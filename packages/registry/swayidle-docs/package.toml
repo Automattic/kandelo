@@ -1,0 +1,32 @@
+kind = "program"
+name = "swayidle-docs"
+version = "1.9.1"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
+
+# Upstream manual page for the `swayidle` package.
+# The source, SHA-256 and version are the `swayidle` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/swaywm/swayidle/releases/download/v1.9.1/swayidle-1.9.1.tar.gz"
+sha256 = "6e1655ecba30db14de3df1652ef9dd1db72784946fa65cb222404a87ac825d57"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/swayidle/blob/v1.9.1/LICENSE"
+
+[build]
+script_path = "packages/registry/swayidle-docs/build-swayidle-docs.sh"
+
+[[outputs]]
+name = "swayidle-docs"
+wasm = "swayidle-docs.zip"
+fork_instrumentation = "disabled"

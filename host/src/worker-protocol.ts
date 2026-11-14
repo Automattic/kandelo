@@ -40,6 +40,20 @@ export interface CentralizedWorkerInitMessage {
   programBytes: ArrayBuffer;
   /** Pre-compiled WebAssembly module (avoids recompilation in web workers) */
   programModule?: WebAssembly.Module;
+  /**
+   * SHA-256 of `programBytes`, from the kernel worker's module cache. It is
+   * the fork module template id, so the worker need not hash the bytes again.
+   * Optional only for direct test harnesses; the worker hashes when absent.
+   */
+  programTemplateId?: Uint8Array;
+  /**
+   * The kernel worker already judged exactly `programBytes` with the
+   * artifact policy for this kernel's ABI version and contract digest: at
+   * exec or posix_spawn admission, or, for a fork child, at the launch of
+   * the parent image it copies. The worker then skips its own copy of that
+   * check. Absent for a top-level host spawn, which the worker judges.
+   */
+  programAdmitted?: boolean;
   /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
@@ -138,6 +152,8 @@ export interface CentralizedThreadInitMessage {
   tid: number;
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
+  /** SHA-256 of `programBytes`; see {@link CentralizedWorkerInitMessage}. */
+  programTemplateId?: Uint8Array;
   memory: WebAssembly.Memory;
   /** Main process channel offset. The thread reads the process-wide dlopen
    * archive head relative to this live shared-memory anchor before fork. */

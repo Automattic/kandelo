@@ -201,11 +201,11 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$SYSROOT/include/glib-2.0" \
     -lm -o "$WORK_DIR/notify-send.wasm"
 
 # --- launchers and desktop data ----------------------------------------
-# wldesktop starts the floating demo desktop; hyprdesktop and omarchydesktop
-# start the tiling desktop and the Omarchy-shaped one. Omarchy's configs,
-# themes, .desktop entries and shell QML, and the sway machine's config, are
-# image data under /usr/share/kandelo, packed into one archive the image
-# builder unpacks there. The Hyprland desktop is not in any image by
+# wldesktop starts the floating demo desktop; hyprdesktop starts the tiling
+# desktop and omarchydesktop the Omarchy desktop on sway. The desktops'
+# configs, themes, .desktop entries and shell QML, and the sway machine's
+# config, are image data under /usr/share/kandelo, packed into one archive
+# the image builder unpacks there. The Hyprland desktop is not in any image by
 # default, so its launcher and config are separate artifacts an image that
 # wants it installs.
 for launcher in wldesktop desktops/hyprdesktop desktops/omarchydesktop; do

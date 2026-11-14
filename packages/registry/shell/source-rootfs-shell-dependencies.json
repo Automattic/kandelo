@@ -183,7 +183,7 @@
     },
     {
       "name": "foot",
-      "version": "1.17.2",
+      "version": "1.28.0",
       "role": "lazy-file"
     },
     {
@@ -217,9 +217,59 @@
       "role": "lazy-file"
     },
     {
-      "name": "qtgallery",
-      "version": "0.1.0",
+      "name": "fuzzel",
+      "version": "1.15.0",
       "role": "lazy-file"
+    },
+    {
+      "name": "swaylock",
+      "version": "1.8.6",
+      "role": "lazy-file"
+    },
+    {
+      "name": "swayidle",
+      "version": "1.9.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "mako",
+      "version": "1.10.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "waybar",
+      "version": "0.14.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "basuctl",
+      "version": "0.2.1",
+      "role": "lazy-file"
+    },
+    {
+      "name": "busybox",
+      "version": "1.37.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "lua-cli",
+      "version": "5.2.4",
+      "role": "lazy-file"
+    },
+    {
+      "name": "xkbcli",
+      "version": "1.13.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "omarchy",
+      "version": "4.0.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "jetbrains-mono-nerd-font",
+      "version": "3.4.0",
+      "role": "lazy-archive"
     },
     {
       "name": "quickshell",
@@ -338,7 +388,7 @@
     },
     {
       "name": "foot-docs",
-      "version": "1.17.2",
+      "version": "1.28.0",
       "role": "lazy-archive"
     },
     {
@@ -487,11 +537,6 @@
       "role": "lazy-archive"
     },
     {
-      "name": "qtgallery-docs",
-      "version": "0.1.0",
-      "role": "lazy-archive"
-    },
-    {
       "name": "wasm-fork-instrument-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
@@ -549,6 +594,41 @@
     {
       "name": "espeak-ng-docs",
       "version": "1.52.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "fuzzel-docs",
+      "version": "1.15.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "lua-cli-docs",
+      "version": "5.2.4",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "mako-docs",
+      "version": "1.10.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "swayidle-docs",
+      "version": "1.9.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "swaylock-docs",
+      "version": "1.8.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "waybar-docs",
+      "version": "0.14.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "xkbcli-docs",
+      "version": "1.13.2",
       "role": "lazy-archive"
     },
     {

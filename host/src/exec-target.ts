@@ -248,6 +248,8 @@ export interface PreparedExecLaunchOptions {
   readonly argv: string[];
   readonly envp: string[];
   readonly expectedAbi: number;
+  /** The running kernel's ABI-contract digest, or null for an unstamped kernel. */
+  readonly expectedAbiContractDigest: Uint8Array | null;
   readonly prepareInitialTarget: () => number;
   readonly prepareInterpreterTarget: (interpreterPath: string) => number;
   readonly commitTarget: (
@@ -347,11 +349,17 @@ export async function launchPreparedExecTarget(
       }
     }
     const targetBytes = exactArrayBuffer(bytes);
-    // The kernel judged these exact bytes; the host adds only the fork
-    // contract, which the kernel cannot judge until the fork work lands.
+    // The kernel judged these exact bytes. The host adds the fork contract,
+    // which the kernel cannot judge until the fork work lands, and the ABI
+    // contract digest, which only the host reads from the kernel's stamp.
+    // This is the process worker's own check, so the worker does not repeat
+    // it on the bytes it is handed.
     const refusal = admission.kind === "refused"
       ? admission.reason
-      : describeWasmArtifactPolicyFailures(targetBytes).join("; ");
+      : describeWasmArtifactPolicyFailures(targetBytes, {
+          expectedAbi: options.expectedAbi,
+          expectedAbiContractDigest: options.expectedAbiContractDigest,
+        }).join("; ");
     if (refusal !== "") {
       throw new PreparedExecTargetError(
         `prepared exec target is not runnable: ${refusal}`,

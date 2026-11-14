@@ -77,7 +77,7 @@ PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" meson setup "$BUILD_DIR" "$SRC_DIR" \
     -Dbuildtype=plain \
     -Doptimization=2 \
     -Dwerror=false \
-    -Dgdk-pixbuf=disabled \
+    -Dgdk-pixbuf=enabled \
     -Dman-pages=disabled
 
 echo "==> Building swaybg..."

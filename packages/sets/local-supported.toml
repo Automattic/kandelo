@@ -91,6 +91,10 @@ name = "basu"
 class = "platform"
 
 [[packages]]
+name = "basuctl"
+class = "user-software"
+
+[[packages]]
 name = "bc"
 class = "user-software"
 
@@ -145,6 +149,10 @@ class = "platform"
 [[packages]]
 name = "wasm-fork-instrument-docs"
 class = "browser-product"
+
+[[packages]]
+name = "busybox"
+class = "user-software"
 
 [[packages]]
 name = "bzip2"
@@ -331,6 +339,14 @@ name = "freetype"
 class = "platform"
 
 [[packages]]
+name = "fuzzel"
+class = "user-software"
+
+[[packages]]
+name = "fuzzel-docs"
+class = "browser-product"
+
+[[packages]]
 name = "fribidi"
 class = "platform"
 
@@ -425,6 +441,10 @@ class = "platform"
 [[packages]]
 name = "icu"
 class = "platform"
+
+[[packages]]
+name = "jetbrains-mono-nerd-font"
+class = "user-software"
 
 [[packages]]
 name = "jq"
@@ -551,6 +571,10 @@ name = "libinput"
 class = "platform"
 
 [[packages]]
+name = "libjpeg-turbo"
+class = "platform"
+
+[[packages]]
 name = "libmad"
 class = "platform"
 
@@ -607,6 +631,14 @@ name = "libxkbregistry"
 class = "platform"
 
 [[packages]]
+name = "xkbcli"
+class = "user-software"
+
+[[packages]]
+name = "xkbcli-docs"
+class = "browser-product"
+
+[[packages]]
 name = "libxml2"
 class = "platform"
 
@@ -649,6 +681,10 @@ class = "browser-product"
 [[packages]]
 name = "mako"
 class = "user-software"
+
+[[packages]]
+name = "mako-docs"
+class = "browser-product"
 
 [[packages]]
 name = "mandoc"
@@ -767,6 +803,10 @@ name = "npm-docs"
 class = "browser-product"
 
 [[packages]]
+name = "omarchy"
+class = "user-software"
+
+[[packages]]
 name = "openssl"
 class = "platform"
 
@@ -817,14 +857,6 @@ class = "platform"
 [[packages]]
 name = "qtdeclarative"
 class = "platform"
-
-[[packages]]
-name = "qtgallery"
-class = "user-software"
-
-[[packages]]
-name = "qtgallery-docs"
-class = "browser-product"
 
 [[packages]]
 name = "qtshadertools"
@@ -1007,6 +1039,22 @@ name = "swaybg-docs"
 class = "browser-product"
 
 [[packages]]
+name = "swayidle"
+class = "user-software"
+
+[[packages]]
+name = "swayidle-docs"
+class = "browser-product"
+
+[[packages]]
+name = "swaylock"
+class = "user-software"
+
+[[packages]]
+name = "swaylock-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sdl2-mixer-playwave"
 class = "user-software"
 
@@ -1083,6 +1131,10 @@ name = "tar-docs"
 class = "browser-product"
 
 [[packages]]
+name = "ttfx"
+class = "user-software"
+
+[[packages]]
 name = "tmux"
 class = "user-software"
 
@@ -1151,6 +1203,10 @@ name = "waybar"
 class = "user-software"
 
 [[packages]]
+name = "waybar-docs"
+class = "browser-product"
+
+[[packages]]
 name = "wget"
 class = "user-software"
 
@@ -1205,6 +1261,14 @@ class = "browser-product"
 [[packages]]
 name = "lua"
 class = "platform"
+
+[[packages]]
+name = "lua-cli"
+class = "user-software"
+
+[[packages]]
+name = "lua-cli-docs"
+class = "browser-product"
 
 [[products]]
 id = "platform-rootfs"

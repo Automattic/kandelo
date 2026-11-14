@@ -7754,6 +7754,8 @@ pub fn sys_write(
                         else { usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)? };
                     let end = offset.checked_add(writable_len).ok_or(Errno::EFBIG)?;
                     let next_offset = i64::try_from(end).map_err(|_| Errno::EFBIG)?;
+                    crate::kernel_file_mapping::prepare_overwrite(FileType::MemFd, host_handle, offset as u64, end as u64,
+                        &mut |at, page| crate::kernel_file_mapping::read_old_page(page, at, |at, dst| backing.read_at(at, dst)))?;
                     backing.write_at(offset, &buf[..writable_len])?;
                     backing.offset = next_offset;
                     Ok(writable_len)
@@ -8672,6 +8674,9 @@ pub fn sys_pwrite(
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+            let end = start.checked_add(writable_len).ok_or(Errno::EFBIG)?;
+            crate::kernel_file_mapping::prepare_overwrite(FileType::MemFd, host_handle, start as u64, end as u64,
+                &mut |at, page| crate::kernel_file_mapping::read_old_page(page, at, |at, dst| backing.read_at(at, dst)))?;
             backing.write_at(start, &buf[..writable_len])
         });
     }
@@ -22380,6 +22385,8 @@ pub fn sys_ftruncate(
         let new_len = usize::try_from(length).map_err(|_| Errno::EFBIG)?;
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+            crate::kernel_file_mapping::prepare_truncate(FileType::MemFd, host_handle, new_len as u64,
+                &mut |at, page| crate::kernel_file_mapping::read_old_page(page, at, |at, dst| backing.read_at(at, dst)))?;
             backing.resize(new_len)
         })?;
         crate::kernel_file_mapping::notify_truncated(FileType::MemFd, host_handle, length as u64);

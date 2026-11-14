@@ -1,0 +1,210 @@
+From: mho22 <yannick@capsules.codes>
+Subject: [PATCH] Theme sway, Waybar, fuzzel, swaylock and mako
+
+omarchy-theme-set-templates renders every default/themed/*.tpl into
+the current theme. Add templates for the sway session's own programs,
+Waybar among them in place of the QuickShell bar, and run only the
+post-theme commands whose programs Kandelo ships: the sway reload and
+the foot recolor.
+
+diff --git a/bin/omarchy-theme-set b/bin/omarchy-theme-set
+index 016fe67..500e6ce 100755
+--- a/bin/omarchy-theme-set
++++ b/bin/omarchy-theme-set
+@@ -316,22 +316,8 @@ fi
+ flock -u 9
+ 
+ post_theme_commands=(
+-  omarchy-restart-terminal
+   omarchy-restart-hyprctl
+-  omarchy-restart-btop
+-  omarchy-restart-opencode
+-  omarchy-restart-helix
+   omarchy-theme-set-foot
+-  omarchy-theme-set-tmux
+-  omarchy-theme-set-gnome
+-  omarchy-theme-set-pi
+-  omarchy-theme-set-claude
+-  omarchy-theme-set-hermes
+-  omarchy-theme-set-t3code
+-  omarchy-theme-set-browser
+-  omarchy-theme-set-vscode
+-  omarchy-theme-set-obsidian
+-  omarchy-theme-set-keyboard
+ )
+ 
+ if [[ $THEME_HEADLESS != "1" ]]; then
+diff --git a/default/themed/fuzzel.ini.tpl b/default/themed/fuzzel.ini.tpl
+new file mode 100644
+index 0000000..e881d92
+--- /dev/null
++++ b/default/themed/fuzzel.ini.tpl
+@@ -0,0 +1,29 @@
++# The menu card from the shell's [menu] tokens and shell/plugins/menu: a
++# 300-pixel card with 18-pixel padding, 50-pixel rows in 16-pixel text, a
++# header at 58% opacity until the visitor types, the selected row at 8%
++# foreground with accent text, and a 2-pixel border.
++[main]
++font=JetBrainsMono Nerd Font:pixelsize=16
++dpi-aware=no
++width=27
++minimal-lines=yes
++horizontal-pad=18
++vertical-pad=18
++line-height=50px
++
++[colors]
++background={{ background_strip }}ff
++text={{ foreground_strip }}ff
++prompt={{ foreground_strip }}ff
++placeholder={{ foreground_strip }}94
++input={{ foreground_strip }}ff
++match={{ accent_strip }}ff
++selection={{ foreground_strip }}14
++selection-text={{ accent_strip }}ff
++selection-match={{ accent_strip }}ff
++counter={{ dark_foreground_strip }}ff
++border={{ foreground_strip }}ff
++
++[border]
++width=2
++radius=0
+diff --git a/default/themed/mako.ini.tpl b/default/themed/mako.ini.tpl
+new file mode 100644
+index 0000000..46753fd
+--- /dev/null
++++ b/default/themed/mako.ini.tpl
+@@ -0,0 +1,21 @@
++# The toast from the shell's [notifications] tokens and
++# shell/plugins/notifications: a 380-pixel card 5 pixels below the bar and
++# from the right edge, 10x12 padding, a bold summary and a body in 14-pixel
++# Liberation Sans, a 2-pixel accent border, and 8 seconds on screen (5 for
++# low urgency).
++font=Liberation Sans 14px
++format=<b>%s</b>\n%b
++width=380
++margin=5
++padding=10,12
++border-size=2
++border-radius=0
++max-visible=5
++default-timeout=8000
++text-color={{ foreground }}
++border-color={{ accent }}
++background-color={{ background }}
++progress-color=over {{ selection }}
++
++[urgency=low]
++default-timeout=5000
+diff --git a/default/themed/sway.conf.tpl b/default/themed/sway.conf.tpl
+new file mode 100644
+index 0000000..292e5a2
+--- /dev/null
++++ b/default/themed/sway.conf.tpl
+@@ -0,0 +1,7 @@
++# Window borders from hyprland.lua.tpl: the accent on the focused window,
++# Hyprland's rgba(595959aa) on the others.
++# class                 border       background       text                  indicator    child_border
++client.focused          {{ accent }} {{ background }} {{ foreground }}      {{ accent }} {{ accent }}
++client.focused_inactive #595959aa    {{ background }} {{ foreground }}      #595959aa    #595959aa
++client.unfocused        #595959aa    {{ background }} {{ dark_foreground }} #595959aa    #595959aa
++client.urgent           {{ red }}    {{ background }} {{ foreground }}      {{ red }}    {{ red }}
+diff --git a/default/themed/swaylock.conf.tpl b/default/themed/swaylock.conf.tpl
+new file mode 100644
+index 0000000..00bbbe8
+--- /dev/null
++++ b/default/themed/swaylock.conf.tpl
+@@ -0,0 +1,31 @@
++# The lock from the shell's [lock] tokens and shell/plugins/lock: the current
++# background behind an always-visible ring, the theme background at 80%
++# inside, a 3-pixel accent outline that turns red on a wrong password, and
++# the bar's font at 18 pixels. swaylock draws a ring where the shell draws a
++# 381x67 field, and it does not blur the background.
++scaling=fill
++indicator-idle-visible
++indicator-radius=60
++indicator-thickness=3
++font=JetBrainsMono Nerd Font
++font-size=18
++color={{ background_strip }}
++inside-color={{ background_strip }}cc
++inside-clear-color={{ background_strip }}cc
++inside-ver-color={{ background_strip }}cc
++inside-wrong-color={{ background_strip }}cc
++ring-color={{ accent_strip }}
++ring-clear-color={{ accent_strip }}
++ring-ver-color={{ accent_strip }}
++ring-wrong-color={{ red_strip }}
++key-hl-color={{ foreground_strip }}
++bs-hl-color={{ red_strip }}
++line-color=00000000
++line-clear-color=00000000
++line-ver-color=00000000
++line-wrong-color=00000000
++separator-color=00000000
++text-color={{ foreground_strip }}
++text-clear-color={{ foreground_strip }}
++text-ver-color={{ foreground_strip }}
++text-wrong-color={{ red_strip }}
+diff --git a/default/themed/waybar.css.tpl b/default/themed/waybar.css.tpl
+new file mode 100644
+index 0000000..af0f810
+--- /dev/null
++++ b/default/themed/waybar.css.tpl
+@@ -0,0 +1,56 @@
++/* The bar's [bar] tokens from shell.toml.tpl and its widget sizes from
++   shell/plugins/bar: a 12px font, 8px section margins, a 7.5px margin around
++   the menu glyph and the clock, 20px workspace slots 1px apart, and unused
++   workspaces at half opacity. */
++* {
++  font-family: 'JetBrainsMono Nerd Font';
++  font-size: 12px;
++  border: none;
++  border-radius: 0;
++  min-height: 0;
++  background: transparent;
++  color: {{ foreground }};
++}
++
++window#waybar {
++  background-color: {{ background }};
++}
++
++.modules-left {
++  margin-left: 8px;
++}
++
++.modules-right {
++  margin-right: 8px;
++}
++
++#custom-omarchy,
++#clock {
++  padding: 0 7.5px;
++}
++
++#workspaces {
++  margin-right: 1.5px;
++}
++
++#workspaces button {
++  all: initial;
++  min-width: 20px;
++  margin: 0 0.5px;
++  color: {{ foreground }};
++}
++
++#workspaces button.empty {
++  opacity: 0.5;
++}
++
++/* The calendar tooltip as one of the shell's panels: the bar background
++   inside a 2px foreground border. */
++tooltip {
++  background-color: {{ background }};
++  border: 2px solid {{ foreground }};
++}
++
++tooltip label {
++  padding: 8px 12px;
++}

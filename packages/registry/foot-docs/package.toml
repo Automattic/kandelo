@@ -1,6 +1,6 @@
 kind = "program"
 name = "foot-docs"
-version = "1.17.2"
+version = "1.28.0"
 kernel_abi = 56
 depends_on = []
 
@@ -15,13 +15,13 @@ install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/de
 # pages describe the release that built the installed binary;
 # tests/package-system/package-docs-source-parity.test.ts keeps them equal.
 [source]
-url = "https://codeberg.org/dnkl/foot/releases/download/1.17.2/foot-1.17.2.tar.gz"
-sha256 = "de901e5fba00aded452df989a968906309f14221ed606c78c1caff3026c7f541"
+url = "https://codeberg.org/dnkl/foot/releases/download/1.28.0/foot-1.28.0.tar.gz"
+sha256 = "ee73c292a4b457004b38c2df178eac025ab0b849fdd9e13253c1f8b5cf110710"
 provider = "archive"
 
 [license]
 spdx = "MIT"
-url = "https://codeberg.org/dnkl/foot/src/tag/1.17.2/LICENSE"
+url = "https://codeberg.org/dnkl/foot/src/tag/1.28.0/LICENSE"
 
 [build]
 script_path = "packages/registry/foot-docs/build-foot-docs.sh"
