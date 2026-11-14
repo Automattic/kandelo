@@ -1,0 +1,25 @@
+kind = "program"
+name = "gperf"
+version = "3.3"
+kernel_abi = 56
+depends_on = ["libcxx@21.1.7"]
+
+# GNU gperf: generates perfect hash functions as C or C++ source. Build
+# systems such as fontconfig's and coreutils' run it to produce lookup
+# tables.
+[source]
+url = "https://ftpmirror.gnu.org/gperf/gperf-3.3.tar.gz"
+sha256 = "fd87e0aba7e43ae054837afd6cd4db03a3f2693deb3619085e6ed9d8d9604ad8"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/gperf.git/tree/COPYING?h=v3.3"
+
+[build]
+script_path = "packages/registry/gperf/build-gperf.sh"
+
+[[outputs]]
+name = "gperf"
+wasm = "gperf.wasm"
+fork_instrumentation = "auto"

@@ -16,6 +16,7 @@ inputs = [
   # gains an import.
   "images/vfs/scripts",
   "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/lib/init/dev-tools.ts",
   "images/vfs/ruby-todo-app",
   "images/rootfs/etc/services",
   "packages/registry/ruby/ruby-todo-demo.json",

@@ -86,7 +86,22 @@ describe.skipIf(!available)("runGuestBuild (Node host, real kernel)", () => {
     expect(log).toContain("second\n");
   }, 60_000);
 
-  it("stops a command that outlives its timeout", async () => {
+  it("appends to workspace files", async () => {
+    // O_APPEND writes on /build: shell `>>`, m4's --debugfile (autom4te),
+    // and build logs. The host filesystem supports them only because the
+    // workspace mount is declared exclusive.
+    const dir = workspace();
+    const result = await runGuestBuild({
+      kernelWasm: new Uint8Array(readFileSync(kernelPath!)),
+      image: minimalImage(),
+      request: request(dir, "echo one > /build/log.txt; echo two >> /build/log.txt; echo three >> /build/log.txt"),
+      log: () => {},
+    });
+    expect(result).toEqual({ exitCode: 0, timedOut: false });
+    expect(readFileSync(join(dir, "log.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+  }, 60_000);
+
+    it("stops a command that outlives its timeout", async () => {
     const started = Date.now();
     const result = await runGuestBuild({
       kernelWasm: new Uint8Array(readFileSync(kernelPath!)),

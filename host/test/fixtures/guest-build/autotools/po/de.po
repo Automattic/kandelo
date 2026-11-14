@@ -1,0 +1,10 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: kandelo-calc 1.0\n"
+"Language: de\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Hello"
+msgstr "Hallo"

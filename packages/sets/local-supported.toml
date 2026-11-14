@@ -131,6 +131,46 @@ name = "wasm-tools-docs"
 class = "browser-product"
 
 [[packages]]
+name = "autoconf"
+class = "user-software"
+
+[[packages]]
+name = "automake"
+class = "user-software"
+
+[[packages]]
+name = "libtool"
+class = "user-software"
+
+[[packages]]
+name = "autoconf-archive"
+class = "user-software"
+
+[[packages]]
+name = "gettext"
+class = "user-software"
+
+[[packages]]
+name = "help2man"
+class = "user-software"
+
+[[packages]]
+name = "texinfo"
+class = "user-software"
+
+[[packages]]
+name = "pkgconf"
+class = "user-software"
+
+[[packages]]
+name = "bison"
+class = "user-software"
+
+[[packages]]
+name = "gperf"
+class = "user-software"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 

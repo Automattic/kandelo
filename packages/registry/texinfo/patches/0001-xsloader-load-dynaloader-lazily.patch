@@ -1,0 +1,24 @@
+# Load DynaLoader only when an XS module is actually loaded. Texinfo built
+# with --disable-perl-xs never loads one, but the unconditional `use
+# DynaLoader` still failed under a perl built without dynamic loading, such
+# as Kandelo's static perl, which installs no DynaLoader.pm.
+--- a/tta/perl/Texinfo/XSLoader.pm
++++ b/tta/perl/Texinfo/XSLoader.pm
+@@ -19,7 +19,6 @@
+ use strict;
+ use warnings;
+ 
+-use DynaLoader;
+ 
+ #use version;
+ 
+@@ -152,6 +151,9 @@
+ # installed in the default case on platforms where modules have usual names
+ # and are found by DynaLoader.
+ sub load_libtool_library {
++  # Loaded here, not at compile time, so a perl built without dynamic
++  # loading can still run the pure-Perl modules when XS is disabled.
++  require DynaLoader;
+   my ($module_name, $libtool_dir, $libtool_archive, $try_direct_load) = @_;
+ 
+   my $dlname;

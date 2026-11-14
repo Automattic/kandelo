@@ -1,0 +1,22 @@
+AC_INIT([kandelo-calc], [1.0])
+AC_CONFIG_SRCDIR([main.c])
+AC_CONFIG_AUX_DIR([build-aux])
+AC_CONFIG_MACRO_DIRS([m4])
+m4_pattern_forbid([^AX_])
+AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
+AC_PROG_CC
+AM_PROG_AR
+LT_INIT
+AC_PROG_YACC
+AC_PATH_PROG([GPERF], [gperf])
+AC_PATH_PROG([HELP2MAN], [help2man])
+AX_CHECK_COMPILE_FLAG([-Wall], [CFLAGS="$CFLAGS -Wall"])
+PKG_PROG_PKG_CONFIG
+PKG_CHECK_MODULES([GREETING], [greeting >= 1.0])
+AM_GNU_GETTEXT([external])
+AM_GNU_GETTEXT_REQUIRE_VERSION([0.25])
+AC_CANONICAL_HOST
+AC_SUBST([KANDELO_HOST], [$host])
+AC_CONFIG_HEADERS([config.h])
+AC_CONFIG_FILES([Makefile po/Makefile.in])
+AC_OUTPUT

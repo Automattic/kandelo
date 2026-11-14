@@ -528,6 +528,7 @@ describe("canonical source-rootfs shell", () => {
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
       "images/vfs/lib/init/shell-binaries.ts",
+      "images/vfs/lib/init/dev-tools.ts",
       "web-libs/kandelo-session/src/experimental-terminal-session.ts",
       "web-libs/kandelo-session/src/demo-config.ts",
     ]) {

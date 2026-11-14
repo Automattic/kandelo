@@ -4,8 +4,9 @@ version = "0.1.0"
 kernel_abi = 50
 arches = ["wasm32"]
 # The canonical rootfs's own package closure (it is rebuilt here with every
-# output installed eagerly), plus the guest toolchain and the LLVM binary
-# tools (clang's llvm-ar, llvm-objdump, ...). Keep the first group
+# output installed eagerly), plus the guest toolchain, the LLVM binary tools
+# (clang's llvm-ar, llvm-objdump, ...), Perl, the shell's archive tools (tar,
+# gzip, bzip2, xz), and the GNU build tools (images/vfs/lib/init/dev-tools.ts). Keep the first group
 # equal to packages/registry/rootfs/package.toml's depends_on.
 depends_on = [
   "toybox@0.8.15",
@@ -32,6 +33,21 @@ depends_on = [
   "attr@2.5.2",
   "kandelo-sdk-browser-bundle@21.1.7",
   "clang@21.1.7",
+  "perl-browser-bundle@5.40.3",
+  "tar@1.35",
+  "gzip@1.13",
+  "bzip2@1.0.8",
+  "xz@5.6.2",
+  "autoconf@2.73",
+  "automake@1.20",
+  "libtool@2.6.2",
+  "autoconf-archive@2026.11.11",
+  "gettext@1.0",
+  "help2man@1.49.3",
+  "texinfo@7.3",
+  "pkgconf@3.0.10",
+  "bison@3.8.2",
+  "gperf@3.3",
 ]
 
 # The image a package build boots when it builds inside Kandelo
