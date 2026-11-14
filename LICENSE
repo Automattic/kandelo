@@ -36,9 +36,10 @@ MIT:
   libc/glue/            Syscall glue compiled into user programs
 
 The MIT grant covers the code we wrote in those two directories. They also
-hold a few unmodified upstream headers that keep their own licenses; see
-"Copied into libc/musl-overlay/ and libc/glue/" below. Each of those licenses
-permits linking into proprietary programs, so the paragraph above still holds.
+hold upstream headers and code adapted from upstream projects, which keep
+their own licenses; see "Copied into libc/musl-overlay/ and libc/glue/"
+below. Each of those licenses permits linking into proprietary programs, so
+the paragraph above still holds.
 
 
 Third-Party Software
@@ -83,7 +84,8 @@ libc/glue/:
       Adapted from __mulddi3 in LLVM compiler-rt lib/builtins/multi3.c.
       Copyright the LLVM Project contributors. Apache-2.0 WITH
       LLVM-exception. The exception lets programs carry the compiled
-      builtin without Apache-2.0's attribution requirement.
+      builtin without Apache-2.0's attribution requirement. See
+      sdk/kandelo/licenses/LLVM-LICENSE.TXT.
   libc/glue/wayland-egl-include/
       wayland-egl headers from the Wayland project. Copyright Kristian
       Høgsberg and Benjamin Franzke. MIT (license text in each file).

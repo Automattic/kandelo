@@ -14,6 +14,13 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 // Clang 23 did this to __multi3.
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const compilerRt = join(repoRoot, "libc/glue/compiler_rt.c");
+// Absolute path, never a bare `wasm32posix-cc`: a bare name resolves through
+// PATH and can pick up a different worktree's SDK.
+const sdkCc = (arch: "wasm32" | "wasm64") =>
+  join(repoRoot, "sdk", "bin", `${arch}posix-cc`);
+// The SDK driver compiles the glue at -O2; the other levels guard packages
+// that compile compiler_rt.c themselves and future driver changes.
+const optLevels = ["-O1", "-O2", "-O3", "-Os", "-Oz"] as const;
 const programs = [
   ["wasm32", join(repoRoot, "examples/compiler_builtins_test.wasm")],
   ["wasm64", join(repoRoot, "examples/compiler_builtins_test.wasm64.wasm")],
@@ -72,15 +79,23 @@ describe("compiler builtins", () => {
     (arch) => {
       const temp = mkdtempSync(join(tmpdir(), "kandelo-compiler-rt-"));
       try {
-        const object = join(temp, "compiler_rt.o");
-        // The SDK driver compiles the glue at -O2 with its standard flags.
-        execFileSync(`${arch}posix-cc`, ["-O2", "-c", compilerRt, "-o", object], {
-          cwd: repoRoot,
-          stdio: "pipe",
-        });
-        const graph = callGraph(object);
-        expect(graph.has("__multi3"), "objdump listed no __multi3").toBe(true);
-        expect(callCycles(graph)).toEqual([]);
+        for (const opt of optLevels) {
+          const object = join(temp, `compiler_rt${opt}.o`);
+          execFileSync(sdkCc(arch), [opt, "-c", compilerRt, "-o", object], {
+            cwd: repoRoot,
+            stdio: "pipe",
+          });
+          const graph = callGraph(object);
+          expect(graph.has("__multi3"), `${opt}: objdump listed no __multi3`).toBe(true);
+          // A known call edge proves the relocations parsed; an edgeless
+          // graph would otherwise pass the cycle check vacuously. If a
+          // compiler inlines __addtf3 here, pick another stable edge.
+          expect(
+            graph.get("__subtf3")?.has("__addtf3"),
+            `${opt}: no __subtf3 -> __addtf3 edge; call relocations did not parse`,
+          ).toBe(true);
+          expect(callCycles(graph), opt).toEqual([]);
+        }
       } finally {
         rmSync(temp, { recursive: true, force: true });
       }

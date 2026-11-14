@@ -1,13 +1,14 @@
-/* compiler_builtins_test.c — call every compiler builtin family at runtime.
+/* compiler_builtins_test.c — call compiler builtins at runtime.
  *
  * Clang lowers __int128 multiply and shifts, and every long double (fp128)
  * operation, to builtins that the SDK provides from libc/glue/compiler_rt.c.
  * A builtin whose own body the optimizer turns back into the operation it
  * implements calls itself and recurses until the stack overflows; clang 23
- * did that to __multi3. This program reaches each builtin through volatile
- * operands, so none is folded away, and checks exact results computed
- * independently with Python integers. 128-bit division and modulo are
- * covered by int128_division_test.c.
+ * did that to __multi3. This program calls every builtin in that file that
+ * clang emits, except 128-bit division and modulo, which
+ * int128_division_test.c covers. Every operand is a volatile read, so no
+ * call is folded away at any optimization level. Results are exact values
+ * computed independently with Python integers.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -58,11 +59,9 @@ static const struct shift_row shift_rows[] = {
 int main(void) {
     for (int i = 0; i < (int)(sizeof mul_rows / sizeof mul_rows[0]); i++) {
         volatile u128 a = mul_rows[i].a, b = mul_rows[i].b;
+        /* Signed and unsigned multiply are the same __multi3 call; rows
+         * with the top bit set cover negative operands. */
         check_u128("multiply", i, a * b, mul_rows[i].p);
-        volatile s128 sa = (s128)mul_rows[i].a, sb = (s128)mul_rows[i].b;
-        /* Signed multiply wraps identically; compute it in unsigned to avoid
-         * signed-overflow UB while still reaching __multi3 with signed data. */
-        check_u128("signed multiply", i, (u128)sa * (u128)sb, mul_rows[i].p);
     }
     {
         /* The 64x64 -> 128 widening multiply, the form musl's number
@@ -88,6 +87,11 @@ int main(void) {
     check_true("long double multiply", x * z == -10.5L);
     check_true("long double divide", y / q == 0.5625L);
     check_true("long double compare", z < x && x <= y && y > z && q >= q && x != y);
+    /* musl's isunordered() is built from isnan(); the builtin is the
+     * unordered fp128 comparison that clang lowers to __unordtf2. */
+    volatile long double nan = __builtin_nanl("");
+    check_true("long double unordered",
+               __builtin_isunordered(nan, x) && !__builtin_isunordered(x, y));
 
     volatile long long i64 = -123456789012345LL;
     volatile unsigned long long u64 = 0xfedcba9876543210ULL;
@@ -95,7 +99,7 @@ int main(void) {
     volatile unsigned u32 = 4000000000u;
     volatile double d = 0.1;
     volatile float f = 0.375f;
-    long double li = i64, lu = u64, l32 = i32, lu32 = u32, ld = d, lf = f;
+    volatile long double li = i64, lu = u64, l32 = i32, lu32 = u32, ld = d, lf = f;
     check_true("long long round trip", (long long)li == -123456789012345LL);
     check_true("unsigned long long round trip", (unsigned long long)lu == 0xfedcba9876543210ULL);
     check_true("int round trip", (int)l32 == -2147483647);
