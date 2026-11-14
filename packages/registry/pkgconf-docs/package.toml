@@ -1,0 +1,28 @@
+kind = "program"
+name = "pkgconf-docs"
+version = "3.0.10"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `pkgconf` package.
+# The source, SHA-256 and version are the `pkgconf` package's own, so the
+# pages describe the release that built the installed program;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.10.tar.xz"
+sha256 = "9371b2f6372da574d4c6dc96fe9b1463037bcf6afcb6671c1555afde7b17e2de"
+provider = "archive"
+
+
+[license]
+spdx = "ISC"
+url = "https://github.com/pkgconf/pkgconf/blob/pkgconf-3.0.10/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/pkgconf-docs/build-pkgconf-docs.sh"
+
+[[outputs]]
+name = "pkgconf-docs"
+wasm = "pkgconf-docs.zip"
+fork_instrumentation = "disabled"

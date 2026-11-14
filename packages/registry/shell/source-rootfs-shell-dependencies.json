@@ -302,8 +302,43 @@
       "role": "lazy-archive"
     },
     {
+      "name": "autoconf-docs",
+      "version": "2.73",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "automake-docs",
+      "version": "1.20",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "bison-docs",
+      "version": "3.8.2",
+      "role": "lazy-archive"
+    },
+    {
       "name": "coreutils-docs",
       "version": "9.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "gettext-docs",
+      "version": "1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "gperf-docs",
+      "version": "3.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "help2man-docs",
+      "version": "1.49.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "libtool-docs",
+      "version": "2.6.2",
       "role": "lazy-archive"
     },
     {
@@ -314,6 +349,16 @@
     {
       "name": "curl-docs",
       "version": "8.11.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "pkgconf-docs",
+      "version": "3.0.10",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "texinfo-docs",
+      "version": "7.3",
       "role": "lazy-archive"
     },
     {

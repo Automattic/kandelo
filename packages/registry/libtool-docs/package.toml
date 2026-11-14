@@ -1,0 +1,40 @@
+kind = "program"
+name = "libtool-docs"
+version = "2.6.2"
+kernel_abi = 56
+depends_on = [
+  "libtool@2.6.2",
+  "autoconf@2.73",
+  "automake@1.20",
+  "perl-browser-bundle@5.40.3",
+  "bash@5.2.37",
+  "coreutils@9.6",
+  "sed@4.9",
+  "grep@3.11",
+  "kernel@0.1.0",
+  "rootfs@0.1.0",
+]
+
+# Manual pages for libtool, libtoolize and libtool-next-version, made by
+# help2man from what each prints running inside Kandelo. Upstream's pages
+# are help2man output too, but from the maintainer's x86_64 Linux build:
+# libtool(1) and libtoolize(1) print the configuration they were built
+# for, which on Kandelo is wasm32-unknown-linux-musl with no dynamic
+# linker. The recipe is this repository's, so the source is the
+# in-repository sentinel, as for composer-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later WITH Libtool-exception"
+url = "https://git.savannah.gnu.org/cgit/libtool.git/tree/COPYING?h=v2.6.2"
+
+[build]
+script_path = "packages/registry/libtool-docs/build-libtool-docs.sh"
+
+[[outputs]]
+name = "libtool-docs"
+wasm = "libtool-docs.zip"
+fork_instrumentation = "disabled"

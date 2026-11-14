@@ -1,0 +1,28 @@
+kind = "program"
+name = "bison-docs"
+version = "3.8.2"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `bison` package.
+# The source, SHA-256 and version are the `bison` package's own, so the
+# pages describe the release that built the installed program;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/bison/bison-3.8.2.tar.xz"
+sha256 = "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2"
+provider = "archive"
+
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/bison.git/tree/COPYING?h=v3.8.2"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/bison-docs/build-bison-docs.sh"
+
+[[outputs]]
+name = "bison-docs"
+wasm = "bison-docs.zip"
+fork_instrumentation = "disabled"
