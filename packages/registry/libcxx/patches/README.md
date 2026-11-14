@@ -30,8 +30,10 @@ is set, not only when `__linux__` is defined. libc++ 23 removed the
 targets. Without this patch Kandelo falls through to the IBM shim, whose
 inline `strtod_l`/`strtof_l`/`strtold_l`/`vasprintf` definitions conflict
 with musl's declarations, and libc++ does not compile. The selected backend
-calls only POSIX 2008 locale functions and musl extensions that Kandelo's
-musl provides. The patch keys on the libc capability libc++ already
-records; it does not define `__linux__` or make Kandelo a Linux target.
-Because the patched header is installed, C++ consumers see the same
-selection.
+calls POSIX.1-2008 locale functions (including `wcsnrtombs`, `mbsnrtowcs`
+and `nl_langinfo_l`), the GNU extensions `strtod_l`, `strtof_l` and
+`strtold_l`, and `vasprintf` (GNU/BSD, standardized in POSIX.1-2024).
+Kandelo's musl provides all of them. It is not yet proposed upstream.
+The patch keys on the libc capability libc++ already records; it does not
+define `__linux__` or make Kandelo a Linux target. Because the patched
+header is installed, C++ consumers see the same selection.

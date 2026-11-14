@@ -183,6 +183,8 @@ done
 # libcxx is copied whole so CMake's relative paths (src/../include) resolve
 # inside the patched copy. Only its test suite, which this recipe never
 # configures (LIBCXX_INCLUDE_TESTS=OFF), stays a link to the Nix source.
+# Only libcxx/ and libunwind/ are private writable copies; a future patch to
+# another tree (for example libcxxabi/) must copy that tree here too.
 mkdir -p "$LLVM_SRC_DIR/libcxx"
 for entry in "$NIX_LIBCXX_SOURCE/libcxx"/* "$NIX_LIBCXX_SOURCE/libcxx"/.[!.]*; do
     [ -e "$entry" ] || continue
