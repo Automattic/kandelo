@@ -1,0 +1,27 @@
+kind = "program"
+name = "meson-docs"
+version = "1.12.1"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual page for the `meson` package.
+# The source, SHA-256 and version are the `meson` package's own, so the
+# page describes the release that installed the program;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz"
+sha256 = "ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/mesonbuild/meson/blob/1.12.1/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/meson-docs/build-meson-docs.sh"
+
+[[outputs]]
+name = "meson-docs"
+wasm = "meson-docs.zip"
+fork_instrumentation = "disabled"
