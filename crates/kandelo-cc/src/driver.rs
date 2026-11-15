@@ -317,7 +317,8 @@ pub fn working_directory_from_clang_trace(
 
     // The provisional argv always adds absolute glue C sources, so an
     // executable link, including an object-only user link, emits cc1 jobs.
-    // Pinned LLVM 21 constructs this exact slot by pushing -resource-dir, its
+    // Clang's driver (Clang::ConstructJob in clang/lib/Driver/ToolChains/
+    // Clang.cpp) constructs this exact slot by pushing -resource-dir, its
     // value, and then Args.AddLastArg(OPT_working_directory), before
     // preprocessing and -Xclang arguments. This is the effective driver cwd
     // even when a config file or CCC_OVERRIDE_OPTIONS supplied it.

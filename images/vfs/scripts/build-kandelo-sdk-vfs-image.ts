@@ -182,7 +182,9 @@ export async function buildKandeloSdkVfsImage(
   copyTree(
     fs,
     inputs.clangResourceDirectory,
-    "/usr/lib/llvm/lib/clang/21",
+    // The guest clang's resource directory: ../lib/clang/<major> from
+    // /usr/lib/llvm/bin/clang, for the packages/registry/clang version.
+    "/usr/lib/llvm/lib/clang/23",
     0o644,
     { preserveSymlinks: false },
   );

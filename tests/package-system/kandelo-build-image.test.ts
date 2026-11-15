@@ -39,7 +39,7 @@ describe("kandelo-build-image package", () => {
     // a package the rootfs gains must reach the image too.
     expect(dependsOn("packages/registry/kandelo-build-image/package.toml")).toEqual([
       ...dependsOn("packages/registry/rootfs/package.toml"),
-      "kandelo-sdk-browser-bundle@21.1.7",
+      "kandelo-sdk-browser-bundle@23.1.3",
     ]);
   });
 });

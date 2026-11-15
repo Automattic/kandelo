@@ -93,6 +93,10 @@ require_dir "Clang resource headers" "$HOST_CLANG_RESOURCE_DIR/include"
 # Kandelo. They come from the build machine's clang, so require the same
 # release the clang package builds.
 CLANG_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$REPO_ROOT/packages/registry/clang/package.toml")"
+if [ -z "$CLANG_VERSION" ]; then
+    echo "build-kandelo-sdk-zip: no version in packages/registry/clang/package.toml" >&2
+    exit 1
+fi
 HOST_CLANG_VERSION="$(clang --version 2>/dev/null | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)"
 if [ -z "${CLANG_RESOURCE_DIR:-}" ] && [ "$HOST_CLANG_VERSION" != "$CLANG_VERSION" ]; then
     echo "build-kandelo-sdk-zip: the build machine's clang is $HOST_CLANG_VERSION, the guest clang $CLANG_VERSION; their resource headers differ" >&2
@@ -135,11 +139,14 @@ chmod 755 \
     "$STAGING/lib/llvm/bin/llvm-nm"
 ln -s clang "$STAGING/lib/llvm/bin/clang++"
 
-# --- lib/llvm/lib/clang/21 — Clang resource headers ---
-mkdir -p "$STAGING/lib/llvm/lib/clang/21"
+# --- lib/llvm/lib/clang/<major> — Clang resource headers ---
+# The guest clang looks for its resource directory at ../lib/clang/<major>
+# relative to its binary, so the directory follows the clang package major.
+CLANG_MAJOR="${CLANG_VERSION%%.*}"
+mkdir -p "$STAGING/lib/llvm/lib/clang/$CLANG_MAJOR"
 # Only target-independent headers belong in the guest resource tree. Host
 # compiler-rt libraries (e.g. Darwin Mach-O archives) are not guest libraries.
-cp -RL "$HOST_CLANG_RESOURCE_DIR/include" "$STAGING/lib/llvm/lib/clang/21/"
+cp -RL "$HOST_CLANG_RESOURCE_DIR/include" "$STAGING/lib/llvm/lib/clang/$CLANG_MAJOR/"
 
 # --- lib/kandelo/wasm32posix/sysroot — musl + libc++ ---
 mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot"

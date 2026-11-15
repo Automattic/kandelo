@@ -849,8 +849,8 @@ references in `shell.vfs.zst`. Opening a compiler or SDK file fetches
 `/usr`. Shell startup does not fetch the ZIP. Its compressed byte count
 and SHA-256 are recorded in the shell image and verified on download.
 
-The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
-It contains the source-built `clang@21.1.7` tools, matching Clang resource
+The ZIP is the declared output of `kandelo-sdk-browser-bundle@23.1.3`.
+It contains the source-built `clang@23.1.3` tools, matching Clang resource
 headers, musl and libc++ sysroot, syscall glue, the SDK driver
 (`kandelo-cc`) and Binaryen's `wasm-opt`. The five
 LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
@@ -910,7 +910,7 @@ warning during the digest rollout; a present mismatched digest still
 fails.
 
 DWARF from `-g` builds records clang's resource directory, which is
-`/usr/lib/llvm/lib/clang/21` here and a different path on the build
+`/usr/lib/llvm/lib/clang/23` here and a different path on the build
 machine, so `-g` outputs are not byte-identical between the two SDKs.
 
 Running the build machine's jobs costs time inside Kandelo: a link runs
