@@ -251,6 +251,17 @@ impl MemFdBacking {
         self.content_gen = self.content_gen.wrapping_add(1);
     }
 
+    /// Positional read: up to `dst.len()` bytes at `offset`, 0 at EOF.
+    pub fn read_at(&self, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+        let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        if start >= self.data.len() {
+            return Ok(0);
+        }
+        let count = dst.len().min(self.data.len() - start);
+        dst[..count].copy_from_slice(&self.data[start..start + count]);
+        Ok(count)
+    }
+
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, Errno> {
         if bytes.is_empty() { return Ok(0); }
         let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;
@@ -860,6 +871,19 @@ mod tests {
             assert_eq!(backing.offset, 4);
             assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
         }
+    }
+
+    #[test]
+    fn memfd_positional_read_stops_at_end_of_file() {
+        let mut backing = super::MemFdBacking::new();
+        backing.write_at(0, b"abcdef").unwrap();
+        let mut dst = [0u8; 4];
+        assert_eq!(backing.read_at(1, &mut dst), Ok(4));
+        assert_eq!(&dst, b"bcde");
+        assert_eq!(backing.read_at(4, &mut dst), Ok(2));
+        assert_eq!(&dst[..2], b"ef");
+        assert_eq!(backing.read_at(6, &mut dst), Ok(0));
+        assert_eq!(backing.read_at(1 << 20, &mut dst), Ok(0));
     }
 
     #[test]
