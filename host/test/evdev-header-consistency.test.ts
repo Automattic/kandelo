@@ -63,4 +63,24 @@ describe("vendored evdev header ↔ kernel INPUT_CODES", () => {
       expect(header, `header missing ${anchor}`).toHaveProperty(anchor);
     }
   });
+
+  it("<linux/input.h> carries the Linux UAPI MT_TOOL_* values", () => {
+    // ABS_MT_TOOL_TYPE values; Qt's evdev touch handler compiles against
+    // them. The kernel emits none, so there is no INPUT_CODES counterpart
+    // and the values are pinned to include/uapi/linux/input.h directly.
+    const header = parseDefines("libc/musl-overlay/include/linux/input.h");
+    expect({
+      MT_TOOL_FINGER: header.MT_TOOL_FINGER,
+      MT_TOOL_PEN: header.MT_TOOL_PEN,
+      MT_TOOL_PALM: header.MT_TOOL_PALM,
+      MT_TOOL_DIAL: header.MT_TOOL_DIAL,
+      MT_TOOL_MAX: header.MT_TOOL_MAX,
+    }).toEqual({
+      MT_TOOL_FINGER: 0x00,
+      MT_TOOL_PEN: 0x01,
+      MT_TOOL_PALM: 0x02,
+      MT_TOOL_DIAL: 0x0a,
+      MT_TOOL_MAX: 0x0f,
+    });
+  });
 });

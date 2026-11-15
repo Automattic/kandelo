@@ -92,6 +92,17 @@ struct input_id {
 #define BUS_INTEL_ISHTP		0x1F
 #define BUS_AMD_SFH		0x20
 
+/* MT_TOOL types: the values an ABS_MT_TOOL_TYPE event carries. Verbatim
+ * from <linux/input.h>, where upstream keeps them beside the bus types.
+ * They are data for multitouch consumers (e.g. Qt's evdev touch handler)
+ * to compile against; kandelo's keyboard and pointer devices report no
+ * EV_ABS multitouch axes, so the kernel never emits ABS_MT_TOOL_TYPE. */
+#define MT_TOOL_FINGER		0x00
+#define MT_TOOL_PEN		0x01
+#define MT_TOOL_PALM		0x02
+#define MT_TOOL_DIAL		0x0a
+#define MT_TOOL_MAX		0x0f
+
 /* Returned by EVIOCGABS(axis). Total 24 bytes. The kernel reports
  * `maximum = canvas_dim - 1`, `resolution = 1` unit per pixel; other
  * fields are zero. */

@@ -56,13 +56,6 @@
 # rest need a library the resolved prefixes do not carry, so they settle
 # off on their own and are not listed.
 #
-# evdev is named off too. Qt's evdev keyboard, mouse and touch handlers
-# feed the linuxfb and eglfs backends, both off here; the Wayland client
-# takes its input from the compositor's wl_seat, and no consumer loads
-# the evdev generic plugins. Qt 6.12's touch handler also reads the
-# MT_TOOL_* values, which Linux UAPI defines in <linux/input.h> and
-# Kandelo's libc overlay header does not yet carry.
-#
 # The markdown reader uses Qt's bundled md4c. Left to auto-detection,
 # configure finds the build machine's md4c — the resolved prefixes
 # carry none — and Qt6Gui's dependency interface then links that host
@@ -234,7 +227,6 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DINPUT_opengl=no \
     -DFEATURE_vulkan=OFF \
     -DFEATURE_linuxfb=OFF \
-    -DFEATURE_evdev=OFF \
     -DFEATURE_widgets=ON \
     -DFEATURE_network=ON \
     -DFEATURE_ssl=OFF \
