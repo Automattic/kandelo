@@ -204,6 +204,30 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
     expect(result.stdout.trim()).toBe("4");
   });
 
+  // The kernel fields come from uname(2). `-o` is fixed when coreutils is
+  // configured: gnulib derives it from the host tuple, which would say
+  // "GNU/Linux" for wasm32-unknown-linux-musl, so sdk/config.site names the
+  // operating system instead.
+  it("uname reports the kernel's fields and Kandelo as the OS", async () => {
+    const uname = async (...args: string[]) => {
+      const result = await runCentralizedProgram({
+        programPath: coreutilsBinary!,
+        argv: ["uname", ...args],
+        timeout: 10_000,
+      });
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      return result.stdout.trim();
+    };
+    expect(await uname("-s")).toBe("wasm-posix");
+    expect(await uname("-o")).toBe("Kandelo");
+    // sysname nodename release version machine, then the OS; -a omits
+    // the processor and hardware platform because both are "unknown".
+    expect(await uname("-a")).toBe(
+      "wasm-posix localhost 1.0.0 kandelo wasm32 Kandelo",
+    );
+  }, 60_000);
+
   it("cut extracts fields", async () => {
     const result = await runCentralizedProgram({
       programPath: coreutilsBinary!,

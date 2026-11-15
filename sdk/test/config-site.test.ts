@@ -191,3 +191,23 @@ describe('config.site gnulib behavior facts', () => {
     })).toEqual(['no', 'no']);
   });
 });
+
+function hostOperatingSystemSiteFact(overrides: Record<string, string> = {}): string {
+  const output = execFileSync(
+    'bash',
+    ['-c', '. "$1"; printf "%s\\n" "$gl_cv_host_operating_system"', 'bash', CONFIG_SITE],
+    { encoding: 'utf8', env: { ...process.env, ...overrides } },
+  );
+  return output.trimEnd();
+}
+
+describe('config.site operating-system identity', () => {
+  // gnulib would otherwise derive "GNU/Linux" from the linux-musl host tuple.
+  it('names Kandelo as the operating system for gnulib host-os', () => {
+    expect(hostOperatingSystemSiteFact()).toBe('Kandelo');
+  });
+
+  it('preserves a caller-provided operating-system name', () => {
+    expect(hostOperatingSystemSiteFact({ gl_cv_host_operating_system: 'Other' })).toBe('Other');
+  });
+});
