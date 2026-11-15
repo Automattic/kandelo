@@ -343,10 +343,20 @@ linked module:
 
 - A module that imports `kernel.kernel_fork` (it can fork) keeps its
   `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
-  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+  fork-instrumented next; the instrumenter runs `wasm-opt -Os` itself after
   instrumenting.
-- Any other module loses the section and then gets exactly the `wasm-opt`
-  command clang scheduled.
+- Any other module loses the section and then gets the `wasm-opt` command
+  clang scheduled, plus `--skip-pass=constraint-analysis`.
+
+Both `wasm-opt` runs skip Binaryen's `constraint-analysis` pass, which
+Binaryen 133 schedules at `-O3`, `-O4`, `-Os` and `-Oz`. In 133 the pass
+aborts on some LLVM 23 output, and it measured no worthwhile size or speed
+win on Kandelo's programs. The skip is a decision to revisit, not a
+permanent setting: see the registry entry
+[`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)
+and [Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass).
+A recipe that runs `wasm-opt` itself at one of those levels must pass the
+same flag.
 
 Facts never ship. `install_local_binary` removes `kandelo.calltypes` and
 `kandelo.calltypes.code-sha256` from every artifact it installs, because a
@@ -792,7 +802,7 @@ wasm32posix-cc program.c -o program.wasm
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
+# file needed — then runs wasm-opt -Os over the result. The wrapper builds
 # the tool on demand if tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
@@ -884,7 +894,8 @@ SDK driver (`crates/kandelo-cc`) built for Kandelo, so a command runs the
 same compiler, linker and post-link jobs it would on the build machine:
 the Kandelo target flags, the glue compiled into each executable, the
 link layout, the compiler facts, and clang's post-link `wasm-opt` for
-modules that do not fork. Only toolchain discovery differs: inside
+modules that do not fork, which skips the same Binaryen pass (see
+**Links** above). Only toolchain discovery differs: inside
 Kandelo the driver uses the fixed `/usr` layout above (overridable with
 the same `WASM_POSIX_*` variables), and clang has the facts plugin
 compiled in (see [Compiler facts for fork instrumentation](#compiler-facts-for-fork-instrumentation)).

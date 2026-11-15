@@ -1670,10 +1670,21 @@ A fork-using program goes through Binaryen's `wasm-opt` twice:
    Inlining, dead-function removal and identical-function merging shrink
    the call graph the instrumenter has to cover. Quickshell's raw link has
    108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
-2. **After instrumentation.** The CLI runs `wasm-opt -Os` over its own
-   output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
-   pass simplifies the dispatch and frame code the transform adds, merges
-   or removes generated helpers, and drops runtime imports nothing calls.
+2. **After instrumentation.** The CLI runs
+   `wasm-opt -Os --skip-pass=constraint-analysis` over its own output
+   (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This pass
+   simplifies the dispatch and frame code the transform adds, merges or
+   removes generated helpers, and drops runtime imports nothing calls.
+
+Both runs skip Binaryen's `constraint-analysis` pass, which Binaryen 133
+schedules at `-O3`, `-O4`, `-Os` and `-Oz`: the SDK appends the flag to
+clang's post-link job, and the CLI passes it at every `--post-optimize`
+level. In 133 the pass aborts on FFmpeg's `ff_spatial_dwt` built by LLVM 23
+(instrumented or not), and it measured no worthwhile size or speed win on
+Kandelo's programs. The skip is to be revisited, not kept by default: see
+[`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)
+and [Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass).
+The table below was measured before Kandelo moved to Binaryen 133.
 
 Measured on code-section size (static, captured links, 2026-10-02):
 

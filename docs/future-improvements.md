@@ -1524,6 +1524,105 @@ path stands in for.
 
 ## Performance
 
+### Revisit Binaryen's constraint-analysis pass
+
+**Decision (2026-11-15): Kandelo skips Binaryen's `constraint-analysis`
+pass. This is a deliberate, temporary choice; revisit it when a trigger
+below fires.** Every `wasm-opt` run Kandelo makes at a level that schedules
+the pass (`-O3`, `-O4`, `-Os`, `-Oz`) passes
+`--skip-pass=constraint-analysis`: the fork instrumenter's post-instrumentation
+`-Os`, the SDK driver's post-link job for modules that do not fork, and the
+`-Oz` steps of the image-module and program-policy builds. The sites carry
+the `[RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS]` tag; the
+registry entry
+[`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)
+lists them.
+
+**Why: it buys Kandelo nothing measurable.** Measured 2026-11-15 with
+Binaryen 133 plus #9258 (so no input aborts), `wasm-opt -Os` with and
+without the pass, three alternating runs per input, on macOS:
+
+| inputs | size with the pass | `wasm-opt` CPU |
+|---|---|---|
+| raw links and instrumenter output: dash, bash, ffplay, jq, sqlite3, mariadbd | −0.002% to −0.022% (−10 to −1,507 bytes; largest relative: sqlite3, −455 of 2.07 MB) | +3% to +18% |
+| `-O2`-optimized modules: git, vim, python, php | 0 bytes, except python −53 | +3% to +8% |
+| published instrumented binaries: coreutils, bash, redis-server, perl, clang | 0 bytes, except bash −5 and clang −49 of 109 MB | +4% to +6% (clang, one single-threaded run: −0.7%) |
+
+Runtime: sqlite3 built both ways ran a recursive-CTE and indexed-insert
+workload on the Node host, five alternating runs each. The median was
+18.62 s with the pass and 18.25 s without, inside a run-to-run spread of
+12.4–21.1 s; smaller and startup-only workloads showed no difference
+beyond noise either. Every output was deterministic across runs. The likely reason:
+the pass removes comparisons that earlier checks already decide, which
+matters most for bounds checks that managed-language compilers emit into
+Wasm. Kandelo's C, C++ and Rust arrive already optimized by LLVM, which
+removes most such checks first.
+
+**Risk history.** The pass is new: added in
+[#8853](https://github.com/WebAssembly/binaryen/pull/8853) and enabled by
+default in [#9010](https://github.com/WebAssembly/binaryen/pull/9010), both
+first released in 133. Before that release it needed five correctness fixes
+([#9029](https://github.com/WebAssembly/binaryen/pull/9029) i64 parsing,
+[#9037](https://github.com/WebAssembly/binaryen/pull/9037) increment
+overflow, [#9041](https://github.com/WebAssembly/binaryen/pull/9041) float
+comparisons, [#9045](https://github.com/WebAssembly/binaryen/pull/9045)
+mixed signed/unsigned comparisons,
+[#9049](https://github.com/WebAssembly/binaryen/pull/9049) floats without
+fast-math) and a hang fix
+([#9058](https://github.com/WebAssembly/binaryen/pull/9058)). After it,
+[#9216](https://github.com/WebAssembly/binaryen/pull/9216) notes that the
+pass in 133 can take quadratic or cubic time on consecutive loops, and 133
+aborts on FFmpeg (next paragraph).
+
+**The abort.** On FFmpeg's `ff_spatial_dwt` built by LLVM 23, 133's pass
+fails `!constraints.provesEverything()` at `-O3`, `-Os` and `-Oz`, so
+`ffplay` could not be built. The fix is
+[#9258](https://github.com/WebAssembly/binaryen/pull/9258), merged
+2026-10-13 and in no release yet. The registry entry has a standalone
+reproduction that the runtime-workarounds suite runs.
+
+**Revisit triggers.** Re-measure when either happens:
+
+- a released Binaryen contains #9258 (the abort is fixed; the registry run
+  of the entry's reproduction reports `not-reproduced` on it);
+- a released Binaryen contains
+  [#9136](https://github.com/WebAssembly/binaryen/pull/9136)
+  ("ConstraintAnalysis: Optimize `local.get`"), which makes the pass find
+  more (and run about 30% slower). Its broader analysis is the most likely
+  source of a real win and has not been measured on Kandelo; it postdates 133.
+
+**Re-measurement procedure.** With the candidate Binaryen in the dev shell:
+
+1. Collect the inputs `wasm-opt` sees in real builds: raw links of programs
+   that do not fork (`wasm32posix-cc ... --no-wasm-opt`), instrumenter
+   output before its own pass (`wasm-fork-instrument IN -o OUT
+   --post-optimize none`; to capture links from a package build, set
+   `WASM_POSIX_FORK_INSTRUMENT` to a wrapper that copies its input before
+   running the real tool), and installed binaries. Use at least the
+   programs above.
+2. Run `scripts/measure-wasm-opt-pass.sh --runs 3 --out DIR INPUT...`. It
+   alternates `wasm-opt -Os` with and without the pass and prints size,
+   identical-output and median CPU per input. Repeat with `--level O3` or
+   `--level Oz` for SDK links built at those levels.
+3. For any input whose size changes, build the program both ways and
+   compare run time on the Node host, alternating runs, with a workload that
+   runs long enough to beat the noise (sqlite3 above: 5 runs of a
+   15M-row recursive CTE). Use the benchmark suites for programs they cover.
+
+**Criteria for re-enabling** (remove the skip from every tagged site and
+retire the entry):
+
+- a meaningful size or runtime win on Kandelo's programs or benchmarks,
+  well beyond run-to-run noise, that justifies the extra `wasm-opt` time;
+- no open wrong-code, abort or hang bugs against the pass in the released
+  Binaryen being pinned;
+- the registry reproduction reports `not-reproduced` on that release.
+
+If the triggers fire and the re-measurement still shows no win, keep the
+skip, record the new numbers here, and retire the registry entry as
+described in its removal criteria (the skip is then a measured choice, not
+a workaround).
+
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads
 A May 6, 2026 prototype found that the Rust kernel can likely be built as
 `wasm32-unknown-unknown` while keeping user-process pointer width independent

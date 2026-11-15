@@ -4,8 +4,9 @@
 use kandelo_cc::Result;
 use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::driver::{
-    LinkerPreparation, build_clang_args, build_glue_compile_args, decode_llvm_response_file,
-    glue_sources, linker_args_from_clang_trace, working_directory_from_clang_trace,
+    LinkerPreparation, SKIP_CONSTRAINT_ANALYSIS, build_clang_args, build_glue_compile_args,
+    decode_llvm_response_file, glue_sources, linker_args_from_clang_trace,
+    post_link_wasm_opt_job, working_directory_from_clang_trace,
 };
 use kandelo_cc::flags::MAX_EXECUTABLE_MEMORY_SIZE;
 use kandelo_cc::toolchain::Toolchain;
@@ -614,6 +615,25 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
     .join("\n");
     let error = working_directory_from_clang_trace(&conflicting, "/tmp/project").unwrap_err();
     assert!(error.contains(inconsistent), "{error}");
+}
+
+// [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] The rerun post-link
+// job keeps clang's command and skips the constraint-analysis pass.
+#[test]
+fn post_link_wasm_opt_skips_constraint_analysis() {
+    assert_eq!(SKIP_CONSTRAINT_ANALYSIS, "--skip-pass=constraint-analysis");
+    let scheduled = strings(&["/opt/bin/wasm-opt", "-Oz", "a.wasm", "-o", "a.wasm"]);
+    assert_eq!(
+        post_link_wasm_opt_job(&scheduled),
+        strings(&[
+            "/opt/bin/wasm-opt",
+            "-Oz",
+            "a.wasm",
+            "-o",
+            "a.wasm",
+            "--skip-pass=constraint-analysis",
+        ])
+    );
 }
 
 #[test]
