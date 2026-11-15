@@ -779,6 +779,7 @@ tests/package-system/partial-shell-selection.test.ts	prepared-product
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
 tests/package-system/qtbase-package.test.ts	source-only
+tests/package-system/qtdeclarative-package.test.ts	source-only
 tests/package-system/resolve-binary.test.ts	prepared-product
 tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product

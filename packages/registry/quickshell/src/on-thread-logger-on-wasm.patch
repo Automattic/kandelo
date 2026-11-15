@@ -12,6 +12,10 @@ and LogManager::initThreadLogging() later moves it to a new QThread. That
 move is dropped here, so the logger stays where it was created, and
 initFs() calls ThreadLogging::initFs() directly: a
 BlockingQueuedConnection to an object on the calling thread deadlocks.
+After initFs(), log-file writes queue on the main loop, so disk logs
+from the initial QML load (before exec()) are delayed and can be lost
+if the program crashes during that load; console output is unaffected.
+The 0.3.1 form of this patch behaved the same way.
 
 diff --git a/src/core/logging.cpp b/src/core/logging.cpp
 index 1dc4a56..2a5c266 100644

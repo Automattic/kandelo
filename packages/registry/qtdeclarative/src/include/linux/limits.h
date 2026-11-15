@@ -6,8 +6,9 @@
  * vendors no <linux/limits.h>. Qt 6.12's bundled WTF includes it from
  * src/3rdparty/masm/wtf/OSAllocatorPosix.cpp under OS(LINUX), for
  * PATH_MAX, and OS(LINUX) holds only because the recipes define
- * __linux__. Qt 6.10.2 did not include it and took PATH_MAX from POSIX
- * <limits.h>, which is what this shim forwards to.
+ * __linux__. Qt 6.10.2 did not include it; that file got PATH_MAX from
+ * POSIX <limits.h> through other includes, and this shim forwards to
+ * the same header.
  *
  * It goes away when the Qt recipes stop defining __linux__ (see
  * docs/future-improvements.md).
