@@ -368,7 +368,7 @@
 
         # A macOS SDK for the ONE build that needs a newer one than the dev
         # shell's default. SpiderMonkey's configure refuses any macOS SDK
-        # older than 15.5 (`mac_sdk_min_version()` in
+        # older than its `mac_sdk_min_version()` (26.5 for ESR 153, in
         # build/moz.configure/toolchain.configure), and this nixpkgs pins the
         # default Darwin SDK at 14.4 -- so before this existed, the recipe
         # reached outside Nix for /Applications/Xcode.app instead, which is
@@ -377,13 +377,14 @@
         # devShellPackages on purpose: putting it in the package set would
         # move SDKROOT for every host-side compile in the shell (perl's
         # miniperl, MariaDB's host tools, every configure probe) from 14.4 to
-        # 15.5, and nothing but SpiderMonkey needs that.
+        # 26.5, and nothing but SpiderMonkey needs that.
         #
-        # 15.5 and not the newest available: the failure this replaced was a
+        # 26.5 and not the newest available: the failure this replaced was a
         # too-NEW SDK (see packages/registry/spidermonkey/build-spidermonkey.sh),
         # so the oldest version Mozilla accepts is the safest point to sit.
+        # Raise it only when a SpiderMonkey upgrade raises the minimum.
         macosSdk = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin
-          "${pkgs.apple-sdk_15}";
+          "${pkgs.apple-sdk_26}";
       in {
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
