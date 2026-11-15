@@ -264,6 +264,24 @@ returns null for both.
 
 ## Example agent workflows
 
+### Deliver a file to the user
+
+Use `kandelo_run_command` to publish a file from the guest computer:
+
+```json
+{ "script": "kandelo-publish /tmp/report.csv" }
+```
+
+Observe successful job completion, checking stderr on failure, then tell the
+user to click **Save** on the `report.csv` output card. The output ID printed
+on stdout identifies the publication; it is not proof of a download to the
+user's device. Archive directories before publishing. Streamed producers can
+wait for the user to start saving, so allow for that interaction in the job
+timeout. See the [file-transfer guide](../docs-site/guide/moving-files.md)
+for examples and the complete command syntax.
+
+### Other workflows
+
 1. Discover profiles, launch one, and poll status until the new computer runs.
 2. List terminals and read TTY1 output. Create TTY2, read its login/prompt state,
    send `VALUE=second\n`, switch to TTY1 and send `VALUE=first\n`. Switching back

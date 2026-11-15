@@ -247,6 +247,12 @@ persistence, service-worker bridges or image metadata. Reusable session
 contracts belong in `web-libs/kandelo-session`; React wiring and page
 fixtures belong in `apps/browser-demos`.
 
+To deliver a guest file to a browser user, run `kandelo-publish FILE` inside
+Kandelo and direct the user to **Save** on its output card. Publication is
+not confirmation of a host download. See the
+[file-transfer guide](docs-site/guide/moving-files.md) for directories,
+streams, command options, and agent instructions.
+
 Treat boot descriptors and shared URLs as untrusted input: version them,
 bound their size/mounts and validate paths/source kinds. Describe persistence,
 privacy and verification accurately. Image-owned demo metadata belongs in
