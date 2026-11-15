@@ -69,6 +69,8 @@ const PROBES: Record<string, string> = {
   // libraries".
   "python-browser-bundle": "for login in '' -l; do bash $login -c " +
     "\"python3 -c 'import sys; print(\\\"python-prefix\\\", sys.prefix, sys.exec_prefix)'\" 2>&1; done",
+  cmake: "cmake --version | head -n 1; ctest --version | head -n 1; cpack --version | head -n 1",
+  "cmake-docs": "man -w cmake",
   "wasm-tools": "wasm-tools --version; wasm-tools validate /usr/bin/wasm-tools && echo wasm-tools-validate-ok",
   toybox: "dmesg -r | head -n 1; dmesg -S | head -n 1 | sed 's/^/klog: /'; logger -s -t probe hello 2>&1",
 };
@@ -164,6 +166,12 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       }
       if (manifest!.packages.includes("patch-docs")) {
         expect(stdout).toContain("/usr/share/man/man1/patch.1");
+      }
+      if (manifest!.packages.includes("cmake")) {
+        for (const tool of ["cmake", "ctest", "cpack"]) expect(stdout).toContain(`${tool} version 4.5.0\n`);
+      }
+      if (manifest!.packages.includes("cmake-docs")) {
+        expect(stdout).toContain("/usr/share/man/man1/cmake.1");
       }
       if (manifest!.packages.includes("cargo")) expect(stdout).toContain("cargo 1.97.0-nightly");
       if (manifest!.packages.includes("rustc")) expect(stdout).toContain("rustc 1.97.0-nightly");

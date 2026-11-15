@@ -1142,3 +1142,60 @@ image. `host/test/guest-meson.test.ts` configures a Meson project (header,
 function and size probes, a static library and an executable linked
 against it), builds it with Ninja, and runs `meson test` and
 `meson install` there.
+
+## CMake inside Kandelo
+
+The shell (and every image built on it) and the build image carry CMake
+4.5 (`cmake`, `ctest`, `cpack`; the `cmake` package), so a CMake project
+configures, builds, tests and packages inside Kandelo with the usual
+commands, using the guest `cc`/`c++` and GNU `make`:
+
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build
+```
+
+The programs are in `images/vfs/lib/init/dev-tools.ts` with the GNU build
+tools; `/usr/share/cmake-4.5` (Modules, Templates and the Help files that
+`cmake --help-*` reads) is the lazy archive `cmake-data.zip`, and their
+manual pages, `cmake(1)`, `ctest(1)`, `cpack(1)` and the `cmake-*(7)`
+references, are `cmake-docs`.
+
+**System name.** Kandelo's `uname` reports sysname `wasm-posix`; CMake
+names the machine `Kandelo` (`CMAKE_SYSTEM_NAME` and
+`CMAKE_HOST_SYSTEM_NAME`), the name cross builds with
+`sdk/cmake/kandelo-toolchain.cmake` already use, and
+`CMAKE_SYSTEM_PROCESSOR` is `wasm32`. The build is native
+(`CMAKE_CROSSCOMPILING` is false), so `try_run()` and
+`check_c_source_runs()` run their tests inside Kandelo. Kandelo is not
+Linux to CMake either: projects that branch on `Linux` take their generic
+Unix path.
+
+**Static libraries only.** CMake's `Platform/Kandelo` module says the
+platform has no shared libraries, for the reason Libtool builds none
+above. Under policy CMP0164 (`cmake_minimum_required(VERSION 3.30)` or
+later), `add_library(... SHARED)` and `add_library(... MODULE)` stop with
+"the target platform does not support dynamic linking"; older projects
+get CMake's warning and a static library. `find_library()` finds `.a`
+files only. Build `dlopen` side modules with `cc -shared`.
+
+**C++ exceptions** need no flag: the SDK enables them for every C++
+compile (see [C++ exceptions](#c-exceptions)), so `try`/`catch` works in a
+CMake project as written.
+
+**Packages.** `find_package()` and `pkg_check_modules()` search `/usr/local`
+and `/usr`, and pkg-config finds the guest SDK's libraries (see above).
+`cpack` writes archives (`TGZ` and the other archive generators) through
+CMake's libarchive. `file(DOWNLOAD)`, `FetchContent` and `ExternalProject` use
+the `libcurl` package (with OpenSSL). They need a machine with a network:
+on the Node host that means `enableTcpNetwork`, and without one, name
+lookup fails ("Could not resolve hostname"). Guest package builds
+(`runGuestBuild`) have no network, so a project built there must not
+download at configure time.
+
+`ccmake`, `cmake-gui` and `cmake --debugger` are not built
+(`packages/registry/cmake/README.md`). `host/test/guest-cmake.test.ts`
+configures, builds, tests and packages a C and C++ project with a static
+library, a pkg-config module, configure checks that run, a `SHARED` library
+that falls back to static, `ctest` and `cpack`, in the build image.

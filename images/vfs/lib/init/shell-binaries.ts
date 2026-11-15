@@ -661,7 +661,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // a machine that cannot fetch it boots without logging and says so.
   { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
   ...LLVM_BINARY_TOOL_SPECS,
-  // pkgconf, Bison, gperf and install-info (images/vfs/lib/init/dev-tools.ts).
+  // pkgconf, Bison, gperf, install-info, gettext and CMake
+  // (images/vfs/lib/init/dev-tools.ts).
   ...DEV_TOOL_BINARY_SPECS,
   // The Bytecode Alliance's Wasm toolkit (print, validate, objdump, dump,
   // strip, ...). It reads Kandelo programs natively, including dylink.0 and

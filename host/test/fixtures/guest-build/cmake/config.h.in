@@ -1,0 +1,5 @@
+#cmakedefine HAVE_UNISTD_H 1
+#cmakedefine HAVE_FORK 1
+#cmakedefine POINTERS_ARE_32_BITS 1
+#define KCALC_VERSION "@PROJECT_VERSION@"
+#define KCALC_SYSTEM "@CMAKE_SYSTEM_NAME@"

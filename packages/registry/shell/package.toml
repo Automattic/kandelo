@@ -182,6 +182,7 @@ depends_on = [
   "gperf@3.3",
   "ninja@1.13.2",
   "meson@1.12.1",
+  "cmake@4.5.0",
   "cargo@1.97.0-nightly-2026-04-27",
   "rustc@1.97.0-nightly-2026-04-27",
   "kandelo-rustc@0.1.0",
