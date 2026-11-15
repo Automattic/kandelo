@@ -7,10 +7,10 @@ use crate::arch::{Language, WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
-    calltypes_plugin_flags, compile_flags, filter_args, host_imports_allowance,
-    infer_thread_slot_declaration, join, link_flags, main_thread_stack_size, needs_linking,
-    parse_args, read_text_file, requests_cfi, shared_link_flags, thread_slot_declaration_define,
-    tokenize_gnu_response_file,
+    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, filter_args,
+    host_imports_allowance, infer_thread_slot_declaration, join, link_flags,
+    main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
+    shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
 use crate::toolchain::{Toolchain, resolve_lld_major};
@@ -468,6 +468,9 @@ fn build_clang_args_internal(
     // that compile glue, and response-hidden compile jobs found by the trace.
     if may_run_compile {
         args.extend(compile_flags(arch));
+        if compiles_cxx(language, &filtered) {
+            args.extend(cxx_compile_flags());
+        }
     }
     // The call-type facts plugin, for invocations that can run a compile job.
     // A link of objects only has none, and clang would warn that the -Xclang

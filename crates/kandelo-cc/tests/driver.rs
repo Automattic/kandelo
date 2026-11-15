@@ -701,3 +701,72 @@ fn cxx_library_is_not_added_to_c_links_side_modules_or_opted_out_links() {
     .unwrap();
     assert!(!has(&compile, "-lc++"));
 }
+
+fn compile_cxx_driver(user_args: &[&str]) -> Vec<String> {
+    build_clang_args(
+        &strings(user_args),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::Cxx,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn cxx_compiles_get_wasm_exception_handling_without_a_caller_flag() {
+    // Build systems know nothing about Kandelo; the SDK supplies what C++
+    // exceptions need on this target.
+    assert!(has(
+        &compile_cxx_driver(&["-c", "a.cpp"]),
+        "-fwasm-exceptions"
+    ));
+    assert!(has(
+        &build_cxx(&["main.cpp", "-o", "app.wasm"]),
+        "-fwasm-exceptions"
+    ));
+    assert!(has(
+        &compile_cxx_driver(&["-shared", "-fPIC", "lib.cc", "-o", "lib.so"]),
+        "-fwasm-exceptions"
+    ));
+    // The C driver compiles C++ sources as C++, and so does any -x c++.
+    assert!(has(&build(&["-c", "a.cpp"]), "-fwasm-exceptions"));
+    assert!(has(
+        &build(&["-x", "c++", "-c", "a.txt"]),
+        "-fwasm-exceptions"
+    ));
+}
+
+#[test]
+fn c_compiles_and_object_links_keep_their_flags() {
+    for args in [
+        build(&["-c", "a.c"]),
+        build(&["a.c", "-o", "a.wasm"]),
+        build(&["a.o", "b.o", "-o", "a.wasm"]),
+        build_cxx(&["a.o", "-o", "a.wasm"]),
+        compile_cxx_driver(&["-x", "c", "-c", "a.c"]),
+        compile_cxx_driver(&["-c", "start.s"]),
+    ] {
+        assert!(!has(&args, "-fwasm-exceptions"), "{args:?}");
+    }
+}
+
+#[test]
+fn an_explicit_no_exceptions_reaches_clang_after_the_sdk_default() {
+    // The last of -fexceptions/-fno-exceptions wins in clang, and
+    // -fno-exceptions leaves the Wasm EH backend nothing to lower.
+    let args = compile_cxx_driver(&["-fno-exceptions", "-c", "a.cpp"]);
+    assert!(position(&args, "-fwasm-exceptions") < position(&args, "-fno-exceptions"));
+}
+
+#[test]
+fn glue_compiles_stay_c() {
+    let args = build_glue_compile_args(
+        &strings(&["/tmp/glue/channel_syscall.c"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        None,
+    );
+    assert!(!has(&args, "-fwasm-exceptions"));
+}

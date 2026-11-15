@@ -1,7 +1,7 @@
 //! The SDK's compile and link flags, and its reading of a caller's arguments.
 
 use crate::Result;
-use crate::arch::{WasmArch, target_triple, tool_prefix};
+use crate::arch::{Language, WasmArch, target_triple, tool_prefix};
 use std::collections::HashSet;
 
 pub fn compile_flags(arch: WasmArch) -> Vec<String> {
@@ -31,6 +31,90 @@ pub fn compile_flags(arch: WasmArch) -> Vec<String> {
         .map(String::from),
     );
     flags
+}
+
+/// The flags a compile of C++ adds to `compile_flags`.
+///
+/// C++ exceptions are on by default, as with every Unix C++ compiler, and
+/// Kandelo implements them with Wasm exception handling. Clang already
+/// enables C++ exceptions for C++ and selects the Wasm exception model
+/// (through the SjLj flag in `compile_flags`), but only -fwasm-exceptions
+/// makes the backend keep catch handlers and unwinding cleanups: without it
+/// every landing pad is deleted and a throw ends the program. The SDK owns
+/// this target fact, so CMake, Meson, autotools and plain makefiles need no
+/// flag of their own. `-fno-exceptions` still turns exceptions off, and a
+/// translation unit without exceptions compiles to the same code either way.
+pub fn cxx_compile_flags() -> Vec<String> {
+    vec!["-fwasm-exceptions".to_string()]
+}
+
+/// Flags whose value is the next argument and never an input file, beyond
+/// `FLAGS_WITH_VALUE` (which `parse_args` keeps as caller arguments).
+const OPAQUE_FLAGS_WITH_VALUE: &[&str] = &[
+    "-o",
+    "-Xclang",
+    "-mllvm",
+    "-Xlinker",
+    "-Xassembler",
+    "-Xpreprocessor",
+    "-z",
+];
+
+/// Inputs clang compiles as C++ by their suffix (clang's `types.def`).
+const CXX_INPUT_EXTS: &[&str] = &[
+    ".cc", ".cp", ".cxx", ".cpp", ".CPP", ".c++", ".C", ".CC", ".CXX", ".ii", ".mm", ".M", ".mii",
+    ".cppm", ".ccm", ".cxxm", ".c++m", ".hh", ".hpp", ".hxx", ".h++", ".H", ".ixx",
+];
+
+/// C-family inputs the C++ driver also compiles as C++, as clang++ does.
+const C_INPUT_EXTS: &[&str] = &[".c", ".i", ".h", ".m"];
+
+/// Does this invocation compile any input as C++?
+///
+/// Decided per input, as clang decides it: by the `-x` language in force
+/// for that input, otherwise by its suffix, with the C++ driver taking C
+/// sources as C++ too. A compile of C alone does not get the C++ flags, so
+/// C compiles exactly as before. An invocation whose inputs are hidden in a
+/// response file is C++ when the C++ driver runs it.
+pub fn compiles_cxx(language: Language, args: &[String]) -> bool {
+    let cxx_driver = language == Language::Cxx;
+    let mut forced: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "-x" {
+            forced = args.get(i + 1).map(String::as_str);
+            i += 2;
+            continue;
+        }
+        if FLAGS_WITH_VALUE.contains(&arg) || OPAQUE_FLAGS_WITH_VALUE.contains(&arg) {
+            i += 2;
+            continue;
+        }
+        let input = if let Some(language) = arg.strip_prefix("-x") {
+            forced = Some(language);
+            None
+        } else if arg == "-" || !arg.starts_with('-') {
+            Some(arg)
+        } else {
+            None
+        };
+        if let Some(input) = input {
+            let is_cxx = match forced {
+                Some(language) if language != "none" => language.contains("c++"),
+                _ if input.starts_with('@') => cxx_driver,
+                _ => {
+                    let ext = extension(input);
+                    CXX_INPUT_EXTS.contains(&ext) || (cxx_driver && C_INPUT_EXTS.contains(&ext))
+                }
+            };
+            if is_cxx {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// How a compile loads the KandeloCallTypes compiler plugin.

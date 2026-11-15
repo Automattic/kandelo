@@ -9107,6 +9107,7 @@ components.
 The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 - `--target=wasm32-unknown-unknown`
 - `-matomics -mbulk-memory -mexception-handling` (Wasm features)
+- `-fwasm-exceptions` for compiles with C++ input (C++ exceptions on by default)
 - `--sysroot=<path to musl sysroot>`
 - Links: `channel_syscall.c` + `compiler_rt.c` + `crt1.o` + `libc.a`
 - Linker flags: `--import-memory --shared-memory --max-memory=1073741824`

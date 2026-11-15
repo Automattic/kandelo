@@ -482,8 +482,8 @@ println!("cargo:rustc-link-search=native={out}");
 println!("cargo:rustc-link-lib=static=foo");
 ```
 
-For C++, compile with `wasm32posix-c++` (add `-fwasm-exceptions` if the
-code uses exceptions) and also link `c++` and `c++abi`: rustc links
+For C++, compile with `wasm32posix-c++` (C++ exceptions are on by
+default) and also link `c++` and `c++abi`: rustc links
 through `wasm32posix-cc`, a C driver, which does not add the C++
 runtime. C++ exceptions work inside the C++ code but must not propagate
 into Rust frames (Rust here is `panic = "abort"` and does not unwind),

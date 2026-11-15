@@ -106,6 +106,20 @@ int main() {
   return 0;
 }
 `,
+  // C++ exceptions with no flag from the caller: the SDK supplies what
+  // Wasm exception handling needs (docs/sdk-guide.md, "C++ exceptions").
+  "throw.cpp": `#include <cstdio>
+#include <stdexcept>
+#include <vector>
+struct Guard { int &n; ~Guard() { n++; } };
+static void fail(int &n) { Guard g{n}; throw std::runtime_error("thrown"); }
+int main() {
+  int unwound = 0;
+  try { fail(unwound); } catch (const std::exception &e) { std::printf("%s %d\\n", e.what(), unwound); }
+  try { std::vector<int>(1).at(5); } catch (const std::out_of_range &) { std::puts("out_of_range"); }
+  return 0;
+}
+`,
   "link.rsp": "-O2\nmain.c\nutil.c\n-o\nrsp.wasm\n",
   // The executable a program reports for itself (LLVM's getMainExecutable
   // relies on dladdr; clang starts its own compile jobs at that path).
@@ -172,6 +186,12 @@ const cases: Case[] = [
     ],
     outputs: ["io.wasm", "io-explicit.wasm"],
     runs: [{ program: "io.wasm", stdout: "3 2\n" }],
+  },
+  {
+    name: "cxx-exceptions",
+    steps: [{ tool: "c++", args: ["-O2", "throw.cpp", "-o", "throw.wasm"] }],
+    outputs: ["throw.wasm"],
+    runs: [{ program: "throw.wasm", stdout: "thrown 1\nout_of_range\n" }],
   },
   {
     name: "fork",
