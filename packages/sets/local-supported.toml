@@ -203,6 +203,10 @@ name = "gperf-docs"
 class = "browser-product"
 
 [[packages]]
+name = "cmake-docs"
+class = "browser-product"
+
+[[packages]]
 name = "help2man-docs"
 class = "browser-product"
 
