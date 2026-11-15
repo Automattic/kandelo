@@ -7076,3 +7076,31 @@ differences, legacy ABI warnings and interrupted preparation attempts. This is
 a whole-candidate ordinary-runtime comparison, including preserved unrelated
 changes, not a causal feature attribution or current translated-PHP timing.
 The original optimization and timestamp measurements above remain unchanged.
+
+## November 14: current-contract application and OS resource follow-up
+
+The [current application report](2026-11-14-common-memory-application-impact.md)
+now compares ordinary FILE-only FPM, instrumented FILE-only FPM and the exact
+same instrumented executable with shared OPcache. Timestamp validation stays
+enabled with zero revalidation interval. There are 48 timing parents and 48
+analyzed resource parents across both databases and all four hosts. Twelve
+additional tree-only WebKit resource parents are retained and uniformly
+excluded after a predeclared correction includes detached WebKit XPC services.
+These format-2 results do not overwrite the earlier survey or turn its negative
+results into discarded ideas.
+
+| Follow-up idea | Current evidence | Next proof needed |
+|---|---|---|
+| Whole-host allocation and executable-state profiling | SQLite guest mapped reduction with sharing: **24.375 MiB**<br>Node/SQLite shared footprint, first order: **3391.3 MiB**<br>Node/SQLite ordinary footprint, first order: **2738.0 MiB** | Establish which allocations cause the difference; guest counters do not explain the OS total. No engine-defect or leak attribution is established. |
+| Smaller scratch, retained RT-01 candidate | Current scratch per root: **8 MiB**<br>Current three-root runtime allocation: **24.4375 MiB**<br>Earlier logical saving with smaller scratch: **21 MiB** | Repeat current-contract large scatter/copy and lifecycle controls, then measure OS footprint separately. Earlier capacity savings are not current RAM or speed proof. |
+| Remove inherited FILE-cache data from shared-mode images | Source objects: **1500**<br>Source logical bytes: **45251192 B** | Check all PHP consumers before changing the image. The controlled fixture removes the data from every arm; this does not measure live-preview RAM savings. |
+| Ordinary/translated executable selection within one package | Instrumented FILE / ordinary FILE request-time range: **1.92–2.90×**<br>Shared / instrumented FILE request-time range: **0.50–0.60×** | Current one-binary cache selection works only in the translated runtime. An ordinary-speed dual path or automatic two-artifact package selection is not implemented. Ranges summarize four-page median ratios, not every request. |
+| Larger worker pools and sustained workloads | FPM workers per tested pool: **2** | Measure scaling before estimating a break-even point; private heaps, runtime roots and engine state can grow alongside sharing benefits. |
+
+Node's shared-mode footprint is higher than both controls in both databases and
+orders. Chromium improves relative to instrumented FILE-only but remains above
+ordinary FILE-only. Firefox/SQLite has a modest observed footprint reduction;
+the other cases do not establish a general memory win. WebKit/MariaDB is near
+ordinary request latency, while most other shared-mode application cases remain
+slower. Keep the feature opt-in while retaining every optimization candidate
+and the prior adverse ordinary-runtime results for further investigation.

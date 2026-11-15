@@ -151,6 +151,27 @@ OPcache with timestamp validation and zero revalidation interval. Both recipes
 are explicitly excluded from default product selection. Their existence and
 the profile manifest do not establish release readiness.
 
+### Reusing an instrumented PHP-FPM binary
+
+One translated FPM executable can select either shared OPcache or FILE-only
+OPcache through `php.ini` at service startup. Changing the cache backend does
+not remove address translation, execution-stop checks or the group allocator.
+FPM also uses anonymous shared memory for its own scoreboard, independently of
+OPcache. The current two-worker fixture maps 64 KiB shared per process with
+FILE-only OPcache, and 32 MiB plus 64 KiB with shared OPcache.
+
+A translated executable may be its group's only live process; it still needs
+the translated runtime. FPM forks stay within that group.
+
+This is binary reuse within the translated runtime. The ordinary host refuses
+the instrumented program with `requires the opt-in common-memory prototype
+host`; changing OPcache settings cannot make it use ordinary direct addressing.
+An instrumented program still needs the translated root/page-table bindings
+and compatible memory-model admission, even if its application never requests
+shared OPcache. A single deployment package could carry ordinary and translated
+variants, but an ordinary-speed execution path inside one translated artifact
+has not been implemented.
+
 ## Current format-2 retirement screen
 
 On November 14, normal resolver-built PHP-FPM revision 3 repeated the 24-worker
@@ -265,9 +286,15 @@ additions. See `.context/common-memory-source-test-triage-20261114.json`.
 The new execution-stop polls now have a [standalone instruction measurement](measurements/2026-11-14-common-memory-stop-overhead.md)
 on Node and all three browser engines, with matched unvirtualized and unchecked
 translation controls. It finds substantial costs in some tight loops, especially
-WebKit calls and Firefox atomics. PHP/WordPress request latency for this contract
-version remains unmeasured. The earlier survey does not supply that missing
-measurement. The full browser-memory gate passes as described above. The
+WebKit calls and Firefox atomics. A later
+[current-contract application comparison](measurements/2026-11-14-common-memory-application-impact.md)
+now measures both WordPress databases on Node and all three browser engines,
+with timestamp validation and separate OS resource runs. Shared OPcache takes
+about half the instrumented FILE-only request time, but usually remains slower
+than ordinary Wasm. Guest mapped bytes fall while observed host footprint is
+often higher; the report retains both orders and the WebKit XPC probe correction.
+The earlier survey remains historical. The full browser-memory gate passes as
+described above. The
 [ordinary-runtime before/after comparison](measurements/2026-11-14-common-memory-default-regression.md)
 now completes all nine enabled suites on Node and Chromium in both orders.
 It retains higher Node exec/locking costs and lower stdin throughput in both
@@ -276,6 +303,15 @@ canonical input inventories. This compares the whole candidate against
 pinned main, including differing application artifacts and preserved unrelated
 changes; it does not isolate this feature or establish performance neutrality.
 Broader conformance and cause-specific regression investigation remain open.
+
+A [fresh committed-PR comparison](measurements/2026-11-14-common-memory-pr-regression.md)
+repeats all nine enabled ordinary-runtime suites against the same pinned main
+with eight new CLI parents, including the final accounting code. All selected
+inputs match their final inventories. It retains adverse Node dense file
+replacement and Aria select results, Chromium startup costs, and smaller
+same-direction Node stdin/exec changes, alongside favorable and mixed values.
+This does not establish ordinary-runtime performance neutrality or assign the
+differences to the shared-memory feature alone.
 
 ## First retirement screen
 
