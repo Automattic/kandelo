@@ -1,0 +1,24 @@
+# Name Kandelo executables without a suffix.
+#
+# Meson gives executables a .js suffix on any host system whose name
+# starts with "wasm", a convention for Emscripten-style JavaScript
+# loaders. Kandelo's uname reports the system "wasm-posix", and its
+# executables are WebAssembly modules the kernel runs directly by path,
+# like any POSIX executable, so a native Meson build inside Kandelo
+# named `executable('calc', ...)` calc.js. Drop when upstream Meson
+# knows the wasm-posix system.
+# @suggest-upstream
+--- a/mesonbuild/build.py
++++ b/mesonbuild/build.py
+@@ -2220,7 +2220,10 @@
+             # Executable for Windows or C#/Mono
+             if machine.is_windows() or machine.is_cygwin() or 'cs' in self.compilers:
+                 self.suffix = 'exe'
+-            elif machine.system.startswith('wasm') or machine.system == 'emscripten':
++            # Kandelo's uname names its system 'wasm-posix'. Its programs are
++            # WebAssembly modules the kernel executes directly, named like
++            # any POSIX executable; only Emscripten's need a .js loader.
++            elif (machine.system.startswith('wasm') and machine.system != 'wasm-posix') or machine.system == 'emscripten':
+                 self.suffix = 'js'
+             elif ('c' in self.compilers and self.compilers['c'].get_id().startswith('armclang') or
+                   'cpp' in self.compilers and self.compilers['cpp'].get_id().startswith('armclang')):

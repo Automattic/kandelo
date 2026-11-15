@@ -1,0 +1,11 @@
+script_path = "packages/registry/meson/build-meson.sh"
+inputs = [
+  "packages/registry/meson/build-meson.sh",
+  "packages/registry/meson/patches",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
