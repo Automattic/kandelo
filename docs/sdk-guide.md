@@ -1141,7 +1141,10 @@ with `autoreconf -fi`, `./configure`, `make` and `make check` in the build
 image. `host/test/guest-meson.test.ts` configures a Meson project (header,
 function and size probes, a static library and an executable linked
 against it), builds it with Ninja, and runs `meson test` and
-`meson install` there.
+`meson install` there. In the browser,
+`apps/browser-demos/test/kandelo-build-systems.spec.ts` (tagged `@slow`)
+builds one C project with CMake, Meson and Ninja, and autotools in the
+base shell, each tool fetched on first use, and runs each build's program.
 
 ## CMake inside Kandelo
 
