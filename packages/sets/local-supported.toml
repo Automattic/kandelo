@@ -179,6 +179,10 @@ name = "meson"
 class = "user-software"
 
 [[packages]]
+name = "cmake"
+class = "user-software"
+
+[[packages]]
 name = "autoconf-docs"
 class = "browser-product"
 
