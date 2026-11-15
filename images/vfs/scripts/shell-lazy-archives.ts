@@ -356,8 +356,8 @@ export function registerShellProfileScripts(
 ): void {
   for (const script of SHELL_PROFILE_SCRIPTS) {
     // A partial shell (images/vfs/scripts/shell-selection.ts) omits a script
-    // whose package it does not carry: python.sh pointing PYTHONHOME at an
-    // absent interpreter would describe software the image does not have.
+    // whose package it does not carry: node.sh configuring an absent npm
+    // would describe software the image does not have.
     if ("owner" in script && !includesPackage(script.owner)) continue;
     script.register(fs);
   }
@@ -372,11 +372,6 @@ const SHELL_PROFILE_SCRIPTS = [
   {
     path: "/etc/profile.d/00-kandelo-shell.sh",
     register: registerDemoShellProfile,
-  },
-  {
-    path: "/etc/profile.d/python.sh",
-    register: registerPythonShellProfile,
-    owner: "python-browser-bundle",
   },
   {
     path: "/etc/profile.d/node.sh",
@@ -438,27 +433,6 @@ export function registerDemoShellProfile(fs: VfsImageFilesystem): void {
       "  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n" +
       "  export SSL_CERT_DIR=/etc/ssl/certs\n" +
       "fi\n",
-    0o644,
-  );
-}
-
-// The python lazy-archive mounts a statically-linked CPython at /usr/bin with
-// its standard library at /usr/lib/python3.13. A static build ships no
-// platform-dependent (lib-dynload) modules, so CPython's exec_prefix probe
-// fails and prints "Could not find platform dependent libraries <exec_prefix>"
-// to stderr on every launch (the pure-Python stdlib still self-locates, so the
-// REPL otherwise works). Pinning PYTHONHOME=/usr makes exec_prefix explicit —
-// the interpreter stops probing and the REPL starts cleanly. This mirrors the
-// dedicated python VFS product, which sets the same value in its boot env.
-// Sourced by /etc/profile for interactive login shells.
-export function registerPythonShellProfile(fs: VfsImageFilesystem): void {
-  ensureDirRecursive(fs, "/etc/profile.d");
-  writeVfsFile(
-    fs,
-    "/etc/profile.d/python.sh",
-    "# Static CPython ships no lib-dynload; pin the prefix so exec_prefix\n" +
-      "# resolves without probing and the REPL starts without a warning.\n" +
-      "export PYTHONHOME=/usr\n",
     0o644,
   );
 }

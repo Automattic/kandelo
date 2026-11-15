@@ -24,3 +24,13 @@ Still left out by the WASI target, though Kandelo's libc may provide what
 they need: `termios`, `mmap`, `resource`, `syslog`, `_multiprocessing`,
 `_posixshmem`, `_curses` and `_curses_panel`. Each is a platform gap until
 it is enabled the same way and tested. `sys.platform` stays `wasi`.
+
+## Installed layout
+
+The runtime archive carries an empty `lib/python3.13/lib-dynload`, as
+`make install` creates it even when every extension module is built in.
+CPython's `Modules/getpath.py` takes that directory as the `exec_prefix`
+landmark; without it every launch that did not set `PYTHONHOME` printed
+`Could not find platform dependent libraries <exec_prefix>`. With it,
+`/usr/bin/python3` finds `/usr` for both prefixes on its own, in a login
+shell or not, and the shell sets no `PYTHONHOME`.

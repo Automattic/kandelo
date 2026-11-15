@@ -38,6 +38,10 @@ unzip -q "$RUNTIME_ZIP" -d "$EXTRACT"
 # tree under share/licenses/cpython.
 [ -d "$EXTRACT/lib/python3.13" ] || { echo "runtime zip missing lib/python3.13" >&2; exit 1; }
 [ -f "$EXTRACT/lib/python3.13/os.py" ] || { echo "runtime zip missing lib/python3.13/os.py" >&2; exit 1; }
+# CPython's exec_prefix landmark (Modules/getpath.py). It is empty because
+# every extension module is built in, but without it each launch that does
+# not set PYTHONHOME warns "Could not find platform dependent libraries".
+[ -d "$EXTRACT/lib/python3.13/lib-dynload" ] || { echo "runtime zip missing lib/python3.13/lib-dynload" >&2; exit 1; }
 
 echo "==> Staging python.zip tree..."
 mkdir -p "$STAGING/bin" "$STAGING/lib"

@@ -63,6 +63,12 @@ const PROBES: Record<string, string> = {
     "\"$t\" --version | grep -q 'LLVM version' && echo \"llvm-tool-ok $t\"; done; " +
     "readlink /usr/bin/strip; command -v readelf || echo no-readelf",
   "patch-docs": "man -w patch",
+  // With no PYTHONHOME, in a plain and in a login shell alike, the
+  // interpreter finds its prefix and exec_prefix (the lib-dynload landmark)
+  // from the archive's layout, without "Could not find platform dependent
+  // libraries".
+  "python-browser-bundle": "for login in '' -l; do bash $login -c " +
+    "\"python3 -c 'import sys; print(\\\"python-prefix\\\", sys.prefix, sys.exec_prefix)'\" 2>&1; done",
   "wasm-tools": "wasm-tools --version; wasm-tools validate /usr/bin/wasm-tools && echo wasm-tools-validate-ok",
   toybox: "dmesg -r | head -n 1; dmesg -S | head -n 1 | sed 's/^/klog: /'; logger -s -t probe hello 2>&1",
 };
@@ -152,6 +158,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
         expect(stdout).toContain("wasm-tools 1.263.0");
         expect(stdout).toContain("wasm-tools-validate-ok");
       }
+      if (manifest!.packages.includes("python-browser-bundle")) {
+        expect(stdout.match(/^python-prefix \/usr \/usr$/gm)).toHaveLength(2);
+        expect(stdout).not.toContain("Could not find platform");
+      }
       if (manifest!.packages.includes("patch-docs")) {
         expect(stdout).toContain("/usr/share/man/man1/patch.1");
       }
@@ -175,8 +185,8 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     };
     if (!manifest!.selection.includes("ffmpeg")) expect(absent("/usr/bin/ffmpeg")).toBe(true);
     if (!manifest!.selection.includes("scummvm")) expect(absent("/usr/bin/scummvm")).toBe(true);
-    if (!manifest!.selection.includes("python-browser-bundle")) {
-      expect(absent("/etc/profile.d/python.sh")).toBe(true);
+    if (!manifest!.selection.includes("node-browser-bundle")) {
+      expect(absent("/etc/profile.d/node.sh")).toBe(true);
     }
   });
 });

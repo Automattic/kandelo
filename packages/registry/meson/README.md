@@ -48,11 +48,6 @@ unsuffixed, like any POSIX system's.
 - Kandelo reports one online processor, so by default Ninja (and
   `meson compile`) runs two jobs at a time and `meson test` one test at a
   time. `-j` and `MESON_NUM_PROCESSES` override them.
-- Each Python launch outside a login shell prints `Could not find platform
-  dependent libraries <exec_prefix>` on standard error: the static CPython
-  ships no `lib-dynload` directory. The shell's `/etc/profile.d/python.sh`
-  sets `PYTHONHOME=/usr`, which silences it; the build image runs commands
-  without a login shell.
 - The polkit policy upstream installs for `meson install` elevation is
   left out: Kandelo has no polkit.
 
