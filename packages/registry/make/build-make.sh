@@ -175,16 +175,47 @@ if [ ! -f Makefile ]; then
     export ac_cv_lib_dl_dlopen=no
     export ac_cv_func_dlopen=no
 
-    # Wasm32 clang only supports 0-arg or 2-arg main (not 3-arg envp form).
-    # MK_OS_ZOS selects the 2-arg main and uses extern environ instead.
-    export CFLAGS="-DMK_OS_ZOS"
-
     wasm32posix-configure \
         --disable-nls \
         --disable-load \
         2>&1 | tail -30
 
     echo "==> Configure complete."
+fi
+
+# make's jobserver must use pselect(). Without HAVE_PSELECT, make 4.4.1
+# falls back to its "dup trick": the SIGCHLD handler closes and resets a
+# dup of the jobserver read fd, and make_job_rfd() returns that global after
+# two fcntl() calls. A SIGCHLD delivered at either call makes it return -1,
+# and make stops with "duping jobs pipe" and a stale errno. Defining
+# MK_OS_ZOS (once used here to pick the 2-arg main) also undefines
+# HAVE_PSELECT, so check the configured result.
+if ! grep -q '^#define HAVE_PSELECT 1' src/config.h; then
+    echo "ERROR: make was configured without HAVE_PSELECT; its jobserver" \
+        "would use the racy dup fallback (see build-make.sh)" >&2
+    exit 1
+fi
+
+# --- Provide __main_argc_argv ---
+# Clang for wasm32 renames `int main(int, char **)` to __main_argc_argv,
+# which the CRT calls. make's main takes envp as a third argument, which
+# clang does not rename, so give the CRT the 2-arg entry point and pass
+# environ as envp, as the C runtime does on other POSIX systems.
+cat > kandelo-main.c <<'EOF'
+extern int main(int argc, char **argv, char **envp);
+extern char **environ;
+int __main_argc_argv(int argc, char **argv) {
+    return main(argc, argv, environ);
+}
+EOF
+wasm32posix-cc -c kandelo-main.c -o kandelo-main.o
+if ! grep -q 'kandelo-main\.o' Makefile; then
+    sed -i.bak 's|^LIBS = \(.*\)$|LIBS = \1 kandelo-main.o|' Makefile
+    rm -f Makefile.bak
+    if ! grep -q '^LIBS = .*kandelo-main\.o' Makefile; then
+        echo "ERROR: failed to add kandelo-main.o to make's LIBS" >&2
+        exit 1
+    fi
 fi
 
 # --- Build ---
