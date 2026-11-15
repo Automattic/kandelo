@@ -5,6 +5,8 @@ inputs = [
   "packages/registry/kandelo-sdk/build-kandelo-sdk.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts",
+  # The guest clang version names the resource directory in the image.
+  "packages/registry/clang/package.toml",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "libc/glue",
   "scripts/install-local-binary.sh",

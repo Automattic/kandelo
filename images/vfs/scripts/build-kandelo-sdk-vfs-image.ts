@@ -97,6 +97,14 @@ function copyTree(
   return count;
 }
 
+/** The guest clang's version, from the `clang` package recipe. */
+function guestClangVersion(): string {
+  const recipe = join(REPO_ROOT, "packages", "registry", "clang", "package.toml");
+  const version = /^version = "([^"]+)"$/m.exec(readFileSync(recipe, "utf8"))?.[1];
+  if (!version) throw new Error(`no version in ${recipe}`);
+  return version;
+}
+
 function requireInput(path: string, label: string): void {
   if (!existsSync(path)) throw new Error(`required SDK ${label} missing: ${path}`);
 }
@@ -184,7 +192,7 @@ export async function buildKandeloSdkVfsImage(
     inputs.clangResourceDirectory,
     // The guest clang's resource directory: ../lib/clang/<major> from
     // /usr/lib/llvm/bin/clang, for the packages/registry/clang version.
-    "/usr/lib/llvm/lib/clang/23",
+    `/usr/lib/llvm/lib/clang/${guestClangVersion().split(".")[0]}`,
     0o644,
     { preserveSymlinks: false },
   );
@@ -224,6 +232,17 @@ function hostClangResourceDir(): string {
   if (process.env.CLANG_RESOURCE_DIR) return process.env.CLANG_RESOURCE_DIR;
   const out = execFileSync("clang", ["--print-resource-dir"], { encoding: "utf8" }).trim();
   if (!out) throw new Error("clang --print-resource-dir returned an empty path");
+  // The headers are part of the compiler, so they must come from the guest
+  // clang's own release (as in build-kandelo-sdk-zip.sh).
+  const host = /clang version (\d[\d.]*)/.exec(
+    execFileSync("clang", ["--version"], { encoding: "utf8" }),
+  )?.[1];
+  const guest = guestClangVersion();
+  if (host !== guest) {
+    throw new Error(
+      `the build machine's clang is ${host ?? "unknown"}, the guest clang ${guest}; their resource headers differ (set CLANG_RESOURCE_DIR to override)`,
+    );
+  }
   return out;
 }
 

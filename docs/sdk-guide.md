@@ -326,6 +326,15 @@ activating `kandelo-fncasts` also registers the LLVM passes, through
 `-load` alone produces the same object bytes as the normal library with
 `-fpass-plugin`.
 
+**Known gap: precompiled headers.** A translation unit compiled with a
+clang precompiled header (`-include-pch`, CMake's
+`target_precompile_headers`) gets different AST-side facts than the same
+unit compiled from its own includes: some template-related flow facts are
+missing and others are added. The LLVM-side facts match. Missing flow facts
+could make fork analysis unsound, so builds whose objects feed fork
+instrumentation should not use precompiled headers until the plugin handles
+them. The `clang` package disables LLVM's default PCH for this reason.
+
 **Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
 and an optimization level is set. Binaryen inlines and merges functions,
 which would move call sites to other functions and make per-function facts

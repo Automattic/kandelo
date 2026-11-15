@@ -140,9 +140,12 @@ COMMON_FLAGS=("-ffile-prefix-map=$REPO_ROOT=/kandelo" "-ffile-prefix-map=$WORK_D
 # Keep each large host wasm-ld link within the same resource bound as the
 # default serial build, even when compilation jobs are raised explicitly.
 LINK_FLAGS=(-Wl,--threads=1 "$LIBCXX_DIR/lib/libc++.a" "$LIBCXX_DIR/lib/libc++abi.a")
-# LLVM 23 precompiles headers by default. A unit that reuses a PCH records
-# different AST compiler facts (the KandeloCallTypes plugin) than the same
-# unit compiled from its own includes, so build without PCH, as LLVM 21 did.
+# CMAKE_DISABLE_PRECOMPILE_HEADERS works around a KandeloCallTypes
+# limitation: LLVM 23 precompiles headers by default, and a unit that
+# reuses a PCH gets different AST-side compiler facts (docs/sdk-guide.md,
+# "Compiler facts for fork instrumentation", known gap).
+# CLANG_PLUGIN_SUPPORT concerns loading plugins from shared libraries only;
+# the built-in KandeloCallTypes plugin above does not depend on it.
 
 cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/llvm" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_SYSTEM_NAME=Kandelo \
