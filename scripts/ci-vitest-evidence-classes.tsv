@@ -218,6 +218,7 @@ host/test/guest-bash-subshells.test.ts	prepared-product
 host/test/guest-binutils.test.ts	prepared-product
 host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product
+host/test/guest-cmake.test.ts	prepared-product
 host/test/guest-meson.test.ts	prepared-product
 host/test/guest-program-preparation.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product

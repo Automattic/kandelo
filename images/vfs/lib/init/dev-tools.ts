@@ -1,7 +1,7 @@
 /**
  * The build tools Kandelo ships for building software inside a machine:
  * Autoconf, Automake, Libtool, the Autoconf Archive, gettext, pkgconf, Bison,
- * gperf, Texinfo and help2man, and Meson and Ninja.
+ * gperf, Texinfo and help2man, and CMake, Meson and Ninja.
  *
  * The shell installs them lazily, as SHELL_LAZY_BINARY_SPECS and
  * SHELL_LAZY_ARCHIVE_SPECS entries, so images built on it inherit them. The
@@ -69,6 +69,10 @@ export const DEV_TOOL_BINARY_SPECS = [
   { id: "msguniq", dependency: "gettext", resolverPath: "programs/wasm32/gettext/msguniq.wasm", vfsPath: "/usr/bin/msguniq", symlinks: [] },
   { id: "recode-sr-latin", dependency: "gettext", resolverPath: "programs/wasm32/gettext/recode-sr-latin.wasm", vfsPath: "/usr/bin/recode-sr-latin", symlinks: [] },
   { id: "xgettext", dependency: "gettext", resolverPath: "programs/wasm32/gettext/xgettext.wasm", vfsPath: "/usr/bin/xgettext", symlinks: [], displaces: ["/usr/bin/xgettext"] },
+  // CMake; its Modules tree is cmake-data below.
+  { id: "cmake", dependency: "cmake", resolverPath: "programs/wasm32/cmake/cmake.wasm", vfsPath: "/usr/bin/cmake", symlinks: [] },
+  { id: "ctest", dependency: "cmake", resolverPath: "programs/wasm32/cmake/ctest.wasm", vfsPath: "/usr/bin/ctest", symlinks: [] },
+  { id: "cpack", dependency: "cmake", resolverPath: "programs/wasm32/cmake/cpack.wasm", vfsPath: "/usr/bin/cpack", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];
 
 /** Scripts and data, as ZIPs rooted at /usr. */
@@ -142,5 +146,12 @@ export const DEV_TOOL_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/meson.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/meson",
+  },
+  {
+    id: "cmake-data",
+    dependency: "cmake",
+    resolverPath: "programs/wasm32/cmake/cmake-data.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/cmake-4.5/Modules/Platform/Kandelo.cmake",
   },
 ] as const satisfies readonly DevToolArchiveSpec[];

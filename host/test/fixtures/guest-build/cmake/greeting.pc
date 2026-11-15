@@ -1,0 +1,4 @@
+Name: greeting
+Description: Compile-time greeting for the Kandelo CMake fixture
+Version: 1.2
+Cflags: -DGREETING="\"hello from pkg-config\""

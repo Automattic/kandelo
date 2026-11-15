@@ -67,6 +67,7 @@ describe("kandelo-build-image package", () => {
       "gperf@3.3",
       "ninja@1.13.2",
       "meson@1.12.1",
+      "cmake@4.5.0",
     ]);
   });
 });
