@@ -95,8 +95,10 @@ kandelo_package_rust_build_env() {
         cp -R "$vendor/$entry" "$patched/$entry"
         rm -f "$patched/$entry/.cargo-checksum.json"
         patch -d "$patched/$entry" -p1 < "$patch" || return
+        # The [patch] key only has to be unique and a valid bare TOML key.
+        # Semver build metadata (libgit2-sys 0.18.3+1.9.2) contains '+'.
         printf '%s = { path = "%s", package = "%s" }\n' \
-            "${crate//-/_}_${version//./_}" "$patched/$entry" "$crate" >> "$config"
+            "${crate//-/_}_${version//[^A-Za-z0-9_]/_}" "$patched/$entry" "$crate" >> "$config"
         updates+=(-p "$crate@$version")
     done
     cat "$work/vendor-config.toml" >> "$config"
