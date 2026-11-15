@@ -347,9 +347,18 @@ for path in sorted(source.rglob("*"), key=lambda item: item.as_posix()):
 PY
 cp "$SRC_DIR/LICENSE" "$RUNTIME_STAGE/share/licenses/cpython/LICENSE"
 
+# `make install` always creates the extension-module directory
+# (DESTSHARED, lib/pythonX.Y/lib-dynload), even when every module is
+# built in, as here. CPython's Modules/getpath.py takes that directory as
+# the exec_prefix landmark: without it, every launch that does not set
+# PYTHONHOME warns "Could not find platform dependent libraries
+# <exec_prefix>". Ship the same empty directory upstream installs.
+DYNLOAD_DIR="lib/python${PYTHON_MAJOR_MINOR}/lib-dynload"
+mkdir -p "$RUNTIME_STAGE/$DYNLOAD_DIR"
+
 RUNTIME_ZIP="$WORK_DIR/python-runtime.zip"
 rm -f "$RUNTIME_ZIP"
-"$HOST_PYTHON" - "$RUNTIME_STAGE" "$RUNTIME_ZIP" <<'PY'
+"$HOST_PYTHON" - "$RUNTIME_STAGE" "$RUNTIME_ZIP" "$DYNLOAD_DIR" <<'PY'
 from pathlib import Path
 import stat
 import sys
@@ -357,8 +366,15 @@ import zipfile
 
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
+dynload = sys.argv[3]
 timestamp = (2023, 11, 14, 22, 13, 20)
 with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED, strict_timestamps=True) as archive:
+    # A ZIP carries an empty directory only as an explicit entry.
+    info = zipfile.ZipInfo(dynload + "/", date_time=timestamp)
+    info.create_system = 3
+    info.external_attr = ((stat.S_IFDIR | 0o755) << 16) | 0x10
+    info.compress_type = zipfile.ZIP_STORED
+    archive.writestr(info, b"")
     for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.as_posix()):
         relative = path.relative_to(root).as_posix()
         info = zipfile.ZipInfo(relative, date_time=timestamp)
