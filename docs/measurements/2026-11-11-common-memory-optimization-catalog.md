@@ -7179,3 +7179,13 @@ Neither proposal changes the current preview or claims general release
 readiness. Retain selective seeding, inode-scoped generations and conservative
 fallback ideas for the next platform experiment; a global all-write epoch
 would also react to database/log writes.
+
+**Lazy recompilation refinement.** Watch source mutations proactively, mark the
+affected entry dirty, and let PHP invalidate both shared/FILE entries and
+recompile on the next use. This avoids eager compilation of unused edits and
+allows repeated edits to coalesce. The controlled watcher prototype already
+tests a limited dirty-set/invalidate-before-request form. A general version
+still needs authoritative inode/namespace mutation coverage and a fence before
+each cached-code lookup, including includes in requests already running.
+Proactive invalidation can initially complement timestamp checks; removing
+them is a separate correctness gate. No new performance number is claimed.

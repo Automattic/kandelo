@@ -56,3 +56,29 @@ Startup records include image initialization, FPM installation/configuration
 and service-to-homepage time. They exclude network image transfer, host file
 reads and module import time. Image compressed size is recorded separately.
 Do not call service-only latency total startup, or FILE logical lengths RAM.
+
+## Interactive seeded demo
+
+`build-demo.ts FILTERED_FIXTURE OUTPUT` installs the matching FPM into a new
+image, enables its second-level FILE cache alongside shared OPcache, and keeps
+timestamp validation enabled at frequency zero. It uses the normal image
+writer and explicit prototype-v2 artifact policy. It requires the filtered
+fixture's generated-secrets exclusion and records the image/FPM/seed hashes.
+
+Serve that image on a new local port with the existing WordPress preview:
+
+```sh
+scripts/dev-shell.sh node --import tsx/esm \
+  tools/common-memory-program/cache-policy/build-demo.ts FILTERED_FIXTURE NEW_OUTPUT
+scripts/dev-shell.sh env WASM_POSIX_SOURCE_ONLY_BINARY_ROOT=MATCHING_PROJECTION \
+  node tools/common-memory-program/wordpress/serve.mjs \
+  PROFILE NEW_OUTPUT/wordpress.vfs.zst UNUSED_PORT MATCHING_KERNEL
+```
+
+Use each backend's own seed for its demo. The image-owned profiles and normal
+app/service-worker flow remain intact. `/kandelo-seed-info.php` reports effective
+OPcache configuration inside FPM. `demo.spec.ts` checks homepage, shared cache,
+both workers, timestamps, admin login and the memory boundary through the real
+UI. Select the two preview origins with `KANDELO_SEEDED_SQLITE_URL` and
+`KANDELO_SEEDED_MARIADB_URL`, and use `demo.config.ts` with the app's Playwright
+CLI. These demos do not enable the experimental watcher-only policy.
