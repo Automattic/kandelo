@@ -1,7 +1,7 @@
 /**
- * The GNU build tools Kandelo ships for building software inside a machine:
+ * The build tools Kandelo ships for building software inside a machine:
  * Autoconf, Automake, Libtool, the Autoconf Archive, gettext, pkgconf, Bison,
- * gperf, Texinfo and help2man.
+ * gperf, Texinfo and help2man, and Meson and Ninja.
  *
  * The shell installs them lazily, as SHELL_LAZY_BINARY_SPECS and
  * SHELL_LAZY_ARCHIVE_SPECS entries, so images built on it inherit them. The
@@ -11,6 +11,8 @@
  *
  * The script-based tools run the guest's /usr/bin/perl, /usr/bin/m4 and
  * /bin/sh, which their recipes record (scripts/rewrite-guest-tool-paths.py).
+ * Meson runs the guest's /usr/bin/python3 (python-browser-bundle) from its
+ * own directory, /usr/lib/meson.
  */
 import type { VfsBinarySpec } from "./shell-binaries";
 
@@ -34,6 +36,7 @@ export const DEV_TOOL_BINARY_SPECS = [
   },
   { id: "bison", resolverPath: "programs/wasm32/bison/bison.wasm", vfsPath: "/usr/bin/bison", symlinks: [] },
   { id: "gperf", resolverPath: "programs/wasm32/gperf.wasm", vfsPath: "/usr/bin/gperf", symlinks: [] },
+  { id: "ninja", resolverPath: "programs/wasm32/ninja.wasm", vfsPath: "/usr/bin/ninja", symlinks: [] },
   {
     id: "install-info",
     dependency: "texinfo",
@@ -132,5 +135,12 @@ export const DEV_TOOL_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/bison/bison-data.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/bison/m4sugar/m4sugar.m4",
+  },
+  {
+    id: "meson",
+    dependency: "meson",
+    resolverPath: "programs/wasm32/meson.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/meson",
   },
 ] as const satisfies readonly DevToolArchiveSpec[];

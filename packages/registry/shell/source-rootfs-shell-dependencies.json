@@ -342,6 +342,16 @@
       "role": "lazy-archive"
     },
     {
+      "name": "meson-docs",
+      "version": "1.12.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "ninja-docs",
+      "version": "1.13.2",
+      "role": "lazy-archive"
+    },
+    {
       "name": "lsof-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
@@ -855,6 +865,16 @@
       "name": "gperf",
       "version": "3.3",
       "role": "lazy-file"
+    },
+    {
+      "name": "ninja",
+      "version": "1.13.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "meson",
+      "version": "1.12.1",
+      "role": "lazy-archive"
     },
     {
       "name": "cargo",

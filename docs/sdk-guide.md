@@ -782,6 +782,9 @@ missing because every executable link is strict: the SDK leaves undefined only
 the imports the host provides (`libc/glue/kandelo-host-imports.txt`), so a bare
 `cc.has_function()` is truthful.
 
+Meson and Ninja also run inside Kandelo, for native builds there without a
+cross file; see [GNU build tools](#gnu-build-tools).
+
 ## Fork instrumentation (`wasm-fork-instrument`)
 
 **Persistence warning:** user-built forking programs cannot currently be
@@ -1052,18 +1055,22 @@ make check
 | `gperf` 3.3 | `gperf` |
 | `texinfo` 7.3 | `makeinfo`/`texi2any`, `texindex`, `install-info` |
 | `help2man` 1.49.3 | `help2man` |
+| `meson` 1.12.1 | `meson` |
+| `ninja` 1.13.2 | `ninja` |
 
 The list is `images/vfs/lib/init/dev-tools.ts`. In the shell each tool
 is a lazy file or archive, fetched on first use; the build image holds
-them resident, together with Perl and `tar`, `gzip`, `bzip2` and `xz`.
+them resident, together with Perl, Python and `tar`, `gzip`, `bzip2` and
+`xz`.
 Autoconf, Automake, help2man and `texi2any` are Perl and m4 programs and
 run `/usr/bin/perl` and `/usr/bin/m4`. Texinfo's Perl runs without its
 optional XS modules: Kandelo's Perl is built without dynamic loading, and a
 package patch keeps Texinfo from requiring `DynaLoader` when XS is off.
 
 Each package's manual pages are a `<package>-docs` lazy archive in the
-shell (`man autoreconf`, `man msgfmt`, `man pkg-config`); the build image
-carries no manual pages. Libtool's pages are made from what `libtool`,
+shell (`man autoreconf`, `man msgfmt`, `man pkg-config`, `man meson`); the
+build image carries no manual pages. Ninja has no upstream page; its page
+is made with help2man from what `ninja --help` prints inside Kandelo. Libtool's pages are made from what `libtool`,
 `libtoolize` and `libtool-next-version` print running inside Kandelo,
 because upstream's describe the maintainer's x86_64 Linux build. The
 Autoconf Archive installs macros, not commands, and has none.
@@ -1081,6 +1088,23 @@ types match, `configure` runs natively: its run tests execute inside
 Kandelo instead of being answered from a cache. A release tarball whose
 own `config.guess` predates this stops with "unable to guess system type";
 run `autoreconf -fi`, or pass `--build=wasm32-unknown-linux-musl`.
+
+**Meson and Ninja.** A Meson project builds natively with
+`meson setup build`, `ninja -C build` (or `meson compile -C build`),
+`meson test -C build` and `meson install -C build`. Meson is Python: its
+package is in `/usr/lib/meson`, outside Python's own tree, and
+`/usr/bin/meson` runs it with `/usr/bin/python3`.
+It describes the machine as `uname` does: `host_machine.system()` is
+`wasm-posix` and `cpu_family()` is `wasm32`, with no native file; this
+differs from the SDK's cross files, which say `linux` for cross builds.
+Meson would name executables `<name>.js` on a system whose name starts
+with `wasm`, an Emscripten convention, so a package patch keeps Kandelo's
+unsuffixed. As with Libtool, build static libraries: `library()` defaults
+to shared, and linking an executable against a shared library fails, so
+use `static_library()` or `-Ddefault_library=static`. Kandelo reports one
+online processor, so Ninja runs two jobs and `meson test` one test at a
+time unless told otherwise. `packages/registry/meson/README.md` and
+`packages/registry/ninja/README.md` have the detail.
 
 **Libtool** builds static libraries only. A Kandelo executable cannot be
 linked against a shared library (`cc` builds `-shared` side modules for
@@ -1114,4 +1138,7 @@ puts under `/usr/local` and the libraries `cc` links against. The SDK's
 of these tools (an Autoconf Archive macro, Libtool, a Bison grammar, a
 gperf table, a Texinfo manual, a help2man page and a pkg-config module)
 with `autoreconf -fi`, `./configure`, `make` and `make check` in the build
-image.
+image. `host/test/guest-meson.test.ts` configures a Meson project (header,
+function and size probes, a static library and an executable linked
+against it), builds it with Ninja, and runs `meson test` and
+`meson install` there.

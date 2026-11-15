@@ -8,8 +8,8 @@
  * The guest toolchain archive (kandelo-sdk.zip) is expanded under /usr, where
  * the shell would otherwise mount it lazily. The LLVM binary tools come from
  * the clang package's outputs (<clang-dir>), at the paths the shell gives
- * them (LLVM_BINARY_TOOL_SPECS). Perl (perl.zip) and the GNU build tools
- * (images/vfs/lib/init/dev-tools.ts) come from their packages' outputs,
+ * them (LLVM_BINARY_TOOL_SPECS). Perl (perl.zip), Python (python.zip) and the
+ * build tools (images/vfs/lib/init/dev-tools.ts) come from their packages' outputs,
  * found through the resolver's WASM_POSIX_DEP_<NAME>_DIR variables.
  *
  * WHY eager rather than lazy: a lazy archive member is cached in the kernel's
@@ -207,6 +207,12 @@ async function main(argv: string[]): Promise<void> {
     fs,
     new Uint8Array(readFileSync(join(dependencyDirFromEnv("perl-browser-bundle"), "perl.zip"))),
     "perl archive",
+  );
+  // Python, which Meson runs.
+  expandArchiveUnderUsr(
+    fs,
+    new Uint8Array(readFileSync(join(dependencyDirFromEnv("python-browser-bundle"), "python.zip"))),
+    "python archive",
   );
   installLlvmBinaryTools(fs, clangDir);
   installArchiveTools(fs, dependencyDirFromEnv);
