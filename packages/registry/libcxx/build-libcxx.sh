@@ -254,6 +254,25 @@ check_libcxx_archive() {
     ' "$report"
 }
 
+# libc++abi must define __cxa_thread_atexit, which the C++ ABI calls to
+# register thread_local destructors; musl does not provide it. LLVM 23
+# guards the definition by OS (patches/0003), and a guard that excludes
+# Kandelo still compiles cxa_thread_atexit.cpp into an empty object, so
+# the archive looks complete until a consumer fails to link.
+check_libcxxabi_thread_atexit() {
+    local archive="$1" report="$2"
+    if ! "$LLVM_NM" --defined-only --extern-only "$archive" > "$report" 2>&1; then
+        echo "ERROR: cannot list libc++abi symbols: $archive" >&2
+        cat "$report" >&2
+        return 1
+    fi
+    if ! grep -Eq '^[0-9a-fA-F]* *[TW] __cxa_thread_atexit$' "$report"; then
+        echo "ERROR: $archive does not define __cxa_thread_atexit;" \
+            "thread_local destructors would not link (see patches/0003)" >&2
+        return 1
+    fi
+}
+
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with
 # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY, CMake's check_library_exists
 # only compiles, never links, so it reports every function present. musl has
@@ -443,6 +462,10 @@ cp "$LIBCXXABI_PIC_A" "$INSTALL_DIR/lib/libc++abi-pic.a"
 echo "==> Verifying every libc++ archive member targets ${ARCH}..."
 for archive in libc++.a libc++abi.a libc++-pic.a libc++abi-pic.a; do
     check_libcxx_archive "$INSTALL_DIR/lib/$archive" "$ARCH" "$WORK_DIR/$archive.headers.log"
+done
+echo "==> Verifying libc++abi defines __cxa_thread_atexit..."
+for archive in libc++abi.a libc++abi-pic.a; do
+    check_libcxxabi_thread_atexit "$INSTALL_DIR/lib/$archive" "$WORK_DIR/$archive.symbols.log"
 done
 
 echo "==> Done!"

@@ -1,8 +1,8 @@
 # libcxx package patches
 
 The recipe applies these patches, in order, to private writable copies of
-the Nix-provided `libcxx` and `libunwind` sources. The Nix derivations and
-the checkout are never modified.
+the Nix-provided `libcxx`, `libcxxabi` and `libunwind` sources. The Nix
+derivations and the checkout are never modified.
 
 ## Wasm unwinder source selection
 
@@ -54,4 +54,20 @@ definition uses libc++abi's own pthread-key destructor list, which runs at
 thread exit and, for the main thread, at `exit`. It is not yet proposed
 upstream. Like the locale patch, it keys on the libc capability libc++
 already records and does not define `__linux__`. The recipe makes
-`libcxxabi/` a private writable copy for this patch.
+`libcxxabi/` a private writable copy for this patch, and fails the build if
+`libc++abi.a` or `libc++abi-pic.a` does not define `__cxa_thread_atexit`.
+
+This is the fallback libc++abi already uses on musl Linux, such as Alpine,
+and it has the limits upstream's source comments describe:
+
+- `dso_symbol` is ignored, so a module unloaded with `dlclose` before a
+  thread exits can leave that thread's destructor list pointing at its
+  unloaded code.
+- The main thread's `thread_local` destructors run from the destructor of a
+  static object that is created at the first registration. Static objects
+  constructed after that point are destroyed before those `thread_local`
+  objects, although the standard sequences every `thread_local` destructor
+  before any static destructor.
+- On other threads the destructors run in the first round of
+  thread-specific-data destructors, so code that must run after them needs a
+  later round.
