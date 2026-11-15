@@ -1,0 +1,32 @@
+kind = "program"
+name = "ninja"
+version = "1.13.2"
+kernel_abi = 56
+depends_on = ["libcxx@21.1.7"]
+
+# Ninja, the small build system Meson (and CMake's Ninja generator) write
+# build files for. C++, built with upstream's CMake build and the SDK
+# toolchain file. It runs each build command with posix_spawn of /bin/sh
+# and waits for them with ppoll and SIGCHLD.
+[source]
+url = "https://github.com/ninja-build/ninja/archive/refs/tags/v1.13.2.tar.gz"
+sha256 = "974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/ninja-build/ninja/blob/v1.13.2/COPYING"
+
+[build]
+script_path = "packages/registry/ninja/build-ninja.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "ninja"
+wasm = "ninja.wasm"
+fork_instrumentation = "auto"
