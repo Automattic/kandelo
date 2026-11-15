@@ -14,6 +14,20 @@ ac_cv_file__dev_ptmx=${ac_cv_file__dev_ptmx=no}
 ac_cv_file__dev_ptc=${ac_cv_file__dev_ptc=no}
 ac_cv_pthread=${ac_cv_pthread=yes}
 
+# CPython asks this run probe to decide whether multiprocessing's SemLock
+# (Lock, Semaphore, Queue, Pool, ...) can rely on named POSIX semaphores
+# shared between processes. On Kandelo sem_open() works, but a semaphore
+# in a shared mapping is not process-shared: futex waits and wakes reach
+# only the calling process, and stores reach a peer only at syscall
+# boundaries (docs/posix-status.md, "No immediate cross-process
+# shared-memory or futex semantics"). Measured with SemLock built in, an
+# acquire in one process did not see a release in another, so Lock,
+# Queue and Pool hung. Answer "no", CPython's own mode for this: _multiprocessing builds
+# without SemLock, and multiprocessing.synchronize raises its ImportError
+# ("lacks a functioning sem_open implementation") rather than hanging.
+# Flip this when the kernel implements process-shared futexes.
+ac_cv_posix_semaphores_enabled=${ac_cv_posix_semaphores_enabled=no}
+
 # Kandelo executables intentionally preserve unresolved imports for the kernel
 # ABI. That makes Autoconf's bare-symbol link probes report success even for a
 # few functions that musl does not declare or define. Keep this list limited to

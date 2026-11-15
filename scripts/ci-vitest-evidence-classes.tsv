@@ -719,6 +719,7 @@ packages/registry/bash/test/bash.test.ts	prepared-product
 packages/registry/bzip2/test/bzip2.test.ts	prepared-product
 packages/registry/composer/test/composer-shell.test.ts	prepared-product
 packages/registry/coreutils/test/coreutils.test.ts	prepared-product
+packages/registry/cpython/test/posix-modules.test.ts	prepared-product
 packages/registry/curl/test/curl.test.ts	prepared-product
 packages/registry/dash/test/dash-signal-regression.test.ts	prepared-product
 packages/registry/dash/test/dash.test.ts	prepared-product

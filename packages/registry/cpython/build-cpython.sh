@@ -124,10 +124,12 @@ if [ -z "$NCURSES_PREFIX" ]; then
         cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses
     )"
 fi
-if [ ! -f "$NCURSES_PREFIX/lib/libtinfow.a" ]; then
-    echo "ERROR: ncurses dependency is missing lib/libtinfow.a: $NCURSES_PREFIX" >&2
-    exit 1
-fi
+for lib in libtinfow.a libncursesw.a libpanelw.a; do
+    if [ ! -f "$NCURSES_PREFIX/lib/$lib" ]; then
+        echo "ERROR: ncurses dependency is missing lib/$lib: $NCURSES_PREFIX" >&2
+        exit 1
+    fi
+done
 echo "==> ncurses at $NCURSES_PREFIX"
 
 SQLITE_PREFIX="${WASM_POSIX_DEP_SQLITE_DIR:-}"
@@ -157,10 +159,11 @@ kandelo_package_stage_primary_source cpython "$SRC_DIR" "$WORK_DIR"
 if ! grep -q "Kandelo uses the WASI configure target" "$SRC_DIR/Lib/subprocess.py"; then
     kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-subprocess.patch"
 fi
-# Upstream's WASI target also declares fcntl, pwd and grp unavailable ("WASI
-# SDK 15.0 does not support file locking"; pwd and grp are stubs there).
-# Kandelo's libc provides flock() and the password and group databases, so
-# configure's usual checks decide those modules instead. Meson needs fcntl
+# Upstream's WASI target also declares fcntl, pwd, grp, mmap, termios,
+# resource, syslog, _multiprocessing, _posixshmem and curses unavailable
+# ("WASI SDK 15.0 does not support file locking, mmap, and more"; pwd and
+# grp are stubs there). Kandelo's libc provides those interfaces, so
+# configure's usual checks decide the modules instead. Meson needs fcntl
 # for its build-directory lock and pwd for `meson install` as root.
 if ! grep -q "Kandelo's POSIX libc provides file locking" "$SRC_DIR/configure"; then
     kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-libc-modules.patch"
@@ -230,6 +233,10 @@ if [ ! -f "$CROSS_BUILD_DIR/Makefile" ]; then
         PKG_CONFIG=wasm32posix-pkg-config \
         LIBREADLINE_CFLAGS="-I$READLINE_PREFIX/include" \
         LIBREADLINE_LIBS="-L$READLINE_PREFIX/lib -L$NCURSES_PREFIX/lib -lreadline -lhistory -ltinfow" \
+        CURSES_CFLAGS="-I$NCURSES_PREFIX/include" \
+        CURSES_LIBS="-L$NCURSES_PREFIX/lib -lncursesw -ltinfow" \
+        PANEL_CFLAGS="-I$NCURSES_PREFIX/include" \
+        PANEL_LIBS="-L$NCURSES_PREFIX/lib -lpanelw" \
         py_cv_module__ssl=n/a \
         py_cv_module__hashlib=n/a \
         py_cv_module__decimal=n/a \
