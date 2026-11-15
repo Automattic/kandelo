@@ -168,7 +168,7 @@ rm -rf "$LLVM_SRC_DIR"
 # CMake checks siblings via runtimes/../libunwind, and if runtimes is a symlink
 # that `..` resolves inside the Nix libcxx source instead of this overlay tree.
 mkdir -p "$LLVM_SRC_DIR"
-for entry in cmake libc libcxxabi llvm third-party; do
+for entry in cmake libc llvm third-party; do
     if [ -e "$NIX_LIBCXX_SOURCE/$entry" ]; then
         ln -s "$NIX_LIBCXX_SOURCE/$entry" "$LLVM_SRC_DIR/$entry"
     fi
@@ -178,31 +178,35 @@ for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
     [ -e "$entry" ] || continue
     ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
 done
-# libcxx and libunwind receive the patches below. Dereference them into
-# writable private files rather than patching the immutable Nix derivations.
-# libcxx is copied whole so CMake's relative paths (src/../include) resolve
-# inside the patched copy. Only its test suite, which this recipe never
-# configures (LIBCXX_INCLUDE_TESTS=OFF), stays a link to the Nix source.
-# Only libcxx/ and libunwind/ are private writable copies; a future patch to
-# another tree (for example libcxxabi/) must copy that tree here too.
-mkdir -p "$LLVM_SRC_DIR/libcxx"
-for entry in "$NIX_LIBCXX_SOURCE/libcxx"/* "$NIX_LIBCXX_SOURCE/libcxx"/.[!.]*; do
-    [ -e "$entry" ] || continue
-    if [ "$(basename "$entry")" = test ]; then
-        ln -s "$entry" "$LLVM_SRC_DIR/libcxx/test"
-    else
-        cp -RL "$entry" "$LLVM_SRC_DIR/libcxx/"
-    fi
+# libcxx, libcxxabi and libunwind receive the patches below. Dereference
+# them into writable private files rather than patching the immutable Nix
+# derivations. libcxx and libcxxabi are copied whole so CMake's relative
+# paths (src/../include) resolve inside the patched copies. Only their test
+# suites, which this recipe never configures (LIBCXX_INCLUDE_TESTS=OFF,
+# LIBCXXABI_INCLUDE_TESTS=OFF), stay links to the Nix source.
+# Only libcxx/, libcxxabi/ and libunwind/ are private writable copies; a
+# future patch to another tree must copy that tree here too.
+for tree in libcxx libcxxabi; do
+    mkdir -p "$LLVM_SRC_DIR/$tree"
+    for entry in "$NIX_LIBCXX_SOURCE/$tree"/* "$NIX_LIBCXX_SOURCE/$tree"/.[!.]*; do
+        [ -e "$entry" ] || continue
+        if [ "$(basename "$entry")" = test ]; then
+            ln -s "$entry" "$LLVM_SRC_DIR/$tree/test"
+        else
+            cp -RL "$entry" "$LLVM_SRC_DIR/$tree/"
+        fi
+    done
+    chmod -R u+w "$LLVM_SRC_DIR/$tree"
 done
-chmod -R u+w "$LLVM_SRC_DIR/libcxx"
 cp -RL "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
 chmod -R u+w "$LLVM_SRC_DIR/libunwind"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
-# Select the VM unwinder backend without native register assembly, and the
-# musl locale support for libc++ (see patches/README.md). Patch only the
-# private source copies; source derivations and the checkout stay immutable.
+# Select the VM unwinder backend without native register assembly, the
+# musl locale support for libc++, and libc++abi's __cxa_thread_atexit on
+# musl (see patches/README.md). Patch only the private source copies;
+# source derivations and the checkout stay immutable.
 for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
     patch --fuzz=0 -p1 -d "$LLVM_SRC_DIR" < "$patch_file"
 done

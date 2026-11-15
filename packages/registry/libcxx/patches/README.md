@@ -37,3 +37,21 @@ Kandelo's musl provides all of them. It is not yet proposed upstream.
 The patch keys on the libc capability libc++ already records; it does not
 define `__linux__` or make Kandelo a Linux target. Because the patched
 header is installed, C++ consumers see the same selection.
+
+## __cxa_thread_atexit on musl
+
+`0003-provide-cxa-thread-atexit-on-musl.patch` lets libc++abi define
+`__cxa_thread_atexit` when `_LIBCPP_HAS_MUSL_LIBC` is set, not only when
+`__linux__` or `__Fuchsia__` is defined. The C++ ABI calls it to register
+the destructor of each non-trivially destructible `thread_local` object.
+musl provides neither it nor `__cxa_thread_atexit_impl`, so on musl the C++
+ABI library must. libcxxabi's CMake still compiles `cxa_thread_atexit.cpp`
+for Kandelo, but LLVM 23 added a `__linux__`/`__Fuchsia__` guard around the
+definition, so the object was empty and such programs (Binaryen 133's
+`wasm-opt`, MariaDB) failed to link. LLVM 21.1.7's libc++abi defined it.
+The recipe seeds `LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF`, so the
+definition uses libc++abi's own pthread-key destructor list, which runs at
+thread exit and, for the main thread, at `exit`. It is not yet proposed
+upstream. Like the locale patch, it keys on the libc capability libc++
+already records and does not define `__linux__`. The recipe makes
+`libcxxabi/` a private writable copy for this patch.

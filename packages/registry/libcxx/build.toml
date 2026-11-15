@@ -27,4 +27,6 @@ commit      = "UNPUBLISHED"
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF (musl has no _impl).
 # Revision 10: select the VM unwinder sources for Wasm, target any assembly
 # explicitly, and reject native or wrong-width static/PIC archive members.
-revision    = 10
+# Revision 11: patch libc++abi 23 to define __cxa_thread_atexit on musl
+# (patches/0003), which its new __linux__/__Fuchsia__ guard had dropped.
+revision    = 11
