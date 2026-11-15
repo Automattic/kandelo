@@ -296,15 +296,12 @@ build_cpp_program() {
 
     echo "  Compiling $name (C++)..."
     rm -f "$wasm" "$raw_wasm" "$next_wasm"
-    # -fwasm-exceptions is required for clang to lower C++ try/catch
-    # to wasm-EH `try`/`catch` instructions. Without it clang emits
-    # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
-    # whole exception-propagation chain (libunwind + libc++abi) never
-    # runs.
+    # No exception flag: the SDK enables Wasm exception handling for every
+    # C++ compile (docs/sdk-guide.md, "C++ exceptions"), so these fixtures,
+    # including the fork-in-try/catch ones, build the way user software does.
     # shellcheck disable=SC2046
     "$WASM32_CXX" \
         -O2 \
-        -fwasm-exceptions \
         $(libcxx_flags "$LIBCXX_PREFIX_32") \
         "$src" \
         -lc++ -lc++abi \
@@ -317,7 +314,6 @@ build_cpp_program() {
         # shellcheck disable=SC2046
         "$WASM32_CXX" \
             -O2 \
-            -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
             $(libcxx_flags "$LIBCXX_PREFIX_32") \
             "$src" \
@@ -1486,7 +1482,6 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         # shellcheck disable=SC2046
         "$WASM64_CXX" \
             -O2 \
-            -fwasm-exceptions \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
             $(libcxx_flags "$LIBCXX_PREFIX_64") \
             "$sjlj_noexcept_src" \

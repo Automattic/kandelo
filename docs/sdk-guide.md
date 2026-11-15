@@ -138,7 +138,7 @@ wasm32posix-cc -O2 program.c -o program.wasm
 wasm32posix-c++ program.cpp -o program.wasm
 ```
 
-### Linking C++ programs (with exceptions)
+### Linking C++ programs
 
 C++ programs link against libc++ + libc++abi. Both are produced by
 the libcxx package (`packages/registry/libcxx/`) and resolved automatically
@@ -150,18 +150,39 @@ this target. `-nostdlib`, `-nodefaultlibs` and `-nostdlib++` turn that
 off; a shared library (`-shared`) takes the C++ library from the program
 that loads it. So the libcxx package must be in the sysroot of any build
 that links with `wasm32posix-c++`, including a configure check. LLVM
-libunwind is statically bundled into `libc++abi.a`, so:
+libunwind is statically bundled into `libc++abi.a`, so `_Unwind_*`
+symbols resolve internally, with no separate `-lunwind`.
+
+### C++ exceptions
+
+C++ exceptions work with no flag from the caller, as with every Unix C++
+compiler:
 
 ```bash
-wasm32posix-c++ -fwasm-exceptions main.cpp -o app.wasm
+wasm32posix-c++ main.cpp -o app.wasm
 ```
 
-works out of the box — `_Unwind_*` symbols resolve internally, no
-separate `-lunwind`.
+Kandelo implements C++ exceptions with WebAssembly exception handling. The
+SDK adds `-fwasm-exceptions` to every compile that has C++ input: any
+compile by `wasm32posix-c++` (which, like `clang++`, treats C sources as
+C++), and any compile by `wasm32posix-cc` of a C++ source or of input after
+`-x c++`. That flag makes clang keep `try`/`catch` handlers and unwinding
+cleanups as `try_table`/`catch_ref` code; without it clang deletes them and
+a `throw` ends the program. CMake, Meson, autotools and plain makefiles
+therefore need no Kandelo-specific flag, and the libcxx package is built
+the same way, so libc++'s own handlers and cleanups run too.
 
-`-fwasm-exceptions` is required for clang to lower C++ `try`/`catch`
-to wasm-EH `try_table` / `catch_ref` instructions. Without it, catch
-handlers are dead-code-eliminated and `throw` hangs at runtime.
+`-fno-exceptions` still turns C++ exceptions off; such a translation unit
+compiles to the same code as before the SDK enabled exceptions. C
+translation units, assembly and links of objects do not get the flag, so C
+code compiles exactly as before, including C compiled with `-fexceptions`.
+Two gaps remain, both independent of the flag. An exception with no
+handler leaves the program's Wasm stack and reaches the host instead of
+calling `std::terminate` (LLVM's Wasm unwinder has no search phase to find
+out that no handler exists), so the process does not end with `SIGABRT`.
+And a failed throwing `operator new` aborts instead of throwing
+`std::bad_alloc`: the SDK glue's weak fallback (`libc/glue/cxxrt.c`)
+satisfies `operator new` before the link reaches libc++'s definition.
 
 #### LLVM 21 SjLj and `noexcept` limitation
 
@@ -226,10 +247,11 @@ not currently supported.
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
 -mllvm -wasm-enable-sjlj           # Enable setjmp/longjmp
-# Modern wasm-EH lowering (try_table/catch_ref) is LLVM's default
-# since version ≥17; we no longer override with `-wasm-use-legacy-eh=true`
-# (removed in commit 9 of the fork-instrument mega-PR, 2026-05-14).
+-mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
+                                   # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
+-fwasm-exceptions                  # Compiles with C++ input only (see
+                                   # "C++ exceptions")
 --sysroot=<path>                   # musl sysroot
 -ffile-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
 -fdebug-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue

@@ -1,43 +1,34 @@
 /**
- * Regression gate for C++ exception unwinding under the kandelo.
+ * C++ exceptions work with the SDK's default flags.
  *
- * The bundled libcxx package currently builds libc++abi.a with
- * LIBCXXABI_USE_LLVM_UNWINDER=OFF, so `_Unwind_RaiseException` is left as
- * an undefined import in every C++ binary and the host has no stub. Any
- * C++ throw deadlocks the process.
- *
- * This test runs `programs/cpp_throw_test.wasm` (typed catch, catch-all,
- * cross-frame throw) and asserts all three sub-tests print PASS. It will
- * FAIL until libcxxabi bundles libunwind via LIBCXXABI_USE_LLVM_UNWINDER=ON
- * — that is the point. Do not remove or rename without first landing the
- * fix it gates.
- *
- * The B1 fork-from-catch and post-catch fork fixtures previously hosted
- * here moved into host/test/fork-instrument-coverage.test.ts as C-02 and
- * C-11 of the regression matrix.
+ * `programs/cpp_throw_test.wasm` is compiled by scripts/build-programs.sh
+ * with no exception flag: the SDK driver enables Wasm exception handling
+ * for C++ itself (docs/sdk-guide.md, "C++ exceptions"). The program checks
+ * catch handlers, destructors run while unwinding, exceptions thrown by
+ * libc++ and libc++abi, exception_ptr across threads and the catch
+ * handler inside libc++.a's std::call_once. Without exception handling in
+ * the program a throw ends it; without it in the libcxx package the
+ * call_once check hangs until the program's watchdog alarm ends it.
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const cppThrowBinary = tryResolveBinary("programs/cpp_throw_test.wasm");
-const hasBinary = !!cppThrowBinary;
+const program = tryResolveBinary("programs/cpp_throw_test.wasm");
 
 describe("cpp_throw_test", () => {
-  it.skipIf(!hasBinary)(
-    "propagates and catches C++ exceptions across frames",
-    async () => {
-      const result = await runCentralizedProgram({
-        programPath: cppThrowBinary!,
-        argv: ["cpp_throw_test"],
-        timeout: 10_000,
-      });
+  it("builds the fixture (a missing binary is a build failure, not a skip)", () => {
+    expect(program, "scripts/build-programs.sh did not produce cpp_throw_test.wasm").toBeTruthy();
+  });
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("PASS: typed catch");
-      expect(result.stdout).toContain("PASS: catch-all");
-      expect(result.stdout).toContain("PASS: cross-frame");
-    },
-    15_000,
-  );
+  it("catches C++ exceptions thrown by the program, libc++ and libc++abi", async () => {
+    const result = await runCentralizedProgram({
+      programPath: program!,
+      argv: ["cpp_throw_test"],
+      useDefaultRootfs: false,
+      timeout: 30_000,
+    });
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain("PASS cpp_throw_test");
+  }, 60_000);
 });

@@ -1051,10 +1051,20 @@ Itanium-EH unwinding uses LLVM `libunwind` statically bundled into
 `libc++abi.a` via the libcxx package (`packages/registry/libcxx/`,
 `LIBCXXABI_USE_LLVM_UNWINDER` + `LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY`),
 so consumers link `-lc++ -lc++abi` and `_Unwind_*` resolves internally —
-no separate `-lunwind`. clang must be invoked with `-fwasm-exceptions`;
-without it catch handlers are dead-code-eliminated and `throw` hangs.
+no separate `-lunwind`. The SDK compiles C++ with `-fwasm-exceptions` by
+default and the libcxx package is built with it, so `try`/`catch`,
+unwinding cleanups and libc++'s own handlers work without a flag from the
+build system (`docs/sdk-guide.md`, "C++ exceptions"). `-fno-exceptions`
+still turns them off.
 
-Regression gate: `programs/cpp_throw_test.cpp` exercises throw → catch
-in a single program; `host/test/cpp-throw-test.test.ts` runs it via the
-kernel harness. The gap was first surfaced by the SpiderMonkey EH
-spike (see external `memory/spidermonkey-spike-eh-toolchain-gap.md`).
+Regression gate: `programs/cpp_throw_test.cpp`, built with no exception
+flag, checks catch handlers, destructors during unwinding, exceptions
+thrown by libc++ and libc++abi, `exception_ptr` across threads and the
+handler inside libc++'s `std::call_once`; `host/test/cpp-throw-test.test.ts`
+runs it via the kernel harness.
+
+Known gaps: an exception with no handler escapes the program to the host
+instead of calling `std::terminate` and raising `SIGABRT`, and a failed
+throwing `operator new` aborts instead of throwing `std::bad_alloc`
+because the SDK glue's weak fallback in `libc/glue/cxxrt.c` is linked
+ahead of libc++'s definition (`docs/sdk-guide.md`, "C++ exceptions").

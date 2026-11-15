@@ -143,6 +143,15 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
 #
+# -fwasm-exceptions makes the backend keep libc++'s own catch handlers and
+# unwinding cleanups. -fexceptions alone only reaches the front end: the
+# SjLj flag selects the Wasm exception model, but without -fwasm-exceptions
+# the backend lowers every invoke to a call and deletes its landing pad, so
+# an exception crossing libc++ code skipped its destructors and handlers
+# (std::call_once never reset its flag after a throwing call). The SDK
+# driver passes the same flag to every compile (docs/sdk-guide.md, "C++
+# exceptions").
+#
 # LLVM records source/compilation paths in archive members. The worktree
 # mapping covers sysroot paths. The assembled sources, both variant build
 # directories, and the generated smoke source live under WORK_DIR: beside this
@@ -155,7 +164,7 @@ REPRODUCIBLE_PREFIX_MAPS="-ffile-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fdebu
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     REPRODUCIBLE_PREFIX_MAPS="${REPRODUCIBLE_PREFIX_MAPS} -ffile-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fdebug-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fmacro-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx"
 fi
-WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
+WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fwasm-exceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
 
 # Start with a fresh source tree so a cache-miss rebuild does not mix old + new
 # artifacts. (Each build dir is cleaned by build_libcxx_variant below.)

@@ -27,4 +27,6 @@ commit      = "UNPUBLISHED"
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF (musl has no _impl).
 # Revision 10: select the VM unwinder sources for Wasm, target any assembly
 # explicitly, and reject native or wrong-width static/PIC archive members.
-revision    = 10
+# Revision 11: compile with -fwasm-exceptions so libc++, libc++abi and
+# libunwind keep their catch handlers and unwinding cleanups.
+revision    = 11
