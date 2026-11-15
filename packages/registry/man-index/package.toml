@@ -14,6 +14,7 @@ depends_on = [
   "bzip2-docs@1.0.8",
   "cage-docs@0.3.1",
   "clang-docs@21.1.7",
+  "cmake-docs@4.5.0",
   "composer-docs@2.10.3",
   "coreutils-docs@9.6",
   "cpython-docs@3.13.3",

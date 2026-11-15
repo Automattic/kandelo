@@ -69,6 +69,7 @@ depends_on = [
   "autoconf-docs@2.73",
   "automake-docs@1.20",
   "bison-docs@3.8.2",
+  "cmake-docs@4.5.0",
   "coreutils-docs@9.6",
   "gettext-docs@1.0",
   "gperf-docs@3.3",

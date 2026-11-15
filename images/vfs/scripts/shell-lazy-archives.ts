@@ -70,6 +70,7 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["bzip2-docs", "share/man/man1/bzip2.1"],
   ["cage-docs", "share/man/man1/cage.1"],
   ["clang-docs", "share/man/man1/llvm-ar.1"],
+  ["cmake-docs", "share/man/man1/cmake.1"],
   ["composer-docs", "share/man/man1/composer.1"],
   ["cpython-docs", "share/man/man1/python3.1"],
   ["curl-docs", "share/man/man1/curl.1"],

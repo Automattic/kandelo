@@ -283,6 +283,8 @@ describe.skipIf(!available)(
         ["1 meson", /a\s+high\s+productivity\s+build\s+system/],
         // help2man over what ninja --help prints inside Kandelo.
         ["1 ninja", /run\s+N\s+jobs\s+in\s+parallel/],
+        ["1 cmake", /CMake\s+Command-Line\s+Reference/],
+        ["7 cmake-modules", /CMake\s+Modules\s+Reference/],
         ["1 cc", /Kandelo\s+SDK\s+driver/],
         // An alias page: retro-nes is fceumm under a shorter name.
         ["1 retro-nes", /FCEUmm\s+libretro\s+core/],
