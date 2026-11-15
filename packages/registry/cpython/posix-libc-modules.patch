@@ -1,0 +1,77 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -7522,11 +7522,13 @@
+       [_interpreters],
+       [_interpchannels],
+       [_interpqueues],
+-      [grp],
+-      [pwd],
+       [resource],
+       [syslog],
+     )
++    dnl Emscripten provides only stubs for the pwd and grp APIs. On WASI the
++    dnl usual checks decide: a POSIX libc on WebAssembly can provide the
++    dnl password and group databases (Kandelo).
++    AS_CASE([$ac_sys_system], [Emscripten], [PY_STDLIB_MOD_SET_NA([grp], [pwd])])
+     dnl A POSIX libc on WebAssembly can provide real fork/exec (Kandelo).
+     AS_IF([test "$ac_cv_func_fork" != yes || test "$ac_cv_func_execv" != yes], [
+       PY_STDLIB_MOD_SET_NA([_posixsubprocess])
+@@ -7551,12 +7553,15 @@
+           [_testimportmultiple],
+           [_testmultiphase],
+           [_testsinglephase],
+-          [fcntl],
+           [mmap],
+           [termios],
+           [xxlimited],
+           [xxlimited_35],
+         )
++        dnl A POSIX libc on WebAssembly can provide file locking (Kandelo).
++        AS_IF([test "$ac_cv_func_flock" != yes], [
++          PY_STDLIB_MOD_SET_NA([fcntl])
++        ])
+       ]
+     )
+   ],
+--- a/configure
++++ b/configure
+@@ -28774,12 +28774,17 @@
+     py_cv_module__interpreters=n/a
+     py_cv_module__interpchannels=n/a
+     py_cv_module__interpqueues=n/a
+-    py_cv_module_grp=n/a
+-    py_cv_module_pwd=n/a
+     py_cv_module_resource=n/a
+     py_cv_module_syslog=n/a
+     py_cv_module_=n/a
+ 
++    # Emscripten provides only stubs for the pwd and grp APIs. On WASI the
++    # usual checks decide (Kandelo's POSIX libc provides both databases).
++    if test "$ac_sys_system" = Emscripten; then
++      py_cv_module_grp=n/a
++      py_cv_module_pwd=n/a
++    fi
++
+     # Kandelo's POSIX libc provides fork/exec despite the WASI target name.
+     if test "$ac_cv_func_fork" != yes || test "$ac_cv_func_execv" != yes; then
+       py_cv_module__posixsubprocess=n/a
+@@ -28807,14 +28812,18 @@
+     py_cv_module__testimportmultiple=n/a
+     py_cv_module__testmultiphase=n/a
+     py_cv_module__testsinglephase=n/a
+-    py_cv_module_fcntl=n/a
+     py_cv_module_mmap=n/a
+     py_cv_module_termios=n/a
+     py_cv_module_xxlimited=n/a
+     py_cv_module_xxlimited_35=n/a
+     py_cv_module_=n/a
+ 
++    # Kandelo's POSIX libc provides file locking despite the WASI target name.
++    if test "$ac_cv_func_flock" != yes; then
++      py_cv_module_fcntl=n/a
++    fi
+ 
++
+      ;; #(
+   *) :
+      ;;

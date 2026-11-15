@@ -157,6 +157,14 @@ kandelo_package_stage_primary_source cpython "$SRC_DIR" "$WORK_DIR"
 if ! grep -q "Kandelo uses the WASI configure target" "$SRC_DIR/Lib/subprocess.py"; then
     kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-subprocess.patch"
 fi
+# Upstream's WASI target also declares fcntl, pwd and grp unavailable ("WASI
+# SDK 15.0 does not support file locking"; pwd and grp are stubs there).
+# Kandelo's libc provides flock() and the password and group databases, so
+# configure's usual checks decide those modules instead. Meson needs fcntl
+# for its build-directory lock and pwd for `meson install` as root.
+if ! grep -q "Kandelo's POSIX libc provides file locking" "$SRC_DIR/configure"; then
+    kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-libc-modules.patch"
+fi
 
 printf '%s\n' "$PYTHON_VERSION" > "$SOURCE_MARKER"
 
