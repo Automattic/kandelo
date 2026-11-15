@@ -109,6 +109,10 @@ if [ ! -d "$SRC_DIR" ]; then
     # Accessibility handlers connected to void signals take the closure-data
     # argument and return nothing, as GLib's marshallers call them.
     patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-a11y-signal-contracts.patch"
+    # Backport of GTK's GtkWidget argument fix in gtk_label_style_updated;
+    # clang 23 makes -Wincompatible-pointer-types an error by default.
+    # Upstream fix: GNOME/gtk a3e82f20a1a1 (3.24.36).
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/gtklabel-queue-resize-widget.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.

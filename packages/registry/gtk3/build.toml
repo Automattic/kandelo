@@ -14,5 +14,6 @@ inputs = [
   "packages/registry/gtk3/src/wasm-widget-signal-contracts.patch",
   "packages/registry/gtk3/src/wasm-closure-notifier-contract.patch",
   "packages/registry/gtk3/src/wasm-a11y-signal-contracts.patch",
+  "packages/registry/gtk3/src/gtklabel-queue-resize-widget.patch",
   "scripts/package-build-roots.sh",
 ]
