@@ -1,0 +1,27 @@
+kind = "program"
+name = "ninja-docs"
+version = "1.13.2"
+kernel_abi = 56
+depends_on = ["ninja@1.13.2", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for ninja, generated from what the program prints for
+# --help and --version while running inside Kandelo: upstream ships an
+# AsciiDoc manual (doc/manual.asciidoc) but no manual page. The recipe is
+# this repository's, so the source is the in-repository sentinel, as for
+# redis-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/ninja-build/ninja/blob/v1.13.2/COPYING"
+
+[build]
+script_path = "packages/registry/ninja-docs/build-ninja-docs.sh"
+
+[[outputs]]
+name = "ninja-docs"
+wasm = "ninja-docs.zip"
+fork_instrumentation = "disabled"
