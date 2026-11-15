@@ -176,6 +176,7 @@ const TEST_PROGRAMS = [
   "unix_listener_exec_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
+  "getaddrinfo_lookup.c",
   "process_native_layout_test.c",
   "timerfd_signalfd_scratch_test.c",
   "timerfd_wake_latency_test.c",

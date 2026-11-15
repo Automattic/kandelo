@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import * as net from "node:net";
-import { TcpNetworkBackend } from "../src/networking/tcp-backend";
+import { dnsLookupFailureErrno, TcpNetworkBackend } from "../src/networking/tcp-backend";
 import { NET_READINESS } from "../src/generated/abi";
 
 const LOOPBACK = new Uint8Array([127, 0, 0, 1]);
@@ -243,4 +243,16 @@ describe('Node TCP host shutdown',()=>{
    expect(()=>backend.send(41,new Uint8Array([1]),0)).toThrowError(expect.objectContaining({errno:32}));
   }finally{backend.close(41);await new Promise<void>(resolve=>server.close(()=>resolve()));}
  });
+});
+
+describe("TcpNetworkBackend DNS failures", () => {
+  it("carries a name the resolver does not know as ENOENT and other failures as EIO", () => {
+    // Node's dns.lookup errors carry negative libuv errno values (-3008 for
+    // ENOTFOUND); the kernel used to receive those and report EIO for all.
+    expect(dnsLookupFailureErrno({ code: "ENOTFOUND" })).toBe(2);
+    expect(dnsLookupFailureErrno({ code: "ENODATA" })).toBe(2);
+    expect(dnsLookupFailureErrno({ code: "EAI_AGAIN" })).toBe(5);
+    expect(dnsLookupFailureErrno({ code: "EAI_FAIL" })).toBe(5);
+    expect(dnsLookupFailureErrno(undefined)).toBe(5);
+  });
 });
