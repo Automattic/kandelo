@@ -1,6 +1,18 @@
+Map the Kandelo wasm32 Linux target to Rust's wasm32-unknown-unknown.
+
+The C/C++ side is configured as wasm32-unknown-linux-musl so Mozilla enables
+its POSIX/Linux code paths. Rust's usable std target in the pinned toolchain
+is wasm32-unknown-unknown, which split_triplet() rejects. Index that target
+under the wasm32/Linux key, and when the C target is wasm32 Linux pick it
+before the alias/raw-OS/vendor narrowing below can choose another candidate.
+
+ESR 153 rebase: find_candidate() gained an arm vendor-matching loop and a
+final vendor-narrowing step; the Kandelo narrowing still sits right after the
+arm block, ahead of all generic narrowing.
+
 --- a/build/moz.configure/rust.configure
 +++ b/build/moz.configure/rust.configure
-@@ -266,15 +266,17 @@
+@@ -264,15 +264,17 @@
          try:
              info = split_triplet(t, allow_wasi=True)
          except ValueError:
@@ -23,10 +35,10 @@
          key = (info.cpu, info.endianness, info.os)
          data.setdefault(key, []).append(namespace(rust_target=t, target=info))
      return data
-@@ -374,6 +376,15 @@
-                         "{}-".format(p)
-                     ) and c.rust_target.endswith(suffix):
+@@ -384,6 +386,15 @@
+                     if c.target.vendor == vendor:
                          return c.rust_target
+                 return matches[0].rust_target
 +
 +        # Kandelo's C/C++ side is configured as wasm32-unknown-linux-musl so
 +        # Mozilla enables the POSIX/Linux code paths. Rust's usable std target
@@ -36,6 +48,6 @@
 +            narrowed = [c for c in candidates if c.rust_target == "wasm32-unknown-unknown"]
 +            if len(narrowed) == 1:
 +                return narrowed[0].rust_target
-
+ 
          # See if we can narrow down on the exact alias.
          # We use the sub_configure_alias to keep support mingw32 triplets as input.

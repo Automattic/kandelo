@@ -1,6 +1,15 @@
+Skip the static-libstdc++ link probe for the Kandelo wasm32 target.
+
+Kandelo configures SpiderMonkey as wasm32-unknown-linux-musl, so Mozilla
+runs its Linux-only probe: link a small C++ program and look for a NEEDED
+libstdc++/libc++ entry with llvm-objdump. A static wasm executable has no
+dynamic dependencies, so the probe reports static libstdc++ linkage and
+configure dies. Kandelo links the sysroot's static libc++ by design, so the
+probe does not apply to wasm32.
+
 --- a/build/moz.configure/flags.configure
 +++ b/build/moz.configure/flags.configure
-@@ -23,6 +23,7 @@
+@@ -21,6 +21,7 @@
      extra_toolchain_flags,
      linker_ldflags,
      llvm_objdump,
@@ -8,7 +17,7 @@
      when=target_has_linux_kernel,
  )
  @checking("whether we're trying to statically link with libstdc++")
-@@ -34,8 +35,12 @@
+@@ -32,8 +33,12 @@
      extra_toolchain_flags,
      linker_ldflags,
      llvm_objdump,

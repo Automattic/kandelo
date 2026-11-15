@@ -1,6 +1,12 @@
+Add native seams for node-compat's vm module context isolation.
+
+ESR 153 rebase: the 153 shell installs its own contentSecurityPolicyAllows
+checker (setCSPEnabled()). The vm seam now keeps that checker and defers to
+it whenever no vm context blocks code generation, instead of replacing it.
+
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -1444,8 +1444,448 @@
+@@ -1434,6 +1434,456 @@
      return false;
    }
    return sc->moduleLoader->requireModuleNamespace(cx, path, args.rval());
@@ -18,9 +24,12 @@
 +//   - newEnumerate : enumerate-through
 +// codeGeneration:{strings:false}/{wasm:false} is enforced per-realm through a
 +// content-security-policy eval checker installed with JS_SetSecurityCallbacks,
-+// keyed on a reserved-slot bitmask and scoped by the current global.
++// keyed on a reserved-slot bitmask and scoped by the current global. Outside a
++// blocking vm context it defers to the checker installed before it (the shell's
++// own setCSPEnabled() policy), so installing the vm seam does not change eval
++// policy anywhere else.
 +//
-+// Read liveness is copy-on-first-access, not fully-live-per-access: ESR 140's
++// Read liveness is copy-on-first-access, not fully-live-per-access: ESR 153's
 +// JSClassOps has no get/set interceptors (removed upstream), so the read-side
 +// hook (`resolve`) fires once per missing name and must define the value onto
 +// the global, after which the global's own copy shadows the sandbox. This is a
@@ -136,6 +145,7 @@
 +};
 +
 +static JSSecurityCallbacks gKandeloVmSecurityCallbacks;
++static JSCSPEvalChecker gKandeloVmPreviousCSPAllows = nullptr;
 +static bool gKandeloVmSecurityInstalled = false;
 +
 +static bool KandeloVmCSPAllows(
@@ -156,6 +166,11 @@
 +      return true;
 +    }
 +  }
++  if (gKandeloVmPreviousCSPAllows) {
++    return gKandeloVmPreviousCSPAllows(
++        cx, kind, codeString, compilationType, parameterStrings, bodyString,
++        parameterArgs, bodyArg, outCanCompileStrings);
++  }
 +  *outCanCompileStrings = true;
 +  return true;
 +}
@@ -167,6 +182,7 @@
 +  const JSSecurityCallbacks* existing = JS_GetSecurityCallbacks(cx);
 +  if (existing) {
 +    gKandeloVmSecurityCallbacks = *existing;
++    gKandeloVmPreviousCSPAllows = existing->contentSecurityPolicyAllows;
 +  }
 +  gKandeloVmSecurityCallbacks.contentSecurityPolicyAllows = KandeloVmCSPAllows;
 +  JS_SetSecurityCallbacks(cx, &gKandeloVmSecurityCallbacks);
@@ -244,8 +260,8 @@
 +  }
 +  args.rval().setObject(*result);
 +  return true;
- }
- 
++}
++
 +// __kandeloVmIsContext(obj) -> bool.
 +static bool KandeloVmIsContext(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
@@ -444,12 +460,10 @@
 +    }
 +  }
 +  return false;
-+}
-+
+ }
+ 
  static bool DefineKandeloNodeNative(JSContext* cx) {
-   RootedObject native(cx, JS_NewPlainObject(cx));
-   if (!native) {
-@@ -1454,6 +1894,10 @@
+@@ -1444,6 +1894,10 @@
    const JSFunctionSpec funcs[] = {
        JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
        JS_FN("__kandeloRequireModule", KandeloNativeRequireModule, 1, 0),

@@ -61,8 +61,9 @@ MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
 if [ "$HOST_OS" = "Darwin" ] && [ -z "$MACOS_SDK_DIR" ]; then
     # Take the macOS SDK the dev shell declares for this build (`macosSdk` in
     # flake.nix). SpiderMonkey's configure refuses any macOS SDK older than
-    # 15.5, and this nixpkgs pins the shell's default Darwin SDK at 14.4, so
-    # the flake declares a 15.5 one for SpiderMonkey alone.
+    # 26.5 (`mac_sdk_min_version()` in build/moz.configure/toolchain.configure
+    # for ESR 153), and this nixpkgs pins the shell's default Darwin SDK at
+    # 14.4, so the flake declares a newer one for SpiderMonkey alone.
     #
     # This used to prefer /Applications/Xcode.app instead, which is the only
     # place in the package tree that left the Nix world. That made the build
@@ -98,6 +99,21 @@ for required_tool in python3 rustc cargo cbindgen node curl make; do
         echo "ERROR: required host tool '$required_tool' not found in PATH." >&2
         exit 1
     fi
+done
+
+# Mozilla's configure looks for rustc, cargo, rustdoc, rustfmt and cbindgen in
+# $CARGO_HOME/bin (default ~/.cargo/bin) BEFORE $PATH, and unwraps a rustup
+# proxy found there to the user's default toolchain. On a machine with rustup
+# installed that silently swaps the dev shell's pinned toolchain
+# (rust-toolchain.toml) for whatever rustup defaults to. Name each tool
+# explicitly so configure uses the ones this build resolved on PATH.
+for rust_tool in rustc:RUSTC cargo:CARGO rustdoc:RUSTDOC rustfmt:RUSTFMT cbindgen:CBINDGEN; do
+    rust_tool_path="$(command -v "${rust_tool%%:*}" || true)"
+    if [ -z "$rust_tool_path" ]; then
+        echo "ERROR: required host tool '${rust_tool%%:*}' not found in PATH." >&2
+        exit 1
+    fi
+    export "${rust_tool##*:}=$rust_tool_path"
 done
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -217,7 +233,7 @@ if [ -d "$PATCH_DIR" ]; then
             # Neither a forward nor a reverse dry-run succeeded: the patch
             # does not cleanly apply to this source tree at all. Silently
             # continuing here would ship a build missing a platform fix
-            # (e.g. 0015/0016/0017) with no signal that it was dropped.
+            # (e.g. 0015/0016/0018) with no signal that it was dropped.
             echo "ERROR: patch $patch_name does not apply to $SRC_DIR (source may have drifted from what the patch expects). Update the patch or the pinned source version." >&2
             exit 1
         fi

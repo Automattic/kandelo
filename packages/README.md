@@ -21,7 +21,7 @@ is the source of truth for its exact version.
 | CPython | 3.13 | Python interpreter and standard library |
 | Perl | 5.40 | Perl interpreter and core modules |
 | Ruby | 4.0 | Ruby interpreter and standard library |
-| SpiderMonkey | 140 ESR | Firefox's JavaScript engine, used to provide a Node.js-compatible runtime with `npm install` |
+| SpiderMonkey | 153 ESR | Firefox's JavaScript engine, used to provide a Node.js-compatible runtime with `npm install` |
 | Git | 2.47 | Version control |
 | Vim | 9.1 | Text editor with a full terminal UI |
 | GNU nano | 8.0 | Text editor |

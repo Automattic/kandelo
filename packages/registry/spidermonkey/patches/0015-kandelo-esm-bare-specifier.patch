@@ -1,6 +1,18 @@
+Resolve bare ES module specifiers through node-compat.
+
+A specifier that is not absolute, relative or javascript: is a Node "bare"
+specifier (a builtin or a node_modules package). Resolve it with
+globalThis.__kandeloResolveBare and serve the generated source from
+globalThis.__kandeloBareSources. Unresolved specifiers keep the shell's
+default file-path behavior, so the failure stays visible.
+
+ESR 153 rebase: the string resolve() overload still receives the referrer's
+script private, so the hook is unchanged; only the include block moved
+(js/Prefs.h was added upstream).
+
 --- a/js/src/shell/ModuleLoader.cpp
 +++ b/js/src/shell/ModuleLoader.cpp
-@@ -13,12 +13,15 @@
+@@ -10,13 +10,16 @@
  #include "NamespaceImports.h"
  
  #include "builtin/TestingUtility.h"  // js::CreateScriptPrivate
@@ -9,6 +21,7 @@
 +#include "js/GlobalObject.h"  // JS::CurrentGlobalOrNull
  #include "js/MapAndSet.h"
  #include "js/Modules.h"
+ #include "js/Prefs.h"
  #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_GetProperty
  #include "js/SourceText.h"
  #include "js/StableStringChars.h"
@@ -16,7 +29,7 @@
  #include "shell/jsshell.h"
  #include "shell/OSObject.h"
  #include "shell/StringUtils.h"
-@@ -46,6 +49,87 @@
+@@ -44,6 +47,87 @@
    return SubString(cx, path, schemeLength);
  }
  
@@ -104,7 +117,7 @@
  bool ModuleLoader::init(JSContext* cx, HandleString loadPath) {
    loadPathStr = AtomizeString(cx, loadPath);
    if (!loadPathStr || !PinAtom(cx, loadPathStr)) {
-@@ -375,6 +459,27 @@
+@@ -508,6 +592,27 @@
  #endif
        ;
  
@@ -132,7 +145,7 @@
    RootedString path(cx, loadPathStr);
  
    if (isRelative) {
-@@ -696,6 +801,12 @@
+@@ -939,6 +1044,12 @@
      return ExtractJavaScriptURLSource(cx, path);
    }
  

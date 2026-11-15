@@ -1,9 +1,16 @@
+Add joinWorkerThreads() to join evalInWorker threads.
+
+The worker_threads adapter joins finished shell workers on terminate()
+without tearing down the shell's worker lock the way KillWorkerThreads does
+at exit.
+
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -5019,6 +5019,42 @@ static void KillWorkerThreads(JSContext* cx) {
+@@ -6275,7 +6275,43 @@
+   js_delete(workerThreadsLock);
    workerThreadsLock = nullptr;
  }
- 
++
 +static void JoinShellWorkerThreadsForKandelo() {
 +  MOZ_ASSERT_IF(!CanUseExtraThreads(), workerThreads.empty());
 +
@@ -11,7 +18,7 @@
 +    MOZ_ASSERT(workerThreads.empty());
 +    return;
 +  }
-+
+ 
 +  while (true) {
 +    UniquePtr<Thread> thread;
 +    {
@@ -43,7 +50,7 @@
  static void CancelExecution(JSContext* cx) {
    ShellContext* sc = GetShellContext(cx);
    sc->serviceInterrupt = true;
-@@ -10122,6 +10158,11 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
+@@ -11412,6 +11448,11 @@
  "evalInWorker(str)",
  "  Evaluate 'str' in a separate thread with its own runtime.\n"),
  

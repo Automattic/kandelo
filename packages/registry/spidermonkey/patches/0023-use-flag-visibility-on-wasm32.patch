@@ -1,0 +1,39 @@
+Use flag-based symbol visibility for the Kandelo wasm32 target.
+
+For every non-Windows target other than Darwin, FreeBSD and OpenBSD,
+Mozilla hides symbols by force-including config/gcc_hidden.h, which opens
+`#pragma GCC visibility push(hidden)` around each translation unit, and
+re-exposes only the system headers listed in config/system-headers.mozbuild
+through generated wrappers. Standard library headers outside that list are
+parsed under the hidden pragma.
+
+That scheme does not hold with libc++ 23. Its <__system_error/error_category.h>
+forward-declares `class error_condition;` without an annotation, while
+<__system_error/error_condition.h> defines it with
+_LIBCPP_EXPORTED_FROM_ABI (default visibility). Under the pragma the forward
+declaration becomes hidden, so any unwrapped include of <system_error> --
+for example from fmt/format.h via mfbt/DbgMacro.h -- fails with "visibility
+does not match previous declaration". On Darwin, FreeBSD and OpenBSD, whose
+C++ runtime is libc++, Mozilla already uses -fvisibility=hidden instead
+(the pragma clash with libc++ headers is discussed in Mozilla bug 1259537).
+The flag sets a default for declarations without an annotation, so the
+explicit annotation on the definition is consistent with it.
+
+Use that same scheme for wasm32. Visibility is moot for the static Kandelo
+wasm executable, which has no dynamic symbol table, so this does not change
+what the shell exports.
+
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -2220,7 +2220,10 @@
+ @depends(target, build_environment)
+ def visibility_flags(target, env):
+     if target.os != "WINNT":
+-        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD"):
++        # Kandelo: wasm32 builds against libc++, like the BSDs, and produces a
++        # static executable with no dynamic symbol table, so use the flag-based
++        # scheme rather than the gcc_hidden.h pragma and system wrappers.
++        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD") or target.cpu == "wasm32":
+             return ("-fvisibility=hidden", "-fvisibility-inlines-hidden")
+         return (
+             "-I%s/system_wrappers" % os.path.join(env.dist),
