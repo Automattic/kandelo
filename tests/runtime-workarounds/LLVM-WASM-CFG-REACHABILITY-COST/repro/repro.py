@@ -63,6 +63,8 @@ def run():
         except subprocess.TimeoutExpired:
             default = ">30"
             verdict = "reproduced" if control < 2 else "inconclusive"
+            # The timed-out compile produced nothing to check.
+            checked = ""
         else:
             default = time.monotonic() - start
             subprocess.run(["node", str(CHECK), str(default_wasm), str(STATE_COUNT)],
@@ -71,8 +73,9 @@ def run():
             # The absolute floor avoids timing noise on tiny compilation times.
             reproduced = default > 3 and default / control > 30
             verdict = "reproduced" if reproduced else "not-reproduced"
+            checked = f"; {STATE_COUNT * 6} state/input combinations checked"
         details = (f"{STATE_COUNT} states; control={control:.3f}s, "
-                   f"default={default}s; {STATE_COUNT * 6} state/input combinations checked")
+                   f"default={default}s{checked}")
         print("REPRO-VERDICT " + json.dumps({"verdict": verdict, "details": details}))
 
 
