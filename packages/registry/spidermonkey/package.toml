@@ -26,18 +26,18 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 name = "rustc"
 version_constraint = ">=1.90"
 probe = { args = ["--version"], version_regex = "rustc (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "rustup toolchain install stable", linux = "rustup toolchain install stable" }
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
 
 [[host_tools]]
 name = "cargo"
 version_constraint = ">=1.92.0"
-install_hints = { darwin = "rustup toolchain install stable", linux = "rustup toolchain install stable" }
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
 
 [[host_tools]]
 name = "cbindgen"
 version_constraint = ">=0.29.4"
 probe = { args = ["--version"], version_regex = "cbindgen (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "nix develop, or: cargo install cbindgen", linux = "nix develop, or: cargo install cbindgen" }
+install_hints = { darwin = "provided by flake.nix (pkgs.rust-cbindgen); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.rust-cbindgen); enter scripts/dev-shell.sh" }
 
 [[host_tools]]
 name = "node"

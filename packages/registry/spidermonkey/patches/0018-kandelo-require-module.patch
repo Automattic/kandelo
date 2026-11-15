@@ -4,6 +4,8 @@ __kandeloNodeNative.__kandeloRequireModule(path) loads, links and evaluates
 an ES module through the same registry as import and import(), and returns
 its namespace. A pending top-level await throws ERR_REQUIRE_ASYNC_MODULE; a
 cyclic require of an evaluating module returns the live partial namespace.
+Node rejects that cycle with ERR_REQUIRE_CYCLE_MODULE instead; the
+difference is a known gap recorded in docs/posix-status.md.
 
 ESR 153 rebase: the shell loader now implements HostLoadImportedModule.
 ModuleLink requires LoadRequestedModules to have loaded the static import
@@ -31,7 +33,7 @@ builds an evaluation-phase JavaScript request the way loadRootModule does.
  #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_GetProperty
  #include "js/SourceText.h"
  #include "js/StableStringChars.h"
-@@ -246,6 +248,143 @@
+@@ -246,6 +248,144 @@
    global->setReservedSlot(GlobalAppSlotModuleRegistry, UndefinedValue());
  }
  
@@ -114,8 +116,9 @@ builds an evaluation-phase JavaScript request the way loadRootModule does.
 +  // ES Evaluate() requires status linked / evaluating-async / evaluated;
 +  // calling JS::ModuleEvaluate on an `evaluating` module throws
 +  // "module record has unexpected status: Evaluating". Return the partial live
-+  // namespace instead (Node circular require(esm) semantics). Not-yet-run
-+  // exports read as TDZ ReferenceError and fill in live as evaluation proceeds.
++  // namespace instead. Node throws ERR_REQUIRE_CYCLE_MODULE here; the
++  // difference is a known gap (docs/posix-status.md). Not-yet-run exports
++  // read as TDZ ReferenceError and fill in live as evaluation proceeds.
 +  if (status == js::ModuleStatus::Evaluating) {
 +    return KandeloReturnModuleNamespace(cx, module, rval);
 +  }
