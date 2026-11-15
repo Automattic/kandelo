@@ -3470,8 +3470,11 @@ machine a NES, SNES, Mega Drive, Master System or Game Gear ROM is kept in
 `~/roms` and played (see "Retro emulators" below); and the catch-all saves
 anything else to `~/Downloads`. Each batch gets a toast with its
 status and outcome; outputs the machine publishes appear in a tray with
-Save and Dismiss (Save streams through `showSaveFilePicker` where the
-browser has it, and otherwise buffers the output and downloads it). A
+Save and Dismiss. Run `kandelo-publish FILE` inside the guest to offer a file
+for saving; see the [file-transfer guide](../docs-site/guide/moving-files.md)
+for user and agent examples, directories, streams, and command options.
+Save streams through `showSaveFilePicker` where the
+browser has it, and otherwise buffers the output and downloads it. A
 machine with no agent shows "This machine doesn't accept files" and refuses
 the drop. A profile may add presentation hints:
 
