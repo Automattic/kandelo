@@ -1,0 +1,72 @@
+# Teach CMake the Kandelo platform, for builds inside Kandelo.
+#
+# Kandelo's uname(2) reports sysname "wasm-posix" and version "kandelo".
+# CMake took the sysname as CMAKE_SYSTEM_NAME, found no
+# Platform/wasm-posix.cmake ("System is unknown to cmake") and fell back
+# to its generic defaults, which assume shared libraries work. Cross
+# builds for Kandelo already name the system "Kandelo" (the SDK's
+# sdk/cmake/kandelo-toolchain.cmake), so:
+#
+# - cmSystemTools::GetSystemName() names a wasm-posix/kandelo machine
+#   "Kandelo", as it names BSD/OS "BSDOS";
+# - CMakeDetermineSystem.cmake takes the processor from `uname -m`
+#   (wasm32), as on Linux, rather than `uname -p`;
+# - Modules/Platform/Kandelo.cmake describes the platform: a Unix whose
+#   executables cannot link against shared libraries, so CMake builds
+#   SHARED and MODULE libraries as static ones (with its usual warning)
+#   and find_library() finds static libraries only.
+#
+# Kandelo is not Linux, and nothing here says it is.
+--- a/Source/cmSystemTools.cxx
++++ b/Source/cmSystemTools.cxx
+@@ -4368,6 +4368,15 @@
+       systemName = "BSDOS";
+     }
+ 
++    // Kandelo, a POSIX environment for WebAssembly, reports sysname
++    // "wasm-posix" and version "kandelo".  Name it as cross builds
++    // for it do (CMAKE_SYSTEM_NAME Kandelo), so Platform/Kandelo
++    // describes both.
++    if (strcmp(uts_name.sysname, "wasm-posix") == 0 &&
++        strcmp(uts_name.version, "kandelo") == 0) {
++      systemName = "Kandelo";
++    }
++
+     return systemName;
+   }
+   return "";
+--- a/Modules/CMakeDetermineSystem.cmake
++++ b/Modules/CMakeDetermineSystem.cmake
+@@ -57,7 +57,7 @@
+         ERROR_QUIET
+         RESULT_VARIABLE _uname_result)
+     endif()
+-    if(CMAKE_HOST_SYSTEM_NAME MATCHES "Linux|CYGWIN.*|MSYS.*|^GNU$|Android")
++    if(CMAKE_HOST_SYSTEM_NAME MATCHES "Linux|CYGWIN.*|MSYS.*|^GNU$|Android|^Kandelo$")
+       execute_process(COMMAND ${CMAKE_UNAME} -m
+         OUTPUT_VARIABLE CMAKE_HOST_SYSTEM_PROCESSOR
+         RESULT_VARIABLE val
+--- /dev/null
++++ b/Modules/Platform/Kandelo.cmake
+@@ -0,0 +1,21 @@
++# Distributed under the OSI-approved BSD 3-Clause License.  See accompanying
++# file LICENSE.rst or https://cmake.org/licensing for details.
++
++# Kandelo, a POSIX-compatible operating system for WebAssembly whose libc
++# is musl.  Its uname(2) reports sysname "wasm-posix" and version
++# "kandelo", which CMake names "Kandelo"; cross builds for it name the
++# same system in their toolchain file.
++
++include(Platform/UnixPaths)
++
++# A Kandelo program is a statically linked WebAssembly module.  The
++# compiler builds shared side modules for dlopen(3) (cc -shared), but an
++# executable cannot be linked against a shared library, so the platform
++# does not support shared libraries: add_library(SHARED) and
++# add_library(MODULE) warn and build static libraries instead, and
++# find_library() finds only static ones.
++set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS FALSE)
++set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
++
++# dlopen(3) and the rest of the dynamic-linking interface are in libc.
++set(CMAKE_DL_LIBS "")

@@ -1,0 +1,63 @@
+kind = "program"
+name = "cmake"
+version = "4.5.0"
+kernel_abi = 56
+arches = ["wasm32"]
+# Kandelo packages provide zlib, Expat, JsonCpp and libcurl (with OpenSSL);
+# CMake builds its bundled libuv, libarchive, liblzma, bzip2, zstd and RHash
+# (the libzstd package decompresses only, and cpack compresses). ccmake,
+# cmake-gui and the debugger (cppdap) are not built.
+depends_on = [
+  "libcxx@21.1.7",
+  "zlib@1.3.1",
+  "expat@2.8.3",
+  "jsoncpp@1.9.6",
+  "libcurl@8.11.1",
+  "openssl@3.3.2",
+]
+
+# CMake: cmake, ctest and cpack, and the files they read at run time
+# (share/cmake-4.5) in cmake-data.zip, mounted at /usr.
+[source]
+url = "https://github.com/Kitware/CMake/releases/download/v4.5.0/cmake-4.5.0.tar.gz"
+sha256 = "424352d6133e8455e020da787008e8dc67abb18820af3532572ab35657e49213"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://gitlab.kitware.com/cmake/cmake/-/blob/v4.5.0/LICENSE.rst"
+
+[build]
+script_path = "packages/registry/cmake/build-cmake.sh"
+
+[[outputs]]
+name = "cmake"
+wasm = "cmake.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "ctest"
+wasm = "ctest.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "cpack"
+wasm = "cpack.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "cmake-data"
+wasm = "cmake-data.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
