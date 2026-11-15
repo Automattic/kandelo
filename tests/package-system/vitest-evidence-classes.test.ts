@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
+import { importSpecifiers } from "../../scripts/vitest-source-imports.mjs";
 
 // The evidence-class registry must name exactly the files Vitest collects.
 // ci-run-test-suite.sh checks this before every Vitest group; this test runs
@@ -116,4 +117,17 @@ describe("Vitest evidence-class registry", () => {
       "uncollected row: scripts/ci-vitest-evidence-classes.tsv classifies host/test/b.test.ts",
     );
   });
+});
+
+
+it("audits real imports without following fixture strings or comments", () => {
+  const source = [
+    "import type { A } from './types';",
+    "export { B } from './exports';",
+    "const p = import('./dynamic'); const q = require('./required');",
+    "import value = require('./external');",
+    "const fixture = `import { x } from './fixture-only';`;",
+    "// import { x } from './comment-only';",
+  ].join("\n");
+  expect([...importSpecifiers(source)]).toEqual(["./types", "./exports", "./dynamic", "./required", "./external"]);
 });

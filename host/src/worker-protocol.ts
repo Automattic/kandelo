@@ -1,3 +1,4 @@
+import type{DirectClockInit}from'./fast-clock-record';
 import type {
   ForkHostImportWorkerInit,
 } from "./fork-host-import-runtime";
@@ -34,6 +35,7 @@ export type HostToWorkerMessage =
  * to communicate with the CentralizedKernelWorker.
  */
 export interface CentralizedWorkerInitMessage {
+  directClock?: DirectClockInit;
   type: "centralized_init";
   pid: number;
   /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
@@ -133,6 +135,7 @@ export interface CentralizedWorkerInitMessage {
  * Threads share the parent process's Memory and run a function pointer.
  */
 export interface CentralizedThreadInitMessage {
+  directClock?: DirectClockInit;
   type: "centralized_thread_init";
   pid: number;
   tid: number;

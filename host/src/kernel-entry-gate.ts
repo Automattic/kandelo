@@ -1,3 +1,4 @@
+import {type ClockEpochAuthority,shareClockEpoch,invalidateClockEpoch,refreshClockEpochBusy,retireClockEpoch} from './fast-clock-control';
 /**
  * Single-entry serialization for calls into the kernel WebAssembly instance.
  *
@@ -251,6 +252,8 @@ export class KernelReentrantEntryError extends IntrinsicError {
  * queued operation uses `runOrDeferVoidIngress` and an explicit scope token.
  */
 export class KernelEntryGate {
+  #directClockEpoch?: ClockEpochAuthority;
+  #directClockOperationDepth=0;
   #activeExportName: string | null = null;
   #fatalError: Error | null = null;
   #deferred = intrinsicObjectSetPrototypeOf(
@@ -272,6 +275,7 @@ export class KernelEntryGate {
 
   constructor(
     onFatal?: (error: Error) => void,
+    directClockEpoch?: ClockEpochAuthority,
   ) {
     if (new.target !== KernelEntryGate) {
       throw new IntrinsicError(
@@ -280,6 +284,8 @@ export class KernelEntryGate {
     }
     intrinsicApply(intrinsicWeakSetAdd, exactKernelEntryGates, [this]);
     this.#onFatal = onFatal;
+    if(directClockEpoch)shareClockEpoch(directClockEpoch);
+    this.#directClockEpoch=directClockEpoch;
     // Private fields remain mutable on a frozen object. Freezing only removes
     // the public own-property surface that an observer could otherwise use to
     // shadow runOrDeferVoidIngress, fail, or the defer-state getter.
@@ -354,6 +360,9 @@ export class KernelEntryGate {
   }
 
   invokeKernelExport<T>(name: string, operation: () => T): T {
+if(this.#directClockEpoch){this.#directClockOperationDepth++;invalidateClockEpoch(this.#directClockEpoch);}
+try {
+
     if (this.#fatalError !== null) throw this.#fatalError;
     if (
       this.#activeExportName !== null
@@ -427,7 +436,9 @@ export class KernelEntryGate {
       // selected pid before any queued entry can observe that transaction.
       this.#scheduleDrain();
     }
-  }
+
+} finally {if(this.#directClockEpoch){this.#directClockOperationDepth--;refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}}
+}
 
   /**
    * Serialize one synchronous host-only operation while the gate is idle.
@@ -445,6 +456,9 @@ export class KernelEntryGate {
     label: string,
     operation: () => T,
   ): T {
+if(this.#directClockEpoch){this.#directClockOperationDepth++;invalidateClockEpoch(this.#directClockEpoch);}
+try {
+
     if (this.#fatalError !== null) throw this.#fatalError;
     if (typeof operation !== "function") {
       throw new IntrinsicError(
@@ -471,7 +485,9 @@ export class KernelEntryGate {
       this.#reportPendingFatalIfRevoked();
       this.#scheduleDrain();
     }
-  }
+
+} finally {if(this.#directClockEpoch){this.#directClockOperationDepth--;refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}}
+}
 
   /**
    * Run one synchronous void ingress only when the gate is completely idle.
@@ -490,6 +506,9 @@ export class KernelEntryGate {
       effects: KernelEntryEffectRegistrar,
     ) => undefined,
   ): void {
+if(this.#directClockEpoch){this.#directClockOperationDepth++;invalidateClockEpoch(this.#directClockEpoch);}
+try {
+
     if (typeof label !== "string") {
       throw new IntrinsicError(
         "immediate kernel void-ingress label must be a primitive string",
@@ -519,7 +538,9 @@ export class KernelEntryGate {
     }
     const effects = this.#runVoidIngress(label, operation);
     this.#runDetachedEffects(label, effects);
-  }
+
+} finally {if(this.#directClockEpoch){this.#directClockOperationDepth--;refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}}
+}
 
   /**
    * Run one reviewed synchronous void-ingress operation, or append it to the
@@ -541,6 +562,9 @@ export class KernelEntryGate {
     ) => undefined,
     dedupeKey?: object,
   ): boolean {
+if(this.#directClockEpoch){this.#directClockOperationDepth++;invalidateClockEpoch(this.#directClockEpoch);}
+try {
+
     if (this.#fatalError !== null) return true;
     if (this.#shouldDeferVoidIngress()) {
       if (
@@ -571,7 +595,9 @@ export class KernelEntryGate {
     const effects = this.#runVoidIngress(label, operation);
     this.#runDetachedEffects(label, effects);
     return false;
-  }
+
+} finally {if(this.#directClockEpoch){this.#directClockOperationDepth--;refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}}
+}
 
   #runDetachedEffects(
     label: string,
@@ -661,6 +687,9 @@ export class KernelEntryGate {
     index: number,
     operation: () => undefined,
   ): void {
+if(this.#directClockEpoch){this.#directClockOperationDepth++;invalidateClockEpoch(this.#directClockEpoch);}
+try {
+
     this.#pendingProtocolTransactionStarts--;
     if (this.#fatalError !== null) return;
     this.#runningProtocolTransactionStart = true;
@@ -683,7 +712,9 @@ export class KernelEntryGate {
       this.#reportPendingFatalIfRevoked();
       this.#scheduleDrain();
     }
-  }
+
+} finally {if(this.#directClockEpoch){this.#directClockOperationDepth--;refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}}
+}
 
   #runVoidIngress(
     label: string,
@@ -692,6 +723,9 @@ export class KernelEntryGate {
       effects: KernelEntryEffectRegistrar,
     ) => undefined,
   ): KernelDetachedEffect[] {
+if(this.#directClockEpoch){this.#directClockOperationDepth++;invalidateClockEpoch(this.#directClockEpoch);}
+try {
+
     if (this.#fatalError !== null) throw this.#fatalError;
     if (
       this.#activeExportName !== null
@@ -871,17 +905,23 @@ export class KernelEntryGate {
       this.#reportPendingFatalIfRevoked();
       this.#scheduleDrain();
     }
-  }
+
+} finally {if(this.#directClockEpoch){this.#directClockOperationDepth--;refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}}
+}
 
   /**
    * Poison this generation and discard work that can no longer be executed
    * against a coherent Rust state.
    */
   fail(error: Error): boolean {
+if(this.#directClockEpoch)retireClockEpoch(this.#directClockEpoch);
+
     return this.#fail(error);
   }
 
   #fail(error: Error): boolean {
+if(this.#directClockEpoch)retireClockEpoch(this.#directClockEpoch);
+
     if (this.#fatalError !== null) return false;
     this.#fatalError = error;
     this.#deferred.length = 0;
@@ -890,6 +930,8 @@ export class KernelEntryGate {
   }
 
   #scheduleDrain(): void {
+try {
+
     if (
       this.#drainScheduled
       || this.#draining
@@ -956,10 +998,13 @@ export class KernelEntryGate {
         }
       } finally {
         this.#draining = false;
+        if(this.#directClockEpoch)refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());
         this.#reportPendingFatalIfRevoked();
       }
     });
-  }
+
+} finally {if(this.#directClockEpoch)refreshClockEpochBusy(this.#directClockEpoch,this.#directClockOperationDepth>0||this.#runningProtocolTransactionStart||this.#shouldDeferVoidIngress());}
+}
 
   #reportPendingFatalIfRevoked(): void {
     const error = this.#pendingFatalReport;

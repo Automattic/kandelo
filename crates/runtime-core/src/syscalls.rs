@@ -3668,6 +3668,8 @@ fn namespace_lstat_raw(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<WasmStat, Errno> {
+    #[cfg(test)]
+    tests::NAMESPACE_STAT_READS.with(|count| count.set(count.get() + 1));
     if let Some(entry) = crate::procfs::match_procfs(path, proc.pid) {
         crate::procfs::validate_entry(proc, &entry)?;
         return Ok(crate::procfs::procfs_stat(&entry, 0, false));
@@ -10102,8 +10104,21 @@ fn procfs_entry_stat(
     Ok(crate::procfs::procfs_stat(entry, 0, follow))
 }
 
+// Resolution has already checked directory search permissions and fetched the
+// final metadata. Kernel-owned filesystems cannot change during this syscall's
+// synchronous entry. External mounts may change independently, so retain their
+// existing final lookup. Special namespace objects are handled by callers first.
+fn resolved_owned_stat(path: &[u8], stat: Option<WasmStat>) -> Option<WasmStat> {
+    if crate::tmpfs::claims_path(path) || crate::rootfs::claims_path(path) {
+        stat
+    } else {
+        None
+    }
+}
+
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    let ResolvedNamespacePath { path: resolved, stat } =
+        resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(
             dev,
@@ -10141,6 +10156,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(st) = unix_socket_path_stat(proc, host, &resolved, true)? {
         return Ok(st);
     }
+    if let Some(stat) = resolved_owned_stat(&resolved, stat) {
+        return Ok(stat);
+    }
     // VFS is the source of truth for ownership: host_stat already returns the
     // file's real uid/gid, so just propagate.
     check_search_path(proc, host, &resolved)?;
@@ -10152,7 +10170,8 @@ pub fn sys_lstat(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<WasmStat, Errno> {
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    let ResolvedNamespacePath { path: resolved, stat } =
+        resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(
             dev,
@@ -10189,6 +10208,9 @@ pub fn sys_lstat(
     }
     if let Some(st) = unix_socket_path_stat(proc, host, &resolved, false)? {
         return Ok(st);
+    }
+    if let Some(stat) = resolved_owned_stat(&resolved, stat) {
+        return Ok(stat);
     }
     // VFS is the source of truth for ownership: host_lstat already returns the
     // link's real uid/gid, so just propagate.
@@ -12273,6 +12295,7 @@ fn sys_exit_impl(
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
         return;
     }
+    if proc.pending_signal_termination().is_some() { return; }
     cleanup_process_for_exit(proc, locks, host);
     proc.record_normal_exit(status);
 }
@@ -12299,6 +12322,9 @@ fn sys_exit_by_signal_impl(
     signum: u32,
 ) {
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
+        return;
+    }
+    if proc.defer_signal_termination_until_stopped(signum) {
         return;
     }
     cleanup_process_for_exit(proc, locks, host);
@@ -13013,7 +13039,12 @@ fn mmap_region_for_ofd(
     owned_index: Option<usize>,
 ) -> Result<usize, Errno> {
     if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
-
+    // The first shared-group backend only implements anonymous shared PTEs.
+    // Refuse unsupported file/device sharing before any mapping/OFD mutation.
+    if proc.memory_model == crate::process::ProcessMemoryModel::SharedGroupV2
+        && flags & wasm_posix_shared::mmap::MAP_SHARED != 0 && flags & MAP_ANONYMOUS == 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if flags & MAP_ANONYMOUS == 0 {
         // WHY: the ordinary path selects its fd once. A driver capability
         // supplies an already retained exact OFD; rereading the old fd here
@@ -18934,7 +18965,8 @@ pub fn sys_fstatat(
     } else {
         PathResolveOptions::FOLLOW
     };
-    let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
+    let ResolvedNamespacePath { path: resolved, stat } =
+        resolve_at_path(proc, host, dirfd, path, options)?;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(
             dev,
@@ -18977,6 +19009,9 @@ pub fn sys_fstatat(
         unix_socket_path_stat(proc, host, &resolved, flags & AT_SYMLINK_NOFOLLOW == 0)?
     {
         return Ok(st);
+    }
+    if let Some(stat) = resolved_owned_stat(&resolved, stat) {
+        return Ok(stat);
     }
     // VFS is the source of truth for ownership: host_stat / host_lstat
     // already return the real uid/gid, so just propagate.
@@ -20469,6 +20504,9 @@ pub fn sys_clone(
     // channel mailbox but the kernel stores masks by TID.
     let caller_tid = table.current_tid();
     let pid = table.current_pid();
+    if table.get(pid).is_some_and(|proc| proc.memory_model == crate::process::ProcessMemoryModel::SharedGroupV2) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if table.get(pid).is_some_and(|proc| proc.vfork_child) {
         return Err(Errno::EAGAIN);
     }
@@ -23993,6 +24031,9 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 
 #[cfg(test)]
 mod tests {
+    std::thread_local! {
+        pub(super) static NAMESPACE_STAT_READS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    }
     mod epoll_semantics {
         include!("epoll_tests.rs");
     }
@@ -30295,6 +30336,68 @@ mod tests {
     }
 
     #[test]
+    fn owned_stat_reuses_walk_but_observes_subsequent_mutations() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let mut proc = Process::new(81_200);
+        let mut host = MockHostIO::new();
+        for prefix in ["/stat-owned", "/tmp/stat-owned"] {
+            for suffix in ["", "/a", "/a/b"] {
+                sys_mkdir(&mut proc, &mut host, alloc::format!("{prefix}{suffix}").as_bytes(), 0o755).unwrap();
+            }
+            let path = alloc::format!("{prefix}/a/b/file").into_bytes();
+            let fd = sys_open(&mut proc, &mut host, &path, O_CREAT | O_RDWR, 0o640).unwrap();
+            sys_write(&mut proc, &mut host, fd, b"first").unwrap();
+            let components = path.split(|&c| c == b'/').filter(|c| !c.is_empty()).count();
+            NAMESPACE_STAT_READS.with(|count| count.set(0));
+            let first = sys_stat(&mut proc, &mut host, &path).unwrap();
+            assert_eq!(first.st_size, 5);
+            // One namespace walk plus its final verification; no second
+            // directory-search walk. No counter exists in production builds.
+            assert_eq!(NAMESPACE_STAT_READS.with(|count| count.get()), components + 2);
+            sys_write(&mut proc, &mut host, fd, b"-changed").unwrap();
+            let times = [WasmTimespec { tv_sec: 123, tv_nsec: 456 }, WasmTimespec { tv_sec: 789, tv_nsec: 123 }];
+            sys_utimensat(&mut proc, &mut host, AT_FDCWD, &path, Some(&times), 0).unwrap();
+            let changed = sys_fstatat(&mut proc, &mut host, AT_FDCWD, &path, 0).unwrap();
+            assert_eq!((changed.st_size, changed.st_mtime_sec, changed.st_mtime_nsec), (13, 789, 123));
+            let moved = alloc::format!("{prefix}/a/b/moved").into_bytes();
+            sys_rename(&mut proc, &mut host, &path, &moved).unwrap();
+            assert_eq!(sys_stat(&mut proc, &mut host, &path).unwrap_err(), Errno::ENOENT);
+            assert_eq!(sys_lstat(&mut proc, &mut host, &moved).unwrap().st_ino, first.st_ino);
+            sys_unlink(&mut proc, &mut host, &moved).unwrap();
+            assert_eq!(sys_stat(&mut proc, &mut host, &moved).unwrap_err(), Errno::ENOENT);
+            assert_eq!(sys_fstat(&proc, &mut host, fd).unwrap().st_size, 13);
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        assert!(host.lstat_paths.is_empty(), "kernel-owned paths must not reach the host");
+    }
+
+    #[test]
+    fn owned_stat_preserves_symlink_permissions_and_directory_errors() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        for (path, mode) in [(b"/".as_slice(), 0o755), (b"/stat-public", 0o755), (b"/stat-private", 0o700)] {
+            crate::rootfs::insert_base_dir(path, mode, 0, 0, 1).unwrap();
+        }
+        crate::rootfs::insert_base_file(b"/stat-private/file", 1, 7, 0o644, 0, 0, 2).unwrap();
+        crate::rootfs::insert_base_symlink(b"/stat-public/link", b"/stat-private/file", 0o777, 0, 0, 3).unwrap();
+        let mut proc = Process::new(81_201);
+        let mut host = MockHostIO::new();
+        set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/stat-public/link").unwrap_err(), Errno::EACCES);
+        assert_eq!(sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/stat-public/link", 0).unwrap_err(), Errno::EACCES);
+        assert_eq!(sys_lstat(&mut proc, &mut host, b"/stat-public/link").unwrap().st_mode & S_IFMT, S_IFLNK);
+        assert_eq!(sys_fstatat(&mut proc, &mut host, AT_FDCWD, b"/stat-public/link", AT_SYMLINK_NOFOLLOW).unwrap().st_mode & S_IFMT, S_IFLNK);
+        set_test_credentials(&mut proc, 0, 0, 0, 0, &[]);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/stat-public/link").unwrap().st_size, 7);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/stat-private/file/").unwrap_err(), Errno::ENOTDIR);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/stat-private/file/..").unwrap_err(), Errno::ENOTDIR);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/stat-private/../stat-public/link").unwrap().st_size, 7);
+    }
+
+    #[test]
     fn test_lstat_returns_symlink_info() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -31794,6 +31897,35 @@ mod tests {
     fn test_getegid_returns_default() {
         let proc = Process::new(1);
         assert_eq!(sys_getegid(&proc), 0);
+    }
+
+    #[test]
+    fn shared_group_signal_exit_keeps_resources_until_exact_execution_stop() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.configure_memory_model(0, 2, true).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/stopping", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        sys_exit_by_signal(&mut proc, &mut host, wasm_posix_shared::signal::SIGTERM);
+        assert_eq!(proc.state, ProcessState::Running);
+        assert_eq!(proc.pending_signal_termination(), Some((0, wasm_posix_shared::signal::SIGTERM)));
+        assert!(proc.wait_event.is_none(), "death is not waitable before execution stops");
+        assert!(proc.fd_table.get(fd).is_ok(), "stop request must not release descriptors");
+        assert_eq!(proc.confirm_signal_termination_stopped(1), Err(Errno::EAGAIN));
+        assert_eq!(proc.configure_memory_model(0, 0, true), Err(Errno::EAGAIN));
+        assert!(proc.fd_table.get(fd).is_ok());
+
+        sys_exit_by_signal(&mut proc, &mut host, wasm_posix_shared::signal::SIGKILL);
+        sys_exit(&mut proc, &mut host, 42);
+        assert!(proc.fd_table.get(fd).is_ok(), "a late normal exit cannot bypass the stop fence");
+        let signal = proc.confirm_signal_termination_stopped(0).unwrap();
+        assert_eq!(signal, wasm_posix_shared::signal::SIGKILL);
+        sys_exit_by_signal(&mut proc, &mut host, signal);
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(proc.exit_signal, wasm_posix_shared::signal::SIGKILL);
+        assert_eq!(proc.pending_signal_termination(), None);
+        assert_eq!(proc.fd_table.get(fd), Err(Errno::EBADF));
+        assert_eq!(proc.wait_event.unwrap().si_status, wasm_posix_shared::signal::SIGKILL as i32);
     }
 
     #[test]
@@ -36261,6 +36393,18 @@ mod tests {
         assert_eq!(fields[2], "00010000", "{line}");
         assert_eq!(fields[4], alloc::format!("{}", st.st_ino), "{line}");
         assert_eq!(fields[5], "/tmp/maps-file", "{line}");
+    }
+
+    #[test]
+    fn common_memory_model_refuses_file_sharing_without_mutating_mappings() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/group-mapping", 0x42, 0o644).unwrap();
+        proc.configure_memory_model(0, 2, true).unwrap();
+        let before = proc.memory.mappings().len();
+        assert_eq!(sys_mmap(&mut proc, &mut host, 0, 0x10000, 3, wasm_posix_shared::mmap::MAP_SHARED, fd, 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(proc.memory.mappings().len(), before);
+        assert!(sys_mmap(&mut proc, &mut host, 0, 0x10000, 3, wasm_posix_shared::mmap::MAP_SHARED | MAP_ANONYMOUS, -1, 0).is_ok());
     }
 
     #[test]
@@ -49121,6 +49265,16 @@ impl HostIO for NetMock {
         let tid = result.expect("thread-style clone should allocate a tid");
         assert_eq!(tid, 101);
         assert!(table.get(pid).unwrap().get_thread(tid as u32).is_some());
+    }
+
+    #[test]
+    fn common_memory_model_refuses_threads_before_consuming_a_task_id() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.get_mut(pid).unwrap().configure_memory_model(0, 2, true).unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        assert_eq!(sys_clone(&mut table, 0, 0x8000, 0x10100, 0, 0, 0, 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(table.create_process().unwrap(), pid + 1);
     }
 
     #[test]
@@ -68974,7 +69128,9 @@ impl HostIO for RelSymlinkMock {
             let mut host = host_at(9);
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
             let create = |proc: &mut Process, host: &mut MockHostIO| {
-                let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: 0, usage: 0 };
+                // Reach host capability admission with a valid texture format.
+                // Format 0 is rejected before the host is consulted.
+                let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: DRM_FORMAT_XRGB8888, usage: 0 };
                 let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
                 unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
                 sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf)

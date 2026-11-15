@@ -129,5 +129,40 @@ and descriptor are kernel-host surface (`extension_requests` in
 program digest. They are reachable only through this import: no
 program's libc marshals 600.
 
+## Experimental clock query version 1
+
+Module `kandelo.clock.v1` supplies `__kandelo_clock_query_v1`:
+
+```text
+(output: pointer, clock_id: i32, format: i32) -> i32
+```
+
+The current SDK option `--experimental-clock-query-v1` is memory32-only and
+links a libc clock hook into that executable. Format 0 is a 16-byte little-endian
+timespec (signed 64-bit seconds and nanoseconds); format 1 is the corresponding
+timeval (seconds and microseconds). Return 0 means the output was written.
+Return 1 means fallback: output bytes and guest errno remain unchanged, and
+the caller must execute its original syscall with its original arguments.
+An unsupported clock ID or format also falls back, allowing the kernel to
+produce the normal error. Import admission and fast-path eligibility are
+different: a host may supply this interface and always return fallback.
+
+The ordinary host build does exactly that. The explicit
+[common-memory source profile](experimental-common-memory.md) can supply direct
+reads after a successful normal clock syscall certifies the exact task,
+execution generation, clock ID, format and output pointer. Every admitted read
+samples the same immutable provider used by the kernel. Custom providers,
+logical clocks, borrowed address spaces, secondary threads, pending deliverable
+signals and unsupported mappings refuse this capability. The prototype issues
+timespec certificates; callers asking for a different format fall back.
+
+The worker checks current writable-page mappings and an independent bounded
+epoch record before writing. The kernel entry gate invalidates the epoch
+before entries, queued ingress and mapping changes; disposal retires it.
+Successful metadata calls may renew a known clock certificate only with a new
+authoritative eligibility decision. This caches neither metadata nor time,
+and does not change OPcache timestamp policy. No guest or kernel Wasm backing
+is handed to a persistent browser realm for this protocol.
+
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).

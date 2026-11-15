@@ -63,6 +63,29 @@
       "results": [
         "i32"
       ]
+    },
+    {
+      "fallback": "unchanged output and errno; execute original syscall with original flags",
+      "formats": {
+        "timespec": 0,
+        "timeval": 1
+      },
+      "kind": "function",
+      "module": "kandelo.clock.v1",
+      "name": "__kandelo_clock_query_v1",
+      "output_bytes": 16,
+      "params": [
+        "pointer",
+        "i32",
+        "i32"
+      ],
+      "results": [
+        "i32"
+      ],
+      "statuses": {
+        "fallback": 1,
+        "success": 0
+      }
     }
   ],
   "format": 1,

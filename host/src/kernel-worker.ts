@@ -1,3 +1,7 @@
+import {CLOCK_MODULE,CLOCK_IMPORT}from './generated/program-extensions';
+const clockModuleImports=WebAssembly.Module.imports;
+import{type ClockEpochAuthority,clockEpochValue}from'./fast-clock-control';
+import{type DirectClockInit,newClockRecord,retireClockRecord,publishClockRecord}from'./fast-clock-record';
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
@@ -51,6 +55,8 @@ import { FileReadBuffer, FileReadBufferError } from "./vfs/file-read-buffer";
 
 
 import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
+import { processBackingMemoryModel, requestProcessBackingExecutionStop, supportsProcessBackingExecutionStop } from "./process-memory-backing";
+import { inspectProcessMemory, type ProcessMemoryAccounting, type ProcessMemoryGroupAccounting } from "./process-memory-accounting";
 import {
   getWasmPosixKernelRuntimeAccess,
   getKernelGraphicsAccess,
@@ -1550,12 +1556,18 @@ export interface ProcessSnapshot {
   vsizeBytes: number;
   /** Current WebAssembly.Memory buffer size for this process, in bytes. */
   memoryBytes?: number;
+  memoryAccounting?: ProcessMemoryAccounting;
   /** Process state code exposed through procfs-style snapshots. */
   state: "R" | "Z" | "S" | "D" | "T" | "I";
   /** Basename of argv[0], or "[kernel]" for an empty argv. */
   comm: string;
   /** Space-separated argv (we decode the kernel's null-separated bytes). */
   cmdline: string;
+}
+
+export interface ProcessInspection {
+  processes: ProcessSnapshot[];
+  memoryGroups: ProcessMemoryGroupAccounting[];
 }
 
 function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
@@ -2327,6 +2339,8 @@ export interface CentralizedKernelCallbacks {
    * Called when a process exits.
    */
   onExit?: (pid: number, exitStatus: number) => void;
+  /** Stop this exact shared-group execution before Rust publishes its death. */
+  onSignalTerminationRequested?: (pid: number, exitStatus: number) => void;
 
   /**
    * Called when a process calls exit_group (terminate all threads).
@@ -2930,6 +2944,37 @@ export class CentralizedKernelWorker {
 
   #kernel: WasmPosixKernel;
   #kernelEntryGate: KernelEntryGate;
+  #clockEpoch:ClockEpochAuthority|undefined;
+  #clockRecords=new WeakMap<WebAssembly.Memory,Map<number,DirectClockInit>>();
+  prepareDirectClockInit(pid:number,memory:WebAssembly.Memory,offset:number,generation:number|undefined,borrowed:string|undefined,programModule:WebAssembly.Module):DirectClockInit|undefined{
+    if(!this.#clockEpoch||borrowed==='borrowed'||!generation||generation>0x7fffffff)return;
+    // Opt-in programs alone allocate records and pay the late eligibility query.
+    if(!clockModuleImports(programModule).some(x=>x.module===CLOCK_MODULE&&x.name===CLOCK_IMPORT&&x.kind==='function'))return;
+    const descriptor=(this.io as PlatformIO & {directClockDescriptor?:(logical:boolean)=>unknown}).directClockDescriptor?.(Boolean(this.config.imageBuildDeterminism));
+    if(!descriptor)return;
+    let records=this.#clockRecords.get(memory);if(!records){records=new Map();this.#clockRecords.set(memory,records);}
+    const old=records.get(offset);if(old)retireClockRecord(old);
+    const init=newClockRecord(this.#clockEpoch,{pid,tid:pid,generation},descriptor);records.set(offset,init);return init;
+  }
+  #retireClockMemory(memory:WebAssembly.Memory):void{
+    const records=this.#clockRecords.get(memory);if(records){for(const init of records.values())retireClockRecord(init);records.clear();this.#clockRecords.delete(memory);}
+  }
+  #certifyDirectClock(channel:ChannelInfo,nr:number,args:number[],prepared:PreparedChannelCompletion,entry:KernelWorkerEntryContext):void{
+    if(!this.#clockEpoch||nr!==ABI_SYSCALLS.ClockGettime||prepared.errVal!==0||prepared.retVal!==0||!this.isRegisteredChannel(channel))return;
+    // An ordinary clock completion also publishes/imports unrelated shared
+    // bytes. A fast clock cannot skip that obligation merely because its
+    // own output is private. Until equivalent synchronization is implemented,
+    // refuse every process holding any host- or kernel-owned shared mapping.
+    if((this.sharedMappings.get(channel.pid)?.size??0)!==0||this.#processOwnsKernelSharedMappings(channel.pid))return;
+    const init=this.#clockRecords.get(channel.memory)?.get(channel.channelOffset);if(!init||init.binding.pid!==channel.pid||init.binding.tid!==this.guestTidForChannel(channel))return;
+    const v=new DataView(channel.memory.buffer,channel.channelOffset);
+    if((v.getUint32(CH_REQUEST_FLAGS,true)&~CHANNEL_REQUEST_FLAG_OPAQUE_RECORD)!==0||v.getUint32(CH_SIG_SIGNUM,true)!==0)return;
+    const eligible=this.#kernelInstanceForEntry(entry).exports.kernel_direct_clock_eligible as((pid:number,tid:number)=>number)|undefined;
+    if(!eligible||eligible(channel.pid,init.binding.tid)!==0)return;
+    const epoch=clockEpochValue(this.#clockEpoch);
+    publishClockRecord(this.#clockEpoch,epoch,init,args[1],args[0]|0,0);
+  }
+
   #kernelInstance: WebAssembly.Instance | null = null;
   #kernelMemory: WebAssembly.Memory | null = null;
   #kernelPointerWidth: 4 | 8 = 4;
@@ -3030,6 +3075,7 @@ export class CentralizedKernelWorker {
    */
   private kernelAbiContractDigest: Uint8Array | null = null;
   private processes = new Map<number, ProcessRegistration>();
+  private stoppingProcessGenerations = new WeakSet<ProcessRegistration>();
   private activeChannels: ChannelInfo[] = [];
   /**
    * Exact channel generations detached from dispatch but whose engine-owned
@@ -3878,6 +3924,7 @@ export class CentralizedKernelWorker {
     });
     const runtimeAccess = getWasmPosixKernelRuntimeAccess(this.#kernel);
     this.#kernelEntryGate = runtimeAccess.gate;
+    this.#clockEpoch=runtimeAccess.clockEpoch;
     this.#kernelEntryGate.setFatalHandler((error) => {
       this.#failKernelInstance(error);
     });
@@ -5021,6 +5068,7 @@ export class CentralizedKernelWorker {
               for (const channel of previous?.channels ?? []) {
                 this.channelTids.delete(`${channel.pid}:${channel.channelOffset}`);
               }
+const oldClockRegistration=this.processes.get(staged.pid);if(oldClockRegistration&&oldClockRegistration.memory!==registration.memory)this.#retireClockMemory(oldClockRegistration.memory);
               this.processes.set(staged.pid, registration);
               for (const channel of staged.channels) {
                 this.channelTids.set(`${channel.pid}:${channel.channelOffset}`, staged.pid);
@@ -7938,6 +7986,10 @@ export class CentralizedKernelWorker {
       );
     }
     const ptrWidth = options?.ptrWidth ?? 4;
+    const memoryModel = processBackingMemoryModel(memory);
+    if (memoryModel === 2 && (ptrWidth !== 4 || options?.borrowedAddressSpace === true)) {
+      throw new Error("Shared-group memory requires memory32 and an owned process address space");
+    }
     const metadataPtrWidth = options?.metadataPtrWidth ?? ptrWidth;
     const preserveProcessState = options?.preserveProcessState === true;
     const brkBase = options?.brkBase;
@@ -8010,6 +8062,29 @@ export class CentralizedKernelWorker {
         );
         if (execGeneration instanceof Error) {
           registrationPreconditionError = execGeneration;
+          return undefined;
+        }
+        const configureMemoryModel = this.#kernelInstanceForEntry(entry).exports
+          .kernel_configure_process_memory_model as
+          ((pid: number, generation: bigint, model: number, commit: number) => number) | undefined;
+        if (memoryModel === 2 && typeof configureMemoryModel !== "function") {
+          registrationPreconditionError = new Error("Kernel lacks shared-group memory admission");
+          return undefined;
+        }
+        if (memoryModel === 2) {
+          const exports = this.#kernelInstanceForEntry(entry).exports;
+          const stopVersion = exports.kernel_shared_group_stop_protocol_version as (() => number) | undefined;
+          if (typeof stopVersion !== "function" || stopVersion() !== 1
+            || typeof exports.kernel_get_pending_signal_termination !== "function"
+            || typeof exports.kernel_commit_signal_termination_stopped !== "function"
+            || typeof this.callbacks.onSignalTerminationRequested !== "function"
+            || !supportsProcessBackingExecutionStop(memory)) {
+            registrationPreconditionError = new Error("Shared-group admission requires execution-stop protocol v1");
+            return undefined;
+          }
+        }
+        if (configureMemoryModel && configureMemoryModel(pid, execGeneration, memoryModel, 0) !== 0) {
+          registrationPreconditionError = new Error("Kernel refused process memory-model admission");
           return undefined;
         }
         const registration: ProcessRegistration = {
@@ -8099,6 +8174,9 @@ export class CentralizedKernelWorker {
           );
         }
 
+        if (configureMemoryModel && configureMemoryModel(pid, execGeneration, memoryModel, 1) !== 0) {
+          throw new Error("Kernel process memory model changed after admission");
+        }
         entry.deferProtocolEffect(() => {
           // WHY: publish the replacement channel generation only after every
           // Rust mutation has completed and the entry scope is revoked. Host
@@ -8111,6 +8189,7 @@ export class CentralizedKernelWorker {
           // Kernel task IDs are never reused. Clear a stale host lifecycle
           // marker only as part of the same completed registration commit.
           this.hostReaped.delete(pid);
+const oldClockRegistration=this.processes.get(pid);if(oldClockRegistration&&oldClockRegistration.memory!==registration.memory)this.#retireClockMemory(oldClockRegistration.memory);
           this.processes.set(pid, registration);
           this.activeChannels.push(...channels);
 
@@ -9042,6 +9121,18 @@ export class CentralizedKernelWorker {
     return snapshots;
   }
 
+  /** One diagnostic sample; guest Workers are not paused for inspection. */
+  inspectProcesses(): ProcessInspection {
+    const processes = this.enumProcs();
+    const registrations = processes.flatMap(({ pid }) => {
+      const registration = this.processes.get(pid);
+      return registration ? [{ pid, memory: registration.memory }] : [];
+    });
+    const accounting = inspectProcessMemory(registrations);
+    for (const process of processes) process.memoryAccounting = accounting.processes.get(process.pid);
+    return { processes, memoryGroups: accounting.groups };
+  }
+
   #enumProcsWithinKernelEntry(
     entry: KernelWorkerEntryContext,
   ): Uint8Array | null {
@@ -9169,6 +9260,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
+    this.#retireClockMemory(registration.memory);
 
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
@@ -9469,6 +9561,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
+    this.#retireClockMemory(registration.memory);
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
@@ -12852,6 +12945,14 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry?: KernelWorkerEntryContext,
   ): boolean {
+    const registration = this.processes.get(channel.pid);
+    if (registration && registration.memory === channel.memory
+      && this.stoppingProcessGenerations.has(registration)) {
+      // This process is still alive in Rust. Its exact wait/retry ownership
+      // was cancelled when stopping began; serve only the private unwind.
+      this.wakeExitedChannelForRetirement(channel, entry);
+      return true;
+    }
     if (!this.hostReaped?.has(channel.pid)) return false;
     this.retireChannelHostWaits(channel, entry);
     this.#forgetBlockingRetrySnapshotAfterKernelLifecycle(channel);
@@ -15476,6 +15577,7 @@ export class CentralizedKernelWorker {
     } else {
       this.drainAndProcessWakeupEvents();
     }
+    if(entry)this.#certifyDirectClock(channel,syscallNr,origArgs,prepared,entry);
     if (entry) {
       // WHY: Atomics.notify releases guest execution and relistening can invoke
       // host scheduling hooks. The kernel wake snapshot is already owned, so
@@ -16335,6 +16437,12 @@ export class CentralizedKernelWorker {
     const woken = new Set<number>();
     const registration = this.processes.get(pid);
     if (!registration) return woken;
+    if (this.stoppingProcessGenerations.has(registration)) {
+      // The pending-signal entry already cancelled exact waits and published
+      // its private stop marker. Do not overwrite that transport handshake.
+      woken.add(pid);
+      return woken;
+    }
 
     // Drop this pid's pending-retry bookkeeping so a timer cannot re-arm a
     // syscall behind the wake. Scoped to the target's channels — sibling
@@ -24227,6 +24335,10 @@ export class CentralizedKernelWorker {
         `Kernel rejected signal-death transition for process ${pid}: ${detail}`,
       );
     }
+    const pendingRegistration = this.processes.get(pid);
+    if (pendingRegistration && this.#requestPendingSignalStopWithinKernelEntry(pendingRegistration, entry)) {
+      return;
+    }
     // The drain below may let a parked parent reap the zombie; learn the
     // parent while the zombie still names it.
     const parentPid = this.getParentPid(pid, entry);
@@ -24262,6 +24374,8 @@ export class CentralizedKernelWorker {
     // remove entries).
     const pids = Array.from(this.processes.keys());
     for (const pid of pids) {
+      const registration = this.processes.get(pid);
+      if (registration && entry && this.#requestPendingSignalStopWithinKernelEntry(registration, entry)) continue;
       const signal = this.#getProcessExitSignal(pid, entry);
       // -ESRCH: the kernel already reaped this signal-killed zombie (a parent
       // parked in wait4/waitid consumed it, or SA_NOCLDWAIT auto-reaped it,
@@ -24283,6 +24397,106 @@ export class CentralizedKernelWorker {
         this.handleProcessTerminated(ch);
       }
     }
+  }
+
+  #pendingSignalTerminationWithinKernelEntry(registration: ProcessRegistration, entry: KernelWorkerEntryContext): number {
+    if (processBackingMemoryModel(registration.memory) !== 2) return 0;
+    const query = this.#kernelInstanceForEntry(entry).exports.kernel_get_pending_signal_termination as
+      (pid: number, generation: bigint) => number;
+    const signal = query(registration.pid, registration.execGeneration);
+    if (signal === -ESRCH || signal === -ERRNO.EAGAIN) return 0;
+    if (!Number.isInteger(signal) || signal < 0 || signal > 64) {
+      throw new Error(`Invalid pending signal termination for pid ${registration.pid}: ${signal}`);
+    }
+    return signal;
+  }
+
+  pendingSignalTerminationForMemory(pid: number, memory: WebAssembly.Memory): number {
+    let signal = 0;
+    this.#runImmediateKernelEntry(`pending signal termination pid=${pid}`, entry => {
+      const registration = this.processes.get(pid);
+      if (registration && registration.memory === memory) {
+        signal = this.#pendingSignalTerminationWithinKernelEntry(registration, entry);
+      }
+      return undefined;
+    });
+    return signal;
+  }
+
+  #requestPendingSignalStopWithinKernelEntry(registration: ProcessRegistration, entry: KernelWorkerEntryContext): boolean {
+    const signal = this.#pendingSignalTerminationWithinKernelEntry(registration, entry);
+    if (!signal) return false;
+    if (this.stoppingProcessGenerations.has(registration)) return true;
+    this.stoppingProcessGenerations.add(registration);
+    for (const channel of registration.channels) {
+      this.retireChannelHostWaits(channel, entry);
+      this.#releaseBlockingRetrySnapshot(channel, entry);
+      if (channel.kernelWaitGeneration !== undefined) {
+        if (!this.#cancelLiveTaskKernelWait(channel, entry)) {
+          this.#failBlockingRetryProtocol(`Could not cancel stopping task pid=${channel.pid}`);
+        }
+        channel.kernelWaitGeneration = undefined;
+      }
+      const view = new DataView(channel.memory.buffer, channel.channelOffset);
+      view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
+      view.setUint32(CH_SIG_HANDLER, 0, true);
+      view.setUint32(CH_SIG_SI_CODE, EXIT_RETIRE_SIGNAL_CODE, true);
+      if (Atomics.load(new Int32Array(channel.memory.buffer, channel.channelOffset), CH_STATUS / 4) === CH_PENDING) {
+        this.wakeExitedChannelForRetirement(channel, entry);
+      }
+    }
+    requestProcessBackingExecutionStop(registration.memory);
+    entry.deferProtocolEffect(() => {
+      this.callbacks.onSignalTerminationRequested!(registration.pid, 128 + signal);
+      return undefined;
+    });
+    return true;
+  }
+
+  /** Called only after the entry adapter has an exact execution-stop fence.
+   * Immediate gate refusal retains no callback; callers may retry that refusal. */
+  commitSignalTerminationAfterExecutionStop(pid: number, memory: WebAssembly.Memory): number {
+    let status: number | undefined;
+    this.#runImmediateKernelEntry(`commit stopped signal termination pid=${pid}`, entry => {
+      const registration = this.processes.get(pid);
+      if (!registration || registration.memory !== memory
+        || !this.stoppingProcessGenerations.has(registration)) {
+        throw new Error(`Signal-stop execution generation changed for pid ${pid}`);
+      }
+      // Publish the stopped execution's final shared writes before descriptor
+      // cleanup. Its live peers cannot observe a death before this fence.
+      this.releaseAllSharedMemoryForProcess(pid, false, entry);
+      const commit = this.#kernelInstanceForEntry(entry).exports.kernel_commit_signal_termination_stopped as
+        (pid: number, generation: bigint) => number;
+      status = commit(pid, registration.execGeneration);
+      if (!Number.isInteger(status) || status < 129 || status > 192) {
+        throw new Error(`Kernel rejected stopped signal termination pid=${pid}: ${status}`);
+      }
+      this.stoppingProcessGenerations.delete(registration);
+      const channel = registration.channels[0];
+      if (!channel) throw new Error(`Stopped process lacks its exact channel pid=${pid}`);
+      this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
+      return undefined;
+    });
+    return status!;
+  }
+
+  /** An unproven stop cannot be converted into a successful signal death. */
+  containUnprovenSharedGroupStop(pid: number): never {
+    const error = new Error(`Shared-group execution stop was not proven for pid ${pid}`);
+    this.#runImmediateKernelEntry(`contain unproven shared-group stop pid=${pid}`, () => {
+      try {
+        for (const registration of this.processes.values()) {
+          if (supportsProcessBackingExecutionStop(registration.memory)) {
+            requestProcessBackingExecutionStop(registration.memory);
+          }
+        }
+      } finally {
+        this.#failKernelInstance(error);
+      }
+      return undefined;
+    });
+    throw error;
   }
 
   #getProcessExitSignal(

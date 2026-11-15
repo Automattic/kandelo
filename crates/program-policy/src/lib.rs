@@ -184,7 +184,9 @@ mod tests {
     #[test]
     fn inspection_round_trips_exact_source_policy_and_limits() {
         let inspection = Inspection::read(SOURCE, limits()).unwrap();
-        assert_eq!(inspection.surface().abi_version, Some(wasm_posix_shared::ABI_VERSION));
+        // SOURCE is the frozen v56 baseline fixture, independent of the
+        // checkout's current program ABI and its optional host interfaces.
+        assert_eq!(inspection.surface().abi_version, Some(56));
         assert_eq!(inspection.source(), identity(SOURCE));
         assert_eq!(inspection.original(), None);
         assert_eq!(Inspection::decode(&inspection.encode()), Ok(inspection));

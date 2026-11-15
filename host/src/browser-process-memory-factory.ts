@@ -66,6 +66,7 @@ export class BrowserProcessMemoryFactory {
       let worker: Worker | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let finished = false;
+      let cancellation: Error | undefined;
       const finish = (
         error?: Error,
         memory?: WebAssembly.Memory,
@@ -82,8 +83,13 @@ export class BrowserProcessMemoryFactory {
           try {
             worker.terminate();
           } catch (terminationError) {
-            error ??= terminationError instanceof Error
+            const failure = terminationError instanceof Error
               ? terminationError : new Error(String(terminationError));
+            // Cancellation is expected only when its construction realm was
+            // actually retired. Keep a failed termination unbranded/visible.
+            error = error !== undefined && error === cancellation
+              ? new AggregateError([error, failure], `Process memory cancellation could not terminate its allocation Worker: ${String(failure)}`)
+              : error ?? failure;
             retryInOwnerRealm = false;
           }
         }
@@ -106,7 +112,7 @@ export class BrowserProcessMemoryFactory {
         if (error) reject(error);
         else resolve(memory!);
       };
-      const cancel = (error: Error) => finish(error);
+      const cancel = (error: Error) => { cancellation = error; finish(error); };
       this.pending.add(cancel);
       try {
         this.scriptUrl ??= URL.createObjectURL(new Blob([
@@ -138,11 +144,11 @@ export class BrowserProcessMemoryFactory {
     });
   }
 
-  dispose(): void {
+  dispose(cancellationReason?: Error): void {
     if (this.disposed) return;
     this.disposed = true;
     for (const cancel of this.pending) {
-      cancel(new Error("Process memory factory was destroyed"));
+      cancel(cancellationReason ?? new Error("Process memory factory was destroyed"));
     }
     if (this.scriptUrl !== undefined) URL.revokeObjectURL(this.scriptUrl);
     this.scriptUrl = undefined;

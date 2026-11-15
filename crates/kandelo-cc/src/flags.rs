@@ -539,6 +539,12 @@ pub fn filter_args(args: &[String], arch: WasmArch) -> FilterResult {
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
+        // SDK-owned link option; clang does not consume it. The executable
+        // glue compile handles the opt-in independently of caller C flags.
+        if arg == "--experimental-clock-query-v1" {
+            i += 1;
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--target=") {
             if is_equivalent_wasm_target(value, arch) {
                 i += 1;
@@ -876,6 +882,13 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn experimental_clock_link_option_does_not_reach_clang() {
+        let result = filter_args(&strings(&["-O2", "--experimental-clock-query-v1", "clock.c", "-o", "clock.wasm"]), WasmArch::Wasm32);
+        assert_eq!(result.filtered, strings(&["-O2", "clock.c", "-o", "clock.wasm"]));
+        assert!(result.warnings.is_empty());
     }
 
     #[test]

@@ -11,6 +11,8 @@ import type { WebPreviewTarget } from "./web-preview-address";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
+import type { ProcessMemoryAccounting, ProcessMemoryGroupAccounting } from "../../../host/src/process-memory-accounting";
+export type { ProcessMemoryAccounting, ProcessMemoryGroupAccounting } from "../../../host/src/process-memory-accounting";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -65,6 +67,7 @@ export interface KernelProcessSnapshot {
   gid: number;
   vsizeBytes: number;
   memoryBytes?: number;
+  memoryAccounting?: ProcessMemoryAccounting;
   state: "R" | "Z" | "S" | "D" | "T" | "I";
   comm: string;
   cmdline: string;
@@ -455,6 +458,7 @@ export interface KernelLike {
    * kernel doesn't expose `kernel_enum_procs` yet (older ABI).
    */
   enumProcs?(): Promise<KernelProcessSnapshot[]>;
+  inspectProcesses?(): Promise<{ processes: KernelProcessSnapshot[]; memoryGroups: ProcessMemoryGroupAccounting[] }>;
   /**
    * Read `/proc/[pid]/maps` for a foreign process. Returns null if the
    * pid is gone or the export isn't available.
@@ -849,7 +853,14 @@ export interface ProcessInfo {
   user: string;
   cmdline: string;
   state: "R" | "S" | "D" | "T" | "Z" | "I";
-  memory: string;                   // WebAssembly.Memory size when available
+  memory: string;                   // Legacy linear/virtual size, not resident RAM
+  memoryAccounting?: ProcessMemoryAccounting;
+}
+
+export interface ProcessInspectionInfo {
+  processes: ProcessInfo[];
+  /** Undefined when the attached runtime does not implement accounting. */
+  memoryGroups?: ProcessMemoryGroupAccounting[];
 }
 
 export type VfsKind = "d" | "f" | "l" | "b" | "c" | "p" | "s";
@@ -1117,6 +1128,7 @@ export interface KernelHost {
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
+  inspectProcesses(): Promise<ProcessInspectionInfo>;
   readMemMap(pid: number): Promise<MemMapEntry[]>;
   getMounts(): Promise<MountInfo[]>;
   getFilesystemConfiguration?(): FilesystemConfiguration | null;
@@ -2875,6 +2887,17 @@ export class LiveKernelHost implements KernelHost {
     return snaps.map((snap) => toProcessInfo(snap, names.users));
   }
 
+  async inspectProcesses(): Promise<ProcessInspectionInfo> {
+    if (!this.kernel?.inspectProcesses) return { processes: await this.enumProcs() };
+    const [snapshot, names] = await Promise.all([
+      this.kernel.inspectProcesses(), this.loadIdNameMaps(),
+    ]);
+    return {
+      processes: snapshot.processes.map(snap => toProcessInfo(snap, names.users)),
+      memoryGroups: snapshot.memoryGroups,
+    };
+  }
+
   async readMemMap(pid: number): Promise<MemMapEntry[]> {
     // Direct kernel call when available; falls back to /proc/[pid]/maps
     // read on older kernels.
@@ -3693,6 +3716,7 @@ function toProcessInfo(s: KernelProcessSnapshot, users: IdNameMap): ProcessInfo 
     cmdline: s.cmdline,
     state: s.state,
     memory: humanSize(s.memoryBytes ?? s.vsizeBytes),
+    memoryAccounting: s.memoryAccounting,
   };
 }
 

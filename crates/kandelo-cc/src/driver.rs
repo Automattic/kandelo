@@ -693,7 +693,10 @@ pub fn compile_executable_glue(
     let sources = glue_sources(toolchain, parsed.link_dl);
     // One compiler process for every glue source: `-c` with several inputs
     // writes <basename>.o files into the working directory.
-    let args = build_glue_compile_args(&sources, toolchain, arch, define.as_deref());
+    let mut args = build_glue_compile_args(&sources, toolchain, arch, define.as_deref());
+    if user_args.iter().any(|arg| arg == "--experimental-clock-query-v1") {
+        args.push("-DKANDELO_CLOCK_QUERY_V1=1".into());
+    }
     // The glue is the SDK's code, compiled with the SDK's flags: a caller's
     // CCC_OVERRIDE_OPTIONS edits the caller's own clang jobs, not this one.
     // (It could also move this compile's working directory, and with it the
@@ -967,6 +970,11 @@ pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
 
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.
 pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -> Result<i32> {
+    if arch != WasmArch::Wasm32
+        && user_args.iter().any(|arg| arg == "--experimental-clock-query-v1")
+    {
+        return Err("--experimental-clock-query-v1 currently requires memory32".into());
+    }
     let mut toolchain = crate::toolchain::resolve_toolchain(arch)?;
     let compiler = match language {
         Language::C => toolchain.cc.clone(),

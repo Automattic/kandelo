@@ -377,10 +377,13 @@ for (const peer of ["node", "browser"] as const) {
     const file = new URL(`../src/${peer}-kernel-host.ts`, import.meta.url);
     const ast = ts.createSourceFile(file.pathname, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     const callbacks: ts.Expression[] = [];
+    const workerBinding = peer === "node" ? "observationWorker" : "worker";
+    const dispatch = peer === "node" ? "this.handleWorkerMessage(msg, observationRealm)"
+      : "this.handleWorkerMessage(e.data as KernelToMainMessage, observationRealm)";
     const visit = (node: ts.Node) => {
       if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
-          && node.getText(ast).includes("!== observationWorker")
-          && node.getText(ast).includes("this.handleWorkerMessage(msg, observationRealm)")) callbacks.push(node);
+          && node.getText(ast).includes(`!== ${workerBinding}`)
+          && node.getText(ast).includes(dispatch)) callbacks.push(node);
       ts.forEachChild(node, visit);
     };
     visit(ast);
@@ -388,7 +391,7 @@ for (const peer of ["node", "browser"] as const) {
     const code = ts.transpileModule(`const listener = (${callbacks[0].getText(ast)});`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     }).outputText;
-    const bind = new Function("observationWorker", "observationRealm", `${code}\nreturn listener;`);
+    const bind = new Function(workerBinding, "observationRealm", `${code}\nreturn listener;`);
     const first = {}, second = {};
     const setCurrent = (worker: object, started = true) => Object.assign(host, {
       [peer === "node" ? "worker" : "kernelWorkerHandle"]: worker, workerStarted: started,

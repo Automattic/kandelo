@@ -1,0 +1,24 @@
+script_path = "packages/registry/wordpress-common-memory/build.sh"
+inputs = [
+  "packages/registry/wordpress-common-memory/build.sh",
+  "packages/registry/wordpress-common-memory/compose.ts",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "scripts/check-image-layout.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/scripts/filesystem-layout.ts",
+  "images/vfs/lib/kandelo-image-fs.ts",
+  "images/vfs/lib/positioned-image-targets.ts",
+  # Retain the host helper/validator closure, including generated ABI contracts.
+  "host/src",
+  "cargo:kandelo-image-module",
+  "cargo:runtime-core",
+  "crates/kandelo-image-module/build-wasm.sh",
+  "package.json",
+  "package-lock.json",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 2
+publication_state = "pending"

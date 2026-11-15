@@ -111,6 +111,33 @@ Kandelo, and crashed Firefox even with no grows. That is a separate Firefox
 defect that only classic nested workers reach; see
 [`docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md`](../../../docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
 
+Rechecked 2026-11-11 on the same macOS Playwright WebKit 26.6 build2359:
+the registered reproduction crashes in all three driver attempts. The
+observations and tables above from October remain historical evidence.
+An independent small controller-Worker diagnostic also crashes with the
+same `0x10`/cached-memory-update stack, while Chromium and Firefox pass.
+Its shared memory stays entirely in disposable Workers; no Kandelo code
+or guest program is loaded.
+
+The opt-in common-memory PHP-FPM prototype encounters the same signature
+during a post-VM O2 shared-cache check. Its backing spans multiple process
+Workers, so keeping an instance until its own process ends does not cover
+the lifetime of the whole group: peers can still grow that backing. This
+is a prototype integration boundary, not evidence that O2 generated
+incorrect guest code. The default dynamic-growth input and failed matrix
+remain retained in the optimization campaign.
+
+`tools/common-memory-program/platform/build.mjs --pregrow-group` provides
+a separate diagnostic profile that creates the common backing at its
+existing maximum before binding instances. It prevents subsequent positive
+physical growth, while virtual growth and allocation bounds remain checked.
+All eight Node fork/FPM and twelve browser shared-FPM controls pass with
+that profile, including WebKit O2/O3/Os. Its larger initial physical buffer
+is a resource tradeoff; it is not a promoted runtime default or proof that
+general group retirement is solved. Any timings must use the same backing
+policy for reference and candidate. The optimization catalog retains the
+commands, artifacts and limits. No upstream report was sent.
+
 ## Why this is not a Kandelo defect
 
 `repro.html` and `repro-faithful.html` contain no Kandelo code: plain

@@ -593,6 +593,26 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+  ...[
+    ["host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::stopVersion()",
+      "Optional protocol version query ()->i32; carries no pointer, memory view, or scratch reservation."],
+    ["host/src/kernel-worker.ts::CentralizedKernelWorker.#pendingSignalTerminationWithinKernelEntry::kernel-export-direct-use::query(registration.pid, registration.execGeneration)",
+      "Pending termination query (PID i32, execution generation i64)->i32 signal; exact process identity scalars only."],
+    ["host/src/kernel-worker.ts::CentralizedKernelWorker.commitSignalTerminationAfterExecutionStop::kernel-export-direct-use::commit(pid, registration.execGeneration)",
+      "Execution-stop commit (PID i32, execution generation i64)->i32 status; no kernel-memory pointer or scratch authority. Caller separately proves the exact generation stopped."],
+  ].map(([key, why]): AuditAllowance => ({key, why, disposition: "kernel-control", count: 1})),
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#certifyDirectClock::kernel-export-direct-use::eligible(channel.pid,init.binding.tid)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "The optional kernel_direct_clock_eligible export takes only PID and TID (i32,i32), returns an i32 eligibility status, and checks actual task/signal state. It borrows no kernel bytes or scratch authority; the output capability consists of independent bounded control records and fresh guest-page checks.",
+  },
+  ...[0, 1].map((phase): AuditAllowance => ({
+    key: `host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::configureMemoryModel(pid, execGeneration, memoryModel, ${phase})`,
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact optional export takes PID, u64 execution generation, memory-model enum and preflight/commit phase, returning i32 status. Its (i32,i64,i32,i32)->i32 signature carries only process identities and control scalars, no kernel-memory pointer or scratch authority. Both calls stay within the same process registration entry.",
+  })),
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",
@@ -1156,6 +1176,248 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 ];
 
 const auditAllowances: AuditAllowance[] = [
+  {
+    key: "tools/common-memory-program/survey/mixed-memory-probe.mjs::runMixedMemoryProbe.makeMemory::wasm-memory-authority::new WebAssembly.Memory({initial:8,maximum:16,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The disposable synthetic pointer-stream Worker owns four bounded memories for ordinary, private, shared and copied-private controls. No kernel module or imports are involved; only copied checksums, mechanism results and timings leave the Worker.",
+  },
+  {
+    key: "tools/common-memory-program/survey/mixed-memory-probe.mjs::runMixedMemoryProbe::wasm-instance-authority::new WebAssembly.Instance(singleModule,{env:{memory:singleMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The one-memory gather/control module binds only this disposable Worker's own bounded synthetic memory; it imports no kernel authority and does not escape its parent as an instance or memory view.",
+  },
+  {
+    key: "tools/common-memory-program/survey/mixed-memory-probe.mjs::runMixedMemoryProbe.instantiateDual::wasm-instance-authority::new WebAssembly.Instance(dualModule,{env:{private:p,shared:s}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This synthetic two-memory factory creates Worker-local parent/copied-private/aliased-import controls only. Both imports are fixture-owned bounded memories; no kernel authority is present and parent messages contain copied diagnostic values.",
+  },
+  {
+    key: "tools/common-memory-program/survey/affine-cache-checks.mjs::runAffineCacheChecks.instantiate::wasm-authority-escape::WebAssembly.Instance",
+    disposition: "non-kernel",
+    why: "Only vmConstruct receives this intrinsic, for the freestanding affine-cache fixture against disposable Worker-owned VirtualGroup roots. It imports no kernel authority and returns copied mechanism checks only.",
+  },
+  {
+    key: "tools/common-memory-program/survey/affine-cache-bench.mjs::runAffineCacheBench::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(bytes.native),{env:{memory:group.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The ordinary-addressing synthetic control binds to this disposable Worker's own bounded ProgramGroup backing. No kernel module or imports are involved; only copied checksums and timings reach the parent.",
+  },
+  {
+    key: "tools/common-memory-program/platform/retirement-checks.mjs::runRetirementChecks::wasm-instance-authority::new WebAssembly.Instance(untranslated,{env:{memory:group.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 1,
+    why: "The untranslated-start negative control imports only the fresh 64 MiB synthetic VirtualGroup created inside this component fixture. It has no kernel module/imports or live process memory; browser callers run it in a disposable Worker and return copied scalar check results.",
+  },
+  {
+    key: "tools/common-memory-program/platform/retirement-checks.mjs::runRetirementChecks::wasm-authority-escape::WebAssembly.Instance",
+    disposition: "non-kernel",
+    count: 1,
+    why: "This intrinsic is passed only to vmConstruct for the same freestanding untranslated-start refusal check against a fixture-owned virtual root. The result is a boolean refusal and scalar sentinel; no constructor, instance, memory or view is returned to the browser page.",
+  },
+  {
+    key: "tools/common-memory-program/platform/reuse-checks.mjs::runReuseChecks::wasm-instance-authority::WebAssembly.instantiate(growModule,{env:{memory:group.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The mapped-payload ownership fixture binds only the freestanding C helper to its own bounded 64 MiB VirtualGroup backing, to exercise the real guest growth allocator. Browser execution stays in a disposable Worker; parent messages contain scalar diagnostics, never a guest or kernel Memory/view.",
+  },
+  {
+    key: "tools/common-memory-program/survey/access-count-mechanism.mjs::runAccessCountMechanism::wasm-authority-escape::WebAssembly.Instance",
+    count: 2,
+    disposition: "non-kernel",
+    why: "Both intrinsic references go only to vmConstruct for freestanding access-counter canary instances against fixture-owned VirtualGroup roots. The diagnostic fixture imports no Kandelo kernel; browsers run it inside the disposable survey Worker and return copied counts.",
+  },
+  {
+    key: "tools/common-memory-program/survey/region-count-mechanism.mjs::runRegionCountMechanism.instantiate::wasm-authority-escape::WebAssembly.Instance",
+    disposition: "non-kernel",
+    why: "The intrinsic is passed only to vmConstruct for a freestanding regional-counter fixture against this disposable Worker's own VirtualGroup roots. The synthetic module has only memory/remap fixture imports, no kernel authority, and returns copied scalar accounting checks.",
+  },
+  {
+    key: "tools/common-memory-program/survey/origin-sites-mechanism.mjs::runOriginSitesMechanism::wasm-authority-escape::WebAssembly.Instance",
+    count: 2,
+    disposition: "non-kernel",
+    why: "Both intrinsic references go only to vmConstruct for the freestanding origin-site counter fixture against disposable Worker-owned VirtualGroup roots. It imports no kernel authority; the parent receives copied scalar counts and mechanism results only.",
+  },
+  {
+    key: "tools/common-memory-program/survey/affine-mechanism.mjs::runAffineMechanism.instantiate::wasm-authority-escape::WebAssembly.Instance",
+    disposition: "non-kernel",
+    why: "This intrinsic is passed only to vmConstruct for the synthetic affine-address observer against fixture-owned VirtualGroup roots in a disposable Worker. The fixture has no kernel imports and sends only copied classification, mapping and fork check results to its parent.",
+  },
+  {
+    key: "tools/common-memory-program/survey/atomic-fusion-checks.mjs::runAtomicFusion::wasm-memory-authority::new WebAssembly.Memory({initial:2,maximum:2,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This differential atomic fixture owns a fixed two-page ordinary control memory, alongside its ProgramGroup test memory. It executes only synthetic freestanding atomic forms, in a disposable Worker on browsers, with no kernel imports or shared backing in parent results.",
+  },
+  {
+    key: "tools/common-memory-program/survey/atomic-fusion-checks.mjs::runAtomicFusion::wasm-instance-authority::new WebAssembly.Instance(nativeModule,{env:{memory:nativeMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The ordinary differential-control instance binds the synthetic atomic module to the fixture's fixed two-page memory. Neither the module nor its imports carry Kandelo kernel authority; the instance remains inside the disposable fixture Worker on browsers.",
+  },
+  {
+    key: "tools/common-memory-program/survey/breadth/worker.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({initial:2,maximum:4,shared:true})",
+    count: 2,
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The exploratory Node Worker owns exactly two two-page array memories, each bounded to four pages, for private/shared tagged-dispatch controls. It imports no kernel; parentPort receives only checksums, timings and scalar diagnostics.",
+  },
+  {
+    key: "tools/common-memory-program/survey/breadth/cross-host-probe.mjs::runBreadthProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 2, maximum: 4, shared: true })",
+    count: 2,
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The cross-host synthetic array screen creates two fixture-owned memories, each with a four-page ceiling, inside a disposable Node/browser Worker. There is no kernel or guest process; only copied JSON timings and checksums reach the parent.",
+  },
+  {
+    key: "tools/common-memory-program/survey/breadth/cross-host-probe.mjs::runBreadthProbe::wasm-instance-authority::new WebAssembly.Instance(compiled.dual, { env: { private: privateMemory, shared: sharedMemory }, })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This Worker-local freestanding two-memory module binds only the synthetic array fixture's private/shared controls. It has no kernel imports, and no instance, backing or view appears in the JSON result.",
+  },
+  {
+    key: "tools/common-memory-program/survey/breadth/cross-host-probe.mjs::runBreadthProbe::wasm-instance-authority::new WebAssembly.Instance(compiled.single, { env: { memory: group.memory }, })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The physical-base control binds a synthetic sum module to the disposable Worker's own ProgramGroup test backing, bounded to 64 pages. It carries no Kandelo kernel authority and returns only copied scalar results.",
+  },
+  {
+    key: "tools/common-memory-program/survey/breadth/worker.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(dual,{env:{private:p,shared:s}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This Node-only array fixture binds a synthetic two-memory Wasm module to its two locally owned four-page-ceiling controls. The disposable Worker retains every backing and returns copied timing/checksum data without kernel authority.",
+  },
+  {
+    key: "tools/common-memory-program/survey/breadth/worker.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(single,{env:{memory:group.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The physical-base array control binds a freestanding synthetic module to this disposable Node Worker's ProgramGroup test backing. It is not a guest process or Kandelo kernel, and no memory, instance or view escapes in parentPort results.",
+  },
+  {
+    key: "tools/common-memory-program/platform/byte-slices.mjs::installByteSlices::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The private byte-slice installer captures the native Memory prototype and its buffer getter for side-effect-free descriptor/brand guards. It captures no Memory instance or kernel backing; actual byte copies use only branded VirtualGroup process/test backings, while native kernel memory keeps the original path.",
+  },
+  {
+    key: "tools/common-memory-program/platform/byte-slices.mjs::installByteSlices::wasm-authority-escape::wasmPrototype",
+    disposition: "kernel-read",
+    why: "This alias is recorded only in the installer's private pristine-property checklist. Descriptor checks read the shared native prototype without invoking a user getter, retaining an instance, mutating the prototype or admitting kernel memory into a virtual group.",
+  },
+  {
+    key: "tools/common-memory-program/survey/byte-slice-checks.mjs::runByteSliceChecks::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "non-kernel",
+    why: "The disposable byte-snapshot fixture captures only the intrinsic buffer getter to test a custom own getter on its two fixed 8 MiB ProgramGroup-owned memories. It imports no Kandelo kernel; browser parent messages contain diagnostic values only.",
+  },
+  {
+    key: "tools/common-memory-program/survey/object-checks.mjs::runObjectRegions::wasm-instance-authority::new WebAssembly.Instance(helperModule,{env:{memory:group.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This mechanism fixture instantiates only its private freestanding guard-helper module against the existing ProgramGroup-owned fixed 8 MiB test backing. Browser execution stays in the disposable probe worker; no kernel module, memory or authority enters the fixture or parent messages.",
+  },
+  {
+    key: "tools/common-memory-program/survey/multi-memory/probe.mjs::runProbe::wasm-memory-authority::new WebAssembly.Memory({initial:2,maximum:4,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 3,
+    why: "This synthetic multi-memory capability fixture owns exactly two private memories and one group memory, each bounded to four pages, inside its disposable Node/browser worker. It imports no Kandelo kernel or process memory and returns only scalar diagnostic results to its parent.",
+  },
+  {
+    key: "tools/common-memory-program/survey/multi-memory/probe.mjs::runProbe.instance::wasm-instance-authority::new WebAssembly.Instance(module,{env:{private:privateMemory,shared:sharedMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This fixture helper instantiates only its generated two-memory WAT module against its three bounded worker-owned test memories. Its same-memory import negative control deliberately tests aliasing; no kernel module, authority or memory enters the fixture.",
+  },
+  {
+    key: "tools/common-memory-program/survey/cache-checks.mjs::runCacheCoherency::wasm-authority-escape::WebAssembly.Instance",
+    disposition: "non-kernel",
+    count: 3,
+    why: "The three reviewed constructor uses in this mechanism fixture instantiate only its access-form module against explicit test roots (parent, child and epoch-zero legacy). No kernel module or kernel memory enters the virtual adapter.",
+  },
+  {
+    key: "tools/common-memory-program/platform/check-memory.mjs::<module>::wasm-authority-escape::WebAssembly.Instance",
+    disposition: "non-kernel",
+    why: "This unit fixture passes the intrinsic constructor to its virtual-view adapter only to instantiate the literal empty import-free Wasm module; it supplies no kernel module or memory.",
+  },
+  {
+    key: "tools/common-memory-program/platform/memory.mjs::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The opt-in host adapter captures only the genuine native buffer getter, including for native kernel callers; explicit VirtualMemory handling is separate and no instance or backing is retained at capture.",
+  },
+  {
+    key: "tools/common-memory-program/platform/memory.mjs::VirtualGroup.constructor::wasm-memory-authority::new WebAssembly.Memory({ initial: 1024, maximum: maximumPages, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The explicit experimental process group owns this bounded physical backing for guest page tables, payload and scratch. The normal kernel retains its separate native Memory; browser group creation occurs in the disposable kernel worker, never the persistent page.",
+  },
+  {
+    key: "tools/common-memory-program/platform/memory.mjs::vmCreateProcessMemory::wasm-memory-authority::new WebAssembly.Memory(descriptor)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The opt-in profile routes only the ordinary process allocator's constructor here. This disabled-profile branch preserves the admitted native process descriptor; kernel Memory constructors use the unchanged native-construction path.",
+  },
+  {
+    key: "tools/common-memory-program/platform/memory.mjs::vmInstantiate::wasm-instance-authority::WebAssembly.instantiate(input,mapped.imports)",
+    disposition: "kernel-control",
+    authorityOwner: "kernel",
+    why: "Conservatively kernel-owned: this isolated whole-host adapter also wraps native kernel instantiation, not only virtual guests. It forwards the caller's original native module/imports; bind validates a virtual guest marker before setting its root, refuses address-model mismatches, and retains no instance. Existing kernel-owner/gate code and disposable-worker boundaries remain the callers.",
+  },
+  {
+    key: "tools/common-memory-program/platform/memory.mjs::vmInstantiate::wasm-instance-authority::WebAssembly.instantiate(snapshot(input),mapped.imports)",
+    disposition: "kernel-control",
+    authorityOwner: "kernel",
+    why: "Conservatively kernel-owned for the adapter's byte-input branch as well: input virtual views are copied, native kernel inputs remain ordinary bytes, and imports preserve existing native kernel authority. The local result is bound/checked and returned to the original host owner; no kernel memory enters virtual process backing or public worker messages.",
+  },
+  {
+    key: "tools/common-memory-program/runtime.mjs::ProgramGroup.constructor::wasm-memory-authority::new WebAssembly.Memory({ initial: initialPages, maximum: maximumPages, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone compiled-C canary owns its bounded test memory and imports no Kandelo kernel. Browser calls run in its disposable probe worker.",
+  },
+  {
+    key: "tools/common-memory-program/runtime.mjs::ProgramGroup.create::wasm-instance-authority::new WebAssembly.Instance(module, { env: { ...extraEnv, memory: this.memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone canary binds only translated freestanding test modules to its own group Memory, with no kernel imports, exports or views. The optional controlled env callbacks support remapping tests; the group Memory is assigned last so those callbacks cannot substitute another backing.",
+  },
+  {
+    key: "tools/common-memory-prototype/optimization-runtime.mjs::instantiateC::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The optimization fixture instantiates its native/translated freestanding C benchmark against fixture-owned test memory, not a Kandelo kernel or process generation.",
+  },
+  {
+    key: "tools/common-memory-prototype/runtime.mjs::Group.constructor::wasm-memory-authority::new WebAssembly.Memory({ initial: 1024, maximum: 2048, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The original WAT mechanism/translation-cost fixture owns this bounded diagnostic backing; it runs no Kandelo kernel and its browser memory stays in disposable workers.",
+  },
+  {
+    key: "tools/common-memory-prototype/runtime.mjs::Group.context::wasm-instance-authority::new WebAssembly.Instance(this.modules.inline, { env })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This fixture instantiates only its generated inline-translation WAT module against the diagnostic group and root globals, with no kernel authority.",
+  },
+  {
+    key: "tools/common-memory-prototype/runtime.mjs::Group.context::wasm-instance-authority::new WebAssembly.Instance(this.modules.native, { env })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The untranslated WAT control receives only the fixture-owned test memory; native here means unvirtualized Wasm, not kernel authority.",
+  },
+  {
+    key: "tools/common-memory-prototype/runtime.mjs::Group.context::wasm-instance-authority::new WebAssembly.Instance(this.modules.helper, { env, ops: inline.exports })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The helper-based WAT control receives the same diagnostic memory and inline probe exports; neither module is a Kandelo kernel.",
+  },
+  {
+    key: "tools/common-memory-prototype/runtime.mjs::instantiateRemote::wasm-instance-authority::new WebAssembly.Instance(modules.inline, { env: { memory, root, scratch } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "A disposable probe worker instantiates the same standalone WAT fixture with explicitly transported diagnostic group memory and numeric root/scratch. No kernel state or persistent page receives this backing.",
+  },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
     disposition: "rust-lent",
@@ -1838,9 +2100,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The raw sink runs only after lossless pointer conversion, explicit Rust-lent capacity/current-memory proof, and an intrinsic producer-length check; it publishes once synchronously.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, }, ], )",
+    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, clockEpoch: this.#directClockEpoch, instance: () => this.#instance, memory: () => this.#memory, }, ], )",
     disposition: "kernel-control",
-    why: "The package-private WeakMap grants only the dedicated worker access to this wrapper's exact gate, gated instance, and memory; none is exported from the public package surface.",
+    why: "The package-private WeakMap grants only the dedicated worker access to this wrapper's exact gate, gated instance, and memory; none is exported from the public package surface. The optional clock epoch is an opaque authority for an independent 16-byte control buffer, never a view into guest or kernel backing.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-return::() => this.#memory",

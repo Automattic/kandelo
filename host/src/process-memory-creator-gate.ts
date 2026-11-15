@@ -42,6 +42,15 @@ export class ProcessMemoryCreatorGate {
     }
   }
 
+  /** Cancel admitted, unpublished construction with this gate's actual
+   * terminal disposition. A constructor/transport error remains unbranded. */
+  cancelPendingCreation(operation: string, cancel: (reason: Error) => void): void {
+    if (this.open) {
+      throw new Error("Cannot cancel process memory creation before closing admission");
+    }
+    cancel(new ProcessMemoryCreatorAdmissionClosedError(operation));
+  }
+
   /**
    * Admit ownership that must transfer out of an async setup callback.
    *

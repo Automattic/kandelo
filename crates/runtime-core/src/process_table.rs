@@ -1609,8 +1609,11 @@ impl ProcessTable {
         caller_tid: u32,
         mode: wasm_posix_shared::fork_contract::Mode,
     ) -> Result<u32, Errno> {
-        let (serialized_parent, caller_blocked, mut dri_mappings) = {
+        let (serialized_parent, caller_blocked, mut dri_mappings, memory_model) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.pending_signal_termination().is_some() {
+                return Err(Errno::ESRCH);
+            }
             if parent.prepared_exec_targets.has_retiring() {
                 return Err(Errno::EBUSY);
             }
@@ -1623,6 +1626,10 @@ impl ProcessTable {
             }
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
+            }
+            if parent.memory_model == crate::process::ProcessMemoryModel::SharedGroupV2
+                && mode == wasm_posix_shared::fork_contract::Mode::Vfork {
+                return Err(Errno::EOPNOTSUPP);
             }
             // WHY only vfork: a vfork child borrows its parked parent's
             // address space, and a second borrower of the same memory would
@@ -1638,6 +1645,7 @@ impl ProcessTable {
                 serialize_fork_state_with_growing_buffer(parent)?,
                 parent.blocked_for(caller_tid),
                 mappings,
+                parent.memory_model,
             )
         };
 
@@ -1649,6 +1657,7 @@ impl ProcessTable {
         // already allocated here; the deserializer cannot select a PID.
         let mut child = Process::new_allocated_empty(child_task_id);
         crate::fork::deserialize_allocated_fork_state(&serialized_parent, &mut child)?;
+        child.memory_model = memory_model;
         // WHY: bytes preserve an OfdId and scalar snapshot, not object
         // identity. Relink before publication so fork and vfork inherit the
         // parent's exact open file description instead of a matching copy.
@@ -3108,6 +3117,31 @@ mod wait_tests {
         assert_eq!(table.get(parent_pid).unwrap().pointer_width, 4);
         let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
         assert_eq!(table.get(child_pid).unwrap().pointer_width, 4);
+    }
+
+    #[test]
+    fn common_memory_model_registration_refuses_one_existing_secondary_thread() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.create_thread(pid, pid, 65536, 0, 0).unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        assert_eq!(proc.threads.len(), 1);
+        assert_eq!(proc.configure_memory_model(0, 2, false), Err(Errno::EINVAL));
+        assert_eq!(proc.configure_memory_model(0, 2, true), Err(Errno::EINVAL));
+        assert_eq!(proc.memory_model, crate::process::ProcessMemoryModel::Separate);
+    }
+
+    #[test]
+    fn common_memory_model_fork_inherits_and_vfork_refuses_before_allocation() {
+        use crate::process::ProcessMemoryModel;
+        use wasm_posix_shared::fork_contract::Mode;
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        table.get_mut(parent).unwrap().configure_memory_model(0, 2, true).unwrap();
+        assert_eq!(table.fork_process_for_caller_with_mode(parent, parent, Mode::Vfork), Err(Errno::EOPNOTSUPP));
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        assert_eq!(child, parent + 1);
+        assert_eq!(table.get(child).unwrap().memory_model, ProcessMemoryModel::SharedGroupV2);
     }
 
     #[test]

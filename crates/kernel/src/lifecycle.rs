@@ -35,6 +35,10 @@ pub(crate) enum Request {
         pid: u32,
         signum: u32,
     },
+    ConfirmSignalStop {
+        pid: u32,
+        generation: u64,
+    },
     ReapInit {
         pid: u32,
     },
@@ -56,6 +60,7 @@ impl Request {
             | Self::Remove { pid, .. }
             | Self::ReleaseRetry { pid, .. }
             | Self::SignalExit { pid, .. }
+            | Self::ConfirmSignalStop { pid, .. }
             | Self::ReapInit { pid } => pid,
             Self::SpawnExec { child, .. } => child,
         }
@@ -68,6 +73,7 @@ pub(crate) enum Completion {
     Removed(ProcessRemovalState),
     RetryReleased,
     Signaled,
+    SignalStopCommitted(i32),
     InitReaped(crate::process_table::InitReap),
 }
 
@@ -79,7 +85,16 @@ fn check(table: &ProcessTable, request: Request) -> Result<(), Errno> {
     if proc.prepared_exec_targets.has_retiring() {
         return Err(Errno::EBUSY);
     }
+    if proc.pending_signal_termination().is_some()
+        && matches!(request, Request::Exec { .. } | Request::SpawnExec { .. } | Request::Exit { .. })
+    {
+        return Err(Errno::EBUSY);
+    }
     match request {
+        Request::ConfirmSignalStop { generation, .. } => {
+            if proc.exec_generation != generation { return Err(Errno::EAGAIN); }
+            if proc.pending_signal_termination().is_none() { return Err(Errno::EINVAL); }
+        }
         Request::SpawnExec { parent, .. } => {
             if table.get(parent).is_none() || proc.ppid != parent {
                 return Err(Errno::ESRCH);
@@ -158,6 +173,12 @@ pub(crate) fn run(
             let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
             crate::signal::terminate_process_by_signal_with_locks(proc, locks, host, signum);
             Completion::Signaled
+        }
+        Request::ConfirmSignalStop { pid, generation } => {
+            let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
+            let signal = proc.confirm_signal_termination_stopped(generation)?;
+            crate::signal::terminate_process_by_signal_with_locks(proc, locks, host, signal);
+            Completion::SignalStopCommitted(128 + proc.exit_signal as i32)
         }
         Request::ReapInit { pid } => {
             Completion::InitReaped(table.reap_for_init_with_io(pid, host).ok_or(Errno::ECHILD)?)
@@ -396,6 +417,21 @@ mod tests {
             guard,
         )
     }
+
+    #[test]
+    fn shared_group_stop_commit_refuses_stale_generation_before_cleanup() {
+        let (table, mut host, pid, _, _guard) = fixture();
+        table.get_mut(pid).unwrap().configure_memory_model(0, 2, true).unwrap();
+        run(table, &mut host, Request::SignalExit { pid, signum: 9 }).unwrap();
+        assert_eq!(table.get(pid).unwrap().state, ProcessState::Running);
+        assert!(matches!(run(table, &mut host, Request::ConfirmSignalStop { pid, generation: 1 }), Err(Errno::EAGAIN)));
+        assert_eq!(table.get(pid).unwrap().state, ProcessState::Running);
+        assert!(table.get(pid).unwrap().wait_event.is_none());
+        assert!(matches!(run(table, &mut host, Request::ConfirmSignalStop { pid, generation: 0 }), Ok(Completion::SignalStopCommitted(137))));
+        assert_eq!(table.get(pid).unwrap().state, ProcessState::Exited);
+        assert_eq!(table.get(pid).unwrap().exit_signal, 9);
+        assert!(matches!(run(table, &mut host, Request::ConfirmSignalStop { pid, generation: 0 }), Err(Errno::EINVAL)));
+    }
     fn prepare(
         table: &mut ProcessTable,
         pid: u32,
@@ -403,9 +439,8 @@ mod tests {
         handle: i64,
     ) -> (u32, usize) {
         let proc = table.get_mut(pid).unwrap();
-        let idx = proc
-            .ofd_table
-            .create(FileType::Regular, O_RDONLY, handle, b"/program".to_vec());
+        let prepared = proc.ofd_table.prepare(FileType::Regular, O_RDONLY, b"/program").unwrap();
+        let idx = proc.ofd_table.publish(prepared, handle);
         let id = proc.ofd_table.get(idx).unwrap().ofd_id;
         let mut target = PreparedExecTarget::new(
             owner,
@@ -704,7 +739,7 @@ mod tests {
             thread_exit(&mut table, &mut host, pid, pid, false),
             Err(Errno::EBUSY)
         ));
-        assert!(table.remove_process(pid).is_none());
+        assert!(table.remove_process_with_io(pid, &mut host).is_none());
         assert_eq!(table.fork_process_for_caller(pid, pid), Err(Errno::EBUSY));
         assert_eq!(table.get(pid).unwrap().state, ProcessState::Running);
         assert_eq!(host.closed, [base]);

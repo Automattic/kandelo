@@ -1,5 +1,7 @@
 /** Import namespaces are required interfaces, not optional metadata to ignore. */
 import {
+  CLOCK_IMPORT,
+  CLOCK_MODULE,
   KLOG_IMPORT,
   KLOG_MODULE,
   RESERVED_MODULE_PREFIX,
@@ -16,6 +18,7 @@ interface FunctionImport {
 const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
   [STACK_MODULE, STACK_IMPORT],
   [KLOG_MODULE, KLOG_IMPORT],
+  [CLOCK_MODULE, CLOCK_IMPORT],
 ]);
 const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set(EXTENSION_IMPORTS.values());
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());

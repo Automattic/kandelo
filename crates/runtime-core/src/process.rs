@@ -1151,6 +1151,38 @@ pub struct ProcessIdentity {
     pub threads: crate::IoBuffer<ThreadInfo>,
 }
 
+/// Actual host address-space implementation for the current execution image.
+/// This is kernel metadata, not a guest-selected syscall argument.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProcessMemoryModel {
+    #[default]
+    Separate,
+    SharedGroupV2,
+}
+
+#[cfg(test)]
+mod common_memory_model_tests {
+    use super::*;
+
+    #[test]
+    fn common_memory_model_registration_is_exact_and_preflight_is_pure() {
+        let mut proc = Process::new(1);
+        assert_eq!(proc.configure_memory_model(0, 1, false), Err(Errno::EOPNOTSUPP));
+        assert_eq!(proc.configure_memory_model(0, 2, false), Ok(()));
+        assert_eq!(proc.memory_model, ProcessMemoryModel::Separate);
+        assert_eq!(proc.configure_memory_model(0, 2, true), Ok(()));
+        assert_eq!(proc.memory_model, ProcessMemoryModel::SharedGroupV2);
+        proc.exec_generation = 1;
+        assert_eq!(proc.configure_memory_model(0, 0, true), Err(Errno::EAGAIN));
+        assert_eq!(proc.memory_model, ProcessMemoryModel::SharedGroupV2);
+        assert_eq!(proc.configure_memory_model(1, 99, true), Err(Errno::EINVAL));
+        assert_eq!(proc.configure_memory_model(1, 0, true), Ok(()));
+        proc.pointer_width = 8;
+        assert_eq!(proc.configure_memory_model(1, 2, true), Err(Errno::EINVAL));
+        assert_eq!(proc.memory_model, ProcessMemoryModel::Separate);
+    }
+}
+
 /// Per-process kernel state: file descriptor table, OFD table, pipes, cwd, and directory streams.
 pub struct Process {
     identity: ProcessIdentity,
@@ -1173,6 +1205,12 @@ pub struct Process {
     /// recorded once here: at process creation, inherited across `fork`, and
     /// replaced by [`crate::exec_target`] at the instant a new image commits.
     pub pointer_width: u8,
+    pub memory_model: ProcessMemoryModel,
+    /// A shared backing cannot publish signal death while its Worker may
+    /// still write through another process's aliases. Keep resources and
+    /// wait state live until the host confirms this exact image has stopped.
+    deferred_signal_termination: Option<(u64, u32)>,
+    signal_stop_confirmed_generation: Option<u64>,
     /// Byte address of the main thread's syscall channel in this process's
     /// memory, or 0 while no host has registered one.
     ///
@@ -1656,6 +1694,9 @@ impl Process {
             credentials: Credentials::root(),
             secure_exec: false,
             pointer_width: 4,
+            memory_model: ProcessMemoryModel::Separate,
+            deferred_signal_termination: None,
+            signal_stop_confirmed_generation: None,
             main_channel_addr: 0,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
@@ -1828,6 +1869,56 @@ impl Process {
         self.identity.pid = pid;
     }
 
+    /// Two-phase host registration. Validate before metadata/layout mutation;
+    /// commit only in the same exact kernel entry before the Worker can run.
+    pub fn configure_memory_model(&mut self, generation: u64, model: u32, commit: bool) -> Result<(), Errno> {
+        if self.exec_generation != generation { return Err(Errno::EAGAIN); }
+        if self.deferred_signal_termination.is_some() { return Err(Errno::EAGAIN); }
+        let model = match model {
+            0 => ProcessMemoryModel::Separate,
+            // The process leader is stored separately; even one entry here
+            // means there is an additional Worker sharing the address space.
+            1 => return Err(Errno::EOPNOTSUPP),
+            2 if self.pointer_width == 4 && self.threads.is_empty() => ProcessMemoryModel::SharedGroupV2,
+            _ => return Err(Errno::EINVAL),
+        };
+        if commit {
+            self.memory_model = model;
+            self.signal_stop_confirmed_generation = None;
+        }
+        Ok(())
+    }
+
+    /// Signal delivery may request termination immediately, but cleanup and
+    /// parent-visible death require an execution fence for shared-group code.
+    pub fn defer_signal_termination_until_stopped(&mut self, signum: u32) -> bool {
+        if self.memory_model != ProcessMemoryModel::SharedGroupV2
+            || self.signal_stop_confirmed_generation == Some(self.exec_generation)
+        {
+            return false;
+        }
+        if self.deferred_signal_termination.is_none()
+            || signum == wasm_posix_shared::signal::SIGKILL
+        {
+            self.deferred_signal_termination = Some((self.exec_generation, signum));
+        }
+        true
+    }
+
+    pub fn pending_signal_termination(&self) -> Option<(u64, u32)> {
+        self.deferred_signal_termination
+    }
+
+    /// The host must have stopped the exact registered execution generation.
+    /// Stale confirmations cannot authorize cleanup of an exec successor.
+    pub fn confirm_signal_termination_stopped(&mut self, generation: u64) -> Result<u32, Errno> {
+        if self.exec_generation != generation { return Err(Errno::EAGAIN); }
+        let (pending_generation, signum) = self.deferred_signal_termination.ok_or(Errno::EINVAL)?;
+        if pending_generation != generation { return Err(Errno::EAGAIN); }
+        self.signal_stop_confirmed_generation = Some(generation);
+        Ok(signum)
+    }
+
     /// Returns how many times this process has successfully forked (parent side).
     pub fn fork_count(&self) -> u64 {
         self.fork_count
@@ -1919,6 +2010,7 @@ impl Process {
             return false;
         }
         let signum = signum & 0x7f;
+        self.deferred_signal_termination = None;
         self.state = ProcessState::Exited;
         crate::wait_park::retire_process(self.pid);
         self.exit_status = 0;

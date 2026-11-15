@@ -984,6 +984,24 @@ describe("LiveKernelHost: lazy download events", () => {
 });
 
 describe("LiveKernelHost: process listing", () => {
+  it("preserves numeric accounting and group totals through the session surface", async () => {
+    const memoryAccounting = { groupId: "memory-1", virtualBytes: 64, privateBytes: 20, sharedBytes: 32, attributedBytes: 28 };
+    const memoryGroups = [{ id: "memory-1", kind: "shared-group", uniqueMappedBytes: 112 }];
+    const host = new LiveKernelHost({ kernel: {
+      ...makeVfs({ "/etc/passwd": "www-data:x:33:33::/:/bin/sh\n" }),
+      inspectProcesses: async () => ({ processes: [{ pid: 100, ppid: 1, uid: 33, gid: 33,
+        vsizeBytes: 0, state: "S", comm: "php-fpm", cmdline: "php-fpm", memoryAccounting }], memoryGroups }),
+    } as any });
+    const report = await host.inspectProcesses();
+    expect(report.processes[0]).toMatchObject({ user: "www-data", memoryAccounting });
+    expect(report.memoryGroups).toEqual(memoryGroups);
+  });
+
+  it("leaves accounting explicitly unavailable for an older enumeration-only runtime", async () => {
+    const host = new LiveKernelHost({ kernel: { ...makeVfs({}), enumProcs: async () => [] } as any });
+    expect(await host.inspectProcesses()).toEqual({ processes: [] });
+  });
+
   it("resolves process snapshot UIDs through /etc/passwd", async () => {
     const vfs = makeVfs({
       "/etc/passwd": [

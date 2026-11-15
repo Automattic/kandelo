@@ -1,3 +1,5 @@
+import {EXPERIMENTAL_DIRECT_CLOCK_ENABLED} from './experimental-direct-clock';
+import {createImmutableClockProvider} from './fast-clock-provider';
 import { ProcessGenerationObservations } from "./process-generation-observation";
 import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
@@ -174,6 +176,7 @@ import {
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
 import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
+import { processBackingMemoryModel } from "./process-memory-backing";
 import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import type { PlatformIO } from "./types";
 import type {
@@ -493,9 +496,14 @@ const threadExits = new ThreadExitCoordinator();
 
 async function terminateTrackedWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  requireExecutionStop = false,
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
   forkHostImportsByWorker.get(worker as object)?.close();
+  if (requireExecutionStop) {
+    await worker.terminate();
+    return;
+  }
   await worker.terminate().catch((error) => {
       console.warn(`[kernel-worker] Worker termination failed: ${String(error)}`);
     });
@@ -997,7 +1005,7 @@ async function buildVirtualPlatformIO(
   // must not claim; hand their prefixes over so they keep resolving through
   // their own backend. (The kernel excludes its own tmpfs prefixes itself.)
   rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
-  return new VirtualPlatformIO(mounts, new NodeTimeProvider());
+  return new VirtualPlatformIO(mounts, EXPERIMENTAL_DIRECT_CLOCK_ENABLED?createImmutableClockProvider('node'):new NodeTimeProvider());
 }
 
 let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
@@ -1270,6 +1278,16 @@ async function handleInit(msg: InitMessage) {
       ),
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: handleExit,
+      onSignalTerminationRequested: (pid, status) => {
+        const info = processes.get(pid);
+        const stop = info?.worker
+          ? finishProcessExit(pid, status, info.worker, "signal", true)
+          : Promise.reject(new Error(`Missing shared-group worker pid=${pid}`));
+        void stop.catch(() => {
+          if (processes.get(pid) !== info) return;
+          void retryKernelEntryResult(() => kernelWorker.containUnprovenSharedGroupStop(pid)).catch(() => {});
+        });
+      },
     },
   );
 
@@ -1640,7 +1658,9 @@ async function handleSpawn(msg: SpawnMessage) {
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      };
+
+ directClock:kernelWorker.prepareDirectClockInit(pid,memory,channelOffset,externrefGeneration.id,undefined,programModule),
+};
 
       // A constructor may expose Memory to a partially created Worker before it
       // throws, so any failure from this point uses forced retirement.
@@ -2031,7 +2051,9 @@ async function handleVfork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-    };
+
+ directClock:kernelWorker.prepareDirectClockInit(childPid,parentMemory,childChannelOffset,externrefGrant.generation.id,"borrowed",parentInfo.programModule),
+};
 
     childWorker = new DeferredWorkerHandle(
       () => workerAdapter.createWorker(childInitData),
@@ -2409,7 +2431,9 @@ async function handleOrdinaryFork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-    };
+
+ directClock:kernelWorker.prepareDirectClockInit(childPid,childMemory,childChannelOffset,externrefGrant.generation.id,undefined,parentInfo.programModule),
+};
 
     childWorker = new DeferredWorkerHandle(
       () => workerAdapter.createWorker(childInitData),
@@ -2744,7 +2768,9 @@ async function handleExec(
         ptrWidth: newPtrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      };
+
+ directClock:kernelWorker.prepareDirectClockInit(pid,newMemory,newChannelOffset,replacementExternrefGeneration.id,undefined,programModule),
+};
 
       replacementWorker = new DeferredWorkerHandle(() => {
         if (
@@ -3083,7 +3109,9 @@ async function handlePosixSpawn(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-    };
+
+ directClock:kernelWorker.prepareDirectClockInit(childPid,memory,channelOffset,processExternrefGeneration.id,undefined,programModule),
+};
 
     newWorker = new DeferredWorkerHandle(
       () => workerAdapter.createWorker(initData),
@@ -3483,16 +3511,25 @@ async function finishProcessExit(
   expectedWorker = processes.get(pid)?.worker,
   vforkReason: VforkExactCompletionReason =
     signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
+  signalStopRequested = false,
 ): Promise<void> {
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
-  generationObservations.exited(info, exitStatus);
+  if (!signalStopRequested && processBackingMemoryModel(info.memory) === 2) {
+    const pending = await retryKernelEntryResultForGeneration(
+      () => processes.get(pid) === info,
+      () => kernelWorker.pendingSignalTerminationForMemory(pid, info.memory),
+    );
+    if (pending.status === "stale") return;
+    signalStopRequested = pending.value > 0;
+  }
+  if (!signalStopRequested) generationObservations.exited(info, exitStatus);
   vmInterruptTimers.clear(pid, info);
 
   const existingTeardown = processTeardowns.get(expectedWorker);
   if (existingTeardown) {
-    reportProcessExit(pid, exitStatus);
+    if (!signalStopRequested) reportProcessExit(pid, exitStatus);
     return;
   }
 
@@ -3514,7 +3551,19 @@ async function finishProcessExit(
       waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS),
       terminateThreadWorkers(pid),
     ]);
-    await terminateTrackedWorker(expectedWorker);
+    await terminateTrackedWorker(expectedWorker, signalStopRequested);
+    if (signalStopRequested) {
+      // Node's resolved terminate() joins this exact Worker. Missing wrapper
+      // fences still quarantine its backing, independently of exit visibility.
+      const committed = await retryKernelEntryResultForGeneration(
+        () => processes.get(pid) === info,
+        () => kernelWorker.commitSignalTerminationAfterExecutionStop(pid, info.memory),
+      );
+      if (committed.status === "stale") return;
+      exitStatus = committed.value;
+      generationObservations.exited(info, exitStatus);
+      reportProcessExit(pid, exitStatus);
+    }
     const exactMemoryTeardown = processWorkerRetirementProven(info) && threadsQuiescent;
 
     // Deactivate process (zombie until reaped or destroy) after worker
@@ -3582,7 +3631,7 @@ async function finishProcessExit(
   // exit before worker-thread teardown so a slow termination cannot make
   // NodeKernelHost.spawn() look like the guest process never exited. The
   // teardown promise remains tracked so destroy() still waits for cleanup.
-  reportProcessExit(pid, exitStatus);
+  if (!signalStopRequested) reportProcessExit(pid, exitStatus);
 
   try {
     await teardown;
@@ -4450,11 +4499,12 @@ port.on("message", (msg: MainToKernelMessage) => {
         result: kernelWorker.wasmModules.stats(),
       });
       break;
+    case "inspect_processes":
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.
       try {
-        post({ type: "response", requestId: msg.requestId, result: kernelWorker.enumProcs() });
+        post({ type: "response", requestId: msg.requestId, result: msg.type === "inspect_processes" ? kernelWorker.inspectProcesses() : kernelWorker.enumProcs() });
       } catch (err) {
         post({
           type: "response",

@@ -26,7 +26,7 @@ import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import type { StagedRootfsImageProgress } from "./vfs/staged-rootfs-image";
-import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+import type { ProcessInspection, ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -1173,6 +1173,11 @@ export class BrowserKernel {
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `NodeKernelHost.enumProcs`.
    */
+  async inspectProcesses(): Promise<ProcessInspection> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, { type: "inspect_processes", requestId }) as ProcessInspection;
+  }
+
   async enumProcs(): Promise<ProcessSnapshot[]> {
     const requestId = this.nextRequestId++;
     const result = await this.request(requestId, {

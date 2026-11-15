@@ -89,11 +89,31 @@ pub mod klog_v1 {
     ];
 }
 
-/// Every implemented extension, by module and its single function import.
+/// Private TS-05 prototype contract. Ordinary channel fallback is part of
+/// this interface; declaring it does not promise that every call is fast.
+pub mod clock_v1 {
+    pub const MODULE: &str = "kandelo.clock.v1";
+    pub const IMPORT: &str = "__kandelo_clock_query_v1";
+    /// (output: pointer, clock_id: signed i32, format: u32) -> i32.
+    /// Success writes exactly16 little-endian bytes: signed i64 seconds,
+    /// then signed i64 nanoseconds (timespec) or microseconds (timeval).
+    /// FALLBACK leaves output and guest errno unchanged. The libc caller
+    /// then executes its original syscall, including its signal flags.
+    /// Timeval accepts realtime only. Unknown formats/IDs, uncertified or
+    /// stale task state, unsupported providers, and logical clocks fall back.
+    pub const OUTPUT_BYTES: u32 = 16;
+    pub const TIMESPEC: u32 = 0;
+    pub const TIMEVAL: u32 = 1;
+    pub const SUCCESS: i32 = 0;
+    pub const FALLBACK: i32 = 1;
+}
+
+/// Every declared extension, by module and its single function import.
 /// Each has the signature `(pointer, i32, i32) -> i32`.
 pub const EXTENSIONS: &[(&str, &str)] = &[
     (stack_v1::MODULE, stack_v1::IMPORT),
     (klog_v1::MODULE, klog_v1::IMPORT),
+    (clock_v1::MODULE, clock_v1::IMPORT),
 ];
 
 /// The function import a known extension module supplies.

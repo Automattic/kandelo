@@ -89,6 +89,7 @@ import { openOpfsFileReference, type OpfsFileReference } from "../../../../../ho
 import { ABI_VERSION, ERRNO } from "../../../../../host/src/generated/abi";
 import { stageConfiguredAssets } from "./configured-assets";
 import { prepareMariadbWritableDirectories } from "../../../../../images/vfs/scripts/mariadb-image-helpers";
+import { cappedPhpFpmWorkerCount } from "../../../lib/init/php-fpm-worker-count";
 
 const ROOT_UID = 0;
 const ROOT_GID = 0;
@@ -103,13 +104,14 @@ const MARIADB_READY_SERVICE = "mariadb-ready";
 const MARIADB_READY_SCRIPT_PATH = "/usr/libexec/mariadb-ready";
 
 /**
- * php-fpm's static worker pool, sized by the host.
+ * php-fpm's static worker pool, capped by the host.
  *
  * `pm = static` claims every child at startup, so this number is a demand for
  * that many process address spaces at once. On a host whose reservation pool
  * cannot supply them, php-fpm's master SIGTERMs the children it did start and
  * exits — taking dinit and the whole demo with it — so the count has to come
- * from the host's memory profile rather than a fixed constant.
+ * stay within the host's memory profile. A smaller image request must remain
+ * smaller: expanding it can exhaust an image's own shared-memory budget.
  */
 function patchedPhpFpmConf(workers: number): string {
   if (!Number.isSafeInteger(workers) || workers <= 0) {
@@ -170,7 +172,7 @@ export interface ComposeImageJob {
   /** "http" or "https", from the composing page's origin. */
   proto: string;
   /**
-   * Worker count for pre-forking services, from the host's memory profile.
+   * Worker-count ceiling for pre-forking services, from the host's memory profile.
    * See {@link patchedPhpFpmConf}.
    */
   preforkServiceProcesses: number;
@@ -327,7 +329,7 @@ export async function composeKandeloImage(
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
   if (!job.hasCandidateEvidence && job.frozenImageBytes === undefined) {
     // Keyed on what the image ACTUALLY CONTAINS, never on a machine id: an
-    // image that ships a PHP-FPM config gets the host's worker-pool patch, and
+    // image that ships a PHP-FPM config gets the host's worker-count cap, and
     // one that ships WordPress gets the runtime wp-config this page's prefix
     // and protocol determine (which no baked artifact can know). Whether that
     // WordPress talks to MariaDB is likewise read off the image's own dinit
@@ -336,7 +338,10 @@ export async function composeKandeloImage(
       writeVfsFile(
         buildFs,
         "/etc/php-fpm.conf",
-        patchedPhpFpmConf(job.preforkServiceProcesses),
+        patchedPhpFpmConf(cappedPhpFpmWorkerCount(
+          readOptionalVfsText(buildFs, "/etc/php-fpm.conf")!,
+          job.preforkServiceProcesses,
+        )),
       );
       ensureDirRecursive(buildFs, "/var/cache/opcache");
     }

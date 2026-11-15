@@ -17,6 +17,7 @@ export type {
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
+  InspectProcessesRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
   DrainSyscallTraceMessage,
@@ -62,6 +63,7 @@ import type {
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
+  InspectProcessesRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
   DrainSyscallTraceMessage,
@@ -384,6 +386,7 @@ export type MainToKernelMessage =
   | GetWasmModuleCacheStatsRequestMessage
   | SignalProcessMessage
   | EnumProcsRequestMessage
+  | InspectProcessesRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage

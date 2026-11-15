@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Common-memory mechanism fixture</title>
+<p>Worker-owned WebAssembly common-memory experiment.</p>
+<script type="module">
+window.progress = [];
+window.run = checksOnly => new Promise((resolve, reject) => {
+  // The persistent page receives numeric results, never a guest memory/view.
+  const script = new URLSearchParams(location.search).has('optimizations')
+    ? './optimization-coordinator-browser.mjs' : './coordinator-browser.mjs';
+  const worker = new Worker(script, { type: 'module' });
+  worker.onerror = e => { worker.terminate(); reject(Error(e.message)); };
+  worker.onmessage = ({ data }) => {
+    if (data.progress) { window.progress.push(data.progress); console.log('progress', JSON.stringify(data.progress)); return; }
+    worker.terminate();
+    if (data.error) reject(Error(data.error)); else resolve(data.result);
+  };
+  worker.postMessage({ checksOnly });
+});
+</script>

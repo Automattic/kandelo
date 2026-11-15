@@ -1,3 +1,5 @@
+import {EXPERIMENTAL_DIRECT_CLOCK_ENABLED} from './experimental-direct-clock';
+import {createImmutableClockProvider} from './fast-clock-provider';
 import { ProcessGenerationObservations } from "./process-generation-observation";
 import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
@@ -158,6 +160,7 @@ import {
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
 import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
+import { processBackingMemoryModel } from "./process-memory-backing";
 import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import type {
   HostDiagnostic,
@@ -1036,7 +1039,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // The host mounts are exactly the sibling filesystems the kernel's rootfs
   // must not claim. Mirrors the Node entry.
   const rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
-  io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
+  io = new VirtualPlatformIO(mounts, EXPERIMENTAL_DIRECT_CLOCK_ENABLED?createImmutableClockProvider('browser'):new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
   // their compiled-in OpenSSL; the backend terminates TLS locally, makes
@@ -1218,6 +1221,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       ),
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
+      onSignalTerminationRequested: (pid, status) => {
+        const info = processes.get(pid);
+        const stop = info?.worker
+          ? finishProcessExit(pid, status, undefined, info.worker, "signal", true)
+          : Promise.reject(new Error(`Missing shared-group worker pid=${pid}`));
+        void stop.catch(() => {
+          if (processes.get(pid) !== info) return;
+          void retryKernelEntryResult(() => kernelWorker.containUnprovenSharedGroupStop(pid)).catch(() => {});
+        });
+      },
     },
   );
 
@@ -1645,7 +1658,9 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      };
+
+ directClock:kernelWorker.prepareDirectClockInit(pid,memory,channelOffset,externrefGeneration.id,undefined,programModule),
+};
 
       workerCreationAttempted = true;
       worker = workerAdapter.createWorker(initData);
@@ -2178,7 +2193,9 @@ async function handleVfork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-    };
+
+ directClock:kernelWorker.prepareDirectClockInit(childPid,parentMemory,childChannelOffset,externrefGrant.generation.id,"borrowed",parentInfo.programModule),
+};
 
     childWorker = new DeferredWorkerHandle(() => {
       if (
@@ -2571,7 +2588,9 @@ async function handleOrdinaryFork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-    };
+
+ directClock:kernelWorker.prepareDirectClockInit(childPid,childMemory,childChannelOffset,externrefGrant.generation.id,undefined,parentInfo.programModule),
+};
 
     childWorker = new DeferredWorkerHandle(
       () => workerAdapter.createWorker(childInitData),
@@ -2941,7 +2960,9 @@ async function handleExec(
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      };
+
+ directClock:kernelWorker.prepareDirectClockInit(pid,newMemory,newChannelOffset,replacementExternrefGeneration.id,undefined,programModule),
+};
 
       replacementWorker = new DeferredWorkerHandle(() => {
         if (
@@ -3312,7 +3333,9 @@ async function handlePosixSpawn(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-    };
+
+ directClock:kernelWorker.prepareDirectClockInit(childPid,newMemory,newChannelOffset,processExternrefGeneration.id,undefined,programModule),
+};
 
     newWorker = new DeferredWorkerHandle(
       () => workerAdapter.createWorker(initData),
@@ -3728,11 +3751,20 @@ async function finishProcessExit(
   expectedWorker = processes.get(pid)?.worker,
   vforkReason: VforkExactCompletionReason =
     signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
+  signalStopRequested = false,
 ): Promise<void> {
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
-  generationObservations.exited(info, exitStatus);
+  if (!signalStopRequested && processBackingMemoryModel(info.memory) === 2) {
+    const pending = await retryKernelEntryResultForGeneration(
+      () => processes.get(pid) === info,
+      () => kernelWorker.pendingSignalTerminationForMemory(pid, info.memory),
+    );
+    if (pending.status === "stale") return;
+    signalStopRequested = pending.value > 0;
+  }
+  if (!signalStopRequested) generationObservations.exited(info, exitStatus);
   if (processTeardowns.has(expectedWorker)) return;
   vmInterruptTimers.clear(pid, info);
 
@@ -3755,7 +3787,9 @@ async function finishProcessExit(
     // `hostReaped`: when the kernel already processed a clean
     // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
     // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
+    if (!signalStopRequested) {
+      try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
+    }
 
     // Keep the pid registered until the process worker is gone. musl's
     // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
@@ -3772,6 +3806,19 @@ async function finishProcessExit(
     await waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS);
     const threadsQuiescent = await terminateThreadWorkers(pid);
     await terminateTrackedWorker(expectedWorker, settleMs);
+    if (signalStopRequested) {
+      if (!processWorkerRetirementProven(info) || !threadsQuiescent) {
+        throw new Error(`Shared-group worker lacks an exact stop fence pid=${pid}`);
+      }
+      const committed = await retryKernelEntryResultForGeneration(
+        () => processes.get(pid) === info,
+        () => kernelWorker.commitSignalTerminationAfterExecutionStop(pid, info.memory),
+      );
+      if (committed.status === "stale") return;
+      exitStatus = committed.value;
+      generationObservations.exited(info, exitStatus);
+      post({ type: "exit", pid, generation: info.generation, status: exitStatus });
+    }
 
     // Check if this is a "top-level" process or a fork child. For now,
     // always deactivate after worker termination; the main thread tracks
@@ -3845,12 +3892,9 @@ async function finishProcessExit(
   })();
   processTeardowns.set(expectedWorker, teardown);
 
-  post({
-    type: "exit",
-    pid,
-    generation: info.generation,
-    status: exitStatus,
-  });
+  if (!signalStopRequested) {
+    post({ type: "exit", pid, generation: info.generation, status: exitStatus });
+  }
 
   try {
     await teardown;
@@ -4617,7 +4661,10 @@ async function handleDestroy(
     // every creator already in flight, and runs this terminal sweep only once.
     // Browser main still terminates this whole worker realm on timeout.
     const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
-    processMemoryFactory?.dispose();
+    const factory = processMemoryFactory;
+    if (factory) processMemoryCreators.cancelPendingCreation(
+      "pending process memory construction", reason => factory.dispose(reason),
+    );
     deferredByteSpool?.cancelTransfers();
     const result = await destroy;
     respond(msg.requestId, result);
@@ -4943,12 +4990,13 @@ sw.onmessage = (e: MessageEvent) => {
       markPcmFatalError(pcmControlWords(kernelWorker.claimPcmTransport(true)));
       break;
     case "audio_drain": handleAudioDrain(msg); break;
+    case "inspect_processes":
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Node-side handler in node-kernel-worker-entry.ts —
       // dual-host parity is load-bearing here.
       try {
-        respond(msg.requestId, kernelWorker.enumProcs());
+        respond(msg.requestId, msg.type === "inspect_processes" ? kernelWorker.inspectProcesses() : kernelWorker.enumProcs());
       } catch (err) {
         respondError(msg.requestId, (err as Error)?.message ?? String(err));
       }

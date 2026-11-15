@@ -79,10 +79,13 @@ PKG_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
 # resolves to a throwing stub, and SDL tries the Wayland driver before KMSDRM.
 SDL2_WAYLAND_LIBS="-L${WASM_POSIX_DEP_LIBWAYLAND_DIR:?resolver did not provide the direct libwayland dependency}/lib -L${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide the direct libxkbcommon dependency}/lib -L${WASM_POSIX_DEP_LIBFFI_DIR:?resolver did not provide the direct libffi dependency}/lib -lwayland-client -lwayland-egl -lwayland-cursor -lxkbcommon -lffi"
 
+# Keep assertion diagnostics stable across checkout and resolver work paths.
 echo "==> Building the SDL2 GLSL playground..."
 wasm32posix-cc \
     -std=c11 \
     -O2 \
+    "-ffile-prefix-map=$SOURCE_ROOT=." \
+    "-ffile-prefix-map=$WORK_DIR=/kandelo/build/sdl2-demo" \
     -Wall \
     -Wextra \
     -Wno-unused-parameter \

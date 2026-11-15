@@ -270,76 +270,8 @@ const sources = rows
   .map(([path]) => resolve(root, path));
 const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
-function withoutComments(source) {
-  let output = "";
-  let state = "code";
-  for (let index = 0; index < source.length; index += 1) {
-    const current = source[index];
-    const next = source[index + 1];
-    if (state === "line") {
-      if (current === "\n") {
-        state = "code";
-        output += current;
-      } else {
-        output += " ";
-      }
-      continue;
-    }
-    if (state === "block") {
-      if (current === "*" && next === "/") {
-        output += "  ";
-        index += 1;
-        state = "code";
-      } else {
-        output += current === "\n" ? "\n" : " ";
-      }
-      continue;
-    }
-    if (state === "single" || state === "double" || state === "template") {
-      output += current;
-      if (current === "\\") {
-        output += next ?? "";
-        index += 1;
-      } else if (
-        (state === "single" && current === "'") ||
-        (state === "double" && current === '"') ||
-        (state === "template" && current === "`")
-      ) {
-        state = "code";
-      }
-      continue;
-    }
-    if (current === "/" && next === "/") {
-      output += "  ";
-      index += 1;
-      state = "line";
-    } else if (current === "/" && next === "*") {
-      output += "  ";
-      index += 1;
-      state = "block";
-    } else {
-      output += current;
-      if (current === "'") state = "single";
-      else if (current === '"') state = "double";
-      else if (current === "`") state = "template";
-    }
-  }
-  return output;
-}
-
-function importSpecifiers(source) {
-  const clean = withoutComments(source);
-  const result = new Set();
-  const patterns = [
-    /\b(?:import|export)\s+(?:type\s+)?(?:[^;]{0,1000}?\s+from\s+)?["']([^"']+)["']/g,
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of clean.matchAll(pattern)) result.add(match[1]);
-  }
-  return result;
-}
+// The parser also ignores import-looking strings in test source fixtures.
+import { importSpecifiers } from "./scripts/vitest-source-imports.mjs";
 
 function candidates(base) {
   const values = [base];

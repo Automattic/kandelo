@@ -142,6 +142,9 @@ export interface VfsImageHeadroom {
 export interface VfsWasmArtifactPolicy {
   path: string;
   forkInstrumentation: "auto" | "disabled";
+  /** Build-time admission only; executing this file still needs the explicit
+   * experimental host profile. Every ABI and fork check remains in force. */
+  experimentalCommonMemory?: "prototype-v1" | "prototype-v2";
 }
 
 export interface ExactVfsImageAbi {
@@ -356,16 +359,21 @@ function declaredWasmArtifactPolicies(
     }
     const keys = Object.keys(declaration).sort();
     if (
-      keys.length !== 2 ||
-      keys[0] !== "forkInstrumentation" ||
-      keys[1] !== "path"
+      !(
+        keys.length === 2 && keys[0] === "forkInstrumentation" && keys[1] === "path"
+        || keys.length === 3 && keys[0] === "experimentalCommonMemory" && keys[1] === "forkInstrumentation" && keys[2] === "path"
+      )
     ) {
       throw new Error(
         `VFS Wasm artifact policy ${index + 1} must contain exactly ` +
-          "forkInstrumentation and path",
+          "forkInstrumentation and path, optionally experimentalCommonMemory",
       );
     }
-    const { path, forkInstrumentation } = declaration;
+    const { path, forkInstrumentation, experimentalCommonMemory } = declaration;
+    if (experimentalCommonMemory !== undefined && experimentalCommonMemory !== "prototype-v1"
+      && experimentalCommonMemory !== "prototype-v2") {
+      throw new Error(`VFS Wasm artifact policy ${index + 1} has unsupported common-memory format`);
+    }
     if (
       typeof path !== "string" ||
       path === "/" ||
@@ -433,8 +441,9 @@ function assertNoStaleWasmArtifacts(
               expectedAbi: kernelAbi,
               requireForkInstrumentation: false,
               forbidForkInstrumentation: true,
+              experimentalCommonMemory: policy?.experimentalCommonMemory,
             }
-          : { expectedAbi: kernelAbi },
+          : { expectedAbi: kernelAbi, experimentalCommonMemory: policy?.experimentalCommonMemory },
       );
       if (reasons.length > 0) {
         failures.push(`${path}: ${reasons.join("; ")}`);

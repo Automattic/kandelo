@@ -603,7 +603,12 @@ describe("generated host ABI bindings", () => {
     expect(STRUCT_SIZE_WASM_POLL_FD).toBe(snapshot.marshalled_structs.WasmPollFd.size);
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);
 
-    expect(SYSCALL_ARGS).toEqual(snapshot.syscall_arg_descriptors);
+    // The host marshals optional extension requests too; they remain separate
+    // from the base program surface in Rust's compatibility snapshot.
+    for (const number of Object.keys(snapshot.extension_requests.descriptors)) {
+      expect(Object.hasOwn(snapshot.syscall_arg_descriptors, number)).toBe(false);
+    }
+    expect(SYSCALL_ARGS).toEqual({ ...snapshot.syscall_arg_descriptors, ...snapshot.extension_requests.descriptors });
   });
 
   it("match caller-native siginfo layouts for both pointer widths", () => {

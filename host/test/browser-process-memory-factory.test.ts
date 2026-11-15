@@ -1,6 +1,7 @@
 import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserProcessMemoryFactory } from "../src/browser-process-memory-factory";
+import { ProcessMemoryCreatorGate, isProcessMemoryCreatorAdmissionClosed } from "../src/process-memory-creator-gate";
 
 class AllocationWorker {
   static instances: AllocationWorker[] = [];
@@ -75,6 +76,52 @@ describe("browser process memory allocation realm", () => {
     }
     await expect(factory.allocate(request)).rejects.toThrow(/closed/);
     expect(AllocationWorker.instances).toHaveLength(2);
+  });
+
+  it("preserves a closed creator gate's cancellation until construction drains", async () => {
+    setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const allocation = gate.run("a fork Worker", () => factory.allocate(request));
+    const rejected = allocation.catch(error => error);
+    const sweep = vi.fn();
+    const destroyed = gate.closeAndRunAfterDrain(sweep);
+    expect(sweep).not.toHaveBeenCalled();
+    gate.cancelPendingCreation("pending process memory construction", reason => factory.dispose(reason));
+    expect(isProcessMemoryCreatorAdmissionClosed(await rejected)).toBe(true);
+    await destroyed;
+    expect(sweep).toHaveBeenCalledOnce();
+    expect(AllocationWorker.instances[0].terminate).toHaveBeenCalledOnce();
+  });
+
+  it("does not turn a failed construction-realm termination into expected cancellation", async () => {
+    setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const allocation = gate.run("a fork Worker", () => factory.allocate(request));
+    const rejected = allocation.catch(error => error);
+    const termination = new Error("native termination failed");
+    AllocationWorker.instances[0].terminate.mockImplementationOnce(() => { throw termination; });
+    const destroyed = gate.closeAndRunAfterDrain(() => {});
+    gate.cancelPendingCreation("pending process memory construction", reason => factory.dispose(reason));
+    const error = await rejected;
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors).toContain(termination);
+    expect(isProcessMemoryCreatorAdmissionClosed(error)).toBe(false);
+    await destroyed;
+  });
+
+  it("preserves a genuine constructor rejection that arrived before shutdown", async () => {
+    setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const rejected = factory.allocate(request).catch(error => error);
+    AllocationWorker.instances[0].onmessage!({ data: { error: "construction failed" } } as MessageEvent);
+    await gate.closeAndWait();
+    gate.cancelPendingCreation("pending process memory construction", reason => factory.dispose(reason));
+    const error = await rejected;
+    expect(error.message).toBe("construction failed");
+    expect(isProcessMemoryCreatorAdmissionClosed(error)).toBe(false);
   });
 
   it("reports constructor errors without leaving an allocation worker alive", async () => {

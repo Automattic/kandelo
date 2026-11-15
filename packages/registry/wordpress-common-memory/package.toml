@@ -1,0 +1,25 @@
+kind = "program"
+name = "wordpress-common-memory"
+version = "0.1.0"
+kernel_abi = 56
+arches = ["wasm32"]
+# Separate experimental product; deliberately absent from default sets.
+depends_on = ["wordpress-family-vfs@0.1.0", "php-common-memory@8.5.12"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wordpress-common-memory/build.sh"
+toolchain = "none"
+
+[[outputs]]
+name = "wordpress-common-memory"
+wasm = "wordpress-common-memory.vfs.zst"
+fork_instrumentation = "disabled"

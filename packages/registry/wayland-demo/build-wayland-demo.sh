@@ -118,7 +118,10 @@ CC="$CC_BIN" AR="$LLVM_AR" XDG_SHELL_INCLUDE="$GEN" BUILD_DIR="$WORK_DIR/libkwl"
     bash "$SOURCE_ROOT/examples/libs/libkwl/build.sh" "$SYSROOT"
 
 PKG_CFLAGS="$(wasm32posix-pkg-config --cflags gbm libdrm egl glesv2)"
-CFLAGS=(-std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -D_DEFAULT_SOURCE)
+# Stable diagnostics also cover sources generated in the private work root.
+CFLAGS=(-std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -D_DEFAULT_SOURCE
+    "-ffile-prefix-map=$SOURCE_ROOT=."
+    "-ffile-prefix-map=$WORK_DIR=/kandelo/build/wayland-demo")
 
 # --- wlcompositor -----------------------------------------------------
 # Link order: dependents before dependencies; libffi last so

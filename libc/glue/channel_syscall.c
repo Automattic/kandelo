@@ -46,6 +46,14 @@
 #include <bits/kandelo_thread_syscalls.h>
 #include "abi_constants.h"
 
+/* Opt-in independently versioned interface. Default SDK executables keep
+ * their original base-only import surface. Unsupported calls fall through
+ * without changing errno, output bytes, or the channel's delivery flags. */
+#ifdef KANDELO_CLOCK_QUERY_V1
+__attribute__((import_module("kandelo.clock.v1"), import_name("__kandelo_clock_query_v1")))
+extern int __kandelo_clock_query_v1(void *, int32_t, uint32_t);
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -1595,6 +1603,12 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               int cancellation_point,
                               uint32_t extra_request_flags)
 {
+#ifdef KANDELO_CLOCK_QUERY_V1
+    if (n == SYS_CLOCK_GETTIME && !cancellation_point && !extra_request_flags
+        && (unsigned long long)a2 == (uintptr_t)(unsigned long long)a2
+        && __kandelo_clock_query_v1((void *)(uintptr_t)a2, (int32_t)a1, 0) == 0)
+        return 0;
+#endif
     struct timespec kandelo_ppoll_deadline;
     kandelo_ppoll_wire_timeout kandelo_ppoll_remaining_timeout;
     int kandelo_ppoll_has_deadline = kandelo_capture_ppoll_deadline(

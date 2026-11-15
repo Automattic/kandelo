@@ -980,6 +980,36 @@ describe("extractThreadSlotDeclaration", () => {
 // ---------------------------------------------------------------------------
 
 describe("wasm artifact policy helpers", () => {
+  it("checks the common-memory stop contract before executable admission", () => {
+    const module = (contract: unknown) => buildWasm({
+      types: [{ params: [], results: [0x7f] }, { params: [], results: [] }],
+      funcTypes: [0, 1],
+      funcBodies: [{ locals: [0], instructions: [0x41, ...sleb128_i32(ABI_VERSION)] }, { locals: [0], instructions: [] }],
+      globals: [{ valType: 0x7f, mut: 1, init: [0x41, 0] }, { valType: 0x7f, mut: 1, init: [0x41, 0] }],
+      exports: [
+        { name: "__abi_version", kind: 0, index: 0 },
+        { name: "__vm_initialize", kind: 0, index: 1 },
+        { name: "__vm_root", kind: 3, index: 0 },
+        { name: "__vm_scratch", kind: 3, index: 1 },
+      ],
+      customSections: [{ name: "kandelo.common-memory.prototype", data: [...new TextEncoder().encode(JSON.stringify(contract))] }],
+    });
+    const contract = { format: 2, cooperativeStop: 1, initialPages: 1, maximumPages: 16 };
+    const options = { experimentalCommonMemory: "prototype-v2" as const, expectedAbi: ABI_VERSION };
+    expect(WebAssembly.validate(module(contract))).toBe(true);
+    expect(describeWasmArtifactPolicyFailures(module(contract), options)).toEqual([]);
+    for (const invalid of [
+      { ...contract, format: 1 }, { ...contract, cooperativeStop: 0 },
+      { ...contract, initialPages: 17 }, { ...contract, maximumPages: 65537 },
+      { ...contract, padding: "x".repeat(16384) },
+    ]) {
+      expect(describeWasmArtifactPolicyFailures(module(invalid), options).join("\n")).toMatch(/invalid common-memory stop contract/);
+    }
+    expect(describeWasmArtifactPolicyFailures(module(contract), { ...options, expectedAbi: ABI_VERSION + 1 }))
+      .toContain(`ABI ${ABI_VERSION}, expected ${ABI_VERSION + 1}`);
+    expect(describeWasmArtifactPolicyFailures(module(contract)).join("\n")).toMatch(/requires the opt-in/);
+  });
+
   it("detects legacy Asyncify by its exports, not by the word appearing in the bytes", () => {
     // A module that exports the transform's entry point is instrumented.
     const instrumented = buildWasm({
