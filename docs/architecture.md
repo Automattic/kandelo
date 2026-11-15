@@ -5224,6 +5224,8 @@ This backend is used by `apps/browser-demos/pages/network/`, which boots multipl
 
 `TcpNetworkBackend` uses Node.js `net.Socket` for external raw TCP. DNS uses `dns.lookup`. Node can therefore provide real socket-level TCP behavior for destinations outside the Kandelo process.
 
+`NodeKernelHost` attaches this backend only with `enableTcpNetwork`. With it, guest name resolution, including libcurl's in curl and CMake's `file(DOWNLOAD)`, reaches the computer's resolver: the lookup starts asynchronously and the syscall retries until it settles. A name the resolver does not know reaches the guest as `ENOENT` (`EAI_NONAME` from `getaddrinfo`); any other resolver failure is `EIO` (`EAI_FAIL`). Without the option the machine has no egress link and no resolver, so a lookup fails with `EAI_NONAME` and curl reports `Could not resolve host`. `runGuestBuild` machines are offline in the same way.
+
 The conformance runners select `OfflineEgressBackend`: it exposes the same
 guest internet interface as the browser while refusing external traffic.
 It also owns all guest TCP listener addresses, preventing the Node host's
