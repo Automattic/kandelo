@@ -26,7 +26,7 @@ depends_on = [
   "freetype@2.13.3",
   "pixman@0.46.4",
   "libpng@1.6.43",
-  "libwayland@1.24.0",
+  "libwayland@1.26.0",
   "libxkbcommon@1.13.2",
   "wayland-protocols@1.47",
   "libffi@0.1.0",

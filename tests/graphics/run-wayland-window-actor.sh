@@ -10,8 +10,8 @@ if [ -n "${2:-}" ]; then
     cp "$source_root"/src/wayland-{client,client-core,util}.h "$output_dir/include/"
     cp "$repo_root"/libc/glue/wayland-egl-include/*.h "$output_dir/include/"
     wayland-scanner client-header "$source_root/protocol/wayland.xml" "$output_dir/include/wayland-client-protocol.h"
-    sed -e 's/@WAYLAND_VERSION_MAJOR@/1/g' -e 's/@WAYLAND_VERSION_MINOR@/24/g' \
-        -e 's/@WAYLAND_VERSION_MICRO@/0/g' -e 's/@WAYLAND_VERSION@/1.24.0/g' \
+    sed -e 's/@WAYLAND_VERSION_MAJOR@/1/g' -e 's/@WAYLAND_VERSION_MINOR@/26/g' \
+        -e 's/@WAYLAND_VERSION_MICRO@/0/g' -e 's/@WAYLAND_VERSION@/1.26.0/g' \
         "$source_root/src/wayland-version.h.in" > "$output_dir/include/wayland-version.h"
     cp "$repo_root/libc/musl-overlay/include/gbm.h" "$output_dir/include/"
     cp "$3"/include/drm/*.h "$output_dir/include/drm/"

@@ -13,14 +13,14 @@ m=tomllib.loads(pathlib.Path(sys.argv[1]).read_text());p=pathlib.Path(sys.argv[2
 assert p.is_file() and not p.is_symlink() and hashlib.sha256(p.read_bytes()).hexdigest()==m['source']['sha256']
 with tarfile.open(p) as archive:archive.extractall(sys.argv[3],filter='data')
 PY
-src="$out/wayland-1.24.0"
+src="$out/wayland-1.26.0"
 mkdir -p "$out/include"
-printf '#define PACKAGE_VERSION "1.24.0"\n' > "$src/config.h"
+printf '#define PACKAGE_VERSION "1.26.0"\n' > "$src/config.h"
 wayland-scanner client-header "$src/protocol/wayland.xml" "$out/include/wayland-client-protocol.h"
 wayland-scanner server-header "$src/protocol/wayland.xml" "$out/include/wayland-server-protocol.h"
 wayland-scanner public-code "$src/protocol/wayland.xml" "$out/protocol.c"
-sed -e 's/@WAYLAND_VERSION_MAJOR@/1/g' -e 's/@WAYLAND_VERSION_MINOR@/24/g' \
- -e 's/@WAYLAND_VERSION_MICRO@/0/g' -e 's/@WAYLAND_VERSION@/1.24.0/g' \
+sed -e 's/@WAYLAND_VERSION_MAJOR@/1/g' -e 's/@WAYLAND_VERSION_MINOR@/26/g' \
+ -e 's/@WAYLAND_VERSION_MICRO@/0/g' -e 's/@WAYLAND_VERSION@/1.26.0/g' \
  "$src/src/wayland-version.h.in" > "$out/include/wayland-version.h"
 # Full server TU requires Linux eventfd on this native host. Compile its exact
 # unchanged public setter definition; unrelated server I/O is outside scope.

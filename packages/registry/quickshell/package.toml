@@ -24,7 +24,7 @@ depends_on = [
   "cli11@2.5.0",
   "libdrm@2.4.134",
   "wayland-protocols@1.47",
-  "libwayland@1.24.0",
+  "libwayland@1.26.0",
   "libxkbcommon@1.13.2",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
