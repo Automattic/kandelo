@@ -3139,6 +3139,11 @@ resolves it under the lazy-asset directory the page passes
   Vite's `/@fs/` route, which runs a path with no extension (a shell
   script such as sfwbar's `kandelo-sfwbar`) or a JavaScript or CSS
   extension through Vite's module transform and changes its bytes.
+  Every answer on the route is `Cache-Control: no-store`, including the
+  pinned store's, which is immutable under the store's own
+  content-addressed path: the route's URL names a member, not its bytes,
+  and after a rebuild the same URL names new bytes. A cached old body
+  would fail the image's size and SHA-256 check as an I/O error.
 - An image that is not a product activation, such as a `?vfs=` URL image,
   resolves its lazy bodies under the deployment's own asset group, when
   there is one; the image's digests still decide whether bytes are
