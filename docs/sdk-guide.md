@@ -622,6 +622,12 @@ promise a Linux kernel: `wasm32posix-cc` continues to invoke Clang with
 `--target=wasm32-unknown-unknown`, and Kandelo's documented POSIX surface
 remains authoritative.
 
+The tuple is not the operating system's name. gnulib's host-os module would
+derive "GNU/Linux" from it and bake that into programs at configure time, so
+`sdk/config.site` (below) sets `gl_cv_host_operating_system` to `Kandelo`;
+GNU coreutils prints that value for `uname -o`. The kernel's own name,
+`wasm-posix`, comes from `uname(2)` at run time.
+
 The wrapper also loads `sdk/config.site`. That file is authoritative for
 shared target facts that cross-compilation cannot discover reliably, including
 functions present in the Kandelo musl sysroot and extension functions that are
