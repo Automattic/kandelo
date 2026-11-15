@@ -59,6 +59,7 @@ pub(super) fn run(
     command
         .arg(source.path())
         .arg(format!("-{level}"))
+        // [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] at every level.
         .arg(SKIP_CONSTRAINT_ANALYSIS);
     if keep_names {
         command.arg("-g");

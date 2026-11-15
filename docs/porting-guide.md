@@ -75,7 +75,7 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 
 **fork() support**: If the program uses `fork()` or fork-like behavior, run
 `wasm-fork-instrument` after linking and after any `wasm-opt` pass of your
-own. The tool runs `wasm-opt -O2` over its output itself. Fork-like behavior includes `vfork()`, `_Fork()`, shell
+own. The tool runs `wasm-opt -Os` over its output itself, skipping Binaryen's `constraint-analysis` pass (see [Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass)). Fork-like behavior includes `vfork()`, `_Fork()`, shell
 pipelines, command substitution, `system()`, `popen()`, and helper processes
 implemented through fork.
 ```bash

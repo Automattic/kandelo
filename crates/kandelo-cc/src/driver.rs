@@ -974,6 +974,7 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
         }
     }
     if let Some(job) = wasm_opt.first() {
+        // [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] skip the pass.
         let job = post_link_wasm_opt_job(job);
         return Ok(run_passthrough(&job[0], &job[1..]));
     }

@@ -1663,23 +1663,30 @@ with that backend.
 
 ## Optimization around instrumentation
 
-A fork-using program goes through Binaryen's `wasm-opt` twice:
+A fork-using program goes through Binaryen's `wasm-opt` once or twice:
 
-1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
-   schedules it after `wasm-ld`), and some recipes run their own pass.
-   Inlining, dead-function removal and identical-function merging shrink
-   the call graph the instrumenter has to cover. Quickshell's raw link has
-   108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
+1. **Before instrumentation, only if the recipe asks.** The SDK holds
+   clang's post-link `wasm-opt` back for a fork-capable module and leaves
+   it as `wasm-ld` wrote it, so the compiler facts still describe the
+   linked functions (see "Links" in the
+   [SDK guide](sdk-guide.md#compiler-facts-for-fork-instrumentation)). Some
+   recipes (bash, git's `git-remote-http`, php, vim) run their own
+   `wasm-opt -O2` before instrumenting. Inlining, dead-function removal and
+   identical-function merging shrink the call graph the instrumenter has
+   to cover. Quickshell's raw link has 108,860 functions on the fork path;
+   after `wasm-opt -O2` it has 51,960.
 2. **After instrumentation.** The CLI runs
    `wasm-opt -Os --skip-pass=constraint-analysis` over its own output
    (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This pass
    simplifies the dispatch and frame code the transform adds, merges or
    removes generated helpers, and drops runtime imports nothing calls.
 
-Both runs skip Binaryen's `constraint-analysis` pass, which Binaryen 133
-schedules at `-O3`, `-O4`, `-Os` and `-Oz`: the SDK appends the flag to
-clang's post-link job, and the CLI passes it at every `--post-optimize`
-level. In 133 the pass aborts on FFmpeg's `ff_spatial_dwt` built by LLVM 23
+The post-instrumentation run skips Binaryen's `constraint-analysis` pass,
+which Binaryen 133 schedules at `-O3`, `-O4`, `-Os` and `-Oz`; the CLI
+passes `--skip-pass=constraint-analysis` at every `--post-optimize` level.
+The SDK's post-link job for modules that do not fork carries the same
+flag. A recipe's own `-O2` needs none, because `-O2` does not schedule the
+pass. In 133 the pass aborts on FFmpeg's `ff_spatial_dwt` built by LLVM 23
 (instrumented or not), and it measured no worthwhile size or speed win on
 Kandelo's programs. The skip is to be revisited, not kept by default: see
 [`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)

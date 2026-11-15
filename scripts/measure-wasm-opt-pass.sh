@@ -12,10 +12,16 @@
 #       [--runs N] [--out DIR] INPUT.wasm...
 #
 #   --pass   pass to compare (default: constraint-analysis)
-#   --level  wasm-opt level without the dash (default: Os, the
+#   --level  wasm-opt level, with or without the dash (default: Os, the
 #            instrumenter's post-optimize level)
-#   --runs   alternating with/without pairs per input (default: 3)
+#   --runs   alternating with/without pairs per input, a positive integer
+#            (default: 3)
 #   --out    directory for outputs and runs.tsv (default: a new mktemp dir)
+#
+# The two outputs of every input are kept in the output directory, so it
+# needs about twice the inputs' total size per level measured (clang alone
+# is about 109 MB). Inputs that share a file name are told apart by their
+# position on the command line: two x.wasm inputs become 1-x and 2-x.
 #
 # WASM_OPT selects the wasm-opt under test (default: wasm-opt on PATH). Use a
 # build containing every fix the pass needs: an input the pass aborts on is
@@ -29,8 +35,14 @@
 # binaries under local-binaries/ or a package's output directory.
 #
 # Output: runs.tsv (input, cfg, run, real_s, cpu_s, bytes, exit) and a
-# summary table on stdout. Exit status 1 if any run failed.
+# summary table on stdout. Exit status 1 if any run failed, 2 on bad usage.
 set -euo pipefail
+
+usage() {
+  [ "$#" -eq 0 ] || echo "$0: $*" >&2
+  echo "usage: $0 [--pass NAME] [--level LEVEL] [--runs N] [--out DIR] INPUT.wasm..." >&2
+  exit 2
+}
 
 pass=constraint-analysis
 level=Os
@@ -38,19 +50,51 @@ runs=3
 out=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --pass) pass="$2"; shift 2 ;;
-    --level) level="$2"; shift 2 ;;
-    --runs) runs="$2"; shift 2 ;;
-    --out) out="$2"; shift 2 ;;
+    --pass|--level|--runs|--out)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      case "$1" in
+        --pass) pass="$2" ;;
+        --level) level="$2" ;;
+        --runs) runs="$2" ;;
+        --out) out="$2" ;;
+      esac
+      shift 2 ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     --) shift; break ;;
-    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    -*) usage "unknown option: $1" ;;
     *) break ;;
   esac
 done
-[ "$#" -gt 0 ] || { echo "usage: $0 [--pass NAME] [--level LEVEL] [--runs N] [--out DIR] INPUT.wasm..." >&2; exit 2; }
+[ "$#" -gt 0 ] || usage "no inputs"
+[[ "$runs" =~ ^[1-9][0-9]*$ ]] || usage "--runs must be a positive integer, not '$runs'"
+level="${level#-}"
+[[ "$level" =~ ^O[0-4sz]$ ]] || usage "--level must be one of O0-O4, Os, Oz (with or without the dash), not '$level'"
+[ -n "$pass" ] || usage "--pass needs a pass name"
+for input in "$@"; do
+  case "$input" in -*) usage "options go before the inputs: $input" ;; esac
+  [ -f "$input" ] || usage "no such input: $input"
+done
+
+# One output name per input: the file name without .wasm, prefixed with the
+# input's position when another input has the same file name.
+names=()
+index=0
+for input in "$@"; do
+  index=$((index + 1))
+  base="$(basename "$input" .wasm)"
+  shared=0
+  for other in "$@"; do
+    [ "$(basename "$other" .wasm)" = "$base" ] && shared=$((shared + 1))
+  done
+  if [ "$shared" -gt 1 ]; then names+=("$index-$base"); else names+=("$base"); fi
+done
+duplicate="$(printf '%s\n' "${names[@]}" | sort | uniq -d | head -n 1)"
+[ -z "$duplicate" ] || usage "two inputs would share the output name '$duplicate'; rename one"
 tool="${WASM_OPT:-wasm-opt}"
-if ! "$tool" --help 2>/dev/null | grep -qE -- "^ *--$pass( |,|$)"; then
+# Read the whole help first: `grep -q` closing the pipe early would make
+# wasm-opt die of SIGPIPE, and pipefail would report the pass as missing.
+help="$("$tool" --help 2>/dev/null || true)"
+if ! printf '%s\n' "$help" | grep -qE -- "^ *--$pass( |,|$)"; then
   echo "$("$tool" --version 2>/dev/null || echo "$tool") has no pass named $pass" >&2
   exit 2
 fi
@@ -61,22 +105,26 @@ printf 'input\tcfg\trun\treal_s\tcpu_s\tbytes\texit\n' > "$tsv"
 echo "$("$tool" --version), -$level, pass $pass, $runs run(s) each; outputs in $out" >&2
 
 failed=0
+index=0
 for input in "$@"; do
-  name="$(basename "$input" .wasm)"
+  name="${names[$index]}"
+  index=$((index + 1))
+  [ "$name" = "$(basename "$input" .wasm)" ] || echo "$input is measured as $name" >&2
   for run in $(seq 1 "$runs"); do
     for cfg in with without; do
       extra=()
       [ "$cfg" = without ] && extra=("--skip-pass=$pass")
       result="$out/$name.$cfg.wasm"
       timing="$out/$name.$cfg.$run.time"
+      errors="$out/$name.$cfg.$run.err"
       status=0
       # bash's `time` reports the child's real, user and system seconds.
       { TIMEFORMAT='%R %U %S'; time "$tool" "$input" "-$level" ${extra[@]+"${extra[@]}"} \
-          -o "$result" 2>"$out/$name.$cfg.err"; } 2>"$timing" || status=$?
+          -o "$result" 2>"$errors"; } 2>"$timing" || status=$?
       read -r real user sys < <(tail -n 1 "$timing")
       bytes=0
       [ "$status" -eq 0 ] && bytes="$(wc -c < "$result" | tr -d ' ')"
-      [ "$status" -eq 0 ] || { failed=1; echo "$name ($cfg, run $run): exit $status; see $out/$name.$cfg.err" >&2; }
+      [ "$status" -eq 0 ] || { failed=1; echo "$name ($cfg, run $run): exit $status; see $errors" >&2; }
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$cfg" "$run" "$real" \
         "$(awk -v u="$user" -v s="$sys" 'BEGIN { printf "%.2f", u + s }')" "$bytes" "$status" >> "$tsv"
     done

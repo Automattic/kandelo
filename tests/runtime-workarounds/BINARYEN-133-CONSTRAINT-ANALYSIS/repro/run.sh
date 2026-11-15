@@ -13,8 +13,16 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 tool="${WASM_OPT:-wasm-opt}"
 
+# Print the verdict line and stop. details is JSON-escaped: it carries the
+# tool's version string, which may contain quotes or backslashes.
 verdict() {
-  printf 'REPRO-VERDICT {"verdict": "%s", "details": "%s"}\n' "$1" "$2"
+  local details="$2"
+  details="${details//\\/\\\\}"
+  details="${details//\"/\\\"}"
+  details="${details//$'\n'/\\n}"
+  details="${details//$'\r'/\\r}"
+  details="${details//$'\t'/\\t}"
+  printf 'REPRO-VERDICT {"verdict": "%s", "details": "%s"}\n' "$1" "$details"
   exit 0
 }
 

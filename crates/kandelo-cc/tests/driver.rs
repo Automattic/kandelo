@@ -4,9 +4,10 @@
 use kandelo_cc::Result;
 use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::driver::{
-    LinkerPreparation, SKIP_CONSTRAINT_ANALYSIS, build_clang_args, build_glue_compile_args,
-    decode_llvm_response_file, glue_sources, linker_args_from_clang_trace,
-    post_link_wasm_opt_job, working_directory_from_clang_trace,
+    LinkerPreparation, SKIP_CONSTRAINT_ANALYSIS, TempDir, build_clang_args,
+    build_glue_compile_args, decode_llvm_response_file, glue_sources,
+    linker_args_from_clang_trace, post_link_wasm_opt_job, run_compiler_driver,
+    working_directory_from_clang_trace,
 };
 use kandelo_cc::flags::MAX_EXECUTABLE_MEMORY_SIZE;
 use kandelo_cc::toolchain::Toolchain;
@@ -633,6 +634,62 @@ fn post_link_wasm_opt_skips_constraint_analysis() {
             "a.wasm",
             "--skip-pass=constraint-analysis",
         ])
+    );
+}
+
+// [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] The driver itself
+// runs the post-link job through `post_link_wasm_opt_job`: a fake clang
+// schedules `wasm-opt -Oz` after its link of a module that does not fork,
+// and a fake wasm-opt records the argv the driver gives it.
+#[cfg(unix)]
+#[test]
+fn the_driver_runs_the_post_link_job_without_constraint_analysis() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("kandelo-cc-post-link-").unwrap();
+    let bin = dir.path().to_str().unwrap().to_string();
+    let script = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    // Traces (-###) list a wasm-ld job and, unless --no-wasm-opt holds it
+    // back, a wasm-opt job; a real run writes an empty module to -o.
+    script(
+        "clang",
+        r#"#!/bin/sh
+bin=$(dirname "$0")
+out=; prev=; trace=0; held=0
+for arg in "$@"; do
+  [ "$prev" = -o ] && out=$arg
+  [ "$arg" = "-###" ] && trace=1
+  [ "$arg" = --no-wasm-opt ] && held=1
+  prev=$arg
+done
+if [ "$trace" = 1 ]; then
+  printf ' "%s/wasm-ld" "main.o" "-o" "%s"\n' "$bin" "$out" >&2
+  [ "$held" = 1 ] || printf ' "%s/wasm-opt" "-Oz" "%s" "-o" "%s"\n' "$bin" "$out" "$out" >&2
+  exit 0
+fi
+printf '\000asm\001\000\000\000' > "$out"
+"#,
+    );
+    script(
+        "wasm-opt",
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$(dirname "$0")/wasm-opt.args"
+"#,
+    );
+
+    let output = format!("{bin}/a.wasm");
+    let status =
+        run_compiler_driver(&format!("{bin}/clang"), &strings(&["main.o", "-o", &output]), true)
+            .unwrap();
+    assert_eq!(status, 0);
+    let recorded = std::fs::read_to_string(dir.path().join("wasm-opt.args")).unwrap();
+    assert_eq!(
+        recorded.lines().collect::<Vec<_>>(),
+        vec!["-Oz", output.as_str(), "-o", output.as_str(), SKIP_CONSTRAINT_ANALYSIS]
     );
 }
 

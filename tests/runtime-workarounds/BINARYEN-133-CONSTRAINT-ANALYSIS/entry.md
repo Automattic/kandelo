@@ -62,17 +62,22 @@ Every `wasm-opt` run Kandelo makes at a level that can schedule the pass
 gets `--skip-pass=constraint-analysis`. Tagged sites:
 
 - `crates/fork-instrument/src/cli/optimize.rs`: `SKIP_CONSTRAINT_ANALYSIS`,
-  passed after the `--post-optimize` level on every run.
+  and its use in `run`, which passes it after the `--post-optimize` level on
+  every run.
 - `crates/kandelo-cc/src/driver.rs`: `SKIP_CONSTRAINT_ANALYSIS` and
-  `post_link_wasm_opt_job`, appended to clang's scheduled post-link job for
-  modules that do not fork.
+  `post_link_wasm_opt_job`, which appends it to clang's scheduled post-link
+  job for modules that do not fork, and the call to `post_link_wasm_opt_job`
+  in `run_compiler_driver`.
 - `crates/kandelo-image-module/build-wasm.sh`: the `wasm-opt -Oz` shrink
   step.
 - `crates/program-policy/build-wasm.sh`: the `wasm-opt -Oz` step.
 - Tests: `crates/fork-instrument/tests/cli_post_optimize.rs`
   (`the_default_level_is_os` checks the flag reaches `wasm-opt`) and
   `crates/kandelo-cc/tests/driver.rs`
-  (`post_link_wasm_opt_skips_constraint_analysis`).
+  (`post_link_wasm_opt_skips_constraint_analysis`, and
+  `the_driver_runs_the_post_link_job_without_constraint_analysis`, which runs
+  `run_compiler_driver` with a fake clang and `wasm-opt` and checks the argv
+  `wasm-opt` receives).
 
 Package recipes that run `wasm-opt` themselves (bash, cpython, git, lsof,
 php, spidermonkey, vim) use `-O2`, which does not schedule the pass, so they
@@ -104,6 +109,12 @@ The script runs `wasm-opt <input> --constraint-analysis` on two inputs:
 The reduced inputs abort only when the pass runs alone: in the full `-O`
 pipelines, earlier passes simplify them first. `control.wat` shows that the
 pass runs to completion on this tool.
+
+The verdict rests on a Binaryen assertion. A Binaryen built with assertions
+off (`BYN_ENABLE_ASSERTIONS=OFF`) would report `not-reproduced` while still
+forming the contradictory constraint set, so a `not-reproduced` verdict
+counts only on a build with assertions enabled. The dev shell's nix
+`binaryen-133` has them (it aborts on both inputs).
 
 On full modules (before this change; logs kept in the investigating
 worktree's `.scratch/binaryen-assert/logs/`):
@@ -144,13 +155,14 @@ expected `not-reproduced`, actual the assertion.
 
 The abort is gone when a **released** Binaryen that contains #9258 is
 pinned (`flake.nix` and the `binaryen` package) and `repro/run.sh` reports
-`not-reproduced` on it through the driver; record that `observed` result.
+`not-reproduced` on it through the driver, on a build with assertions
+enabled (see "Evidence"); record that `observed` result.
 
 That alone retires this entry's **abort** rationale, not the skip. Then
 decide separately, by re-measuring as described in
 `docs/future-improvements.md` ("Revisit Binaryen's constraint-analysis
 pass"), whether to run the pass again. If the decision is to enable it,
-delete the four tagged code sites and the two test assertions, update
+delete the tagged code in the four files and the tagged test assertions, update
 `docs/sdk-guide.md` and `docs/fork-instrumentation.md`, and retire this
 entry. If the decision is to keep skipping it, keep the flag, retire this
 entry with `retired_reason` saying the abort is fixed and the skip
