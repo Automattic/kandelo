@@ -2,11 +2,11 @@
   description = "kandelo dev environment";
 
   inputs = {
-    # A locked nixpkgs-unstable revision. The clang, libcxx, qtbase,
-    # qtdeclarative, qtshadertools and libwayland guest recipes must match
-    # versions from it, so move it (`nix flake update nixpkgs`) only with
-    # them, after checking cache.nixos.org has the new revision for every
-    # system below. Update other inputs by name (`nix flake update
+    # A locked nixpkgs-unstable revision. The clang, libcxx, binaryen,
+    # qtbase, qtdeclarative, qtshadertools and libwayland guest recipes must
+    # match versions from it, so move it (`nix flake update nixpkgs`) only
+    # with them, after checking cache.nixos.org has the new revision for
+    # every system below. Update other inputs by name (`nix flake update
     # rust-overlay`), never with a bare `nix flake update`.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     rust-overlay = {
