@@ -9,10 +9,10 @@
 kind = "library"
 
 name = "qtshadertools"
-version = "6.10.2"
+version = "6.12.0"
 kernel_abi = 44
 depends_on = [
-  "qtbase@6.10.2",
+  "qtbase@6.12.0",
   "libcxx@23.1.3",
   "zlib@1.3.1",
   "freetype@2.13.3",
@@ -25,20 +25,20 @@ depends_on = [
 ]
 
 [source]
-url = "https://download.qt.io/archive/qt/6.10/6.10.2/submodules/qtshadertools-everywhere-src-6.10.2.tar.xz"
-sha256 = "18d9dbbc4f7e6e96e6ed89a9965dc032e2b58158b65156c035537826216716c9"
+url = "https://download.qt.io/archive/qt/6.12/6.12.0/submodules/qtshadertools-everywhere-src-6.12.0.tar.xz"
+sha256 = "c7d84f436e1aaef39fdcadebf2bd71bdf24dc69497e13f2e0198873cbbfea2ab"
 provider = "archive"
 
 [license]
 spdx = "LGPL-3.0-only"
-url = "https://code.qt.io/cgit/qt/qtshadertools.git/tree/LICENSES/LGPL-3.0-only.txt?h=v6.10.2"
+url = "https://code.qt.io/cgit/qt/qtshadertools.git/tree/LICENSES/LGPL-3.0-only.txt?h=v6.12.0"
 
 [build]
 script_path = "packages/registry/qtshadertools/build-qtshadertools.sh"
 
 [[host_tools]]
 name = "qmake"
-version_constraint = ">=6.10.2"
+version_constraint = ">=6.12.0"
 probe = { args = ["-query", "QT_VERSION"], version_regex = "(\\d+\\.\\d+\\.\\d+)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh" }
 

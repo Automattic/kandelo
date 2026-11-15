@@ -18,9 +18,9 @@ name = "quickshell"
 version = "0.3.1"
 kernel_abi = 44
 depends_on = [
-  "qtdeclarative@6.10.2",
-  "qtshadertools@6.10.2",
-  "qtbase@6.10.2",
+  "qtdeclarative@6.12.0",
+  "qtshadertools@6.12.0",
+  "qtbase@6.12.0",
   "cli11@2.5.0",
   "libdrm@2.4.134",
   "wayland-protocols@1.47",
@@ -40,7 +40,7 @@ depends_on = [
 
 [[host_tools]]
 name = "qmake"
-version_constraint = ">=6.10.2"
+version_constraint = ">=6.12.0"
 probe = { args = ["-query", "QT_VERSION"], version_regex = "(\\d+\\.\\d+\\.\\d+)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh" }
 

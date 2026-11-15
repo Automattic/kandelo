@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build Qt 6.10.2 QtCore, QtGui, QtWidgets, QtWaylandClient, QtConcurrent
+# Build Qt 6.12.0 QtCore, QtGui, QtWidgets, QtWaylandClient, QtConcurrent
 # and QtXml (static) for wasm32-posix-kernel.
 #
 # Qt 6.10 moved the Wayland client platform plugin out of qtwayland and
@@ -22,7 +22,7 @@
 #
 # Three target adaptations, each for a stated reason:
 #
-#   -D__linux__=1   qsystemdetection.h:134 has no wasm branch and errors
+#   -D__linux__=1   qsystemdetection.h:138 has no wasm branch and errors
 #                   out. CMAKE_SYSTEM_NAME only settles the build
 #                   system; the headers read preprocessor macros, and
 #                   this toolchain defines __unix__ but not __linux__.
@@ -34,9 +34,11 @@
 #                   futex syscall (qfutex_p.h:41), which this kernel is.
 #                   It also steers Qt off glibc-only paths — backtrace,
 #                   inotify syscall stubs, sched_getaffinity — toward
-#                   the portable ones. Two upstream sites forgot to
-#                   honour it; src/qmutex-honour-qt-linuxbase.patch
-#                   fixes those.
+#                   the portable ones. Three upstream sites forgot to
+#                   honour it: src/qmutex-honour-qt-linuxbase.patch
+#                   fixes the two in QMutex, and
+#                   src/qthread-name-honour-qt-linuxbase.patch restores
+#                   the thread-name guard Qt 6.12 dropped.
 #
 #   src/include     supplies the empty <linux/fs.h> QtCore includes.
 #
@@ -53,6 +55,13 @@
 # framebuffer device this target does not have. Both are named off. The
 # rest need a library the resolved prefixes do not carry, so they settle
 # off on their own and are not listed.
+#
+# evdev is named off too. Qt's evdev keyboard, mouse and touch handlers
+# feed the linuxfb and eglfs backends, both off here; the Wayland client
+# takes its input from the compositor's wl_seat, and no consumer loads
+# the evdev generic plugins. Qt 6.12's touch handler also reads the
+# MT_TOOL_* values, which Linux UAPI defines in <linux/input.h> and
+# Kandelo's libc overlay header does not yet carry.
 #
 # The markdown reader uses Qt's bundled md4c. Left to auto-detection,
 # configure finds the build machine's md4c — the resolved prefixes
@@ -144,6 +153,7 @@ if [ ! -d "$SRC_DIR" ]; then
         "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
         "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qmutex-honour-qt-linuxbase.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qthread-name-honour-qt-linuxbase.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-fd-notifier-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/dbus-manager-on-thread-on-wasm.patch"
@@ -224,6 +234,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DINPUT_opengl=no \
     -DFEATURE_vulkan=OFF \
     -DFEATURE_linuxfb=OFF \
+    -DFEATURE_evdev=OFF \
     -DFEATURE_widgets=ON \
     -DFEATURE_network=ON \
     -DFEATURE_ssl=OFF \

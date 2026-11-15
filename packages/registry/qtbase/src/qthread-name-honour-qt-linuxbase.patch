@@ -1,0 +1,25 @@
+Keep QThread's prctl(PR_SET_NAME) call behind QT_LINUXBASE.
+
+qthread_unix.cpp:46 includes <sys/prctl.h> only on
+`defined(Q_OS_LINUX) && !defined(QT_LINUXBASE)`. Qt 6.10 guarded the
+thread-name call the same way; Qt 6.12 dropped the QT_LINUXBASE half at
+the call site (qthread_unix.cpp:353, lines as of Qt 6.12.0) and kept it
+on the include, so a QT_LINUXBASE build names an undeclared PR_SET_NAME
+and fails to compile.
+
+This restores the 6.10 guard. A QT_LINUXBASE build falls through to the
+`#else` branch and leaves the thread unnamed, as it did with Qt 6.10.2.
+
+diff --git a/src/corelib/thread/qthread_unix.cpp b/src/corelib/thread/qthread_unix.cpp
+index 36e34fd..aaa3a31 100644
+--- a/src/corelib/thread/qthread_unix.cpp
++++ b/src/corelib/thread/qthread_unix.cpp
+@@ -350,7 +350,7 @@ template <typename String>
+ static void setCurrentThreadName(QThread *thr, String &objectName)
+ {
+     auto setit = [](const char *name) {
+-#  if defined(Q_OS_LINUX)
++#  if defined(Q_OS_LINUX) && !defined(QT_LINUXBASE)
+         prctl(PR_SET_NAME, name);
+ #  elif defined(Q_OS_DARWIN)
+         pthread_setname_np(name);

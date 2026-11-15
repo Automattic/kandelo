@@ -12,7 +12,7 @@ name = "qtgallery"
 version = "0.1.0"
 kernel_abi = 44
 depends_on = [
-  "qtbase@6.10.2",
+  "qtbase@6.12.0",
   "libdbus@1.14.10",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
