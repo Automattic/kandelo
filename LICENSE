@@ -110,12 +110,6 @@ third_party/Inconsolata-Regular.ttf
   Raph Levien and The Inconsolata Project Authors. SIL Open Font License
   1.1. See third_party/NOTICE.md.
 
-packages/registry/wayland-protocols/xml/
-  Protocol XML from wayland 1.24.0, wayland-protocols 1.45 and wlroots'
-  wlr-protocols. Most files carry their own copyright and MIT-style license
-  text; the rest are covered by wayland-protocols' MIT license, copied to
-  packages/registry/wayland-protocols/COPYING.
-
 packages/registry/openssl/src/tls/
   TLS 1.2 implementation from WordPress Playground. Copyright WordPress
   Foundation and contributors. GPL-2.0-or-later. Local changes are listed in

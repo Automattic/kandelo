@@ -10,7 +10,8 @@ kind = "library"
 # tree and wayland-protocols.pc (pkgdatadir, includedir) match a distro
 # install. wlroots 0.20 requires >= 1.47. 1.48 raises the versions of
 # text-input-v3 and xdg-decoration, and 1.49's enum headers need
-# wayland-scanner >= 1.25 (the dev shell ships 1.24).
+# wayland-scanner >= 1.25 (the dev shell now ships 1.26, so that limit
+# no longer holds this pin).
 #
 # The core protocol (wayland.xml) is not part of this package: libwayland
 # installs it at share/wayland/wayland.xml. The wlr-* protocols come from
