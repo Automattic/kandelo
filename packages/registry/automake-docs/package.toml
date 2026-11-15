@@ -1,0 +1,29 @@
+kind = "program"
+name = "automake-docs"
+version = "1.20"
+kernel_abi = 56
+depends_on = []
+
+# Manual pages for the `automake` package's commands, generated the way
+# Automake's own build generates them. The source, SHA-256 and version are
+# the `automake` package's own, so the pages describe the release that
+# built the installed scripts;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/automake/automake-1.20.tar.xz"
+sha256 = "f6f34dad4cbe395715762b0710f7c511e39bd5cf777e6b95818ccbecf7714248"
+provider = "archive"
+
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/automake.git/tree/COPYING?h=v1.20"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/automake-docs/build-automake-docs.sh"
+
+[[outputs]]
+name = "automake-docs"
+wasm = "automake-docs.zip"
+fork_instrumentation = "disabled"
