@@ -2873,13 +2873,11 @@ The Harper recipe sets its dependency's documented `CONST_RANDOM_SEED` build
 option to the verified upstream source hash, so independent builds retain
 the same compiled constants. Runtime OS entropy is unaffected.
 
-Its `tree-sitter-gitcommit-0.5.0.patch` skips LLVM's costly irreducibility
-analysis only for that grammar's reducible generated state machines. The
-complete grammar still compiles through the SDK and normal instrumentation.
-The standalone reproduction and retirement conditions are recorded in
-[the compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
-This compiler option is unsuitable as a general SDK default: other programs
-can have irreducible control flow and need the analysis.
+Under LLVM 21, Harper's Git commit grammar needed a patch that skipped LLVM's
+costly irreducibility analysis. LLVM 23 fixed the analysis and removed the
+option, so the grammar now compiles through the normal pass; the evidence is
+kept in
+[the retired compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
 
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|

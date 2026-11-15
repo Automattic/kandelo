@@ -1,4 +1,12 @@
-"""Compare one reducible Wasm state machine with/without CFG reachability analysis.
+"""Time a reducible Wasm state machine through and up to the irreducible-CFG pass.
+
+The control runs the identical compile and stops before the
+wasm-fix-irreducible-control-flow pass (-stop-before), so it measures the
+frontend, middle end and code generation that precede the analysis. It
+replaced the -wasm-disable-fix-irreducible-control-flow-pass switch, which
+LLVM 23 removed (llvm-project#185072), and works on releases with and
+without that switch. An unknown -stop-before pass name is a hard compiler
+error, so a renamed pass cannot silently turn the control into a full build.
 
 This reproduction uses no Kandelo source, headers, compiler plugins, or runtime.
 """
@@ -36,24 +44,22 @@ def run():
     with tempfile.TemporaryDirectory(prefix="llvm-wasm-cfg-") as temp:
         root = Path(temp)
         (root / "input.c").write_text(source())
-        base = [
+        compile = [
             CLANG, "--target=wasm32-unknown-unknown", "-O0", "-nostdlib",
-            "-Wl,--no-entry", "-Wl,--export=lex", str(root / "input.c"),
+            str(root / "input.c"),
         ]
-        control_wasm = root / "control.wasm"
         start = time.monotonic()
-        subprocess.run(base + [
-            "-mllvm", "-wasm-disable-fix-irreducible-control-flow-pass",
-            "-o", str(control_wasm),
+        subprocess.run(compile + [
+            "-c", "-mllvm", "-stop-before=wasm-fix-irreducible-control-flow",
+            "-o", str(root / "control.mir"),
         ], check=True, timeout=15, capture_output=True)
         control = time.monotonic() - start
-        subprocess.run(["node", str(CHECK), str(control_wasm), str(STATE_COUNT)],
-                       check=True, timeout=15)
         start = time.monotonic()
         try:
             default_wasm = root / "default.wasm"
-            subprocess.run(base + ["-o", str(default_wasm)],
-                           check=True, timeout=30, capture_output=True)
+            subprocess.run(compile + [
+                "-Wl,--no-entry", "-Wl,--export=lex", "-o", str(default_wasm),
+            ], check=True, timeout=30, capture_output=True)
         except subprocess.TimeoutExpired:
             default = ">30"
             verdict = "reproduced" if control < 2 else "inconclusive"
