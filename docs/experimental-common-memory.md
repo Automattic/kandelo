@@ -172,6 +172,30 @@ shared OPcache. A single deployment package could carry ordinary and translated
 variants, but an ordinary-speed execution path inside one translated artifact
 has not been implemented.
 
+### Warming shared OPcache
+
+Normal PHP can populate OPcache before user traffic. Calling
+[`opcache_compile_file()`](https://www.php.net/manual/en/function.opcache-compile-file.php)
+inside the running FPM pool compiles ordinary, invalidatable cache entries
+without executing those files. Warmup requests can populate the same cache.
+A separate CLI process ordinarily warms its own cache, rather than the FPM
+pool's shared segment.
+
+PHP also supports a persistent second-level `opcache.file_cache` alongside
+shared caching (`opcache.file_cache_only=0`). Kandelo already has a
+[build-time FILE-cache prewarmer](../images/vfs/scripts/opcache-prewarm.ts)
+for its ordinary PHP images. The common-memory experiment can load compatible
+compiled files into shared OPcache on demand; it needs no new PHP cache format.
+Seeds must match the PHP build, paths, source timestamps and configuration.
+Configuration-dependent expressions can already be compiled into a seed.
+
+This differs from `opcache.preload`, whose preloaded definitions require a PHP
+restart to replace. Ordinary warming retains editable-code invalidation.
+The isolated [cache-policy fixtures](../tools/common-memory-program/cache-policy/README.md)
+exercise seed restoration, edited-source freshness and the limitations of
+observer-driven invalidation. They do not change the published preview or
+disable its timestamp validation.
+
 ## Current format-2 retirement screen
 
 On November 14, normal resolver-built PHP-FPM revision 3 repeated the 24-worker

@@ -7150,3 +7150,32 @@ overflow and concurrent requests on both FPM workers before disabling checks.
 This differs from TS-06 metadata caching: it replaces PHP's validation policy
 instead of accelerating individual metadata queries. No implementation or
 speedup estimate is claimed yet.
+
+### First seeding and observer screens (November 14)
+
+The [new cache-policy report](2026-11-14-common-memory-opcache-seeding.md)
+records actual prototypes and retained failures for both proposals. Normal PHP
+warming already exists, including Kandelo's ordinary image prewarmer; the new
+screen proves compatible compiled-file restoration into the current shared FPM
+cache. It does not establish which warming mechanism WP Cloud uses.
+
+| Candidate | Measured or observed result | Decision and limits |
+|---|---|---|
+| Compatible FILE seed feeding shared OPcache | Node startup / empty shared without FILE path:<br>SQLite: 0.8793×<br>MariaDB: 0.8658×<br>Node four-page warm ratio:<br>SQLite: 0.9891×<br>MariaDB: 1.0015× | Modest local startup candidate; timestamps stay enabled. Includes image initialization/configuration/service-to-homepage, excludes network transfer and imports. Two timing parents per case; both orders retain the startup gain. Warm changes are near neutral and include page/order regressions. |
+| Seed memory/ordinary control | One-point OS footprint / empty shared:<br>SQLite: 0.9189×<br>MariaDB: 1.0466×<br>Seeded shared startup / seeded ordinary Wasm:<br>SQLite: 2.1245×<br>MariaDB: 1.9360×<br>Seeded shared warm / seeded ordinary Wasm:<br>SQLite: 1.6334×<br>MariaDB: 1.3919× | No memory-win claim from one sample per case. The ordinary control has its own compatible prewarmed FILE cache. These are application/configuration comparisons, not pure translation overhead. |
+| Observer plus explicit FPM invalidation | Closed same-mtime writes and atomic replacements: both workers fresh.<br>Held-FD cached version: 3<br>Held-FD source version: 4<br>Outside-alias cached version: 4<br>Outside-alias source version: 5 | Useful controlled-request subset; unsafe as a general timestamp replacement. With changed-mtime gap edits, validation enabled catches both while watcher-only remains stale. Needs authoritative inode/namespace mutation coverage and PHP cache-lookup ordering before promotion. |
+
+All 24 Node measurement parents and the initial six browser seed/freshness
+cases passed. The seed-only script mismatch was a boot-generated secrets file;
+it is excluded by a subsequent unchanged-source filter, rather than shipping
+training-time private configuration. Both Node database gates and six further
+browser gates pass those filtered seeds, including an edit to an already-seeded
+WordPress core file observed by both workers. These correctness refinements
+were not retimed. PHP also folds immutable configuration
+queries into compiled code: final shared training uses shared+FILE settings,
+not the failed FILE-only WordPress seed. The initial timing cohort and its
+frozen source copies remain separate from later correctness refinements.
+Neither proposal changes the current preview or claims general release
+readiness. Retain selective seeding, inode-scoped generations and conservative
+fallback ideas for the next platform experiment; a global all-write epoch
+would also react to database/log writes.
