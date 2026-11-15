@@ -7104,3 +7104,49 @@ the other cases do not establish a general memory win. WebKit/MariaDB is near
 ordinary request latency, while most other shared-mode application cases remain
 slower. Keep the feature opt-in while retaining every optimization candidate
 and the prior adverse ordinary-runtime results for further investigation.
+
+## November 14 follow-up proposals: cache seeding and change-driven invalidation
+
+These are proposed experiments, not changes to the preview or measured wins.
+The current profile retains timestamp validation with zero revalidation interval.
+
+**Persistent compiled cache feeding shared OPcache.** PHP supports a second-level
+`opcache.file_cache` while `opcache.file_cache_only=0` keeps shared caching
+enabled. Generate a compatible seed with the deployed PHP build, source paths,
+extensions and settings, then test loading it into shared memory on demand.
+Keep timestamp and cache-consistency checks initially. Do not assume the
+inherited ordinary-build cache is compatible with the instrumented FPM build.
+If this works, a matching seed becomes an alternative use for FILE-cache image
+data that shared-only mode currently leaves unused. Count image transfer/load,
+cache restoration, service startup, first response, warm latency and OS footprint;
+moving compilation before the timer is not a total-startup improvement. See
+[PHP's configuration reference](https://www.php.net/manual/en/opcache.configuration.php).
+
+Normal FPM requests or `opcache_compile_file()` within the running FPM cache
+can also warm ordinary cache entries. That can move work before navigation,
+but does not eliminate it. This differs from PHP's native `opcache.preload`:
+preloaded definitions persist until process restart. The older full-preload
+experiment above increased startup time/allocation and does not establish a
+result for selective seeding in the current profile. Native preloading is not
+the initial candidate for editable code; see [PHP's preload lifecycle](https://www.php.net/manual/en/opcache.preloading.php).
+
+**Change-driven opcode invalidation.** A future policy could disable repeated
+timestamp checks while authoritative filesystem change generations drive cache
+invalidation inside the FPM pool. Shared OPcache makes the opcode invalidation
+common to its workers. Coherence must be established before subsequent requests
+reuse stale code; an asynchronous UI watcher callback alone is insufficient.
+Account for writes/truncation, open descriptors, replacement/deletion, aliases,
+path-resolution caches and namespace changes. An ambiguous event, overflow or
+untracked provider must force conservative invalidation/restart or retain
+timestamp validation; the fallback also needs an ordering proof.
+
+The existing [`subscribeVfsChanges` event contract](../../host/src/vfs/types.ts)
+explicitly provides bounded hints emitted on writable-handle close or name
+changes, omits memory-mapped writes, and reports overflow as a modified prefix.
+The [kernel queue](../../crates/runtime-core/src/fs_changes.rs) and deferred
+observer delivery are useful groundwork, not a complete coherence protocol.
+Test same-size/same-mtime edits, still-open writers, rename/delete/link changes,
+overflow and concurrent requests on both FPM workers before disabling checks.
+This differs from TS-06 metadata caching: it replaces PHP's validation policy
+instead of accelerating individual metadata queries. No implementation or
+speedup estimate is claimed yet.
