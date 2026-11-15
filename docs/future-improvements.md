@@ -1461,6 +1461,67 @@ On 2026-10-30 a full setup in a second checkout of main (`e4bca8639e`) failed wi
 
 **Files:** `packages/registry/php/`, the local-build cache-winner receipts
 
+### Build Qt as a generic POSIX Unix instead of Linux
+
+The Qt recipes (qtbase, qtshadertools, qtdeclarative, qtgallery and
+quickshell) compile with `-D__linux__=1 -DQT_LINUXBASE`, and all but
+qtgallery also configure CMake with `-DCMAKE_SYSTEM_NAME=Linux`. Qt's
+`qsystemdetection.h` stops with an error for any OS it does not recognize,
+and it recognizes Wasm only through `__EMSCRIPTEN__`. The SDK already
+declares Kandelo as a POSIX Unix (`sdk/cmake/Platform/Kandelo.cmake`), but
+Qt never sees it. Pretending to be Linux costs:
+
+- Linux-header shims: qtbase's `src/include/linux/fs.h` and qtdeclarative's
+  `src/include/linux/limits.h`.
+- Patches: `qmutex` and `qthread-name`, where upstream forgot to honor
+  `QT_LINUXBASE`, and `forkfd`, which `__linux__` routes to raw `clone(2)`.
+- Linux-only code paths in Qt, for example raw `syscall(SYS_memfd_create)`.
+
+**Direction.** Build Qt as a generic POSIX Unix, with no Kandelo identity
+macro in source. The project avoids such a macro on purpose, so that porting
+work improves general POSIX compatibility instead of inviting special cases.
+That means:
+
+- a generic `Q_OS_UNIX` fallback in `qsystemdetection.h` for an unrecognized
+  `__unix__` system;
+- a generic mkspec;
+- Qt's CMake run with the SDK's `Kandelo` system name, which sets `UNIX`;
+- Linux-gated CMake checks widened to capability checks: the Wayland and EGL
+  discovery gated on `LINUX OR FREEBSD`, and `--gc-sections` gated on
+  `LINUX OR BSD`;
+- features enabled by capability, not by OS name.
+
+**Gaps to resolve.**
+
+| # | Feature | Today (Linux path) | Generic path | Plan |
+|---|---|---|---|---|
+| 1 | Wayland SHM pools | memfd via raw syscall | temp file | `memfd_create()` when declared |
+| 2 | `applicationFilePath()` | `/proc/self/exe` | empty string | runtime readlink probe |
+| 3 | QLockFile stale check | `/proc/<pid>/exe` | PID liveness only | same probe |
+| 4 | `QStorageInfo::mountedVolumes()` | `/proc/self/mountinfo` | empty | read mountinfo, else `getmntent()` on `/etc/mtab` |
+| 5 | thread names | disabled under `QT_LINUXBASE` | disabled | `pthread_setname_np` if present and working; Kandelo implements `prctl(PR_SET_NAME)` |
+| 6 | thread ids in logs | `SYS_gettid` | `pthread_self` | `gettid()` when declared |
+| 7 | abstract-namespace local sockets | supported | unsupported option | accept generic path |
+| 8 | UDP pending-datagram size | `MSG_TRUNC` | generic sizing | accept generic path |
+| 9 | file watching | inotify, `ENOSYS` today, so polling | polling | Qt's inotify feature test applies if Kandelo implements inotify |
+| 10 | QMutex | futex-free dummy (`QT_LINUXBASE`) | generic Unix mutex | accept; benchmark |
+| 11 | QML JS memory (bundled WTF) | memfd-backed pages; relies on Linux `MADV_DONTNEED` zeroing that Kandelo does not provide | plain `mmap`, zeroed by WTF | accept |
+| 12 | Wayland plugin, `--gc-sections` | built | silently dropped | widen the CMake gates; compare configure summaries |
+
+Visible changes: `Qt.platform.os` becomes `"unix"`, the default Qt Quick
+Controls style may change, and `QSysInfo` reports the kernel from `uname()`.
+
+quickshell is not Linux-only: its upstream build has a FreeBSD branch.
+
+**Other packages.** basu, erlang, libdrm and spidermonkey also define
+`__linux__` (libdrm only while compiling its own sources), and mariadb's
+build script widens two `__linux__` checks to Wasm. They should get the same
+treatment: capability probes, or closing the Kandelo POSIX gap the Linux
+path stands in for.
+
+**Files:** `packages/registry/qt*/`, `packages/registry/quickshell/`,
+`sdk/cmake/Platform/Kandelo.cmake`
+
 ## Performance
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads
