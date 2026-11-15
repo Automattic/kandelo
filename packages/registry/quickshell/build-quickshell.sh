@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Cross-compile Quickshell 0.3.1 (quickshell.wasm) for wasm32.
+# Cross-compile Quickshell 0.3.2 (quickshell.wasm) for wasm32.
 #
 # The CMake cross setup mirrors build-qtdeclarative.sh — the target
 # defines match qtbase, CMAKE_CXX_STANDARD_LIBRARIES closes the static

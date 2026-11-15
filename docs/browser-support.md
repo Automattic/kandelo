@@ -1312,7 +1312,7 @@ file read downloads the archive; later reads reuse it. The image declares
 one command,
 `/usr/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
 and the compositor, waits for both sockets and the compositor's Hyprland
-IPC socket, then starts **Quickshell 0.3.1** on the image's `shell.qml`.
+IPC socket, then starts **Quickshell 0.3.2** on the image's `shell.qml`.
 Nothing is staged by the page.
 
 The desktop comes up bare: wallpaper and bar, no windows. As in Omarchy,

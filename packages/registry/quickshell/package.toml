@@ -1,6 +1,6 @@
 # Per-program manifest for Quickshell. See docs/package-management.md.
 #
-# Ports Quickshell 0.3.1, the QtQuick-based Wayland shell toolkit
+# Ports Quickshell 0.3.2, the QtQuick-based Wayland shell toolkit
 # Omarchy's shell is written in. The build keeps what the Omarchy
 # desktop's shell uses: wlr-layer-shell for the bar, launcher, wallpaper
 # and notifications; ext-session-lock for the lock screen; the Hyprland
@@ -15,7 +15,7 @@
 # services nothing here provides), X11, i3 and screencopy.
 kind = "program"
 name = "quickshell"
-version = "0.3.1"
+version = "0.3.2"
 kernel_abi = 44
 depends_on = [
   "qtdeclarative@6.12.0",
@@ -57,13 +57,13 @@ probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:
 install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-scanner" }
 
 [source]
-url = "https://github.com/quickshell-mirror/quickshell/archive/refs/tags/v0.3.1.tar.gz"
-sha256 = "218f6327293928bcb1f9b25728b336c4ab125f67fe1babd7d47313f890a16c99"
+url = "https://github.com/quickshell-mirror/quickshell/archive/refs/tags/v0.3.2.tar.gz"
+sha256 = "946a27e2a276917a03c1079e5c60971af84ece73088c3661dee455d92eb420f7"
 provider = "archive"
 
 [license]
 spdx = "LGPL-3.0-only"
-url = "https://github.com/quickshell-mirror/quickshell/blob/v0.3.1/LICENSE"
+url = "https://github.com/quickshell-mirror/quickshell/blob/v0.3.2/LICENSE"
 
 [build]
 script_path = "packages/registry/quickshell/build-quickshell.sh"

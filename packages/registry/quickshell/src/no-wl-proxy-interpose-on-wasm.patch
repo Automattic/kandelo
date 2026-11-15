@@ -8,10 +8,11 @@ libwayland-client.a's definition collide, wasm-ld has no
 the hook the behavior is upstream libwayland's (QTBUG-145022's null
 deref stays possible, exactly as in any non-interposed build).
 
-diff -ru a/src/wayland/CMakeLists.txt b/src/wayland/CMakeLists.txt
---- a/src/wayland/CMakeLists.txt	2026-08-31 19:35:06
-+++ b/src/wayland/CMakeLists.txt	2026-08-31 19:35:06
-@@ -82,10 +82,6 @@
+diff --git a/src/wayland/CMakeLists.txt b/src/wayland/CMakeLists.txt
+index 509fd91..e7f776e 100644
+--- a/src/wayland/CMakeLists.txt
++++ b/src/wayland/CMakeLists.txt
+@@ -82,10 +82,6 @@ qt_add_library(quickshell-wayland STATIC
  	output_tracking.cpp
  )
  
@@ -22,9 +23,10 @@ diff -ru a/src/wayland/CMakeLists.txt b/src/wayland/CMakeLists.txt
  # required to make sure the constructor is linked
  add_library(quickshell-wayland-init OBJECT init.cpp)
  
-diff -ru a/src/wayland/wl_proxy_safe_deref.cpp b/src/wayland/wl_proxy_safe_deref.cpp
---- a/src/wayland/wl_proxy_safe_deref.cpp	2026-08-31 19:35:06
-+++ b/src/wayland/wl_proxy_safe_deref.cpp	2026-08-31 19:35:06
+diff --git a/src/wayland/wl_proxy_safe_deref.cpp b/src/wayland/wl_proxy_safe_deref.cpp
+index 2664a99..69b9f9b 100644
+--- a/src/wayland/wl_proxy_safe_deref.cpp
++++ b/src/wayland/wl_proxy_safe_deref.cpp
 @@ -1,41 +1,12 @@
 -#include <dlfcn.h>
  #include <qlogging.h>
