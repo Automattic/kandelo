@@ -280,6 +280,9 @@ describe.skipIf(!available)(
         ["1 pkg-config", /pkgconf/],
         ["1 msgfmt", /compile\s+message\s+catalog\s+to\s+binary\s+format/],
         ["1 makeinfo", /translate\s+Texinfo\s+documents/],
+        ["1 meson", /a\s+high\s+productivity\s+build\s+system/],
+        // help2man over what ninja --help prints inside Kandelo.
+        ["1 ninja", /run\s+N\s+jobs\s+in\s+parallel/],
         ["1 cc", /Kandelo\s+SDK\s+driver/],
         // An alias page: retro-nes is fceumm under a shorter name.
         ["1 retro-nes", /FCEUmm\s+libretro\s+core/],

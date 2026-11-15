@@ -48,6 +48,7 @@ describe("kandelo-build-image package", () => {
       "kandelo-sdk-browser-bundle@21.1.7",
       "clang@21.1.7",
       "perl-browser-bundle@5.40.3",
+      "python-browser-bundle@3.13.3",
       // BUILD_IMAGE_ARCHIVE_TOOL_IDS.
       "tar@1.35",
       "gzip@1.13",
@@ -64,6 +65,8 @@ describe("kandelo-build-image package", () => {
       "pkgconf@3.0.10",
       "bison@3.8.2",
       "gperf@3.3",
+      "ninja@1.13.2",
+      "meson@1.12.1",
     ]);
   });
 });

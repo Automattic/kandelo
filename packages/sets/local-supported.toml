@@ -171,6 +171,14 @@ name = "gperf"
 class = "user-software"
 
 [[packages]]
+name = "ninja"
+class = "user-software"
+
+[[packages]]
+name = "meson"
+class = "user-software"
+
+[[packages]]
 name = "autoconf-docs"
 class = "browser-product"
 
@@ -196,6 +204,14 @@ class = "browser-product"
 
 [[packages]]
 name = "libtool-docs"
+class = "browser-product"
+
+[[packages]]
+name = "meson-docs"
+class = "browser-product"
+
+[[packages]]
+name = "ninja-docs"
 class = "browser-product"
 
 [[packages]]
