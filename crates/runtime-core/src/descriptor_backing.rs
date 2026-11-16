@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
-use crate::process::{EpollInstance, EventFdState, Process, SignalFdState, TimerFdState};
+use crate::process::{EventFdState, Process, SignalFdState, TimerFdState};
 
 #[derive(Debug)]
 struct SharedBacking<T> {
@@ -69,7 +69,7 @@ impl BackingReleaseEffects {
 }
 
 impl<T> SharedBackingTable<T> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: crate::IoBuffer::new(),
             #[cfg(test)]
@@ -347,7 +347,7 @@ static PROCFS_BUFS: GlobalBackingTable<ProcfsBacking> = GlobalBackingTable::new(
 static SYNTHETIC_REGULARS: GlobalBackingTable<SyntheticRegularBacking> =
     GlobalBackingTable::new();
 static PCM_STREAMS: GlobalBackingTable<crate::audio::PcmStream> = GlobalBackingTable::new();
-static EPOLLS: GlobalBackingTable<EpollInstance> = GlobalBackingTable::new();
+static EPOLLS: spin::Mutex<Option<crate::epoll::Table>> = spin::Mutex::new(None);
 
 // Keep synthetic backing handles disjoint from the small negative sentinels
 // used by pipes, devices, and procfs.
@@ -417,8 +417,8 @@ fn synthetic_regular_idx(host_handle: i64) -> Result<usize, Errno> {
 /// Epoll instances, one per open file description that `epoll_create1`
 /// created. Sharing them here is what lets a `fork` child use an inherited
 /// epoll descriptor and see the parent's registrations, and vice versa.
-pub fn with_epolls<R>(f: impl for<'a> FnOnce(&'a mut SharedBackingTable<EpollInstance>) -> R) -> R {
-    EPOLLS.with(f)
+pub fn with_epolls<R>(f: impl for<'a> FnOnce(&'a mut crate::epoll::Table) -> R) -> R {
+    f(EPOLLS.lock().get_or_insert_with(crate::epoll::Table::new))
 }
 
 pub fn with_pcm_streams<R>(

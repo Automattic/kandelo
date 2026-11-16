@@ -936,13 +936,6 @@ const SYS_POLL = ABI_SYSCALLS.Poll;
 const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
 const SYS_PSELECT6 = ABI_SYSCALLS.Pselect6;
 const SYS_SELECT = ABI_SYSCALLS.Select;
-/**
- * `kernel_epoll_wake_indices` token families. The kernel rejects any other
- * value with EINVAL; these two must stay in step with the `KIND_*` constants
- * in `crates/kernel/src/wasm_api.rs`.
- */
-const EPOLL_WAKE_KIND_PIPE = 0;
-const EPOLL_WAKE_KIND_ACCEPT = 1;
 const SYS_EPOLL_PWAIT = ABI_SYSCALLS.EpollPwait;
 const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
 const SYS_SCHED_GETAFFINITY = ABI_SYSCALLS.SchedGetaffinity;
@@ -16932,93 +16925,6 @@ export class CentralizedKernelWorker {
     return { pipeIndices: indices, acceptIndices };
   }
 
-  /**
-   * Ask the kernel which targeted wake tokens an `epoll_pwait` on `epfd`
-   * should park against.
-   *
-   * WHY THE KERNEL ANSWERS THIS. The interest list belongs to the open file
-   * description `epfd` names (`descriptor_backing::with_epolls`), is shared
-   * across `fork`, and keys each registration on `(fd, OfdId)`. The host held
-   * a `"pid:epfd"` mirror of it for exactly this join; that mirror was
-   * per-process and keyed on bare descriptor numbers, so it could only ever
-   * be a weaker model of what the kernel already knows. The join now runs
-   * where the interests live (`kernel_epoll_wake_indices`).
-   *
-   * The tokens are a latency optimization: the wait also re-checks readiness
-   * on a timer, so an empty result costs wake latency, never correctness. A
-   * kernel that cannot answer (an epfd already closed, an instance gone)
-   * yields no tokens and the timer carries the wait.
-   */
-  private resolveEpollReadinessIndices(
-    pid: number,
-    epfd: number,
-    entry: KernelWorkerEntryContext,
-  ): {
-    pipeIndices: number[];
-    acceptIndices: number[];
-  } {
-    return {
-      pipeIndices: this.#epollWakeIndices(
-        pid,
-        epfd,
-        EPOLL_WAKE_KIND_PIPE,
-        entry,
-      ),
-      acceptIndices: this.#epollWakeIndices(
-        pid,
-        epfd,
-        EPOLL_WAKE_KIND_ACCEPT,
-        entry,
-      ),
-    };
-  }
-
-  /**
-   * Read one wake-token family for `epfd` out of the kernel.
-   *
-   * `kind` selects the family — see `EPOLL_WAKE_KIND_*`. Kept a method rather
-   * than a closure so the entry context is threaded explicitly instead of
-   * captured.
-   */
-  #epollWakeIndices(
-    pid: number,
-    epfd: number,
-    kind: number,
-    entry: KernelWorkerEntryContext,
-  ): number[] {
-    // No availability probe for `kernel_epoll_wake_indices`: an absent export
-    // is a stale kernel artifact, and the scratch lease already fails loudly
-    // by name for one. Tolerating it would be the compatibility shim the ABI
-    // contract forbids, and it would silently turn every epoll wait into a
-    // timer poll.
-    const scratch = this.#requireMainScratchRegion();
-    return scratch.withLease((lease) => {
-      const request = Math.min(SCRATCH_SIZE, scratch.capacity);
-      const n = this.#invokeEntryScratchExport(
-        entry,
-        lease,
-        "kernel_epoll_wake_indices",
-        [pid, epfd, kind, lease.exportPointer(0, request), request],
-      );
-      // A negative result is the kernel declining to answer for this epfd
-      // (EBADF once it is closed, ESRCH once the process is gone). Both are
-      // ordinary races against a wait that is about to be retried anyway.
-      if (n <= 0) return [];
-      const bytes = n * 4;
-      if (!Number.isSafeInteger(bytes) || bytes > request) {
-        throw new KernelScratchError(
-          "epoll wake-index output exceeded scratch capacity",
-          EIO,
-        );
-      }
-      const out = lease.copyOut(0, bytes);
-      const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
-      const values: number[] = [];
-      for (let i = 0; i < n; i++) values.push(view.getInt32(i * 4, true));
-      return values;
-    });
-  }
-
   private wakeBlockedAccept(acceptIdx: number): void {
     const matches = Array.from(this.pendingPollRetries.entries()).filter(
       ([, e]) => e.acceptIndices?.includes(acceptIdx),
@@ -20628,11 +20534,10 @@ export class CentralizedKernelWorker {
     // Blocking: retry via setTimeout to avoid starving other processes.
     // Pipe-based wakeup (via wakeAllBlockedRetries) provides instant wakeup
     // when data arrives; setTimeout is only a fallback.
-    const { pipeIndices, acceptIndices } = this.resolveEpollReadinessIndices(
-      channel.pid,
-      epfd,
-      entry,
-    );
+    // Indexed kernel notifications issue a coalesced broad wake when they
+    // reach a sleeping epoll. Enumerating all interests here would put an
+    // O(watches) join back into every empty delivery, including nested and
+    // sibling-only registrations that caller-local fd hints cannot cover.
     if (
       this.interruptPendingCancellationBeforeRegistration(
         channel,
@@ -20655,8 +20560,8 @@ export class CentralizedKernelWorker {
         ...this.#cancellationPointIdentity(channel),
         timer: null as ReturnType<typeof setTimeout> | null,
         channel,
-        pipeIndices,
-        acceptIndices,
+        pipeIndices: [] as number[],
+        acceptIndices: [] as number[],
       };
       const arm = (remaining: number): void => {
         const delay = remaining === WAIT_REMAINING_INFINITE

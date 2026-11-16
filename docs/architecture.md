@@ -1375,9 +1375,13 @@ still observe that description while a sibling process holds it.
 A parked wait owns the exact epoll description and a unique kernel token,
 so fd reuse and late retirement after exec cannot redirect or cancel another
 wait. The shared Node/browser host retains only this token, the signal scope
-and the deadline; it keeps no interest-list mirror. Targeted pipe/accept
-wake tokens are latency hints, with bounded yielding retries for other
-sources and concurrent registration. Host network notification counters,
+and the deadline; it keeps no interest-list mirror. A reverse source index
+routes mutations to bounded, coalesced candidate queues, and nested callbacks
+follow only affected parent relationships. Indexed callbacks reaching a
+sleeping instance issue the existing coalesced broad wake, including concurrent
+registration into an empty set. Parking no longer clones/resolves the interest
+list for pipe/accept hints. Sampling-dependent providers retain the existing
+bounded yielding retry. Host network notification counters,
 signal queue generations, and the independent PCM consumer clock retain
 activity that happens between attempts. See the [epoll matrix](epoll.md) for
 interfaces, event bits, ownership details and explicit compatibility limits.

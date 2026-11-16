@@ -755,6 +755,7 @@ describe("retained epoll fallback probe", () => {
         syscallArgs(7, 4096, 1, -1, 0, SIGNAL_MASK_BYTES));
       expect(harness.handleChannel).toHaveBeenCalledOnce();
       expect(harness.synchronizeSharedMemory).toHaveBeenCalledOnce();
+      expect(harness.epollWakeIndices).not.toHaveBeenCalled();
       const token = harness.channel.epollWaitToken;
       expect(token).toBeTypeOf("bigint");
       await vi.advanceTimersByTimeAsync(30);

@@ -115,6 +115,7 @@ host/test/egress-link.test.ts	source-only
 host/test/enosys-report.test.ts	prepared-product
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-pwait-sigmask.test.ts	prepared-product
+host/test/epoll-scaling.test.ts	prepared-product
 host/test/epoll-semantics.test.ts	prepared-product
 host/test/esm-probe-guest.test.ts	prepared-product
 host/test/evdev-header-consistency.test.ts	source-only
