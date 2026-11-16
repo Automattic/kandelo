@@ -45,6 +45,7 @@ if [ "${WASM_POSIX_TARGET_ARCH:-wasm32}" = "wasm64" ]; then
     ac_cv_sizeof_void_p=${ac_cv_sizeof_void_p=8}
     ac_cv_sizeof_uintptr_t=${ac_cv_sizeof_uintptr_t=8}
     ac_cv_sizeof_pthread_t=${ac_cv_sizeof_pthread_t=8}
+    ac_cv_sizeof_clock_t=${ac_cv_sizeof_clock_t=8}
     php_cv_sizeof_ssize_t=${php_cv_sizeof_ssize_t=8}
     php_cv_sizeof_ptrdiff_t=${php_cv_sizeof_ptrdiff_t=8}
     ac_cv_alignof_size_t=${ac_cv_alignof_size_t=8}
@@ -73,7 +74,8 @@ ac_cv_sizeof_fpos_t=${ac_cv_sizeof_fpos_t=16}
 ac_cv_sizeof_uintptr_t=${ac_cv_sizeof_uintptr_t=4}
 ac_cv_sizeof_wchar_t=${ac_cv_sizeof_wchar_t=4}
 ac_cv_sizeof_signed_char=${ac_cv_sizeof_signed_char=1}
-ac_cv_sizeof_clock_t=${ac_cv_sizeof_clock_t=8}
+# musl's clock_t is long: 4 bytes on wasm32, 8 on wasm64 (above).
+ac_cv_sizeof_clock_t=${ac_cv_sizeof_clock_t=4}
 ac_cv_sizeof__Bool=${ac_cv_sizeof__Bool=1}
 ac_cv_sizeof_pthread_t=${ac_cv_sizeof_pthread_t=4}
 ac_cv_sizeof_pthread_key_t=${ac_cv_sizeof_pthread_key_t=4}
@@ -261,6 +263,7 @@ ac_cv_func_sigwaitinfo=${ac_cv_func_sigwaitinfo=yes}
 # Time
 ac_cv_func_clock_getres=${ac_cv_func_clock_getres=yes}
 ac_cv_func_clock_gettime=${ac_cv_func_clock_gettime=yes}
+ac_cv_func_clock_nanosleep=${ac_cv_func_clock_nanosleep=yes}
 ac_cv_func_clock_settime=${ac_cv_func_clock_settime=yes}
 ac_cv_func_getitimer=${ac_cv_func_getitimer=yes}
 ac_cv_func_gettimeofday=${ac_cv_func_gettimeofday=yes}
@@ -383,6 +386,7 @@ ac_cv_func_pthread_attr_init=${ac_cv_func_pthread_attr_init=yes}
 ac_cv_func_pthread_attr_setinheritsched=${ac_cv_func_pthread_attr_setinheritsched=yes}
 ac_cv_func_pthread_attr_setstacksize=${ac_cv_func_pthread_attr_setstacksize=yes}
 ac_cv_func_pthread_condattr_setclock=${ac_cv_func_pthread_condattr_setclock=yes}
+ac_cv_func_pthread_create=${ac_cv_func_pthread_create=yes}
 ac_cv_func_pthread_getcpuclockid=${ac_cv_func_pthread_getcpuclockid=yes}
 ac_cv_func_pthread_getattr_np=${ac_cv_func_pthread_getattr_np=yes}
 ac_cv_func_pthread_kill=${ac_cv_func_pthread_kill=yes}
@@ -506,7 +510,6 @@ ac_cv_func_memset_s=${ac_cv_func_memset_s=no}
 ac_cv_func___setostype=${ac_cv_func___setostype=no}
 ac_cv_func__doprnt=${ac_cv_func__doprnt=no}
 ac_cv_func_GetSystemTimeAsFileTime=${ac_cv_func_GetSystemTimeAsFileTime=no}
-ac_cv_func_clock_nanosleep=${ac_cv_func_clock_nanosleep=no}
 ac_cv_func_close_range=${ac_cv_func_close_range=no}
 ac_cv_func_closefrom=${ac_cv_func_closefrom=no}
 ac_cv_func_closesocket=${ac_cv_func_closesocket=no}
@@ -529,7 +532,6 @@ ac_cv_func_mbscasecmp=${ac_cv_func_mbscasecmp=no}
 ac_cv_func_mbschr=${ac_cv_func_mbschr=no}
 ac_cv_func_mbscmp=${ac_cv_func_mbscmp=no}
 ac_cv_func_mbslen=${ac_cv_func_mbslen=no}
-ac_cv_func_mprotect=${ac_cv_func_mprotect=no}
 ac_cv_func_mquery=${ac_cv_func_mquery=no}
 ac_cv_func_mremap=${ac_cv_func_mremap=no}
 ac_cv_func_open64=${ac_cv_func_open64=no}
@@ -539,7 +541,6 @@ ac_cv_func_pstat_getdynamic=${ac_cv_func_pstat_getdynamic=no}
 ac_cv_func_pstat_getprocvm=${ac_cv_func_pstat_getprocvm=no}
 ac_cv_func_pstat_getstatic=${ac_cv_func_pstat_getstatic=no}
 ac_cv_func_pthread_cond_timedwait_relative_np=${ac_cv_func_pthread_cond_timedwait_relative_np=no}
-ac_cv_func_pthread_create=${ac_cv_func_pthread_create=no}
 ac_cv_func_pthread_init=${ac_cv_func_pthread_init=no}
 ac_cv_func_ptsname_r=${ac_cv_func_ptsname_r=no}
 ac_cv_func_renameat2=${ac_cv_func_renameat2=no}
@@ -554,6 +555,13 @@ ac_cv_func_vasnprintf=${ac_cv_func_vasnprintf=no}
 ac_cv_func_RAND_egd=${ac_cv_func_RAND_egd=no}
 ac_cv_func__set_invalid_parameter_handler=${ac_cv_func__set_invalid_parameter_handler=no}
 ac_cv_func_posix_spawn_file_actions_addclosefrom_np=${ac_cv_func_posix_spawn_file_actions_addclosefrom_np=no}
+
+# mprotect() links, but Wasm cannot enforce page protection: the kernel
+# accepts a protection change without making later accesses fault
+# (docs/posix-status.md). A configure check finding it would enable guard
+# pages, write barriers or W^X schemes that silently do nothing, so it stays
+# absent until protection is enforced.
+ac_cv_func_mprotect=${ac_cv_func_mprotect=no}
 
 # xattr — not in musl on wasm32
 ac_cv_func_fgetxattr=${ac_cv_func_fgetxattr=no}

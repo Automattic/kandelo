@@ -211,3 +211,41 @@ describe('config.site operating-system identity', () => {
     expect(hostOperatingSystemSiteFact({ gl_cv_host_operating_system: 'Other' })).toBe('Other');
   });
 });
+
+function siteFacts(names: readonly string[], overrides: Record<string, string> = {}): string[] {
+  const printFacts = ['. "$1";', 'printf "%s\\n"', ...names.map((name) => `"$${name}"`)].join(' ');
+  const env: Record<string, string | undefined> = { ...process.env, ...overrides };
+  if (!('WASM_POSIX_TARGET_ARCH' in overrides)) delete env.WASM_POSIX_TARGET_ARCH;
+  for (const name of names) if (!(name in overrides)) delete env[name];
+  const output = execFileSync('bash', ['-c', printFacts, 'bash', CONFIG_SITE], {
+    encoding: 'utf8',
+    env,
+  });
+  return output.trimEnd().split('\n');
+}
+
+describe('config.site answers that agree with the sysroot and kernel', () => {
+  // musl's clock_t is long.
+  it('sizes clock_t for each target', () => {
+    expect(siteFacts(['ac_cv_sizeof_clock_t'])).toEqual(['4']);
+    expect(siteFacts(['ac_cv_sizeof_clock_t'], { WASM_POSIX_TARGET_ARCH: 'wasm32' })).toEqual(['4']);
+    expect(siteFacts(['ac_cv_sizeof_clock_t'], { WASM_POSIX_TARGET_ARCH: 'wasm64' })).toEqual(['8']);
+  });
+
+  it('reports functions present that link and work', () => {
+    expect(siteFacts(['ac_cv_func_clock_nanosleep', 'ac_cv_func_pthread_create'])).toEqual(['yes', 'yes']);
+  });
+
+  // close_range is not in musl's libc.a; mprotect links but cannot enforce
+  // page protection in Wasm, so it stays absent for configure.
+  it('keeps close_range and mprotect absent', () => {
+    expect(siteFacts(['ac_cv_func_close_range', 'ac_cv_func_mprotect'])).toEqual(['no', 'no']);
+  });
+
+  it('preserves caller overrides', () => {
+    expect(siteFacts(['ac_cv_sizeof_clock_t', 'ac_cv_func_pthread_create'], {
+      ac_cv_sizeof_clock_t: '16',
+      ac_cv_func_pthread_create: 'no',
+    })).toEqual(['16', 'no']);
+  });
+});
