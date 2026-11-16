@@ -11748,7 +11748,7 @@ pub fn kernel_utimensat(
 pub fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_madvise(proc, addr, len, advice) {
+    let result = match syscalls::sys_madvise(proc, &mut host, addr, len, advice) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
