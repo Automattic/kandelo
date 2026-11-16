@@ -878,6 +878,16 @@ under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
 and `c++`. This delivery uses the base shell's existing lazy archive
 mechanism and requires no separate compiler image.
 
+The archive's sysroot holds only the SDK's declared content: the files in
+the musl output receipt (checked against their recorded digests), the
+other files `scripts/build-musl.sh` installs, the
+[platform graphics libraries](#sysroot-platform-libraries), and libc++
+from the declared `libcxx` dependency. The build machine's `sysroot/` is
+shared and also holds libraries other tools stage there, such as the
+GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
+fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind,
+and the `kandelo-sdk` image selects its sysroot through the same script.
+
 In a shell session:
 
 ```sh

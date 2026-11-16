@@ -5,6 +5,15 @@ inputs = [
   "packages/registry/kandelo-sdk/build-kandelo-sdk.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts",
+  # The SDK sysroot selection and the graphics producers it selects from
+  # (the global toolchain inputs cover musl but not these).
+  "images/vfs/scripts/stage-sdk-sysroot.sh",
+  "scripts/musl-output-state.mjs",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/build-step-input-hash.sh",
+  "scripts/write-graphics-pkgconfig.sh",
+  "packages/registry/libdrm",
   # The guest clang version names the resource directory in the image.
   "packages/registry/clang/package.toml",
   "images/vfs/scripts/vfs-image-helpers.ts",

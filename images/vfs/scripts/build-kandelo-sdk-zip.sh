@@ -26,7 +26,9 @@
 # directory (lib/libc++.a, lib/libc++abi.a, include/c++/v1). <kandelo-cc-dir>
 # holds kandelo-cc.wasm and <binaryen-dir> wasm-opt.wasm. This script does
 # not resolve packages itself — canonical package builds pass their direct
-# dependencies explicitly.
+# dependencies explicitly. The musl and graphics sysroot content comes from
+# $WASM_POSIX_SYSROOT (default: this checkout's sysroot/) through
+# stage-sdk-sysroot.sh, which copies only the SDK's declared files.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,6 +44,8 @@ LIBCXX_DIR="$2"
 KANDELO_CC_DIR="$3"
 BINARYEN_DIR="$4"
 OUTPUT_FILE="$5"
+# The build machine's wasm32 sysroot, chosen as the SDK driver chooses it.
+SYSROOT_DIR="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 require_file() {
     local label="$1"
@@ -69,7 +73,6 @@ require_file "llvm-nm.wasm" "$CLANG_DIR/llvm-nm.wasm"
 require_file "libc++.a" "$LIBCXX_DIR/lib/libc++.a"
 require_file "libc++abi.a" "$LIBCXX_DIR/lib/libc++abi.a"
 require_dir "libc++ headers" "$LIBCXX_DIR/include/c++/v1"
-require_file "sysroot libc.a" "$REPO_ROOT/sysroot/lib/libc.a"
 require_file "kandelo-cc.wasm" "$KANDELO_CC_DIR/kandelo-cc.wasm"
 require_file "wasm-opt.wasm" "$BINARYEN_DIR/wasm-opt.wasm"
 require_file "config.site" "$REPO_ROOT/sdk/config.site"
@@ -148,20 +151,17 @@ mkdir -p "$STAGING/lib/llvm/lib/clang/$CLANG_MAJOR"
 # compiler-rt libraries (e.g. Darwin Mach-O archives) are not guest libraries.
 cp -RL "$HOST_CLANG_RESOURCE_DIR/include" "$STAGING/lib/llvm/lib/clang/$CLANG_MAJOR/"
 
-# --- lib/kandelo/wasm32posix/sysroot — musl + libc++ ---
-mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot"
-cp -RL "$REPO_ROOT/sysroot/." "$STAGING/lib/kandelo/wasm32posix/sysroot/"
-# The sysroot's top-level .kandelo-* files are the build machine's freshness
-# stamps (hashes of this checkout's musl and stub inputs). They are not guest
-# content, nothing in the guest SDK reads them, and they differ between
-# checkouts whose libraries are byte-identical, which made this archive
-# differ per worktree under one cache key.
-find "$STAGING/lib/kandelo/wasm32posix/sysroot" -maxdepth 1 -type f \
-    -name '.kandelo-*' -delete
-mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot/lib"
+# --- lib/kandelo/wasm32posix/sysroot — musl, graphics libraries, libc++ ---
+# Only the SDK's declared sysroot content: the shared build-machine sysroot
+# also holds whatever other tools staged there (scripts/build-programs.sh
+# copies GTK, glib, SDL2 and other fixture libraries into it), and those are
+# not inputs of this archive. The freshness stamps (.kandelo-*) stay behind
+# too: they hash this checkout's inputs, so they differ between checkouts
+# whose libraries are byte-identical.
+bash "$SCRIPT_DIR/stage-sdk-sysroot.sh" "$SYSROOT_DIR" \
+    "$STAGING/lib/kandelo/wasm32posix/sysroot"
 cp "$LIBCXX_DIR/lib/libc++.a" "$STAGING/lib/kandelo/wasm32posix/sysroot/lib/libc++.a"
 cp "$LIBCXX_DIR/lib/libc++abi.a" "$STAGING/lib/kandelo/wasm32posix/sysroot/lib/libc++abi.a"
-rm -rf "$STAGING/lib/kandelo/wasm32posix/sysroot/include/c++/v1"
 mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot/include/c++"
 cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/lib/kandelo/wasm32posix/sysroot/include/c++/v1"
 

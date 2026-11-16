@@ -16,9 +16,9 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] || \
   kandelo_package_prepare_build_roots "$SCRIPT_DIR/kandelo-sdk-work" wasm32
 fi
 
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-if [[ ! -f "$SYSROOT/lib/libc.a" ]]; then
-  echo "ERROR: sysroot not found at $SYSROOT. Run: bash scripts/build-musl.sh" >&2
+SOURCE_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+if [[ ! -f "$SOURCE_SYSROOT/lib/libc.a" ]]; then
+  echo "ERROR: sysroot not found at $SOURCE_SYSROOT. Run: bash scripts/build-musl.sh" >&2
   exit 1
 fi
 
@@ -44,14 +44,21 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     echo "ERROR: kandelo-sdk resolver build requires WASM_POSIX_DEP_OUT_DIR" >&2
     exit 1
   fi
-  SYSROOT="$(
-    kandelo_package_prepare_private_sysroot kandelo-sdk "$SYSROOT"
-  )"
-  export WASM_POSIX_SYSROOT="$SYSROOT"
+  kandelo_package_require_disjoint_paths \
+    "SDK sysroot" "$SOURCE_SYSROOT" WASM_POSIX_DEP_WORK_DIR "$KANDELO_PACKAGE_WORK_DIR"
+  SYSROOT="$(mktemp -d "$KANDELO_PACKAGE_WORK_DIR/.kandelo-kandelo-sdk-sysroot.XXXXXX")"
   VFS="$KANDELO_PACKAGE_OUT_DIR/kandelo-sdk.vfs.zst"
 else
+  SYSROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-sdk-sysroot.XXXXXX")"
+  trap 'rm -rf -- "$SYSROOT"' EXIT
   VFS="$SCRIPT_DIR/kandelo-sdk.vfs.zst"
 fi
+# Copy only the SDK's declared sysroot content into a private tree. The
+# shared sysroot also holds what other tools staged there
+# (scripts/build-programs.sh copies GTK, glib, SDL2 and other fixture
+# libraries into it), which is not an input of this image.
+bash "$REPO_ROOT/images/vfs/scripts/stage-sdk-sysroot.sh" "$SOURCE_SYSROOT" "$SYSROOT"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 if [[ -n "$LIBCXX_DIR" ]]; then
   copy_if_changed() {
     local src="$1"
