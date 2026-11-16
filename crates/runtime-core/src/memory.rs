@@ -711,6 +711,47 @@ impl MemoryManager {
             .any(|m| addr >= m.addr && addr < m.addr + m.len)
     }
 
+    /// Whether every page of `[addr, addr + len)` is process memory: below the
+    /// program break (program image, stack and `brk` heap), in a mapping, in a
+    /// host-reserved region (thread stacks), in the host control gap, or at or
+    /// above the mmap ceiling where the host places channels and TLS. A page in
+    /// the mmap area that no mapping covers is not. This is the `ENOMEM` test
+    /// of `madvise()`; Wasm linear memory itself has no unmapped pages.
+    pub fn range_is_process_memory(&self, addr: usize, len: usize) -> bool {
+        let Some(end) = addr.checked_add(len) else {
+            return false;
+        };
+        let break_end = Self::align_page_up(self.program_break);
+        let mut cursor = addr;
+        while cursor < end {
+            if cursor < break_end {
+                cursor = break_end;
+                continue;
+            }
+            if cursor >= self.max_addr {
+                return true;
+            }
+            if self.brk_limit < self.mmap_base
+                && cursor >= self.brk_limit
+                && cursor < self.mmap_base
+            {
+                cursor = self.mmap_base;
+                continue;
+            }
+            let covering = self
+                .mappings
+                .iter()
+                .map(|m| (m.addr, m.len))
+                .chain(self.reserved_regions.iter().map(|r| (r.addr, r.len)))
+                .find(|&(start, len)| start <= cursor && cursor < start.saturating_add(len));
+            match covering {
+                Some((start, len)) => cursor = start.saturating_add(len),
+                None => return false,
+            }
+        }
+        true
+    }
+
     /// Check if `len` bytes starting at `addr` are free (no overlap with existing mappings
     /// and within address space bounds).
     pub fn can_grow_at(&self, addr: usize, len: usize) -> bool {
@@ -853,9 +894,11 @@ impl MemoryManager {
         addr.saturating_add(0xFFFF) & !0xFFFF
     }
 
-    /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
-    /// The caller must ensure the space is free (via `can_grow_at`). Returns
-    /// whether an exact mapping was found and updated.
+    /// Extend the mapping that starts at `addr` from `old_len` to `new_len`.
+    /// `addr` is the mapping's start, which may lie below the range `mremap`
+    /// named when that range is the mapping's tail. The caller must ensure the
+    /// space is free (via `can_grow_at`). Returns whether an exact mapping was
+    /// found and updated.
     pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) -> bool {
         for m in &mut self.mappings {
             if m.addr == addr && m.len == old_len {

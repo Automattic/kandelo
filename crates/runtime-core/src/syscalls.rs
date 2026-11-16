@@ -12665,20 +12665,69 @@ pub fn sys_utimensat(
     crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, 0)
 }
 
-/// Memory advice hint. No-op in Wasm — there's no virtual memory paging.
+/// `madvise()` advice values Kandelo's `<sys/mman.h>` defines: the five
+/// POSIX/BSD values and the Linux values from `MADV_FREE` (8) through
+/// `MADV_PAGEOUT` (21), plus `MADV_HWPOISON` and `MADV_SOFT_OFFLINE`.
+fn is_defined_madvise_advice(advice: u32) -> bool {
+    matches!(advice, 0..=4 | 8..=21 | 100 | 101)
+}
+
+/// madvise -- advice about the use of a memory range.
+///
+/// Advice is a hint: Kandelo performs none of it, which is a correct
+/// implementation of `POSIX_MADV_*` (the advice may not change data
+/// semantics) and of Linux's hint values. Arguments are still validated as
+/// POSIX `posix_madvise()` and Linux `madvise()` do: an undefined advice value
+/// or an unaligned address is `EINVAL`, and a range containing pages that are
+/// not process memory is `ENOMEM`. Linux advice whose effect is observable
+/// (`MADV_DONTNEED`'s discard, `MADV_REMOVE`, `MADV_DONTFORK`,
+/// `MADV_WIPEONFORK`, `MADV_HWPOISON`) is accepted without that effect; see
+/// `docs/posix-status.md`. musl's `posix_madvise()` answers
+/// `POSIX_MADV_DONTNEED` itself and never sends it here.
 pub fn sys_madvise(
-    _proc: &mut Process,
-    _addr: usize,
-    _len: usize,
-    _advice: u32,
+    proc: &mut Process,
+    addr: usize,
+    len: usize,
+    advice: u32,
 ) -> Result<(), Errno> {
+    if !is_defined_madvise_advice(advice) {
+        return Err(Errno::EINVAL);
+    }
+    if addr & 0xFFFF != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
+    if aligned_len == 0 {
+        return Ok(());
+    }
+    if addr.checked_add(aligned_len).is_none() {
+        return Err(Errno::EINVAL);
+    }
+    if !proc.memory.range_is_process_memory(addr, aligned_len) {
+        return Err(Errno::ENOMEM);
+    }
     Ok(())
 }
 
 /// Remap a memory mapping.
 ///
-/// Supports in-place shrink, in-place grow (if adjacent gap exists),
-/// and MREMAP_MAYMOVE (allocate new mapping, old mapping is freed).
+/// Supports shrink, in-place growth when the pages after the mapping are
+/// free, `MREMAP_MAYMOVE` (the kernel picks the new address) and
+/// `MREMAP_FIXED` (the caller does, replacing what was mapped there). The
+/// kernel only moves the mapping records: the host copies the bytes in its
+/// SYS_MREMAP post-syscall step (`host/src/kernel-worker.ts`), because the
+/// process's memory is not the kernel's.
+///
+/// Refused, each with the errno named:
+/// - a zero old length (Linux duplicates a shared mapping; Wasm linear memory
+///   cannot alias two addresses), `MREMAP_DONTUNMAP` and unknown flags:
+///   `EINVAL`;
+/// - part of a `MAP_SHARED` mapping (its host coherence tracker covers the
+///   whole mapping): `EINVAL`;
+/// - growing or moving a device mapping, and growing a `MAP_PRIVATE` file
+///   mapping (the kernel keeps no reference to the file to read the added
+///   pages from): `EFAULT`, as Linux answers for a non-expandable mapping.
+#[allow(clippy::too_many_arguments)]
 pub fn sys_mremap(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -12686,37 +12735,53 @@ pub fn sys_mremap(
     old_len: usize,
     new_len: usize,
     flags: u32,
+    new_addr: usize,
 ) -> Result<usize, Errno> {
+    use wasm_posix_shared::mmap::{MAP_FAILED, MAP_FIXED, MAP_SHARED};
     if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
 
     const MREMAP_MAYMOVE: u32 = 1;
-    const SUPPORTED_FLAGS: u32 = MREMAP_MAYMOVE;
+    const MREMAP_FIXED: u32 = 2;
+    const SUPPORTED_FLAGS: u32 = MREMAP_MAYMOVE | MREMAP_FIXED;
 
+    if flags & !SUPPORTED_FLAGS != 0 {
+        // MREMAP_DONTUNMAP leaves an empty mapping behind at the old address;
+        // the kernel does not implement it. Reject unsupported flags rather
+        // than treating them as an ordinary remap.
+        return Err(Errno::EINVAL);
+    }
+    let fixed = flags & MREMAP_FIXED != 0;
+    if fixed && flags & MREMAP_MAYMOVE == 0 {
+        return Err(Errno::EINVAL);
+    }
     if old_len == 0 || new_len == 0 {
         return Err(Errno::EINVAL);
     }
-    if flags & !SUPPORTED_FLAGS != 0 {
-        // The current wasm libc import ABI passes the Linux mremap syscall's
-        // first four arguments. MREMAP_FIXED requires the fifth new-address
-        // argument, and MREMAP_DONTUNMAP has Linux-specific aliasing semantics
-        // that the kernel does not implement. Reject unsupported flags
-        // explicitly instead of silently treating them as an ordinary remap.
-        return Err(Errno::EINVAL);
-    }
-
     if old_addr & 0xFFFF != 0 {
         return Err(Errno::EINVAL);
     }
     let aligned_old = old_len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
     let aligned_new = new_len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
+    if fixed {
+        if new_addr & 0xFFFF != 0 || new_addr.checked_add(aligned_new).is_none() {
+            return Err(Errno::EINVAL);
+        }
+        if ranges_overlap(old_addr, aligned_old, new_addr, aligned_new) {
+            return Err(Errno::EINVAL);
+        }
+    }
     let old_end = old_addr.checked_add(aligned_old).ok_or(Errno::EFAULT)?;
     let original = proc.memory.mappings().iter().find(|mapping| {
         mapping.addr <= old_addr && mapping.addr.checked_add(mapping.len).is_some_and(|end| old_end <= end)
     }).cloned().ok_or(Errno::EFAULT)?;
+    let original_end = original.addr + original.len;
+    if original.flags & MAP_SHARED != 0 && (original.addr != old_addr || original.len != aligned_old) {
+        return Err(Errno::EINVAL);
+    }
 
     // Shrink uses the same device retirement as munmap, while the old
     // address-space bytes can still be flushed into canonical backing.
-    if aligned_new <= aligned_old {
+    if !fixed && aligned_new <= aligned_old {
         if aligned_new < aligned_old {
             sys_munmap(proc, host, old_addr + aligned_new, aligned_old - aligned_new)?;
         }
@@ -12726,7 +12791,8 @@ pub fn sys_mremap(
     // Linux GEM maps are VM_DONTEXPAND: growing them fails with EFAULT,
     // including MAYMOVE and requests within an otherwise larger BO. The fb
     // and command mappings also describe fixed protocol buffers; a generic
-    // address-space grow must not invent device bytes. See the graphics ledger.
+    // address-space grow must not invent device bytes, and their bindings
+    // name the mapped address, so they do not move. See the graphics ledger.
     let fixed_device = proc.dri_bindings.iter().any(|binding| {
         ranges_overlap(old_addr, aligned_old, binding.addr, binding.len)
     }) || proc.fb_binding.is_some_and(|binding| {
@@ -12747,51 +12813,71 @@ pub fn sys_mremap(
     if fixed_device {
         return Err(Errno::EFAULT);
     }
-
-    // Grow: check if the mapping can expand in place
-    let extra = aligned_new - aligned_old;
-    let grow_start = old_addr.checked_add(aligned_old).ok_or(Errno::EINVAL)?;
-    if proc.memory.can_grow_at(grow_start, extra) {
-        if proc
-            .memory
-            .extend_mapping(old_addr, aligned_old, aligned_new)
-        {
-            return Ok(old_addr);
-        }
+    // A private file mapping's added pages would have to come from the file,
+    // and the kernel keeps no reference to it once the descriptor closes.
+    // Treat the mapping as non-expandable instead of zero-filling file pages.
+    if aligned_new > aligned_old && original.file.is_some() && original.flags & MAP_SHARED == 0 {
         return Err(Errno::EFAULT);
     }
 
-    // MREMAP_MAYMOVE: allocate a new mapping and free the old one.
-    //
-    // The kernel cannot memcpy the user bytes itself — it runs in its own
-    // Wasm linear memory, separate from the user process's. The byte copy
-    // is performed by the host runtime in `host/src/kernel-worker.ts`'s
-    // SYS_MREMAP post-syscall fixup, which owns the user's
-    // `WebAssembly.Memory` and runs after this function returns but before
-    // the user process resumes.
-    if flags & MREMAP_MAYMOVE != 0 {
-        // A moved subrange can add the destination plus a source fragment.
-        proc.memory.reserve_mapping_slots(2)?;
-        let new_addr = proc.memory.mmap_anonymous(
-            0, aligned_new, original.prot,
-            original.flags & !wasm_posix_shared::mmap::MAP_FIXED,
-        );
-        if new_addr == wasm_posix_shared::mmap::MAP_FAILED {
+    // Grow in place when the range ends where its mapping does and the pages
+    // after it are free. The mapping grows from its own start, which lies
+    // below `old_addr` when the range is the mapping's tail.
+    if !fixed {
+        let extra = aligned_new - aligned_old;
+        if old_end == original_end && proc.memory.can_grow_at(old_end, extra) {
+            let grown = original.len.checked_add(extra).ok_or(Errno::ENOMEM)?;
+            if proc.memory.extend_mapping(original.addr, original.len, grown) {
+                return Ok(old_addr);
+            }
+            return Err(Errno::EFAULT);
+        }
+        if flags & MREMAP_MAYMOVE == 0 {
             return Err(Errno::ENOMEM);
         }
-        // A moved file mapping still maps the same object from the offset
-        // the old address mapped.
-        if let Some(file) = original.file.clone() {
-            let file_offset = original
-                .file_offset
-                .saturating_add((old_addr - original.addr) as u64);
-            proc.memory.set_mapping_file(new_addr, file_offset, file);
-        }
-        proc.memory.munmap(old_addr, aligned_old)?;
-        return Ok(new_addr);
     }
 
-    Err(Errno::ENOMEM)
+    // Move: map the destination, then drop the old range. The kernel cannot
+    // copy the bytes itself; the host's SYS_MREMAP post-syscall step does,
+    // after this returns and before the process resumes.
+    //
+    // A moved subrange can add the destination plus a source fragment.
+    proc.memory.reserve_mapping_slots(2)?;
+    let file_offset = original
+        .file_offset
+        .saturating_add((old_addr - original.addr) as u64);
+    let moved = if fixed {
+        // Replace whatever was mapped at the destination, as MAP_FIXED does:
+        // the same device retirement and kernel shared-mapping cleanup.
+        let cleanup = unsafe { crate::memory::global_shared_mapping_table() }
+            .stage_cleanup_mappings(proc.pid, new_addr as u64, aligned_new as u64)?;
+        let allocation = DeviceMapAllocation::prepare_reporting(
+            proc, host, new_addr, aligned_new, original.prot, original.flags | MAP_FIXED,
+        )?;
+        if let Err(error) = proc.memory.munmap(old_addr, aligned_old) {
+            allocation.rollback(proc);
+            return Err(error);
+        }
+        let moved = allocation.addr;
+        allocation.commit(proc, host, false);
+        unsafe { crate::memory::global_shared_mapping_table() }.publish_cleanup_preparation(cleanup);
+        moved
+    } else {
+        let moved = proc.memory.mmap_anonymous(
+            0, aligned_new, original.prot, original.flags & !MAP_FIXED,
+        );
+        if moved == MAP_FAILED {
+            return Err(Errno::ENOMEM);
+        }
+        proc.memory.munmap(old_addr, aligned_old)?;
+        moved
+    };
+    // A moved file mapping still maps the same object from the offset the old
+    // address mapped.
+    if let Some(file) = original.file {
+        proc.memory.set_mapping_file(moved, file_offset, file);
+    }
+    Ok(moved)
 }
 
 /// Check if a file descriptor refers to a terminal.
@@ -36385,15 +36471,16 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/tmp/maps-move", 0x42, 0o644).unwrap();
         let addr = sys_mmap(&mut proc, &mut host, 0, 0x20000, 1, 0x02, fd, 0x30000).unwrap();
-        // Block in-place growth so the remap must move.
         let blocker = addr + 0x20000;
         assert_eq!(
             sys_mmap(&mut proc, &mut host, blocker, 0x10000, 1, 0x32, -1, 0).unwrap(),
             blocker
         );
-        // Move the second page only: it mapped file offset 0x40000.
-        let moved = sys_mremap(&mut proc, &mut host, addr + 0x10000, 0x10000, 0x20000, 1).unwrap();
-        assert_ne!(moved, addr + 0x10000);
+        // Move the second page only (MREMAP_MAYMOVE | MREMAP_FIXED, without
+        // growth, which a private file mapping refuses): it mapped file
+        // offset 0x40000.
+        let moved = sys_mremap(&mut proc, &mut host, addr + 0x10000, 0x10000, 0x10000, 3, blocker + 0x10000).unwrap();
+        assert_eq!(moved, blocker + 0x10000);
         let line = maps_line_at(&proc, moved);
         assert!(line.contains(" r--p 00040000 "), "{line}");
         assert!(line.ends_with(" /tmp/maps-move"), "{line}");
@@ -36508,12 +36595,12 @@ mod tests {
         proc.memory.set_mappings(crate::IoBuffer::try_adopt(vec![original.clone()]).unwrap());
         {
             let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
-            assert_eq!(sys_mremap(&mut proc, &mut host, base + page, page, 2 * page, 1), Err(Errno::ENOMEM));
+            assert_eq!(sys_mremap(&mut proc, &mut host, base + page, page, 2 * page, 1, 0), Err(Errno::ENOMEM));
             assert_eq!(proc.memory.mappings(), &[original]);
         }
         let held = crate::io_buffer::IO_MEMORY.usage().0;
         let _limit = crate::io_buffer::test_budget(held + 6 * core::mem::size_of::<crate::memory::MappedRegion>());
-        let moved = sys_mremap(&mut proc, &mut host, base + page, page, 2 * page, 1).unwrap();
+        let moved = sys_mremap(&mut proc, &mut host, base + page, page, 2 * page, 1, 0).unwrap();
         assert_eq!(moved, base + 4 * page);
         assert_eq!(proc.memory.mappings().len(), 3);
         assert!(proc.memory.is_mapped(base));
@@ -52069,7 +52156,7 @@ impl HostIO for RelSymlinkMock {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         // Shrink to 1 page
-        let new_addr = sys_mremap(&mut proc, &mut host, addr, 0x30000, 0x10000, 0).unwrap();
+        let new_addr = sys_mremap(&mut proc, &mut host, addr, 0x30000, 0x10000, 0, 0).unwrap();
         assert_eq!(new_addr, addr);
         assert!(proc.memory.is_mapped(addr));
         assert!(!proc.memory.is_mapped(addr + 0x20000));
@@ -52088,7 +52175,7 @@ impl HostIO for RelSymlinkMock {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         // Grow to 2 pages — should succeed since adjacent space is free
-        let new_addr = sys_mremap(&mut proc, &mut host, addr, 0x10000, 0x20000, 0).unwrap();
+        let new_addr = sys_mremap(&mut proc, &mut host, addr, 0x10000, 0x20000, 0, 0).unwrap();
         assert_eq!(new_addr, addr);
         assert!(proc.memory.is_mapped(addr + 0x10000));
     }
@@ -52109,7 +52196,7 @@ impl HostIO for RelSymlinkMock {
         // A free third page must not turn the missing metadata update into a
         // successful in-place grow.
         assert_eq!(
-            sys_mremap(&mut proc, &mut host, addr, 0x20000, 0x30000, 0).unwrap_err(),
+            sys_mremap(&mut proc, &mut host, addr, 0x20000, 0x30000, 0, 0).unwrap_err(),
             Errno::EFAULT
         );
         assert_eq!(proc.memory.mappings()[0].len, 0x10000);
@@ -52144,7 +52231,7 @@ impl HostIO for RelSymlinkMock {
         );
         assert_eq!(addr2, addr1 + 0x10000);
         // Try to grow with MREMAP_MAYMOVE — should move to new location
-        let new_addr = sys_mremap(&mut proc, &mut host, addr1, 0x10000, 0x20000, 1).unwrap();
+        let new_addr = sys_mremap(&mut proc, &mut host, addr1, 0x10000, 0x20000, 1, 0).unwrap();
         assert_ne!(new_addr, addr1); // moved
         assert!(proc.memory.is_mapped(new_addr));
         assert!(!proc.memory.is_mapped(addr1)); // old freed
@@ -52164,7 +52251,7 @@ impl HostIO for RelSymlinkMock {
         let address = proc.memory.mmap_anonymous(0, page, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
         let blocker = proc.memory.mmap_anonymous(0, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
         assert_eq!(blocker, address + page);
-        let moved = sys_mremap(&mut proc, &mut host, address, page, 2 * page, 1).unwrap();
+        let moved = sys_mremap(&mut proc, &mut host, address, page, 2 * page, 1, 0).unwrap();
         assert_ne!(moved, address);
         assert!(!proc.memory.is_mapped(address));
         assert!(proc.memory.is_mapped(blocker));
@@ -52186,16 +52273,117 @@ impl HostIO for RelSymlinkMock {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
 
-        // Linux MREMAP_FIXED requires the fifth syscall argument (new_addr),
-        // which the current wasm libc import ABI does not pass through. The
-        // kernel must reject it rather than accidentally treating the request
-        // as an in-place grow at old_addr.
+        // MREMAP_FIXED without MREMAP_MAYMOVE, and MREMAP_DONTUNMAP, are
+        // EINVAL. Neither may be treated as an in-place grow at old_addr.
         assert_eq!(
-            sys_mremap(&mut proc, &mut host, addr, 0x10000, 0x20000, 2).unwrap_err(),
+            sys_mremap(&mut proc, &mut host, addr, 0x10000, 0x20000, 2, 0x200000).unwrap_err(),
+            Errno::EINVAL
+        );
+        assert_eq!(
+            sys_mremap(&mut proc, &mut host, addr, 0x10000, 0x20000, 1 | 4, 0).unwrap_err(),
             Errno::EINVAL
         );
         assert!(proc.memory.is_mapped(addr));
         assert!(!proc.memory.is_mapped(addr + 0x10000));
+    }
+
+    #[test]
+    fn test_mremap_grows_a_mapping_tail_in_place() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 0x10000;
+        let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        // The old range is the second page; the mapping grows from its start.
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr + page, page, 3 * page, 0, 0), Ok(addr + page));
+        assert_eq!(proc.memory.mappings().len(), 1);
+        assert_eq!(proc.memory.mappings()[0].addr, addr);
+        assert_eq!(proc.memory.mappings()[0].len, 4 * page);
+        // A range that ends before its mapping does cannot grow in place.
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr, page, 2 * page, 0, 0), Err(Errno::ENOMEM));
+    }
+
+    #[test]
+    fn test_mremap_fixed_replaces_the_destination_and_unmaps_the_source() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 0x10000;
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let source = proc.memory.mmap_anonymous(0, page, PROT_READ, anon);
+        let target = proc.memory.mmap_anonymous(0, 4 * page, rw, anon);
+        let moved = sys_mremap(&mut proc, &mut host, source, page, 2 * page, 1 | 2, target + page).unwrap();
+        assert_eq!(moved, target + page);
+        assert!(!proc.memory.is_mapped(source));
+        let regions: Vec<(usize, usize, u32)> = proc.memory.mappings().iter().map(|m| (m.addr, m.len, m.prot)).collect();
+        assert_eq!(regions, vec![
+            (target, page, rw),
+            (target + page, 2 * page, PROT_READ),
+            (target + 3 * page, page, rw),
+        ]);
+
+        // The destination must be aligned and must not overlap the source.
+        assert_eq!(sys_mremap(&mut proc, &mut host, moved, page, page, 3, target + 1), Err(Errno::EINVAL));
+        assert_eq!(sys_mremap(&mut proc, &mut host, moved, 2 * page, 2 * page, 3, moved + page), Err(Errno::EINVAL));
+        // A fixed move may also shrink.
+        assert_eq!(sys_mremap(&mut proc, &mut host, moved, 2 * page, page, 3, source), Ok(source));
+        assert!(proc.memory.is_mapped(source));
+        assert!(!proc.memory.is_mapped(moved));
+    }
+
+    #[test]
+    fn test_mremap_refuses_part_of_a_shared_mapping() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 0x10000;
+        let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS);
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr + page, page, 2 * page, 1, 0), Err(Errno::EINVAL));
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr, page, page, 0, 0), Err(Errno::EINVAL));
+        // The whole mapping may grow.
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr, 2 * page, 3 * page, 0, 0), Ok(addr));
+        assert_eq!(proc.memory.mappings()[0].len, 3 * page);
+    }
+
+    #[test]
+    fn test_mremap_does_not_grow_a_private_file_mapping() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 0x10000;
+        let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec() });
+        assert!(proc.memory.set_mapping_file(addr, 0, file));
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr, 2 * page, 3 * page, 1, 0), Err(Errno::EFAULT));
+        assert_eq!(proc.memory.mappings()[0].len, 2 * page);
+        // Shrinking, and moving without growth, keep the file and its offset.
+        assert_eq!(sys_mremap(&mut proc, &mut host, addr, 2 * page, page, 0, 0), Ok(addr));
+        let moved = sys_mremap(&mut proc, &mut host, addr, page, page, 3, addr + 4 * page).unwrap();
+        let mapping = proc.memory.mappings().iter().find(|m| m.addr == moved).unwrap();
+        assert!(mapping.file.is_some());
+        assert_eq!(mapping.file_offset, 0);
+    }
+
+    #[test]
+    fn test_madvise_validates_advice_alignment_and_mapping() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let page = 0x10000;
+        let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        for advice in [0, 1, 2, 3, 4, 8, 14, 21] {
+            assert_eq!(sys_madvise(&mut proc, addr, 2 * page, advice), Ok(()), "advice {advice}");
+        }
+        assert_eq!(sys_madvise(&mut proc, addr, 2 * page, 5), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, addr, 2 * page, 22), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, addr + 1, page, 0), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, addr, 0, 0), Ok(()));
+        assert_eq!(sys_madvise(&mut proc, addr, page + 1, 0), Ok(()));
+        assert_eq!(sys_madvise(&mut proc, addr, 3 * page, 0), Err(Errno::ENOMEM));
+        // Memory below the program break is process memory without a mapping.
+        let brk = proc.memory.get_brk() & !0xFFFF;
+        assert_eq!(sys_madvise(&mut proc, brk - page, page, 3), Ok(()));
+        assert_eq!(sys_madvise(&mut proc, usize::MAX & !0xFFFF, 2 * page, 0), Err(Errno::EINVAL));
     }
 
     // ---- O_CLOFORK / FD_CLOFORK tests ----
@@ -59475,7 +59663,7 @@ impl HostIO for RelSymlinkMock {
             MAP_SHARED, fd, offset as i64).unwrap();
         let bo_id = proc.dri_bindings[0].bo_id;
         sys_close(&mut proc, &mut host, fd).unwrap();
-        assert_eq!(sys_mremap(&mut proc, &mut host, address, size, page, 0), Ok(address));
+        assert_eq!(sys_mremap(&mut proc, &mut host, address, size, page, 0, 0), Ok(address));
         assert_eq!(proc.dri_bindings.len(), 1);
         assert_eq!(proc.dri_bindings[0].len, page);
         assert_eq!(proc.dri_bindings[0].bo_offset, 0);
@@ -59499,7 +59687,7 @@ impl HostIO for RelSymlinkMock {
                 MAP_SHARED, fd, offset as i64).unwrap();
             let bo_id = proc.dri_bindings[0].bo_id;
             sys_close(&mut proc, &mut host, fd).unwrap();
-            assert_eq!(sys_mremap(&mut proc, &mut host, address, size, size + page, flags), Err(Errno::EFAULT));
+            assert_eq!(sys_mremap(&mut proc, &mut host, address, size, size + page, flags, 0), Err(Errno::EFAULT));
             assert_eq!(proc.dri_bindings[0].len, size);
             assert_eq!(proc.memory.mappings().iter().find(|m| m.addr == address).unwrap().len, size);
             assert_eq!(crate::dri::with_registry(|r| r.get(bo_id).unwrap().refcount), 1);

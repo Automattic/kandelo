@@ -1029,6 +1029,7 @@ const PROT_READ = 0x01;
 const PROT_WRITE = 0x02;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
+const MREMAP_MAYMOVE = 0x01;
 const MREMAP_FIXED = 0x02;
 const O_RDONLY = OPEN_FLAGS.O_RDONLY;
 const O_WRONLY = OPEN_FLAGS.O_WRONLY;
@@ -14206,6 +14207,34 @@ export class CentralizedKernelWorker {
           );
           return;
         }
+        const remapFlags = origArgs[3]!;
+        const fixedDestination = origArgs[4]!;
+        if (
+          (remapFlags & MREMAP_FIXED) !== 0
+          && (remapFlags & MREMAP_MAYMOVE) !== 0
+          && fixedDestination % WASM_PAGE_SIZE === 0
+        ) {
+          // MREMAP_FIXED replaces its destination as MAP_FIXED does: make the
+          // process memory large enough to hold it and publish any shared
+          // mapping there while its bytes are intact. The kernel still
+          // validates the request; a refusal leaves only the memory growth.
+          const destination = [fixedDestination, alignWasmPageLength(origArgs[2]!)];
+          let destinationError = this.ensureFixedMmapProcessMemoryCapacity(
+            channel,
+            destination,
+            entry,
+          ) ? 0 : ENOMEM;
+          if (destinationError === 0) {
+            const flushStatus = this.flushSharedMappings(channel, destination, entry);
+            if (this.hostReaped?.has(channel.pid)) return;
+            if (flushStatus < 0) destinationError = -flushStatus;
+          }
+          if (destinationError !== 0) {
+            this.completeChannel(channel, syscallNr, origArgs, undefined,
+              -1, destinationError, [], undefined, entry);
+            return;
+          }
+        }
       }
 
       try {
@@ -14538,6 +14567,20 @@ export class CentralizedKernelWorker {
           channel.pid,
           replacementArgs[0]!,
           replacementArgs[1]!,
+          entry,
+        );
+      }
+      // MREMAP_FIXED's destination was published before the kernel call;
+      // detach its trackers before the source's move to that address.
+      if (
+        syscallNr === SYS_MREMAP
+        && retVal > 0
+        && (origArgs[3] & MREMAP_FIXED) !== 0
+      ) {
+        this.cleanupSharedMappings(
+          channel.pid,
+          retVal,
+          alignWasmPageLength(origArgs[2]),
           entry,
         );
       }
@@ -24571,10 +24614,13 @@ export class CentralizedKernelWorker {
       origArgs[1] > 0
     ) {
       const oldAddr = origArgs[0];
-      const oldLen = origArgs[1];
       const newAddr = retVal;
-      const newLen = origArgs[2];
-      const copyLen = Math.min(oldLen, newLen);
+      // Whole pages move: bytes past old_len in its last page belong to the
+      // mapping too, as they do when Linux moves the page itself.
+      const copyLen = Math.min(
+        alignWasmPageLength(origArgs[1]),
+        alignWasmPageLength(origArgs[2]),
+      );
       if (copyLen > 0) {
         const buf = processMemory.buffer;
         const totalBytes = buf.byteLength;

@@ -5860,6 +5860,17 @@ fn dispatch_channel_mremap(
     let old_address = checked_channel_process_address(126, args, 0)?;
     let old_length = checked_channel_process_size(126, args, 1)?;
     let new_length = checked_channel_process_size(126, args, 2)?;
+    let flags = args[3] as u32;
+    // MREMAP_FIXED's destination is the fifth argument. The host validated
+    // and canonicalized it to the caller's pointer width; without the flag
+    // the slot carries no meaning and is ignored, as on Linux.
+    let new_address = if flags & 2 != 0 {
+        let bits = u32::from(current_caller_pointer_width()?) * 8;
+        let raw = checked_channel_pointer_bits(args[4], bits)?;
+        usize::try_from(raw).map_err(|_| Errno::EINVAL)?
+    } else {
+        0
+    };
     {
         let _gkl = GklGuard::acquire();
         let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -5875,7 +5886,8 @@ fn dispatch_channel_mremap(
         old_address,
         old_length,
         new_length,
-        args[3] as u32,
+        flags,
+        new_address,
     );
     if result.is_err() {
         unsafe { crate::memory::global_shared_mapping_table() }.cancel_remap_mapping();
