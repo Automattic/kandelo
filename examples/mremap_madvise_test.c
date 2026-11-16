@@ -380,6 +380,23 @@ static void test_madvise_dontneed(void) {
     }
 }
 
+/* The kernel validates mprotect requests (it cannot enforce protection).
+ * The raw syscall keeps this independent of whether libc links mprotect. */
+static void test_mprotect_validation(void) {
+    unsigned char *p = map_anon(2 * page);
+    CHECK(syscall(SYS_mprotect, p, 2 * page, PROT_READ | PROT_WRITE) == 0,
+          "mprotect of a mapping");
+    errno = 0;
+    CHECK(syscall(SYS_mprotect, p, page, 0x40 | PROT_READ) == -1 && errno == EINVAL,
+          "unknown protection bits");
+    CHECK(munmap(p + page, page) == 0, "unmap the second page");
+    errno = 0;
+    CHECK(syscall(SYS_mprotect, p, 2 * page, PROT_READ | PROT_WRITE) == -1 &&
+              errno == ENOMEM,
+          "mprotect over an unmapped page");
+    CHECK(munmap(p, page) == 0, "munmap");
+}
+
 int main(void) {
     page = sysconf(_SC_PAGESIZE);
     CHECK(page > 0, "sysconf(_SC_PAGESIZE)");
@@ -394,6 +411,7 @@ int main(void) {
     test_shared_file();
     test_madvise();
     test_madvise_dontneed();
+    test_mprotect_validation();
     puts("MREMAP_MADVISE_PASS");
     return 0;
 }

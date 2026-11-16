@@ -13767,9 +13767,31 @@ pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
     }
 }
 
-/// mprotect -- Wasm linear memory has no page-level protection.
-/// Returns success (no-op) so callers like Zend's allocator don't fail.
-pub fn sys_mprotect(_proc: &Process, _addr: usize, _len: usize, _prot: u32) -> Result<(), Errno> {
+/// mprotect -- validate a protection change; Wasm cannot enforce it.
+///
+/// Wasm linear memory has no page-level protection, so the kernel records
+/// nothing and later accesses never fault. It validates the request as POSIX
+/// and Linux do: unknown protection bits or an unaligned address are
+/// `EINVAL`, and a range containing a page in the mmap area that no mapping
+/// covers is `ENOMEM`. A request that would remove access succeeds without
+/// effect here; which requests a program can make is libc's decision (see
+/// `mprotect()` in `docs/posix-status.md`). The host keeps its own effect of
+/// a write upgrade on a shared file mapping (writeback eligibility).
+pub fn sys_mprotect(proc: &Process, addr: usize, len: usize, prot: u32) -> Result<(), Errno> {
+    use wasm_posix_shared::mmap::{PROT_EXEC, PROT_READ, PROT_WRITE};
+    if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if addr & 0xFFFF != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::ENOMEM)? & !0xFFFF;
+    if aligned_len == 0 {
+        return Ok(());
+    }
+    if addr.checked_add(aligned_len).is_none() || !proc.memory.range_is_process_memory(addr, aligned_len) {
+        return Err(Errno::ENOMEM);
+    }
     Ok(())
 }
 
@@ -36763,9 +36785,18 @@ mod tests {
     }
 
     #[test]
-    fn test_mprotect_succeeds_noop() {
-        let proc = Process::new(1);
-        assert_eq!(sys_mprotect(&proc, 0, 4096, 3), Ok(()));
+    fn test_mprotect_validates_protection_alignment_and_range() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let page = 0x10000;
+        assert_eq!(sys_mprotect(&proc, 0, 4096, PROT_READ | PROT_WRITE), Ok(()));
+        let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_eq!(sys_mprotect(&proc, addr, 2 * page, PROT_READ | PROT_WRITE | PROT_EXEC), Ok(()));
+        assert_eq!(sys_mprotect(&proc, addr, 0, PROT_READ), Ok(()));
+        assert_eq!(sys_mprotect(&proc, addr, page, 0x10), Err(Errno::EINVAL));
+        assert_eq!(sys_mprotect(&proc, addr + 1, page, PROT_READ), Err(Errno::EINVAL));
+        assert_eq!(sys_mprotect(&proc, addr, 3 * page, PROT_READ | PROT_WRITE), Err(Errno::ENOMEM));
+        assert_eq!(sys_mprotect(&proc, usize::MAX & !0xFFFF, 2 * page, PROT_READ), Err(Errno::ENOMEM));
     }
 
     #[test]
