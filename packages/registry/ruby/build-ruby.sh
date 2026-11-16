@@ -716,8 +716,6 @@ ac_cv_func_shm_open=no
 ac_cv_func_shm_unlink=no
 ac_cv_func_getentropy=no
 ac_cv_func_getrandom=no
-ac_cv_func_mremap=no
-ac_cv_func_madvise=no
 ac_cv_func_mprotect=no
 ac_cv_func_memfd_create=no
 ac_cv_func_sendfile=no
@@ -1010,7 +1008,7 @@ disable = {
     'HAVE_POSIX_SPAWN', 'HAVE_POSIX_SPAWNP',
     'HAVE_SIGALTSTACK', 'HAVE_GETENTROPY', 'HAVE_GETRANDOM',
     'HAVE_SHM_OPEN', 'HAVE_SHM_UNLINK',
-    'HAVE_MREMAP', 'HAVE_MADVISE', 'HAVE_MPROTECT', 'HAVE_MEMFD_CREATE',
+    'HAVE_MPROTECT', 'HAVE_MEMFD_CREATE',
     'HAVE_SENDFILE', 'HAVE_SPLICE', 'HAVE_COPY_FILE_RANGE',
     'HAVE_EPOLL_CREATE', 'HAVE_EPOLL_CREATE1',
     'HAVE_TIMERFD_CREATE', 'HAVE_INOTIFY_INIT', 'HAVE_INOTIFY_INIT1',
