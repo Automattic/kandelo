@@ -238,6 +238,13 @@ pub trait HostIO {
         name_buf: &mut [u8],
     ) -> Result<Option<(u64, u32, usize)>, Errno>;
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
+    /// CPU time the host has measured for task `tid` of process `pid`, or
+    /// for all of the process's tasks, past and present, when `tid` is 0
+    /// (see `crate::cpu_time`). `None` when the host has no record of the
+    /// task; a host that does not measure leaves this default.
+    fn host_task_cpu_time(&mut self, _pid: u32, _tid: u32) -> Option<crate::cpu_time::CpuTime> {
+        None
+    }
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno>;
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
@@ -1354,6 +1361,11 @@ pub struct Process {
     /// Used as a regression guardrail by the spawn test suite to confirm
     /// non-forking spawn doesn't sneak through the fork path.
     pub fork_count: u64,
+    /// CPU time of this process's terminated, waited-for descendants
+    /// (`RUSAGE_CHILDREN`, `tms_cutime`/`tms_cstime`). See `crate::cpu_time`.
+    pub cpu_children: crate::cpu_time::CpuTime,
+    /// This process's own CPU time, frozen when it exits.
+    pub cpu_at_exit: Option<crate::cpu_time::CpuTime>,
 }
 
 impl Deref for Process {
@@ -1736,6 +1748,8 @@ impl Process {
             gl_resource_owners: Vec::new(),
             shm_mappings: crate::IoBuffer::new(),
             fork_count: 0,
+            cpu_children: crate::cpu_time::CpuTime::default(),
+            cpu_at_exit: None,
         }
     }
 

@@ -1863,6 +1863,9 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fb_binding = None;
     child.dri_bindings.clear();
     child.fork_count = 0;
+    // A child starts with no CPU time of its own or of its children.
+    child.cpu_children = crate::cpu_time::CpuTime::default();
+    child.cpu_at_exit = None;
     Ok(())
 }
 

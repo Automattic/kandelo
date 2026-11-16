@@ -218,6 +218,21 @@ programs, as the maintainer decided in
 `docs/plans/2026-11-15-process-shared-synchronization-design.md`. Such a
 change is documented where it lands and in `docs/posix-status.md`.
 
+### CPU-time accounting
+
+`getrusage()`, `wait4()`'s resource usage and the CPU-time clocks report
+CPU time the host measures for each task (`runtime_core::cpu_time`). The
+kernel reads it through the new required `host_task_cpu_time` kernel
+import, so `HOST_ADAPTER_VERSION` advances from 7 to 8 and both hosts are
+rebuilt with the kernel. No syscall number, argument representation,
+structure or errno changes: `ru_utime`/`ru_stime` and the CPU-time clocks
+keep their POSIX meaning, which the earlier zeros and elapsed time only
+approximated. `times()` is implemented in Kandelo's musl overlay from
+`getrusage()` and `CLOCK_MONOTONIC` rather than as base syscall 270, so
+every program-surface section is byte-identical to the ABI-56 baseline and
+the program digest is unchanged. Programs linked against an older libc
+still receive `ENOSYS` from `times()` until they are rebuilt.
+
 ### Scheduled optional kernel exports
 
 `shared::abi::HOST_ADAPTER_KERNEL_EXPORTS` declares host-facing kernel

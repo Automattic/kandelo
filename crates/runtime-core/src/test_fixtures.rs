@@ -156,3 +156,52 @@ impl crate::process::HostIO for ClockHost {
     fn host_net_listen(&mut self, _: i32, _: u16, _: &[u8; 4]) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
     fn host_getaddrinfo(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
 }
+
+/// A [`HostIO`](crate::process::HostIO) that reports CPU times and nothing
+/// else: the host a `crate::cpu_time` test needs. `times` is what
+/// `host_task_cpu_time` answers for each `(pid, tid)`; an unknown task has no
+/// record. Every other host operation is `unimplemented!`.
+pub(crate) struct CpuHost {
+    times: Vec<((u32, u32), crate::cpu_time::CpuTime)>,
+}
+
+impl CpuHost {
+    pub(crate) fn new(times: &[((u32, u32), crate::cpu_time::CpuTime)]) -> Self {
+        CpuHost { times: times.to_vec() }
+    }
+
+    /// Drop every record, as a host does once a process's workers retire.
+    pub(crate) fn forget(&mut self) {
+        self.times.clear();
+    }
+}
+
+impl crate::process::HostIO for CpuHost {
+    fn host_task_cpu_time(&mut self, pid: u32, tid: u32) -> Option<crate::cpu_time::CpuTime> {
+        self.times.iter().find(|(key, _)| *key == (pid, tid)).map(|(_, time)| *time)
+    }
+    fn host_clock_gettime(&mut self, _: u32) -> Result<(i64, i64), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_close(&mut self, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_read(&mut self, _: i64, _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_write(&mut self, _: i64, _: &[u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_seek(&mut self, _: i64, _: i64, _: u32) -> Result<i64, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fstat(&mut self, _: i64) -> Result<wasm_posix_shared::WasmStat, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_readdir(&mut self, _: i64, _: &mut [u8]) -> Result<Option<(u64, u32, usize)>, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_ftruncate(&mut self, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fsync(&mut self, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fchmod(&mut self, _: i64, _: u32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fchown(&mut self, _: i64, _: u32, _: u32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_set_alarm(&mut self, _: u32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_set_posix_timer(&mut self, _: i32, _: i32, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn bind_framebuffer(&mut self, _: i32, _: usize, _: usize, _: u32, _: u32, _: u32, _: u32) { unimplemented!() }
+    fn unbind_framebuffer(&mut self, _: i32) { unimplemented!() }
+    fn fb_write(&mut self, _: i32, _: usize, _: &[u8]) { unimplemented!() }
+    fn host_getrandom(&mut self, _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_connect(&mut self, _: i32, _: &[u8], _: u16) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_connect_status(&mut self, _: i32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_send(&mut self, _: i32, _: &[u8], _: u32) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_recv(&mut self, _: i32, _: u32, _: u32, _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_close(&mut self, _: i32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_listen(&mut self, _: i32, _: u16, _: &[u8; 4]) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_getaddrinfo(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+}
