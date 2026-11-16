@@ -320,6 +320,47 @@ static void mutex_handoff(void) {
     report(latency >= 0 && latency < 1.0, "acquired %.2f ms after unlock", latency * 1e3);
 }
 
+static volatile sig_atomic_t handled;
+static void on_usr1(int sig) { (void)sig; handled = 1; }
+
+static void install_usr1_without_restart(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, NULL);
+}
+
+/*
+ * A caught signal does not make pthread_mutex_lock fail: POSIX forbids
+ * EINTR, and the thread resumes waiting after the handler.
+ */
+static void mutex_lock_signal_no_eintr(void) {
+    pthread_mutex_t *m = shared_page();
+    init_mutex(m, PTHREAD_MUTEX_NORMAL, 0);
+    install_usr1_without_restart();
+    handled = 0;
+    int gate[2];
+    pipe(gate);
+    pid_t parent = getpid();
+    pid_t pid = fork();
+    if (pid == 0) {
+        pthread_mutex_lock(m);
+        write(gate[1], "x", 1);
+        usleep(200000);
+        kill(parent, SIGUSR1);
+        usleep(300000);
+        pthread_mutex_unlock(m);
+        _exit(0);
+    }
+    char b;
+    read(gate[0], &b, 1);
+    int r = pthread_mutex_lock(m);
+    if (r == 0) pthread_mutex_unlock(m);
+    reap(pid);
+    report(r == 0 && handled, "lock=%s, handler ran=%d", err_name(r), (int)handled);
+}
+
 /* Three processes increment a counter under a process-shared mutex. */
 static void mutex_lock_counter(void) {
     struct counter *c = shared_page();
@@ -440,6 +481,35 @@ static void cond_wait_wakeup(void) {
     report(r == 0 && dt < 2.0, "wait=%s after %.2f s", err_name(r), dt);
 }
 
+/* A handler runs during pthread_cond_wait, and the wait resumes afterwards. */
+static void cond_wait_signal_resumes(void) {
+    struct condpair *g = shared_page();
+    init_mutex(&g->m, PTHREAD_MUTEX_NORMAL, 0);
+    init_cond(&g->c);
+    install_usr1_without_restart();
+    handled = 0;
+    pid_t parent = getpid();
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(200000);
+        kill(parent, SIGUSR1);
+        usleep(300000);
+        pthread_mutex_lock(&g->m);
+        g->flag = 1;
+        pthread_cond_signal(&g->c);
+        pthread_mutex_unlock(&g->m);
+        _exit(0);
+    }
+    pthread_mutex_lock(&g->m);
+    int r = 0;
+    while (!g->flag && r == 0) r = pthread_cond_wait(&g->c, &g->m);
+    int flag = g->flag;
+    pthread_mutex_unlock(&g->m);
+    reap(pid);
+    report(r == 0 && flag && handled, "wait=%s, flag=%d, handler ran=%d", err_name(r),
+           flag, (int)handled);
+}
+
 /* pthread_rwlock_timedrdlock wakes when a writer in another process unlocks. */
 static void rwlock_wakeup(void) {
     pthread_rwlock_t *rw = shared_page();
@@ -522,8 +592,10 @@ static const struct test_case cases[] = {
     { "robust-mutex-owner-exit", robust_owner_exit, 10 },
     { "mutex-timedlock-deadline", mutex_timedlock_deadline, 10 },
     { "mutex-handoff", mutex_handoff, 10 },
+    { "mutex-lock-signal-no-eintr", mutex_lock_signal_no_eintr, 10 },
     { "mutex-lock-counter", mutex_lock_counter, 60 },
     { "cond-wait-wakeup", cond_wait_wakeup, 10 },
+    { "cond-wait-signal-resumes", cond_wait_signal_resumes, 10 },
     { "cond-timedwait-wakeup", cond_timedwait_wakeup, 10 },
     { "cond-two-thread-broadcast", cond_two_thread_broadcast, 10 },
     { "rwlock-wakeup", rwlock_wakeup, 10 },
