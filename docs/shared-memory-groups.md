@@ -146,6 +146,20 @@ does not waive correct semantics, bounded ownership or truthful reporting.
 
 ## Review stages
 
+The initial kernel component now owns admission, image and task receipts, plus
+backing-owner holds. Fork reserves the child image before publication; pthread
+creation reserves membership before inserting its task. Failed construction can
+roll back prepared admissions; live/stopping/quarantined Workers block removal.
+Image custody outlives the last Worker until explicit lifecycle cleanup, and old
+receipts remain distinct from an exec successor.
+
+Host-adapter 7 adds protocol-1 fixed metadata records and advertises admission
+capability only. Program ABI 56 remains unchanged. The generated kernel-host
+snapshot includes record layouts and actions; full unsigned generation/receipt
+values have separate status returns. These interfaces do not advertise a ready
+execution/stop backend or expose a guest group-creation syscall. Normal host
+launch, executable translation and terminal-stop integration remain later stages.
+
 These are review boundaries for the integration series. Each stage must leave
 the ordinary backend usable. Incomplete grouped behavior stays
 explicitly gated until its prerequisites are available.

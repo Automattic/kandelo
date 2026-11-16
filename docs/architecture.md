@@ -2430,6 +2430,16 @@ compile one thread module between them.
 
 ## Memory Layout
 
+Opt-in shared-memory groups have an initial kernel-owned admission ledger,
+separate from POSIX process groups. It reserves process/image/task capacity,
+inherits membership through fork, and retains exact execution receipts until
+the host proves retirement. Prepared construction can roll back; live,
+stopping or quarantined Workers prevent process removal. Old exec-image
+custody remains distinct from its successor. Host-adapter 7 exposes admission
+metadata only: the normal launcher does not yet run grouped programs. See
+[shared-memory groups](shared-memory-groups.md) for the trust boundary,
+unsupported operations and remaining execution/lifecycle gates.
+
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
 ```

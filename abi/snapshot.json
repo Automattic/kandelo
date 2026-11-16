@@ -9,6 +9,7 @@
       "kernel_exports",
       "kernel_imports",
       "kms_cursor_transport",
+      "memory_group_contract",
       "pcm_transport_abi",
       "process_metadata_contract",
       "process_snapshot_wire",
@@ -2546,6 +2547,17 @@
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_epoll_wait_retry_state",
+      "kernel_memory_group_capabilities",
+      "kernel_memory_group_configure",
+      "kernel_memory_group_create",
+      "kernel_memory_group_prepare_process",
+      "kernel_memory_group_protocol_version",
+      "kernel_memory_group_remove",
+      "kernel_memory_group_retire_image",
+      "kernel_memory_group_seal",
+      "kernel_memory_group_snapshot",
+      "kernel_memory_group_task_action",
+      "kernel_memory_group_task_receipt",
       "kernel_owned_mapping_finish",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
@@ -4617,6 +4629,61 @@
       "kind": "func",
       "name": "kernel_mark_process_signaled",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_capabilities",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_configure",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_create",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_prepare_process",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_protocol_version",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_remove",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_retire_image",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_seal",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_snapshot",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_task_action",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_task_receipt",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -8152,6 +8219,39 @@
       ],
       "size": 16
     }
+  },
+  "memory_group_contract": {
+    "capability_admission": 1,
+    "receipt_bytes": 32,
+    "receipt_fields": {
+      "generation": 24,
+      "group": 0,
+      "pid": 4,
+      "reserved": 12,
+      "serial": 16,
+      "tid": 8
+    },
+    "snapshot_bytes": 40,
+    "snapshot_fields": {
+      "accepting": 16,
+      "backings": 32,
+      "group": 0,
+      "images": 36,
+      "maximumPages": 4,
+      "maximumProcesses": 8,
+      "maximumTasks": 12,
+      "processes": 20,
+      "quarantinedTasks": 28,
+      "tasks": 24
+    },
+    "task_actions": {
+      "beginRetirement": 2,
+      "cancelUnconstructed": 5,
+      "quarantine": 4,
+      "retireQuiescent": 3,
+      "start": 1
+    },
+    "version": 1
   },
   "oss_source_abi": {
     "capabilities": {
