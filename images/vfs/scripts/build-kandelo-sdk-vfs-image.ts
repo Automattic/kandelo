@@ -1,4 +1,12 @@
-/** Build the Kandelo SDK VFS from either explicit staged inputs or legacy paths. */
+/**
+ * Build the Kandelo SDK VFS from explicit inputs.
+ *
+ * The sysroot must be one staged by images/vfs/scripts/stage-sdk-sysroot.sh,
+ * which copies only the SDK's declared sysroot content out of the build
+ * machine's shared sysroot/, and libc++ comes from the declared libcxx
+ * dependency. packages/registry/kandelo-sdk/build-kandelo-sdk.sh provides
+ * both; this builder does not fall back to the shared sysroot.
+ */
 import {
   existsSync,
   lstatSync,
@@ -30,6 +38,7 @@ export interface KandeloSdkLicenseInput {
 }
 
 export interface KandeloSdkVfsInputs {
+  /** A sysroot staged by images/vfs/scripts/stage-sdk-sysroot.sh. */
   sysrootDirectory: string;
   glueDirectory: string;
   /** The SDK driver built for Kandelo (kandelo-cc.wasm). */
@@ -40,7 +49,8 @@ export interface KandeloSdkVfsInputs {
   clangResourceDirectory: string;
   licenseFiles: readonly KandeloSdkLicenseInput[];
   outputPath: string;
-  libcxxDirectory?: string;
+  /** The libcxx package output: lib/libc++.a, lib/libc++abi.a, include/c++/v1. */
+  libcxxDirectory: string;
   targetAbi?: ExactVfsImageAbi;
   maximumBytes?: number;
 }
@@ -109,11 +119,55 @@ function requireInput(path: string, label: string): void {
   if (!existsSync(path)) throw new Error(`required SDK ${label} missing: ${path}`);
 }
 
+// libc++ files the image takes from the libcxx dependency. Its other
+// archives (the -pic variants) are not part of the SDK.
+const LIBCXX_ARCHIVES = ["libc++.a", "libc++abi.a"];
+const LIBCXX_HEADERS = join("include", "c++", "v1");
+
+/**
+ * Refuse a sysroot that was not staged for the SDK. The build machine's
+ * shared sysroot/ carries the musl output receipt (and other .kandelo-*
+ * freshness stamps) next to whatever other tools staged into it, such as the
+ * fixture libraries scripts/build-programs.sh copies there; a staged sysroot
+ * has none of them. libc++ must come from the libcxx dependency.
+ */
+function requireStagedSysroot(sysroot: string): void {
+  if (existsSync(join(sysroot, ".kandelo-musl.outputs.json"))) {
+    throw new Error(
+      `SDK sysroot ${sysroot} still holds the musl output receipt, so it is an ` +
+        "unstaged build-machine sysroot; stage it with " +
+        "images/vfs/scripts/stage-sdk-sysroot.sh",
+    );
+  }
+  const stamps = readdirSync(sysroot).filter((name) => name.startsWith(".kandelo-"));
+  if (stamps.length > 0) {
+    throw new Error(
+      `SDK sysroot ${sysroot} holds build-machine stamps (${stamps.join(", ")}); ` +
+        "stage it with images/vfs/scripts/stage-sdk-sysroot.sh",
+    );
+  }
+  for (const path of [
+    ...LIBCXX_ARCHIVES.map((name) => join(sysroot, "lib", name)),
+    join(sysroot, LIBCXX_HEADERS),
+  ]) {
+    if (existsSync(path)) {
+      throw new Error(
+        `staged SDK sysroot already contains undeclared libc++ content: ${path}`,
+      );
+    }
+  }
+}
+
 export async function buildKandeloSdkVfsImage(
   inputs: KandeloSdkVfsInputs,
 ): Promise<void> {
   const glueNames = ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"];
   requireInput(join(inputs.sysrootDirectory, "lib", "libc.a"), "sysroot libc");
+  requireStagedSysroot(inputs.sysrootDirectory);
+  for (const path of [
+    ...LIBCXX_ARCHIVES.map((name) => join(inputs.libcxxDirectory, "lib", name)),
+    join(inputs.libcxxDirectory, LIBCXX_HEADERS),
+  ]) requireInput(path, "libc++ runtime");
   requireInput(inputs.driverPath, "SDK driver");
   requireInput(inputs.wasmOptPath, "wasm-opt");
   requireInput(inputs.configSitePath, "config.site");
@@ -127,25 +181,6 @@ export async function buildKandeloSdkVfsImage(
   for (const license of inputs.licenseFiles) {
     requireInput(license.hostPath, `license ${license.guestPath}`);
   }
-  if (inputs.libcxxDirectory !== undefined) {
-    for (const path of [
-      join(inputs.libcxxDirectory, "lib", "libc++.a"),
-      join(inputs.libcxxDirectory, "lib", "libc++abi.a"),
-      join(inputs.libcxxDirectory, "include", "c++", "v1"),
-    ]) requireInput(path, "libc++ runtime");
-    for (const path of [
-      join(inputs.sysrootDirectory, "lib", "libc++.a"),
-      join(inputs.sysrootDirectory, "lib", "libc++abi.a"),
-      join(inputs.sysrootDirectory, "include", "c++", "v1"),
-    ]) {
-      if (existsSync(path)) {
-        throw new Error(
-          `staged SDK sysroot already contains undeclared libc++ content: ${path}`,
-        );
-      }
-    }
-  }
-
   const maximumBytes = inputs.maximumBytes ?? 256 * 1024 * 1024;
   const fs = KandeloImageFs.create();
   // The declared capacity the product's publication gate checks the artifact
@@ -159,18 +194,21 @@ export async function buildKandeloSdkVfsImage(
   fs.chown("/home/maker", 1000, 1000);
 
   copyTree(fs, inputs.sysrootDirectory, "/usr/lib/kandelo/wasm32posix/sysroot");
-  if (inputs.libcxxDirectory !== undefined) {
-    copyTree(
+  for (const name of LIBCXX_ARCHIVES) {
+    writeVfsBinary(
       fs,
-      join(inputs.libcxxDirectory, "lib"),
-      "/usr/lib/kandelo/wasm32posix/sysroot/lib",
-    );
-    copyTree(
-      fs,
-      join(inputs.libcxxDirectory, "include", "c++", "v1"),
-      "/usr/lib/kandelo/wasm32posix/sysroot/include/c++/v1",
+      `/usr/lib/kandelo/wasm32posix/sysroot/lib/${name}`,
+      new Uint8Array(readFileSync(join(inputs.libcxxDirectory, "lib", name))),
+      0o644,
     );
   }
+  copyTree(
+    fs,
+    join(inputs.libcxxDirectory, LIBCXX_HEADERS),
+    "/usr/lib/kandelo/wasm32posix/sysroot/include/c++/v1",
+    0o644,
+    { preserveSymlinks: false },
+  );
   // The driver compiles this glue into every executable it links, as it
   // does on the build machine.
   copyTree(fs, inputs.glueDirectory, "/usr/lib/kandelo/wasm32posix/glue");
@@ -222,9 +260,14 @@ export async function buildKandeloSdkVfsImage(
       });
 }
 
-function requiredEnv(name: string): string {
+function requiredEnv(name: string, meaning = ""): string {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is required (packages/registry/kandelo-sdk/build-kandelo-sdk.sh sets it)`);
+  if (!value) {
+    throw new Error(
+      `${name} is required${meaning ? ` (${meaning})` : ""}; ` +
+        "packages/registry/kandelo-sdk/build-kandelo-sdk.sh sets it",
+    );
+  }
   return value;
 }
 
@@ -249,7 +292,13 @@ function hostClangResourceDir(): string {
 async function main(): Promise<void> {
   const sdkLicenseRoot = join(REPO_ROOT, "sdk", "kandelo", "licenses");
   await buildKandeloSdkVfsImage({
-    sysrootDirectory: process.env.WASM_POSIX_SYSROOT ?? join(REPO_ROOT, "sysroot"),
+    // No default: the checkout's sysroot/ is the shared build-machine
+    // sysroot, not SDK content.
+    sysrootDirectory: requiredEnv(
+      "WASM_POSIX_SYSROOT",
+      "a sysroot staged by images/vfs/scripts/stage-sdk-sysroot.sh",
+    ),
+    libcxxDirectory: requiredEnv("KANDELO_SDK_LIBCXX_DIR", "the libcxx package output"),
     glueDirectory: process.env.WASM_POSIX_GLUE_DIR ?? join(REPO_ROOT, "libc", "glue"),
     driverPath: requiredEnv("KANDELO_SDK_DRIVER"),
     wasmOptPath: requiredEnv("KANDELO_SDK_WASM_OPT"),

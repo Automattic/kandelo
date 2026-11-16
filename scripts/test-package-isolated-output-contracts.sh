@@ -1162,6 +1162,11 @@ cat >"$kandelo_sdk_repo/images/vfs/scripts/build-kandelo-sdk-vfs-image.sh" <<'SH
 set -euo pipefail
 [ "${KANDELO_SDK_DRIVER:?}" = "${WASM_POSIX_DEP_KANDELO_CC_DIR:?}/kandelo-cc.wasm" ] || exit 91
 [ "${KANDELO_SDK_WASM_OPT:?}" = "${WASM_POSIX_DEP_BINARYEN_DIR:?}/wasm-opt.wasm" ] || exit 93
+[ "${KANDELO_SDK_LIBCXX_DIR:?}" = "${WASM_POSIX_DEP_LIBCXX_DIR:?}" ] || exit 94
+case "${WASM_POSIX_SYSROOT:?}" in
+    "${WASM_POSIX_DEP_WORK_DIR:?}"/.kandelo-kandelo-sdk-sysroot.*) ;;
+    *) exit 95 ;;
+esac
 case "${KANDELO_SDK_VFS_OUT:?}" in
     "${WASM_POSIX_DEP_OUT_DIR:?}"/*) ;;
     *) exit 92 ;;
@@ -1234,8 +1239,11 @@ kandelo_sdk_private_sysroot="$(find "$kandelo_sdk_work" -mindepth 1 -maxdepth 1 
     -type d -name '.kandelo-kandelo-sdk-sysroot.*' -print -quit)"
 [ -n "$kandelo_sdk_private_sysroot" ] ||
     fail "kandelo-sdk resolver build did not create a work-owned private sysroot"
-[ -f "$kandelo_sdk_private_sysroot/lib/libc++.a" ] ||
-    fail "kandelo-sdk private sysroot omitted the libcxx archive"
+# libc++ reaches the image from the declared libcxx directory, which the
+# VFS builder receives directly; it is not merged into the staged sysroot.
+[ ! -e "$kandelo_sdk_private_sysroot/lib/libc++.a" ] &&
+    [ ! -e "$kandelo_sdk_private_sysroot/include/c++" ] ||
+    fail "kandelo-sdk private sysroot merged libcxx content"
 [ -f "$kandelo_sdk_private_sysroot/lib/libc.a" ] &&
     [ -f "$kandelo_sdk_private_sysroot/lib/libgbm.a" ] &&
     [ -f "$kandelo_sdk_private_sysroot/include/drm/drm.h" ] ||
@@ -1256,6 +1264,47 @@ kandelo_sdk_private_sysroot="$(find "$kandelo_sdk_work" -mindepth 1 -maxdepth 1 
     fail "kandelo-sdk resolver build wrote checkout-local artifacts"
 [ ! -e "$kandelo_sdk_fixture/local-mirror-called" ] ||
     fail "kandelo-sdk resolver build published a local mirror"
+
+# The shared sysroot is read-only input: it must be named canonically and
+# stay disjoint from the work, output and source roots.
+kandelo_sdk_rejects() {
+    local expected="$1" label="$2" sysroot="$3" work="$4" out="$5" source="$6"
+    mkdir -p "$work" "$out"
+    set +e
+    env \
+        WASM_POSIX_DEP_NAME=kandelo-sdk \
+        WASM_POSIX_DEP_WORK_DIR="$work" \
+        WASM_POSIX_DEP_OUT_DIR="$out" \
+        WASM_POSIX_DEP_SOURCE_DIR="$source" \
+        WASM_POSIX_DEP_LIBCXX_DIR="$kandelo_sdk_libcxx" \
+        WASM_POSIX_DEP_KANDELO_CC_DIR="$kandelo_sdk_driver" \
+        WASM_POSIX_DEP_BINARYEN_DIR="$kandelo_sdk_binaryen" \
+        WASM_POSIX_SYSROOT="$sysroot" \
+        KANDELO_UNEXPECTED_LOCAL_MIRROR="$kandelo_sdk_fixture/local-mirror-called" \
+        bash "$kandelo_sdk_recipe_dir/build-kandelo-sdk.sh" \
+        >"$kandelo_sdk_fixture/stdout" 2>"$kandelo_sdk_fixture/stderr"
+    local status=$?
+    set -e
+    [ "$status" -ne 0 ] && grep -F "$expected" "$kandelo_sdk_fixture/stderr" >/dev/null ||
+        fail "kandelo-sdk accepted $label"
+    [ ! -e "$out/kandelo-sdk.vfs.zst" ] ||
+        fail "kandelo-sdk published output for $label"
+}
+kandelo_sdk_variant="$kandelo_sdk_fixture/variant"
+mkdir -p "$kandelo_sdk_variant/out-root" "$kandelo_sdk_variant/source"
+ln -s "$kandelo_sdk_fixture" "$kandelo_sdk_variant/fixture-link"
+kandelo_sdk_rejects "SDK sysroot must use its canonical path" \
+    "a non-canonical sysroot" "$kandelo_sdk_variant/fixture-link/seed" \
+    "$kandelo_sdk_variant/work" "$kandelo_sdk_variant/out" ""
+cp -R "$kandelo_sdk_seed" "$kandelo_sdk_variant/out-root/sysroot"
+kandelo_sdk_rejects "SDK sysroot must not overlap WASM_POSIX_DEP_OUT_DIR" \
+    "a sysroot inside its output root" "$kandelo_sdk_variant/out-root/sysroot" \
+    "$kandelo_sdk_variant/work" "$kandelo_sdk_variant/out-root" ""
+cp -R "$kandelo_sdk_seed" "$kandelo_sdk_variant/source/sysroot"
+kandelo_sdk_rejects "SDK sysroot must not overlap WASM_POSIX_DEP_SOURCE_DIR" \
+    "a sysroot inside its source root" "$kandelo_sdk_variant/source/sysroot" \
+    "$kandelo_sdk_variant/work" "$kandelo_sdk_variant/out" \
+    "$kandelo_sdk_variant/source"
 
 # PHP validates all of its declared dependency prefixes before projecting the
 # C++ toolchain. Omit SourceOnly source authority so the fixture stops after

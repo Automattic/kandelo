@@ -17,7 +17,7 @@
 #
 # This script copies only the declared content:
 #   - every path in the musl output receipt (.kandelo-musl.outputs.json),
-#     after checking each against its recorded digest;
+#     whose copied bytes are checked against their recorded digests;
 #   - the remaining files build-musl.sh installs (MUSL_LIBRARY_FILES);
 #   - the graphics libraries, headers and pkg-config files
 #     (GRAPHICS_FILES, GRAPHICS_TREES).
@@ -86,18 +86,36 @@ GRAPHICS_TREES=(
 
 RECEIPT=.kandelo-musl.outputs.json
 OUTPUT_STATE="$REPO_ROOT/scripts/musl-output-state.mjs"
-[ -f "$SOURCE/$RECEIPT" ] ||
+[ -f "$SOURCE/$RECEIPT" ] && [ ! -L "$SOURCE/$RECEIPT" ] ||
     fail "no musl output receipt at $SOURCE/$RECEIPT; rebuild the sysroot with scripts/build-musl.sh"
-node "$OUTPUT_STATE" check "$SOURCE" ||
-    fail "$SOURCE no longer matches its musl output receipt; rebuild it with scripts/build-musl.sh"
 
+# Read the receipt once. The shared sysroot can be rewritten while this
+# runs, so the list of files to copy and the final digest check must come
+# from the same snapshot.
+RECEIPT_COPY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-sdk-receipt.XXXXXX")"
+trap 'rm -rf -- "$RECEIPT_COPY_DIR"' EXIT
+RECEIPT_COPY="$RECEIPT_COPY_DIR/$RECEIPT"
+cp "$SOURCE/$RECEIPT" "$RECEIPT_COPY"
+
+# musl-output-state.mjs validates the whole receipt in the final check; the
+# listing only has to keep every path inside the destination before then.
+receipt_listing="$(node -e '
+const outputs = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+if (!outputs || Array.isArray(outputs) || typeof outputs !== "object") {
+  throw new Error("musl output receipt is not an object");
+}
+for (const path of Object.keys(outputs).sort()) {
+  if (path.startsWith("/") || /[\0-\x1f]/.test(path) ||
+      path.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`invalid musl output receipt path: ${JSON.stringify(path)}`);
+  }
+  console.log(path);
+}
+' "$RECEIPT_COPY")" || fail "could not list the musl output receipt at $SOURCE/$RECEIPT"
 receipt_paths=()
 while IFS= read -r path; do
-    receipt_paths+=("$path")
-done < <(node -e '
-const outputs = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-for (const path of Object.keys(outputs).sort()) console.log(path);
-' "$SOURCE/$RECEIPT")
+    if [ -n "$path" ]; then receipt_paths+=("$path"); fi
+done <<<"$receipt_listing"
 [ "${#receipt_paths[@]}" -gt 0 ] || fail "musl output receipt lists no files"
 
 copy_file() {
@@ -124,12 +142,13 @@ for tree in "${GRAPHICS_TREES[@]}"; do
     cp -R "$SOURCE/$tree" "$DEST/$tree"
 done
 
-# Check the copied bytes, not just the source: the shared sysroot can be
-# rewritten while this runs. The receipt is build-machine state, not guest
-# content, so it does not stay in the staged tree.
-cp "$SOURCE/$RECEIPT" "$DEST/$RECEIPT"
+# Check the copied bytes against the receipt snapshot: this catches a
+# sysroot that was already stale and one rewritten while this ran. The
+# receipt is build-machine state, not guest content, so it does not stay in
+# the staged tree.
+cp "$RECEIPT_COPY" "$DEST/$RECEIPT"
 node "$OUTPUT_STATE" check "$DEST" ||
-    fail "the staged sysroot does not match the musl output receipt; $SOURCE changed during staging"
+    fail "the staged copy of $SOURCE does not match its musl output receipt (stale, or changed during staging); rebuild it with scripts/build-musl.sh"
 rm -f "$DEST/$RECEIPT"
 
 echo "    sysroot: $(find "$DEST" -type f | wc -l | tr -d ' ') files staged from $SOURCE"

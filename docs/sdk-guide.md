@@ -885,8 +885,13 @@ other files `scripts/build-musl.sh` installs, the
 from the declared `libcxx` dependency. The build machine's `sysroot/` is
 shared and also holds libraries other tools stage there, such as the
 GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
-fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind,
-and the `kandelo-sdk` image selects its sysroot through the same script.
+fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind.
+The `kandelo-sdk` image's package build stages its sysroot through the
+same script and passes the `libcxx` output separately. Its image builder,
+`images/vfs/scripts/build-kandelo-sdk-vfs-image.sh`, has no default
+sysroot: it requires both inputs and refuses a sysroot that still holds
+the build machine's musl output receipt, other `.kandelo-*` stamps, or
+libc++.
 
 In a shell session:
 
