@@ -34,6 +34,13 @@ export async function configureNewComputer(page: Page, profileId: string, title?
     expect(image.headers()["content-length"]).toBe(String(partial.bytes));
     expect(image.headers()["cache-control"]).toMatch(/(?:^|,)\s*no-store(?:\s|,|$)/);
   }
+  // Display clicks can capture the browser pointer. Follow the shipped
+  // Escape-to-release interaction before using controls outside the guest.
+  if (await page.evaluate(() => document.pointerLockElement !== null)) {
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => document.pointerLockElement === null))
+      .toBe(true);
+  }
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await page.getByRole("button", { name: "+ New computer", exact: true }).click();
   await page.getByRole("searchbox", { name: "Find starting computers" }).fill(profileId);
