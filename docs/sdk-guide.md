@@ -176,13 +176,38 @@ the same way, so libc++'s own handlers and cleanups run too.
 compiles to the same code as before the SDK enabled exceptions. C
 translation units, assembly and links of objects do not get the flag, so C
 code compiles exactly as before, including C compiled with `-fexceptions`.
-Two gaps remain, both independent of the flag. An exception with no
-handler leaves the program's Wasm stack and reaches the host instead of
-calling `std::terminate` (LLVM's Wasm unwinder has no search phase to find
-out that no handler exists), so the process does not end with `SIGABRT`.
-And a failed throwing `operator new` aborts instead of throwing
-`std::bad_alloc`: the SDK glue's weak fallback (`libc/glue/cxxrt.c`)
-satisfies `operator new` before the link reaches libc++'s definition.
+
+An exception that no handler catches calls `std::terminate`, as the C++
+standard requires. The default terminate handler prints `libc++abi:
+terminating due to uncaught exception of type <type>: <what()>` and calls
+`abort()`, so the process is killed by `SIGABRT` and `waitpid` reports
+`WIFSIGNALED` with `WTERMSIG == SIGABRT`; a `std::set_terminate` handler
+runs instead when one is installed. On a native target the unwinder's
+search phase finds that no handler exists and `__cxa_throw` calls
+`std::terminate` itself. WebAssembly exception handling has no search
+phase, so Kandelo puts a handler at the bottom of every guest stack
+instead. libc runs the main thread's constructors, `main` and `exit`
+through `__kandelo_main_entry`, and each thread's start routine and thread
+exit through `__kandelo_pthread_entry` (or `__kandelo_thrd_entry` for C11
+threads). libc's weak definitions just run that code. The SDK links
+`libc/glue/cxxrt_entry.cpp` into every executable whose link includes
+libc++abi; its strong definitions run the same code inside `catch (...)`,
+which catches only C++ exceptions, and call `std::terminate` with the
+exception caught. C programs, and other exceptions such as `longjmp`'s and
+fork instrumentation's, are unaffected.
+
+One difference from Linux is observable: the C++ standard leaves it
+implementation-defined whether the stack is unwound before `std::terminate`
+is called. Linux's two-phase unwinder does not unwind; Kandelo does, so the
+destructors of the frames the exception left have run when the terminate
+handler starts.
+
+A failed throwing `operator new` calls the `std::new_handler` and, when
+there is none, throws `std::bad_alloc`; the `nothrow` forms return a null
+pointer. These are libc++'s definitions. The SDK's minimal fallback in
+`libc/glue/cxxrt.c` is linked lazily after libc++ (see "Files linked
+automatically"), so it no longer replaces them; it only serves C++ code
+linked without libc++.
 
 #### LLVM 21 SjLj and `noexcept` limitation
 
@@ -525,7 +550,17 @@ live in `crates/kandelo-cc/src/flags.rs`, shared by both SDK builds.
 When linking an executable (not compile-only), the SDK adds:
 - `libc/glue/channel_syscall.c` — syscall dispatcher
 - `libc/glue/compiler_rt.c` — soft-float and 64-bit builtins
+- `libc/glue/dlopen.c` — the dynamic loader, with `-ldl`
+- `libc/glue/cxxrt_entry.cpp` — the C++ runtime's entries (see "C++
+  exceptions"), when the link includes libc++abi: the C++ driver adds it, or
+  the caller names `-lc++abi` or `libc++abi.a`
 - `sysroot/lib/crt1.o` — C runtime startup
+- `libc/glue/cxxrt.c` — a minimal C++ runtime (`operator new`/`delete`,
+  `__cxa_pure_virtual`) for C++ code linked without libc++ and libc++abi,
+  as a lazy member (`--start-lib`) after the caller's inputs and the C++
+  libraries, so it supplies only what nothing earlier defined. Its throwing
+  `operator new` aborts on failure, since there is no exception runtime to
+  throw `std::bad_alloc`.
 - `sysroot/lib/libc.a` — musl libc
 
 The injected glue and startup objects precede user linker inputs, and the final

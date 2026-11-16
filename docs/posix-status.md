@@ -899,7 +899,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - **Extended attributes:** 12 xattr syscalls; `user.` attributes on the exchange filesystem only (ENOTSUP for get/set/remove and an empty list elsewhere)
 - **Remaining:** memfd_create, getcpu, splice/tee, POSIX timers, capget/capset, and more
 - **No longer stubs:** `sync_file_range` (whole-file `fsync`), `personality` (ENOSYS, logged) and `membarrier` (empty QUERY mask, EINVAL for barrier commands) were listed above as batch-5 stubs; see their rows in the tables for current behaviour.
-- **Not the live path:** `libc/glue/syscall_glue.c` still answers `return 0` for `SYS_SYNC_FILE_RANGE`, `SYS_PERSONALITY` and `SYS_MEMBARRIER` (the last with a "no-op, single-threaded" comment that is false). No build links that file: the SDK driver (`crates/kandelo-cc/src/driver.rs`, `glue_sources`) links only `channel_syscall.c`, `compiler_rt.c`, `cxxrt.c` and optionally `dlopen.c`, and the channel path reaches the kernel dispatcher, which is what this document describes. Do not read `syscall_glue.c` as authoritative.
+- **Not the live path:** `libc/glue/syscall_glue.c` still answers `return 0` for `SYS_SYNC_FILE_RANGE`, `SYS_PERSONALITY` and `SYS_MEMBARRIER` (the last with a "no-op, single-threaded" comment that is false). No build links that file: the SDK driver (`crates/kandelo-cc/src/driver.rs`, `glue_sources`) links only `channel_syscall.c`, `compiler_rt.c`, `cxxrt.c` and optionally `dlopen.c` and `cxxrt_entry.cpp`, and the channel path reaches the kernel dispatcher, which is what this document describes. Do not read `syscall_glue.c` as authoritative.
 
 ---
 
@@ -1066,8 +1066,20 @@ thrown by libc++ and libc++abi, `exception_ptr` across threads and the
 handler inside libc++'s `std::call_once`; `host/test/cpp-throw-test.test.ts`
 runs it via the kernel harness.
 
-Known gaps: an exception with no handler escapes the program to the host
-instead of calling `std::terminate` and raising `SIGABRT`, and a failed
-throwing `operator new` aborts instead of throwing `std::bad_alloc`
-because the SDK glue's weak fallback in `libc/glue/cxxrt.c` is linked
-ahead of libc++'s definition (`docs/sdk-guide.md`, "C++ exceptions").
+An exception with no handler calls `std::terminate`: libc++abi's default
+handler prints `terminating due to uncaught exception of type ...` and
+aborts, so the process is killed by `SIGABRT` (visible to `waitpid` as
+`WIFSIGNALED`/`SIGABRT`), and a `std::set_terminate` handler runs when
+installed. This holds for `main`, static constructors and destructors run
+by `exit`, and every `pthread_create`/`std::thread` start routine. Because
+Wasm exception handling has no search phase, the SDK's C++ runtime entry
+(`libc/glue/cxxrt_entry.cpp`) catches such an exception at the bottom of
+each stack; unlike Linux, the stack has been unwound by the time the
+terminate handler runs, which the standard leaves implementation-defined.
+A failed throwing `operator new` calls the `new_handler` and then throws
+`std::bad_alloc`, and the `nothrow` forms return a null pointer
+(libc++'s definitions; the SDK's abort-on-failure fallback in
+`libc/glue/cxxrt.c` is linked lazily after libc++ and only serves C++ code
+linked without it). `programs/cxx_uncaught_test.cpp` and
+`programs/cxx_bad_alloc_test.cpp`, run by `host/test/cxx-terminate.test.ts`,
+are the regression gate (`docs/sdk-guide.md`, "C++ exceptions").

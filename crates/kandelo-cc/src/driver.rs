@@ -357,19 +357,45 @@ pub fn working_directory_from_clang_trace(
     Ok(traced.into_iter().next().expect("one directory"))
 }
 
-/// Link-time libc glue sources, in link order.
-pub fn glue_sources(toolchain: &Toolchain, link_dl: bool) -> Vec<String> {
-    let mut names = vec!["channel_syscall.c", "compiler_rt.c", "cxxrt.c"];
-    if link_dl {
-        names.push("dlopen.c");
-    }
-    names
-        .iter()
-        .map(|name| join(&toolchain.glue_dir, name))
-        .collect()
+/// The link-time glue of an executable link, as sources or as the objects
+/// compiled from them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Glue {
+    /// Linked as objects ahead of crt1.o and the caller's inputs, in this
+    /// order: the syscall channel and compiler-rt builtins, the dlopen loader
+    /// when the link asks for it, and the C++ runtime entry
+    /// (`cxxrt_entry.cpp`) when the link includes libc++abi.
+    pub leading: Vec<String>,
+    /// The minimal C++ runtime fallback (`cxxrt.c`), linked lazily after the
+    /// caller's inputs and the C++ libraries: a member is used only when
+    /// nothing earlier defines what it provides.
+    pub fallback: Vec<String>,
 }
 
-/// Compile command for the link-time glue sources.
+/// The glue source that installs the C++ runtime's language entries.
+pub const CXX_ENTRY_GLUE: &str = "cxxrt_entry.cpp";
+
+/// Link-time libc glue sources, in link order.
+pub fn glue_sources(toolchain: &Toolchain, link_dl: bool, cxx_runtime: bool) -> Glue {
+    let mut leading = vec!["channel_syscall.c", "compiler_rt.c"];
+    if link_dl {
+        leading.push("dlopen.c");
+    }
+    if cxx_runtime {
+        leading.push(CXX_ENTRY_GLUE);
+    }
+    let path = |name: &&str| join(&toolchain.glue_dir, name);
+    Glue {
+        leading: leading.iter().map(path).collect(),
+        fallback: ["cxxrt.c"].iter().map(path).collect(),
+    }
+}
+
+fn is_cxx_glue(source: &str) -> bool {
+    source.ends_with(".cpp")
+}
+
+/// Compile command for the link-time C glue sources.
 ///
 /// The glue (the syscall channel, compiler-rt builtins, the minimal C++
 /// runtime, the dlopen loader) is platform code linked into every
@@ -382,6 +408,30 @@ pub fn build_glue_compile_args(
     arch: WasmArch,
     thread_slot_define: Option<&str>,
 ) -> Vec<String> {
+    let mut args = glue_compile_base(toolchain, arch);
+    if let Some(define) = thread_slot_define {
+        args.push(define.to_string());
+    }
+    args.extend(["-O2", "-x", "c", "-c"].map(String::from));
+    args.extend(sources.iter().cloned());
+    args
+}
+
+/// Compile command for the C++ glue: the same fixed flags as the C glue,
+/// with the SDK's C++ exception handling, which its catch handlers need.
+pub fn build_cxx_glue_compile_args(
+    sources: &[String],
+    toolchain: &Toolchain,
+    arch: WasmArch,
+) -> Vec<String> {
+    let mut args = glue_compile_base(toolchain, arch);
+    args.extend(cxx_compile_flags());
+    args.extend(["-O2", "-x", "c++", "-c"].map(String::from));
+    args.extend(sources.iter().cloned());
+    args
+}
+
+fn glue_compile_base(toolchain: &Toolchain, arch: WasmArch) -> Vec<String> {
     let mut args = compile_flags(arch);
     // The glue is code of every executable, so its facts must be in the link
     // like any other object's.
@@ -391,11 +441,6 @@ pub fn build_glue_compile_args(
     args.push(format!("--sysroot={}", toolchain.sysroot));
     args.extend(sdk_source_prefix_map_flags(toolchain, arch));
     args.extend(recipe_work_prefix_map_flags());
-    if let Some(define) = thread_slot_define {
-        args.push(define.to_string());
-    }
-    args.extend(["-O2", "-x", "c", "-c"].map(String::from));
-    args.extend(sources.iter().cloned());
     args
 }
 
@@ -431,6 +476,20 @@ fn links_cxx_stdlib(language: Language, filtered: &[String]) -> bool {
             .any(|arg| matches!(arg.as_str(), "-nostdlib" | "-nodefaultlibs" | "-nostdlib++"))
 }
 
+/// Does this executable link include the C++ runtime (libc++abi)?
+///
+/// Either the SDK adds it (`links_cxx_stdlib`) or the caller names it, as a
+/// C program that links a C++ library does with `-lc++ -lc++abi`. Such a
+/// link gets the C++ runtime entry glue (`cxxrt_entry.cpp`).
+fn links_cxx_runtime(language: Language, filtered: &[String]) -> bool {
+    links_cxx_stdlib(language, filtered)
+        || filtered.iter().enumerate().any(|(i, arg)| {
+            arg == "-lc++abi"
+                || (arg == "-l" && filtered.get(i + 1).is_some_and(|next| next == "c++abi"))
+                || basename(arg) == "libc++abi.a"
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_clang_args_internal(
     user_args: &[String],
@@ -440,7 +499,7 @@ fn build_clang_args_internal(
     executable_linker: Option<Preparation>,
     report_warnings: bool,
     classify_link: bool,
-    glue_objects: Option<&[String]>,
+    glue_objects: Option<&Glue>,
 ) -> Result<Vec<String>> {
     let filter = filter_args(user_args, arch);
     if report_warnings {
@@ -576,10 +635,15 @@ fn build_clang_args_internal(
             if thread_slots != THREAD_SLOT_USE_HOST_DEFAULT {
                 args.push(thread_slot_declaration_define(thread_slots));
             }
-            match glue_objects {
-                Some(objects) => args.extend(objects.iter().cloned()),
-                None => args.extend(glue_sources(toolchain, parsed.link_dl)),
-            }
+            let glue = match glue_objects {
+                Some(objects) => objects.clone(),
+                None => glue_sources(
+                    toolchain,
+                    parsed.link_dl,
+                    links_cxx_runtime(language, &filtered),
+                ),
+            };
+            args.extend(glue.leading);
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
             args.extend(parsed.forwarded_args.iter().cloned());
@@ -589,6 +653,16 @@ fn build_clang_args_internal(
             // that loads them.
             if links_cxx_stdlib(language, &filtered) {
                 args.extend(["-lc++", "-lc++abi"].map(String::from));
+            }
+            // The minimal C++ runtime is a fallback for C++ code linked
+            // without libc++ and libc++abi. As a lazy member after them it
+            // supplies only what they did not: libc++'s operator new, which
+            // throws std::bad_alloc, is weak like the fallback's, so a
+            // fallback object linked earlier would win and abort instead.
+            if !glue.fallback.is_empty() {
+                args.push("-Wl,--start-lib".into());
+                args.extend(glue.fallback);
+                args.push("-Wl,--end-lib".into());
             }
             args.push(join(&lib, "libc.a"));
             // LLD 22 made --stack-first the default; LLD 21 neither defaults to
@@ -614,7 +688,7 @@ pub fn build_clang_args(
     arch: WasmArch,
     language: Language,
     executable_linker: Option<LinkerPreparation>,
-    glue_objects: Option<&[String]>,
+    glue_objects: Option<&Glue>,
 ) -> Result<Vec<String>> {
     build_clang_args_internal(
         user_args,
@@ -679,52 +753,80 @@ pub fn compile_executable_glue(
     user_args: &[String],
     toolchain: &Toolchain,
     arch: WasmArch,
+    language: Language,
     executable_linker: Option<LinkerPreparation>,
-) -> Result<Option<(Vec<String>, TempDir)>> {
+) -> Result<Option<(Glue, TempDir)>> {
     if !matches!(
         executable_linker,
         Some(LinkerPreparation::ExecutableLink { .. })
     ) {
         return Ok(None);
     }
-    let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
+    let filtered = filter_args(user_args, arch).filtered;
+    let parsed = parse_args(&filtered)?;
     if parsed.shared {
         return Ok(None);
     }
     let define = executable_thread_slot_define(user_args, arch)?;
     let dir = TempDir::new("kandelo-glue-")?;
-    let sources = glue_sources(toolchain, parsed.link_dl);
-    // One compiler process for every glue source: `-c` with several inputs
-    // writes <basename>.o files into the working directory.
-    let args = build_glue_compile_args(&sources, toolchain, arch, define.as_deref());
-    // The glue is the SDK's code, compiled with the SDK's flags: a caller's
-    // CCC_OVERRIDE_OPTIONS edits the caller's own clang jobs, not this one.
-    // (It could also move this compile's working directory, and with it the
-    // objects, out of the directory the link reads them from.)
-    let result = run_without_env(
-        &toolchain.cc,
-        &args,
-        Some(dir.path()),
-        &["CCC_OVERRIDE_OPTIONS"],
+    let sources = glue_sources(
+        toolchain,
+        parsed.link_dl,
+        links_cxx_runtime(language, &filtered),
     );
-    if result.exit_code != 0 {
-        return Err(format!(
-            "compiling SDK glue failed:\n{}",
-            result.stderr.trim()
-        ));
+    let (cxx_sources, c_sources): (Vec<String>, Vec<String>) = sources
+        .leading
+        .iter()
+        .chain(&sources.fallback)
+        .cloned()
+        .partition(|source| is_cxx_glue(source));
+    // One compiler process per glue language: `-c` with several inputs
+    // writes <basename>.o files into the working directory. The C glue must
+    // not get the C++ exception flags, so C++ glue has its own process.
+    let mut compiles = vec![build_glue_compile_args(
+        &c_sources,
+        toolchain,
+        arch,
+        define.as_deref(),
+    )];
+    if !cxx_sources.is_empty() {
+        compiles.push(build_cxx_glue_compile_args(&cxx_sources, toolchain, arch));
+    }
+    for args in &compiles {
+        // The glue is the SDK's code, compiled with the SDK's flags: a
+        // caller's CCC_OVERRIDE_OPTIONS edits the caller's own clang jobs,
+        // not this one. (It could also move this compile's working
+        // directory, and with it the objects, out of the directory the link
+        // reads them from.)
+        let result = run_without_env(
+            &toolchain.cc,
+            args,
+            Some(dir.path()),
+            &["CCC_OVERRIDE_OPTIONS"],
+        );
+        if result.exit_code != 0 {
+            return Err(format!(
+                "compiling SDK glue failed:\n{}",
+                result.stderr.trim()
+            ));
+        }
     }
     let dir_text = dir.path().to_string_lossy().into_owned();
-    let objects = sources
-        .iter()
-        .map(|source| {
-            let name = basename(source);
-            let object = match name.strip_suffix(".c") {
-                Some(stem) => format!("{stem}.o"),
-                None => name.to_string(),
-            };
-            node_path::join(&[&dir_text, &object])
-        })
-        .collect();
+    let object = |source: &String| {
+        let name = basename(source);
+        let object = match name
+            .strip_suffix(".cpp")
+            .or_else(|| name.strip_suffix(".c"))
+        {
+            Some(stem) => format!("{stem}.o"),
+            None => name.to_string(),
+        };
+        node_path::join(&[&dir_text, &object])
+    };
+    let objects = Glue {
+        leading: sources.leading.iter().map(object).collect(),
+        fallback: sources.fallback.iter().map(object).collect(),
+    };
     Ok(Some((objects, dir)))
 }
 
@@ -1022,7 +1124,7 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     }
     let executable_linker =
         prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
-    let glue = compile_executable_glue(user_args, &toolchain, arch, executable_linker)?;
+    let glue = compile_executable_glue(user_args, &toolchain, arch, language, executable_linker)?;
     // An executable link links the glue, and carries the glue's digest.
     let abi_contract = glue
         .as_ref()
@@ -1034,7 +1136,7 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
         arch,
         language,
         executable_linker,
-        glue.as_ref().map(|(objects, _)| objects.as_slice()),
+        glue.as_ref().map(|(objects, _)| objects),
     )?;
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
     let linking = needs_linking(&parsed) && executable_linker != Some(LinkerPreparation::NoLink);

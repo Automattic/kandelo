@@ -103,6 +103,21 @@ pub(crate) const HUBS: &[(&str, &str, &str, &[&str])] = &[
         "_ZTSFvvE",
         &["once"],
     ),
+    // Kandelo's libc calls the start routine from these bodies, which run
+    // inside the thread's language-runtime entry (scripts/build-musl.sh).
+    // `start` and `start_c11` remain for programs linked before that change.
+    (
+        "thread/pthread_create.c",
+        "__kandelo_run_pthread",
+        "_ZTSFPvS_E",
+        &["thread"],
+    ),
+    (
+        "thread/pthread_create.c",
+        "__kandelo_run_thrd",
+        "_ZTSFiPvE",
+        &["thread"],
+    ),
     (
         "thread/pthread_create.c",
         "start",
