@@ -12942,6 +12942,10 @@ fn sys_mmap_prepared(
     offset: i64,
 ) -> Result<usize, Errno> {
     let mapped = mmap_region(proc, host, addr, len, prot, flags, fd, offset)?;
+    if flags & MAP_ANONYMOUS != 0 && flags & wasm_posix_shared::mmap::MAP_SHARED != 0 {
+        // PROTOTYPE (process-shared sync): name the shared object.
+        proc.memory.set_anon_shared(mapped);
+    }
     if flags & MAP_ANONYMOUS == 0 {
         // Record what the new mapping maps while the descriptor still names
         // it; /proc/<pid>/maps reports it after the descriptor is closed.
@@ -20403,6 +20407,175 @@ pub fn sys_futex(
             Ok(ParkOutcome::Done(i32::try_from(woken).unwrap_or(i32::MAX)))
         }
         _ => Err(Errno::ENOSYS),
+    }
+}
+
+// ── PROTOTYPE: process-shared semaphores keyed by memory-object identity ──
+//
+// Throwaway prototype for docs/plans/2026-11-15-process-shared-
+// synchronization-design.md. The semaphore value lives in a kernel table
+// keyed by the identity of the memory object that holds the sem_t (file
+// dev/ino + offset, anonymous MAP_SHARED object + offset, or the private
+// (pid, address)), not by the guest address alone. Waiters park in
+// `wait_park` under a token for that key, so a post in any process wakes a
+// waiter in any other. Not for merge: no cleanup, no limits, no robust
+// semantics, no mremap/split identity tracking, no wasm64 audit.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PsyncKey {
+    kind: u8,
+    a: u64,
+    b: u64,
+    offset: u64,
+}
+
+struct PsyncTable {
+    values: alloc::collections::BTreeMap<PsyncKey, u32>,
+    tokens: alloc::collections::BTreeMap<PsyncKey, u64>,
+    next_token: u64,
+}
+
+static mut PSYNC: PsyncTable = PsyncTable {
+    values: alloc::collections::BTreeMap::new(),
+    tokens: alloc::collections::BTreeMap::new(),
+    next_token: 1,
+};
+
+#[allow(static_mut_refs)]
+fn psync_table() -> &'static mut PsyncTable {
+    unsafe { &mut PSYNC }
+}
+
+/// Resolve a guest address to the identity of the object it names.
+pub fn psync_key(memory: &crate::memory::MemoryManager, pid: u32, addr: u64) -> PsyncKey {
+    if let Some(region) = memory.region_containing(addr as usize) {
+        let delta = addr - region.addr as u64;
+        if let Some(file) = region.file.as_ref() {
+            if region.flags & wasm_posix_shared::mmap::MAP_SHARED != 0 {
+                return PsyncKey { kind: 2, a: file.dev, b: file.ino, offset: region.file_offset + delta };
+            }
+        }
+        if let Some((id, base)) = region.anon_shared {
+            return PsyncKey { kind: 1, a: id, b: 0, offset: addr - base as u64 };
+        }
+    }
+    PsyncKey { kind: 0, a: pid as u64, b: 0, offset: addr }
+}
+
+fn psync_token(key: PsyncKey) -> u64 {
+    let t = psync_table();
+    if let Some(token) = t.tokens.get(&key) {
+        return *token;
+    }
+    let token = t.next_token;
+    t.next_token += 1;
+    t.tokens.insert(key, token);
+    token
+}
+
+/// Wait-queue source for a key: pid 0 is never a task, so these tokens
+/// cannot collide with a private futex queue.
+fn psync_wake_source(token: u64) -> crate::wait_queue::WakeSource {
+    crate::wait_queue::WakeSource::Futex { pid: 0, addr: token }
+}
+
+pub const PSYNC_SEM_INIT: u32 = 0;
+pub const PSYNC_SEM_POST: u32 = 1;
+pub const PSYNC_SEM_TRYWAIT: u32 = 2;
+pub const PSYNC_SEM_TIMEDWAIT: u32 = 3;
+pub const PSYNC_SEM_GETVALUE: u32 = 4;
+
+/// One process-shared semaphore operation.
+pub fn sys_psync_sem(
+    host: &mut dyn HostIO,
+    memory: &crate::memory::MemoryManager,
+    task: GuestTask,
+    op: u32,
+    addr: u64,
+    arg: u64,
+    clock: u32,
+) -> Result<ParkOutcome, Errno> {
+    const SEM_VALUE_MAX: u32 = 0x7fff_ffff;
+    let GuestTask { pid, tid, .. } = task;
+    if addr & 3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let key = psync_key(memory, pid, addr);
+    let mirror = |host: &mut dyn HostIO, value: u32| {
+        // Keep the sem_t bytes truthful for inspection; the table is the
+        // authority while the prototype runs.
+        let _ = host.proc_write_bytes(pid as i32, addr, &value.to_le_bytes());
+    };
+    if op == PSYNC_SEM_INIT {
+        if arg > SEM_VALUE_MAX as u64 {
+            return Err(Errno::EINVAL);
+        }
+        psync_table().values.insert(key, arg as u32);
+        mirror(host, arg as u32);
+        return Ok(ParkOutcome::Done(0));
+    }
+    // A semaphore created by bytes alone (sem_open writes its file) is
+    // materialized from those bytes on first use.
+    if !psync_table().values.contains_key(&key) {
+        let mut word = [0u8; 4];
+        if host.proc_read_bytes(pid as i32, addr, &mut word) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        psync_table().values.insert(key, u32::from_le_bytes(word) & SEM_VALUE_MAX);
+    }
+    let value = *psync_table().values.get(&key).unwrap();
+    match op {
+        PSYNC_SEM_GETVALUE => Ok(ParkOutcome::Done(value as i32)),
+        PSYNC_SEM_POST => {
+            let token = psync_token(key);
+            // Hand the unit straight to the oldest waiter, if any.
+            let woken = crate::wait_park::with(|parks| parks.futex_wake(0, token, 1, u32::MAX));
+            if woken == 0 {
+                if value == SEM_VALUE_MAX {
+                    return Err(Errno::EOVERFLOW);
+                }
+                psync_table().values.insert(key, value + 1);
+                mirror(host, value + 1);
+            }
+            Ok(ParkOutcome::Done(0))
+        }
+        PSYNC_SEM_TRYWAIT | PSYNC_SEM_TIMEDWAIT => {
+            if value > 0 {
+                psync_table().values.insert(key, value - 1);
+                mirror(host, value - 1);
+                return Ok(ParkOutcome::Done(0));
+            }
+            if op == PSYNC_SEM_TRYWAIT {
+                return Err(Errno::EAGAIN);
+            }
+            let now = crate::wait_park::now_ns(host)?;
+            let timeout_ns = if arg == 0 {
+                None
+            } else {
+                let at = read_guest_timespec_ns(host, task, arg)?;
+                Some(at.saturating_sub(guest_clock_ns(host, clock)?))
+            };
+            if timeout_ns.is_some_and(|ns| ns <= 0) {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let deadline = timeout_ns.map(|ns| now.saturating_add(ns));
+            let token = psync_token(key);
+            let generation = crate::wait_park::with(|parks| {
+                parks.park(
+                    pid,
+                    tid,
+                    crate::wait_queue::WaitKind::Futex,
+                    alloc::vec![psync_wake_source(token)],
+                    deadline,
+                    crate::wait_park::Resume::Futex {
+                        bitset: u32::MAX,
+                        timeout_ns: timeout_ns.map(|ns| ns as u64),
+                    },
+                )
+            })?;
+            Ok(ParkOutcome::Parked(generation))
+        }
+        _ => Err(Errno::EINVAL),
     }
 }
 

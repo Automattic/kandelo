@@ -54,6 +54,10 @@ pub struct MappedRegion {
     /// Opt-in driver cleanup authority, independent of address and BO reuse.
     /// Ordinary mmap and the fork wire format carry no such authority.
     pub(crate) exact_mapping: Option<ExactMappingIdentity>,
+    /// PROTOTYPE (process-shared sync): identity of an anonymous MAP_SHARED
+    /// object as (object id, address of the object's first byte in this
+    /// process). Inherited at fork; split fragments keep the same base.
+    pub anon_shared: Option<(u64, usize)>,
 }
 
 impl MappedRegion {
@@ -67,6 +71,7 @@ impl MappedRegion {
             file_offset: 0,
             file: None,
             exact_mapping: None,
+            anon_shared: None,
         }
     }
 
@@ -410,6 +415,24 @@ impl MemoryManager {
         }
     }
 
+    /// PROTOTYPE: give the fresh anonymous mapping at `addr` a new
+    /// process-shared object identity.
+    pub fn set_anon_shared(&mut self, addr: usize) {
+        static mut NEXT: u64 = 1;
+        if let Some(mapping) = self.mappings.iter_mut().find(|m| m.addr == addr) {
+            let id = unsafe { NEXT };
+            unsafe { NEXT += 1 };
+            mapping.anon_shared = Some((id, addr));
+        }
+    }
+
+    /// PROTOTYPE: the mapping that contains `addr`.
+    pub fn region_containing(&self, addr: usize) -> Option<&MappedRegion> {
+        self.mappings
+            .iter()
+            .find(|m| addr >= m.addr && addr < m.addr.saturating_add(m.len))
+    }
+
     /// Copy each mapping's backing object from the live parent at `fork`.
     ///
     /// WHY not serialized: fork state carries the address layout, and the
@@ -424,6 +447,7 @@ impl MemoryManager {
             {
                 mapping.file_offset = source.file_offset;
                 mapping.file = source.file.clone();
+                mapping.anon_shared = source.anon_shared;
             }
         }
     }
@@ -626,6 +650,7 @@ impl MemoryManager {
                         file_offset: self.mappings[i].offset_after(unmap_end - m_addr),
                         file: self.mappings[i].file.clone(),
                         exact_mapping: self.mappings[i].exact_mapping,
+                        anon_shared: self.mappings[i].anon_shared,
                     };
                     self.mappings[i].len = addr - m_addr;
                     self.mappings.insert(i + 1, right);

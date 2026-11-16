@@ -8619,6 +8619,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
+        440 => {
+            // PROTOTYPE SYS_PSYNC_SEM: (op, sem address, value/abstime, clock)
+            channel_psync_sem(a1 as u32, args[1] as u64, args[2] as u64, a4 as u32)
+        }
         414 => {
             // SYS_PSHARED_COND_WAIT_ABORT: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
@@ -16045,6 +16049,23 @@ fn channel_futex(uaddr: u64, op: u32, val: u32, timeout: u64, uaddr2: u64, val3:
         narrow(timeout),
         narrow(uaddr2),
         val3,
+    ))
+}
+
+/// PROTOTYPE: process-shared semaphore operation keyed by object identity.
+fn channel_psync_sem(op: u32, addr: u64, arg: u64, clock: u32) -> i32 {
+    let (_gkl, proc, _locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let narrow = |raw: u64| if task.pointer_width == 4 { raw as u32 as u64 } else { raw };
+    let mut host = WasmHostIO;
+    report_park(syscalls::sys_psync_sem(
+        &mut host,
+        &proc.memory,
+        task,
+        op,
+        narrow(addr),
+        narrow(arg),
+        clock,
     ))
 }
 
