@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,38 @@ describe.skipIf(!available)("make inside Kandelo (Node host, build image)", () =
     expect(generated).toContain("#define GEN_SIZEOF_POINTER 4");
     expect(readFileSync(join(dir, "run.txt"), "utf8"))
       .toBe("sizeof(long) at build: 4, pointer: 4, sum: 5\n");
+  }, 900_000);
+
+  // Hundreds of jobs that exit at once deliver SIGCHLD throughout make's
+  // jobserver loop. make built without pselect() (as it was when the recipe
+  // defined MK_OS_ZOS) uses a dup-and-close fallback that races with its
+  // own SIGCHLD handler and stopped with "duping jobs pipe" on every run of
+  // this test. Both jobserver styles must keep their tokens to the end.
+  it("runs hundreds of short parallel jobs through the jobserver", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-guest-make-jobs-"));
+    workspaces.push(dir);
+    const targets = Array.from({ length: 300 }, (_, i) => `t${i}`).join(" ");
+    writeFileSync(
+      join(dir, "Makefile"),
+      `T := ${targets}\nall: $(T)\n$(T):\n\ttrue\n.PHONY: all $(T)\n`,
+    );
+    let log = "";
+    const { exitCode } = await runGuestBuild({
+      kernelWasm: new Uint8Array(readFileSync(kernelPath!)),
+      image: new Uint8Array(readFileSync(imagePath!)),
+      request: {
+        workspace: dir,
+        argv: [
+          "/bin/sh", "-c",
+          "make -s -j4 --jobserver-style=fifo && make -s -j4 --jobserver-style=pipe",
+        ],
+        sourceDateEpoch: 1704067200,
+        timeoutMs: 600_000,
+      },
+      log: (chunk) => { log += new TextDecoder().decode(chunk); },
+    });
+    expect(exitCode, log).toBe(0);
+    expect(log).not.toContain("jobs pipe");
   }, 900_000);
 
   it("produces the same program from two workspaces", async () => {
