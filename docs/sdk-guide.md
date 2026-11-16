@@ -361,6 +361,14 @@ linked module:
 - Any other module loses the section and then gets exactly the `wasm-opt`
   command clang scheduled.
 
+Last, the SDK stamps every executable it links (not shared libraries)
+with the `kandelo.abi.contract` digest from the glue
+directory's `kandelo-abi-contract.txt`, which the host compares with the
+running kernel's before it runs the program
+([ABI versioning](abi-versioning.md)). `wasm-opt`, the fork instrumenter
+and `strip` keep the section. A link whose output already carries another
+digest fails rather than restamping it.
+
 Facts never ship. `install_local_binary` removes `kandelo.calltypes` and
 `kandelo.calltypes.code-sha256` from every artifact it installs, because a
 module can reach installation without passing through the instrumenter: a
@@ -979,11 +987,13 @@ the compiler entry point, which prepares Rust executable outputs before
 Cargo runs build scripts or programs. C/C++ links retain their normal
 explicit preparation step.
 
-Programs compiled here, like programs compiled ad hoc with the build
-machine's SDK, lack the `kandelo.abi.contract` digest stamp added by
-package admission. The current host accepts an absent stamp with a
-warning during the digest rollout; a present mismatched digest still
-fails.
+Programs linked here carry the `kandelo.abi.contract` digest, as programs
+linked by the build machine's SDK do: `cc` stamps it on every executable
+it links, from `kandelo-abi-contract.txt` in the SDK's glue directory. The
+host refuses a program whose digest differs from the running kernel's.
+A program built by an SDK that predates link-time stamping lacks the
+digest; the host still accepts it with a warning during the digest
+rollout.
 
 DWARF from `-g` builds records clang's resource directory, which is
 `/usr/lib/llvm/lib/clang/21` here and a different path on the build

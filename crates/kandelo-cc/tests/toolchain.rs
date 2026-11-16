@@ -7,7 +7,9 @@
 use kandelo_cc::arch::WasmArch;
 use kandelo_cc::driver::TempDir;
 use kandelo_cc::node_path::basename;
-use kandelo_cc::toolchain::{find_glue_dir, find_llvm_dir, find_sysroot};
+use kandelo_cc::toolchain::{
+    find_glue_dir, find_llvm_dir, find_sysroot, parse_abi_contract_digest, read_abi_contract_digest,
+};
 use std::sync::{Mutex, MutexGuard};
 
 /// Serializes the tests that change the process environment.
@@ -124,6 +126,43 @@ fn resolves_glue_dir_relative_to_the_sdk_root() {
     assert!(find_glue_dir().unwrap().contains("libc/glue"));
 }
 
+// The program ABI-contract digest executable links carry
+
+#[test]
+fn the_repositorys_glue_carries_a_program_abi_contract_digest() {
+    let glue = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../libc/glue");
+    let digest = read_abi_contract_digest(glue.to_str().unwrap()).unwrap();
+    assert_ne!(digest, [0; 32]);
+}
+
+#[test]
+fn abi_contract_digests_are_64_lowercase_hex_digits() {
+    let hex = "0123456789abcdef".repeat(4);
+    let parsed = parse_abi_contract_digest(&format!("{hex}\n")).unwrap();
+    assert_eq!(
+        parsed[..8],
+        [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+    );
+    assert_eq!(parse_abi_contract_digest(&hex), Some(parsed));
+    for invalid in [
+        String::new(),
+        hex[..62].to_string(),
+        hex.to_uppercase(),
+        format!("{hex}\n\n"),
+        format!(" {hex}"),
+        "g".repeat(64),
+    ] {
+        assert_eq!(parse_abi_contract_digest(&invalid), None, "{invalid:?}");
+    }
+}
+
+#[test]
+fn a_glue_directory_without_the_digest_is_an_error() {
+    let dir = TempDir::new("kandelo-cc-glue-").unwrap();
+    let error = read_abi_contract_digest(dir.path().to_str().unwrap()).unwrap_err();
+    assert!(error.contains("kandelo-abi-contract.txt"), "{error}");
+}
+
 // ar, ranlib and nm
 
 #[test]
@@ -146,8 +185,15 @@ fn archive_tools_do_not_require_any_sysroot() {
 
     let mut env = EnvGuard::new();
     env.set("WASM_POSIX_LLVM_DIR", Some(bin.path().to_str().unwrap()));
-    env.set("WASM_POSIX_SYSROOT", Some(missing_sysroot.to_str().unwrap()));
+    env.set(
+        "WASM_POSIX_SYSROOT",
+        Some(missing_sysroot.to_str().unwrap()),
+    );
     for tool in ["llvm-ar", "llvm-ranlib", "llvm-nm"] {
-        assert_eq!(kandelo_cc::tools::llvm_passthrough(tool, &[]), Ok(0), "{tool}");
+        assert_eq!(
+            kandelo_cc::tools::llvm_passthrough(tool, &[]),
+            Ok(0),
+            "{tool}"
+        );
     }
 }

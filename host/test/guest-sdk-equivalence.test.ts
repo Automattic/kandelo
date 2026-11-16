@@ -7,6 +7,9 @@
  * Binaryen release. So each command below must produce the same bytes in both
  * places: objects, archives, linked programs (with clang's post-link
  * wasm-opt) and fork-capable programs (facts and code hash, no wasm-opt).
+ * Every executable either side links carries the running kernel's
+ * kandelo.abi.contract digest, so the host checks it instead of admitting
+ * it as an unstamped legacy binary.
  *
  * Both sides compile against the sysroot and glue inside kandelo-sdk.zip: the
  * build machine's side extracts them and points the SDK at them, so the
@@ -30,6 +33,7 @@ import {
   createSourceOnlyBinarySnapshotSession,
   tryResolveBinaries,
 } from "../src/binary-resolver";
+import { ABI_CONTRACT_SECTION, readWasmCustomSectionPayload } from "../src/constants";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
 
@@ -224,6 +228,30 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function abiContract(bytes: Uint8Array): string | null {
+  const payload = readWasmCustomSectionPayload(arrayBuffer(bytes), ABI_CONTRACT_SECTION);
+  return payload === null ? null : Buffer.from(payload).toString("hex");
+}
+
+/**
+ * Each SDK stamps the executables it links (*.wasm here) with the program
+ * ABI-contract digest the host compares with the running kernel's; an
+ * executable without it runs unchecked, with the host's legacy-binary
+ * warning. Objects, archives and shared libraries carry none.
+ */
+function contractFailure(
+  side: string,
+  output: string,
+  bytes: Uint8Array,
+  kernelContract: string,
+): string | null {
+  const contract = abiContract(bytes);
+  const expected = output.endsWith(".wasm") ? kernelContract : null;
+  return contract === expected
+    ? null
+    : `${side} ${output}: kandelo.abi.contract ${contract ?? "absent"}, expected ${expected ?? "absent"}`;
+}
+
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
@@ -260,6 +288,9 @@ function guestCommand(step: Step): string {
 describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build machine", () => {
   it("builds the same bytes in both places", async () => {
     const [kernel, shell, sdk, ...utilities] = artifacts as Uint8Array[];
+    const kernelContract = abiContract(kernel!);
+    expect(kernelContract, "the kernel carries its ABI-contract digest").not.toBeNull();
+    const contractFailures: string[] = [];
     const work = mkdtempSync(join(tmpdir(), "kandelo-sdk-equivalence-"));
     try {
       // --- The build machine ---
@@ -277,7 +308,10 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
         for (const [name, text] of Object.entries(sources)) writeFileSync(join(dir, name), text);
         for (const step of sample.steps) hostStep(step, dir, env);
         for (const output of sample.outputs) {
-          hostOutputs.set(`${sample.name}/${output}`, sha256(readFileSync(join(dir, output))));
+          const bytes = new Uint8Array(readFileSync(join(dir, output)));
+          hostOutputs.set(`${sample.name}/${output}`, sha256(bytes));
+          const failure = contractFailure("build machine", `${sample.name}/${output}`, bytes, kernelContract!);
+          if (failure) contractFailures.push(failure);
         }
       }
 
@@ -334,6 +368,8 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
             expect(bytes, `${sample.name}/${output} missing inside Kandelo`).not.toBeNull();
             const key = `${sample.name}/${output}`;
             if (sha256(bytes!) !== hostOutputs.get(key)) mismatches.push(key);
+            const failure = contractFailure("Kandelo", key, bytes!, kernelContract!);
+            if (failure) contractFailures.push(failure);
           }
           for (const expected of sample.runs ?? []) {
             const executed = await run(`cd ${dir} && ./${expected.program}`);
@@ -341,6 +377,7 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
             expect(executed.stdout).toBe(expected.stdout);
           }
         }
+        expect(contractFailures, "ABI-contract stamps that differ from the kernel's").toEqual([]);
         expect(mismatches, "outputs that differ between the two SDKs").toEqual([]);
       } finally {
         await host.destroy();

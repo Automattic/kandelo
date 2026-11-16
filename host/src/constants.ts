@@ -2425,7 +2425,9 @@ export function readWasmCustomSectionNames(programBytes: ArrayBuffer): string[] 
  * Custom-section name carrying the 32-byte ABI-contract digest
  * (`ABI_VERSION` plus the program surface of abi/snapshot.json) a wasm
  * artifact was built against.
- * Stamped by the local-build engine (`tools/xtask/src/build_stamp.rs`,
+ * Stamped by the SDK driver on every executable it links
+ * (`crates/kandelo-cc`), on the build machine and inside Kandelo, and by the
+ * local-build engine (`tools/xtask/src/build_stamp.rs`,
  * `ABI_CONTRACT_SECTION`) onto every program — kernel, userspace, and every
  * guest. The host reads the kernel's own stamp at init and compares each
  * guest's stamp against it at exec, so a structural ABI change can't let a
