@@ -7,7 +7,8 @@ unchanged. The measured benefit is for the eventfd scaling probe: at 2,048
 registrations its complete create-through-close median fell 53–64% across Node,
 Chromium, Firefox and WebKit. Persistent metadata increased. Application results
 are mixed; this record does not claim an application-wide speedup or a green
-workspace test run.
+workspace test run. The later [Aria SELECT investigation](#aria-select-follow-up)
+did not reproduce the original large SELECT flag.
 
 ## Design and semantic boundary
 
@@ -441,8 +442,8 @@ unlock changed +7.3% then +0.2%. These reversals do not erase the original flags
 or establish absence of regressions. Node wasm32 Aria SELECT remained higher:
 100.84 → 117.39 ms (+16.4%) initially and 98.02 → 115.22 ms (+17.5%) on repeat.
 Initial ranges were 94.07–111.38 versus 115.29–119.30 ms; repeat ranges were
-96.31–132.43 versus 102.86–117.06 ms. This remains an acceptance risk; its cause
-has not been isolated. A separate diagnostic wrapped only that SELECT client invocation with the
+96.31–132.43 versus 102.86–117.06 ms. This was unresolved at the original checkpoint; the
+[follow-up](#aria-select-follow-up) records additional comparisons and profiles. A separate diagnostic wrapped only that SELECT client invocation with the
 existing bounded syscall trace: main collected 797 entries, candidate 799, both
 below its 4,096-entry capacity and both exited 0. Both had 666 reads; poll was
 8/9 and recvfrom 19/20. Neither trace contained epoll create/ctl/wait/pwait.
@@ -562,6 +563,143 @@ latency/duration and higher for throughput. Metric names carry the harness units
 | `mariadb-innodb-64/query_insert_ms` | 134.67 [125.74–143.62] → 156.48 [137.56–170.38] | +16.2% | 134.24 [129.62–134.69] → 135.10 [131.94–143.21] | +0.6% |
 | `mariadb-innodb-64/query_select_ms` | 8.52 [7.03–8.58] → 7.88 [7.16–9.00] | -7.5% | 8.18 [6.75–9.13] → 7.34 [7.29–9.65] | -10.3% |
 | `mariadb-innodb-64/query_join_ms` | 2.10 [2.08–2.68] → 1.92 [1.78–2.01] | -8.6% | 2.24 [1.77–3.21] → 1.79 [1.79–1.99] | -20.1% |
+
+## Aria SELECT follow-up
+
+On November 16 the user reported intermittent machine load and requested
+investigation of the repeated Node Aria SELECT flag. “Aria SELECT” here is the
+wasm32 MariaDB Aria-storage-engine suite's `query_select_ms`: a newly launched
+`mysqltest` client connects over loopback, executes `USE bench` and
+`SELECT * FROM t1 WHERE value > 500 AND value < 800`, reads results and exits.
+The table has 100 inserted rows; the predicate selects 29. The metric includes
+client startup and connection/lookup work, rather than isolating SQL execution.
+
+“Slower in both cohorts” meant candidate versus main within each of two
+three-parent comparison groups: 100.84 → 117.39 ms and 98.02 → 115.22 ms.
+It did not mean both builds became slower over time. Both original groups and
+all their flags remain recorded above.
+
+### Fresh uninstrumented comparisons
+
+The exact original baseline `f8612113e7bd52a5ce31011d556d7ce1519424be`
+and committed candidate `07fb5c204c664048697d30339ef7de52e6881d78` reused
+their own identified builds. Every original artifact hash was reverified.
+No production source, guest binary, fixture or worker bundle changed. Declared
+MariaDB program/data fingerprints match; the intended kernel/host fingerprints
+differ. Node remains 24.15.0 on the same Mac. This investigation ran timing jobs serially, with source/doc review but no
+concurrent build, other suite or profiler of its own. Other machine work was not
+controlled; load averages and system CPU counters were
+recorded before and after each launch. No run was discarded based on timing.
+
+Eight alternating independent-parent pairs used the unchanged ordinary harness
+with `--suite=mariadb-aria --rounds=1`. Three further alternating pairs repeated
+the complete unchanged nine-suite Node sequence with `--rounds=1`, preserving
+the process history that the isolated selection changes. All 22 parent reports
+completed successfully; all nine suites completed in every full report.
+
+SELECT milliseconds, median [minimum–maximum]; positive change means a higher
+candidate median. These are fresh observations, separate from both old cohorts.
+
+| Context | Parents per side | Main | Candidate | Change |
+|---|---:|---:|---:|---:|
+| Isolated Aria suite | 8 | 102.09 [100.95–106.41] | 101.75 [98.63–111.23] | -0.33% |
+| Full nine-suite sequence | 3 | 104.13 [103.75–107.74] | 105.89 [105.71–107.53] | +1.69% |
+
+The isolated paired changes span -6.77% to +8.74%; four pairs favored each
+side. The full-sequence paired changes were +1.89%, +1.69% and -0.19%.
+The earlier 16–18% effect did not reproduce. This supports reclassifying that
+specific flag as unconfirmed performance variation; it does not establish an
+exact zero effect or prove the cause of the original measurements.
+
+The first original Node cohort's one-minute load averages ranged 3.85–12.40
+on main and 4.03–8.85 on candidate. The second ranged 2.41–4.39 and 2.67–3.01,
+so load average alone cannot explain the original flag. Fresh load averages and
+CPU-counter deltas are retained per report; they are not per-query external-load
+measurements. Different scheduling, thermal state and startup/cache/GC history
+remain possible contributors, not demonstrated root causes.
+
+For completeness, all Aria metric medians in the fresh full-sequence reports:
+
+| Metric | Main | Candidate |
+|---|---:|---:|
+| `bootstrap_ms` | 2201.49 | 2179.18 |
+| `query_create_ms` | 242.11 | 249.09 |
+| `query_insert_ms` | 932.38 | 959.36 |
+| `query_select_ms` | 104.13 | 105.89 |
+| `query_join_ms` | 98.89 | 93.82 |
+
+### Separate startup and syscall diagnostics
+
+A private helper wrapped only the first SELECT client during a full nine-suite
+run, preserving its SQL, options, output handling and successful-exit checks.
+The pair used existing scalar syscall tracing and Node CPU profiling at a
+requested 500 us sampling interval. The diagnostic launcher was
+`node --cpu-prof --cpu-prof-interval=500 --cpu-prof-dir=... --import tsx
+profile.ts <tree> <output> full`; its loader/profiler setup differs from the
+ordinary `npx tsx` launcher, and all its durations are excluded from the tables
+above. Known begin/end functions shared monotonic markers with the profiles;
+profiler and `hrtime` clock offsets were calibrated separately on each side
+before assigning samples to the query interval. The bounded trace clock was
+checked against the parent's recorded interval. Samples are attribution evidence,
+not exact syscall CPU costs.
+
+| Instrumented observation | Main | Candidate |
+|---|---:|---:|
+| Client invocation wall ms | 127.86 | 122.26 |
+| Spawn acknowledgement ms after invocation | 3.25 | 3.32 |
+| First traced guest entry ms after invocation | 91.41 | 88.73 |
+| Trace entries | 794.00 | 808.00 |
+| Host-process user CPU ms (all threads) | 210.03 | 200.09 |
+| Host-process system CPU ms (all threads) | 80.53 | 73.02 |
+
+Both clients emitted 742 trace entries of their own. Neither trace included an
+epoll create/ctl/wait/pwait. Most pre-query time preceded the first traced guest
+syscall. The client worker's marked profile contains substantial `tsx` loader,
+JavaScript module compilation and internal loader work. The host process CPU
+figures above include all threads and diagnostic overhead; they are not guest
+CPU. Blocked Wasm threads can retain a Wasm leaf in sampled profiles, so wall
+sample weight was not added up and mislabeled as active CPU.
+
+Both clients opened the native Mac `/etc/services` and issued **664 reads of
+up to 1,024 bytes** on that descriptor, then closed it before their socket work.
+The entry-to-entry open/close spans were 20.68/17.41 ms in this diagnostic;
+these spans include scheduling and intervening client/kernel/host work, not
+isolated filesystem CPU. `NodeKernelHost` has no `rootfsImage` option in this
+suite, so it selects raw `NodePlatformIO`; the actual host file was 678,260 B,
+not the repository rootfs's 453 B service file. Its current SHA-256 is
+`e4ab19dc7199f9f15fac3d9cb62743637950cfab70dd9238715ad9d73a654042`. This native input is additional to the ordinary report's
+declared program/data fingerprints. The network target is
+`127.0.0.1:<fresh benchmark port>`, with server data in each ordinary temporary
+benchmark directory. No external database or relay participates.
+
+A separate eight-pair empty-worker control under the ordinary `npx tsx` launcher
+confirmed that workers inherit the parent's `--require tsx/.../preflight.cjs`
+and `--import tsx/.../loader.mjs` flags. The median until an otherwise empty
+JavaScript worker replied was 24.19 ms with inherited flags and 10.38 ms with
+`execArgv: []` (ranges 23.79–25.37 and 10.20–10.61). This demonstrates a shared
+startup cost in the development launch path. It does not measure a Kandelo guest
+or explain the original between-build difference by itself. The production
+worker policy and ordinary benchmark were not changed to obtain better scores.
+
+### Outcome and retained evidence
+
+The fresh standard runs do not substantiate a persistent 16–18% Aria SELECT
+regression. The measured interval includes substantial shared worker startup
+and native services-file work, making “SQL query latency” an inaccurate label.
+A precise cause for the original difference cannot be recovered from the
+original aggregate reports. Retain those reports as observations; do not present
+the old effect as a confirmed epoll regression or the new runs as proof that
+machine load was its sole cause. There is no evidence here requiring a further
+epoll implementation change.
+
+All follow-up scripts, original ordinary JSON reports, side order, statuses,
+load/CPU counters, raw scalar traces, calibrated marker/profile summaries,
+compressed profiles intersecting SELECT, and input identities are retained in
+`.context/epoll-index/aria-followup/`. Unrelated bulk profiles are disposable in
+the recorded `.scratch/epoll-aria-profile.*` directory. Eight isolated pairs,
+three full-sequence pairs, one instrumented full-sequence pair and the empty
+worker control all exited 0. Existing main-reproduced Rust failures are unchanged;
+this docs-only follow-up does not assert a new green workspace or browser run.
 
 ## Reproduction and remaining work
 
