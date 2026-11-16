@@ -131,6 +131,10 @@ pub enum WakeSource {
     ProcessStopped { pid: u32 },
     /// A stopped process was continued.
     ProcessContinued { pid: u32 },
+    /// A kernel process-shared pthread object changed (`crate::pshared`):
+    /// a mutex was released, a condition signaled, a barrier round
+    /// completed. `id` is the object's table ID.
+    PShared { id: u32 },
 }
 
 impl WakeSource {

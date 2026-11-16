@@ -1322,9 +1322,9 @@ fn commit_exec_state_impl(
     proc.signals.reset_dispositions_for_exec();
 
     // Kernel-backed process-shared primitives outlive the process address
-    // space, but this image's participation in them does not. Drop stale
-    // mutex ownership and cond/barrier waiter entries before the memory and
-    // sibling-thread state that could complete those operations disappears.
+    // space, but this image's waits on them do not: drop its condition and
+    // barrier waiter entries. Mutexes its threads hold stay held, as
+    // PTHREAD_MUTEX_STALLED requires (crate::pshared).
     unsafe { crate::pshared::global_pshared_table() }.cleanup_process(proc.pid);
 
     // Reset state owned by the discarded address space or its threads. Open
@@ -6632,6 +6632,9 @@ pub fn cleanup_exiting_thread_with_state(
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
     crate::wait_park::retire_task(proc.pid, tid);
+    // Its process-shared condition and barrier waits end with it; mutexes it
+    // holds stay held (PTHREAD_MUTEX_STALLED, crate::pshared).
+    unsafe { crate::pshared::global_pshared_table() }.cleanup_task(tid);
     release_gl_current_for_tid(proc, host, tid, None);
     let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
     release_result?;
@@ -37355,23 +37358,24 @@ mod tests {
 
     #[test]
     fn exec_removes_discarded_pshared_participation() {
-        use crate::pshared::{MUTEX_TYPE_NORMAL, PTHREAD_BARRIER_SERIAL_THREAD};
+        use crate::pshared::{MUTEX_TYPE_NORMAL, Owner, PTHREAD_BARRIER_SERIAL_THREAD};
 
         const EXEC_PID: u32 = 0x6eec_0001;
         const PEER_A: u32 = 0x6eec_0002;
         const PEER_B: u32 = 0x6eec_0003;
+        let main = |pid| Owner { pid, tid: pid };
 
         let (owned_mutex, cond_mutex, cond, barrier) = {
             let table = unsafe { crate::pshared::global_pshared_table() };
-            let owned_mutex = table.mutex_init(MUTEX_TYPE_NORMAL);
-            let cond_mutex = table.mutex_init(MUTEX_TYPE_NORMAL);
-            let cond = table.cond_init();
+            let owned_mutex = table.mutex_init(MUTEX_TYPE_NORMAL).unwrap();
+            let cond_mutex = table.mutex_init(MUTEX_TYPE_NORMAL).unwrap();
+            let cond = table.cond_init().unwrap();
             let barrier = table.barrier_init(2).unwrap();
 
-            table.mutex_lock(owned_mutex, EXEC_PID).unwrap();
-            table.mutex_lock(cond_mutex, EXEC_PID).unwrap();
-            table.cond_wait_begin(cond, cond_mutex, EXEC_PID).unwrap();
-            assert_eq!(table.barrier_wait(barrier, EXEC_PID), Err(Errno::EAGAIN));
+            table.mutex_lock(owned_mutex, main(EXEC_PID)).unwrap();
+            table.mutex_lock(cond_mutex, main(EXEC_PID)).unwrap();
+            table.cond_wait_begin(cond, cond_mutex, main(EXEC_PID)).unwrap();
+            assert_eq!(table.barrier_wait(barrier, main(EXEC_PID)), Err(Errno::EAGAIN));
             (owned_mutex, cond_mutex, cond, barrier)
         };
 
@@ -37380,16 +37384,19 @@ mod tests {
         commit_exec_state(&mut proc, &mut host, EXEC_PID).unwrap();
 
         let table = unsafe { crate::pshared::global_pshared_table() };
-        assert_eq!(table.mutex_lock(owned_mutex, PEER_A), Ok(()));
+        // The discarded image's waits are gone...
         assert_eq!(table.cond_signal(cond), Ok(0));
-        assert_eq!(table.barrier_wait(barrier, PEER_A), Err(Errno::EAGAIN));
+        assert_eq!(table.barrier_wait(barrier, main(PEER_A)), Err(Errno::EAGAIN));
         assert_eq!(
-            table.barrier_wait(barrier, PEER_B),
+            table.barrier_wait(barrier, main(PEER_B)),
             Ok(PTHREAD_BARRIER_SERIAL_THREAD)
         );
-        assert_eq!(table.barrier_wait(barrier, PEER_A), Ok(0));
+        assert_eq!(table.barrier_wait(barrier, main(PEER_A)), Ok(0));
+        // ...but a mutex its thread held stays held (PTHREAD_MUTEX_STALLED):
+        // the thread survives exec and may still unlock it.
+        assert_eq!(table.mutex_trylock(owned_mutex, main(PEER_A)), Err(Errno::EBUSY));
+        table.mutex_unlock(owned_mutex, main(EXEC_PID)).unwrap();
 
-        table.mutex_unlock(owned_mutex, PEER_A).unwrap();
         table.mutex_destroy(owned_mutex).unwrap();
         table.mutex_destroy(cond_mutex).unwrap();
         table.cond_destroy(cond).unwrap();

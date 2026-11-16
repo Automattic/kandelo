@@ -27,28 +27,27 @@ const NEW_PSYNC_SEMAPHORES =
   "kernel semaphores through kandelo.psync.v1 (design phase 3)";
 const NEW_PSYNC_PTHREAD =
   "kernel pthread objects through kandelo.psync.v1 (design phase 4); ABI-56 programs need a rebuild";
-const LEGACY_REQUESTS = "POSIX semantics for legacy requests 400-414 (design phase 1)";
 
 export const PSYNC_SEMANTICS_EXPECTATIONS: Record<string, PsyncExpectation> = {
   "sem-pshared-wakeup": { status: "diverges", fixedBy: NEW_PSYNC_SEMAPHORES },
   "sem-open-wakeup": { status: "diverges", fixedBy: NEW_PSYNC_SEMAPHORES },
   "sem-binary-one-holder": { status: "unstable", fixedBy: NEW_PSYNC_SEMAPHORES },
   "sem-lock-counter": { status: "unstable", fixedBy: NEW_PSYNC_SEMAPHORES },
-  "mutex-thread-exclusion": { status: "diverges", fixedBy: LEGACY_REQUESTS },
-  "mutex-errorcheck-foreign-unlock": { status: "diverges", fixedBy: LEGACY_REQUESTS },
-  "mutex-owner-exit-stalled": { status: "diverges", fixedBy: LEGACY_REQUESTS },
+  "mutex-thread-exclusion": { status: "passes" },
+  "mutex-errorcheck-foreign-unlock": { status: "passes" },
+  "mutex-owner-exit-stalled": { status: "passes" },
   "robust-mutex-owner-exit": { status: "diverges", fixedBy: NEW_PSYNC_PTHREAD },
   "mutex-timedlock-deadline": { status: "diverges", fixedBy: NEW_PSYNC_PTHREAD },
   "mutex-handoff": { status: "passes" },
-  "mutex-lock-signal-no-eintr": { status: "diverges", fixedBy: LEGACY_REQUESTS },
+  "mutex-lock-signal-no-eintr": { status: "passes" },
   "mutex-lock-counter": { status: "passes" },
   "cond-wait-wakeup": { status: "passes" },
-  "cond-wait-signal-resumes": { status: "diverges", fixedBy: LEGACY_REQUESTS },
+  "cond-wait-signal-resumes": { status: "passes" },
   "cond-timedwait-wakeup": { status: "diverges", fixedBy: NEW_PSYNC_PTHREAD },
-  "cond-two-thread-broadcast": { status: "diverges", fixedBy: LEGACY_REQUESTS },
+  "cond-two-thread-broadcast": { status: "passes" },
   "rwlock-wakeup": { status: "diverges", fixedBy: NEW_PSYNC_PTHREAD },
   "barrier-two-processes": { status: "passes" },
-  "barrier-two-threads": { status: "diverges", fixedBy: LEGACY_REQUESTS },
+  "barrier-two-threads": { status: "passes" },
 };
 
 /**
