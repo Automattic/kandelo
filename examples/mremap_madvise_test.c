@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static long page;
@@ -311,6 +312,74 @@ static void test_madvise(void) {
     CHECK(munmap(p, page) == 0, "munmap");
 }
 
+/* MADV_DONTNEED discards private anonymous pages, which then read as zeros,
+ * and leaves shared mappings' content; a private file mapping, which Kandelo
+ * cannot reread, is refused. Other advice with a data effect Kandelo does not
+ * implement is refused rather than accepted without its effect. */
+static void test_madvise_dontneed(void) {
+    unsigned char *p = map_anon(3 * page);
+    fill(p, 3 * page, 0, 11);
+    CHECK(madvise(p + page, page, MADV_DONTNEED) == 0, "MADV_DONTNEED");
+    CHECK(matches(p, page, 0, 11), "the page before is kept");
+    CHECK(all_zero(p + page, page), "the discarded page reads as zeros");
+    CHECK(matches(p + 2 * page, page, 2 * page, 11), "the page after is kept");
+    p[page] = 5;
+    CHECK(p[page] == 5, "a discarded page is writable again");
+
+    /* MADV_FREE may keep the contents of private anonymous memory. */
+    CHECK(madvise(p, page, MADV_FREE) == 0, "MADV_FREE");
+    static const int refused[] = {MADV_REMOVE, MADV_DONTFORK, MADV_WIPEONFORK,
+                                  MADV_HWPOISON, MADV_SOFT_OFFLINE};
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        errno = 0;
+        CHECK(madvise(p, page, refused[i]) == -1 && errno == EINVAL,
+              "unimplemented advice %d is refused", refused[i]);
+    }
+    CHECK(matches(p, page, 0, 11), "refused advice changed nothing");
+    CHECK(munmap(p, 3 * page) == 0, "munmap");
+
+    unsigned char *shared = mmap(NULL, page, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(shared != MAP_FAILED, "mmap shared");
+    fill(shared, page, 0, 12);
+    CHECK(madvise(shared, page, MADV_DONTNEED) == 0, "shared MADV_DONTNEED");
+    CHECK(matches(shared, page, 0, 12), "a shared mapping keeps its content");
+    errno = 0;
+    CHECK(madvise(shared, page, MADV_FREE) == -1 && errno == EINVAL,
+          "MADV_FREE of a shared mapping");
+    CHECK(munmap(shared, page) == 0, "munmap shared");
+
+    const char *path = "/tmp/madvise-private.bin";
+    int fd = make_file(path, page, 13);
+    unsigned char *f = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE,
+                            fd, 0);
+    CHECK(f != MAP_FAILED, "mmap private file");
+    f[0] ^= 0xff;
+    errno = 0;
+    CHECK(madvise(f, page, MADV_DONTNEED) == -1 && errno == EINVAL,
+          "MADV_DONTNEED of a private file mapping is refused");
+    CHECK(f[0] == (unsigned char)(pattern_byte(0, 13) ^ 0xff),
+          "the refused discard kept the private write");
+    CHECK(munmap(f, page) == 0, "munmap file");
+    close(fd);
+    unlink(path);
+
+    /* The brk heap is private anonymous memory too. Kandelo's compact
+     * process layouts start the mmap area at the program break, so the break
+     * can grow only while no mapping sits above it; the unit tests cover the
+     * heap's classification. */
+    uintptr_t start = (uintptr_t)syscall(SYS_brk, 0);
+    unsigned char *heap = (unsigned char *)((start + page - 1) &
+                                            ~(uintptr_t)(page - 1));
+    uintptr_t want = (uintptr_t)heap + page;
+    if ((uintptr_t)syscall(SYS_brk, want) == want) {
+        fill(heap, page, 0, 14);
+        CHECK(madvise(heap, page, MADV_DONTNEED) == 0, "heap MADV_DONTNEED");
+        CHECK(all_zero(heap, page), "a discarded heap page reads as zeros");
+        CHECK((uintptr_t)syscall(SYS_brk, start) == start, "restore the break");
+    }
+}
+
 int main(void) {
     page = sysconf(_SC_PAGESIZE);
     CHECK(page > 0, "sysconf(_SC_PAGESIZE)");
@@ -324,6 +393,7 @@ int main(void) {
     test_private_file();
     test_shared_file();
     test_madvise();
+    test_madvise_dontneed();
     puts("MREMAP_MADVISE_PASS");
     return 0;
 }

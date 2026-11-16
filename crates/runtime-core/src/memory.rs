@@ -39,6 +39,21 @@ pub(crate) struct ExactMappingIdentity {
     pub source_bo: Option<u32>,
 }
 
+/// What one stretch of process memory is, as `madvise()` must know it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdviceTarget {
+    /// A `MAP_PRIVATE | MAP_ANONYMOUS` mapping, or the `brk` heap.
+    PrivateAnonymous,
+    /// A `MAP_SHARED` mapping, anonymous or file-backed.
+    Shared,
+    /// A `MAP_PRIVATE` mapping of a file.
+    PrivateFile,
+    /// Process memory that is not a mapping or the heap: the program image
+    /// and stack below the initial break, host-reserved thread regions, and
+    /// the host control area.
+    Other,
+}
+
 /// Tracks a single mmap'd region.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappedRegion {
@@ -752,6 +767,65 @@ impl MemoryManager {
         true
     }
 
+    /// Split `[addr, addr + len)` into stretches by [`AdviceTarget`], in
+    /// address order, appending them to `out`. A page in the mmap area that
+    /// no mapping covers is `ENOMEM`, as [`Self::range_is_process_memory`]
+    /// decides.
+    pub fn advice_targets(
+        &self,
+        addr: usize,
+        len: usize,
+        out: &mut Vec<(usize, usize, AdviceTarget)>,
+    ) -> Result<(), Errno> {
+        use wasm_posix_shared::mmap::MAP_SHARED;
+        let end = addr.checked_add(len).ok_or(Errno::EINVAL)?;
+        let heap_end = Self::align_page_up(self.program_break);
+        let mut cursor = addr;
+        while cursor < end {
+            let mapping = self
+                .mappings
+                .iter()
+                .find(|m| m.addr <= cursor && cursor < m.addr.saturating_add(m.len));
+            let (stop, target) = if let Some(m) = mapping {
+                let target = if m.flags & MAP_SHARED != 0 {
+                    AdviceTarget::Shared
+                } else if m.file.is_some() {
+                    AdviceTarget::PrivateFile
+                } else {
+                    AdviceTarget::PrivateAnonymous
+                };
+                (m.addr.saturating_add(m.len), target)
+            } else if cursor < self.initial_brk {
+                (self.initial_brk, AdviceTarget::Other)
+            } else if cursor < heap_end {
+                (heap_end, AdviceTarget::PrivateAnonymous)
+            } else if let Some(r) = self
+                .reserved_regions
+                .iter()
+                .find(|r| r.addr <= cursor && cursor < r.addr.saturating_add(r.len))
+            {
+                (r.addr.saturating_add(r.len), AdviceTarget::Other)
+            } else if self.brk_limit < self.mmap_base
+                && cursor >= self.brk_limit
+                && cursor < self.mmap_base
+            {
+                (self.mmap_base, AdviceTarget::Other)
+            } else if cursor >= self.max_addr {
+                (end, AdviceTarget::Other)
+            } else {
+                return Err(Errno::ENOMEM);
+            };
+            let stop = stop.min(end);
+            out.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            match out.last_mut() {
+                Some(last) if last.1 == cursor && last.2 == target => last.1 = stop,
+                _ => out.push((cursor, stop, target)),
+            }
+            cursor = stop;
+        }
+        Ok(())
+    }
+
     /// Check if `len` bytes starting at `addr` are free (no overlap with existing mappings
     /// and within address space bounds).
     pub fn can_grow_at(&self, addr: usize, len: usize) -> bool {
@@ -930,6 +1004,33 @@ mod tests {
         assert_eq!(parent.reserve_exact_mapping_id(), Err(Errno::ENOMEM));
         child.inherit_exact_mapping_ids(&parent);
         assert_eq!(child.reserve_exact_mapping_id(), Err(Errno::ENOMEM));
+    }
+
+    #[test]
+    fn advice_targets_classify_mappings_heap_and_program_memory() {
+        let page = 0x10000;
+        let mut manager = MemoryManager::new();
+        let base = MemoryManager::MMAP_BASE;
+        manager.set_brk_base(base - 4 * page);
+        assert_eq!(manager.set_brk(base - 2 * page), base - 2 * page);
+        let private = manager.mmap_anonymous(base, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        let shared = manager.mmap_anonymous(base + page, page, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED);
+        assert_eq!((private, shared), (base, base + page));
+        let mut targets = Vec::new();
+        manager.advice_targets(base - 5 * page, 3 * page, &mut targets).unwrap();
+        assert_eq!(targets, vec![
+            (base - 5 * page, base - 4 * page, AdviceTarget::Other),
+            (base - 4 * page, base - 2 * page, AdviceTarget::PrivateAnonymous),
+        ]);
+        // The gap between the heap and the first mapping is unmapped.
+        let mut gap = Vec::new();
+        assert_eq!(manager.advice_targets(base - 2 * page, 3 * page, &mut gap), Err(Errno::ENOMEM));
+        let mut maps = Vec::new();
+        manager.advice_targets(base, 2 * page, &mut maps).unwrap();
+        assert_eq!(maps, vec![
+            (base, base + page, AdviceTarget::PrivateAnonymous),
+            (base + page, base + 2 * page, AdviceTarget::Shared),
+        ]);
     }
 
     #[test]

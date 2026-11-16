@@ -704,7 +704,7 @@ instead of duplicating them across packages. An explicitly exported
 An availability answer must agree with the kernel as well as the sysroot. For
 example, `config.site` reports `mremap` and `madvise` present because they link
 and the kernel implements them; the limits that remain (`mremap` refuses to
-grow a `MAP_PRIVATE` file mapping, and `madvise` performs no advice) are listed
+grow a `MAP_PRIVATE` file mapping, and `madvise` refuses advice it cannot carry out) are listed
 in [POSIX status](posix-status.md).
 
 Dynamic loading is an important exception to link-only detection. Musl carries

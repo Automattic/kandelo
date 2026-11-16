@@ -167,8 +167,9 @@ ac_cv_func_mmap=${ac_cv_func_mmap=yes}
 ac_cv_func_munmap=${ac_cv_func_munmap=yes}
 ac_cv_func_mlockall=${ac_cv_func_mlockall=yes}
 ac_cv_func_munlockall=${ac_cv_func_munlockall=yes}
-# madvise() validates its arguments and accepts advice as a hint; mremap()
-# shrinks, grows in place, and moves with MREMAP_MAYMOVE or MREMAP_FIXED.
+# madvise() takes hints, zero-fills private anonymous memory for
+# MADV_DONTNEED, and refuses advice it cannot carry out; mremap() shrinks,
+# grows in place, and moves with MREMAP_MAYMOVE or MREMAP_FIXED.
 # docs/posix-status.md lists what each does not do.
 ac_cv_func_madvise=${ac_cv_func_madvise=yes}
 ac_cv_func_mremap=${ac_cv_func_mremap=yes}

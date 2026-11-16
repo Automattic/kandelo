@@ -12672,20 +12672,62 @@ fn is_defined_madvise_advice(advice: u32) -> bool {
     matches!(advice, 0..=4 | 8..=21 | 100 | 101)
 }
 
+const MADV_DONTNEED: u32 = 4;
+const MADV_FREE: u32 = 8;
+const MADV_REMOVE: u32 = 9;
+const MADV_DONTFORK: u32 = 10;
+const MADV_WIPEONFORK: u32 = 18;
+const MADV_HWPOISON: u32 = 100;
+const MADV_SOFT_OFFLINE: u32 = 101;
+
+/// Whether `[addr, addr + len)` overlaps a device mapping: a DRI buffer, the
+/// framebuffer, or a GL command buffer. Their bytes belong to the device
+/// binding, not to ordinary anonymous or file memory.
+fn range_has_device_mapping(proc: &Process, addr: usize, len: usize) -> bool {
+    proc.dri_bindings.iter().any(|binding| {
+        ranges_overlap(addr, len, binding.addr, binding.len)
+    }) || proc.fb_binding.is_some_and(|binding| {
+        ranges_overlap(addr, len, binding.addr, binding.len)
+    }) || proc.ofd_table.iter().any(|(_, ofd)| {
+        ofd.dri().and_then(|dri| dri.gl.as_ref()).is_some_and(|gl| {
+            gl.owner_pid == proc.pid as i32 && gl.cmdbuf.is_some_and(|binding| {
+                ranges_overlap(addr, len, binding.addr, binding.len)
+            })
+        })
+    }) || proc.gl_resource_owners.iter().any(|weak| {
+        weak.upgrade().is_some_and(|shared| shared.borrow().owner.is_some_and(|owner| {
+            owner.pid == proc.pid as i32 && owner.cmdbuf_range.is_some_and(|(base, len_)| {
+                ranges_overlap(addr, len, base, len_)
+            })
+        }))
+    })
+}
+
 /// madvise -- advice about the use of a memory range.
 ///
-/// Advice is a hint: Kandelo performs none of it, which is a correct
-/// implementation of `POSIX_MADV_*` (the advice may not change data
-/// semantics) and of Linux's hint values. Arguments are still validated as
-/// POSIX `posix_madvise()` and Linux `madvise()` do: an undefined advice value
-/// or an unaligned address is `EINVAL`, and a range containing pages that are
-/// not process memory is `ENOMEM`. Linux advice whose effect is observable
-/// (`MADV_DONTNEED`'s discard, `MADV_REMOVE`, `MADV_DONTFORK`,
-/// `MADV_WIPEONFORK`, `MADV_HWPOISON`) is accepted without that effect; see
-/// `docs/posix-status.md`. musl's `posix_madvise()` answers
-/// `POSIX_MADV_DONTNEED` itself and never sends it here.
+/// Arguments are validated as POSIX `posix_madvise()` and Linux `madvise()`
+/// do: an undefined advice value or an unaligned address is `EINVAL`, and a
+/// range containing pages that are not process memory is `ENOMEM`.
+///
+/// - The POSIX hints (`NORMAL`, `RANDOM`, `SEQUENTIAL`, `WILLNEED`) and the
+///   Linux hints without a data effect (`DOFORK`, `MERGEABLE` through
+///   `PAGEOUT`, `KEEPONFORK`) are accepted and not acted on, which is a
+///   correct implementation of a hint. musl's `posix_madvise()` answers
+///   `POSIX_MADV_DONTNEED` itself, with no data effect, and never sends it.
+/// - `MADV_DONTNEED` has Linux's data effect: the pages of private anonymous
+///   memory (mappings and the `brk` heap) read as zeros afterwards, and
+///   shared mappings keep their content. Kandelo cannot reread a private file
+///   mapping's file, and the program image, thread stacks and device
+///   mappings are not discardable memory, so a range containing any of those
+///   is `EINVAL`. Wasm memory cannot be decommitted: zeroing frees no host
+///   memory.
+/// - `MADV_FREE` may keep the contents, so on private anonymous memory it is
+///   accepted without effect; elsewhere it is `EINVAL`, as on Linux.
+/// - `MADV_REMOVE`, `MADV_DONTFORK`, `MADV_WIPEONFORK`, `MADV_HWPOISON` and
+///   `MADV_SOFT_OFFLINE` have effects Kandelo does not implement: `EINVAL`.
 pub fn sys_madvise(
     proc: &mut Process,
+    host: &mut dyn HostIO,
     addr: usize,
     len: usize,
     advice: u32,
@@ -12697,14 +12739,57 @@ pub fn sys_madvise(
         return Err(Errno::EINVAL);
     }
     let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
-    if aligned_len == 0 {
-        return Ok(());
-    }
     if addr.checked_add(aligned_len).is_none() {
         return Err(Errno::EINVAL);
     }
-    if !proc.memory.range_is_process_memory(addr, aligned_len) {
-        return Err(Errno::ENOMEM);
+    if matches!(advice, MADV_REMOVE | MADV_DONTFORK | MADV_WIPEONFORK | MADV_HWPOISON | MADV_SOFT_OFFLINE) {
+        return Err(Errno::EINVAL);
+    }
+    if aligned_len == 0 {
+        return Ok(());
+    }
+    if !matches!(advice, MADV_DONTNEED | MADV_FREE) {
+        if !proc.memory.range_is_process_memory(addr, aligned_len) {
+            return Err(Errno::ENOMEM);
+        }
+        return Ok(());
+    }
+
+    let mut targets = Vec::new();
+    proc.memory.advice_targets(addr, aligned_len, &mut targets)?;
+    if range_has_device_mapping(proc, addr, aligned_len) {
+        return Err(Errno::EINVAL);
+    }
+    use crate::memory::AdviceTarget;
+    for &(_, _, target) in &targets {
+        let allowed = match advice {
+            MADV_FREE => target == AdviceTarget::PrivateAnonymous,
+            _ => matches!(target, AdviceTarget::PrivateAnonymous | AdviceTarget::Shared),
+        };
+        if !allowed {
+            return Err(Errno::EINVAL);
+        }
+    }
+    if advice == MADV_DONTNEED {
+        // One Wasm page of zeros, written over each discarded page. It is
+        // heap memory rather than a static so the kernel's own memory
+        // minimum (a kernel-host import) does not grow.
+        let mut zeros = Vec::new();
+        zeros.try_reserve_exact(0x10000).map_err(|_| Errno::ENOMEM)?;
+        zeros.resize(0x10000, 0u8);
+        for &(start, end, target) in &targets {
+            if target != AdviceTarget::PrivateAnonymous {
+                continue;
+            }
+            let mut cursor = start;
+            while cursor < end {
+                let chunk = (end - cursor).min(zeros.len());
+                if host.proc_write_bytes(proc.pid as i32, cursor as u64, &zeros[..chunk]) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                cursor += chunk;
+            }
+        }
     }
     Ok(())
 }
@@ -12793,23 +12878,7 @@ pub fn sys_mremap(
     // and command mappings also describe fixed protocol buffers; a generic
     // address-space grow must not invent device bytes, and their bindings
     // name the mapped address, so they do not move. See the graphics ledger.
-    let fixed_device = proc.dri_bindings.iter().any(|binding| {
-        ranges_overlap(old_addr, aligned_old, binding.addr, binding.len)
-    }) || proc.fb_binding.is_some_and(|binding| {
-        ranges_overlap(old_addr, aligned_old, binding.addr, binding.len)
-    }) || proc.ofd_table.iter().any(|(_, ofd)| {
-        ofd.dri().and_then(|dri| dri.gl.as_ref()).is_some_and(|gl| {
-            gl.owner_pid == proc.pid as i32 && gl.cmdbuf.is_some_and(|binding| {
-                ranges_overlap(old_addr, aligned_old, binding.addr, binding.len)
-            })
-        })
-    }) || proc.gl_resource_owners.iter().any(|weak| {
-        weak.upgrade().is_some_and(|shared| shared.borrow().owner.is_some_and(|owner| {
-            owner.pid == proc.pid as i32 && owner.cmdbuf_range.is_some_and(|(base, len)| {
-                ranges_overlap(old_addr, aligned_old, base, len)
-            })
-        }))
-    });
+    let fixed_device = range_has_device_mapping(proc, old_addr, aligned_old);
     if fixed_device {
         return Err(Errno::EFAULT);
     }
@@ -52369,21 +52438,61 @@ impl HostIO for RelSymlinkMock {
     fn test_madvise_validates_advice_alignment_and_mapping() {
         use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let page = 0x10000;
         let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-        for advice in [0, 1, 2, 3, 4, 8, 14, 21] {
-            assert_eq!(sys_madvise(&mut proc, addr, 2 * page, advice), Ok(()), "advice {advice}");
+        for advice in [0, 1, 2, 3, 11, 14, 19, 21] {
+            assert_eq!(sys_madvise(&mut proc, &mut host, addr, 2 * page, advice), Ok(()), "advice {advice}");
         }
-        assert_eq!(sys_madvise(&mut proc, addr, 2 * page, 5), Err(Errno::EINVAL));
-        assert_eq!(sys_madvise(&mut proc, addr, 2 * page, 22), Err(Errno::EINVAL));
-        assert_eq!(sys_madvise(&mut proc, addr + 1, page, 0), Err(Errno::EINVAL));
-        assert_eq!(sys_madvise(&mut proc, addr, 0, 0), Ok(()));
-        assert_eq!(sys_madvise(&mut proc, addr, page + 1, 0), Ok(()));
-        assert_eq!(sys_madvise(&mut proc, addr, 3 * page, 0), Err(Errno::ENOMEM));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr, 2 * page, 5), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr, 2 * page, 22), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr + 1, page, 0), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr, 0, 0), Ok(()));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr, page + 1, 0), Ok(()));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr, 3 * page, 0), Err(Errno::ENOMEM));
+        assert_eq!(sys_madvise(&mut proc, &mut host, addr, 3 * page, 4), Err(Errno::ENOMEM));
         // Memory below the program break is process memory without a mapping.
         let brk = proc.memory.get_brk() & !0xFFFF;
-        assert_eq!(sys_madvise(&mut proc, brk - page, page, 3), Ok(()));
-        assert_eq!(sys_madvise(&mut proc, usize::MAX & !0xFFFF, 2 * page, 0), Err(Errno::EINVAL));
+        assert_eq!(sys_madvise(&mut proc, &mut host, brk - page, page, 3), Ok(()));
+        assert_eq!(sys_madvise(&mut proc, &mut host, usize::MAX & !0xFFFF, 2 * page, 0), Err(Errno::EINVAL));
+        // Advice with a data effect Kandelo does not implement is refused.
+        for advice in [9, 10, 18, 100, 101] {
+            assert_eq!(sys_madvise(&mut proc, &mut host, addr, page, advice), Err(Errno::EINVAL), "advice {advice}");
+        }
+    }
+
+    #[test]
+    fn test_madvise_dontneed_zero_fills_private_anonymous_memory_only() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let page = 0x10000;
+        let rw = PROT_READ | PROT_WRITE;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.proc_memory = vec![0xAA; 6 * page];
+        let private = proc.memory.mmap_anonymous(page, 2 * page, rw, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED);
+        let shared = proc.memory.mmap_anonymous(3 * page, page, rw, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED);
+        let file = proc.memory.mmap_anonymous(4 * page, page, rw, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED);
+        assert_eq!((private, shared, file), (page, 3 * page, 4 * page));
+        let name = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec() });
+        assert!(proc.memory.set_mapping_file(file, 0, name));
+
+        // A private file mapping cannot be reread: refused, nothing changes.
+        assert_eq!(sys_madvise(&mut proc, &mut host, private, 4 * page, 4), Err(Errno::EINVAL));
+        assert!(host.proc_memory[page..5 * page].iter().all(|&b| b == 0xAA));
+        // Below the first mapping is the program image: refused.
+        assert_eq!(sys_madvise(&mut proc, &mut host, 0, page, 4), Err(Errno::EINVAL));
+
+        // Private anonymous pages read as zeros; the shared page keeps its bytes.
+        assert_eq!(sys_madvise(&mut proc, &mut host, private, 3 * page, 4), Ok(()));
+        assert!(host.proc_memory[page..3 * page].iter().all(|&b| b == 0));
+        assert!(host.proc_memory[3 * page..4 * page].iter().all(|&b| b == 0xAA));
+        assert!(host.proc_memory[4 * page..].iter().all(|&b| b == 0xAA));
+
+        // MADV_FREE may keep contents, but only private anonymous memory may be freed.
+        host.proc_memory[page] = 7;
+        assert_eq!(sys_madvise(&mut proc, &mut host, private, 2 * page, 8), Ok(()));
+        assert_eq!(host.proc_memory[page], 7);
+        assert_eq!(sys_madvise(&mut proc, &mut host, shared, page, 8), Err(Errno::EINVAL));
     }
 
     // ---- O_CLOFORK / FD_CLOFORK tests ----
