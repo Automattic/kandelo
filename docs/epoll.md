@@ -205,11 +205,6 @@ browser. No retry interval was shortened and no new relay or backend was added.
 
 ## Boundaries and validation
 
-The [November 2026 indexing validation](plans/2026-11-15-epoll-index-validation.md)
-records the exact-main comparison, semantic and lifecycle checks, eventfd
-scaling, persistent metadata cost, mixed application benchmark results and the
-subsequent Aria SELECT investigation.
-
 Remaining completeness work and its acceptance criteria are tracked in
 [future improvements](future-improvements.md#close-the-remaining-epoll-completeness-gaps).
 
