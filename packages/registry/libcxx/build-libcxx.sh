@@ -204,8 +204,9 @@ chmod -R u+w "$LLVM_SRC_DIR/libunwind"
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
 # Select the VM unwinder backend without native register assembly, the
-# musl locale support for libc++, and libc++abi's __cxa_thread_atexit on
-# musl (see patches/README.md). Patch only the private source copies;
+# musl locale support for libc++ and libc++abi's __cxa_thread_atexit on
+# musl, and keep the PIC build importing __cpp_exception (see
+# patches/README.md). Patch only the private source copies;
 # source derivations and the checkout stay immutable.
 for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
     patch --fuzz=0 -p1 -d "$LLVM_SRC_DIR" < "$patch_file"
@@ -269,6 +270,32 @@ check_libcxxabi_thread_atexit() {
     if ! grep -Eq '^[0-9a-fA-F]* *[TW] __cxa_thread_atexit$' "$report"; then
         echo "ERROR: $archive does not define __cxa_thread_atexit;" \
             "thread_local destructors would not link (see patches/0003)" >&2
+        return 1
+    fi
+}
+
+# The C++ exception tag must have one identity per process. Side modules
+# statically link the PIC archives, which both carry libunwind's members,
+# so neither may define __cpp_exception: each side module must import the
+# process's canonical tag. LLVM 23's libunwind defines it unconditionally
+# (patches/0004). The non-PIC libc++abi.a keeps upstream's definition,
+# which gives a C++ main program its tag.
+check_cpp_exception_tag() {
+    local archive="$1" expectation="$2" report="$3"
+    if ! "$LLVM_NM" --defined-only --extern-only "$archive" > "$report" 2>&1; then
+        echo "ERROR: cannot list C++ runtime symbols: $archive" >&2
+        cat "$report" >&2
+        return 1
+    fi
+    if grep -Eq '^[0-9a-fA-F]* *[A-Za-z] __cpp_exception$' "$report"; then
+        if [ "$expectation" = imported ]; then
+            echo "ERROR: $archive defines __cpp_exception; side modules" \
+                "would each get a private C++ exception tag (see patches/0004)" >&2
+            return 1
+        fi
+    elif [ "$expectation" = defined ]; then
+        echo "ERROR: $archive does not define __cpp_exception;" \
+            "C++ main programs would have no exception tag" >&2
         return 1
     fi
 }
@@ -466,6 +493,13 @@ done
 echo "==> Verifying libc++abi defines __cxa_thread_atexit..."
 for archive in libc++abi.a libc++abi-pic.a; do
     check_libcxxabi_thread_atexit "$INSTALL_DIR/lib/$archive" "$WORK_DIR/$archive.symbols.log"
+done
+echo "==> Verifying __cpp_exception linkage (defined non-PIC, imported PIC)..."
+check_cpp_exception_tag "$INSTALL_DIR/lib/libc++abi.a" defined \
+    "$WORK_DIR/libc++abi.a.tag-symbols.log"
+for archive in libc++-pic.a libc++abi-pic.a; do
+    check_cpp_exception_tag "$INSTALL_DIR/lib/$archive" imported \
+        "$WORK_DIR/$archive.tag-symbols.log"
 done
 
 echo "==> Done!"

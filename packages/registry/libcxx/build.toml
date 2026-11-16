@@ -29,4 +29,7 @@ commit      = "UNPUBLISHED"
 # explicitly, and reject native or wrong-width static/PIC archive members.
 # Revision 11: patch libc++abi 23 to define __cxa_thread_atexit on musl
 # (patches/0003), which its new __linux__/__Fuchsia__ guard had dropped.
-revision    = 11
+# Revision 12: keep __cpp_exception undefined in the PIC libunwind
+# (patches/0004) so C++ side modules import the process's tag instead of
+# each defining a private one; the recipe checks both archive variants.
+revision    = 12

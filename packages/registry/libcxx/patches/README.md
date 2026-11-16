@@ -71,3 +71,38 @@ and it has the limits upstream's source comments describe:
 - On other threads the destructors run in the first round of
   thread-specific-data destructors, so code that must run after them needs a
   later round.
+
+## C++ exception tag in side modules
+
+`0004-keep-cpp-exception-tag-imported-in-pic.patch` leaves libunwind's
+`__cpp_exception` tag undefined when `Unwind-wasm.c` is compiled with
+`-fPIC`. Wasm C++ exceptions cross a module boundary only when the
+throwing and catching modules use the same tag identity. The program ABI
+records that identity as the `env.__cpp_exception` import, "C++ exception
+tag shared with the host" (`crates/program-abi/src/lib.rs`), which the host
+supplies from the main program's export or from a process-owned tag
+(`host/src/dylink.ts`, `host/src/worker-main.ts`).
+
+Since llvm-project #185770, LLVM 23's libunwind defines the tag and
+compiled code only references it. Upstream expects one libunwind per
+process, such as a single `libunwind.so`. Kandelo has no shared C++
+runtime: each C++ side module statically links `libc++abi-pic.a`, which
+bundles libunwind. Without the patch, every such side module, including
+PHP's `intl.so`, defines and exports its own tag instead of importing the
+process's tag. LLVM 21 left the tag undefined in PIC objects and defined
+it weak in non-PIC objects.
+
+The patch keys on `__PIC__`, which clang defines only for the recipe's
+`-fPIC` build. The non-PIC archives keep upstream's strong definition.
+A C++ main program pulls in one `Unwind-wasm.c.o` (both `libc++.a` and
+`libc++abi.a` carry an identical copy, as they did with LLVM 21, and the
+linker takes only the first), and LLVM 23 code no longer defines the tag,
+so the main program gets the same single tag, defined inside the module,
+that LLVM 21's weak definitions produced. The recipe fails the build if
+`libc++-pic.a` or `libc++abi-pic.a` defines `__cpp_exception`, or if
+`libc++abi.a` does not.
+
+The patch is not proposed upstream; it adapts upstream's single-libunwind
+model to statically bundled side modules. Retire it once a process
+shares one C++ runtime across its side modules
+([future improvements](../../../../docs/future-improvements.md#share-one-c-runtime-per-process-across-side-modules)).

@@ -1659,6 +1659,38 @@ built from LLVM 23 sources needs the same.
 **Files:** `rust-toolchain.toml`, `sdk/rust/`,
 `packages/registry/rust-llvm/`, `packages/registry/rustc/`
 
+### Share one C++ runtime per process across side modules
+
+Upstream LLVM expects one C++ runtime per process: a single
+`libunwind.so` defines the Wasm C++ exception tag, `__cpp_exception`, and
+every module that throws or catches imports it. llvm-project #185770
+(LLVM 23) moved the tag's definition from compiled code into libunwind on
+that assumption.
+
+Kandelo instead links `libc++-pic.a` and `libc++abi-pic.a`, which
+bundles libunwind, statically into each C++ side module (PHP's `intl.so`,
+the `fork-dlopen-replay-e2e` C++ fixture). A process that loads several
+C++ side modules carries a copy of the C++ runtime, and of its global
+state such as the terminate handler and emergency exception pool, in
+each one. The exception tag is kept shared
+only by a recipe patch,
+[`0004-keep-cpp-exception-tag-imported-in-pic.patch`](../packages/registry/libcxx/patches/0004-keep-cpp-exception-tag-imported-in-pic.patch),
+which leaves the tag undefined in the PIC build so each side module
+imports the process's `env.__cpp_exception`.
+
+Provide one shared C++ runtime that every C++ module in a process uses:
+either a `libc++` side module that C++ side modules import, or exports
+from a C++ main program that side modules link against. Define the
+exception tag once in that runtime, so the libcxx package no longer needs
+the patch. This changes how C++ side modules are linked and which symbols
+a main program exports, so it needs an ABI review
+(`docs/abi-versioning.md`) and a plan for side modules built against the
+static archives.
+
+**Files:** `packages/registry/libcxx/`,
+`packages/registry/php/build-php.sh` (`intl.so`), `host/src/dylink.ts`,
+`host/src/worker-main.ts`, `host/test/fork-dlopen-replay-e2e.test.ts`
+
 ## Performance
 
 ### Revisit Binaryen's constraint-analysis pass
