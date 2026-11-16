@@ -297,6 +297,69 @@ for upstream, intermediate, final in replacements:
 path.write_text(text)
 PY
 
+# A thread's start routine runs inside a language-runtime entry, as main does
+# (__kandelo_main_entry in src/env/__libc_start_main.c). The default runs the
+# routine and exits the thread; the SDK's C++ runtime glue
+# (libc/glue/cxxrt_entry.cpp) overrides it to call std::terminate for a C++
+# exception that no handler caught. The bodies that call the start routine
+# stay in pthread_create.c, the file whose functions
+# crates/fork-instrument/src/facts/side.rs declares as the thread registry's
+# dispatch sites.
+python3 - "$MUSL_DIR/src/thread/pthread_create.c" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+replacements = [
+    (
+        "static int start(void *p)\n{",
+        """/* Kandelo: run a thread's start routine and exit the thread. Not
+ * inlined, so each start-routine call has one dispatch site. */
+__attribute__((noinline))
+_Noreturn void __kandelo_run_pthread(void *(*start)(void *), void *arg)
+{
+\t__pthread_exit(start(arg));
+}
+
+__attribute__((noinline))
+_Noreturn void __kandelo_run_thrd(int (*start)(void *), void *arg)
+{
+\t__pthread_exit((void *)(uintptr_t)start(arg));
+}
+
+/* Kandelo: the thread's language-runtime entry; see build-musl.sh. */
+weak _Noreturn void __kandelo_pthread_entry(void *(*start)(void *), void *arg)
+{
+\t__kandelo_run_pthread(start, arg);
+}
+
+weak _Noreturn void __kandelo_thrd_entry(int (*start)(void *), void *arg)
+{
+\t__kandelo_run_thrd(start, arg);
+}
+
+static int start(void *p)
+{""",
+    ),
+    (
+        "\t__pthread_exit(args->start_func(args->start_arg));\n",
+        "\t__kandelo_pthread_entry(args->start_func, args->start_arg);\n",
+    ),
+    (
+        "\t__pthread_exit((void *)(uintptr_t)start(args->start_arg));\n",
+        "\t__kandelo_thrd_entry(start, args->start_arg);\n",
+    ),
+]
+for upstream, kandelo in replacements:
+    if text.count(upstream) != 1:
+        raise SystemExit(f"build-musl: could not patch pthread_create.c pattern: {upstream.splitlines()[0]!r}")
+    text = text.replace(upstream, kandelo, 1)
+
+path.write_text(text)
+PY
+
 # Copy CRT overlay (e.g., Wasm-specific crt1.c with proper main signature)
 if [ -d "$OVERLAY_DIR/crt" ]; then
     cp -r "$OVERLAY_DIR/crt/"* "$MUSL_DIR/crt/"
