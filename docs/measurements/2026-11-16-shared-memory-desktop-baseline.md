@@ -95,17 +95,22 @@ node apps/browser-demos/node_modules/@playwright/test/cli.js test \
 This is provenance, not a supported main-branch launcher. The integration series
 must supply a normal build/run path and a committed equivalent pressure fixture.
 
-## Remaining resource question
+## Current resource screen and remaining question
 
-Earlier format-3 measurements at 1920x1080 found usable scripted interaction
-and higher reported total browser footprint for the grouped candidate. Those
-timings cannot be attributed to format 4's new ordered wait protocol.
+The later [format-4 resource screen](2026-11-16-shared-group-desktop-cost.md)
+uses the frozen candidate above, six alternating fresh Chromium launches at
+1920x1080, and three launches per arm. Per-launch median verified shell response
+has a median of 19.235 ms ordinary and 3.690 ms grouped; owned browser CPU during
+paced typing is 3.471 s and 2.842 s. Separate-workspace OS footprint is
+2,160.05 MiB and 2,260.92 MiB. Startup is similar at this sample size.
+The linked report retains ranges, method, background-load limits and provenance.
+This supports a capacity/interaction tradeoff, not a total RAM-saving claim.
+
 The physical group remains 512 MiB pregrown and each thread has translation
-scratch. A raw memory.grow stress still advances the physical high-water extent
-despite exact release of all roots, pins and wait records.
-
-The next comparison must measure the current candidate and address sustained
-allocation reuse. Record idle, interaction, resize and teardown separately;
-preserve failed runs and startup costs. Capacity improvement alone is useful,
-but it is not evidence of lower total resident RAM. The eventual integrated
-candidate also needs comparison with its actual target branch at a pinned SHA.
+scratch. In this frozen candidate, a raw memory.grow stress still advances the
+physical high-water extent despite exact release of roots, pins and wait records.
+A shared allocator/reuse model is integration work; the research candidate does
+not establish sustained physical reuse. Record idle, interaction, resize and
+teardown separately and preserve failed runs and startup costs. The eventual
+integrated candidate also needs comparison with its actual target branch at a
+pinned SHA, along with other browsers and the broader release gates.

@@ -121,8 +121,9 @@ The reproducible desktop baseline uses Sway and two Foot terminals at
 ordinary arm loses a terminal after a compositor shared mapping is refused.
 The grouped experiment survives visible/hidden workspace movement and retile
 on Chromium, Firefox and WebKit. This establishes capacity value for that
-workload. Earlier lower-resolution measurements did not establish lower total
-browser footprint; current format-4 costs require fresh measurement.
+workload. The lower-resolution [format-4 resource screen](measurements/2026-11-16-shared-group-desktop-cost.md)
+found faster verified shell response and higher total browser footprint in
+three fresh Chromium launches per arm. It does not measure the integrated feature.
 
 Promotion requires independently testable stages: kernel group authority;
 normal SDK artifacts; explicit Node/browser backend; waits and lifecycle;
@@ -145,8 +146,8 @@ does not waive correct semantics, bounded ownership or truthful reporting.
 
 ## Review stages
 
-These are proposed review boundaries, not already opened pull requests. Each
-stage must leave the ordinary backend usable. Incomplete grouped behavior stays
+These are review boundaries for the integration series. Each stage must leave
+the ordinary backend usable. Incomplete grouped behavior stays
 explicitly gated until its prerequisites are available.
 
 | Stage | Change | Acceptance focus |
