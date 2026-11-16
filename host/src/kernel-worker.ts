@@ -14889,6 +14889,9 @@ export class CentralizedKernelWorker {
         && syscallNr !== SYS_RT_SIGTIMEDWAIT
         && syscallNr !== SYS_FLOCK
         && syscallNr !== SYS_FCNTL
+        // PROTOTYPE: process-shared semaphore ops park in the kernel; their
+        // EAGAIN is sem_trywait's final answer.
+        && syscallNr !== 440
         && (
           errVal === EAGAIN
           || errVal === EINPROGRESS
