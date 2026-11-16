@@ -45,6 +45,39 @@ pub fn run_without_env(
     }
 }
 
+/// Run `cmd` with this process's stdin and stdout, copying its standard
+/// error through to ours as it arrives and also returning it, so a caller can
+/// add guidance after a failure without delaying or hiding the program's own
+/// diagnostics. The exit status is 127 when it could not start.
+pub fn run_passthrough_capturing_stderr(cmd: &str, args: &[String]) -> (i32, String) {
+    use std::io::{Read, Write};
+    let mut child = match Command::new(cmd).args(args).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(_) => return (127, String::new()),
+    };
+    let mut captured = Vec::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut buffer = [0u8; 8192];
+        let mut ours = std::io::stderr();
+        loop {
+            match stderr.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let _ = ours.write_all(&buffer[..n]);
+                    captured.extend_from_slice(&buffer[..n]);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    }
+    let code = match child.wait() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(_) => 1,
+    };
+    (code, String::from_utf8_lossy(&captured).into_owned())
+}
+
 /// Run `cmd` with this process's standard streams; its exit status, or 127
 /// when it could not start.
 pub fn run_passthrough(cmd: &str, args: &[String]) -> i32 {
