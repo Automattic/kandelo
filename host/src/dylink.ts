@@ -4160,6 +4160,13 @@ export class DynamicLinker {
     consumer.providerDependencies = dependencies;
   }
 
+  /** SPIKE: the process global-scope definition of `symbolName`, if any. */
+  lookupGlobalSymbol(
+    symbolName: string,
+  ): Function | WebAssembly.Global | undefined {
+    return this.options.globalSymbols.get(symbolName);
+  }
+
   /** Look up a symbol by name. Returns its function-table index or data address. */
   dlsym(handle: number, symbolName: string): number | null {
     if (isForkRuntimeExport(symbolName)) {

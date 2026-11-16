@@ -202,3 +202,116 @@ pub fn with_code_hash_section(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
     out.extend(body);
     Ok(Some(out))
 }
+
+/// Every import as `(module, field, kind)`; kind is the import-section byte
+/// (0 function, 1 table, 2 memory, 3 global, 4 tag).
+pub fn import_entries(bytes: &[u8]) -> Result<Vec<(String, String, u8)>> {
+    let all = sections(bytes)?;
+    let Some(imports) = all.iter().find(|s| s.id == 2) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    let (mut count, mut offset) = read_leb(bytes, imports.body_start)?;
+    while count > 0 {
+        let (module_name, next) = read_name(bytes, offset)?;
+        let (name, next) = read_name(bytes, next)?;
+        offset = next;
+        let kind = byte_at(bytes, offset)?;
+        offset += 1;
+        match kind {
+            0x00 => (_, offset) = read_leb(bytes, offset)?,
+            0x01 => {
+                let ref_type = byte_at(bytes, offset)?;
+                offset += 1;
+                if ref_type == 0x63 || ref_type == 0x64 {
+                    (_, offset) = read_leb(bytes, offset)?;
+                }
+                offset = skip_limits(bytes, offset)?;
+            }
+            0x02 => offset = skip_limits(bytes, offset)?,
+            0x03 => offset += 2,
+            0x04 => (_, offset) = read_leb(bytes, offset + 1)?,
+            _ => return Err(format!("unknown import kind 0x{kind:x} in Wasm module")),
+        }
+        out.push((module_name, name, kind));
+        count -= 1;
+    }
+    Ok(out)
+}
+
+/// Every export name.
+pub fn export_names(bytes: &[u8]) -> Result<Vec<String>> {
+    let all = sections(bytes)?;
+    let Some(exports) = all.iter().find(|s| s.id == 7) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    let (mut count, mut offset) = read_leb(bytes, exports.body_start)?;
+    while count > 0 {
+        let (name, next) = read_name(bytes, offset)?;
+        // kind byte, then index
+        let (_, next) = read_leb(bytes, next + 1)?;
+        offset = next;
+        out.push(name);
+        count -= 1;
+    }
+    Ok(out)
+}
+
+/// The payload (after the name) of the first custom section named `name`.
+pub fn custom_section_payload(bytes: &[u8], name: &str) -> Result<Option<Vec<u8>>> {
+    for s in sections(bytes)? {
+        if s.id == 0 && s.name.as_deref() == Some(name) {
+            let (_, after_name) = read_name(bytes, s.body_start)?;
+            return Ok(Some(bytes[after_name..s.end].to_vec()));
+        }
+    }
+    Ok(None)
+}
+
+/// The `WASM_DYLINK_NEEDED` entries of a `dylink.0`-format payload.
+pub fn dylink_needed(payload: &[u8]) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    while offset < payload.len() {
+        let kind = payload[offset];
+        let (size, body) = read_leb(payload, offset + 1)?;
+        let end = body + size as usize;
+        if kind == 2 {
+            let (mut count, mut at) = read_leb(payload, body)?;
+            while count > 0 {
+                let (name, next) = read_name(payload, at)?;
+                out.push(name);
+                at = next;
+                count -= 1;
+            }
+        }
+        offset = end;
+    }
+    Ok(out)
+}
+
+/// The module with every custom section named `from` renamed to `to`, or
+/// `None` when it has none.
+pub fn renamed_custom_section(bytes: &[u8], from: &str, to: &str) -> Result<Option<Vec<u8>>> {
+    let all = sections(bytes)?;
+    if !all.iter().any(|s| s.id == 0 && s.name.as_deref() == Some(from)) {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(bytes.len() + to.len());
+    out.extend_from_slice(&bytes[..8]);
+    for s in &all {
+        if s.id == 0 && s.name.as_deref() == Some(from) {
+            let (_, after_name) = read_name(bytes, s.body_start)?;
+            let mut body = leb(to.len());
+            body.extend_from_slice(to.as_bytes());
+            body.extend_from_slice(&bytes[after_name..s.end]);
+            out.push(0);
+            out.extend(leb(body.len()));
+            out.extend(body);
+        } else {
+            out.extend_from_slice(&bytes[s.start..s.end]);
+        }
+    }
+    Ok(Some(out))
+}

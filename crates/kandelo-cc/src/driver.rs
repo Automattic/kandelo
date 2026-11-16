@@ -578,10 +578,20 @@ fn build_clang_args_internal(
             }
             match glue_objects {
                 Some(objects) => args.extend(objects.iter().cloned()),
-                None => args.extend(glue_sources(toolchain, parsed.link_dl)),
+                None => args.extend(glue_sources(
+                    toolchain,
+                    parsed.link_dl
+                        || !crate::dynlink::shared_library_inputs(&parsed).is_empty(),
+                )),
             }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
+            // SPIKE: accept `.so` inputs (see crate::dynlink). -Bdynamic is
+            // positional, so it precedes the caller's -l options.
+            let shared_libs = crate::dynlink::shared_library_inputs(&parsed);
+            if !shared_libs.is_empty() {
+                args.extend(crate::dynlink::dynamic_link_flags(&shared_libs)?);
+            }
             args.extend(parsed.forwarded_args.iter().cloned());
             args.extend(sdk_compile_args);
             // Where clang puts the C++ library: after the caller's inputs,
@@ -693,7 +703,20 @@ pub fn compile_executable_glue(
     }
     let define = executable_thread_slot_define(user_args, arch)?;
     let dir = TempDir::new("kandelo-glue-")?;
-    let sources = glue_sources(toolchain, parsed.link_dl);
+    // SPIKE: an executable linked against shared libraries gets the dlopen
+    // glue plus a generated startup loader for its needed libraries.
+    let shared_libs = crate::dynlink::shared_library_inputs(&parsed);
+    let mut sources = glue_sources(toolchain, parsed.link_dl || !shared_libs.is_empty());
+    if !shared_libs.is_empty() {
+        let source = dir.path().join("kandelo_needed.c");
+        let text = crate::dynlink::needed_init_source(
+            &crate::dynlink::needed_names(&shared_libs),
+            &crate::dynlink::rpaths(user_args),
+        );
+        std::fs::write(&source, text)
+            .map_err(|e| format!("cannot write {}: {e}", source.display()))?;
+        sources.push(source.to_string_lossy().into_owned());
+    }
     // One compiler process for every glue source: `-c` with several inputs
     // writes <basename>.o files into the working directory.
     let args = build_glue_compile_args(&sources, toolchain, arch, define.as_deref());
@@ -934,7 +957,25 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
     }
 
     // No readable output (e.g. -o /dev/null on some hosts): nothing to inspect.
-    let module = std::fs::read(&output).ok();
+    let mut module = std::fs::read(&output).ok();
+    // SPIKE: a non-relocatable executable linked against shared libraries
+    // carries wasm-ld's dylink.0 (needed list). Rename it so consumers that
+    // read dylink.0 as "side module" do not misclassify the executable.
+    if let Some(bytes) = module.as_deref().filter(|m| is_wasm_module(m)) {
+        let relocatable = crate::wasm::import_entries(bytes)?
+            .iter()
+            .any(|(m, n, k)| m == "env" && n == "__memory_base" && *k == 3);
+        if !relocatable
+            && let Some(renamed) = crate::wasm::renamed_custom_section(
+                bytes,
+                "dylink.0",
+                crate::dynlink::MAIN_DYLINK_SECTION,
+            )?
+        {
+            write_output(&output, &renamed)?;
+            module = Some(renamed);
+        }
+    }
     if let Some(module) = module.as_deref().filter(|m| is_wasm_module(m)) {
         let facts = wasm_artifact::read_artifact_facts(module).map_err(|error| error.0)?;
         let failures = wasm_artifact::program_extensions::describe_failures(&facts, wasm_artifact::program_extensions::IMPLEMENTED);

@@ -56,9 +56,23 @@ const DECLARED_ENV_IMPORTS = declaredEnvImports();
  * Throw if `module` imports from `env` a name the host does not provide, or
  * a provided name as a different kind of import.
  */
-export function assertDeclaredEnvImports(module: WebAssembly.Module): void {
+/** SPIKE: is `name` an env import the host itself supplies? */
+export function isDeclaredEnvImport(name: string): boolean {
+  return DECLARED_ENV_IMPORTS.has(name);
+}
+
+export function assertDeclaredEnvImports(
+  module: WebAssembly.Module,
+  // SPIKE: functions a shared-library executable imports from its libraries.
+  dynamicEnvFunctions?: ReadonlySet<string>,
+): void {
   for (const imported of wasmModuleImports(module)) {
     if (imported.module !== "env") continue;
+    if (
+      dynamicEnvFunctions?.has(imported.name) && imported.kind === "function"
+    ) {
+      continue;
+    }
     const kind = DECLARED_ENV_IMPORTS.get(imported.name);
     if (kind === undefined) {
       throw new Error(

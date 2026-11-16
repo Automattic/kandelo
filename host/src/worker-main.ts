@@ -78,7 +78,13 @@ import {
   WPK_FORK_RESUME_SINK_EXPORT,
   type ProcessForkMode,
 } from "./generated/abi";
-import { assertDeclaredEnvImports } from "./env-imports";
+import { assertDeclaredEnvImports, isDeclaredEnvImport } from "./env-imports";
+import {
+  createMainDynamicImports,
+  isDynamicMainProgram,
+  type MainDynamicImports,
+  type MainDynamicLookup,
+} from "./main-dynamic-imports";
 import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
@@ -696,6 +702,8 @@ export interface DlopenSupport {
       tableMutationCommitted: boolean,
     ) => void,
   ): void;
+  /** SPIKE: fill an executable's dynamic imports after each committed load. */
+  setMainDynamicResolver(resolver: (scope: MainDynamicLookup) => void): void;
 }
 
 interface ProcessDylinkActivationOwnerOptions {
@@ -1173,6 +1181,16 @@ export function buildDlopenImports(
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
   let instantiatingModules = 0;
+  // SPIKE: shared-library executables (host/src/main-dynamic-imports.ts).
+  let mainDynamicResolver: ((scope: MainDynamicLookup) => void) | null = null;
+  const runMainDynamicResolver = (): void => {
+    if (!mainDynamicResolver || !linker) return;
+    const current = linker;
+    mainDynamicResolver({
+      lookup: (name) => current.lookupGlobalSymbol(name),
+      functionIndex: (name) => current.dlsym(0, name),
+    });
+  };
   // `kandelo.klog.v1`: the kernel owns the message ring, so the import is a
   // request on this worker's own channel rather than host logic. The kernel
   // stages `buffer` with the request's kernel-host descriptor exactly as it
@@ -1977,6 +1995,7 @@ export function buildDlopenImports(
       // local table writes are not a new source mutation to republish.
       tableMutationPending = false;
     }
+    runMainDynamicResolver();
   };
 
   const resetForkChildLock = (): void => {
@@ -2141,6 +2160,7 @@ export function buildDlopenImports(
           notifyCommit(forkArchive.sync(linker.forkState()));
           ownedDlopenTransactions.delete(transaction);
           releaseLoaderOwnershipIfIdle();
+          if (handle > 0) runMainDynamicResolver();
         }
         return entry;
       } catch (error) {
@@ -2375,6 +2395,9 @@ export function buildDlopenImports(
     setCommitObserver: (observer) => {
       commitObserver = observer;
     },
+    setMainDynamicResolver: (resolver) => {
+      mainDynamicResolver = resolver;
+    },
   };
 }
 
@@ -2428,12 +2451,15 @@ function buildImportObject(
   ) => void,
   forkEnvImports?: Record<string, WebAssembly.ImportValue>,
   programExtensionImports?: WebAssembly.Imports,
+  mainDynamic?: MainDynamicImports | null,
 ): WebAssembly.Imports {
   assertSupportedKernelFunctionImports(module, kernelImports);
   // Refuse, before instantiation, a program that imports from env anything
   // the host does not provide (src/env-imports.ts). Library functions come
   // from libc, libc++abi, or libc++; the host never fakes them.
-  assertDeclaredEnvImports(module);
+  // SPIKE: except those a shared-library executable imports from its
+  // libraries (host/src/main-dynamic-imports.ts).
+  assertDeclaredEnvImports(module, mainDynamic?.dynamicEnvFunctions);
 
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -2592,7 +2618,17 @@ function buildImportObject(
     };
   }
 
+  if (mainDynamic) {
+    for (const [moduleName, values] of Object.entries(mainDynamic.importObject)) {
+      if (moduleName === "env") Object.assign(envImports, values);
+    }
+  }
   const importObject: WebAssembly.Imports = { ...programExtensionImports, env: envImports };
+  if (mainDynamic) {
+    for (const [moduleName, values] of Object.entries(mainDynamic.importObject)) {
+      if (moduleName !== "env") importObject[moduleName] = values;
+    }
+  }
   if (Object.keys(kernelImports).length > 0) {
     importObject.kernel = kernelImports;
   }
@@ -3963,6 +3999,19 @@ export async function centralizedWorkerMain(
           referenceReplay,
         }),
       };
+      const spikeMainDynamic = isDynamicMainProgram(programBytes as ArrayBuffer)
+        ? createMainDynamicImports(
+            module,
+            programBytes as ArrayBuffer,
+            isDeclaredEnvImport,
+            ptrWidth,
+          )
+        : null;
+      if (spikeMainDynamic) {
+        dlopenSupport.setMainDynamicResolver((scope) => {
+          spikeMainDynamic.resolve(scope);
+        });
+      }
       const importObject = buildImportObject(
         module,
         memory,
@@ -3984,6 +4033,7 @@ export async function centralizedWorkerMain(
         },
         forkEnvImports,
         dlopenSupport.extensionImports,
+        spikeMainDynamic,
       );
       const routedImportObject = processHostImportRuntime.routeImportObject(
         programBytes,
@@ -4357,6 +4407,19 @@ export async function centralizedWorkerMain(
         readForkSideModuleContract(module),
         programBytes,
       );
+      const spikeMainDynamic = isDynamicMainProgram(programBytes as ArrayBuffer)
+        ? createMainDynamicImports(
+            module,
+            programBytes as ArrayBuffer,
+            isDeclaredEnvImport,
+            ptrWidth,
+          )
+        : null;
+      if (spikeMainDynamic) {
+        dlopenSupport.setMainDynamicResolver((scope) => {
+          spikeMainDynamic.resolve(scope);
+        });
+      }
       const importObject = buildImportObject(
         module,
         memory,
@@ -4378,6 +4441,7 @@ export async function centralizedWorkerMain(
         },
         undefined,
         dlopenSupport.extensionImports,
+        spikeMainDynamic,
       );
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
@@ -5840,7 +5904,20 @@ export async function centralizedThreadWorkerMain(
             }),
           }
         : undefined;
-    const importObject = buildImportObject(
+    const spikeMainDynamic = isDynamicMainProgram(initData.programBytes as ArrayBuffer)
+        ? createMainDynamicImports(
+            module,
+            initData.programBytes as ArrayBuffer,
+            isDeclaredEnvImport,
+            ptrWidth,
+          )
+        : null;
+      if (spikeMainDynamic) {
+        threadDlopenSupport.setMainDynamicResolver((scope) => {
+          spikeMainDynamic.resolve(scope);
+        });
+      }
+      const importObject = buildImportObject(
       module,
       memory,
       kernelImports,
@@ -5861,6 +5938,7 @@ export async function centralizedThreadWorkerMain(
       },
       threadForkEnvImports,
       threadDlopenSupport.extensionImports,
+      spikeMainDynamic,
     );
     const routedThreadImportObject = threadHostImportRuntime
       ? threadHostImportRuntime.routeImportObject(

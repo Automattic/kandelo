@@ -14,6 +14,7 @@
 
 pub mod arch;
 pub mod driver;
+pub mod dynlink;
 pub mod exec;
 pub mod flags;
 pub mod node_path;
