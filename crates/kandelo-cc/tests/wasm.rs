@@ -3,7 +3,8 @@
 
 use kandelo_cc::driver::is_fork_capable;
 use kandelo_cc::wasm::{
-    CALLTYPES_CODE_HASH_SECTION, CALLTYPES_SECTION, with_code_hash_section, without_custom_section,
+    CALLTYPES_CODE_HASH_SECTION, CALLTYPES_SECTION, is_relocatable, with_abi_contract_section,
+    with_code_hash_section, without_custom_section,
 };
 
 fn module(wat: &str) -> Vec<u8> {
@@ -136,4 +137,56 @@ fn fork_capability_is_the_kernel_fork_import() {
       (func (export "_start")))"#;
     assert!(!is_fork_capable(&module(other)).unwrap());
     assert!(!is_fork_capable(&module("(module (func (export \"_start\")))")).unwrap());
+}
+
+const CONTRACT: [u8; 32] = [0x5a; 32];
+
+#[test]
+fn the_abi_contract_is_appended_once_and_read_back_by_the_hosts_reader() {
+    let linked = with_custom(module(FORK_MODULE), CALLTYPES_SECTION, b"facts");
+    let stamped = with_abi_contract_section(&linked, &CONTRACT)
+        .unwrap()
+        .expect("an unstamped module is stamped");
+    assert!(stamped.starts_with(&linked), "every earlier byte is kept");
+    assert_eq!(
+        wasm_artifact::read_custom_section(&stamped, wasm_artifact::ABI_CONTRACT_SECTION),
+        Some(&CONTRACT[..])
+    );
+    // Stamping again with the same digest changes nothing.
+    assert_eq!(
+        with_abi_contract_section(&stamped, &CONTRACT).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn another_or_a_duplicated_abi_contract_is_refused() {
+    let foreign = with_custom(
+        module(FORK_MODULE),
+        wasm_artifact::ABI_CONTRACT_SECTION,
+        &[0x11; 32],
+    );
+    let error = with_abi_contract_section(&foreign, &CONTRACT).unwrap_err();
+    assert!(
+        error.contains("another kandelo.abi.contract digest"),
+        "{error}"
+    );
+    let twice = with_custom(
+        with_custom(
+            module(FORK_MODULE),
+            wasm_artifact::ABI_CONTRACT_SECTION,
+            &CONTRACT,
+        ),
+        wasm_artifact::ABI_CONTRACT_SECTION,
+        &CONTRACT,
+    );
+    let error = with_abi_contract_section(&twice, &CONTRACT).unwrap_err();
+    assert!(error.contains("more than one"), "{error}");
+}
+
+#[test]
+fn relocatable_objects_are_told_apart_from_programs() {
+    assert!(!is_relocatable(&module(FORK_MODULE)).unwrap());
+    assert!(is_relocatable(&with_custom(module(FORK_MODULE), "linking", &[2])).unwrap());
+    assert!(is_relocatable(&with_custom(module(FORK_MODULE), "reloc.CODE", &[0])).unwrap());
 }

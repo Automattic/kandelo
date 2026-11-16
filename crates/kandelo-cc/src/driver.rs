@@ -13,10 +13,10 @@ use crate::flags::{
     shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
-use crate::toolchain::{Toolchain, resolve_lld_major};
+use crate::toolchain::{Toolchain, read_abi_contract_digest, resolve_lld_major};
 use crate::wasm::{
-    CALLTYPES_SECTION, imports_function, is_wasm_module, with_code_hash_section,
-    without_custom_section,
+    CALLTYPES_SECTION, imports_function, is_relocatable, is_wasm_module, with_abi_contract_section,
+    with_code_hash_section, without_custom_section,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -865,8 +865,15 @@ fn is_linker_job(job: &[String]) -> bool {
 
 /// Run the compiler driver. Compile-only invocations pass straight through.
 /// A link is run with clang's post-link wasm-opt (if clang schedules one)
-/// held back, then finished per `is_fork_capable`.
-pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Result<i32> {
+/// held back, then finished per `is_fork_capable`. An executable link passes
+/// its SDK's program ABI-contract digest as `abi_contract`, which the
+/// finished program carries (`stamp_abi_contract`).
+pub fn run_compiler_driver(
+    compiler: &str,
+    args: &[String],
+    linking: bool,
+    abi_contract: Option<&[u8; 32]>,
+) -> Result<i32> {
     if !linking || args.iter().any(|a| a == "-###") {
         return Ok(run_passthrough(compiler, args));
     }
@@ -943,6 +950,7 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
             if let Some(hashed) = with_code_hash_section(module)? {
                 write_output(&output, &hashed)?;
             }
+            stamp_abi_contract(&output, abi_contract)?;
             return Ok(0);
         }
         if let Some(stripped) = without_custom_section(module, CALLTYPES_SECTION)? {
@@ -950,9 +958,43 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
         }
     }
     if let Some(job) = wasm_opt.first() {
-        return Ok(run_passthrough(&job[0], &job[1..]));
+        let exit_code = run_passthrough(&job[0], &job[1..]);
+        if exit_code != 0 {
+            return Ok(exit_code);
+        }
     }
+    stamp_abi_contract(&output, abi_contract)?;
     Ok(0)
+}
+
+/// Append the SDK's `kandelo.abi.contract` digest to a linked program, after
+/// every other post-link edit.
+///
+/// WHY at link time: the host compares this digest with the running kernel's
+/// before it runs a program, and refuses a mismatch, but admits a program
+/// without one unchecked, with a warning. Stamping only where packages are
+/// admitted left every program linked elsewhere unchecked: test programs, ad
+/// hoc builds, and the tools a build compiles and then runs inside Kandelo.
+/// wasm-opt and the fork instrumenter keep the section, and package
+/// admission accepts a stamp equal to its own.
+///
+/// A relocatable object is not a program: a later link would concatenate its
+/// section into the program it ends up in.
+fn stamp_abi_contract(output: &str, abi_contract: Option<&[u8; 32]>) -> Result<()> {
+    let Some(digest) = abi_contract else {
+        return Ok(());
+    };
+    // No readable output (e.g. -o /dev/null on some hosts): nothing to stamp.
+    let Ok(module) = std::fs::read(output) else {
+        return Ok(());
+    };
+    if !is_wasm_module(&module) || is_relocatable(&module)? {
+        return Ok(());
+    }
+    if let Some(stamped) = with_abi_contract_section(&module, digest)? {
+        write_output(output, &stamped)?;
+    }
+    Ok(())
 }
 
 fn write_output(path: &str, bytes: &[u8]) -> Result<()> {
@@ -981,6 +1023,11 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     let executable_linker =
         prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
     let glue = compile_executable_glue(user_args, &toolchain, arch, executable_linker)?;
+    // An executable link links the glue, and carries the glue's digest.
+    let abi_contract = glue
+        .as_ref()
+        .map(|_| read_abi_contract_digest(&toolchain.glue_dir))
+        .transpose()?;
     let args = build_clang_args(
         user_args,
         &toolchain,
@@ -991,7 +1038,7 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     )?;
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
     let linking = needs_linking(&parsed) && executable_linker != Some(LinkerPreparation::NoLink);
-    let result = run_compiler_driver(&compiler, &args, linking);
+    let result = run_compiler_driver(&compiler, &args, linking, abi_contract.as_ref());
     drop(glue);
     result
 }

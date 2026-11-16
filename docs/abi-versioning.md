@@ -3090,6 +3090,17 @@ equal the digest stamped on the running kernel. The local build engine
 also keys every program and library on that digest, so the digest decides
 when cached package builds are reused.
 
+The SDK driver (`crates/kandelo-cc`) stamps the digest on every executable
+it links, after its other post-link edits, on the build machine and inside
+Kandelo alike. It reads the digest from `libc/glue/kandelo-abi-contract.txt`,
+which `xtask dump-abi` generates from the snapshot and
+`scripts/check-abi-version.sh` checks. The file sits beside the glue every
+executable links, and the SDK inside Kandelo ships that directory. Shared
+libraries are not stamped. A link whose output already carries another
+digest fails. Package admission, `scripts/build-programs.sh` and the
+conformance runners stamp the same digest again, which leaves a
+driver-stamped program unchanged.
+
 The digest covers `ABI_VERSION` and the snapshot sections listed under
 `abi_surfaces.program`: what a running program was compiled and linked
 against. That is syscall numbers (including host-intercepted ones) and

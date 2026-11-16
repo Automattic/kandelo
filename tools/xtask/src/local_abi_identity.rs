@@ -171,6 +171,24 @@ mod tests {
     const SURFACES: &str =
         r#""abi_surfaces":{"program":["layout"],"kernel_host":["kernel_exports"]}"#;
 
+    /// The SDK driver stamps the digest committed beside the glue, so it must
+    /// be this checkout's program digest; `xtask dump-abi --check` also checks
+    /// it, but only where a kernel is built.
+    #[test]
+    fn sdk_glue_digest_is_this_checkouts_program_digest() {
+        let root = crate::repo_root();
+        let committed =
+            std::fs::read_to_string(root.join(crate::dump_abi::PROGRAM_CONTRACT_FILE)).unwrap();
+        let expected = local_abi_contract_digest(&root, wasm_posix_shared::ABI_VERSION).unwrap();
+        let expected: String = expected.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            committed,
+            format!("{expected}\n"),
+            "run `bash scripts/check-abi-version.sh update` to regenerate {}",
+            crate::dump_abi::PROGRAM_CONTRACT_FILE
+        );
+    }
+
     #[test]
     fn local_abi_identity_ignores_formatting_and_object_key_order() {
         let first = snapshot_root(
