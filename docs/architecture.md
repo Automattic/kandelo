@@ -2424,6 +2424,28 @@ compilations and reuse counted separately) for diagnostics.
 in a real browser that three processes running the same threaded program
 compile one thread module between them.
 
+### Processors
+
+Each process and thread is its own Worker, and the host schedules Workers on
+its CPUs, so guest code runs in parallel. Syscalls do not: every channel is
+served by the one kernel worker, one request at a time. Eight CPU-bound
+workers finish in about the time of one on Node.js, Chromium, Firefox and
+WebKit, while syscall throughput stops growing at about four callers
+([measurements](measurements/2026-11-16-guest-parallelism.md)).
+
+The processor count describes where guest code runs. At boot, before any
+guest exists, `CentralizedKernelWorker` reads `navigator.hardwareConcurrency`
+in its own worker realm (Node.js answers `os.availableParallelism()`) and
+passes it to `kernel_set_processor_count`. The kernel records it once in
+`runtime_core::processors`; a second call, or one after a user process
+exists, is `EBUSY`. It answers `_SC_NPROCESSORS_ONLN`, `_SC_NPROCESSORS_CONF`
+and the `sched_getaffinity` mask, which musl's `sysconf` and `get_nprocs`
+count. The mask is one four-byte word, so the kernel reports at most 32
+processors; the boot record in the kernel log (`dmesg`) names the count,
+and the host's count when the kernel reports fewer. A host that does not
+report its parallelism, or a kernel without the export, leaves the count
+at 1.
+
 ## Memory Layout
 
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.

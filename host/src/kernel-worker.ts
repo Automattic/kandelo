@@ -1142,6 +1142,53 @@ function enableKernelTmpfs(instance: WebAssembly.Instance): void {
 }
 
 /**
+ * Processors the host can run guest Workers on at once.
+ *
+ * Every guest process and thread is its own Worker, so guest code runs in
+ * parallel up to the host's available parallelism; only syscalls serialize,
+ * on this kernel worker. Node.js and browsers both expose that parallelism to
+ * a worker as `navigator.hardwareConcurrency` (Node.js answers
+ * `os.availableParallelism()`). Browsers may report a reduced value as a
+ * privacy measure (WebKit reported 8 on a 14-CPU Mac); the kernel can only
+ * report what the host reveals. Answers `undefined` when the host does not
+ * say.
+ */
+export function hostProcessorCount(
+  scope: { readonly navigator?: { readonly hardwareConcurrency?: unknown } } = globalThis,
+): number | undefined {
+  const count = scope.navigator?.hardwareConcurrency;
+  return typeof count === "number" && Number.isSafeInteger(count) && count >= 1
+    ? count
+    : undefined;
+}
+
+/**
+ * Give the kernel the machine's processor count before any guest runs, so
+ * `sysconf(_SC_NPROCESSORS_ONLN/CONF)`, `get_nprocs()` and the
+ * `sched_getaffinity` mask describe the real host. A host that does not
+ * reveal its parallelism leaves the kernel's one-processor answer, which is
+ * a true lower bound. Returns the count the kernel reports: it caps the count
+ * at the 32 CPUs its four-byte affinity mask can name, and its boot record in
+ * the kernel log names the host's count when it does.
+ */
+export function configureKernelProcessors(
+  instance: WebAssembly.Instance,
+  available: number | undefined,
+): number | undefined {
+  if (available === undefined) return undefined;
+  const fn = instance.exports.kernel_set_processor_count as
+    | ((available: number) => number)
+    | undefined;
+  // An optional export: a kernel without it reports one processor.
+  if (typeof fn !== "function") return undefined;
+  const reported = fn(Math.min(available, 0xffff_ffff) >>> 0);
+  if (reported < 0) {
+    throw new Error(`kernel_set_processor_count failed with errno ${-reported}`);
+  }
+  return reported;
+}
+
+/**
  * Wait kinds passed to `kernel_wait_deadline_open`.
  *
  * Must match `wait_kind_from_u32` in `crates/kernel/src/wasm_api.rs`, which
@@ -6620,6 +6667,11 @@ export class CentralizedKernelWorker {
             throw new Error(`kernel_set_image_build_determinism failed with errno ${-enabled}`);
           }
         }
+
+        // The processor count is fixed for the machine's life: set it before
+        // any guest can read it, and before `/` loads so the boot record in
+        // the kernel log names it.
+        configureKernelProcessors(instance, hostProcessorCount());
 
         // Hand scratch-mount ownership to the in-kernel tmpfs, and the `/`
         // tree to the in-kernel rootfs, before any guest filesystem op runs.

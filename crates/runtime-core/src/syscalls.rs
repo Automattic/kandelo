@@ -22010,11 +22010,11 @@ pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
     match name {
         // _SC_ARG_MAX: host exec argv+env aggregate cap.
         0 => Ok(wasm_posix_shared::platform_limits::ARG_MAX_BYTES as i64),
-        1 => Ok(0),      // _SC_CHILD_MAX (unspecified)
-        2 => Ok(100),    // _SC_CLK_TCK
-        4 => Ok(1024),   // _SC_OPEN_MAX
-        6 => Ok(1),      // _SC_NPROCESSORS_ONLN
-        8 => Ok(1),      // _SC_NPROCESSORS_CONF
+        1 => Ok(0),    // _SC_CHILD_MAX (unspecified)
+        2 => Ok(100),  // _SC_CLK_TCK
+        4 => Ok(1024), // _SC_OPEN_MAX
+        // _SC_NPROCESSORS_ONLN and _SC_NPROCESSORS_CONF: one fixed count.
+        6 | 8 => Ok(crate::processors::count() as i64),
         11 => Ok(65536), // _SC_PAGESIZE (Wasm page = 64KB)
         30 => Ok(65536), // _SC_PAGE_SIZE (alias)
         _ => Err(Errno::EINVAL),
@@ -40380,7 +40380,10 @@ mod tests {
 
     #[test]
     fn test_sysconf_nprocessors() {
-        assert_eq!(sys_sysconf(6), Ok(1)); // _SC_NPROCESSORS_ONLN
+        let count = crate::processors::count() as i64;
+        assert!(count >= 1);
+        assert_eq!(sys_sysconf(6), Ok(count)); // _SC_NPROCESSORS_ONLN
+        assert_eq!(sys_sysconf(8), Ok(count)); // _SC_NPROCESSORS_CONF
     }
 
     #[test]
