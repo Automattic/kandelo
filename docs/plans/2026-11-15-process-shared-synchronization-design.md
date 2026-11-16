@@ -1,7 +1,8 @@
 # Process-Shared Synchronization: Design
 
 Date: 2026-11-15
-Status: Draft for review. No implementation is proposed for merge here.
+Status: Reviewed design; the maintainer's decisions are recorded in
+[Decisions](#decisions). No implementation is proposed for merge here.
 Contracts touched: POSIX and process semantics, ABI, host runtime (no
 change expected), package (CPython).
 
@@ -40,12 +41,17 @@ libc keeps musl's user-space paths for process-private objects and
 routes `PTHREAD_PROCESS_SHARED` and `pshared` semaphore operations to
 the kernel.
 
-This replaces the existing ID-based pshared table. It needs no new host
+For newly built programs this replaces the existing ID-based pshared
+table. It needs no new host
 wake mechanism, no new `SharedArrayBuffer` and no memory ceiling, on
 either host. It costs one syscall per operation on a process-shared
-object (about 35–50 µs per operation in the prototype on Node). It
-changes the program ABI. It is compatible with the common-memory
-process groups of draft PR #1720 and does not depend on them.
+object (about 35–50 µs per operation in the prototype on Node). The
+new interface ships as the versioned program extension
+`kandelo.psync.v1`. The ABI-56 base is unchanged. The existing
+syscalls 400–414 keep serving ABI-56 programs, now with POSIX
+semantics. Object state is kernel state and resets when the machine
+restarts. It is compatible with the common-memory process groups of
+draft PR #1720 and does not depend on them.
 
 A throwaway prototype of the recommended mechanism for semaphores
 passes the cross-process cases that fail today, including a
@@ -200,9 +206,9 @@ pages are physically shared or merged at boundaries. Kernel-parked
 waiters block in the ordinary syscall channel, and the host can end
 that wait by publishing a completion. Whether that satisfies #1720's
 browser execution-stop protocol for a parked process needs checking
-against that branch. If #1720 becomes a supported memory model, its groups could
-later use a user-space fast path: musl's ordinary algorithms with a
-shared futex keyed the same way. That is phase 6 below.
+against that branch. Raw `futex(2)` stays process-local in #1720
+groups too (decision 5). Process-shared POSIX objects use the same
+kernel calls there as everywhere else.
 
 ## POSIX requirements
 
@@ -274,8 +280,8 @@ musl's user-space algorithms. This fixes reason 1 above. Reasons 2 and
 3 remain under the default memory model, as probe C shows. It is
 correct only where memory is coherent, which today means #1720 groups.
 It also targets Linux's `futex(2)` ABI rather than the POSIX
-interfaces. **Not recommended as the general mechanism.** It is
-retained as the optional coherent-memory fast path in phase 6.
+interfaces. **Rejected.** Raw `futex(2)` stays process-local
+(decision 5).
 
 ### B. Repair the ID table
 
@@ -307,9 +313,9 @@ memory. However, host-owned backings (anonymous and host-mounted files)
 would need a new kernel→host import for atomic word access, which bumps
 `HOST_ADAPTER_VERSION`. Every operation would also need a fresh import
 of the word for kernel-owned files. In #1720 groups, the kernel would
-need real `Atomics` operations on the group backing. **Possible later
-refinement** if persistence across restarts is required. See the open
-questions.
+need real `Atomics` operations on the group backing. **Rejected**
+(decision 3): kernel-held state is accepted, and state resets at a
+machine restart.
 
 ### E. Make shared memory coherent everywhere
 
@@ -370,26 +376,78 @@ function's error list prefers it, never an unbounded map.
 
 - `*_init` creates or resets the entry. `*_destroy` removes it. `EBUSY`
   applies where POSIX allows: waiters present, or a held lock.
-- An entry is removed when its memory object is destroyed. Anonymous
-  objects are destroyed at the last unmap, exit or exec of any mapper.
-  SysV segments are destroyed after `IPC_RMID` and the last detach. For
-  kernel-owned files, entries are removed at inode release. The kernel
-  cannot observe the release of a host-mounted file, so its entries are
-  removed at the last mapping. Private-key entries are removed when the
-  address space is replaced or destroyed.
-- An operation on an address with no entry fails with `EINVAL`. POSIX
-  allows this for uninitialized objects. Copying an initialized object
-  does not copy its state, and POSIX says using a copy is undefined.
+- An entry is removed when the kernel observes that its memory object
+  is destroyed. Anonymous objects are destroyed at the last unmap, exit
+  or exec of any mapper. SysV segments are destroyed after `IPC_RMID`
+  and the last detach. For kernel-owned files, entries are removed at
+  inode release. Private-key entries are removed when the address
+  space is replaced or destroyed. The kernel cannot observe the release
+  of a host-mounted file. Its entries therefore last until `*_destroy`
+  or machine stop, within the table's admission bound.
+- An operation on a private, anonymous or SysV key with no entry fails
+  with `EINVAL`. Such an object was never initialized, or it is a copy.
+  POSIX leaves both undefined, and `EINVAL` is a permitted error.
+- An operation on a file key with no entry treats the object as freshly
+  initialized. See the next section.
+
+### State across a machine restart
+
+Object state is kernel state (decision 3). The kernel table starts
+empty when a machine starts, so state resets at a restart. A process-shared
+object found in a file after a restart behaves as freshly initialized:
+
+- mutexes, read-write locks and spin locks are unlocked and consistent;
+- condition variables have no waiters;
+- barriers have no arrivals for the current round;
+- semaphores hold the value given at their `sem_init` or creating
+  `sem_open`.
+
+The attributes come from the object's own bytes. libc records them at
+init and passes them with every operation. The attributes are the mutex
+type, robustness, condition clock, barrier count and semaphore initial
+value. libc stores the semaphore's initial value in the spare word of
+musl's `sem_t`. Only file keys can outlive the table, so this rule
+applies only to them.
+
+POSIX permits this:
+
+- The `pthread_mutex_init` rationale says "an implementation may store
+  the lock in the heap and merely store a pointer, handle, or unique ID
+  in the mutex object". It deliberately defines no assignment or
+  equality, so that portable code cannot depend on the lock living in
+  the object.
+- `shm_open` says: "It is unspecified whether the name and shared memory
+  object state remain valid after a system reboot."
+- Reinitializing an initialized object is undefined for each type:
+  "Attempting to initialize an already initialized mutex results in
+  undefined behavior" (likewise for `pthread_cond_init` and `sem_init`).
+  The `pthread_rwlock_init`, `pthread_barrier_init` and
+  `pthread_spin_init` pages say the results are undefined. A portable
+  program cannot depend on an initialized object surviving
+  reinitialization or a reboot. Programs that reinitialize their lock
+  file's objects when they find no other user (LMDB does) behave the
+  same on Kandelo.
+
+Linux keeps such state in the file's bytes. A Linux program that
+expects a lock held before a reboot to still be held, or owner-dead,
+afterwards will see it unlocked on Kandelo. Named semaphores live on
+the in-kernel tmpfs `/dev/shm`, which itself does not survive a
+restart, as on Linux. The change that introduces the table records
+this boundary in `docs/posix-status.md`.
 
 libc still writes the process-shared marker bits into the struct at
 init (musl's existing encodings), so later calls know to route to the
 kernel. The kernel does not interpret libc's struct layout; libc passes
-attributes as syscall arguments. This keeps musl's layouts out of the
-kernel ABI.
+attributes as arguments. This keeps musl's layouts out of the kernel
+ABI. musl's `pthread_spinlock_t` is a single `int` with no room for a
+marker. A process-shared spin lock instead stores a sentinel value that
+musl's private spin lock never uses, and the private path checks for
+it.
 
 ### Operations
 
-Each operation is one syscall. It returns at once, or it parks in
+Each operation is one kernel request on the calling thread's channel
+(see [ABI](#abi-impact) for how it is reached). It returns at once, or it parks in
 `wait_park` under a new wake source `PSync { token }` with a
 `Resume::PSync` decision, the way `futex` parks today.
 
@@ -422,7 +480,7 @@ guest memory, no host-side wait list and no per-object buffer.
 
 One host change is required. The host treats `EAGAIN` from most
 syscalls as "block and retry" (`isRetryResult` in `kernel-worker.ts`).
-The new syscall must join `futex`, `rt_sigtimedwait`, `flock` and
+The new request must join `futex`, `rt_sigtimedwait`, `flock` and
 `fcntl` in the list whose `EAGAIN` is final, because `sem_trywait` and
 the try-lock forms return `EAGAIN`/`EBUSY` as answers. The prototype
 hung until this was added.
@@ -451,11 +509,13 @@ hung until this was added.
 - Owners are kernel TIDs. Task IDs are never reused (`ProcessTable`
   allocates them monotonically), so a dead owner cannot be confused
   with a live task.
-- The kernel records which robust mutexes each task holds; it performed
-  every lock, so libc's robust list is not needed for process-shared
-  mutexes. At thread exit, process exit or exec, each held robust mutex
-  is marked owner-dead and one waiter is woken with `EOWNERDEAD`.
-  Linux also reports thread exit. POSIX "may" report it.
+- A robust mutex reports owner death on process exit, thread exit and
+  exec (decision 4). POSIX requires the first, permits the second ("may
+  be notified") and is silent on the third. Linux reports all three, and
+  reporting gives the next owner more information. The next acquirer
+  receives `EOWNERDEAD` and owns the mutex. If it unlocks without
+  `pthread_mutex_consistent`, the mutex becomes permanently
+  `ENOTRECOVERABLE`.
 - A non-robust (`STALLED`) mutex held at exit stays held. A later lock
   blocks, `trylock` returns `EBUSY` and a timed lock times out. This
   removes the current silent release.
@@ -467,6 +527,34 @@ hung until this was added.
   mutexes become owner-dead. Semaphores in shared memory keep their
   state while any mapper or the object exists. Private-key entries go
   with the address space.
+
+#### The per-thread held-robust list
+
+The kernel performs every lock of a process-shared robust mutex, so it
+knows the holder without libc's user-space `robust_list`.
+`set_robust_list` stays a no-op for this purpose. Each task record
+holds the head of an intrusive, doubly linked list. The links live in
+the mutex's own table entry (`held_prev`, `held_next`, as keys). A
+mutex has at most one owner, so one pair of links per entry suffices.
+
+- **lock or a successful `EOWNERDEAD` hand-off:** push onto the new
+  owner's list. O(1), with no allocation, so a lock never fails for
+  list space.
+- **unlock:** unlink. O(1) plus the key lookups.
+- **thread exit, process exit (every thread) or exec (every thread,
+  including the caller):** walk the list. Each entry is marked
+  owner-dead and handed to its oldest waiter with `EOWNERDEAD`, or left
+  owner-dead for the next acquirer. The walk is O(held), done once per
+  exiting task.
+- **Memory:** two key-sized links (about 64 bytes) per robust entry,
+  plus one head per task. Non-robust objects carry no links.
+- **Cost on the lock path:** nothing beyond the table update the lock
+  already does.
+
+Process-private robust mutexes still use musl's user-space
+`robust_list`. `set_robust_list` is a no-op today, so their owner
+death is not reported either. That is a separate gap, recorded in
+phase 0 and not part of this design.
 
 ### Named semaphores
 
@@ -503,18 +591,20 @@ These remain the boundary documented in `docs/wasm-limitations.md`
 section 7, unless coherent memory such as #1720 is in use:
 
 - user-space lock-free algorithms (C11 atomics) on memory shared between
-  processes;
-- raw `futex(2)` without `FUTEX_PRIVATE_FLAG` across processes.
+  processes.
 
-Phase 6 can key shared raw futexes by object identity, but only with
-maintainer approval, because it is Linux ABI behavior.
+Raw `futex(2)` stays process-local on every memory model, including
+#1720 groups (decision 5). It is musl's internal primitive, not a POSIX
+interface. The POSIX interfaces get cross-process semantics through the
+new kernel requests. `docs/posix-status.md` keeps saying that a futex
+wait or wake reaches only the calling process.
 
 ## Cost
 
 | Operation (prototype probe case K, Node, one machine, three runs) | Time |
 |---|---|
 | Private semaphore `sem_trywait`+`sem_post` pair, user space | 0.02–0.07 µs per pair |
-| Process-shared semaphore pair through the kernel | 68–101 µs per pair |
+| Process-shared semaphore pair through the kernel (prototype syscall) | 68–101 µs per pair |
 | Existing pshared mutex lock+unlock pair (IDs, kernel) | 58–109 µs per pair |
 | `getppid()` | 28–29 µs per call |
 
@@ -530,75 +620,226 @@ Memory:
   ceiling, so the WebKit reservation budget (`host/src/runtime-memory-profile.ts`)
   is unchanged.
 - **Kernel:** one table entry (tens of bytes) per live process-shared
-  object, one wait entry per parked thread, and one held-robust record
-  per held robust mutex, all through bounded admission. This replaces
-  the current unbounded ID table.
+  object, one wait entry per parked thread, and two held-list links in
+  each robust entry, all through bounded admission. The legacy ID table
+  gains the same bound.
+- **Negotiation:** one worker-served import call per process image,
+  with no channel round trip.
 - **Hot paths:** `futex` and other syscall dispatch are untouched. The
-  new syscall adds one mapping lookup per call.
+  new request adds one mapping lookup per call.
 
 ## ABI impact
 
-- **Program surface.** A new process-shared synchronization syscall
-  family with operation codes and argument descriptors. libc changes
-  the routing and behavior of existing functions, so already-built
-  programs keep their linked behavior until rebuilt. Two ways to ship
-  it, for the maintainer to choose:
-  1. Bump `ABI_VERSION` (56 → 57) and declare a new supported program
-     baseline. Every program and package is rebuilt and republished
-     under `binaries-abi-v57`.
-  2. Keep the ABI-56 base and add an independently versioned program
-     extension (for example `kandelo.psync.v1`;
-     `docs/program-extensions.md`). Programs linked against the new libc
-     import it. Extensions are currently Wasm imports supplied by the
-     process worker, so carrying a syscall this way needs its own design
-     review.
+### The program extension `kandelo.psync.v1`
 
-  Either way, syscalls 400–414 keep their meaning for ABI-56 programs,
-  as `docs/persistent-program-compatibility.md` requires. They should
-  also be recorded in `abi/snapshot.json` now. A kernel-only improvement
-  that preserves their results, such as parking instead of polling,
-  needs no program bump. Changing their results, such as TID ownership,
-  is a behavior change for old binaries and needs an explicit decision.
-- **Kernel–host surface.** No new imports or exports, and no wire format
-  change. Completions use `wait_completion_wire`. The host's final-`EAGAIN`
-  list changes together with the kernel. `HOST_ADAPTER_VERSION` stays at
-  7 unless option D is adopted.
-- **Fork instrumentation, channel layout, struct layouts:** unchanged.
+The new interface keeps the ABI-56 base unchanged (decision 1). It
+follows the precedent of `kandelo.klog.v1` (`docs/program-extensions.md`).
+
+**Declaration.** libc's process-shared paths import one function:
+
+```text
+module "kandelo.psync.v1", name "__kandelo_psync_v1"
+(info: pointer, capacity: i32, flags: i32) -> i32
+```
+
+This is the extension family's `(pointer, i32, i32) -> i32` shape. A
+program imports it only if it links a function that can create a
+process-shared object: `pthread_mutexattr_setpshared`,
+`pthread_condattr_setpshared`, `pthread_rwlockattr_setpshared`,
+`pthread_barrierattr_setpshared`, `pthread_spin_init`, `sem_init` or
+`sem_open`. Those reference the libc psync object strongly. The lock,
+wait and post paths reference it weakly, through a symbol that only a
+process-shared init can make non-null. A program that never creates a
+process-shared object therefore keeps its base identity.
+
+**Negotiation.** On first use in a process image, libc calls the
+import. The process worker serves it synchronously, with no channel
+round trip. It writes a small packet into `info`: magic, version 1, and
+the kernel request number to use. It returns the packet length, or
+`-105` if `capacity` is too small and `-22` for nonzero `flags`. libc
+caches the packet in a static. A forked child inherits the cache,
+which stays valid because the child runs on the same host. Exec
+discards it with the image.
+
+**Transport.** libc issues every operation through the ordinary syscall
+glue: `__syscall`, or `__syscall_cp` for cancellation points. It uses
+the negotiated request number, an operation code, the object address
+and operation arguments. Using the glue rather than the import as the
+transport matters. A worker-issued request
+(`invokeChannelSyscall` in `host/src/worker-main.ts`) defers signal
+delivery to the next guest syscall (`markDeferredSignalDelivery`). That
+would break `EINTR` after a handler, `SA_RESTART` restarts and deferred
+cancellation, all of which the glue already implements for blocking
+calls.
+
+**What is versioned where.**
+
+- The operation codes, argument meanings, packet layout and errno
+  results are the program contract of `kandelo.psync.v1`. They are
+  declared in `crates/program-abi/src/program_extensions.rs`, generated
+  into `abi/program-extensions.json` and documented in
+  `docs/program-extensions.md`. They are immutable for v1. An
+  incompatible change is `kandelo.psync.v2`.
+- The request number (in `shared::extension_requests`, beside `KLOG_V1`
+  = 600), its argument descriptors
+  (`host_abi::EXTENSION_REQUEST_DESCRIPTORS`) and the host's
+  final-`EAGAIN` entry are kernel-host surface, versioned by
+  `HOST_ADAPTER_VERSION`. No program has the number compiled in; it
+  comes from the packet.
+
+**Checks.**
+
+- **Build:** `cargo xtask program-extensions` adds the module to the
+  SDK linker allowance. A plain `env` import of the same name is
+  refused at link time.
+- **Admission, on both hosts:** `wasm-artifact`'s extension admission
+  (`IMPLEMENTED` in `crates/wasm-artifact/src/program_extensions.rs`)
+  and the shared host policy accept `kandelo.psync.v1` with the exact
+  signature. They refuse unknown versions, unknown names, wrong kinds
+  and wrong signatures before execution. Dynamic loading checks a side
+  module's imports against what the worker supplies.
+- **Kernel gate:** the host registers each process image's admitted
+  extension set with the kernel when it registers the image. Fork
+  inherits the set, and exec replaces it with the new image's set. The
+  kernel answers the psync request with `ENOSYS` from an image that did
+  not declare `kandelo.psync.v1`. The request is therefore unreachable
+  from undeclared programs, rather than merely unadvertised to them.
+  The registration is a kernel-host wire change.
+- **Generated files:** `cargo xtask program-extensions --check` and
+  `xtask dump-abi --check` verify the manifest, host constants and
+  linker allowance.
+
+**How stale or mismatched artifacts fail.**
+
+| Artifact | Result |
+|---|---|
+| Program importing `kandelo.psync.v1`, on a host or kernel without it | Admission refusal: "unsupported required program extension kandelo.psync.v1". Never runs with a missing interface. |
+| Program importing `kandelo.psync.v2` on a v1 host | Admission refusal, as an unknown version |
+| Import with the wrong name, kind or signature | Admission refusal |
+| Image issuing the request without the import | `ENOSYS` from the kernel gate |
+| Kernel and host from different `HOST_ADAPTER_VERSION`s | The existing kernel-host refusal |
+| ABI-56 program built before this work | Admitted unchanged. It keeps using 400–414, which now behave as in the next section. |
+
+### Syscalls 400–414 for ABI-56 programs
+
+ABI-56 programs keep using the ID table. Its behavior changes to match
+POSIX (decision 2). Each change is kernel-side unless noted.
+
+- **Parking instead of polling:** blocked lock, condition and barrier
+  calls park in `wait_park` under the object's ID token, instead of
+  returning `EAGAIN` for the host to retry. A wake is a kernel decision,
+  as for futex.
+- **Thread ownership:** owners and waiter entries are TIDs, not PIDs.
+  Threads of one process now exclude each other, and two threads can
+  wait on one condition or barrier.
+- **No silent release at exit:** a held mutex stays held, as
+  `PTHREAD_MUTEX_STALLED`. Robust process-shared mutexes never used the
+  table (the ABI-56 libc sends them to musl's futex path), so robust
+  semantics need a rebuild.
+- **Admission bound:** the table gets an admission bound. Init returns
+  `EAGAIN` or `ENOMEM` when it is full; both are permitted errors.
+- **Real timeouts, where the old libc passes one:** none of 400–414
+  carries a timeout. ABI-56 `pthread_mutex_timedlock` passes only the
+  ID, and ABI-56 `pthread_cond_timedwait` does not use the table at
+  all. The kernel cannot recover a deadline those binaries never send.
+  Bounded timed waits therefore need a rebuild against the new libc.
+  `docs/posix-status.md` says so instead of implying a fix.
+
+These are deliberate behavior changes for existing binaries. They are
+listed as such in `docs/posix-status.md` and in the change that makes
+them.
+
+### Recording 400–414 in `abi/snapshot.json`
+
+The ABI-56 programs that use 400–414 bind to them, but the snapshot does
+not list them. Adding them to the program-surface `syscalls` section
+would change the ABI-56 program digest. Every existing program would
+then be refused, which is what decision 1 avoids. They are recorded
+instead in a new snapshot section, `program_legacy_requests`. It lists
+each number, name, argument meaning and result convention.
+
+- It is checked by `xtask dump-abi --check` and by a kernel test that
+  dispatch serves exactly these numbers.
+- It is excluded from the ABI-56 digest. `docs/abi-versioning.md`
+  gains a third surface classification, "frozen baseline record", for
+  observable behavior that a frozen baseline already depends on but did
+  not digest.
+- At the next program baseline it merges into `syscalls`, or is removed
+  together with the legacy table.
+
+### Other surfaces
+
+- `ABI_VERSION` stays at 56. The persistent-program baseline is
+  unchanged.
+- `HOST_ADAPTER_VERSION` increases once: for the new extension request
+  number and descriptors, the per-image extension registration, and the
+  final-`EAGAIN` entry. The legacy changes add no kernel-host wire.
+- Completions use the existing `wait_completion_wire`.
+- Fork instrumentation, channel layout and musl struct layouts are
+  unchanged. Only the spare `sem_t` word and the spin-lock sentinel gain
+  meaning, inside libc.
 
 ## Phased plan
 
-0. **Truthful state (docs and ABI hygiene).** Add `posix-status.md` rows
-   for the process-shared functions with today's behavior. Record
-   syscalls 400–414 in the ABI snapshot. Commit the probe as an
-   `examples/` fixture with a host test that pins the current
-   divergences, so later phases flip expectations visibly.
-1. **Kernel infrastructure.** Object identity (anonymous object ids
-   across mmap, fork, split, `mremap`, exit and exec), `PsyncTable` with
-   bounded admission and lifetime hooks, the `PSync` wake source and
-   resume, and the syscall and the host's final-`EAGAIN` entry. Rust
-   unit tests.
-2. **Semaphores.** `sem_init(pshared)`, `sem_open` registration,
-   `sem_wait`, `sem_timedwait`, `sem_clockwait` (today's override
-   ignores its clock), `sem_trywait`, `sem_post` and `sem_getvalue`.
-   Flip CPython's `ac_cv_posix_semaphores_enabled` and update its README
-   and `posix-modules.test.ts`.
-3. **Mutexes, conditions, rwlocks, barriers and spin locks** on the new
-   path for programs built with the new libc. The ID table remains for
-   ABI-56 programs only.
-4. **Robust and lifecycle semantics.** Owner-dead reporting at thread
-   exit, exit and exec. `ENOTRECOVERABLE`. `STALLED` held at exit.
-   Decide whether the legacy path stops releasing at exit.
-5. **Retire the legacy table** at the next program baseline.
-6. **Optional, needs approval:** shared futex keys for coherent memory
-   (#1720 groups) and a user-space fast path there, only if measurements
-   justify it.
+Recommended sequencing. Each step is independently reviewable.
+
+0. **Truthful state.**
+   - Add `posix-status.md` rows for the process-shared functions with
+     today's behavior, including the private robust-mutex gap.
+   - Add the `program_legacy_requests` snapshot section and its surface
+     classification.
+   - Commit the probe as an `examples/` fixture with a host test that
+     pins today's divergences, so later steps flip expectations visibly.
+1. **Legacy 400–414 semantics.** Parking, TID ownership, no release at
+   exit, and the admission bound. This is kernel-only and needs no
+   extension. ABI-56 programs benefit at once. It also exercises the
+   parking path that the new requests reuse.
+2. **Object identity keys.** Anonymous object ids across mmap, fork,
+   split, `mremap`, exit and exec, plus file and SysV keys with
+   generations, all with Rust unit tests. These land on `develop` on
+   their own merits, independent of #1720. Their semantics do not depend
+   on the memory model. #1720 adopts them when it next rebases, by
+   resolving its translated addresses through the same mapping
+   metadata. #1720 does not need to land first, and nothing here waits
+   for it.
+3. **The extension and semaphores.**
+   - The `kandelo.psync.v1` declarations, admission, kernel gate,
+     request and `HOST_ADAPTER_VERSION` bump.
+   - `PsyncTable` with lifetime hooks and the restart rule.
+   - `sem_init(pshared)`, `sem_open` registration, `sem_wait`,
+     `sem_timedwait`, `sem_clockwait` (today's override ignores its
+     clock), `sem_trywait`, `sem_post` and `sem_getvalue`.
+   - Flip CPython's `ac_cv_posix_semaphores_enabled` and update its
+     README and `posix-modules.test.ts`.
+
+   Semaphores come first because they unblock CPython and exercise
+   every part of the mechanism with the simplest state machine.
+4. **Mutexes, conditions, rwlocks, barriers and spin locks** on the new
+   path, with robust owner death at process exit, thread exit and exec,
+   and the held-robust list.
+5. **Retire the legacy table** at the next program baseline. Fold or
+   remove `program_legacy_requests` at the same time.
 
 ## Test strategy
 
 - **Rust unit tests:** key resolution (private, anonymous across
   fork/split/`mremap`, file, SysV, generations), each primitive's state
   machine, hand-off order, deadlines, signal restart rules,
-  cancellation, robust transitions and admission failure.
+  cancellation, robust transitions and the held-robust list (lock,
+  unlock, thread exit, exit, exec), admission failure, the
+  freshly-initialized rule for file keys after a simulated table reset,
+  and the legacy table's parking and TID ownership.
+- **Extension admission, on both hosts:**
+  - a program with `kandelo.psync.v1` runs;
+  - the same program is refused by a host built without the extension;
+  - wrong signatures and `v2` imports are refused;
+  - a program without the import gets `ENOSYS` from a hand-issued
+    request;
+  - a program that never creates a process-shared object has no
+    extension import.
+- **ABI-56 cohort:** the frozen `abi/program-fixtures/v56/` programs
+  still run, and a v56 program using a process-shared mutex shows the
+  new legacy semantics.
 - **Guest fixture:** the probe cases plus spin lock, barrier, clock
   attributes, `sem_unlink` lifetime, exec and robust thread exit. Run on
   Node through Vitest and in Chromium, Firefox and WebKit through the
@@ -652,22 +893,30 @@ demonstrates three things:
 - kernel-serialized operations restore mutual exclusion and
   lock-protected data coherence under boundary-coherent memory.
 
-## Open questions for the maintainer
+## Decisions
 
-1. **ABI vehicle:** a new baseline (ABI 57), or a versioned program
-   extension that keeps the ABI-56 base?
-2. **Legacy 400–414:** may their results change for ABI-56 programs?
-   This would fix TID ownership, stop the silent release at exit and use
-   real timeouts. Or should they stay frozen apart from kernel-only
-   parking?
-3. **State location:** kernel-held state (C) loses process-shared object
-   state in persistent regular files across a machine restart, where
-   Linux keeps it in the bytes. Is that acceptable for now, or should D
-   be planned?
-4. **Robust thread exit and exec:** report owner death for thread exit
-   (POSIX "may") and exec (POSIX silent), as Linux does?
-5. **Raw shared futexes:** is keying non-private `futex(2)` by object
-   identity (Linux-specific) wanted, at least inside #1720 groups?
-6. **#1720 coordination:** should identity keys land first so #1720's
-   group can rely on them, or should #1720 stay independent until it
-   leaves prototype status?
+Recorded from the maintainer's review of this draft.
+
+1. **ABI vehicle:** ship as the versioned program extension
+   `kandelo.psync.v1`, keeping the ABI-56 base. No `ABI_VERSION` bump.
+   Mechanism: [The program extension](#the-program-extension-kandelopsyncv1).
+2. **Legacy 400–414:** may change behavior for ABI-56 programs to match
+   POSIX: TID ownership, no silent release at exit, real timeouts where
+   the old libc passes one, and parking instead of polling. Also record
+   them in `abi/snapshot.json`. See
+   [Syscalls 400–414](#syscalls-400414-for-abi-56-programs) and
+   [Recording 400–414](#recording-400414-in-abisnapshotjson).
+3. **State location:** kernel-held state is accepted. State resets at a
+   machine restart, and an object found in a file afterwards behaves as
+   freshly initialized. See
+   [State across a machine restart](#state-across-a-machine-restart).
+4. **Robust owner death:** reported on process exit, thread exit and
+   exec. See [the held-robust list](#the-per-thread-held-robust-list).
+5. **Raw `futex(2)`:** stays process-local. It is musl's internal
+   primitive, and POSIX interfaces get cross-process semantics through
+   the new kernel requests.
+6. **Sequencing:** recommended in [Phased plan](#phased-plan). Legacy
+   fixes and identity keys land first on `develop`, independent of
+   #1720, which adopts the keys when it rebases.
+
+No questions remain open.
