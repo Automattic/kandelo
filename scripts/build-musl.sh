@@ -493,6 +493,23 @@ rm -f "$SYSROOT/lib/libkandelo-ucontext-unsupported.a"
 rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 
 # ---------------------------------------------------------------
+# 8b'. Build the opt-in mprotect (NOT part of libc.a)
+# ---------------------------------------------------------------
+# Wasm cannot enforce page protection, so libc.a defines no public mprotect
+# and a program that calls it fails to link. Software that only makes memory
+# accessible opts in with -lkandelo-mprotect, whose mprotect() refuses
+# requests that would remove access with ENOTSUP; see the source.
+echo "==> Building opt-in mprotect..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$REPO_ROOT/libc/glue/kandelo_mprotect.c" \
+    -o "$SYSROOT/lib/kandelo_mprotect.o"
+rm -f "$SYSROOT/lib/libkandelo-mprotect.a"
+"$AR" rcs "$SYSROOT/lib/libkandelo-mprotect.a" "$SYSROOT/lib/kandelo_mprotect.o"
+rm -f "$SYSROOT/lib/kandelo_mprotect.o"
+
+# ---------------------------------------------------------------
 # 8c. Private kernel-owned device runtime (pulled only when referenced)
 # ---------------------------------------------------------------
 # Keep one nonce/receipt implementation across EGL and GBM. Separate archive

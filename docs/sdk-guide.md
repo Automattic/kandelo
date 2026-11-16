@@ -602,6 +602,7 @@ package that accepts the boundary names them explicitly.
 | Library | Provides | Behavior |
 |---|---|---|
 | `-lkandelo-ucontext-unsupported` | `getcontext`, `setcontext`, `makecontext`, `swapcontext` | Writes `<function>: ucontext is not supported on Kandelo` to stderr and aborts (`SIGABRT`). |
+| `-lkandelo-mprotect` | `mprotect` | Accepts a request that keeps read and write access (`PROT_READ\|PROT_WRITE`, with or without `PROT_EXEC`) and fails with `ENOTSUP` for one that would remove read or write access; `EINVAL` for unknown protection bits. |
 
 ucontext is unsupported (see `docs/posix-status.md`), so by default a program
 that calls it fails to link. PHP opts in because Zend always compiles Fibers on
@@ -611,6 +612,16 @@ stand-ins abort instead of returning `-1`/`ENOSYS` because PHP ignores those
 return values, so an error return would let a Fiber run on an uninitialized
 context. Do not link these libraries to make a link error go away unless the
 program is known not to depend on the API.
+
+WebAssembly memory has no page protection, so libc.a defines no public
+`mprotect` and a program that calls it fails to link; the SDK driver adds a
+note naming `-lkandelo-mprotect` to that link error. Link it when the program
+uses `mprotect()` only to make memory readable and writable, such as committing
+pages of a `PROT_NONE` reservation. A program that relies on `mprotect()` to
+make memory read-only or inaccessible (guard pages, write barriers, W^X JITs)
+gets `ENOTSUP` from it and must handle that or use another strategy.
+`config.site` reports `mprotect` absent, and build systems that probe by linking
+(Meson, CMake) find it absent too unless the library is added to their link.
 
 #### Why an 8 MiB main-thread stack
 
