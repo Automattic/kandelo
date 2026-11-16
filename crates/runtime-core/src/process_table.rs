@@ -80,6 +80,8 @@ pub struct ProcessTable {
     pub processes: PreparedMap<u32, Process>,
     /// Sole machine-wide authority for POSIX, OFD, and flock advisory locks.
     advisory_locks: AdvisoryLockManager,
+    /// Kernel authority for opt-in backing groups, separate from POSIX pgids.
+    memory_groups: crate::memory_group::MemoryGroups,
     current_pid: u32,
     /// Next machine-wide process or thread identity to consider.
     ///
@@ -689,10 +691,36 @@ fn serialize_fork_state_with_allocator(
 }
 
 impl ProcessTable {
+    /// Group configuration/lifecycle is host-driven; guest POSIX pgids do not
+    /// grant admission. The ledger itself cannot mint a ProcessTable task.
+    pub fn memory_groups(&mut self) -> &mut crate::memory_group::MemoryGroups {
+        &mut self.memory_groups
+    }
+
+    pub fn prepare_process_memory_group(
+        &mut self, group: crate::memory_group::MemoryGroupId, pid: u32,
+    ) -> Result<crate::memory_group::GroupAdmission, Errno> {
+        self.validate_task(pid, pid)?;
+        let generation = self.processes.get(&pid).ok_or(Errno::ESRCH)?.exec_generation;
+        self.memory_groups.prepare_process(group, pid, generation)
+    }
+
+    pub fn prepare_thread_memory_group(
+        &mut self, parent: crate::memory_group::GroupAdmission, tid: u32,
+    ) -> Result<crate::memory_group::GroupAdmission, Errno> {
+        let execution = parent.execution();
+        self.validate_task(execution.pid, tid)?;
+        if self.processes.get(&execution.pid).ok_or(Errno::ESRCH)?.exec_generation != execution.exec_generation {
+            return Err(Errno::ESRCH);
+        }
+        self.memory_groups.prepare_thread(parent, tid)
+    }
+
     const fn new_inner() -> Self {
         ProcessTable {
             processes: PreparedMap::new(),
             advisory_locks: AdvisoryLockManager::new(),
+            memory_groups: crate::memory_group::MemoryGroups::new(),
             current_pid: 0,
             next_task_id: FIRST_TASK_ID,
             current_tid: 0,
