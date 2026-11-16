@@ -68,6 +68,18 @@ libuv backend selection/integration, kqueue, io_uring and new relays are outside
 this change. The unchanged epoll/eventfd API and OFD lifetime can support a later
 Kandelo libuv epoll backend, subject to the documented provider gaps.
 
+## PR integration target
+
+The PR targets `develop` at `13c7691b0a65f6db874a51c0634dce9890807b4a`,
+79 commits beyond the recorded `main` baseline. That target already contains
+the equivalent normal-Escape pointer-release fixture fix, so the duplicate
+fixture edit was removed from this branch before opening the PR. The kernel
+and shared-host implementation are unchanged from the validated candidate.
+A merge preview against that target is clean. The builds, runtime checks and
+performance comparisons below apply to the recorded baseline/candidate;
+a complete build or runtime validation of the combined current `develop`
+state is not claimed.
+
 ## Inputs and build provenance
 
 Baseline: recorded `origin/main` commit
