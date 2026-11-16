@@ -179,6 +179,9 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_inject_datagram",
   "kernel_ioctl",
   "kernel_kms_cursor_read",
+  "kernel_memory_group_snapshot",
+  "kernel_memory_group_task_action",
+  "kernel_memory_group_task_receipt",
   "kernel_ipc_shm_read_chunk",
   "kernel_ipc_shm_write_chunk",
   "kernel_mq_drain_notification",
@@ -281,6 +284,12 @@ export function kernelScratchRequiredPointerArguments(
   switch (name) {
     case "kernel_overlay_activation_codec":
       return REQUIRED_POINTER_1_3;
+    case "kernel_memory_group_task_action":
+      return REQUIRED_POINTER_0;
+    case "kernel_memory_group_snapshot":
+      return REQUIRED_POINTER_1;
+    case "kernel_memory_group_task_receipt":
+      return REQUIRED_POINTER_2;
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_drain_audio":
@@ -408,6 +417,9 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_memory_group_snapshot":
+    case "kernel_memory_group_task_action":
+    case "kernel_memory_group_task_receipt":
     case "kernel_overlay_activation_codec":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
