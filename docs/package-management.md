@@ -2200,13 +2200,14 @@ Real issues encountered during D.1–D.5 and how to avoid them.
 ### 5. Optimization-level workarounds
 
 A few cross-compiles use a lower `-O` level for specific files
-because of a suspected LLVM 21 wasm32 codegen bug at higher levels.
-None of these has a standalone reduction yet, so the compiler bug
-is unverified; the per-file rules stay until one exists or the
-fault is found elsewhere. The migration pattern doesn't change
-this — these are pre-existing issues that surface independent of
-the cache — but consumers must keep the per-file workaround in
-place when porting their build script:
+because of suspected LLVM wasm32 codegen bugs at higher levels,
+observed on LLVM 21. They have not yet been re-tested on Kandelo's
+pinned LLVM 23.1.3. None of these has a standalone reduction yet,
+so the compiler bug is unverified; the per-file rules stay until
+one exists or the fault is found elsewhere. The migration pattern
+doesn't change this — these are pre-existing issues that surface
+independent of the cache — but consumers must keep the per-file
+workaround in place when porting their build script:
 
 - **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
   builds at `-O2`). At `-O2`, aggregate initialization of structs
@@ -2218,11 +2219,12 @@ place when porting their build script:
   [`LLVM-WASM32-O2-ERLANG-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM32-O2-ERLANG-MISCOMPILE/entry.md)
   and the `packages/registry/erlang/build-erlang.sh` comments.
 - **Redis `tls.c`** — the build notes record LLVM 21.1.8 crashing
-  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above.
-  That crash claim is unverified and has no registry entry: the
-  Redis build has TLS turned off, and stubbing `tls.c` out is a
-  configuration choice that follows from that, not a workaround
-  tied to a measured compiler defect. Re-enabling TLS would first
+  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above,
+  and it has not been re-tested on LLVM 23.1.3. That crash claim
+  is unverified and has no registry entry: the Redis build has TLS
+  turned off, and stubbing `tls.c` out is a configuration choice
+  that follows from that, not a workaround tied to a measured
+  compiler defect. Re-enabling TLS would first
   need the crash reproduced; if it holds, a per-target Makefile
   rule could compile just `tls.c` at `-O0`.
 

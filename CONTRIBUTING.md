@@ -13,7 +13,7 @@ Mac, run Linux natively or in a VM and use the `x86_64-linux` shell; open the
 demo in a browser inside that Linux system, or forward port 5401 to the Mac's
 localhost (for example `ssh -L 5401:127.0.0.1:5401 <vm>`).
 `./run.sh setup` enters the repository's Nix development shell and provides
-the pinned Rust nightly, LLVM 21, Node.js 24, and package build tools.
+the pinned Rust nightly, LLVM 23, Node.js 24, and package build tools.
 Installing those tools separately does not replace Nix for this workflow.
 
 To work inside that environment, run from the repository root:

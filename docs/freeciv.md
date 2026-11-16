@@ -44,9 +44,10 @@ instrumentation, artifact validation, and publication.
 | Sequential Freeciv and bundle nodes | 559.1 s (9m 19s) |
 
 This is a single measurement under competing build load, excluding the
-cost of building dependencies and fetching uncached sources. It is not a
-measured increase in the entire build's elapsed time: independent work can
-run in parallel with Freeciv.
+cost of building dependencies and fetching uncached sources. It predates
+the move to LLVM 23.1.3 and has not been repeated with that toolchain.
+It is not a measured increase in the entire build's elapsed time:
+independent work can run in parallel with Freeciv.
 
 Separate cached `xtask build-deps --source-only --arch=wasm32 resolve`
 invocations took 24.4 seconds for Freeciv and 29.4 seconds for the complete
