@@ -7,6 +7,7 @@
 #include <spawn.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -355,12 +356,22 @@ static int expect_proc_stopped(pid_t pid)
     return 0;
 }
 
-static int expect_zero_rusage(const struct rusage *usage)
+/* Kandelo measures CPU time only (docs/posix-status.md, getrusage()):
+ * ru_utime and ru_stime are normalized timevals, every counter after them
+ * is zero, and musl leaves the reserved tail untouched. */
+static int expect_cpu_only_rusage(const struct rusage *usage)
 {
     const unsigned char *bytes = (const unsigned char *)usage;
     const size_t meaningful = sizeof(long) == 4 ? 88 : 144;
+    const size_t counters = offsetof(struct rusage, ru_maxrss);
 
-    for (size_t i = 0; i < meaningful; i++) {
+    if (usage->ru_utime.tv_sec < 0 || usage->ru_utime.tv_usec < 0 ||
+        usage->ru_utime.tv_usec >= 1000000 || usage->ru_stime.tv_sec < 0 ||
+        usage->ru_stime.tv_usec < 0 || usage->ru_stime.tv_usec >= 1000000) {
+        fprintf(stderr, "rusage times are not normalized timevals\n");
+        return -1;
+    }
+    for (size_t i = counters; i < meaningful; i++) {
         if (bytes[i] != 0) {
             fprintf(stderr, "rusage byte %zu was %u, expected zero\n",
                 i, (unsigned)bytes[i]);
@@ -445,7 +456,7 @@ static int test_wait4_lifecycle(void)
             (int)got, status);
         return -1;
     }
-    if (expect_zero_rusage(&usage) != 0 || expect_proc_stopped(pid) != 0)
+    if (expect_cpu_only_rusage(&usage) != 0 || expect_proc_stopped(pid) != 0)
         return -1;
 
     status = 0x13572468;
@@ -462,7 +473,7 @@ static int test_wait4_lifecycle(void)
         return fail("SIGCONT");
     memset(&usage, 0xa5, sizeof(usage));
     got = wait4(pid, &status, WCONTINUED, &usage);
-    if (got != pid || !WIFCONTINUED(status) || expect_zero_rusage(&usage) != 0) {
+    if (got != pid || !WIFCONTINUED(status) || expect_cpu_only_rusage(&usage) != 0) {
         fprintf(stderr, "wait4 continue mismatch: got=%d status=%#x\n",
             (int)got, status);
         return -1;
@@ -473,7 +484,7 @@ static int test_wait4_lifecycle(void)
     memset(&usage, 0xa5, sizeof(usage));
     got = wait4(pid, &status, 0, &usage);
     if (got != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 42 ||
-        expect_zero_rusage(&usage) != 0) {
+        expect_cpu_only_rusage(&usage) != 0) {
         fprintf(stderr, "wait4 exit mismatch: got=%d status=%#x\n",
             (int)got, status);
         return -1;
@@ -975,7 +986,7 @@ static int test_getrusage_pointer_validation(void)
     memset(&usage, 0xa5, sizeof(usage));
     if (getrusage(RUSAGE_SELF, &usage) != 0)
         return fail("getrusage valid");
-    return expect_zero_rusage(&usage);
+    return expect_cpu_only_rusage(&usage);
 }
 
 struct delayed_stop_ctx {
@@ -1744,7 +1755,7 @@ static int test_memory64_wait_layouts(void)
     memset(&usage, 0xa5, sizeof(usage));
     pid_t got = wait4(pid, &status, 0, &usage);
     if (got != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 7 ||
-        expect_zero_rusage(&usage) != 0) {
+        expect_cpu_only_rusage(&usage) != 0) {
         fprintf(stderr, "memory64 wait4 exit mismatch: got=%d status=%#x\n",
             (int)got, status);
         return -1;

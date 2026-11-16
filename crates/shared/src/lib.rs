@@ -2394,7 +2394,9 @@ pub mod abi {
     /// 38: length-derived select bitmap slots above FD_SETSIZE.
     /// 39: direct shared-group page-table scanning.
     /// 40: integrate kernel-owned epoll waits with those group contracts.
-    pub const HOST_ADAPTER_VERSION: u32 = 40;
+    /// 41: the required `host_task_cpu_time` kernel import, through which the
+    ///    kernel reads the CPU time the host measures for each task.
+    pub const HOST_ADAPTER_VERSION: u32 = 41;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

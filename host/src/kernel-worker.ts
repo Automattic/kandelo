@@ -1722,6 +1722,48 @@ interface ChannelInfo {
    * record only into the channel that still carries its generation.
    */
   kernelWaitGeneration?: number;
+  /** This task's CPU-time accounting, from its first syscall on. */
+  cpu?: TaskCpuTime;
+}
+
+/**
+ * A process's CPU time in milliseconds, summed over all of its tasks, past
+ * and present, and kept across exec. See `runtime_core::cpu_time`.
+ */
+interface ProcessCpuTime {
+  userMs: number;
+  systemMs: number;
+}
+
+/**
+ * One task's CPU time. User time is the wall-clock time from the completion
+ * of the task's syscall to the kernel worker taking up its next one; system
+ * time is the time the kernel worker spends handling its requests. Time
+ * blocked in a syscall is neither. Each charge is also added to `process`.
+ *
+ * WHY two clock reads per syscall, not three: the read that completes a
+ * request both ends its system time and starts the task's next user time,
+ * so a request handled to completion costs one read when the kernel worker
+ * takes it up and one when it completes. Only a request that leaves the
+ * handler unfinished (it blocks or is deferred) costs a third, to end its
+ * system time there. A third read on every syscall measurably slowed
+ * syscall-bound programs.
+ */
+interface TaskCpuTime {
+  userMs: number;
+  systemMs: number;
+  /**
+   * `performance.now()` when the task's last syscall completed, while it
+   * runs guest code; undefined while a request is in progress and before
+   * its first syscall completes, so worker start-up is not charged.
+   */
+  resumedAtMs: number | undefined;
+  /**
+   * `performance.now()` when the kernel worker took up the task's request,
+   * while it is handling it; undefined otherwise.
+   */
+  handlingSinceMs: number | undefined;
+  readonly process: ProcessCpuTime;
 }
 
 /**
@@ -3551,6 +3593,11 @@ export class CentralizedKernelWorker {
     FrozenChannelRequest
   >();
   readonly #groupChannelBindings = new Map<ChannelInfo, GroupChannelPlatformBinding>();
+  /**
+   * Per-process CPU time (`ProcessCpuTime`), until the process's host
+   * registration retires; the kernel froze its usage when it exited.
+   */
+  #processCpuTime = new Map<number, ProcessCpuTime>();
   /** Pids whose authoritative kernel state is Stopped. Updated only from the
    * kernel wake-event stream, so ordinary syscall completion does not need an
    * extra Wasm state query. */
@@ -4125,6 +4172,7 @@ export class CentralizedKernelWorker {
         this.udpBindings.delete(key);
         return 0;
       },
+      taskCpuTime: (pid: number, tid: number) => this.#readTaskCpuTime(pid, tid),
       onPosixTimer: (timerId: number, signo: number, valueMs: number, intervalMs: number): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
@@ -11120,6 +11168,7 @@ export class CentralizedKernelWorker {
     this.#removeFromKernelProcessTableWithinKernelEntry(pid, entry);
 
     this.processes.delete(pid);
+    this.#processCpuTime.delete(pid);
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
     this.#releaseHostStdinForExitedProcess(pid, entry);
@@ -11620,6 +11669,7 @@ export class CentralizedKernelWorker {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.clearProcessThreadTransportState(pid);
     this.processes.delete(pid);
+    this.#processCpuTime.delete(pid);
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
     this.#releaseHostStdinForExitedProcess(pid, entry);
@@ -14690,6 +14740,72 @@ export class CentralizedKernelWorker {
 
   #finishChannelRequest(channel: ChannelInfo): void {
     this.activeChannelRequests.delete(channel);
+    // The task runs guest code again from here (runtime_core::cpu_time). If
+    // the kernel worker is still handling the request, the same reading ends
+    // its system time (see TaskCpuTime).
+    const cpu = channel.cpu;
+    if (cpu !== undefined) {
+      const nowMs = performance.now();
+      const since = cpu.handlingSinceMs;
+      if (since !== undefined) {
+        const handledMs = nowMs - since;
+        cpu.systemMs += handledMs;
+        cpu.process.systemMs += handledMs;
+        cpu.handlingSinceMs = undefined;
+      }
+      cpu.resumedAtMs = nowMs;
+    }
+  }
+
+  #createTaskCpuTime(channel: ChannelInfo): TaskCpuTime {
+    let process = this.#processCpuTime.get(channel.pid);
+    if (!process) {
+      process = { userMs: 0, systemMs: 0 };
+      this.#processCpuTime.set(channel.pid, process);
+    }
+    const cpu: TaskCpuTime = {
+      userMs: 0,
+      systemMs: 0,
+      resumedAtMs: undefined,
+      handlingSinceMs: undefined,
+      process,
+    };
+    channel.cpu = cpu;
+    return cpu;
+  }
+
+  /**
+   * The CPU time of task `tid` of `pid`, or of all of the process's tasks
+   * when `tid` is 0, in nanoseconds, including the interval a task is
+   * running guest code now. Null when the host has no record of the task.
+   * Answers the kernel's `host_task_cpu_time` import.
+   */
+  #readTaskCpuTime(pid: number, tid: number): readonly [bigint, bigint] | null {
+    const nowMs = performance.now();
+    const running = (cpu: TaskCpuTime | undefined): number =>
+      cpu?.resumedAtMs === undefined ? 0 : Math.max(0, nowMs - cpu.resumedAtMs);
+    const toNs = (ms: number): bigint => BigInt(Math.max(0, Math.round(ms * 1e6)));
+    const channels = this.processes.get(pid)?.channels ?? [];
+    if (tid === 0) {
+      const process = this.#processCpuTime.get(pid);
+      if (!process) return null;
+      let userMs = process.userMs;
+      for (const channel of channels) userMs += running(channel.cpu);
+      return [toNs(userMs), toNs(process.systemMs)];
+    }
+    for (const channel of channels) {
+      let channelTid: number;
+      try {
+        channelTid = this.guestTidForChannel(channel);
+      } catch {
+        continue;
+      }
+      if (channelTid !== tid) continue;
+      const cpu = channel.cpu;
+      if (!cpu) return [0n, 0n];
+      return [toNs(cpu.userMs + running(cpu)), toNs(cpu.systemMs)];
+    }
+    return null;
   }
 
   /**
@@ -14697,6 +14813,41 @@ export class CentralizedKernelWorker {
    * the reviewed kernel entry scope.
    */
   #handleSyscallWithinKernelEntry(
+    channel: ChannelInfo,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    // CPU-time accounting (runtime_core::cpu_time): the time since the
+    // task's last syscall completed is user time, and the time spent here
+    // handling its request is system time, ended by #finishChannelRequest
+    // when the request completes here.
+    const cpu = channel.cpu ?? this.#createTaskCpuTime(channel);
+    const startedAtMs = performance.now();
+    const resumedAtMs = cpu.resumedAtMs;
+    if (resumedAtMs !== undefined) {
+      const ranMs = startedAtMs - resumedAtMs;
+      cpu.userMs += ranMs;
+      cpu.process.userMs += ranMs;
+      cpu.resumedAtMs = undefined;
+    }
+    cpu.handlingSinceMs = startedAtMs;
+    try {
+      this.#handleCapturedSyscallWithinKernelEntry(channel, entry);
+    } finally {
+      // Still set: the request did not complete here (it blocked, was
+      // deferred, or its handler unwound). Its handling ends now; the wait
+      // that follows is not CPU time, and a retry is charged when the
+      // kernel worker takes it up.
+      const since = cpu.handlingSinceMs;
+      if (since !== undefined) {
+        const handledMs = performance.now() - since;
+        cpu.systemMs += handledMs;
+        cpu.process.systemMs += handledMs;
+        cpu.handlingSinceMs = undefined;
+      }
+    }
+  }
+
+  #handleCapturedSyscallWithinKernelEntry(
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
   ): void {

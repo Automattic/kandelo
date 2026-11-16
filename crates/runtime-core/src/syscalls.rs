@@ -12377,6 +12377,7 @@ fn sys_exit_impl(
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
         return;
     }
+    crate::cpu_time::freeze_at_exit(proc, host);
     cleanup_process_for_exit(proc, locks, host);
     proc.record_normal_exit(status);
 }
@@ -12405,6 +12406,7 @@ fn sys_exit_by_signal_impl(
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
         return;
     }
+    crate::cpu_time::freeze_at_exit(proc, host);
     cleanup_process_for_exit(proc, locks, host);
     if proc.record_signal_exit(signum) {
         record_death_by_signal(proc.pid, signum, host);
@@ -12437,22 +12439,15 @@ fn record_death_by_signal(pid: u32, signum: u32, host: &mut dyn HostIO) {
     };
 }
 
-fn is_encoded_process_cpu_clock_id(clock_id: u32) -> bool {
-    // musl/Linux encode process CPU clocks as (-pid-1)*8 + 2. Real encoded
-    // IDs are negative clockid_t values; checking only the low three bits
-    // would incorrectly accept positive IDs such as 10 (produced when an
-    // invalid negative pid is passed to clock_getcpuclockid()).
-    (clock_id as i32) < 0 && (clock_id & 7) == 2
-}
-
+/// The host clock a guest clock ID reads. The CPU-time clocks are not host
+/// clocks: `crate::cpu_time` answers them from the kernel's accounting, and
+/// the kernel's `clock_gettime`/`clock_getres` route them there first.
 fn host_clock_id(clock_id: u32) -> Result<u32, Errno> {
     use wasm_posix_shared::clock::*;
 
     match clock_id {
         CLOCK_REALTIME
         | CLOCK_MONOTONIC
-        | CLOCK_PROCESS_CPUTIME_ID
-        | CLOCK_THREAD_CPUTIME_ID
         | CLOCK_BOOTTIME => Ok(clock_id),
         // Linux exposes coarse variants to libc consumers such as MariaDB.
         // Kandelo's hosts do not maintain separate coarse clock sources, so
@@ -12461,11 +12456,6 @@ fn host_clock_id(clock_id: u32) -> Result<u32, Errno> {
         // first filesystem operation.
         CLOCK_REALTIME_COARSE => Ok(CLOCK_REALTIME),
         CLOCK_MONOTONIC_COARSE => Ok(CLOCK_MONOTONIC),
-        // clock_getcpuclockid() encodes a process clock as (-pid-1)*8 + 2.
-        // Kandelo does not yet account CPU time per process, so preserve the
-        // documented elapsed-time approximation without letting the host
-        // mistake an encoded ID for CLOCK_REALTIME.
-        id if is_encoded_process_cpu_clock_id(id) => Ok(CLOCK_PROCESS_CPUTIME_ID),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -12510,27 +12500,19 @@ fn guest_clock_ns(host: &mut dyn HostIO, clock_id: u32) -> Result<i64, Errno> {
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
-/// have sub-millisecond timer guarantees.
+/// have sub-millisecond timer guarantees. The CPU-time clocks are answered
+/// by `crate::cpu_time::clock_getres`, which checks the clock's target.
 pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, Errno> {
     use wasm_posix_shared::clock::*;
     match clock_id {
         CLOCK_REALTIME
         | CLOCK_MONOTONIC
-        | CLOCK_PROCESS_CPUTIME_ID
-        | CLOCK_THREAD_CPUTIME_ID
         | CLOCK_REALTIME_COARSE
         | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME => Ok(WasmTimespec {
             tv_sec: 0,
             tv_nsec: 1_000_000,
         }), // 1ms
-        id if is_encoded_process_cpu_clock_id(id) => {
-            // Per-process CPU clock: clock_getcpuclockid encodes as (-pid-1)*8 + 2
-            Ok(WasmTimespec {
-                tv_sec: 0,
-                tv_nsec: 1_000_000,
-            })
-        }
         _ => Err(Errno::EINVAL),
     }
 }
@@ -23730,22 +23712,24 @@ pub fn can_query_sched(sender_euid: u32, target_uid: u32, target_euid: u32) -> b
     sender_euid == 0 || sender_euid == target_uid || sender_euid == target_euid
 }
 
-/// getrusage -- validate the request and report unavailable accounting.
+/// getrusage -- resource usage of the process or its waited-for children.
 ///
-/// Do not publish invented zero measurements to any guest program. Real
-/// SELF/CHILDREN accounting remains required platform work; elapsed time is
-/// not a substitute for CPU time. Preserve the output buffer on failure.
-pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<(), Errno> {
-    use wasm_posix_shared::rusage::{RUSAGE_CHILDREN, RUSAGE_SELF};
+/// `ru_utime` and `ru_stime` are the CPU time `crate::cpu_time` accounts;
+/// Kandelo measures no other field, and they are zero. The wire size is
+/// owned by `wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE`.
+pub fn sys_getrusage(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    who: i32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     let wire_size = wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize;
-
-    if who != RUSAGE_SELF && who != RUSAGE_CHILDREN {
-        return Err(Errno::EINVAL);
-    }
     if buf.len() < wire_size {
         return Err(Errno::EINVAL);
     }
-    Err(Errno::ENOSYS)
+    let usage = crate::cpu_time::getrusage(proc, host, who)?;
+    buf[..wire_size].copy_from_slice(&crate::wait_child::rusage_bytes(&usage));
+    Ok(())
 }
 
 /// getpriority -- get scheduling priority.
@@ -25907,6 +25891,9 @@ mod tests {
         clock_time: (i64, i64),
         clock_error: Option<Errno>,
         clock_gettime_calls: usize,
+        /// CPU times `host_task_cpu_time` reports, keyed by (pid, tid).
+        cpu_times: Vec<((u32, u32), crate::cpu_time::CpuTime)>,
+        cpu_queries: usize,
         /// When set, CLOCK_MONOTONIC (1) reads return this instead of
         /// `clock_time`, letting tests model hosts where the monotonic and
         /// realtime epochs differ (Node: hrtime-since-boot vs Unix epoch).
@@ -26119,6 +26106,8 @@ mod tests {
                 clock_time: (1234567890, 123456789),
                 clock_error: None,
                 clock_gettime_calls: 0,
+                cpu_times: Vec::new(),
+                cpu_queries: 0,
                 monotonic_time: None,
                 file_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
@@ -26896,6 +26885,10 @@ mod tests {
             }
         }
 
+        fn host_task_cpu_time(&mut self, pid: u32, tid: u32) -> Option<crate::cpu_time::CpuTime> {
+            self.cpu_queries += 1;
+            self.cpu_times.iter().find(|(key, _)| *key == (pid, tid)).map(|(_, time)| *time)
+        }
         fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
             self.clock_gettime_calls += 1;
             if let Some(err) = self.clock_error {
@@ -36270,15 +36263,27 @@ mod tests {
     }
 
     #[test]
-    fn test_clock_gettime_supports_boottime_and_encoded_process_clock() {
+    fn test_clock_gettime_supports_boottime() {
         let proc = Process::new(1);
         let mut host = MockHostIO::new();
 
         assert!(
             sys_clock_gettime(&proc, &mut host, wasm_posix_shared::clock::CLOCK_BOOTTIME,).is_ok()
         );
-        // Linux's clock_getcpuclockid() encoding for PID 1.
-        assert!(sys_clock_gettime(&proc, &mut host, (-2_i32 * 8 + 2) as u32).is_ok());
+    }
+
+    #[test]
+    fn test_cpu_time_clocks_are_not_host_clocks() {
+        use wasm_posix_shared::clock::{CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID};
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // crate::cpu_time answers these; the host clock path must not
+        // substitute elapsed time for CPU time.
+        for clock_id in [CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID, (-2_i32 * 8 + 2) as u32] {
+            assert_eq!(host_clock_id(clock_id), Err(Errno::EINVAL));
+            assert_eq!(sys_clock_getres(&proc, clock_id).err(), Some(Errno::EINVAL));
+        }
+        assert_eq!(host.clock_gettime_calls, 0);
     }
 
     #[test]
@@ -43948,38 +43953,79 @@ mod tests {
 
     // ---- Phase 12: getrusage ----
 
-    #[test]
-    fn test_getrusage_self() {
-        let mut proc = Process::new(1);
-        let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
-        let result = sys_getrusage(&mut proc, 0, &mut buf);
-        assert_eq!(result, Err(Errno::ENOSYS));
-        assert!(buf.iter().all(|&b| b == 0xFF));
+    fn cpu(user_ms: u64, system_ms: u64) -> crate::cpu_time::CpuTime {
+        crate::cpu_time::CpuTime { user_ns: user_ms * 1_000_000, system_ns: system_ms * 1_000_000 }
+    }
+
+    fn rusage_times(buf: &[u8]) -> [i64; 4] {
+        let slot = |i: usize| i64::from_le_bytes(buf[i * 8..i * 8 + 8].try_into().unwrap());
+        [slot(0), slot(1), slot(2), slot(3)]
     }
 
     #[test]
-    fn test_getrusage_children() {
+    fn test_getrusage_self_reports_the_host_measured_process_time() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.cpu_times = vec![((1, 0), cpu(1_500, 20))];
         let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
-        let result = sys_getrusage(&mut proc, -1, &mut buf);
-        assert_eq!(result, Err(Errno::ENOSYS));
-        assert!(buf.iter().all(|&b| b == 0xFF));
+        sys_getrusage(&mut proc, &mut host, 0, &mut buf).unwrap();
+        assert_eq!(rusage_times(&buf), [1, 500_000, 0, 20_000]);
+        // Kandelo measures no other field.
+        assert!(buf[32..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_getrusage_children_reports_waited_for_children_only() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.cpu_times = vec![((1, 0), cpu(9_000, 9_000))];
+        let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
+        sys_getrusage(&mut proc, &mut host, -1, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
+        proc.cpu_children = cpu(250, 3);
+        sys_getrusage(&mut proc, &mut host, -1, &mut buf).unwrap();
+        assert_eq!(rusage_times(&buf), [0, 250_000, 0, 3_000]);
     }
 
     #[test]
     fn test_getrusage_invalid_who() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
-        let result = sys_getrusage(&mut proc, 5, &mut buf);
-        assert_eq!(result, Err(Errno::EINVAL));
+        // RUSAGE_THREAD is a Linux extension Kandelo does not implement.
+        for who in [5, 1] {
+            assert_eq!(sys_getrusage(&mut proc, &mut host, who, &mut buf), Err(Errno::EINVAL));
+        }
     }
 
     #[test]
     fn test_getrusage_buffer_too_small() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 10];
-        let result = sys_getrusage(&mut proc, 0, &mut buf);
+        let result = sys_getrusage(&mut proc, &mut host, 0, &mut buf);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_exit_freezes_the_process_cpu_time() {
+        let mut proc = Process::new(7);
+        let mut host = MockHostIO::new();
+        host.cpu_times = vec![((7, 0), cpu(40, 2))];
+        sys_exit(&mut proc, &mut host, 0);
+        assert_eq!(proc.cpu_at_exit, Some(cpu(40, 2)));
+        assert_eq!(host.cpu_queries, 1);
+        // Later queries read the frozen value, not the host.
+        host.cpu_times.clear();
+        let mut buf = [0u8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
+        sys_getrusage(&mut proc, &mut host, 0, &mut buf).unwrap();
+        assert_eq!(rusage_times(&buf), [0, 40_000, 0, 2_000]);
+
+        let mut killed = Process::new(8);
+        let mut host = MockHostIO::new();
+        host.cpu_times = vec![((8, 0), cpu(5, 1))];
+        sys_exit_by_signal(&mut killed, &mut host, wasm_posix_shared::signal::SIGKILL);
+        assert_eq!(killed.cpu_at_exit, Some(cpu(5, 1)));
     }
 
     // ---- realpath ----
@@ -45476,17 +45522,6 @@ impl HostIO for TrackingHostIO {
         assert_eq!(&buf[..n], b"abstract");
 
         unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9024);
-    }
-
-    #[test]
-    fn test_clock_getres_per_process_cpu_clock() {
-        let proc = Process::new(1);
-        // clock_getcpuclockid(pid) encodes as (-pid-1)*8 + 2
-        // For pid=1: (-1-1)*8 + 2 = -16 + 2 = -14, as u32 = 4294967282
-        let clock_id = ((-1i32 - 1) * 8 + 2) as u32;
-        let res = sys_clock_getres(&proc, clock_id).unwrap();
-        assert_eq!(res.tv_sec, 0);
-        assert_eq!(res.tv_nsec, 1_000_000);
     }
 
     #[test]

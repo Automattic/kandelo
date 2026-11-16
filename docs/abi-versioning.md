@@ -414,6 +414,21 @@ binaries retain their program digest. The five `kernel_epoll_wait_*` and
 `kernel_*_poll_sigmask` exports used by the old host retry path are retired.
 Update the kernel and host together.
 
+### CPU-time accounting
+
+`getrusage()`, `wait4()`'s resource usage and the CPU-time clocks report
+CPU time the host measures for each task (`runtime_core::cpu_time`). The
+kernel reads it through the new required `host_task_cpu_time` kernel
+import, so `HOST_ADAPTER_VERSION` advances from 40 to 41 and both hosts are
+rebuilt with the kernel. No syscall number, argument representation,
+structure or errno changes: `ru_utime`/`ru_stime` and the CPU-time clocks
+keep their POSIX meaning, which the earlier zeros and elapsed time only
+approximated. `times()` is implemented in Kandelo's musl overlay from
+`getrusage()` and `CLOCK_MONOTONIC` rather than as base syscall 270, so
+every program-surface section is byte-identical to the ABI-56 baseline and
+the program digest is unchanged. Programs linked against an older libc
+still receive `ENOSYS` from `times()` until they are rebuilt.
+
 ### Scheduled optional kernel exports
 
 `shared::abi::HOST_ADAPTER_KERNEL_EXPORTS` declares host-facing kernel

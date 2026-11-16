@@ -2501,7 +2501,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 40,
+      "required_host_adapter_version": 41,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2733,7 +2733,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 40,
+    "version": 41,
     "worker_features": [
       {
         "bit": 2,
@@ -6344,6 +6344,12 @@
       "module": "env",
       "name": "host_symlinkat",
       "signature": "(i32,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_task_cpu_time",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
