@@ -849,6 +849,27 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 **Files:** `crates/runtime-core/src/syscalls.rs` — `filesystem_pathconf_value`, `host_clock_id`, `is_encoded_process_cpu_clock_id`; `scripts/sortix-expectations.sh`
 
+### Read `PR_SET_NAME` names only up to the terminating NUL
+
+The `prctl` marshalling in `libc/glue/channel_syscall.c` always copies 16
+bytes for `PR_SET_NAME`, whatever the name's length. Linux reads the
+name only up to its NUL, at most 16 bytes, so a short name at the end of
+readable memory succeeds there. Check and fix this before enabling thread
+names in the generic Qt build (row 5 of the table in "Build Qt as a
+generic POSIX Unix instead of Linux").
+
+**Files:** `libc/glue/channel_syscall.c`
+
+### Reject invalid `madvise` advice
+
+`sys_madvise` returns success for every advice value and range.
+`docs/posix-status.md` (the `madvise()` / `posix_madvise()` row)
+describes the gap: `posix_madvise()` must fail with `EINVAL` for invalid
+advice, and Linux `madvise()` also returns `ENOMEM` for an unmapped range.
+Changing the return value is an ABI-visible change.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` (`sys_madvise`)
+
 ## Graphics
 
 D-64 approves one combined foundation/B1 shipment through #1594 and closes
@@ -1461,6 +1482,20 @@ On 2026-10-30 a full setup in a second checkout of main (`e4bca8639e`) failed wi
 
 **Files:** `packages/registry/php/`, the local-build cache-winner receipts
 
+### NetHack's in-Kandelo build is not reproducible
+
+`packages/registry/nethack` compiles NetHack inside a Kandelo machine
+booted from `kandelo-build-image` (`build-nethack-guest.sh`), then
+fork-instruments `nethack.wasm` on the build machine. Two builds with
+byte-identical `kandelo-build-image` artifacts produced different
+`nethack.wasm` files. The cause has not been isolated. Compare the two
+builds' guest-compiled objects and uninstrumented module to tell whether
+the difference comes from the guest build or from host-side
+instrumentation, then remove it.
+
+**Files:** `packages/registry/nethack/`,
+`packages/registry/kandelo-build-image/`
+
 ### Build Qt as a generic POSIX Unix instead of Linux
 
 The Qt recipes (qtbase, qtshadertools, qtdeclarative, qtgallery and
@@ -1521,6 +1556,108 @@ path stands in for.
 
 **Files:** `packages/registry/qt*/`, `packages/registry/quickshell/`,
 `sdk/cmake/Platform/Kandelo.cmake`
+
+### Stage the SDK sysroot from output receipts instead of hand lists
+
+`images/vfs/scripts/stage-sdk-sysroot.sh` copies the guest SDK's sysroot
+out of the build machine's shared sysroot. Paths in musl's output receipt
+(`.kandelo-musl.outputs.json`, written by `scripts/musl-output-state.mjs`)
+are checked against their recorded digests after copying, but the receipt
+covers only five `lib/` files plus `include/`. The rest of musl's `lib/`
+output is listed by hand in `MUSL_LIBRARY_FILES`, and the graphics stubs in
+`GRAPHICS_FILES` and `GRAPHICS_TREES`. Those files are checked only for
+existence: a stale archive is copied as it is, and a file that a build
+script starts installing is left out until someone edits the lists.
+
+Extend the musl receipt to every file `scripts/build-musl.sh` installs
+under `lib/`, then drop `MUSL_LIBRARY_FILES`. For the graphics stubs, add
+an output receipt, or check the input-hash stamps that
+`scripts/build-dri-stubs.sh` and `scripts/build-gles-stubs.sh` already
+write (`.kandelo-dri-stubs.input-hash`, `.kandelo-gles-stubs.input-hash`).
+`scripts/musl-output-state.mjs` is a global package build input
+(`GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` in `tools/xtask/src/build_deps.rs`), so
+changing it re-keys every package.
+
+**Files:** `images/vfs/scripts/stage-sdk-sysroot.sh`,
+`scripts/musl-output-state.mjs`, `scripts/build-musl.sh`,
+`scripts/build-dri-stubs.sh`, `scripts/build-gles-stubs.sh`
+
+### Reject symlinked parent directories when staging the SDK sysroot
+
+`copy_file` in `images/vfs/scripts/stage-sdk-sysroot.sh` rejects a source
+file that is itself a symlink, but not one reached through a symlinked
+parent directory, such as a `lib/` that points elsewhere. Receipt files
+are still caught by the final digest check. Files from `MUSL_LIBRARY_FILES`
+and `GRAPHICS_FILES` have no such check, so their bytes could come from
+outside the source sysroot. Check every path component below the source
+sysroot.
+
+**Files:** `images/vfs/scripts/stage-sdk-sysroot.sh`
+
+### Make the `developer-kandelo-sdk` product's builder field truthful
+
+`images/vfs/products/developer-kandelo-sdk.toml` declares
+`builder = "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"`. Product
+validation (`tools/xtask/src/vfs_products/product_manifest.rs`) only
+checks that the path is a regular file; nothing runs it as the product's
+build. The image is built by the `kandelo-sdk` package script
+(`packages/registry/kandelo-sdk/build-kandelo-sdk.sh`), which stages the
+sysroot with `stage-sdk-sysroot.sh` and then calls that builder with the
+inputs it requires. Either run product builds through the declared
+builder, or make the field name the real build path.
+
+**Files:** `images/vfs/products/developer-kandelo-sdk.toml`,
+`packages/registry/kandelo-sdk/build-kandelo-sdk.sh`,
+`tools/xtask/src/vfs_products/product_manifest.rs`
+
+### Keep `build-programs.sh` fixtures out of the shared sysroot
+
+`scripts/build-programs.sh` stages resolved fixture libraries and headers
+(SDL2, Wayland, libffi, glib and others) into the repository's shared
+`sysroot/`. SDK package recipes compile against that same directory:
+the compiler driver falls back to it when `WASM_POSIX_SYSROOT` is unset,
+many recipes set `WASM_POSIX_SYSROOT` to it themselves, and
+`kandelo_package_prepare_private_sysroot` (`scripts/package-build-roots.sh`)
+seeds private sysroots by copying it. A configure or CMake probe can
+therefore find a library or header the recipe never declared, depending
+on whether `build-programs.sh` ran first, under a cache key that does not
+cover it. The SDK bundle already copies only declared content
+(`images/vfs/scripts/stage-sdk-sysroot.sh`). The root fix is for
+`build-programs.sh` to stage into a fixture-only sysroot.
+
+**Files:** `scripts/build-programs.sh`, `scripts/package-build-roots.sh`
+
+### Keep the user's Cargo configuration out of Rust recipes
+
+Cargo reads `.cargo/config.toml` from its working directory and from
+every parent directory. Resolver work directories are created next to
+their cache entries under the binary cache root (`$HOME/.cache/kandelo`
+by default), so `$HOME/.cargo/config.toml` is in that search path for
+every Rust recipe, even one that sets its own `CARGO_HOME`. A user's
+target, linker, flags or source replacement can then change a package
+build without appearing in its cache key. Stable Cargo has no switch to
+stop the parent-directory search, so the fix has to come from where the
+work directories live or from a check that refuses an inherited
+configuration file.
+
+**Files:** `tools/xtask/src/build_deps.rs` (`create_build_work_root`),
+Rust package build scripts
+
+### Move the Rust toolchain to an LLVM 23 nightly
+
+The C/C++ toolchain is LLVM 23.1.3, while Rust stays on
+`nightly-2026-04-27` with LLVM 22.1.2, and the guest `rust-llvm` (22.1.2)
+and `rustc` packages match that nightly. Moving Rust to an LLVM 23 nightly
+is a separate change: rebase `sdk/rust/std-kandelo.patch` and
+`sdk/rust/libc-kandelo.patch` onto the new nightly, and move the guest
+`rust-llvm` and `rustc` packages to the matching fork. LLVM 23's own CMake
+build defaults to precompiled headers, which change KandeloCallTypes
+compiler facts (see "Known gap: precompiled headers" in
+`docs/sdk-guide.md`). The `clang` package turns them off; a `rust-llvm`
+built from LLVM 23 sources needs the same.
+
+**Files:** `rust-toolchain.toml`, `sdk/rust/`,
+`packages/registry/rust-llvm/`, `packages/registry/rustc/`
 
 ## Performance
 
@@ -1830,6 +1967,36 @@ run without an API-level invocation, then restore browser acceptance to execute
 **Files:** `packages/registry/node-compat/bootstrap.js`,
 `apps/browser-demos/test/kandelo-node.spec.ts`
 
+### Match Node's exit status and timer order in spidermonkey-node
+
+These differences from Node were observed on the Node host with the
+current `spidermonkey-node`:
+
+- A CommonJS main that throws an uncaught error, or leaves a promise
+  rejection unhandled, exits with status 3; Node exits with 1.
+- An ES module main runs through `_runEsmMain`
+  (`packages/registry/node-compat/bootstrap.js`), which rewrites static
+  imports and `import.meta.url` with regular expressions and evaluates
+  the result as an async function body, not through the native module
+  loader. Other `import.meta` properties fail: `import.meta.dirname`
+  raises "import.meta may only appear in a module".
+- `setTimeout(fn, 0)` and `setImmediate(fn)` queue microtasks
+  (`packages/registry/spidermonkey/node-compat/adapter.js`), so they run
+  before promise callbacks queued after them. Node runs those promise
+  callbacks first.
+- An exception thrown by a delayed timer callback is discarded:
+  `KandeloRunDueTimers` in
+  `packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch`
+  clears it, and the process exits 0. Node reports an uncaught exception
+  and exits with 1.
+
+The node-compat inventory in `docs/posix-status.md` does not list these
+yet.
+
+**Files:** `packages/registry/node-compat/bootstrap.js`,
+`packages/registry/spidermonkey/node-compat/adapter.js`,
+`packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch`
+
 ### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.
@@ -1987,6 +2154,17 @@ wiring for stack bounds), plus any other `build-*.sh` that hits the same wall
 in the meantime.
 
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
+
+### Provide the missing complex-multiply and `__int128` conversion builtins
+
+`libc/glue/compiler_rt.c` does not define `__floattitf` (`__int128` to
+`long double`) or the complex-multiply helpers `__muldc3`, `__mulsc3` and
+`__multc3`. Clang emits calls to them, and libc.a's `cpow`, `cpowf` and
+`cpowl` need the multiply helpers. An executable that uses any of them
+fails to link with an undefined symbol, so a configure probe for `cpow`
+reports it as missing.
+
+**Files:** `libc/glue/compiler_rt.c`
 
 ## Testing
 
