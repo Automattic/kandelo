@@ -399,6 +399,36 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `mq_notify()` | Full | One `SIGEV_SIGNAL` notification on the first message sent to an empty queue, with one registration per queue. Signal numbers outside `1..NSIG` fail with `EINVAL`. Rust queues authoritative `SI_MESGQ`, full-width `union sigval`, and sender metadata before the host wake; the host does not synthesize a second signal. |
 | `mq_getattr()` / `mq_setattr()` | Full | Get/set queue attributes (mq_flags, mq_maxmsg, mq_msgsize, mq_curmsgs). |
 
+## Process-Shared Synchronization
+
+POSIX objects placed in shared memory with `PTHREAD_PROCESS_SHARED` or
+`sem_init(pshared=1)`, or opened with `sem_open()`. Kandelo advertises
+`_POSIX_THREAD_PROCESS_SHARED`, but most of these interfaces do not yet
+synchronize separate processes. Two things cause this. Futex waits are
+keyed by process (see `futex()`). Shared mappings converge only at
+syscall boundaries (see "No immediate cross-process shared-memory or
+futex semantics" below), so a user-space atomic on a shared word is not
+atomic between processes. Process-shared mutexes, condition variables
+and barriers go through kernel objects instead: requests 400–414, which
+ABI-56 programs issue and `abi/snapshot.json` records in
+`program_legacy_requests`.
+
+`examples/psync_semantics_test.c` checks each requirement below as a
+case. `host/test/fixtures/psync-semantics.ts` records which cases pass
+today on Node and in Chromium. The plan for every gap is
+`docs/plans/2026-11-15-process-shared-synchronization-design.md`.
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `pthread_mutexattr_setpshared()` | Partial | A process-shared mutex is a kernel object named by an ID that `pthread_mutex_init` stores in the mutex. Lock, unlock and trylock exclude processes, and data protected by the mutex is coherent across processes, because every lock and unlock is a syscall boundary. Gaps: a blocked lock is retried by the host every few milliseconds rather than woken; ownership is per process, so the threads of one process do not exclude each other and an error-checking mutex accepts an unlock from a thread that does not own it; when the owning process exits, its mutexes are released, where POSIX's default `PTHREAD_MUTEX_STALLED` leaves them locked; `pthread_mutex_timedlock` ignores its deadline. |
+| `pthread_mutexattr_setrobust()` | Partial | Robust mutexes are process-local. A robust process-shared mutex uses musl's futex path, and `set_robust_list` is a no-op, so the death of its owner is never reported with `EOWNERDEAD`. The same holds for robust process-private mutexes whose owner thread exits. |
+| `pthread_condattr_setpshared()` | Partial | `pthread_cond_wait`, `pthread_cond_signal` and `pthread_cond_broadcast` on a process-shared condition go through kernel objects and work across processes. Gaps: `pthread_cond_timedwait` and `pthread_cond_clockwait` are not routed to the kernel object; a signal from another process does not wake them, and they fail with `EINVAL` at the deadline. Waiters are tracked per process, so two threads of one process waiting on one condition collide. The kernel path is not a cancellation point. |
+| `pthread_rwlockattr_setpshared()` | Unsupported across processes | The attribute is stored and the lock works between threads of one process. Between processes, a reader or writer blocked in one process is not woken by an unlock in another, and the lock word is not atomic across processes. |
+| `pthread_barrierattr_setpshared()` | Partial | Kernel barrier objects synchronize separate processes. Waiters are tracked per process, so two threads of one process meeting at one process-shared barrier deadlock. |
+| `pthread_spin_init(PTHREAD_PROCESS_SHARED)` | Unsupported across processes | The `pshared` argument is accepted and ignored. A spin lock is a user-space word, not atomic across processes. |
+| `sem_init()` with `pshared` nonzero | Unsupported across processes | A post in one process does not wake a waiter in another; a timed wait times out although the value was posted. Two processes can both take a semaphore whose value is 1. Semaphores shared by the threads of one process work. CPython therefore builds `multiprocessing` without `SemLock` (`packages/registry/cpython/README.md`). |
+| `sem_open()` / `sem_close()` / `sem_unlink()` | Partial | Names, `O_CREAT`/`O_EXCL`, inheritance across `fork()`, and lifetime after `sem_unlink()` work: a named semaphore is a file in the in-kernel `/dev/shm`. Waits and posts between processes have the same gaps as `sem_init()` with `pshared`. |
+
 ## Extended Attributes
 
 | Function | Status | Notes |
@@ -778,7 +808,7 @@ and `tls`/`https` keep-alive items listed there are now resolved.)
 | Gap | Subsystem | Reason |
 |-----|-----------|--------|
 | **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
-| **No immediate cross-process shared-memory or futex semantics** | memory | Anonymous, SysV, and regular-file shared mappings (host files with stable identity, and every file the kernel owns) merge and refresh across processes at syscall boundaries. They are not one physical linear memory: direct stores remain private until a syscall (for a file the kernel owns, until a syscall of a peer completes or the file is read through a descriptor), a peer spinning only on loads sees no update, and futex WAIT/WAKE targets only the caller's process `SharedArrayBuffer`. Process-shared pthread locks and PHP opcache's normal shared-memory locking model therefore remain unsupported. The PHP package rejects its normal SHM mode and supports only explicitly configured `opcache.file_cache_only=1`; otherwise FPM workers would observe divergent cache and lock state. Linux `SIGBUS` on access beyond EOF, and detection of external host writes also remain gaps. |
+| **No immediate cross-process shared-memory or futex semantics** | memory | Anonymous, SysV, and regular-file shared mappings (host files with stable identity, and every file the kernel owns) merge and refresh across processes at syscall boundaries. They are not one physical linear memory: direct stores remain private until a syscall (for a file the kernel owns, until a syscall of a peer completes or the file is read through a descriptor), a peer spinning only on loads sees no update, and futex WAIT/WAKE targets only the caller's process `SharedArrayBuffer`. Process-shared synchronization is therefore limited; see [Process-Shared Synchronization](#process-shared-synchronization). PHP opcache's normal shared-memory locking model remains unsupported. The PHP package rejects its normal SHM mode and supports only explicitly configured `opcache.file_cache_only=1`; otherwise FPM workers would observe divergent cache and lock state. Linux `SIGBUS` on access beyond EOF, and detection of external host writes also remain gaps. |
 | **External raw UDP routes** | socket | AF_INET SOCK_DGRAM has POSIX-style in-kernel loopback/virtual semantics, but browsers cannot expose raw UDP and Node raw UDP is not yet wired behind HostIO. A datagram for beyond the machine fails with EHOSTUNREACH where the egress link exists, and ENETUNREACH on a loopback-only machine. A datagram sent to the machine's own eth0 address is also handed to the egress gateway (EHOSTUNREACH) instead of being delivered locally, which is a defect. |
 | **Stop is cooperative at a Wasm boundary** | process / signals | The kernel records stopped state immediately and the shared host withholds every exact channel completion until SIGCONT. This suspends code at syscall boundaries in both Node and browser, but a process executing CPU-bound Wasm without reaching a syscall cannot be stopped at an arbitrary instruction by current WebAssembly execution APIs. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
