@@ -20777,19 +20777,11 @@ pub fn notify_socket_readiness(proc: &Process, sock_idx: usize, events: u32) {
             o.file_type == FileType::Socket && o.host_handle == -(sock_idx as i64 + 1)
         }) {
             if let Ok(sources) = epoll_sources(proc, fd) {
-                let id = proc.ofd_table
-            .get(entry.ofd_ref.0)
-            .unwrap().ofd_id;
+                let id = proc.ofd_table.get(entry.ofd_ref.0).unwrap().ofd_id;
 
-    crate::descriptor_backing::with_epolls(|table| {
-                    for (_, ep) in table.iter_mut() {
-                        for i in &mut ep.interests {
-                            if i.ofd_id == id {
-                                i.sources = sources.clone();
-                            }
-                        }
-                    }
-                });
+                // Description notification below still queues the registration
+                // on allocation refusal; its delivery retries source refresh.
+                let _ = crate::epoll::refresh_sources(id, &sources);
             }
         }
     }
@@ -20802,12 +20794,25 @@ pub fn notify_socket_readiness(proc: &Process, sock_idx: usize, events: u32) {
 
 fn epoll_sources(proc: &Process, fd: i32) -> Result<Vec<crate::epoll::Source>, Errno> {
     use crate::epoll::Source;
+    #[cfg(test)]
+    if crate::epoll::REFUSE_SOURCE_COLLECTION.load(core::sync::atomic::Ordering::Relaxed) {
+        return Err(Errno::ENOMEM);
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    let mut sources = alloc::vec![
-        Source::Description(ofd.ofd_id),
-        Source::Backing(ofd.file_type, ofd.host_handle)
-    ];
+    let mut sources = Vec::new();
+    // Reserve the provider's maximum before ctl publication. Ordinary
+    // descriptors need only description/backing, while sockets can also
+    // subscribe to a peer, two pipes, listener and transport.
+    let max_sources = match ofd.file_type {
+        FileType::Socket => 7,
+        FileType::Pipe => 4,
+        FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave => 3,
+        _ => 2,
+    };
+    sources.try_reserve_exact(max_sources).map_err(|_| Errno::ENOMEM)?;
+    sources.push(Source::Description(ofd.ofd_id));
+    sources.push(Source::Backing(ofd.file_type, ofd.host_handle));
     match ofd.file_type {
         FileType::Pipe if ofd.host_handle < 0 => {
             let idx = (-(ofd.host_handle + 1)) as u32;
@@ -20883,50 +20888,7 @@ fn epoll_sources(proc: &Process, fd: i32) -> Result<Vec<crate::epoll::Source>, E
 /// Reject cycles and chains containing more than five epoll instances. Linux
 /// counts the four edges between them, including paths entering the changed fd.
 fn epoll_check_graph(parent: usize, child: usize) -> Result<(), Errno> {
-    crate::descriptor_backing::with_epolls(|table| {
-        let graph: Vec<(usize, Vec<usize>)> = table
-            .iter_mut()
-            .map(|(idx, ep)| {
-                let mut children: Vec<usize> = ep
-                    .interests
-                    .iter()
-                    .flat_map(|i| i.sources.iter())
-                    .filter_map(|s| match s {
-                        crate::epoll::Source::Backing(FileType::Epoll, h) => {
-                            Some((-(h + 1)) as usize)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                if idx == parent {
-                    children.push(child);
-                }
-                (idx, children)
-            })
-            .collect();
-        fn visit(graph: &[(usize, Vec<usize>)], node: usize, path: &mut Vec<usize>) -> bool {
-            if path.contains(&node) || path.len() >= 5 {
-                return false;
-            }
-            path.push(node);
-            let valid = graph
-                .iter()
-                .find(|(idx, _)| *idx == node)
-                .is_none_or(|(_, children)| {
-                    children.iter().all(|child| visit(graph, *child, path))
-                });
-            path.pop();
-            valid
-        }
-        if graph
-            .iter()
-            .all(|(idx, _)| visit(&graph, *idx, &mut Vec::new()))
-        {
-            Ok(())
-        } else {
-            Err(Errno::ELOOP)
-        }
-    })
+    crate::descriptor_backing::with_epolls(|table| table.check_graph(parent, child))
 }
 
 /// Change a registration keyed by (descriptor number, open file description).
@@ -20981,7 +20943,7 @@ pub fn sys_epoll_ctl(
             .interests
             .iter()
             .find(|i| i.fd == fd && i.ofd_id == target_id)
-            .cloned())
+            .map(|i| i.events))
     })?;
     if op != 2 {
         // EPOLLWAKEUP has no effect without CAP_BLOCK_SUSPEND; Kandelo exposes
@@ -21001,7 +20963,7 @@ pub fn sys_epoll_ctl(
             || op == 3
                 && existing
                     .as_ref()
-                    .is_some_and(|i| i.events & EPOLLEXCLUSIVE != 0)
+                    .is_some_and(|events| *events & EPOLLEXCLUSIVE != 0)
         {
             return Err(Errno::EINVAL);
         }
@@ -21015,35 +20977,23 @@ pub fn sys_epoll_ctl(
     if op == 1 && target.file_type == FileType::Epoll {
         epoll_check_graph(ep_idx, (-(target.host_handle + 1)) as usize)?;
     }
-    let sources = epoll_sources(proc, fd)?;
+    // DEL only retires an existing watch; it must remain possible when
+    // allocating a source snapshot would fail.
+    let sources = if op == 2 { Vec::new() } else { epoll_sources(proc, fd)? };
     target.mark_epoll_watched();
     crate::descriptor_backing::with_epolls(|table| {
-        let ep = table.get_mut(ep_idx).ok_or(Errno::EBADF)?;
-        let pos = ep
-            .interests
-            .iter()
-            .position(|i| i.fd == fd && i.ofd_id == target_id);
+        let ep = table.get(ep_idx).ok_or(Errno::EBADF)?;
+        let pos = ep.interests.iter().position(|i| i.fd == fd && i.ofd_id == target_id);
         if op == 2 {
-            ep.interests.remove(pos.ok_or(Errno::ENOENT)?);
-            ep.cursor %= ep.interests.len().max(1);
+            table.remove(ep_idx, pos.ok_or(Errno::ENOENT)?);
         } else {
             let interest = crate::process::EpollInterest {
-                fd,
-                ofd_id: target_id,
-                events: events | EPOLLERR | EPOLLHUP,
-                data,
-                pending: true,
-                disabled: false,
-                sources,
-                network_generations: [None; 2],
-                device_generation: None,
+                registration: 0, ready_prev: None, ready_next: None, queued: false,
+                fd, ofd_id: target_id, events: events | EPOLLERR | EPOLLHUP,
+                data, pending: true, disabled: false, sources,
+                network_generations: [None; 2], device_generation: None,
             };
-            if let Some(pos) = pos {
-                ep.interests[pos] = interest;
-            } else {
-                ep.interests.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-                ep.interests.push(interest);
-            }
+            table.register(ep_idx, pos, interest)?;
         }
         Ok(())
     })?;
@@ -21204,6 +21154,8 @@ fn epoll_interest_readiness(
     peers: &mut [&mut Process],
     strict_probe: bool,
 ) -> Result<u32, Errno> {
+    #[cfg(test)]
+    crate::epoll::READINESS_CHECKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     use wasm_posix_shared::epoll::*;
     let mut owner_index = None;
     let fd = if let Some(fd) = fd_naming_ofd_id(proc, interest.ofd_id, interest.fd) {
@@ -21402,15 +21354,7 @@ fn epoll_interest_readiness(
                 crate::epoll::network_generation(*handle, generations, terminal);
             }
         }
-        crate::descriptor_backing::with_epolls(|table| {
-            for (_, ep) in table.iter_mut() {
-                for i in &mut ep.interests {
-                    if i.ofd_id == interest.ofd_id {
-                        i.sources = sources.clone();
-                    }
-                }
-            }
-        });
+        crate::epoll::refresh_sources(interest.ofd_id, &sources)?;
     }
     poll_check_depth(owner, host, &mut pollfd, depth, &mut []);
     let mut ready = pollfd[0].revents as u16 as u32;
@@ -21433,53 +21377,96 @@ fn epoll_evaluate(
     peers: &mut [&mut Process],
 ) -> Result<Vec<(u32, u64)>, Errno> {
     use wasm_posix_shared::epoll::*;
-    let (interests, cursor) = crate::descriptor_backing::with_epolls(|table| {
+    // Only providers without complete kernel mutation notifications need
+    // sampling. Ordinary idle registrations never enter the delivery walk.
+    let sampled = crate::descriptor_backing::with_epolls(|t| {
+        t.get(idx).map(|ep| ep.sampled.len()).ok_or(Errno::EBADF)
+    })?;
+    for offset in 0..sampled {
+        let candidate = crate::descriptor_backing::with_epolls(|t| {
+            let ep = t.get(idx).ok_or(Errno::EBADF)?;
+            ep.sampled
+                .get(offset)
+                .and_then(|slot| {
+                    let interest = &ep.interests[*slot];
+                    (!interest.disabled).then(|| interest.try_snapshot().map(|i| (*slot, i)))
+                })
+                .transpose()
+        })?;
+        if let Some((slot, interest)) = candidate {
+            if interest.disabled {
+                continue;
+            }
+            let ready =
+                epoll_interest_readiness(proc, host, &interest, depth, peers, strict_probe)?;
+            if ready != 0 && interest.events & (EPOLLET | EPOLLEXCLUSIVE) == 0 {
+                crate::descriptor_backing::with_epolls(|t| t.get_mut(idx).unwrap().enqueue(slot));
+            }
+        }
+    }
+    let (mut next, count) = crate::descriptor_backing::with_epolls(|table| {
         table
             .get(idx)
-            .map(|ep| (ep.interests.clone(), ep.cursor))
+            .map(|ep| (ep.ready_head, ep.ready_count))
             .ok_or(Errno::EBADF)
     })?;
     let mut out = Vec::new();
-    for offset in 0..interests.len() {
-        let pos = (cursor + offset) % interests.len();
-        let interest = &interests[pos];
-        if interest.disabled {
-            continue;
-        }
-        // Always refresh backing readiness, including lazy timers. Only a
-        // notification (or ADD/MOD) can enqueue another edge-triggered event.
-        let ready = epoll_interest_readiness(proc, host, interest, depth, peers, strict_probe)?;
+    out.try_reserve_exact(maxevents.min(count))
+        .map_err(|_| Errno::ENOMEM)?;
+    // A level candidate goes to the tail after delivery, but is visited only
+    // once in this call. New arrivals remain queued for the next batch.
+    for _ in 0..count {
+        let Some(pos) = next else {
+            break;
+        };
+        let snapshot = crate::descriptor_backing::with_epolls(|table| {
+            let ep = table.get(idx).ok_or(Errno::EBADF)?;
+            ep.interests[pos].try_snapshot()
+        });
+        // A short successful batch is valid. Once an edge/one-shot was
+        // consumed, a later allocation/provider error must not discard its
+        // output; leave the failing candidate queued for the next call.
+        let interest = match snapshot {
+            Ok(interest) => interest,
+            Err(error) => return if out.is_empty() { Err(error) } else { Ok(out) },
+        };
+        next = interest.ready_next;
+        let ready =
+            match epoll_interest_readiness(proc, host, &interest, depth, peers, strict_probe) {
+                Ok(ready) => ready,
+                Err(error) => return if out.is_empty() { Err(error) } else { Ok(out) },
+            };
         let pending = crate::descriptor_backing::with_epolls(|table| {
             table
                 .get(idx)
                 .and_then(|ep| ep.interests.get(pos))
-                .is_some_and(|i| i.pending)
+                .is_some_and(|i| {
+                    i.registration == interest.registration && i.pending && !i.disabled
+                })
         });
         let gated = interest.events & (EPOLLET | EPOLLEXCLUSIVE) != 0;
-        if ready == 0 {
-            if strict_probe {
-                continue;
+        if ready == 0 || gated && !pending {
+            if consume {
+                crate::descriptor_backing::with_epolls(|table| {
+                    let ep = table.get_mut(idx).unwrap();
+                    ep.dequeue(pos);
+                    ep.interests[pos].pending = false;
+                });
             }
-            crate::descriptor_backing::with_epolls(|table| {
-                if let Some(i) = table.get_mut(idx).and_then(|ep| ep.interests.get_mut(pos)) {
-                    i.pending = false;
-                }
-            });
-            continue;
-        }
-        if gated && !pending {
             continue;
         }
         out.push((ready, interest.data));
         if consume {
             crate::descriptor_backing::with_epolls(|table| {
-                if let Some(ep) = table.get_mut(idx) {
-                    if let Some(i) = ep.interests.get_mut(pos) {
-                        i.pending = i.events & EPOLLET == 0;
-                        i.disabled = i.events & EPOLLONESHOT != 0;
-                    }
-                    ep.cursor = (pos + 1) % ep.interests.len().max(1);
+                let ep = table.get_mut(idx).unwrap();
+                ep.dequeue(pos);
+                let i = &mut ep.interests[pos];
+                i.pending = i.events & EPOLLET == 0;
+                i.disabled = i.events & EPOLLONESHOT != 0;
+                if i.pending && !i.disabled {
+                    ep.enqueue(pos);
                 }
+                ep.cursor = (pos + 1) % ep.interests.len().max(1);
             });
         }
         if out.len() == maxevents {

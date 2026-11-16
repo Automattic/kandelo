@@ -187,6 +187,14 @@ pub fn push_timer_expired() {
     set_timer_expiry_unreported(true);
 }
 
+/// An indexed candidate reached an epoll with a parked waiter, including
+/// nested/sibling-only targets or a concurrent ADD to an empty set. Reuse the
+/// existing coalesced broad-readiness record: the host need not mirror or
+/// enumerate registrations to arrange a retry. This does not notify epoll again.
+pub fn push_epoll_ready() {
+    append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
+}
+
 /// An eventfd's counter changed in a way a blocked reader or writer can
 /// observe. Like a timer expiry it has no pipe token, so it is the same
 /// untargeted record: hosts apply their broad retry. It is raised inside the

@@ -976,6 +976,10 @@ pub struct EventFdState {
 /// description rather than the number a later `open` may reuse.
 #[derive(Debug, Clone)]
 pub struct EpollInterest {
+    pub registration: u64,
+    pub ready_prev: Option<usize>,
+    pub ready_next: Option<usize>,
+    pub queued: bool,
     /// Descriptor number used at registration. Part of the key, not the
     /// identity: `EPOLL_CTL_ADD` of a `dup` at a different number is a
     /// second interest in the same description, exactly as on Linux.
@@ -1004,6 +1008,11 @@ pub struct EpollInterest {
 pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
     pub cursor: usize,
+    pub ready_head: Option<usize>,
+    pub ready_tail: Option<usize>,
+    pub ready_count: usize,
+    pub notification_epoch: u64,
+    pub sampled: Vec<usize>,
     pub waiters: u32,
 }
 
@@ -1012,6 +1021,11 @@ impl EpollInstance {
         EpollInstance {
             interests: Vec::new(),
             cursor: 0,
+            ready_head: None,
+            ready_tail: None,
+            ready_count: 0,
+            notification_epoch: 0,
+            sampled: Vec::new(),
             waiters: 0,
         }
     }

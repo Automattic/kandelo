@@ -9,6 +9,12 @@ import { expectRunningMachineAudio } from "./support/machine-audio";
 import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 
 async function launch(page: Page, title: string, profile: string): Promise<void> {
+  // Graphics input can capture the pointer. Release it through the same
+  // Escape action shown by the display before using the host's Library.
+  if (await page.evaluate(() => Boolean(document.pointerLockElement))) {
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => Boolean(document.pointerLockElement))).toBe(false);
+  }
   await configureNewComputer(page, profile);
   await page.getByLabel("Computer name", { exact: true }).fill(title);
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
