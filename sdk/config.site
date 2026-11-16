@@ -167,6 +167,11 @@ ac_cv_func_mmap=${ac_cv_func_mmap=yes}
 ac_cv_func_munmap=${ac_cv_func_munmap=yes}
 ac_cv_func_mlockall=${ac_cv_func_mlockall=yes}
 ac_cv_func_munlockall=${ac_cv_func_munlockall=yes}
+# madvise() validates its arguments and accepts advice as a hint; mremap()
+# shrinks, grows in place, and moves with MREMAP_MAYMOVE or MREMAP_FIXED.
+# docs/posix-status.md lists what each does not do.
+ac_cv_func_madvise=${ac_cv_func_madvise=yes}
+ac_cv_func_mremap=${ac_cv_func_mremap=yes}
 ac_cv_func_posix_madvise=${ac_cv_func_posix_madvise=yes}
 ac_cv_func_posix_memalign=${ac_cv_func_posix_memalign=yes}
 ac_cv_func_malloc_0_nonnull=${ac_cv_func_malloc_0_nonnull=yes}
@@ -524,14 +529,12 @@ ac_cv_func_glob64=${ac_cv_func_glob64=no}
 ac_cv_func_kqueue=${ac_cv_func_kqueue=no}
 ac_cv_func_kevent=${ac_cv_func_kevent=no}
 ac_cv_func_lutimens=${ac_cv_func_lutimens=no}
-ac_cv_func_madvise=${ac_cv_func_madvise=no}
 ac_cv_func_mbscasecmp=${ac_cv_func_mbscasecmp=no}
 ac_cv_func_mbschr=${ac_cv_func_mbschr=no}
 ac_cv_func_mbscmp=${ac_cv_func_mbscmp=no}
 ac_cv_func_mbslen=${ac_cv_func_mbslen=no}
 ac_cv_func_mprotect=${ac_cv_func_mprotect=no}
 ac_cv_func_mquery=${ac_cv_func_mquery=no}
-ac_cv_func_mremap=${ac_cv_func_mremap=no}
 ac_cv_func_open64=${ac_cv_func_open64=no}
 ac_cv_func_plock=${ac_cv_func_plock=no}
 ac_cv_func_process_vm_readv=${ac_cv_func_process_vm_readv=no}

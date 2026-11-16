@@ -151,6 +151,7 @@ const TEST_PROGRAMS = [
   "mqueue_test.c",
   "epoll_semantics_test.c",
   "mmap_file_test.c",
+  "mremap_madvise_test.c",
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
   "select_signal_test.c",

@@ -82,6 +82,37 @@ os.waitpid(pid, 0)
 assert shared[:5] == b"child", shared[:5]
 print("mmap-ok")
 `,
+  // resize() uses mremap(MREMAP_MAYMOVE) and madvise() is defined, because
+  // sdk/config.site reports both present.
+  mmap_resize: `
+import mmap, os
+page = mmap.PAGESIZE
+m = mmap.mmap(-1, page)
+m[:5] = b"hello"
+m.resize(4 * page)
+assert len(m) == 4 * page and m[:5] == b"hello", m[:5]
+assert m[page:page + 4] == bytes(4)
+m[-3:] = b"end"
+m.resize(page // 2)
+assert len(m) == page // 2 and m[:5] == b"hello", m[:5]
+m.madvise(mmap.MADV_WILLNEED)
+m.madvise(mmap.MADV_SEQUENTIAL, 0, len(m))
+m.close()
+path = "/tmp/mmap-resize"
+with open(path, "wb") as f:
+    f.write(b"abc")
+with open(path, "r+b") as f:
+    m = mmap.mmap(f.fileno(), 0)
+    m.resize(3 * page)
+    m[-3:] = b"xyz"
+    m.flush()
+    m.close()
+assert os.path.getsize(path) == 3 * page
+with open(path, "rb") as f:
+    data = f.read()
+assert data[:3] == b"abc" and data[-3:] == b"xyz", (data[:3], data[-3:])
+print("mmap_resize-ok")
+`,
   resource: `
 import errno, os, resource
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)

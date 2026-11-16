@@ -701,6 +701,12 @@ package recipe, but add reusable sysroot availability facts to `config.site`
 instead of duplicating them across packages. An explicitly exported
 `CONFIG_SITE` overrides the SDK default.
 
+An availability answer must agree with the kernel as well as the sysroot. For
+example, `config.site` reports `mremap` and `madvise` present because they link
+and the kernel implements them; the limits that remain (`mremap` refuses to
+grow a `MAP_PRIVATE` file mapping, and `madvise` performs no advice) are listed
+in [POSIX status](posix-status.md).
+
 Dynamic loading is an important exception to link-only detection. Musl carries
 weak `dlopen`/`dlsym` stubs that link but only report that dynamic loading is
 unsupported. `config.site` therefore directs `AC_SEARCH_LIBS` checks for the

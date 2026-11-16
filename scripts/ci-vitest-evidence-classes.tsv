@@ -331,6 +331,7 @@ host/test/mmap-tracking.test.ts	source-only
 host/test/module-base-image.test.ts	prepared-product
 host/test/mouse-integration.test.ts	prepared-product
 host/test/mqueue.test.ts	prepared-product
+host/test/mremap-madvise-guest.test.ts	prepared-product
 host/test/mtdev-smoke.test.ts	prepared-product
 host/test/multi-worker.test.ts	prepared-product
 host/test/native-lazy-integrity-recovery.test.ts	prepared-product
