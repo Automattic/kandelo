@@ -1,0 +1,287 @@
+use shared_memory_instrument::{ARTIFACT_SECTION, EXTENSION_MODULE, check_sdk_input, translate};
+use std::{borrow::Cow, fs, path::Path, process::Command};
+use wasm_encoder::{CustomSection, Encode};
+const DIGEST: [u8; 32] = [0x42; 32];
+fn stamp(mut bytes: Vec<u8>, digest: &[u8]) -> Vec<u8> {
+    bytes.push(0);
+    CustomSection {
+        name: Cow::Borrowed("kandelo.abi.contract"),
+        data: Cow::Borrowed(digest),
+    }
+    .encode(&mut bytes);
+    bytes
+}
+fn input(body: &str) -> Vec<u8> {
+    stamp(
+        wat::parse_str(format!(
+            r#"(module(import "env" "memory" (memory 2 32 shared))
+      (func(export "__abi_version")(result i32)i32.const {}) {body})"#,
+            wasm_posix_program_abi::ABI_VERSION
+        ))
+        .unwrap(),
+        &DIGEST,
+    )
+}
+fn digest() -> String {
+    "42".repeat(32)
+}
+#[test]
+fn refuses_stale_missing_and_ambiguous_abi_stamps() {
+    assert!(check_sdk_input(&input(""), &digest()).is_ok());
+    let missing =
+        wat::parse_str("(module (import \"env\" \"memory\" (memory 2 32 shared)))").unwrap();
+    assert!(check_sdk_input(&missing, &digest()).is_err());
+    assert!(check_sdk_input(&input(""), &"43".repeat(32)).is_err());
+    assert!(check_sdk_input(&stamp(input(""), &DIGEST), &digest()).is_err());
+    assert!(check_sdk_input(&input(""), "not a digest").is_err());
+}
+#[test]
+fn refuses_side_modules_and_reserved_vm_exports() {
+    let mut object = input("");
+    object.push(0);
+    CustomSection {
+        name: Cow::Borrowed("dylink.0"),
+        data: Cow::Borrowed(&[]),
+    }
+    .encode(&mut object);
+    assert!(check_sdk_input(&object, &digest()).is_err());
+    assert!(
+        check_sdk_input(
+            &input("(global(export \"__vm_root\")(mut i32)(i32.const 0))"),
+            &digest()
+        )
+        .is_err()
+    );
+    assert!(check_sdk_input(&input("(func(export \"__vm_checkpoint\"))"), &digest()).is_err());
+    assert!(check_sdk_input(&input("(func(export \"__vm_worker_wait32\"))"), &digest()).is_err());
+    let wide=stamp(wat::parse_str(format!("(module (import \"env\" \"memory\" (memory i64 2 32)) (func(export \"__abi_version\")(result i32)i32.const {}))",wasm_posix_program_abi::ABI_VERSION)).unwrap(),&DIGEST);
+    assert!(check_sdk_input(&wide, &digest()).is_err());
+}
+fn command(command: &mut Command) {
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{:?}\nstdout:{}\nstderr:{}",
+        command,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+fn helpers(directory: &Path) -> Vec<u8> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    command(
+        Command::new("bash")
+            .arg(root.join("scripts/build-shared-memory-helpers.sh"))
+            .arg(directory),
+    );
+    fs::read(directory.join("helpers.wasm")).unwrap()
+}
+// Change an actual compiled marker without invalidating the module or its
+// function type. All low-bit changes preserve the original signed LEB width.
+fn stale_layout_marker(helper: &[u8], name: &str) -> Vec<u8> {
+    use wasmparser::{Operator, Parser, Payload};
+    let export_name = format!("vm_layout_{name}");
+    let mut target = None;
+    for payload in Parser::new(0).parse_all(helper) {
+        if let Payload::ExportSection(exports) = payload.unwrap() {
+            for export in exports {
+                let export = export.unwrap();
+                if export.name == export_name {
+                    target = Some(export.index);
+                }
+            }
+        }
+    }
+    let target = target.expect("compiled C marker export");
+    let mut function = 0;
+    for payload in Parser::new(0).parse_all(helper) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            if function == target {
+                let mut reader = body.get_operators_reader().unwrap();
+                let opcode = reader.original_position();
+                assert!(matches!(reader.read().unwrap(), Operator::I32Const { .. }));
+                let mut stale = helper.to_vec();
+                stale[opcode + 1] ^= 1;
+                wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                    .validate_all(&stale)
+                    .unwrap();
+                return stale;
+            }
+            function += 1;
+        }
+    }
+    panic!("compiled C marker body was not found");
+}
+#[test]
+fn compiled_helpers_reject_every_stale_layout_constant() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helpers(directory.path());
+    let source = input("(func(export \"op\")(param i32)(result i32)local.get 0 i32.load)");
+    assert!(translate(&source, &helper, &digest()).is_ok());
+    for (name, _) in wasm_posix_program_abi::program_extensions::memory_group_v3::WIRE {
+        let stale = stale_layout_marker(&helper, name);
+        let error = translate(&source, &stale, &digest()).unwrap_err();
+        assert!(
+            error.to_string().contains("compiled helper layout"),
+            "{name}: {error:#}"
+        );
+    }
+}
+#[test]
+fn translated_c_preserves_real_memory_operations_in_a_worker() {
+    let directory = tempfile::tempdir().unwrap();
+    let helpers = helpers(directory.path());
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let llvm = std::env::var("LLVM_BIN").expect("run through scripts/dev-shell.sh");
+    let raw = directory.path().join("ordinary.wasm");
+    command(
+        Command::new(Path::new(&llvm).join("clang"))
+            .args([
+                "--target=wasm32-unknown-unknown",
+                "-ffreestanding",
+                "-fno-builtin",
+                "-O2",
+                "-matomics",
+                "-mbulk-memory",
+                "-msimd128",
+                "-nostdlib",
+                "-Wl,--no-entry",
+                "-Wl,--import-memory",
+                "-Wl,--shared-memory",
+                "-Wl,--initial-memory=131072",
+                "-Wl,--max-memory=2097152",
+                "-Wl,-z,stack-size=65536",
+            ])
+            .arg(format!("-fuse-ld={llvm}/wasm-ld"))
+            .arg(format!(
+                "-DABI_VERSION={}",
+                wasm_posix_program_abi::ABI_VERSION
+            ))
+            .arg(crate_root.join("tests/fixtures/access.c"))
+            .arg("-o")
+            .arg(&raw),
+    );
+    let source = stamp(fs::read(raw).unwrap(), &DIGEST);
+    let (bytes, report) = translate(&source, &helpers, &digest()).unwrap();
+    assert!(report["rewritten"]["MemoryCopy"].as_u64().unwrap() > 0);
+    assert!(report["rewritten"]["MemoryAtomicWait32"].as_u64().unwrap() > 0);
+    assert_eq!(
+        wasm_artifact::read_abi_version(&bytes),
+        Some(wasm_posix_program_abi::ABI_VERSION as i32)
+    );
+    let facts = wasm_artifact::read_artifact_facts(&bytes).unwrap();
+    assert!(
+        facts
+            .custom_section_names
+            .iter()
+            .any(|name| name == ARTIFACT_SECTION)
+    );
+    assert!(
+        facts
+            .import_descriptors
+            .iter()
+            .any(|import| import.module == EXTENSION_MODULE)
+    );
+    let refusal = wasm_artifact::describe_artifact_policy_failures(&bytes, &Default::default());
+    assert!(
+        refusal
+            .failures
+            .iter()
+            .any(|f| f.contains("unsupported required program extension"))
+    );
+    assert!(check_sdk_input(&bytes, &digest()).is_err());
+    if let Ok(path) = std::env::var("KANDELO_SHARED_SDK_EVIDENCE_DIR") {
+        let path = Path::new(&path);
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("ordinary.wasm"), &source).unwrap();
+        fs::write(path.join("helpers.wasm"), &helpers).unwrap();
+        fs::write(path.join("grouped.wasm"), &bytes).unwrap();
+        fs::write(
+            path.join("translation.json"),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+    let output = directory.path().join("grouped.wasm");
+    fs::write(&output, bytes).unwrap();
+    let worker = crate_root
+        .join("tests/fixtures/node-runner.mjs")
+        .canonicalize()
+        .unwrap();
+    let output=Command::new("node").args(["--input-type=module","-e",r#"import {Worker} from 'node:worker_threads';const w=new Worker(process.argv[1],{workerData:process.argv[2],execArgv:[]});const timer=setTimeout(()=>{w.terminate();process.exitCode=1;console.error('mechanism worker timed out');},20000);w.on('message',r=>{clearTimeout(timer);console.log(JSON.stringify(r));});w.on('error',e=>{clearTimeout(timer);console.error(e);process.exitCode=1;});"#]).arg(worker).arg(output).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(result["checks"].as_array().unwrap().len() >= 25);
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+}
+#[test]
+fn helper_contract_and_fork_custom_sections_remain_exact() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helpers(directory.path());
+    let mut source = input("(func(export \"op\")(param i32)(result i32)local.get 0 i32.load)");
+    let name = "kandelo.wpk_fork.module_state";
+    let payload = [1, 2, 3, 4];
+    source.push(0);
+    CustomSection {
+        name: Cow::Borrowed(name),
+        data: Cow::Borrowed(&payload),
+    }
+    .encode(&mut source);
+    let (bytes, report) = translate(&source, &helper, &digest()).unwrap();
+    assert_eq!(wasm_artifact::read_abi_version(&bytes), Some(wasm_posix_program_abi::ABI_VERSION as i32));
+    assert_eq!(
+        wasm_artifact::read_custom_section(&bytes, name),
+        Some(&payload[..])
+    );
+    assert_eq!(report["threadAttach"], 2);
+    assert_eq!(report["cooperativeStop"], 3);
+    assert_eq!(report["executionBarrier"], 1);
+    let bad = wat::parse_str("(module(import \"env\" \"memory\"(memory 2 32 shared)))").unwrap();
+    assert!(translate(&source, &bad, &digest()).is_err());
+}
+
+#[test]
+fn cli_refusal_preserves_input_and_existing_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let ordinary = directory.path().join("ordinary.wasm");
+    let output = directory.path().join("grouped.wasm");
+    let helper = directory.path().join("helpers.wasm");
+    let source = input("");
+    fs::write(&ordinary, &source).unwrap();
+    fs::write(&output, b"existing output").unwrap();
+    fs::write(&helper, b"not wasm").unwrap();
+    let invoke = |path: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_wasm-shared-memory-instrument"))
+            .arg(&ordinary)
+            .arg("--helpers")
+            .arg(&helper)
+            .arg("--abi-digest")
+            .arg(digest())
+            .arg("-o")
+            .arg(path)
+            .output()
+            .unwrap()
+    };
+    assert!(!invoke(&output).status.success());
+    assert_eq!(fs::read(&output).unwrap(), b"existing output");
+    assert_eq!(fs::read(&ordinary).unwrap(), source);
+    let alias = directory.path().join("alias.wasm");
+    fs::hard_link(&ordinary, &alias).unwrap();
+    assert!(!invoke(&alias).status.success());
+    assert_eq!(fs::read(&ordinary).unwrap(), source);
+    let fresh_helpers = helpers(directory.path());
+    fs::write(&helper, stale_layout_marker(&fresh_helpers, "CONTROL")).unwrap();
+    assert!(!invoke(&output).status.success());
+    assert_eq!(fs::read(&output).unwrap(), b"existing output");
+    assert_eq!(fs::read(&ordinary).unwrap(), source);
+    fs::write(&helper, fresh_helpers).unwrap();
+    assert!(invoke(&output).status.success());
+    assert_eq!(fs::read(&ordinary).unwrap(), source);
+    assert!(
+        wasm_artifact::read_custom_section(&fs::read(output).unwrap(), ARTIFACT_SECTION).is_some()
+    );
+}

@@ -1247,3 +1247,71 @@ download at configure time.
 configures, builds, tests and packages a C and C++ project with a static
 library, a pkg-config module, configure checks that run, a `SHARED` library
 that falls back to static, `ctest` and `cpack`, in the build image.
+
+## Experimental memory-group translation
+
+`wasm32posix-shared-memory ordinary.wasm -o grouped.wasm` prepares a separate
+memory32 executable for a trusted sharing group. This is an artifact-preparation
+component; the normal launcher does not yet implement grouped execution and
+refuses its required `kandelo.memory-group.v3.memory` import. Ordinary programs,
+including PHP-FPM, keep their existing build and launch behavior.
+
+The command uses this checkout's normal SDK program version, ABI stamp and fork
+instrumenter, then compiles the checked translation helpers and runs
+`crates/shared-memory-instrument`. It retains the ordinary input, refuses stale
+stamps, side modules and already translated input, and validates the emitted
+Wasm. The versioned memory import changes no function, global or table indices;
+fork descriptor identities stay intact. This extension does not change the
+frozen program ABI 56 or permit an ordinary host to substitute `env.memory`.
+
+Before translation, the tool checks exact constant-returning markers in the
+compiled helpers against every Rust layout declaration. Missing, stale or
+malformed markers require a helper rebuild and leave existing output intact.
+This checks compiled layout agreement without running helper code; it does not
+replace the C memory-operation tests or prove arbitrary helper code correct.
+
+`kandelo.memory-group` records artifact version 3, layout 3, thread attachment 2,
+cooperative stop 3, execution barrier 1, ordered wait queue 2, source/helper hashes, and the original
+logical page limits. Physical memory is group storage; host consumers must use
+explicit virtual-memory operations rather than treat its buffer as guest memory.
+The baseline uses outlined checked accesses. Research optimization variants are
+retained separately; none is silently enabled by this tool.
+
+The mechanism fixture covers compiled C scalar, split-page, SIMD, atomic, bulk,
+growth, alias, initialization and stop behavior in disposable Workers. The
+physical pool uses one bitmap for host allocation and translated C growth,
+zeroes reused pages before publication and preserves state on allocation refusal.
+The matching physical-pool primitive and its standalone tests are included to
+check host/C bitmap interoperability. Synthetic grow/retire cycles plateau,
+including concurrent C Workers and host allocation. The pool primitive does not establish complete process retirement.
+
+Version 3 adds an exact per-replica control block, a separate `__vm_replica`
+global and source-function/loop checkpoints. A reversible execution barrier
+does not authorize reclamation: a native waiter can acknowledge that barrier
+while its physical target and wait node remain pinned. Pause preserves the
+original native timeout and notification order; stop targets the exact replica,
+and the returning helper owns node recycling. The exported `__vm_checkpoint`
+also permits process-Worker import adapters to check an admitted root/replica
+before a host call and in its return/failure path. That check must execute the
+native Wasm helper; throwing a JavaScript RuntimeError is catchable by guest
+exception handlers. The process import adapters belong to later runtime work.
+Notifications wake translated guest wait nodes and native kernel listeners on
+the physical status word. Native listeners do not consume the guest wake quota
+or contribute to its return count. Host publication writes the body and status
+before either wake; native listeners are notified after the queue unlocks.
+The internal `__vm_worker_wait32` entry accepts a virtual byte address and an
+exact root/replica binding for JavaScript-generated IPC. It translates and
+checks the address, then uses the same queue and pause/stop checkpoints as a
+source Wasm wait. A worker must bind this entry to its admitted replica; native
+JavaScript waits on physical payload words cannot substitute for guest waits.
+The runtime integration must bind those entries to exact kernel-authorized
+replicas before exposing grouped launch. That host/lifecycle work belongs to
+later PRs and is not implemented by this SDK extraction.
+
+Dynamic physical growth after peer Worker termination remains experimental:
+repeated WebKit tests close the page, while growth before peer termination passes
+the same comparison. Orderly close acknowledgments have not removed the failure.
+Standalone raw-Wasm reductions currently pass, so no external-runtime cause is
+established. This is not ready for normal grouped launch or a sustained desktop
+preview. Complete lifecycle integration, backing ownership and the full release
+gates remain required. See [the shared-group contract](shared-memory-groups.md).

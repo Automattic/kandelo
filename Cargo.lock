@@ -1073,6 +1073,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "shared-memory-instrument"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wasm-artifact",
+ "wasm-encoder 0.247.0",
+ "wasm-posix-program-abi",
+ "wasmparser 0.247.0",
+ "wat",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
