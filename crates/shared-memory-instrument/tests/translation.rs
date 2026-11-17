@@ -76,6 +76,19 @@ fn helpers(directory: &Path) -> Vec<u8> {
     );
     fs::read(directory.join("helpers.wasm")).unwrap()
 }
+
+#[test]
+fn bounded_copy_matches_snapshot_oracle_for_all_small_alias_mappings() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/copy-graph-oracle.c");
+    let executable = directory.path().join("copy-graph-oracle");
+    command(Command::new("clang").args(["-O2", "-std=c11"]).arg(fixture).arg("-o").arg(&executable));
+    let result = Command::new(executable).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(String::from_utf8_lossy(&result.stdout).trim(),
+        "copy_graph_snapshot_oracle_cases=4048380");
+}
 // Change an actual compiled marker without invalidating the module or its
 // function type. All low-bit changes preserve the original signed LEB width.
 fn stale_layout_marker(helper: &[u8], name: &str) -> Vec<u8> {

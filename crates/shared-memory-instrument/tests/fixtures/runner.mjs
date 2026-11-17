@@ -13,6 +13,41 @@ export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=t
     control[G.MEMORY_GROUP_REPLICA_MAGIC_OFFSET/4]=G.MEMORY_GROUP_REPLICA_MAGIC;
     return address;
   }
+  // Independent snapshot oracle for copies larger than the admitted scratch.
+  // Every case owns its mappings and has no concurrent guest or mapping edit.
+  {
+    const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
+    const words=new Uint32Array(memory.buffer),payload=new Uint8Array(memory.buffer);
+    const e=(await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
+    words[root/4]=8;words[root/4+1]=32;words[root/4+2]=P;words[root/4+14]=1;
+    const pte=root/4+16,ordinary=[4,6,7,8,9,10,11,12];
+    ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
+    e.__vm_root.value=root;e.__vm_scratch.value=scratch;
+    e.__vm_replica.value=replica(memory,3*P,root);e.__vm_initialize(1);
+    const cases=[
+      ['large fragmented self-copy',0,0,2*P,ordinary],
+      ['large fragmented forward overlap',0,P,2*P,ordinary],
+      ['large fragmented backward overlap',P,0,2*P,ordinary],
+      ['large disjoint fragmented copy',2*P,0,2*P,ordinary],
+      ['large physical alias cycle',2*P,0,2*P,[4,6,6,4,9,10,11,12]],
+      ['large repeated destination alias',2*P,0,2*P,[4,6,7,7,9,10,11,12]],
+      ['large unaligned physical aliases',2*P+7,1,2*P-13,[4,6,4,6,9,10,11,12]],
+    ];
+    for(const [name,dst,src,n,mapping] of cases) {
+      mapping.forEach((p,i)=>words[pte+i]=p*P|3);
+      for(let i=4*P;i<13*P;i++)payload[i]=(i*17+(i>>>16)*53)&255;
+      const physical=v=>mapping[v>>>16]*P+(v&(P-1));
+      const snapshot=Uint8Array.from({length:n},(_,i)=>payload[physical(src+i)]);
+      const expected=payload.slice(4*P,13*P);
+      for(let i=0;i<n;i++)expected[physical(dst+i)-4*P]=snapshot[i];
+      e.copy(dst,src,n);
+      check(name,payload.subarray(4*P,13*P).every((value,i)=>value===expected[i]));
+    }
+    ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
+    const before=payload.slice(4*P,13*P);words[pte+3]&=~2;
+    trap('large copy checks every destination permission first',()=>e.copy(2*P,0,2*P));
+    check('large permission failure leaves all payload intact',payload.subarray(4*P,13*P).every((value,i)=>value===before[i]));
+  }
   const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
   const pool=MemoryGroupPagePool.initialize(memory,128);
   const reserved=pool.allocateContiguous(15);check('host reserves initial root/scratch/payload pages',reserved.first===1);
