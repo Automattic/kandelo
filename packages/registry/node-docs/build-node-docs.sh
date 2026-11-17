@@ -23,12 +23,12 @@ WORK="$KANDELO_PACKAGE_WORK_DIR"
 VERSION="${WASM_POSIX_DEP_VERSION:-$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["version"])' "$HERE/package.toml")}"
 # Kandelo's node is this repository's (version 0.1.0); the help text is
 # the SpiderMonkey shell's, so the page carries that release's date.
-SPIDERMONKEY=140.11.0esr
+SPIDERMONKEY=153.7.0esr
 grep -qF "\"spidermonkey@$SPIDERMONKEY\"" "$REPO_ROOT/packages/registry/node/package.toml" || {
     echo "build-node-docs: node no longer builds on spidermonkey $SPIDERMONKEY" >&2
     exit 1
 }
-DATE="$(kandelo_man_pages_release_date "$SPIDERMONKEY" 140.11.0esr=2026-05-18)"
+DATE="$(kandelo_man_pages_release_date "$SPIDERMONKEY" 153.7.0esr=2026-11-09)"
 
 TREE="$WORK/node-tree"
 rm -rf "$TREE"
