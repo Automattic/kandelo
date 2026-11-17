@@ -14,7 +14,7 @@
 
 struct vm_copy_graph_context {
     uint32_t dst, src, n, root, replica, scratch, capacity;
-    uint32_t unit, seen_bytes, temporary;
+    uint32_t unit, seen_bytes, seen_pages, seen_offset, temporary;
 };
 
 VM_COPY_INLINE uint32_t vm_copy_last_index(
@@ -39,18 +39,32 @@ VM_COPY_INLINE uint32_t vm_copy_parent(
     return i == UINT32_MAX ? 0 : vm_copy_address(c->src + i, 1, c->root);
 }
 
+VM_COPY_INLINE uint32_t vm_copy_page_id(
+    const struct vm_copy_graph_context *c, uint32_t i) {
+    return vm_copy_read(c->scratch + 2 * i)
+        | (uint32_t)vm_copy_read(c->scratch + 2 * i + 1) << 8;
+}
+
+VM_COPY_INLINE uint32_t vm_copy_seen_index(
+    const struct vm_copy_graph_context *c, uint32_t physical) {
+    if (!c->seen_pages) return vm_copy_last_index(c, physical) / c->unit;
+    uint32_t p = physical / VM_COPY_PAGE_BYTES, i = 0;
+    while (vm_copy_page_id(c, i) != p) i++;
+    return i * VM_COPY_PAGE_BYTES + (physical & (VM_COPY_PAGE_BYTES - 1));
+}
+
 VM_COPY_INLINE uint32_t vm_copy_seen(
     const struct vm_copy_graph_context *c, uint32_t physical) {
     if (!c->seen_bytes) return 0;
-    uint32_t i = vm_copy_last_index(c, physical) / c->unit;
-    return vm_copy_read(c->scratch + i / 8) & (1u << (i & 7));
+    uint32_t i = vm_copy_seen_index(c, physical);
+    return vm_copy_read(c->scratch + c->seen_offset + i / 8) & (1u << (i & 7));
 }
 
 VM_COPY_INLINE void vm_copy_mark(
     const struct vm_copy_graph_context *c, uint32_t physical) {
     if (!c->seen_bytes) return;
-    uint32_t i = vm_copy_last_index(c, physical) / c->unit;
-    uint32_t p = c->scratch + i / 8;
+    uint32_t i = vm_copy_seen_index(c, physical);
+    uint32_t p = c->scratch + c->seen_offset + i / 8;
     vm_copy_write(p, vm_copy_read(p) | (1u << (i & 7)));
 }
 
@@ -141,11 +155,37 @@ VM_COPY_INLINE uint32_t vm_copy_meeting(
     return slow && fast ? slow : 0;
 }
 
+/* Repeated virtual aliases must not force a quadratic, workspace-free walk
+ * when a bitmap of their few distinct physical bytes fits the same scratch.
+ * This mode is only needed for byte-sized nodes after the virtual bitmap
+ * failed. Page IDs fit 16 bits in a wasm32 physical address space. */
+VM_COPY_INLINE void vm_copy_sparse_seen(struct vm_copy_graph_context *c) {
+    uint32_t first = c->dst / VM_COPY_PAGE_BYTES;
+    uint32_t end = (uint32_t)(((uint64_t)c->dst + c->n - 1) / VM_COPY_PAGE_BYTES);
+    uint32_t count = 0;
+    for (uint32_t vp = first; vp <= end; vp++) {
+        vm_copy_poll(c->root, c->replica);
+        uint32_t p = vm_copy_address(vp * VM_COPY_PAGE_BYTES, 2, c->root) / VM_COPY_PAGE_BYTES;
+        uint32_t i = 0;
+        while (i < count && vm_copy_page_id(c, i) != p) i++;
+        if (i < count) continue;
+        uint64_t seen = ((uint64_t)(count + 1) * VM_COPY_PAGE_BYTES + 7) / 8;
+        if (2 * (uint64_t)(count + 1) + seen > c->capacity) return;
+        vm_copy_write(c->scratch + 2 * count, (uint8_t)p);
+        vm_copy_write(c->scratch + 2 * count + 1, (uint8_t)(p >> 8));
+        count++;
+    }
+    c->seen_pages = count;
+    c->seen_offset = 2 * count;
+    c->seen_bytes = (uint32_t)(((uint64_t)count * VM_COPY_PAGE_BYTES + 7) / 8);
+}
+
 VM_COPY_INLINE void vm_copy_graph(struct vm_copy_graph_context *c) {
     if (!c->n) return;
     uint32_t alignment = c->dst | c->src | c->n | VM_COPY_PAGE_BYTES;
     c->unit = alignment & (0u - alignment);
     c->seen_bytes = 0;
+    c->seen_pages = c->seen_offset = 0;
     for (;;) {
         uint32_t seen = (uint32_t)(((uint64_t)c->n / c->unit + 7) / 8);
         uint32_t temporary = c->unit == 1 ? 0 : c->unit;
@@ -156,16 +196,25 @@ VM_COPY_INLINE void vm_copy_graph(struct vm_copy_graph_context *c) {
         if (c->unit == 1) break;
         c->unit /= 2;
     }
-    c->temporary = c->scratch + c->seen_bytes;
+    if (!c->seen_bytes) vm_copy_sparse_seen(c);
+    c->temporary = c->scratch + c->seen_offset + c->seen_bytes;
     for (uint32_t i = 0; i < c->seen_bytes; i++) {
         if (!(i & (VM_COPY_PAGE_BYTES - 1))) vm_copy_poll(c->root, c->replica);
-        vm_copy_write(c->scratch + i, 0);
+        vm_copy_write(c->scratch + c->seen_offset + i, 0);
     }
 
-    for (uint64_t i = 0; i < c->n; i += c->unit) {
+    uint64_t nodes = c->seen_pages ? (uint64_t)c->seen_pages * VM_COPY_PAGE_BYTES : c->n;
+    for (uint64_t i = 0; i < nodes; i += c->unit) {
         vm_copy_poll(c->root, c->replica);
-        uint32_t node = vm_copy_address(c->dst + (uint32_t)i, 2, c->root);
-        if (vm_copy_last_index(c, node) != i || vm_copy_seen(c, node)) continue;
+        uint32_t node;
+        if (c->seen_pages) {
+            node = vm_copy_page_id(c, (uint32_t)(i / VM_COPY_PAGE_BYTES)) * VM_COPY_PAGE_BYTES
+                + (uint32_t)(i & (VM_COPY_PAGE_BYTES - 1));
+            if (vm_copy_seen(c, node) || vm_copy_last_index(c, node) == UINT32_MAX) continue;
+        } else {
+            node = vm_copy_address(c->dst + (uint32_t)i, 2, c->root);
+            if (vm_copy_last_index(c, node) != i || vm_copy_seen(c, node)) continue;
+        }
         uint32_t parent = vm_copy_parent(c, node);
         if (vm_copy_last_index(c, parent) == UINT32_MAX) {
             vm_copy_tree(c, node, 0, 1);
