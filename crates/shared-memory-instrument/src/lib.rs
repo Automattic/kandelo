@@ -925,18 +925,17 @@ pub fn translate(
         helper_shape
             .exports
             .keys()
-            .all(|name| name == "memory" || REQUIRED_HELPERS.contains(&name.as_str())
+            .all(|name| name == "memory" || REQUIRED_HELPERS.iter().any(|(helper, _, _)| name == helper)
                 || layout::WIRE.iter().any(|(key, _)| name == &format!("vm_layout_{key}"))),
         "unexpected helper export"
     );
-    for name in REQUIRED_HELPERS {
-        ensure!(
-            helper_shape
-                .exports
-                .get(*name)
-                .is_some_and(|(kind, _)| *kind == p::ExternalKind::Func),
-            "missing helper {name}"
-        );
+    for (name, params, results) in REQUIRED_HELPERS {
+        let Some(&(p::ExternalKind::Func, index)) = helper_shape.exports.get(*name) else {
+            bail!("missing helper {name}; rebuild helpers");
+        };
+        let signature = &helper_shape.types[helper_shape.functions[index as usize] as usize];
+        ensure!(signature.params() == *params && signature.results() == *results,
+            "helper signature {name} differs from the translator declaration; rebuild helpers");
     }
     check_compiled_helper_layout(helpers, &helper_shape)?;
     let initial = shape.initial;
@@ -1001,23 +1000,26 @@ pub fn translate(
         .context("validating grouped output")?;
     Ok((output, report))
 }
-const REQUIRED_HELPERS: &[&str] = &[
-    "vm_checkpoint",
-    "vm_span",
-    "vm_read_address",
-    "vm_write_address",
-    "vm_write_commit",
-    "vm_bulk_poll",
-    "vm_atomic_address",
-    "vm_copy",
-    "vm_fill",
-    "vm_size",
-    "vm_initialize_gate",
-    "vm_grow",
-    "vm_wait32",
-    "vm_wait64",
-    "vm_worker_wait32",
-    "vm_notify",
+use p::ValType::{I32, I64};
+// Check the private compiler/helper coupling even when the source does not
+// exercise a helper. Final Wasm validation cannot detect every unused mismatch.
+const REQUIRED_HELPERS: &[(&str, &[p::ValType], &[p::ValType])] = &[
+    ("vm_checkpoint", &[I32, I32], &[]),
+    ("vm_span", &[I32, I32, I32, I32], &[I32]),
+    ("vm_read_address", &[I32, I64, I32, I32, I32], &[I32]),
+    ("vm_write_address", &[I32, I64, I32, I32, I32], &[I32]),
+    ("vm_write_commit", &[I32, I64, I32, I32, I32, I32], &[]),
+    ("vm_bulk_poll", &[I32, I32], &[]),
+    ("vm_atomic_address", &[I32, I64, I32, I32, I32], &[I32]),
+    ("vm_copy", &[I32, I32, I32, I32, I32, I32], &[]),
+    ("vm_fill", &[I32, I32, I32, I32], &[]),
+    ("vm_size", &[I32], &[I32]),
+    ("vm_initialize_gate", &[I32, I32, I32], &[I32]),
+    ("vm_grow", &[I32, I32], &[I32]),
+    ("vm_wait32", &[I32, I32, I64, I32, I32], &[I32]),
+    ("vm_wait64", &[I32, I64, I64, I32, I32], &[I32]),
+    ("vm_worker_wait32", &[I32, I32, I64, I32, I32], &[I32]),
+    ("vm_notify", &[I32, I32], &[I32]),
 ];
 
 // Give the existing memory import a required, versioned namespace. No index
