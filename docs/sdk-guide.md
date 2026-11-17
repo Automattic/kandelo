@@ -1350,6 +1350,12 @@ still be expensive when neither bitmap fits. Application performance of that
 fallback remains unmeasured. Its stop checks do not acknowledge a mapping
 barrier while physical cursors remain live.
 
+Passive data initialization also accepts fragmented ranges larger than scratch.
+It validates the whole destination and source before page-sized writes, using
+the native data segment to check bounds and dropped state. Active segments are
+dropped before the original start function runs; attaching a replica replays
+neither active data nor start.
+
 The mechanism fixture covers compiled C scalar, split-page, SIMD, atomic, bulk,
 growth, alias, initialization and stop behavior in disposable Workers. The
 physical pool uses one bitmap for host allocation and translated C growth,

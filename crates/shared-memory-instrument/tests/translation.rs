@@ -141,6 +141,48 @@ fn compiled_helpers_reject_every_stale_layout_constant() {
     }
 }
 #[test]
+fn passive_initialization_preserves_large_ranges_and_segment_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helpers(directory.path());
+    let data: String = (0..2 * 65536 + 31).map(|i| format!("\\{:02x}", i % 251)).collect();
+    let source = input(&format!(r#"(data $payload "{data}")
+        (func(export "init")(param i32 i32 i32)
+            local.get 0 local.get 1 local.get 2 memory.init $payload)
+        (func(export "drop") data.drop $payload)"#));
+    let (bytes, report) = translate(&source, &helper, &digest()).unwrap();
+    assert_eq!(report["rewritten"]["MemoryInit"], 1);
+    let active_source = input(r#"(data (i32.const 0) "abc")
+        (func $start i32.const 10 i32.const 0 i32.const 1 memory.init 0)
+        (start $start)"#);
+    let (active_bytes, _) = translate(&active_source, &helper, &digest()).unwrap();
+    let ordinary = directory.path().join("ordinary.wasm");
+    let grouped = directory.path().join("grouped.wasm");
+    let active_ordinary = directory.path().join("active-ordinary.wasm");
+    let active_grouped = directory.path().join("active-grouped.wasm");
+    fs::write(&ordinary, &source).unwrap();fs::write(&grouped, &bytes).unwrap();
+    fs::write(&active_ordinary, &active_source).unwrap();fs::write(&active_grouped, &active_bytes).unwrap();
+    if let Ok(path) = std::env::var("KANDELO_SHARED_SDK_EVIDENCE_DIR") {
+        let path = Path::new(&path);fs::create_dir_all(path).unwrap();
+        fs::write(path.join("passive-ordinary.wasm"), &source).unwrap();
+        fs::write(path.join("passive-grouped.wasm"), &bytes).unwrap();
+        fs::write(path.join("active-ordinary.wasm"), &active_source).unwrap();
+        fs::write(path.join("active-grouped.wasm"), &active_bytes).unwrap();
+    }
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/data-init-node.mjs").canonicalize().unwrap();
+    let output = Command::new("node").args(["--input-type=module", "-e", r#"
+        import {Worker} from 'node:worker_threads';
+        const worker=new Worker(process.argv[1],{workerData:{ordinary:process.argv[2],grouped:process.argv[3],activeOrdinary:process.argv[4],activeGrouped:process.argv[5]},execArgv:[]});
+        const timer=setTimeout(()=>{worker.terminate();process.exitCode=1;},10000);
+        worker.on('message',result=>{clearTimeout(timer);console.log(JSON.stringify(result));});
+        worker.on('error',error=>{clearTimeout(timer);console.error(error);process.exitCode=1;});
+    "#]).arg(worker).arg(ordinary).arg(grouped).arg(active_ordinary).arg(active_grouped).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["checks"].as_array().unwrap().len(), 12);
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+}
+#[test]
 fn translated_c_preserves_real_memory_operations_in_a_worker() {
     let directory = tempfile::tempdir().unwrap();
     let helpers = helpers(directory.path());
@@ -205,7 +247,7 @@ fn translated_c_preserves_real_memory_operations_in_a_worker() {
     assert!(check_sdk_input(&bytes, &digest()).is_err());
     if let Ok(path) = std::env::var("KANDELO_SHARED_SDK_EVIDENCE_DIR") {
         let path = Path::new(&path);
-        fs::create_dir(path).unwrap();
+        fs::create_dir_all(path).unwrap();
         fs::write(path.join("ordinary.wasm"), &source).unwrap();
         fs::write(path.join("helpers.wasm"), &helpers).unwrap();
         fs::write(path.join("grouped.wasm"), &bytes).unwrap();
