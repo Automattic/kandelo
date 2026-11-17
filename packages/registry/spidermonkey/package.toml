@@ -34,6 +34,18 @@ version_constraint = ">=1.92.0"
 install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
 
 [[host_tools]]
+name = "rustdoc"
+version_constraint = ">=1.90"
+probe = { args = ["--version"], version_regex = "rustdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "rustfmt"
+version_constraint = ">=1.8"
+probe = { args = ["--version"], version_regex = "rustfmt (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
+
+[[host_tools]]
 name = "cbindgen"
 version_constraint = ">=0.29.4"
 probe = { args = ["--version"], version_regex = "cbindgen (\\d+\\.\\d+(?:\\.\\d+)?)" }
