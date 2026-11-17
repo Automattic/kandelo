@@ -19,7 +19,7 @@ export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=t
     const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
     const words=new Uint32Array(memory.buffer),payload=new Uint8Array(memory.buffer);
     const e=(await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
-    words[root/4]=8;words[root/4+1]=32;words[root/4+2]=P;words[root/4+14]=1;
+    words[root/4]=8;words[root/4+1]=64;words[root/4+2]=P;words[root/4+14]=1;
     const pte=root/4+16,ordinary=[4,6,7,8,9,10,11,12];
     ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
     e.__vm_root.value=root;e.__vm_scratch.value=scratch;
@@ -32,8 +32,10 @@ export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=t
       ['large physical alias cycle',2*P,0,2*P,[4,6,6,4,9,10,11,12]],
       ['large repeated destination alias',2*P,0,2*P,[4,6,7,7,9,10,11,12]],
       ['large unaligned physical aliases',2*P+7,1,2*P-13,[4,6,4,6,9,10,11,12]],
+      ['large sparse physical alias graph',16*P+7,1,16*P-13,Array.from({length:36},(_,i)=>4+2*(i%2))],
     ];
     for(const [name,dst,src,n,mapping] of cases) {
+      words[root/4]=mapping.length;
       mapping.forEach((p,i)=>words[pte+i]=p*P|3);
       for(let i=4*P;i<13*P;i++)payload[i]=(i*17+(i>>>16)*53)&255;
       const physical=v=>mapping[v>>>16]*P+(v&(P-1));
@@ -43,7 +45,7 @@ export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=t
       e.copy(dst,src,n);
       check(name,payload.subarray(4*P,13*P).every((value,i)=>value===expected[i]));
     }
-    ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
+    words[root/4]=ordinary.length;ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
     const before=payload.slice(4*P,13*P);words[pte+3]&=~2;
     trap('large copy checks every destination permission first',()=>e.copy(2*P,0,2*P));
     check('large permission failure leaves all payload intact',payload.subarray(4*P,13*P).every((value,i)=>value===before[i]));

@@ -87,7 +87,7 @@ fn bounded_copy_matches_snapshot_oracle_for_all_small_alias_mappings() {
     let result = Command::new(executable).output().unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     assert_eq!(String::from_utf8_lossy(&result.stdout).trim(),
-        "copy_graph_snapshot_oracle_cases=4048380");
+        "copy_graph_snapshot_oracle_cases=4048380\ncopy_graph_sparse_oracle_cases=144");
 }
 // Change an actual compiled marker without invalidating the module or its
 // function type. All low-bit changes preserve the original signed LEB width.
