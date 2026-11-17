@@ -498,16 +498,22 @@ rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 # Wasm cannot enforce page protection, so libc.a defines no public mprotect
 # and a program that calls it fails to link. Software that only makes memory
 # accessible opts in with -lkandelo-mprotect, whose mprotect() refuses
-# requests that would remove access with ENOTSUP; see the source.
+# requests that would remove access with ENOTSUP; see the source. Two
+# members: the policy-driven implementation, and the truthful mprotect()
+# over it. A link that declares the mprotect fiction gets a generated
+# mprotect() from the SDK driver instead of the second member.
 echo "==> Building opt-in mprotect..."
-"$CC" --target=$TARGET -O2 \
-    -matomics -mbulk-memory \
-    -I"$SYSROOT/include" \
-    -c "$REPO_ROOT/libc/glue/kandelo_mprotect.c" \
-    -o "$SYSROOT/lib/kandelo_mprotect.o"
+for member in kandelo_mprotect_policy kandelo_mprotect; do
+    "$CC" --target=$TARGET -O2 \
+        -matomics -mbulk-memory \
+        -I"$SYSROOT/include" \
+        -c "$REPO_ROOT/libc/glue/$member.c" \
+        -o "$SYSROOT/lib/$member.o"
+done
 rm -f "$SYSROOT/lib/libkandelo-mprotect.a"
-"$AR" rcs "$SYSROOT/lib/libkandelo-mprotect.a" "$SYSROOT/lib/kandelo_mprotect.o"
-rm -f "$SYSROOT/lib/kandelo_mprotect.o"
+"$AR" rcs "$SYSROOT/lib/libkandelo-mprotect.a" \
+    "$SYSROOT/lib/kandelo_mprotect_policy.o" "$SYSROOT/lib/kandelo_mprotect.o"
+rm -f "$SYSROOT/lib/kandelo_mprotect_policy.o" "$SYSROOT/lib/kandelo_mprotect.o"
 
 # ---------------------------------------------------------------
 # 8c. Private kernel-owned device runtime (pulled only when referenced)

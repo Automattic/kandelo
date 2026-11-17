@@ -624,14 +624,17 @@ pub enum KlogSite {
     MmapKernelMemoryExhausted,
     /// The host reported that it lacks a capability the guest asked for.
     HostCapabilityUnavailable,
+    /// A process's first successful `mprotect` that would remove read or
+    /// write access, which Kandelo does not enforce.
+    ProtectionNotEnforced,
 }
 
-const _: () = assert!((KlogSite::HostCapabilityUnavailable as u32) < KMSG_EVENT_CALLSITES);
+const _: () = assert!((KlogSite::ProtectionNotEnforced as u32) < KMSG_EVENT_CALLSITES);
 
 impl KlogSite {
     /// Every site, for tests that must hold for all of them.
     #[cfg(test)]
-    pub(crate) const ALL: [KlogSite; 8] = [
+    pub(crate) const ALL: [KlogSite; 9] = [
         KlogSite::BootIdentity,
         KlogSite::RootImageMounted,
         KlogSite::DeviceFirstOpen,
@@ -640,6 +643,7 @@ impl KlogSite {
         KlogSite::MmapAddressSpaceExhausted,
         KlogSite::MmapKernelMemoryExhausted,
         KlogSite::HostCapabilityUnavailable,
+        KlogSite::ProtectionNotEnforced,
     ];
 
     /// The limiter slot this site owns.
@@ -657,7 +661,8 @@ impl KlogSite {
             KlogSite::ProcessKilledByFault
             | KlogSite::MmapAddressSpaceExhausted
             | KlogSite::MmapKernelMemoryExhausted
-            | KlogSite::HostCapabilityUnavailable => LOG_WARNING,
+            | KlogSite::HostCapabilityUnavailable
+            | KlogSite::ProtectionNotEnforced => LOG_WARNING,
         }
     }
 }
@@ -879,6 +884,46 @@ pub fn klog_unimplemented_syscall<H: HostIO + ?Sized>(host: &mut H, pid: u32, nu
             format_args!("pid {pid} called syscall {number}, which is not implemented (ENOSYS)"),
         ),
     }
+}
+
+/// The protection an `mprotect` asked for, by name.
+fn protection_name(prot: u32) -> &'static str {
+    match prot & 7 {
+        0 => "PROT_NONE",
+        1 => "PROT_READ",
+        2 => "PROT_WRITE",
+        4 => "PROT_EXEC",
+        5 => "PROT_READ|PROT_EXEC",
+        6 => "PROT_WRITE|PROT_EXEC",
+        3 => "PROT_READ|PROT_WRITE",
+        _ => "PROT_READ|PROT_WRITE|PROT_EXEC",
+    }
+}
+
+/// Record that `mprotect` reported success for a protection Kandelo does not
+/// enforce: one that removes read or write access.
+///
+/// The caller logs only a process's first such request (see
+/// [`crate::memory::MemoryManager::take_first_unenforced_protection`]): a
+/// program that declared the mprotect fiction makes them routinely, and what
+/// a person reading the log needs is that this process relies on protection
+/// it does not get, not each guard page.
+pub fn klog_protection_not_enforced<H: HostIO + ?Sized>(
+    host: &mut H,
+    pid: u32,
+    addr: usize,
+    len: usize,
+    prot: u32,
+) -> Option<u64> {
+    klog(
+        host,
+        KlogSite::ProtectionNotEnforced,
+        format_args!(
+            "pid {pid} mprotect({addr:#x}, {len}, {}) succeeded but is not enforced: \
+             Kandelo has no page protection (first such request of this process image)",
+            protection_name(prot)
+        ),
+    )
 }
 
 /// The one limiter slot every unknown syscall number shares: the limiter's
@@ -1374,6 +1419,34 @@ mod tests {
         assert_eq!(host.clock_reads, 1);
         assert_eq!(logged(), [(LOG_INFO, 10_345_678_901, "hello 7".into())]);
         with_ring(|ring| assert_eq!(ring.read_at(seq.unwrap()).unwrap().facility, LOG_KERN));
+    }
+
+    #[test]
+    fn unenforced_protection_names_the_request_and_the_boundary() {
+        reset_test_ring();
+        klog_protection_not_enforced(&mut ClockHost::at(1, 0), 42, 0x120000, 65536, 0);
+        klog_protection_not_enforced(&mut ClockHost::at(1, 0), 43, 0x20000, 131072, 1);
+        assert_eq!(
+            logged(),
+            [
+                (
+                    LOG_WARNING,
+                    0,
+                    "pid 42 mprotect(0x120000, 65536, PROT_NONE) succeeded but is not enforced: \
+                     Kandelo has no page protection (first such request of this process image)"
+                        .into()
+                ),
+                (
+                    LOG_WARNING,
+                    0,
+                    "pid 43 mprotect(0x20000, 131072, PROT_READ) succeeded but is not enforced: \
+                     Kandelo has no page protection (first such request of this process image)"
+                        .into()
+                ),
+            ]
+        );
+        assert_eq!(protection_name(4 | 1), "PROT_READ|PROT_EXEC");
+        assert_eq!(protection_name(2), "PROT_WRITE");
     }
 
     #[test]
