@@ -54,4 +54,18 @@ done
 if [ "${#aborted[@]}" -gt 0 ]; then
   verdict reproduced "$version: provesEverything assertion on ${aborted[*]}; control.wat ok"
 fi
+# The defect shows only as an assertion. A build without assertions (NDEBUG)
+# carries no assertion text and cannot report it, so a clean run there
+# proves nothing. Look for the text in the tool and its Binaryen library.
+tool_path="$(command -v "$tool")"
+tool_path="$(cd "$(dirname "$tool_path")" && pwd -P)/$(basename "$tool_path")"
+asserts=no
+for file in "$tool_path" "$(dirname "$tool_path")"/../lib/libbinaryen*; do
+  if [ -f "$file" ] && LC_ALL=C grep -aq 'provesEverything' "$file"; then
+    asserts=yes
+  fi
+done
+if [ "$asserts" = no ]; then
+  verdict inconclusive "$version: ${clean[*]} optimize cleanly, but this build has no assertion text to report the defect"
+fi
 verdict not-reproduced "$version: ${clean[*]} and control.wat optimize without the assertion"

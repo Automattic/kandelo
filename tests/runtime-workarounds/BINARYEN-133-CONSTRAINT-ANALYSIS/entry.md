@@ -111,13 +111,14 @@ pipelines, earlier passes simplify them first. `control.wat` shows that the
 pass runs to completion on this tool.
 
 The verdict rests on a Binaryen assertion. A Binaryen built with assertions
-off (`BYN_ENABLE_ASSERTIONS=OFF`) would report `not-reproduced` while still
-forming the contradictory constraint set, so a `not-reproduced` verdict
-counts only on a build with assertions enabled. The dev shell's nix
-`binaryen-133` has them (it aborts on both inputs).
+off (`BYN_ENABLE_ASSERTIONS=OFF`) would optimize both inputs cleanly while
+still forming the contradictory constraint set. The driver therefore
+reports `not-reproduced` only when the tool or its `libbinaryen` carries
+the assertion text, and `inconclusive` otherwise. The dev shell's nix
+`binaryen-133` has assertions (it aborts on both inputs).
 
-On full modules (before this change; logs kept in the investigating
-worktree's `.scratch/binaryen-assert/logs/`):
+On full modules (before this change; the run logs were not kept in the
+repository):
 
 | input | 133 `-O1`/`-O2` | 133 `-O3`/`-Os`/`-Oz` | 133 `-Os`/`-O3` + skip | 133 + #9258 | 126 |
 |---|---|---|---|---|---|

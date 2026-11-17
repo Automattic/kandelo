@@ -62,3 +62,7 @@ seconds. Kandelo's toolchain is clang 23.1.3, which no longer accepts the
 switch, so Harper's `tree-sitter-gitcommit-0.5.0.patch` was removed and
 Harper was rebuilt with the grammar going through the pass. No older
 supported toolchain still needs the workaround.
+
+The rebuilt Harper passed `host/test/harper-smoke.test.ts` in the full
+Node Vitest run on 2026-11-16 (9.7 s), which is the package test the
+retirement condition above requires.

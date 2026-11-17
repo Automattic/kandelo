@@ -30,5 +30,17 @@ path = "docs/fork-instrumentation.md"
 note = "Prose: the instrumenter's post-instrumentation wasm-opt skips constraint-analysis; links this entry."
 
 [[sites_without_tags]]
+path = "docs/architecture.md"
+note = "Prose: the fork-instrumentation pipeline's post-instrumentation wasm-opt skips constraint-analysis; links the future-improvements entry."
+
+[[sites_without_tags]]
+path = "docs/porting-guide.md"
+note = "Prose: the instrumenter runs wasm-opt -Os skipping constraint-analysis; links the future-improvements entry."
+
+[[sites_without_tags]]
+path = "packages/registry/git/build-git.sh"
+note = "Build-script comment describing the instrumenter's -Os pass with constraint-analysis skipped; a tag here would only add a cache-key change."
+
+[[sites_without_tags]]
 path = "docs/future-improvements.md"
 note = "Prose: \"Revisit Binaryen's constraint-analysis pass\", the decision to skip the pass, its measurements and the triggers and criteria for re-enabling it."
