@@ -98,13 +98,6 @@ void vm_write_commit(uint32_t base, uint64_t offset, uint32_t n, uint32_t root, 
     for (uint32_t i = 0; i < n; i++)
         *(uint8_t *)(uintptr_t)page(p + i, 2, root) = *(uint8_t *)(uintptr_t)(scratch + i);
 }
-EXPORT("vm_init_address")
-uint32_t vm_init_address(uint32_t p, uint32_t n, uint32_t root, uint32_t scratch) {
-    uint32_t a = vm_span(p, n, 2, root);
-    if (a) return a;
-    if (n > words(root)[2]) fail();
-    return scratch;
-}
 EXPORT("vm_atomic_address")
 uint32_t vm_atomic_address(uint32_t base, uint64_t offset, uint32_t n, uint32_t rights, uint32_t root) {
     uint32_t p = effective(base, offset, n, root);
@@ -124,6 +117,8 @@ AI void vm_copy_poll(uint32_t root, uint32_t replica) {
     // may. Do not acknowledge a reversible mapping barrier with live cursors.
     if (!r_alive(root, replica)) fail();
 }
+EXPORT("vm_bulk_poll")
+void vm_bulk_poll(uint32_t root, uint32_t replica) { vm_copy_poll(root, replica); }
 #define VM_COPY_INLINE AI
 #define VM_COPY_PAGE_BYTES PAGE
 #define VM_COPY_BITMAP_BYTES KANDELO_MG_BITMAP_BYTES
