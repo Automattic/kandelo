@@ -100,6 +100,8 @@ describe("compiler builtins", () => {
         rmSync(temp, { recursive: true, force: true });
       }
     },
+    // Five SDK compiles and objdump runs per architecture.
+    60_000,
   );
 
   it.each(programs)("%s computes exact 128-bit and fp128 results", async (_arch, program) => {
