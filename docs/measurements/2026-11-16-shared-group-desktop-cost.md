@@ -65,11 +65,80 @@ still contain outstanding asynchronous retirement, so those samples alone do
 not establish a leak.
 
 The priority is a shared authoritative allocator/reuse model that both translated
-guest memory.grow and host allocation can consume safely. The existing C growth
-helper advances the high-water cursor and cannot consume the JavaScript-only
+guest memory.grow and host allocation can consume safely. The frozen prototype's
+C growth helper advances the high-water cursor and cannot consume the JavaScript-only
 free pool. Reducing scratch or pregrowth also needs actual correctness/resource
 evidence; this screen does not attribute the OS overhead to a single component.
 Keep those changes isolated from the user's frozen interactive demo.
+
+## November 17 follow-up
+
+A separate experiment using the unchanged format-4 runtime completed twenty Foot launch,
+hidden-workspace, retile and close cycles in one persistent Sway machine per
+arm/engine. There were six fresh browser parents: ordinary and grouped on
+Chromium, Firefox and WebKit. These are twenty cycles within each parent,
+not twenty independent browser launches. Canonical SDK compilation ran in
+the background; this run makes allocation/lifecycle observations, not CPU or
+latency claims.
+
+All six arms completed the twenty cycles, kept the original terminal, removed
+each closed client, exited Sway with status zero, and completed machine
+destruction without page errors or memory-boundary violations. The campaign
+**failed** its predeclared Chromium grouped allocation plateau: the final five
+settled allocation extents were required to be identical.
+
+| Grouped engine | Initial extent (MiB) | Extent after 20 cycles (MiB) | Final five extents |
+|---|---:|---:|---|
+| Chromium | 163.62 | 198.94 | Changed; criterion failed |
+| Firefox | 163.62 | 192.56 | Flat |
+| WebKit | 163.62 | 192.56 | Flat |
+
+Chromium's final five extents were 174.94, 174.94, 198.94, 198.94 and 198.94 MiB.
+Firefox and WebKit ended at a flat 192.56 MiB over that window. A flat ending
+in a bounded run does not establish indefinite boundedness; the late Chromium
+increase does not by itself prove an unbounded leak.
+
+These extents describe the allocator's physical-page high-water position,
+within the same pregrown 512 MiB backing. They are not OS footprints or RSS.
+At Chromium's final settled sample, 80.56 MiB was reusable; its live group
+returned to four roots, with no quarantine or unexplained pins. The retired-root
+counter advanced by sixty across the twenty client cycles. This narrows the
+resource question to live application high-water behavior and allocation/reuse;
+it does not identify a single cause or prove the normal feature's reclamation.
+Post-root-exit samples can still contain asynchronous retirement.
+
+An earlier attempt incorrectly required the prototype's `pendingSnapshots`
+counter to reach zero at startup. That counter includes graphical-object and
+thread-scratch pins: the sampled live desktop had eight object pins and two
+thread pins. The corrected observation accounts for these owners and requires
+no unexplained pins, the baseline root count and no quarantine. The twenty-cycle
+inventory and physical plateau criterion were unchanged. The original failed
+attempt remains retained.
+
+Response-observation qualification also completed on both arms in all three
+engines. Eighteen shell-produced color responses had negative controls before
+Enter, actual PNG pixel checks, matching shell completion files, and clean
+exit/destroy/boundary checks. A follow-up agreed with all eighteen PNGs using
+one-pixel readback from the transferred canvas. The once-per-animation-frame
+observer then passed eighteen probes with same-page input/observation clocks
+and independent post-interval PNG/completion checks. These qualify a correlated
+**rendered canvas** observation mechanism, not physical scanout, input-to-photon,
+or a quiet before/after latency comparison. Readback and sampling costs remain
+part of the observation.
+
+Original results, failed harness attempts, source identities and all six
+lifecycle trajectories are retained under:
+
+- `.context/format4-desktop-lifecycle-complete-1/retention.json`
+- `.context/format4-desktop-lifecycle-pin-predicate-failure-1/retention.json`
+- `.context/format4-presentation-correlation-complete-1/retention.json`
+- `.context/format4-canvas-readback-complete-1/retention.json`
+- `.context/format4-latency-method-qualified-1/retention.json`
+
+The formal SDK's shared allocation bitmap is separate work; it has not been
+integrated into this frozen desktop and does not retroactively change these
+numbers. The preview still needs application-level resource and normal-runtime
+acceptance. The interactive demo, renderer and limits were preserved.
 
 ## Provenance and limits
 
