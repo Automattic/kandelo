@@ -1281,12 +1281,13 @@ Bulk copies validate both complete virtual ranges before writing. Contiguous
 physical spans use an ordinary Wasm copy. Fragmented ranges can exceed the
 per-replica scratch capacity: a page bitmap proves when chunked moves are safe,
 while physical alias cycles use a bounded graph walk that preserves source
-bytes and repeated destination mappings. The walk uses only the existing
-scratch allocation and scalar locals; scratch capacity is not a copy-size
-limit. Very irregular unaligned alias graphs can be expensive when the visited
-bitmap does not fit. Application performance of that fallback remains
-unmeasured. Its stop checks do not acknowledge a mapping barrier while physical
-cursors remain live.
+bytes and repeated destination mappings. If virtual aliases make the visited
+bitmap too large, a compact bitmap can track their distinct physical pages.
+The walk uses only the existing scratch allocation and scalar locals; scratch
+capacity is not a copy-size limit. Very irregular unaligned alias graphs can
+still be expensive when neither bitmap fits. Application performance of that
+fallback remains unmeasured. Its stop checks do not acknowledge a mapping
+barrier while physical cursors remain live.
 
 The mechanism fixture covers compiled C scalar, split-page, SIMD, atomic, bulk,
 growth, alias, initialization and stop behavior in disposable Workers. The
