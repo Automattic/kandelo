@@ -809,8 +809,8 @@ export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
 export const HOST_ADAPTER_VERSION = 8 as const;
-export const ENTROPY_READ_PENDING = -2147483648 as const;
 export const MEMORY_GROUP_PROTOCOL = {"capability_admission":1,"receipt_bytes":32,"receipt_fields":{"generation":24,"group":0,"pid":4,"reserved":12,"serial":16,"tid":8},"snapshot_bytes":40,"snapshot_fields":{"accepting":16,"backings":32,"group":0,"images":36,"maximumPages":4,"maximumProcesses":8,"maximumTasks":12,"processes":20,"quarantinedTasks":28,"tasks":24},"task_actions":{"beginRetirement":2,"cancelUnconstructed":5,"quarantine":4,"retireQuiescent":3,"start":1},"version":1} as const;
+export const ENTROPY_READ_PENDING = -2147483648 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;

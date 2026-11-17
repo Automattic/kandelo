@@ -18,6 +18,12 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 8 adds opt-in memory-group admission metadata,
+exact task/image receipts and kernel-owned custody to version 7's entropy
+and I/O contracts. The host and kernel must be rebuilt together. This stage
+advertises admission only; grouped execution is not available through the
+normal launcher. Guest program ABI 56 and its supported digest are unchanged.
+
 Kernel-host adapter version 7 adds bounded entropy-read continuations, a
 nonallocating process-range validation import, and a private guest-address I/O
 transport. Selection, allocation admission and retained write payloads are
