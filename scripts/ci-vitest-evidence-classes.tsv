@@ -354,6 +354,7 @@ host/test/mmap-shared.test.ts	prepared-product
 host/test/mmap-tracking.test.ts	source-only
 host/test/module-base-image.test.ts	prepared-product
 host/test/mouse-integration.test.ts	prepared-product
+host/test/mprotect-fiction.test.ts	prepared-product
 host/test/mprotect-opt-in.test.ts	prepared-product
 host/test/mqueue.test.ts	prepared-product
 host/test/mremap-madvise-guest.test.ts	prepared-product
@@ -789,6 +790,7 @@ packages/registry/php/test/php-pdo-column-metadata.test.ts	prepared-product
 packages/registry/posix-utils-lite/test/gencat.test.ts	prepared-product
 packages/registry/posix-utils-lite/test/process-tools.test.ts	prepared-product
 packages/registry/rsvg-convert/test/rsvg-convert.test.ts	prepared-product
+packages/registry/ruby/test/fibers.test.ts	prepared-product
 packages/registry/ruby/test/posix-spawn.test.ts	prepared-product
 packages/registry/sdl2/test/runtime.test.ts	prepared-product
 packages/registry/sed/test/sed.test.ts	prepared-product

@@ -2655,6 +2655,8 @@ Optional:
 - `[build].script_path` — see "Override" below.
 - `[[host_tools]]` — see the Host-tool requirements section below.
 
+(`[[fictions]]` is program-only; see "Declared fictions".)
+
 Rejected at parse time (the parser surfaces a clear error):
 
 - `[outputs]` and `[[outputs]]` — sources have no built-artifact
@@ -2813,6 +2815,91 @@ registry context, then run `cargo xtask build-deps check`.
 
 See decisions 10 (cache-key impact) and 11 (probe + install hint
 contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
+
+## Declared fictions
+
+A **fiction** is behaviour Kandelo reports as provided without providing it,
+for software that cannot run on the truthful answer. Fictions are never the
+default: a program gets the truthful behaviour unless its package declares
+the fiction. The design and review rules are in
+[the design record](plans/2026-11-17-declared-fictions-design.md).
+
+The registry is `sdk/fictions/<name>.toml`. Each entry states what is faked,
+how that differs from POSIX, the risks, the intents a declaration may and may
+not use it for, the truthful alternative, and the configuration schema.
+Today there is one fiction, `mprotect` (below).
+
+A program package declares a fiction with a reason and a configuration:
+
+```toml
+[[fictions]]
+name = "mprotect"
+reason = "cont.c fiber stack guard pages (one 64 KiB PROT_NONE page per fiber stack); GC compaction is compiled out"
+config = { prot_none = "accept-unenforced", prot_none_max = 65536 }
+```
+
+- Only `kind = "program"` manifests may declare fictions: a fiction changes
+  what an executable link produces. A program declares the fictions the code
+  it links needs, including code from library packages.
+- `reason` is required. It names the caller and what the fiction is used for,
+  and a reviewer checks it against the registry's allowed and forbidden
+  intents. It is free text and not part of the cache key.
+- `config` is required and must depart from the truthful default; keys and
+  values are checked against the registry when the package builds. A config
+  change is part of the cache key.
+- The build sets `KANDELO_FICTIONS` for the recipe, so every SDK link in the
+  build applies the declaration without recipe edits. A package that declares
+  none has the variable removed.
+- `program-packages.json` reports each package's declarations (`name`,
+  `reason`, `selection`).
+
+Outside a package build, select a fiction by hand with the same syntax:
+
+```sh
+wasm32posix-cc app.c -o app.wasm \
+    --kandelo-fiction=mprotect:prot_none=accept-unenforced,prot_none_max=65536
+KANDELO_FICTIONS='mprotect:read_only=accept-unenforced' make
+```
+
+The driver validates every selection (unknown names, keys or values, and a
+selection equal to the truthful default, are errors) and applies it to
+executable links only. For each fiction a program actually links, the program
+carries a line with the full selection in its `kandelo.fictions` custom
+section; a program that never calls the faked interface carries nothing. The
+section survives the post-link wasm-opt, fork instrumentation and install.
+
+### The `mprotect` fiction
+
+WebAssembly memory has no page protection. With only `-lkandelo-mprotect`, a
+request that keeps read and write access succeeds and anything else is
+`ENOTSUP` (see `docs/posix-status.md`). The fiction makes chosen classes of
+restrictive request report success without effect:
+
+| Key | Values | Meaning |
+|---|---|---|
+| `prot_none` | `enotsup` (default), `accept-unenforced` | requests without `PROT_READ` (`PROT_NONE`, write-only, exec-only) |
+| `prot_none_max` | bytes, `0` (default) = no limit | larger `prot_none` requests stay `ENOTSUP` |
+| `read_only` | `enotsup` (default), `accept-unenforced` | requests with `PROT_READ` but not `PROT_WRITE` |
+| `read_only_max` | bytes, `0` (default) = no limit | larger `read_only` requests stay `ENOTSUP` |
+
+Lengths are compared after rounding the request out to 64 KiB pages. The
+driver links the declared `mprotect()` in place of the library's truthful
+one, even when the link names `-lkandelo-mprotect` itself. An accepted
+request still reaches the kernel, which validates it and logs the first one
+of each process image to `/dev/kmsg` (`pid N mprotect(addr, len, PROT_NONE)
+succeeded but is not enforced: ...`).
+
+Declarations in the registry:
+
+| Package | Config | Caller |
+|---|---|---|
+| ruby | `prot_none = "accept-unenforced"`, `prot_none_max = 65536` | `cont.c` fiber stack guard pages (fibers themselves still fail with `ENOSYS`: the Kandelo coroutine backend has no context switch). GC compaction, whose read barrier would need real protection and uses requests of the same size, is compiled out (`GC.compact` raises `NotImplementedError`). See `packages/registry/ruby/README.md`. |
+| quickshell | `prot_none = "accept-unenforced"` | Qt QML's V4 `OSAllocator::decommit` makes released JS heap pages `PROT_NONE` after `MADV_DONTNEED` and crashes if that fails. Its executable-memory probe (`PROT_READ\|PROT_EXEC`) stays `ENOTSUP`, which keeps the QML JIT off. |
+
+Packages whose `mprotect` callers only widen access link `-lkandelo-mprotect`
+and declare nothing. PHP links it too: Zend's fiber stack guard gets
+`ENOTSUP`, and `Fiber::start()` throws a catchable exception ("Fiber stack
+protect failed") instead of reaching `makecontext()`.
 
 ## Packages that are not real upstream builds yet
 

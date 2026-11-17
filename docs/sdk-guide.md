@@ -623,6 +623,14 @@ gets `ENOTSUP` from it and must handle that or use another strategy.
 `config.site` reports `mprotect` absent, and build systems that probe by linking
 (Meson, CMake) find it absent too unless the library is added to their link.
 
+Software that cannot run unless such a request reports success (a fiber pool
+that refuses to work without a guard page, an allocator that crashes when
+decommit fails) can declare the `mprotect` fiction instead: the request
+succeeds without effect, within a declared class and size, and the program
+records that it was built that way. Select it with
+`--kandelo-fiction=mprotect:...` or `KANDELO_FICTIONS`, or in a package with
+`[[fictions]]`; see "Declared fictions" in `docs/package-management.md`.
+
 #### Why an 8 MiB main-thread stack
 
 wasm-ld's default shadow stack is only ~64 KiB. WebAssembly has **no stack
