@@ -2435,7 +2435,7 @@ separate from POSIX process groups. It reserves process/image/task capacity,
 inherits membership through fork, and retains exact execution receipts until
 the host proves retirement. Prepared construction can roll back; live,
 stopping or quarantined Workers prevent process removal. Old exec-image
-custody remains distinct from its successor. Host-adapter 7 exposes admission
+custody remains distinct from its successor. Host-adapter 8 exposes admission
 metadata only: the normal launcher does not yet run grouped programs. See
 [shared-memory groups](shared-memory-groups.md) for the trust boundary,
 unsupported operations and remaining execution/lifecycle gates.

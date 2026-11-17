@@ -153,7 +153,7 @@ roll back prepared admissions; live/stopping/quarantined Workers block removal.
 Image custody outlives the last Worker until explicit lifecycle cleanup, and old
 receipts remain distinct from an exec successor.
 
-Host-adapter 7 adds protocol-1 fixed metadata records and advertises admission
+Host-adapter 8 adds protocol-1 fixed metadata records and advertises admission
 capability only. Program ABI 56 remains unchanged. The generated kernel-host
 snapshot includes record layouts and actions; full unsigned generation/receipt
 values have separate status returns. These interfaces do not advertise a ready
