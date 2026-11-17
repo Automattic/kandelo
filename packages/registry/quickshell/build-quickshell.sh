@@ -143,7 +143,7 @@ TARGET_DEFINES="-D__linux__=1 -DQT_LINUXBASE"
 # inside another checkout, that checkout's). The revision is the release
 # tag's commit; a version bump must record the new one.
 case "$QUICKSHELL_VERSION" in
-    0.3.1) QUICKSHELL_GIT_REVISION=1a4716cde794a59928d9d9fc15f2afc7a95de360 ;;
+    0.3.2) QUICKSHELL_GIT_REVISION=4f508be500dea6e5732cc3d50382a0048b17e7b1 ;;
     *)
         echo "ERROR: no release commit recorded for quickshell $QUICKSHELL_VERSION" >&2
         exit 1
