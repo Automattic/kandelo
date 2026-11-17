@@ -759,6 +759,7 @@ impl Reencode for Rewrite<'_> {
                 } => {
                     f.instruction(&I::GlobalGet(self.root()));
                     f.instruction(&I::GlobalGet(self.scratch()));
+                    f.instruction(&I::GlobalGet(self.replica()));
                     f.instruction(&I::Call(self.helper_function("vm_copy")));
                     *self.counts.entry("MemoryCopy".into()).or_default() += 1;
                 }

@@ -113,20 +113,29 @@ uint32_t vm_atomic_address(uint32_t base, uint64_t offset, uint32_t n, uint32_t 
     if (!a) fail();
     return a;
 }
+AI uint32_t vm_copy_address(uint32_t p, uint32_t rights, uint32_t root) { return page(p, rights, root); }
+AI uint8_t vm_copy_read(uint32_t p) { return *(uint8_t *)(uintptr_t)p; }
+AI void vm_copy_write(uint32_t p, uint8_t value) { *(uint8_t *)(uintptr_t)p = value; }
+AI void vm_copy_raw(uint32_t d, uint32_t s, uint32_t n) {
+    __builtin_memmove((void *)(uintptr_t)d, (void *)(uintptr_t)s, n);
+}
+AI void vm_copy_poll(uint32_t root, uint32_t replica) {
+    // Stop may abandon a partial copy, just as terminating an ordinary writer
+    // may. Do not acknowledge a reversible mapping barrier with live cursors.
+    if (!r_alive(root, replica)) fail();
+}
+#define VM_COPY_INLINE AI
+#define VM_COPY_PAGE_BYTES PAGE
+#define VM_COPY_BITMAP_BYTES KANDELO_MG_BITMAP_BYTES
+#include "copy-graph.h"
 EXPORT("vm_copy")
-void vm_copy(uint32_t dst, uint32_t src, uint32_t n, uint32_t root, uint32_t scratch) {
+void vm_copy(uint32_t dst, uint32_t src, uint32_t n, uint32_t root, uint32_t scratch, uint32_t replica) {
     uint32_t s = vm_span(src, n, 1, root), d = vm_span(dst, n, 2, root);
-    if (!n) return;
-    if (s && d) {
-        __builtin_memmove((void *)(uintptr_t)d, (void *)(uintptr_t)s, n);
-        return;
-    }
-    // Full staging preserves aliases whose physical ordering differs from VA.
-    if (n > words(root)[2]) fail();
-    for (uint32_t i = 0; i < n; i++)
-        *(uint8_t *)(uintptr_t)(scratch + i) = *(uint8_t *)(uintptr_t)page(src + i, 1, root);
-    for (uint32_t i = 0; i < n; i++)
-        *(uint8_t *)(uintptr_t)page(dst + i, 2, root) = *(uint8_t *)(uintptr_t)(scratch + i);
+    struct vm_copy_graph_context context = {
+        .dst = dst, .src = src, .n = n, .root = root, .replica = replica,
+        .scratch = scratch, .capacity = words(root)[2],
+    };
+    vm_copy_bounded(&context, s, d);
 }
 EXPORT("vm_fill")
 void vm_fill(uint32_t dst, uint32_t value, uint32_t n, uint32_t root) {
