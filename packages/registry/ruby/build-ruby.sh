@@ -904,6 +904,14 @@ SITE_EOF
     # Kandelo wasm32-posix while compiling Psych::Visitors::ToRuby.
     # Ruby parser/compiler paths are stack-heavy, and local-root spilling
     # adds small linear-stack frames to preserve VALUE visibility for GC.
+    #
+    # GC compaction is compiled out. Its read barrier makes moved heap pages
+    # PROT_NONE and relies on the fault to fix references; Kandelo has no page
+    # protection, so a "protected" page would be read silently and compaction
+    # would corrupt the heap. GC.compact raises NotImplementedError instead.
+    # This is also what keeps the declared mprotect fiction (package.toml) to
+    # fiber stack guards: heap pages and guard pages are both 64 KiB, so the
+    # fiction's length limit alone could not tell them apart.
     CONFIG_SITE="$CONFIG_SITE" \
     CC="$RUBY_CC_COMMAND" \
     LD=wasm32posix-cc \
@@ -916,7 +924,7 @@ SITE_EOF
     BASERUBY="$BASERUBY_COMMAND" \
     WASM_POSIX_CROSS_COMPILE=1 \
     CFLAGS="-O2" \
-    CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$ZLIB_PREFIX/include" \
+    CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -DGC_CAN_COMPILE_COMPACTION=0 -I$ZLIB_PREFIX/include" \
     LDFLAGS="-L$ZLIB_PREFIX/lib" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
@@ -1098,6 +1106,11 @@ fi
 reject_asyncify_coroutine
 
 if [ -f Makefile ]; then
+    grep -Eq '^CPPFLAGS = .*-DGC_CAN_COMPILE_COMPACTION=0' Makefile || {
+        echo "ERROR: Ruby's Makefile lost -DGC_CAN_COMPILE_COMPACTION=0; GC compaction" >&2
+        echo "       needs page protection Kandelo does not have (see package.toml)" >&2
+        exit 1
+    }
     echo "==> Patching Ruby static archive rule for generated extension initializers..."
     perl -0pi -e 's/^(CPPFLAGS = )(?!.*RUBY_KANDELO_POSIX)/$1-DRUBY_KANDELO_POSIX=1 /m' Makefile
     perl -0pi -e 's/^\t\t\$\(Q\).*ARFLAGS.*LIBRUBY_A_OBJS.*$/\t\t\$(Q) \$(AR) \$(ARFLAGS) \$@ \$(LIBRUBY_A_OBJS)/m' Makefile

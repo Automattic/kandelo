@@ -32,3 +32,17 @@ wasm = "ruby.wasm"
 [[outputs]]
 name = "ruby-runtime"
 wasm = "ruby-runtime.zip"
+
+# Ruby's fiber pool (cont.c) makes the lowest page of every fiber stack a
+# PROT_NONE guard and fails the fiber if mprotect refuses. (Fibers still fail
+# after that today: the Kandelo coroutine backend has no context switch and
+# coroutine_transfer() is ENOSYS; see README.md.) Kandelo cannot
+# enforce the guard: a fiber that overflows its stack corrupts the next
+# fiber's stack instead of faulting. The fiction is limited to one 64 KiB page
+# per request, the guard's size. GC compaction, whose read barrier needs real
+# protection, is compiled out in build-ruby.sh, so no other caller makes such
+# requests; JIT (read-only/exec) is disabled and stays ENOTSUP.
+[[fictions]]
+name = "mprotect"
+reason = "cont.c fiber stack guard pages (one 64 KiB PROT_NONE page per fiber stack); GC compaction is compiled out"
+config = { prot_none = "accept-unenforced", prot_none_max = 65536 }

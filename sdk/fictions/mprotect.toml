@@ -1,0 +1,81 @@
+# Declared fiction: mprotect
+#
+# Registry entry for one explicitly declared compromise. The SDK driver
+# (crates/kandelo-cc/src/fictions.rs) and the package build (tools/xtask)
+# validate selections against this file; a test keeps the driver's built-in
+# copy of the config schema equal to it. See docs/package-management.md
+# ("Declared fictions") and docs/plans/2026-11-17-declared-fictions-design.md.
+
+name = "mprotect"
+summary = "mprotect() reports success for a protection change Kandelo does not enforce"
+
+# What is faked.
+fakes = """
+WebAssembly linear memory has no page protection: every byte below the
+memory's size stays readable and writable, and data memory is never
+executable. With this fiction selected, mprotect() answers success for a
+request in an accepted class (PROT_NONE, read-only) without restricting
+access. A later access that should fault reads or writes normally."""
+
+# How it differs from POSIX.
+posix_difference = """
+POSIX requires that an access the protection does not permit generate
+SIGSEGV (or SIGBUS), and allows mprotect() to fail with ENOTSUP when the
+implementation does not support the combination of accesses requested. The
+truthful default does the latter; this fiction reports the change as made
+instead."""
+
+risks = [
+    "a guard page does not stop a stack or buffer overflow: the overflow corrupts the neighbouring memory instead of faulting",
+    "data sealed read-only can still be written, so a bug that writes it is not caught",
+    "an algorithm that relies on the fault (a GC read or write barrier, userfault-style lazy loading, a W^X JIT) silently computes wrong results or skips work",
+]
+
+# What a declaration may use this fiction for.
+allowed_intents = [
+    "guard pages around stacks or allocations, where the fault is a debugging aid and correct programs never touch the page",
+    "sealing data read-only as hardening, where correct programs never write it",
+    "decommitting or reserving address space with PROT_NONE, where correct programs never touch it",
+]
+
+# What a declaration must never use it for; a reviewer rejects these.
+forbidden_intents = [
+    "a GC read or write barrier, or any other algorithm that learns something from the fault",
+    "lazy loading or copy-on-access that waits for a fault to fill memory",
+    "W^X code generation, or any security boundary between code and data",
+]
+
+# The truthful subset that needs no fiction: requests that keep read and
+# write access (with or without PROT_EXEC) always succeed, and a program that
+# only makes such requests links -lkandelo-mprotect without declaring this.
+truthful_subset = "-lkandelo-mprotect"
+
+# Config schema. A selection names any of these keys; omitted keys take the
+# default, which is the truthful behaviour. An "enum" key's first value is its
+# default. A "size" key with `limits` bounds what that key accepts and may be
+# set only while that key departs from its default. A selection must depart
+# from at least one enum default. A request that keeps read and write access
+# is always allowed and has no key.
+[config.prot_none]
+description = "requests without PROT_READ: PROT_NONE, and write- or exec-only"
+type = "enum"
+values = ["enotsup", "accept-unenforced"]
+default = "enotsup"
+
+[config.prot_none_max]
+description = "largest prot_none request accepted, in bytes after page rounding; 0 means no limit; a larger request is ENOTSUP"
+type = "size"
+limits = "prot_none"
+default = 0
+
+[config.read_only]
+description = "requests with PROT_READ but not PROT_WRITE (with or without PROT_EXEC)"
+type = "enum"
+values = ["enotsup", "accept-unenforced"]
+default = "enotsup"
+
+[config.read_only_max]
+description = "largest read_only request accepted, in bytes after page rounding; 0 means no limit; a larger request is ENOTSUP"
+type = "size"
+limits = "read_only"
+default = 0

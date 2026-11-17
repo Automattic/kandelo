@@ -370,6 +370,15 @@ pub struct Glue {
     /// caller's inputs and the C++ libraries: a member is used only when
     /// nothing earlier defines what it provides.
     pub fallback: Vec<String>,
+    /// The generated definitions of the declared fictions
+    /// (`crate::fictions`), linked lazily ahead of crt1.o and the caller's
+    /// inputs: a member is used only when the program refers to what it
+    /// defines, and then in place of the SDK library's truthful definition
+    /// (lld keeps the first lazy definition of a symbol).
+    pub fictions: Vec<String>,
+    /// The SDK libraries the fictions' definitions call, linked after the
+    /// caller's inputs.
+    pub fiction_libraries: Vec<String>,
 }
 
 /// The glue source that installs the C++ runtime's language entries.
@@ -388,6 +397,7 @@ pub fn glue_sources(toolchain: &Toolchain, link_dl: bool, cxx_runtime: bool) -> 
     Glue {
         leading: leading.iter().map(path).collect(),
         fallback: ["cxxrt.c"].iter().map(path).collect(),
+        ..Glue::default()
     }
 }
 
@@ -644,6 +654,11 @@ fn build_clang_args_internal(
                 ),
             };
             args.extend(glue.leading);
+            if !glue.fictions.is_empty() {
+                args.push("-Wl,--start-lib".into());
+                args.extend(glue.fictions);
+                args.push("-Wl,--end-lib".into());
+            }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
             args.extend(parsed.forwarded_args.iter().cloned());
@@ -654,6 +669,7 @@ fn build_clang_args_internal(
             if links_cxx_stdlib(language, &filtered) {
                 args.extend(["-lc++", "-lc++abi"].map(String::from));
             }
+            args.extend(glue.fiction_libraries);
             // The minimal C++ runtime is a fallback for C++ code linked
             // without libc++ and libc++abi. As a lazy member after them it
             // supplies only what they did not: libc++'s operator new, which
@@ -755,6 +771,7 @@ pub fn compile_executable_glue(
     arch: WasmArch,
     language: Language,
     executable_linker: Option<LinkerPreparation>,
+    fiction_selections: &[crate::fictions::Selection],
 ) -> Result<Option<(Glue, TempDir)>> {
     if !matches!(
         executable_linker,
@@ -823,10 +840,41 @@ pub fn compile_executable_glue(
         };
         node_path::join(&[&dir_text, &object])
     };
-    let objects = Glue {
+    let mut objects = Glue {
         leading: sources.leading.iter().map(object).collect(),
         fallback: sources.fallback.iter().map(object).collect(),
+        ..Glue::default()
     };
+    for selection in fiction_selections {
+        let name = crate::fictions::source_name(selection);
+        let source = dir.path().join(&name);
+        std::fs::write(&source, crate::fictions::source(selection))
+            .map_err(|error| format!("cannot write {}: {error}", source.display()))?;
+        let source_text = source.to_string_lossy().into_owned();
+        let mut args = glue_compile_base(toolchain, arch);
+        args.push("-iquote".into());
+        args.push(toolchain.glue_dir.clone());
+        args.extend(["-O2", "-x", "c", "-c"].map(String::from));
+        args.push(source_text.clone());
+        let result = run_without_env(
+            &toolchain.cc,
+            &args,
+            Some(dir.path()),
+            &["CCC_OVERRIDE_OPTIONS"],
+        );
+        if result.exit_code != 0 {
+            return Err(format!(
+                "compiling the declared fiction {} failed:\n{}",
+                selection.fiction.name,
+                result.stderr.trim()
+            ));
+        }
+        objects.fictions.push(object(&source_text));
+        let library = crate::fictions::support_library(selection).to_string();
+        if !objects.fiction_libraries.contains(&library) {
+            objects.fiction_libraries.push(library);
+        }
+    }
     Ok(Some((objects, dir)))
 }
 
@@ -1172,7 +1220,18 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     }
     let executable_linker =
         prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
-    let glue = compile_executable_glue(user_args, &toolchain, arch, language, executable_linker)?;
+    // Validated for every invocation, so a bad selection fails at the first
+    // compile rather than at a configure test's link.
+    let fiction_flags = parse_args(&filter_args(user_args, arch).filtered)?.fictions;
+    let fiction_selections = crate::fictions::selections_from_environment(&fiction_flags)?;
+    let glue = compile_executable_glue(
+        user_args,
+        &toolchain,
+        arch,
+        language,
+        executable_linker,
+        &fiction_selections,
+    )?;
     // An executable link links the glue, and carries the glue's digest.
     let abi_contract = glue
         .as_ref()
