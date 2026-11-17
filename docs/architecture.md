@@ -2931,6 +2931,13 @@ before a queued Rust retirement marker is written. Fence listeners remain
 active; an expected cancellation must not become a second crash report.
 This handoff is enabled only for ordinary fork. A vfork borrower's existing
 lifetime completion and address-space containment protocol remains its owner.
+
+The browser construction factory preserves the closed creator owner's private
+cancellation reason for pending allocations and admitted preparation that
+resumes after disposal. Only that private reason is expected shutdown; copied
+error text, constructor failures and failed Worker termination remain visible.
+Allocation failure diagnostics retain the original error alongside context.
+
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space

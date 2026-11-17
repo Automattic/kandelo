@@ -45,6 +45,7 @@ function allocateMemoryWorkerMain(construct: typeof createProcessMemory): void {
 export class BrowserProcessMemoryFactory {
   private scriptUrl: string | undefined;
   private disposed = false;
+  private cancellation: Error | undefined;
   private readonly pending = new Set<(error: Error) => void>();
 
   constructor(private readonly timeoutMs = 30_000) {}
@@ -53,7 +54,7 @@ export class BrowserProcessMemoryFactory {
     request: Readonly<ProcessMemoryAllocationRequest>,
   ): Promise<WebAssembly.Memory> {
     if (this.disposed) {
-      return Promise.reject(new Error("Process memory factory is closed"));
+      return Promise.reject(this.cancellation ?? new Error("Process memory factory is closed"));
     }
     // Copy the admitted constructor arguments before any asynchronous reply.
     // Only this self-contained factory proves the returned native Memory type.
@@ -145,6 +146,9 @@ export class BrowserProcessMemoryFactory {
   dispose(cancellation?: Error): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Admitted preparation can resume after disposal and reach allocation.
+    // Preserve the exact owner's reason for that late continuation too.
+    this.cancellation = cancellation;
     // The destroy owner can carry the closed creator gate's exact refusal.
     const reason = cancellation ?? new Error("Process memory factory was destroyed");
     for (const cancel of this.pending) cancel(reason);
