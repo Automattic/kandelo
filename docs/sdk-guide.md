@@ -307,6 +307,57 @@ visibility, either through `__attribute__((visibility("default")))` on the
 public API or a scoped `-fvisibility=default` build flag. `RTLD_NEXT` lookup is
 not currently supported.
 
+#### Plugin modules and the programs that load them
+
+A side module carries no libc: every symbol it does not define, libc's
+included, resolves against the program that loads it, and `dlopen()` fails
+with a `dlerror()` naming the first symbol nothing provides. So a program
+that loads plugins must
+
+- link `-ldl`. `-ldl` is what links Kandelo's loader; the `dlopen` that
+  `libc.a` defines is musl's static stub, which fails with "Dynamic
+  loading not supported". A probe that finds `dlopen` in libc without
+  `-ldl` finds that stub: Meson's `dependency('dl')` and `cc.has_function`,
+  and Autoconf's `AC_SEARCH_LIBS([dlopen], [dl])` and
+  `AC_CHECK_FUNC([dlopen])`, report it as present. Ask for the library
+  itself instead (`cc.find_library('dl')`, `AC_CHECK_LIB([dl], [dlopen])`;
+  CMake's `CMAKE_DL_LIBS` is `dl` inside Kandelo).
+- export the API its plugins call. Link with `-Wl,--export-dynamic`
+  (`-Wl,-E`), and declare that API with default visibility: Clang gives
+  WebAssembly symbols hidden visibility unless told otherwise, and
+  `--export-dynamic` exports only default-visibility symbols. `-rdynamic`
+  is ignored (see [Flags silently ignored](#flags-silently-ignored)). The
+  build systems' own switches produce `-Wl,--export-dynamic` inside
+  Kandelo: CMake's `ENABLE_EXPORTS`, Meson's `export_dynamic: true` and
+  Libtool's `-export-dynamic`.
+- export each libc function its plugins call, with `-Wl,--export=<symbol>`
+  (which also links it). `libc.a` is built with hidden visibility, so
+  `--export-dynamic` exports none of libc. `-Wl,--export-all` exports
+  every symbol the program links, libc's included, which is what
+  `-rdynamic` does on an ELF system, but it also keeps every function of
+  each linked object, the SDK glue's `fork` among them. The program then
+  imports the fork entry and must be fork-instrumented before it runs
+  (see [Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)),
+  and it grows (a small test program went from 46 KB to 201 KB). PHP and
+  ScummVM link with `-Wl,--export-all` and a list of `-u` symbols
+  (`packages/registry/php/build-php.sh`,
+  `packages/registry/scummvm/build-scummvm.sh`).
+
+Libtool, CMake and Meson build plugin modules natively inside Kandelo:
+see [GNU build tools](#gnu-build-tools) and
+[CMake inside Kandelo](#cmake-inside-kandelo).
+`host/test/guest-plugins.test.ts` builds a program and a plugin that calls
+back into it with each of them, and runs it. `host/test/sdk-plugin-modules.test.ts`
+builds the same program and plugin with the build machine's `cc` and checks
+the boundaries above: a plugin that calls `printf` loads only once the
+program exports it, a program linked without `-ldl` gets the stub, and
+`--export-all` makes the program fork-capable. Cross builds with the build
+machine's Meson and CMake do not use these package changes: there, Meson's
+`export_dynamic: true` still passes `-Wl,-export-dynamic`, but the SDK's
+CMake platform (`sdk/cmake/Platform/Kandelo.cmake`) gives `ENABLE_EXPORTS`
+no flag, so a cross-built CMake plugin host adds `-Wl,--export-dynamic`
+itself.
+
 ## What the SDK Does
 
 ### Compiler flags injected automatically
@@ -1253,22 +1304,36 @@ differs from the SDK's cross files, which say `linux` for cross builds.
 Meson would name executables `<name>.js` on a system whose name starts
 with `wasm`, an Emscripten convention, so a package patch keeps Kandelo's
 unsuffixed. As with Libtool, build static libraries: `library()` defaults
-to shared, and linking an executable against a shared library fails, so
-use `static_library()` or `-Ddefault_library=static`. Kandelo reports one
+to shared, and a Kandelo program cannot be linked against a shared
+library, so use `static_library()` or `-Ddefault_library=static`. Meson
+refuses an executable's `link_with` of a shared library with a message
+that says so (a package patch); without it the link would fail with
+"attempted static link of dynamic object". `shared_module()` builds a
+side module that `dlopen()` loads, and an executable's
+`export_dynamic: true` exports its symbols to it. Kandelo reports one
 online processor, so Ninja runs two jobs and `meson test` one test at a
 time unless told otherwise. `packages/registry/meson/README.md` and
 `packages/registry/ninja/README.md` have the detail.
 
-**Libtool** builds static libraries only. A Kandelo executable cannot be
-linked against a shared library (`cc` builds `-shared` side modules for
-`dlopen`, but linking a program against one fails with "attempted static
-link of dynamic object"). Given the `linux-musl` identity, upstream
-libtool would build `libfoo.so` and fail to link programs against it, so
-the shipped `libtool.m4` reports no dynamic linker on Kandelo (a package
-patch), and `libtool` installs `.a` archives whatever `LT_INIT` asks for.
-A release tarball whose bundled `libtool.m4` predates this needs
-`--disable-shared`, or `autoreconf -fi`. Libtool cannot build `dlopen`
-modules (`-module`) on Kandelo; build those with `cc -shared`.
+**Libtool** builds `dlopen` modules shared and every other library
+static. A Kandelo executable cannot be linked against a shared library
+(linking a program against one fails with "attempted static link of
+dynamic object"), but `dlopen()` loads the side modules `cc -shared`
+builds. Given the `linux-musl` identity, upstream libtool would build
+`libfoo.so` for every library and fail to link programs against it, so
+the shipped `libtool.m4` and `ltmain.sh` describe Kandelo's loader (a
+package patch): `configure` reports the dynamic linker as `Kandelo dlopen
+(modules only)`, a `-module` library (or one whose link passes
+`-shared`) becomes an unversioned side module, `NAME.so`, with no soname,
+run path or libc of its own, and every other installed library is a `.a`
+archive whatever `LT_INIT` asks for. A program's `-export-dynamic` becomes
+`-Wl,--export-dynamic`, so its plugins can call it (see
+[Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
+Because shared libraries are enabled, Libtool compiles each library
+source twice, PIC and non-PIC, as on any platform with shared libraries;
+`--disable-shared` compiles once and builds modules static too. A
+release tarball whose bundled `libtool.m4` predates this needs
+`--disable-shared`, or `autoreconf -fi`.
 
 **`ld`** is `/usr/bin/ld`, a script that runs the SDK's `wasm-ld`. It
 is not a symlink because LLD picks which linker to be from the name it
@@ -1328,13 +1393,21 @@ names the machine `Kandelo` (`CMAKE_SYSTEM_NAME` and
 Linux to CMake either: projects that branch on `Linux` take their generic
 Unix path.
 
-**Static libraries only.** CMake's `Platform/Kandelo` module says the
-platform has no shared libraries, for the reason Libtool builds none
-above. Under policy CMP0164 (`cmake_minimum_required(VERSION 3.30)` or
-later), `add_library(... SHARED)` and `add_library(... MODULE)` stop with
-"the target platform does not support dynamic linking"; older projects
-get CMake's warning and a static library. `find_library()` finds `.a`
-files only. Build `dlopen` side modules with `cc -shared`.
+**Modules, not shared libraries.** CMake's `Platform/Kandelo` module says
+the platform cannot link programs against shared libraries, for the
+reason Libtool builds none above, but loads modules. Under policy CMP0164
+(`cmake_minimum_required(VERSION 3.30)` or later),
+`add_library(... SHARED)` stops with "the target platform does not
+support dynamic linking"; older projects get CMake's warning and a static
+library. `add_library(... MODULE)` builds a side module,
+`lib<name>.so`, that `dlopen()` loads; as on every platform, no target
+can link against a `MODULE` library. A package patch lets CMake admit
+`MODULE` libraries through a new global property,
+`TARGET_SUPPORTS_MODULE_LIBS`, while `TARGET_SUPPORTS_SHARED_LIBS` stays
+false. `ENABLE_EXPORTS` on an executable links it with
+`-Wl,--export-dynamic` so its modules can call it, and `CMAKE_DL_LIBS` is
+`dl` (see [Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
+`find_library()` finds `.a` files only.
 
 **C++ exceptions** need no flag: the SDK enables them for every C++
 compile (see [C++ exceptions](#c-exceptions)), so `try`/`catch` works in a

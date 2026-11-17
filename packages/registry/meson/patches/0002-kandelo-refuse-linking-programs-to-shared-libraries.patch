@@ -1,0 +1,29 @@
+# Refuse to link a Kandelo program against a shared library.
+#
+# Kandelo's dlopen(3) loads WebAssembly side modules, so shared_module()
+# builds modules it loads. A program cannot be linked against a shared
+# library, though: wasm-ld stops with "attempted static link of dynamic
+# object". library() defaults to shared, so a native Meson build inside
+# Kandelo reached that linker error with no hint. On a wasm-posix machine
+# Meson now refuses the link_with itself and names the alternatives
+# (static_library(), -Ddefault_library=static, shared_module()).
+--- a/mesonbuild/build.py
++++ b/mesonbuild/build.py
+@@ -1603,6 +1603,17 @@
+                 raise InvalidArguments(msg + ' This is not possible in a cross build.')
+             else:
+                 mlog.warning(msg + ' This will fail in cross build.')
++        # Kandelo's uname names its system 'wasm-posix'. Its dlopen() loads
++        # shared modules, but a program cannot be linked against a shared
++        # library: say so here instead of letting the link fail.
++        if (isinstance(self, Executable) and isinstance(t, SharedLibrary)
++                and not isinstance(t, SharedModule)
++                and self.environment.machines[self.for_machine].system == 'wasm-posix'):
++            raise InvalidArguments(
++                f'Executable {self.name!r} cannot link against the shared library {t.name!r}: '
++                'a Kandelo program cannot be linked against a shared library. Use '
++                'static_library(), or library() with -Ddefault_library=static; '
++                'shared_module() builds modules that dlopen() loads.')
+ 
+     def add_include_dirs(self, args: T.Sequence['IncludeDirs'], set_is_system: str = 'preserve') -> None:
+         if set_is_system != 'preserve':
