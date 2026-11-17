@@ -108,6 +108,10 @@ set(WASM32_LINK_FLAGS
   "-Wl,--max-memory=1073741824"
   "-Wl,--allow-undefined-file=${_KANDELO_HOST_IMPORTS}"
   "-Wl,--global-base=1114112"
+  # LLD 22 made --stack-first the default, which puts the shadow stack at
+  # address 0 below the data. Keep the stack-after-data layout every other
+  # program gets from the SDK driver (crates/kandelo-cc/src/driver.rs).
+  "-Wl,--no-stack-first"
   "-Wl,--table-base=3"
   "-Wl,--export-table"
   "-Wl,--growable-table"
