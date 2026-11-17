@@ -158,7 +158,14 @@ capability only. Program ABI 56 remains unchanged. The generated kernel-host
 snapshot includes record layouts and actions; full unsigned generation/receipt
 values have separate status returns. These interfaces do not advertise a ready
 execution/stop backend or expose a guest group-creation syscall. Normal host
-launch, executable translation and terminal-stop integration remain later stages.
+launch and terminal-stop integration remain later stages.
+
+The SDK now provides `wasm32posix-shared-memory` to prepare a separate,
+versioned grouped executable while preserving the ordinary input. The
+translator and standalone C/Worker fixtures exercise translated memory
+operations, permissions and atomics. This artifact preparation does not enable
+grouped launch: the normal launcher still refuses the required group-memory
+import. See [SDK preparation and its limits](sdk-guide.md#experimental-memory-group-translation).
 
 These are review boundaries for the integration series. Each stage must leave
 the ordinary backend usable. Incomplete grouped behavior stays
