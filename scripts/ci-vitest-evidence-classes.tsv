@@ -65,6 +65,7 @@ host/test/core-image-identity.test.ts	prepared-product
 host/test/cors-proxy-session.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/cxx-runtime-guest.test.ts	prepared-product
+host/test/cxx-terminate.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
 host/test/dbus-smoke.test.ts	prepared-product
 host/test/deferred-byte-spool.test.ts	source-only
