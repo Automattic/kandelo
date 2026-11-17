@@ -154,7 +154,8 @@ describe("channel scalar-slot contract", () => {
     expect(kernelWorkerSource).not.toContain(
       "channelReturnValueForPublication",
     );
-    expect(wasmApiSource).toContain("dispatch_channel_wide_result");
+    expect(wasmApiSource).toContain("dispatch_channel_result");
+    expect(wasmApiSource).toContain("(82, ChannelResultKind::I32)");
     expect(wasmApiSource).not.toMatch(
       /(?:46|48|66|126)\s*=>[^,\\n]*as\s+i32/,
     );

@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolveRootfsArtifact } from "../src/node-kernel-host";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary } from "../src/binary-resolver";
 
 const programBinary = resolveBinary("programs/gbm_surface_smoke.wasm");
+// WHY: source-checkout provenance checks are artifact preparation. Keep the
+// existing deadline on kernel boot, the guest operation and teardown by
+// preparing the verified image alongside the program before the test starts.
+const rootfsImage = readFileSync(resolveRootfsArtifact().selectedPath);
 
 describe("libgbm surface before rendering", () => {
   it(
@@ -10,6 +16,7 @@ describe("libgbm surface before rendering", () => {
     async () => {
       const result = await runCentralizedProgram({
         programPath: programBinary!,
+        rootfsImage,
         argv: ["gbm_surface_smoke"],
         timeout: 5_000,
       });

@@ -15,11 +15,14 @@ import {
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  CH_SIG_SIGNUM,
+  CH_SIG_SI_CODE,
   CH_STATUS,
   CH_SYSCALL,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch, emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 import { ProcessMemoryCreatorGate } from "../src/process-memory-creator-gate";
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 
 const PID = 47;
 const KERNEL_TID = 318;
@@ -952,7 +955,13 @@ describe("clone teardown ownership", () => {
       expect(h.markProcessSignaled).toHaveBeenCalledExactlyOnceWith(PID, 11);
       expect(h.onExit).toHaveBeenCalledExactlyOnceWith(PID, 139);
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("FATAL could not roll back allocated tid"));
-      expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+      // The dead caller is woken only with EINTR and the private SIGKILL
+      // exit-retirement marker so its Worker can unwind; it never receives
+      // an ordinary clone result (a TID or -1/ENOMEM).
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 4});
+      const signal = new DataView(h.channel.memory.buffer, h.channel.channelOffset);
+      expect(signal.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+      expect(signal.getUint32(CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
     } finally { consoleError.mockRestore(); }
   });
 

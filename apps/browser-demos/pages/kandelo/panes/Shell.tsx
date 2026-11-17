@@ -199,14 +199,10 @@ const ShellTerminalHost: React.FC<{
     });
     let unsubData = () => {};
     let disposed = false;
-    // Fitting the terminal depends on the flex layout, the dock's reserved
-    // height (--kdock-height), and xterm's character measurement all being
-    // final. None of those are guaranteed on this first synchronous pass, so a
-    // single fit here can spawn the shell at the wrong winsize and leave it
-    // there — the ResizeObserver below only re-fits on a box-size change, so
-    // without this the size stays wrong until the user physically resizes the
-    // window. safeFit() is retried after layout settles (see resettle below).
-    const safeFit = () => {
+    // Fitting depends on the flex layout, dock space and character metrics.
+    // Observe visible layout before fitting, then resettle after fonts load
+    // so a shell started with xterm's initial dimensions receives its size.
+    const fitNow = () => {
       if (disposed || !viewRef.current.active || !containerRef.current) return;
       if (containerRef.current.clientWidth === 0 || containerRef.current.clientHeight === 0) return;
       try {
@@ -215,6 +211,27 @@ const ShellTerminalHost: React.FC<{
         /* xterm can throw if measured before layout; a later pass retries */
       }
     };
+    let intersects = false;
+    let fitFrame = 0;
+    const safeFit = () => {
+      if (disposed || !viewRef.current.active || !intersects || fitFrame) return;
+      fitFrame = window.requestAnimationFrame(() => {
+        fitFrame = 0;
+        fitNow();
+      });
+    };
+    // Why: xterm suspends its renderer while hidden. Fitting before its
+    // visibility callback resumes rendering can size the scroll range from
+    // the old row count and strand new output below the visible terminal.
+    // Fit on the frame after visibility is observed, preserving scrollback.
+    const fitVisibility = new IntersectionObserver((entries) => {
+      const entry = entries.at(-1);
+      if (!entry) return;
+      intersects = entry.isIntersecting;
+      safeFit();
+    });
+    fitVisibility.observe(term.element!);
+
     fitTerminalRef.current = safeFit;
     safeFit();
     const focusTerminal = () => {
@@ -321,6 +338,8 @@ const ShellTerminalHost: React.FC<{
       }
       document.removeEventListener("pointerdown", onDocumentPointerDown, true);
       themeObserver.disconnect();
+      fitVisibility.disconnect();
+      if (fitFrame) window.cancelAnimationFrame(fitFrame);
       links.dispose();
       previewRequests.dispose();
       term.dispose();

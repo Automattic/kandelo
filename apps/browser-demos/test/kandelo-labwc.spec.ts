@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "../playwright-test";
+import { expect, type Page } from "../playwright-test";
+import { test } from "./support/persistent-page";
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { setInternalsOpen } from "./support/dock";
 import { typePhysicalText } from "./support/physical-typing";

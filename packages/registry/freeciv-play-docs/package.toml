@@ -1,0 +1,25 @@
+kind = "program"
+name = "freeciv-play-docs"
+version = "3.2.6"
+kernel_abi = 56
+depends_on = ["freeciv-browser-bundle@3.2.6", "bash@5.2.37", "coreutils@9.6", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for Kandelo's freeciv-play launcher, generated from what each prints for --help and
+# --version while running inside Kandelo. Kandelo writes these commands,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/freeciv-play-docs/build-freeciv-play-docs.sh"
+
+[[outputs]]
+name = "freeciv-play-docs"
+wasm = "freeciv-play-docs.zip"
+fork_instrumentation = "disabled"

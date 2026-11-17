@@ -335,6 +335,13 @@ binary = "programs/wasm32/toybox/logger.wasm"
 path = "/usr/bin/logger"
 
 [[packages]]
+name = "patch"
+
+[[packages.outputs]]
+binary = "programs/wasm32/patch.wasm"
+path = "/usr/bin/patch"
+
+[[packages]]
 name = "posix-utils-lite"
 
 [[packages.outputs]]
@@ -424,10 +431,6 @@ path = "/usr/bin/ngettext"
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/nm.wasm"
 path = "/usr/bin/nm"
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/patch.wasm"
-path = "/usr/bin/patch"
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/pax.wasm"

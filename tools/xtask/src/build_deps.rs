@@ -3100,6 +3100,16 @@ pub(crate) struct SourceOnlyProgramProjectionAuthority<'a> {
 
 #[cfg(unix)]
 impl SourceOnlyProgramProjectionAuthority<'_> {
+    /// Check one package's retained receipt against its cache entry and
+    /// current key before the projection authority is published.
+    ///
+    /// `dependency_keys` is shared by every package one publication checks:
+    /// each package's own key is recomputed from its inputs here, but the
+    /// keys of its dependencies are reused from it, because deriving each
+    /// closure from scratch hashed the shared dependencies again for every
+    /// package. The publication then calls `recheck_package_keys`, which
+    /// derives every key again from scratch, so a dependency whose inputs
+    /// change while this runs still fails it.
     pub(crate) fn validate_package_receipt(
         &self,
         target: &DepsManifest,
@@ -3109,6 +3119,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
         abi_version: u32,
         verify_cache: bool,
         receipt: &PackageNodeReceiptV1,
+        dependency_keys: &mut BTreeMap<String, [u8; 32]>,
     ) -> Result<(), String> {
         self.lock.validate()?;
         if target.kind == ManifestKind::Source {
@@ -3117,15 +3128,8 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
                 target.spec()
             ));
         }
-        let cache_key = compute_sha_for_policy(
-            target,
-            registry,
-            arch,
-            abi_version,
-            ResolvePolicy::SourceOnlyV1,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )?;
+        let cache_key =
+            source_only_package_key(target, registry, arch, abi_version, Some(dependency_keys))?;
         let canonical = canonical_path(&roots.compiled, target, arch, abi_version, &cache_key);
         let before = capture_source_only_package_authority(
             target,
@@ -3135,6 +3139,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             arch,
             abi_version,
             verify_cache,
+            Some(dependency_keys),
         )?;
         let actual_cache_receipt = before.cache_receipt_sha256.clone();
         // `manifest_sha256` is the digest of the package.toml FILE, and it is
@@ -3241,6 +3246,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             arch,
             abi_version,
             verify_cache,
+            Some(dependency_keys),
         )?;
         require_same_source_only_package_authority(
             target,
@@ -3248,6 +3254,38 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             &after,
             "during supervisor finalization",
         )?;
+        self.lock.validate()
+    }
+
+    /// Derive every checked package's key again from scratch and require it
+    /// to equal the key its receipt records. `validate_package_receipt` reused
+    /// dependency keys across packages; this is the check that the inputs of
+    /// every package in every closure were still the same at the end.
+    pub(crate) fn recheck_package_keys<'m>(
+        &self,
+        registry: &Registry,
+        abi_version: u32,
+        checked: impl IntoIterator<Item = (&'m DepsManifest, TargetArch, &'m PackageNodeReceiptV1)>,
+    ) -> Result<(), String> {
+        self.lock.validate()?;
+        let mut fresh = BTreeMap::new();
+        for (target, arch, receipt) in checked {
+            let key = compute_sha_for_policy(
+                target,
+                registry,
+                arch,
+                abi_version,
+                ResolvePolicy::SourceOnlyV1,
+                &mut fresh,
+                &mut Vec::new(),
+            )?;
+            if hex(&key) != receipt.cache_key_sha256 {
+                return Err(format!(
+                    "{}: package inputs changed while the projection was being finalized",
+                    target.spec()
+                ));
+            }
+        }
         self.lock.validate()
     }
 
@@ -3425,6 +3463,16 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
         _abi_version: u32,
         _verify_cache: bool,
         _receipt: &PackageNodeReceiptV1,
+        _dependency_keys: &mut BTreeMap<String, [u8; 32]>,
+    ) -> Result<(), String> {
+        Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
+    }
+
+    pub(crate) fn recheck_package_keys<'m>(
+        &self,
+        _registry: &Registry,
+        _abi_version: u32,
+        _checked: impl IntoIterator<Item = (&'m DepsManifest, TargetArch, &'m PackageNodeReceiptV1)>,
     ) -> Result<(), String> {
         Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
     }
@@ -5451,22 +5499,12 @@ fn package_context_cache_keys(
     manifest: &DepsManifest,
     registry: &Registry,
 ) -> Result<BTreeMap<String, String>, String> {
-    package_context_cache_keys_for_policy(
+    package_context_cache_keys_with_memo(
         manifest,
         registry,
         current_abi_version(),
         ResolvePolicy::Default,
-    )
-}
-
-fn package_context_cache_keys_for_policy(
-    manifest: &DepsManifest,
-    registry: &Registry,
-    abi_version: u32,
-    policy: ResolvePolicy,
-) -> Result<BTreeMap<String, String>, String> {
-    package_context_cache_keys_with_memo(
-        manifest, registry, abi_version, policy, &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
     )
 }
 
@@ -5648,6 +5686,7 @@ fn program_dependency_closure_for_policy(
     arch: TargetArch,
     abi_version: u32,
     policy: ResolvePolicy,
+    memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Result<Vec<ProgramDependencyIdentity>, String> {
     let mut identities = BTreeMap::new();
     collect_program_dependency_identities(
@@ -5656,7 +5695,7 @@ fn program_dependency_closure_for_policy(
         arch,
         &mut identities,
         &mut Vec::new(),
-        &mut BTreeMap::new(),
+        memo,
         abi_version,
         policy,
     )?;
@@ -5965,6 +6004,13 @@ pub(crate) fn source_only_program_package_index_for_nodes(
     let mut packages = BTreeMap::<String, ProgramPackageProjection>::new();
     let mut required_identities = BTreeSet::new();
     let mut resolver_paths = Vec::<(String, String, String)>::new();
+    // WHY: one cache-key memo for the whole index. Every program's key covers
+    // its dependency closure, so deriving each one from an empty memo hashed
+    // the shared dependencies again for every program and architecture, which
+    // made the index the slowest step of a full local build. Memo entries are
+    // keyed by package, architecture, ABI and policy, and the index is one
+    // derivation of the tree as it stands, so sharing them changes no key.
+    let mut key_memo = BTreeMap::new();
     for node in selected_nodes {
         let manifest = registry.load(&node.package_name)?;
         if !manifest.target_arches.contains(&node.target_arch) {
@@ -5985,17 +6031,19 @@ pub(crate) fn source_only_program_package_index_for_nodes(
             node.target_arch,
             abi_version,
             ResolvePolicy::SourceOnlyV1,
+            &mut key_memo,
         )?;
         required_identities.extend(
             dependency_closure
                 .iter()
                 .map(|identity| identity.package_name.clone()),
         );
-        let identity_keys = package_context_cache_keys_for_policy(
+        let identity_keys = package_context_cache_keys_with_memo(
             &manifest,
             registry,
             abi_version,
             ResolvePolicy::SourceOnlyV1,
+            &mut key_memo,
         )?;
         let selected_key = identity_keys
             .get(node.target_arch.as_str())
@@ -6071,11 +6119,12 @@ pub(crate) fn source_only_program_package_index_for_nodes(
                 manifest_sha256: stable_package_manifest_sha256(
                     &manifest.dir.join("package.toml"),
                 )?,
-                cache_keys: package_context_cache_keys_for_policy(
+                cache_keys: package_context_cache_keys_with_memo(
                     &manifest,
                     registry,
                     abi_version,
                     ResolvePolicy::SourceOnlyV1,
+                    &mut key_memo,
                 )?,
             },
         );
@@ -7140,6 +7189,53 @@ fn compute_sha_with_identity_context(
     )
 }
 
+/// The entry under which the cache-key memo records `target`'s key.
+fn cache_key_memo_entry(
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+) -> String {
+    format!("{}|{}|{}|{:?}", target.spec(), arch.as_str(), abi_version, policy)
+}
+
+/// `target`'s SourceOnlyV1 cache key from its inputs as they are now.
+///
+/// With `dependency_keys`, the keys of its dependencies come from that memo
+/// (and are recorded there), but `target`'s own key is always recomputed, so
+/// its own inputs are read again on every call. Without it, the whole
+/// dependency closure is derived from scratch, as every caller once did.
+fn source_only_package_key(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    dependency_keys: Option<&mut BTreeMap<String, [u8; 32]>>,
+) -> Result<[u8; 32], String> {
+    let mut fresh = BTreeMap::new();
+    let memo = match dependency_keys {
+        Some(memo) => {
+            memo.remove(&cache_key_memo_entry(
+                target,
+                arch,
+                abi_version,
+                ResolvePolicy::SourceOnlyV1,
+            ));
+            memo
+        }
+        None => &mut fresh,
+    };
+    compute_sha_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+        memo,
+        &mut Vec::new(),
+    )
+}
+
 fn compute_sha_with_identity_context_for_platform(
     target: &DepsManifest,
     registry: &Registry,
@@ -7171,13 +7267,7 @@ fn compute_sha_with_identity_context_for_platform(
     // a canonical cache path with wasm32 in the dir but the wasm64
     // sha in the suffix — which then can't possibly be satisfied by
     // either archive.
-    let memo_key = format!(
-        "{}|{}|{}|{:?}",
-        target.spec(),
-        arch.as_str(),
-        abi_version,
-        policy
-    );
+    let memo_key = cache_key_memo_entry(target, arch, abi_version, policy);
     if let Some(cached) = memo.get(&memo_key) {
         return Ok(*cached);
     }
@@ -9504,6 +9594,7 @@ fn capture_source_only_package_authority(
     arch: TargetArch,
     abi_version: u32,
     verify_cache: bool,
+    mut dependency_keys: Option<&mut BTreeMap<String, [u8; 32]>>,
 ) -> Result<SourceOnlyPackageAuthority, String> {
     let manifest_path = target.dir.join("package.toml");
     let manifest_before = stable_package_manifest_sha256(&manifest_path)?;
@@ -9518,14 +9609,12 @@ fn capture_source_only_package_authority(
             manifest.dir.display()
         ));
     }
-    let cache_key = compute_sha_for_policy(
+    let cache_key = source_only_package_key(
         &manifest,
         registry,
         arch,
         abi_version,
-        ResolvePolicy::SourceOnlyV1,
-        &mut BTreeMap::new(),
-        &mut Vec::new(),
+        dependency_keys.as_deref_mut(),
     )?;
     let cache_key_sha256 = hex(&cache_key);
     let expected_canonical =
@@ -9614,14 +9703,12 @@ fn capture_source_only_package_authority(
     let reloaded = registry.load(&target.name).map_err(|error| {
         format!("{}: recheck source-only package authority: {error}", target.spec())
     })?;
-    let key_after = compute_sha_for_policy(
+    let key_after = source_only_package_key(
         &reloaded,
         registry,
         arch,
         abi_version,
-        ResolvePolicy::SourceOnlyV1,
-        &mut BTreeMap::new(),
-        &mut Vec::new(),
+        dependency_keys,
     )?;
     if manifest_before != manifest_after
         || reloaded.dir != manifest.dir
@@ -10136,6 +10223,7 @@ where
         arch,
         abi_version,
         verify_cache,
+        None,
     )?;
     before_projection().map_err(|error| {
         format!(
@@ -10159,6 +10247,7 @@ where
             arch,
             abi_version,
             verify_cache,
+            None,
         )?;
         require_same_source_only_package_authority(
             target,
@@ -10187,6 +10276,7 @@ where
                 arch,
                 abi_version,
                 verify_cache,
+                None,
             )?;
             require_same_source_only_package_authority(
                 target,
@@ -10205,6 +10295,7 @@ where
             arch,
             abi_version,
             verify_cache,
+            None,
         )?;
         require_same_source_only_package_authority(
             target,
@@ -26602,7 +26693,7 @@ printf 'consumer' > "$WASM_POSIX_DEP_OUT_DIR/lib/libconsumer.a""#,
         assert_eq!(receipt.materialized_members.len(), 2);
         assert_eq!(read_source_only_cache_receipt(&canonical, &receipt.cache_key_sha256).unwrap().unwrap(), receipt);
         with_source_only_program_projection_lock(&output, |authority| {
-            authority.validate_package_receipt(&target, &registry, &roots, TEST_ARCH, TEST_ABI, true, &receipt)
+            authority.validate_package_receipt(&target, &registry, &roots, TEST_ARCH, TEST_ABI, true, &receipt, &mut BTreeMap::new())
         }).unwrap();
         let original_member = receipt.materialized_members.iter().find(|member| member.source_artifact == "originals/app.wasm").unwrap();
         assert_eq!(fs::read(output.join(&original_member.mirror_path)).unwrap(), original);
@@ -39120,6 +39211,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 TEST_ABI,
                 true,
                 &receipt,
+                &mut BTreeMap::new(),
             )
         })
         .unwrap();
@@ -39134,6 +39226,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 TEST_ABI,
                 true,
                 &receipt,
+                &mut BTreeMap::new(),
             )
         })
         .unwrap_err();
@@ -39154,10 +39247,91 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
                 TEST_ABI,
                 true,
                 &receipt,
+                &mut BTreeMap::new(),
             )
         })
         .unwrap_err();
         assert!(error.contains("materialized") || error.contains("member"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn projection_publication_reuses_dependency_keys_and_rechecks_them_from_scratch() {
+        let repo = tempdir("projection-dependency-keys-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_counted_lib_fixture(&repo, "base", &[], &repo.join("counter"));
+        write_source_only_repository_inputs(&repo, "base");
+        write_program(
+            &repo,
+            "app",
+            "1.0.0",
+            &["base@1.0.0"],
+            &emit_wasm_build_script("app.wasm", &minimal_executable_wasm()),
+            &[("app", "app.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "app");
+        let manifest_path = repo.join("app/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"app.wasm\"",
+                "wasm = \"app.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let base = registry.load("base").unwrap();
+        let app = registry.load("app").unwrap();
+        let (cache_base, compiled) = source_only_test_roots("projection-dependency-keys-cache");
+        let roots = SourceOnlyCacheRoots { base: cache_base, compiled };
+        let output = tempdir("projection-dependency-keys-output");
+        let base_receipt = run_local_rebuild_fixture(&base, &registry, &roots, &repo, &output, false)
+            .unwrap()
+            .package_receipt
+            .unwrap();
+        let app_receipt = run_local_rebuild_fixture(&app, &registry, &roots, &repo, &output, false)
+            .unwrap()
+            .package_receipt
+            .unwrap();
+        let checked = [(&base, TEST_ARCH, &base_receipt), (&app, TEST_ARCH, &app_receipt)];
+
+        // Unchanged inputs: both receipts validate against one shared memo,
+        // and the from-scratch recheck agrees.
+        with_source_only_program_projection_lock(&output, |authority| {
+            let mut dependency_keys = BTreeMap::new();
+            for (target, arch, receipt) in checked {
+                authority.validate_package_receipt(
+                    target, &registry, &roots, arch, TEST_ABI, true, receipt,
+                    &mut dependency_keys,
+                )?;
+            }
+            authority.recheck_package_keys(&registry, TEST_ABI, checked)
+        })
+        .unwrap();
+
+        // The library's input changes after its key is in the memo. The
+        // program's own check reuses that remembered key and passes, which is
+        // why the publication must recheck every key from scratch.
+        let error = with_source_only_program_projection_lock(&output, |authority| {
+            let mut dependency_keys = BTreeMap::new();
+            authority.validate_package_receipt(
+                &base, &registry, &roots, TEST_ARCH, TEST_ABI, true, &base_receipt,
+                &mut dependency_keys,
+            )?;
+            fs::write(repo.join("base/source-only-input.txt"), "changed while finalizing\n")
+                .unwrap();
+            authority.validate_package_receipt(
+                &app, &registry, &roots, TEST_ARCH, TEST_ABI, true, &app_receipt,
+                &mut dependency_keys,
+            )?;
+            authority.recheck_package_keys(&registry, TEST_ABI, checked)
+        })
+        .unwrap_err();
+        assert!(
+            error.contains("base") && error.contains("changed while the projection was being finalized"),
+            "{error}"
+        );
     }
 
     /// Task 5 of the kernel-staleness Stage 1 fix: a wasm output published by

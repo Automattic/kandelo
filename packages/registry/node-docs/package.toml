@@ -1,0 +1,26 @@
+kind = "program"
+name = "node-docs"
+version = "0.1.0"
+kernel_abi = 56
+depends_on = ["node-browser-bundle@0.1.0", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for node, generated from what the program
+# prints for --help and --version while running inside Kandelo: the
+# program has no upstream manual page. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MPL-2.0"
+url = "https://www.mozilla.org/MPL/2.0/"
+
+[build]
+script_path = "packages/registry/node-docs/build-node-docs.sh"
+
+[[outputs]]
+name = "node-docs"
+wasm = "node-docs.zip"
+fork_instrumentation = "disabled"

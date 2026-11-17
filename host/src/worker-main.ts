@@ -3049,8 +3049,12 @@ export async function centralizedWorkerMain(
     // WHY: the kernel keeps its own copy of the program bytes, and a running
     // process never reads them again. Detaching frees them at once: an idle
     // process worker waits in Atomics.wait and rarely collects garbage.
+    // The one exception is a program that imports the stack-capture
+    // extension: its import reads these bytes for debug metadata on the
+    // first capture, so they are kept for the process's lifetime.
+    let retainProgramBytes = false;
     const releaseProgramBytes = () => {
-      programBytes.transfer(0);
+      if (!retainProgramBytes) programBytes.transfer(0);
     };
     const ptrWidth = initData.ptrWidth ?? 4;
     const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
@@ -3068,6 +3072,8 @@ export async function centralizedWorkerMain(
       ? initData.programModule
       : await WebAssembly.compile(programBytes);
     registerWasmModuleReflection(module, programBytes);
+    retainProgramBytes = wasmModuleImports(module)
+      .some((entry) => entry.module === STACK_MODULE);
     // --- WASI module detection and handling ---
     if (isWasiModule(module)) {
       if (wasiModuleDefinesMemory(module)) {

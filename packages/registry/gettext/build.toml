@@ -1,0 +1,12 @@
+script_path = "packages/registry/gettext/build-gettext.sh"
+inputs = [
+  "packages/registry/gettext/build-gettext.sh",
+  "packages/registry/gettext/patches",
+  "scripts/rewrite-guest-tool-paths.py",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

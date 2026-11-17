@@ -403,9 +403,11 @@ mod tests {
         handle: i64,
     ) -> (u32, usize) {
         let proc = table.get_mut(pid).unwrap();
-        let idx = proc
+        let prepared = proc
             .ofd_table
-            .create(FileType::Regular, O_RDONLY, handle, b"/program".to_vec());
+            .prepare(FileType::Regular, O_RDONLY, b"/program")
+            .unwrap();
+        let idx = proc.ofd_table.publish(prepared, handle);
         let id = proc.ofd_table.get(idx).unwrap().ofd_id;
         let mut target = PreparedExecTarget::new(
             owner,
@@ -704,7 +706,7 @@ mod tests {
             thread_exit(&mut table, &mut host, pid, pid, false),
             Err(Errno::EBUSY)
         ));
-        assert!(table.remove_process(pid).is_none());
+        assert!(table.remove_process_with_io(pid, &mut host).is_none());
         assert_eq!(table.fork_process_for_caller(pid, pid), Err(Errno::EBUSY));
         assert_eq!(table.get(pid).unwrap().state, ProcessState::Running);
         assert_eq!(host.closed, [base]);

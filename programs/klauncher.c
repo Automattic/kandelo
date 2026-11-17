@@ -360,7 +360,52 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
         wpk_text(s, font, 16, PROMPT_H + 28, "no matches", palette.muted);
 }
 
+static const char help_text[] =
+    "Usage: klauncher [--menu]\n"
+    "\n"
+    "Choose an application or desktop theme from a keyboard menu.\n"
+    "\n"
+    "klauncher opens a 640x400 window on the Wayland compositor's overlay\n"
+    "layer (zwlr_layer_shell_v1) that takes all keyboard input while it is\n"
+    "up. Typing filters the list by a case-insensitive substring of the entry\n"
+    "names, Backspace deletes, Up and Down move the selection, Enter chooses,\n"
+    "and Escape dismisses. Pressing Enter when nothing matches also\n"
+    "dismisses.\n"
+    "\n"
+    "The application list comes from the .conf files in\n"
+    APPS_DIR ", or in the directory named by KLAUNCHER_APPS_DIR;\n"
+    "each file holds a \"name = ...\" and an \"exec = ...\" line, and at most\n"
+    "32 are read.\n"
+    "Choosing an application asks the compositor to run its exec command by\n"
+    "sending \"dispatch exec COMMAND\" to the kwlctl socket " KWLCTL_SOCKET_PATH ";\n"
+    "klauncher itself starts no process. It takes its colours from the\n"
+    "theme the compositor reports on that socket, reading\n"
+    THEME_DIR "/NAME/theme.conf, or\n"
+    "KANDELO_THEME_DIR/NAME/theme.conf when that is set.\n"
+    "\n"
+    "klauncher writes KLAUNCHER_READY, KLAUNCHER_LEVEL, KLAUNCHER_FILTER,\n"
+    "KLAUNCHER_EXEC, KLAUNCHER_THEME and KLAUNCHER_EXIT lines on standard\n"
+    "output as it works. It exits with status 0 when dismissed or after a\n"
+    "choice, and 1 when the compositor has no layer shell or the font cannot\n"
+    "be loaded.\n"
+    "\n"
+    "Options:\n"
+    "      --menu     open the desktop menu instead: Apps opens the\n"
+    "                 application list and Theme lists the compositor's\n"
+    "                 installed themes, switching to the chosen one with\n"
+    "                 \"dispatch theme NAME\"; Escape returns to the menu\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("klauncher (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
     st.menu = argc > 1 && strcmp(argv[1], "--menu") == 0;
     enter_level(st.menu ? L_ROOT : L_APPS);
     sync_theme();

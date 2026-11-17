@@ -115,7 +115,7 @@ export class CpuImageStorage {
   attachPlanarGpu(host: PlanarGpuHost): void { this.planarGpu = host; }
 
   acquire(b: GlBinding, bo: number, store: GbmBoRegistry, layout: CpuImageLayout): GlGpuAllocation | null {
-    const gl = b.gl, bytes = store.pixelView(bo);
+    const gl = b.gl, bytes = store.readPixelView(bo);
     const {width, height, format, pitch, offset} = layout;
     // The mirror's texture holds the plane's own format (cpu-image-codec.ts).
     const codec = cpuImageCodec(format);
@@ -167,7 +167,7 @@ export class CpuImageStorage {
         if (source.gl !== gl) return null;
         continue;
       }
-      const bytes = store.pixelView(plane.bo), row = rowBytes(info, width, index);
+      const bytes = store.readPixelView(plane.bo), row = rowBytes(info, width, index);
       const span = plane.offset + (planeHeight(info, height, index) - 1) * plane.pitch + row;
       if (!bytes ||
           ![plane.offset, plane.pitch, span].every(Number.isSafeInteger) || plane.offset < 0 ||
@@ -230,7 +230,7 @@ export class CpuImageStorage {
     if (current) {
       // Audit (debug and tests): unchanged counts must mean unchanged bytes.
       for (const bo of bos) {
-        const bytes = store.pixelView(bo)!, before = mirror.audited?.get(bo);
+        const bytes = store.readPixelView(bo)!, before = mirror.audited?.get(bo);
         if (before && (before.length !== bytes.length || bytes.some((value, i) => value !== before[i])))
           nativeGlFault(`YUV image plane bo ${bo} changed without a counted write`);
       }
@@ -240,14 +240,14 @@ export class CpuImageStorage {
     let pixels: ArrayBufferView;
     try {
       pixels = convertYuv(format, width, height, mirror.layout.planes.map(plane =>
-        ({bytes: store.pixelView(plane.bo)!, offset: plane.offset, pitch: plane.pitch})),
+        ({bytes: store.readPixelView(plane.bo)!, offset: plane.offset, pitch: plane.pitch})),
         {colorSpace: mirror.layout.colorSpace, fullRange: mirror.layout.fullRange,
           sitingH: mirror.layout.siting & 1 ? 0.5 : 0, sitingV: mirror.layout.siting & 2 ? 0.5 : 0});
     } catch (caught) { rethrowNativeGlFault(caught); return false; }
     const storage = mirror.allocation.storage;
     if (!this.uploadPixels(b, mirror.allocation, pixels, storage.format, storage.type)) return false;
     mirror.converted = counts;
-    mirror.audited = imageWriteAudit() ? new Map(bos.map(bo => [bo, new Uint8Array(store.pixelView(bo)!)])) : null;
+    mirror.audited = imageWriteAudit() ? new Map(bos.map(bo => [bo, new Uint8Array(store.readPixelView(bo)!)])) : null;
     return true;
   }
 
@@ -274,7 +274,7 @@ export class CpuImageStorage {
     const rows = new Map<number, Uint8Array>();
     for (const index of written) {
       if (stages[index].source) continue;
-      const {bo, offset, pitch} = layout.planes[index], bytes = store.pixelView(bo);
+      const {bo, offset, pitch} = layout.planes[index], bytes = store.readPixelView(bo);
       if (!bytes) return false;
       const row = rowBytes(info, layout.width, index), count = planeHeight(info, layout.height, index);
       const packed = new Uint8Array(row * count);
@@ -364,7 +364,7 @@ export class CpuImageStorage {
     for (const [bo, mirror] of this.entries(b.gl)) {
       if (mirror.allocation.retirement.pending) continue;
       store.syncToSab(bo);
-      const bytes = store.pixelView(bo);
+      const bytes = store.readPixelView(bo);
       if (!bytes) return false;
       const previous = mirror.snapshot;
       if (!previous || previous.length !== bytes.length || bytes.some((value, index) => value !== previous[index]))
@@ -396,7 +396,7 @@ export class CpuImageStorage {
       // (unless the write-count audit verifies exactly that).
       const uncounted = !!mirror.snapshot && mirror.begun === storageWrites(mirror.allocation.tex).count;
       if (uncounted && !imageWriteAudit()) { mirror.dirty = false; continue; }
-      const bytes = store.pixelView(bo);
+      const bytes = store.readPixelView(bo);
       if (!bytes || !mirror.snapshot) return false;
       const codec = cpuImageCodec(mirror.layout.format);
       if (!codec) return false;

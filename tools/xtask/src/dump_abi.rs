@@ -104,6 +104,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let clipboard_header = render_clipboard_header();
     let ts_module = render_ts_module();
     let host_imports = render_host_imports_file();
+    let program_contract = render_program_contract_file(&snapshot)?;
 
     let out = out_path.unwrap_or_else(|| repo_root().join("abi/snapshot.json"));
     let header_out = repo_root().join("libc/glue/abi_constants.h");
@@ -124,6 +125,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         repo_root().join("libc/musl-overlay/include/kandelo/clipboard.h");
     let ts_out = repo_root().join("host/src/generated/abi.ts");
     let host_imports_out = repo_root().join("libc/glue/kandelo-host-imports.txt");
+    let program_contract_out = repo_root().join(PROGRAM_CONTRACT_FILE);
 
     if check {
         check_file(&out, &rendered, "ABI snapshot")?;
@@ -166,6 +168,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         )?;
         check_file(&ts_out, &ts_module, "host/src/generated/abi.ts")?;
         check_file(&host_imports_out, &host_imports, "libc/glue/kandelo-host-imports.txt")?;
+        check_file(&program_contract_out, &program_contract, PROGRAM_CONTRACT_FILE)?;
         println!("abi snapshot up-to-date: {}", out.display());
         println!("abi header up-to-date:  {}", header_out.display());
         println!(
@@ -201,6 +204,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             clipboard_header_out.display()
         );
         println!("abi TS bindings up-to-date: {}", ts_out.display());
+        println!(
+            "program ABI-contract digest up-to-date: {}",
+            program_contract_out.display()
+        );
         crate::program_extensions::run(vec!["--check".to_owned()])?;
         return Ok(());
     }
@@ -229,6 +236,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", ts_out.display());
     write_file(&host_imports_out, &host_imports)?;
     println!("wrote {}", host_imports_out.display());
+    write_file(&program_contract_out, &program_contract)?;
+    println!("wrote {}", program_contract_out.display());
     crate::program_extensions::run(Vec::new())?;
     Ok(())
 }
@@ -3349,6 +3358,10 @@ fn render_ts_module() -> String {
         shared::abi::HOST_ADAPTER_VERSION
     ));
     out.push_str(&format!(
+        "export const ENTROPY_READ_PENDING = {} as const;\n",
+        shared::abi::ENTROPY_READ_PENDING
+    ));
+    out.push_str(&format!(
         "export const HOST_ADAPTER_MANIFEST_MAGIC = {} as const;\n",
         shared::abi::HOST_ADAPTER_MANIFEST_MAGIC
     ));
@@ -4408,6 +4421,11 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
     s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
+    s.add(KernelHost, "entropy_read_wire", json!({
+        "pending_step_result": shared::abi::ENTROPY_READ_PENDING,
+        "pending_channel_errno": shared::abi::ENTROPY_READ_PENDING as u32,
+        "pending_channel_return": "positive process/task-bound token",
+    }));
     s.add(KernelHost, "kms_cursor_transport", kms_cursor_transport());
     s.add(KernelHost, "dri_cleanup_status", dri_cleanup_status());
     s.add(Program, "io_multiplexing", io_multiplexing());
@@ -7266,6 +7284,27 @@ fn host_env_imports() -> Value {
             })
             .collect(),
     )
+}
+
+/// Where the SDK finds the program ABI-contract digest it stamps on every
+/// executable it links (crates/kandelo-cc, `kandelo.abi.contract`).
+pub(crate) const PROGRAM_CONTRACT_FILE: &str = "libc/glue/kandelo-abi-contract.txt";
+
+/// The program ABI-contract digest as 64 lowercase hex digits and a newline.
+///
+/// WHY a generated file beside the glue: the SDK driver compiles this glue
+/// into every executable it links, and the glue is what binds a program to
+/// the program surface. The SDK inside Kandelo ships the glue directory but
+/// not the snapshot or the digest code, so the driver reads the digest from
+/// here on both the build machine and inside Kandelo.
+fn render_program_contract_file(snapshot: &JsonMap) -> Result<String, String> {
+    let digest = crate::local_abi_identity::program_contract_digest(
+        &Value::Object(snapshot.clone().into_iter().collect()),
+        shared::ABI_VERSION,
+    )?;
+    let mut out: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    out.push('\n');
+    Ok(out)
 }
 
 /// The link-time allowance: one symbol per line, sorted. Every executable link

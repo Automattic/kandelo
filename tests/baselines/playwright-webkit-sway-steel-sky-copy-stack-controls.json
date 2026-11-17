@@ -1,0 +1,19 @@
+{
+  "context": {
+    "command": "scripts/dev-shell.sh npx playwright test --config ../../.scratch/cage-coherence-20261109/steel-sky-main-copy-stack.config.ts --grep \"sway launches\" --workers=1 --retries=0 --reporter=list,json",
+    "commit": "8161769ed9d2394e7793bfd82be08cbf890e7145",
+    "date": "2026-11-10T22:00:04.856801+00:00",
+    "exit_code": 1,
+    "host": "webkit",
+    "note": "Two fixed diagnostic projects against unchanged pinned main normal source-only server56513. Build-only evidence classifications/Sortix case adjustment retained. Test from candidate private scratch adds error stack capture and holds Control until menu completion, unchanged visible-game deadline and original production runtime. Both fail visible-game readiness: first process-worker fork replay Uint32Array allocation OOM, second kernel-scratch detached Uint8Array OOM during epoll then fatal wake drain. Full traces retained. Candidate normal-product finalization was concurrently active; no performance or browser-defect claim.",
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/sydney/.scratch/cage-coherence-20261109/main-control",
+    "selection": "sway-steel-sky-copy-stack-controls",
+    "suite": "playwright"
+  },
+  "source_sha256": "6526c6c09b2984f85518fb46dd83d7eb8c89d14f4e99b25d5bd7746cf65ecc5b",
+  "cases": {
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"},
+    "[webkit-main-copy-stack-1] steel-sky-error-diagnostic.spec.ts > steel-sky-error-diagnostic.spec.ts > sway launches real Steel Sky and opens its game menu": {"observed":["failed"],"outcome":"fail","reason":"Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m Expected: \u001b[32mtrue\u001b[39m Received: \u001b[31mfalse\u001b[39m Call Log: - Timeout 360000ms exceeded while waiting on the predicate"},
+    "[webkit-main-copy-stack-2] steel-sky-error-diagnostic.spec.ts > steel-sky-error-diagnostic.spec.ts > sway launches real Steel Sky and opens its game menu": {"observed":["failed"],"outcome":"fail","reason":"Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m Expected: \u001b[32mtrue\u001b[39m Received: \u001b[31mfalse\u001b[39m Call Log: - Timeout 360000ms exceeded while waiting on the predicate"}
+  }
+}

@@ -2,7 +2,7 @@
 #
 # Build the browser lazy-archive bundle for Node.js. Reshapes the node
 # package's node.wasm plus npm (this package's [source]) into a root-relative
-# node.zip (bin/node + bin/npm + bin/npx + local/lib/npm/…). Consumers see the
+# node.zip (bin/node + bin/npm + bin/npx + lib/npm/…). Consumers see the
 # bare zip at programs/wasm32/node.zip.
 set -euo pipefail
 

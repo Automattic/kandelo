@@ -27,19 +27,21 @@ clarifies exclusive callback selection and the four-edge nesting limit.
 | obsolete `epoll_ctl_old` / `epoll_wait_old` | not exposed by either SDK target | absent | absent |
 
 The host intercepts only waits. It dispatches one kernel attempt without
-sleeping the dedicated worker. Pipe and listener tokens provide targeted
-wakeups; a timerfd expiry or an eventfd write raises the host's broad retry
-at once (the kernel timer fires at the earliest armed timerfd deadline);
-bounded timer retries cover asynchronous devices, network engines, new
-registrations, and targets reachable only in another process. The retry
-uses the same absolute monotonic deadline. An empty set can sleep and later
-observe a concurrent registration.
+sleeping the dedicated worker. Indexed kernel notifications reaching an epoll
+with sleeping waiters raise the existing coalesced broad-readiness retry.
+Parking no longer resolves/copies every registration to collect pipe/listener
+hints. A timerfd expiry is accounted by the kernel timer at the earliest armed
+timerfd deadline. The existing bounded yielding fallback remains for providers
+that require sampling; its interval is unchanged. Every retry uses the same
+absolute monotonic deadline. An empty set can sleep and later observe a
+concurrent registration.
 
 ## Behavior matrix
 
-“Before” describes the implementation audited at the start of this change.
-“Implemented” describes the code contract; test results are recorded separately
-and must not be inferred from that label.
+“Before” records the original October 2026 semantic audit, before the indexing
+change. The indexing baseline already implemented these semantics. “Current
+contract” describes the implementation; executed validation is recorded
+separately and must not be inferred from that label.
 
 | Behavior | Before | Current contract |
 |---|---|---|
@@ -78,12 +80,69 @@ and must not be inferred from that label.
 
 ## State and notification ownership
 
-`descriptor_backing::with_epolls` owns instances. Interests carry the original
-fd/OFD key, event/data values, notification sources, pending state and one-shot
-disablement. `epoll::notify` records candidates at a mutation, independently
-of the host's drainable wake buffer. Nested callbacks propagate candidates to
-parents. A candidate is neither an event log nor permission to return stale
-readiness: delivery checks the backing again and coalesces notifications.
+`descriptor_backing::with_epolls` owns instances and the reverse subscription
+index under one lock. Interests retain the original fd/OFD key, event/data,
+notification sources, pending state and one-shot disablement. Each published
+registration has a unique monotonic identity. A fallible AVL map, reused from
+`PreparedMap`, maps `(source, registration identity)` to its instance and dense
+slot. Notifications visit only that source's subscribers; nested propagation
+follows indexed parent relationships, at most once per affected instance per
+notification. No producer allocates candidate storage.
+
+Each instance has an intrusive doubly linked FIFO with at most one entry per
+registration. ADD/MOD enqueue an initial candidate. Delivery snapshots one
+candidate at a time outside the backing lock, rechecks the authoritative object,
+and removes stale candidates. ET delivery dequeues; one-shot also disables until
+MOD. Level delivery moves the candidate to the tail. A call visits at most its
+initial candidate count, preventing duplicate level delivery within one batch.
+Non-consuming nested checks and blocked-wait probes neither dequeue nor rotate.
+A notification can propagate to an ET parent even when a level child already
+occupies its queue.
+
+Only sampling-dependent registrations occupy the separate sampler list:
+host-network history, timerfd clock/error observations, task-specific signalfd,
+PCM, asynchronous character devices, host-delegated pipes, and sockets without a pipe/listener source
+(including process-local datagram queues). Nested sampler membership follows only
+indexed ancestors when those providers are added, removed or change sources.
+Ordinary idle pipes, eventfds, pipe-backed streams and listeners are absent.
+Sampling preserves existing provider behavior; it is not a periodic scan of the
+whole interest list. Network adapters lacking history still reject ET/exclusive
+with EOPNOTSUPP.
+
+Registration prepares every new index node and required vector capacity before
+publication. DEL allocates no source snapshot, so it remains available under
+allocation pressure. Disabled one-shot samplers are skipped before copying. If a later candidate snapshot or provider fails after an event has
+already been consumed, delivery returns that short successful batch and leaves
+the failing candidate queued. An error before any event is consumed returns
+its errno without losing edge/one-shot state. Failed ADD leaves no watch; failed MOD preserves the prior data,
+masks, subscriptions and queue state. A dynamic source refresh keeps its old
+subscriptions on allocation refusal; the description callback still queues it,
+and delivery retries the refresh. Dense-slot removal repairs only the moved
+registration's index values and queue links. Target retirement uses the
+description index; final epoll retirement removes all of its own subscriptions
+and frees its queue/sampler storage. There are no queued tombstones or references
+to reused slots. Closing a watched alias enqueues an authority recheck without
+setting its pending edge bit. This preserves strict blocked-probe authority
+checks when only another process or an in-flight descriptor transfer owns it.
+
+Index allocation has independent accounting rather than consuming filesystem
+cache admission; allocation refusal returns ENOMEM. Storage is proportional to
+live source subscriptions plus the owning instance's vector high-water capacity.
+Shared backing slots retain the table's existing high-water allocation.
+Registration lookup and graph admission still inspect interest/graph state at
+ctl time, and readiness resolution can search fd/OFD owners after alias loss.
+Those costs are distinct from notification and ready-candidate delivery and must
+be included in scaling measurements. Coarse device sources can still fan out to
+many registrations, and sampling-provider costs remain platform work; the index
+does not manufacture object-specific notifications where a producer lacks them.
+
+The shared Node/browser scheduler uses the existing broad-readiness record only
+when a notification reaches a sleeping instance (or ADD/MOD reaches its own
+sleeping instance). This also covers nested, sibling-only and empty-set waits
+without a host interest-list mirror. It can retry unrelated parked waits; this
+tradeoff replaces full-list wake-hint joins, not the kernel's readiness decision.
+The retained `kernel_epoll_wake_indices` export remains available as introspection
+but is no longer called by the active epoll parking path.
 
 The shared OFD state retires its registrations when its last owner disappears.
 An interest itself does not retain the target. A parked wait separately owns
@@ -127,6 +186,23 @@ PCM consumer cursor, configuration generation and fatal-error flag provide
 audio notification history without lending any guest memory to persistent
 host realms.
 
+## Producer coverage
+
+| Provider | Candidate source and remaining observation |
+|---|---|
+| Pipes and pipe-backed streams | Read/write/close/shutdown mutations notify directional kernel pipe sources; current backing state is rechecked. Host-delegated pipes retain sampling and strict probes decline unsupported authority. |
+| Listeners | Accept-queue mutations notify the shared accept token; connection/source changes also refresh description subscriptions. |
+| Datagrams | Arrival/association/shutdown notify description state; receiver dequeue and final close notify capacity subscribers. Process-local queues and cross-process capacity identity remain existing gaps; these sockets retain sampling. |
+| Host transports | Per-direction notification generations are sampled only for registered host transports; missing history is EOPNOTSUPP for edge/exclusive. |
+| PTYs | Translated input, output and hangup notify the correct master/slave source. Existing coalesced PTY wakes also remain. |
+| Eventfd | Successful writes notify readable subscribers; successful reads notify writable subscribers. Counter state remains shared. |
+| Timerfd | Kernel deadline expiry notifies backing subscribers; timer clock/error sampling and exact absolute host-wait deadlines remain. |
+| Signalfd | Waiting-task queue generations/readiness are sampled; the descriptor alone does not define the signal recipient. |
+| Devices | Input, mouse, clipboard, kernel log, exchange, DRM/fence mutations use existing description/device notifications. Asynchronous device and PCM observations retain the sampler boundary. |
+
+These paths share the same dedicated kernel-worker implementation on Node and
+browser. No retry interval was shortened and no new relay or backend was added.
+
 ## Boundaries and validation
 
 Remaining completeness work and its acceptance criteria are tracked in
@@ -167,14 +243,22 @@ record, data offset eight, full 64-bit payload, eventfd edges, one-shot rearm
 and stream RDHUP. Its inherited raw `SYS_epoll_pwait2` constant returned
 ENOSYS. Those probes established the syscall and Rust ABI behavior;
 dependency platform selection was still a separate porting task. The
-subsequent [termchat port](termchat.md) enables Kandelo in mio 0.7.6's
+subsequent [termchat port](../packages/registry/termchat/README.md) enables Kandelo in mio 0.7.6's
 existing epoll/eventfd, pipe, and socket branches with narrow target
 configuration patches. It retains mio's event backend. The real termchat
 TUI exercises discovery, messages, file transfer, resize and clean shutdown
 in Chromium, Firefox and WebKit; this is consumer evidence for the paths
 it uses, not a claim of complete Linux epoll compatibility.
 
-The [libevent port](libevent.md) supplies a reusable C event library and
+The [libevent port](../packages/registry/libevent/README.md) supplies a reusable C event library and
 unchanged upstream edge-triggering and peer-close regression tests. Its
 Node and browser fixtures exercise both pointer widths and both libevent
 epoll modes, with an explicit backend check and zero skipped cases required.
+## Later libuv integration
+
+The unchanged guest epoll/eventfd API can serve a later Kandelo libuv epoll
+backend. Persistent indexed subscriptions and coalesced candidates reduce
+kernel work for sparse readiness while preserving actual readiness checks,
+ET/one-shot rearming and OFD lifetime. Libuv target selection, build changes
+and backend integration remain separate work. Consumers must still account
+for the provider and fork-state gaps above; an index does not close them.

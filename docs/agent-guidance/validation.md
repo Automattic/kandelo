@@ -69,11 +69,13 @@ skips a local fixture, rerun it under the normal policy; the skip is not
 evidence for the fixture's runtime behavior.
 
 Also check the canonical image when switching back to the ordinary Node
-runner. `resolveRootfsArtifact()` tries `rootfs.vfs.zst` before the program
-package request, so an older `host/wasm/rootfs.vfs.zst` can take precedence
-over a fresh SourceOnly projection. Refresh it with
-`scripts/dev-shell.sh bash scripts/build-rootfs.sh` before the broad host
-run. For a lazy artifact size mismatch, check the selected image and
+runner. `resolveRootfsArtifact()` tries the `programs/rootfs.vfs.zst`
+package request first and falls back to `rootfs.vfs.zst`, so an older
+`host/wasm/rootfs.vfs.zst` is used only when no package rootfs resolves.
+Refresh it with `scripts/dev-shell.sh bash scripts/build-rootfs.sh` before
+the broad host run. Outside SourceOnly, that package request runs the
+program-index freshness check on every call, which takes seconds in a
+source checkout. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
@@ -153,7 +155,7 @@ Core validation surface:
 | Suite | Command | Primary evidence for |
 |---|---|---|
 | Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
-| Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
+| Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename. The process import audit tests need both musl sysroots (`scripts/build-musl.sh`, also with `--arch wasm64posix`); the CI-shaped suite builds them first. |
 | Runtime workaround repros | `scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh runtime-workarounds` | Whether each confirmed outside defect still reproduces (registry: `tests/runtime-workarounds/`). Run it in the dev shell: the Bun repros judge the dev shell's pinned Bun version. |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |

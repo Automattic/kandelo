@@ -24,6 +24,7 @@
  *   WLTERM_RESIZE cols=.. rows=.. — the compositor dictated a new size
  *   WLTERM_EXIT code=<n>    — shell exited, clean shutdown
  *   WLTERM_EXIT signal=<n>  — shell died on a signal
+ * wlterm's own exit status is the shell's: <n>, or 128+<n> for a signal.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -125,7 +126,46 @@ static void watch_report(struct vt100 *t) {
     }
 }
 
+static const char help_text[] =
+    "Usage: wlterm [--watch TEXT]... [COMMAND [ARGUMENT]...]\n"
+    "\n"
+    "Run a command in a terminal emulator window on Wayland.\n"
+    "\n"
+    "wlterm opens a 960x540 xdg-shell window on the Wayland compositor and\n"
+    "runs COMMAND, found through PATH, on a new pseudo-terminal sized to the\n"
+    "window's character grid; without COMMAND it runs sh. The command's\n"
+    "environment has TERM=vt100, the terminal type wlterm implements. Keys\n"
+    "typed in the window go to the pseudo-terminal and its output is drawn\n"
+    "in the window. When the compositor resizes the window, wlterm resizes\n"
+    "the grid and the pseudo-terminal and sends the command SIGWINCH.\n"
+    "\n"
+    "wlterm ends when the command closes the pseudo-terminal or the window is\n"
+    "closed; on a close it sends the command SIGHUP and waits for it. It\n"
+    "writes WLTERM_READY, WLTERM_RESIZE cols=COLS rows=ROWS, and finally\n"
+    "WLTERM_EXIT code=STATUS or WLTERM_EXIT signal=NUMBER for the command, on\n"
+    "its standard output. wlterm exits with the command's exit status, or\n"
+    "128 plus the signal number when a signal ended it; closing the window\n"
+    "usually ends the command with SIGHUP, giving 129. If COMMAND cannot be\n"
+    "executed the command's status is 127. wlterm exits with status 1 when\n"
+    "the window, font or pseudo-terminal cannot be set up.\n"
+    "\n"
+    "Options:\n"
+    "      --watch TEXT  write WLTERM_GRID \"TEXT\" on standard output the\n"
+    "                    first time TEXT is visible in the terminal; may be\n"
+    "                    given up to eight times, before COMMAND\n"
+    "      --help        display this help and exit\n"
+    "      --version     output version information and exit\n";
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("wlterm (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
+
     /* A closed shell peer must not kill us via SIGPIPE. */
     signal(SIGPIPE, SIG_IGN);
 
@@ -307,21 +347,30 @@ int main(int argc, char **argv) {
      * blocked forever. SIGHUP on an already-exited pid is a harmless ESRCH. */
     close(master);
     int status = 0;
-    if (pid > 0) {
-        kill(pid, SIGHUP);
-        waitpid(pid, &status, 0);
+    kill(pid, SIGHUP);
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) continue;
+        /* No status to report: saying code=0 would claim a clean exit. */
+        perror("waitpid");
+        return 1;
     }
     /* WEXITSTATUS is undefined unless WIFEXITED, so a signal death cannot be
-     * reported through code=. */
+     * reported through code=. wlterm's own status follows the shell
+     * convention (status, or 128+N for signal N), so whatever runs wlterm --
+     * a desktop script, or cage, which forwards its client's status -- sees
+     * how the command ended, not just that the window went away. */
+    int exit_status;
     if (WIFSIGNALED(status)) {
         printf("WLTERM_EXIT signal=%d\n", WTERMSIG(status));
+        exit_status = 128 + WTERMSIG(status);
     } else {
-        printf("WLTERM_EXIT code=%d\n", WIFEXITED(status) ? WEXITSTATUS(status) : 0);
+        exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
+        printf("WLTERM_EXIT code=%d\n", exit_status);
     }
     fflush(stdout);
 
     free(g_input);
     vt100_destroy(term);
     wpk_font_destroy(font);
-    return 0;
+    return exit_status;
 }

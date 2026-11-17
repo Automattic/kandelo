@@ -201,7 +201,7 @@ pub enum BlockingRetryTarget {
         pending_send: Option<PendingSysvMessage>,
     },
     SysvSemaphore(PinnedSemSet),
-    /// A blocked `writev`/`readv`/`preadv`/`pwritev` on one pinned open file
+    /// A blocked vector or guest-address scalar I/O on one pinned open file
     /// description, holding the request exactly as the caller presented it.
     Vector {
         carrier: StableOfdTarget,
@@ -226,9 +226,9 @@ pub enum BlockingRetryTarget {
 /// The kernel only reaches EAGAIN with zero bytes transferred (see
 /// `sys_write`, which returns a short count whenever any byte moved), so
 /// replaying the whole retained request can never write the same byte twice.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PendingVectorIo {
-    /// The caller's `struct iovec` table, decoded at entry.
+    /// The caller's decoded table, or one internal entry for scalar I/O.
     pub entries: crate::IoBuffer<crate::msghdr::NativeIovec>,
     /// Bytes gathered from the caller at entry. Empty for a read, whose
     /// buffers are outputs rather than inputs.

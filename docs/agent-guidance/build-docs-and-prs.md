@@ -202,9 +202,19 @@ the description.
 
 - `## Why`: one to three sentences. What is wrong or missing, and who it
   affects.
-- `## What changed`: a few bullets, one line each, describing the resulting
-  behavior. Name a file only when a reviewer needs it to find something.
+- `## What changed`: open with one or two plain sentences that answer the
+  Why: what is true now, and the idea that makes it true. For example,
+  "Finalizing now takes about 8 minutes instead of 80, because each cache key
+  is computed once and reused." Then, if a reviewer needs them, a few bullets,
+  one line each, describing the resulting behavior. A bullet that names a
+  function, flag or data structure says what it achieves. Name a file only
+  when a reviewer needs it to find something.
 - `## Validation`: what you ran and what you did not run, one line each.
+
+Before posting, read only the Why and the first lines of What changed. They
+should tell a reviewer what was wrong, that it is fixed or what remains, and
+roughly how. If the key result appears only under Validation, move it to
+What changed and keep Validation to how it was measured.
 
 Most PRs need 10 to 20 lines. Add a short extra section only when a reviewer
 cannot judge the change without it, such as an ABI bump, a known gap, or a
@@ -232,12 +242,12 @@ Historical results must not be presented as current readiness. See
 ### Commit Messages
 
 Commit messages follow the same rules: simple, clear, and plain. The subject
-is a short `Area: Purpose` line. The body says what changed and why, in a few
-short paragraphs or bullets that a junior developer can follow. Keep the
-details a future reader needs, such as the reason for a non-obvious choice,
-an important limit, or the evidence for a claim. Leave out the investigation
-story, repeated points, and filler. Most bodies need 3 to 10 lines; a small,
-obvious change may need only the subject.
+is a short `Area: Purpose` line. The body says what was wrong, what is true
+now and how, in a few short paragraphs or bullets that a junior developer can
+follow. Keep the details a future reader needs, such as the reason for a
+non-obvious choice, an important limit, or the evidence for a claim. Leave out
+the investigation story, repeated points, and filler. Most bodies need 3 to 10
+lines; a small, obvious change may need only the subject.
 
 **Wrapping.** Do not hard-wrap prose in PR descriptions: write one line per
 paragraph or list item. GitHub's squash merge builds the commit message from

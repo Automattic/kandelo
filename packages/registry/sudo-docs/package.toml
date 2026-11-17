@@ -1,0 +1,26 @@
+kind = "program"
+name = "sudo-docs"
+version = "1.9.17p2"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `sudo` package (sudo and the files it reads).
+# The source, SHA-256 and version are the `sudo` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/sudo-project/sudo/archive/refs/tags/v1.9.17p2.tar.gz"
+sha256 = "cabee23359afa698d147478c3a141437dbfecb510382e114eaf4b5087a1f8ca5"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://github.com/sudo-project/sudo/blob/v1.9.17p2/LICENSE.md"
+
+[build]
+script_path = "packages/registry/sudo-docs/build-sudo-docs.sh"
+
+[[outputs]]
+name = "sudo-docs"
+wasm = "sudo-docs.zip"
+fork_instrumentation = "disabled"

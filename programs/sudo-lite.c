@@ -206,9 +206,55 @@ static void usage(const char *argv0) {
     fprintf(stderr, "usage: %s -l | [--] command [argument ...]\n", argv0);
 }
 
+static const char help_text[] =
+    "Usage: sudo-lite [--] COMMAND [ARGUMENT]...\n"
+    "  or:  sudo-lite -l\n"
+    "\n"
+    "Run a command as root after checking the caller's password.\n"
+    "\n"
+    "sudo-lite is a small first-party alternative to sudo(8). It must be\n"
+    "installed set-user-ID root, and refuses to run when its effective user ID\n"
+    "is not 0. It reads " SUDOERS_PATH ", which may contain only comments, blank\n"
+    "lines and the rules \"root ALL=(ALL:ALL) ALL\" and\n"
+    "\"%" AUTHORIZATION_GROUP " ALL=(ALL:ALL) ALL\"; any other line makes it refuse to run.\n"
+    "\n"
+    "A caller whose real user ID is 0 is not asked for a password. Any other\n"
+    "caller must be a member of the " AUTHORIZATION_GROUP " group, " SUDOERS_PATH " must\n"
+    "contain the %" AUTHORIZATION_GROUP " rule, and the caller must type their own\n"
+    "password at the \"[sudo-lite] password for USER: \" prompt, which is\n"
+    "written to standard error; echo is turned off while standard input is a\n"
+    "terminal. The password is checked with crypt(3) against /etc/shadow, or\n"
+    "/etc/passwd when the account has no shadow entry. Every invocation asks\n"
+    "again; nothing is cached.\n"
+    "\n"
+    "sudo-lite then sets every user and group ID to 0 with root's\n"
+    "supplementary groups, replaces the environment with HOME=/root, USER and\n"
+    "LOGNAME=root, SHELL=/bin/sh, the caller's TERM and\n"
+    "PATH=" SAFE_PATH ",\n"
+    "and executes COMMAND, searching that PATH.\n"
+    "\n"
+    "Exit status is COMMAND's status, 127 when COMMAND is not found, 126 when\n"
+    "it cannot be executed, 2 for invalid arguments and 1 when the policy,\n"
+    "authorization or authentication check fails.\n"
+    "\n"
+    "Options:\n"
+    "  -l             after the same checks, list the commands the caller may\n"
+    "                 run, instead of running one\n"
+    "  --             end of options; the next argument is COMMAND\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
 int main(int argc, char **argv) {
     int command_index = 1;
     int list_only = 0;
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("sudo-lite (Kandelo sudo-lite) 0.1.0\n", stdout);
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "-l") == 0) {
         if (argc != 2) {
             usage(argv[0]);

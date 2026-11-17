@@ -1,10 +1,14 @@
 /* cxxrt.c — Minimal C++ runtime for wasm32.
  *
  * Provides the operator new/delete forms and __cxa_pure_virtual that
- * C++ code linked with wasm32posix-c++ can need without libc++abi.
+ * C++ code linked without libc++ and libc++abi can need.
  *
- * All symbols are weak so that libc++abi can override them when linked.
- * Programs that don't link libc++abi still get working new/delete from here.
+ * The SDK links this object lazily (--start-lib), after the caller's inputs
+ * and the C++ libraries, so it supplies only what nothing earlier defined.
+ * That order matters: libc++ also defines operator new weakly (so programs
+ * can replace it), and between two weak definitions the linker keeps the
+ * first. Linked ahead of libc++, these abort-on-failure forms used to
+ * replace libc++'s, which throw std::bad_alloc.
  */
 
 #include <stdlib.h>

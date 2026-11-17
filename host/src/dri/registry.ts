@@ -1,5 +1,6 @@
 import { mergeChangedByteRuns } from "../shared-byte-runs";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
+import { allocateByteSnapshot, publishMappedBytes } from "./byte-snapshot";
 
 const mappingMemoryBufferGetter = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype,"buffer")!.get!;
 const mappingApply = Reflect.apply;
@@ -94,9 +95,16 @@ type InternalBinding = GbmBoBinding & {
   boOffset: number;
   /** Independent baseline; never a guest memory view. */
   snapshot: Uint8Array;
+  /** Independent bounded baseline storage; never imports a guest memory. */
+  snapshotMemory?: WebAssembly.Memory;
   primed: boolean;
   /** One admission identity; splits retain it, replacements never do. */
   lineage: MappingLineage;
+  /** A comparison is reusable only while this exact address space stays parked. */
+  cleanEpoch?: bigint;
+  cleanBytes?: number;
+  /** Canonical revision last imported into this mapping and its baseline. */
+  seenWrites?: number;
 };
 type MappingLineage = {
   memory: WebAssembly.Memory | null;
@@ -118,6 +126,8 @@ type InternalEntry = {
    * derive data from the bytes (a converted YUV image) redo it only when
    * this moves. */
   writes: number;
+  /** Legacy mutable pixel views cannot report later writes; keep their readers conservative. */
+  exposedPixels: boolean;
 };
 
 /** Consulted only for a NEW mapping admission. Later coherence and cleanup
@@ -134,6 +144,8 @@ export interface GbmBoRegistryOptions {
   /** A fatal mapping fault (see GbmMappingFault), reported before it is
    * thrown. The kernel wires this to its fatal host-fault path. */
   onFault?: (fault: GbmMappingFault) => void;
+  getProcessQuiescentEpoch?: (pid: number, memory: WebAssembly.Memory) => bigint;
+  onProcessMemoryChanged?: (pid: number, memory: WebAssembly.Memory) => void;
 }
 
 export class GbmBoRegistry {
@@ -186,10 +198,25 @@ export class GbmBoRegistry {
   }
   private getProcessMemory: ProcessMemoryResolver | null;
   private onFault: GbmBoRegistryOptions["onFault"] | null;
+  private getProcessQuiescentEpoch: GbmBoRegistryOptions["getProcessQuiescentEpoch"] | null;
+  private onProcessMemoryChanged: GbmBoRegistryOptions["onProcessMemoryChanged"] | null;
 
   constructor(opts: GbmBoRegistryOptions = {}) {
     this.getProcessMemory = opts.getProcessMemory ?? null;
     this.onFault = opts.onFault ?? null;
+    this.getProcessQuiescentEpoch = opts.getProcessQuiescentEpoch ?? null;
+    this.onProcessMemoryChanged = opts.onProcessMemoryChanged ?? null;
+  }
+
+  setProcessMemoryCoherence(
+    epoch: GbmBoRegistryOptions["getProcessQuiescentEpoch"],
+    changed: GbmBoRegistryOptions["onProcessMemoryChanged"],
+  ): void {
+    this.getProcessQuiescentEpoch = epoch ?? null;
+    this.onProcessMemoryChanged = changed ?? null;
+    // A stamp belongs to the authority that issued it, including in embedders
+    // that replace callbacks without replacing their process memories.
+    for (const e of this.bos.values()) for (const b of this.bindings(e)) b.cleanEpoch = undefined;
   }
 
   /** Report and throw a fatal mapping fault. An exception the reporter
@@ -227,6 +254,7 @@ export class GbmBoRegistry {
         bindingsByPid: new Map(),
         pendingReaders: new Set(),
         writes: 0,
+        exposedPixels: false,
       });
     }
     for (const l of this.listeners) l(b.pid, b.bo_id, "create");
@@ -286,9 +314,9 @@ export class GbmBoRegistry {
             aliases.delete(binding.addr);
             const fragment = (offset: number, length: number) => {
               const source = binding.snapshot.subarray(offset, offset + length);
-              const snapshot = new Uint8Array(source.byteLength);
-              const child = {...binding, addr: binding.addr + offset,
-                len: length, boOffset: binding.boOffset + offset, snapshot};
+              const baseline = allocateByteSnapshot(source.byteLength, binding.lineage.memory);
+              const child = {...binding, cleanEpoch: undefined, addr: binding.addr + offset,
+                len: length, boOffset: binding.boOffset + offset, ...baseline};
               aliases.set(child.addr, child);
               fragments.push({binding:child,source});
             };
@@ -309,7 +337,7 @@ export class GbmBoRegistry {
         fragments:new Set()};
       if (lineage.memory) mappingMemoryBuffer(lineage.memory);
       const admitted: InternalBinding = {pid,addr,len,boOffset,primed:false,lineage,
-        snapshot:new Uint8Array(Math.max(0,Math.min(len,entry.size-boOffset)))};
+        ...allocateByteSnapshot(Math.max(0,Math.min(len,entry.size-boOffset)),lineage.memory)};
       target.bindingsByPid.get(pid)!.set(addr, admitted);
       const stagedLineages = this.stageLineages(retiring.map(value => value.binding),
         [...fragments.map(value => value.binding), admitted]);
@@ -324,6 +352,9 @@ export class GbmBoRegistry {
       for (const record of retiring) this.flushMemoryToSab(record.entry,record.binding);
       for (const {binding,source} of fragments) binding.snapshot.set(source);
       for (const {original,next} of changed.values()) {
+        // Retiring writers may have published since this metadata was staged.
+        next.writes = original.writes;
+        next.exposedPixels = original.exposedPixels;
         next.pendingReaders = new Set(original.pendingReaders);
         if (!next.bindingsByPid.get(pid)?.size) {
           next.bindingsByPid.delete(pid);
@@ -387,8 +418,8 @@ export class GbmBoRegistry {
         aliases.delete(binding.addr); removed.push(binding);
         const fragment = (offset: number, length: number) => {
           const source = binding.snapshot.subarray(offset,offset+length);
-          const child = {...binding,addr:binding.addr+offset,len:length,boOffset:binding.boOffset+offset,
-            snapshot:new Uint8Array(source.length)};
+          const child = {...binding,cleanEpoch:undefined,addr:binding.addr+offset,len:length,boOffset:binding.boOffset+offset,
+            ...allocateByteSnapshot(source.length,binding.lineage.memory)};
           aliases.set(child.addr,child); added.push(child); baselines.push({binding:child,source});
         };
         if (start > binding.addr) fragment(0,start-binding.addr);
@@ -487,6 +518,9 @@ export class GbmBoRegistry {
       binding.snapshot.set(src);
       binding.lineage.memory = memory;
       binding.primed = true;
+      binding.seenWrites = e.writes;
+      binding.cleanEpoch = undefined;
+      this.onProcessMemoryChanged?.(pid, memory);
       e.pendingReaders.delete(pid);
       return true;
     } catch (error) {
@@ -520,6 +554,8 @@ export class GbmBoRegistry {
       if (targets.some(target => target.destination.byteLength !== target.length)) return false;
       for (const {entry,binding,destination,source} of targets) {
         destination.set(source); binding.snapshot.set(source); binding.lineage.memory=memory; binding.primed=true;
+        binding.seenWrites=entry.writes; binding.cleanEpoch=undefined;
+        this.onProcessMemoryChanged?.(pid,memory);
         entry.pendingReaders.delete(pid);
       }
       return true;
@@ -550,18 +586,23 @@ export class GbmBoRegistry {
     if (binding.snapshot.length < copyLen)
       this.fault(`${primedMapping(e,binding)} has a ${binding.snapshot.length}-byte baseline for a ${copyLen}-byte publication`);
     if (!copyLen) return;
+    const epoch = this.getProcessQuiescentEpoch?.(binding.pid, mem) ?? -1n;
+    if (epoch >= 0n && binding.cleanEpoch === epoch && (binding.cleanBytes ?? 0) >= copyLen) return;
     const dst = new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen);
-    const src = new Uint8Array(mappingMemoryBuffer(mem), binding.addr, copyLen);
-    const snapshot = binding.snapshot;
     // Publish and advance the baseline together, using only the bytes that
     // reached canonical storage. Reading src again here could swallow stores
     // made by a still-running producer after its changed run was copied.
-    if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen, true)) {
+    if (publishMappedBytes(mem, binding.addr, binding, dst, copyLen)) {
       e.writes++;
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
       for (const reader of this.bindings(e)) if (reader !== binding) e.pendingReaders.add(reader.pid);
     }
+    // Active writers are always compared. Recheck after publication: host
+    // writes or a changed authority must not make a partial scan look clean.
+    binding.cleanEpoch = epoch >= 0n && this.getProcessQuiescentEpoch?.(binding.pid, mem) === epoch
+      ? epoch : undefined;
+    binding.cleanBytes = copyLen;
     // An unchanged scan already agrees with this independent baseline. Do
     // not copy the whole mapping again or capture later, unpublished stores.
   }
@@ -590,7 +631,16 @@ export class GbmBoRegistry {
   pixelView(bo_id: number): Uint8Array | undefined {
     const e = this.bos.get(bo_id);
     if (!e) return undefined;
+    e.exposedPixels = true;
     return new Uint8Array(e.sab);
+  }
+
+  /** Borrow canonical bytes for synchronous device reads. Callers must not
+   * mutate or retain this view as a writer; device writes use publishDevicePixels.
+   * pixelView retains the conservative contract for unrestricted mutable views. */
+  readPixelView(bo_id: number): Uint8Array | undefined {
+    const e = this.bos.get(bo_id);
+    return e ? new Uint8Array(e.sab) : undefined;
   }
 
   /** Publish a complete device write and refresh every live mapped reader.
@@ -623,8 +673,15 @@ export class GbmBoRegistry {
       e.writes++;
       for (const {pid, view, source, snapshot} of targets) {
         view.set(source);
-        snapshot.set(view);
+        // The guest can store immediately after its copy; baseline only the
+        // stable canonical bytes so that store remains a pending publication.
+        snapshot.set(source);
         e.pendingReaders.delete(pid);
+      }
+      for (const binding of this.bindings(e)) if (binding.primed) {
+        binding.seenWrites = e.writes;
+        binding.cleanEpoch = undefined;
+        this.onProcessMemoryChanged?.(binding.pid, binding.lineage.memory!);
       }
       return true;
     } catch { return false; }
@@ -682,9 +739,17 @@ export class GbmBoRegistry {
         if (binding.lineage.memory !== memory) { complete = false; continue; }
         const copyLen = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
         if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength) { complete = false; continue; }
+        if (!e.exposedPixels && Number.isSafeInteger(e.writes) && binding.seenWrites === e.writes) continue;
         const dst = new Uint8Array(mappingMemoryBuffer(memory), binding.addr, copyLen);
-        dst.set(new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen));
-        binding.snapshot.set(dst);
+        // Canonical storage is stable on this worker. Advance the baseline
+        // from that source, never from a destination a live guest can change
+        // immediately after the copy. Preserve writes outside changed runs.
+        if (mergeChangedByteRuns(new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen),
+          0, binding.snapshot, 0, dst, 0, copyLen, "source")) {
+          binding.cleanEpoch = undefined;
+          this.onProcessMemoryChanged?.(pid, memory);
+        }
+        binding.seenWrites = e.writes;
       }
       if (complete) e.pendingReaders.delete(pid);
     }

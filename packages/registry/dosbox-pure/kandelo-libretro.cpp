@@ -659,9 +659,60 @@ struct ExecutableAlias {
     return false;
   }
 };
+constexpr char kHelpText[] =
+    "Usage: dosbox-pure [OPTION]... CONTENT\n"
+    "  or:  dosbox-pure --info\n"
+    "\n"
+    "Run a DOS game or program in the DOSBox Pure emulator.\n"
+    "\n"
+    "dosbox-pure runs the DOSBox Pure libretro core, emulating the x86 CPU\n"
+    "with its interpreter, through Kandelo's libretro frontend. CONTENT is a\n"
+    "game ZIP, a DOS program, a disk image, a DOSBox configuration file or a\n"
+    "directory; the core opens ZIPs itself. A configuration file's autoexec\n"
+    "must mount the content it runs. A file that starts with an MZ header\n"
+    "but does not end in .exe or .com is run through a temporary hard link\n"
+    "named K*.EXE beside it, removed when dosbox-pure exits.\n"
+    "\n"
+    "Video is drawn on /dev/fb0, which must be 640x400 at 32 bits per pixel.\n"
+    "Sound is played on /dev/dsp and the mouse is read from /dev/input/mice;\n"
+    "without them dosbox-pure runs silently or without a mouse. The keyboard\n"
+    "is standard input, switched to raw scan codes, when it is a terminal,\n"
+    "and otherwise /dev/input/event0. Pressing and releasing Ctrl+Shift+F12\n"
+    "quits; Ctrl+C goes to the DOS program. SIGINT, SIGTERM and SIGHUP also\n"
+    "quit, unloading the core first.\n"
+    "\n"
+    "An absolute XDG_DATA_HOME or HOME is required. Changes a game makes to\n"
+    "the files in its ZIP are kept in $XDG_DATA_HOME/dosbox-pure/saves, by\n"
+    "default ~/.local/share/dosbox-pure/saves, and the core's optional\n"
+    "system files are read from the system directory beside it. A game\n"
+    "loaded directly rather than from a ZIP writes into its own directory,\n"
+    "which must be writable. dos-play(1) downloads and runs games from a\n"
+    "catalog.\n"
+    "\n"
+    "Exit status is 0 when the emulator quits, 1 when the content, the\n"
+    "devices or the save directories cannot be set up, and 2 for invalid\n"
+    "arguments.\n"
+    "\n"
+    "Options:\n"
+    "      --keypad-arrows  send the arrow, Home, End, Page Up, Page Down,\n"
+    "                       Insert and Delete keys as keypad keys, for older\n"
+    "                       games that expect them\n"
+    "      --frames N       stop after N emulated frames\n"
+    "      --info           print the core's name and version and the CPU\n"
+    "                       emulation used, and exit\n"
+    "      --help           display this help and exit\n"
+    "      --version        output version information and exit\n";
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+    fputs(kHelpText, stdout);
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+    fputs("dosbox-pure (Kandelo dosbox-pure) 1.0-preview8\n", stdout);
+    return 0;
+  }
   if (argc == 2 && strcmp(argv[1], "--info") == 0) {
     retro_system_info info{};
     retro_get_system_info(&info);

@@ -28175,3 +28175,221 @@ Node/browser regression checks and original large-viewport reproduction
 remain pending. The advertised port-59239 checkpoint still has the prior
 kernel. This native result establishes the bounded publication behavior,
 not browser repair, complete B1, a performance improvement or native feel.
+
+
+## Cage reliability follow-up (R1, 2026-11-09)
+
+The [bounded reliability report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md) preserves the
+original 23/24 shipment and failed WebKit control while attributing that
+startup rejection to OPFS root access in the test's ephemeral context,
+before any guest starts. Cage now uses the existing persistent-page
+fixture; production storage errors retain their native cause and identify
+the operation without inferring OOM or retrying.
+
+A distinct terminal return failure occurred after Cage/wlterm exited zero
+and released DRM ownership: fitting before xterm resumed its hidden renderer
+left a stale scroll range. The Shell now fits after observed visibility
+and the next animation frame, preserves deliberate scrollback, and cancels
+only its own retired layout work. Regressions cover actual GLES2 output,
+keyboard repaint, host resize, clean display/client exit, six-cycle live
+restarts and replacement PTY ownership. The mixed-memory keyboard step
+focuses the canvas without acquiring pointer capture through a click.
+
+Normal products, 259 test programs and the ABI check passed at main base
+`a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a`. Program 56 / host 4 / GL 17 /
+fork 21 and both original fixture cohorts are unchanged. The normal shell
+is 1,076,101 bytes, SHA-256
+`1024edcac14dac7620070ee90a45d6bd2a62fbc36f56f1bd008ff31568f8075b`.
+The normal graphical selection passes 30/30 (10 per engine), host checks
+15/15, and actual terminal UI checks 12/12 across the three engines.
+The latest complete browser-memory command passed 18/18 browser cases
+(six per engine, zero skips/flaky/retries), plus source 7, ownership 253,
+Node 3 and Bun 7, with every kernel-realm containment warning now rejected.
+The earlier after-cleanup run passed 17 cases and failed WebKit's mixed
+switch because a Doom worklet missed its retirement acknowledgement and
+replacement Quake audio stayed unprepared.
+That intermittent failure remains unexplained, with its trace retained;
+a successful rerun is not an owner repair, and the PR remains a draft.
+The approved collection removed 18.1 GiB logical while preserving all six
+preview projections, 50 frozen identities and ABI 56/4/17/21. Earlier native
+ENOSPC and stale-ID failures are also retained. The normal Cage rendering and exit
+screenshots were inspected. Exact commands, versions, identities and
+retained failed/interrupted runs are in the report.
+
+The normal build also exposed a stale shell eager-file guard. This delivery
+accounts for the existing 156 files / 2,414,611 bytes and allows four files
+of slack; both byte ceilings remain unchanged. It adds no eager payload and
+introduces no new compatibility exception. The seven existing budget tests
+pass.
+
+The accidentally expanded desktop run retains three Freeciv direct-display
+failures (cursor alignment, expected default-mode text and captured cursor
+state). All three reproduce in a main-Shell substitution control on the
+same products. This is not pristine whole-main acceptance or a Freeciv fix;
+D1/V1/P1 retain those findings. Other reported Cage crashes remain
+unclassified. Frozen Cage profiles identify copying and synchronous-query
+traffic as leads, with no performance correction or native-feel claim.
+M1/M2, Q1–Q5, D1/D2, L1 and V1/P1 remain open; B2–B6/C1–C3 remain paused.
+The maintainer authorized Sydney as this follow-up's commit/push location.
+
+
+### R1 pointer-performance finding — 2026-11-09
+
+The current normal Cage preview reproduces severe cursor stalls at larger
+outputs. On Chromium, 60 trusted mouse moves over about one second yielded
+40 cursor paint callbacks at 1280×612 but only one at 3840×2052 with the
+light observer. The latter paint arrived after the sweep ended. Full
+instrumentation recorded 8.32 GB of logical mapped-buffer scanning, 8.32 GB
+of copies and 1.16s inside imported-buffer synchronization in the 4K case.
+WebKit also degrades with output size. The owning path synchronizes mapped
+BOs on ready waits and receives, coupling pointer traffic to full-image
+comparisons/imports in the kernel worker that also services cursor/vblank
+presentation. No performance correction has been applied. The [R1 report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#cursor-slowness-reproduced-on-the-normal-preview)
+records raw scope, observer controls, failed diagnostic attempts and the
+unpartitioned startup time. Functional green does not establish acceptable
+interactive latency; R1 and draft PR #1678 remain open. Broader campaign
+work remains paused.
+
+
+### R1 modest default display — 2026-11-09
+
+The maintainer requested a modest-resolution Cage demo instead of native
+HiDPI Wayland. Cage's normal image now declares a 1280×720 preferred-mode
+limit in image-owned presentation metadata. The generic session contract
+uses CSS-reference pixels, preserves aspect within connector bounds and
+avoids Retina supersampling; other profiles retain native defaults. The
+actual guest buffers are smaller, while the browser fits them into its pane.
+Higher standard connector modes remain available, and live Cage output
+hotplug is not added. The shared high-resolution BO coherence inefficiency
+is still open; this is an explicit quality/pixel-count tradeoff.
+
+The new normal shell SHA is
+`44687dd36b9710933356c6846bd29c1e30e9fc09759593db76385a38ccd93152`.
+Rendering/input/resize/exit checks pass 6/6 across Chromium, Firefox and
+WebKit at browser densities 1 and 2. At a 3840×2160 CSS viewport, the actual
+capped mode is 1280×684. Chromium's cursor observer records 32 paints during
+60 mouse moves plus a drain versus two on the 3840×2052 preserved control;
+WebKit records 39 versus 15, with different actual event-delivery durations.
+These are scoped cursor callbacks with intentionally different guest pixel
+counts, not equal-quality renderer speedups or native-display latency.
+The [R1 follow-up report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#modest-default-display-requested-by-the-maintainer)
+records exact products, commands, observer limits and remaining checks.
+The old preview remains preserved separately, the earlier unexplained
+WebKit audio retirement stays open, and the PR remains a draft. Full new
+memory/selected-graphical acceptance is pending; broader campaign work stays
+paused.
+
+
+The follow-up matrix on the modest-display image is retained at 32/36,
+with two corrected fixture observations (compressed PNG size and a
+non-atomic process-row read) and two unresolved Firefox Sway observations.
+The affected cases subsequently pass 12/12, including actual native pixel
+box checks at scale 2 on Chromium and Firefox; a separate Firefox main-Sway
+case passes 1/1. These results are not a clean full-matrix rerun or a repair
+of the intermittent Sway behavior. The normal prepared-product/session
+selection passes 333/333, host sessions/PTYs 15/15, and TypeScript checks pass.
+
+The default development-relay memory gate passes source 7, ownership 253,
+Node 3 and Bun 7, but only 15/18 browser cases. All three mixed cases stop
+at the required Keen ZIP download: the relay returns 502/ETIMEDOUT. Direct
+and documented production-proxy downloads match the required 153,012 bytes
+and manifest hash. The direct public-proxy full gate passes 12/18 and
+fails browser boot-data fetches. A same-origin relay preflight passes 6/6
+with actual Doom and Keen frames and running audio. Its full gate then
+passes 18/18, with four complete mixed cycles per engine and source 7,
+ownership 253, Node 3 and Bun 7 passing. Each configuration retains its
+separate verdict, and the default-relay failure remains unresolved. See the R1 report for the exact two configurations and retained
+screenshots, original four graphical failures and corrected case reports.
+
+
+The completed same-origin relay gate is job
+cage-modest-memory-chained-relay-1109-205138-5b94, exit 0 after 34m11s, run
+e4971157-b89f-443f-82ed-7766ccb57fc0. It uses the existing configured proxy
+prefix; proxy/runtime code, original data URLs and manifest hashes, memory
+limits and ownership fences are unchanged. There are zero skips, retries
+or flaky outcomes. All 50 normal source/product/original-fixture identities
+match before and after validation, and both preview HTTP image hashes match.
+This is scoped memory/lifecycle acceptance for that explicit configuration;
+the default 15/18 and direct-public 12/18 remain failures, and the earlier
+unexplained PCM retirement and intermittent Sway findings remain open. PR #1678
+stays a draft. The requested modest Cage preview is available separately
+from broader graphics, native Safari and combined-latest-main acceptance.
+
+
+### R1 current-main integration, 2026-11-10
+
+The shared-buffer repair now integrates pinned main `8161769ed9d2`, with
+program ABI 56 and host adapter 6. Full normal products and all supported
+example/test fixtures have been prepared. The normal `./run.sh browser`
+Cage entry passes its Chromium shifted-input/repaint/exit check (1/1).
+The prepared-product host selection passes 24 files / 239 tests, including
+five Node wlterm cases; the source ownership/lifecycle and graphics
+selections pass 267 and 2,353 cases respectively. Frozen-program offline
+compatibility passes 6/6 across Chromium, Firefox and WebKit, with memory
+and OPFS storage. Owned-job output and worker/server port observations were
+corrected in the test fixtures; their original failures remain recorded.
+
+Actual Steel Sky checks pass Cage 3/3 and Chromium Sway on this integration.
+Firefox Sway fails its menu assertion; WebKit Sway stops during download
+with retained `RangeError: Out of memory` and fatal kernel diagnostics.
+The same post-update Sway checks pass Firefox and WebKit on pinned main.
+Their causes remain under investigation. These findings differ from the
+historical WebKit corrupted-terminal failure. Current full memory/desktop
+and paired performance validation is unfinished; the PR remains a draft.
+Maintainer Firefox feedback accepts improved responsiveness and game
+performance, while the remaining Cage/Sway sharpness difference is follow-up
+work. The [R1 report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#current-integration-after-the-macos-update)
+records the current image/kernel identities and separates earlier results.
+
+
+### R1 shutdown and desktop validation checkpoint — 2026-11-10
+
+The completed current-main desktop matrix is 104/120 (zero skips), including
+all 15 Cage and 12 Sway cases. Twelve cursor-import failures reproduce on
+main: the fixture never enabled its CRTC. A real primary scanout repairs
+the private fixture (12/12); tracked validation is pending. Two WebKit cases
+fail OPFS setup before machine creation and now share the established
+persistent-page fixture. The Chromium ScummVM archive-import failure also
+reproduces on main; it remains a failure record, not an allowance.
+
+The current-main memory gate is 17/18. Chromium and Firefox complete four
+mixed-machine cycles; WebKit reports an unexpected cancellation of a pending
+process allocation during WordPress retirement. The browser factory/gate
+repair preserves terminal cancellation after exact rollback while keeping
+real allocation and worker-retirement errors visible. Its focused source
+selection passes 125/125. New normal-product and complete memory validation
+remain pending.
+
+Matched WebKit Sway/Steel Sky main controls now also fail 0/2. One records
+a fork-replay typed-array allocation OOM; the other records the candidate's
+detached-byte allocation OOM in a different kernel operation, followed by
+fatal failure. Earlier successful controls remain mixed outcomes. The
+resource cause and complete paired performance validation remain open;
+no browser defect, green allowance or complete R1 acceptance is inferred.
+See the [current repair evidence](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#browser-shutdown-cancellation-and-fixture-corrections--2026-11-10).
+
+
+## Bounded Cage delivery and remaining work — 2026-11-11
+
+[PR #1678](https://github.com/Automattic/kandelo/pull/1678) contains the bounded
+Cage responsiveness and reliability increment. Against pinned develop
+`200d7bbfacdb`, the canonical graph passes 278/278, memory 18/18,
+prepared-host checks 257/257 and actual Steel Sky under Cage/Sway 6/6 across
+three engines. Desktop is 118/120, including Cage 15/15 and Sway 12/12; the
+two archive-import failures also reproduce on the current control. Program
+ABI 56 and host adapter 6 are unchanged. The PR records exact validation,
+benchmark context and remaining risks.
+
+Node pipe throughput penalties of 10.6–13.2% and getpid latency increases of
+6.4–6.6% remain unexplained review risks. Cursor observations qualify 11/12
+cases, including all six candidate cases; the large Chromium baseline is
+unqualified. Broad performance neutrality, complete R1, native Safari and
+full graphics/POSIX conformance are not claimed.
+
+Follow-up work includes Cage text sharpness relative to Sway, the portable
+[Freeciv window-size correction](../../packages/registry/freeciv/README.md#known-wayland-window-size-limitation),
+and separate live Sway resize coverage. The current Cage profile uses one
+guest pixel per CSS pixel; its HiDPI tradeoff is documented in
+[browser support](../browser-support.md). The separate graphics campaign plan
+remains on branch `brandonpayton/graphics-campaign-plan`; this bounded
+delivery does not activate B2–B6/C1–C3.

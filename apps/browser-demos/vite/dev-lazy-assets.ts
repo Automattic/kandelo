@@ -165,6 +165,14 @@ export function devLazyAssets(options: DevLazyAssetOptions): Plugin {
           return;
         }
         // The SourceOnly store, a later middleware, answers its pinned path.
+        // It marks the answer immutable, which is right for that
+        // content-addressed path but not for the member's unhashed lazy URL
+        // the page asked for: after a rebuild the same URL names new bytes,
+        // and a cached old body fails the image's size and SHA-256 check.
+        const setHeader = response.setHeader.bind(response);
+        response.setHeader = ((name: string, value: number | string | readonly string[]) =>
+          setHeader(name, name.toLowerCase() === "cache-control" ? "no-store" : value)
+        ) as typeof response.setHeader;
         request.url = served.path;
         next();
       });

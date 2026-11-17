@@ -28,6 +28,7 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/" },
           { text: "Current Kandelo UI", link: "/guide/current-ui" },
+          { text: "Move Files In and Out", link: "/guide/moving-files" },
           { text: "Your Own Browser App", link: "/guide/browser-apps" },
         ],
       },

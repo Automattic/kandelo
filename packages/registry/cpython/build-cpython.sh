@@ -124,10 +124,12 @@ if [ -z "$NCURSES_PREFIX" ]; then
         cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses
     )"
 fi
-if [ ! -f "$NCURSES_PREFIX/lib/libtinfow.a" ]; then
-    echo "ERROR: ncurses dependency is missing lib/libtinfow.a: $NCURSES_PREFIX" >&2
-    exit 1
-fi
+for lib in libtinfow.a libncursesw.a libpanelw.a; do
+    if [ ! -f "$NCURSES_PREFIX/lib/$lib" ]; then
+        echo "ERROR: ncurses dependency is missing lib/$lib: $NCURSES_PREFIX" >&2
+        exit 1
+    fi
+done
 echo "==> ncurses at $NCURSES_PREFIX"
 
 SQLITE_PREFIX="${WASM_POSIX_DEP_SQLITE_DIR:-}"
@@ -156,6 +158,15 @@ kandelo_package_stage_primary_source cpython "$SRC_DIR" "$WORK_DIR"
 # fork/exec; enable the ordinary subprocess module using those capabilities.
 if ! grep -q "Kandelo uses the WASI configure target" "$SRC_DIR/Lib/subprocess.py"; then
     kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-subprocess.patch"
+fi
+# Upstream's WASI target also declares fcntl, pwd, grp, mmap, termios,
+# resource, syslog, _multiprocessing, _posixshmem and curses unavailable
+# ("WASI SDK 15.0 does not support file locking, mmap, and more"; pwd and
+# grp are stubs there). Kandelo's libc provides those interfaces, so
+# configure's usual checks decide the modules instead. Meson needs fcntl
+# for its build-directory lock and pwd for `meson install` as root.
+if ! grep -q "Kandelo's POSIX libc provides file locking" "$SRC_DIR/configure"; then
+    kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-libc-modules.patch"
 fi
 
 printf '%s\n' "$PYTHON_VERSION" > "$SOURCE_MARKER"
@@ -222,6 +233,10 @@ if [ ! -f "$CROSS_BUILD_DIR/Makefile" ]; then
         PKG_CONFIG=wasm32posix-pkg-config \
         LIBREADLINE_CFLAGS="-I$READLINE_PREFIX/include" \
         LIBREADLINE_LIBS="-L$READLINE_PREFIX/lib -L$NCURSES_PREFIX/lib -lreadline -lhistory -ltinfow" \
+        CURSES_CFLAGS="-I$NCURSES_PREFIX/include" \
+        CURSES_LIBS="-L$NCURSES_PREFIX/lib -lncursesw -ltinfow" \
+        PANEL_CFLAGS="-I$NCURSES_PREFIX/include" \
+        PANEL_LIBS="-L$NCURSES_PREFIX/lib -lpanelw" \
         py_cv_module__ssl=n/a \
         py_cv_module__hashlib=n/a \
         py_cv_module__decimal=n/a \
@@ -339,9 +354,18 @@ for path in sorted(source.rglob("*"), key=lambda item: item.as_posix()):
 PY
 cp "$SRC_DIR/LICENSE" "$RUNTIME_STAGE/share/licenses/cpython/LICENSE"
 
+# `make install` always creates the extension-module directory
+# (DESTSHARED, lib/pythonX.Y/lib-dynload), even when every module is
+# built in, as here. CPython's Modules/getpath.py takes that directory as
+# the exec_prefix landmark: without it, every launch that does not set
+# PYTHONHOME warns "Could not find platform dependent libraries
+# <exec_prefix>". Ship the same empty directory upstream installs.
+DYNLOAD_DIR="lib/python${PYTHON_MAJOR_MINOR}/lib-dynload"
+mkdir -p "$RUNTIME_STAGE/$DYNLOAD_DIR"
+
 RUNTIME_ZIP="$WORK_DIR/python-runtime.zip"
 rm -f "$RUNTIME_ZIP"
-"$HOST_PYTHON" - "$RUNTIME_STAGE" "$RUNTIME_ZIP" <<'PY'
+"$HOST_PYTHON" - "$RUNTIME_STAGE" "$RUNTIME_ZIP" "$DYNLOAD_DIR" <<'PY'
 from pathlib import Path
 import stat
 import sys
@@ -349,8 +373,15 @@ import zipfile
 
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
+dynload = sys.argv[3]
 timestamp = (2023, 11, 14, 22, 13, 20)
 with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED, strict_timestamps=True) as archive:
+    # A ZIP carries an empty directory only as an explicit entry.
+    info = zipfile.ZipInfo(dynload + "/", date_time=timestamp)
+    info.create_system = 3
+    info.external_attr = ((stat.S_IFDIR | 0o755) << 16) | 0x10
+    info.compress_type = zipfile.ZIP_STORED
+    archive.writestr(info, b"")
     for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.as_posix()):
         relative = path.relative_to(root).as_posix()
         info = zipfile.ZipInfo(relative, date_time=timestamp)

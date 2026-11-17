@@ -115,12 +115,136 @@ name = "flex-docs"
 class = "browser-product"
 
 [[packages]]
+name = "patch"
+class = "user-software"
+
+[[packages]]
+name = "patch-docs"
+class = "browser-product"
+
+[[packages]]
+name = "wasm-tools"
+class = "user-software"
+
+[[packages]]
+name = "wasm-tools-docs"
+class = "browser-product"
+
+[[packages]]
+name = "autoconf"
+class = "user-software"
+
+[[packages]]
+name = "automake"
+class = "user-software"
+
+[[packages]]
+name = "libtool"
+class = "user-software"
+
+[[packages]]
+name = "autoconf-archive"
+class = "user-software"
+
+[[packages]]
+name = "gettext"
+class = "user-software"
+
+[[packages]]
+name = "help2man"
+class = "user-software"
+
+[[packages]]
+name = "texinfo"
+class = "user-software"
+
+[[packages]]
+name = "pkgconf"
+class = "user-software"
+
+[[packages]]
+name = "bison"
+class = "user-software"
+
+[[packages]]
+name = "gperf"
+class = "user-software"
+
+[[packages]]
+name = "ninja"
+class = "user-software"
+
+[[packages]]
+name = "meson"
+class = "user-software"
+
+[[packages]]
+name = "cmake"
+class = "user-software"
+
+[[packages]]
+name = "autoconf-docs"
+class = "browser-product"
+
+[[packages]]
+name = "automake-docs"
+class = "browser-product"
+
+[[packages]]
+name = "bison-docs"
+class = "browser-product"
+
+[[packages]]
+name = "gettext-docs"
+class = "browser-product"
+
+[[packages]]
+name = "gperf-docs"
+class = "browser-product"
+
+[[packages]]
+name = "cmake-docs"
+class = "browser-product"
+
+[[packages]]
+name = "help2man-docs"
+class = "browser-product"
+
+[[packages]]
+name = "libtool-docs"
+class = "browser-product"
+
+[[packages]]
+name = "meson-docs"
+class = "browser-product"
+
+[[packages]]
+name = "ninja-docs"
+class = "browser-product"
+
+[[packages]]
+name = "pkgconf-docs"
+class = "browser-product"
+
+[[packages]]
+name = "texinfo-docs"
+class = "browser-product"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 
 [[packages]]
+name = "binaryen-docs"
+class = "browser-product"
+
+[[packages]]
 name = "wasm-fork-instrument"
 class = "platform"
+
+[[packages]]
+name = "wasm-fork-instrument-docs"
+class = "browser-product"
 
 [[packages]]
 name = "bzip2"
@@ -147,6 +271,10 @@ name = "clang"
 class = "platform"
 
 [[packages]]
+name = "clang-docs"
+class = "browser-product"
+
+[[packages]]
 name = "cli11"
 class = "platform"
 
@@ -157,6 +285,10 @@ class = "user-software"
 [[packages]]
 name = "composer"
 class = "user-software"
+
+[[packages]]
+name = "composer-docs"
+class = "browser-product"
 
 [[packages]]
 name = "coreutils-docs"
@@ -173,6 +305,10 @@ class = "browser-product"
 [[packages]]
 name = "kandelo-cc"
 class = "platform"
+
+[[packages]]
+name = "kandelo-cc-docs"
+class = "browser-product"
 
 [[packages]]
 name = "python-browser-bundle"
@@ -195,6 +331,10 @@ name = "dbus"
 class = "user-software"
 
 [[packages]]
+name = "dbus-docs"
+class = "browser-product"
+
+[[packages]]
 name = "diffutils"
 class = "user-software"
 
@@ -205,6 +345,10 @@ class = "browser-product"
 [[packages]]
 name = "dosbox-pure"
 class = "user-software"
+
+[[packages]]
+name = "dosbox-pure-docs"
+class = "browser-product"
 
 [[packages]]
 name = "dinit"
@@ -223,6 +367,10 @@ name = "espeak-ng"
 class = "user-software"
 
 [[packages]]
+name = "espeak-ng-docs"
+class = "browser-product"
+
+[[packages]]
 name = "expat"
 class = "platform"
 
@@ -231,12 +379,20 @@ name = "fbdoom"
 class = "user-software"
 
 [[packages]]
+name = "fbdoom-docs"
+class = "browser-product"
+
+[[packages]]
 name = "fcft"
 class = "platform"
 
 [[packages]]
 name = "ffmpeg"
 class = "user-software"
+
+[[packages]]
+name = "ffmpeg-docs"
+class = "browser-product"
 
 [[packages]]
 name = "file"
@@ -267,6 +423,10 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "foot-docs"
+class = "browser-product"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -277,6 +437,10 @@ class = "platform"
 [[packages]]
 name = "game-import"
 class = "user-software"
+
+[[packages]]
+name = "game-import-docs"
+class = "browser-product"
 
 [[packages]]
 name = "gawk"
@@ -293,6 +457,10 @@ class = "platform"
 [[packages]]
 name = "git"
 class = "user-software"
+
+[[packages]]
+name = "git-docs"
+class = "browser-product"
 
 [[packages]]
 name = "glib"
@@ -343,6 +511,10 @@ name = "harper"
 class = "user-software"
 
 [[packages]]
+name = "harper-docs"
+class = "browser-product"
+
+[[packages]]
 name = "harper-browser-bundle"
 class = "user-software"
 
@@ -373,6 +545,10 @@ class = "platform"
 [[packages]]
 name = "kandelo-exchange"
 class = "platform"
+
+[[packages]]
+name = "kandelo-exchange-docs"
+class = "browser-product"
 
 [[packages]]
 name = "kandelo-sdk"
@@ -543,6 +719,10 @@ name = "login"
 class = "platform"
 
 [[packages]]
+name = "login-docs"
+class = "browser-product"
+
+[[packages]]
 name = "lsof"
 class = "user-software"
 
@@ -603,6 +783,10 @@ name = "modeset"
 class = "user-software"
 
 [[packages]]
+name = "modeset-docs"
+class = "browser-product"
+
+[[packages]]
 name = "msmtpd"
 class = "user-software"
 
@@ -621,6 +805,10 @@ class = "browser-product"
 [[packages]]
 name = "ncurses"
 class = "platform"
+
+[[packages]]
+name = "ncurses-docs"
+class = "browser-product"
 
 [[packages]]
 name = "readline"
@@ -667,7 +855,15 @@ name = "node"
 class = "user-software"
 
 [[packages]]
+name = "node-docs"
+class = "browser-product"
+
+[[packages]]
 name = "node-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "npm-docs"
 class = "browser-product"
 
 [[packages]]
@@ -727,6 +923,10 @@ name = "qtgallery"
 class = "user-software"
 
 [[packages]]
+name = "qtgallery-docs"
+class = "browser-product"
+
+[[packages]]
 name = "qtshadertools"
 class = "platform"
 
@@ -739,12 +939,24 @@ name = "quickshell"
 class = "user-software"
 
 [[packages]]
+name = "quickshell-docs"
+class = "browser-product"
+
+[[packages]]
 name = "redis"
 class = "user-software"
 
 [[packages]]
+name = "redis-docs"
+class = "browser-product"
+
+[[packages]]
 name = "retro-emulators"
 class = "user-software"
+
+[[packages]]
+name = "retro-emulators-docs"
+class = "browser-product"
 
 [[packages]]
 name = "rootfs"
@@ -771,6 +983,10 @@ name = "ruby-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "rubygems-docs"
+class = "browser-product"
+
+[[packages]]
 name = "scummvm"
 class = "user-software"
 
@@ -783,7 +999,15 @@ name = "freeciv"
 class = "user-software"
 
 [[packages]]
+name = "freeciv-docs"
+class = "browser-product"
+
+[[packages]]
 name = "freeciv-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "freeciv-play-docs"
 class = "browser-product"
 
 [[packages]]
@@ -807,8 +1031,16 @@ name = "sdl2-demo"
 class = "user-software"
 
 [[packages]]
+name = "sdl2-demo-docs"
+class = "browser-product"
+
+[[packages]]
 name = "wayland-demo"
 class = "user-software"
+
+[[packages]]
+name = "wayland-demo-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sdl2-mixer"
@@ -827,6 +1059,10 @@ name = "cage"
 class = "user-software"
 
 [[packages]]
+name = "cage-docs"
+class = "browser-product"
+
+[[packages]]
 name = "json-c"
 class = "platform"
 
@@ -835,12 +1071,28 @@ name = "sway"
 class = "user-software"
 
 [[packages]]
+name = "swaybar-docs"
+class = "browser-product"
+
+[[packages]]
+name = "sway-docs"
+class = "browser-product"
+
+[[packages]]
 name = "labwc"
 class = "user-software"
 
 [[packages]]
+name = "labwc-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sfwbar"
 class = "user-software"
+
+[[packages]]
+name = "kandelo-desktop-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sfwbar-docs"
@@ -849,6 +1101,10 @@ class = "browser-product"
 [[packages]]
 name = "swaybg"
 class = "user-software"
+
+[[packages]]
+name = "swaybg-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sdl2-mixer-playwave"
@@ -891,16 +1147,32 @@ name = "sqlite-cli"
 class = "user-software"
 
 [[packages]]
+name = "sqlite-cli-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sudo"
 class = "platform"
+
+[[packages]]
+name = "sudo-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sudo-lite"
 class = "platform"
 
 [[packages]]
+name = "sudo-lite-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sysklogd"
 class = "platform"
+
+[[packages]]
+name = "sysklogd-docs"
+class = "browser-product"
 
 [[packages]]
 name = "tar"
@@ -923,8 +1195,16 @@ name = "toybox"
 class = "platform"
 
 [[packages]]
+name = "toybox-docs"
+class = "browser-product"
+
+[[packages]]
 name = "termchat"
 class = "user-software"
+
+[[packages]]
+name = "termchat-docs"
+class = "browser-product"
 
 [[packages]]
 name = "tcl"
@@ -937,6 +1217,10 @@ class = "platform"
 [[packages]]
 name = "tyrquake"
 class = "user-software"
+
+[[packages]]
+name = "tyrquake-docs"
+class = "browser-product"
 
 [[packages]]
 name = "unzip"
@@ -1073,6 +1357,10 @@ name = "rustc"
 class = "user-software"
 
 [[packages]]
+name = "rust-tools-docs"
+class = "browser-product"
+
+[[packages]]
 name = "rust-llvm"
 class = "platform"
 
@@ -1087,6 +1375,10 @@ class = "browser-product"
 [[packages]]
 name = "rust-coverage-tools"
 class = "user-software"
+
+[[packages]]
+name = "rust-coverage-tools-docs"
+class = "browser-product"
 
 [[packages]]
 name = "rust-docs"

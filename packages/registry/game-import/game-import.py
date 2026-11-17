@@ -1,5 +1,6 @@
 """Guest-side game import and dispatch. Never executes an archive to identify it."""
 import configparser
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -355,7 +356,12 @@ def request_terminal(command, display):
     argv = ['/usr/bin/kandelo-page-terminal', '--title', 'Imported games']
     if display:
         argv.append('--display')
-    return subprocess.run([*argv, command]).returncode == 0
+    try:
+        return subprocess.run([*argv, command]).returncode == 0
+    except FileNotFoundError:
+        # An image without the page terminal has no page to ask; callers
+        # fall back to reporting or running the command themselves.
+        return False
 
 
 def main(argv):
@@ -381,8 +387,14 @@ def main(argv):
     else:
         root = source
         # Detection owns its config; never trust a config supplied in a ZIP.
+        # A ScummVM game launched from it reads that config while it runs,
+        # so it cannot be removed afterwards. One directory per game
+        # directory, replaced on each run, keeps it from accumulating.
         imports.mkdir(parents=True, exist_ok=True, mode=0o700)
-        metadata = Path(tempfile.mkdtemp(prefix='detection-', dir=imports))
+        key = hashlib.sha256(os.fsencode(root)).hexdigest()[:16]
+        metadata = imports / ('detection-' + key)
+        shutil.rmtree(metadata, ignore_errors=True)
+        metadata.mkdir(mode=0o700)
         had_zip = False
     candidates = []
     try:

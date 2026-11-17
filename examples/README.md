@@ -84,6 +84,7 @@ reboot a test's journal or establish full persistent POSIX conformance.
 | [environ.c](environ.c) | Process info and environment variables |
 | [putenv_test.c](putenv_test.c) | setenv/getenv/putenv/unsetenv |
 | [getaddrinfo_test.c](getaddrinfo_test.c) | DNS resolution via getaddrinfo() |
+| [getaddrinfo_lookup.c](getaddrinfo_lookup.c) | Prints the getaddrinfo() result or EAI error for each name argument |
 | [mmap_file_test.c](mmap_file_test.c) | Memory-mapped file I/O |
 | [test-pthread.c](test-pthread.c) | Thread creation via clone() |
 | [sysv_ipc_test.c](sysv_ipc_test.c) | SysV IPC (message queues, semaphores) |

@@ -52,11 +52,17 @@ class ScriptedRunner implements PhpRunner {
   async close(): Promise<void> {}
 }
 
+// The php-src checkout lives on the host; the runner mounts it in the guest at
+// the PHP test work tree (docs/filesystem-layout.md), so guest-visible paths
+// are rooted there, not at the host checkout.
+const HOST_PHP_SRC = "/host/php-src";
+const GUEST_PHP_TESTS = "/var/lib/kandelo-tests/php";
+
 function phpt(sections: Record<string, string>): PhptTest {
   return {
-    path: "/php-src/tests/harness.phpt",
+    path: `${HOST_PHP_SRC}/tests/harness.phpt`,
     rel: "tests/harness.phpt",
-    sourceRoot: "/php-src",
+    sourceRoot: HOST_PHP_SRC,
     sections: {
       TEST: "harness semantics",
       FILE: "<?php echo 'ok'; ?>",
@@ -109,7 +115,7 @@ describe("PHP PHPT verdict semantics", () => {
 
     const loaded = await probeLoadedExtensions(
       runner,
-      "/php-src",
+      HOST_PHP_SRC,
       new Set(["opcache"]),
       1000,
     );
@@ -153,8 +159,8 @@ describe("PHP PHPT verdict semantics", () => {
     const fileEnv = runner.envByKind.get("file") ?? [];
     expect(fileEnv).toContain("REDIRECT_STATUS=1");
     expect(fileEnv).toContain("REQUEST_METHOD=GET");
-    expect(fileEnv).toContain("PATH_TRANSLATED=/php-src/tests/harness.php");
-    expect(fileEnv).toContain("SCRIPT_FILENAME=/php-src/tests/harness.php");
+    expect(fileEnv).toContain(`PATH_TRANSLATED=${GUEST_PHP_TESTS}/tests/harness.php`);
+    expect(fileEnv).toContain(`SCRIPT_FILENAME=${GUEST_PHP_TESTS}/tests/harness.php`);
     for (const kind of ["skipif", "clean"] as const) {
       const env = runner.envByKind.get(kind) ?? [];
       expect(env.some((entry) => entry.startsWith("REQUEST_METHOD="))).toBe(false);

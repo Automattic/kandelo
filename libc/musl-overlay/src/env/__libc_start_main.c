@@ -94,6 +94,8 @@ static void libc_start_init(void)
 weak_alias(libc_start_init, __libc_start_init);
 
 int __main_argc_argv(int, char **);
+_Noreturn void __kandelo_run_main(int (*)(int,char **), int, char **);
+_Noreturn void __kandelo_main_entry(int (*)(int,char **), int, char **);
 
 /* WHY noinline and a direct call: upstream musl calls stage 2 through a
  * pointer laundered by an asm statement, a barrier against hoisting
@@ -181,13 +183,28 @@ static int libc_start_main_stage2(int (*main)(int,char **), int argc, char **arg
 		/* Not reached */
 	}
 
-	__libc_start_init();
+	__kandelo_main_entry(main, argc, argv);
+}
 
-	/* Call main and exit. A direct call, not through the pointer crt1 used
-	 * to pass: keeping main out of the indirect function table lets fork
-	 * instrumentation see that main is entered only from here (see crt1.c).
-	 * A non-null pointer (a foreign start routine) is still honoured. */
+/* Run constructors, main and exit. A direct call of main, not through the
+ * pointer crt1 used to pass: keeping main out of the indirect function table
+ * lets fork instrumentation see that main is entered only from here (see
+ * crt1.c). A non-null pointer (a foreign start routine) is still honoured. */
+_Noreturn void __kandelo_run_main(int (*main)(int,char **), int argc, char **argv)
+{
+	__libc_start_init();
 	if (main)
 		exit(main(argc, argv));
 	exit(__main_argc_argv(argc, argv));
+}
+
+/* The main thread's language-runtime entry. A C program runs
+ * __kandelo_run_main directly. The SDK links a strong definition into
+ * programs that link the C++ runtime (libc/glue/cxxrt_entry.cpp): it
+ * catches a C++ exception that no handler caught and calls std::terminate.
+ * WebAssembly exception handling has no search phase, so without that frame
+ * the exception would leave the program instead. */
+weak _Noreturn void __kandelo_main_entry(int (*main)(int,char **), int argc, char **argv)
+{
+	__kandelo_run_main(main, argc, argv);
 }

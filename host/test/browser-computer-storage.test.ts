@@ -13,6 +13,17 @@ const other = "87654321-4321-4321-4321-cba987654321";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("identifies a storage bootstrap failure and preserves its native cause without retrying", async () => {
+  const cause = new DOMException("The operation failed for an unknown transient reason (e.g. out of memory).", "UnknownError");
+  const getDirectory = vi.fn().mockRejectedValue(cause);
+  vi.stubGlobal("navigator", { storage: { getDirectory } });
+  await expect(browserComputersDirectory(false)).rejects.toMatchObject({
+    message: `Opening browser computer storage (navigator.storage.getDirectory) failed: UnknownError: ${cause.message}`,
+    cause,
+  });
+  expect(getDirectory).toHaveBeenCalledTimes(1);
+});
+
 it("uses computer-prefixed names and binds replacement journals to exactly one computer", () => {
   const name = browserComputerStorageName(id);
   expect(name).toBe(`computer-${id}`);

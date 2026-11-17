@@ -599,7 +599,7 @@ and `catclose` checks exercise the generated catalogs through musl.
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `uname()` | Full | Returns sysname="wasm-posix", nodename="localhost", release="1.0.0", version="kandelo", machine="wasm32". 5 x 65-byte null-terminated strings. |
+| `uname()` | Full | Returns sysname="wasm-posix", nodename="localhost", release="1.0.0", version="kandelo", machine="wasm32". 5 x 65-byte null-terminated strings. The `uname` utility (GNU coreutils) prints these fields; its `-o` operating-system name is fixed at build time and reads "Kandelo" (set in `sdk/config.site`). |
 | `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_NPROCESSORS_CONF=1, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via musl overlay. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. `RLIMIT_AS` is the exception and is never infinity: a process address space is a bounded Wasm linear memory, so the hard limit is the real ceiling mmap and brk already enforce (the host sets it per process from the memory layout it built — 1 GiB under the desktop memory profile, 256 MiB under the constrained one), and a soft limit set above that ceiling is reported at it. A guest cannot discover the bound any other way, and one told the space is unlimited will size an allocation it cannot have. |
@@ -641,11 +641,25 @@ The base rootfs installs a compact utility set, `posix-utils-lite`
 package provides yet. Several of its programs are placeholders that do not
 do what the utility is specified to do, and most still exit 0. Do not rely
 on them in builds or scripts; a real package should replace each one, as
-Berkeley yacc (`byacc`) and flex now replace its `yacc` and `lex`.
+Berkeley yacc (`byacc`), flex and GNU patch now replace its `yacc`, `lex`
+and `patch`.
+
+The shell image, every image built on it, and the build image replace its
+`ar`, `nm`, `strip` and `strings` with LLVM's (`llvm-ar`, `llvm-nm`,
+`llvm-objcopy` running as `strip`, `llvm-strings`, from the `clang`
+package) and add `ranlib`, `objdump`, `objcopy`, `llvm-readobj` (also
+`llvm-readelf`), `size`, `c++filt` and `addr2line`, but no plain
+`readelf`. The shell also carries `wasm-tools`. "Inspecting build output"
+in [the SDK guide](sdk-guide.md#inspecting-build-output) says which tool
+reads which file, why there is no `readelf`, and how the two `strip`
+commands differ. They also replace its `gettext`, `ngettext`, `msgfmt` and
+`xgettext` with GNU gettext's, alongside the other GNU build tools (see
+"GNU build tools" in the SDK guide). The rows below for `ar`, `nm`,
+`strip`, `strings`, `msgfmt` and `xgettext` describe images that carry only
+the base rootfs.
 
 | Utility | What it actually does |
 |---|---|
-| `patch` | Prints `patching file X` for each file a unified diff names, changes nothing, and exits 0. |
 | `compress`, `uncompress` | Copy the bytes unchanged: `compress f` writes an uncompressed `f.Z`. |
 | `iconv` | Copies its input; `-f` and `-t` are ignored. |
 | `msgfmt` | Writes the source text behind a comment line, not a binary message catalog. |
@@ -656,10 +670,16 @@ Berkeley yacc (`byacc`) and flex now replace its `yacc` and `lex`.
 | `ipcrm` | Refuses, saying System V IPC removal is unavailable, although it is implemented. |
 | `xgettext` | Extracts every string literal, not only the ones passed to `gettext` calls. |
 | `ar` | `r` and `q` rewrite the archive with only the named members (existing members are lost); writes no symbol index. |
+| `strip` | Removes every Wasm custom section, including the ABI section the host requires, so a stripped program no longer loads. |
+| `strings` | Ignores its options except `-n`; `-t` prints no offsets and `-a` changes nothing. |
 | `uuencode`, `uudecode` | `uuencode` always writes base64 (as with `-m`); `uudecode` decodes only base64. |
 | `cflow`, `cxref` | List function definitions found by a line pattern; no call graph and no cross-reference. |
 | `more` | Copies its input without paging. |
 | `getconf` | Prints built-in fallback values when `sysconf` fails. |
+
+GNU patch runs `/usr/bin/ed` for ed-style diffs (`patch -e`, or a diff
+`patch` recognizes as an ed script), so those still go through the `ed`
+placeholder above; unified and context diffs do not use it.
 
 The real `yacc` and `lex` come without their libraries: there is no
 `-ly` (POSIX `main` and `yyerror`) or `-ll`/`-lfl` (`main` and `yywrap`) in
@@ -879,7 +899,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - **Extended attributes:** 12 xattr syscalls; `user.` attributes on the exchange filesystem only (ENOTSUP for get/set/remove and an empty list elsewhere)
 - **Remaining:** memfd_create, getcpu, splice/tee, POSIX timers, capget/capset, and more
 - **No longer stubs:** `sync_file_range` (whole-file `fsync`), `personality` (ENOSYS, logged) and `membarrier` (empty QUERY mask, EINVAL for barrier commands) were listed above as batch-5 stubs; see their rows in the tables for current behaviour.
-- **Not the live path:** `libc/glue/syscall_glue.c` still answers `return 0` for `SYS_SYNC_FILE_RANGE`, `SYS_PERSONALITY` and `SYS_MEMBARRIER` (the last with a "no-op, single-threaded" comment that is false). No build links that file: the SDK driver (`crates/kandelo-cc/src/driver.rs`, `glue_sources`) links only `channel_syscall.c`, `compiler_rt.c`, `cxxrt.c` and optionally `dlopen.c`, and the channel path reaches the kernel dispatcher, which is what this document describes. Do not read `syscall_glue.c` as authoritative.
+- **Not the live path:** `libc/glue/syscall_glue.c` still answers `return 0` for `SYS_SYNC_FILE_RANGE`, `SYS_PERSONALITY` and `SYS_MEMBARRIER` (the last with a "no-op, single-threaded" comment that is false). No build links that file: the SDK driver (`crates/kandelo-cc/src/driver.rs`, `glue_sources`) links only `channel_syscall.c`, `compiler_rt.c`, `cxxrt.c` and optionally `dlopen.c` and `cxxrt_entry.cpp`, and the channel path reaches the kernel dispatcher, which is what this document describes. Do not read `syscall_glue.c` as authoritative.
 
 ---
 
@@ -892,7 +912,7 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
 | ~~`flock()` syscall~~ | file locking | **Done.** Uses the Rust advisory manager with OFD-style ownership, so dup/fork share ownership and final close releases it (also when an independent open of the same tmpfs or rootfs file stays open). A blocking request parks in the kernel like F_SETLKW. LOCK_SH, LOCK_EX, LOCK_UN, and LOCK_NB are supported; shared/exclusive conversion follows the non-atomic BSD/Linux rule by dropping the old mode before attempting the new one, preventing mutually upgrading shared holders from retaining a deadlocking lock. | ~~Medium~~ |
-| ~~`/dev/urandom` virtual device~~ | VFS | **Done.** `/dev/urandom` and `/dev/random` intercept in kernel, delegate to `host_getrandom()` → `crypto.getRandomValues()`. | ~~Easy~~ |
+| ~~`/dev/urandom` virtual device~~ | VFS | **Done.** `/dev/urandom` and `/dev/random` intercept in kernel, delegate to `host_getrandom()` → `crypto.getRandomValues()`. Rust streams bounded windows directly into the guest for large scalar reads, `readv`, and `getrandom`. Kernel and host scratch stay bounded independently of the requested size; continuations permit interruption and return a delivered prefix on later failure. Web Crypto's 65,536-byte quota limits a window, not a device read. | ~~Easy~~ |
 | ~~`getrandom()` syscall~~ | random | **Done.** Host-delegated to `crypto.getRandomValues()`. | ~~Easy~~ |
 | ~~`putenv()` syscall~~ | environment | **Done.** Parses `KEY=VALUE` string, delegates to setenv. | ~~Easy~~ |
 | ~~Virtual device files in VFS~~ | VFS | **Done.** `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/full`, `/dev/fd/N`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` all handled in-kernel. | ~~Medium~~ |
@@ -903,7 +923,7 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
 | ~~`connect()` for AF_INET~~ | socket | **Done.** Host-delegated TCP networking. bind/listen/accept/connect/send/recv all functional. Node.js backend uses `net` module; browser backend uses fetch for HTTP. | ~~Hard~~ |
-| ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** Host-delegated via `host_getaddrinfo` import. Returns AF_INET sockaddr_in. `/etc/hosts` is served from the canonical `rootfs.vfs.zst` mount at `/` for localhost resolution. | ~~Medium~~ |
+| ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** libc answers numeric IPv4 literals, empty names and `localhost` itself; every other name goes through the private `SYS_getaddrinfo` syscall to the host's network backend (`host_getaddrinfo`) and returns one AF_INET address. libc does not read `/etc/hosts` or `/etc/resolv.conf`, and an AF_INET6 lookup of a host name fails with `EAI_FAMILY`. The Node host with `enableTcpNetwork` resolves through the computer's resolver (`dns.lookup`): a name it does not know is `EAI_NONAME`, any other resolver failure `EAI_FAIL`. A Node machine without `enableTcpNetwork`, and the offline conformance link, have no internet resolver and report such names as `EAI_NONAME`; Linux musl reports `EAI_AGAIN` when no nameserver answers. The browser's fetch/TLS links give each syntactically valid name a made-up `198.18.0.0/15` address, so a nonexistent name fails when the connection is fetched rather than at lookup. | ~~Medium~~ |
 | ~~`setsockopt()` expansion~~ | socket | **Done.** SO_KEEPALIVE, TCP_NODELAY, SO_REUSEADDR, disabled SO_LINGER state, and many more are represented; enabled SO_LINGER remains explicitly unsupported. | ~~Easy~~ |
 | ~~Async socket polling bridge~~ | socket | **Done.** poll/select/epoll all work with socket fds. The kernel checks readiness inline. | ~~Medium~~ |
 
@@ -1034,10 +1054,32 @@ Itanium-EH unwinding uses LLVM `libunwind` statically bundled into
 `libc++abi.a` via the libcxx package (`packages/registry/libcxx/`,
 `LIBCXXABI_USE_LLVM_UNWINDER` + `LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY`),
 so consumers link `-lc++ -lc++abi` and `_Unwind_*` resolves internally —
-no separate `-lunwind`. clang must be invoked with `-fwasm-exceptions`;
-without it catch handlers are dead-code-eliminated and `throw` hangs.
+no separate `-lunwind`. The SDK compiles C++ with `-fwasm-exceptions` by
+default and the libcxx package is built with it, so `try`/`catch`,
+unwinding cleanups and libc++'s own handlers work without a flag from the
+build system (`docs/sdk-guide.md`, "C++ exceptions"). `-fno-exceptions`
+still turns them off.
 
-Regression gate: `programs/cpp_throw_test.cpp` exercises throw → catch
-in a single program; `host/test/cpp-throw-test.test.ts` runs it via the
-kernel harness. The gap was first surfaced by the SpiderMonkey EH
-spike (see external `memory/spidermonkey-spike-eh-toolchain-gap.md`).
+Regression gate: `programs/cpp_throw_test.cpp`, built with no exception
+flag, checks catch handlers, destructors during unwinding, exceptions
+thrown by libc++ and libc++abi, `exception_ptr` across threads and the
+handler inside libc++'s `std::call_once`; `host/test/cpp-throw-test.test.ts`
+runs it via the kernel harness.
+
+An exception with no handler calls `std::terminate`: libc++abi's default
+handler prints `terminating due to uncaught exception of type ...` and
+aborts, so the process is killed by `SIGABRT` (visible to `waitpid` as
+`WIFSIGNALED`/`SIGABRT`), and a `std::set_terminate` handler runs when
+installed. This holds for `main`, static constructors and destructors run
+by `exit`, and every `pthread_create`/`std::thread` start routine. Because
+Wasm exception handling has no search phase, the SDK's C++ runtime entry
+(`libc/glue/cxxrt_entry.cpp`) catches such an exception at the bottom of
+each stack; unlike Linux, the stack has been unwound by the time the
+terminate handler runs, which the standard leaves implementation-defined.
+A failed throwing `operator new` calls the `new_handler` and then throws
+`std::bad_alloc`, and the `nothrow` forms return a null pointer
+(libc++'s definitions; the SDK's abort-on-failure fallback in
+`libc/glue/cxxrt.c` is linked lazily after libc++ and only serves C++ code
+linked without it). `programs/cxx_uncaught_test.cpp` and
+`programs/cxx_bad_alloc_test.cpp`, run by `host/test/cxx-terminate.test.ts`,
+are the regression gate (`docs/sdk-guide.md`, "C++ exceptions").

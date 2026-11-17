@@ -1,3 +1,5 @@
+import { ProcessMemoryCreatorGate, isProcessMemoryCreatorAdmissionClosed } from "../src/process-memory-creator-gate";
+import { ProcessMemoryAllocator } from "../src/process-memory";
 import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserProcessMemoryFactory } from "../src/browser-process-memory-factory";
@@ -30,6 +32,90 @@ afterEach(() => {
 });
 
 describe("browser process memory allocation realm", () => {
+  it("keeps termination failure visible during an admitted cancellation", async () => {
+    setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const allocated = gate.run("fork construction", () => factory.allocate(request));
+    const outcome = allocated.catch(error => error);
+    const worker = AllocationWorker.instances[0];
+    worker.terminate.mockImplementationOnce(() => { throw new Error("termination failed"); });
+    const drained = gate.closeAndWait();
+    const cancellation = gate.closedAdmissionCancellation("pending memory construction");
+    factory.dispose(cancellation);
+    const failure = await outcome;
+    await drained;
+    expect(isProcessMemoryCreatorAdmissionClosed(failure)).toBe(false);
+    expect(failure.message).toContain("termination failed");
+    expect(worker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("mints cancellation only after admission closes", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    expect(() => gate.closedAdmissionCancellation("memory construction")).toThrow("still open");
+    await gate.closeAndWait();
+    const cancellation = gate.closedAdmissionCancellation("memory construction");
+    expect(isProcessMemoryCreatorAdmissionClosed(cancellation)).toBe(true);
+    expect(isProcessMemoryCreatorAdmissionClosed(new Error(cancellation.message))).toBe(false);
+  });
+
+  it("preserves terminal admission cancellation while draining pending fork and exec allocation", async () => {
+    const revoke = setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const allocator = new ProcessMemoryAllocator({ maxMemories: 4, maxTotalBytes: 8 * 65536,
+      createMemoryAsync: request => factory.allocate(request) });
+    const parent = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+    const fork = gate.run("fork construction", () => allocator.acquireForkClone(parent, 4, 4));
+    const exec = gate.run("exec construction", () => allocator.acquireWhenAvailable(request));
+    const forkOutcome = fork.catch(error => error);
+    const execOutcome = exec.catch(error => error);
+    expect(AllocationWorker.instances).toHaveLength(2);
+    const lateReply = AllocationWorker.instances[0].onmessage!;
+    const sweep = vi.fn(() => {
+      expect(allocator.getRetirementStats()).toMatchObject({ liveMemories: 0, chargedMemories: 0, chargedBytes: 0 });
+      allocator.clear();
+    });
+    const destroyed = gate.closeAndRunAfterDrain(sweep);
+    expect(sweep).not.toHaveBeenCalled();
+    const cancellation = gate.closedAdmissionCancellation("pending memory construction");
+    expect(isProcessMemoryCreatorAdmissionClosed(cancellation)).toBe(true);
+    factory.dispose(cancellation);
+    const results = await Promise.all([forkOutcome, execOutcome]);
+    await destroyed;
+    expect(sweep).toHaveBeenCalledOnce();
+    for (const worker of AllocationWorker.instances) {
+      expect(worker.terminate).toHaveBeenCalledOnce();
+      expect(worker.onmessage).toBeNull();
+    }
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:allocation-worker");
+    const lateMemory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+    lateReply({ data: { memory: lateMemory } } as MessageEvent);
+    expect(lookupComparisonMemoryShape(lateMemory)).toBeUndefined();
+    expect(allocator.getRetirementStats()).toMatchObject({ liveMemories: 0, chargedBytes: 0 });
+    for (const result of results) {
+      expect(result).toBe(cancellation);
+      expect(isProcessMemoryCreatorAdmissionClosed(result)).toBe(true);
+    }
+  });
+
+  it("keeps an earlier construction failure distinct from terminal cancellation", async () => {
+    setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const pending = gate.run("fork construction", () => factory.allocate(request));
+    const outcome = pending.catch(error => error);
+    AllocationWorker.instances[0].onerror!({ message: "Process memory factory was destroyed" } as ErrorEvent);
+    const destroyed = gate.closeAndRunAfterDrain(() => {});
+    const cancellation = gate.closedAdmissionCancellation("pending memory construction");
+    factory.dispose(cancellation);
+    const failure = await outcome;
+    await destroyed;
+    expect(failure.message).toBe("Process memory factory was destroyed");
+    expect(failure).not.toBe(cancellation);
+    expect(isProcessMemoryCreatorAdmissionClosed(failure)).toBe(false);
+  });
+
   it("returns the received Memory and terminates its construction realm", async () => {
     const revoke = setup();
     const factory = new BrowserProcessMemoryFactory();

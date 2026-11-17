@@ -1,0 +1,28 @@
+kind = "program"
+name = "texinfo-docs"
+version = "7.3"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `texinfo` package.
+# The source, SHA-256 and version are the `texinfo` package's own, so the
+# pages describe the release that built the installed program;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/texinfo/texinfo-7.3.tar.xz"
+sha256 = "51f74eb0f51cfa9873b85264dfdd5d46e8957ec95b88f0fb762f63d9e164c72e"
+provider = "archive"
+
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/texinfo.git/tree/COPYING?h=texinfo-7.3"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/texinfo-docs/build-texinfo-docs.sh"
+
+[[outputs]]
+name = "texinfo-docs"
+wasm = "texinfo-docs.zip"
+fork_instrumentation = "disabled"

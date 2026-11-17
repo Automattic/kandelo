@@ -72,7 +72,7 @@ describe.skipIf(!available)("Composer in the Node-host shell", () => {
       expect(composerDownloads()).toHaveLength(0);
       expect(await run("composer --version --no-ansi")).toContain("Composer version 2.10.3");
       expect(composerDownloads()).toHaveLength(1);
-      expect(await run("/bin/composer --version --no-ansi")).toContain("Composer version 2.10.3");
+      expect(await run("/usr/bin/composer --version --no-ansi")).toContain("Composer version 2.10.3");
       const result = await run(`set -eu
         mkdir -p "$HOME/composer smoke/src"
         cd "$HOME/composer smoke"

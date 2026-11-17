@@ -77,8 +77,22 @@ cleaned up after 24 hours without opening them; keep one through Library to
 retain it. Browser storage is not a backup.
 
 **Persistence is experimental:** saved computers from this release will not
-work in the next release. Export important files before updating Kandelo.
+work in the next release. [Export important files](docs-site/guide/moving-files.md)
+before updating Kandelo.
 See [computer storage and retention](docs/browser-support.md#computer-library-and-retention).
+
+### Move files into and out of Kandelo
+
+Drop files onto the running computer or use **Send files**; the fallback
+handler saves them inside Kandelo under `~/Downloads/`. To download a file
+to your device, run this in the Kandelo terminal:
+
+```sh
+kandelo-publish ./report.pdf
+```
+
+Click **Save** on the output card. See the [file-transfer guide](docs-site/guide/moving-files.md)
+for exporting directories, streaming command output, and agent instructions.
 
 ### Build C and C++ inside Kandelo
 

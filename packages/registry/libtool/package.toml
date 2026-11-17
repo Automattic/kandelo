@@ -1,0 +1,26 @@
+kind = "program"
+name = "libtool"
+version = "2.6.2"
+kernel_abi = 56
+depends_on = []
+
+# GNU Libtool: libtoolize, its m4 macros and ltmain.sh, and a libtool script
+# configured for Kandelo (wasm32-unknown-linux-musl, the SDK's compilers), as
+# a ZIP mounted at /usr. libltdl is not installed. The ZIP holds shell
+# scripts that run the guest's /bin/sh, sed and grep.
+[source]
+url = "https://ftpmirror.gnu.org/libtool/libtool-2.6.2.tar.xz"
+sha256 = "2ef1067c16c97db930fd740cc9bc3d3ba9a583804ae5ac42cc3e8719e49e191e"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later WITH Libtool-exception"
+url = "https://git.savannah.gnu.org/cgit/libtool.git/tree/COPYING?h=v2.6.2"
+
+[build]
+script_path = "packages/registry/libtool/build-libtool.sh"
+
+[[outputs]]
+name = "libtool"
+wasm = "libtool.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,25 @@
+kind = "program"
+name = "rust-tools-docs"
+version = "1.97.0-nightly-2026-04-27"
+kernel_abi = 56
+depends_on = ["rustc@1.97.0-nightly-2026-04-27", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for rustfmt, cargo-fmt, cargo-clippy and clippy-driver, which the pinned Rust distribution ships without manual pages, generated from what each prints for --help and
+# --version while running inside Kandelo. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT OR Apache-2.0"
+url = "https://github.com/rust-lang/rust/blob/ca9a134e0985765ded9cfdde4030a5df4db7e2bd/COPYRIGHT"
+
+[build]
+script_path = "packages/registry/rust-tools-docs/build-rust-tools-docs.sh"
+
+[[outputs]]
+name = "rust-tools-docs"
+wasm = "rust-tools-docs.zip"
+fork_instrumentation = "disabled"

@@ -9,9 +9,12 @@ and validation. This document remains the reference for implemented behavior.
 The B1 graphics shipment follows the maintainer's D-63 incremental
 release scope: selected graphical demos generally work, while known
 defects and full validation remain explicit follow-ups. The combined
-normal-built checkpoint passes 23 of 24 graphical cases; WebKit Cage
-startup fails before the rendering checks and its isolated control
-reproduces the failure. The implemented ownership and publication
+normal-built shipment checkpoint passed 23 of 24 graphical cases; WebKit
+Cage startup failed before rendering and its isolated control reproduced
+the failure. The [Cage follow-up](https://github.com/Automattic/kandelo/pull/1678)
+attributes that startup failure to the test's ephemeral storage context and
+records a separate terminal visibility/resize ordering repair. The original
+failures remain release evidence. The implemented ownership and publication
 contracts below still apply. This release makes no native-feel or
 full-conformance claim.
 
@@ -21,7 +24,7 @@ intermediate branch versions of host 4 had different interfaces and are
 not separate release contracts. Both original frozen fixture cohorts
 remain unchanged. See the [combined landing
 decision](graphics/compatibility-v1.md#combined-landing-decision-d-64-2026-11-08)
-for exact evidence, the unresolved startup defect and contributor
+for exact shipment evidence, the original startup failure and contributor
 credit.
 
 ## Overview
@@ -131,6 +134,9 @@ kernel_transfer_scratch_capacity(reservation_token) → reservation_capacity | 0
 kernel_transfer_scratch_cancel(reservation_token) → 0 | -errno
 kernel_transfer_io_execute(pid, tid, reservation_token, len, syscall, fd, offset, retry_token) → bytes | -errno
 kernel_transfer_channel_execute(pid, tid, reservation_token, retry_token) → 0 | -errno
+kernel_handle_guest_io(scratch_ptr, capacity, pid, retry_token) → result (private guest-pointer transport)
+kernel_entropy_read_step(pid, tid, token, interrupted) → bytes | -errno | ENTROPY_READ_PENDING
+kernel_entropy_read_cancel(pid, tid, token) → 0
 kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
@@ -197,6 +203,47 @@ component relative to a directory handle the host issued, and the kernel uses
 them only for host directories mounted beneath its own `/`
 (`crates/runtime-core/src/hostdir.rs`). The listing above is abridged;
 `crates/shared/src/lib.rs` and `abi/snapshot.json` hold the full import set.
+
+The shared Node/browser `host_getrandom` adapter allocates an independent
+buffer of at most 65,536 bytes, the
+[Web Crypto per-call quota](https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues).
+It publishes one initialized window to the Rust-lent destination and returns
+its byte count. The backing buffer, as well as its view, is bounded.
+
+Large `/dev/urandom`, `/dev/random`, and `getrandom()` requests bypass the
+request-sized transfer reservation. During normal dispatch Rust selects the
+producer, copies any
+`readv()` table once (bounded by `IOV_MAX`), and validates each destination
+through the nonallocating `host_proc_validate_range` import. It generates and
+copies one window at a time into the guest, reusing bounded kernel scratch.
+The first batch runs in that same dispatch; after sixteen windows it can
+yield to the worker with an opaque task-bound token in the private result
+header (`errno = ENTROPY_READ_PENDING as u32`, `return = token`); only admitted
+destination metadata and progress survive between turns.
+Each continuation checks the original process registration and image generation.
+A later error or interruption returns the delivered prefix; before progress it
+returns errno. Cancellation, thread exit, exec, and process teardown retire
+pending state. The quota is not a device read limit, and 1 MiB has no special
+read semantics. The existing seeded image-build source still supplies build
+kernels; aligned windows preserve its block consumption.
+
+Other transfers retain their existing single-operation pipe, datagram, and
+OFD semantics. Large scalar requests use `kernel_handle_guest_io` with the original guest
+address and length in the fixed header. Rust gathers write bytes once into an
+admitted `IoBuffer` and retains it with the pinned open file description across
+EAGAIN, using the same retry state as `writev`. The host retains only scalar
+arguments and a retry token, with no payload-sized JavaScript snapshot or
+separate admission/release calls. This transport has a dedicated host handler;
+ordinary mailbox plans and scratch dispatch use their fixed channel export.
+The kernel specializes the guest-address transport at compile time. Ordinary
+`readv` selects entropy inside its existing kernel dispatch and returns its
+continuation token directly with that read's result, with no preliminary host
+probe or global pending-token lookup. Host continuation lookups run only for
+an already-active request or retry. Existing widened-channel reservations for
+other syscalls are unchanged. Large scalar payload admission refusal is
+`ENOMEM`; no memory
+ceiling is raised. Freeing scratch permits heap reuse but cannot shrink Wasm
+linear memory.
 
 `host_proc_read_bytes` / `host_proc_write_bytes` take a 64-bit guest address,
 so a wasm64 process's pointer above 4 GiB reaches the kernel intact. They are
@@ -482,22 +529,23 @@ publishing a channel. This identity check keeps later process-memory ranges,
 framebuffers, mappings, and worker transport outside the kernel-allocation
 model even if an internal caller accidentally passes the wrong memory object.
 
-Scalar and vectored reads or writes at most `CH_DATA_SIZE` use the main
-channel region. The host validates the complete caller range or native iovec
-table, flattens a vector directly into the data area, and dispatches one scalar
-kernel operation. A vector is never split merely to fit scratch; preserving
-one logical operation is required for pipe atomicity, datagram boundaries,
-short reads, EOF, and operation-wide file-size limits.
+Scalar reads and writes at most `CH_DATA_SIZE` use the main channel region.
+Vector syscalls pass caller-native metadata to Rust, which copies and validates
+the table once and performs one operation. Entropy reads use the bounded
+cursor described above. Other vectors gather or stage under the I/O budget;
+a vector is never split merely to fit scratch. This preserves pipe atomicity,
+datagram boundaries, short reads, EOF, and operation-wide file-size limits.
 
-Larger operations reserve
-`crates/kernel/src/transfer.rs::TransferScratch`. Begin creates a fresh,
-initialized Rust-owned allocation and returns a positive token. The host reads
-the token's pointer and explicit capacity together, proves the current-memory
-range, and copies under one synchronous lease. For widened syscall and channel
-execution, execute changes the reservation from `Reserved` to `Executing`
-before releasing the mutex and entering exactly one kernel operation. A
-normal return, including an errno, changes it to `Ready`; cancellation then
-drops the allocation. No pointer-only execute path exists.
+Large scalar I/O uses the guest-address transport described above. Other
+widened channel and path operations reserve
+`crates/runtime-core/src/transfer.rs::TransferScratch`. Begin creates a fresh,
+initialized Rust-owned allocation and returns a positive token. The
+host reads the token's pointer and explicit capacity together, proves the
+current-memory range, and copies under one synchronous lease. Execute changes
+the reservation from `Reserved` to `Executing` before releasing the mutex and
+entering exactly one kernel operation. A normal return, including an errno,
+changes it to `Ready`; cancellation then drops the allocation. No pointer-only
+execute path exists.
 
 Canonical CWD and open-file-description path snapshots use the same allocation
 owner with a deliberately different `Reserved`-state lifetime. The host first
@@ -1327,9 +1375,13 @@ still observe that description while a sibling process holds it.
 A parked wait owns the exact epoll description and a unique kernel token,
 so fd reuse and late retirement after exec cannot redirect or cancel another
 wait. The shared Node/browser host retains only this token, the signal scope
-and the deadline; it keeps no interest-list mirror. Targeted pipe/accept
-wake tokens are latency hints, with bounded yielding retries for other
-sources and concurrent registration. Host network notification counters,
+and the deadline; it keeps no interest-list mirror. A reverse source index
+routes mutations to bounded, coalesced candidate queues, and nested callbacks
+follow only affected parent relationships. Indexed callbacks reaching a
+sleeping instance issue the existing coalesced broad wake, including concurrent
+registration into an empty set. Parking no longer clones/resolves the interest
+list for pipe/accept hints. Sampling-dependent providers retain the existing
+bounded yielding retry. Host network notification counters,
 signal queue generations, and the independent PCM consumer clock retain
 activity that happens between attempts. See the [epoll matrix](epoll.md) for
 interfaces, event bits, ownership details and explicit compatibility limits.
@@ -2764,6 +2816,12 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+Browser destroy carries the closed creator gate's terminal cancellation into
+pending disposable memory allocations. Fork rollback still removes the exact
+uncommitted child and inherited host handles before accepting that disposition.
+Constructor errors, copied cancellation text and failed allocation-worker
+termination retain their failure identity and remain diagnostic.
+
 Every main generation prepares its own exact-handle absence proof before
 publication or deferred start. Cold exit, exec and destroy paths may accept that
 sealed never-attempted proof instead of waiting for a message from a realm that
@@ -2851,6 +2909,18 @@ snapshot and pending child backing, including concurrent pending allocations,
 and rechecks guest growth before publishing a constructed memory. Native
 constructor exhaustion maps to `ENOMEM` without changing unrelated errors.
 Machine shutdown closes creator admission before draining admitted work.
+If Rust exits a fork child while replay readiness is pending, the exact
+process-exit owner cancels that replay with its already-published teardown.
+Both hosts join that teardown instead of rolling back the exited child.
+A prior worker or protocol failure still wins; a synthetic Worker exit or
+matching error text cannot supply this ownership. The same cancellation is
+rechecked after readiness and after asynchronous launch-state queries.
+When that owner cancels pending replay, it marks only the exact child as
+intentionally retiring before yielding. Cancellation can wake guest glue
+before a queued Rust retirement marker is written. Fence listeners remain
+active; an expected cancellation must not become a second crash report.
+This handoff is enabled only for ordinary fork. A vfork borrower's existing
+lifetime completion and address-space containment protocol remains its owner.
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space
@@ -5158,6 +5228,8 @@ This backend is used by `apps/browser-demos/pages/network/`, which boots multipl
 
 `TcpNetworkBackend` uses Node.js `net.Socket` for external raw TCP. DNS uses `dns.lookup`. Node can therefore provide real socket-level TCP behavior for destinations outside the Kandelo process.
 
+`NodeKernelHost` attaches this backend only with `enableTcpNetwork`. With it, guest name resolution, including libcurl's in curl and CMake's `file(DOWNLOAD)`, reaches the computer's resolver: the lookup starts asynchronously and the syscall retries until it settles. A name the resolver does not know reaches the guest as `ENOENT` (`EAI_NONAME` from `getaddrinfo`); any other resolver failure is `EIO` (`EAI_FAIL`). Without the option the machine has no egress link and no resolver, so a lookup fails with `EAI_NONAME` and curl reports `Could not resolve host`. `runGuestBuild` machines are offline in the same way.
+
 The conformance runners select `OfflineEgressBackend`: it exposes the same
 guest internet interface as the browser while refusing external traffic.
 It also owns all guest TCP listener addresses, preventing the Node host's
@@ -5970,11 +6042,32 @@ runs, using the exact bytes that reached canonical storage, and marks
 readers pending. It never rereads the live producer to advance that
 baseline: stores made during the scan must remain detectable at the next
 publication, including stores to an earlier byte the scan already passed.
-Readiness refresh remains unconditional for the
-selected BO's mapped readers: mutable canonical pixel views do not provide
-an authoritative version that would permit skipping those refreshes.
-This remains boundary synchronization,
-not live aliasing between Wasm memories. A snapshot is bounded by the
+Each reader records the canonical revision it has imported. A current
+reader needs no copy; a stale reader imports only changed byte runs and
+advances its baseline from canonical bytes, so a concurrent guest store
+remains detectable. Unrestricted mutable `pixelView` access permanently
+disables that revision shortcut for the BO. Internal read-only consumers
+borrow `readPixelView`; device writes use `publishDevicePixels`.
+
+A mapping comparison can be reused only when the existing process mutation
+epoch proves every thread is parked and no vfork alias can write. The proof
+is checked against the original mapped memory, before and after the scan;
+unknown or running address spaces always scan. Host imports invalidate the
+same epoch. A prefix comparison proves only that prefix.
+
+Large mappings with authenticated constructor metadata use the existing
+read-only Wasm comparator on 64 KiB blocks. Each mapping owns an independent,
+nonshared baseline memory whose initial and maximum sizes both equal the
+rounded allocation. Instances and exports exist only during a synchronous
+borrow of the original process memory. Dirty blocks still use exact
+changed-byte publication; small mappings, unavailable native capabilities,
+and JavaScriptCore hosts (WebKit and Bun) use the JavaScript comparison with
+owned-array baselines. Fixed Wasm baselines spend additional reservation
+capacity on JavaScriptCore; optional comparison bookkeeping must not reduce
+the capacity available to guest processes. Splits allocate independent baselines, and
+retirement releases them with their mappings. No guest memory is sent to a
+persistent browser realm, and no ABI or memory-budget ceiling changes.
+This remains boundary synchronization, not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired
 only by the kernel's final-reference destroy notification. Partial DRI
 `munmap` trims or splits that ownership instead of revoking the whole
@@ -6826,11 +6919,19 @@ journal that would retry a refused deletion before later GL work, which
 nothing guarantees will ever come.
 
 The browser's optional image-owned `presentation.displayScale` advertises
-a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
-reference dimensions, scanout, input range, and cursor use one grid. Without
-that setting, the existing native-device-pixel and physical-size path is
-preserved for compositors. See [display presentation](browser-support.md)
-for its bounds and resampling limitations.
+a readable virtual monitor for bitmap interfaces. `displayMaxSize` selects
+a CSS-reference grid without HiDPI supersampling and bounds its preferred
+pixel dimensions, preserving aspect within connector bounds. An explicit
+scale applies before this maximum. The guest mode, 96-DPI reference size,
+scanout, input range and cursor use one grid; this bounds real guest
+framebuffers rather than only enlarging their CSS presentation. Cage's
+profile opts into a 1280×720 maximum for demo responsiveness. Removing or
+changing the preference invalidates a preserved pane's size report before
+another client starts. Other images retain the native-device-pixel and
+physical-size path when neither setting is declared. Higher standard guest
+modes remain available, and this does not add live mode-switch notifications.
+See [display presentation](browser-support.md) for bounds and resampling
+limitations.
 
 KMS display stats distinguish scene presentations from page flips. Cursor-plane updates do not increment scene presentation counters. Slot 0 counts
 canvas presentations from the CPU/scanout presenters and successful direct
@@ -7073,7 +7174,18 @@ and a button), and foot, GTK3, libkwl and wlterm as session clients
 (`host/test/{foot,gtk3,libkwl,wlterm}-smoke.test.ts`), all on the pixman
 renderer. The tests share the session root in `host/test/wlroots-session.ts`.
 `apps/browser-demos/test/kandelo-cage.spec.ts` gates the GLES2 renderer in
-the browser.
+the browser. It uses the shared persistent-page fixture to exercise the
+storage-backed computer bootstrap. A failure to open the browser's OPFS
+root reports the native operation, error name/message and retained cause
+before any guest worker starts; it is not evidence of a compositor crash
+or of memory exhaustion. Repeated Cage checks cover keyboard repaint,
+host viewport resizing, clean client/display release and live machine
+restarts. The retained terminal fits after observed visibility and the
+following animation frame, allowing xterm's hidden renderer to resume
+before it measures the new scroll range. Each terminal cancels its own
+visibility observer and scheduled fit when disposed. See the
+[Cage follow-up PR](https://github.com/Automattic/kandelo/pull/1678) for scope and
+current validation.
 
 ## Wayland tiling compositor (`sway`)
 
@@ -9001,6 +9113,7 @@ components.
 The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 - `--target=wasm32-unknown-unknown`
 - `-matomics -mbulk-memory -mexception-handling` (Wasm features)
+- `-fwasm-exceptions` for compiles with C++ input (C++ exceptions on by default)
 - `--sysroot=<path to musl sysroot>`
 - Links: `channel_syscall.c` + `compiler_rt.c` + `crt1.o` + `libc.a`
 - Linker flags: `--import-memory --shared-memory --max-memory=1073741824`

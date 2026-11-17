@@ -1,5 +1,5 @@
-//! The little of the WebAssembly binary format the driver reads: imports,
-//! custom sections and the code section.
+//! The little of the WebAssembly binary format the driver reads and writes:
+//! imports, custom sections and the code section.
 
 use crate::Result;
 use sha2::{Digest, Sha256};
@@ -197,6 +197,61 @@ pub fn with_code_hash_section(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
     body.extend_from_slice(&digest);
     let mut out = without_custom_section(bytes, CALLTYPES_CODE_HASH_SECTION)?
         .unwrap_or_else(|| bytes.to_vec());
+    out.push(0);
+    out.extend(leb(body.len()));
+    out.extend(body);
+    Ok(Some(out))
+}
+
+/// Is the module a relocatable object (`-r` output) rather than a program?
+/// Such an object is an input of a later link, which would concatenate any
+/// custom section it carries into the program it ends up in.
+pub fn is_relocatable(bytes: &[u8]) -> Result<bool> {
+    Ok(sections(bytes)?.iter().any(|s| {
+        s.name
+            .as_deref()
+            .is_some_and(|name| name == "linking" || name.starts_with("reloc."))
+    }))
+}
+
+/// The module with a `kandelo.abi.contract` section carrying `digest`, the
+/// program ABI-contract digest of the SDK that linked it, or `None` when it
+/// already carries exactly that digest.
+///
+/// A module carrying another digest, or more than one contract section, is an
+/// error: some of its code was built against another program surface, and
+/// restamping would hide that from the host's admission check.
+pub fn with_abi_contract_section(bytes: &[u8], digest: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+    let name = wasm_artifact::ABI_CONTRACT_SECTION;
+    let existing: Vec<Section> = sections(bytes)?
+        .into_iter()
+        .filter(|s| s.id == 0 && s.name.as_deref() == Some(name))
+        .collect();
+    match existing.as_slice() {
+        [] => {}
+        [section] => {
+            let (name_len, name_start) = read_leb(bytes, section.body_start)?;
+            let payload = bytes
+                .get(name_start.saturating_add(name_len as usize)..section.end)
+                .ok_or("truncated Wasm custom section")?;
+            if payload == digest {
+                return Ok(None);
+            }
+            return Err(format!(
+                "the linked module already carries another {name} digest; \
+                 rebuild the input that was built against another program ABI"
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "the linked module carries more than one {name} section"
+            ));
+        }
+    }
+    let mut body = leb(name.len());
+    body.extend_from_slice(name.as_bytes());
+    body.extend_from_slice(digest);
+    let mut out = bytes.to_vec();
     out.push(0);
     out.extend(leb(body.len()));
     out.extend(body);

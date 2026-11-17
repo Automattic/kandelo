@@ -1,0 +1,7 @@
+--- a/greet.c
++++ b/greet.c
+@@ -1,3 +1,3 @@
+ #include <stdio.h>
+ 
+-int greeting_count(void) { return 99; }
++int greeting_count(void) { return 100; }

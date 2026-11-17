@@ -5,6 +5,8 @@ import {
   createForkReplayGate,
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
+  retireForkReplayWorker,
+  waitForForkReplayRetirement,
 } from "../src/fork-replay-gate";
 import { MockWorkerAdapter } from "../src/worker-adapter";
 
@@ -91,7 +93,7 @@ describe("fork replay readiness coordinator", () => {
 });
 
 describe("fork replay Worker lifecycle observer", () => {
-  function observed(isCurrentGeneration = () => true) {
+  function observed(isCurrentGeneration = () => true, retireWithProcessExit = true) {
     const adapter = new MockWorkerAdapter();
     const worker = adapter.createWorker({ pid: 41 });
     const coordinator = new ForkReplayGateCoordinator("fork child pid=41");
@@ -100,6 +102,7 @@ describe("fork replay Worker lifecycle observer", () => {
       worker,
       41,
       isCurrentGeneration,
+      retireWithProcessExit,
     );
     return { coordinator, worker: adapter.lastWorker! };
   }
@@ -171,5 +174,74 @@ describe("fork replay Worker lifecycle observer", () => {
 
     expect(coordinator.currentPhase).toBe("committed");
     expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(1);
+  });
+
+  it.each([false, true])("joins the exact exit owner when readiness was already resolved: %s", async (ready) => {
+    const { coordinator, worker } = observed();
+    if (ready) {
+      worker.simulateMessage({ type: "fork_replay_ready", pid: 41 });
+      await coordinator.waitUntilReady();
+    }
+    let finish!: () => void;
+    const teardown = new Promise<void>(resolve => { finish = resolve; });
+    expect(retireForkReplayWorker(worker, teardown)).toBe(true);
+    worker.simulateExit(0);
+    let reason: unknown;
+    try {
+      await coordinator.waitUntilReady();
+      coordinator.throwIfCancelled();
+    } catch (error) { reason = error; }
+    expect(reason).toBeInstanceOf(Error);
+    expect(() => coordinator.commit()).toThrow(reason as Error);
+    let joined = false;
+    const joining = waitForForkReplayRetirement(coordinator, reason).then(result => { joined = result; });
+    await Promise.resolve();
+    expect(joined).toBe(false);
+    finish();
+    await joining;
+    expect(joined).toBe(true);
+    expect(Atomics.load(new Int32Array(coordinator.gate), 0)).toBe(-1);
+    expect(await waitForForkReplayRetirement(new ForkReplayGateCoordinator("replacement"), reason)).toBe(false);
+    expect(await waitForForkReplayRetirement(coordinator, new Error((reason as Error).message))).toBe(false);
+  });
+
+  it("preserves a real Worker failure before exit takes ownership", async () => {
+    const { coordinator, worker } = observed();
+    worker.simulateError(new Error("real construction failure"));
+    expect(retireForkReplayWorker(worker, Promise.resolve())).toBe(false);
+    const reason = await coordinator.waitUntilReady().catch(error => error);
+    expect(reason.message).toContain("real construction failure");
+    expect(await waitForForkReplayRetirement(coordinator, reason)).toBe(false);
+  });
+
+  it("propagates failed retirement instead of reporting completion", async () => {
+    const { coordinator, worker } = observed();
+    const teardownFailure = new Error("exact detach failed");
+    const teardown = Promise.reject(teardownFailure);
+    expect(retireForkReplayWorker(worker, teardown)).toBe(true);
+    const reason = await coordinator.waitUntilReady().catch(error => error);
+    await expect(waitForForkReplayRetirement(coordinator, reason)).rejects.toBe(teardownFailure);
+  });
+
+  it("leaves borrowed-child retirement to its own lifetime protocol", async () => {
+    const { coordinator, worker } = observed(() => true, false);
+    expect(retireForkReplayWorker(worker, Promise.resolve())).toBe(false);
+    expect(coordinator.currentPhase).toBe("pending");
+    worker.simulateExit(0);
+    const reason = await coordinator.waitUntilReady().catch(error => error);
+    expect(await waitForForkReplayRetirement(coordinator, reason)).toBe(false);
+    expect(reason.message).toContain("Worker exited before replay readiness");
+  });
+
+  it("does not retire a replacement Worker or a committed replay", async () => {
+    const old = observed();
+    const replacement = observed();
+    retireForkReplayWorker(old.worker, Promise.resolve());
+    replacement.worker.simulateMessage({ type: "fork_replay_ready", pid: 41 });
+    await replacement.coordinator.waitUntilReady();
+    replacement.coordinator.commit();
+    retireForkReplayWorker(replacement.worker, Promise.resolve());
+    expect(replacement.coordinator.currentPhase).toBe("committed");
+    expect(old.coordinator.currentPhase).toBe("cancelled");
   });
 });

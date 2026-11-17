@@ -44,7 +44,7 @@ tests pass with zero skips on Node, Chromium, Firefox, and WebKit for both
 wasm32/wasm64 and both libevent epoll modes: 192 upstream case executions.
 The recorded main ABI-50 comparison fails 10 of 12 cases in every
 configuration. The complete upstream suite was not run. See
-[the libevent port](libevent.md) for scope, reproduction, and provenance.
+[the libevent port](../packages/registry/libevent/README.md) for scope, reproduction, and provenance.
 
 ## 2026-06-16 PHP PHPT Node Source-PR Full Run
 

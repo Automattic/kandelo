@@ -136,8 +136,24 @@ CMAKE_PREFIXES="$(IFS=';'; printf '%s' "${DEP_PREFIXES[*]}")"
 
 TARGET_DEFINES="-D__linux__=1 -DQT_LINUXBASE"
 
+# Quickshell reports "VERSION (revision R, distributed by D)" (quickshell
+# --version, its crash and debug info). Distributions pass both values, as
+# this build does: the source is a release archive, not a git checkout, so
+# without GIT_REVISION CMake's `git rev-parse HEAD` finds no revision (or,
+# inside another checkout, that checkout's). The revision is the release
+# tag's commit; a version bump must record the new one.
+case "$QUICKSHELL_VERSION" in
+    0.3.1) QUICKSHELL_GIT_REVISION=1a4716cde794a59928d9d9fc15f2afc7a95de360 ;;
+    *)
+        echo "ERROR: no release commit recorded for quickshell $QUICKSHELL_VERSION" >&2
+        exit 1
+        ;;
+esac
+
 echo "==> Configuring quickshell for wasm32..."
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
+    -DDISTRIBUTOR=Kandelo \
+    -DGIT_REVISION="$QUICKSHELL_GIT_REVISION" \
     -DCMAKE_SYSTEM_NAME=Linux \
     -DCMAKE_SYSTEM_PROCESSOR=wasm32 \
     -DCMAKE_C_COMPILER=wasm32posix-cc \

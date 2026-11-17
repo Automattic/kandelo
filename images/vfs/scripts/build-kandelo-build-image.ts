@@ -1,12 +1,16 @@
 /**
  * Compose the image package builds boot when they build inside Kandelo.
  *
- *   build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <out.vfs.zst>
+ *   build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <clang-dir> <out.vfs.zst>
  *
  * The input rootfs must be the canonical rootfs built with every package
  * output installed eagerly (scripts/build-rootfs.sh --default-install eager).
  * The guest toolchain archive (kandelo-sdk.zip) is expanded under /usr, where
- * the shell would otherwise mount it lazily.
+ * the shell would otherwise mount it lazily. The LLVM binary tools come from
+ * the clang package's outputs (<clang-dir>), at the paths the shell gives
+ * them (LLVM_BINARY_TOOL_SPECS). Perl (perl.zip), Python (python.zip) and the
+ * build tools (images/vfs/lib/init/dev-tools.ts) come from their packages' outputs,
+ * found through the resolver's WASM_POSIX_DEP_<NAME>_DIR variables.
  *
  * WHY eager rather than lazy: a lazy archive member is cached in the kernel's
  * linear memory when first read, together with the whole archive, and the
@@ -18,13 +22,22 @@
  * to browsers.
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { ensureDir, writeVfsBinary } from "../../../host/src/vfs/image-helpers";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
+import { DEV_TOOL_ARCHIVE_SPECS, DEV_TOOL_BINARY_SPECS } from "../lib/init/dev-tools";
+import {
+  displaceBasePlaceholders,
+  LLVM_BINARY_TOOL_SPECS,
+  SHELL_LAZY_BINARY_SPECS,
+  shellLazySpecDependency,
+  shellLazySpecDisplaces,
+  type VfsBinarySpec,
+} from "../lib/init/shell-binaries";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { saveImage } from "./vfs-image-helpers";
 
@@ -56,7 +69,15 @@ function requireNothingDeferred(fs: KandeloImageFs): void {
 /** Expand the guest toolchain archive into `fs` under /usr. */
 export function installGuestToolchain(fs: KandeloImageFs, sdkZip: Uint8Array): void {
   requireNothingDeferred(fs);
-  const entries = parseZipCentralDirectory(sdkZip);
+  expandArchiveUnderUsr(fs, sdkZip, "toolchain archive");
+}
+
+/**
+ * Expand a ZIP rooted at /usr into `fs`, resident. Directories may be shared
+ * between archives; a file may not replace one already in the image.
+ */
+export function expandArchiveUnderUsr(fs: KandeloImageFs, zip: Uint8Array, label: string): void {
+  const entries = parseZipCentralDirectory(zip);
 
   // Directories first, so every member's parent exists before it is written.
   const ordered = [...entries].sort((a, b) =>
@@ -65,7 +86,7 @@ export function installGuestToolchain(fs: KandeloImageFs, sdkZip: Uint8Array): v
   for (const entry of ordered) {
     const relative = entry.fileName.replace(/\/$/, "");
     if (relative === "" || relative.split("/").some((part) => part === ".." || part === ".")) {
-      throw new Error(`toolchain archive entry escapes ${GUEST_TOOLCHAIN_PREFIX}: ${entry.fileName}`);
+      throw new Error(`${label} entry escapes ${GUEST_TOOLCHAIN_PREFIX}: ${entry.fileName}`);
     }
     const path = `${GUEST_TOOLCHAIN_PREFIX}${relative}`;
     const parent = path.slice(0, path.lastIndexOf("/"));
@@ -82,9 +103,9 @@ export function installGuestToolchain(fs: KandeloImageFs, sdkZip: Uint8Array): v
     // A base file and a toolchain file at one path would leave the image
     // ambiguous about which bytes a tool runs; refuse rather than overwrite.
     if (exists(fs, path)) {
-      throw new Error(`toolchain archive would replace ${path}, which the rootfs already provides`);
+      throw new Error(`${label} would replace ${path}, which the image already provides`);
     }
-    const bytes = extractZipEntry(sdkZip, entry);
+    const bytes = extractZipEntry(zip, entry);
     if (entry.isSymlink) {
       fs.symlink(new TextDecoder("utf-8", { fatal: true }).decode(bytes), path);
       continue;
@@ -94,13 +115,81 @@ export function installGuestToolchain(fs: KandeloImageFs, sdkZip: Uint8Array): v
   }
 }
 
+/**
+ * Write the LLVM binary tools resident, from the clang package's output
+ * directory, replacing the rootfs placeholders each one names.
+ */
+export function installLlvmBinaryTools(fs: KandeloImageFs, clangDir: string): void {
+  installBinarySpecs(fs, LLVM_BINARY_TOOL_SPECS, () => clangDir);
+}
+
+/**
+ * The shell's archive tools, which the rootfs does not carry: unpacking a
+ * source tarball and gettext's autopoint both need them.
+ */
+export const BUILD_IMAGE_ARCHIVE_TOOL_IDS = ["tar", "gzip", "bzip2", "xz"] as const;
+
+/** The archive tools, at the shell's paths, from their packages' outputs. */
+export function installArchiveTools(fs: KandeloImageFs, dependencyDir: (name: string) => string): void {
+  const ids: readonly string[] = BUILD_IMAGE_ARCHIVE_TOOL_IDS;
+  const specs = SHELL_LAZY_BINARY_SPECS.filter((spec) => ids.includes(spec.id));
+  if (specs.length !== ids.length) {
+    throw new Error(`the shell no longer installs every archive tool: ${ids.join(", ")}`);
+  }
+  installBinarySpecs(fs, specs, dependencyDir);
+}
+
+/** The resolver's directory for a declared dependency (WASM_POSIX_DEP_<NAME>_DIR). */
+export function dependencyDirFromEnv(name: string): string {
+  const variable = `WASM_POSIX_DEP_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_DIR`;
+  const dir = process.env[variable];
+  if (!dir) throw new Error(`${variable} is required: declare ${name} in the build image's depends_on`);
+  return dir;
+}
+
+/**
+ * Write the GNU build tools resident (images/vfs/lib/init/dev-tools.ts):
+ * each package's ZIPs expanded under /usr and its programs at their paths.
+ */
+export function installDevTools(fs: KandeloImageFs, dependencyDir: (name: string) => string): void {
+  for (const spec of DEV_TOOL_ARCHIVE_SPECS) {
+    const zip = new Uint8Array(readFileSync(join(dependencyDir(spec.dependency), basename(spec.resolverPath))));
+    expandArchiveUnderUsr(fs, zip, `${spec.dependency} archive ${basename(spec.resolverPath)}`);
+  }
+  installBinarySpecs(fs, DEV_TOOL_BINARY_SPECS, dependencyDir);
+}
+
+function installBinarySpecs(
+  fs: KandeloImageFs,
+  specs: readonly VfsBinarySpec[],
+  dependencyDir: (name: string) => string,
+): void {
+  for (const spec of specs) {
+    displaceBasePlaceholders(fs, shellLazySpecDisplaces(spec));
+    if (exists(fs, spec.vfsPath)) {
+      throw new Error(`${spec.vfsPath} is already in the image; refusing to replace it`);
+    }
+    const bytes = new Uint8Array(
+      readFileSync(join(dependencyDir(shellLazySpecDependency(spec)), basename(spec.resolverPath))),
+    );
+    writeVfsBinary(fs, spec.vfsPath, bytes, 0o755);
+    fs.chmod(spec.vfsPath, 0o755);
+    for (const alias of spec.symlinks) {
+      if (exists(fs, alias)) {
+        throw new Error(`${alias} is already in the image; refusing to replace it`);
+      }
+      fs.symlink(spec.vfsPath, alias);
+    }
+  }
+}
+
 async function main(argv: string[]): Promise<void> {
-  if (argv.length !== 3) {
+  if (argv.length !== 4) {
     throw new Error(
-      "usage: build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <out.vfs.zst>",
+      "usage: build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <clang-dir> <out.vfs.zst>",
     );
   }
-  const [rootfsPath, sdkZipPath, outPath] = argv;
+  const [rootfsPath, sdkZipPath, clangDir, outPath] = argv;
   const epoch = process.env.SOURCE_DATE_EPOCH;
   if (epoch === undefined || !/^[0-9]+$/.test(epoch)) {
     throw new Error("SOURCE_DATE_EPOCH must be set to a non-negative integer");
@@ -113,6 +202,21 @@ async function main(argv: string[]): Promise<void> {
     throw new Error(`rootfs was built for kernel ABI ${baseAbi}, this tree is ABI ${ABI_VERSION}`);
   }
   installGuestToolchain(fs, new Uint8Array(readFileSync(sdkZipPath)));
+  // Perl, which Autoconf, Automake, help2man and texi2any run.
+  expandArchiveUnderUsr(
+    fs,
+    new Uint8Array(readFileSync(join(dependencyDirFromEnv("perl-browser-bundle"), "perl.zip"))),
+    "perl archive",
+  );
+  // Python, which Meson runs.
+  expandArchiveUnderUsr(
+    fs,
+    new Uint8Array(readFileSync(join(dependencyDirFromEnv("python-browser-bundle"), "python.zip"))),
+    "python archive",
+  );
+  installLlvmBinaryTools(fs, clangDir);
+  installArchiveTools(fs, dependencyDirFromEnv);
+  installDevTools(fs, dependencyDirFromEnv);
   await saveImage(fs, outPath, {
     metadata: {
       version: 1,

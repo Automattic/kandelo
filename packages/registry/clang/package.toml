@@ -37,6 +37,34 @@ wasm = "llvm-ranlib.wasm"
 name = "llvm-nm"
 wasm = "llvm-nm.wasm"
 
+[[outputs]]
+name = "llvm-objdump"
+wasm = "llvm-objdump.wasm"
+
+[[outputs]]
+name = "llvm-objcopy"
+wasm = "llvm-objcopy.wasm"
+
+[[outputs]]
+name = "llvm-readobj"
+wasm = "llvm-readobj.wasm"
+
+[[outputs]]
+name = "llvm-size"
+wasm = "llvm-size.wasm"
+
+[[outputs]]
+name = "llvm-strings"
+wasm = "llvm-strings.wasm"
+
+[[outputs]]
+name = "llvm-cxxfilt"
+wasm = "llvm-cxxfilt.wasm"
+
+[[outputs]]
+name = "llvm-symbolizer"
+wasm = "llvm-symbolizer.wasm"
+
 [[host_tools]]
 name = "cmake"
 version_constraint = ">=3.20"

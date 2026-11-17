@@ -18,6 +18,12 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 7 adds bounded entropy-read continuations, a
+nonallocating process-range validation import, and a private guest-address I/O
+transport. Selection, allocation admission and retained write payloads are
+kernel-owned; ordinary readv dispatch needs no separate entropy probe. The host and kernel must be rebuilt together. Guest program ABI
+56 and its supported digest are unchanged; existing guest binaries remain valid.
+
 Program ABI 56 is the supported baseline; ABI 55 was retired before release.
 The separate `abi/supported-program-baseline.json` gate preserves the current program digest across
 kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
@@ -3083,6 +3089,17 @@ must equal the kernel's, and the `kandelo.abi.contract` digest, which must
 equal the digest stamped on the running kernel. The local build engine
 also keys every program and library on that digest, so the digest decides
 when cached package builds are reused.
+
+The SDK driver (`crates/kandelo-cc`) stamps the digest on every executable
+it links, after its other post-link edits, on the build machine and inside
+Kandelo alike. It reads the digest from `libc/glue/kandelo-abi-contract.txt`,
+which `xtask dump-abi` generates from the snapshot and
+`scripts/check-abi-version.sh` checks. The file sits beside the glue every
+executable links, and the SDK inside Kandelo ships that directory. Shared
+libraries are not stamped. A link whose output already carries another
+digest fails. Package admission, `scripts/build-programs.sh` and the
+conformance runners stamp the same digest again, which leaves a
+driver-stamped program unchanged.
 
 The digest covers `ABI_VERSION` and the snapshot sections listed under
 `abi_surfaces.program`: what a running program was compiled and linked

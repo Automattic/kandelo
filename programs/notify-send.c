@@ -14,6 +14,31 @@
 #include <gio/gio.h>
 
 #include <stdio.h>
+#include <string.h>
+
+static const char help_text[] =
+    "Usage: notify-send SUMMARY [BODY]...\n"
+    "\n"
+    "Show a desktop notification through the session bus.\n"
+    "\n"
+    "notify-send calls org.freedesktop.Notifications.Notify on the\n"
+    "notification daemon that owns that name on the D-Bus session bus, whose\n"
+    "address is taken from DBUS_SESSION_BUS_ADDRESS. The notification's\n"
+    "summary is SUMMARY and its body is the remaining arguments joined with\n"
+    "spaces; it has the application name notify-send, no icon and no\n"
+    "actions, and the daemon's default timeout. notify-send waits up to ten\n"
+    "seconds for the reply and prints the id the daemon assigned as\n"
+    "\"NOTIFY_ID id=N\" on standard output.\n"
+    "\n"
+    "Unlike the libnotify notify-send, this one takes no other options: every\n"
+    "argument other than --help and --version as the first is text.\n"
+    "\n"
+    "Exit status is 0 on success, 1 when the bus or the call fails, and 2\n"
+    "when SUMMARY is missing.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
 
 int main(int argc, char **argv)
 {
@@ -22,6 +47,15 @@ int main(int argc, char **argv)
     GVariant *reply;
     GString *body;
     guint32 id = 0;
+
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("notify-send (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
 
     if (argc < 2) {
         fprintf(stderr, "usage: %s <summary> [body...]\n", argv[0]);

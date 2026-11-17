@@ -185,6 +185,16 @@ an earlier cache key usually has the same size. The finalizer then leaves the
 published projection untouched only when it already records this run's exact
 package set, cache keys, and receipts.
 
+When it does publish, the finalizer derives the program index and checks every
+package's receipt against its current cache key. Within that pass each
+package's own inputs are read again at every check, but the keys of its
+dependencies are derived once and shared, because a key covers the package's
+whole dependency closure and deriving every closure from scratch repeated the
+same hashing for each package. Before the new projection goes live, every key is
+derived once more from scratch; if any package's inputs changed while the
+finalizer ran, publication fails instead of recording a key that no longer
+matches.
+
 The machine-readable result contains every selected node and whether it was
 newly published or reused from cache. If a node fails, independent work drains
 and the command exits nonzero after printing failed and blocked counts. Fix the
@@ -1908,13 +1918,20 @@ The contract:
   `depends_on`. The machine boots exactly those artifacts. The build image is
   the canonical rootfs with every tool resident, plus `kandelo-sdk.zip`
   expanded under `/usr` (`cc`, `c++`, `wasm32posix-ar`, `wasm32posix-ranlib`
-  and the LLVM tools). It is never served to browsers.
+  and the LLVM tools) and the clang package's binary tools in `/usr/bin`
+  (`ar`, `ranlib`, `nm`, `strip`, `objdump`, `llvm-readobj`, ...; see
+  `LLVM_BINARY_TOOL_SPECS` in `images/vfs/lib/init/shell-binaries.ts`).
+  It is never served to browsers.
 - `build.toml` `inputs` lists `scripts/guest-build.sh`,
   `scripts/guest-build.ts`, `host/src/node-guest-build.ts` and the host runtime
   it imports, and `cargo:runtime-core`, as `coreutils-docs` does: the kernel and
   host runtime are part of the output's identity.
 - The workspace is mounted read-write at `/build` and must be a copy under
-  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. `--input` mounts are
+  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. Nothing on the host may
+  write it while the command runs: the runner declares the mount
+  exclusively owned, which is what lets the host filesystem perform
+  O_APPEND writes (`>>`, build logs, m4's `--debugfile`) with exact
+  results. `--input` mounts are
   read-only. Neither may sit under a path the in-kernel tmpfs owns (`/tmp`,
   `/var/tmp`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
   runner refuses them.

@@ -161,7 +161,13 @@ function requireStagedSysroot(sysroot: string): void {
 export async function buildKandeloSdkVfsImage(
   inputs: KandeloSdkVfsInputs,
 ): Promise<void> {
-  const glueNames = ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"];
+  const glueSources = [
+    "channel_syscall.c",
+    "compiler_rt.c",
+    "cxxrt.c",
+    "cxxrt_entry.cpp",
+    "dlopen.c",
+  ];
   requireInput(join(inputs.sysrootDirectory, "lib", "libc.a"), "sysroot libc");
   requireStagedSysroot(inputs.sysrootDirectory);
   for (const path of [
@@ -175,8 +181,8 @@ export async function buildKandeloSdkVfsImage(
   // The SDK driver links executables against this generated allowance
   // (shared::abi::HOST_ENV_IMPORTS); without it every link fails.
   requireInput(join(inputs.glueDirectory, "kandelo-host-imports.txt"), "link allowance");
-  for (const name of glueNames) {
-    requireInput(join(inputs.glueDirectory, `${name}.c`), `${name} glue source`);
+  for (const name of glueSources) {
+    requireInput(join(inputs.glueDirectory, name), `${name} glue source`);
   }
   for (const license of inputs.licenseFiles) {
     requireInput(license.hostPath, `license ${license.guestPath}`);

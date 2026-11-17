@@ -1,0 +1,28 @@
+kind = "program"
+name = "help2man-docs"
+version = "1.49.3"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `help2man` package.
+# The source, SHA-256 and version are the `help2man` package's own, so the
+# pages describe the release that built the installed program;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/help2man/help2man-1.49.3.tar.xz"
+sha256 = "4d7e4fdef2eca6afe07a2682151cea78781e0a4e8f9622142d9f70c083a2fd4f"
+provider = "archive"
+
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://www.gnu.org/software/help2man/"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/help2man-docs/build-help2man-docs.sh"
+
+[[outputs]]
+name = "help2man-docs"
+wasm = "help2man-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,26 @@
+kind = "program"
+name = "composer-docs"
+version = "2.10.3"
+kernel_abi = 56
+depends_on = ["composer@2.10.3", "php@8.5.12", "bash@5.2.37", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for composer, generated from what the program
+# prints for --help and --version while running inside Kandelo: the
+# program has no upstream manual page. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/composer/composer/blob/2.10.3/LICENSE"
+
+[build]
+script_path = "packages/registry/composer-docs/build-composer-docs.sh"
+
+[[outputs]]
+name = "composer-docs"
+wasm = "composer-docs.zip"
+fork_instrumentation = "disabled"

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
@@ -104,6 +105,150 @@ static void fairness_and_lifetime(void) {
   close(f[1]);
   close(f[2]);
   close(ep);
+}
+
+/* Exercise sparse/dense queues through libc and the production syscall path.
+   Removing queued entries forces dense-slot relocation before fd reuse. */
+static void sparse_dense_delivery(void) {
+  enum { N = 128, BATCH = 17 };
+  const uint32_t modes[] = {0, EPOLLET, EPOLLONESHOT, EPOLLET | EPOLLONESHOT};
+  for (unsigned mode = 0; mode < sizeof modes / sizeof modes[0]; ++mode) {
+    int ep = epoll_create1(0), fds[N];
+    unsigned char seen[N] = {0};
+    struct epoll_event out[BATCH];
+    CHECK(ep >= 0);
+    for (int i = 0; i < N; ++i) {
+      fds[i] = eventfd(0, EFD_NONBLOCK);
+      CHECK(fds[i] >= 0);
+      ctl(ep, EPOLL_CTL_ADD, fds[i], EPOLLIN | modes[mode], i);
+    }
+    CHECK(epoll_wait(ep, out, BATCH, 0) == 0);
+    for (int i = 0; i < 32; ++i) poke(fds[73]);
+    CHECK(epoll_wait(ep, out, BATCH, 0) == 1 && out[0].data.u64 == 73);
+    uint64_t value;
+    CHECK(read(fds[73], &value, 8) == 8 && value == 32);
+    CHECK(epoll_wait(ep, out, BATCH, 0) == 0);
+    for (int i = 0; i < N; ++i) {
+      ctl(ep, EPOLL_CTL_MOD, fds[i], EPOLLIN | modes[mode], i);
+      poke(fds[i]);
+    }
+    for (int i = 0; i < N; i += 3) {
+      CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, fds[i], NULL) == 0);
+      CHECK(close(fds[i]) == 0);
+      fds[i] = -1;
+    }
+    int delivered = 0;
+    while (delivered < N - (N + 2) / 3) {
+      int n = epoll_wait(ep, out, BATCH, 0);
+      CHECK(n > 0);
+      for (int i = 0; i < n; ++i) {
+        unsigned id = out[i].data.u64;
+        CHECK(id < N && id % 3 != 0 && !seen[id]);
+        seen[id] = 1;
+        ++delivered;
+        CHECK(read(fds[id], &value, 8) == 8 && value == 1);
+      }
+    }
+    CHECK(epoll_wait(ep, out, BATCH, 0) == 0);
+    for (int i = 0; i < N; ++i) if (fds[i] >= 0) CHECK(close(fds[i]) == 0);
+    int reused = eventfd(1, EFD_NONBLOCK);
+    CHECK(reused >= 0 && epoll_wait(ep, out, BATCH, 0) == 0);
+    ctl(ep, EPOLL_CTL_ADD, reused, EPOLLIN | modes[mode], TAG);
+    CHECK(wait_one(ep, 0) == 1 && event.data.u64 == TAG);
+    CHECK(close(reused) == 0 && close(ep) == 0);
+  }
+}
+
+/* Uninstrumented scaling diagnostic. Times include ordinary channel/SDK work;
+   write phases measure mutation plus notification, wait phases delivery. */
+static uint64_t now_ns(void) {
+  struct timespec t;
+  CHECK(clock_gettime(CLOCK_MONOTONIC, &t) == 0);
+  return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+static void metric(const char *phase, uint64_t start, int operations) {
+  uint64_t elapsed = now_ns() - start;
+  printf("EPOLL_SCALE {\"phase\":\"%s\",\"ns\":%llu,\"operations\":%d}\n",
+         phase, (unsigned long long)elapsed, operations);
+}
+static int scaling_benchmark(int count, uint32_t mode) {
+  CHECK(count >= 1 && count <= 3000);
+  struct rlimit limit;
+  CHECK(getrlimit(RLIMIT_NOFILE, &limit) == 0);
+  CHECK(limit.rlim_max >= (rlim_t)count + 16);
+  limit.rlim_cur = count + 16;
+  CHECK(setrlimit(RLIMIT_NOFILE, &limit) == 0);
+  int *fds = calloc(count, sizeof *fds);
+  struct epoll_event *out = calloc(count, sizeof *out);
+  CHECK(fds && out);
+  struct timespec resolution;
+  CHECK(clock_getres(CLOCK_MONOTONIC, &resolution) == 0);
+  uint64_t observed = UINT64_MAX, previous = now_ns();
+  for (int i = 0; i < 256; ++i) {
+    uint64_t current = now_ns(), delta = current - previous;
+    if (delta && delta < observed) observed = delta;
+    previous = current;
+  }
+  printf("EPOLL_SCALE {\"count\":%d,\"edge\":%d,\"reported_clock_ns\":%llu,\"min_clock_observation_ns\":%llu}\n",
+         count, mode != 0, (unsigned long long)resolution.tv_sec * 1000000000 + resolution.tv_nsec,
+         (unsigned long long)observed);
+  uint64_t total = now_ns(), start = total;
+  int ep = epoll_create1(0);
+  CHECK(ep >= 0);
+  for (int i = 0; i < count; ++i) {
+    fds[i] = eventfd(0, EFD_NONBLOCK);
+    CHECK(fds[i] >= 0);
+    ctl(ep, EPOLL_CTL_ADD, fds[i], EPOLLIN | mode, i);
+  }
+  metric("create_register", start, count);
+  start = now_ns();
+  CHECK(epoll_wait(ep, out, count, 0) == 0);
+  metric("initial_recheck", start, 1);
+  start = now_ns();
+  for (int i = 0; i < 64; ++i) CHECK(epoll_wait(ep, out, count, 0) == 0);
+  metric("idle_wait", start, 64);
+  start = now_ns();
+  for (int i = 0; i < 8; ++i) CHECK(epoll_wait(ep, out, count, 2) == 0);
+  metric("parked_idle_wait", start, 8);
+  start = now_ns();
+  for (int i = 0; i < 64; ++i) {
+    int target = (i * 31) % count;
+    poke(fds[target]);
+    CHECK(epoll_wait(ep, out, count, 0) == 1 && out[0].data.u64 == (uint64_t)target);
+    uint64_t value;
+    CHECK(read(fds[target], &value, 8) == 8 && value == 1);
+  }
+  metric("sparse_write_wait_read", start, 64);
+  start = now_ns();
+  for (int i = 0; i < 64; ++i) poke(fds[count / 2]);
+  metric("burst_write", start, 64);
+  start = now_ns();
+  CHECK(epoll_wait(ep, out, count, 0) == 1);
+  metric("burst_delivery", start, 1);
+  uint64_t value;
+  CHECK(read(fds[count / 2], &value, 8) == 8 && value == 64);
+  CHECK(epoll_wait(ep, out, count, 0) == 0);
+  start = now_ns();
+  for (int i = 0; i < count; ++i) poke(fds[i]);
+  metric("dense_write", start, count);
+  start = now_ns();
+  CHECK(epoll_wait(ep, out, count, 0) == count);
+  metric("dense_delivery", start, 1);
+  start = now_ns();
+  for (int i = 0; i < 64; ++i) {
+    int target = (i * 31) % count;
+    CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, fds[target], NULL) == 0);
+    ctl(ep, EPOLL_CTL_ADD, fds[target], EPOLLIN | mode, target);
+  }
+  metric("registration_churn", start, 64);
+  start = now_ns();
+  for (int i = 0; i < count; ++i) CHECK(close(fds[i]) == 0);
+  CHECK(close(ep) == 0);
+  metric("close", start, count);
+  metric("total", total, count);
+  free(out);
+  free(fds);
+  return 0;
 }
 
 static void sockets_and_hangup(void) {
@@ -494,10 +639,13 @@ static void exec_lifetime(const char *self) {
   CHECK(0);
 }
 int main(int argc, char **argv) {
+  if (argc == 4 && strcmp(argv[1], "--bench") == 0)
+    return scaling_benchmark(atoi(argv[2]), strcmp(argv[3], "et") == 0 ? EPOLLET : 0);
   if (argc > 1 && strcmp(argv[1], "--after-exec") == 0)
     return after_exec(argc, argv);
   edges_and_oneshot();
   fairness_and_lifetime();
+  sparse_dense_delivery();
   sockets_and_hangup();
   socket_shutdown_masks();
   socket_write_band_edges();

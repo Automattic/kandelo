@@ -7,12 +7,8 @@
   //   cd host && ./node_modules/.bin/tsc -p ../images/tsconfig.typecheck.json
   // and require that the errors under `images/` are exactly ZERO.
   //
-  // NOT WIRED AS A BLOCKING GATE: the program also pulls in files outside
-  // `images/` that have errors of their own. In particular
-  // `images/vfs/scripts/generate-coreutils-man.ts` imports
-  // `runCentralizedProgram` from `host/test/centralized-test-helper.ts` — a
-  // production build script depending on test scaffolding — so that helper's
-  // errors land in this program too.
+  // NOT WIRED AS A BLOCKING GATE. The program also pulls in the host files
+  // the image builders import, so errors there land in this program too.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

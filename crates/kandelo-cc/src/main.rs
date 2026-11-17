@@ -50,6 +50,50 @@ fn run_tool(tool: &str, arch: WasmArch, args: &[String]) -> Option<Result<i32>> 
     })
 }
 
+/// `kandelo-cc --help`. The page `man kandelo-cc` shows is laid out from it.
+const HELP: &str = "\
+Usage: kandelo-cc calltypes-plugin CLANG
+  or:  cc|c89|c99|c++ [CLANG-OPTION]... FILE...
+  or:  wasm32posix-TOOL [ARG]...
+
+Compile and build programs for Kandelo: the Kandelo SDK driver.
+
+kandelo-cc is every Kandelo SDK tool; the name it runs as selects the tool.
+The SDK's wrapper scripts name it in WASM_POSIX_INVOKED_AS, which overrides
+the program's own name. Each wasm32posix-TOOL also exists as
+wasm64posix-TOOL, which targets wasm64.
+
+  cc, c89, c99, wasm32posix-cc
+         compile and link C with clang for Kandelo: the Kandelo sysroot,
+         its libc and link flags, and the post-link steps a Kandelo
+         program needs. Options are clang's; `cc --help` lists them.
+  c++, wasm32posix-c++
+         the same for C++.
+  wasm32posix-ar, wasm32posix-ranlib, wasm32posix-nm
+         run LLVM's llvm-ar, llvm-ranlib or llvm-nm with the arguments.
+  wasm32posix-strip
+         do nothing and exit 0: for Wasm, the linker and wasm-opt decide
+         what a module keeps.
+  wasm32posix-configure
+         run ./configure with --host=wasm32-unknown-linux-musl
+         --prefix=/usr and the arguments, with CC, CXX, AR, RANLIB and NM
+         set to the SDK's tools and CONFIG_SITE to its cross-compilation
+         cache (unless already set). The host triple selects musl
+         behavior in Autoconf; it does not claim a Linux kernel.
+  wasm32posix-pkg-config
+         run pkg-config on the Kandelo sysroot's .pc files and the
+         Kandelo package directories in PKG_CONFIG_PATH.
+
+Run as kandelo-cc:
+
+  calltypes-plugin CLANG
+         print the path of the compiler plugin for CLANG, building it if
+         needed, for builds that run clang directly.
+
+      --help     display this help and exit
+      --version  output version information and exit
+";
+
 fn calltypes_plugin_command(args: &[String]) -> ExitCode {
     if args.len() != 2 || args[0] != "calltypes-plugin" {
         eprintln!("usage: kandelo-cc calltypes-plugin <clang>");
@@ -91,7 +135,17 @@ fn main() -> ExitCode {
         .to_string();
 
     if name == "kandelo-cc" {
-        return calltypes_plugin_command(&args);
+        match args.first().map(String::as_str) {
+            Some("--help") => {
+                print!("{HELP}");
+                return ExitCode::SUCCESS;
+            }
+            Some("--version") => {
+                println!("kandelo-cc (Kandelo kandelo-cc) {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
+            _ => return calltypes_plugin_command(&args),
+        }
     }
 
     let (arch, _) = detect(&name);

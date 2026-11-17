@@ -1,0 +1,18 @@
+{
+  "context": {
+    "command": "scripts/dev-shell.sh bash -c \"export CI=1 KANDELO_CACHE_GC_AUTO=0; cd apps/browser-demos; npx playwright test --config ../../.context/kms-inheritance-firefox-control.config.ts --workers=1 --retries=0 --reporter=line,json\"",
+    "commit": "8161769ed9d2394e7793bfd82be08cbf890e7145",
+    "date": "2026-11-11T03:06:27.254Z",
+    "exit_code": 1,
+    "host": "firefox",
+    "note": "Pinned main with eight build-only prepared-product classifications and the pre-existing Sortix submodule case adjustment; no runtime, package or selected test modifications. Own normally built SDK/program/kernel and own source-only server at 56513. macOS 27.2.1 build 26B131. Other workspace builds were active; no exact failure-time load sample retained. This reproduces the selected inherited-rendering failure on main and is not an allowance or browser-defect attribution.",
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/sydney/.scratch/cage-coherence-20261109/main-control",
+    "selection": "dri-kms-inheritance-render-node-2d",
+    "suite": "playwright"
+  },
+  "source_sha256": "f8504e8b3d19c73d56d0aacf4adae084b1d01f710d8c8770d485aaba55b872ff",
+  "cases": {
+    "[firefox] dri-kms-inheritance.spec.ts > dri-kms-inheritance.spec.ts > inherited master presents render-node-2d after the opener Worker exits": {"observed":["failed"],"outcome":"fail","reason":"Error: Timeout 10000ms exceeded while waiting on the predicate"},
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"}
+  }
+}

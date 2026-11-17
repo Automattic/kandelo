@@ -26,6 +26,7 @@ inputs = [
   "scripts/package-runtime-file.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/lib/init/dev-tools.ts",
   "images/rootfs/etc/services",
   # Opcache prewarming boots the shared host runtime, and the image builder
   # reaches shared VFS modules transitively. Track both as one source tree so

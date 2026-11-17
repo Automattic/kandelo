@@ -1,0 +1,27 @@
+kind = "program"
+name = "kandelo-cc-docs"
+version = "0.1.0"
+kernel_abi = 56
+depends_on = ["kandelo-cc@0.1.0", "bash@5.2.37", "coreutils@9.6", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# The manual page for kandelo-cc, the Kandelo SDK driver, and the names it
+# runs as (cc, c89, c99, c++, wasm32posix-*), generated from what it prints
+# for --help and --version while running inside Kandelo. Kandelo writes
+# this command, so the source is the in-repository sentinel, as for
+# coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/kandelo-cc-docs/build-kandelo-cc-docs.sh"
+
+[[outputs]]
+name = "kandelo-cc-docs"
+wasm = "kandelo-cc-docs.zip"
+fork_instrumentation = "disabled"

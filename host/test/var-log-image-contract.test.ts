@@ -39,6 +39,10 @@ describe("/var/log is provided by the image", () => {
     "smtp-capture-helpers.ts": "adds a service to an image whose builder ran addDinitInit",
     "wordpress-first-boot.ts": "adds a service to an image whose builder ran addDinitInit",
     "build-image-families.ts": "derives from images built with addDinitInit (nginx-php, redis, ...)",
+    "mariadb-image-helpers.ts":
+      "a helper the MariaDB, LAMP and MariaDB-test builders call; each runs addDinitInit",
+    "wordpress-preinstall.ts":
+      "boots the image build-wp/build-lamp already built with addDinitInit",
   };
   const creates = /addDinitInit\(|ensureDirRecursive\(\s*fs,\s*"\/var\/log"\s*\)/;
 
@@ -53,6 +57,29 @@ describe("/var/log is provided by the image", () => {
 
   for (const name of mentioning.filter((n) => !(n in notRoots))) {
     it(`${name} creates /var/log itself`, () => {
+      expect(readFileSync(join(scripts, name), "utf8")).toMatch(creates);
+    });
+  }
+
+  // A helper that names /var/log is exempt above only because the builders
+  // that call it create the directory. Hold those callers to the contract
+  // even when they never spell /var/log themselves.
+  const helperImport = /from\s+"\.\/(?:mariadb-image-helpers|wordpress-preinstall)"/;
+  const helperCallers = readdirSync(scripts)
+    .filter((name) => name.endsWith(".ts") && !(name in notRoots))
+    .filter((name) => helperImport.test(readFileSync(join(scripts, name), "utf8")));
+
+  it("finds the image builders that call the MariaDB and WordPress helpers", () => {
+    expect(helperCallers).toEqual(expect.arrayContaining([
+      "build-lamp-vfs-image.ts",
+      "build-mariadb-vfs-image.ts",
+      "build-mariadb-test-vfs-image.ts",
+      "build-wp-vfs-image.ts",
+    ]));
+  });
+
+  for (const name of helperCallers) {
+    it(`${name} creates /var/log for the helpers it calls`, () => {
       expect(readFileSync(join(scripts, name), "utf8")).toMatch(creates);
     });
   }

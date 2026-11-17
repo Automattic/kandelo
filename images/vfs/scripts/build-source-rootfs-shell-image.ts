@@ -23,6 +23,7 @@ import {
   type ExperimentalTerminalProgram,
   type ExperimentalTerminalSession,
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
+import { assertKandeloFilesystemLayout } from "./filesystem-layout";
 import {
   ensureDirRecursive,
   serializeImage,
@@ -33,6 +34,7 @@ import {
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazySpecDependency,
+  shellLazySpecDisplaces,
 } from "../lib/init/shell-binaries";
 import {
   NETHACK_PLAYGROUND,
@@ -1225,6 +1227,49 @@ function optionalLazyIdentity(
  * actually happened rather than silently accepting either an unrelated
  * change or no change at all.
  */
+/**
+ * The base-image placeholders the overlay displaces (a lazy-binary spec's
+ * `displaces`), with their rootfs lazy identities. Only placeholders whose
+ * replacing package the shell includes are displaced; the rest must survive
+ * unchanged like any other rootfs file.
+ */
+function displacedPlaceholderIdentities(
+  fs: KandeloImageFs,
+  includes: (dependency: string) => boolean,
+): { path: string; identity: LazyIdentity }[] {
+  const displaced: { path: string; identity: LazyIdentity }[] = [];
+  for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    if (!includes(shellLazySpecDependency(spec))) continue;
+    for (const path of shellLazySpecDisplaces(spec)) {
+      const identity = optionalLazyIdentity(fs, path);
+      if (identity !== null) displaced.push({ path, identity });
+    }
+  }
+  return displaced;
+}
+
+/**
+ * Each displaced placeholder's path must now name the replacing program (its
+ * lazy file or an alias of it), not the placeholder: the overlay removed the
+ * placeholder so the replacement could claim the path.
+ */
+function requirePlaceholdersSuperseded(
+  fs: KandeloImageFs,
+  displaced: readonly { path: string; identity: LazyIdentity }[],
+): void {
+  for (const { path, identity } of displaced) {
+    let stat;
+    try {
+      stat = fs.lstat(path);
+    } catch {
+      throw new Error(`${path} lost its posix-utils-lite placeholder but nothing replaced it`);
+    }
+    if (sameLazyIdentity(stat, identity)) {
+      throw new Error(`${path} still resolves to the posix-utils-lite placeholder`);
+    }
+  }
+}
+
 function requireManSupersededByMandoc(
   fs: KandeloImageFs,
   priorIdentity: LazyIdentity | null,
@@ -1297,7 +1342,12 @@ function requireCompleteProductShellContract(
   // promises a program it does not carry.
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (!selectionIncludes(selection, shellLazySpecDependency(spec))) {
-      if (imagePathExists(fs, spec.vfsPath)) {
+      // A program that displaces a base placeholder at its own path (gettext's
+      // /usr/bin/gettext) leaves that placeholder in place when unselected.
+      if (
+        imagePathExists(fs, spec.vfsPath) &&
+        !shellLazySpecDisplaces(spec).includes(spec.vfsPath)
+      ) {
         throw new Error(
           `partial shell carries ${spec.vfsPath} from unselected ${shellLazySpecDependency(spec)}`,
         );
@@ -1715,9 +1765,13 @@ export async function buildSourceRootfsShellImage(
   const priorManIdentity = includes("mandoc-browser-bundle")
     ? optionalLazyIdentity(fs, "/usr/bin/man")
     : null;
+  // The same for the placeholders real programs displace (ar, nm, strip and
+  // strings, replaced by the LLVM binary tools).
+  const displacedPlaceholders = displacedPlaceholderIdentities(fs, includes);
   const omittedLazyIdentities = [
     sourceBash.identity,
     ...(priorManIdentity ? [priorManIdentity] : []),
+    ...displacedPlaceholders.map(({ identity }) => identity),
   ];
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
@@ -1771,6 +1825,7 @@ export async function buildSourceRootfsShellImage(
     "production shell overlay",
   );
   requireManSupersededByMandoc(fs, priorManIdentity);
+  requirePlaceholdersSuperseded(fs, displacedPlaceholders);
   requireCompleteProductShellContract(fs, selection);
 
   ensureDirRecursive(fs, "/usr/bin");
@@ -1923,6 +1978,9 @@ export async function buildSourceRootfsShellImage(
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
 
+  // WHY: this composer serializes directly for its size gate; enforce the
+  // same layout contract as saveImage before publishing deferred archives.
+  assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);

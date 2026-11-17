@@ -13,10 +13,11 @@ import { WASM_PAGE_SIZE } from "../src/constants";
 import { writeForkContinuationAnchor } from "../src/fork-continuation";
 import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { ProcessMemoryCreatorGate } from "../src/process-memory-creator-gate";
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { emptyProcessTimerCleanup, installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import {
   CHANNEL_STATUS_COMPLETE, CHANNEL_STATUS_PENDING, CH_ARGS, CH_ARG_SIZE,
-  CH_STATUS, CH_SYSCALL, CH_RETURN, CH_ERRNO, HOST_INTERCEPTED_SYSCALLS, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
+  CH_STATUS, CH_SYSCALL, CH_RETURN, CH_ERRNO, CH_SIG_SIGNUM, CH_SIG_SI_CODE, HOST_INTERCEPTED_SYSCALLS, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
 
 const PARENT = 77;
@@ -95,6 +96,17 @@ const started = (h: ReturnType<typeof makeHarness>, count = 1) =>
 const removed = (h: ReturnType<typeof makeHarness>) =>
   vi.waitFor(() => expect(h.removed).toHaveBeenCalledWith(CHILD));
 
+async function expectFatalParentRetirement(h: ReturnType<typeof makeHarness>) {
+  await vi.waitFor(() => expect(h.onExit).toHaveBeenCalledExactlyOnceWith(PARENT, 128 + 11));
+  expect(h.signaled).toHaveBeenCalledExactlyOnceWith(PARENT, 11);
+  // Rust records signal death; the old mailbox wakes with the terminal
+  // retirement marker so its parked Worker can unwind.
+  expect(h.completion()).toEqual({status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 4});
+  const view = new DataView(h.memory.buffer, h.channel.channelOffset);
+  expect(view.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+  expect(view.getUint32(CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
+}
+
 // These controls drive the actual fork dispatcher and fresh kernel-entry
 // continuation. Mock Rust exports model only its PID/image ledger; replacing
 // a mailbox or image exercises the production ownership checks, not a copy.
@@ -113,6 +125,27 @@ describe("fork allocation ownership across asynchronous admission", () => {
       expect(h.completion()).toEqual({status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 12});
       expect(error).not.toHaveBeenCalled(); expect(h.onKernelFatal).not.toHaveBeenCalled();
     } finally {error.mockRestore();}
+  });
+
+  it.each(widths)("%s rolls back an admitted allocation canceled by terminal destroy", async (_name, width) => {
+    const gate = new ProcessMemoryCreatorGate();
+    let rejectAllocation!: (reason: unknown) => void;
+    const allocation = new Promise<number[]>((_, reject) => { rejectAllocation = reject; });
+    const h = makeHarness(() => gate.run("pending fork construction", () => allocation), width);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(); await started(h);
+      expect(h.generations.has(CHILD)).toBe(true);
+      const drained = gate.closeAndWait();
+      rejectAllocation(gate.closedAdmissionCancellation("pending fork construction"));
+      await removed(h); await drained;
+      expect(h.removed).toHaveBeenCalledExactlyOnceWith(CHILD);
+      expect(h.generations.has(CHILD)).toBe(false);
+      expect((h.worker as any).tcpListenerTargets.get(8080)).toEqual([{pid: PARENT, fd: 3, acceptWakeIdx: 42}]);
+      expect(h.completion()).toEqual({status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 12});
+      expect(error).not.toHaveBeenCalled();
+      expect(h.onKernelFatal).not.toHaveBeenCalled();
+    } finally { error.mockRestore(); }
   });
 
   it.each(widths)("%s vfork retains its original request and returns a real admission failure", async (_name, width) => {
@@ -200,7 +233,7 @@ describe("fork allocation ownership across asynchronous admission", () => {
       expect(h.removed).not.toHaveBeenCalled(); expect(h.generations.get(CHILD)).toBe(1n);
       expect(h.signaled).toHaveBeenCalled();
       expect(error).toHaveBeenCalledWith(expect.stringContaining("changed image ownership"));
-      expect(h.completion().status).toBe(CHANNEL_STATUS_PENDING);
+      await expectFatalParentRetirement(h);
     } finally {error.mockRestore();}
   });
 
@@ -260,7 +293,7 @@ describe("fork allocation ownership across asynchronous admission", () => {
       expect(h.generations.has(CHILD)).toBe(true);
       expect(h.signaled).toHaveBeenCalled();
       expect(error).toHaveBeenCalledWith(expect.stringContaining("could not roll back fork child"));
-      expect(h.completion().status).toBe(CHANNEL_STATUS_PENDING);
+      await expectFatalParentRetirement(h);
     } finally {error.mockRestore();}
   });
 });

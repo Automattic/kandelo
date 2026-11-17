@@ -23,6 +23,15 @@
 # before calling a Kandelo configure wrapper (exports take precedence over
 # config.site defaults set with ${var=default}).
 
+# ─── Operating-system identity ────────────────────────────────────────────────
+
+# gnulib's host-os module bakes HOST_OPERATING_SYSTEM into programs at
+# configure time from the host tuple's OS field; GNU coreutils prints it for
+# `uname -o`. Derived from linux-musl it would claim "GNU/Linux". The
+# operating system is Kandelo (the name the CMake platform also uses); the
+# kernel reports its own name, "wasm-posix", through uname(2) sysname.
+gl_cv_host_operating_system=${gl_cv_host_operating_system=Kandelo}
+
 # ─── Type sizes ───────────────────────────────────────────────────────────────
 
 # wasm64 uses LP64. Seed only the values that differ from wasm32 before the

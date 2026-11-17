@@ -414,7 +414,7 @@ describe("wlcompositor — theme system", () => {
       const compositorBytes = loadBytes(compositorBin!);
       const kwlctlBytes = loadBytes(kwlctlBin!);
       const { themeDir, confPath } = stageThemes();
-      appendFileSync(confPath, "notify = /usr/local/bin/knotify\n");
+      appendFileSync(confPath, "notify = /usr/bin/knotify\n");
 
       const out = { value: "" };
       const err = { value: "" };

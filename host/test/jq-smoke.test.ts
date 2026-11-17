@@ -75,7 +75,7 @@ describe.skipIf(!jqBinary)("jq CLI on Kandelo", () => {
 });
 
 describe.skipIf(!jqBinary || !bashBinary)("jq lazy shell execution", () => {
-  it("materializes jq through PATH and its /bin alias for a Bash pipeline", async () => {
+  it("materializes jq through PATH and its /usr/bin path for a Bash pipeline", async () => {
     const fs = KandeloImageFs.create();
     fs.setImageCapacity(16 * 1024 * 1024);
     ensureDirRecursive(fs, "/usr/bin");
@@ -108,7 +108,7 @@ describe.skipIf(!jqBinary || !bashBinary)("jq lazy shell execution", () => {
       expect(downloads).toEqual([]);
       const { exit } = await host.spawnFromVfs("/bin/bash", [
         "bash", "-c",
-        `printf '%s\\n' '{"answer":42}' | jq -e '.answer' && /bin/jq --version`,
+        `printf '%s\\n' '{"answer":42}' | jq -e '.answer' && /usr/bin/jq --version`,
       ], { env: ["PATH=/usr/bin:/bin"] });
       expect(await exit, stderr).toBe(0);
       expect(stdout).toBe("42\njq-1.8.2\n");

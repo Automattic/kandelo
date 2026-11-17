@@ -58,3 +58,51 @@ describe("getaddrinfo override", () => {
     30_000,
   );
 });
+
+// Each line is `NAME ok A.B.C.D` or `NAME error <EAI code> <gai_strerror>`.
+const lookupProgram = join(__dirname, "../../examples/getaddrinfo_lookup.wasm");
+const EAI_NONAME = -2;
+
+describe("getaddrinfo results a guest observes", () => {
+  it.skipIf(!HAS_PUBLIC_DNS)(
+    "reports a name the Node host resolver does not know as EAI_NONAME",
+    async () => {
+      // `.invalid` is reserved never to resolve (RFC 6761). Node reports it
+      // as ENOTFOUND, which used to reach the guest as EIO and EAI_FAIL
+      // ("Non-recoverable error") instead of "the name does not resolve".
+      const io = new NodePlatformIO();
+      (io as any).network = new TcpNetworkBackend();
+
+      const { exitCode, stdout } = await runCentralizedProgram({
+        programPath: lookupProgram,
+        argv: ["getaddrinfo_lookup", "example.com", "kandelo-no-such-name.invalid"],
+        io,
+      });
+
+      expect(stdout).toMatch(/^example\.com ok (\d{1,3}\.){3}\d{1,3}$/m);
+      expect(stdout).toContain(
+        `kandelo-no-such-name.invalid error ${EAI_NONAME} Name does not resolve\n`,
+      );
+      expect(exitCode).toBe(0);
+    },
+    30_000,
+  );
+
+  it("fails name lookups when the machine has no network", async () => {
+    // A Node machine without `enableTcpNetwork` has no egress link and no
+    // resolver. Numeric literals and localhost still resolve in libc.
+    const io = new NodePlatformIO();
+    expect(io.network).toBeUndefined();
+
+    const { exitCode, stdout } = await runCentralizedProgram({
+      programPath: lookupProgram,
+      argv: ["getaddrinfo_lookup", "192.0.2.7", "localhost", "example.com"],
+      io,
+    });
+
+    expect(stdout).toContain("192.0.2.7 ok 192.0.2.7\n");
+    expect(stdout).toContain("localhost ok 127.0.0.1\n");
+    expect(stdout).toContain(`example.com error ${EAI_NONAME} Name does not resolve\n`);
+    expect(exitCode).toBe(0);
+  }, 30_000);
+});

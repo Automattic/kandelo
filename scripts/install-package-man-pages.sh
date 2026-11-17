@@ -19,6 +19,45 @@
 #       literally; a token missing from <in> is a hard failure, so an
 #       upstream template change cannot silently ship a stale page.
 #
+#   kandelo_man_pages_release_date <version> <version=YYYY-MM-DD>...
+#       Print the named release's date (its release tag's date). Page
+#       generators that stamp a date (scdoc, DocBook XSL) otherwise read
+#       the build clock, which the dev shell pins to 1980. A version with
+#       no recorded date is a hard failure, so a version bump has to
+#       record its release date too.
+#
+#   kandelo_man_pages_date_epoch <YYYY-MM-DD>
+#       Print the date's Unix time (midnight UTC), the SOURCE_DATE_EPOCH a
+#       generator reads to date a page (scdoc, help2man).
+#
+#   kandelo_man_pages_scdoc <release-date> <in.scd> <out>
+#       Render one page with the dev shell's scdoc, dated <release-date>,
+#       the way upstream meson builds do (`scdoc < in > out`). scdoc is the
+#       page generator of the wlroots-family projects (sway, foot, labwc).
+#
+#   kandelo_man_pages_capture_help <spec.json> <capture-dir>
+#       For programs with no upstream manual: boot the declared kernel
+#       (WASM_POSIX_DEP_KERNEL_DIR) over the declared base rootfs
+#       (WASM_POSIX_DEP_ROOTFS_DIR) plus the files the spec names, and
+#       record what each command prints for --help and --version
+#       (images/vfs/scripts/capture-help-output.ts documents the spec).
+#
+#   kandelo_man_pages_help2man <capture-dir> <name> <out> [help2man-arg]...
+#       Format one captured command with help2man. help2man runs a replay
+#       wrapper that prints the captured bytes, so it only lays out text
+#       the program printed inside Kandelo.
+#
+#   kandelo_man_pages_own_commands <docs-pkg> <owner-pkg> <version>
+#           <name.section>=<host-file>... [<alias.section>=><name.section>]...
+#       Pages for Kandelo's own commands, which Kandelo writes --help for:
+#       capture each command installed at /usr/bin/<name> (with bash as
+#       /bin/sh, so scripts run), require its --version to read
+#       "<name> (Kandelo <owner-pkg>) <version>", take the NAME line from
+#       the summary line after its usage line, date the page with Kandelo's
+#       reference time, and install the pages as <docs-pkg>.zip, with each
+#       alias=>page as a link. The docs package depends on the owner, bash,
+#       coreutils, kernel and rootfs.
+#
 #   install_package_man_pages <docs-pkg> <tree-dir> <spec>...
 #       Stage the named pages and install them as the package's declared
 #       `<docs-pkg>.zip` output. Each spec is one of:
@@ -32,6 +71,10 @@
 #         doc/bash.1          -> share/man/man1/bash.1
 #         less.nro:less.1     -> share/man/man1/less.1  (less keeps troff in .nro)
 #         unxz.1=xz.1         -> share/man/man1/unxz.1 -> xz.1
+#         tic.1m              -> share/man/man1/tic.1m
+#         +lib/npm/man  -> lib/npm/man/man<N>/<page> symlinks to
+#                                every page staged earlier, for a program that
+#                                looks pages up in its own directory (npm help)
 #
 #       A missing page is a hard failure: upstream moving or renaming a
 #       page must surface as a build error, not as `man foo` finding
@@ -95,6 +138,185 @@ kandelo_man_pages_substitute() {
     printf '%s' "$content" > "$out"
 }
 
+kandelo_man_pages_release_date() {
+    local version="${1:-}"
+    if [ "$#" -lt 2 ] || [ -z "$version" ]; then
+        echo "kandelo_man_pages_release_date: usage:" \
+            "kandelo_man_pages_release_date <version> <version=YYYY-MM-DD>..." >&2
+        return 2
+    fi
+    shift
+    local pair date=""
+    for pair in "$@"; do
+        if [ "${pair%%=*}" = "$version" ]; then
+            date="${pair#*=}"
+        fi
+    done
+    case "$date" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) printf '%s\n' "$date" ;;
+        "")
+            echo "kandelo_man_pages_release_date: no release date recorded" \
+                "for version $version" >&2
+            return 1
+            ;;
+        *)
+            echo "kandelo_man_pages_release_date: '$date' is not YYYY-MM-DD" >&2
+            return 2
+            ;;
+    esac
+}
+
+kandelo_man_pages_date_epoch() {
+    case "${1:-}" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+        *)
+            echo "kandelo_man_pages_date_epoch: '${1:-}' is not YYYY-MM-DD" >&2
+            return 2
+            ;;
+    esac
+    perl -MTime::Local=timegm -e '
+        my ($y, $m, $d) = split /-/, $ARGV[0];
+        print timegm(0, 0, 0, $d, $m - 1, $y), "\n";
+    ' "$1"
+}
+
+kandelo_man_pages_scdoc() {
+    local date="${1:-}" in="${2:-}" out="${3:-}" epoch
+    if [ "$#" -ne 3 ] || [ -z "$date" ] || [ -z "$in" ] || [ -z "$out" ]; then
+        echo "kandelo_man_pages_scdoc: usage:" \
+            "kandelo_man_pages_scdoc <release-date> <in.scd> <out>" >&2
+        return 2
+    fi
+    # scdoc prints SOURCE_DATE_EPOCH as a UTC date.
+    epoch="$(kandelo_man_pages_date_epoch "$date")" || return
+    mkdir -p "$(dirname "$out")"
+    SOURCE_DATE_EPOCH="$epoch" scdoc < "$in" > "$out"
+}
+
+kandelo_man_pages_capture_help() {
+    local spec="${1:-}" out="${2:-}"
+    if [ "$#" -ne 2 ] || [ -z "$spec" ] || [ -z "$out" ]; then
+        echo "kandelo_man_pages_capture_help: usage:" \
+            "kandelo_man_pages_capture_help <spec.json> <capture-dir>" >&2
+        return 2
+    fi
+    local repo_root kernel rootfs tsx_tmp status=0
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    kernel="${WASM_POSIX_DEP_KERNEL_DIR:?kernel dependency dir required}/kandelo-kernel.wasm"
+    rootfs="${WASM_POSIX_DEP_ROOTFS_DIR:?rootfs dependency dir required}/rootfs.vfs.zst"
+    [ -f "$kernel" ] || { echo "kandelo_man_pages_capture_help: no $kernel" >&2; return 2; }
+    [ -f "$rootfs" ] || { echo "kandelo_man_pages_capture_help: no $rootfs" >&2; return 2; }
+    rm -rf "$out"
+    # A short TMPDIR keeps tsx's IPC socket path under the macOS unix-socket
+    # limit; the resolver's content-hashed work paths overflow it.
+    tsx_tmp="$(mktemp -d /tmp/kandelo-help-capture.XXXXXX)"
+    TMPDIR="$tsx_tmp" node "$repo_root/node_modules/tsx/dist/cli.mjs" \
+        "$repo_root/images/vfs/scripts/capture-help-output.ts" \
+        "$spec" "$out" "$kernel" "$rootfs" || status=$?
+    rm -rf -- "$tsx_tmp"
+    return "$status"
+}
+
+kandelo_man_pages_help2man() {
+    local capture="${1:-}" name="${2:-}" out="${3:-}"
+    if [ "$#" -lt 3 ] || [ -z "$capture" ] || [ -z "$name" ] || [ -z "$out" ]; then
+        echo "kandelo_man_pages_help2man: usage:" \
+            "kandelo_man_pages_help2man <capture-dir> <name> <out> [help2man-arg]..." >&2
+        return 2
+    fi
+    shift 3
+    command -v help2man >/dev/null || {
+        echo "kandelo_man_pages_help2man: help2man is not on PATH" >&2
+        return 2
+    }
+    local help="$capture/$name.help" version="$capture/$name.version" wrap
+    [ -f "$help" ] || { echo "kandelo_man_pages_help2man: no capture for $name" >&2; return 1; }
+    # help2man runs "<wrapper> --help" and "<wrapper> --version" and names
+    # the page after the wrapper, so the wrapper carries the command's name.
+    wrap="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-help2man.XXXXXX")"
+    printf '#!/usr/bin/env bash\ncase "$1" in\n  --version) cat %q ;;\n  *) cat %q ;;\nesac\n' \
+        "$version" "$help" > "$wrap/$name"
+    chmod +x "$wrap/$name"
+    mkdir -p "$(dirname "$out")"
+    if ! help2man --no-info "$@" "$wrap/$name" > "$out"; then
+        rm -rf -- "$out" "$wrap"
+        return 1
+    fi
+    rm -rf -- "$wrap"
+}
+
+kandelo_man_pages_own_commands() {
+    local pkg="${1:-}" owner="${2:-}" version="${3:-}"
+    if [ "$#" -lt 4 ] || [ -z "$pkg" ] || [ -z "$owner" ] || [ -z "$version" ]; then
+        echo "kandelo_man_pages_own_commands: usage:" \
+            "kandelo_man_pages_own_commands <docs-pkg> <owner-pkg> <version>" \
+            "<name.section>=<host-file>..." >&2
+        return 2
+    fi
+    shift 3
+    local work="${KANDELO_PACKAGE_WORK_DIR:-${WASM_POSIX_DEP_WORK_DIR:-}}"
+    local repo_root epoch spec cap pages entry page name file files="" commands="" sep=""
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # Kandelo's own tools have no release dates; Kandelo's one fixed
+    # reference time dates their pages.
+    epoch="$(sed -nE 's/^pub const KANDELO_REFERENCE_EPOCH_SECONDS: u64 = ([0-9_]+);$/\1/p' \
+        "$repo_root/crates/shared/src/lib.rs" | tr -d _)"
+    [ -n "$epoch" ] || { echo "kandelo_man_pages_own_commands: no reference epoch" >&2; return 1; }
+    # Scripts run under /bin/sh and use coreutils (cat, ...), which the base
+    # rootfs keeps as lazy files the capture cannot fetch.
+    files="{\"from\": \"${WASM_POSIX_DEP_BASH_DIR:?bash dependency dir required}/bash.wasm\", \"to\": \"/bin/bash\"}"
+    files="$files, {\"from\": \"${WASM_POSIX_DEP_COREUTILS_DIR:?coreutils dependency dir required}/coreutils.wasm\", \"to\": \"/bin/coreutils\"}"
+    local aliases=()
+    for entry in "$@"; do
+        case "$entry" in
+            *=\>*) aliases+=("${entry%%=>*}=${entry#*=>}"); continue ;;
+        esac
+        page="${entry%%=*}"
+        file="${entry#*=}"
+        name="${page%.*}"
+        [ -f "$file" ] || { echo "kandelo_man_pages_own_commands: no $file" >&2; return 1; }
+        files="$files, {\"from\": \"$file\", \"to\": \"/usr/bin/$name\"}"
+        commands="$commands$sep{\"name\": \"$name\", \"path\": \"/usr/bin/$name\"}"
+        sep=", "
+    done
+    spec="$work/help-capture.json"
+    cap="$work/help-capture"
+    printf '{"files": [%s],\n "env": ["PATH=/usr/bin:/bin", "HOME=/tmp"],\n "commands": [%s]}\n' \
+        "$files" "$commands" > "$spec"
+    kandelo_man_pages_capture_help "$spec" "$cap" || return
+    pages="$work/pages"
+    rm -rf "$pages"
+    local specs=() expected summary
+    for entry in "$@"; do
+        case "$entry" in *=\>*) continue ;; esac
+        page="${entry%%=*}"
+        name="${page%.*}"
+        # Each tool's --version names its package and that package's version.
+        expected="$name (Kandelo $owner) $version"
+        if [ "$(head -n 1 "$cap/$name.version")" != "$expected" ]; then
+            echo "kandelo_man_pages_own_commands: $name --version is not '$expected':" \
+                "$(head -n 1 "$cap/$name.version")" >&2
+            return 1
+        fi
+        # The summary is the one-line paragraph after the usage line's; the
+        # NAME line takes it without its closing period.
+        summary="$(awk 'seen == 1 && NF { line = $0; seen = 2; next }
+            seen == 2 { if (NF) bad = 1; exit }
+            !NF { seen = 1 }
+            END { if (!bad) print line }' "$cap/$name.help")"
+        summary="${summary%.}"
+        [ -n "$summary" ] || {
+            echo "kandelo_man_pages_own_commands: $name --help has no one-line summary" \
+                "after its usage line" >&2
+            return 1
+        }
+        SOURCE_DATE_EPOCH="$epoch" kandelo_man_pages_help2man "$cap" "$name" "$pages/$page" \
+            --section="${page##*.}" --source=Kandelo --name="$summary" || return
+        specs+=("$page")
+    done
+    install_package_man_pages "$pkg" "$pages" "${specs[@]}" ${aliases[@]+"${aliases[@]}"}
+}
+
 install_package_man_pages() {
     local pkg="${1:-}" tree="${2:-}"
     if [ "$#" -lt 3 ] || [ -z "$pkg" ] || [ -z "$tree" ]; then
@@ -137,6 +359,23 @@ install_package_man_pages() {
     for spec in "$@"; do
         target=""
         case "$spec" in
+            +*)
+                local mirror="${spec#+}" up page rel
+                case "/$mirror/" in
+                    //|*/../*|*/./*|*//*)
+                        echo "install_package_man_pages: $pkg: invalid mirror '$spec'" >&2
+                        return 2
+                        ;;
+                esac
+                # From <mirror>/man<N>/ back up to the archive root.
+                up="../$(printf '%s' "$mirror" | sed 's#[^/][^/]*#..#g')/"
+                while IFS= read -r page; do
+                    rel="${page#"$stage"/share/man/}"
+                    mkdir -p "$stage/$mirror/$(dirname "$rel")"
+                    ln -s "${up}share/man/$rel" "$stage/$mirror/$rel"
+                done < <(find "$stage/share/man" \( -type f -o -type l \) | LC_ALL=C sort)
+                continue
+                ;;
             *=*)
                 dest="${spec%%=*}"
                 target="${spec#*=}"
@@ -156,9 +395,11 @@ install_package_man_pages() {
                 return 2
                 ;;
         esac
+        # A letter suffix names a subsection installed in the section's
+        # directory, as upstream installs it (ncurses' man1/tic.1m).
         section="${dest##*.}"
         case "$section" in
-            [1-9]) ;;
+            [1-9]|[1-9][a-z]|[1-9][a-z][a-z]) section="${section%"${section#?}"}" ;;
             *)
                 echo "install_package_man_pages: $pkg: cannot infer a man section" \
                     "from '$dest'" >&2

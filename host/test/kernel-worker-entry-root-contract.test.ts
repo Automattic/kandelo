@@ -9,6 +9,7 @@ const ENTRY_SOURCES = [
 ] as const;
 
 const REQUIRED_KERNEL_CALLBACKS = [
+  "onChildLaunchRolledBack",
   "onClone",
   "onExec",
   "onExit",

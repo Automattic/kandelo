@@ -9,6 +9,13 @@
     # every system below. Update other inputs by name (`nix flake update
     # rust-overlay`), never with a bare `nix flake update`.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Node only, on its own input so Node moves independently of the
+    # toolchain pin above. Node before 24.19.0 aborts the process when a
+    # Worker is terminated while it parses a CommonJS module (`FATAL ERROR:
+    # v8::ToLocalChecked Empty MaybeLocal` in node::cjs_lexer::Parse;
+    # nodejs/node#63323). Bump this input deliberately: flake.lock is a
+    # package cache-key input, so every move rebuilds every package.
+    nixpkgs-node.url = "github:NixOS/nixpkgs/nixos-26.05";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -16,7 +23,7 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
+  outputs = { self, nixpkgs, nixpkgs-node, rust-overlay, flake-utils }:
     flake-utils.lib.eachSystem [
       "aarch64-darwin"
       "x86_64-linux"
@@ -27,6 +34,7 @@
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
+        nodePkgs = import nixpkgs-node { inherit system; };
 
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
@@ -116,7 +124,7 @@
             # not enable by default. V8 12.9 (Node 24) ships with
             # memory64 on, matching the host Macs the team develops
             # on (system-installed Node 24/25).
-            pkgs.nodejs_24
+            nodePkgs.nodejs_24
             # Bun: a JavaScriptCore-based runtime. We ship it so the host's
             # teardown reclamation path can be exercised on JSC (the same engine
             # as Safari) in addition to V8 (Node): `npm run test:teardown:engines`
@@ -290,6 +298,22 @@
             # coreutils.wasm running inside Kandelo — help2man only
             # reformats already-faithful text into troff.
             pkgs.help2man
+            # The documentation generators upstream projects build their
+            # man pages with; the <pkg>-docs recipes run them on the pinned
+            # source (docs/porting-guide.md "Shipping man pages"). scdoc:
+            # sway, foot, swaybg, cage, labwc. asciidoc and xmlto, with
+            # DocBook XSL and the DocBook DTDs (whose XML catalogs reach
+            # xsltproc through XML_CATALOG_FILES): git, dbus. Sphinx: LLVM's
+            # command guide (llvm-cov, llvm-profdata). ronn: espeak-ng.
+            pkgs.scdoc
+            pkgs.asciidoc
+            pkgs.xmlto
+            pkgs.libxslt
+            pkgs.docbook_xsl
+            pkgs.docbook_xml_dtd_44
+            pkgs.docbook_xml_dtd_45
+            pkgs.python3Packages.sphinx
+            pkgs.ronn
             # libfaketime provides `faketime`, which the determinism check
             # (scripts/check-determinism.sh → xtask check-determinism) uses to
             # run its two builds under distinct wall clocks. Without it the two

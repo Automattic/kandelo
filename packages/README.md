@@ -37,7 +37,7 @@ is the source of truth for its exact version.
 | less, bc, file | 668, 1.07, 5.45 | Pager, calculator, file-type detection |
 | NetHack | 3.6.7 | Classic terminal game |
 | fbDOOM | — | DOOM, drawn through the `/dev/fb0` framebuffer device |
-| [Freeciv](../docs/freeciv.md) | 3.2.6 | Native SDL2 client and dedicated server; single player and TCP multiplayer through network sessions |
+| [Freeciv](registry/freeciv/README.md) | 3.2.6 | Native SDL2 client and dedicated server; single player and TCP multiplayer through network sessions |
 | TyrQuake | 0.71 | Quake (software renderer), drawn through `/dev/fb0` |
 | [LÖVE](registry/love/README.md) | 11.5-kandelo-kms | Lua games with SDL2/GLES graphics and OSS audio; supported source controls and limits are documented with the package |
 | espeak-ng | 1.52 | Speech synthesis, played through the `/dev/dsp` audio device |
@@ -45,10 +45,12 @@ is the source of truth for its exact version.
 The [registry](registry/) also includes SDL, Wayland/compositor, and Qt demos.
 Node.js and browser hosts share the kernel and process runtime, with different
 networking and display capabilities. See [Browser Support](../docs/browser-support.md)
-for those limits and [Freeciv](../docs/freeciv.md) for its client/server guide.
+for those limits and [Freeciv](registry/freeciv/README.md) for its client/server guide.
 
 ## Package layout
 
+- `registry/<name>/README.md` documents that port's usage, build notes,
+  patches, workarounds, and limits. Shared platform guides belong in `docs/`.
 - `registry/<name>/package.toml` describes one buildable package, its source,
   license, dependencies, build script, and outputs.
 - `registry/<name>/build-*.sh` builds the package for Kandelo.

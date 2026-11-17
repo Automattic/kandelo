@@ -1083,3 +1083,241 @@ fn eventfd_counter_changes_wake_untargeted_waiters() {
     assert_eq!(sys_read(&mut p, &mut h, fd, &mut [0; 8]), Ok(8));
     assert_eq!(drain_wake_records(), [(IDX_FENCE_READY, TYPE_READABLE)]);
 }
+
+fn epoll_ready_snapshot(p: &Process, fd: i32) -> (usize, usize, Vec<u64>) {
+    let idx = epoll_index(p, fd).unwrap();
+    crate::descriptor_backing::with_epolls(|t| {
+        let ep = t.get(idx).unwrap();
+        let mut next = ep.ready_head;
+        let mut registrations = Vec::new();
+        while let Some(slot) = next {
+            let i = &ep.interests[slot];
+            assert!(i.queued);
+            assert!(!registrations.contains(&i.registration));
+            registrations.push(i.registration);
+            next = i.ready_next;
+        }
+        assert_eq!(registrations.len(), ep.ready_count);
+        (ep.interests.len(), ep.sampled.len(), registrations)
+    })
+}
+
+#[test]
+fn epoll_sparse_notifications_and_delivery_visit_only_candidates() {
+    use core::sync::atomic::Ordering;
+    let mut p = Process::new(151);
+    let mut h = MockHostIO::new();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    let mut fds = Vec::new();
+    for data in 0..256 {
+        let fd = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+        sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN, data).unwrap();
+        fds.push(fd);
+    }
+    assert!(batch(&mut p, &mut h, ep, 256).is_empty());
+    assert_eq!(epoll_ready_snapshot(&p, ep), (256, 0, vec![]));
+    crate::epoll::READINESS_CHECKS.store(0, Ordering::Relaxed);
+    for _ in 0..8 {
+        assert!(batch(&mut p, &mut h, ep, 1).is_empty());
+    }
+    assert_eq!(crate::epoll::READINESS_CHECKS.load(Ordering::Relaxed), 0);
+    crate::descriptor_backing::with_epolls(|t| t.notification_visits = 0);
+    for _ in 0..100 {
+        sys_write(&mut p, &mut h, fds[137], &1u64.to_le_bytes()).unwrap();
+    }
+    assert_eq!(epoll_ready_snapshot(&p, ep).2.len(), 1);
+    assert_eq!(
+        crate::descriptor_backing::with_epolls(|t| t.notification_visits),
+        100
+    );
+    assert_eq!(batch(&mut p, &mut h, ep, 256), [(EPOLLIN, 137)]);
+    assert_eq!(crate::epoll::READINESS_CHECKS.load(Ordering::Relaxed), 1);
+    assert_eq!(batch(&mut p, &mut h, ep, 256), [(EPOLLIN, 137)]);
+    let mut value = [0; 8];
+    sys_read(&mut p, &mut h, fds[137], &mut value).unwrap();
+    assert!(batch(&mut p, &mut h, ep, 256).is_empty());
+    assert!(epoll_ready_snapshot(&p, ep).2.is_empty());
+}
+
+#[test]
+fn epoll_dense_removal_repairs_queue_and_index_before_slot_reuse() {
+    for flags in [0, EPOLLET, EPOLLONESHOT, EPOLLET | EPOLLONESHOT] {
+        let mut p = Process::new(152);
+        let mut h = MockHostIO::new();
+        let ep = sys_epoll_create1(&mut p, 0).unwrap();
+        let mut fds = Vec::new();
+        for data in 0..32 {
+            let fd = sys_eventfd2(&mut p, 1, O_NONBLOCK).unwrap();
+            sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN | flags, data).unwrap();
+            fds.push(fd);
+        }
+        // Remove head, middle and tail while queued; swap_remove moves a
+        // candidate whose predecessor/successor can be the removed slot.
+        for slot in [0, 16, 31] {
+            sys_epoll_ctl(&mut p, ep, 2, fds[slot], 0, 0).unwrap();
+        }
+        assert_eq!(epoll_ready_snapshot(&p, ep).2.len(), 29);
+        let got = batch(&mut p, &mut h, ep, 64);
+        assert_eq!(got.len(), 29);
+        assert!(got.iter().all(|(_, data)| ![0, 16, 31].contains(data)));
+        assert_eq!(
+            got.iter()
+                .map(|(_, data)| *data)
+                .collect::<alloc::collections::BTreeSet<_>>()
+                .len(),
+            29
+        );
+        for fd in fds {
+            sys_close(&mut p, &mut h, fd).unwrap();
+        }
+        assert_eq!(epoll_ready_snapshot(&p, ep), (0, 0, vec![]));
+        let fd = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+        sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN | flags, 99).unwrap();
+        assert!(batch(&mut p, &mut h, ep, 1).is_empty());
+        sys_write(&mut p, &mut h, fd, &1u64.to_le_bytes()).unwrap();
+        assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 99)]);
+    }
+}
+
+#[test]
+fn epoll_index_allocation_failure_preserves_add_mod_and_retires_storage() {
+    for successes in 0..2 {
+        let mut p = Process::new(153);
+        let mut h = MockHostIO::new();
+        let before = crate::descriptor_backing::with_epolls(|t| t.subscription_count());
+        let ep = sys_epoll_create1(&mut p, 0).unwrap();
+        let fd = sys_eventfd2(&mut p, 1, O_NONBLOCK).unwrap();
+        crate::prepared_map::fail_after_allocations(successes);
+        assert_eq!(
+            sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN, 8),
+            Err(Errno::ENOMEM)
+        );
+        crate::prepared_map::fail_after_allocations(usize::MAX);
+        assert_eq!(epoll_ready_snapshot(&p, ep), (0, 0, vec![]));
+        assert_eq!(
+            crate::descriptor_backing::with_epolls(|t| t.subscription_count()),
+            before
+        );
+        sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN | EPOLLET | EPOLLONESHOT, 9).unwrap();
+        let snapshot = epoll_ready_snapshot(&p, ep);
+        crate::prepared_map::fail_after_allocations(successes);
+        assert_eq!(
+            sys_epoll_ctl(&mut p, ep, 3, fd, EPOLLOUT, 10),
+            Err(Errno::ENOMEM)
+        );
+        crate::prepared_map::fail_after_allocations(usize::MAX);
+        assert_eq!(epoll_ready_snapshot(&p, ep), snapshot);
+        assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 9)]);
+        assert!(batch(&mut p, &mut h, ep, 1).is_empty());
+        sys_close(&mut p, &mut h, ep).unwrap();
+        assert_eq!(
+            crate::descriptor_backing::with_epolls(|t| t.subscription_count()),
+            before
+        );
+        sys_close(&mut p, &mut h, fd).unwrap();
+    }
+}
+
+#[test]
+fn epoll_nested_repeated_edges_and_empty_wait_registration_raise_host_wake() {
+    let mut p = Process::new(154);
+    let mut h = MockHostIO::new();
+    let child = sys_epoll_create1(&mut p, 0).unwrap();
+    let parent = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, parent, 1, child, EPOLLIN | EPOLLET, 1).unwrap();
+    assert!(batch(&mut p, &mut h, parent, 1).is_empty());
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, parent, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let mut wake = [0; 1024];
+    while crate::wakeup::drain(&mut wake, 128) != 0 {}
+    let fd = sys_eventfd2(&mut p, 1, O_NONBLOCK).unwrap();
+    sys_epoll_ctl(&mut p, child, 1, fd, EPOLLIN, 2).unwrap();
+    assert!(crate::wakeup::drain(&mut wake, 128) > 0);
+    assert_eq!(batch(&mut p, &mut h, parent, 1), [(EPOLLIN, 1)]);
+    assert!(batch(&mut p, &mut h, parent, 1).is_empty());
+    // The level child stayed queued after the outer ET candidate was
+    // consumed. Coalescing the child must not hide a later parent edge.
+    sys_write(&mut p, &mut h, fd, &1u64.to_le_bytes()).unwrap();
+    assert_eq!(batch(&mut p, &mut h, parent, 1), [(EPOLLIN, 1)]);
+}
+
+#[test]
+fn epoll_partial_allocation_failure_keeps_the_completed_batch() {
+    for successes in [0, 1] {
+        let mut p = Process::new(172);
+        let mut h = MockHostIO::new();
+        let ep = sys_epoll_create1(&mut p, 0).unwrap();
+        for data in [1, 2] {
+            let fd = sys_eventfd2(&mut p, 1, O_NONBLOCK).unwrap();
+            sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN | EPOLLET | EPOLLONESHOT, data).unwrap();
+        }
+        crate::epoll::SNAPSHOT_FAILURE_AFTER
+            .store(successes, core::sync::atomic::Ordering::Relaxed);
+        let result = sys_epoll_pwait(&mut p, &mut h, ep, 2, 0, None);
+        crate::epoll::SNAPSHOT_FAILURE_AFTER
+            .store(usize::MAX, core::sync::atomic::Ordering::Relaxed);
+        if successes == 0 {
+            assert_eq!(result, Err(Errno::ENOMEM));
+            assert_eq!(batch(&mut p, &mut h, ep, 2), [(EPOLLIN, 1), (EPOLLIN, 2)]);
+        } else {
+            assert_eq!(result, Ok((1, vec![(EPOLLIN, 1)])));
+            assert_eq!(batch(&mut p, &mut h, ep, 2), [(EPOLLIN, 2)]);
+        }
+        assert!(batch(&mut p, &mut h, ep, 2).is_empty());
+    }
+}
+
+#[test]
+fn epoll_host_pipe_probe_retains_unknown_provider_boundary() {
+    let mut p = Process::new(173);
+    let mut h = MockHostIO::new();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    // Fixture fd 0 is host-delegated (no kernel pipe source). PRI is not
+    // ready, so the ordinary call parks; strict observation cannot certify
+    // a host pipe even with no candidate in the queue.
+    sys_epoll_ctl(&mut p, ep, 1, 0, EPOLLPRI, 8).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let token = retained_epoll_token(&p);
+    let tid = current_tid_for_process(&p);
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Err(Errno::EOPNOTSUPP)
+    );
+}
+
+#[test]
+fn epoll_del_needs_no_source_allocation_and_refused_ctl_is_transactional() {
+    let mut p = Process::new(174);
+    let mut h = MockHostIO::new();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    let first = sys_eventfd2(&mut p, 1, O_NONBLOCK).unwrap();
+    let second = sys_eventfd2(&mut p, 1, O_NONBLOCK).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, first, EPOLLIN | EPOLLONESHOT, 1).unwrap();
+    crate::epoll::REFUSE_SOURCE_COLLECTION.store(true, core::sync::atomic::Ordering::Relaxed);
+    let add = sys_epoll_ctl(&mut p, ep, 1, second, EPOLLIN, 2);
+    let modify = sys_epoll_ctl(&mut p, ep, 3, first, EPOLLIN, 3);
+    let delete = sys_epoll_ctl(&mut p, ep, 2, first, 0, 0);
+    crate::epoll::REFUSE_SOURCE_COLLECTION.store(false, core::sync::atomic::Ordering::Relaxed);
+    assert_eq!(add, Err(Errno::ENOMEM));
+    assert_eq!(modify, Err(Errno::ENOMEM));
+    assert_eq!(delete, Ok(()));
+    assert!(batch(&mut p, &mut h, ep, 2).is_empty());
+}
+
+#[test]
+fn epoll_disabled_sampler_needs_no_candidate_allocation() {
+    let mut p = Process::new(175);
+    let mut h = MockHostIO::new();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, 0, EPOLLIN | EPOLLONESHOT, 9).unwrap();
+    assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 9)]);
+    crate::epoll::SNAPSHOT_FAILURE_AFTER.store(0, core::sync::atomic::Ordering::Relaxed);
+    let result = sys_epoll_pwait(&mut p, &mut h, ep, 1, 0, None);
+    crate::epoll::SNAPSHOT_FAILURE_AFTER.store(usize::MAX, core::sync::atomic::Ordering::Relaxed);
+    assert_eq!(result, Ok((0, vec![])));
+}

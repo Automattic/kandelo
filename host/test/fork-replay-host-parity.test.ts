@@ -66,6 +66,25 @@ describe.each([
       .toBeGreaterThan(rollbackCancellation);
   });
 
+  it("joins exit retirement before considering launch rollback", () => {
+    const source = readFileSync(join(repoRoot, relativePath), "utf8");
+    const handler = ordinaryForkHandlerSource(relativePath);
+    const rollback = handler.indexOf("} catch (error)");
+    const retirementJoin = handler.indexOf("await waitForForkReplayRetirement(forkReplay, error)", rollback);
+    const terminate = handler.indexOf("await terminateTrackedWorker(childWorker)", rollback);
+    expect(retirementJoin).toBeGreaterThan(rollback);
+    expect(terminate).toBeGreaterThan(retirementJoin);
+    const publish = source.indexOf("processTeardowns.set(expectedWorker, teardown)");
+    const retire = source.indexOf("retireForkReplayWorker(expectedWorker, teardown)");
+    expect(publish).toBeGreaterThanOrEqual(0);
+    expect(retire).toBeGreaterThan(publish);
+    const mark = source.indexOf("intentionallyTerminated.add(expectedWorker)", retire);
+    expect(mark).toBeGreaterThan(retire);
+    expect(source.slice(retire, mark)).not.toContain("await ");
+    expect(source.slice(publish, retire)).not.toContain("await ");
+    expect(handler.match(/forkReplay\.throwIfCancelled\(\)/g)).toHaveLength(3);
+  });
+
   it("grants the exact copied externref graph before launch and retires rollback", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
     const grant = handler.indexOf(

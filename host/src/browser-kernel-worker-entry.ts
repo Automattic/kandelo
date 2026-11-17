@@ -110,6 +110,8 @@ import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
+  retireForkReplayWorker,
+  waitForForkReplayRetirement,
 } from "./fork-replay-gate";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
@@ -2606,6 +2608,7 @@ async function handleOrdinaryFork(
       launchedWorker,
       childPid,
       () => processes.get(childPid)?.worker === launchedWorker,
+      true,
     );
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = await retryKernelEntryResult(() =>
@@ -2650,21 +2653,42 @@ async function handleOrdinaryFork(
       return [];
     }
     await forkReplay.waitUntilReady();
+    forkReplay.throwIfCancelled();
     if (processes.get(childPid)?.worker !== launchedWorker) {
       throw new Error(
         `Fork child ${childPid} changed generation before replay commit`,
       );
     }
-    if (!await retryKernelEntryResult(
+    const mayLaunch = await retryKernelEntryResult(
       () => kernelWorker.shouldLaunchPendingChild(childPid),
-    )) {
-      throw new Error(`Fork child ${childPid} exited before replay commit`);
+    );
+    forkReplay.throwIfCancelled();
+    if (!mayLaunch) {
+      // Rust may deliver a fatal signal after reconstruction but before commit.
+      // Exit retains the waitable child and owns exact-generation retirement.
+      childForkHostImports?.close();
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(childPid),
+      );
+      forkReplay.throwIfCancelled();
+      if (signal < 0) {
+        throw new Error(`Cannot confirm exited fork child ${childPid} before replay commit`);
+      }
+      lifecycleTeardownStarted = true;
+      await awaitFinalizedProcessTeardown(
+        childPid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        launchedWorker,
+        signal > 0 ? signal : undefined,
+      );
+      return [];
     }
     // WHY: keep the child blocked inside its inherited fork import until the
     // exact fresh Worker generation proves reconstruction completed. onFork
     // resolves only after the shared gate is committed.
     forkReplay.commit();
   } catch (error) {
+    if (await waitForForkReplayRetirement(forkReplay, error)) return [];
     if (lifecycleTeardownStarted) throw error;
     const mainNeverCreated = childGeneration
       ? sealProcessWorkerAbsence(childGeneration)
@@ -3844,6 +3868,12 @@ async function finishProcessExit(
     ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
+  if (retireForkReplayWorker(expectedWorker, teardown)) {
+    // Replay cancellation can wake guest glue before the queued Rust
+    // retirement wake sets its marker. Exit already owns this exact child;
+    // keep its fence listeners active without diagnosing a second crash.
+    intentionallyTerminated.add(expectedWorker);
+  }
 
   post({
     type: "exit",
@@ -4617,7 +4647,11 @@ async function handleDestroy(
     // every creator already in flight, and runs this terminal sweep only once.
     // Browser main still terminates this whole worker realm on timeout.
     const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
-    processMemoryFactory?.dispose();
+    // Carry the gate's terminal refusal through pending allocation rollback;
+    // genuine construction or worker-retirement failures keep their diagnostics.
+    processMemoryFactory?.dispose(
+      processMemoryCreators.closedAdmissionCancellation("process memory construction"),
+    );
     deferredByteSpool?.cancelTransfers();
     const result = await destroy;
     respond(msg.requestId, result);

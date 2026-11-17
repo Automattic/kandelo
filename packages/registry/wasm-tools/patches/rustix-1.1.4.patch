@@ -1,0 +1,20 @@
+--- a/src/backend/libc/fs/types.rs
++++ b/src/backend/libc/fs/types.rs
+@@ -806,6 +806,7 @@
+             target_os = "haiku",
+             target_os = "hurd",
+             target_os = "l4re",
++            target_os = "kandelo",
+             target_os = "linux",
+             target_os = "wasi",
+         )))]
+--- a/src/ioctl/mod.rs
++++ b/src/ioctl/mod.rs
+@@ -330,6 +330,7 @@
+ #[cfg(any(
+     solarish,
+     target_os = "aix",
++    target_os = "kandelo",
+     target_os = "cygwin",
+     target_os = "fuchsia",
+     target_os = "emscripten",

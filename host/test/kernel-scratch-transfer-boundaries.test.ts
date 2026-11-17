@@ -151,6 +151,7 @@ interface ScratchHarness {
   scratchEnd: number;
   transferOffset: number;
   handleChannel: ReturnType<typeof vi.fn>;
+  handleGuestIo: ReturnType<typeof vi.fn>;
   blockingRetryToken: ReturnType<typeof vi.fn>;
   blockingRetryRelease: ReturnType<typeof vi.fn>;
   handleBlockingRetry: ReturnType<typeof vi.fn>;
@@ -289,9 +290,21 @@ function makeScratchHarness(
       return 0;
     },
   );
+  const handleGuestIo = vi.fn((pointer: number | bigint) => {
+    const view = new DataView(kernelMemory.buffer, Number(pointer));
+    const random = view.getUint32(CH_SYSCALL, true) === ABI_SYSCALLS.Getrandom;
+    const address = BigInt.asUintN(ptrWidth * 8, view.getBigInt64(CH_ARGS + (random ? 0 : 1) * CH_ARG_SIZE, true));
+    const length = BigInt.asUintN(ptrWidth * 8, view.getBigInt64(CH_ARGS + (random ? 1 : 2) * CH_ARG_SIZE, true));
+    const error = length > 0x7fff_ffffn ? EINVAL
+      : length > 0n && (address === 0n || address + length > BigInt(processBytes.length)) ? EFAULT : 0;
+    view.setBigInt64(CH_RETURN, error ? -1n : length, true);
+    view.setUint32(CH_ERRNO, error, true);
+    return error ? -error : Number(length);
+  });
   kernelExports = {
     kernel_rootfs_export_container_cancel: vi.fn(),
     kernel_handle_channel: handleChannel,
+    kernel_handle_guest_io: handleGuestIo,
     kernel_blocking_retry_token: blockingRetryToken,
     kernel_blocking_retry_release: blockingRetryRelease,
     kernel_dequeue_signal: () => 0,
@@ -412,18 +425,13 @@ function makeScratchHarness(
     scratchEnd,
     transferOffset,
     handleChannel,
+    handleGuestIo,
     blockingRetryToken,
     blockingRetryRelease,
     handleBlockingRetry,
     completeChannel,
     completeChannelRaw,
   };
-}
-
-function useTransferScratchInstance(harness: ScratchHarness): void {
-  // The harness is always bound to this genuine gated instance. Reservation
-  // imports remain late-bound through harness.kernelExports.
-  expect(harness.scratchTestInstance).toBeDefined();
 }
 
 function prepareGenericSyscallHarness(
@@ -2559,11 +2567,10 @@ describe("kernel scratch transfer capacity regressions", () => {
     ["wasm64", 8, "pwrite", ABI_SYSCALLS.Pwrite, false, 9_007_199_254_740_993n],
     ["wasm64", 8, "pread", ABI_SYSCALLS.Pread, true, 9_007_199_254_740_993n],
   ] as const)(
-    "%s large %s uses one reservation and preserves its exact offset",
+    "%s large %s passes the original guest range and exact offset without a reservation",
     (_widthName, pointerWidth, _name, syscallNr, readOperation, offset) => {
       const harness = makeScratchHarness(pointerWidth);
       prepareGenericSyscallHarness(harness, pointerWidth);
-      useTransferScratchInstance(harness);
       const buffer = 65_536;
       const length = CH_DATA_SIZE + 1;
       const payload = Uint8Array.from(
@@ -2574,40 +2581,25 @@ describe("kernel scratch transfer capacity regressions", () => {
         harness.processBytes.set(payload, buffer);
       }
       const returned = readOperation ? 3 : length;
-      const execute = vi.fn(
-        (
-          pid: number,
-          _tid: number,
-          _token: bigint,
-          offered: number | bigint,
-          originalSyscall: number,
-          _fd: number,
-          exactOffset: bigint,
-          retryToken: bigint,
-        ) => {
-          expect(pid).toBe(harness.channel.pid);
-          expect(harness.worker.currentHandlePid).toBe(harness.channel.pid);
-          expect(Number(offered)).toBe(length);
-          expect(originalSyscall).toBe(syscallNr);
-          expect(exactOffset).toBe(offset ?? 0n);
-          expect(retryToken).toBe(0n);
-          if (readOperation) {
-            harness.kernelBytes.set(
-              payload.subarray(0, returned),
-              harness.transferOffset,
-            );
-          } else {
-            expect(
-              harness.kernelBytes.slice(
-                harness.transferOffset,
-                harness.transferOffset + length,
-              ),
-            ).toEqual(payload);
-          }
-          return returned;
-        },
-      );
-      harness.kernelExports.kernel_transfer_io_execute = execute;
+      const begin = vi.spyOn(harness.kernelExports, "kernel_transfer_scratch_begin");
+      const execute = vi.fn((pointer: number | bigint, capacity: number, pid: number, retryToken: bigint) => {
+        expect(pid).toBe(harness.channel.pid);
+        expect(capacity).toBe(CH_TOTAL_SIZE);
+        expect(Number(pointer)).toBe(harness.scratchOffset);
+        expect(harness.worker.currentHandlePid).toBe(harness.channel.pid);
+        expect(retryToken).toBe(0n);
+        const view = new DataView(harness.kernelBytes.buffer, Number(pointer));
+        expect(view.getUint32(CH_SYSCALL, true)).toBe(syscallNr);
+        expect(view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(BigInt(buffer));
+        expect(view.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)).toBe(BigInt(length));
+        expect(view.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true)).toBe(offset ?? 0n);
+        if (readOperation) harness.processBytes.set(payload.subarray(0, returned), buffer);
+        else expect(harness.processBytes.slice(buffer, buffer + length)).toEqual(payload);
+        view.setBigInt64(CH_RETURN, BigInt(returned), true);
+        view.setUint32(CH_ERRNO, 0, true);
+        return returned;
+      });
+      harness.kernelExports.kernel_handle_guest_io = execute;
       writeChannelSyscall(harness, syscallNr, [
         7n,
         BigInt(buffer),
@@ -2618,6 +2610,7 @@ describe("kernel scratch transfer capacity regressions", () => {
       dispatchScratchBoundarySyscall(harness);
 
       expect(execute).toHaveBeenCalledOnce();
+      expect(begin).not.toHaveBeenCalled();
       expect(harness.handleChannel).not.toHaveBeenCalled();
       expect(harness.worker.currentHandlePid).toBe(0);
       expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
@@ -2633,7 +2626,7 @@ describe("kernel scratch transfer capacity regressions", () => {
     },
   );
 
-  it("rejects an out-of-range source before a large write kernel call", () => {
+  it("rejects an out-of-range source through the kernel guest-write range check", () => {
     const harness = makeScratchHarness();
     const source = harness.processBytes.byteLength - 8;
 
@@ -2647,15 +2640,12 @@ describe("kernel scratch transfer capacity regressions", () => {
     ]);
 
     expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
+    expect(harness.handleGuestIo).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([-1, EFAULT]);
     expectScratchTailUntouched(harness);
   });
 
-  it("rejects an out-of-range destination before a large read kernel call", () => {
+  it("rejects an out-of-range destination through the kernel guest-read range check", () => {
     const harness = makeScratchHarness();
     const destination = harness.processBytes.byteLength - 8;
 
@@ -2669,11 +2659,8 @@ describe("kernel scratch transfer capacity regressions", () => {
     ]);
 
     expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
+    expect(harness.handleGuestIo).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([-1, EFAULT]);
     expectScratchTailUntouched(harness);
   });
 
@@ -2892,7 +2879,7 @@ describe("kernel scratch transfer capacity regressions", () => {
   // `crates/runtime-core/src/ipc_wire.rs` and
   // `crates/runtime-core/src/guest_ptr.rs`.
 
-  it("rejects a negative generic descriptor length before scratch mutation", () => {
+  it("delegates a reportable-size refusal without staging a payload", () => {
     const harness = makeScratchHarness();
     prepareGenericSyscallHarness(harness, 4);
     const request = new DataView(
@@ -2908,12 +2895,8 @@ describe("kernel scratch transfer capacity regressions", () => {
     expect(() => dispatchScratchBoundarySyscall(harness)).not.toThrow();
 
     expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EINVAL,
-    );
+    expect(harness.handleGuestIo).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([-1, EINVAL]);
     expectScratchTailUntouched(harness);
   });
 
@@ -3270,7 +3253,7 @@ describe("kernel scratch transfer capacity regressions", () => {
   );
 
   it.each([4, 8] as const)(
-    "caps only short-safe wasm%s outputs at channel capacity and capacity plus one",
+    "preserves wasm%s short directory outputs and entropy prefixes across the mailbox boundary",
     (pointerWidth) => {
       const destination = 65_536;
       const randomBytes = Uint8Array.from(
@@ -3393,6 +3376,17 @@ describe("kernel scratch transfer capacity regressions", () => {
               return 0;
             },
           );
+          if (testCase.syscall === ABI_SYSCALLS.Getrandom && callerCapacity > CH_DATA_SIZE) {
+            harness.handleGuestIo.mockImplementation((offset: number | bigint) => {
+              const view = new DataView(harness.kernelBytes.buffer, Number(offset));
+              expect(view.getBigInt64(CH_ARGS, true)).toBe(BigInt(destination));
+              expect(view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(BigInt(callerCapacity));
+              harness.processBytes.set(testCase.payload, destination);
+              view.setBigInt64(CH_RETURN, BigInt(testCase.payload.byteLength), true);
+              view.setUint32(CH_ERRNO, 0, true);
+              return 0;
+            });
+          }
           writeChannelSyscall(
             harness,
             testCase.syscall,

@@ -198,11 +198,12 @@ where
         "scalar codec is unavailable for this activation shape"
     );
     let mut output = layout.new_function();
-    layout.emit_scratch_reserve(&mut output, limits.output_bytes)?;
     output.instruction(&Instruction::GlobalGet(runtime.state_global));
     output.instruction(&Instruction::I32Const(crate::runtime::STATE_REWINDING));
     output.instruction(&Instruction::I32GeU);
     output.instruction(&Instruction::If(BlockType::Empty));
+    // Replay restores the scratch base saved at capture and leaves the stack
+    // pointer at its restored fork-time value; only a normal entry reserves.
     restore_scalars(plan, emission, &mut output, limits.output_bytes)?;
     if let Some(io) = &plan.reference_io {
         io.emit_restore(
@@ -214,6 +215,10 @@ where
             limits.output_bytes,
         )?;
     }
+    if layout.scratch.is_some() {
+        output.instruction(&Instruction::Else);
+        layout.emit_scratch_reserve(&mut output, limits.output_bytes)?;
+    }
     output.instruction(&Instruction::End);
     output.instruction(&Instruction::Block(emission.result_block)); // common normal exit
     output.instruction(&Instruction::Block(BlockType::Result(ValType::EXNREF))); // escaping exception
@@ -222,7 +227,7 @@ where
         Cow::Owned(vec![Catch::AllRef { label: 0 }]),
     ));
     output.instruction(&Instruction::Loop(BlockType::Empty)); // live abort/boundary restart
-    layout.emit_scratch_reseed(&mut output, limits.output_bytes)?;
+    layout.emit_scratch_reseed(runtime.state_global, &mut output, limits.output_bytes)?;
     output.instruction(&Instruction::Block(BlockType::Empty)); // selected postamble
     output.instruction(&Instruction::Block(BlockType::Empty)); // private catch landing
     output.instruction(&Instruction::TryTable(
@@ -257,7 +262,7 @@ where
     output.instruction(&Instruction::End);
     output.instruction(&Instruction::Unreachable);
     output.instruction(&Instruction::End);
-    layout.emit_scratch_reseed(&mut output, limits.output_bytes)?;
+    layout.emit_scratch_reseed(runtime.state_global, &mut output, limits.output_bytes)?;
     if let Some(selector) = plan.call_selector {
         layout.emit_get(selector, &mut output, limits.output_bytes)?;
     } else {
@@ -512,7 +517,7 @@ impl<T: ContinuationHooks> ContinuationHooks for CaptureHooks<'_, T> {
                 region,
                 handler_depths,
                 layout,
-                self.runtime.unwind_tag,
+                self.runtime,
                 output,
                 limit,
             )?;

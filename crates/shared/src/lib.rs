@@ -2278,7 +2278,12 @@ pub mod abi {
     ///    minimum from 19 pages to 21, and the kernel serves the `kandelo.klog.v1`
     ///    program extension through `extension_requests::KLOG_V1` and its
     ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
-    pub const HOST_ADAPTER_VERSION: u32 = 6;
+    /// 7: bounded entropy continuations, process-range validation, and private
+    ///    guest-address I/O transport.
+    pub const HOST_ADAPTER_VERSION: u32 = 7;
+    /// A bounded entropy batch yielded without completing its guest syscall.
+    /// Negative errno values occupy -1..=-4095; this is transport-only status.
+    pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2400,6 +2405,8 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
+        HostAdapterKernelExport::required("kernel_entropy_read_cancel"),
+        HostAdapterKernelExport::required("kernel_entropy_read_step"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
         HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
@@ -2440,6 +2447,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
+        HostAdapterKernelExport::required("kernel_handle_guest_io"),
         HostAdapterKernelExport::required("kernel_has_sa_nocldstop"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
