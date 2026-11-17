@@ -40,7 +40,8 @@ export async function checkDataInit(ordinaryBytes,groupedBytes,activeOrdinaryByt
     check(name,trap(()=>ordinary.init(0,src,n))&&trap(()=>grouped.init(0,src,n))&&payload.subarray(4*P,8*P).every((v,i)=>v===before[i]));
   }
   let ordinaryStartTrapped=false;
-  try{await WebAssembly.instantiate(activeOrdinaryBytes,{env:{memory:plainMemory}});}catch(error){if(!(error instanceof WebAssembly.RuntimeError))throw error;ordinaryStartTrapped=true;}
+  // Keep an unexpected instance locally owned even on this negative path.
+  try{const {instance:unexpectedActiveOrdinary}=await WebAssembly.instantiate(activeOrdinaryBytes,{env:{memory:plainMemory}});if(unexpectedActiveOrdinary)throw Error('native active-data start unexpectedly completed');}catch(error){if(!(error instanceof WebAssembly.RuntimeError))throw error;ordinaryStartTrapped=true;}
   const active=(await WebAssembly.instantiate(activeGroupedBytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
   words[root/4+3]=0;active.__vm_root.value=root;active.__vm_scratch.value=scratch;active.__vm_replica.value=replica;
   check('active data is dropped before original start',ordinaryStartTrapped&&trap(()=>active.__vm_initialize(1)));
