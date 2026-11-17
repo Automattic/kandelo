@@ -36,6 +36,7 @@ struct Shape {
     maximum: u64,
     memories: u32,
     data: u32,
+    data_lengths: Vec<u32>,
     active: Vec<(u32, u32, u32)>,
     start: Option<u32>,
 }
@@ -113,6 +114,7 @@ fn scan(bytes: &[u8]) -> Result<Shape> {
                 for (index, d) in ds.into_iter().enumerate() {
                     let d = d?;
                     s.data += 1;
+                    s.data_lengths.push(d.data.len().try_into()?);
                     if let p::DataKind::Active {
                         memory_index,
                         offset_expr,
@@ -504,11 +506,12 @@ impl Rewrite<'_> {
         self.exports_done = true;
     }
     fn initialize(&self) -> enc::Function {
-        let mut f = enc::Function::new([(3, V::I32)]); // fresh=0, offset=1, chunk=2, unused=3
+        let mut f = enc::Function::new([(3, V::I32)]); // fresh=0, offset=1, chunk=2, initialize=3
         f.instruction(&I::GlobalGet(self.root()));
         f.instruction(&I::LocalGet(0));
         f.instruction(&I::GlobalGet(self.replica()));
         f.instruction(&I::Call(self.helper_function("vm_initialize_gate")));
+        f.instruction(&I::LocalTee(3));
         f.instruction(&I::If(enc::BlockType::Empty));
         for &(segment, base, length) in &self.source.active {
             f.instruction(&I::I32Const(base as i32));
@@ -525,6 +528,9 @@ impl Rewrite<'_> {
             f.instruction(&I::I32Const(length as i32));
             f.instruction(&I::I32GeU);
             f.instruction(&I::BrIf(1));
+            f.instruction(&I::GlobalGet(self.root()));
+            f.instruction(&I::GlobalGet(self.replica()));
+            f.instruction(&I::Call(self.helper_function("vm_bulk_poll")));
             f.instruction(&I::I32Const(65536));
             f.instruction(&I::I32Const(base as i32));
             f.instruction(&I::LocalGet(1));
@@ -565,38 +571,103 @@ impl Rewrite<'_> {
             f.instruction(&I::End);
             f.instruction(&I::End);
         }
-        if let Some(start) = self.source.start {
-            f.instruction(&I::Call(start));
-        }
         f.instruction(&I::End);
+        // Native instantiation drops active segments before running start.
+        // Attached replicas also drop them, without replaying data or start.
         for &(segment, _, _) in &self.source.active {
             f.instruction(&I::DataDrop(segment));
+        }
+        if let Some(start) = self.source.start {
+            f.instruction(&I::LocalGet(3));
+            f.instruction(&I::If(enc::BlockType::Empty));
+            f.instruction(&I::Call(start));
+            f.instruction(&I::End);
         }
         f.instruction(&I::End);
         f
     }
     fn data_initializer(&self, segment: u32) -> enc::Function {
-        let mut f = enc::Function::new([(1, V::I32)]);
+        // All destination permissions and the whole immutable source must be
+        // valid before a chunk writes. A native zero-length probe at the end
+        // checks data.drop state without staging the complete source.
+        let mut f = enc::Function::new([(2, V::I32), (1, V::I64)]);
         f.instruction(&I::LocalGet(0));
         f.instruction(&I::LocalGet(2));
+        f.instruction(&I::I32Const(2));
         f.instruction(&I::GlobalGet(self.root()));
-        f.instruction(&I::GlobalGet(self.scratch()));
-        f.instruction(&I::Call(self.helper_function("vm_init_address")));
-        f.instruction(&I::LocalTee(3));
+        f.instruction(&I::Call(self.helper_function("vm_span")));
+        f.instruction(&I::Drop);
         f.instruction(&I::LocalGet(1));
+        f.instruction(&I::I64ExtendI32U);
         f.instruction(&I::LocalGet(2));
-        // Native memory.init retains exact data-segment bounds/drop semantics.
+        f.instruction(&I::I64ExtendI32U);
+        f.instruction(&I::I64Add);
+        f.instruction(&I::LocalTee(5));
+        f.instruction(&I::I64Const(self.source.data_lengths[segment as usize] as i64));
+        f.instruction(&I::I64GtU);
+        f.instruction(&I::If(enc::BlockType::Empty));
+        f.instruction(&I::Unreachable);
+        f.instruction(&I::End);
+        f.instruction(&I::GlobalGet(self.scratch()));
+        f.instruction(&I::LocalGet(5));
+        f.instruction(&I::I32WrapI64);
+        f.instruction(&I::I32Const(0));
         f.instruction(&I::MemoryInit {
             mem: 0,
             data_index: segment,
         });
-        f.instruction(&I::LocalGet(0));
-        f.instruction(&I::I64Const(0));
-        f.instruction(&I::LocalGet(2));
-        f.instruction(&I::GlobalGet(self.root()));
-        f.instruction(&I::GlobalGet(self.scratch()));
+        f.instruction(&I::I32Const(0));
+        f.instruction(&I::LocalSet(3));
+        f.instruction(&I::Block(enc::BlockType::Empty));
+        f.instruction(&I::Loop(enc::BlockType::Empty));
         f.instruction(&I::LocalGet(3));
-        f.instruction(&I::Call(self.helper_function("vm_write_commit")));
+        f.instruction(&I::LocalGet(2));
+        f.instruction(&I::I32GeU);
+        f.instruction(&I::BrIf(1));
+        f.instruction(&I::GlobalGet(self.root()));
+        f.instruction(&I::GlobalGet(self.replica()));
+        f.instruction(&I::Call(self.helper_function("vm_bulk_poll")));
+        f.instruction(&I::I32Const(65536));
+        f.instruction(&I::LocalGet(0));
+        f.instruction(&I::LocalGet(3));
+        f.instruction(&I::I32Add);
+        f.instruction(&I::I32Const(65535));
+        f.instruction(&I::I32And);
+        f.instruction(&I::I32Sub);
+        f.instruction(&I::LocalSet(4));
+        f.instruction(&I::LocalGet(4));
+        f.instruction(&I::LocalGet(2));
+        f.instruction(&I::LocalGet(3));
+        f.instruction(&I::I32Sub);
+        f.instruction(&I::I32GtU);
+        f.instruction(&I::If(enc::BlockType::Empty));
+        f.instruction(&I::LocalGet(2));
+        f.instruction(&I::LocalGet(3));
+        f.instruction(&I::I32Sub);
+        f.instruction(&I::LocalSet(4));
+        f.instruction(&I::End);
+        f.instruction(&I::LocalGet(0));
+        f.instruction(&I::LocalGet(3));
+        f.instruction(&I::I32Add);
+        f.instruction(&I::LocalGet(4));
+        f.instruction(&I::I32Const(2));
+        f.instruction(&I::GlobalGet(self.root()));
+        f.instruction(&I::Call(self.helper_function("vm_span")));
+        f.instruction(&I::LocalGet(1));
+        f.instruction(&I::LocalGet(3));
+        f.instruction(&I::I32Add);
+        f.instruction(&I::LocalGet(4));
+        f.instruction(&I::MemoryInit {
+            mem: 0,
+            data_index: segment,
+        });
+        f.instruction(&I::LocalGet(3));
+        f.instruction(&I::LocalGet(4));
+        f.instruction(&I::I32Add);
+        f.instruction(&I::LocalSet(3));
+        f.instruction(&I::Br(0));
+        f.instruction(&I::End);
+        f.instruction(&I::End);
         f.instruction(&I::End);
         f
     }
@@ -936,7 +1007,7 @@ const REQUIRED_HELPERS: &[&str] = &[
     "vm_read_address",
     "vm_write_address",
     "vm_write_commit",
-    "vm_init_address",
+    "vm_bulk_poll",
     "vm_atomic_address",
     "vm_copy",
     "vm_fill",
