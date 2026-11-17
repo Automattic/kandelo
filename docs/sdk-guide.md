@@ -1273,6 +1273,8 @@ frozen program ABI 56 or permit an ordinary host to substitute `env.memory`.
 Before translation, the tool checks exact constant-returning markers in the
 compiled helpers against every Rust layout declaration. Missing, stale or
 malformed markers require a helper rebuild and leave existing output intact.
+Every internal helper also needs its exact parameter/result signature, even
+when the particular input program does not exercise that helper.
 This checks compiled layout agreement without running helper code; it does not
 replace the C memory-operation tests or prove arbitrary helper code correct.
 

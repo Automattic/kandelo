@@ -126,6 +126,48 @@ fn stale_layout_marker(helper: &[u8], name: &str) -> Vec<u8> {
     panic!("compiled C marker body was not found");
 }
 #[test]
+fn helper_signatures_are_checked_without_source_operations() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helpers(directory.path());
+    let mut wrong = wasm_encoder::Module::new();
+    // Find the actual function index from the compiled module, then give its
+    // valid but incompatible type to vm_span without changing layout markers.
+    let mut size_index = None;
+    for payload in wasmparser::Parser::new(0).parse_all(&helper) {
+        if let wasmparser::Payload::ExportSection(exports) = payload.unwrap() {
+            for export in exports {
+                let export = export.unwrap();
+                if export.name == "vm_size" { size_index = Some(export.index); }
+            }
+        }
+    }
+    for payload in wasmparser::Parser::new(0).parse_all(&helper) {
+        let payload = payload.unwrap();
+        if let wasmparser::Payload::ExportSection(exports) = payload {
+            let mut section = wasm_encoder::ExportSection::new();
+            for export in exports {
+                let export = export.unwrap();
+                let kind = match export.kind {
+                    wasmparser::ExternalKind::Func => wasm_encoder::ExportKind::Func,
+                    wasmparser::ExternalKind::Memory => wasm_encoder::ExportKind::Memory,
+                    _ => panic!("unexpected helper export"),
+                };
+                section.export(export.name, kind,
+                    if export.name == "vm_span" { size_index.unwrap() } else { export.index });
+            }
+            wrong.section(&section);
+        } else if let Some((id, range)) = payload.as_section() {
+            wrong.section(&wasm_encoder::RawSection {id, data: &helper[range]});
+        }
+    }
+    let wrong = wrong.finish();
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wrong).unwrap();
+    let Err(error) = translate(&input(""), &wrong, &digest()) else {
+        panic!("accepted an incompatible helper signature without source operations");
+    };
+    assert!(error.to_string().contains("helper signature"), "{error:#}");
+}
+#[test]
 fn compiled_helpers_reject_every_stale_layout_constant() {
     let directory = tempfile::tempdir().unwrap();
     let helper = helpers(directory.path());
