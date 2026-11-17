@@ -1180,6 +1180,43 @@ const auditAllowances: AuditAllowance[] = [
     why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
   },
   {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory:limitedMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Bounded standalone compiled-C translator fixture in a disposable Worker. This instance controls only its test process-group storage; no Rust kernel or persistent page/audio realm receives it.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 2,
+    why: "Bounded standalone compiled-C translator fixture in a disposable Worker. This instance controls only its test process-group storage; no Rust kernel or persistent page/audio realm receives it.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{env:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Negative translator fixture deliberately attempts the ordinary env.memory import and requires instantiation refusal. No instance is admitted and no Rust kernel memory participates.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:2,maximum:5,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone compiled-C translator fixture creates a bounded shared process-group memory (at most128pages; the OOM control5pages). It is created inside a disposable Worker, never the Rust kernel or a persistent browser/audio realm.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone compiled-C translator fixture creates a bounded shared process-group memory (at most128pages; the OOM control5pages). It is created inside a disposable Worker, never the Rust kernel or a persistent browser/audio realm.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/pool-peer.mjs::runPeer::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "A disposable child Worker instantiates the same compiled C fixture over its parent Worker-owned group storage. It owns a distinct virtual root/scratch and tests concurrent allocation; no kernel or persistent realm receives the backing.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
     disposition: "rust-lent",
     why: "Only the fixed structurally audited read-only comparator borrows the two existing Memories after whole-range and exact-generation proof. No start, store, defined memory, external callback, cached Instance or escaping export is admitted.",
