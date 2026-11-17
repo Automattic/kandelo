@@ -66,11 +66,12 @@ describe.skipIf(!available)("GNU build tools inside Kandelo (Node host, build im
     expect(configureLog).toMatch(/checking whether we are cross compiling\.\.\. no/);
     expect(configureLog).toMatch(/checking for greeting >= 1\.0\.\.\. yes/);
     expect(configureLog).toMatch(/checking whether to use NLS\.\.\. yes/);
-    // Kandelo executables cannot link against shared libraries, so the
-    // shipped libtool reports no dynamic linker and builds static ones, even
-    // though LT_INIT leaves shared libraries enabled.
-    expect(configureLog).toMatch(/checking dynamic linker characteristics\.\.\. no/);
-    expect(configureLog).toMatch(/checking whether to build shared libraries\.\.\. no/);
+    // Kandelo executables cannot link against shared libraries, but
+    // dlopen loads side modules: the shipped libtool describes that loader
+    // and builds only -module libraries shared (guest-plugins.test.ts);
+    // calc's convenience library is linked in statically.
+    expect(configureLog).toMatch(/checking dynamic linker characteristics\.\.\. Kandelo dlopen \(modules only\)/);
+    expect(configureLog).toMatch(/checking whether to build shared libraries\.\.\. yes/);
 
     expect(read("version.out")).toBe("calc (kandelo-calc) 1.0\nhello from pkg-config\n");
     expect(read("calc.out")).toBe("7\n7\n");

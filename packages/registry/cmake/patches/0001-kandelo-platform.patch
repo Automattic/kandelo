@@ -12,9 +12,14 @@
 # - CMakeDetermineSystem.cmake takes the processor from `uname -m`
 #   (wasm32), as on Linux, rather than `uname -p`;
 # - Modules/Platform/Kandelo.cmake describes the platform: a Unix whose
-#   executables cannot link against shared libraries, so CMake builds
-#   SHARED and MODULE libraries as static ones (with its usual warning)
-#   and find_library() finds static libraries only.
+#   executables cannot link against shared libraries but whose dlopen(3)
+#   loads side modules. SHARED libraries follow CMP0164 (static with
+#   CMake's warning, or an error), MODULE libraries are side modules,
+#   ENABLE_EXPORTS exports an executable's symbols to them, and
+#   find_library() finds static libraries only;
+# - add_library() admits MODULE libraries on a platform that sets the
+#   new global property TARGET_SUPPORTS_MODULE_LIBS while
+#   TARGET_SUPPORTS_SHARED_LIBS is false.
 #
 # Kandelo is not Linux, and nothing here says it is.
 --- a/Source/cmSystemTools.cxx
@@ -46,9 +51,29 @@
        execute_process(COMMAND ${CMAKE_UNAME} -m
          OUTPUT_VARIABLE CMAKE_HOST_SYSTEM_PROCESSOR
          RESULT_VARIABLE val
+--- a/Source/cmAddLibraryCommand.cxx
++++ b/Source/cmAddLibraryCommand.cxx
+@@ -231,9 +231,16 @@
+      CMAKE_${LANG}_CREATE_SHARED_LIBRARY is defined and if not default to
+      STATIC. But at this point we know only the name of the target, but not
+      yet its linker language. */
++  /* A platform whose programs cannot link against shared libraries may
++     still load modules at run time (Kandelo's dlopen loads WebAssembly
++     side modules): its TARGET_SUPPORTS_MODULE_LIBS property admits MODULE
++     libraries while SHARED ones still follow CMP0164. */
+   if ((type == cm::TargetType::SHARED_LIBRARY ||
+        type == cm::TargetType::MODULE_LIBRARY) &&
+-      !mf.GetState()->GetGlobalPropertyAsBool("TARGET_SUPPORTS_SHARED_LIBS")) {
++      !mf.GetState()->GetGlobalPropertyAsBool("TARGET_SUPPORTS_SHARED_LIBS") &&
++      !(type == cm::TargetType::MODULE_LIBRARY &&
++        mf.GetState()->GetGlobalPropertyAsBool(
++          "TARGET_SUPPORTS_MODULE_LIBS"))) {
+     switch (status.GetMakefile().GetPolicyStatus(cmPolicies::CMP0164)) {
+       case cmPolicies::WARN:
+         mf.IssueDiagnostic(
 --- /dev/null
 +++ b/Modules/Platform/Kandelo.cmake
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,34 @@
 +# Distributed under the OSI-approved BSD 3-Clause License.  See accompanying
 +# file LICENSE.rst or https://cmake.org/licensing for details.
 +
@@ -59,14 +84,27 @@
 +
 +include(Platform/UnixPaths)
 +
-+# A Kandelo program is a statically linked WebAssembly module.  The
-+# compiler builds shared side modules for dlopen(3) (cc -shared), but an
-+# executable cannot be linked against a shared library, so the platform
-+# does not support shared libraries: add_library(SHARED) and
-+# add_library(MODULE) warn and build static libraries instead, and
-+# find_library() finds only static ones.
++# A Kandelo program is a WebAssembly module that cannot be linked against
++# a shared library.  Its dlopen(3) loads side modules, which the compiler
++# builds with -shared and which take libc and every other undefined
++# symbol from the program that loads them.  So:
++#
++# - add_library(MODULE) builds such a module, lib<name>.so, for dlopen(3).
++#   As on every platform, no target can link against a MODULE library.
++# - add_library(SHARED) is not supported: under policy CMP0164 a project
++#   requiring CMake 3.30 or later stops with "the target platform does not
++#   support dynamic linking"; an older one gets CMake's warning and a
++#   static library.
++# - find_library() finds only static libraries.
++# - ENABLE_EXPORTS on an executable exports its default-visibility
++#   symbols to the modules it loads (-Wl,--export-dynamic; the compiler
++#   ignores -rdynamic).  WebAssembly symbols are hidden unless declared
++#   otherwise, and libc's are hidden.
 +set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS FALSE)
++set_property(GLOBAL PROPERTY TARGET_SUPPORTS_MODULE_LIBS TRUE)
 +set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
++set(CMAKE_EXE_EXPORTS_C_FLAG "-Wl,--export-dynamic")
++set(CMAKE_EXE_EXPORTS_CXX_FLAG "-Wl,--export-dynamic")
 +
-+# dlopen(3) and the rest of the dynamic-linking interface are in libc.
-+set(CMAKE_DL_LIBS "")
++# The dlopen(3) loader is the SDK's libdl; -ldl links it.
++set(CMAKE_DL_LIBS "dl")
