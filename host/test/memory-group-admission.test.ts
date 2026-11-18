@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
 import { KernelEntryGate, createKernelEntryGatedInstance, KernelReentrantEntryError } from '../src/kernel-entry-gate';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
-import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING } from '../src/generated/abi';
+import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING, ABI_SYSCALLS as SYSCALLS,
+  CH_STATUS, CH_SYSCALL, CH_ARGS, CH_ARG_SIZE, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE } from '../src/generated/abi';
+import * as G from '../src/generated/program-extensions';
+import { processDataView } from '../src/process-memory-views';
 import { createKernelScratchTestInstance } from './support/kernel-scratch-instance';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
 function harness(pointerWidth: 4 | 8 = 4) {
@@ -12,6 +15,12 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_get_process_state: () => PROCESS_STATE_RUNNING,
     kernel_memory_group_protocol_version: () => P.version,
     kernel_memory_group_capabilities: () => P.capability_admission,
+    kernel_group_memory_change_prepare: vi.fn(() => -95),
+    kernel_group_memory_change_validate: vi.fn(() => -95),
+    kernel_group_memory_change_commit: vi.fn(() => -95),
+    kernel_group_memory_change_cancel: vi.fn(() => 0),
+    kernel_set_current_tid: () => 0,
+    kernel_get_process_exit_signal: () => -1,
     kernel_memory_group_configure: vi.fn(() => 0),
     kernel_memory_group_create: vi.fn(() => 23),
     kernel_memory_group_seal: vi.fn(() => 0),
@@ -47,7 +56,7 @@ function harness(pointerWidth: 4 | 8 = 4) {
     () => pointerWidth === 8 ? 4096n : 4096, 4, Object.keys(implementations));
   const instance = createKernelEntryGatedInstance(raw, gate);
   const scratch = allocateKernelScratchRegion(memory, instance.exports.kernel_alloc_scratch as (size: number) => number | bigint,
-    128, pointerWidth, 'group admission test', instance);
+    256, pointerWidth, 'group admission test', instance);
   const worker = createCentralizedKernelWorkerTestDouble();
   worker.testAuthority.initializeKernelForTest({ instance, gate, mainScratch: scratch });
   return { worker, instance, implementations, memory };
@@ -380,5 +389,173 @@ describe('grouped mapping metadata transport', () => {
     view.setUint32(f.kind, P.mapping.kinds.protect, true); view.setBigUint64(f.address, BigInt(3 * page), true);
     view.setBigUint64(f.result, 0n, true); view.setBigUint64(f.oldAddress, 0n, true);
     expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({ kind: 'protect', length: 0 });
+  });
+});
+
+function mappingDispatchHarness(width: 4 | 8 = 4) {
+  const h = harness(width), kw = h.worker as any, page = 65536, token = (1n << 63n) + 0xfffffff1n;
+  h.implementations.kernel_memory_group_capabilities = () => P.capability_admission | P.mapping.capability;
+  h.worker.createMemoryGroupBacking(23, 16);
+  const receipt = h.worker.prepareMemoryGroupProcess(23, 100);
+  if (typeof receipt === 'number') throw Error('missing admitted task');
+  const handle = h.worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: page });
+  if (typeof handle === 'number') throw Error('missing image');
+  const launch = h.worker.publishMemoryGroupReplica(handle);
+  if (typeof launch === 'number') throw Error('missing published replica');
+  h.worker.registerMemoryGroupProcess(handle, [page], { maxAddr: 16 * page });
+  const registration = kw.processes.get(100), channel = registration.channels[0], store = registration.grouped.store;
+  const completions: { value: number; errno: number }[] = [];
+  let complete!: (value: { value: number; errno: number }) => void;
+  const completed = new Promise<{ value: number; errno: number }>(resolve => { complete = resolve; });
+  h.worker.testAuthority.configureScratchBoundaryHooksForTest({
+    completeChannelRaw: (_channel, value, errno) => {
+      const record = { value, errno }; completions.push(record);
+      processDataView(channel.source, page).setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true); complete(record);
+    },
+  });
+  const effect = { kind: 'map' as 'map' | 'protect' | 'unmap', address: 8 * page, length: page, prot: 3, flags: 0x22, result: 8 * page };
+  const writeDescription = (pointer: number | bigint, capacity: number) => {
+    expect(capacity).toBe(P.mapping.description_bytes);
+    const data = new DataView(h.memory.buffer, Number(pointer), capacity), f = P.mapping.description_fields;
+    new Uint8Array(h.memory.buffer, Number(pointer), capacity).fill(0);
+    for (const [field, value] of Object.entries({ group: 23, pid: 100, tid: 100 })) data.setUint32(P.receipt_fields[field as 'group' | 'pid' | 'tid'], value, true);
+    data.setBigUint64(P.receipt_fields.serial, SERIAL, true); data.setBigUint64(P.receipt_fields.generation, GENERATION, true);
+    data.setBigUint64(f.token, token, true); data.setUint32(f.kind, P.mapping.kinds[effect.kind], true);
+    data.setUint32(f.prot, effect.prot, true); data.setUint32(f.flags, effect.flags, true);
+    for (const field of ['address', 'length', 'result'] as const) data.setBigUint64(f[field], BigInt(effect[field]), true);
+    return capacity;
+  };
+  const captured: bigint[][] = [];
+  h.implementations.kernel_group_memory_change_prepare = vi.fn((_pid, _tid, request, size, output, capacity) => {
+    expect(size).toBe(P.mapping.request_bytes);
+    const view = new DataView(h.memory.buffer, Number(request), size);
+    captured.push(Array.from({ length: 6 }, (_, at) => view.getBigInt64(P.mapping.request_fields.args + at * 8, true)));
+    return writeDescription(output, capacity);
+  });
+  h.implementations.kernel_group_memory_change_validate = vi.fn((_pid, _tid, low, high, output, capacity) => {
+    expect(low >>> 0).toBe(0xfffffff1); expect(high >>> 0).toBe(0x80000000); return writeDescription(output, capacity);
+  });
+  h.implementations.kernel_group_memory_change_commit = vi.fn(() => 0);
+  h.implementations.kernel_group_memory_change_cancel = vi.fn(() => 0);
+  const control = new Int32Array(launch.envelope.memory.buffer, launch.expectation.replica, G.MEMORY_GROUP_REPLICA_BYTES / 4);
+  const acknowledge = () => {
+    Atomics.store(control, G.MEMORY_GROUP_REPLICA_ACK / 4, Atomics.load(control, G.MEMORY_GROUP_REPLICA_REQUEST / 4));
+    Atomics.notify(control, G.MEMORY_GROUP_REPLICA_ACK / 4);
+  };
+  const dispatch = (syscall = SYSCALLS.Mmap, args = [0n, BigInt(page), 3n, 0x22n, -1n, 0n]) => {
+    const view = processDataView(channel.source, page); view.setUint32(CH_SYSCALL, syscall, true);
+    args.forEach((value, at) => view.setBigInt64(CH_ARGS + at * CH_ARG_SIZE, value, true));
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true); kw.handleSyscall(channel);
+    return kw.pendingGroupMappings.get(channel);
+  };
+  const close = async () => {
+    const pending = kw.pendingGroupMappings.get(channel);
+    if (pending) { kw.retireChannelHostWaits(channel); await pending.finished; }
+    store.close();
+  };
+  return { ...h, kw, page, token, registration, channel, store, launch, captured, effect, completed, completions, control, acknowledge, dispatch, close };
+}
+
+describe('normal grouped mapping syscall coordination', () => {
+  it.each([4, 8] as const)('publishes Rust-selected virtual addresses with independent scratch records at kernel width %s', async width => {
+    const h = mappingDispatchHarness(width);
+    try {
+      const pending = h.dispatch(); expect(pending).toBeDefined(); expect(h.completions).toEqual([]);
+      expect(h.captured).toEqual([[0n, BigInt(h.page), 3n, 0x22n, -1n, 0n]]);
+      new Uint8Array(h.memory.buffer, 4096, 128).fill(0x91);
+      h.acknowledge(); expect(await h.completed).toEqual({ value: 8 * h.page, errno: 0 }); await pending.finished;
+      expect(h.launch.source.readBytes(8 * h.page, h.page).every(byte => byte === 0)).toBe(true);
+      expect(h.implementations.kernel_group_memory_change_commit).toHaveBeenCalledTimes(1);
+      expect(h.implementations.kernel_group_memory_change_cancel).not.toHaveBeenCalled();
+      expect(h.kw.pendingGroupMappings.size).toBe(0); expect(Atomics.load(h.control, G.MEMORY_GROUP_REPLICA_REQUEST / 4)).toBe(0);
+    } finally { await h.close(); }
+  });
+  it('deduplicates notifications and retains the first copied arguments while waiting for execution ACK', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      const pending = h.dispatch(); processDataView(h.channel.source, h.page).setBigInt64(CH_ARGS, 123n, true);
+      h.kw.handleSyscall(h.channel); expect(h.implementations.kernel_group_memory_change_prepare).toHaveBeenCalledTimes(1);
+      h.acknowledge(); expect(await h.completed).toEqual({ value: 8 * h.page, errno: 0 }); await pending.finished;
+      expect(h.captured[0][0]).toBe(0n);
+    } finally { await h.close(); }
+  });
+  it.each(['generation', 'request', 'registration'] as const)('cancels a stale %s without completing its successor', async replacement => {
+    const h = mappingDispatchHarness();
+    try {
+      const pending = h.dispatch();
+      if (replacement === 'generation') h.implementations.kernel_get_process_exec_generation = (_pid: number, pointer: number | bigint) => {
+        new DataView(h.memory.buffer).setBigUint64(Number(pointer), GENERATION + 1n, true); return 8;
+      };
+      else if (replacement === 'request') h.kw.activeChannelRequests.set(h.channel, Object.freeze({ ...h.kw.activeChannelRequests.get(h.channel) }));
+      else h.kw.processes.set(100, { ...h.registration });
+      const successor = h.kw.processes.get(100), request = h.kw.activeChannelRequests.get(h.channel);
+      h.acknowledge(); await pending.finished;
+      expect(h.completions).toEqual([]); expect(h.implementations.kernel_group_memory_change_commit).not.toHaveBeenCalled();
+      expect(h.implementations.kernel_group_memory_change_cancel).toHaveBeenCalledTimes(1);
+      expect(h.kw.processes.get(100)).toBe(successor); expect(h.kw.activeChannelRequests.get(h.channel)).toBe(request);
+      expect(h.launch.source.byteLength).toBe(4 * h.page);
+    } finally { await h.close(); }
+  });
+  it('does not run ordinary zero/grow postprocessing over a protected result', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.effect.prot = 0; h.dispatch(SYSCALLS.Mmap, [0n, BigInt(h.page), 0n, 0x22n, -1n, 0n]);
+      h.acknowledge(); expect(await h.completed).toEqual({ value: 8 * h.page, errno: 0 });
+      expect(() => h.launch.source.readBytes(8 * h.page, 1)).toThrow();
+    } finally { await h.close(); }
+  });
+  it('releases staged physical pages if generation changes at final validation', async () => {
+    const h = mappingDispatchHarness(), charged = h.store.snapshot().allocatedPages;
+    try {
+      const validate = h.implementations.kernel_group_memory_change_validate; let changed = false;
+      h.implementations.kernel_group_memory_change_validate = (...args: any[]) => {
+        const result = validate(...args);
+        if (!changed && h.store.snapshot().allocatedPages > charged) {
+          changed = true;
+          h.implementations.kernel_get_process_exec_generation = (_pid: number, pointer: number | bigint) => {
+            new DataView(h.memory.buffer).setBigUint64(Number(pointer), GENERATION + 1n, true); return 8;
+          };
+        }
+        return result;
+      };
+      const pending = h.dispatch(); h.acknowledge(); await pending.finished;
+      expect(changed).toBe(true); expect(h.implementations.kernel_group_memory_change_commit).not.toHaveBeenCalled();
+      expect(h.implementations.kernel_group_memory_change_cancel).toHaveBeenCalledTimes(1);
+      expect(h.completions).toEqual([]); expect(h.store.snapshot().allocatedPages).toBe(charged);
+      expect(h.launch.source.byteLength).toBe(4 * h.page);
+    } finally { await h.close(); }
+  });
+  it('refuses an old image before binding or preparing a successor task', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.implementations.kernel_get_process_exec_generation = (_pid: number, pointer: number | bigint) => {
+        new DataView(h.memory.buffer).setBigUint64(Number(pointer), GENERATION + 1n, true); return 8;
+      };
+      h.implementations.kernel_set_current_tid = vi.fn(() => 0); h.dispatch();
+      expect(h.implementations.kernel_set_current_tid).not.toHaveBeenCalled();
+      expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled(); expect(h.completions).toEqual([]);
+    } finally { await h.close(); }
+  });
+  it('keeps a failed unpublished allocation owned through busy-pool channel retirement', async () => {
+    const h = mappingDispatchHarness(), charged = h.store.snapshot().allocatedPages;
+    const poolLock = new Int32Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_CONTROL, 1);
+    let reached!: () => void; const committed = new Promise<void>(resolve => { reached = resolve; });
+    try {
+      h.implementations.kernel_group_memory_change_commit = vi.fn(() => { Atomics.store(poolLock, 0, 1); reached(); return -12; });
+      const pending = h.dispatch(); h.acknowledge(); await committed;
+      expect(pending.rustCancelled).toBe(true); expect(pending.done).toBe(false); expect(h.kw.retiringGroupMappings.has(pending)).toBe(true);
+      h.kw.retireChannelHostWaits(h.channel);
+      expect(h.implementations.kernel_group_memory_change_cancel).toHaveBeenCalledTimes(1);
+      Atomics.store(poolLock, 0, 0); Atomics.notify(poolLock, 0); await pending.finished;
+      expect(h.completions).toEqual([]); expect(h.store.snapshot().allocatedPages).toBe(charged);
+      expect(h.kw.retiringGroupMappings.size).toBe(0); expect(h.kw.pendingGroupMappings.size).toBe(0);
+    } finally { Atomics.store(poolLock, 0, 0); Atomics.notify(poolLock, 0); await h.close(); }
+  });
+  it('keeps unsupported brk visible and never invokes ordinary mapping dispatch', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.dispatch(SYSCALLS.Brk, [0n, 0n, 0n, 0n, 0n, 0n]); expect(await h.completed).toEqual({ value: -1, errno: 95 });
+      expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
+    } finally { await h.close(); }
   });
 });

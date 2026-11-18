@@ -5,11 +5,12 @@ import { captureProcessRead, processDataView, readProcessBytes, writeProcessByte
   type ProcessMemorySource } from "./process-memory-views";
 import {
   decodeMemoryGroupReceipt, decodeMemoryGroupSnapshot, memoryGroupU32,
+  encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, type GroupMemoryChangeDescription,
   MemoryGroupProtocolFault, type MemoryGroupSnapshot, type MemoryGroupTaskReceipt,
 } from "./memory-group-protocol";
 import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
 import { MemoryGroupImageStore, type GroupImageLayout, type GroupReplicaLaunch,
-  type PreparedGroupReplica } from "./memory-group-image-store";
+  type PreparedGroupReplica, type GroupImageExecutionPause, type PreparedGroupMapping } from "./memory-group-image-store";
 import { MEMORY_GROUP_MAXIMUM_PAGES } from "./generated/program-extensions";
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
@@ -1757,6 +1758,11 @@ interface ProcessRegistration {
   readonly execGeneration: bigint;
   /** Guest pointer source, distinct from the group's physical instantiation Memory. */
   readonly source: ProcessMemorySource;
+  readonly grouped?: {
+    readonly store: MemoryGroupImageStore;
+    readonly handle: PreparedGroupReplica;
+    readonly receipt: MemoryGroupTaskReceipt;
+  };
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
   /** True only while a vfork child borrows its suspended parent's Memory. */
@@ -2166,6 +2172,24 @@ interface PendingEntropyRead {
   registration: ProcessRegistration;
   request: object;
   timer: ReturnType<typeof setTimeout> | null;
+}
+interface PendingGroupMapping {
+  readonly channel: ChannelInfo;
+  readonly registration: ProcessRegistration;
+  readonly request: FrozenChannelRequest;
+  readonly description: GroupMemoryChangeDescription;
+  readonly store: MemoryGroupImageStore;
+  /** Mapping custody only; engine observer and execution fences are separate. */
+  readonly finished: Promise<void>;
+  readonly finish: () => void;
+  barrier?: GroupImageExecutionPause;
+  physical?: PreparedGroupMapping;
+  cancelling: boolean;
+  rustCancelled: boolean;
+  suppressCompletion: boolean;
+  failure: number;
+  scheduled: boolean;
+  done: boolean;
 }
 
 interface BlockingRetryDisposition extends FrozenCancellationPointIdentity {
@@ -3048,6 +3072,9 @@ export class CentralizedKernelWorker {
   private kernelAbiContractDigest: Uint8Array | null = null;
   private processes = new Map<number, ProcessRegistration>();
   private pendingEntropyReads = new Map<ChannelInfo, PendingEntropyRead>();
+  private pendingGroupMappings = new Map<ChannelInfo, PendingGroupMapping>();
+  /** Detached cleanup remains owned even after its exact channel is removed. */
+  private retiringGroupMappings = new Set<PendingGroupMapping>();
   private activeChannels: ChannelInfo[] = [];
   /**
    * Exact channel generations detached from dispatch but whose engine-owned
@@ -8432,6 +8459,7 @@ export class CentralizedKernelWorker {
         const registration: ProcessRegistration = {
           pid, memory, source, channels, execGeneration, borrowedAddressSpace,
           ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined,
+          grouped: grouped && Object.freeze({ store: grouped.store, handle: grouped.handle, receipt: grouped.receipt }),
         };
         this.#noteGuestMayRun(source);
         kernelEntryIntrinsicObjectDefineProperty(registration, "execGeneration", {
@@ -11561,6 +11589,15 @@ export class CentralizedKernelWorker {
   }
 
   private retireChannelHostWaits(channel: ChannelInfo, entry?: KernelWorkerEntryContext): void {
+    const mapping = this.pendingGroupMappings?.get(channel);
+    if (mapping) {
+      mapping.cancelling = true; mapping.suppressCompletion = true;
+      this.retiringGroupMappings.add(mapping);
+      if (entry) this.#cancelGroupMapping(mapping, entry);
+      else this.#runOrDeferKernelEntry("retire exact grouped mapping", next => {
+        this.#cancelGroupMapping(mapping, next); return undefined;
+      }, mapping);
+    }
     const entropy = this.pendingEntropyReads?.get(channel);
     if (entropy) {
       if (entropy.timer !== null) this.#cancelRegisteredTimeout(entropy.timer);
@@ -11625,6 +11662,9 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingEntropyReads?.keys() ?? []) {
+      if (channel.pid === pid) channels.add(channel);
+    }
+    for (const channel of this.pendingGroupMappings?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingSelectRetries?.keys() ?? []) {
@@ -12595,6 +12635,8 @@ export class CentralizedKernelWorker {
   ): FrozenChannelRequest | null {
     const active = this.activeChannelRequests.get(channel);
     if (active) {
+      const mapping = this.pendingGroupMappings.get(channel);
+      if (mapping) { this.#advanceGroupMapping(mapping, entry); return null; }
       const entropy = this.pendingEntropyReads.get(channel);
       if (entropy) {
         if (this.#completeTerminalTeardownChannel(channel, entry)
@@ -13565,6 +13607,13 @@ export class CentralizedKernelWorker {
         origArgs,
         diagnosticArgs,
       );
+    }
+
+    if (channel.source instanceof GroupProcessAddressSpace
+        && (syscallNr === SYS_MMAP || syscallNr === SYS_MUNMAP || syscallNr === SYS_MPROTECT
+          || syscallNr === SYS_MREMAP || syscallNr === SYS_BRK)) {
+      this.#beginGroupMapping(channel, syscallNr, adjustedArgs, entry);
+      return;
     }
 
     // Separate Wasm memories cannot observe MAP_SHARED/SysV writes directly.
@@ -16754,6 +16803,10 @@ export class CentralizedKernelWorker {
       cancel(channel.pid, pending.tid, pending.token);
     }
     this.pendingEntropyReads.clear();
+    for (const pending of this.pendingGroupMappings.values()) {
+      pending.cancelling = true; pending.suppressCompletion = true;
+      this.retiringGroupMappings.add(pending); this.#cancelGroupMapping(pending, entry);
+    }
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
@@ -19960,6 +20013,8 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    const mapping = this.pendingGroupMappings.get(channel);
+    if (mapping) { this.#advanceGroupMapping(mapping, entry); return; }
     const entropy = this.pendingEntropyReads.get(channel);
     if (entropy) {
       this.#advanceEntropyRead(channel, entropy, entry);
@@ -21230,6 +21285,217 @@ export class CentralizedKernelWorker {
     }
     this.completeChannel(channel, syscallNr, origArgs, undefined,
       result.retVal, result.errVal, [], undefined, entry);
+  }
+
+  #groupMappingCallerCurrent(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): boolean {
+    const { channel, registration, request } = pending;
+    if (this.processes.get(channel.pid) !== registration || channel.source !== registration.source
+        || channel.memory !== registration.memory || !this.isRegisteredChannel(channel)
+        || this.activeChannelRequests.get(channel) !== request || this.hostReaped.has(channel.pid)
+        || this.loadChannelStatus(channel) !== CH_PENDING) return false;
+    const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+    if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH) return false;
+    if (generation instanceof Error) this.#memoryGroupProtocolError("Cannot validate pending mapping generation", generation);
+    return generation === registration.execGeneration;
+  }
+
+  #beginGroupMapping(channel: ChannelInfo, syscall: number, args: readonly ChannelScalarValue[],
+    entry: KernelWorkerEntryContext): void {
+    const previous = this.pendingGroupMappings.get(channel);
+    if (previous) { this.#advanceGroupMapping(previous, entry); return; }
+    const registration = this.processes.get(channel.pid), request = this.activeChannelRequests.get(channel);
+    const grouped = registration?.grouped;
+    if (!registration || !request || !grouped || registration.source !== channel.source) {
+      this.#memoryGroupProtocolError("Grouped mapping has no exact registered image/request");
+    }
+    const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+    if ((generation instanceof KernelTaskBindingError && generation.errno === ESRCH)
+        || (typeof generation === "bigint" && generation !== registration.execGeneration)) return;
+    if (generation instanceof Error) this.#memoryGroupProtocolError("Cannot confirm grouped mapping caller generation", generation);
+    this.#bindKernelTidForChannel(channel, entry);
+    // Initial linear-image/brk ownership must be modeled before this path can
+    // implement brk. Never send a grouped call through ordinary growth/zeroing.
+    if (syscall === SYS_BRK) {
+      this.completeChannelRawAndRelisten(channel, -1, ERRNO.EOPNOTSUPP, entry); return;
+    }
+    const capabilities = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_capabilities as (() => number) | undefined;
+    if (!capabilities || (capabilities() & MEMORY_GROUP_PROTOCOL.mapping.capability) === 0) {
+      this.completeChannelRawAndRelisten(channel, -1, ERRNO.EOPNOTSUPP, entry); return;
+    }
+    const tid = this.guestTidForChannel(channel);
+    const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(channel.pid, tid, registration.execGeneration, entry);
+    if (typeof receipt === "number" || receipt.group !== grouped.receipt.group) {
+      this.#memoryGroupProtocolError("Grouped mapping task no longer belongs to its registered image");
+    }
+    const copied = args.map(value => BigInt.asIntN(64, BigInt(value)));
+    // These slots have Rust u32 semantics, including ignored high channel bits.
+    if (syscall === SYS_MMAP) copied[2] = BigInt.asUintN(32, copied[2]);
+    if (syscall === SYS_MMAP || syscall === SYS_MREMAP) copied[3] = BigInt.asUintN(32, copied[3]);
+    if (syscall === SYS_MPROTECT) copied[2] = BigInt.asUintN(32, copied[2]);
+    const packet = encodeGroupMemoryChangeRequest(syscall, copied), protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    const description = this.#requireMainScratchRegion().withLease(lease => {
+      // Borrow independent bounded request/output ranges. The scratch contract
+      // refuses overlap even though Rust decodes before writing its result.
+      lease.copyFrom(packet, 0, 0, packet.length);
+      const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_prepare", [
+        channel.pid, tid, lease.exportPointer(0, packet.length), packet.length,
+        lease.exportPointer(packet.length, protocol.description_bytes), protocol.description_bytes,
+      ]);
+      if (count < 0) return this.#checkedMemoryGroupStatus(count);
+      if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid prepared mapping record length");
+      try { return decodeGroupMemoryChangeDescription(lease.copyOut(packet.length, count), receipt); }
+      catch (error) { return this.#memoryGroupProtocolError("Invalid prepared mapping record", error); }
+    });
+    if (typeof description === "number") {
+      this.completeChannelRawAndRelisten(channel, -1, -description, entry); return;
+    }
+    let pending: PendingGroupMapping;
+    try {
+      let finish!: () => void;
+      const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+      pending = { channel, registration, request, description, store: grouped.store, finished, finish,
+        cancelling: false, rustCancelled: false, suppressCompletion: false, failure: EIO, scheduled: false, done: false };
+      this.pendingGroupMappings.set(channel, pending);
+    } catch (error) {
+      // Rust already retained a preparation. Unexpected host-owner setup
+      // failure cannot become recoverable EIO with an orphaned kernel token.
+      this.#memoryGroupProtocolError("Cannot retain prepared mapping custody", error);
+    }
+    if (!this.#groupMappingCallerCurrent(pending, entry)) {
+      pending.cancelling = true; pending.suppressCompletion = true; this.#cancelGroupMapping(pending, entry); return;
+    }
+    try { pending.barrier = grouped.store.beginImageExecutionPause(grouped.handle); }
+    catch (error) {
+      // A partially requested barrier contains uncertain replicas in its owner.
+      // Do not resume that image by manufacturing a recoverable syscall result.
+      this.#memoryGroupProtocolError("Cannot establish grouped mapping barrier", error);
+    }
+    this.#advanceGroupMapping(pending, entry);
+  }
+
+  #validateGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): number {
+    if (!this.#groupMappingCallerCurrent(pending, entry)) return -ESRCH;
+    const { receipt, token } = pending.description, protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    const result = this.#requireMainScratchRegion().withLease(lease => {
+      const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_validate", [
+        receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
+        lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+      ]);
+      if (count < 0) return this.#checkedMemoryGroupStatus(count);
+      if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid validated mapping record length");
+      let current: GroupMemoryChangeDescription;
+      try { current = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), receipt, token); }
+      catch (error) { return this.#memoryGroupProtocolError("Invalid validated mapping record", error); }
+      for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags"] as const) {
+        if (current[key] !== pending.description[key]) this.#memoryGroupProtocolError("Prepared mapping effect changed under its exact token");
+      }
+      return 0;
+    });
+    return result === 0 && !this.#groupMappingCallerCurrent(pending, entry) ? -ESRCH : result;
+  }
+
+  #groupMappingAction(pending: PendingGroupMapping, cancel: boolean, entry: KernelWorkerEntryContext): number {
+    const { receipt, token } = pending.description, exports = this.#kernelInstanceForEntry(entry).exports;
+    const operation = cancel ? exports.kernel_group_memory_change_cancel : exports.kernel_group_memory_change_commit;
+    if (typeof operation !== "function") this.#memoryGroupProtocolError("Kernel lacks exact mapping action");
+    return this.#checkedMemoryGroupStatus(operation(receipt.pid, receipt.tid,
+      Number(token & 0xffffffffn), Number(token >> 32n)));
+  }
+
+  #advanceGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {
+    if (pending.done) return;
+    if (pending.cancelling) { this.#cancelGroupMapping(pending, entry); return; }
+    if (!this.#groupMappingCallerCurrent(pending, entry)) {
+      pending.cancelling = true; pending.suppressCompletion = true; this.#cancelGroupMapping(pending, entry); return;
+    }
+    if (this.deferChannelWhileStopped(pending.channel)) {
+      // SIGCONT's normal retry path resumes this owner. Do not poll stopped tasks.
+      return;
+    }
+    const validity = this.#validateGroupMapping(pending, entry);
+    if (validity < 0) {
+      pending.cancelling = true; pending.failure = -validity; this.#cancelGroupMapping(pending, entry); return;
+    }
+    if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier!)) {
+      this.#scheduleGroupMapping(pending, "barrier", entry); return;
+    }
+    if (!pending.physical) {
+      let physical: ReturnType<MemoryGroupImageStore["prepareImageMapping"]>;
+      try { physical = pending.store.prepareImageMapping(pending.barrier!, pending.description); }
+      catch (error) {
+        if (!(error instanceof RangeError)) this.#memoryGroupProtocolError("Physical mapping preparation failed", error);
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return;
+      }
+      if (physical === "waiting" || physical === "busy") {
+        this.#scheduleGroupMapping(pending, physical === "waiting" ? "barrier" : "locks", entry); return;
+      }
+      if (physical === "exhausted") {
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return;
+      }
+      pending.physical = physical;
+    }
+    let validation = 0;
+    let result: ReturnType<MemoryGroupImageStore["commitImageMapping"]>;
+    try {
+      result = pending.store.commitImageMapping(pending.physical,
+        () => { validation = this.#validateGroupMapping(pending, entry); return validation === 0; },
+        () => this.#groupMappingAction(pending, false, entry));
+    } catch (error) { return this.#memoryGroupProtocolError("Uncertain grouped mapping publication", error); }
+    if (result === "busy") { this.#scheduleGroupMapping(pending, "locks", entry); return; }
+    if (result !== "committed") {
+      pending.cancelling = true; pending.failure = typeof result === "number" ? -result : validation < 0 ? -validation : EAGAIN;
+      this.#cancelGroupMapping(pending, entry); return;
+    }
+    pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+    pending.store.resumeImageExecutionPause(pending.barrier!);
+    entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+    this.#dequeueSignalForDelivery(pending.channel, entry);
+    if (this.#finishSignalTermination(pending.channel, entry)) return;
+    // PTE publication already supplied zeroing, growth and protection. Ordinary
+    // memory-call postprocessing would overwrite or reject the new mappings.
+    this.completeChannelRawAndRelisten(pending.channel, pending.description.result, 0, entry);
+  }
+
+  #cancelGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {
+    if (pending.done) return;
+    this.retiringGroupMappings.add(pending);
+    if (!pending.rustCancelled) {
+      const status = this.#groupMappingAction(pending, true, entry);
+      // ESRCH means this monotonic exact token no longer owns Rust state; it
+      // never authorizes cancellation of a successor's preparation.
+      if (status !== 0 && status !== -ESRCH) this.#memoryGroupProtocolError("Cannot cancel exact Rust mapping owner");
+      pending.rustCancelled = true;
+    }
+    if (pending.physical && pending.store.cancelImageMapping(pending.physical) === "busy") {
+      this.#scheduleGroupMapping(pending, "pool", entry); return;
+    }
+    if (pending.barrier) pending.store.resumeImageExecutionPause(pending.barrier);
+    pending.done = true; this.retiringGroupMappings.delete(pending);
+    if (this.pendingGroupMappings.get(pending.channel) === pending) this.pendingGroupMappings.delete(pending.channel);
+    entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+    if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
+      this.completeChannelRawAndRelisten(pending.channel, -1, pending.failure, entry);
+    }
+  }
+
+  #scheduleGroupMapping(pending: PendingGroupMapping, target: 'barrier' | 'locks' | 'pool', entry: KernelWorkerEntryContext): void {
+    if (pending.done || pending.scheduled) return;
+    pending.scheduled = true;
+    // No scratch lease, entry façade, memory view or caller array crosses the
+    // effect boundary. Observe real control-word notifications, not a JS poll.
+    entry.deferProtocolEffect(() => {
+      if (pending.done || this.#kernelFatalError !== null) return;
+      pending.store.waitForMappingProgress(pending.barrier!, target).then(() => {
+        if (pending.done || this.#kernelFatalError !== null || !this.#kernelInstance) return;
+        this.#registerTimeout(() => {
+          pending.scheduled = false;
+          if (pending.done || this.#kernelFatalError !== null) return;
+          this.#runOrDeferKernelEntry("exact grouped mapping continuation", next => {
+            this.#advanceGroupMapping(pending, next); return undefined;
+          }, pending);
+        }, 0);
+      }).catch(error => { this.#failKernelInstance(error); });
+    });
   }
 
   #queueEntropyRead(channel: ChannelInfo, token: bigint, entry: KernelWorkerEntryContext): void {

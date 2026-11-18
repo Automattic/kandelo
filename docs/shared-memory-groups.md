@@ -186,8 +186,9 @@ acknowledgment, stopped member or revoked image is insufficient. Barrier setup
 faults quarantine uncertain replicas and retain failed wait drains and storage
 charges. This is reversible execution coordination, not a terminal fence or
 permission to recycle pages. The staged Rust metadata owner separately checks
-exact transaction custody and intervening changes before publication; neither
-component is connected to normal mapping syscalls yet.
+exact transaction custody and intervening changes before publication. Normal
+grouped memory-call dispatch now joins these owners for the implemented
+anonymous map/unmap/protect/remap path; this remains an internal integration.
 
 Host-adapter 9 adds fixed copied records for grouped mapping preparation,
 validation, commit and cancellation. Rust retains a budgeted owner for one
@@ -196,7 +197,7 @@ exec cannot publish it. Cancellation can discard an old preparation without
 changing a successor manager's transaction. All receipt/token bits remain
 unsigned 64-bit values, separate from status returns. The program-56 digest
 is unchanged. This transport currently prepares anonymous private metadata;
-file/shared/device effects and normal syscall/PTE coordination remain unfinished.
+file/shared/device effects remain unfinished.
 
 The internal image owner can now stage anonymous map, unmap, protection and
 remap PTE changes behind its exact all-replica barrier. Replacement maps use
@@ -209,13 +210,26 @@ by remap; this is not a completed reclamation mechanism. Snapshots report
 staging-array bytes and retained mapping references separately from allocated
 physical pages. Staging arrays scale with the admitted virtual page-table
 capacity and are dropped after successful commit or cancellation. This path
-still needs the normal syscall/request coordinator and initial-image/brk
-ownership; its synthetic barrier tests do not establish guest quiescence.
+still needs initial-image/brk ownership and actual guest acceptance; its
+synthetic barrier tests do not establish guest quiescence.
+
+The shared Node/browser kernel Worker retains each mapping's exact pending
+channel request, image source, registration, generation and Rust token. It
+copies scalar arguments once and uses separate bounded scratch request/result
+records. Before publication it revalidates both Rust metadata and the current
+caller; it never completes a replacement request or registration. Deferred
+barrier/lock progress observes native control-word notifications with bounded
+engine waits, retaining each image pin until its promise actually settles.
+Timeouts only schedule revalidation. Detached unpublished cleanup survives
+channel removal and keeps allocation custody when the pool is busy. Its
+completion is not an execution or engine-observer retirement fence. Grouped
+brk currently refuses EOPNOTSUPP pending initial-image/heap ownership. These
+internal tests do not establish usable grouped program execution or measured
+dispatch cost.
 
 These internal components do not expose an embedding launch option. Mapping
-materialization currently operates only within the image's published virtual
-extent; physical group growth cannot establish virtual capacity. Transactional
-map/protect/unmap/remap/break publication and rollback, complete lifecycle,
+publication stays within the admitted virtual capacity; physical group growth
+cannot establish virtual capacity. Complete mapping/heap semantics, lifecycle,
 shared objects and graphics remain required before preview support. See the
 [address-space architecture](architecture.md#experimental-process-address-spaces).
 

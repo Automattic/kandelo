@@ -954,13 +954,22 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.createProcess::kernel-export-direct-use::createProcess(stdinKind, stdoutKind, stderrKind)",
   ),
   // Group admission uses only u32 budgets/identities and exact generation
-  // halves. These seven calls lend no kernel pointers; record-bearing exports
+  // halves. These calls lend no kernel pointers; record-bearing exports
   // remain scoped KernelScratchLease calls with their own capacity proofs.
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#memoryGroupAdmissionAvailable::kernel-export-direct-use::capabilities()",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#memoryGroupAdmissionAvailable::kernel-export-direct-use::protocol()",
+  ),
+  // Mapping capability and commit/cancel carry only scalar identities and
+  // both u32 halves of a validated opaque token. Preparation/validation records
+  // still borrow disjoint capacity-proved ranges through KernelScratchLease.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#beginGroupMapping::kernel-export-direct-use::capabilities()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#groupMappingAction::kernel-export-direct-use::operation(receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n))",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.configureMemoryGroups::kernel-export-direct-use::configure(maximumPages, maximumGroups)",
