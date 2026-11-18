@@ -1751,7 +1751,7 @@ interface GroupedExecPreparationState {
   readonly store: MemoryGroupImageStore;
   reservation?: GroupedExecReservation;
   handle?: PreparedGroupReplica;
-  phase: 'prepared' | 'committed' | 'cancelled';
+  phase: 'prepared' | 'committed' | 'handoff' | 'installed' | 'cancelled';
 }
 
 interface ExecCallerIdentity {
@@ -3276,6 +3276,7 @@ export class CentralizedKernelWorker {
   // stores, their capabilities, or their complete physical guest backings.
   #memoryGroupStores = new Map<number, MemoryGroupImageStore>();
   #groupExecReservations = new WeakMap<GroupedExecReservation, GroupedExecPreparationState>();
+  #groupExecImages = new WeakMap<PreparedGroupReplica, GroupedExecPreparationState>();
   #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
   #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
@@ -8331,6 +8332,8 @@ export class CentralizedKernelWorker {
         if (registration !== caller.registration || !group || !this.#isCurrentExecCaller(registration, caller.tid, caller)) {
           throw new PreparedExecTargetError('Grouped exec caller changed during preparation', ESRCH);
         }
+        const addressSpace = this.#prepareAddressSpaceForExecWithinKernelEntry(registration.pid, entry);
+        if (addressSpace < 0) throw new PreparedExecTargetError('Cannot prepare outgoing grouped mappings', -addressSpace);
         if (!this.#memoryGroupAdmissionAvailable(entry, MEMORY_GROUP_PROTOCOL.exec_preparation.capability)) {
           throw new PreparedExecTargetError('Kernel grouped exec preparation unavailable', ERRNO.EOPNOTSUPP);
         }
@@ -8362,6 +8365,7 @@ export class CentralizedKernelWorker {
           state.handle = group.store.prepareImage(prepared.receipt, { initialVirtualPages: layout.initialPages,
             maximumVirtualPages: layout.maximumPages, scratchBytes: 65536 });
           this.#memoryGroupReplicas.set(state.handle, group.store);
+          this.#groupExecImages.set(state.handle, state);
           const reservation: GroupedExecReservation = Object.freeze({ kind: 'memory-group-exec', layout });
           state.reservation = reservation;
           this.#groupExecReservations.set(reservation, state);
@@ -8421,6 +8425,7 @@ export class CentralizedKernelWorker {
     if (state.handle) {
       if (!state.store.isUnexposed(state.handle)) this.#memoryGroupProtocolError('Grouped exec storage already escaped');
       state.store.cancelUnexposed(state.handle); this.#memoryGroupReplicas.delete(state.handle);
+      this.#groupExecImages.delete(state.handle);
       if (!state.store.canReleaseUnexposedImage(state.receipt)) this.#memoryGroupProtocolError('Grouped exec image retains references');
     }
     if (this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.finishCancellation, entry) !== 0) {
@@ -8430,6 +8435,60 @@ export class CentralizedKernelWorker {
     if (state.reservation) this.#groupExecReservations.delete(state.reservation);
     state.reservation = undefined;
     state.handle = undefined; state.phase = 'cancelled'; this.#preparedGroupExecReservations.delete(state);
+  }
+
+  /** Called on the successful commit stack, before the embedding yields.
+   * Only this exact opaque preparation can detach the old transport. */
+  beginMemoryGroupExecHandoff(reservation: GroupedExecReservation): {
+    readonly previousImage: PreparedGroupReplica;
+    readonly replacementImage: PreparedGroupReplica;
+    readonly secureExec: boolean;
+    readonly stopped: Promise<void>;
+  } {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const state = this.#groupExecReservations.get(reservation);
+    if (!state || state.phase !== 'committed' || !state.handle
+        || this.processes.get(state.registration.pid) !== state.registration) {
+      throw new MemoryGroupProtocolFault('Grouped exec handoff is stale or not committed');
+    }
+    const previous = state.registration.grouped!;
+    state.phase = 'handoff';
+    const transition = this.takeCommittedExecTransition(state.registration.pid,
+      state.registration.memory, state.registration.source);
+    if (transition.addressSpaceResult < 0
+        || !this.prepareProcessForExec(state.registration.pid, state.registration.memory)) {
+      this.#memoryGroupProtocolError('Cannot detach exact committed grouped image');
+    }
+    return Object.freeze({ previousImage: previous.handle, replacementImage: state.handle,
+      secureExec: transition.secureExec, stopped: this.#stopMemoryGroupExecImage(state) });
+  }
+
+  async #stopMemoryGroupExecImage(state: GroupedExecPreparationState): Promise<void> {
+    const previous = state.registration.grouped!;
+    for (;;) {
+      let drained = false;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('stop exact old exec image', _entry => {
+        drained = previous.store.requestImageStop(previous.handle); return undefined;
+      }));
+      if (drained) break;
+      await previous.store.waitForThreadRetirementProgress(previous.handle);
+    }
+    await previous.store.waitForImageQuiescence(previous.handle);
+  }
+
+  finishMemoryGroupExecHandoff(reservation: GroupedExecReservation): void {
+    const state = this.#groupExecReservations.get(reservation);
+    if (!state || state.phase !== 'installed' || !state.handle
+        || this.processes.get(state.receipt.pid)?.grouped?.handle !== state.handle) {
+      this.#memoryGroupProtocolError('Grouped exec replacement lost its exact registration');
+    }
+    this.finishProcessExecHandoff(state.receipt.pid);
+    this.#groupExecReservations.delete(reservation); state.reservation = undefined;
+  }
+
+  /** Postcommit failure cannot restore the old image or prove page reuse. */
+  containMemoryGroupExecFailure(cause: unknown): never {
+    return this.#memoryGroupProtocolError('Committed grouped exec failed; storage retained', cause);
   }
 
   #prepareMemoryGroupReplica(receipt: MemoryGroupTaskReceipt, layout?: GroupImageLayout): PreparedGroupReplica | number {
@@ -8782,9 +8841,16 @@ export class CentralizedKernelWorker {
       throw new Error("Grouped main replica has already installed its process image");
     }
     const image = store.processRegistration(handle);
+    const exec = this.#groupExecImages.get(handle);
+    if (exec && (exec.phase !== 'handoff' || this.processes.get(image.receipt.pid) !== exec.registration
+        || !this.isExecHandoffActive(image.receipt.pid)
+        || !store.imageExecutionStopped(exec.registration.grouped!.handle))) {
+      throw new MemoryGroupProtocolFault('Grouped exec registration lacks exact stopped predecessor');
+    }
     this.#registerProcess(image.receipt.pid, image.memory, channelOffsets, options,
-      { store, handle, ...image });
+      { store, handle, ...image }, exec);
     this.#memoryGroupImageRegistrations.set(handle, { memory: image.memory, source: image.source });
+    if (exec) { exec.phase = 'installed'; this.#groupExecImages.delete(handle); }
   }
 
   #registerProcess(
@@ -8796,6 +8862,7 @@ export class CentralizedKernelWorker {
       readonly store: MemoryGroupImageStore;
       readonly handle: PreparedGroupReplica;
     },
+    preparedExec?: GroupedExecPreparationState,
   ): void {
     if (!this.#initialized) throw new Error("Kernel not initialized");
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_KERNEL_TASK_ID) {
@@ -8848,6 +8915,10 @@ export class CentralizedKernelWorker {
     if (existingRegistration && !replacingExecImage) {
       throw new Error(`Process ${pid} is already registered with the host`);
     }
+    if (preparedExec && (!replacingExecImage || existingRegistration !== preparedExec.registration
+        || grouped?.handle !== preparedExec.handle)) {
+      throw new MemoryGroupProtocolFault('Prepared exec map cannot replace this registration');
+    }
 
     if (argv !== undefined || env !== undefined) {
       const metadataResult = this.validateExecMetadata(
@@ -8867,7 +8938,7 @@ export class CentralizedKernelWorker {
       }
       const ceiling = grouped.maximumVirtualPages * 65536;
       if (explicitMaxAddr !== undefined && explicitMaxAddr !== ceiling) throw new Error("Grouped process layout disagrees with its admitted virtual ceiling");
-      if ((!preserveProcessState || replacingExecImage)
+      if ((!preserveProcessState || replacingExecImage && !preparedExec)
           && (brkBase === undefined || controlBase === undefined || controlEnd === undefined)) {
         throw new Error("Fresh grouped registration requires its heap and control layout");
       }
@@ -8995,7 +9066,7 @@ export class CentralizedKernelWorker {
         // mutating any layout field so a failed attempt leaves the whole
         // kernel Process unchanged and can be retried safely.
         if (grouped) {
-          const inherited = preserveProcessState && !replacingExecImage;
+          const inherited = preserveProcessState && (!replacingExecImage || preparedExec !== undefined);
           const packet = encodeGroupMemoryLayout(grouped.receipt, {
             initialPages: processMemoryByteLength(source) / 65536, maximumPages: grouped.maximumVirtualPages,
             channel: stableChannelOffsets[0]!, mode: inherited ? 'inherited' : 'fresh',

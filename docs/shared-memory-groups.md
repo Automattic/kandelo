@@ -208,9 +208,28 @@ the old process's virtual ceiling also produces recoverable `ENOMEM`, without
 allocating a physical replacement or failing unrelated kernel state. Cancelled
 opaque reservations lose their private association, so retaining copied layout
 metadata does not retain the old image through that association.
-The public launcher still refuses grouped execution. Successful replacement,
-old-image stop/handoff, repeated exec/destroy and the full promotion gates
-remain required before grouped exec support is advertised.
+The internal backend also has a shared Node/browser replacement helper. It
+claims the committed opaque reservation on the commit stack, removes the
+exact outgoing transport and requests cooperative stop for every old-image
+replica. New Start remains refused until old task receipts retire. The helper
+joins the exact Worker fences and native-wait drainage, installs the already
+prepared kernel map through private preparation authority, then retires the
+old image by root/source identity. Physical Memory equality cannot identify
+exec generations because both images use the same backing.
+
+The replacement Worker uses the normal memory-free readiness handshake and
+SDK executable. Its new image owns fresh initialization, TLS and constructors;
+PID and inherited descriptors survive, while `CLOEXEC` descriptors close. A
+real C probe repeats sixteen self-execs. A variant leaves one busy pthread
+and native wait32/wait64 pthreads in each outgoing image; the fixture observes
+the actual waits and busy progress before allowing exec, and checks exact
+stop acknowledgements, zero resumed waiters and bounded allocation reuse.
+
+The public launcher still refuses grouped execution. Signal/destroy races,
+postcommit failure disposition and the full promotion gates remain required
+before grouped exec support is advertised. Unexpected postcommit failure
+currently contains the instance with storage retained; it cannot restore the
+old image or establish reuse.
 
 
 These are review boundaries for the integration series. Each stage must leave

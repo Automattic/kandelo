@@ -7,13 +7,13 @@ import { runSdkCycles, runSdkExecution } from "./grouped-sdk-execution";
 
 // This is a dedicated kernel Worker, separate from the ordinary process entry.
 const buffer = (path: string): ArrayBuffer => Uint8Array.from(readFileSync(path)).buffer;
-const { kernelPath, programPath, ordinaryPath, grouped, trace, cycles, physicalPages, maximumVirtualPages, execTargetPath, rejectThreadLaunchCount, uncertainThreadConstructor, forcedLifecycle, nativeWaitLifecycle, execPrecommitFailure } = workerData;
+const { kernelPath, programPath, ordinaryPath, grouped, trace, cycles, physicalPages, maximumVirtualPages, execTargetPath, rejectThreadLaunchCount, uncertainThreadConstructor, forcedLifecycle, nativeWaitLifecycle, execPrecommitFailure, execSuccess, execOldThreads } = workerData;
 try {
   const options = {
     kernelBytes: buffer(kernelPath), programBytes: buffer(programPath), ordinaryBytes: buffer(ordinaryPath),
     imageModuleBytes: buffer(join(dirname(dirname(kernelPath)), "kandelo_image_module32.wasm")),
     grouped, trace, physicalPages, maximumVirtualPages, execTargetBytes: execTargetPath ? buffer(execTargetPath) : undefined,
-    rejectThreadLaunchCount, uncertainThreadConstructor, forcedLifecycle, nativeWaitLifecycle, execPrecommitFailure, io: new NodePlatformIO(), adapter: new NodeWorkerAdapter(), joinOnExit: true,
+    rejectThreadLaunchCount, uncertainThreadConstructor, forcedLifecycle, nativeWaitLifecycle, execPrecommitFailure, execSuccess, execOldThreads, io: new NodePlatformIO(), adapter: new NodeWorkerAdapter(), joinOnExit: true,
   };
   parentPort!.postMessage(await (cycles ? runSdkCycles(options, cycles) : runSdkExecution(options)));
 } finally { parentPort!.close(); }
