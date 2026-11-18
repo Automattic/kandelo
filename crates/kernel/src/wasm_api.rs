@@ -4313,10 +4313,22 @@ pub extern "C" fn kernel_memory_group_task_action(
     };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table
-        .memory_group_task_action(record, action)
-        .map(|()| 0)
-        .unwrap_or_else(|e| -(e as i32))
+    if let Err(e) = table.memory_group_task_action(record, action) {
+        return -(e as i32);
+    }
+    // Init has no waiter to retry a reap which was blocked by execution
+    // custody at exit publication. Only the last exact stop may finish it;
+    // unpublished exits must remain for the host's normal exit observer.
+    if action == TaskAction::RetireQuiescent
+        && !table.memory_group_removal_pending(record.pid)
+        && table.get(record.pid).is_some_and(|p| {
+            p.ppid == crate::process_table::SYNTHETIC_INIT_PID
+                && p.state == ProcessState::Exited && p.exit_published
+        })
+    {
+        return reap_for_init_and_cleanup(record.pid);
+    }
+    0
 }
 
 #[unsafe(no_mangle)]

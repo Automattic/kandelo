@@ -13,6 +13,7 @@ import { writeForkContinuationAnchor } from '../src/fork-continuation';
 import { FORK_SAVE_BUFFER_SIZE } from '../src/process-memory';
 import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import { HOST_INTERCEPTED_SYSCALLS, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS } from '../src/generated/abi';
+import { MockWorkerHandle } from '../src/worker-adapter';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
 const groupedOptions = { brkBase: 3 * 65536, brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 };
 function harness(pointerWidth: 4 | 8 = 4) {
@@ -28,6 +29,8 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_clear_fork_child: vi.fn(() => 0),
     kernel_remove_process: vi.fn(() => 0),
     kernel_drain_wakeup_events: vi.fn(() => 0),
+    kernel_drain_wait_completions: vi.fn(() => 0),
+    kernel_wait_next_timeout_ns: vi.fn(() => -1n),
     kernel_group_memory_change_prepare: vi.fn(() => -95),
     kernel_group_memory_change_read: vi.fn(() => -95),
     kernel_group_memory_change_validate: vi.fn(() => -95),
@@ -84,6 +87,53 @@ function harness(pointerWidth: 4 | 8 = 4) {
   return { worker, instance, implementations, memory, layoutRecords };
 }
 describe('kernel-Worker memory group admission', () => {
+  it.each(['group', 'pid', 'tid', 'serial', 'generation'] as const)('refuses a terminal fence with the wrong %s', key => {
+    const { worker, implementations } = harness();
+    worker.createMemoryGroupBacking(23, 16);
+    const receipt = worker.prepareMemoryGroupProcess(23, 100);
+    if (typeof receipt === 'number') throw Error('missing admission');
+    const handle = worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('missing image');
+    worker.publishMemoryGroupReplica(handle);
+    const concrete = new MockWorkerHandle();
+    worker.observeMemoryGroupReplicaWorker(handle, concrete, { terminationProvesQuiescence: false });
+    implementations.kernel_memory_group_task_action.mockClear();
+    const forged = { ...receipt, [key]: typeof receipt[key] === 'bigint' ? receipt[key] as bigint ^ (1n << 32n) : Number(receipt[key]) + 1 };
+    expect(() => concrete.simulateMessage({ type: 'memory_quiescent', pid: 100, memoryGroup: forged })).toThrow(/Wrong terminal/);
+    expect(implementations.kernel_memory_group_task_action).not.toHaveBeenCalled();
+  });
+  it.each([true, false])('retires only its concrete Worker fence (Node join=%s), keeping physical pages charged', joins => {
+    const { worker, implementations } = harness();
+    worker.createMemoryGroupBacking(23, 16);
+    const receipt = worker.prepareMemoryGroupProcess(23, 100);
+    if (typeof receipt === 'number') throw Error('missing admission');
+    const handle = worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('missing image');
+    const concrete = new MockWorkerHandle(), other = new MockWorkerHandle();
+    expect(() => worker.observeMemoryGroupReplicaWorker(handle, concrete, { terminationProvesQuiescence: joins })).toThrow(/published/);
+    const launch = worker.publishMemoryGroupReplica(handle);
+    if (typeof launch === 'number') throw Error('missing launch');
+    worker.registerMemoryGroupProcess(handle, [65536], groupedOptions);
+    const allocated = worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    worker.observeMemoryGroupReplicaWorker(handle, concrete, { terminationProvesQuiescence: joins });
+    expect(() => worker.observeMemoryGroupReplicaWorker(handle, other, { terminationProvesQuiescence: joins })).toThrow(/already/);
+    implementations.kernel_memory_group_task_action.mockClear();
+    const fence = { type: 'memory_quiescent', pid: 100, memoryGroup: receipt };
+    other.simulateMessage(fence);
+    concrete.simulateMessage({ type: 'exit', pid: 100, status: 23 });
+    expect(implementations.kernel_memory_group_task_action).not.toHaveBeenCalled();
+    concrete.simulateExit(0);
+    if (!joins) expect(implementations.kernel_memory_group_task_action).not.toHaveBeenCalled();
+    concrete.simulateMessage(fence);
+    concrete.simulateMessage(fence); concrete.simulateExit(0);
+    expect(implementations.kernel_memory_group_task_action.mock.calls.map((c: any[]) => c[2]))
+      .toEqual([P.task_actions.beginRetirement, P.task_actions.retireQuiescent]);
+    expect(implementations.kernel_drain_wait_completions).toHaveBeenCalledTimes(1);
+    expect(worker.inspectMemoryGroupBacking(23)).toMatchObject({ allocatedPages: allocated, exposedReplicas: 0 });
+    expect(() => launch.source.readBytes(0, 1)).toThrow();
+    // The kernel image source survives to publish the final wait completion.
+    expect((worker as any).processes.get(100).source.readBytes(0, 1)).toEqual(Uint8Array.of(0));
+  });
   it('allocates only a kernel-reserved backing and publishes after the exact start action', () => {
     const { worker, implementations, memory } = harness();
     expect(worker.createMemoryGroupBacking(23, 8)).toBe(0);

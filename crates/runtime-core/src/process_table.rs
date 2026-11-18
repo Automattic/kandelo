@@ -779,7 +779,14 @@ impl ProcessTable {
                 return Err(Errno::EAGAIN);
             }
         }
-        self.memory_groups.apply_task_action(receipt, action)
+        self.memory_groups.apply_task_action(receipt, action)?;
+        if action == wasm_posix_shared::memory_group::TaskAction::RetireQuiescent {
+            // Exited grouped children remain waitable but unobservable until
+            // every exact execution admission has stopped. Revisit parked
+            // waits after the stop receipt, even with no later guest syscall.
+            crate::wait_park::note_children_changed();
+        }
+        Ok(())
     }
 
     const fn new_inner() -> Self {
@@ -2434,6 +2441,9 @@ impl ProcessTable {
                 continue;
             };
             if event.event_mask & event_mask == 0 {
+                continue;
+            }
+            if event.event_mask == EVENT_EXITED && !self.memory_groups.can_remove_process(child_pid) {
                 continue;
             }
             selected = Some((child_pid, event));

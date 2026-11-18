@@ -240,8 +240,9 @@ One pool operation reserves contiguous controls and fragmented payload before
 publishing allocation bits. Busy/exhausted preparation leaves parent custody
 unchanged, and exact unconstructed cancellation returns the child allocation.
 This is an internal private-page operation. The dispatcher connects it to an
-explicitly configured grouped-fork backend; normal embedding launch and child
-Worker replay are not integrated yet. Shared-object inheritance remains separate.
+explicitly configured grouped-fork backend and a shared Node/browser child
+Worker launcher. Normal embedding launch remains gated. Shared-object
+inheritance remains separate.
 
 Host-adapter 13 adds a receipt-bound private fork metadata operation. After the
 host pauses the image and reads its logical extent, Rust validates the exact
@@ -266,9 +267,21 @@ Channel retirement before launch cancels the exact unpublished child; once a
 callback starts, it owns partial publication until it settles. An adopted child
 survives retirement of its caller. Failed publication begins Rust retirement
 before quarantine. Unpublished cancellation returns its exact allocation;
-published or uncertain storage stays charged. Source-only dispatcher tests
-cover these transitions, not actual grouped C fork/pthread Worker replay or
-terminal reclamation. Those and the broader release gates remain unfinished.
+published or uncertain storage stays charged. The shared child launcher uses
+the normal externref/import owners and continuation replay commit gate after
+authenticated prepare/ready/launch. It releases its reference observers only
+after a terminal fence, Node join or sealed never-constructed Worker.
+
+Host-adapter 14 binds each published replica to its concrete Worker before
+execution. Only that Worker's exact quiescence receipt (or a Node thread join)
+retires its execution admission. Browser termination alone is insufficient.
+Exit waits preserve their status record and remain pending until all that
+child's execution admissions retire; the last receipt wakes parked waits and
+retries synthetic-init reaping for an already-published exit. Replica access
+and execution-barrier membership end separately from kernel image access.
+Physical pages remain charged: these fences do not yet establish engine wait
+retirement, safe physical reuse or a lifecycle allocation plateau. Grouped
+pthread replay and broader release gates remain unfinished.
 
 Host-adapter 11 makes process-range preflight direction-aware: the host
 checks every virtual page for guest read or write access without copying a
@@ -350,6 +363,13 @@ read-only descriptor, descriptor reuse, close/unlink and file-backed remap
 growth. Its ordinary control records the existing zero-filled remap-growth
 gap. Both hosts compose their fixture's root image through the normal image
 writer inside the disposable kernel realm, so `/tmp` reaches the kernel tmpfs.
+
+The grouped fork probe exercises real C continuation replay, inherited heap,
+globals and private mappings, retained protection, inherited pipe descriptors,
+private child writes and parent wait status 23. The same C source also runs
+through the normal ordinary Node host. Its ordinary read-only-destination
+behavior remains an explicit control. Ordinary browser fork equivalence and
+the broader pthread, cancellation and reclamation gates remain separate.
 
 Run the Node case with `cd host && npx vitest run test/grouped-sdk-execution.test.ts`
 and the Chromium/Firefox/WebKit cases with

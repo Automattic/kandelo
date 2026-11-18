@@ -18,6 +18,14 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 14 connects exact grouped Worker stop receipts
+to execution admission retirement. Grouped child exit waits remain pending
+until all execution admissions retire, and the final receipt wakes parked
+waits and retries already-published synthetic-init reaping. Browser Worker
+termination alone is insufficient proof. Physical pages remain charged pending
+the broader retirement work. The host and kernel must be rebuilt together;
+program ABI 56 and its supported digest are unchanged.
+
 Kernel-host adapter version 8 adds opt-in memory-group admission metadata,
 exact task/image receipts and kernel-owned custody to version 7's entropy
 and I/O contracts. The host and kernel must be rebuilt together. This stage

@@ -9,6 +9,8 @@ import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, waitForGroupedWo
 import type { CentralizedWorkerInitMessage } from "../../src/worker-protocol";
 import { retryKernelEntryResult } from "../../src/kernel-entry-retry";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { launchGroupedForkWorker, type GroupedForkWorkerOwnership } from '../../src/grouped-fork-launch';
+import type { PreparedGroupReplica } from '../../src/memory-group-image-store';
 
 // Invoke only inside a disposable kernel Worker. Results contain copied
 // output/scalars, never a kernel/process Memory or a view of its backing.
@@ -37,6 +39,10 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
   let stdout = "", stderr = "";
   let kernelExit: number | undefined, processExit: number | undefined;
   let quiescent = false, processReady = false;
+  let rootPid: number | undefined, rootJoined = false;
+  let processLayout: ReturnType<typeof computeProcessMemoryLayout> | undefined;
+  const children = new Map<number, GroupedForkWorkerOwnership>();
+  const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
   const trace: string[] = [];
   let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -44,19 +50,49 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
   try {
     const execution = new Promise<void>((resolve, reject) => {
       const maybeComplete = () => {
-        if (!options.joinOnExit && kernelExit !== undefined && processExit !== undefined && quiescent && processReady) resolve();
+        if (kernelExit === undefined || processExit === undefined || !quiescent || !processReady
+            || (options.joinOnExit && !rootJoined)) return;
+        for (const [pid, child] of children) {
+          const state = childStates.get(pid);
+          if (state?.kernelExit === undefined || state.processExit === undefined || !state.ready || !child.quiescent
+              || (options.joinOnExit && !child.hasJoined)) return;
+        }
+        resolve();
       };
       // The Node exit event joins the exact process Worker. The deadline is a
       // failure/containment boundary, never permission to reuse grouped pages.
       deadline = setTimeout(() => reject(new Error("guest execution deadline")), 60_000);
-      const kernel = new CentralizedKernelWorker({ maxWorkers: 1, dataBufferSize: 65536,
+      const kernel = new CentralizedKernelWorker({ maxWorkers: 4, dataBufferSize: 65536,
         useSharedMemory: true, kernelMaxPages: 1024 }, options.io, {
-        onExit: (_pid, code) => {
-          kernelExit = code;
+        onExit: (pid, code) => {
+          if (pid === rootPid) kernelExit = code;
+          else childStates.set(pid, { ...childStates.get(pid), kernelExit: code });
           trace.push(...kernel.drainSyscallTrace().map(event => event.decoded ?? `syscall ${event.nr}`));
           maybeComplete();
         },
         onKernelFatal: error => reject(error),
+        onGroupedFork: async request => {
+          try {
+            const parentGeneration = request.parentPid === rootPid ? generation : children.get(request.parentPid)?.generation;
+            if (!parentGeneration || !processLayout) throw Error('Missing exact grouped fork parent');
+            await launchGroupedForkWorker({ kernel, request, adapter, externrefs: owner, imports, parentGeneration,
+              programBytes: options.programBytes, channelOffset: processLayout.channelOffset,
+              maximumVirtualPages: processLayout.maximumPages, terminationProvesQuiescence: options.joinOnExit,
+              isCurrent: child => children.get(child.pid) === child,
+              retain: child => { children.set(child.pid, child); if (!childStates.has(child.pid)) childStates.set(child.pid, {}); },
+              onMessage: (message, child) => {
+                const state = childStates.get(child.pid)!;
+                if (message.type === 'ready') state.ready = message.pid === child.pid;
+                else if (message.type === 'exit') { if (message.pid !== child.pid) return reject(Error('Wrong child exit')); state.processExit = message.status; }
+                else if (message.type === 'error') return reject(Error(message.message));
+                maybeComplete();
+              },
+              onError: error => reject(error),
+              onExit: (code, _child) => { if (code !== 0) reject(Error(`Child Worker exit ${code}`)); else maybeComplete(); },
+            });
+            return [processLayout.channelOffset];
+          } catch (error) { reject(error); throw error; }
+        },
       });
       void (async () => {
         // Compose through the normal image writer, inside this disposable
@@ -80,19 +116,23 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
         const { programBytes, ordinaryBytes: ordinary } = options;
         const layout = computeProcessMemoryLayout({ ptrWidth: 4, maxPages: 2048,
           programBytes: ordinary, heapBase: extractHeapBase(ordinary) });
+        processLayout = layout;
         const pid = status(kernel.createProcess(CAPTURED_STDIO), "create process");
+        rootPid = pid;
         const argv = ["grouped-sdk-mapping", grouped ? "grouped" : "ordinary"], env = ["PATH=/bin"];
         const registration = { ...layout, ptrWidth: 4 as const, argv, env };
         let launch: ReturnType<CentralizedKernelWorker["publishMemoryGroupReplica"]> | undefined;
+        let rootHandle: PreparedGroupReplica | undefined;
         if (grouped) {
           status(kernel.configureMemoryGroups(2048, 1), "configure groups");
-          const group = status(kernel.createMemoryGroup(2048, 1, 1), "create group");
+          const group = status(kernel.createMemoryGroup(2048, 4, 8), "create group");
           status(kernel.createMemoryGroupBacking(group), "create backing");
           const receipt = kernel.prepareMemoryGroupProcess(group, pid);
           if (typeof receipt === "number") throw new Error(`prepare process: ${receipt}`);
           const handle = kernel.prepareMemoryGroupImage(receipt, { initialVirtualPages: layout.initialPages,
             maximumVirtualPages: layout.maximumPages, scratchBytes: 65536 });
           if (typeof handle === "number") throw new Error(`prepare image: ${handle}`);
+          rootHandle = handle;
           launch = kernel.publishMemoryGroupReplica(handle);
           if (typeof launch === "number") throw new Error(`publish replica: ${launch}`);
           kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], registration);
@@ -120,6 +160,8 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
           // Install ordinary message handling after readiness: that protocol has
           // its own exact receipt check and permits no unrelated message.
           await waitForGroupedWorkerReady(processWorker, expected);
+          await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(rootHandle!, processWorker!,
+            { terminationProvesQuiescence: options.joinOnExit }));
         } else {
           const memory = kernel.getProcessMemory(pid);
           if (!memory) throw new Error("ordinary process registration lost Memory");
@@ -143,18 +185,21 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
           maybeComplete();
         });
         processWorker.on("error", reject);
-        processWorker.on("exit", code => code === 0 ? resolve() : reject(new Error(`process Worker exit ${code}`)));
+        processWorker.on("exit", code => { if (code !== 0) reject(new Error(`process Worker exit ${code}`)); else { rootJoined = options.joinOnExit; maybeComplete(); } });
         if (launch && typeof launch !== "number") processWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
       })().catch(reject);
     });
     await execution;
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace };
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace,
+      children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace,
+      children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
       failure: error instanceof Error ? error.stack : String(error) };
   } finally {
     if (deadline) clearTimeout(deadline);
     await processWorker?.terminate();
+    for (const child of children.values()) { await child.contain(); child.releaseAfterStop(); }
     importWorker?.close();
     if (generation) owner.releaseGeneration(generation);
   }
