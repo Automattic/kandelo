@@ -132,8 +132,7 @@ pub(crate) fn run(
     check(table, request)?;
     Ok(match request {
         Request::Exec { pid, tid, target } => {
-            let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-            crate::exec_target::commit_process(proc, locks, host, pid, tid, target)?;
+            table.commit_exec_target(host, pid, tid, target)?;
             Completion::Exec
         }
         Request::SpawnExec {

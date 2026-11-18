@@ -116,6 +116,9 @@ struct ImageKey {
 
 struct Image {
     group: MemoryGroupId,
+    // An uncommitted exec may reuse its proposed generation after rollback.
+    // Keep its exact serial even after the prepared task is cancelled.
+    exec_serial: Option<u64>,
 }
 
 impl MapMemory for ImageKey {
@@ -357,7 +360,7 @@ impl MemoryGroups {
             .checked_add(1)
             .ok_or(Errno::EOVERFLOW)?;
         let slot = PreparedMapSlot::new_in(&IO_MEMORY, 0)?;
-        let entry = slot.finish(key, Image { group })?;
+        let entry = slot.finish(key, Image { group, exec_serial: None })?;
         let receipt = self.prepare_process(group, pid, generation)?;
         self.images.publish_io(entry);
         self.groups
@@ -366,6 +369,36 @@ impl MemoryGroups {
             .snapshot
             .images = images;
         Ok(receipt)
+    }
+
+    pub(crate) fn prepare_exec_image(&mut self, group: MemoryGroupId, pid: u32, generation: u64) -> Result<GroupAdmission, Errno> {
+        let receipt = self.prepare_image(group, pid, generation)?;
+        self.images.get_mut(&ImageKey { pid, generation }).unwrap().exec_serial = Some(receipt.serial);
+        Ok(receipt)
+    }
+
+    pub(crate) fn validate_exec_image(&self, receipt: GroupAdmission) -> Result<(), Errno> {
+        if self.prepared_image_task(receipt.execution)? != receipt { return Err(Errno::ESRCH); }
+        self.exec_image(receipt)?;
+        Ok(())
+    }
+
+    fn exec_image(&self, receipt: GroupAdmission) -> Result<&Image, Errno> {
+        self.images.get(&ImageKey { pid: receipt.execution.pid, generation: receipt.execution.exec_generation })
+            .filter(|image| image.group == receipt.group && image.exec_serial == Some(receipt.serial))
+            .ok_or(Errno::ESRCH)
+    }
+
+    pub(crate) fn commit_exec_image(&mut self, receipt: GroupAdmission) -> Result<(), Errno> {
+        self.validate_exec_image(receipt)?;
+        self.images.get_mut(&ImageKey { pid: receipt.execution.pid, generation: receipt.execution.exec_generation })
+            .unwrap().exec_serial = None;
+        Ok(())
+    }
+
+    pub(crate) fn finish_exec_image_cancellation(&mut self, receipt: GroupAdmission) -> Result<(), Errno> {
+        self.exec_image(receipt)?;
+        self.retire_image_inner(receipt.execution.pid, receipt.execution.exec_generation, true)
     }
 
     pub fn image_group(&self, pid: u32, generation: u64) -> Option<MemoryGroupId> {
@@ -418,8 +451,14 @@ impl MemoryGroups {
     /// Drop image custody only after every one of its exact Worker receipts
     /// has retired. Old-generation cleanup remains valid after exec advances.
     pub fn retire_image(&mut self, pid: u32, generation: u64) -> Result<(), Errno> {
+        self.retire_image_inner(pid, generation, false)
+    }
+
+    fn retire_image_inner(&mut self, pid: u32, generation: u64, exec_cleanup: bool) -> Result<(), Errno> {
         let key = ImageKey { pid, generation };
-        let group = self.images.get(&key).ok_or(Errno::ENOENT)?.group;
+        let image = self.images.get(&key).ok_or(Errno::ENOENT)?;
+        if image.exec_serial.is_some() && !exec_cleanup { return Err(Errno::EBUSY); }
+        let group = image.group;
         if self.tasks.iter().any(|(_, task)| {
             task.receipt.execution.pid == pid
                 && task.receipt.execution.exec_generation == generation
@@ -443,9 +482,8 @@ impl MemoryGroups {
     /// Once an admission has escaped to a Worker, PID removal is not proof
     /// that it stopped. Only prepared, unconstructed admissions can roll back.
     pub(crate) fn can_remove_process(&self, pid: u32) -> bool {
-        self.tasks
-            .iter()
-            .all(|(_, task)| task.receipt.execution.pid != pid || task.phase == Phase::Prepared)
+        !self.images.iter().any(|(key, image)| key.pid == pid && image.exec_serial.is_some())
+            && self.tasks.iter().all(|(_, task)| task.receipt.execution.pid != pid || task.phase == Phase::Prepared)
     }
 
     pub(crate) fn rollback_unconstructed_image(
@@ -453,9 +491,8 @@ impl MemoryGroups {
         pid: u32,
         generation: u64,
     ) -> Result<(), Errno> {
-        if self.images.get(&ImageKey { pid, generation }).is_none() {
-            return Err(Errno::ENOENT);
-        }
+        let image = self.images.get(&ImageKey { pid, generation }).ok_or(Errno::ENOENT)?;
+        if image.exec_serial.is_some() { return Err(Errno::EBUSY); }
         if self.tasks.iter().any(|(_, task)| {
             task.receipt.execution.pid == pid
                 && task.receipt.execution.exec_generation == generation
@@ -614,8 +651,13 @@ impl MemoryGroups {
     }
 
     pub fn start(&mut self, receipt: GroupAdmission) -> Result<(), Errno> {
-        if self.task(receipt)?.phase != Phase::Prepared {
-            return Err(Errno::EINVAL);
+        if self.task(receipt)?.phase != Phase::Prepared { return Err(Errno::EINVAL); }
+        // Exec's new main may become current before the outgoing Workers have
+        // actually stopped. No successor can run while any older exact task
+        // still owns execution custody, including a never-started sibling.
+        if self.tasks.iter().any(|(_, task)| task.receipt.execution.pid == receipt.execution.pid
+            && task.receipt.execution.exec_generation < receipt.execution.exec_generation) {
+            return Err(Errno::EBUSY);
         }
         self.tasks.get_mut(&receipt.serial).unwrap().phase = Phase::Running;
         Ok(())
@@ -1008,9 +1050,11 @@ mod tests {
         table.get_mut(pid).unwrap().exec_generation = 1;
         assert_eq!(table.process_memory_group(pid), Ok(None));
         let new = table.prepare_process_memory_group(group, pid).unwrap();
-        table.memory_groups().start(new).unwrap();
+        assert_eq!(table.memory_groups().start(new), Err(Errno::EBUSY));
         table.memory_groups().begin_retirement(old).unwrap();
+        assert_eq!(table.memory_groups().start(new), Err(Errno::EBUSY));
         table.memory_groups().retire_quiescent(old).unwrap();
+        table.memory_groups().start(new).unwrap();
         table.memory_groups().retire_image(pid, 0).unwrap();
         assert_eq!(table.process_memory_group(pid), Ok(Some(group)));
         assert_eq!(
@@ -1176,8 +1220,9 @@ mod tests {
         groups.start(old).unwrap();
         groups.begin_retirement(old).unwrap();
         let new = groups.prepare_process(id, 100, 1).unwrap();
-        groups.start(new).unwrap();
+        assert_eq!(groups.start(new), Err(Errno::EBUSY));
         groups.retire_quiescent(old).unwrap();
+        groups.start(new).unwrap();
         assert_eq!(groups.retire_quiescent(old), Err(Errno::ESRCH));
         assert_eq!(groups.snapshot(id).unwrap().tasks, 1);
         assert_eq!(groups.snapshot(id).unwrap().processes, 1);

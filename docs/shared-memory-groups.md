@@ -174,10 +174,25 @@ JSON declaration, physical memory import, deferred initialization and binding
 signatures while ordinary target admission continues to refuse the namespace.
 The parser raises the kernel's minimum imported memory from 21 to 22 pages;
 host-adapter 17 records that change while program ABI 56 remains unchanged.
-The kernel memory ceiling is unchanged. This does not reserve a replacement
-image or enable grouped exec. Exec still
-requires target-bound precommit memory reservation, exact old-image retirement
-and normal Node/browser handoff validation before support is advertised.
+The kernel memory ceiling is unchanged.
+
+The kernel can now reserve a future grouped exec receipt bound to the current
+caller, generation and retained target, and prepare its complete virtual memory
+map before commit. Admission or metadata allocation failure preserves the old
+image. The normal lifecycle commit installs that prepared map, keeps the PID
+and inherited descriptors, and closes `CLOEXEC` descriptors. Starting the new
+main remains refused until all old-generation task receipts have retired.
+
+Unconstructed cancellation first retires only the exact future task. Its image
+serial and process-removal hold survive until the owning host has settled
+unexposed references and scratch. Finishing cancellation releases the Rust
+image hold; the host must return final root/payload pages in that same
+serialized entry. A stale receipt cannot remove a
+later reservation for the same proposed generation. Host-adapter 18 describes
+these preparation interfaces; they do not prove physical cleanup or Worker
+stop. The public launcher still refuses grouped execution. Normal host
+replacement allocation/handoff, real SDK exec and Node/browser validation are
+required before grouped exec support is advertised.
 
 
 These are review boundaries for the integration series. Each stage must leave

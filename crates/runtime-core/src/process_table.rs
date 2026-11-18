@@ -725,7 +725,8 @@ impl ProcessTable {
     }
 
     pub fn memory_group_removal_pending(&self, pid: u32) -> bool {
-        !self.memory_groups.can_remove_process(pid)
+        self.get(pid).is_some_and(|proc| proc.pending_grouped_exec.is_some())
+            || !self.memory_groups.can_remove_process(pid)
     }
 
     /// Thread creation reserves membership itself; host registration only
@@ -757,6 +758,10 @@ impl ProcessTable {
         let current = self.memory_groups.running_image_task(admission.execution())?;
         if current != admission { return Err(Errno::ESRCH); }
         Ok(())
+    }
+
+    pub(crate) fn memory_groups_validate_exec(&self, receipt: crate::memory_group::GroupAdmission) -> Result<(), Errno> {
+        self.memory_groups.validate_exec_image(receipt)
     }
 
     pub(crate) fn memory_group_prepared_admission(&self, execution: crate::memory_group::GroupExecution)
@@ -1005,7 +1010,7 @@ impl ProcessTable {
             // the uncertain executable close resolves; IDs are not custody.
             return None;
         }
-        if !self.memory_groups.can_remove_process(pid) {
+        if self.memory_group_removal_pending(pid) {
             return None;
         }
         // Kernel-only fork/launch rollback can discard an unconstructed image.

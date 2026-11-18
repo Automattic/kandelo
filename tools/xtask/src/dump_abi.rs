@@ -7073,6 +7073,14 @@ fn memory_group_contract() -> Value {
     json!({
         "version":group::PROTOCOL_VERSION,
         "capability_admission":group::CAPABILITY_ADMISSION,
+        "exec_preparation": {
+            "version": shared::group_exec::VERSION,
+            "capability": shared::group_exec::CAPABILITY,
+            "bytes": shared::group_exec::PREPARATION_BYTES,
+            "fields": fields(shared::group_exec::PREPARATION_FIELDS),
+            "actions": shared::group_exec::ACTIONS.iter().map(|(name, action)|
+                ((*name).to_string(), json!(*action))).collect::<BTreeMap<_,_>>(),
+        },
         "layout": {
             "version": shared::group_memory_layout::VERSION,
             "capability": shared::group_memory_layout::CAPABILITY,

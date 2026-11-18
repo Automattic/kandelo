@@ -1174,8 +1174,9 @@ fn finish_commit(
     proc.exec_generation = next_generation;
     proc.entropy_reads.clear();
 
-    let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();
-    for stale in competing {
+    // A committed image cannot recover from a descriptor-sized allocation
+    // failure. Pop each remaining exact target before releasing its OFD.
+    while let Some((_, stale)) = proc.prepared_exec_targets.entries.pop_first() {
         release_target(proc, locks, host, &stale);
     }
     Ok(())

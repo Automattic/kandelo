@@ -1347,6 +1347,9 @@ pub struct Process {
     /// One kernel-owned grouped mapping preparation for this image. Its token
     /// never authorizes a replacement image or another task's completion.
     pub(crate) pending_group_memory_change: Option<crate::IoBox<Option<crate::group_memory_change::Pending>>>,
+    /// Future grouped exec image custody. Keep this outside the outgoing MM
+    /// so failed/committed exec cannot erase its exact rollback obligation.
+    pub(crate) pending_grouped_exec: Option<crate::IoBox<Option<crate::grouped_exec::Pending>>>,
     /// Renderer leases created by this image, including descriptions now held
     /// only by another process. Weak references do not keep resources alive.
     pub(crate) gl_resource_owners: Vec<crate::ofd::WeakGlResources>,
@@ -1738,6 +1741,7 @@ impl Process {
             dri_bindings: crate::IoBuffer::new(),
             owned_resources: crate::owned_resource::State::default(),
             pending_group_memory_change: None,
+            pending_grouped_exec: None,
             gl_resource_owners: Vec::new(),
             shm_mappings: crate::IoBuffer::new(),
             fork_count: 0,
