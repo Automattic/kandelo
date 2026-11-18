@@ -267,3 +267,19 @@ describe("ThreadPageAllocator", () => {
     expect(alloc.allocate(mem).slotStartPage).toBe(pthread.slotStartPage);
   });
 });
+
+it('recycles a kernel-selected mapped slot without accumulating native free-list entries or losing quota', () => {
+  const { store, source } = mappedImage();
+  const allocator = new ThreadPageAllocator({ firstSlotStartPage: 0, maxPageExclusive: 0, reservedSlots: 1 });
+  const control = { start: 3 * WASM_PAGE_SIZE, end: 7 * WASM_PAGE_SIZE, occupiedChannels: [] };
+  for (let cycle = 0; cycle < 256; cycle++) {
+    const allocation = allocator.allocateMapped(source, control, 3);
+    expect(allocation.slotStartPage).toBe(3);
+    expect(() => allocator.assertCanAllocate()).toThrow(/limit/);
+    allocator.freeMapped(3);
+    expect(() => allocator.freeMapped(3)).toThrow(/already retired/);
+  }
+  expect(() => allocator.assertCanAllocate()).not.toThrow();
+  expect((allocator as any).freePages).toEqual([]);
+  store.close();
+});

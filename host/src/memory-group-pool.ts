@@ -172,12 +172,13 @@ export class MemoryGroupPagePool {
   }
   /** Exact owner retirement, with nonblocking pool contention. No bitmap bit
    * changes unless the entire ordered independent page set is still owned. */
-  tryReleaseRetiredPages(pages:Uint32Array):'released'|'busy' {
+  tryReleaseRetiredPages(pages:Uint32Array, validate:()=>boolean = ()=>true):'released'|'busy' {
     this.independentPages(pages);
     for(let at=0;at<pages.length;at++)if(!pages[at]||pages[at]>=this.maximumPages
         ||(at>0&&pages[at]<=pages[at-1]))throw Error('Retired page custody must be ordered and unique');
     return this.tryLocked('busy',words=>{
       for(const page of pages)if(!this.used(words,page))throw Error('Unknown or already retired physical page');
+      if(!validate())return 'busy';
       for(const page of pages)this.setUsed(words,page,false);
       return 'released';
     });

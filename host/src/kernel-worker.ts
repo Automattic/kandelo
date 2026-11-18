@@ -2156,6 +2156,22 @@ interface CloneRollbackState {
   finish?: () => void;
 }
 
+interface GroupThreadControlOwner {
+  readonly handle: PreparedGroupReplica;
+  readonly rootHandle: PreparedGroupReplica;
+  readonly store: MemoryGroupImageStore;
+  readonly source: GroupProcessAddressSpace;
+  readonly memory: WebAssembly.Memory;
+  readonly receipt: MemoryGroupTaskReceipt;
+  readonly allocation: ThreadAllocation;
+  readonly allocator: ThreadPageAllocator;
+}
+interface GroupThreadRetirement {
+  owner?: GroupThreadControlOwner;
+  readonly finished: Promise<number>;
+  released: boolean;
+}
+
 interface GroupImageRetirement {
   owner?: { readonly handle: PreparedGroupReplica; readonly store: MemoryGroupImageStore;
     readonly pid: number; readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace };
@@ -3229,6 +3245,9 @@ export class CentralizedKernelWorker {
   #memoryGroupImageRegistrations = new WeakMap<PreparedGroupReplica, {
     readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace }>();
   #pendingGroupClones = new Set<CloneRollbackState>();
+  #memoryGroupThreadControls = new WeakMap<PreparedGroupReplica, GroupThreadControlOwner>();
+  #groupThreadRetirements = new WeakMap<PreparedGroupReplica, GroupThreadRetirement>();
+  #pendingGroupThreadRetirements = new Set<GroupThreadRetirement>();
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
    *
@@ -8238,6 +8257,8 @@ export class CentralizedKernelWorker {
         started = true;
         const launch = group.store.publish(handle, receipt);
         pending.groupedReplica = handle;
+        this.#memoryGroupThreadControls.set(handle, { handle, rootHandle: group.handle, store: group.store, source,
+          memory: pending.memory, receipt, allocation, allocator });
         result = { status: 'ready', handle, launch, allocation, processChannelOffset: registration.channels[0]!.channelOffset };
       } catch (error) {
         if (handle) {
@@ -8248,7 +8269,7 @@ export class CentralizedKernelWorker {
             group.store.cancelUnexposed(handle); this.#memoryGroupReplicas.delete(handle);
           }
         }
-        if (!started && allocation) allocator.free(allocation.slotStartPage);
+        if (!started && allocation) allocator.freeMapped(allocation.slotStartPage);
         if (error instanceof RangeError || error instanceof ProcessAddressFault) result = -ENOMEM;
         else throw error;
       }
@@ -10158,6 +10179,86 @@ export class CentralizedKernelWorker {
     });
   }
 
+  /** Join the kernel observer's stop transition, which can run after another
+   * listener receives the same Worker message. Message order grants no reuse. */
+  waitForMemoryGroupReplicaQuiescence(handle: PreparedGroupReplica): Promise<void> {
+    if (this.#groupThreadRetirements.get(handle)?.released || this.#groupImageRetirements.get(handle)?.released) return Promise.resolve();
+    const store = this.#memoryGroupReplicas.get(handle);
+    if (!store) return Promise.reject(new MemoryGroupProtocolFault('Unknown grouped Worker quiescence owner'));
+    return store.waitForReplicaQuiescence(handle);
+  }
+
+  /** The exact thread may recycle while its peers keep executing. This API
+   * owns references and actual old-channel settlement, never just a numeric
+   * TID or a completed pthread_join. Whole-image retirement joins this owner. */
+  retireMemoryGroupThread(handle: PreparedGroupReplica, retireHostReferences: () => void): Promise<number> {
+    const previous = this.#groupThreadRetirements.get(handle);
+    if (previous) return previous.finished;
+    let record: GroupThreadRetirement | undefined, refusal = -EBUSY;
+    this.#runImmediateKernelEntry('begin exact grouped thread retirement', entry => {
+      const owner = this.#memoryGroupThreadControls.get(handle);
+      if (!owner) { refusal = -EINVAL; return undefined; }
+      if (this.#groupImageRetirements.has(owner.rootHandle)) { refusal = -ESRCH; return undefined; }
+      if (!owner.store.replicaExecutionStopped(handle)) return undefined;
+      const registration = this.processes.get(owner.receipt.pid);
+      if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.allocation.channelOffset)) return undefined;
+      const launches = [...this.#pendingGroupClones].filter(clone => clone.pendingAttachment?.groupedReplica === handle).map(clone => clone.finished!);
+      let resolve!: (result: number) => void, reject!: (cause: unknown) => void;
+      const finished = new this.#promiseReceiver<number>((yes, no) => { resolve = yes; reject = no; });
+      record = { owner, finished, released: false };
+      const owned = record;
+      this.#groupThreadRetirements.set(handle, owned); this.#pendingGroupThreadRetirements.add(owned);
+      entry.deferProtocolEffect(() => {
+        void this.#settleGroupThreadRetirement(owned, launches, retireHostReferences).then(resolve, reject)
+          .finally(() => { this.#pendingGroupThreadRetirements.delete(owned); });
+        return undefined;
+      });
+      return undefined;
+    });
+    return record?.finished ?? Promise.resolve(refusal);
+  }
+
+  async #settleGroupThreadRetirement(record: GroupThreadRetirement, launches: readonly Promise<void>[],
+    retireHostReferences: () => void): Promise<number> {
+    await Promise.all(launches);
+    retireHostReferences();
+    const owner = record.owner!;
+    await this.settleRetiredChannelListeners(owner.receipt.pid, owner.memory, owner.allocation.channelOffset, owner.source);
+    for (;;) {
+      const result = await retryKernelEntryResult(() => this.#releaseGroupThreadRetirement(record));
+      if (result !== -EBUSY) return result;
+      await owner.store.waitForThreadRetirementProgress(owner.handle);
+    }
+  }
+
+  #releaseGroupThreadRetirement(record: GroupThreadRetirement): number {
+    let result = -EBUSY;
+    this.#runImmediateKernelEntry('release exact stopped thread controls', entry => {
+      if (record.released) { result = 0; return undefined; }
+      const owner = record.owner!, receipt = owner.receipt;
+      const released = owner.store.tryReleaseStoppedThread(owner.handle, owner.allocation.slotStartPage * WASM_PAGE_SIZE,
+        PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE, () => {
+          const release = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_thread_control_release;
+          if (typeof release !== 'function') this.#memoryGroupProtocolError('Missing exact thread control retirement export');
+          result = this.#checkedMemoryGroupStatus(release(receipt.group, receipt.pid, receipt.tid,
+            Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n),
+            Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
+          if (result === -ESRCH) {
+            const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+            if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH
+                || typeof generation === 'bigint' && generation !== receipt.generation) result = 0;
+          }
+          return result === 0;
+        });
+      if (released === 'busy') { if (result === 0) result = -EBUSY; return undefined; }
+      owner.allocator.freeMapped(owner.allocation.slotStartPage);
+      this.#memoryGroupReplicas.delete(owner.handle); this.#memoryGroupThreadControls.delete(owner.handle);
+      record.owner = undefined; record.released = true; result = 0;
+      return undefined;
+    });
+    return result;
+  }
+
   /** Release host reference owners once, then join exact channel/operation
    * retirement. A busy queue/pool remains charged and may be retried. Neither
    * PID disappearance nor a caller callback supplies the Worker stop proof. */
@@ -10188,6 +10289,7 @@ export class CentralizedKernelWorker {
         if (pending.registration.source === image.source && !pending.done) operations.add(pending.finished);
       }
       for (const clone of this.#pendingGroupClones) if (clone.source === image.source) operations.add(clone.finished!);
+      for (const retiring of this.#pendingGroupThreadRetirements) if (retiring.owner?.source === image.source) operations.add(retiring.finished.then(() => undefined));
       const registration = this.processes.get(receipt.pid);
       if (registration?.source === image.source) {
         if (registration.grouped?.handle !== handle) this.#memoryGroupProtocolError('Retiring image registration changed identity');
@@ -10226,7 +10328,9 @@ export class CentralizedKernelWorker {
       const { handle, store } = record.owner!;
       const released = store.tryReleaseStoppedImage(handle);
       if (released === 'busy') return undefined;
-      for (const replica of released.replicas) this.#memoryGroupReplicas.delete(replica);
+      for (const replica of released.replicas) {
+        this.#memoryGroupReplicas.delete(replica); this.#memoryGroupThreadControls.delete(replica);
+      }
       this.#memoryGroupImageRegistrations.delete(handle);
       record.owner = undefined; record.released = true; result = 0;
       return undefined;
@@ -22042,6 +22146,24 @@ export class CentralizedKernelWorker {
       Number(token & 0xffffffffn), Number(token >> 32n)));
   }
 
+  #reuseGroupThreadControl(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): number {
+    const reuse = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_thread_control_reuse;
+    if (typeof reuse !== 'function') this.#memoryGroupProtocolError('Missing exact thread control reuse export');
+    const address = reuse(pending.receipt.pid, pending.receipt.tid, pending.hostControl!.thread.tid);
+    if (typeof address !== 'bigint' || address < -4095n || address > 0xffffffffn
+        || address >= 0n && (address === 0n || address % BigInt(WASM_PAGE_SIZE))) this.#memoryGroupProtocolError('Invalid recycled thread control address');
+    return Number(address);
+  }
+
+  #completeGroupThreadControl(pending: PendingGroupMapping, address: number, length: number, entry: KernelWorkerEntryContext): void {
+    pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    pending.store.resumeImageExecutionPause(pending.barrier!);
+    pending.hostControl!.thread.controlSlot = { address, length };
+    const { complete } = pending.hostControl!;
+    entry.deferProtocolEffect(() => { pending.finish(); complete(address); return undefined; });
+  }
+
   #advanceGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {
     if (pending.done) return;
     if (pending.cancelling) { this.#cancelGroupMapping(pending, entry); return; }
@@ -22073,6 +22195,18 @@ export class CentralizedKernelWorker {
     if (!pending.description) {
       const extent = pending.store.virtualExtentAtBarrier(pending.barrier);
       if (typeof extent !== "number") { this.#scheduleGroupMapping(pending, extent === "waiting" ? "barrier" : "locks", entry); return; }
+      if (pending.store.tryReclaimRemovedPages(pending.registration.grouped!.handle) === 'busy') {
+        this.#scheduleGroupMapping(pending, 'locks', entry); return;
+      }
+      if (pending.hostControl) {
+        const address = this.#reuseGroupThreadControl(pending, entry);
+        if (address >= 0) {
+          checkProcessWriteRange(pending.registration.source, address, PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE);
+          this.#completeGroupThreadControl(pending, address, PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE, entry);
+          return;
+        }
+        if (address !== -ERRNO.ENOENT) { pending.cancelling = true; pending.failure = -address; this.#cancelGroupMapping(pending, entry); return; }
+      }
       if (pending.syscall === SYS_BRK) {
         const old = this.#readGroupMemoryBreak(pending.receipt.pid, pending.receipt.tid, entry);
         if (old < 0) { pending.cancelling = true; pending.failure = -old; this.#cancelGroupMapping(pending, entry); return; }
@@ -22148,16 +22282,17 @@ export class CentralizedKernelWorker {
       pending.cancelling = true; pending.failure = typeof result === "number" ? -result : validation < 0 ? -validation : EAGAIN;
       this.#cancelGroupMapping(pending, entry); return;
     }
+    // Published PTEs no longer name removed storage. Pins may retain selected
+    // pages until a later mapping turn; a busy lock never rolls back commit.
+    pending.store.tryReclaimRemovedPages(pending.registration.grouped!.handle);
+    if (pending.hostControl) {
+      this.#completeGroupThreadControl(pending, pending.description.address, pending.description.length, entry);
+      return;
+    }
     pending.done = true; this.pendingGroupMappings.delete(pending.channel);
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     pending.store.resumeImageExecutionPause(pending.barrier);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
-    if (pending.hostControl) {
-      pending.hostControl.thread.controlSlot = { address: pending.description.address, length: pending.description.length };
-      const { complete } = pending.hostControl, address = pending.description.address;
-      entry.deferProtocolEffect(() => { complete(address); return undefined; });
-      return;
-    }
     this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
   }
 

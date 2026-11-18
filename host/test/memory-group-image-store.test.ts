@@ -784,3 +784,149 @@ describe('kernel-realm group image custody', () => {
     expect(store.snapshot().allocatedPages).toBe(8);
   });
 });
+
+
+describe('live-image exact thread scratch and control retirement', () => {
+  it('releases only the stopped thread scratch after Rust validation, preserving mapped controls and live peers', () => {
+    const h = imageWithThread(), charged = h.store.snapshot().allocatedPages;
+    h.leader.source.writeBytes(P, Uint8Array.of(0x97));
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('busy');
+    h.store.noteReplicaQuiescent(h.b);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => false)).toBe('busy');
+    expect(h.store.snapshot().allocatedPages).toBe(charged);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('released');
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged - 2, images: 1, replicas: 1, exposedReplicas: 1 });
+    expect(h.leader.source.readBytes(P, 1)).toEqual(Uint8Array.of(0x97));
+    const receipt = task({ tid: 102, serial: 3n }), next = h.store.prepareThread(receipt);
+    const launch = h.store.publish(next, receipt);
+    expect(launch.expectation.replica).toBe(h.peer.expectation.replica);
+    expect(h.store.snapshot().allocatedPages).toBe(charged);
+    expect(() => h.store.receipt(h.b)).toThrow(); h.store.close();
+  });
+  it('waits for a real observer of control bytes but permits unrelated live-peer observers', async () => {
+    const h = imageWithThread(), source = h.store.imageSource(h.a);
+    const own = source.prepareNativeObservationI32(P), ownWait = own.arm(0, 1000);
+    const peer = source.prepareNativeObservationI32(0), peerWait = peer.arm(0, 1000);
+    h.store.noteReplicaQuiescent(h.b);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('busy');
+    own.wake(); if (ownWait.async) await ownWait.value;
+    expect(h.store.snapshot().nativeObservers).toBe(1);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('released');
+    peer.wake(); if (peerWait.async) await peerWait.value; h.store.close();
+  });
+  it('keeps old scratch through its actual ACK observer even after removing the stopped barrier member', async () => {
+    const h = imageWithThread(), barrier = h.store.beginImageExecutionPause(h.a);
+    h.acknowledge(h.left);
+    const observed = h.store.waitForMappingProgress(barrier, 'barrier');
+    h.store.noteReplicaQuiescent(h.b);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('busy');
+    await observed;
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('released');
+    expect(h.store.imageExecutionPauseAcknowledged(barrier)).toBe(true);
+    h.store.resumeImageExecutionPause(barrier); h.store.close();
+  });
+  it.each([G.MEMORY_GROUP_WAIT_WAITING, G.MEMORY_GROUP_WAIT_NOTIFIED, G.MEMORY_GROUP_WAIT_STOPPED])('preserves a peer parked on old controls, including unlinked node state %s', state => {
+    const h = imageWithThread(), words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const at = G.MEMORY_GROUP_WAIT_NODES / 4;
+    const ptes = new Uint32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
+    words[at] = state; words[at + 2] = (ptes[1] >>> 16) * P;
+    words[at + 3] = h.leader.expectation.root; words[at + 4] = h.leader.expectation.replica;
+    words[q + 4] = 1;
+    if (state === G.MEMORY_GROUP_WAIT_WAITING) words[q + 1] = words[q + 2] = at * 4;
+    h.store.noteReplicaQuiescent(h.b);
+    const before = words.slice(at, at + 8);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('busy');
+    expect(words.slice(at, at + 8)).toEqual(before);
+    words[at] = 0; words[q + 1] = words[q + 2] = words[q + 4] = 0;
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, () => true)).toBe('released'); h.store.close();
+  });
+});
+
+
+describe('retired mapping physical custody', () => {
+  const unmap = (h: ReturnType<typeof pausedMappingImage>, address = P) => {
+    const mapping = h.prepare({ kind: 'unmap', address, length: P, result: 0 });
+    expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+  };
+  it('joins the actual stop transition and rejects teardown without treating it as proof', async () => {
+    const h = imageWithThread(), stopped = h.store.waitForReplicaQuiescence(h.b);
+    h.store.noteReplicaQuiescent(h.b); await stopped;
+    await h.store.waitForReplicaQuiescence(h.b);
+    const unknown = h.store.waitForReplicaQuiescence(h.a);
+    h.store.close(); await expect(unknown).rejects.toThrow();
+  });
+  it('returns an original unmapped page once, zeroes reuse, and never claims a peer allocation through its old payload tuple', () => {
+    const h = pausedMappingImage(); unmap(h);
+    const before = h.store.snapshot();
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 1, retainedPages: 0 });
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: before.allocatedPages - 1, retainedMappingReferences: 0 });
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 0, retainedPages: 0 });
+    h.store.resumeImageExecutionPause(h.barrier);
+    const other = task({ pid: 200, tid: 200, serial: 300n }), image = h.store.prepareImage(other, { ...layout, initialVirtualPages: 1 });
+    const peer = h.store.publish(image, other); peer.source.writeBytes(0, Uint8Array.of(0x97));
+    h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy');
+    expect(peer.source.readBytes(0, 1)).toEqual(Uint8Array.of(0x97));
+    h.store.noteReplicaQuiescent(image); h.store.revokeImageAccess(image);
+    expect(h.store.tryReleaseStoppedImage(image)).not.toBe('busy');
+    expect(h.store.snapshot().allocatedPages).toBe(1);
+  });
+  it('preserves an unmapped page through actual native observer settlement', async () => {
+    const h = pausedMappingImage(), source = h.store.imageSource(h.a);
+    const observation = source.prepareNativeObservationI32(P), wait = observation.arm(0, 1000);
+    unmap(h);
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 0, retainedPages: 1 });
+    observation.wake(); if (wait.async) await wait.value;
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 1, retainedPages: 0 });
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+  it('drops historical alias references while keeping their current physical mapping', () => {
+    const h = pausedMappingImage();
+    const ptes = new Uint32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
+    ptes[1] = ptes[0]; unmap(h);
+    const before = h.store.snapshot().allocatedPages;
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 0, retainedPages: 0 });
+    expect(h.store.snapshot().allocatedPages).toBe(before);
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+  it.each([G.MEMORY_GROUP_WAIT_WAITING, G.MEMORY_GROUP_WAIT_NOTIFIED, G.MEMORY_GROUP_WAIT_STOPPED])('keeps physical wait target pins in state %s without retaining unrelated pages', state => {
+    const h = pausedMappingImage(), words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const at = G.MEMORY_GROUP_WAIT_NODES / 4;
+    const ptes = new Uint32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
+    words[at] = state; words[at + 2] = (ptes[1] >>> 16) * P;
+    words[at + 3] = h.leader.expectation.root; words[at + 4] = h.peer.expectation.replica; words[q + 4] = 1;
+    if (state === G.MEMORY_GROUP_WAIT_WAITING) {
+      words[q + 1] = words[q + 2] = at * 4;
+      Atomics.store(h.right, G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4, at * 4);
+    }
+    unmap(h);
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 0, retainedPages: 1 });
+    words[at] = 0; words[q + 1] = words[q + 2] = words[q + 4] = 0;
+    Atomics.store(h.right, G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4, 0);
+    expect(h.store.tryReclaimRemovedPages(h.a)).toEqual({ releasedPages: 1, retainedPages: 0 });
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+});
+
+it('does not keep a reclaimed private-fork page in its original payload ownership', () => {
+  const h = pausedMappingImage(), receipt = task({ pid: 200, tid: 200, serial: 300n });
+  const child = h.store.preparePrivateFork(h.barrier, receipt);
+  if (typeof child === 'string') throw Error(child);
+  const launch = h.store.publish(child, receipt); h.store.resumeImageExecutionPause(h.barrier);
+  const barrier = h.store.beginImageExecutionPause(child), words = h.control(launch); h.acknowledge(words);
+  const mapping = h.store.prepareImageMapping(barrier, h.describe({ receipt, kind: 'unmap', address: P, length: P, result: 0 }));
+  if (typeof mapping === 'string') throw Error(mapping);
+  expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+  expect(h.store.tryReclaimRemovedPages(child)).toEqual({ releasedPages: 1, retainedPages: 0 });
+  h.store.resumeImageExecutionPause(barrier);
+  const other = task({ pid: 300, tid: 300, serial: 400n }), peer = h.store.prepareImage(other, layout);
+  const exposed = h.store.publish(peer, other); exposed.source.writeBytes(0, Uint8Array.of(0x73));
+  h.store.noteReplicaQuiescent(child); h.store.revokeImageAccess(child);
+  expect(h.store.tryReleaseStoppedImage(child)).not.toBe('busy');
+  expect(exposed.source.readBytes(0, 1)).toEqual(Uint8Array.of(0x73));
+  h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);
+  expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy');
+  h.store.noteReplicaQuiescent(peer); h.store.revokeImageAccess(peer);
+  expect(h.store.tryReleaseStoppedImage(peer)).not.toBe('busy');
+  expect(h.store.snapshot().allocatedPages).toBe(1);
+});

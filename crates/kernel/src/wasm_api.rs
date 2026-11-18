@@ -4096,6 +4096,26 @@ pub extern "C" fn kernel_group_memory_change_prepare(
     }
 }
 
+/// A virtual slot selected by Rust, or a negative errno. No kernel pointer.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_thread_control_reuse(pid: u32, caller_tid: u32, thread_tid: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.reuse_group_thread_control(pid, caller_tid, thread_tid).map(|address| address as i64)
+        .unwrap_or_else(|error| -(error as i64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_thread_control_release(group: u32, pid: u32, tid: u32,
+    serial_lo: u32, serial_hi: u32, generation_lo: u32, generation_hi: u32) -> i32 {
+    let receipt = wasm_posix_shared::memory_group::ReceiptRecord { group, pid, tid,
+        serial: (u64::from(serial_hi) << 32) | u64::from(serial_lo),
+        generation: (u64::from(generation_hi) << 32) | u64::from(generation_lo) };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.release_group_thread_control(receipt).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_group_memory_thread_control_prepare(
     pid: u32, caller_tid: u32, thread_tid: u32, observed_pages: u32,

@@ -240,12 +240,37 @@ impl ProcessTable {
         proc.memory.observe_group_virtual_growth(observed_pages)?;
         let mut storage = crate::IoBox::try_new(None::<Pending>)?;
         let plan = proc.memory.prepare_memory_change(MemoryChange::ReserveHost {
-            len: wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize * 65536,
+            len: wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize * 65536, owner: thread.record(),
         })?;
         let description = Description { token: plan.serial(), receipt, effect: plan.effect(), population_address: 0, population_length: 0 };
         *storage = Some(Pending { description, plan, population: None, population_position: 0, population_eof: false, control_thread: Some(thread) });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
+    }
+
+    /// Rebind an already mapped, retired host control to one exact new task.
+    /// No guest address from the host chooses a slot, and no allocation occurs.
+    pub fn reuse_group_thread_control(&mut self, pid: u32, caller_tid: u32, thread_tid: u32) -> Result<usize, Errno> {
+        let receipt = self.running_group_memory_caller(pid, caller_tid)?;
+        self.validate_task(pid, thread_tid)?;
+        if thread_tid == pid { return Err(Errno::EINVAL); }
+        let thread = self.memory_group_prepared_admission(crate::memory_group::GroupExecution {
+            pid, tid: thread_tid, exec_generation: receipt.generation,
+        })?;
+        if thread.group().as_raw() != receipt.group { return Err(Errno::ESRCH); }
+        self.get_mut(pid).ok_or(Errno::ESRCH)?.memory.claim_group_thread_control(thread.record())
+    }
+
+    /// Retain the full old receipt after ThreadInfo is gone. Neither a numeric
+    /// address nor thread exit alone permits reuse while Worker custody lives.
+    pub fn release_group_thread_control(&mut self, receipt: ReceiptRecord) -> Result<(), Errno> {
+        if receipt.pid == receipt.tid { return Err(Errno::EINVAL); }
+        if self.memory_groups().resolve_receipt(receipt).is_ok() || self.validate_task(receipt.pid, receipt.tid).is_ok() {
+            return Err(Errno::EBUSY);
+        }
+        let proc = self.get_mut(receipt.pid).ok_or(Errno::ESRCH)?;
+        if proc.exec_generation != receipt.generation { return Err(Errno::ESRCH); }
+        proc.memory.release_group_thread_control(receipt)
     }
 
     pub fn validate_group_memory_change(&self, pid: u32, tid: u32, token: u64) -> Result<Description, Errno> {
@@ -371,6 +396,90 @@ mod tests {
         ] {
             assert_eq!(table.prepare_group_memory_change(pid, pid, syscall as u32, args, 8), Err(Errno::EINVAL));
         }
+    }
+    fn committed_control(table: &mut ProcessTable, pid: u32) -> (u32, crate::memory_group::GroupAdmission, usize) {
+        let tid = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        let thread = table.memory_group_task(pid, tid).unwrap().unwrap();
+        let description = table.prepare_group_thread_control(pid, pid, tid, 4).unwrap();
+        table.commit_group_memory_change(pid, pid, description.token).unwrap();
+        (tid, thread, description.result() as usize)
+    }
+    fn retire_control_thread(table: &mut ProcessTable, pid: u32, tid: u32, thread: crate::memory_group::GroupAdmission) {
+        table.get_mut(pid).unwrap().remove_thread(tid).unwrap();
+        table.memory_groups().begin_retirement(thread).unwrap();
+        table.memory_groups().retire_quiescent(thread).unwrap();
+    }
+    #[test]
+    fn control_owner_outlives_threadinfo_and_reuses_only_after_exact_worker_retirement() {
+        let (mut table, pid, _) = setup(true);
+        let (tid, thread, address) = committed_control(&mut table, pid);
+        table.memory_groups().start(thread).unwrap();
+        assert_eq!(table.release_group_thread_control(thread.record()), Err(Errno::EBUSY));
+        table.get_mut(pid).unwrap().remove_thread(tid).unwrap();
+        assert_eq!(table.release_group_thread_control(thread.record()), Err(Errno::EBUSY));
+        table.memory_groups().begin_retirement(thread).unwrap();
+        table.memory_groups().quarantine(thread).unwrap();
+        assert_eq!(table.release_group_thread_control(thread.record()), Err(Errno::EBUSY));
+        table.memory_groups().retire_quiescent(thread).unwrap();
+        table.release_group_thread_control(thread.record()).unwrap();
+        let replacement_tid = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        assert_eq!(table.reuse_group_thread_control(pid, pid, replacement_tid), Ok(address));
+        assert_eq!(table.reuse_group_thread_control(pid, pid, replacement_tid), Err(Errno::EBUSY));
+        assert_eq!(table.release_group_thread_control(thread.record()), Err(Errno::ESRCH));
+        assert_eq!(table.prepare_group_thread_control(pid, pid, replacement_tid, 8), Err(Errno::EBUSY));
+        assert!(table.get(pid).unwrap().memory.reserved_regions().iter().any(|r| r.addr == address && r.len == 4 * P));
+    }
+    #[test]
+    fn control_release_rejects_forged_receipts_and_pending_metadata_before_rebinding() {
+        let (mut table, pid, _) = setup(true);
+        let (tid, thread, address) = committed_control(&mut table, pid);
+        table.memory_groups().start(thread).unwrap();
+        retire_control_thread(&mut table, pid, tid, thread);
+        let original = thread.record();
+        for forged in [ReceiptRecord { serial: original.serial ^ (1 << 32), ..original },
+            ReceiptRecord { generation: original.generation + 1, ..original },
+            ReceiptRecord { group: original.group + 1, ..original }, ReceiptRecord { tid: tid + 100, ..original }] {
+            assert_eq!(table.release_group_thread_control(forged), Err(Errno::ESRCH));
+        }
+        let pending = table.prepare_group_memory_change(pid, pid, Syscall::Brk as u32, [0; 6], 8).unwrap();
+        assert_eq!(table.release_group_thread_control(original), Err(Errno::EBUSY));
+        table.cancel_group_memory_change(pid, pid, pending.token).unwrap();
+        table.release_group_thread_control(original).unwrap();
+        let next = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        assert_eq!(table.reuse_group_thread_control(pid, pid, next), Ok(address));
+        let admission = table.memory_group_task(pid, next).unwrap().unwrap();
+        table.memory_groups().start(admission).unwrap();
+        assert_eq!(table.reuse_group_thread_control(pid, pid, next), Err(Errno::EBUSY));
+    }
+    #[test]
+    fn fork_inherits_reserved_controls_without_inheriting_their_parent_receipts_or_free_list() {
+        let (mut table, pid, main) = setup(true);
+        let (tid, thread, address) = committed_control(&mut table, pid);
+        table.memory_groups().start(thread).unwrap();
+        retire_control_thread(&mut table, pid, tid, thread);
+        table.release_group_thread_control(thread.record()).unwrap();
+        let child = table.fork_group_memory_process(main.record(), 8).unwrap();
+        let child_main = table.memory_group_task(child, child).unwrap().unwrap();
+        table.memory_groups().start(child_main).unwrap();
+        let child_tid = table.create_thread(child, child, 0x8000, 0, 0).unwrap();
+        assert_eq!(table.reuse_group_thread_control(child, child, child_tid), Err(Errno::ENOENT));
+        let child_control = table.prepare_group_thread_control(child, child, child_tid, 8).unwrap();
+        assert_ne!(child_control.result() as usize, address);
+        table.cancel_group_memory_change(child, child, child_control.token).unwrap();
+        let next = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        assert_eq!(table.reuse_group_thread_control(pid, pid, next), Ok(address));
+    }
+    #[test]
+    fn control_owner_admission_failure_keeps_live_reservations_and_budget_unchanged() {
+        let (mut table, pid, _) = setup(true);
+        let tid = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        let original = table.get(pid).unwrap().memory.reserved_regions().to_vec();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        { let _limit = crate::io_buffer::test_budget(held);
+          assert_eq!(table.prepare_group_thread_control(pid, pid, tid, 4), Err(Errno::ENOMEM)); }
+        assert_eq!(table.get(pid).unwrap().memory.reserved_regions(), original);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        assert_eq!(table.reuse_group_thread_control(pid, pid, tid), Err(Errno::ENOENT));
     }
     #[test]
     fn thread_control_commit_requires_the_same_unconstructed_task() {

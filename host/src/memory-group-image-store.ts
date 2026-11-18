@@ -4,7 +4,7 @@ import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt, 
 import { GroupProcessAddressSpace, ProcessAddressFault, NativeI32Observation } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation,
   type ProcessMemoryEnvelope } from './process-memory-descriptor';
-import { tryControlMemoryGroupReplicaWait, memoryGroupImageWaitsRetired } from './memory-group-notification';
+import { tryControlMemoryGroupReplicaWait, memoryGroupImageWaitsRetired, memoryGroupReplicaWaitsRetired, memoryGroupPinnedPages } from './memory-group-notification';
 
 const PAGE = G.MEMORY_GROUP_PAGE_BYTES;
 declare const preparedReplica: unique symbol;
@@ -29,6 +29,7 @@ export interface GroupReplicaLaunch {
   readonly source: GroupProcessAddressSpace;
   readonly expectation: GroupReplicaMemoryExpectation;
 }
+interface NativeObservationPin { readonly physicalAddress: number }
 interface Image {
   readonly receipt: MemoryGroupTaskReceipt;
   readonly root: number;
@@ -40,7 +41,7 @@ interface Image {
   readonly replicas: Set<Replica>;
   /** Kernel image access outlives any one execution replica. */
   readonly sourceLive: { value: boolean };
-  readonly nativeObservations: Set<object>;
+  readonly nativeObservations: Set<NativeObservationPin>;
   source?: GroupProcessAddressSpace;
   exposed: boolean;
   pause?: ImagePause;
@@ -48,6 +49,8 @@ interface Image {
   mapping?: Mapping;
   /** Removed PTE references stay charged until exact whole-image retirement. */
   retainedMappingPages?: RetainedMappingPages;
+  /** Initial payload tuples describe allocation origin, not eternal custody. */
+  returnedOriginalPages?: ReadonlySet<number>;
 }
 interface Replica {
   readonly handle: PreparedGroupReplica;
@@ -59,6 +62,7 @@ interface Replica {
   source?: GroupProcessAddressSpace;
   pause?: Pause;
   pendingWaitDrain: boolean;
+  stopWaiters?: Set<{ resolve: () => void; reject: (error: Error) => void }>;
 }
 interface Pause { replica?: Replica; readonly epoch: number }
 interface ImagePause {
@@ -179,7 +183,7 @@ export class MemoryGroupImageStore {
       }
       Atomics.store(header, 0, layout.initialVirtualPages);
       const image: Image = { receipt, root, layout, controls, payload, replicas: new Set(),
-        sourceLive: { value: true }, nativeObservations: new Set(), exposed: false };
+        sourceLive: { value: true }, nativeObservations: new Set(), returnedOriginalPages: undefined, exposed: false };
       this.images.set(imageKey(receipt), image);
       return this.replica(receipt, image, scratch);
     } catch (error) {
@@ -271,7 +275,7 @@ export class MemoryGroupImageStore {
         Atomics.store(childHeader, 0, extent);
         image = { receipt, root, layout: Object.freeze({ ...parent.layout, initialVirtualPages: extent }),
           controls: allocated.controls, privatePayload, replicas: new Set(),
-          sourceLive: { value: true }, nativeObservations: new Set(), exposed: false };
+          sourceLive: { value: true }, nativeObservations: new Set(), returnedOriginalPages: undefined, exposed: false };
         this.images.set(imageKey(receipt), image);
         return this.replica(receipt, image, allocated.scratch);
       } catch (error) {
@@ -413,7 +417,7 @@ export class MemoryGroupImageStore {
       address = member.replica.scratch.first * PAGE + G.MEMORY_GROUP_REPLICA_ACK;
       expected = Atomics.load(new Int32Array(this.memory.buffer, address, 1), 0);
     }
-    const pin = Object.freeze({}); image.nativeObservations.add(pin);
+    const pin = Object.freeze({ physicalAddress: address }); image.nativeObservations.add(pin);
     const observation = new NativeI32Observation(new Int32Array(this.memory.buffer, address, 1),
       () => { image.nativeObservations.delete(pin); });
     // A finite engine wait also bounds a lost notification during forced stop.
@@ -679,9 +683,9 @@ export class MemoryGroupImageStore {
       const live = image.sourceLive, observations = image.nativeObservations;
       // Retained sources capture no store/image/replica or sibling images.
       const assertLive = () => { if (!live.value) throw new ProcessAddressFault('retired'); };
-      const retainNativeObservation = () => {
+      const retainNativeObservation = (physicalAddress: number) => {
         assertLive();
-        const token = Object.freeze({}); observations.add(token);
+        const token = Object.freeze({ physicalAddress }); observations.add(token);
         return () => { observations.delete(token); };
       };
       image.source = new GroupProcessAddressSpace({ memory: this.memory, root: image.root,
@@ -755,6 +759,8 @@ export class MemoryGroupImageStore {
     replica.live.value = false;
     replica.source?.detachHostAccess(); replica.source = undefined;
     replica.state = 'stopped';
+    for (const waiter of replica.stopWaiters ?? []) waiter.resolve();
+    replica.stopWaiters = undefined;
     const barrier = replica.image.pause;
     if (barrier) barrier.members = barrier.members.filter(member => member.replica !== replica);
     if (replica.pause) {
@@ -766,6 +772,99 @@ export class MemoryGroupImageStore {
     // Wake it to revalidate membership; never invent an execution ACK or free
     // its control pages before that observer has actually settled.
     Atomics.notify(this.controls(replica), G.MEMORY_GROUP_REPLICA_ACK / 4);
+  }
+
+  waitForReplicaQuiescence(handle: PreparedGroupReplica): Promise<void> {
+    const replica = this.owned(handle);
+    if (replica.state === 'stopped') return Promise.resolve();
+    if (this.closed) return Promise.reject(new ProcessAddressFault('retired'));
+    return new Promise<void>((resolve, reject) => { (replica.stopWaiters ??= new Set()).add({ resolve, reject }); });
+  }
+
+  /** A committed unmap/remap ends PTE custody, but not physical waiter pins.
+   * Under the root lock, release only pages absent from every current alias,
+   * control and replica owner. Normalize historical references before return
+   * so allocator reuse cannot make an old tuple claim another image's page. */
+  tryReclaimRemovedPages(handle: PreparedGroupReplica): { releasedPages: number; retainedPages: number } | 'busy' {
+    const image = this.owned(handle).image;
+    if (this.closed || !image.sourceLive.value || image.mapping) return 'busy';
+    if (!image.retainedMappingPages) return { releasedPages: 0, retainedPages: 0 };
+    const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
+    try {
+      const references = new Set<number>();
+      for (let retired: RetainedMappingPages | undefined = image.retainedMappingPages; retired; retired = retired.next) for (const page of retired.pages) references.add(page);
+      const current = new Set(pages(image.controls));
+      for (const replica of this.replicas.values()) if (replica.image === image) for (const page of pages(replica.scratch)) current.add(page);
+      const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
+      for (let at = 0; at < table.length; at++) {
+        const entry = Atomics.load(table, at), page = entry >>> 16;
+        if ((entry & 0xfffc) || (entry && !page) || page >= this.memory.buffer.byteLength / PAGE) fault('Invalid reclaim PTE');
+        if (page) current.add(page);
+      }
+      const pinned = memoryGroupPinnedPages(this.memory, image.root);
+      if (pinned === 'busy') return 'busy';
+      for (const pin of image.nativeObservations) pinned.add(Math.floor(pin.physicalAddress / PAGE));
+      const candidates = [...references].filter(page => !current.has(page) && !pinned.has(page));
+      const released = new Set(candidates);
+      for (const peer of this.images.values()) if (peer !== image) {
+        for (const page of this.imageOwnedPages(peer, false)) if (released.has(page)) fault('Removed mapping overlaps another image');
+      }
+      const allocation = Uint32Array.from(candidates.sort((a, b) => a - b));
+      const remaining = Uint32Array.from([...references].filter(page => !current.has(page) && !released.has(page)));
+      const retained = remaining.length ? { pages: remaining } : undefined;
+      const original = new Set(image.returnedOriginalPages);
+      for (const page of candidates) {
+        if (image.payload && page >= image.payload.first && page < image.payload.first + image.payload.pages
+            || image.privatePayload?.includes(page)) original.add(page);
+      }
+      const result = { releasedPages: allocation.length, retainedPages: remaining.length };
+      if (allocation.length && this.pool.tryReleaseRetiredPages(allocation) === 'busy') return 'busy';
+      image.returnedOriginalPages = original.size ? original : undefined;
+      image.retainedMappingPages = retained;
+      return result;
+    } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
+  }
+
+  replicaExecutionStopped(handle: PreparedGroupReplica): boolean { return this.owned(handle).state === 'stopped'; }
+
+  /** Control pages stay mapped in the kernel's bounded cache. Return only the
+   * retired replica's private scratch after proving both ranges have no wait
+   * or host observation. Rust rebind authority is consumed under the pool lock
+   * before any bit is freed; refusal leaves all storage with this owner. */
+  tryReleaseStoppedThread(handle: PreparedGroupReplica, controlAddress: number, controlLength: number,
+    releaseControl: () => boolean): 'released' | 'busy' {
+    const replica = this.owned(handle), image = replica.image;
+    if (this.closed || replica.receipt.pid === replica.receipt.tid || replica.state !== 'stopped'
+        || replica.pendingWaitDrain) return 'busy';
+    if (!memoryGroupU32(controlAddress, controlLength) || !controlLength || controlAddress % PAGE || controlLength % PAGE
+        || controlAddress + controlLength > image.layout.maximumVirtualPages * PAGE) fault('Invalid exact thread control interval');
+    const ranges = [{ start: replica.scratch.first * PAGE, end: (replica.scratch.first + replica.scratch.pages) * PAGE }];
+    const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
+    for (let page = controlAddress / PAGE; page < (controlAddress + controlLength) / PAGE; page++) {
+      const entry = Atomics.load(table, page), start = (entry >>> 16) * PAGE;
+      if (!start || (entry & 0xffff) !== 3 || start + PAGE > this.memory.buffer.byteLength) fault('Invalid retired control PTE');
+      ranges.push({ start, end: start + PAGE });
+    }
+    if ([...image.nativeObservations].some(pin => ranges.some(range => pin.physicalAddress >= range.start && pin.physicalAddress < range.end))) return 'busy';
+    if (Atomics.load(this.controls(replica), G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4) !== 0
+        || memoryGroupReplicaWaitsRetired(this.memory, image.root, replica.scratch.first * PAGE, ranges) !== true) return 'busy';
+    const allocation = Uint32Array.from(pages(replica.scratch));
+    const result = this.pool.tryReleaseRetiredPages(allocation, releaseControl);
+    if (result === 'busy') return result;
+    this.handles.delete(handle); this.replicas.delete(replica.receipt.serial);
+    return 'released';
+  }
+
+  /** Retry scheduling only. The bounded engine wait must actually settle and
+   * the next entry must prove retirement again; elapsed time grants no reuse. */
+  waitForThreadRetirementProgress(handle: PreparedGroupReplica): Promise<void> {
+    const image = this.owned(handle).image, address = G.MEMORY_GROUP_CONTROL;
+    const word = new Int32Array(this.memory.buffer, address, 1), expected = Atomics.load(word, 0);
+    const pin = Object.freeze({ physicalAddress: address }); image.nativeObservations.add(pin);
+    const observation = new NativeI32Observation(word, () => image.nativeObservations.delete(pin));
+    const result = observation.arm(expected, 10);
+    return result.async ? result.value.then(() => undefined) : Promise.resolve();
   }
 
   imageExecutionStopped(handle: PreparedGroupReplica): boolean {
@@ -817,7 +916,8 @@ export class MemoryGroupImageStore {
   }
 
   private imageOwnedPages(image: Image, stable = true): Set<number> {
-    const owned = new Set([...pages(image.controls), ...pages(image.payload), ...(image.privatePayload ?? [])]);
+    const owned = new Set([...pages(image.controls),
+      ...[...pages(image.payload), ...(image.privatePayload ?? [])].filter(page => !image.returnedOriginalPages?.has(page))]);
     const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
     const extent = Atomics.load(new Uint32Array(this.memory.buffer, image.root, 1), 0);
     if (extent > image.layout.maximumVirtualPages) fault('Retiring image has invalid extent');
@@ -848,6 +948,8 @@ export class MemoryGroupImageStore {
     this.closed = true;
     for (const image of this.images.values()) this.revokeSource(image);
     for (const replica of this.replicas.values()) {
+      for (const waiter of replica.stopWaiters ?? []) waiter.reject(new ProcessAddressFault('retired'));
+      replica.stopWaiters = undefined;
       // Emergency containment cannot wait forever on an interrupted queue.
       // Keep failed/busy drains charged and visible for exact owner cleanup.
       try {

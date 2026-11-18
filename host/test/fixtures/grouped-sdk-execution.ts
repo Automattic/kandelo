@@ -75,6 +75,9 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const children = new Map<number, GroupedForkWorkerOwnership>();
   const threads = new Map<number, GroupedThreadWorkerOwnership>();
   const threadExits = new Set<number>();
+  const threadRetirements = new Map<number, Promise<void>>();
+  const retiredThreads = new Set<number>();
+  const threadRetirementMemory: Record<string, unknown>[] = [];
   const threadAllocators = new Map<number, ThreadPageAllocator>();
   const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
@@ -84,6 +87,20 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   try {
     const execution = new Promise<void>((resolve, reject) => {
       const maybeComplete = () => {
+        for (const [tid, thread] of threads) {
+          if (!threadExits.has(tid) || !thread.quiescent || options.joinOnExit && !thread.hasJoined || threadRetirements.has(tid)) continue;
+          const retirement = (async () => {
+            await kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
+            const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupThread(thread.handle, () => {
+              if (!thread.releaseAfterStop()) throw Error('Thread references have no stop proof');
+            }));
+            if (result !== 0) throw Error(`Thread retirement refused: ${result}`);
+            await thread.contain();
+            retiredThreads.add(tid); threadRetirementMemory.push({ tid, ...memoryEvidence() });
+            maybeComplete();
+          })();
+          threadRetirements.set(tid, retirement); void retirement.catch(reject);
+        }
         if (kernelExit === undefined || processExit === undefined || !quiescent || !processReady
             || (options.joinOnExit && !rootJoined)) return;
         for (const [pid, child] of children) {
@@ -92,7 +109,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               || (options.joinOnExit && !child.hasJoined)) return;
         }
         for (const [tid, thread] of threads) {
-          if (!threadExits.has(tid) || !thread.quiescent || (options.joinOnExit && !thread.hasJoined)) return;
+          if (!threadExits.has(tid) || !thread.quiescent || !retiredThreads.has(tid) || (options.joinOnExit && !thread.hasJoined)) return;
         }
         resolve();
       };
@@ -108,6 +125,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         },
         onKernelFatal: error => reject(error),
         onGroupedClone: async attachment => {
+          await Promise.all(threadRetirements.values());
           const processGeneration = attachment.pid === rootPid ? generation : children.get(attachment.pid)?.generation;
           if (!processGeneration || !processLayout) throw Error('Missing exact grouped pthread process image');
           let allocator = threadAllocators.get(attachment.pid);
@@ -284,13 +302,13 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       retirement = { before, after: memoryEvidence(), statuses };
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
-      retirement,
-      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined })),
+      retirement, threadRetirementMemory,
+      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
     trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
-      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined })),
+      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
       failure: error instanceof Error ? error.stack : String(error) };
   } finally {
