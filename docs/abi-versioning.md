@@ -3153,8 +3153,11 @@ Worker's private never-started seal or an actual stop proof. Their control and
 scratch retirement joins full receipt, reference and channel cleanup before
 publishing creator failure. Constructor uncertainty fails the instance and
 retains storage, rather than returning an errno that would permit stack reuse.
-These host-internal custody paths add no export or wire change. The program
-ABI and digest stay at 56.
+These host-internal custody paths add no export or wire change. Grouped exit
+publication also joins exact image stop/fences before host onExit; opaque image
+crash recording verifies the current source and Rust generation. Bounded word
+inspection and scalar blocked-wait observations remain in the disposable
+kernel realm. The program ABI and digest stay at 56.
 
 Host-adapter 13 adds optional `kernel_group_memory_fork(group, pid, tid,
 serialLo, serialHi, generationLo, generationHi, observedPages) -> i32`.

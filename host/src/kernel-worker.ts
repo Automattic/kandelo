@@ -2180,6 +2180,11 @@ interface GroupThreadRetirement {
   released: boolean;
 }
 
+interface GroupProcessExit {
+  registration?: ProcessRegistration;
+  readonly finished: Promise<void>;
+}
+
 interface GroupImageRetirement {
   owner?: { readonly handle: PreparedGroupReplica; readonly store: MemoryGroupImageStore;
     readonly pid: number; readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace };
@@ -2467,8 +2472,14 @@ export interface CentralizedKernelCallbacks {
    */
   onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
+  /** Scalar observation after an actual kernel park or host wait registration.
+   * Neither a completion nor an execution-stop fence; delivered outside entry. */
+  onSyscallBlocked?: (pid: number, tid: number, syscallNr: number, firstArgument: ChannelScalarValue,
+    owner: 'kernel' | 'pipe-read' | 'pipe-write') => void;
+
   /**
-   * Called when a process exits.
+   * Called when a process exits. Grouped images first join every exact
+   * execution-stop receipt.
    */
   onExit?: (pid: number, exitStatus: number) => void;
 
@@ -3251,6 +3262,7 @@ export class CentralizedKernelWorker {
   #observedMemoryGroupWorkers = new WeakSet<WorkerHandle>();
   #memoryGroupWorkerBindings = new WeakMap<PreparedGroupReplica, { worker: WorkerHandle; retire: () => void }>();
   #groupImageRetirements = new WeakMap<PreparedGroupReplica, GroupImageRetirement>();
+  #groupProcessExits = new WeakMap<PreparedGroupReplica, GroupProcessExit>();
   #memoryGroupImageRegistrations = new WeakMap<PreparedGroupReplica, {
     readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace }>();
   #pendingGroupClones = new Set<CloneRollbackState>();
@@ -8441,6 +8453,50 @@ export class CentralizedKernelWorker {
     }
   }
 
+  #observeSyscallBlocked(channel: ChannelInfo, syscallNr: number, first: ChannelScalarValue,
+    owner: 'kernel' | 'pipe-read' | 'pipe-write', entry: KernelWorkerEntryContext): void {
+    if (!this.callbacks.onSyscallBlocked) return;
+    const pid = channel.pid, tid = this.guestTidForChannel(channel);
+    entry.deferObserverEffect(() => { this.callbacks.onSyscallBlocked?.(pid, tid, syscallNr, first, owner); return undefined; });
+  }
+
+  /** Record a crash only for this currently registered execution image.
+   * A late old-Worker error cannot signal a replacement sharing its PID. */
+  recordMemoryGroupCrash(handle: PreparedGroupReplica, signum = SIGSEGV): number {
+    if (!memoryGroupU32(signum) || signum === 0 || signum > SIGNAL_MASK_BYTES * 8) return -EINVAL;
+    let result = -ESRCH;
+    this.#runImmediateKernelEntry('record exact grouped image crash', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), image = this.#memoryGroupImageRegistrations.get(handle);
+      if (!store || !image) return undefined;
+      const receipt = store.receipt(handle), registration = this.processes.get(receipt.pid);
+      if (registration?.grouped?.handle !== handle || registration.source !== image.source) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+      if (generation instanceof Error) {
+        if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH) return undefined;
+        throw generation;
+      }
+      if (generation !== receipt.generation) return undefined;
+      this.#notifyHostProcessCrashedWithinKernelEntry(receipt.pid, signum, entry); result = 0;
+      return undefined;
+    });
+    return result;
+  }
+
+  /** Bounded guest-word inspection in the disposable kernel realm. The
+   * exact image capability is required; no backing or view crosses the API. */
+  inspectMemoryGroupWord(handle: PreparedGroupReplica, address: number): number {
+    if (!memoryGroupU32(address) || address % 4) return -EINVAL;
+    let result = -ESRCH;
+    this.#runImmediateKernelEntry('inspect exact grouped guest word', _entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store) return undefined;
+      try { result = store.imageSource(handle).atomicLoadI32(address) >>> 0; }
+      catch (error) { if (error instanceof ProcessAddressFault) result = -ERRNO.EFAULT; else throw error; }
+      return undefined;
+    });
+    return result;
+  }
+
   inspectMemoryGroupBacking(group: number): ReturnType<MemoryGroupImageStore["snapshot"]> | undefined {
     return this.#memoryGroupStores.get(group)?.snapshot();
   }
@@ -10329,6 +10385,8 @@ export class CentralizedKernelWorker {
         Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
       if (status !== 0 && status !== -ERRNO.ENOENT) { refusal = status; return undefined; }
       const operations = new Set<Promise<void>>();
+      const exiting = this.#groupProcessExits.get(handle);
+      if (exiting) operations.add(exiting.finished);
       for (const pending of [...this.pendingGroupImageOperations.values(), ...this.retiringGroupMappings]) {
         if (pending.registration.source === image.source && !pending.done) operations.add(pending.finished);
       }
@@ -15645,6 +15703,7 @@ export class CentralizedKernelWorker {
         // that, or a signal that was already pending for this thread.
         if (logging) console.error(logEntry + " = (parked in kernel)");
         channel.kernelWaitGeneration = Number(kernelResult.rawRetVal);
+        this.#observeSyscallBlocked(channel, syscallNr, origArgs[0], 'kernel', entry);
         const identity = this.#cancellationPointIdentity(channel);
         if (
           identity.cancellationPoint
@@ -20407,6 +20466,7 @@ export class CentralizedKernelWorker {
             channel,
             pid: channel.pid,
           });
+          this.#observeSyscallBlocked(channel, syscallNr, origArgs[0], 'pipe-read', entry);
         }
         if (PROFILING) {
           const profile = this.profileData!.get(syscallNr);
@@ -20450,6 +20510,7 @@ export class CentralizedKernelWorker {
             channel,
             pid: channel.pid,
           });
+          this.#observeSyscallBlocked(channel, syscallNr, origArgs[0], 'pipe-write', entry);
         }
         if (PROFILING) {
           const profile = this.profileData!.get(syscallNr);
@@ -24971,8 +25032,8 @@ export class CentralizedKernelWorker {
       if (state.transferred) {
         // Successful launch has already made the thread observable. A later
         // publication failure cannot undo it as though no Worker ever ran.
-        this.#terminateForKernelProtocolFailureWithinKernelEntry(
-          channel, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
+        this.#failCloneProtocolWithinKernelEntry(
+          channel, state, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
         );
         return;
       }
@@ -24980,8 +25041,8 @@ export class CentralizedKernelWorker {
         this.#rollbackCloneWithinKernelEntry(channel, tid, ptidPtr, state, entry);
       } catch (rollbackError) {
         this.#rethrowKernelEntryFatal(rollbackError);
-        this.#terminateForKernelProtocolFailureWithinKernelEntry(
-          channel,
+        this.#failCloneProtocolWithinKernelEntry(
+          channel, state,
           `could not roll back allocated tid ${tid}: ${
             rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
           }`,
@@ -25020,6 +25081,18 @@ export class CentralizedKernelWorker {
       }
       this.#completeFailedCloneWithinKernelEntry(channel, state, cause, cancelled, entry);
     } finally { this.#finishGroupClone(state, entry); }
+  }
+
+  #failCloneProtocolWithinKernelEntry(channel: ChannelInfo, state: CloneRollbackState,
+    reason: string, entry: KernelWorkerEntryContext): void {
+    if (state.source instanceof GroupProcessAddressSpace) {
+      // An old grouped continuation has no PID-only authority over a newer
+      // image. Uncertain rollback/adoption is fatal, retaining every charge.
+      state.failureCompletionPending = true;
+      this.#failKernelInstance(new MemoryGroupProtocolFault(reason));
+      return;
+    }
+    this.#terminateForKernelProtocolFailureWithinKernelEntry(channel, reason, entry);
   }
 
   #completeFailedCloneWithinKernelEntry(channel: ChannelInfo, state: CloneRollbackState,
@@ -25321,7 +25394,7 @@ export class CentralizedKernelWorker {
       // An already-reaped zombie is normal here (see above).
       this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry, true);
       this.hostReaped.add(exitingPid);
-      this.notifyParentOfExitedProcess(exitingPid, entry, exitParentPid);
+      if (!this.processes.get(exitingPid)?.grouped) this.notifyParentOfExitedProcess(exitingPid, entry, exitParentPid);
     }
 
     // Complete the channel so the worker unblocks from Atomics.wait().
@@ -25330,6 +25403,12 @@ export class CentralizedKernelWorker {
     this.completeProcessExitHandshake(channel, syscallNr, entry);
     this.#retireExitedProcessChannels(exitingPid, entry, channel);
 
+    const groupedExit = this.processes.get(exitingPid);
+    if (groupedExit?.grouped) {
+      this.#beginGroupProcessExit(groupedExit, exitStatus, exitParentPid, this.guestTidForChannel(channel), entry);
+      entry.deferProtocolEffect(() => { this.scheduleWakeBlockedRetries(); return undefined; });
+      return;
+    }
     // Wake any processes blocked on pipe reads/polls — the exiting process's
     // FDs were closed by the kernel (sys_exit), so pipes with no remaining
     // writers should now return EOF to readers.
@@ -25341,6 +25420,50 @@ export class CentralizedKernelWorker {
       this.callbacks.onExit?.(exitingPid, exitStatus);
       return undefined;
     });
+  }
+
+  /** Rust has committed exit, but a grouped image can still execute.
+   * Keep exact image custody through cooperative stop and every Worker fence
+   * before publishing SIGCHLD/onExit. The natural actor keeps its exit handshake. */
+  #beginGroupProcessExit(registration: ProcessRegistration, exitStatus: number, parentPid: number | undefined,
+    naturalExitTid: number | undefined, entry: KernelWorkerEntryContext): void {
+    const group = registration.grouped!;
+    if (this.#groupProcessExits.has(group.handle)) return;
+    let resolve!: () => void, reject!: (cause: unknown) => void;
+    const finished = new this.#promiseReceiver<void>((yes, no) => { resolve = yes; reject = no; });
+    const record: GroupProcessExit = { registration, finished };
+    this.#groupProcessExits.set(group.handle, record);
+    group.store.requestImageStop(group.handle, naturalExitTid);
+    entry.deferProtocolEffect(() => {
+      void this.#settleGroupProcessExit(record, exitStatus, parentPid, naturalExitTid).then(() => {
+        record.registration = undefined; resolve();
+      }, reject);
+      this.#observeProtocolCompletionFailure(finished);
+      return undefined;
+    });
+  }
+
+  async #settleGroupProcessExit(record: GroupProcessExit, exitStatus: number, parentPid: number | undefined,
+    naturalExitTid: number | undefined): Promise<void> {
+    const registration = record.registration!, group = registration.grouped!;
+    for (;;) {
+      let drained = false;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('drain exact grouped image stop', _entry => {
+        drained = group.store.requestImageStop(group.handle, naturalExitTid); return undefined;
+      }));
+      if (drained) break;
+      await group.store.waitForThreadRetirementProgress(group.handle);
+    }
+    await group.store.waitForImageQuiescence(group.handle);
+    await retryKernelEntryResult(() => this.#runImmediateKernelEntry('publish stopped grouped process exit', entry => {
+      const generation = this.#processExecGenerationWithinKernelEntry(registration.pid, entry);
+      if (generation instanceof Error) {
+        if (!(generation instanceof KernelTaskBindingError && generation.errno === ESRCH)) throw generation;
+      } else if (generation !== registration.execGeneration) return undefined;
+      this.notifyParentOfExitedProcess(registration.pid, entry, parentPid);
+      entry.deferProtocolEffect(() => { this.callbacks.onExit?.(registration.pid, exitStatus); return undefined; });
+      return undefined;
+    }));
   }
 
   /**
@@ -25401,9 +25524,13 @@ export class CentralizedKernelWorker {
     // Exited and released its process/OFD/flock records. Consume that generic
     // kernel wake before a parent waiter or host exit callback can run.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-    this.notifyParentOfExitedProcess(exitingPid, entry, parentPid);
+    if (!registration?.grouped) this.notifyParentOfExitedProcess(exitingPid, entry, parentPid);
     this.#retireExitedProcessChannels(exitingPid, entry,
       canQuiesceBorrowedWorker ? channel : undefined);
+    if (registration?.grouped) {
+      this.#beginGroupProcessExit(registration, signal > 0 ? 128 + signal : -1, parentPid, undefined, entry);
+      return;
+    }
 
     if (canQuiesceBorrowedWorker) {
       // WHY: forced Worker termination cannot prove that a vfork child has
@@ -25530,8 +25657,10 @@ export class CentralizedKernelWorker {
     // even for a root/no-parent process, where SIGCHLD routing cannot provide
     // an incidental kernel event drain.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-    this.notifyParentOfExitedProcess(pid, entry, parentPid);
+    const registration = this.processes.get(pid);
+    if (!registration?.grouped) this.notifyParentOfExitedProcess(pid, entry, parentPid);
     this.#retireExitedProcessChannels(pid, entry);
+    if (registration?.grouped) this.#beginGroupProcessExit(registration, 128 + signum, parentPid, undefined, entry);
   }
 
   /**

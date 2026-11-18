@@ -44,6 +44,7 @@ interface Image {
   readonly nativeObservations: Set<NativeObservationPin>;
   source?: GroupProcessAddressSpace;
   exposed: boolean;
+  stopping?: boolean;
   pause?: ImagePause;
   replicaPreparationWaiters?: Set<() => void>;
   mapping?: Mapping;
@@ -197,7 +198,7 @@ export class MemoryGroupImageStore {
     if (!image || !image.sourceLive.value || receipt.tid === receipt.pid || image.receipt.group !== receipt.group) {
       fault('Thread has no exact owned image root');
     }
-    if (image.pause) fault('Image execution barrier forbids new replica preparation');
+    if (image.pause || image.stopping) fault('Image execution barrier or stop forbids new replica preparation');
     const allocated: GroupPageExtent[] = [];
     try { return this.replica(receipt, image,
       this.allocate(Math.ceil((G.MEMORY_GROUP_REPLICA_BYTES + image.layout.scratchBytes) / PAGE), allocated)); }
@@ -336,7 +337,7 @@ export class MemoryGroupImageStore {
    */
   beginImageExecutionPause(handle: PreparedGroupReplica): GroupImageExecutionPause {
     const image = this.owned(handle).image;
-    if (this.closed || !image.exposed || !image.sourceLive.value || image.pause) {
+    if (this.closed || !image.exposed || !image.sourceLive.value || image.pause || image.stopping) {
       fault('Image cannot begin an execution barrier');
     }
     const members = Array.from(image.replicas, replica => ({ replica, pause: undefined as GroupExecutionPause | undefined }));
@@ -641,12 +642,33 @@ export class MemoryGroupImageStore {
     return !replica.pendingWaitDrain;
   }
 
+  /** Stop only replicas of this exact image. A natural-exit actor may
+   * finish its existing syscall handshake; signal death exempts no actor.
+   * Queue contention is retryable and never a terminal execution fence. */
+  requestImageStop(rootHandle: PreparedGroupReplica, naturalExitTid?: number): boolean {
+    const root = this.owned(rootHandle), image = root.image;
+    if (this.closed || root.receipt.pid !== root.receipt.tid) fault('Image stop requires an owned root');
+    image.stopping = true;
+    let drained = true;
+    for (const replica of this.replicas.values()) {
+      if (replica.image !== image || replica.state === 'stopped' || replica.receipt.tid === naturalExitTid) continue;
+      if (!this.requestReplicaStop(replica.handle)) drained = false;
+    }
+    return drained;
+  }
+
+  waitForImageQuiescence(rootHandle: PreparedGroupReplica): Promise<void> {
+    const image = this.owned(rootHandle).image;
+    return Promise.all([...this.replicas.values()].filter(replica => replica.image === image)
+      .map(replica => this.waitForReplicaQuiescence(replica.handle))).then(() => undefined);
+  }
+
   /** Caller must first transition this exact Rust receipt out of Prepared.
    * Returning even one backing reference ends the rollback privilege, whether
    * or not a later postMessage/Worker constructor succeeds. */
   publish(handle: PreparedGroupReplica, admission: MemoryGroupTaskReceipt): GroupReplicaLaunch {
     const replica = this.owned(handle);
-    if (this.closed || !replica.image.sourceLive.value || replica.image.pause
+    if (this.closed || !replica.image.sourceLive.value || replica.image.pause || replica.image.stopping
         || replica.state !== 'prepared' || !exact(replica.receipt, admission)) {
       fault('Replica launch is stale, repeated or not its exact admission');
     }
