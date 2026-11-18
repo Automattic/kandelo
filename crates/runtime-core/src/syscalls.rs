@@ -13146,7 +13146,7 @@ fn mapping_file_for_ofd(proc:&Process,host:&mut dyn HostIO,index:usize)->Option<
     let (dev, ino) = fstat_ofd(proc, host, index)
         .map(|st| (st.st_dev, st.st_ino))
         .unwrap_or((0, 0));
-    Some(crate::memory::MappingFile { dev, ino, name, private_source: None })
+    Some(crate::memory::MappingFile { dev, ino, name, private_source: None, group_shared: None })
 }
 
 /// Reserve the address range for `sys_mmap` and bind any device to it.

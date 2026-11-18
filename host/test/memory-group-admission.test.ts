@@ -483,6 +483,31 @@ describe('kernel-Worker memory group admission', () => {
 
 
 describe('grouped mapping metadata transport', () => {
+  it('keeps shared identity bits and refuses absent, mismatched or out-of-bounds backing metadata', () => {
+    const receipt = { group: 23, pid: 100, tid: 100, serial: SERIAL, generation: GENERATION };
+    const bytes = new Uint8Array(P.mapping.description_bytes), view = new DataView(bytes.buffer), f = P.mapping.description_fields;
+    bytes.set(encodeMemoryGroupReceipt(receipt)); view.setBigUint64(f.token, 0xfffffffffffffffdn, true);
+    view.setUint32(f.kind, 1, true); view.setUint32(f.prot, 3, true); view.setUint32(f.flags, 0x21, true);
+    view.setBigUint64(f.address, 4n * 65536n, true); view.setBigUint64(f.result, 4n * 65536n, true);
+    view.setBigUint64(f.length, 3n * 65536n, true); view.setBigUint64(f.sharedLength, 3n * 65536n, true);
+    view.setBigUint64(f.sharedObject, 0xfffffffffffffffdn, true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({ sharedObject: 0xfffffffffffffffdn, sharedLength: 3 * 65536, sharedOffset: 0 });
+    for (const [field, value] of [[f.sharedObject, 0n], [f.sharedObject, 17n], [f.sharedOffset, 1n], [f.sharedOffset, 65536n], [f.populationLength, 65536n]] as const) {
+      const copy = bytes.slice(); new DataView(copy.buffer).setBigUint64(field, value, true);
+      expect(() => decodeGroupMemoryChangeDescription(copy, receipt)).toThrow(/effect/);
+    }
+  });
+  it('preserves an inherited shared object offset independently of its new remap token', () => {
+    const receipt = { group: 23, pid: 100, tid: 100, serial: SERIAL, generation: GENERATION };
+    const bytes = new Uint8Array(P.mapping.description_bytes), view = new DataView(bytes.buffer), f = P.mapping.description_fields;
+    bytes.set(encodeMemoryGroupReceipt(receipt)); view.setBigUint64(f.token, 0xfffffffffffffffdn, true);
+    view.setUint32(f.kind, 4, true); view.setUint32(f.prot, 3, true);
+    for (const [field, value] of [[f.address, 8n * 65536n], [f.result, 8n * 65536n], [f.length, 2n * 65536n],
+      [f.oldAddress, 4n * 65536n], [f.oldLength, 65536n], [f.sharedObject, 0x8000000000000001n],
+      [f.sharedLength, 3n * 65536n], [f.sharedOffset, 65536n]] as const) view.setBigUint64(field, value, true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({ sharedObject: 0x8000000000000001n, sharedOffset: 65536 });
+  });
+
   const page = 65536;
   function description() {
     const receipt = { group: 23, pid: 100, tid: 101, serial: 0xfffffffffffffff1n, generation: 0x8000000100000003n };

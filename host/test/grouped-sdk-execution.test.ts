@@ -11,6 +11,7 @@ const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
 const probes = [
+  { name: "anonymous-shared", source: "grouped-sdk-anonymous-shared.c", markers: ["grouped-sdk-anonymous-shared PASS"], partial: "", groupedOnly: true },
   { name: "exec-signal-commit", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-signal-stopped", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-handoff-threads", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true, oldExecThreads: true },
@@ -75,7 +76,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
       workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
-        execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
+        anonymousShared: probe.name === 'anonymous-shared', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
         execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
@@ -185,6 +186,15 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(evidence.filter(row => row.kind === 'actual-wasm-crash')).toHaveLength(1);
         expect(evidence.filter(row => row.kind === 'busy-still-stopped')).toHaveLength(1);
       }
+      if (probe.name === 'anonymous-shared') {
+        expect(result.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true })]);
+        const events = result.lifecycleEvidence as any[], phases = events.filter(row => row.kind === 'anonymous-shared-phase');
+        expect(phases.map(row => row.phase)).toEqual([1, 2, 3, 4, 5, 6]);
+        expect(phases.map(row => [row.backing.sharedObjects, row.backing.sharedPages, row.backing.sharedImageReferences]))
+          .toEqual([[2,4,2], [2,4,4], [2,4,4], [2,4,3], [1,1,1], [0,0,0]]);
+        expect(events.filter(row => row.kind === 'shared-child-retired')).toHaveLength(1);
+        expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, sharedObjects: 0, sharedPages: 0, sharedImageReferences: 0 } } });
+      }
       if (probe.name === 'fork') {
         expect(result.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true, joined: true })]);
       }
@@ -222,10 +232,10 @@ for (const probe of probes) for (const grouped of [false, true]) {
   }, 90_000);
 }
 
-it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit'])('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
+it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'])('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
   const { ordinary, groupedPath } = fixtures.get(probe)!;
   const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
-    eval: true, workerData: { grouped: true, cycles: 40, forcedLifecycle: probe === "forced-exit", nativeWaitLifecycle: probe === "native-wait-exit", kernelPath: resolveBinary('kernel.wasm'),
+    eval: true, workerData: { grouped: true, cycles: 40, anonymousShared: probe === "anonymous-shared", forcedLifecycle: probe === "forced-exit", nativeWaitLifecycle: probe === "native-wait-exit", kernelPath: resolveBinary('kernel.wasm'),
       ordinaryPath: ordinary.programPath, programPath: groupedPath },
   });
   let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -247,6 +257,12 @@ it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit'])('reuses one back
       expect(row.failure, JSON.stringify(row)).toBeUndefined();
       expect(row.kernelExit).toBe(0); expect(row.processExit).toBe(0);
       expect(row.stdout).toContain(`grouped-sdk-${probe} PASS`);
+      if (probe === 'anonymous-shared') {
+        expect(row.lifecycleEvidence.filter((event: any) => event.kind === 'anonymous-shared-phase')
+          .map((event: any) => [event.phase, event.backing.sharedObjects, event.backing.sharedPages, event.backing.sharedImageReferences]))
+          .toEqual([[1,2,4,2], [2,2,4,4], [3,2,4,4], [4,2,4,3], [5,1,1,1], [6,0,0,0]]);
+        expect(row.memory.backing).toMatchObject({ sharedObjects: 0, sharedPages: 0, sharedImageReferences: 0 });
+      }
       expect(row.stderr).toBe(''); expect(row.diagnostics).toEqual([]);
       if (probe === 'pthread') expect(row.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, joined: true })));
       else if (probe === 'native-wait-exit') {

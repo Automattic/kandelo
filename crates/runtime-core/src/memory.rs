@@ -34,6 +34,38 @@ pub struct MappingFile {
     /// Exact optional source for grouped private remap growth. Ordinary file
     /// labels carry no source capability. Fragments share its one backing hold.
     pub(crate) private_source: Option<crate::private_mapping::Source>,
+    /// Optional kernel-owned direct backing, shared by VMA fragments/forks.
+    pub(crate) group_shared: Option<GroupSharedMapping>,
+}
+
+/// A direct in-memory backing created by an exact grouped mapping transaction.
+/// Its identity and bounds are kernel authority; host physical offsets never
+/// enter this record. Clones share the admitted metadata and object lifetime.
+#[derive(Debug, Clone)]
+pub(crate) struct GroupSharedMapping(crate::io_owner::IoRc<GroupSharedObject>);
+struct GroupSharedObject {
+    group: u32,
+    id: u64,
+    length: usize,
+    _metadata: crate::metadata_budget::MetadataReservation<'static>,
+}
+impl core::fmt::Debug for GroupSharedObject {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GroupSharedObject").field("group", &self.group).field("id", &self.id).field("length", &self.length).finish()
+    }
+}
+impl PartialEq for GroupSharedMapping {
+    fn eq(&self, other: &Self) -> bool { self.0.identity() == other.0.identity() }
+}
+impl Eq for GroupSharedMapping {}
+impl GroupSharedMapping {
+    fn new(group: u32, id: u64, length: usize) -> Result<Self, Errno> {
+        if group == 0 || id == 0 || length == 0 { return Err(Errno::EINVAL); }
+        let bytes = core::mem::size_of::<MappingFile>().checked_add(64)
+            .and_then(|n| n.checked_mul(2)).ok_or(Errno::ENOMEM)?;
+        let metadata = crate::io_buffer::IO_MEMORY.reserve(bytes)?;
+        Ok(Self(crate::io_owner::IoRc::try_new(GroupSharedObject { group, id, length, _metadata: metadata })?))
+    }
 }
 
 /// Rust-owned identity and resource authority for one opt-in device mapping.
@@ -204,6 +236,13 @@ impl MemoryManager {
         self.mappings
             .iter()
             .any(|m| m.flags & wasm_posix_shared::mmap::MAP_SHARED != 0)
+    }
+
+    pub(crate) fn has_unsupported_group_shared_mapping(&self, group: u32) -> bool {
+        self.mappings.iter().any(|mapping| mapping.flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+            && (mapping.flags & wasm_posix_shared::mmap::MAP_ANONYMOUS == 0
+                || !mapping.file.as_ref().and_then(|file| file.group_shared.as_ref())
+                    .is_some_and(|object| object.0.group == group)))
     }
 
     pub fn mappings(&self) -> &[MappedRegion] {

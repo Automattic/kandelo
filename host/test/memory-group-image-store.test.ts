@@ -27,7 +27,7 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   h.acknowledge(h.left); h.acknowledge(h.right);
   const describe = (patch: Partial<GroupMemoryChangeDescription> = {}): GroupMemoryChangeDescription => ({
     receipt: h.main, token: (1n << 63n) + 7n, kind: 'map', address: 8 * P, length: P,
-    oldAddress: 0, oldLength: 0, result: 8 * P, flags: 0x22, prot: 3, populationAddress: 0, populationLength: 0, ...patch,
+    oldAddress: 0, oldLength: 0, result: 8 * P, flags: 0x22, prot: 3, populationAddress: 0, populationLength: 0, sharedObject: 0n, sharedLength: 0, sharedOffset: 0, ...patch,
   });
   const prepare = (patch: Partial<GroupMemoryChangeDescription> = {}) => {
     const result = h.store.prepareImageMapping(barrier, describe(patch));
@@ -1039,4 +1039,97 @@ it('does not keep a reclaimed private-fork page in its original payload ownershi
   h.store.noteReplicaQuiescent(peer); h.store.revokeImageAccess(peer);
   expect(h.store.tryReleaseStoppedImage(peer)).not.toBe('busy');
   expect(h.store.snapshot().allocatedPages).toBe(1);
+});
+
+describe('anonymous shared backing custody', () => {
+  function shared(pages = 3) {
+    const h = pausedMappingImage(64), id = h.describe().token;
+    const mapping = h.prepare({ length: pages * P, flags: 0x21, sharedObject: id, sharedLength: pages * P });
+    expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+    return { ...h, id };
+  }
+  it('aliases shared fork pages, copies private pages and counts physical storage once', () => {
+    const h = shared(2), before = h.store.snapshot();
+    h.leader.source.writeBytes(8 * P, Uint8Array.of(0x71));
+    const receipt = task({ pid: 102, tid: 102, serial: 3n });
+    const child = h.store.preparePrivateFork(h.barrier, receipt);
+    if (typeof child === 'string') throw Error(child);
+    const launch = h.store.publish(child, receipt);
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 1, sharedPages: 2, sharedImageReferences: 2,
+      allocatedPages: before.allocatedPages + 5 });
+    launch.source.writeBytes(8 * P, Uint8Array.of(0x82));
+    expect(h.leader.source.readBytes(8 * P, 1)).toEqual(Uint8Array.of(0x82));
+    h.leader.source.writeBytes(9 * P, Uint8Array.of(0x93));
+    expect(launch.source.readBytes(9 * P, 1)).toEqual(Uint8Array.of(0x93));
+    launch.source.writeBytes(0, Uint8Array.of(0xa4));
+    expect(h.leader.source.readBytes(0, 1)).toEqual(Uint8Array.of(0));
+    h.store.resumeImageExecutionPause(h.barrier);
+    h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy');
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 1, sharedPages: 2, sharedImageReferences: 1 });
+    expect(launch.source.readBytes(8 * P, 1)).toEqual(Uint8Array.of(0x82));
+    h.store.noteReplicaQuiescent(child); h.store.revokeImageAccess(child);
+    expect(h.store.tryReleaseStoppedImage(child)).not.toBe('busy');
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 0, sharedPages: 0, sharedImageReferences: 0, allocatedPages: 1 });
+  });
+  it('returns only unpublished private child pages and its backing hold on fork rollback', () => {
+    const h = shared(), before = h.store.snapshot();
+    const receipt = task({ pid: 102, tid: 102, serial: 3n }), child = h.store.preparePrivateFork(h.barrier, receipt);
+    if (typeof child === 'string') throw Error(child);
+    h.store.cancelUnexposed(child); h.store.releaseUnexposedImage(receipt);
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: before.allocatedPages, sharedObjects: 1, sharedPages: 3, sharedImageReferences: 1 });
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+  it('keeps object data across shrink and regrowth and preserves remapped offsets', () => {
+    const h = shared(); h.leader.source.writeBytes(10 * P, Uint8Array.of(0xb5));
+    const commit = (patch: Partial<GroupMemoryChangeDescription>) => {
+      const mapping = h.prepare({ kind: 'remap', flags: 0, sharedObject: h.id, sharedLength: 3 * P,
+        oldAddress: 8 * P, oldLength: 3 * P, ...patch });
+      expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+    };
+    commit({ length: P });
+    expect(h.store.tryReclaimRemovedPages(h.a)).toMatchObject({ releasedPages: 0 });
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 1, sharedPages: 3 });
+    commit({ oldLength: P, length: 3 * P });
+    expect(h.leader.source.readBytes(10 * P, 1)).toEqual(Uint8Array.of(0xb5));
+    commit({ address: 12 * P, result: 12 * P, length: P, oldAddress: 10 * P, oldLength: P, sharedOffset: 2 * P });
+    expect(h.leader.source.readBytes(12 * P, 1)).toEqual(Uint8Array.of(0xb5));
+    expect(() => h.leader.source.readBytes(10 * P, 1)).toThrow();
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+  it('preserves peer storage after unmap and releases only the last detached owner', () => {
+    const h = shared(2), receipt = task({ pid: 102, tid: 102, serial: 3n });
+    const child = h.store.preparePrivateFork(h.barrier, receipt); if (typeof child === 'string') throw Error(child);
+    const launch = h.store.publish(child, receipt);
+    const unmap = h.prepare({ kind: 'unmap', flags: 0, prot: 0, result: 0, length: 2 * P });
+    expect(h.store.commitImageMapping(unmap, () => true, () => 0)).toBe('committed');
+    expect(h.store.tryReclaimRemovedPages(h.a)).toMatchObject({ releasedPages: 0 });
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 1, sharedPages: 2, sharedImageReferences: 1 });
+    launch.source.writeBytes(8 * P, Uint8Array.of(0xc6));
+    expect(() => h.leader.source.readBytes(8 * P, 1)).toThrow();
+    h.store.noteReplicaQuiescent(child); h.store.revokeImageAccess(child);
+    expect(h.store.tryReleaseStoppedImage(child)).not.toBe('busy');
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 0, sharedPages: 0, sharedImageReferences: 0 });
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+  it('pins a detached object until its actual native observation settles', async () => {
+    const h = shared(1), observation = h.store.imageSource(h.a).prepareNativeObservationI32(8 * P), wait = observation.arm(0, 1000);
+    const unmap = h.prepare({ kind: 'unmap', flags: 0, prot: 0, result: 0 });
+    expect(h.store.commitImageMapping(unmap, () => true, () => 0)).toBe('committed');
+    expect(h.store.tryReclaimRemovedPages(h.a)).toMatchObject({ releasedPages: 0 });
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 1, sharedPages: 1, nativeObservers: 1 });
+    observation.wake(); if (wait.async) await wait.value;
+    expect(h.store.tryReclaimRemovedPages(h.a)).toMatchObject({ releasedPages: 1 });
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 0, sharedPages: 0, nativeObservers: 0 });
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
+  it('rolls back a rejected native map commit without exposing or retaining the new backing', () => {
+    const h = pausedMappingImage(), before = h.store.snapshot(), id = h.describe().token;
+    const mapping = h.prepare({ flags: 0x21, sharedObject: id, sharedLength: P });
+    expect(h.store.commitImageMapping(mapping, () => true, () => -12)).toBe(-12);
+    expect(() => h.leader.source.readBytes(8 * P, 1)).toThrow();
+    expect(h.store.cancelImageMapping(mapping)).toBe('cancelled');
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: before.allocatedPages, sharedObjects: 0, sharedPages: 0, sharedImageReferences: 0 });
+    h.store.resumeImageExecutionPause(h.barrier); h.store.close();
+  });
 });

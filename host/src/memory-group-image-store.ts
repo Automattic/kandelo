@@ -29,6 +29,11 @@ export interface GroupReplicaLaunch {
   readonly source: GroupProcessAddressSpace;
   readonly expectation: GroupReplicaMemoryExpectation;
 }
+interface SharedObject {
+  readonly id: bigint;
+  readonly pages: Uint32Array;
+  readonly owners: Set<Image>;
+}
 interface NativeObservationPin { readonly physicalAddress: number }
 interface Image {
   readonly receipt: MemoryGroupTaskReceipt;
@@ -52,6 +57,7 @@ interface Image {
   retainedMappingPages?: RetainedMappingPages;
   /** Initial payload tuples describe allocation origin, not eternal custody. */
   returnedOriginalPages?: ReadonlySet<number>;
+  sharedObjects?: Set<SharedObject>;
 }
 interface Replica {
   readonly handle: PreparedGroupReplica;
@@ -81,6 +87,7 @@ interface Mapping {
   after?: Uint32Array;
   allocated?: Uint32Array;
   retained?: RetainedMappingPages;
+  introducedShared?: SharedObject;
   state: 'prepared' | 'publishing' | 'committed' | 'cancelled' | 'contained';
 }
 function fault(message: string): never { throw new MemoryGroupProtocolFault(message); }
@@ -105,6 +112,7 @@ export class MemoryGroupImageStore {
   private readonly pool: MemoryGroupPagePool;
   private readonly images = new Map<string, Image>();
   private readonly replicas = new Map<bigint, Replica>();
+  private readonly sharedObjects = new Map<bigint, SharedObject>();
   private readonly handles = new WeakMap<PreparedGroupReplica, Replica>();
   private readonly pauses = new WeakMap<GroupExecutionPause, Pause>();
   private readonly imagePauses = new WeakMap<GroupImageExecutionPause, ImagePause>();
@@ -218,10 +226,9 @@ export class MemoryGroupImageStore {
     });
   }
 
-  /** Physical private-page inheritance only. The coordinator must freeze and
-   * synchronize Rust's parent MM before allocating its child, then revalidate
-   * both identities before publishing this prepared replica. This operation
-   * neither allocates a PID nor implements MAP_SHARED inheritance.
+  /** Copy private pages and retain exact shared backings. The coordinator
+   * freezes Rust's parent MM before allocating its child and revalidates both
+   * identities before publication. This owner never allocates a guest PID.
    */
   preparePrivateFork(barrier: GroupImageExecutionPause, admission: MemoryGroupTaskReceipt):
       PreparedGroupReplica | 'waiting' | 'busy' | 'exhausted' {
@@ -242,12 +249,16 @@ export class MemoryGroupImageStore {
       }
       const entries = new Uint32Array(maximum);
       entries.set(new Uint32Array(this.memory.buffer, parent.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, maximum));
-      const copies = new Map<number, number>();
+      const copies = new Map<number, number>(), inheritedShared = new Set<SharedObject>();
+      const sharedPages = new Map<number, SharedObject>();
+      for (const object of parent.sharedObjects ?? []) for (const page of object.pages) sharedPages.set(page, object);
       for (let at = 0; at < maximum; at++) {
         const entry = entries[at], physical = entry >>> 16;
         if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE
             || (at >= extent && entry)) fault('Invalid private fork PTE');
-        if (physical && !copies.has(physical)) copies.set(physical, copies.size);
+        const shared = sharedPages.get(physical);
+        if (shared) inheritedShared.add(shared);
+        else if (physical && !copies.has(physical)) copies.set(physical, copies.size);
       }
       const privatePayload = new Uint32Array(copies.size);
       const allocated = this.pool.tryAllocateImage(
@@ -271,16 +282,23 @@ export class MemoryGroupImageStore {
         const ptes = new Uint32Array(this.memory.buffer, root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, maximum);
         for (let at = 0; at < extent; at++) {
           const entry = entries[at], physical = entry >>> 16;
-          if (physical) ptes[at] = (privatePayload[copies.get(physical)!] * PAGE | (entry & 3)) >>> 0;
+          if (physical) ptes[at] = ((sharedPages.has(physical) ? physical : privatePayload[copies.get(physical)!]) * PAGE | (entry & 3)) >>> 0;
         }
         Atomics.store(childHeader, 0, extent);
         image = { receipt, root, layout: Object.freeze({ ...parent.layout, initialVirtualPages: extent }),
           controls: allocated.controls, privatePayload, replicas: new Set(),
           sourceLive: { value: true }, nativeObservations: new Set(), returnedOriginalPages: undefined, exposed: false };
+        if (inheritedShared.size) {
+          image.sharedObjects = inheritedShared;
+          for (const object of inheritedShared) object.owners.add(image);
+        }
         this.images.set(imageKey(receipt), image);
         return this.replica(receipt, image, allocated.scratch);
       } catch (error) {
-        if (image) this.images.delete(imageKey(receipt));
+        if (image) {
+          this.images.delete(imageKey(receipt));
+          for (const object of image.sharedObjects ?? []) object.owners.delete(image);
+        }
         this.pool.releaseRetiredPages([...pages(allocated.controls), ...pages(allocated.scratch), ...privatePayload]);
         throw error;
       }
@@ -465,6 +483,20 @@ export class MemoryGroupImageStore {
         || (input.kind === 'remap' && !aligned(input.oldAddress, input.oldLength))
         || !Number.isSafeInteger(input.prot) || input.prot < 0 || input.prot > 7 || input.token <= 0n
         || !['map', 'unmap', 'protect', 'remap', 'break'].includes(input.kind)) fault('Invalid kernel-prepared physical mapping');
+    let shared = input.sharedObject === 0n ? undefined : this.sharedObjects.get(input.sharedObject);
+    if (input.sharedObject !== 0n) {
+      if ((input.kind !== 'map' && input.kind !== 'remap') || input.sharedLength <= 0 || input.sharedLength % PAGE !== 0
+          || input.sharedOffset < 0 || input.sharedOffset % PAGE !== 0 || input.sharedOffset + input.length > input.sharedLength
+          || input.populationLength !== 0) fault('Invalid shared backing bounds');
+      if (input.kind === 'map') {
+        if (shared || input.sharedObject !== input.token || input.sharedOffset !== 0 || input.sharedLength !== input.length
+            || (input.flags & 3) !== 1 || !(input.flags & 0x20)) fault('Shared anonymous map must create its exact kernel backing');
+      } else if (!shared || !image.sharedObjects?.has(shared) || shared.pages.length * PAGE !== input.sharedLength) {
+        fault('Remap has no exact inherited shared backing');
+      }
+    } else if (input.sharedLength !== 0 || input.sharedOffset !== 0 || (input.kind === 'map' && (input.flags & 1))) {
+      fault('Mapping omitted its shared backing identity');
+    }
     const description = Object.freeze({ ...input, receipt: Object.freeze({ ...input.receipt }) });
     // Independent undo/staging storage is bounded by this image's admitted
     // virtual capacity and discarded after commit/cancel. No snapshots of bytes.
@@ -508,7 +540,14 @@ export class MemoryGroupImageStore {
         if (!oldCount || oldStart + oldCount > oldExtent) fault('Remap source is outside its virtual extent');
         for (let at = oldStart; at < oldStart + oldCount; at++) if (!(before[at] >>> 16)) fault('Remap source contains a hole');
         after.fill(0, oldStart, oldStart + oldCount);
-        for (let at = 0; at < count; at++) after[start + at] = at < oldCount ? before[oldStart + at] : (fresh | rights) >>> 0;
+        if (shared) {
+          const offset = input.sharedOffset / PAGE;
+          for (let at = 0; at < oldCount; at++) if ((before[oldStart + at] >>> 16) !== shared.pages[offset + at]) {
+            fault('Remap source disagrees with kernel shared object offset');
+          }
+          for (let at = 0; at < count; at++) after[start + at] = (shared.pages[offset + at] * PAGE
+            | (at < oldCount ? before[oldStart + at] & 3 : rights)) >>> 0;
+        } else for (let at = 0; at < count; at++) after[start + at] = at < oldCount ? before[oldStart + at] : (fresh | rights) >>> 0;
         newExtent = Math.max(oldExtent, start + count);
       }
       let removed = 0, freshCount = 0;
@@ -518,14 +557,25 @@ export class MemoryGroupImageStore {
       const allocated = new Uint32Array(freshCount);
       const retained: RetainedMappingPages = { pages: new Uint32Array(removed) };
       for (let at = 0, out = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) retained.pages[out++] = before[at] >>> 16;
-      const mapping: Mapping = { image, barrier, description, oldExtent, newExtent, before, after, allocated, retained, state: 'prepared' };
+      const introducedShared: SharedObject | undefined = input.kind === 'map' && input.sharedObject !== 0n
+        ? { id: input.sharedObject, pages: allocated, owners: new Set([image]) } : undefined;
+      const mapping: Mapping = { image, barrier, description, oldExtent, newExtent, before, after, allocated, retained, introducedShared, state: 'prepared' };
       // Register custody before acquiring physical pages, so allocation failure
       // cannot strand an unrecorded successful reservation.
       this.mappings.set(token, mapping); image.mapping = mapping;
       let status: 'allocated' | 'busy' | 'exhausted';
-      try { status = allocated.length ? this.pool.tryAllocatePages(allocated) : 'allocated'; }
-      catch (error) { image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; throw error; }
-      if (status !== 'allocated') { image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; return status; }
+      try {
+        if (introducedShared) {
+          image.sharedObjects ??= new Set(); image.sharedObjects.add(introducedShared);
+          this.sharedObjects.set(introducedShared.id, introducedShared);
+        }
+        status = allocated.length ? this.pool.tryAllocatePages(allocated) : 'allocated';
+      } catch (error) {
+        this.cancelIntroducedShared(mapping); image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; throw error;
+      }
+      if (status !== 'allocated') {
+        this.cancelIntroducedShared(mapping); image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; return status;
+      }
       for (let at = 0, next = 0; at < maximum; at++) if ((after[at] >>> 16) === 0xffff) after[at] = (allocated[next++] * PAGE | rights) >>> 0;
       return token;
     } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
@@ -586,7 +636,7 @@ export class MemoryGroupImageStore {
       }
       if (result < 0) { table.set(before); Atomics.store(header, 0, mapping.oldExtent); mapping.state = 'prepared'; return result; }
       if (mapping.retained!.pages.length) { mapping.retained!.next = image.retainedMappingPages; image.retainedMappingPages = mapping.retained; }
-      mapping.state = 'committed'; image.mapping = undefined; mapping.image = undefined;
+      mapping.state = 'committed'; mapping.introducedShared = undefined; image.mapping = undefined; mapping.image = undefined;
       mapping.before = undefined; mapping.after = undefined; mapping.allocated = undefined; mapping.retained = undefined;
       return 'committed';
     } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
@@ -596,10 +646,52 @@ export class MemoryGroupImageStore {
     const mapping = this.mappings.get(token), image = mapping?.image;
     if (!mapping || !image || mapping.state !== 'prepared' || image.mapping !== mapping) fault('Mapping cannot use unpublished rollback');
     if (mapping.allocated!.length && this.pool.tryReleaseUnpublishedPages(mapping.allocated!) === 'busy') return 'busy';
+    this.cancelIntroducedShared(mapping);
     image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled';
     mapping.before = undefined; mapping.after = undefined; mapping.allocated = undefined; mapping.retained = undefined;
     return 'cancelled';
   }
+  private cancelIntroducedShared(mapping: Mapping): void {
+    const object = mapping.introducedShared;
+    if (!object) return;
+    mapping.image?.sharedObjects?.delete(object);
+    if (this.sharedObjects.get(object.id) === object) this.sharedObjects.delete(object.id);
+    object.owners.clear(); mapping.introducedShared = undefined;
+  }
+
+  private sharedPage(image: Image, page: number): SharedObject | undefined {
+    for (const object of image.sharedObjects ?? []) {
+      // The pool returns ordered physical custody. Binary search avoids a
+      // quadratic full-backing scan during large unmap/retirement checks.
+      let low = 0, high = object.pages.length;
+      while (low < high) { const middle = (low + high) >>> 1;
+        if (object.pages[middle] < page) low = middle + 1; else high = middle; }
+      if (object.pages[low] === page) return object;
+    }
+    return undefined;
+  }
+  private assertSharedOverlap(image: Image, peer: Image, page: number): void {
+    const object = this.sharedPage(image, page);
+    if (!object || !peer.sharedObjects?.has(object) || !object.owners.has(image) || !object.owners.has(peer)) {
+      fault('Physical overlap has no exact shared backing');
+    }
+  }
+  private finalSharedPages(image: Image, objects: Iterable<SharedObject> = image.sharedObjects ?? []): number[] {
+    const pages: number[] = [];
+    for (const object of objects) {
+      if (this.sharedObjects.get(object.id) !== object || !object.owners.has(image)) fault('Shared backing lost its image owner');
+      if (object.owners.size === 1) pages.push(...object.pages);
+    }
+    return pages;
+  }
+  private dropSharedObjects(image: Image, objects: Iterable<SharedObject> = image.sharedObjects ?? []): void {
+    for (const object of objects) {
+      if (!object.owners.delete(image)) fault('Shared backing image owner retired twice');
+      image.sharedObjects?.delete(object);
+      if (!object.owners.size) this.sharedObjects.delete(object.id);
+    }
+  }
+
   executionPauseAcknowledged(token: GroupExecutionPause): boolean {
     const pause = this.pauses.get(token);
     if (!pause) fault('Unknown execution-barrier capability');
@@ -770,7 +862,8 @@ export class MemoryGroupImageStore {
       fault('Image still has publication or replica custody');
     }
     this.revokeSource(image);
-    this.pool.releaseRetiredPages([...pages(image.controls), ...pages(image.payload), ...(image.privatePayload ?? [])]); this.images.delete(key);
+    this.pool.releaseRetiredPages([...pages(image.controls), ...pages(image.payload), ...(image.privatePayload ?? []), ...this.finalSharedPages(image)]);
+    this.dropSharedObjects(image); this.images.delete(key);
   }
 
   /** Execution proof is owned by KernelWorker's exact Worker observer. End
@@ -811,7 +904,7 @@ export class MemoryGroupImageStore {
   tryReclaimRemovedPages(handle: PreparedGroupReplica): { releasedPages: number; retainedPages: number } | 'busy' {
     const image = this.owned(handle).image;
     if (this.closed || !image.sourceLive.value || image.mapping) return 'busy';
-    if (!image.retainedMappingPages) return { releasedPages: 0, retainedPages: 0 };
+    if (!image.retainedMappingPages && !image.sharedObjects?.size) return { releasedPages: 0, retainedPages: 0 };
     const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
     if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
     try {
@@ -828,13 +921,15 @@ export class MemoryGroupImageStore {
       const pinned = memoryGroupPinnedPages(this.memory, image.root);
       if (pinned === 'busy') return 'busy';
       for (const pin of image.nativeObservations) pinned.add(Math.floor(pin.physicalAddress / PAGE));
-      const candidates = [...references].filter(page => !current.has(page) && !pinned.has(page));
-      const released = new Set(candidates);
+      const dropping = [...image.sharedObjects ?? []].filter(object => !object.pages.some(page => current.has(page) || pinned.has(page)));
+      const privateReferences = [...references].filter(page => !this.sharedPage(image, page));
+      const candidates = privateReferences.filter(page => !current.has(page) && !pinned.has(page));
+      const released = new Set([...candidates, ...this.finalSharedPages(image, dropping)]);
       for (const peer of this.images.values()) if (peer !== image) {
-        for (const page of this.imageOwnedPages(peer, false)) if (released.has(page)) fault('Removed mapping overlaps another image');
+        for (const page of this.imageOwnedPages(peer, false)) if (released.has(page)) fault('Removed private/final backing overlaps another image');
       }
-      const allocation = Uint32Array.from(candidates.sort((a, b) => a - b));
-      const remaining = Uint32Array.from([...references].filter(page => !current.has(page) && !released.has(page)));
+      const allocation = Uint32Array.from([...released].sort((a, b) => a - b));
+      const remaining = Uint32Array.from(privateReferences.filter(page => !current.has(page) && !released.has(page)));
       const retained = remaining.length ? { pages: remaining } : undefined;
       const original = new Set(image.returnedOriginalPages);
       for (const page of candidates) {
@@ -843,6 +938,7 @@ export class MemoryGroupImageStore {
       }
       const result = { releasedPages: allocation.length, retainedPages: remaining.length };
       if (allocation.length && this.pool.tryReleaseRetiredPages(allocation) === 'busy') return 'busy';
+      this.dropSharedObjects(image, dropping);
       image.returnedOriginalPages = original.size ? original : undefined;
       image.retainedMappingPages = retained;
       return result;
@@ -930,7 +1026,7 @@ export class MemoryGroupImageStore {
   /** Whole-image release only. Live peers and within-image aliases must not
    * lose storage. Bitmap ownership has no per-PTE reference counts: collect
    * each physical allocation once, including removed mappings and native grow.
-   * This does not implement per-thread/control or shared-object release. */
+   * Shared backing pages return only with their final image owner. */
   tryReleaseStoppedImage(handle: PreparedGroupReplica): { readonly replicas: readonly PreparedGroupReplica[]; readonly pages: number } | 'busy' {
     const image = this.owned(handle).image;
     if (this.closed || image.sourceLive.value || !this.imageExecutionStopped(handle)
@@ -947,8 +1043,9 @@ export class MemoryGroupImageStore {
     try {
       const owned = this.imageOwnedPages(image);
       for (const peer of this.images.values()) if (peer !== image) {
-        for (const page of this.imageOwnedPages(peer, false)) if (owned.has(page)) fault('Retirement overlaps another image');
+        for (const page of this.imageOwnedPages(peer, false)) if (owned.has(page)) this.assertSharedOverlap(image, peer, page);
       }
+      for (const object of image.sharedObjects ?? []) if (object.owners.size > 1) for (const page of object.pages) owned.delete(page);
       const allocation = Uint32Array.from([...owned].sort((a, b) => a - b));
       const result = Object.freeze({ replicas: Object.freeze(replicas.map(replica => replica.handle)), pages: allocation.length });
       // No actor of this image can run or create an observer after revocation.
@@ -956,7 +1053,7 @@ export class MemoryGroupImageStore {
       // reuse that same control page, so never write its lock after release.
       Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1);
       if (this.pool.tryReleaseRetiredPages(allocation) === 'busy') return 'busy';
-      this.images.delete(key);
+      this.dropSharedObjects(image); this.images.delete(key);
       for (const replica of replicas) {
         this.handles.delete(replica.handle); this.replicas.delete(replica.receipt.serial);
       }
@@ -983,6 +1080,7 @@ export class MemoryGroupImageStore {
       if (physical) owned.add(physical);
     }
     for (let retired = image.retainedMappingPages; retired; retired = retired.next) for (const page of retired.pages) owned.add(page);
+    for (const object of image.sharedObjects ?? []) for (const page of object.pages) owned.add(page);
     for (const replica of this.replicas.values()) if (replica.image === image) for (const page of pages(replica.scratch)) owned.add(page);
     // An unpublished mapping may also own pages absent from both PTE versions.
     for (const page of image.mapping?.allocated ?? []) owned.add(page);
@@ -1021,6 +1119,7 @@ export class MemoryGroupImageStore {
     readonly exposedReplicas: number; readonly quarantinedReplicas: number; readonly allocatedPages: number;
     readonly pendingWaitDrains: number; readonly nativeObservers: number;
     readonly mappingStagingBytes: number; readonly retainedMappingReferences: number;
+    readonly sharedObjects: number; readonly sharedPages: number; readonly sharedImageReferences: number;
     readonly maximumPages: number; readonly highWaterPages: number; readonly physicalExtentPages: number } {
     let mappingStagingBytes = 0, retainedMappingReferences = 0;
     for (const image of this.images.values()) {
@@ -1035,6 +1134,9 @@ export class MemoryGroupImageStore {
       pendingWaitDrains: [...this.replicas.values()].filter(r => r.pendingWaitDrain).length,
       nativeObservers: [...this.images.values()].reduce((sum, image) => sum + image.nativeObservations.size, 0),
       mappingStagingBytes, retainedMappingReferences,
+      sharedObjects: this.sharedObjects.size,
+      sharedPages: [...this.sharedObjects.values()].reduce((sum, object) => sum + object.pages.length, 0),
+      sharedImageReferences: [...this.sharedObjects.values()].reduce((sum, object) => sum + object.owners.size, 0),
       ...this.pool.snapshot() });
   }
 }

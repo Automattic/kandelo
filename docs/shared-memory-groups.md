@@ -275,6 +275,44 @@ exact transaction custody and intervening changes before publication. Normal
 grouped memory-call dispatch now joins these owners for the implemented
 anonymous map/unmap/protect/remap/brk path; this remains an internal integration.
 
+The internal backend also implements anonymous `MAP_SHARED | MAP_ANONYMOUS`.
+Rust mints a group-scoped backing identity from the exact mapping transaction
+and retains a budgeted capability in the live MM. VMA fragments and forked
+MMs share that capability and preserve object offsets. The host allocates its
+physical pages once, aliases those pages across process roots and copies only
+private pages at fork. Protection remains local to each mapping. Closing one
+mapping or image cannot free another image's backing.
+
+A shared object retains its initial backing contents across shrink, moved
+subranges and regrowth within that extent. Growth beyond the original object
+length returns `EOPNOTSUPP`: EOF/SIGBUS semantics and descriptor resizing are
+still gates, rather than silently extending the backing. Device and
+legacy descriptor-backed sharing remain refused. Public grouped launch is
+still gated; this internal anonymous path is not complete descriptor or
+graphical-object support.
+
+Host-adapter 21 extends mapping-description protocol v4 to 136 bytes with the
+kernel object ID, initial byte length and mapping byte offset. Non-shared
+effects carry zeroes. This protocol version is separate from executable
+format4, whose PTE layout is unchanged. A fresh anonymous object's ID equals
+its creation token; a remap carries the inherited ID under its new exact
+token. The host validates the whole record again before publication.
+
+Shared image holds survive removed PTEs while engine observations or wait
+records still pin the object. Reclamation ends only the detached image's
+hold; physical pages return with the last hold. Snapshots report unique
+shared pages and image references separately. The metadata adds one optional
+pointer per `MappingFile` label (labels are already shared across fragments),
+a compact host page-index array per object and image-owner sets. It creates
+no extra Wasm Memory and raises no ceiling. Logical pool counts do not prove
+lower RSS or a lower browser reservation.
+
+The SDK anonymous-sharing probe uses a forced nonzero-offset remap, then
+forks and exchanges atomic flags and data without syscalls. It checks private
+isolation, per-image protection, a live child after parent unmapping, later
+child retirement and final shared-object release. Repeated cohorts reuse one
+kernel and backing; they supplement the remaining release and desktop gates.
+
 Host-adapter 10 carries fixed copied records for grouped mapping preparation,
 validation, commit and cancellation. Rust retains a budgeted owner for one
 exact task receipt and image generation; a sibling, stopped admission or stale
@@ -282,7 +320,7 @@ exec cannot publish it. Cancellation can discard an old preparation without
 changing a successor manager's transaction. All receipt/token bits remain
 unsigned 64-bit values, separate from status returns. The program-56 digest
 is unchanged. Host-adapter 12 extends this transaction to file-backed private
-mappings; shared-object and device effects remain unfinished.
+mappings; descriptor-backed shared-object and device effects remain unfinished.
 
 Private file preparation captures a readable regular-file or memfd source,
 its exact underlying backing and OFD lock custody. It retains no descriptor
@@ -312,12 +350,13 @@ materialized pages are zeroed; shrink removes whole trailing page mappings.
 The logical extent remains a high-water bound rather than proof every page
 is mapped. Grouped fork metadata is copied from the live kernel parent,
 including controls, holes and permissions; it is not recreated from a fresh
-all-writable image or added to the ordinary fork wire. This metadata behavior
-does not prove the unfinished physical fork integration.
+all-writable image or added to the ordinary fork wire. Physical launch is
+coordinated separately by the kernel Worker.
 
 The internal image owner can now prepare a private physical fork under an
-acknowledged image-wide execution barrier. It copies each distinct mapped
-physical page into child-owned storage, preserving holes, protection and
+acknowledged image-wide execution barrier. It copies each distinct private
+physical page into child-owned storage and retains direct anonymous backing
+pages as aliases, preserving holes, protection and
 within-image aliases, including bytes inaccessible under current protection.
 The child gets a separate root and zeroed replica scratch; its initialization
 gate remains fresh for the normal fork-child mode that skips data replay.
@@ -326,14 +365,15 @@ publishing allocation bits. Busy/exhausted preparation leaves parent custody
 unchanged, and exact unconstructed cancellation returns the child allocation.
 This is an internal private-page operation. The dispatcher connects it to an
 explicitly configured grouped-fork backend and a shared Node/browser child
-Worker launcher. Normal embedding launch remains gated. Shared-object
-inheritance remains separate.
+Worker launcher. Normal embedding launch remains gated. Descriptor-backed
+shared objects and devices remain separate.
 
 Host-adapter 13 adds a receipt-bound private fork metadata operation. After the
 host pauses the image and reads its logical extent, Rust validates the exact
 running caller and absence of pending mappings, observes virtual growth, then
-allocates the child with the inherited live MM. Shared/device inheritance is
-refused until its effects are connected. The ordinary fork export refuses
+allocates the child with the inherited live MM. Host-adapter 21 additionally
+permits kernel-owned direct anonymous backing inheritance. Legacy descriptor
+and device inheritance remains refused until its effects are connected. The ordinary fork export refuses
 grouped images rather than snapshotting stale virtual metadata. This boundary
 does not establish host barrier or Worker-launch acceptance on its own.
 
@@ -580,13 +620,13 @@ fresh zeroed physical pages, so a refused Rust commit can restore old entries
 without destroying old bytes. Preparation and unpublished rollback use
 nonblocking root/pool acquisition; a busy owner keeps custody for a later
 worker turn. Unexpected commit traps contain the image and keep storage
-charged. Removed PTE references remain retained, including references moved
-by remap; this is not a completed reclamation mechanism. Snapshots report
+charged. Removed PTE references stay charged until the exact owner can retire
+them. Shared backing tails remain with the object until its final owner ends. Snapshots report
 staging-array bytes and retained mapping references separately from allocated
 physical pages. Staging arrays scale with the admitted virtual page-table
 capacity and are dropped after successful commit or cancellation. This path
-still needs actual guest acceptance; its synthetic barrier tests do not
-establish guest quiescence.
+is exercised through actual SDK guests as well as synthetic barriers; neither
+selection replaces full shared-object, device, lifecycle or desktop acceptance.
 
 The shared Node/browser kernel Worker retains each mapping's exact pending
 channel request, image source, registration, generation and Rust token. It

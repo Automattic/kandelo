@@ -15,6 +15,9 @@ pub struct Description {
     pub effect: Effect,
     pub population_address: usize,
     pub population_length: usize,
+    pub shared_object: u64,
+    pub shared_length: u64,
+    pub shared_offset: u64,
 }
 impl Description {
     pub fn record(&self) -> wasm_posix_shared::group_memory_change::Description {
@@ -28,7 +31,8 @@ impl Description {
         wasm_posix_shared::group_memory_change::Description { receipt: self.receipt, token: self.token,
             kind, prot, address: address as u64, length: length as u64,
             old_address: old_address as u64, old_length: old_length as u64, result: self.result(), flags,
-            population_address: self.population_address as u64, population_length: self.population_length as u64 }
+            population_address: self.population_address as u64, population_length: self.population_length as u64,
+            shared_object: self.shared_object, shared_length: self.shared_length, shared_offset: self.shared_offset }
     }
     pub fn result(&self) -> u64 {
         match self.effect {
@@ -65,12 +69,10 @@ fn intent(syscall: u32, args: [u64; 6]) -> Result<MemoryChange, Errno> {
         n if n == Syscall::Mmap as u32 => {
             let prot = u32::try_from(args[2]).map_err(|_| Errno::EINVAL)?;
             let flags = u32::try_from(args[3]).map_err(|_| Errno::EINVAL)?;
-            if flags & mmap::MAP_SHARED != 0 {
-                // Shared objects and devices need their own exact effects.
-                return Err(Errno::EOPNOTSUPP);
-            }
-            if flags & mmap::MAP_PRIVATE == 0 {
-                return Err(Errno::EINVAL);
+            match flags & (mmap::MAP_SHARED | mmap::MAP_PRIVATE) {
+                mmap::MAP_SHARED if flags & mmap::MAP_ANONYMOUS == 0 => return Err(Errno::EOPNOTSUPP),
+                mmap::MAP_SHARED | mmap::MAP_PRIVATE => {},
+                _ => return Err(Errno::EINVAL),
             }
             MemoryChange::Map { hint: pointer(args[0])?, len: pointer(args[1])?, prot, flags }
         }
@@ -143,10 +145,10 @@ impl ProcessTable {
         if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
             return Err(Errno::EBUSY);
         }
-        // The physical copy coordinator currently implements private pages.
-        // Do not silently copy storage that must remain a shared alias.
+        // Only exact kernel-owned direct backings may survive as aliases.
+        // Device and legacy descriptor effects still need their own owner.
         if proc.fb_binding.is_some() || !proc.dri_bindings.is_empty()
-            || !proc.shm_mappings.is_empty() || proc.memory.has_shared_mapping() {
+            || !proc.shm_mappings.is_empty() || proc.memory.has_unsupported_group_shared_mapping(receipt.group) {
             return Err(Errno::EOPNOTSUPP);
         }
         proc.memory.observe_group_virtual_growth(observed_pages)?;
@@ -181,10 +183,10 @@ impl ProcessTable {
         if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
             return Err(Errno::EBUSY);
         }
-        // Device and shared-memory cleanup is not implied by a metadata plan.
-        // Refuse until those retained effects join the real coordinator.
+        // Device and legacy shared-memory cleanup is not implied by a plan.
+        // Direct anonymous objects already participate in exact image custody.
         if proc.fb_binding.is_some() || !proc.dri_bindings.is_empty()
-            || !proc.shm_mappings.is_empty() || proc.memory.has_shared_mapping() {
+            || !proc.shm_mappings.is_empty() || proc.memory.has_unsupported_group_shared_mapping(receipt.group) {
             return Err(Errno::EOPNOTSUPP);
         }
         let operation = intent(syscall, args)?;
@@ -200,7 +202,7 @@ impl ProcessTable {
                 name.insert(0, b'/'); name.extend_from_slice(b" (deleted)");
             }
             Some((alloc::rc::Rc::try_new(crate::memory::MappingFile { dev: stat.st_dev, ino: stat.st_ino, name,
-                private_source: Some(source) }).map_err(|_| Errno::ENOMEM)?, offset))
+                private_source: Some(source), group_shared: None }).map_err(|_| Errno::ENOMEM)?, offset))
         } else { None };
         // The owning host freezes all execution replicas first. This is the
         // image's logical root extent, never the common physical Memory size.
@@ -209,14 +211,21 @@ impl ProcessTable {
         // Ordinary processes retain only one optional pointer, not two inline
         // metadata snapshots. No allocation can fail after the live serial.
         let mut storage = crate::IoBox::try_new(None::<Pending>)?;
-        let plan = proc.memory.prepare_memory_change_with_file(operation, file)?;
+        let mut plan = proc.memory.prepare_memory_change_with_file(operation, file)?;
+        if let Err(error) = plan.prepare_group_shared(receipt.group) {
+            proc.memory.cancel_memory_change(plan).expect("fresh shared mapping plan cancellation"); return Err(error);
+        }
+        let (shared_object, shared_length, shared_offset) = match plan.shared_record() {
+            Ok(record) => record,
+            Err(error) => { proc.memory.cancel_memory_change(plan).expect("fresh shared description cancellation"); return Err(error); }
+        };
         let population = match plan.private_population() {
             Ok(value) => value,
             Err(error) => { proc.memory.cancel_memory_change(plan).expect("fresh private mapping plan cancellation"); return Err(error); }
         };
         let description = Description { token: plan.serial(), receipt, effect: plan.effect(),
             population_address: population.as_ref().map_or(0, |p| p.address),
-            population_length: population.as_ref().map_or(0, |p| p.len) };
+            population_length: population.as_ref().map_or(0, |p| p.len), shared_object, shared_length, shared_offset };
         *storage = Some(Pending { description, plan, population, population_position: 0, population_eof: false, control_thread: None });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
@@ -242,7 +251,7 @@ impl ProcessTable {
         let plan = proc.memory.prepare_memory_change(MemoryChange::ReserveHost {
             len: wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize * 65536, owner: thread.record(),
         })?;
-        let description = Description { token: plan.serial(), receipt, effect: plan.effect(), population_address: 0, population_length: 0 };
+        let description = Description { token: plan.serial(), receipt, effect: plan.effect(), population_address: 0, population_length: 0, shared_object: 0, shared_length: 0, shared_offset: 0 };
         *storage = Some(Pending { description, plan, population: None, population_position: 0, population_eof: false, control_thread: Some(thread) });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
@@ -807,7 +816,7 @@ mod tests {
     fn invalid_wide_and_unimplemented_effects_never_acquire_a_plan() {
         let (mut table, pid, _) = setup(true);
         let mut wide = map_args(); wide[0] = 1u64 << 32;
-        let mut shared = map_args(); shared[3] = (mmap::MAP_SHARED | mmap::MAP_ANONYMOUS) as u64;
+        let mut shared = map_args(); shared[3] = mmap::MAP_SHARED as u64;
         let mut file = map_args(); file[3] = mmap::MAP_PRIVATE as u64;
         for (nr, args, expected) in [(Syscall::Mmap as u32, wide, Errno::EINVAL),
             (Syscall::Mmap as u32, shared, Errno::EOPNOTSUPP),
@@ -817,6 +826,74 @@ mod tests {
             assert!(!table.get(pid).unwrap().memory.has_pending_memory_change());
         }
     }
+    #[test]
+    fn anonymous_shared_identity_is_staged_cancellable_and_inherited_by_live_mm() {
+        let (mut table, pid, admission) = setup(true);
+        let mut args = map_args(); args[1] = (3 * P) as u64; args[3] = (mmap::MAP_SHARED | mmap::MAP_ANONYMOUS) as u64;
+        let cancelled = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_eq!(cancelled.shared_object, cancelled.token);
+        assert_eq!((cancelled.shared_length, cancelled.shared_offset), ((3 * P) as u64, 0));
+        assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+        table.cancel_group_memory_change(pid, pid, cancelled.token).unwrap();
+        let map = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert!(map.shared_object > cancelled.shared_object);
+        table.commit_group_memory_change(pid, pid, map.token).unwrap();
+        let parent = &table.get(pid).unwrap().memory;
+        assert!(!parent.has_unsupported_group_shared_mapping(admission.record().group));
+        assert!(parent.has_unsupported_group_shared_mapping(admission.record().group + 1));
+        let child = table.fork_group_memory_process(admission.record(), 7).unwrap();
+        let parent_file = table.get(pid).unwrap().memory.mappings()[0].file.clone().unwrap();
+        let child_file = table.get(child).unwrap().memory.mappings()[0].file.clone().unwrap();
+        assert!(alloc::rc::Rc::ptr_eq(&parent_file, &child_file));
+        assert!(parent_file.group_shared.is_some());
+        let change = table.prepare_group_memory_change(pid, pid, Syscall::Mprotect as u32,
+            [map.result() + P as u64, P as u64, 1, 0, 0, 0], 7).unwrap();
+        table.commit_group_memory_change(pid, pid, change.token).unwrap();
+        let mappings = table.get(pid).unwrap().memory.mappings();
+        assert_eq!(mappings.len(), 3);
+        assert_eq!(mappings.iter().map(|m| m.file_offset).collect::<alloc::vec::Vec<_>>(), alloc::vec![0, P as u64, (2 * P) as u64]);
+        assert!(mappings.iter().all(|m| alloc::rc::Rc::ptr_eq(m.file.as_ref().unwrap(), &parent_file)));
+        let unmap = table.prepare_group_memory_change(pid, pid, Syscall::Munmap as u32,
+            [map.result(), (3 * P) as u64, 0, 0, 0, 0], 7).unwrap();
+        table.commit_group_memory_change(pid, pid, unmap.token).unwrap();
+        assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+        assert_eq!(table.get(child).unwrap().memory.mappings()[0].len, 3 * P);
+    }
+    #[test]
+    fn shared_remap_preserves_offset_and_object_bounds_without_stranding_custody() {
+        let (mut table, pid, _) = setup(true);
+        let mut args = map_args(); args[1] = (3 * P) as u64; args[3] = (mmap::MAP_SHARED | mmap::MAP_ANONYMOUS) as u64;
+        let map = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        table.commit_group_memory_change(pid, pid, map.token).unwrap();
+        for size in [P, 3 * P] {
+            let remap = table.prepare_group_memory_change(pid, pid, Syscall::Mremap as u32,
+                [map.result(), if size == P { (3 * P) as u64 } else { P as u64 }, size as u64, 1, 0, 0], 7).unwrap();
+            assert_eq!((remap.shared_object, remap.shared_length, remap.shared_offset), (map.token, (3 * P) as u64, 0));
+            table.commit_group_memory_change(pid, pid, remap.token).unwrap();
+        }
+        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mremap as u32,
+            [map.result(), (3 * P) as u64, (4 * P) as u64, 1, 0, 0], 7), Err(Errno::EOPNOTSUPP));
+        assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
+        assert!(!table.get(pid).unwrap().memory.has_pending_memory_change());
+        let remap = table.prepare_group_memory_change(pid, pid, Syscall::Mremap as u32,
+            [map.result() + P as u64, (2 * P) as u64, P as u64, 1, 0, 0], 7).unwrap();
+        assert_eq!(remap.shared_offset, P as u64);
+        table.cancel_group_memory_change(pid, pid, remap.token).unwrap();
+    }
+    #[test]
+    fn anonymous_shared_refuses_conflicting_flags_and_metadata_exhaustion_without_publication() {
+        let (mut table, pid, _) = setup(true);
+        let mut args = map_args(); args[3] |= mmap::MAP_SHARED as u64;
+        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4), Err(Errno::EINVAL));
+        args[3] = (mmap::MAP_SHARED | mmap::MAP_ANONYMOUS) as u64;
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        { let _limit = crate::io_buffer::test_budget(held);
+          assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4), Err(Errno::ENOMEM)); }
+        assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+        assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+    }
+
     #[test]
     fn prepared_protect_remap_unmap_and_break_publish_only_on_commit() {
         let (mut table, pid, _) = setup(true);

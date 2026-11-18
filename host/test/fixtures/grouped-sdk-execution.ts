@@ -38,6 +38,7 @@ export interface SdkExecutionOptions {
   execPrecommitFailure?: 'allocation' | 'callback' | 'virtual';
   execSuccess?: boolean;
   execOldThreads?: boolean;
+  anonymousShared?: boolean;
   execSignal?: 'commit' | 'stopped';
 }
 interface SdkExecutionMachine {
@@ -165,6 +166,9 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         }
         resolve();
       };
+      let anonymousChildRetired!: () => void;
+      const anonymousRetirement = new Promise<void>(resolve => { anonymousChildRetired = resolve; });
+      const anonymousPhases = new Set<number>();
       // The Node exit event joins the exact process Worker. The deadline is a
       // failure/containment boundary, never permission to reuse grouped pages.
       deadline = setTimeout(() => reject(new Error("guest execution deadline")), 60_000);
@@ -376,6 +380,30 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           }
           else {
             childStates.set(pid, { ...childStates.get(pid), kernelExit: code });
+            if (options.anonymousShared) {
+              const child = children.get(pid);
+              if (!child?.quiescent) return reject(Error('Shared child exit preceded its exact fence'));
+              const handle = imageHandles.get(pid);
+              if (!handle) return reject(Error('Shared child lost its exact image capability'));
+              const retirement = (async () => {
+                for (;;) {
+                  const status = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(handle, async () => {
+                    if (!child.releaseAfterStop()) throw Error('Shared child references lack stop proof');
+                    // Its real terminal fence preceded this callback. Detach
+                    // embedding observers before intentional realm termination;
+                    // physical retirement still joins the actual Node stop.
+                    await child.contain();
+                  }));
+                  if (status === 0) break;
+                  if (status !== -16) throw Error(`Shared child retirement refused: ${status}`);
+                  await new Promise<void>(resolve => setTimeout(resolve, 0));
+                }
+                imageHandles.delete(pid);
+                lifecycleEvidence.push({ kind: 'shared-child-retired', pid, code, ...memoryEvidence() });
+                anonymousChildRetired(); maybeComplete();
+              })();
+              processDeactivations.push(retirement); void retirement.catch(reject);
+            }
             if (lifecycleEnabled) {
               const child = children.get(pid);
               if (!child?.quiescent) return reject(Error('Grouped signal exit preceded exact Worker fence'));
@@ -520,6 +548,17 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         kernel.setOutputCallbacks({
           onStdout: bytes => {
             stdout += new TextDecoder().decode(bytes);
+            if (options.anonymousShared) {
+              const match = /anonymous-phase (\d+)\n$/.exec(stdout);
+              if (match && !anonymousPhases.has(Number(match[1]))) {
+                const phase = Number(match[1]); anonymousPhases.add(phase);
+                void (async () => {
+                  if (phase === 5) await anonymousRetirement;
+                  lifecycleEvidence.push({ kind: 'anonymous-shared-phase', phase, ...memoryEvidence() });
+                  kernel.appendStdinData(rootPid!, Uint8Array.of(107));
+                })().catch(reject);
+              }
+            }
             if (options.execOldThreads) {
               const match = /exec-ready step=(\d+) busy=(\d+) ready32=(\d+) ready64=(\d+) returned=(\d+)\n$/.exec(stdout);
               if (match) {
@@ -572,7 +611,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         status(kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] }), "attach executable");
         const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(pid));
         kernel.installHostStdinPipe(pid);
-        if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads) kernel.appendStdinData(pid, new Uint8Array());
+        if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads || options.anonymousShared) kernel.appendStdinData(pid, new Uint8Array());
         else kernel.setStdinData(pid, new Uint8Array());
         generation = owner.startGeneration(pid);
         const currentGeneration = generation;

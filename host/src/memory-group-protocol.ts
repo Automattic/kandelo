@@ -77,12 +77,15 @@ export interface GroupMemoryChangeDescription {
   readonly flags: number;
   readonly populationAddress: number;
   readonly populationLength: number;
+  readonly sharedObject: bigint;
+  readonly sharedLength: number;
+  readonly sharedOffset: number;
 }
 
 /** Copied channel scalars only; this packet carries no guest/kernel pointer. */
 export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[], observedPages: number): Uint8Array {
   const mapping = P.mapping;
-  if (mapping.version !== 3 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
+  if (mapping.version !== 4 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
       || args.length !== 6 || args.some(value => typeof value !== 'bigint'
       || value < -(1n << 63n) || value > (1n << 63n) - 1n)) {
     throw new MemoryGroupProtocolFault('Invalid grouped mapping request scalars');
@@ -150,10 +153,18 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
     prot: data.getUint32(f.prot, true), flags: data.getUint32(f.flags, true),
     address: address(f.address), length: address(f.length), oldAddress: address(f.oldAddress),
     oldLength: address(f.oldLength), result: address(f.result),
-    populationAddress: address(f.populationAddress), populationLength: address(f.populationLength) });
+    populationAddress: address(f.populationAddress), populationLength: address(f.populationLength),
+    sharedObject: data.getBigUint64(f.sharedObject, true), sharedLength: address(f.sharedLength), sharedOffset: address(f.sharedOffset) });
   const page = 65536;
   const badRange = (at: number, size: number) => at % page !== 0 || size % page !== 0 || at + size > 0x1_0000_0000;
-  if ((result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
+  if ((result.sharedObject === 0n ? result.sharedLength !== 0 || result.sharedOffset !== 0 :
+        (kind !== 'map' && kind !== 'remap') || result.sharedLength === 0 || result.sharedLength % page !== 0
+        || result.sharedOffset % page !== 0 || result.sharedOffset + result.length > result.sharedLength
+        || result.populationLength !== 0
+        || (kind === 'map' && ((result.flags & 3) !== 1 || (result.flags & 0x20) === 0
+          || result.sharedObject !== actualToken || result.sharedOffset !== 0 || result.sharedLength !== result.length)))
+      || (kind === 'map' && (result.flags & 1) !== 0 && result.sharedObject === 0n)
+      || (result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
       || (kind !== 'break' && badRange(result.address, result.length))
       || (kind !== 'remap' && kind !== 'break' && (result.oldAddress !== 0 || result.oldLength !== 0))
       || ((kind === 'map' || kind === 'remap') && (!result.length || result.result !== result.address))
