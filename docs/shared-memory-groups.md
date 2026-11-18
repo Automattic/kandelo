@@ -233,6 +233,18 @@ image and then publishes the real kernel signal status. No replacement Worker
 or guest exit event is fabricated. Host-adapter 19 records this lifetime
 contract; the normal program ABI stays unchanged.
 
+The private exec exit owner survives future-image cancellation and old host
+registration removal until exact image retirement finishes. Late generic
+finalization or crash ingress consumes the cached kernel signal and parent;
+it cannot publish early, replace the signal, or touch released old storage.
+After publication, the host reads Rust's existing exit-publication bit to
+suppress another generic exit callback without retaining a host PID record.
+Host-adapter 20 requires this scalar query; program ABI 56 stays unchanged.
+Image retirement joins asynchronous host-reference closers before freeing
+physical pages. A rejected closer retains the charge and is not rerun.
+The real C signal probes exercise late finalization and crash ingress while
+those old references remain owned, then reject a crash from the retired image.
+
 The public launcher still refuses grouped execution. Broader signal/destroy races,
 other postcommit failure disposition and the full promotion gates remain required
 before grouped exec support is advertised. Unexpected postcommit failure

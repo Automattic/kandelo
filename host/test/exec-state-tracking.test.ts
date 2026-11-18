@@ -2322,6 +2322,19 @@ describe("exec host-state transition", () => {
     );
   });
 
+  it('does not publish an already acknowledged exit after host registration retirement', () => {
+    const onExit = vi.fn(), getParentPid = vi.fn();
+    const worker = createWorker({ callbacks: { onExit }, kernelInstance: { exports: {
+      kernel_get_process_exit_signal: () => 9,
+      kernel_get_process_exit_published: () => 1,
+      kernel_get_parent_pid: getParentPid,
+    } } });
+    expect(worker.finalizeExecHandoffTermination(7)).toBe(9);
+    expect(worker.finalizeExecHandoffTermination(7)).toBe(9);
+    expect(onExit).not.toHaveBeenCalled(); expect(getParentPid).not.toHaveBeenCalled();
+    expect(worker.hostReaped.size).toBe(0);
+  });
+
   it("does not launch a signal-dead pending child or roll back its zombie", () => {
     const getParentPid = vi.fn(() => 0);
     const onExit = vi.fn();
@@ -2429,6 +2442,9 @@ function createWorker(overrides: Record<string, unknown>): any {
     | undefined;
   const suppliedExports = suppliedInstance?.exports ?? {};
   const exports: Record<string, unknown> = { ...suppliedExports };
+  if (!Object.prototype.hasOwnProperty.call(suppliedExports, 'kernel_get_process_exit_published')) {
+    exports.kernel_get_process_exit_published = () => 0;
+  }
   if (!Object.prototype.hasOwnProperty.call(
     suppliedExports,
     "kernel_get_process_exit_signal",

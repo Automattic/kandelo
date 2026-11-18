@@ -1346,6 +1346,41 @@ describe('bounded exact image inspection', () => {
 });
 
 describe('exact registered image retirement', () => {
+  it('joins an asynchronous reference closer once before releasing old pages', async () => {
+    const h = stoppedImageHarness(); h.stop();
+    h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    let entered!: () => void, finish!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const close = vi.fn(async () => { entered(); await held; });
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    const first = h.worker.retireMemoryGroupImage(h.handle, close);
+    await started;
+    const second = h.worker.retireMemoryGroupImage(h.handle, close);
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated);
+    expect(h.worker.getProcessMemory(100)).toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(1);
+    finish();
+    expect(await Promise.all([first, second])).toEqual([0, 0]);
+    expect(h.worker.inspectMemoryGroupBacking(23)).toMatchObject({ images: 0, allocatedPages: 1 });
+  });
+  it('keeps pages charged after an asynchronous reference closer rejects', async () => {
+    const h = stoppedImageHarness(); h.stop();
+    h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    let entered!: () => void, fail!: (cause: Error) => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>((_resolve, reject) => { fail = reject; });
+    const close = vi.fn(async () => { entered(); await held; });
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    const retirement = h.worker.retireMemoryGroupImage(h.handle, close);
+    const rejected = expect(retirement).rejects.toThrow('async reference owner refused');
+    await started;
+    fail(Error('async reference owner refused'));
+    await rejected;
+    await expect(h.worker.retireMemoryGroupImage(h.handle, close)).rejects.toThrow('async reference owner refused');
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated);
+  });
   it('requires both a concrete Worker stop and Rust exit before closing references or freeing pages', async () => {
     const h = stoppedImageHarness(), close = vi.fn();
     const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;

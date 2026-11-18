@@ -28,7 +28,7 @@ export interface GroupedExecWorkerOptions {
   readonly onStopped?: () => void | Promise<void>;
   /** Both images and old host references retired; kernel owns exit status. */
   readonly onTerminated?: (signal: number) => void;
-  readonly retirePreviousReferences: () => void;
+  readonly retirePreviousReferences: () => void | Promise<void>;
   readonly onRetired: (previous: PreparedGroupReplica, replacement: PreparedGroupReplica) => void;
   readonly onMessage: (message: any, worker: GroupedExecWorkerOwnership) => void;
   readonly onError: (error: Error, worker: GroupedExecWorkerOwnership) => void;
@@ -96,8 +96,8 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
         await options.onStopped?.();
         const retirePrevious = async (): Promise<void> => {
           for (;;) {
-            const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(handoff.previousImage, () => {
-              options.retirePreviousReferences(); options.externrefs.releaseGeneration(options.previousGeneration);
+            const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(handoff.previousImage, async () => {
+              await options.retirePreviousReferences(); options.externrefs.releaseGeneration(options.previousGeneration);
             }));
             if (result === 0) return;
             if (result !== -16) throw Error(`Cannot retire old grouped exec image: errno ${-result}`);

@@ -3990,6 +3990,18 @@ pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
     }
 }
 
+/// Return 1 after host exit acknowledgement, 0 before it, or -ESRCH for an
+/// absent/reaped process. This reads the existing kernel-owned publication
+/// bit; it does not create a host-side lifetime record or publish an exit.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exit_published(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.process_exit_published(pid) {
+        Ok(published) => i32::from(published),
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Return the host-visible parent pid for a process, or -ESRCH if absent or
 /// still hidden inside an unpublished spawn transaction.
 #[unsafe(no_mangle)]

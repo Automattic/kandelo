@@ -2312,6 +2312,17 @@ impl ProcessTable {
             .map(|proc| proc.ppid)
     }
 
+    /// Whether the host has already acknowledged this process's exit.
+    /// Keep this authority with the zombie rather than accumulating host PID
+    /// tombstones after the last execution image and transport have retired.
+    pub fn process_exit_published(&self, pid: u32) -> Result<bool, Errno> {
+        let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
+        if process.state == ProcessState::Limbo {
+            return Err(Errno::ESRCH);
+        }
+        Ok(process.exit_published)
+    }
+
     /// Publish one pending spawn child to its exact parent.
     ///
     /// The result deliberately mirrors `kernel_get_process_exit_signal`: `-1`
@@ -6563,6 +6574,23 @@ mod orphan_tests {
 
         assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
         assert!(again.reaped.is_empty() && again.signaled.is_empty());
+    }
+
+    #[test]
+    fn exit_publication_query_follows_the_zombie_without_retaining_reaped_pids() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        assert_eq!(table.process_exit_published(child), Ok(false));
+        assert_eq!(table.process_exit_published(u32::MAX), Err(Errno::ESRCH));
+        exit(&mut table, child);
+        assert_eq!(table.process_exit_published(child), Ok(false));
+        publish(&mut table, child);
+        assert_eq!(table.process_exit_published(child), Ok(true));
+        publish(&mut table, child);
+        assert_eq!(table.process_exit_published(child), Ok(true));
+        table.reap_process_with_io(child, &mut NoopHost).unwrap();
+        assert_eq!(table.process_exit_published(child), Err(Errno::ESRCH));
     }
 
     #[test]

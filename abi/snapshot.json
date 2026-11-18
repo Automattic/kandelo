@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 19,
+      "required_host_adapter_version": 20,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2633,6 +2633,7 @@
       "kernel_get_fd_path",
       "kernel_get_parent_pid",
       "kernel_get_process_exec_generation",
+      "kernel_get_process_exit_published",
       "kernel_get_process_exit_signal",
       "kernel_get_process_state",
       "kernel_get_socket_timeout_ms",
@@ -2701,7 +2702,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 19,
+    "version": 20,
     "worker_features": [
       {
         "bit": 2,
@@ -4420,6 +4421,11 @@
       "kind": "func",
       "name": "kernel_get_process_exec_generation",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_process_exit_published",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",

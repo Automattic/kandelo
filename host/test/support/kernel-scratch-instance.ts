@@ -203,6 +203,10 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
+    kernel_get_process_exit_published: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_get_process_exit_status: {
       parameters: [i32],
       result: i32,
