@@ -101,7 +101,7 @@ pub struct MemoryLayoutMetadata {
 /// Kernel memory manager for mmap/munmap/brk.
 pub struct MemoryManager {
     /// Exact staged-change owner; ordinary operations leave this empty.
-    pending_change: Option<u64>,
+    pending_change: Option<core::num::NonZeroU64>,
     /// List of active mappings, kept sorted by address.
     mappings: IoBuffer<MappedRegion>,
     last_exact_mapping_id: u64,

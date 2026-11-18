@@ -2952,6 +2952,25 @@ The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn
 
 The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don't export `__heap_base`. Programs built with our SDK always export it, so the fallback is rarely used in normal operation. `fork` correctly inherits the parent's brk, mmap base, max address, reserved prefix, and mappings via the kernel's process-state serialization; `exec` resets them (POSIX-correct) and the host installs the new program's computed layout.
 
+### Prepared address-space metadata
+
+`memory::change` provides an internal, one-shot owner for proposed `mmap`,
+`munmap`, `mprotect`, `mremap` and `brk` metadata. Preparing a change retains
+separate baseline and proposed metadata under admitted I/O credit without
+publishing either. Validation checks the exact manager's transaction and
+baseline, including file-reference identity and mapping offsets. Commit
+moves the proposed metadata into place without a new allocation; cancellation
+drops the staged copies and never restores an old snapshot over newer state.
+A rejected commit returns its owner so the original manager can cancel it.
+
+This API is not connected to syscall dispatch or host page publication yet.
+A future coordinator must hold process/image authority, stage backing and
+device effects, and validate the metadata before publishing those effects.
+The current protection planner covers mapped intervals, not initial linear
+image or heap permissions. The idle manager retains one optional nonzero
+64-bit transaction number; staging allocates its two metadata copies only
+when explicitly requested. It adds no Wasm memory or host reservation.
+
 ## Filesystem
 
 Kandelo-provided images use the [FHS layout](filesystem-layout.md).

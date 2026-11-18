@@ -33,6 +33,7 @@ pub(crate) enum MemoryChangeEffect {
 /// One-shot Rust custody. The two snapshots have admitted I/O metadata credit;
 /// neither publishing nor cancellation needs another allocation. A failed
 /// validation returns this owner so its actual manager can still cancel it.
+#[must_use = "a prepared memory change must be committed or cancelled by its manager"]
 pub(crate) struct PreparedMemoryChange {
     serial: u64,
     baseline: MemoryManager,
@@ -72,12 +73,12 @@ impl MemoryManager {
         let effect = proposed.apply_change(change)?;
         let serial = next_change(&LAST_CHANGE)?;
         // No fallible step follows acquiring live transaction custody.
-        self.pending_change = Some(serial);
+        self.pending_change = core::num::NonZeroU64::new(serial);
         Ok(PreparedMemoryChange { serial, baseline, proposed, effect })
     }
 
     pub(crate) fn validate_memory_change(&self, plan: &PreparedMemoryChange) -> Result<(), Errno> {
-        if self.pending_change != Some(plan.serial) { return Err(Errno::ESRCH); }
+        if self.pending_change.map(core::num::NonZeroU64::get) != Some(plan.serial) { return Err(Errno::ESRCH); }
         if !self.same_metadata(&plan.baseline) { return Err(Errno::EAGAIN); }
         Ok(())
     }
@@ -92,7 +93,7 @@ impl MemoryManager {
 
     pub(crate) fn cancel_memory_change(&mut self, plan: PreparedMemoryChange)
         -> Result<(), (Errno, PreparedMemoryChange)> {
-        if self.pending_change != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
+        if self.pending_change.map(core::num::NonZeroU64::get) != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
         // Cancellation never restores an old snapshot over intervening writes.
         self.pending_change = None;
         Ok(())
