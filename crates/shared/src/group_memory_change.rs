@@ -1,16 +1,17 @@
 //! Kernel-host records for one prepared grouped mapping. No guest ABI fields.
 use crate::{Errno, memory_group::ReceiptRecord};
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const CAPABILITY: u32 = 2;
 pub const REQUEST_BYTES: usize = 64;
-pub const DESCRIPTION_BYTES: usize = 112;
+pub const DESCRIPTION_BYTES: usize = 136;
 pub const REQUEST_FIELDS: &[(&str, usize)] = &[("syscall", 0), ("reserved", 4), ("args", 8), ("observedPages", 56), ("tailReserved", 60)];
 pub const DESCRIPTION_FIELDS: &[(&str, usize)] = &[
     ("receipt", 0), ("token", 32), ("kind", 40), ("prot", 44),
     ("address", 48), ("length", 56), ("oldAddress", 64), ("oldLength", 72),
     ("result", 80), ("flags", 88), ("reserved", 92),
     ("populationAddress", 96), ("populationLength", 104),
+    ("sharedObject", 112), ("sharedLength", 120), ("sharedOffset", 128),
 ];
 pub const KINDS: &[(&str, u32)] = &[("map", 1), ("unmap", 2), ("protect", 3), ("remap", 4), ("break", 5)];
 
@@ -40,11 +41,26 @@ pub struct Description {
     pub flags: u32,
     pub population_address: u64,
     pub population_length: u64,
+    pub shared_object: u64,
+    pub shared_length: u64,
+    pub shared_offset: u64,
 }
 impl Description {
     pub fn encode(&self, out: &mut [u8]) -> Result<(), Errno> {
+        let valid_shared = if self.shared_object == 0 {
+            self.shared_length == 0 && self.shared_offset == 0
+                && !(self.kind == 1 && self.flags & crate::mmap::MAP_SHARED != 0)
+        } else {
+            matches!(self.kind, 1 | 4) && self.shared_length > 0 && self.shared_length % 65536 == 0
+                && self.shared_offset % 65536 == 0
+                && self.shared_offset.checked_add(self.length).is_some_and(|end| end <= self.shared_length)
+                && self.population_address == 0 && self.population_length == 0
+                && (self.kind != 1 || (self.flags & 3 == crate::mmap::MAP_SHARED
+                    && self.flags & crate::mmap::MAP_ANONYMOUS != 0 && self.shared_object == self.token
+                    && self.shared_offset == 0 && self.shared_length == self.length))
+        };
         if out.len() != DESCRIPTION_BYTES || self.token == 0 || !(1..=5).contains(&self.kind)
-            || self.prot & !7 != 0 { return Err(Errno::EINVAL); }
+            || self.prot & !7 != 0 || !valid_shared { return Err(Errno::EINVAL); }
         // Validate the receipt before writing any part of the output.
         let mut receipt = [0; crate::memory_group::RECEIPT_BYTES];
         self.receipt.encode(&mut receipt)?;
@@ -58,6 +74,9 @@ impl Description {
         out[88..92].copy_from_slice(&self.flags.to_le_bytes());
         out[96..104].copy_from_slice(&self.population_address.to_le_bytes());
         out[104..112].copy_from_slice(&self.population_length.to_le_bytes());
+        out[112..120].copy_from_slice(&self.shared_object.to_le_bytes());
+        out[120..128].copy_from_slice(&self.shared_length.to_le_bytes());
+        out[128..136].copy_from_slice(&self.shared_offset.to_le_bytes());
         Ok(())
     }
 }
@@ -81,7 +100,7 @@ mod tests {
         let receipt = ReceiptRecord { group: 7, pid: 100, tid: 101, serial: u64::MAX - 1, generation: 1 << 63 };
         let value = Description { receipt, token: u64::MAX, kind: 4, prot: 3,
             address: 1 << 32, length: 1 << 40, old_address: 65536, old_length: 131072, result: 1 << 32, flags: 0,
-            population_address: 65536, population_length: 131072 };
+            population_address: 65536, population_length: 131072, shared_object: 0, shared_length: 0, shared_offset: 0 };
         let mut bytes = [0xa5; DESCRIPTION_BYTES]; value.encode(&mut bytes).unwrap();
         assert_eq!(ReceiptRecord::decode(&bytes[..32]).unwrap(), receipt);
         assert_eq!(u64::from_le_bytes(bytes[32..40].try_into().unwrap()), u64::MAX);
@@ -93,4 +112,27 @@ mod tests {
         let before = bytes; let invalid = Description { token: 0, ..value };
         assert_eq!(invalid.encode(&mut bytes), Err(Errno::EINVAL)); assert_eq!(bytes, before);
     }
+    #[test]
+    fn shared_description_preserves_identity_and_rejects_bounds_before_writing() {
+        let receipt = ReceiptRecord { group: 7, pid: 100, tid: 100, serial: 19, generation: 3 };
+        let value = Description { receipt, token: u64::MAX - 1, kind: 1, prot: 3,
+            address: 65536, length: 131072, old_address: 0, old_length: 0, result: 65536,
+            flags: crate::mmap::MAP_SHARED | crate::mmap::MAP_ANONYMOUS,
+            population_address: 0, population_length: 0,
+            shared_object: u64::MAX - 1, shared_length: 131072, shared_offset: 0 };
+        let mut bytes = [0xa5; DESCRIPTION_BYTES]; value.encode(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes[112..120].try_into().unwrap()), u64::MAX - 1);
+        assert_eq!(u64::from_le_bytes(bytes[120..128].try_into().unwrap()), 131072);
+        let before = bytes;
+        for invalid in [Description { shared_offset: 65536, ..value },
+            Description { shared_object: 0, ..value }, Description { shared_object: 17, ..value },
+            Description { flags: crate::mmap::MAP_PRIVATE | crate::mmap::MAP_ANONYMOUS, ..value }] {
+            assert_eq!(invalid.encode(&mut bytes), Err(Errno::EINVAL)); assert_eq!(bytes, before);
+        }
+        let remap = Description { kind: 4, flags: 0, token: 23, length: 65536,
+            old_address: 131072, old_length: 65536, shared_offset: 65536, ..value };
+        remap.encode(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes[128..136].try_into().unwrap()), 65536);
+    }
+
 }

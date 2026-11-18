@@ -49,6 +49,39 @@ impl core::fmt::Debug for PreparedMemoryChange {
 impl PreparedMemoryChange {
     pub(crate) fn effect(&self) -> MemoryChangeEffect { self.effect }
     pub(crate) fn serial(&self) -> u64 { self.serial }
+    pub(crate) fn prepare_group_shared(&mut self, group: u32) -> Result<(), Errno> {
+        if let MemoryChangeEffect::Map { addr, len, flags, .. } = self.effect {
+            if flags & mmap::MAP_SHARED != 0 {
+                if flags & mmap::MAP_ANONYMOUS == 0 || self.proposed.grouped_linear.is_none() { return Err(Errno::EOPNOTSUPP); }
+                let object = super::GroupSharedMapping::new(group, self.serial, len)?;
+                let mut name = alloc::vec::Vec::new();
+                name.try_reserve_exact(19).map_err(|_| Errno::ENOMEM)?;
+                name.extend_from_slice(b"/dev/zero (deleted)");
+                let file = alloc::rc::Rc::try_new(super::MappingFile { dev: 0, ino: self.serial, name,
+                    private_source: None, group_shared: Some(object) }).map_err(|_| Errno::ENOMEM)?;
+                if !self.proposed.set_mapping_file(addr, 0, file) { return Err(Errno::EIO); }
+            }
+        }
+        if let Some((object, length, offset)) = self.shared_backing()? {
+            if object.0.group != group { return Err(Errno::EACCES); }
+            let size = match self.effect { MemoryChangeEffect::Map { len, .. } => len,
+                MemoryChangeEffect::Remap { new_len, .. } => new_len, _ => 0 };
+            // Extending a VMA must not silently extend its underlying object.
+            // EOF fault semantics are a separate supported-surface gate.
+            if offset.checked_add(size as u64).is_none_or(|end| end > length) { return Err(Errno::EOPNOTSUPP); }
+        }
+        Ok(())
+    }
+    pub(crate) fn shared_backing(&self) -> Result<Option<(&super::GroupSharedMapping, u64, u64)>, Errno> {
+        let address = match self.effect { MemoryChangeEffect::Map { addr, .. } => addr,
+            MemoryChangeEffect::Remap { new_addr, .. } => new_addr, _ => return Ok(None) };
+        let mapping = self.proposed.mappings.iter().find(|m| m.addr <= address && m.addr + m.len > address).ok_or(Errno::EIO)?;
+        let Some(object) = mapping.file.as_ref().and_then(|file| file.group_shared.as_ref()) else { return Ok(None); };
+        Ok(Some((object, object.0.length as u64, mapping.offset_after(address - mapping.addr))))
+    }
+    pub(crate) fn shared_record(&self) -> Result<(u64, u64, u64), Errno> {
+        Ok(self.shared_backing()?.map_or((0, 0, 0), |(object, length, offset)| (object.0.id, length, offset)))
+    }
     pub(crate) fn private_population(&self) -> Result<Option<crate::group_memory_change::Population>, Errno> {
         let (address, len, lookup, advance) = match self.effect {
             MemoryChangeEffect::Map { addr, len, .. } => (addr, len, addr, 0),
@@ -385,7 +418,7 @@ mod tests {
     fn split_protection_keeps_exact_file_identity_and_byte_offsets() {
         let mut mm = manager();
         let base = mm.mmap_anonymous(0, 3 * PAGE, 3, ANON);
-        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None });
+        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None, group_shared: None });
         mm.set_mapping_file(base, 4096, file.clone());
         let plan = mm.prepare_memory_change(MemoryChange::Protect { addr: base + PAGE, len: PAGE, prot: 0 }).unwrap();
         assert_eq!(mm.mappings().len(), 1);
@@ -420,7 +453,7 @@ mod tests {
     fn protection_fragments_rejoin_only_with_contiguous_identical_backing() {
         let mut mm = manager();
         let base = mm.mmap_anonymous(0, 3 * PAGE, 3, ANON);
-        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None });
+        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None, group_shared: None });
         mm.set_mapping_file(base, 4096, file.clone());
         for prot in [0, 3] {
             let plan = mm.prepare_memory_change(MemoryChange::Protect { addr: base + PAGE, len: PAGE, prot }).unwrap();
@@ -540,10 +573,10 @@ mod tests {
     fn equal_file_labels_and_consumed_mapping_ids_do_not_forge_baseline_identity() {
         let mut mm = manager();
         let base = mm.mmap_anonymous(0, PAGE, 3, ANON);
-        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None });
+        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None, group_shared: None });
         mm.set_mapping_file(base, 0, file);
         let plan = mm.prepare_memory_change(map(PAGE)).unwrap();
-        mm.set_mapping_file(base, 0, Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None }));
+        mm.set_mapping_file(base, 0, Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'], private_source: None, group_shared: None }));
         assert_eq!(mm.validate_memory_change(&plan), Err(Errno::EAGAIN));
         mm.cancel_memory_change(plan).unwrap();
         let plan = mm.prepare_memory_change(map(PAGE)).unwrap();
@@ -572,7 +605,7 @@ mod tests {
     fn moving_and_shrinking_remap_plans_keep_backing_offsets() {
         let mut mm = manager();
         let base = mm.mmap_anonymous(0, 3 * PAGE, 1, ANON);
-        let file = Rc::new(MappingFile { dev: 3, ino: 5, name: vec![], private_source: None });
+        let file = Rc::new(MappingFile { dev: 3, ino: 5, name: vec![], private_source: None, group_shared: None });
         mm.set_mapping_file(base, 4096, file.clone());
         mm.mmap_anonymous(base + 3 * PAGE, PAGE, 3, ANON | mmap::MAP_FIXED);
         let plan = mm.prepare_memory_change(MemoryChange::Remap { addr: base, old_len: 3 * PAGE, new_len: 4 * PAGE, flags: 1 }).unwrap();

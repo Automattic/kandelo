@@ -22554,7 +22554,7 @@ export class CentralizedKernelWorker {
       let current: GroupMemoryChangeDescription;
       try { current = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), receipt, token); }
       catch (error) { return this.#memoryGroupProtocolError("Invalid validated mapping record", error); }
-      for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags", "populationAddress", "populationLength"] as const) {
+      for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags", "populationAddress", "populationLength", "sharedObject", "sharedLength", "sharedOffset"] as const) {
         if (current[key] !== description[key]) this.#memoryGroupProtocolError("Prepared mapping effect changed under its exact token");
       }
       return 0;

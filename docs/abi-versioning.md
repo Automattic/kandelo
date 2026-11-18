@@ -18,6 +18,15 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 21 extends internal grouped mapping descriptions
+from 112 to 136 bytes (mapping protocol v4). The added u64 object ID, initial
+backing length and mapping offset are zero for private effects. Anonymous
+shared creation binds the ID to its exact preparation token; inherited remaps
+retain that identity under their own token. Kernel-owned capabilities persist
+through live MM inheritance and fragments; host pages are not kernel IDs.
+Executable format4 and program ABI 56/digest remain unchanged. This does not
+advertise public grouped launch, descriptor-object or graphics support.
+
 Kernel-host adapter version 20 requires the scalar
 `kernel_get_process_exit_published(pid)` query: 0 before host exit
 acknowledgement, 1 afterward, and `-ESRCH` for an absent or reaped process.

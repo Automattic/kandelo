@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 20,
+      "required_host_adapter_version": 21,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2702,7 +2702,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 20,
+    "version": 21,
     "worker_features": [
       {
         "bit": 2,
@@ -8358,7 +8358,7 @@
     },
     "mapping": {
       "capability": 2,
-      "description_bytes": 112,
+      "description_bytes": 136,
       "description_fields": {
         "address": 48,
         "flags": 88,
@@ -8372,6 +8372,9 @@
         "receipt": 0,
         "reserved": 92,
         "result": 80,
+        "sharedLength": 120,
+        "sharedObject": 112,
+        "sharedOffset": 128,
         "token": 32
       },
       "kinds": {
@@ -8389,7 +8392,7 @@
         "syscall": 0,
         "tailReserved": 60
       },
-      "version": 3
+      "version": 4
     },
     "receipt_bytes": 32,
     "receipt_fields": {
