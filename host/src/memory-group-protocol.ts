@@ -62,3 +62,70 @@ export function decodeMemoryGroupSnapshot(bytes: Uint8Array, group: number): Mem
   }
   return snapshot;
 }
+
+export type GroupMemoryChangeKind = 'map' | 'unmap' | 'protect' | 'remap' | 'break';
+export interface GroupMemoryChangeDescription {
+  readonly receipt: MemoryGroupTaskReceipt;
+  readonly token: bigint;
+  readonly kind: GroupMemoryChangeKind;
+  readonly prot: number;
+  readonly address: number;
+  readonly length: number;
+  readonly oldAddress: number;
+  readonly oldLength: number;
+  readonly result: number;
+  readonly flags: number;
+}
+
+/** Copied channel scalars only; this packet carries no guest/kernel pointer. */
+export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[]): Uint8Array {
+  const mapping = P.mapping;
+  if (!memoryGroupU32(syscall) || args.length !== 6 || args.some(value => typeof value !== 'bigint'
+      || value < -(1n << 63n) || value > (1n << 63n) - 1n)) {
+    throw new MemoryGroupProtocolFault('Invalid grouped mapping request scalars');
+  }
+  const bytes = new Uint8Array(mapping.request_bytes), data = new DataView(bytes.buffer);
+  data.setUint32(mapping.request_fields.syscall, syscall, true);
+  args.forEach((value, index) => data.setBigUint64(mapping.request_fields.args + index * 8, BigInt.asUintN(64, value), true));
+  return bytes;
+}
+
+/** Decode an owned scratch copy, retaining all token/receipt bits. The kernel
+ * remains the mapping authority; this validates its result before host work.
+ */
+export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
+  expected: MemoryGroupTaskReceipt, token?: bigint): GroupMemoryChangeDescription {
+  const mapping = P.mapping, f = mapping.description_fields;
+  const data = view(bytes, mapping.description_bytes);
+  const receipt = decodeMemoryGroupReceipt(bytes.subarray(0, P.receipt_bytes), expected);
+  const actualToken = data.getBigUint64(f.token, true);
+  if (receipt.serial !== expected.serial || !actualToken || (token !== undefined && actualToken !== token)
+      || data.getUint32(f.reserved, true) !== 0) {
+    throw new MemoryGroupProtocolFault('Mapping description names another exact operation');
+  }
+  const rawKind = data.getUint32(f.kind, true);
+  const kind = (Object.entries(mapping.kinds).find(([, value]) => value === rawKind)?.[0]) as GroupMemoryChangeKind | undefined;
+  if (!kind) throw new MemoryGroupProtocolFault('Unknown grouped mapping effect');
+  const address = (offset: number): number => {
+    const value = data.getBigUint64(offset, true);
+    if (value > 0x1_0000_0000n) throw new MemoryGroupProtocolFault('Mapping address exceeds memory32');
+    return Number(value);
+  };
+  const result = Object.freeze({ receipt, token: actualToken, kind,
+    prot: data.getUint32(f.prot, true), flags: data.getUint32(f.flags, true),
+    address: address(f.address), length: address(f.length), oldAddress: address(f.oldAddress),
+    oldLength: address(f.oldLength), result: address(f.result) });
+  const page = 65536;
+  const badRange = (at: number, size: number) => at % page !== 0 || size % page !== 0 || at + size > 0x1_0000_0000;
+  if ((result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
+      || (kind !== 'break' && badRange(result.address, result.length))
+      || (kind !== 'remap' && kind !== 'break' && (result.oldAddress !== 0 || result.oldLength !== 0))
+      || ((kind === 'map' || kind === 'remap') && (!result.length || result.result !== result.address))
+      || ((kind === 'unmap' || kind === 'protect') && result.result !== 0)
+      || (kind === 'unmap' && (!result.length || result.prot !== 0))
+      || (kind === 'remap' && (!result.oldLength || badRange(result.oldAddress, result.oldLength)))
+      || (kind === 'break' && (result.length !== 0 || result.oldLength !== 0 || result.result !== result.address || result.prot !== 3))) {
+    throw new MemoryGroupProtocolFault('Inconsistent grouped mapping effect');
+  }
+  return result;
+}

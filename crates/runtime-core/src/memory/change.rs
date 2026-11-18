@@ -22,7 +22,7 @@ pub(crate) enum MemoryChange {
 /// Host work still required before metadata can be committed. These are guest
 /// addresses; they never authorize dereferencing kernel or group storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MemoryChangeEffect {
+pub enum MemoryChangeEffect {
     Map { addr: usize, len: usize, prot: u32, flags: u32 },
     Unmap { addr: usize, len: usize },
     Protect { addr: usize, len: usize, prot: u32 },
@@ -47,6 +47,7 @@ impl core::fmt::Debug for PreparedMemoryChange {
 }
 impl PreparedMemoryChange {
     pub(crate) fn effect(&self) -> MemoryChangeEffect { self.effect }
+    pub(crate) fn serial(&self) -> u64 { self.serial }
 }
 
 fn next_change(sequence: &AtomicU64) -> Result<u64, Errno> {
@@ -64,6 +65,9 @@ fn interval(addr: usize, len: usize) -> Result<usize, Errno> {
 
 impl MemoryManager {
     pub(crate) fn has_pending_memory_change(&self) -> bool { self.pending_change.is_some() }
+    pub(crate) fn owns_memory_change(&self, plan: &PreparedMemoryChange) -> bool {
+        self.pending_change == Some(plan.serial)
+    }
 
     pub(crate) fn prepare_memory_change(&mut self, change: MemoryChange) -> Result<PreparedMemoryChange, Errno> {
         if self.pending_change.is_some() { return Err(Errno::EBUSY); }

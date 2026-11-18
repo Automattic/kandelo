@@ -7077,6 +7077,16 @@ fn memory_group_contract() -> Value {
         "snapshot_fields":fields(group::SNAPSHOT_FIELDS),
         "task_actions":group::TASK_ACTIONS.iter().map(|(name,action)|
             ((*name).to_string(),json!(*action as u32))).collect::<BTreeMap<_,_>>(),
+        "mapping": {
+            "version": shared::group_memory_change::VERSION,
+            "capability": shared::group_memory_change::CAPABILITY,
+            "request_bytes": shared::group_memory_change::REQUEST_BYTES,
+            "description_bytes": shared::group_memory_change::DESCRIPTION_BYTES,
+            "request_fields": fields(shared::group_memory_change::REQUEST_FIELDS),
+            "description_fields": fields(shared::group_memory_change::DESCRIPTION_FIELDS),
+            "kinds": shared::group_memory_change::KINDS.iter().map(|(name,kind)|
+                ((*name).to_string(),json!(*kind))).collect::<BTreeMap<_,_>>(),
+        },
     })
 }
 
