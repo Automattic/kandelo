@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
 import base from './playwright.config';
 
 if (process.env.KANDELO_PLAYWRIGHT_SERVE_DIST === '1'
@@ -9,6 +10,7 @@ const server = base.webServer;
 if (!server || Array.isArray(server)) throw Error('Process-memory source fixtures require their own local server');
 export default defineConfig({
   ...base,
+  globalSetup: fileURLToPath(new URL('./playwright-process-memory-setup.ts', import.meta.url)),
   testMatch: 'process-address-space.spec.ts',
   webServer: {
     ...server,
