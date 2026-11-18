@@ -3135,6 +3135,17 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
+Host-adapter 16 adds scalar-only grouped thread-control reuse and release.
+`kernel_group_memory_thread_control_reuse(pid, callerTid, newTid) -> i64`
+returns a Rust-selected guest virtual address or a negative errno.
+`kernel_group_memory_thread_control_release(group, pid, tid, serialLo,
+serialHi, generationLo, generationHi) -> i32` retains exact ownership after
+ThreadInfo removal and refuses release while Rust task or Worker custody lives.
+Mapped controls stay host-reserved for bounded reuse; the host independently
+joins exact Worker, reference, channel and queue/native-observer fences before
+returning replica scratch. Fork inherits protected reserved bytes without the
+parent's reusable-slot authority. The program ABI and digest stay at 56.
+
 Host-adapter 13 adds optional `kernel_group_memory_fork(group, pid, tid,
 serialLo, serialHi, generationLo, generationHi, observedPages) -> i32`.
 The host must first acknowledge an image-wide execution barrier and read the

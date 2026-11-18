@@ -297,7 +297,7 @@ cross-image sharing still needs the shared-object ownership model.
 The SDK pthread probe has run forty images on one kernel/group/backing on Node,
 Chromium, Firefox and WebKit. Each cohort launches six pthread Workers, retires
 all image storage back to the single metadata page, and reuses the same
-315-page physical extent with the unchanged 2,048-page maximum and 1,024
+285-page physical extent with the unchanged 2,048-page maximum and 1,024
 declared thread slots. This proves normal-exit allocator reuse for this probe,
 not lower RSS, shrinking linear memory, or kill/exec/crash/destroy acceptance.
 The private-fork probe additionally repeats forty parent/child cohorts on one
@@ -324,10 +324,36 @@ default 1,024 slots would require 4,245 initial pages for the SDK pthread probe,
 exceeding its unchanged 2,048-page ceiling. That failed attempt was rejected;
 the implementation uses the normal compact process layout and allocates each
 four-page control slot on demand. Replica scratch is separately charged.
-Physical control/PTE storage and stopped-thread records remain charged while
-the image lives, then return through exact whole-image retirement. Reusing
-individual thread/control slots in a live process remains unfinished. A known quota refusal is checked before requesting controls; racing
-admissions and later launch failures still need complete control rollback.
+Host-adapter 16 retains exact control ownership in grouped image metadata
+after `ThreadInfo` is removed. Reuse requires absent Rust task and Worker
+custody, closed thread references and settled old-channel observers. The store
+additionally checks physical native-observer targets and every queue node,
+including live peers parked on old control bytes. It returns only private
+replica scratch; four-page controls stay mapped and host-reserved in a cache
+that Rust can bind to a new unconstructed TID. A stale receipt cannot release
+that successor. The host waits for the kernel observer's real stop transition;
+receiving the same message earlier in another callback grants no reuse.
+
+Committed unmap/remap also retires removed physical pages after their last
+current alias, queued wait target and native observer disappear. Still-pinned
+pages remain charged until a later mapping turn or whole-image retirement.
+Original payload tuples lose custody of returned pages, so a later image
+cannot be freed through an old allocation tuple. Descriptor-backed shared
+pages still need their separate ownership model.
+
+A normal SDK probe creates and joins 256 pthreads in one live process on Node
+and all three browsers. TLS initializers, constructors, stack data, native wait
+timeouts and joins pass. The retained failed control-only candidate grew from
+164 to 1,190 physical pages because stack unmaps still retained their payload.
+With removed-page reclamation, the last 128 retirements plateau at 170 pages
+on Node and 164 in Chromium, Firefox and WebKit. Retired mapping references
+reach zero; image exit returns allocation to the single metadata page. Limits
+stay at 2,048 maximum pages and 1,024 declared thread slots. This is allocator
+reuse evidence, not an RSS or reservation reduction claim.
+
+A known quota refusal is checked before requesting controls. Racing admissions
+and later launch failures still need complete control rollback. Full forced
+lifecycle, browser-memory, conformance and performance acceptance remains open.
 
 An exact stopped replica can leave an active image barrier. Its member is
 removed without fabricating an execution ACK, and its ACK observer is notified

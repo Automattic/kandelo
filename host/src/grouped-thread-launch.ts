@@ -35,9 +35,10 @@ export class GroupedThreadWorkerOwnership {
   private endpoint?: ForkHostImportOwnerWorker;
   private cleanup?: () => void;
   readonly receipt: MemoryGroupTaskReceipt;
+  readonly handle: GroupedThreadLaunch['handle'];
   constructor(readonly pid: number, readonly tid: number, plan: GroupedThreadLaunch,
     readonly worker: DeferredWorkerHandle, private readonly joins: boolean) {
-    this.receipt = plan.launch.expectation.receipt;
+    this.receipt = plan.launch.expectation.receipt; this.handle = plan.handle;
   }
   get quiescent(): boolean { return this.stopped; }
   get hasJoined(): boolean { return this.joined; }

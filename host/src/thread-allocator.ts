@@ -60,6 +60,7 @@ export class ThreadPageAllocator {
   private readonly reservedSlots: number;
   private readonly reserveSlotStartPage?: () => number;
   private activeCount = 0;
+  private readonly mappedSlots = new Set<number>();
   private readonly hostControlPages = new Set<number>();
 
   constructor(options: ThreadPageAllocatorOptions);
@@ -110,7 +111,11 @@ export class ThreadPageAllocator {
   allocateMapped(source: GroupProcessAddressSpace, control: {
     start: number; end: number; occupiedChannels: readonly number[];
   }, slotStartPage: number): ThreadAllocation {
-    return this.allocateSlot(source, false, control, slotStartPage);
+    this.assertCanAllocate();
+    if (this.mappedSlots.has(slotStartPage)) throw new RangeError('Grouped control slot is still owned');
+    const allocation = this.allocateSlot(source, false, control, slotStartPage);
+    this.mappedSlots.add(slotStartPage);
+    return allocation;
   }
 
   /**
@@ -193,6 +198,12 @@ export class ThreadPageAllocator {
       channelOffset,
       tlsAllocAddr: tlsOffset,
     };
+  }
+
+  /** Rust selects grouped slots; do not append them to the native free list. */
+  freeMapped(slotStartPage: number): void {
+    if (!this.mappedSlots.delete(slotStartPage)) throw Error('Unknown or already retired grouped control allocation');
+    this.activeCount--;
   }
 
   /** Return pages to the free list after thread exit. */

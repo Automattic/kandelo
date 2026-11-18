@@ -9,20 +9,30 @@ pub(crate) const PAGE: usize = 65536;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LinearRegion { pub start: usize, pub end: usize, pub prot: u32 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GroupThreadControl {
+    pub address: usize,
+    pub length: usize,
+    pub owner: Option<wasm_posix_shared::memory_group::ReceiptRecord>,
+}
+
 pub(crate) struct GroupLinearMemory {
     pub extent_pages: u32,
     pub maximum_pages: u32,
     pub regions: IoBuffer<LinearRegion>,
+    pub controls: IoBuffer<GroupThreadControl>,
 }
 impl GroupLinearMemory {
     pub fn copy(&self) -> Result<IoBox<Self>, Errno> {
         let mut regions = IoBuffer::try_with_capacity(self.regions.len())?;
         for region in &self.regions { regions.push(*region); }
-        IoBox::try_new(Self { extent_pages: self.extent_pages, maximum_pages: self.maximum_pages, regions })
+        let mut controls = IoBuffer::try_with_capacity(self.controls.len())?;
+        for control in &self.controls { controls.push(*control); }
+        IoBox::try_new(Self { extent_pages: self.extent_pages, maximum_pages: self.maximum_pages, regions, controls })
     }
     pub fn same(&self, other: &Self) -> bool {
         self.extent_pages == other.extent_pages && self.maximum_pages == other.maximum_pages
-            && self.regions[..] == other.regions[..]
+            && self.regions[..] == other.regions[..] && self.controls[..] == other.controls[..]
     }
     fn append(regions: &mut IoBuffer<LinearRegion>, region: LinearRegion) {
         if region.start == region.end { return; }
@@ -94,7 +104,7 @@ impl MemoryManager {
         }
         let mut regions = IoBuffer::try_with_capacity(1)?;
         regions.push(LinearRegion { start: 0, end: extent, prot: 3 });
-        let linear = IoBox::try_new(GroupLinearMemory { extent_pages: layout.initial_pages, maximum_pages: layout.maximum_pages, regions })?;
+        let linear = IoBox::try_new(GroupLinearMemory { extent_pages: layout.initial_pages, maximum_pages: layout.maximum_pages, regions, controls: IoBuffer::new() })?;
         let mut reserved = IoBuffer::try_with_capacity(1)?;
         reserved.push(ReservedRegion { addr: layout.control_start, len: layout.control_end - layout.control_start });
         // All metadata and budget admission precede the first live mutation.
@@ -114,10 +124,36 @@ impl MemoryManager {
         linear.map_missing(linear.extent_pages as usize * PAGE, pages as usize * PAGE)?;
         linear.extent_pages = pages; Ok(())
     }
+    pub(crate) fn has_group_thread_control(&self, owner: wasm_posix_shared::memory_group::ReceiptRecord) -> bool {
+        self.grouped_linear.as_deref().is_some_and(|linear| linear.controls.iter().any(|slot| slot.owner == Some(owner)))
+    }
+    pub(crate) fn claim_group_thread_control(&mut self, owner: wasm_posix_shared::memory_group::ReceiptRecord) -> Result<usize, Errno> {
+        if self.pending_change.is_some() { return Err(Errno::EBUSY); }
+        if self.has_group_thread_control(owner) { return Err(Errno::EBUSY); }
+        let linear = self.grouped_linear.as_deref_mut().ok_or(Errno::EOPNOTSUPP)?;
+        let slot = linear.controls.iter_mut().find(|slot| slot.owner.is_none()).ok_or(Errno::ENOENT)?;
+        slot.owner = Some(owner);
+        Ok(slot.address)
+    }
+    pub(crate) fn release_group_thread_control(&mut self, owner: wasm_posix_shared::memory_group::ReceiptRecord) -> Result<(), Errno> {
+        if self.pending_change.is_some() { return Err(Errno::EBUSY); }
+        let linear = self.grouped_linear.as_deref_mut().ok_or(Errno::EOPNOTSUPP)?;
+        let slot = linear.controls.iter_mut().find(|slot| slot.owner == Some(owner)).ok_or(Errno::ESRCH)?;
+        // The caller has already checked absent Rust task/Worker custody. The
+        // reservation stays host-owned and physically mapped for bounded reuse.
+        slot.owner = None;
+        Ok(())
+    }
     pub(crate) fn inherit_group_linear_memory(&mut self, parent: &Self) -> Result<(), Errno> {
         // Grouped forks inherit the live kernel model, including holes and
         // reserved controls. The ordinary fork wire is not authority for it.
-        if parent.grouped_linear.is_some() { *self = parent.copy_for_change()?; }
+        if parent.grouped_linear.is_some() {
+            *self = parent.copy_for_change()?;
+            // A child inherits reserved bytes, including its continuation TLS,
+            // but never the parent's thread authority. Those inherited regions
+            // remain protected; only controls created in this child can recycle.
+            self.grouped_linear.as_deref_mut().unwrap().controls.clear();
+        }
         Ok(())
     }
 }

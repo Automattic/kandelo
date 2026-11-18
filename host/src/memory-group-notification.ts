@@ -29,6 +29,32 @@ function waitingNodes(words: Int32Array): number[] {
  * owns storage until its returning native waiter recycles it. Peer images may
  * remain waiting; never drain their nodes to retire this root. */
 export function memoryGroupImageWaitsRetired(memory: WebAssembly.Memory, root: number): boolean | 'busy' {
+  return memoryGroupWaitsRetired(memory, root, (words, at) => (words[at + 3] >>> 0) === root);
+}
+
+/** Collect physical target pins, including nodes already unlinked by notify
+ * or stop. A returning waiter alone retires those pins. */
+export function memoryGroupPinnedPages(memory: WebAssembly.Memory, root: number): Set<number> | 'busy' {
+  const pages = new Set<number>();
+  const status = memoryGroupWaitsRetired(memory, root, (words, at) => {
+    const address = words[at + 2] >>> 0;
+    if (address % 4 || address > memory.buffer.byteLength - 4) throw new MemoryGroupProtocolFault('Invalid pinned wait target');
+    pages.add(Math.floor(address / G.MEMORY_GROUP_PAGE_BYTES));
+    return false;
+  });
+  return status === 'busy' ? status : pages;
+}
+
+/** A retired thread must leave no node of its own, and no live peer may still
+ * be parked on the control/scratch storage that is about to be reused. */
+export function memoryGroupReplicaWaitsRetired(memory: WebAssembly.Memory, root: number, replica: number,
+  ranges: readonly { start: number; end: number }[]): boolean | 'busy' {
+  return memoryGroupWaitsRetired(memory, root, (words, at) =>
+    ((words[at + 3] >>> 0) === root && (words[at + 4] >>> 0) === replica)
+    || ranges.some(range => (words[at + 2] >>> 0) >= range.start && (words[at + 2] >>> 0) < range.end));
+}
+function memoryGroupWaitsRetired(memory: WebAssembly.Memory, root: number,
+  owns: (words: Int32Array, index: number) => boolean): boolean | 'busy' {
   if (!Number.isSafeInteger(root) || root < G.MEMORY_GROUP_PAGE_BYTES || root % G.MEMORY_GROUP_PAGE_BYTES
       || root > memory.buffer.byteLength - G.MEMORY_GROUP_ROOT_HEADER_BYTES) throw new MemoryGroupProtocolFault('Invalid retiring root');
   const words = new Int32Array(memory.buffer);
@@ -43,7 +69,7 @@ export function memoryGroupImageWaitsRetired(memory: WebAssembly.Memory, root: n
         throw new MemoryGroupProtocolFault('Corrupt retiring wait node');
       }
       allocated++;
-      if ((words[at / 4 + 3] >>> 0) === root) retired = false;
+      if (owns(words, at / 4)) retired = false;
     }
     if (allocated !== (words[Q + 4] >>> 0)) throw new MemoryGroupProtocolFault('Corrupt retiring wait count');
     return retired;

@@ -165,7 +165,7 @@ export interface GroupAddressSpaceBinding {
   /** The kernel-realm owner validates exact image generation and live custody. */
   readonly assertLive: () => void;
   /** Only the kernel image owner may retain engine observers past revocation. */
-  readonly retainNativeObservation?: () => (() => void);
+  readonly retainNativeObservation?: (physicalAddress: number) => (() => void);
 }
 
 /** A virtual root, distinct from the physical Memory shared with other images.
@@ -281,9 +281,9 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
     return { binding, physical, word: new Int32Array(binding.memory.buffer, physical, 1) };
   }
   prepareNativeObservationI32(address: number): NativeI32Observation {
-    const { binding, word } = this.atomicWord(address, READ);
+    const { binding, word, physical } = this.atomicWord(address, READ);
     if (!binding.retainNativeObservation) throw new ProcessAddressFault('metadata');
-    const release = binding.retainNativeObservation();
+    const release = binding.retainNativeObservation(physical);
     try { return new NativeI32Observation(word, release); }
     catch (error) { release(); throw error; }
   }

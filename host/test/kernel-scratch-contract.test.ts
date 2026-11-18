@@ -594,6 +594,16 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#reuseGroupThreadControl::kernel-export-direct-use::reuse(pending.receipt.pid, pending.receipt.tid, pending.hostControl!.thread.tid)",
+    disposition: "kernel-control", count: 1,
+    why: "Host16 (i32,i32,i32)->i64 takes the exact caller and unconstructed Rust TID, returning a Rust-selected guest virtual address or errno. There is no kernel pointer, byte borrow or raw host slot selection. It runs under the owning image FIFO/barrier before mapped-slot initialization.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#releaseGroupThreadRetirement::kernel-export-direct-use::release(receipt.group, receipt.pid, receipt.tid, Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n), Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
+    disposition: "kernel-control", count: 1,
+    why: "Host16 takes seven i32 receipt control scalars, including both unsigned serial and generation halves. It releases only an existing kernel control owner after Rust thread and Worker custody ended. No address or pointer is supplied. The store proves exact native/queue retirement; Rust mutation and scratch bitmap release share one synchronous pool guard.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireMemoryGroupImage::kernel-export-direct-use::(this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (pid: number) => number)(receipt.pid)",
     disposition: "kernel-control",
     count: 1,
