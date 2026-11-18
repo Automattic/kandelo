@@ -167,6 +167,21 @@ operations, permissions and atomics. This artifact preparation does not enable
 grouped launch: the normal launcher still refuses the required group-memory
 import. See [SDK preparation and its limits](sdk-guide.md#experimental-memory-group-translation).
 
+The internal host address-space primitives distinguish a native process memory
+from a grouped virtual root. Grouped byte and scalar access walks page-table
+entries and checks current bounds, permissions and owner liveness; it never
+exposes the common backing as a guest-linear buffer. Reads own their copies,
+while the explicitly named native borrowing helper retains a native alias.
+A synchronous read capture keeps its entry extent across memory growth.
+Native wait observations pin their exact physical word through engine promise
+settlement, including after virtual access is revoked. Queue notifications
+preserve guest waiter counts separately from native host observers.
+
+These primitives are not connected to normal launch, syscall channels or
+loader state yet. They add no default memory reservation and do not enable
+public grouped execution. Descriptor validation, image ownership, mapping
+publication and Worker integration are subsequent backend changes.
+
 These are review boundaries for the integration series. Each stage must leave
 the ordinary backend usable. Incomplete grouped behavior stays
 explicitly gated until its prerequisites are available.

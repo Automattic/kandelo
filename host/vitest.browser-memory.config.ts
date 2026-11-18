@@ -5,6 +5,7 @@ import base from "./vitest.config.ts";
 // This same source-only selection runs locally and in the browser smoke CI.
 // No global fixture compiler: these cases need no guest binaries or images.
 const include = [
+  "test/process-address-space.test.ts",
   "test/memory-group-pool.test.ts",
   "test/kernel-scratch-contract.test.ts",
   "test/browser-kernel.test.ts",
