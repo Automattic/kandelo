@@ -293,6 +293,20 @@ export class MemoryGroupImageStore {
     }
     return acknowledged;
   }
+  virtualExtentAtBarrier(token: GroupImageExecutionPause): number | 'waiting' | 'busy' {
+    const pause = this.imagePauses.get(token), image = pause?.image;
+    if (!image || image.pause !== pause) fault('Virtual extent has no exact image barrier');
+    if (!this.imageExecutionPauseAcknowledged(token)) return 'waiting';
+    const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
+    try {
+      if (!this.imageExecutionPauseAcknowledged(token)) return 'waiting';
+      const header = new Uint32Array(this.memory.buffer, image.root, G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4);
+      const pages = Atomics.load(header, 0);
+      if (header[1] !== image.layout.maximumVirtualPages || pages > image.layout.maximumVirtualPages) fault('Invalid paused virtual extent');
+      return pages;
+    } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
+  }
   /** Observe an exact physical progress word after leaving kernel entry. The
    * timeout only schedules revalidation (including a busy wait-queue lock),
    * never establishes quiescence. Keep its image pin until engine settlement.
@@ -338,7 +352,7 @@ export class MemoryGroupImageStore {
   /** Internal physical half of a kernel-prepared mmap/munmap/mprotect/mremap.
    * Receipts do not authorize a syscall: the coordinator must separately
    * validate the Rust token and pending request before publication. No backing
-   * or PTE leaves this owner. Initial-image/brk ownership remains unfinished.
+   * or PTE leaves this owner. Rust owns initial-image/brk metadata separately.
    */
   prepareImageMapping(barrier: GroupImageExecutionPause, input: GroupMemoryChangeDescription):
       PreparedGroupMapping | 'waiting' | 'busy' | 'exhausted' {
@@ -346,23 +360,23 @@ export class MemoryGroupImageStore {
     if (!image || image.pause !== pause || image.mapping) fault('Mapping has no free exact image barrier');
     if (!pause.members.some(({ replica }) => exact(replica.receipt, input.receipt))) fault('Mapping receipt does not belong to this image barrier');
     if (!this.imageExecutionPauseAcknowledged(barrier)) return 'waiting';
-    if (input.kind === 'break') fault('Break mapping requires initial-image ownership');
     const maximum = image.layout.maximumVirtualPages;
     const aligned = (address: number, length: number) => Number.isSafeInteger(address)
       && Number.isSafeInteger(length) && address >= 0 && length >= 0
       && address % PAGE === 0 && length % PAGE === 0 && address + length <= maximum * PAGE;
-    if (!aligned(input.address, input.length) || (input.kind === 'remap' && !aligned(input.oldAddress, input.oldLength))
+    const byteAddress = (address: number) => Number.isSafeInteger(address) && address >= 0 && address <= maximum * PAGE;
+    const isBreak = input.kind === 'break';
+    if ((isBreak ? !byteAddress(input.address) || !byteAddress(input.oldAddress) || input.length !== 0 || input.oldLength !== 0
+          || input.prot !== 3 || input.result !== input.address : !aligned(input.address, input.length))
+        || (input.kind === 'remap' && !aligned(input.oldAddress, input.oldLength))
         || !Number.isSafeInteger(input.prot) || input.prot < 0 || input.prot > 7 || input.token <= 0n
-        || !['map', 'unmap', 'protect', 'remap'].includes(input.kind)) fault('Invalid kernel-prepared physical mapping');
+        || !['map', 'unmap', 'protect', 'remap', 'break'].includes(input.kind)) fault('Invalid kernel-prepared physical mapping');
     const description = Object.freeze({ ...input, receipt: Object.freeze({ ...input.receipt }) });
     // Independent undo/staging storage is bounded by this image's admitted
     // virtual capacity and discarded after commit/cancel. No snapshots of bytes.
     const before = new Uint32Array(maximum), after = new Uint32Array(maximum);
-    const freshCount = input.kind === 'map' ? input.length / PAGE
-      : input.kind === 'remap' ? Math.max(0, (input.length - input.oldLength) / PAGE) : 0;
     if ((input.kind === 'map' || input.kind === 'remap') && !input.length) fault('Mapping requires a nonempty target');
-    if (freshCount >= this.maximumPhysicalPages) return 'exhausted';
-    const allocated = new Uint32Array(freshCount), token = Object.freeze(Object.create(null)) as PreparedGroupMapping;
+    const token = Object.freeze(Object.create(null)) as PreparedGroupMapping;
     const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
     if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
     try {
@@ -381,7 +395,14 @@ export class MemoryGroupImageStore {
       // A sentinel outside the physical layout lets us finish all fallible
       // undo/retention allocations before reserving actual replacement pages.
       const fresh = 0xffff0000;
-      if (input.kind === 'map') { after.fill((fresh | rights) >>> 0, start, start + count); newExtent = Math.max(oldExtent, start + count); }
+      if (isBreak) {
+        if (input.oldAddress > oldExtent * PAGE) fault('Old break exceeds its materialized virtual extent');
+        const low = Math.ceil(Math.min(input.address, input.oldAddress) / PAGE), high = Math.ceil(Math.max(input.address, input.oldAddress) / PAGE);
+        if (input.address < input.oldAddress) after.fill(0, low, high);
+        else for (let at = low; at < high; at++) if (!(after[at] >>> 16)) after[at] = (fresh | 3) >>> 0;
+        newExtent = Math.max(oldExtent, Math.ceil(input.address / PAGE));
+      }
+      else if (input.kind === 'map') { after.fill((fresh | rights) >>> 0, start, start + count); newExtent = Math.max(oldExtent, start + count); }
       else if (input.kind === 'unmap') after.fill(0, start, start + count);
       else if (input.kind === 'protect') {
         for (let at = start; at < start + count; at++) {
@@ -396,8 +417,11 @@ export class MemoryGroupImageStore {
         for (let at = 0; at < count; at++) after[start + at] = at < oldCount ? before[oldStart + at] : (fresh | rights) >>> 0;
         newExtent = Math.max(oldExtent, start + count);
       }
-      let removed = 0;
+      let removed = 0, freshCount = 0;
       for (let at = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) removed++;
+      for (let at = 0; at < maximum; at++) if ((after[at] >>> 16) === 0xffff) freshCount++;
+      if (freshCount >= this.maximumPhysicalPages) return 'exhausted';
+      const allocated = new Uint32Array(freshCount);
       const retained: RetainedMappingPages = { pages: new Uint32Array(removed) };
       for (let at = 0, out = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) retained.pages[out++] = before[at] >>> 16;
       const mapping: Mapping = { image, barrier, description, oldExtent, newExtent, before, after, allocated, retained, state: 'prepared' };

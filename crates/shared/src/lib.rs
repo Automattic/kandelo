@@ -10,6 +10,7 @@ pub mod ioctl_contract;
 pub mod kms_cursor;
 pub mod memory_group;
 pub mod group_memory_change;
+pub mod group_memory_layout;
 pub mod process_layout;
 
 // The program ABI is owned separately so host-only edits do not rebuild
@@ -2347,7 +2348,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 9;
+    pub const HOST_ADAPTER_VERSION: u32 = 10;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2512,6 +2513,12 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
         HostAdapterKernelExport::required("kernel_get_process_state"),
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
+        HostAdapterKernelExport::optional("kernel_group_memory_break"),
+        HostAdapterKernelExport::optional("kernel_group_memory_change_cancel"),
+        HostAdapterKernelExport::optional("kernel_group_memory_change_commit"),
+        HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
+        HostAdapterKernelExport::optional("kernel_group_memory_change_validate"),
+        HostAdapterKernelExport::optional("kernel_group_memory_layout_install"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
         HostAdapterKernelExport::required("kernel_handle_guest_io"),
@@ -2544,10 +2551,6 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_memory_group_snapshot"),
         HostAdapterKernelExport::optional("kernel_memory_group_task_action"),
         HostAdapterKernelExport::optional("kernel_memory_group_task_receipt"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_validate"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_commit"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_cancel"),
         HostAdapterKernelExport::optional("kernel_owned_mapping_finish"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),

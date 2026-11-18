@@ -79,19 +79,63 @@ fn intent(syscall: u32, args: [u64; 6]) -> Result<MemoryChange, Errno> {
 }
 
 impl ProcessTable {
-    fn running_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
+    pub fn install_group_memory_layout(&mut self, record: wasm_posix_shared::group_memory_layout::Record) -> Result<(), Errno> {
+        use wasm_posix_shared::group_memory_layout::{FRESH, INHERITED};
+        let receipt = self.admitted_group_memory_caller(record.receipt.pid, record.receipt.tid)?;
+        if receipt != record.receipt || receipt.tid != receipt.pid { return Err(Errno::ESRCH); }
+        let channel = pointer(record.channel)?;
+        let channel_end = channel.checked_add(wasm_posix_shared::channel::MIN_CHANNEL_SIZE).ok_or(Errno::EINVAL)?;
+        if channel % 4 != 0 { return Err(Errno::EINVAL); }
+        let proc = self.get_mut(receipt.pid).ok_or(Errno::ESRCH)?;
+        if crate::owned_resource::has_pending_mapping(proc) || proc.pending_group_memory_change.is_some() { return Err(Errno::EBUSY); }
+        match record.mode {
+            FRESH => {
+                let (control_start, control_end) = (pointer(record.control_base)?, pointer(record.control_end)?);
+                if channel < control_start || channel_end > control_end { return Err(Errno::EINVAL); }
+                proc.memory.install_group_linear_layout(crate::memory::linear::InitialLayout {
+                    initial_pages: record.initial_pages, maximum_pages: record.maximum_pages,
+                    brk_base: pointer(record.brk_base)?, mmap_base: pointer(record.mmap_base)?, brk_limit: pointer(record.brk_limit)?,
+                    control_start, control_end,
+                })?;
+            }
+            INHERITED => {
+                if proc.memory.group_virtual_extent() != Some(record.initial_pages)
+                    || proc.memory.group_virtual_maximum() != Some(record.maximum_pages)
+                    || [record.brk_base, record.mmap_base, record.brk_limit, record.control_base, record.control_end].iter().any(|value| *value != 0)
+                    || !proc.memory.reserved_regions().iter().any(|region| region.addr <= channel && region.addr + region.len >= channel_end) {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            _ => return Err(Errno::EINVAL),
+        }
+        proc.main_channel_addr = record.channel;
+        Ok(())
+    }
+
+    pub fn group_memory_break(&self, pid: u32, tid: u32) -> Result<u64, Errno> {
+        self.running_group_memory_caller(pid, tid)?;
+        let proc = self.get(pid).ok_or(Errno::ESRCH)?;
+        if proc.memory.group_virtual_extent().is_none() { return Err(Errno::EOPNOTSUPP); }
+        Ok(proc.memory.get_brk() as u64)
+    }
+    fn admitted_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
         let admission = self.memory_group_task(pid, tid)?.ok_or(Errno::EOPNOTSUPP)?;
         self.memory_group_running_admission(admission)?;
         let proc = self.get(pid).ok_or(Errno::ESRCH)?;
-        if proc.state != ProcessState::Running { return Err(Errno::EAGAIN); }
+        if !matches!(proc.state, ProcessState::Running | ProcessState::Stopped) { return Err(Errno::ESRCH); }
         if proc.pointer_width != 4 || proc.vfork_child { return Err(Errno::EOPNOTSUPP); }
         Ok(admission.record())
+    }
+    fn running_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
+        let receipt = self.admitted_group_memory_caller(pid, tid)?;
+        if self.get(pid).ok_or(Errno::ESRCH)?.state != ProcessState::Running { return Err(Errno::EAGAIN); }
+        Ok(receipt)
     }
 
     /// Rust selects the result address and retains both snapshots. Raw host
     /// addresses cannot mint task/image identity or consume another plan.
     pub fn prepare_group_memory_change(&mut self, pid: u32, tid: u32, syscall: u32,
-        args: [u64; 6]) -> Result<Description, Errno> {
+        args: [u64; 6], observed_pages: u32) -> Result<Description, Errno> {
         let receipt = self.running_group_memory_caller(pid, tid)?;
         let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
         if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
@@ -104,6 +148,9 @@ impl ProcessTable {
             return Err(Errno::EOPNOTSUPP);
         }
         let operation = intent(syscall, args)?;
+        // The owning host freezes all execution replicas first. This is the
+        // image's logical root extent, never the common physical Memory size.
+        proc.memory.observe_group_virtual_growth(observed_pages)?;
         // Pay for the pending owner before acquiring MemoryManager custody.
         // Ordinary processes retain only one optional pointer, not two inline
         // metadata snapshots. No allocation can fail after the live serial.
@@ -184,14 +231,49 @@ mod tests {
         }).unwrap();
         let pid = table.create_process().unwrap();
         let mm = &mut table.get_mut(pid).unwrap().memory;
-        mm.set_brk_base(P); mm.set_mmap_base(4 * P); mm.set_max_addr(64 * P);
+        mm.install_group_linear_layout(crate::memory::linear::InitialLayout { initial_pages: 4, maximum_pages: 64, brk_base: 3 * P, mmap_base: 4 * P, brk_limit: 64 * P, control_start: 0, control_end: 3 * P }).unwrap();
         let admission = table.prepare_process_memory_group(group, pid).unwrap();
         if start { table.memory_groups().start(admission).unwrap(); }
         (table, pid, admission)
     }
     fn map_args() -> [u64; 6] { [0, P as u64, 3, ANON as u64, u64::MAX, 0] }
+    fn initial_record(admission: GroupAdmission) -> wasm_posix_shared::group_memory_layout::Record {
+        wasm_posix_shared::group_memory_layout::Record { receipt: admission.record(), initial_pages: 4, maximum_pages: 64,
+            brk_base: (3 * P) as u64, mmap_base: (4 * P) as u64, brk_limit: (64 * P) as u64,
+            control_base: 0, control_end: (3 * P) as u64, channel: P as u64, mode: 0 }
+    }
+    #[test]
+    fn layout_install_requires_exact_running_main_receipt_and_contains_whole_channel() {
+        let (mut table, pid, admission) = setup(false); table.get_mut(pid).unwrap().memory = MemoryManager::new();
+        let mut record = initial_record(admission);
+        assert_eq!(table.install_group_memory_layout(record), Err(Errno::EBUSY)); table.memory_groups().start(admission).unwrap();
+        record.receipt.serial ^= 1 << 40; assert_eq!(table.install_group_memory_layout(record), Err(Errno::ESRCH)); record.receipt = admission.record();
+        record.channel = (3 * P - 4) as u64; assert_eq!(table.install_group_memory_layout(record), Err(Errno::EINVAL));
+        assert!(table.get(pid).unwrap().memory.group_virtual_extent().is_none());
+        record.channel = P as u64; table.get_mut(pid).unwrap().state = ProcessState::Stopped;
+        table.install_group_memory_layout(record).unwrap();
+        assert_eq!(table.group_memory_break(pid, pid), Err(Errno::EAGAIN));
+        table.get_mut(pid).unwrap().state = ProcessState::Running;
+        assert_eq!(table.group_memory_break(pid, pid), Ok((3 * P) as u64));
+        assert_eq!(table.get(pid).unwrap().main_channel_addr, P as u64);
+        assert_eq!(table.install_group_memory_layout(record), Err(Errno::EBUSY));
+    }
+    #[test]
+    fn inherited_registration_preserves_live_fork_layout_and_refuses_extent_or_reset() {
+        let (mut table, pid, _) = setup(true);
+        let mapping = prepare(&mut table, pid); table.commit_group_memory_change(pid, pid, mapping.token).unwrap();
+        let child = table.fork_process_for_caller(pid, pid).unwrap();
+        let admission = table.memory_group_task(child, child).unwrap().unwrap(); table.memory_groups().start(admission).unwrap();
+        let mut record = initial_record(admission); record.mode = 1; record.initial_pages = 5;
+        record.brk_base = 0; record.mmap_base = 0; record.brk_limit = 0; record.control_end = 0;
+        table.install_group_memory_layout(record).unwrap();
+        assert_eq!(table.group_memory_break(child, child), Ok((3 * P) as u64));
+        assert_eq!(table.get(child).unwrap().memory.mappings()[0].addr, 4 * P);
+        record.initial_pages = 4; assert_eq!(table.install_group_memory_layout(record), Err(Errno::EINVAL));
+        record.initial_pages = 5; record.brk_base = P as u64; assert_eq!(table.install_group_memory_layout(record), Err(Errno::EINVAL));
+    }
     fn prepare(table: &mut ProcessTable, pid: u32) -> Description {
-        table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args()).unwrap()
+        table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args(), table.get(pid).unwrap().memory.group_virtual_extent().unwrap()).unwrap()
     }
     #[test]
     fn kernel_selects_address_and_consumes_exact_commit_once() {
@@ -215,7 +297,7 @@ mod tests {
         let before = table.get(pid).unwrap().memory.mappings().to_vec();
         let args = [(5 * P) as u64, P as u64, 1, (ANON | mmap::MAP_FIXED) as u64, 99, 7];
         // fd/offset are ignored for anonymous mappings, as on the ordinary path.
-        let d = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args).unwrap();
+        let d = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, table.get(pid).unwrap().memory.group_virtual_extent().unwrap()).unwrap();
         assert_eq!(d.result(), (5 * P) as u64);
         assert_eq!(table.get(pid).unwrap().memory.mappings(), before);
         table.cancel_group_memory_change(pid, pid, d.token).unwrap();
@@ -224,10 +306,10 @@ mod tests {
     #[test]
     fn receipt_phase_and_process_stop_prevent_preparation() {
         let (mut table, pid, admission) = setup(false);
-        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args()), Err(Errno::EBUSY));
+        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args(), table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(Errno::EBUSY));
         table.memory_groups().start(admission).unwrap();
         table.get_mut(pid).unwrap().state = ProcessState::Stopped;
-        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args()), Err(Errno::EAGAIN));
+        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args(), table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(Errno::EAGAIN));
         assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
     }
     #[test]
@@ -239,7 +321,7 @@ mod tests {
         let d = prepare(&mut table, pid);
         assert_eq!(table.commit_group_memory_change(pid, tid, d.token), Err(Errno::ESRCH));
         assert_eq!(table.cancel_group_memory_change(pid, tid, d.token), Err(Errno::ESRCH));
-        assert_eq!(table.prepare_group_memory_change(pid, tid, Syscall::Mmap as u32, map_args()), Err(Errno::EBUSY));
+        assert_eq!(table.prepare_group_memory_change(pid, tid, Syscall::Mmap as u32, map_args(), table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(Errno::EBUSY));
         assert_eq!(table.validate_group_memory_change(pid, pid, d.token).unwrap(), d);
         table.cancel_group_memory_change(pid, pid, d.token).unwrap();
     }
@@ -285,7 +367,7 @@ mod tests {
         for (nr, args, expected) in [(Syscall::Mmap as u32, wide, Errno::EINVAL),
             (Syscall::Mmap as u32, shared, Errno::EOPNOTSUPP),
             (Syscall::Mmap as u32, file, Errno::EOPNOTSUPP), (u32::MAX, map_args(), Errno::EINVAL)] {
-            assert_eq!(table.prepare_group_memory_change(pid, pid, nr, args), Err(expected));
+            assert_eq!(table.prepare_group_memory_change(pid, pid, nr, args, table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(expected));
             assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
             assert!(!table.get(pid).unwrap().memory.has_pending_memory_change());
         }
@@ -297,14 +379,14 @@ mod tests {
         for (nr, args) in [(Syscall::Mprotect, [(4 * P) as u64, P as u64, 1, 0, 0, 0]),
             (Syscall::Mremap, [(4 * P) as u64, P as u64, (2 * P) as u64, 1, 0, 0]),
             (Syscall::Munmap, [(4 * P) as u64, (2 * P) as u64, 0, 0, 0, 0]),
-            (Syscall::Brk, [(2 * P) as u64, 0, 0, 0, 0, 0])] {
+            (Syscall::Brk, [(5 * P) as u64, 0, 0, 0, 0, 0])] {
             let before = table.get(pid).unwrap().memory.mappings().to_vec();
-            let d = table.prepare_group_memory_change(pid, pid, nr as u32, args).unwrap();
+            let d = table.prepare_group_memory_change(pid, pid, nr as u32, args, table.get(pid).unwrap().memory.group_virtual_extent().unwrap()).unwrap();
             assert_eq!(table.get(pid).unwrap().memory.mappings(), before);
             table.commit_group_memory_change(pid, pid, d.token).unwrap();
         }
         assert!(table.get(pid).unwrap().memory.mappings().is_empty());
-        assert_eq!(table.get(pid).unwrap().memory.get_brk(), 2 * P);
+        assert_eq!(table.get(pid).unwrap().memory.get_brk(), 5 * P);
     }
     #[test]
     fn failed_metadata_admission_leaves_live_mapping_and_custody_intact() {
@@ -313,7 +395,7 @@ mod tests {
         let before = table.get(pid).unwrap().memory.mappings().to_vec();
         let held = crate::io_buffer::IO_MEMORY.usage().0;
         let _budget = crate::io_buffer::test_budget(held);
-        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args()), Err(Errno::ENOMEM));
+        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args(), table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(Errno::ENOMEM));
         assert_eq!(table.get(pid).unwrap().memory.mappings(), before);
         assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
         assert!(!table.get(pid).unwrap().memory.has_pending_memory_change());

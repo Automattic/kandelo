@@ -102,12 +102,13 @@ impl MemoryManager {
         Ok(())
     }
 
-    fn copy_for_change(&self) -> Result<Self, Errno> {
+    pub(super) fn copy_for_change(&self) -> Result<Self, Errno> {
         let mut mappings = IoBuffer::try_with_capacity(self.mappings.len())?;
         for mapping in &self.mappings { mappings.push(mapping.clone()); }
         let mut reserved_regions = IoBuffer::try_with_capacity(self.reserved_regions.len())?;
         for region in &self.reserved_regions { reserved_regions.push(*region); }
-        Ok(Self { mappings, reserved_regions, pending_change: None,
+        let grouped_linear = match &self.grouped_linear { Some(linear) => Some(linear.copy()?), None => None };
+        Ok(Self { mappings, reserved_regions, grouped_linear, pending_change: None,
             last_exact_mapping_id: self.last_exact_mapping_id,
             program_break: self.program_break, max_addr: self.max_addr,
             mmap_base: self.mmap_base, reserved_until: self.reserved_until,
@@ -120,6 +121,9 @@ impl MemoryManager {
             && self.mmap_base == baseline.mmap_base && self.reserved_until == baseline.reserved_until
             && self.brk_limit == baseline.brk_limit && self.data_limit == baseline.data_limit
             && self.initial_brk == baseline.initial_brk
+            && match (&self.grouped_linear, &baseline.grouped_linear) {
+                (Some(a), Some(b)) => a.same(b), (None, None) => true, _ => false,
+            }
             && self.reserved_regions[..] == baseline.reserved_regions[..]
             && self.mappings.len() == baseline.mappings.len()
             && self.mappings.iter().zip(baseline.mappings.iter()).all(|(a, b)| {
@@ -132,21 +136,25 @@ impl MemoryManager {
     }
 
     fn apply_change(&mut self, change: MemoryChange) -> Result<MemoryChangeEffect, Errno> {
-        match change {
+        let effect: MemoryChangeEffect = match change {
             MemoryChange::Map { hint, len, prot, flags } => {
                 let len = aligned_len(len)?;
                 if prot & !7 != 0 || (flags & mmap::MAP_FIXED != 0 && hint % PAGE != 0) { return Err(Errno::EINVAL); }
+                if self.grouped_linear.is_some() && flags & mmap::MAP_FIXED != 0
+                    && self.overlaps_reserved_prefix(hint, len) { return Err(Errno::EINVAL); }
                 let addr = self.try_mmap_anonymous(hint, len, prot, flags).map_err(|error| match error {
                     MmapRefusal::Invalid => Errno::EINVAL,
                     MmapRefusal::AddressSpaceExhausted | MmapRefusal::KernelMemoryExhausted => Errno::ENOMEM,
                 })?;
+                if let Some(linear) = self.grouped_linear.as_deref_mut() { linear.replace(addr, addr + len, None)?; }
                 Ok(MemoryChangeEffect::Map { addr, len, prot, flags })
             }
             MemoryChange::Unmap { addr, len } => {
                 let len = aligned_len(len)?;
-                interval(addr, len)?;
+                let end = interval(addr, len)?;
                 if self.overlaps_host_reserved_region(addr, len) { return Err(Errno::EINVAL); }
                 self.munmap(addr, len)?;
+                if let Some(linear) = self.grouped_linear.as_deref_mut() { linear.replace(addr, end, None)?; }
                 Ok(MemoryChangeEffect::Unmap { addr, len })
             }
             MemoryChange::Protect { addr, len, prot } => {
@@ -160,6 +168,11 @@ impl MemoryManager {
             MemoryChange::Break { addr } => {
                 let old = self.get_brk();
                 let new = self.set_brk(addr);
+                if let Some(linear) = self.grouped_linear.as_deref_mut() {
+                    let (start, end) = (Self::align_page_up(old.min(new)), Self::align_page_up(old.max(new)));
+                    if new > old { linear.map_missing(start, end)?; }
+                    else if new < old { linear.replace(start, end, None)?; }
+                }
                 Ok(MemoryChangeEffect::Break { old, new })
             }
             MemoryChange::Remap { addr, old_len, new_len, flags } => {
@@ -186,23 +199,37 @@ impl MemoryManager {
                     self.munmap(addr, old_len)?;
                     target
                 } else { return Err(Errno::ENOMEM); };
+                if let Some(linear) = self.grouped_linear.as_deref_mut() { linear.replace(new_addr, new_addr + new_len, None)?; }
                 Ok(MemoryChangeEffect::Remap { old_addr: addr, old_len, new_addr, new_len, prot: original.prot })
             }
+        }?;
+        if let Some(linear) = self.grouped_linear.as_deref_mut() {
+            let end = match effect {
+                MemoryChangeEffect::Map { addr, len, .. } => addr + len,
+                MemoryChangeEffect::Remap { new_addr, new_len, .. } => new_addr + new_len,
+                MemoryChangeEffect::Break { new, .. } => new,
+                _ => 0,
+            };
+            linear.extent_pages = linear.extent_pages.max(Self::align_page_up(end) as u32 / PAGE as u32);
         }
+        Ok(effect)
     }
 
-    /// This metadata stage supports mmap intervals. Initial linear image and
-    /// brk permissions require explicit image-layout ownership in the adapter;
-    /// a hole must not acquire a mapping merely because protection was asked.
+    /// A protection change must cover existing mmap or real linear intervals;
+    /// a hole never acquires a mapping merely because protection was asked.
     fn protect_mapped_range(&mut self, addr: usize, end: usize, prot: u32) -> Result<(), Errno> {
         if addr == end { return Ok(()); }
         let mut cursor = addr;
-        for mapping in &self.mappings {
-            let map_end = mapping.addr.checked_add(mapping.len).ok_or(Errno::EINVAL)?;
-            if map_end <= cursor { continue; }
-            if mapping.addr > cursor { break; }
-            cursor = map_end.min(end);
-            if cursor == end { break; }
+        let linear = self.grouped_linear.as_deref().map(|state| &state.regions[..]).unwrap_or(&[]);
+        let (mut map_index, mut linear_index) = (0, 0);
+        while cursor < end {
+            while map_index < self.mappings.len() && self.mappings[map_index].addr + self.mappings[map_index].len <= cursor { map_index += 1; }
+            while linear_index < linear.len() && linear[linear_index].end <= cursor { linear_index += 1; }
+            let mapped_end = self.mappings.get(map_index).filter(|m| m.addr <= cursor).map(|m| m.addr + m.len);
+            let linear_end = linear.get(linear_index).filter(|r| r.start <= cursor).map(|r| r.end);
+            match mapped_end.into_iter().chain(linear_end).max() {
+                Some(limit) => cursor = limit.min(end), None => return Err(Errno::ENOMEM),
+            }
         }
         if cursor != end { return Err(Errno::ENOMEM); }
         let capacity = self.mappings.len().checked_add(2).ok_or(Errno::ENOMEM)?;
@@ -221,6 +248,7 @@ impl MemoryManager {
             }
         }
         self.mappings = replacement;
+        if let Some(linear) = self.grouped_linear.as_deref_mut() { linear.replace(addr, end, Some(prot))?; }
         Ok(())
     }
 }

@@ -5,7 +5,7 @@ import { captureProcessRead, processDataView, readProcessBytes, writeProcessByte
   type ProcessMemorySource } from "./process-memory-views";
 import {
   decodeMemoryGroupReceipt, decodeMemoryGroupSnapshot, memoryGroupU32,
-  encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, type GroupMemoryChangeDescription,
+  encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout, type GroupMemoryChangeDescription,
   MemoryGroupProtocolFault, type MemoryGroupSnapshot, type MemoryGroupTaskReceipt,
 } from "./memory-group-protocol";
 import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
@@ -1917,6 +1917,9 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+  /** Exact low control slab, required for a fresh grouped image. */
+  controlBase?: number;
+  controlEnd?: number;
   /** The process is a vfork child borrowing another process's Memory. */
   borrowedAddressSpace?: boolean;
 }
@@ -2177,7 +2180,12 @@ interface PendingGroupMapping {
   readonly channel: ChannelInfo;
   readonly registration: ProcessRegistration;
   readonly request: FrozenChannelRequest;
-  readonly description: GroupMemoryChangeDescription;
+  readonly receipt: MemoryGroupTaskReceipt;
+  readonly syscall: number;
+  readonly args: readonly bigint[];
+  description?: GroupMemoryChangeDescription;
+  oldBreak?: number;
+  predecessor?: PendingGroupMapping;
   readonly store: MemoryGroupImageStore;
   /** Mapping custody only; engine observer and execution fences are separate. */
   readonly finished: Promise<void>;
@@ -8225,13 +8233,13 @@ export class CentralizedKernelWorker {
     });
   }
 
-  #memoryGroupAdmissionAvailable(entry: KernelWorkerEntryContext): boolean {
+  #memoryGroupAdmissionAvailable(entry: KernelWorkerEntryContext, required: number = MEMORY_GROUP_PROTOCOL.capability_admission): boolean {
     const exports = this.#kernelInstanceForEntry(entry).exports;
     const protocol = exports.kernel_memory_group_protocol_version, capabilities = exports.kernel_memory_group_capabilities;
     if (typeof protocol !== "function" || typeof capabilities !== "function") return false;
     const version = protocol(), caps = capabilities();
     return version === MEMORY_GROUP_PROTOCOL.version && memoryGroupU32(caps)
-      && (caps & MEMORY_GROUP_PROTOCOL.capability_admission) !== 0;
+      && (caps & required) === required;
   }
 
   #checkedMemoryGroupStatus(status: number): number {
@@ -8334,6 +8342,7 @@ export class CentralizedKernelWorker {
     const mmapBase = options?.mmapBase;
     const explicitMaxAddr = options?.maxAddr;
     const brkLimit = options?.brkLimit;
+    const controlBase = options?.controlBase, controlEnd = options?.controlEnd;
     const existingRegistration = this.processes.get(pid);
     const replacingExecImage =
       preserveProcessState
@@ -8360,7 +8369,12 @@ export class CentralizedKernelWorker {
         throw new Error("Grouped registration requires wasm32 and an owned image");
       }
       const ceiling = grouped.maximumVirtualPages * 65536;
-      for (const address of [brkBase, mmapBase, explicitMaxAddr, brkLimit]) {
+      if (explicitMaxAddr !== undefined && explicitMaxAddr !== ceiling) throw new Error("Grouped process layout disagrees with its admitted virtual ceiling");
+      if ((!preserveProcessState || replacingExecImage)
+          && (brkBase === undefined || controlBase === undefined || controlEnd === undefined)) {
+        throw new Error("Fresh grouped registration requires its heap and control layout");
+      }
+      for (const address of [brkBase, mmapBase, explicitMaxAddr, brkLimit, controlBase, controlEnd]) {
         if (address !== undefined && (!Number.isSafeInteger(address) || address < 0 || address > ceiling)) {
           throw new Error("Grouped process layout exceeds its admitted virtual ceiling");
         }
@@ -8423,7 +8437,8 @@ export class CentralizedKernelWorker {
           registrationPreconditionError = execGeneration;
           return undefined;
         }
-        if (this.#memoryGroupAdmissionAvailable(entry)) {
+        if (this.#memoryGroupAdmissionAvailable(entry, grouped
+          ? MEMORY_GROUP_PROTOCOL.capability_admission | MEMORY_GROUP_PROTOCOL.layout.capability : MEMORY_GROUP_PROTOCOL.capability_admission)) {
           const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(pid, pid, execGeneration, entry);
           if (grouped) {
             const expected = grouped.receipt;
@@ -8458,7 +8473,7 @@ export class CentralizedKernelWorker {
         }
         const registration: ProcessRegistration = {
           pid, memory, source, channels, execGeneration, borrowedAddressSpace,
-          ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined,
+          ptrWidth, explicitMaxAddr: grouped !== undefined || explicitMaxAddr !== undefined,
           grouped: grouped && Object.freeze({ store: grouped.store, handle: grouped.handle, receipt: grouped.receipt }),
         };
         this.#noteGuestMayRun(source);
@@ -8482,7 +8497,22 @@ export class CentralizedKernelWorker {
         // publishing a host registration. Complete that transaction before
         // mutating any layout field so a failed attempt leaves the whole
         // kernel Process unchanged and can be retried safely.
-        if (
+        if (grouped) {
+          const inherited = preserveProcessState && !replacingExecImage;
+          const packet = encodeGroupMemoryLayout(grouped.receipt, {
+            initialPages: processMemoryByteLength(source) / 65536, maximumPages: grouped.maximumVirtualPages,
+            channel: stableChannelOffsets[0]!, mode: inherited ? 'inherited' : 'fresh',
+            brkBase: inherited ? undefined : brkBase, mmapBase: inherited ? undefined : mmapBase ?? brkBase,
+            brkLimit: inherited ? undefined : brkLimit ?? grouped.maximumVirtualPages * 65536,
+            controlBase: inherited ? undefined : controlBase, controlEnd: inherited ? undefined : controlEnd,
+          });
+          const status = this.#requireMainScratchRegion().withLease(lease => {
+            lease.copyFrom(packet, 0, 0, packet.length);
+            return this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_layout_install", [lease.exportPointer(0, packet.length), packet.length]);
+          });
+          if (this.#checkedMemoryGroupStatus(status) !== 0) throw new Error(`Kernel refused grouped image layout: errno ${-status}`);
+        }
+        if (!grouped &&
           brkBase !== undefined
           && !this.#setBrkBaseWithinKernelEntry(pid, brkBase, entry)
         ) {
@@ -8495,10 +8525,10 @@ export class CentralizedKernelWorker {
         // historical lowest-channel ceiling.
         const maxAddr = explicitMaxAddr
           ?? Math.min(...stableChannelOffsets);
-        this.#setMaxAddrWithinKernelEntry(pid, maxAddr, entry);
+        if (!grouped) this.#setMaxAddrWithinKernelEntry(pid, maxAddr, entry);
 
         if (
-          mmapBase !== undefined
+          !grouped && mmapBase !== undefined
           && !this.#setMmapBaseWithinKernelEntry(pid, mmapBase, entry)
         ) {
           throw new Error(
@@ -8506,7 +8536,7 @@ export class CentralizedKernelWorker {
           );
         }
         if (
-          brkLimit !== undefined
+          !grouped && brkLimit !== undefined
           && !this.#setBrkLimitWithinKernelEntry(pid, brkLimit, entry)
         ) {
           throw new Error(
@@ -8517,7 +8547,7 @@ export class CentralizedKernelWorker {
         // which the kernel finds from the request in the caller's channel.
         const setMainChannel = this.#kernelInstanceForEntry(entry).exports
           .kernel_set_main_channel_addr as (pid: number, addr: bigint) => number;
-        if (setMainChannel(pid, BigInt(stableChannelOffsets[0]!)) !== 0) {
+        if (!grouped && setMainChannel(pid, BigInt(stableChannelOffsets[0]!)) !== 0) {
           throw new Error("kernel_set_main_channel_addr refused the registration");
         }
         // The kernel parses caller-native structures for this process, so it
@@ -21299,83 +21329,77 @@ export class CentralizedKernelWorker {
     return generation === registration.execGeneration;
   }
 
+  #readGroupMemoryBreak(pid: number, tid: number, entry: KernelWorkerEntryContext): number {
+    const getBreak = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_break;
+    if (typeof getBreak !== "function") this.#memoryGroupProtocolError("Kernel lacks grouped heap query");
+    const result = getBreak(pid, tid);
+    if (typeof result !== "bigint" || result < -4095n || result > 0xffffffffn) this.#memoryGroupProtocolError("Invalid grouped heap query result");
+    return Number(result);
+  }
+  #completeGroupMemorySyscall(channel: ChannelInfo, result: number, errno: number, entry: KernelWorkerEntryContext): void {
+    this.#dequeueSignalForDelivery(channel, entry);
+    if (this.#finishSignalTermination(channel, entry)) return;
+    this.completeChannelRawAndRelisten(channel, result, errno, entry);
+  }
+
   #beginGroupMapping(channel: ChannelInfo, syscall: number, args: readonly ChannelScalarValue[],
     entry: KernelWorkerEntryContext): void {
     const previous = this.pendingGroupMappings.get(channel);
     if (previous) { this.#advanceGroupMapping(previous, entry); return; }
     const registration = this.processes.get(channel.pid), request = this.activeChannelRequests.get(channel);
     const grouped = registration?.grouped;
-    if (!registration || !request || !grouped || registration.source !== channel.source) {
-      this.#memoryGroupProtocolError("Grouped mapping has no exact registered image/request");
-    }
+    if (!registration || !request || !grouped || registration.source !== channel.source) this.#memoryGroupProtocolError("Grouped mapping has no exact registered image/request");
     const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
     if ((generation instanceof KernelTaskBindingError && generation.errno === ESRCH)
         || (typeof generation === "bigint" && generation !== registration.execGeneration)) return;
     if (generation instanceof Error) this.#memoryGroupProtocolError("Cannot confirm grouped mapping caller generation", generation);
     this.#bindKernelTidForChannel(channel, entry);
-    // Initial linear-image/brk ownership must be modeled before this path can
-    // implement brk. Never send a grouped call through ordinary growth/zeroing.
-    if (syscall === SYS_BRK) {
-      this.completeChannelRawAndRelisten(channel, -1, ERRNO.EOPNOTSUPP, entry); return;
-    }
     const capabilities = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_capabilities as (() => number) | undefined;
     if (!capabilities || (capabilities() & MEMORY_GROUP_PROTOCOL.mapping.capability) === 0) {
-      this.completeChannelRawAndRelisten(channel, -1, ERRNO.EOPNOTSUPP, entry); return;
+      this.#completeGroupMemorySyscall(channel, -1, ERRNO.EOPNOTSUPP, entry); return;
     }
     const tid = this.guestTidForChannel(channel);
     const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(channel.pid, tid, registration.execGeneration, entry);
-    if (typeof receipt === "number" || receipt.group !== grouped.receipt.group) {
-      this.#memoryGroupProtocolError("Grouped mapping task no longer belongs to its registered image");
-    }
+    if (typeof receipt === "number" || receipt.group !== grouped.receipt.group) this.#memoryGroupProtocolError("Grouped mapping task no longer belongs to its registered image");
     const copied = args.map(value => BigInt.asIntN(64, BigInt(value)));
-    // These slots have Rust u32 semantics, including ignored high channel bits.
-    if (syscall === SYS_MMAP) copied[2] = BigInt.asUintN(32, copied[2]);
+    if (syscall === SYS_MMAP || syscall === SYS_MPROTECT) copied[2] = BigInt.asUintN(32, copied[2]);
     if (syscall === SYS_MMAP || syscall === SYS_MREMAP) copied[3] = BigInt.asUintN(32, copied[3]);
-    if (syscall === SYS_MPROTECT) copied[2] = BigInt.asUintN(32, copied[2]);
-    const packet = encodeGroupMemoryChangeRequest(syscall, copied), protocol = MEMORY_GROUP_PROTOCOL.mapping;
-    const description = this.#requireMainScratchRegion().withLease(lease => {
-      // Borrow independent bounded request/output ranges. The scratch contract
-      // refuses overlap even though Rust decodes before writing its result.
+    // A query does not mutate either model or PTEs and needs no allocation or
+    // all-thread barrier. It observes the committed break under kernel entry.
+    if (syscall === SYS_BRK && copied[0] === 0n) {
+      const result = this.#readGroupMemoryBreak(channel.pid, tid, entry);
+      this.#completeGroupMemorySyscall(channel, result < 0 ? -1 : result, result < 0 ? -result : 0, entry); return;
+    }
+    let finish!: () => void;
+    const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+    const predecessor = Array.from(this.pendingGroupMappings.values()).reverse().find(other => other.registration === registration && !other.done);
+    // Host custody is allocated before asking Rust to retain a metadata plan.
+    const pending: PendingGroupMapping = { channel, registration, request, receipt, syscall, args: Object.freeze(copied),
+      store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
+      suppressCompletion: false, failure: EIO, scheduled: false, done: false };
+    this.pendingGroupMappings.set(channel, pending); this.#advanceGroupMapping(pending, entry);
+  }
+
+  #prepareGroupMapping(pending: PendingGroupMapping, observedPages: number, entry: KernelWorkerEntryContext): GroupMemoryChangeDescription | number {
+    const packet = encodeGroupMemoryChangeRequest(pending.syscall, pending.args, observedPages), protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    return this.#requireMainScratchRegion().withLease(lease => {
       lease.copyFrom(packet, 0, 0, packet.length);
       const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_prepare", [
-        channel.pid, tid, lease.exportPointer(0, packet.length), packet.length,
+        pending.receipt.pid, pending.receipt.tid, lease.exportPointer(0, packet.length), packet.length,
         lease.exportPointer(packet.length, protocol.description_bytes), protocol.description_bytes,
       ]);
       if (count < 0) return this.#checkedMemoryGroupStatus(count);
       if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid prepared mapping record length");
-      try { return decodeGroupMemoryChangeDescription(lease.copyOut(packet.length, count), receipt); }
+      try { return decodeGroupMemoryChangeDescription(lease.copyOut(packet.length, count), pending.receipt); }
       catch (error) { return this.#memoryGroupProtocolError("Invalid prepared mapping record", error); }
     });
-    if (typeof description === "number") {
-      this.completeChannelRawAndRelisten(channel, -1, -description, entry); return;
-    }
-    let pending: PendingGroupMapping;
-    try {
-      let finish!: () => void;
-      const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
-      pending = { channel, registration, request, description, store: grouped.store, finished, finish,
-        cancelling: false, rustCancelled: false, suppressCompletion: false, failure: EIO, scheduled: false, done: false };
-      this.pendingGroupMappings.set(channel, pending);
-    } catch (error) {
-      // Rust already retained a preparation. Unexpected host-owner setup
-      // failure cannot become recoverable EIO with an orphaned kernel token.
-      this.#memoryGroupProtocolError("Cannot retain prepared mapping custody", error);
-    }
-    if (!this.#groupMappingCallerCurrent(pending, entry)) {
-      pending.cancelling = true; pending.suppressCompletion = true; this.#cancelGroupMapping(pending, entry); return;
-    }
-    try { pending.barrier = grouped.store.beginImageExecutionPause(grouped.handle); }
-    catch (error) {
-      // A partially requested barrier contains uncertain replicas in its owner.
-      // Do not resume that image by manufacturing a recoverable syscall result.
-      this.#memoryGroupProtocolError("Cannot establish grouped mapping barrier", error);
-    }
-    this.#advanceGroupMapping(pending, entry);
   }
 
   #validateGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): number {
     if (!this.#groupMappingCallerCurrent(pending, entry)) return -ESRCH;
-    const { receipt, token } = pending.description, protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    const description = pending.description;
+    if (!description) this.#memoryGroupProtocolError("Mapping has no Rust preparation");
+    const { receipt, token } = description, protocol = MEMORY_GROUP_PROTOCOL.mapping;
     const result = this.#requireMainScratchRegion().withLease(lease => {
       const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_validate", [
         receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
@@ -21387,7 +21411,7 @@ export class CentralizedKernelWorker {
       try { current = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), receipt, token); }
       catch (error) { return this.#memoryGroupProtocolError("Invalid validated mapping record", error); }
       for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags"] as const) {
-        if (current[key] !== pending.description[key]) this.#memoryGroupProtocolError("Prepared mapping effect changed under its exact token");
+        if (current[key] !== description[key]) this.#memoryGroupProtocolError("Prepared mapping effect changed under its exact token");
       }
       return 0;
     });
@@ -21395,7 +21419,9 @@ export class CentralizedKernelWorker {
   }
 
   #groupMappingAction(pending: PendingGroupMapping, cancel: boolean, entry: KernelWorkerEntryContext): number {
-    const { receipt, token } = pending.description, exports = this.#kernelInstanceForEntry(entry).exports;
+    const description = pending.description;
+    if (!description) { if (cancel) return 0; this.#memoryGroupProtocolError("Mapping commit has no preparation"); }
+    const { receipt, token } = description, exports = this.#kernelInstanceForEntry(entry).exports;
     const operation = cancel ? exports.kernel_group_memory_change_cancel : exports.kernel_group_memory_change_commit;
     if (typeof operation !== "function") this.#memoryGroupProtocolError("Kernel lacks exact mapping action");
     return this.#checkedMemoryGroupStatus(operation(receipt.pid, receipt.tid,
@@ -21408,30 +21434,53 @@ export class CentralizedKernelWorker {
     if (!this.#groupMappingCallerCurrent(pending, entry)) {
       pending.cancelling = true; pending.suppressCompletion = true; this.#cancelGroupMapping(pending, entry); return;
     }
-    if (this.deferChannelWhileStopped(pending.channel)) {
-      // SIGCONT's normal retry path resumes this owner. Do not poll stopped tasks.
+    if (this.deferChannelWhileStopped(pending.channel)) return;
+    // Cancellation may finish a queued middle owner before its predecessor.
+    // Follow that dependency rather than letting its successor bypass the
+    // still-live earlier image barrier.
+    while (pending.predecessor?.done) pending.predecessor = pending.predecessor.predecessor;
+    if (pending.predecessor && !pending.predecessor.done) {
+      if (!pending.scheduled) {
+        const predecessor = pending.predecessor;
+        pending.scheduled = true;
+        entry.deferProtocolEffect(() => {
+          predecessor.finished.then(() => this.#queueGroupMappingTurn(pending)).catch(error => this.#failKernelInstance(error));
+        });
+      }
       return;
     }
-    const validity = this.#validateGroupMapping(pending, entry);
-    if (validity < 0) {
-      pending.cancelling = true; pending.failure = -validity; this.#cancelGroupMapping(pending, entry); return;
+    if (!pending.barrier) {
+      try { pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle); }
+      catch (error) { this.#memoryGroupProtocolError("Cannot establish grouped mapping barrier", error); }
     }
-    if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier!)) {
+    if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier)) {
       this.#scheduleGroupMapping(pending, "barrier", entry); return;
     }
+    if (!pending.description) {
+      const extent = pending.store.virtualExtentAtBarrier(pending.barrier);
+      if (typeof extent !== "number") { this.#scheduleGroupMapping(pending, extent === "waiting" ? "barrier" : "locks", entry); return; }
+      if (pending.syscall === SYS_BRK) {
+        const old = this.#readGroupMemoryBreak(pending.receipt.pid, pending.receipt.tid, entry);
+        if (old < 0) { pending.cancelling = true; pending.failure = -old; this.#cancelGroupMapping(pending, entry); return; }
+        pending.oldBreak = old;
+      }
+      const description = this.#prepareGroupMapping(pending, extent, entry);
+      if (typeof description === "number") {
+        pending.cancelling = true; pending.failure = -description; this.#cancelGroupMapping(pending, entry); return;
+      }
+      pending.description = description;
+    }
+    const validity = this.#validateGroupMapping(pending, entry);
+    if (validity < 0) { pending.cancelling = true; pending.failure = -validity; this.#cancelGroupMapping(pending, entry); return; }
     if (!pending.physical) {
       let physical: ReturnType<MemoryGroupImageStore["prepareImageMapping"]>;
-      try { physical = pending.store.prepareImageMapping(pending.barrier!, pending.description); }
+      try { physical = pending.store.prepareImageMapping(pending.barrier, pending.description); }
       catch (error) {
         if (!(error instanceof RangeError)) this.#memoryGroupProtocolError("Physical mapping preparation failed", error);
         pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return;
       }
-      if (physical === "waiting" || physical === "busy") {
-        this.#scheduleGroupMapping(pending, physical === "waiting" ? "barrier" : "locks", entry); return;
-      }
-      if (physical === "exhausted") {
-        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return;
-      }
+      if (physical === "waiting" || physical === "busy") { this.#scheduleGroupMapping(pending, physical === "waiting" ? "barrier" : "locks", entry); return; }
+      if (physical === "exhausted") { pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return; }
       pending.physical = physical;
     }
     let validation = 0;
@@ -21447,13 +21496,9 @@ export class CentralizedKernelWorker {
       this.#cancelGroupMapping(pending, entry); return;
     }
     pending.done = true; this.pendingGroupMappings.delete(pending.channel);
-    pending.store.resumeImageExecutionPause(pending.barrier!);
+    pending.store.resumeImageExecutionPause(pending.barrier);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
-    this.#dequeueSignalForDelivery(pending.channel, entry);
-    if (this.#finishSignalTermination(pending.channel, entry)) return;
-    // PTE publication already supplied zeroing, growth and protection. Ordinary
-    // memory-call postprocessing would overwrite or reject the new mappings.
-    this.completeChannelRawAndRelisten(pending.channel, pending.description.result, 0, entry);
+    this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
   }
 
   #cancelGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {
@@ -21461,40 +21506,37 @@ export class CentralizedKernelWorker {
     this.retiringGroupMappings.add(pending);
     if (!pending.rustCancelled) {
       const status = this.#groupMappingAction(pending, true, entry);
-      // ESRCH means this monotonic exact token no longer owns Rust state; it
-      // never authorizes cancellation of a successor's preparation.
       if (status !== 0 && status !== -ESRCH) this.#memoryGroupProtocolError("Cannot cancel exact Rust mapping owner");
       pending.rustCancelled = true;
     }
-    if (pending.physical && pending.store.cancelImageMapping(pending.physical) === "busy") {
-      this.#scheduleGroupMapping(pending, "pool", entry); return;
-    }
+    if (pending.physical && pending.store.cancelImageMapping(pending.physical) === "busy") { this.#scheduleGroupMapping(pending, "pool", entry); return; }
     if (pending.barrier) pending.store.resumeImageExecutionPause(pending.barrier);
     pending.done = true; this.retiringGroupMappings.delete(pending);
     if (this.pendingGroupMappings.get(pending.channel) === pending) this.pendingGroupMappings.delete(pending.channel);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
     if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
-      this.completeChannelRawAndRelisten(pending.channel, -1, pending.failure, entry);
+      // brk's raw ABI reports the unchanged break on memory-admission failure.
+      const oldBreak = pending.syscall === SYS_BRK && pending.failure === ENOMEM ? pending.oldBreak : undefined;
+      this.#completeGroupMemorySyscall(pending.channel, oldBreak ?? -1, oldBreak === undefined ? pending.failure : 0, entry);
     }
+  }
+
+  #queueGroupMappingTurn(pending: PendingGroupMapping): void {
+    if (pending.done || this.#kernelFatalError !== null || !this.#kernelInstance) return;
+    this.#registerTimeout(() => {
+      pending.scheduled = false;
+      if (pending.done || this.#kernelFatalError !== null) return;
+      this.#runOrDeferKernelEntry("exact grouped mapping continuation", next => { this.#advanceGroupMapping(pending, next); return undefined; }, pending);
+    }, 0);
   }
 
   #scheduleGroupMapping(pending: PendingGroupMapping, target: 'barrier' | 'locks' | 'pool', entry: KernelWorkerEntryContext): void {
     if (pending.done || pending.scheduled) return;
     pending.scheduled = true;
-    // No scratch lease, entry façade, memory view or caller array crosses the
-    // effect boundary. Observe real control-word notifications, not a JS poll.
     entry.deferProtocolEffect(() => {
       if (pending.done || this.#kernelFatalError !== null) return;
-      pending.store.waitForMappingProgress(pending.barrier!, target).then(() => {
-        if (pending.done || this.#kernelFatalError !== null || !this.#kernelInstance) return;
-        this.#registerTimeout(() => {
-          pending.scheduled = false;
-          if (pending.done || this.#kernelFatalError !== null) return;
-          this.#runOrDeferKernelEntry("exact grouped mapping continuation", next => {
-            this.#advanceGroupMapping(pending, next); return undefined;
-          }, pending);
-        }, 0);
-      }).catch(error => { this.#failKernelInstance(error); });
+      pending.store.waitForMappingProgress(pending.barrier!, target).then(() => this.#queueGroupMappingTurn(pending))
+        .catch(error => { this.#failKernelInstance(error); });
     });
   }
 

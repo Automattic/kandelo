@@ -1,5 +1,6 @@
 extern crate alloc;
 pub(crate) mod change;
+pub(crate) mod linear;
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::collections::BTreeSet;
@@ -115,6 +116,8 @@ pub struct MemoryLayoutMetadata {
 
 /// Kernel memory manager for mmap/munmap/brk.
 pub struct MemoryManager {
+    /// Opt-in virtual image/heap intervals; ordinary processes pay one pointer.
+    grouped_linear: Option<crate::IoBox<linear::GroupLinearMemory>>,
     /// Exact staged-change owner; ordinary operations leave this empty.
     pending_change: Option<u64>,
     /// List of active mappings, kept sorted by address.
@@ -175,6 +178,7 @@ impl MemoryManager {
 
     pub fn new() -> Self {
         MemoryManager {
+            grouped_linear: None,
             pending_change: None,
             mappings: IoBuffer::new(),
             reserved_regions: IoBuffer::new(),

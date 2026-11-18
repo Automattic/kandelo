@@ -4013,6 +4013,27 @@ pub extern "C" fn kernel_memory_group_protocol_version() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_memory_group_capabilities() -> u32 {
     wasm_posix_shared::memory_group::CAPABILITY_ADMISSION | wasm_posix_shared::group_memory_change::CAPABILITY
+        | wasm_posix_shared::group_memory_layout::CAPABILITY
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_layout_install(record_ptr: *const u8, record_len: u32) -> i32 {
+    use wasm_posix_shared::group_memory_layout::{BYTES, Record};
+    if record_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if record_len as usize != BYTES { return -(Errno::EINVAL as i32); }
+    let record = match Record::decode(unsafe { core::slice::from_raw_parts(record_ptr, BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.install_group_memory_layout(record).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_break(pid: u32, tid: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table.group_memory_break(pid, tid).map(|address| address as i64).unwrap_or_else(|error| -(error as i64))
 }
 
 #[unsafe(no_mangle)]
@@ -4030,7 +4051,7 @@ pub extern "C" fn kernel_group_memory_change_prepare(
     };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let description = match table.prepare_group_memory_change(pid, tid, request.syscall, request.args) {
+    let description = match table.prepare_group_memory_change(pid, tid, request.syscall, request.args, request.observed_pages) {
         Ok(description) => description, Err(error) => return -(error as i32),
     };
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) };
