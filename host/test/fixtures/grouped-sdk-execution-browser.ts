@@ -8,12 +8,12 @@ installBrowserSetImmediatePolyfill();
 
 // Fetch executable bytes inside this disposable kernel realm. The page only
 // supplies a mode, and receives owned output/scalars after exact quiescence.
-self.onmessage = async (event: MessageEvent<{ grouped: boolean; cycles?: number; physicalPages?: number; probe?: "mapping" | "private-file" | "fork" | "pthread" | "pthread-churn" | "pthread-rollback" }>) => {
+self.onmessage = async (event: MessageEvent<{ grouped: boolean; cycles?: number; physicalPages?: number; rejectThreadLaunchCount?: number; uncertainThreadConstructor?: boolean; probe?: "mapping" | "private-file" | "fork" | "pthread" | "pthread-churn" | "pthread-rollback" | "pthread-launch-rollback" | "pthread-constructor-failure" }>) => {
   self.onmessage = null;
   try {
     const grouped = event.data.grouped;
     const probe = event.data.probe ?? "mapping";
-    if (probe !== "mapping" && probe !== "private-file" && probe !== "fork" && probe !== "pthread" && probe !== "pthread-churn" && probe !== "pthread-rollback") throw new Error("unknown SDK probe");
+    if (probe !== "mapping" && probe !== "private-file" && probe !== "fork" && probe !== "pthread" && probe !== "pthread-churn" && probe !== "pthread-rollback" && probe !== "pthread-launch-rollback" && probe !== "pthread-constructor-failure") throw new Error("unknown SDK probe");
     const read = async (path: string) => {
       const response = await fetch(path);
       if (!response.ok) throw new Error(`fixture fetch ${path}: ${response.status}`);
@@ -23,7 +23,7 @@ self.onmessage = async (event: MessageEvent<{ grouped: boolean; cycles?: number;
       read("/kernel.wasm"), read("/image-module.wasm"), read(`/${probe}/ordinary.wasm`),
       read(`/${probe}/${grouped ? "grouped" : "ordinary"}.wasm`),
     ]);
-    const options = { kernelBytes, imageModuleBytes, ordinaryBytes, programBytes, grouped, physicalPages: event.data.physicalPages,
+    const options = { kernelBytes, imageModuleBytes, ordinaryBytes, programBytes, grouped, physicalPages: event.data.physicalPages, rejectThreadLaunchCount: event.data.rejectThreadLaunchCount, uncertainThreadConstructor: event.data.uncertainThreadConstructor,
       io: new VirtualPlatformIO([], new BrowserTimeProvider()),
       adapter: new BrowserWorkerAdapter(new URL("/process.mjs", self.location.href)), joinOnExit: false,
     };

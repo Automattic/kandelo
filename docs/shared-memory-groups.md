@@ -370,9 +370,37 @@ another control slot. Node, Chromium, Firefox and WebKit pass the corrected
 path and return image allocation to one metadata page after exit. The initial
 experiment without freeing scratch headroom failed and is retained.
 
-Published deferred cancellation, attempted-constructor failures and full forced
-lifecycle still need their separate absence/stop proofs. Full browser-memory,
-conformance, canonical desktop and performance acceptance remains open.
+Published deferred launches have a distinct absence path. The kernel binds one
+exact Worker handle to the captured replica receipt before startup. Only that
+same private DeferredWorkerHandle can seal never-started execution; foreign,
+derived or constructor-attempted handles cannot supply absence. A deferred
+launch already stale at observation is sealed before it can bind solely for
+retirement. Neither path grants permission to start an obsolete image.
+
+Failed published launches that prove absence or actual stop retain their exact
+reference closer through Rust thread rollback and physical retirement. Launch
+settlement and full clone completion are separate fences: an early thread
+retirement can join adoption settlement without waiting on its own cleanup.
+The creator receives its clone refusal only after this cleanup, while image
+retirement continues to join the full clone owner. Endpoint and listener
+references end explicitly; removing a listener after termination can still
+reach a live old backing through a weak reference without retaining that
+Worker or its Memory strongly.
+
+A normal SDK C probe performs sixteen injected host refusals after publication
+and before construction, each followed by a successful pthread retry. Only the
+sixteen successful threads construct execution Workers. TLS/stack data, joins,
+control/scratch reuse and bounded tail allocation are checked on Node and all
+three browsers. A separate attempted-constructor probe does not report a
+successful clone refusal or image reclamation: the instance fails with an
+explicit missing-stop-proof error and retains all affected storage. Returning
+an errno in that case would let musl unmap its stack while an uncertain realm
+might still use it.
+
+Full forced lifecycle, browser-memory, conformance, canonical desktop and
+performance acceptance remains open. Unit coverage of proven stopped launch
+failure does not establish the real blocked/busy kill, exec, crash and destroy
+matrix.
 
 An exact stopped replica can leave an active image barrier. Its member is
 removed without fabricating an execution ACK, and its ACK observer is notified

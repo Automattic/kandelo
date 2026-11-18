@@ -14,6 +14,8 @@ import { FORK_SAVE_BUFFER_SIZE } from '../src/process-memory';
 import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import { HOST_INTERCEPTED_SYSCALLS, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS } from '../src/generated/abi';
 import { MockWorkerHandle } from '../src/worker-adapter';
+import { DeferredWorkerHandle } from '../src/deferred-worker-handle';
+import { ThreadPageAllocator } from '../src/thread-allocator';
 import { emptyProcessTimerCleanup } from './kernel-worker-test-scratch';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
 const groupedOptions = { brkBase: 3 * 65536, brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 };
@@ -139,6 +141,49 @@ describe('kernel-Worker memory group admission', () => {
     expect(() => launch.source.readBytes(0, 1)).toThrow();
     // The kernel image source survives to publish the final wait completion.
     expect((worker as any).processes.get(100).source.readBytes(0, 1)).toEqual(Uint8Array.of(0));
+  });
+  it('seals only the exact observed deferred Worker and retires its captured receipt once', async () => {
+    const h = harness(); h.worker.createMemoryGroupBacking(23, 16);
+    const receipt = h.worker.prepareMemoryGroupProcess(23, 100); if (typeof receipt === 'number') throw Error('receipt');
+    const handle = h.worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('handle'); h.worker.publishMemoryGroupReplica(handle);
+    const create = vi.fn(() => new MockWorkerHandle()), worker = new DeferredWorkerHandle(create), other = new DeferredWorkerHandle(create);
+    h.worker.observeMemoryGroupReplicaWorker(handle, worker, { terminationProvesQuiescence: false });
+    const charged = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages; h.implementations.kernel_memory_group_task_action.mockClear();
+    expect(h.worker.sealMemoryGroupReplicaWorkerAbsence(handle, other)).toBe(false);
+    expect(other.start()).toBe(true);
+    expect(h.worker.sealMemoryGroupReplicaWorkerAbsence({} as any, worker)).toBe(false);
+    expect(h.worker.sealMemoryGroupReplicaWorkerAbsence(handle, worker)).toBe(true);
+    await h.worker.waitForMemoryGroupReplicaQuiescence(handle);
+    expect(worker.start()).toBe(false); expect(create).toHaveBeenCalledTimes(1);
+    expect(h.worker.sealMemoryGroupReplicaWorkerAbsence(handle, worker)).toBe(false);
+    expect(h.implementations.kernel_memory_group_task_action.mock.calls.map((c: any[]) => c[2])).toEqual([P.task_actions.beginRetirement, P.task_actions.retireQuiescent]);
+    expect(h.worker.inspectMemoryGroupBacking(23)).toMatchObject({ allocatedPages: charged, replicas: 1, exposedReplicas: 0 });
+  });
+  it.each([true, false])('never treats an attempted constructor or no-backing terminate as absence (Node joins=%s)', async joins => {
+    const h = harness(); h.worker.createMemoryGroupBacking(23, 16);
+    const receipt = h.worker.prepareMemoryGroupProcess(23, 100); if (typeof receipt === 'number') throw Error('receipt');
+    const handle = h.worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('handle'); h.worker.publishMemoryGroupReplica(handle);
+    const worker = new DeferredWorkerHandle(() => { throw Error('uncertain constructor'); });
+    h.worker.observeMemoryGroupReplicaWorker(handle, worker, { terminationProvesQuiescence: joins });
+    const charged = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages; h.implementations.kernel_memory_group_task_action.mockClear();
+    expect(() => worker.start()).toThrow('uncertain constructor'); await worker.terminate();
+    expect(h.worker.sealMemoryGroupReplicaWorkerAbsence(handle, worker)).toBe(false);
+    expect(h.implementations.kernel_memory_group_task_action).not.toHaveBeenCalled();
+    expect(h.worker.inspectMemoryGroupBacking(23)).toMatchObject({ allocatedPages: charged, exposedReplicas: 1 });
+  });
+  it('seals a stale deferred launch before accepting its old receipt solely for retirement', async () => {
+    const h = harness(); h.worker.createMemoryGroupBacking(23, 16);
+    const receipt = h.worker.prepareMemoryGroupProcess(23, 100); if (typeof receipt === 'number') throw Error('receipt');
+    const handle = h.worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('handle'); h.worker.publishMemoryGroupReplica(handle);
+    h.implementations.kernel_memory_group_task_receipt = () => -3;
+    const create = vi.fn(() => new MockWorkerHandle()), worker = new DeferredWorkerHandle(create);
+    h.worker.observeMemoryGroupReplicaWorker(handle, worker, { terminationProvesQuiescence: false });
+    await h.worker.waitForMemoryGroupReplicaQuiescence(handle);
+    expect(worker.start()).toBe(false); expect(create).not.toHaveBeenCalled();
+    expect(h.worker.inspectMemoryGroupBacking(23)).toMatchObject({ exposedReplicas: 0, replicas: 1 });
   });
   it('allocates only a kernel-reserved backing and publishes after the exact start action', () => {
     const { worker, implementations, memory } = harness();
@@ -1109,6 +1154,62 @@ function stoppedImageHarness(callbacks: CentralizedKernelCallbacks = {}) {
   const stop = () => concrete.simulateMessage({ type: 'memory_quiescent', pid: 100, memoryGroup: receipt });
   return { ...h, receipt, handle, launch, concrete, stop };
 }
+
+describe('published clone failure retirement', () => {
+  it('joins an already requested stopped-thread retirement without waiting on its own full clone cleanup', async () => {
+    let entered!: () => void, published!: () => void, rejectLaunch!: (error: Error) => void;
+    const hasEntered = new Promise<void>(resolve => { entered = resolve; });
+    const hasPublished = new Promise<void>(resolve => { published = resolve; });
+    const held = new Promise<void>((_resolve, reject) => { rejectLaunch = reject; });
+    const allocator = new ThreadPageAllocator({ firstSlotStartPage: 4, maxPageExclusive: 16, reservedSlots: 3, ptrWidth: 4 });
+    const concrete = new MockWorkerHandle(), close = vi.fn(() => true);
+    let plan: any;
+    const h = stoppedImageHarness({ onGroupedClone: async attachment => {
+      expect(await retryKernelEntryResult(() => { const pending = h.worker.reserveMemoryGroupThreadControl(attachment); entered(); return pending; })).toBe(4 * 65536);
+      plan = await retryKernelEntryResult(() => h.worker.prepareMemoryGroupThreadLaunch(attachment, allocator));
+      if (typeof plan === 'number' || plan.status !== 'ready') throw Error('thread not ready');
+      h.worker.observeMemoryGroupReplicaWorker(plan.handle, concrete, { terminationProvesQuiescence: false, retireHostReferences: close });
+      published(); await held;
+    } });
+    h.implementations.kernel_group_memory_thread_control_reuse.mockReturnValue(4n * 65536n);
+    const receipt = h.implementations.kernel_memory_group_task_receipt;
+    h.implementations.kernel_memory_group_task_receipt = (pid: number, tid: number, pointer: number | bigint, capacity: number) => {
+      const result = receipt(pid, tid, pointer, capacity);
+      if (tid === 101) new DataView(h.memory.buffer).setBigUint64(Number(pointer) + P.receipt_fields.serial, SERIAL + 1n, true);
+      return result;
+    };
+    h.implementations.kernel_handle_channel = (pointer: number | bigint) => {
+      const view = new DataView(h.memory.buffer, Number(pointer)); view.setBigInt64(CH_RETURN, 101n, true); view.setUint32(CH_ERRNO, 0, true); return 0;
+    };
+    const main = (h.worker as any).processes.get(100).channels[0], view = processDataView(main.source, 65536);
+    let completed!: (result: { value: number; errno: number }) => void;
+    const completion = new Promise<{ value: number; errno: number }>(resolve => { completed = resolve; });
+    h.worker.testAuthority.configureScratchBoundaryHooksForTest({ completeChannel: (channel, _syscall, _args, _descs, value, errno) => {
+      if (channel !== main) throw Error('Wrong clone completion');
+      view.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true); completed({ value: Number(value), errno });
+    } });
+    view.setUint32(CH_SYSCALL, SYSCALLS.Clone, true);
+    [0x10100, 5 * 65536, 0, 0, 0, 0].forEach((value, at) => view.setBigInt64(CH_ARGS + at * CH_ARG_SIZE, BigInt(value), true));
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      (h.worker as any).handleSyscall(main); await hasEntered;
+      const controls = new Int32Array(h.launch.envelope.memory.buffer, h.launch.expectation.replica, G.MEMORY_GROUP_REPLICA_BYTES / 4);
+      Atomics.store(controls, G.MEMORY_GROUP_REPLICA_ACK / 4, Atomics.load(controls, G.MEMORY_GROUP_REPLICA_REQUEST / 4)); Atomics.notify(controls, G.MEMORY_GROUP_REPLICA_ACK / 4);
+      await hasPublished;
+      concrete.simulateMessage({ type: 'memory_quiescent', pid: 100, tid: 101, memoryGroup: plan.launch.expectation.receipt });
+      await h.worker.waitForMemoryGroupReplicaQuiescence(plan.handle);
+      h.worker.notifyThreadExit(100, 101); h.worker.removeChannel(100, plan.allocation.channelOffset);
+      const retirement = h.worker.retireMemoryGroupThread(plan.handle, close);
+      expect(close).not.toHaveBeenCalled();
+      rejectLaunch(Error('late callback refusal after actual stop'));
+      expect(await completion).toEqual({ value: -1, errno: 12 });
+      expect(await retirement).toBe(0); expect(close).toHaveBeenCalledTimes(1);
+      expect(h.implementations.kernel_group_memory_thread_control_release).toHaveBeenCalledTimes(1);
+      expect(h.worker.inspectMemoryGroupBacking(23)).toMatchObject({ replicas: 1, quarantinedReplicas: 0 });
+    } finally { diagnostic.mockRestore(); }
+  });
+});
 
 describe('unconstructed clone control retirement', () => {
   it('joins exact control cleanup before releasing a revoked image, without completing its retired creator', async () => {

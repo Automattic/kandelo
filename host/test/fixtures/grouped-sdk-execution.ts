@@ -27,6 +27,8 @@ export interface SdkExecutionOptions {
   joinOnExit: boolean;
   trace?: boolean;
   physicalPages?: number;
+  rejectThreadLaunchCount?: number;
+  uncertainThreadConstructor?: boolean;
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -83,7 +85,15 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
   const failedThreadLaunches: Record<string, unknown>[] = [];
+  const failedThreadWorkers: Record<string, unknown>[] = [];
+  let retainedThreadLaunches = 0, injectedThreadRefusals = 0, threadConstructionAttempts = 0;
+  const threadAdapter: WorkerAdapter = { createWorker: init => {
+    threadConstructionAttempts++;
+    if (options.uncertainThreadConstructor) throw Error("fixture uncertain thread constructor");
+    return adapter.createWorker(init);
+  } };
   const trace: string[] = [];
+  let kernelFailed = false;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let result: Record<string, unknown>;
   try {
@@ -125,7 +135,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           trace.push(...kernel.drainSyscallTrace().map(event => event.decoded ?? `syscall ${event.nr}`));
           maybeComplete();
         },
-        onKernelFatal: error => reject(error),
+        onKernelFatal: error => { kernelFailed = true; reject(error); },
         onGroupedClone: async attachment => {
           await Promise.all(threadRetirements.values());
           const processGeneration = attachment.pid === rootPid ? generation : children.get(attachment.pid)?.generation;
@@ -137,10 +147,19 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             threadAllocators.set(attachment.pid, allocator);
           }
           const before = memoryEvidence();
-          try { await launchGroupedThreadWorker({ kernel, attachment, allocator, adapter, imports, generation: processGeneration,
+          try { await launchGroupedThreadWorker({ kernel, attachment, allocator, adapter: threadAdapter, imports, generation: processGeneration,
             programBytes: options.programBytes, terminationProvesQuiescence: options.joinOnExit,
             isCurrent: thread => threads.get(thread.tid) === thread,
-            retain: thread => threads.set(thread.tid, thread),
+            retain: thread => {
+              threads.set(thread.tid, thread); retainedThreadLaunches++;
+              if (retainedThreadLaunches % 2 === 1 && injectedThreadRefusals < (options.rejectThreadLaunchCount ?? 0)) {
+                injectedThreadRefusals++; throw Error('fixture refusal after thread publication');
+              }
+            },
+            discard: thread => {
+              failedThreadWorkers.push({ tid: thread.tid, executionAbsent: thread.executionAbsent, quiescent: thread.quiescent, joined: thread.hasJoined });
+              if (threads.get(thread.tid) === thread) threads.delete(thread.tid);
+            },
             onMessage: (message, thread) => {
               if (message.type === 'thread_exit') {
                 if (message.pid !== thread.pid || message.tid !== thread.tid) return reject(Error('Wrong pthread exit'));
@@ -151,6 +170,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             onError: reject,
             onExit: (code, _thread) => { if (code !== 0) reject(Error(`pthread Worker exit ${code}`)); else maybeComplete(); },
           }); } catch (error) {
+            if (options.uncertainThreadConstructor) {
+              const thread = threads.get(attachment.tid);
+              if (thread) failedThreadWorkers.push({ tid: thread.tid, executionAbsent: thread.executionAbsent, quiescent: thread.quiescent, joined: thread.hasJoined });
+            }
             failedThreadLaunches.push({ before, after: memoryEvidence(), cause: String(error) });
             throw error;
           }
@@ -308,15 +331,16 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       retirement = { before, after: memoryEvidence(), statuses };
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
-      retirement, threadRetirementMemory, failedThreadLaunches,
+      retirement, threadRetirementMemory, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
-    trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
+    if (!kernelFailed) trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
-      failedThreadLaunches,
+      failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
+      failureMessage: error instanceof Error ? error.message : String(error),
       failure: error instanceof Error ? error.stack : String(error) };
   } finally {
     if (deadline) clearTimeout(deadline);

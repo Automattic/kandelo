@@ -3148,7 +3148,13 @@ parent's reusable-slot authority. Before Start, failed thread launch retains
 the full receipt through exact channel/native/queue cleanup and releases the
 mapped control row to this same cache; it does not unreserve arbitrary guest
 addresses. Start precedes publication and rules out unconstructed rollback
-once accepted. The program ABI and digest stay at 56.
+once accepted. Published launch failures instead require the exact observed
+Worker's private never-started seal or an actual stop proof. Their control and
+scratch retirement joins full receipt, reference and channel cleanup before
+publishing creator failure. Constructor uncertainty fails the instance and
+retains storage, rather than returning an errno that would permit stack reuse.
+These host-internal custody paths add no export or wire change. The program
+ABI and digest stay at 56.
 
 Host-adapter 13 adds optional `kernel_group_memory_fork(group, pid, tid,
 serialLo, serialHi, generationLo, generationHi, observedPages) -> i32`.
