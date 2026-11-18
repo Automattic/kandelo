@@ -1343,6 +1343,9 @@ pub struct Process {
     /// Driver-owned exact resources belong to this image, not inherited fd
     /// numbers. Exec/exit explicitly consume these real OFD/BO references.
     pub(crate) owned_resources: crate::owned_resource::State,
+    /// One kernel-owned grouped mapping preparation for this image. Its token
+    /// never authorizes a replacement image or another task's completion.
+    pub(crate) pending_group_memory_change: Option<crate::IoBox<Option<crate::group_memory_change::Pending>>>,
     /// Renderer leases created by this image, including descriptions now held
     /// only by another process. Weak references do not keep resources alive.
     pub(crate) gl_resource_owners: Vec<crate::ofd::WeakGlResources>,
@@ -1733,6 +1736,7 @@ impl Process {
             fb_binding: None,
             dri_bindings: crate::IoBuffer::new(),
             owned_resources: crate::owned_resource::State::default(),
+            pending_group_memory_change: None,
             gl_resource_owners: Vec::new(),
             shm_mappings: crate::IoBuffer::new(),
             fork_count: 0,

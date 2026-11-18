@@ -3120,6 +3120,14 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
+Host-adapter 9 adds the internal grouped mapping preparation transport:
+`kernel_group_memory_change_prepare`, `validate`, `commit` and `cancel`.
+The first two use fixed scratch records, and the latter two consume exact
+unsigned 64-bit tokens through separate low/high words and status returns.
+The kernel-host memory-group contract records their sizes, fields and effect
+kinds. Program ABI 56 and its digest stay unchanged. This interface does not
+advertise complete grouped mapping, execution or retirement support.
+
 Every built binary carries the ABI version it was compiled against in a
 wasm custom section (`wasm-posix-abi`). The host refuses to launch a
 binary whose custom-section version does not match the kernel's

@@ -750,6 +750,15 @@ impl ProcessTable {
             }))
     }
 
+    pub(crate) fn memory_group_running_admission(
+        &self,
+        admission: crate::memory_group::GroupAdmission,
+    ) -> Result<(), Errno> {
+        let current = self.memory_groups.running_image_task(admission.execution())?;
+        if current != admission { return Err(Errno::ESRCH); }
+        Ok(())
+    }
+
     /// Starting a Worker needs the current live task. Retirement intentionally
     /// resolves older receipts without consulting the replacement image.
     pub fn memory_group_task_action(

@@ -189,6 +189,15 @@ permission to recycle pages. The staged Rust metadata owner separately checks
 exact transaction custody and intervening changes before publication; neither
 component is connected to normal mapping syscalls yet.
 
+Host-adapter 9 adds fixed copied records for grouped mapping preparation,
+validation, commit and cancellation. Rust retains a budgeted owner for one
+exact task receipt and image generation; a sibling, stopped admission or stale
+exec cannot publish it. Cancellation can discard an old preparation without
+changing a successor manager's transaction. All receipt/token bits remain
+unsigned 64-bit values, separate from status returns. The program-56 digest
+is unchanged. This transport currently prepares anonymous private metadata;
+file/shared/device effects and normal syscall/PTE coordination remain unfinished.
+
 These internal components do not expose an embedding launch option. Mapping
 materialization currently operates only within the image's published virtual
 extent; physical group growth cannot establish virtual capacity. Transactional

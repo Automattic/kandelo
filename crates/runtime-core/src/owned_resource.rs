@@ -994,7 +994,7 @@ pub(crate) fn prepare_fork(
 /// guest success is published. Token/transaction owns the reserved interval;
 /// READ_LAST is read-only and never grows, zeroes, rebinds or re-primes it.
 pub(crate) fn has_pending_mapping(proc: &Process) -> bool {
-    proc.owned_resources.resources.iter().any(|r| {
+    proc.memory.has_pending_memory_change() || proc.owned_resources.resources.iter().any(|r| {
         r.receipt
             .as_ref()
             .is_some_and(|r| r.awaiting_mapping_finish)

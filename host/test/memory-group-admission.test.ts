@@ -1,3 +1,4 @@
+import { encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription } from '../src/memory-group-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
 import { KernelEntryGate, createKernelEntryGatedInstance, KernelReentrantEntryError } from '../src/kernel-entry-gate';
@@ -314,5 +315,70 @@ describe('kernel-Worker memory group admission', () => {
     };
     expect(() => worker.prepareMemoryGroupProcess(23, 100)).toThrow(/receipt/i);
     expect(() => worker.createMemoryGroup(1024, 4, 8)).toThrow();
+  });
+});
+
+
+describe('grouped mapping metadata transport', () => {
+  const page = 65536;
+  function description() {
+    const receipt = { group: 23, pid: 100, tid: 101, serial: 0xfffffffffffffff1n, generation: 0x8000000100000003n };
+    const bytes = new Uint8Array(P.mapping.description_bytes), view = new DataView(bytes.buffer);
+    const r = P.receipt_fields, f = P.mapping.description_fields;
+    for (const key of ['group', 'pid', 'tid'] as const) view.setUint32(r[key], receipt[key], true);
+    view.setBigUint64(r.serial, receipt.serial, true); view.setBigUint64(r.generation, receipt.generation, true);
+    view.setBigUint64(f.token, 0xfffffffffffffffdn, true); view.setUint32(f.kind, P.mapping.kinds.map, true);
+    view.setUint32(f.prot, 3, true); view.setUint32(f.flags, 0x22, true);
+    view.setBigUint64(f.address, BigInt(4 * page), true); view.setBigUint64(f.length, BigInt(page), true);
+    view.setBigUint64(f.result, BigInt(4 * page), true);
+    return { receipt, bytes, view, f };
+  }
+  it('encodes every original signed channel bit without narrowing addresses or fd sentinels', () => {
+    const args = [-1n, (1n << 63n) - 1n, -(1n << 63n), 0n, 4294967295n, 7n];
+    const bytes = encodeGroupMemoryChangeRequest(123, args), view = new DataView(bytes.buffer);
+    expect(bytes.byteLength).toBe(P.mapping.request_bytes);
+    expect(view.getUint32(P.mapping.request_fields.syscall, true)).toBe(123);
+    expect(view.getUint32(P.mapping.request_fields.reserved, true)).toBe(0);
+    expect(args.map((_, i) => view.getBigInt64(P.mapping.request_fields.args + 8 * i, true))).toEqual(args);
+    expect(() => encodeGroupMemoryChangeRequest(1, args.slice(0, 5))).toThrow();
+    expect(() => encodeGroupMemoryChangeRequest(1, [1n << 63n, 0n, 0n, 0n, 0n, 0n])).toThrow();
+    expect(() => encodeGroupMemoryChangeRequest(0x100000001, args)).toThrow();
+  });
+  it('keeps high receipt/token bits in independent frozen metadata', () => {
+    const { receipt, bytes, view, f } = description();
+    const decoded = decodeGroupMemoryChangeDescription(bytes, receipt, 0xfffffffffffffffdn);
+    expect(decoded).toMatchObject({ receipt, kind: 'map', token: 0xfffffffffffffffdn,
+      address: 4 * page, length: page, result: 4 * page, prot: 3, flags: 0x22 });
+    expect(Object.isFrozen(decoded)).toBe(true); expect(Object.isFrozen(decoded.receipt)).toBe(true);
+    view.setBigUint64(f.token, 1n, true); view.setBigUint64(P.receipt_fields.serial, 1n, true);
+    expect(decoded.token).toBe(0xfffffffffffffffdn); expect(decoded.receipt.serial).toBe(receipt.serial);
+  });
+  it('refuses another operation or receipt including differences above bit32', () => {
+    const { receipt, bytes } = description();
+    expect(() => decodeGroupMemoryChangeDescription(bytes, receipt, 0xfffffffefffffffdn)).toThrow(/exact operation/);
+    expect(() => decodeGroupMemoryChangeDescription(bytes, { ...receipt, serial: receipt.serial - (1n << 32n) })).toThrow();
+    expect(() => decodeGroupMemoryChangeDescription(bytes, { ...receipt, generation: receipt.generation - (1n << 32n) })).toThrow();
+    expect(() => decodeGroupMemoryChangeDescription(bytes.subarray(1), receipt)).toThrow();
+  });
+  it('refuses malformed reserved, kind, protection, extent and result values', () => {
+    for (const corrupt of [(v: DataView, f: ReturnType<typeof description>['f']) => v.setUint32(f.reserved, 1, true),
+      (v: DataView, f: ReturnType<typeof description>['f']) => v.setUint32(f.kind, 99, true),
+      (v: DataView, f: ReturnType<typeof description>['f']) => v.setUint32(f.prot, 8, true),
+      (v: DataView, f: ReturnType<typeof description>['f']) => v.setBigUint64(f.address, 7n, true),
+      (v: DataView, f: ReturnType<typeof description>['f']) => v.setBigUint64(f.address, 1n << 40n, true),
+      (v: DataView, f: ReturnType<typeof description>['f']) => v.setBigUint64(f.result, 0n, true)]) {
+      const { receipt, bytes, view, f } = description(); corrupt(view, f);
+      expect(() => decodeGroupMemoryChangeDescription(bytes, receipt)).toThrow();
+    }
+  });
+  it('preserves unaligned byte breaks and zero-length aligned protection effects', () => {
+    const { receipt, bytes, view, f } = description();
+    view.setUint32(f.flags, 0, true); view.setUint32(f.kind, P.mapping.kinds.break, true);
+    view.setBigUint64(f.address, BigInt(3 * page + 7), true); view.setBigUint64(f.result, BigInt(3 * page + 7), true);
+    view.setBigUint64(f.length, 0n, true); view.setBigUint64(f.oldAddress, BigInt(2 * page + 3), true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({ kind: 'break', address: 3 * page + 7, oldAddress: 2 * page + 3 });
+    view.setUint32(f.kind, P.mapping.kinds.protect, true); view.setBigUint64(f.address, BigInt(3 * page), true);
+    view.setBigUint64(f.result, 0n, true); view.setBigUint64(f.oldAddress, 0n, true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({ kind: 'protect', length: 0 });
   });
 });

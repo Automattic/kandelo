@@ -4012,7 +4012,67 @@ pub extern "C" fn kernel_memory_group_protocol_version() -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_memory_group_capabilities() -> u32 {
-    wasm_posix_shared::memory_group::CAPABILITY_ADMISSION
+    wasm_posix_shared::memory_group::CAPABILITY_ADMISSION | wasm_posix_shared::group_memory_change::CAPABILITY
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_prepare(
+    pid: u32, tid: u32, request_ptr: *const u8, request_len: u32,
+    out_ptr: *mut u8, out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::group_memory_change::{DESCRIPTION_BYTES, REQUEST_BYTES, Request};
+    if request_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES || request_len as usize != REQUEST_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let request = match Request::decode(unsafe { core::slice::from_raw_parts(request_ptr, request_len as usize) }) {
+        Ok(request) => request, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let description = match table.prepare_group_memory_change(pid, tid, request.syscall, request.args) {
+        Ok(description) => description, Err(error) => return -(error as i32),
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) };
+    match description.record().encode(out) {
+        Ok(()) => DESCRIPTION_BYTES as i32,
+        Err(error) => match table.cancel_group_memory_change(pid, tid, description.token) {
+            Ok(()) => -(error as i32), Err(_) => -(Errno::EIO as i32),
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_validate(
+    pid: u32, tid: u32, token_lo: u32, token_hi: u32, out_ptr: *mut u8, out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let description = match table.validate_group_memory_change(pid, tid, token) {
+        Ok(description) => description, Err(error) => return -(error as i32),
+    };
+    description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
+        .map(|()| DESCRIPTION_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_commit(pid: u32, tid: u32, token_lo: u32, token_hi: u32) -> i32 {
+    let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.commit_group_memory_change(pid, tid, token).map(|_| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_cancel(pid: u32, tid: u32, token_lo: u32, token_hi: u32) -> i32 {
+    let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.cancel_group_memory_change(pid, tid, token).map(|()| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
