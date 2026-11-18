@@ -171,6 +171,27 @@ describe('owned physical mapping transactions', () => {
   });
 });
 describe('image execution barriers for mapping publication', () => {
+  it('pins an exact native progress observation through source revocation until actual settlement', async () => {
+    const h = imageWithThread(), barrier = h.store.beginImageExecutionPause(h.a);
+    const progress = h.store.waitForMappingProgress(barrier, 'barrier');
+    expect(h.store.snapshot().nativeObservers).toBe(1);
+    h.store.revokeImageAccess(h.a); expect(h.store.snapshot().nativeObservers).toBe(1);
+    h.acknowledge(h.left); Atomics.notify(h.left, G.MEMORY_GROUP_REPLICA_ACK / 4);
+    await progress;
+    expect(h.store.snapshot().nativeObservers).toBe(0);
+    expect(h.store.imageExecutionPauseAcknowledged(barrier)).toBe(false);
+    h.store.resumeImageExecutionPause(barrier); h.store.close();
+  });
+  it('uses bounded native contention observation without treating timeout as an execution ACK', async () => {
+    const h = imageWithThread(), barrier = h.store.beginImageExecutionPause(h.a);
+    const lock = new Int32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    Atomics.store(lock, 0, 1);
+    try {
+      await h.store.waitForMappingProgress(barrier, 'locks');
+      expect(Atomics.load(lock, 0)).toBe(1); expect(h.store.snapshot().nativeObservers).toBe(0);
+      expect(h.store.imageExecutionPauseAcknowledged(barrier)).toBe(false);
+    } finally { Atomics.store(lock, 0, 0); h.store.resumeImageExecutionPause(barrier); h.store.close(); }
+  });
   it('requires every exact replica and leaves a successor image alone', () => {
     const h = imageWithThread(), { store } = h;
     const next = task({ serial: 3n, generation: h.main.generation + 1n });

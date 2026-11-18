@@ -30,12 +30,12 @@ export class NativeI32Observation {
     if (this.phase !== 'prepared') throw new Error('Native observation has already been armed');
     this.finish();
   }
-  arm(expected: number): NativeI32ObservationResult {
+  arm(expected: number, timeout?: number): NativeI32ObservationResult {
     if (this.phase !== 'prepared' || !this.word) throw new Error('Native observation cannot be armed twice');
     // If arming or continuation registration unexpectedly throws, retain the
     // target/pin for containment. No caller may infer engine cancellation.
     this.phase = 'pending';
-    const result = Atomics.waitAsync(this.word, 0, expected);
+    const result = Atomics.waitAsync(this.word, 0, expected, timeout);
     if (!result.async) { this.finish(); return result; }
     const value = Reflect.apply(observationPromiseThen, result.value, [
       (value: string) => { this.finish(); return value; },

@@ -88,6 +88,19 @@ retirement. Unpublished allocation rollback requires exact Rust cancellation;
 published or uncertain storage stays charged. Independent device buffers remain
 the only transport into persistent page/audio realms.
 
+Grouped anonymous map/unmap/protect/remap dispatch retains one exact pending
+request and Rust preparation token through the all-replica barrier. It copies
+arguments and bounded kernel records, observes native control-word progress
+outside kernel entry, then revalidates the caller, Rust metadata and root/PTE
+baseline before synchronous publication. Failed commit restores old entries;
+uncertain publication contains storage. Removed PTE references stay charged.
+Unpublished cancellation can finish after channel removal without changing a
+successor image, and a busy pool keeps cleanup custody. Its completion does
+not establish native-observer or Worker retirement. Initial-image/brk state,
+direction-aware protected I/O and file/device effects are still incomplete;
+grouped brk returns EOPNOTSUPP. Source-only coordinator tests do not establish
+actual C quiescence, POSIX acceptance or Node/browser performance.
+
 The Node/browser process entries share a memory-free prepare/ready exchange
 before one backing is transported on the authenticated parent channel. They
 validate the versioned artifact, reject an implicit Wasm start, and bind replica

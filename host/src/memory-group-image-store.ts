@@ -1,7 +1,7 @@
 import * as G from './generated/program-extensions';
 import { MemoryGroupPagePool, type GroupPageExtent } from './memory-group-pool';
 import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt, type GroupMemoryChangeDescription } from './memory-group-protocol';
-import { GroupProcessAddressSpace, ProcessAddressFault } from './process-address-space';
+import { GroupProcessAddressSpace, ProcessAddressFault, NativeI32Observation } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation,
   type ProcessMemoryEnvelope } from './process-memory-descriptor';
 import { tryControlMemoryGroupReplicaWait } from './memory-group-notification';
@@ -292,6 +292,33 @@ export class MemoryGroupImageStore {
       acknowledged = current && acknowledged;
     }
     return acknowledged;
+  }
+  /** Observe an exact physical progress word after leaving kernel entry. The
+   * timeout only schedules revalidation (including a busy wait-queue lock),
+   * never establishes quiescence. Keep its image pin until engine settlement.
+   */
+  waitForMappingProgress(token: GroupImageExecutionPause, target: 'barrier' | 'locks' | 'pool'): Promise<void> {
+    const pause = this.imagePauses.get(token), image = pause?.image;
+    if (!image || image.pause !== pause) fault('Progress wait has no exact image barrier');
+    let address = target === 'pool' ? G.MEMORY_GROUP_CONTROL : image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK;
+    let expected = 1;
+    if (target === 'locks' && Atomics.load(new Int32Array(this.memory.buffer, address, 1), 0) === 0) address = G.MEMORY_GROUP_CONTROL;
+    if (target === 'barrier') {
+      const member = pause.members.find(({ replica, pause: handle }) => {
+        const epoch = handle && this.pauses.get(handle)?.epoch;
+        return epoch !== undefined && (Atomics.load(this.controls(replica), G.MEMORY_GROUP_REPLICA_ACK / 4) >>> 0) !== epoch;
+      });
+      if (!member) return Promise.resolve();
+      address = member.replica.scratch.first * PAGE + G.MEMORY_GROUP_REPLICA_ACK;
+      expected = Atomics.load(new Int32Array(this.memory.buffer, address, 1), 0);
+    }
+    const pin = Object.freeze({}); image.nativeObservations.add(pin);
+    const observation = new NativeI32Observation(new Int32Array(this.memory.buffer, address, 1),
+      () => { image.nativeObservations.delete(pin); });
+    // A finite engine wait also bounds a lost notification during forced stop.
+    // Its promise must still settle before the pin is removed.
+    const result = observation.arm(expected, 10);
+    return result.async ? result.value.then(() => undefined) : Promise.resolve();
   }
   resumeImageExecutionPause(token: GroupImageExecutionPause): boolean {
     const pause = this.imagePauses.get(token);
