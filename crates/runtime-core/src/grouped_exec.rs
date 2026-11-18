@@ -687,6 +687,49 @@ mod replacement_tests {
             .unwrap();
     }
     #[test]
+    fn committed_unexposed_exec_keeps_removal_blocked_until_host_image_release() {
+        let mut f = Fixture::new();
+        f.group();
+        let old = f.table.memory_group_task(f.pid, f.pid).unwrap().unwrap();
+        let target = f.target(&grouped(3));
+        let future = f.table.prepare_grouped_exec(f.pid, f.pid, target).unwrap();
+        f.table.configure_grouped_exec(layout(future)).unwrap();
+        f.table.commit_exec_target(&mut NoopHost, f.pid, f.pid, target).unwrap();
+        let (proc, locks) = f.table.process_and_advisory_locks(f.pid).unwrap();
+        sys_exit_with_locks(proc, locks, &mut NoopHost, 0);
+        f.table.memory_group_task_action(old.record(), TaskAction::BeginRetirement).unwrap();
+        f.table.memory_group_task_action(old.record(), TaskAction::RetireQuiescent).unwrap();
+        assert!(f.table.memory_group_removal_pending(f.pid));
+        assert!(f.table.remove_process(f.pid).is_none());
+        f.table.memory_group_task_action(future.receipt.record(), TaskAction::CancelUnconstructed).unwrap();
+        assert!(f.table.memory_group_removal_pending(f.pid));
+        assert!(f.table.remove_process(f.pid).is_none());
+        f.table.memory_groups().retire_image(f.pid, future.receipt.execution().exec_generation).unwrap();
+        assert!(!f.table.memory_group_removal_pending(f.pid));
+        assert!(f.table.remove_process(f.pid).is_some());
+    }
+
+    #[test]
+    fn published_exec_transfers_committed_hold_to_normal_execution_receipt() {
+        let mut f = Fixture::new();
+        f.group();
+        let old = f.table.memory_group_task(f.pid, f.pid).unwrap().unwrap();
+        let target = f.target(&grouped(3));
+        let future = f.table.prepare_grouped_exec(f.pid, f.pid, target).unwrap();
+        f.table.configure_grouped_exec(layout(future)).unwrap();
+        f.table.commit_exec_target(&mut NoopHost, f.pid, f.pid, target).unwrap();
+        f.table.memory_group_task_action(old.record(), TaskAction::BeginRetirement).unwrap();
+        f.table.memory_group_task_action(old.record(), TaskAction::RetireQuiescent).unwrap();
+        f.table.memory_group_task_action(future.receipt.record(), TaskAction::Start).unwrap();
+        let (proc, locks) = f.table.process_and_advisory_locks(f.pid).unwrap();
+        sys_exit_with_locks(proc, locks, &mut NoopHost, 0);
+        f.table.memory_group_task_action(future.receipt.record(), TaskAction::BeginRetirement).unwrap();
+        f.table.memory_group_task_action(future.receipt.record(), TaskAction::RetireQuiescent).unwrap();
+        assert!(!f.table.memory_group_removal_pending(f.pid));
+        assert!(f.table.remove_process(f.pid).is_some());
+    }
+
+    #[test]
     fn allocation_refusal_at_prepare_and_mm_configuration_preserves_the_running_image() {
         let mut f = Fixture::new();
         f.group();

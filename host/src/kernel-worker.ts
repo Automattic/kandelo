@@ -1752,6 +1752,8 @@ interface GroupedExecPreparationState {
   reservation?: GroupedExecReservation;
   handle?: PreparedGroupReplica;
   phase: 'prepared' | 'committed' | 'handoff' | 'installed' | 'cancelled';
+  terminationSignal?: number;
+  terminationParentPid?: number;
 }
 
 interface ExecCallerIdentity {
@@ -3277,6 +3279,7 @@ export class CentralizedKernelWorker {
   #memoryGroupStores = new Map<number, MemoryGroupImageStore>();
   #groupExecReservations = new WeakMap<GroupedExecReservation, GroupedExecPreparationState>();
   #groupExecImages = new WeakMap<PreparedGroupReplica, GroupedExecPreparationState>();
+  #committedGroupExecs = new Map<ProcessRegistration, GroupedExecPreparationState>();
   #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
   #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
@@ -8483,7 +8486,78 @@ export class CentralizedKernelWorker {
       this.#memoryGroupProtocolError('Grouped exec replacement lost its exact registration');
     }
     this.finishProcessExecHandoff(state.receipt.pid);
+    this.#committedGroupExecs.delete(state.registration);
     this.#groupExecReservations.delete(reservation); state.reservation = undefined;
+  }
+
+  inspectMemoryGroupExecTermination(reservation: GroupedExecReservation): number {
+    let signal = -1;
+    this.#runImmediateKernelEntry('inspect exact grouped exec termination', entry => {
+      const state = this.#groupExecReservations.get(reservation);
+      if (!state || state.phase !== 'handoff' || this.processes.get(state.receipt.pid) !== state.registration) {
+        this.#memoryGroupProtocolError('Grouped exec termination lost its predecessor');
+      }
+      signal = this.#getProcessExitSignal(state.receipt.pid, entry);
+      if (signal > 0) {
+        state.terminationSignal = signal;
+        state.terminationParentPid = this.getParentPid(state.receipt.pid, entry);
+      } else if (signal !== -1) this.#memoryGroupProtocolError('Held grouped exec process disappeared');
+      return undefined;
+    });
+    return signal;
+  }
+
+  /** A committed future image has never escaped, while the exact old image
+   * has stopped. Keep the kernel hold until both scratch and root can retire. */
+  cancelTerminatedMemoryGroupExec(reservation: GroupedExecReservation): void {
+    this.#runImmediateKernelEntry('cancel exact terminated grouped exec future', entry => {
+      const state = this.#groupExecReservations.get(reservation);
+      if (!state || state.phase !== 'handoff' || !state.handle || !state.terminationSignal
+          || this.processes.get(state.receipt.pid) !== state.registration
+          || !state.store.imageExecutionStopped(state.registration.grouped!.handle)
+          || !state.store.isUnexposed(state.handle)) this.#memoryGroupProtocolError('Terminated exec lacks unexposed custody');
+      const generation = this.#processExecGenerationWithinKernelEntry(state.receipt.pid, entry);
+      if (generation !== state.receipt.generation || this.#getProcessExitSignal(state.receipt.pid, entry) !== state.terminationSignal) {
+        this.#memoryGroupProtocolError('Terminated exec changed exact kernel identity');
+      }
+      if (this.#memoryGroupTaskActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry) !== 0) {
+        this.#memoryGroupProtocolError('Cannot cancel held future exec task');
+      }
+      state.store.cancelUnexposed(state.handle); this.#memoryGroupReplicas.delete(state.handle);
+      if (!state.store.canReleaseUnexposedImage(state.receipt)) this.#memoryGroupProtocolError('Future exec image retains references');
+      const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+      if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact future image retirement export');
+      const status = this.#checkedMemoryGroupStatus(retire(state.receipt.pid,
+        Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n)));
+      if (status !== 0) this.#memoryGroupProtocolError('Cannot retire held future exec image');
+      state.store.releaseUnexposedImage(state.receipt);
+      this.#groupExecImages.delete(state.handle); state.handle = undefined; state.phase = 'cancelled';
+      return undefined;
+    });
+  }
+
+  finishMemoryGroupExecTermination(reservation: GroupedExecReservation): void {
+    this.#runImmediateKernelEntry('publish exact terminated grouped exec', entry => {
+      const state = this.#groupExecReservations.get(reservation);
+      if (!state || state.phase !== 'cancelled' || !state.terminationSignal
+          || !this.#groupImageRetirements.get(state.registration.grouped!.handle)?.released) {
+        this.#memoryGroupProtocolError('Terminated exec has not retired its exact images');
+      }
+      const pid = state.receipt.pid, signal = state.terminationSignal, parent = state.terminationParentPid;
+      this.#committedGroupExecs.delete(state.registration); this.#groupExecReservations.delete(reservation);
+      state.reservation = undefined;
+      this.notifyParentOfExitedProcess(pid, entry, parent);
+      entry.deferProtocolEffect(() => { this.callbacks.onExit?.(pid, 128 + signal); return undefined; });
+      return undefined;
+    });
+  }
+
+  #holdCommittedGroupExecTermination(pid: number, signal: number, entry: KernelWorkerEntryContext): boolean {
+    const registration = this.processes.get(pid), state = registration && this.#committedGroupExecs.get(registration);
+    if (!state || (state.phase !== 'committed' && state.phase !== 'handoff')) return false;
+    state.terminationSignal = signal; state.terminationParentPid = this.getParentPid(pid, entry);
+    state.store.requestImageStop(state.registration.grouped!.handle);
+    return true;
   }
 
   /** Postcommit failure cannot restore the old image or prove page reuse. */
@@ -11284,6 +11358,7 @@ export class CentralizedKernelWorker {
               for (const prepared of this.#preparedGroupExecReservations) {
                 if (prepared.registration === registration && prepared.target === target) {
                   prepared.phase = 'committed'; this.#preparedGroupExecReservations.delete(prepared);
+                  this.#committedGroupExecs.set(registration, prepared);
                 }
               }
               const retirementMemory = registration.memory, retirementSource = registration.source;
@@ -25722,6 +25797,8 @@ export class CentralizedKernelWorker {
   ): void {
     const exitingPid = channel.pid;
     const registration = this.processes.get(exitingPid);
+    const signal = this.#getProcessExitSignal(exitingPid, entry);
+    if (signal > 0 && this.#holdCommittedGroupExecTermination(exitingPid, signal, entry)) return;
     const canQuiesceBorrowedWorker =
       registration?.borrowedAddressSpace === true
       && registration.channels.length === 1
@@ -25742,7 +25819,6 @@ export class CentralizedKernelWorker {
     // early guard prevents recursive termination cleanup.
     // Capture the signal before notifying the parent: a synchronous wait can
     // consume and reap the zombie, after which the kernel query returns ESRCH.
-    const signal = this.#getProcessExitSignal(exitingPid, entry);
     // Likewise the parent: the drain below may let it reap the zombie.
     const parentPid = this.getParentPid(exitingPid, entry);
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(exitingPid);
@@ -25874,6 +25950,10 @@ export class CentralizedKernelWorker {
         `Kernel rejected signal-death transition for process ${pid}: ${detail}`,
       );
     }
+    if (this.#holdCommittedGroupExecTermination(pid, this.#getProcessExitSignal(pid, entry), entry)) {
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      return;
+    }
     // The drain below may let a parked parent reap the zombie; learn the
     // parent while the zombie still names it.
     const parentPid = this.getParentPid(pid, entry);
@@ -25930,6 +26010,8 @@ export class CentralizedKernelWorker {
         this.#handleProcessTerminatedWithinKernelEntry(ch, entry);
       } else if (ch) {
         this.handleProcessTerminated(ch);
+      } else if (proc?.grouped && entry && signal > 0) {
+        this.#holdCommittedGroupExecTermination(pid, signal, entry);
       }
     }
   }
@@ -25996,6 +26078,7 @@ export class CentralizedKernelWorker {
   ): number {
     const signal = this.#getProcessExitSignal(pid, entry);
     if (signal <= 0) return signal;
+    if (this.#holdCommittedGroupExecTermination(pid, signal, entry)) return signal;
     this.discardStoppedChannelStateForProcess(pid);
     if (this.hostReaped.has(pid)) return signal;
 

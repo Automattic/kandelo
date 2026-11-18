@@ -225,8 +225,16 @@ and native wait32/wait64 pthreads in each outgoing image; the fixture observes
 the actual waits and busy progress before allowing exec, and checks exact
 stop acknowledgements, zero resumed waiters and bounded allocation reuse.
 
-The public launcher still refuses grouped execution. Signal/destroy races,
-postcommit failure disposition and the full promotion gates remain required
+The kernel also holds a committed but unexposed future image against parent
+reaping. Start transfers this hold to normal execution custody. If a signal
+terminates the process during handoff, the host joins the exact old-image
+fences, cancels the never-exposed future task/scratch/image, retires the old
+image and then publishes the real kernel signal status. No replacement Worker
+or guest exit event is fabricated. Host-adapter 19 records this lifetime
+contract; the normal program ABI stays unchanged.
+
+The public launcher still refuses grouped execution. Broader signal/destroy races,
+other postcommit failure disposition and the full promotion gates remain required
 before grouped exec support is advertised. Unexpected postcommit failure
 currently contains the instance with storage retained; it cannot restore the
 old image or establish reuse.

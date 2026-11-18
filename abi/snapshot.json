@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 18,
+      "required_host_adapter_version": 19,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2701,7 +2701,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 18,
+    "version": 19,
     "worker_features": [
       {
         "bit": 2,

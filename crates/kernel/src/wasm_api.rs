@@ -4429,11 +4429,25 @@ pub extern "C" fn kernel_memory_group_retire_image(
     let generation = (u64::from(generation_hi) << 32) | u64::from(generation_lo);
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table
+    let result = table
         .memory_groups()
         .retire_image(pid, generation)
         .map(|()| 0)
-        .unwrap_or_else(|e| -(e as i32))
+        .unwrap_or_else(|e| -(e as i32));
+    if result == 0 {
+        // Cancelling a committed, never-started exec may remove the last
+        // host hold after all outgoing execution receipts already retired.
+        runtime_core::wait_park::note_children_changed();
+        if !table.memory_group_removal_pending(pid)
+            && table.get(pid).is_some_and(|p| {
+                p.ppid == crate::process_table::SYNTHETIC_INIT_PID
+                    && p.state == ProcessState::Exited && p.exit_published
+            })
+        {
+            return reap_for_init_and_cleanup(pid);
+        }
+    }
+    result
 }
 
 /// Copy the exact unsigned image generation into an owned host scratch lease.

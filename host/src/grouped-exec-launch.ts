@@ -26,6 +26,8 @@ export interface GroupedExecWorkerOptions {
   /** Mark the exact old execution intentional on the commit stack. */
   readonly onCommitted: () => void;
   readonly onStopped?: () => void | Promise<void>;
+  /** Both images and old host references retired; kernel owns exit status. */
+  readonly onTerminated?: (signal: number) => void;
   readonly retirePreviousReferences: () => void;
   readonly onRetired: (previous: PreparedGroupReplica, replacement: PreparedGroupReplica) => void;
   readonly onMessage: (message: any, worker: GroupedExecWorkerOwnership) => void;
@@ -92,26 +94,32 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
         // A browser terminate call is used only after every exact image fence.
         await Promise.all(options.previousWorkers.map(worker => worker.terminate()));
         await options.onStopped?.();
-        const signal = await retryKernelEntryResult(() => kernel.finalizeExecHandoffTermination(request.pid));
-        if (signal > 0) throw Error(`Grouped exec terminated during handoff: signal ${signal}`);
+        const retirePrevious = async (): Promise<void> => {
+          for (;;) {
+            const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(handoff.previousImage, () => {
+              options.retirePreviousReferences(); options.externrefs.releaseGeneration(options.previousGeneration);
+            }));
+            if (result === 0) return;
+            if (result !== -16) throw Error(`Cannot retire old grouped exec image: errno ${-result}`);
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+          }
+        };
+        const signal = await retryKernelEntryResult(() => kernel.inspectMemoryGroupExecTermination(reservation));
+        if (signal > 0) {
+          await retryKernelEntryResult(() => kernel.cancelTerminatedMemoryGroupExec(reservation));
+          await retirePrevious();
+          options.externrefs.releaseGeneration(generation);
+          await retryKernelEntryResult(() => kernel.finishMemoryGroupExecTermination(reservation));
+          options.onTerminated?.(signal);
+          return 0;
+        }
         const launch = await retryKernelEntryResult(() => kernel.publishMemoryGroupReplica(handoff.replacementImage));
         if (typeof launch === 'number') throw Error(`Cannot publish grouped exec replacement: errno ${-launch}`);
         const layout = reservation.layout;
         await retryKernelEntryResult(() => kernel.registerMemoryGroupProcess(handoff.replacementImage, [layout.channelOffset], {
           ...layout, ptrWidth: 4, argv: request.argv, env: request.envp, preserveProcessState: true,
         }));
-        let retired: number;
-        for (;;) {
-          retired = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(handoff.previousImage, () => {
-            options.retirePreviousReferences(); options.externrefs.releaseGeneration(options.previousGeneration);
-          }));
-          if (retired !== -16) break;
-          // All stop proofs are already joined. A peer may transiently own
-          // the physical pool lock; retry this same retirement, never reuse
-          // pages on the strength of a timer.
-          await new Promise<void>(resolve => setTimeout(resolve, 0));
-        }
-        if (retired !== 0) throw Error(`Cannot retire old grouped exec image: errno ${-retired}`);
+        await retirePrevious();
         options.onRetired(handoff.previousImage, handoff.replacementImage);
         const { assertLive: _live, ...expected } = launch.expectation;
         let ownership!: GroupedExecWorkerOwnership;

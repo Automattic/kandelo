@@ -119,6 +119,10 @@ struct Image {
     // An uncommitted exec may reuse its proposed generation after rollback.
     // Keep its exact serial even after the prepared task is cancelled.
     exec_serial: Option<u64>,
+    // A committed but unexposed replacement still has a host owner. Parent
+    // reaping must not erase its cancellation authority before that owner
+    // either publishes Start or retires the exact unconstructed image.
+    committed_exec_serial: Option<u64>,
 }
 
 impl MapMemory for ImageKey {
@@ -360,7 +364,7 @@ impl MemoryGroups {
             .checked_add(1)
             .ok_or(Errno::EOVERFLOW)?;
         let slot = PreparedMapSlot::new_in(&IO_MEMORY, 0)?;
-        let entry = slot.finish(key, Image { group, exec_serial: None })?;
+        let entry = slot.finish(key, Image { group, exec_serial: None, committed_exec_serial: None })?;
         let receipt = self.prepare_process(group, pid, generation)?;
         self.images.publish_io(entry);
         self.groups
@@ -391,8 +395,9 @@ impl MemoryGroups {
 
     pub(crate) fn commit_exec_image(&mut self, receipt: GroupAdmission) -> Result<(), Errno> {
         self.validate_exec_image(receipt)?;
-        self.images.get_mut(&ImageKey { pid: receipt.execution.pid, generation: receipt.execution.exec_generation })
-            .unwrap().exec_serial = None;
+        let image = self.images.get_mut(&ImageKey { pid: receipt.execution.pid, generation: receipt.execution.exec_generation }).unwrap();
+        image.exec_serial = None;
+        image.committed_exec_serial = Some(receipt.serial);
         Ok(())
     }
 
@@ -482,7 +487,8 @@ impl MemoryGroups {
     /// Once an admission has escaped to a Worker, PID removal is not proof
     /// that it stopped. Only prepared, unconstructed admissions can roll back.
     pub(crate) fn can_remove_process(&self, pid: u32) -> bool {
-        !self.images.iter().any(|(key, image)| key.pid == pid && image.exec_serial.is_some())
+        !self.images.iter().any(|(key, image)| key.pid == pid
+            && (image.exec_serial.is_some() || image.committed_exec_serial.is_some()))
             && self.tasks.iter().all(|(_, task)| task.receipt.execution.pid != pid || task.phase == Phase::Prepared)
     }
 
@@ -492,7 +498,7 @@ impl MemoryGroups {
         generation: u64,
     ) -> Result<(), Errno> {
         let image = self.images.get(&ImageKey { pid, generation }).ok_or(Errno::ENOENT)?;
-        if image.exec_serial.is_some() { return Err(Errno::EBUSY); }
+        if image.exec_serial.is_some() || image.committed_exec_serial.is_some() { return Err(Errno::EBUSY); }
         if self.tasks.iter().any(|(_, task)| {
             task.receipt.execution.pid == pid
                 && task.receipt.execution.exec_generation == generation
@@ -660,6 +666,9 @@ impl MemoryGroups {
             return Err(Errno::EBUSY);
         }
         self.tasks.get_mut(&receipt.serial).unwrap().phase = Phase::Running;
+        if let Some(image) = self.images.get_mut(&ImageKey { pid: receipt.execution.pid, generation: receipt.execution.exec_generation }) {
+            if image.committed_exec_serial == Some(receipt.serial) { image.committed_exec_serial = None; }
+        }
         Ok(())
     }
 
