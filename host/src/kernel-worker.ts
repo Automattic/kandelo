@@ -2127,6 +2127,8 @@ interface PendingThreadChannelAttachment {
   readonly creatorRequest: FrozenChannelRequest | undefined;
   controlSlot?: { address: number; length: number };
   controlPending?: Promise<number>;
+  controlOwner?: { receipt: MemoryGroupTaskReceipt; rootHandle: PreparedGroupReplica; store: MemoryGroupImageStore };
+  controlStarted?: boolean;
 }
 
 /** One Rust fork allocation owns cleanup independently of its caller mailbox. */
@@ -2154,6 +2156,8 @@ interface CloneRollbackState {
   pendingAttachment?: PendingThreadChannelAttachment;
   finished?: Promise<void>;
   finish?: () => void;
+  controlCleanup?: Promise<void>;
+  failureCompletionPending?: boolean;
 }
 
 interface GroupThreadControlOwner {
@@ -8205,6 +8209,9 @@ export class CentralizedKernelWorker {
       if (thread.controlPending) { result = thread.controlPending; return undefined; }
       const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(thread.pid, this.guestTidForChannel(channel), registration.execGeneration, entry);
       if (typeof receipt === 'number') { result = Promise.resolve(receipt); return undefined; }
+      const threadReceipt = this.#readMemoryGroupReceiptWithinKernelEntry(thread.pid, thread.tid, registration.execGeneration, entry);
+      if (typeof threadReceipt === 'number') { result = Promise.resolve(threadReceipt); return undefined; }
+      thread.controlOwner = { receipt: threadReceipt, rootHandle: group.handle, store: group.store };
       let finish!: () => void, complete!: (address: number) => void;
       const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
       result = new this.#promiseReceiver<number>(resolve => { complete = resolve; });
@@ -8254,7 +8261,7 @@ export class CentralizedKernelWorker {
         if (attachError) throw attachError;
         const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.start, entry);
         if (status !== 0) throw new Error(`Cannot start grouped thread admission: ${status}`);
-        started = true;
+        started = true; pending.controlStarted = true;
         const launch = group.store.publish(handle, receipt);
         pending.groupedReplica = handle;
         this.#memoryGroupThreadControls.set(handle, { handle, rootHandle: group.handle, store: group.store, source,
@@ -10238,16 +10245,7 @@ export class CentralizedKernelWorker {
       const owner = record.owner!, receipt = owner.receipt;
       const released = owner.store.tryReleaseStoppedThread(owner.handle, owner.allocation.slotStartPage * WASM_PAGE_SIZE,
         PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE, () => {
-          const release = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_thread_control_release;
-          if (typeof release !== 'function') this.#memoryGroupProtocolError('Missing exact thread control retirement export');
-          result = this.#checkedMemoryGroupStatus(release(receipt.group, receipt.pid, receipt.tid,
-            Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n),
-            Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
-          if (result === -ESRCH) {
-            const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
-            if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH
-                || typeof generation === 'bigint' && generation !== receipt.generation) result = 0;
-          }
+          result = this.#releaseGroupThreadControlWithinKernelEntry(receipt, entry);
           return result === 0;
         });
       if (released === 'busy') { if (result === 0) result = -EBUSY; return undefined; }
@@ -10256,6 +10254,22 @@ export class CentralizedKernelWorker {
       record.owner = undefined; record.released = true; result = 0;
       return undefined;
     });
+    return result;
+  }
+
+  /** ESRCH is harmless only after proving that this exact image has
+   * disappeared or been replaced. A live missing row remains a failure. */
+  #releaseGroupThreadControlWithinKernelEntry(receipt: MemoryGroupTaskReceipt, entry: KernelWorkerEntryContext): number {
+    const release = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_thread_control_release;
+    if (typeof release !== 'function') this.#memoryGroupProtocolError('Missing exact thread control retirement export');
+    let result = this.#checkedMemoryGroupStatus(release(receipt.group, receipt.pid, receipt.tid,
+      Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n),
+      Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
+    if (result === -ESRCH) {
+      const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+      if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH
+          || typeof generation === 'bigint' && generation !== receipt.generation) result = 0;
+    }
     return result;
   }
 
@@ -24934,25 +24948,72 @@ export class CentralizedKernelWorker {
         );
         return;
       }
-      // A closed creator gate proves terminal refusal, not Worker failure.
-      // Classify it only AFTER exact rollback; unknown ownership stays fatal.
-      if (!cancelled && !isProcessMemoryCreatorAdmissionClosed(cause)) {
-        entry.deferObserverEffect(() => {
-          console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
+      if (state.controlCleanup) {
+        state.failureCompletionPending = true;
+        entry.deferProtocolEffect(() => {
+          void this.#continuePromise(state.controlCleanup!, () => {
+            this.#runOrDeferAllocatedCloneCompletionKernelEntry(tid, 'complete reclaimed clone refusal', completionEntry => {
+              state.failureCompletionPending = false;
+              try { this.#completeFailedCloneWithinKernelEntry(channel, state, cause, cancelled, completionEntry); }
+              finally { this.#finishGroupClone(state, completionEntry); }
+              return undefined;
+            }, state);
+          }, cleanupError => {
+            // A stale image must never crash a replacement through its PID.
+            // Poison the instance and retain charge if exact cleanup fails.
+            this.#failKernelInstance(new MemoryGroupProtocolFault(
+              `Could not retire unconstructed tid ${tid}`, { cause: cleanupError }));
+          });
           return undefined;
         });
+        return;
       }
-      if (!this.#isCurrentCloneImageWithinKernelEntry(channel, state, entry)) return;
-      this.completeChannel(
-        channel, SYS_CLONE, state.origArgs, undefined, -1, 12, [], undefined, entry,
-      );
+      this.#completeFailedCloneWithinKernelEntry(channel, state, cause, cancelled, entry);
     } finally { this.#finishGroupClone(state, entry); }
   }
 
+  #completeFailedCloneWithinKernelEntry(channel: ChannelInfo, state: CloneRollbackState,
+    cause: unknown, cancelled: boolean, entry: KernelWorkerEntryContext): void {
+    // Classify refusal only after exact rollback; unknown ownership stays fatal.
+    if (!cancelled && !isProcessMemoryCreatorAdmissionClosed(cause)) {
+      entry.deferObserverEffect(() => {
+        console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
+        return undefined;
+      });
+    }
+    if (!this.#isCurrentCloneImageWithinKernelEntry(channel, state, entry)) return;
+    this.completeChannel(channel, SYS_CLONE, state.origArgs, undefined, -1, ENOMEM, [], undefined, entry);
+  }
+
   #finishGroupClone(state: CloneRollbackState, entry: KernelWorkerEntryContext): void {
-    if (!this.#pendingGroupClones.delete(state)) return;
+    if (state.failureCompletionPending || !this.#pendingGroupClones.delete(state)) return;
     const finish = state.finish!;
     entry.deferProtocolEffect(() => { finish(); return undefined; });
+  }
+
+  async #settleUnconstructedThreadControl(thread: PendingThreadChannelAttachment, attachedOffset: number | undefined): Promise<void> {
+    const owner = thread.controlOwner!, slot = thread.controlSlot!;
+    if (attachedOffset !== undefined) {
+      await this.settleRetiredChannelListeners(thread.pid, thread.memory, attachedOffset, thread.source);
+    }
+    for (;;) {
+      let result = -EBUSY;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('release unconstructed thread controls', entry => {
+        const current = this.processes.get(thread.pid);
+        if (current?.source === thread.source && current.channels.some(channel =>
+          channel.channelOffset >= slot.address && channel.channelOffset < slot.address + slot.length)) return undefined;
+        const released = owner.store.tryReleaseUnconstructedThreadControl(owner.rootHandle, slot.address, slot.length, () => {
+          result = this.#releaseGroupThreadControlWithinKernelEntry(owner.receipt, entry);
+          return result === 0;
+        });
+        if (released === 'released') result = 0;
+        else if (result === 0) result = -EBUSY;
+        return undefined;
+      }));
+      if (result === 0) return;
+      if (result !== -EBUSY) throw new MemoryGroupProtocolFault(`Unconstructed control retirement refused: ${result}`);
+      await owner.store.waitForThreadRetirementProgress(owner.rootHandle);
+    }
   }
 
   /**
@@ -25028,6 +25089,16 @@ export class CentralizedKernelWorker {
     );
     if (transportRollbackError !== undefined) {
       throw transportRollbackError;
+    }
+    const pending = state.pendingAttachment;
+    if (pending?.controlSlot && pending.controlOwner && !pending.controlStarted && !state.controlCleanup) {
+      // Keep the exact clone/image owner until fresh-entry cleanup completes.
+      state.controlCleanup = new this.#promiseReceiver<void>((resolve, reject) => {
+        entry.deferProtocolEffect(() => {
+          void this.#settleUnconstructedThreadControl(pending, attachedChannelOffset).then(resolve, reject);
+          return undefined;
+        });
+      });
     }
   }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemoryGroupImageStore, type PreparedGroupMapping } from '../src/memory-group-image-store';
 import { decodeProcessMemoryDescriptor } from '../src/process-memory-descriptor';
 import { GroupProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
@@ -785,6 +785,37 @@ describe('kernel-realm group image custody', () => {
   });
 });
 
+
+describe('unconstructed thread control rollback', () => {
+  it('retains mapped pages and refuses rebinding until exact native observations settle', async () => {
+    const h = imageWithThread(), source = h.store.imageSource(h.a), charged = h.store.snapshot().allocatedPages;
+    const pin = source.prepareNativeObservationI32(P), wait = pin.arm(0, 1000);
+    const release = vi.fn(() => true);
+    expect(h.store.tryReleaseUnconstructedThreadControl(h.a, P, P, release)).toBe('busy');
+    expect(release).not.toHaveBeenCalled();
+    pin.wake(); if (wait.async) await wait.value;
+    expect(h.store.tryReleaseUnconstructedThreadControl(h.a, P, P, () => false)).toBe('busy');
+    expect(h.store.snapshot().allocatedPages).toBe(charged);
+    h.store.revokeImageAccess(h.a);
+    expect(h.store.tryReleaseUnconstructedThreadControl(h.a, P, P, release)).toBe('released');
+    expect(release).toHaveBeenCalledOnce();
+    expect(h.store.snapshot().allocatedPages).toBe(charged); h.store.close();
+  });
+  it.each([G.MEMORY_GROUP_WAIT_WAITING, G.MEMORY_GROUP_WAIT_NOTIFIED, G.MEMORY_GROUP_WAIT_STOPPED])('retains a peer target even in queue state %s', state => {
+    const h = imageWithThread(), words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const at = G.MEMORY_GROUP_WAIT_NODES / 4;
+    const ptes = new Uint32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
+    words[at] = state; words[at + 2] = (ptes[1] >>> 16) * P;
+    words[at + 3] = h.leader.expectation.root; words[at + 4] = h.peer.expectation.replica;
+    words[q + 4] = 1;
+    if (state === G.MEMORY_GROUP_WAIT_WAITING) words[q + 1] = words[q + 2] = at * 4;
+    const release = vi.fn(() => true);
+    expect(h.store.tryReleaseUnconstructedThreadControl(h.a, P, P, release)).toBe('busy');
+    expect(release).not.toHaveBeenCalled();
+    words[at] = 0; words[q + 1] = words[q + 2] = words[q + 4] = 0;
+    expect(h.store.tryReleaseUnconstructedThreadControl(h.a, P, P, release)).toBe('released'); h.store.close();
+  });
+});
 
 describe('live-image exact thread scratch and control retirement', () => {
   it('releases only the stopped thread scratch after Rust validation, preserving mapped controls and live peers', () => {

@@ -3144,7 +3144,11 @@ ThreadInfo removal and refuses release while Rust task or Worker custody lives.
 Mapped controls stay host-reserved for bounded reuse; the host independently
 joins exact Worker, reference, channel and queue/native-observer fences before
 returning replica scratch. Fork inherits protected reserved bytes without the
-parent's reusable-slot authority. The program ABI and digest stay at 56.
+parent's reusable-slot authority. Before Start, failed thread launch retains
+the full receipt through exact channel/native/queue cleanup and releases the
+mapped control row to this same cache; it does not unreserve arbitrary guest
+addresses. Start precedes publication and rules out unconstructed rollback
+once accepted. The program ABI and digest stay at 56.
 
 Host-adapter 13 adds optional `kernel_group_memory_fork(group, pid, tid,
 serialLo, serialHi, generationLo, generationHi, observedPages) -> i32`.

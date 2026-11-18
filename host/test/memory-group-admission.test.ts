@@ -1110,6 +1110,57 @@ function stoppedImageHarness(callbacks: CentralizedKernelCallbacks = {}) {
   return { ...h, receipt, handle, launch, concrete, stop };
 }
 
+describe('unconstructed clone control retirement', () => {
+  it('joins exact control cleanup before releasing a revoked image, without completing its retired creator', async () => {
+    let entered!: () => void, reserved!: () => void, rolledBack!: () => void;
+    const hasEntered = new Promise<void>(resolve => { entered = resolve; });
+    const hasReservation = new Promise<void>(resolve => { reserved = resolve; });
+    const hasRollback = new Promise<void>(resolve => { rolledBack = resolve; });
+    let observation!: ReturnType<typeof h.launch.source.prepareNativeObservationI32>;
+    let wait!: ReturnType<typeof observation.arm>;
+    const h = stoppedImageHarness({ onGroupedClone: async attachment => {
+      expect(await retryKernelEntryResult(() => {
+        const pending = h.worker.reserveMemoryGroupThreadControl(attachment); entered(); return pending;
+      })).toBe(4 * 65536);
+      observation = (h.worker as any).processes.get(100).source.prepareNativeObservationI32(4 * 65536); wait = observation.arm(0, 1000);
+      reserved(); throw Error('launch refused after exact reservation');
+    } });
+    h.implementations.kernel_group_memory_thread_control_reuse.mockReturnValue(4n * 65536n);
+    h.implementations.kernel_thread_exit.mockImplementation(() => { rolledBack(); return 0n; });
+    h.implementations.kernel_handle_channel = (pointer: number | bigint) => {
+      const view = new DataView(h.memory.buffer, Number(pointer));
+      view.setBigInt64(CH_RETURN, 101n, true); view.setUint32(CH_ERRNO, 0, true); return 0;
+    };
+    const channel = (h.worker as any).processes.get(100).channels[0];
+    const view = processDataView(channel.source, 65536);
+    view.setUint32(CH_SYSCALL, SYSCALLS.Clone, true);
+    [0x10100, 5 * 65536, 0, 0, 0, 0].forEach((value, at) => view.setBigInt64(CH_ARGS + at * CH_ARG_SIZE, BigInt(value), true));
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      (h.worker as any).handleSyscall(channel);
+      await hasEntered;
+      const controls = new Int32Array(h.launch.envelope.memory.buffer, h.launch.expectation.replica, G.MEMORY_GROUP_REPLICA_BYTES / 4);
+      Atomics.store(controls, G.MEMORY_GROUP_REPLICA_ACK / 4, Atomics.load(controls, G.MEMORY_GROUP_REPLICA_REQUEST / 4));
+      Atomics.notify(controls, G.MEMORY_GROUP_REPLICA_ACK / 4);
+      await hasReservation; await hasRollback;
+      expect(h.implementations.kernel_group_memory_thread_control_release).not.toHaveBeenCalled();
+      expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_PENDING);
+      h.stop(); h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+      let closed!: () => void; const referencesClosed = new Promise<void>(resolve => { closed = resolve; });
+      const charged = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+      const retirement = h.worker.retireMemoryGroupImage(h.handle, closed);
+      await referencesClosed;
+      expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(charged);
+      observation.wake(); if (wait.async) await wait.value;
+      expect(await retirement).toBe(0);
+      expect(h.implementations.kernel_group_memory_thread_control_release).toHaveBeenCalledWith(23, 100, 101,
+        Number(SERIAL & 0xffffffffn) | 0, Number(SERIAL >> 32n) | 0, Number(GENERATION & 0xffffffffn) | 0, Number(GENERATION >> 32n) | 0);
+      expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(1);
+    } finally { observation?.wake(); diagnostic.mockRestore(); }
+  });
+});
+
 describe('exact registered image retirement', () => {
   it('requires both a concrete Worker stop and Rust exit before closing references or freeing pages', async () => {
     const h = stoppedImageHarness(), close = vi.fn();
