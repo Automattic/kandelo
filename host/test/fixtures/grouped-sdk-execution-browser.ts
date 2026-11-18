@@ -1,14 +1,14 @@
 import { BrowserWorkerAdapter } from "../../src/worker-adapter-browser";
 import { VirtualPlatformIO } from "../../src/vfs/vfs";
 import { BrowserTimeProvider } from "../../src/vfs/time";
-import { runSdkExecution } from "./grouped-sdk-execution";
+import { runSdkCycles, runSdkExecution } from "./grouped-sdk-execution";
 import { installBrowserSetImmediatePolyfill } from "../../src/browser-immediate-polyfill";
 
 installBrowserSetImmediatePolyfill();
 
 // Fetch executable bytes inside this disposable kernel realm. The page only
 // supplies a mode, and receives owned output/scalars after exact quiescence.
-self.onmessage = async (event: MessageEvent<{ grouped: boolean; probe?: "mapping" | "private-file" | "fork" | "pthread" }>) => {
+self.onmessage = async (event: MessageEvent<{ grouped: boolean; cycles?: number; probe?: "mapping" | "private-file" | "fork" | "pthread" }>) => {
   self.onmessage = null;
   try {
     const grouped = event.data.grouped;
@@ -23,10 +23,11 @@ self.onmessage = async (event: MessageEvent<{ grouped: boolean; probe?: "mapping
       read("/kernel.wasm"), read("/image-module.wasm"), read(`/${probe}/ordinary.wasm`),
       read(`/${probe}/${grouped ? "grouped" : "ordinary"}.wasm`),
     ]);
-    self.postMessage(await runSdkExecution({ kernelBytes, imageModuleBytes, ordinaryBytes, programBytes, grouped,
+    const options = { kernelBytes, imageModuleBytes, ordinaryBytes, programBytes, grouped,
       io: new VirtualPlatformIO([], new BrowserTimeProvider()),
       adapter: new BrowserWorkerAdapter(new URL("/process.mjs", self.location.href)), joinOnExit: false,
-    }));
+    };
+    self.postMessage(await (event.data.cycles ? runSdkCycles(options, event.data.cycles) : runSdkExecution(options)));
   } catch (error) {
     self.postMessage({ failure: error instanceof Error ? error.stack : String(error) });
   } finally { self.close(); }

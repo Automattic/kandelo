@@ -1,6 +1,7 @@
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import type { WorkerHandle } from "./worker-adapter";
 import { ThreadPageAllocator, type ThreadAllocation } from './thread-allocator';
+import { retryKernelEntryResult } from './kernel-entry-retry';
 import { GroupProcessAddressSpace, ProcessAddressFault, type NativeI32Observation } from "./process-address-space";
 import { captureProcessRead, processDataView, readProcessBytes, writeProcessBytes,
   fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, type CapturedProcessRead,
@@ -2151,6 +2152,15 @@ interface CloneRollbackState {
   parentTidWritten: boolean;
   cloneAttachment?: AnyThreadChannelAttachment;
   pendingAttachment?: PendingThreadChannelAttachment;
+  finished?: Promise<void>;
+  finish?: () => void;
+}
+
+interface GroupImageRetirement {
+  owner?: { readonly handle: PreparedGroupReplica; readonly store: MemoryGroupImageStore;
+    readonly pid: number; readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace };
+  readonly settled: Promise<void>;
+  released: boolean;
 }
 
 // Module-private authority store: neither a caller nor a subclass can mint a
@@ -3215,6 +3225,10 @@ export class CentralizedKernelWorker {
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
   #observedMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
   #observedMemoryGroupWorkers = new WeakSet<WorkerHandle>();
+  #groupImageRetirements = new WeakMap<PreparedGroupReplica, GroupImageRetirement>();
+  #memoryGroupImageRegistrations = new WeakMap<PreparedGroupReplica, {
+    readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace }>();
+  #pendingGroupClones = new Set<CloneRollbackState>();
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
    *
@@ -8520,6 +8534,7 @@ export class CentralizedKernelWorker {
     const image = store.processRegistration(handle);
     this.#registerProcess(image.receipt.pid, image.memory, channelOffsets, options,
       { store, handle, ...image });
+    this.#memoryGroupImageRegistrations.set(handle, { memory: image.memory, source: image.source });
   }
 
   #registerProcess(
@@ -10143,8 +10158,82 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** A group shares one physical Memory across images. Only the exact
-   * published image handle may withdraw its registration during rollback. */
+  /** Release host reference owners once, then join exact channel/operation
+   * retirement. A busy queue/pool remains charged and may be retried. Neither
+   * PID disappearance nor a caller callback supplies the Worker stop proof. */
+  retireMemoryGroupImage(handle: PreparedGroupReplica, retireHostReferences: () => void): Promise<number> {
+    let record = this.#groupImageRetirements.get(handle);
+    if (record?.released) return Promise.resolve(0);
+    let refusal = -EBUSY;
+    if (!record) this.#runImmediateKernelEntry('begin exact grouped image retirement', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), image = this.#memoryGroupImageRegistrations.get(handle);
+      if (!store || !image) { refusal = -EINVAL; return undefined; }
+      const receipt = store.receipt(handle);
+      if (receipt.pid !== receipt.tid) { refusal = -EINVAL; return undefined; }
+      if (!store.imageExecutionStopped(handle)) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+      if (generation instanceof Error) {
+        if (!(generation instanceof KernelTaskBindingError && generation.errno === ESRCH)) throw generation;
+      } else if (generation === receipt.generation) {
+        const state = (this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (pid: number) => number)(receipt.pid);
+        if (state !== PROCESS_STATE_EXITED) return undefined;
+      }
+      const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+      if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact image retirement export');
+      const status = this.#checkedMemoryGroupStatus(retire(receipt.pid,
+        Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
+      if (status !== 0 && status !== -ERRNO.ENOENT) { refusal = status; return undefined; }
+      const operations = new Set<Promise<void>>();
+      for (const pending of [...this.pendingGroupImageOperations.values(), ...this.retiringGroupMappings]) {
+        if (pending.registration.source === image.source && !pending.done) operations.add(pending.finished);
+      }
+      for (const clone of this.#pendingGroupClones) if (clone.source === image.source) operations.add(clone.finished!);
+      const registration = this.processes.get(receipt.pid);
+      if (registration?.source === image.source) {
+        if (registration.grouped?.handle !== handle) this.#memoryGroupProtocolError('Retiring image registration changed identity');
+        this.#deactivateProcessWithinKernelEntry(receipt.pid, entry, image.memory);
+      }
+      store.revokeImageAccess(handle);
+      let resolve!: () => void, reject!: (reason: unknown) => void;
+      const settled = new this.#promiseReceiver<void>((yes, no) => { resolve = yes; reject = no; });
+      record = { owner: { handle, store, pid: receipt.pid, ...image }, settled, released: false };
+      this.#groupImageRetirements.set(handle, record);
+      const ownedRecord = record;
+      entry.deferProtocolEffect(() => {
+        void this.#settleGroupImageRetirement(ownedRecord, [...operations], retireHostReferences).then(resolve, reject);
+        return undefined;
+      });
+      return undefined;
+    });
+    if (!record) return Promise.resolve(refusal);
+    const ownedRecord = record;
+    return ownedRecord.settled.then(() => retryKernelEntryResult(() => this.#releaseGroupImageRetirement(ownedRecord)));
+  }
+
+  async #settleGroupImageRetirement(record: GroupImageRetirement, operations: readonly Promise<void>[],
+    retireHostReferences: () => void): Promise<void> {
+    retireHostReferences();
+    await Promise.all(operations);
+    const { pid, memory, source } = record.owner!;
+    await this.settleRetiredChannelListeners(pid, memory, undefined, source);
+  }
+
+  #releaseGroupImageRetirement(record: GroupImageRetirement): number {
+    if (record.released) return 0;
+    let result = -EBUSY;
+    this.#runImmediateKernelEntry('release exact stopped image pages', _entry => {
+      if (record.released) { result = 0; return undefined; }
+      const { handle, store } = record.owner!;
+      const released = store.tryReleaseStoppedImage(handle);
+      if (released === 'busy') return undefined;
+      for (const replica of released.replicas) this.#memoryGroupReplicas.delete(replica);
+      this.#memoryGroupImageRegistrations.delete(handle);
+      record.owner = undefined; record.released = true; result = 0;
+      return undefined;
+    });
+    return result;
+  }
+
   deactivateMemoryGroupProcess(handle: PreparedGroupReplica): boolean {
     let result = false;
     this.#runImmediateKernelEntry('deactivate exact grouped image', entry => {
@@ -24500,6 +24589,10 @@ export class CentralizedKernelWorker {
     }
 
     const attachment = cloneState.cloneAttachment!;
+    if (groupedClone) {
+      cloneState.finished = new this.#promiseReceiver<void>(resolve => { cloneState.finish = resolve; });
+      this.#pendingGroupClones.add(cloneState);
+    }
     entry.deferProtocolTransactionStart(() => {
       // Destroy can complete the original mailbox while this detached start
       // waits its turn. Its Rust allocation still needs rollback even though
@@ -24545,52 +24638,54 @@ export class CentralizedKernelWorker {
           tid,
           `clone launch completion pid=${channel.pid}`,
           (completionEntry) => {
-            // A successful callback without an attachment is a real contract
-            // failure even when teardown already retired its caller.
-            if (cloneState.pendingAttachment?.attachedChannelOffset === undefined) {
-              this.#finishFailedCloneWithinKernelEntry(
-                channel, tid, ptidPtr, cloneState,
-                new Error(`onClone returned without attaching kernel tid ${tid}`),
-                false, completionEntry,
+            try {
+              // A successful callback without an attachment is a real contract
+              // failure even when teardown already retired its caller.
+              if (cloneState.pendingAttachment?.attachedChannelOffset === undefined) {
+                this.#finishFailedCloneWithinKernelEntry(
+                  channel, tid, ptidPtr, cloneState,
+                  new Error(`onClone returned without attaching kernel tid ${tid}`),
+                  false, completionEntry,
+                );
+                return undefined;
+              }
+              const groupedReplica = cloneState.pendingAttachment.groupedReplica;
+              if (groupedClone && (!groupedReplica || !this.#observedMemoryGroupReplicas.has(groupedReplica))) {
+                this.#finishFailedCloneWithinKernelEntry(channel, tid, ptidPtr, cloneState,
+                  new Error(`onGroupedClone returned without publishing an observed Worker for tid ${tid}`),
+                  false, completionEntry);
+                return undefined;
+              }
+              // The callback published its Worker owner before resolving. A
+              // retired caller only loses result-publication authority; removing
+              // this transferred channel would prevent that Worker's cooperative
+              // exit and its exact memory-quiescence acknowledgement.
+              cloneState.transferred = true;
+              pendingThreadChannelAttachments.delete(attachment);
+              if (
+                !this.#isCurrentCloneImageWithinKernelEntry(
+                  channel, cloneState, completionEntry,
+                )
+              ) {
+                return undefined;
+              }
+              this.completeChannel(
+                channel,
+                SYS_CLONE,
+                origArgs,
+                undefined,
+                tid,
+                0,
+                [],
+                {
+                  tid,
+                  parentTidPointer:
+                    cloneState.parentTidWritten ? ptidPtr : undefined,
+                },
+                completionEntry,
               );
               return undefined;
-            }
-            const groupedReplica = cloneState.pendingAttachment.groupedReplica;
-            if (groupedClone && (!groupedReplica || !this.#observedMemoryGroupReplicas.has(groupedReplica))) {
-              this.#finishFailedCloneWithinKernelEntry(channel, tid, ptidPtr, cloneState,
-                new Error(`onGroupedClone returned without publishing an observed Worker for tid ${tid}`),
-                false, completionEntry);
-              return undefined;
-            }
-            // The callback published its Worker owner before resolving. A
-            // retired caller only loses result-publication authority; removing
-            // this transferred channel would prevent that Worker's cooperative
-            // exit and its exact memory-quiescence acknowledgement.
-            cloneState.transferred = true;
-            pendingThreadChannelAttachments.delete(attachment);
-            if (
-              !this.#isCurrentCloneImageWithinKernelEntry(
-                channel, cloneState, completionEntry,
-              )
-            ) {
-              return undefined;
-            }
-            this.completeChannel(
-              channel,
-              SYS_CLONE,
-              origArgs,
-              undefined,
-              tid,
-              0,
-              [],
-              {
-                tid,
-                parentTidPointer:
-                  cloneState.parentTidWritten ? ptidPtr : undefined,
-              },
-              completionEntry,
-            );
-            return undefined;
+            } finally { this.#finishGroupClone(cloneState, completionEntry); }
           },
           cloneState,
         );
@@ -24682,39 +24777,47 @@ export class CentralizedKernelWorker {
     cancelled: boolean,
     entry: KernelWorkerEntryContext,
   ): void {
-    if (state.transferred) {
-      // Successful launch has already made the thread observable. A later
-      // publication failure cannot undo it as though no Worker ever ran.
-      this.#terminateForKernelProtocolFailureWithinKernelEntry(
-        channel, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
-      );
-      return;
-    }
     try {
-      this.#rollbackCloneWithinKernelEntry(channel, tid, ptidPtr, state, entry);
-    } catch (rollbackError) {
-      this.#rethrowKernelEntryFatal(rollbackError);
-      this.#terminateForKernelProtocolFailureWithinKernelEntry(
-        channel,
-        `could not roll back allocated tid ${tid}: ${
-          rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-        }`,
-        entry,
+      if (state.transferred) {
+        // Successful launch has already made the thread observable. A later
+        // publication failure cannot undo it as though no Worker ever ran.
+        this.#terminateForKernelProtocolFailureWithinKernelEntry(
+          channel, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
+        );
+        return;
+      }
+      try {
+        this.#rollbackCloneWithinKernelEntry(channel, tid, ptidPtr, state, entry);
+      } catch (rollbackError) {
+        this.#rethrowKernelEntryFatal(rollbackError);
+        this.#terminateForKernelProtocolFailureWithinKernelEntry(
+          channel,
+          `could not roll back allocated tid ${tid}: ${
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          }`,
+          entry,
+        );
+        return;
+      }
+      // A closed creator gate proves terminal refusal, not Worker failure.
+      // Classify it only AFTER exact rollback; unknown ownership stays fatal.
+      if (!cancelled && !isProcessMemoryCreatorAdmissionClosed(cause)) {
+        entry.deferObserverEffect(() => {
+          console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
+          return undefined;
+        });
+      }
+      if (!this.#isCurrentCloneImageWithinKernelEntry(channel, state, entry)) return;
+      this.completeChannel(
+        channel, SYS_CLONE, state.origArgs, undefined, -1, 12, [], undefined, entry,
       );
-      return;
-    }
-    // A closed creator gate proves terminal refusal, not Worker failure.
-    // Classify it only AFTER exact rollback; unknown ownership stays fatal.
-    if (!cancelled && !isProcessMemoryCreatorAdmissionClosed(cause)) {
-      entry.deferObserverEffect(() => {
-        console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
-        return undefined;
-      });
-    }
-    if (!this.#isCurrentCloneImageWithinKernelEntry(channel, state, entry)) return;
-    this.completeChannel(
-      channel, SYS_CLONE, state.origArgs, undefined, -1, 12, [], undefined, entry,
-    );
+    } finally { this.#finishGroupClone(state, entry); }
+  }
+
+  #finishGroupClone(state: CloneRollbackState, entry: KernelWorkerEntryContext): void {
+    if (!this.#pendingGroupClones.delete(state)) return;
+    const finish = state.finish!;
+    entry.deferProtocolEffect(() => { finish(); return undefined; });
   }
 
   /**

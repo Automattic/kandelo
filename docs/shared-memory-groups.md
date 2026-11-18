@@ -279,9 +279,33 @@ Exit waits preserve their status record and remain pending until all that
 child's execution admissions retire; the last receipt wakes parked waits and
 retries synthetic-init reaping for an already-published exit. Replica access
 and execution-barrier membership end separately from kernel image access.
-Physical pages remain charged: these fences do not yet establish engine wait
-retirement, safe physical reuse or a lifecycle allocation plateau. Grouped
-pthread/control reclamation and broader release gates remain unfinished.
+Execution fences alone leave physical pages charged. Whole-image retirement
+additionally requires Rust exit or replacement of the exact image generation,
+revoked kernel image access, settled mapping and clone callbacks, closed host
+reference owners, and settled channel/native observers. The queue must contain
+no node owned by that root, including unlinked notified or stopped nodes. A busy
+lock or remaining node refuses release; a timeout never supplies retirement.
+
+The allocator uses a bitmap rather than PTE reference counts. Whole-image
+release deduplicates original payload, private fork copies, current and removed
+PTE pages, controls and every stopped replica's scratch. It refuses overlap
+with a peer image and preserves peer wait nodes. The old root lock is unlocked
+before pages return to the pool; cleanup cannot write it after another image
+reuses that page. This supports image-private storage only. Descriptor-backed
+cross-image sharing still needs the shared-object ownership model.
+
+The SDK pthread probe has run forty images on one kernel/group/backing on Node,
+Chromium, Firefox and WebKit. Each cohort launches six pthread Workers, retires
+all image storage back to the single metadata page, and reuses the same
+315-page physical extent with the unchanged 2,048-page maximum and 1,024
+declared thread slots. This proves normal-exit allocator reuse for this probe,
+not lower RSS, shrinking linear memory, or kill/exec/crash/destroy acceptance.
+The private-fork probe additionally repeats forty parent/child cohorts on one
+backing, including inherited descriptors, private-state isolation, protection
+and child wait status. It returns both images to the metadata page and keeps
+a 327-page extent. Its non-pthread executable normally declares zero thread
+slots. Full browser-memory, conformance and performance release gates remain
+open.
 
 Host-adapter 15 adds on-demand pthread controls. The grouped clone callback
 receives a one-shot Rust TID capability without an ordinary Memory field.
@@ -300,9 +324,9 @@ default 1,024 slots would require 4,245 initial pages for the SDK pthread probe,
 exceeding its unchanged 2,048-page ceiling. That failed attempt was rejected;
 the implementation uses the normal compact process layout and allocates each
 four-page control slot on demand. Replica scratch is separately charged.
-Physical control/PTE storage and stopped-thread records remain retained until
-the wider reclamation work; no sustained slot-reuse or allocation plateau is
-claimed. A known quota refusal is checked before requesting controls; racing
+Physical control/PTE storage and stopped-thread records remain charged while
+the image lives, then return through exact whole-image retirement. Reusing
+individual thread/control slots in a live process remains unfinished. A known quota refusal is checked before requesting controls; racing
 admissions and later launch failures still need complete control rollback.
 
 An exact stopped replica can leave an active image barrier. Its member is

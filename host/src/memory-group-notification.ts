@@ -25,6 +25,31 @@ function waitingNodes(words: Int32Array): number[] {
   return nodes;
 }
 
+/** Read-only queue retirement proof. An unlinked notified/stopped node still
+ * owns storage until its returning native waiter recycles it. Peer images may
+ * remain waiting; never drain their nodes to retire this root. */
+export function memoryGroupImageWaitsRetired(memory: WebAssembly.Memory, root: number): boolean | 'busy' {
+  if (!Number.isSafeInteger(root) || root < G.MEMORY_GROUP_PAGE_BYTES || root % G.MEMORY_GROUP_PAGE_BYTES
+      || root > memory.buffer.byteLength - G.MEMORY_GROUP_ROOT_HEADER_BYTES) throw new MemoryGroupProtocolFault('Invalid retiring root');
+  const words = new Int32Array(memory.buffer);
+  if (Atomics.compareExchange(words, Q, 0, 1) !== 0) return 'busy';
+  try {
+    waitingNodes(words);
+    let allocated = 0, retired = true;
+    for (let at = FIRST; at < G.MEMORY_GROUP_PAGE_BYTES; at += STRIDE) {
+      const state = Atomics.load(words, at / 4);
+      if (state === G.MEMORY_GROUP_WAIT_FREE) continue;
+      if (state < G.MEMORY_GROUP_WAIT_WAITING || state > G.MEMORY_GROUP_WAIT_STOPPED) {
+        throw new MemoryGroupProtocolFault('Corrupt retiring wait node');
+      }
+      allocated++;
+      if ((words[at / 4 + 3] >>> 0) === root) retired = false;
+    }
+    if (allocated !== (words[Q + 4] >>> 0)) throw new MemoryGroupProtocolFault('Corrupt retiring wait count');
+    return retired;
+  } finally { Atomics.store(words, Q, 0); Atomics.notify(words, Q, 1); }
+}
+
 /** Exact local replica owner only. A busy queue is a retry, never a reason to
  * block kernel teardown behind a possibly interrupted participant. Stop the
  * source/checkpoint first, then retry its queued wait drain until it succeeds.

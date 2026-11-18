@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import base from './vitest.config';
+import base from './vitest.config.ts';
 
 // These prepared-product cases compile their own C executables through the
 // normal SDK in beforeAll. They require the normally built/pinned kernel and
