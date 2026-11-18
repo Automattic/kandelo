@@ -1,3 +1,4 @@
+import { GroupProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
 import { describe, expect, it } from "vitest";
 import type { DylinkForkState } from "../src/dylink";
 import {
@@ -488,5 +489,54 @@ describe("compact dylink fork archive", () => {
       "wrong width",
     );
     expect(() => wrongWidth.read()).toThrow(/pointer-width mismatch/);
+  });
+});
+
+describe('dylink archive with an explicit virtual source', () => {
+  function groupFixture() {
+    const page = 65536, backing = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+    const root = page, words = new Uint32Array(backing.buffer), pte = root / 4 + 16;
+    words[root / 4] = 4;
+    for (let i = 0; i < 4; i++) words[pte + i] = (4 + i * 2) * page | 3;
+    const source = new GroupProcessAddressSpace({ memory: backing, root, maximumPages: 4, assertLive: () => {} });
+    let head = 0, next = page - 80;
+    const allocations = new Map<number, number>();
+    const archive = () => new DylinkForkArchive(source, 4, () => head, value => { head = value; },
+      size => { const address = next; next += Math.ceil(size / 8) * 8; allocations.set(address, size); return { address, size }; },
+      ({ address }) => { allocations.delete(address); }, 'virtual dylink archive');
+    return { source, words, pte, page, archive, allocations, get head() { return head; } };
+  }
+  it('round-trips split headers, module bytes, provider names and staged transactions', () => {
+    const f = groupFixture(), input = state();
+    input.libraries[1] = { ...input.libraries[1]!, moduleBytes: new Uint8Array(f.page + 37).fill(0x5a),
+      providerDependencies: ['libdependency.so'], handle: undefined, refCount: undefined, committedGlobalRoot: undefined,
+      initialization: { transactionToken: 9, stage: 'bootstrap', tableIndex: 19 } };
+    input.transactions = [{ token: 9, name: input.libraries[1]!.name, moduleBytes: input.libraries[1]!.moduleBytes, globalVisibility: true }];
+    const writer = f.archive();
+    const first = writer.sync(input);
+    expect(first.generation).toBe(1);
+    const read = f.archive().read();
+    expect(read.libraries).toEqual(input.libraries);
+    expect(read.transactions).toEqual(input.transactions);
+    const before = [...f.allocations.keys()];
+    expect(writer.sync(input).generation).toBe(2);
+    expect([...f.allocations.keys()]).toEqual(before);
+    read.libraries[1]!.moduleBytes.fill(0);
+    expect(f.archive().read().libraries[1]!.moduleBytes[0]).toBe(0x5a);
+  });
+  it('still detects corrupted module bytes through virtual mappings', () => {
+    const f = groupFixture(); f.archive().sync(state());
+    const firstModule = [...f.allocations.keys()][1]!;
+    // Module header136 plus the aligned16byte dependency name.
+    f.source.writeBytes(firstModule + 136 + 16, new Uint8Array([0xff]));
+    expect(() => f.archive().read()).toThrow(/SHA-256/);
+  });
+  it('preflights split-page header permissions before publishing or clearing bytes', () => {
+    const f = groupFixture();
+    f.source.fillBytes(f.page - 80, 104, 0xa5);
+    f.words[f.pte + 1] = 6 * f.page | 1;
+    expect(() => f.archive().sync(state())).toThrow(ProcessAddressFault);
+    expect(f.head).toBe(0);
+    expect([...f.source.readBytes(f.page - 80, 104)]).toEqual(Array(104).fill(0xa5));
   });
 });

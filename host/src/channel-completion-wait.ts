@@ -20,3 +20,21 @@ export function waitForChannelCompletion(
     // A wake alone does not complete the request.
   }
 }
+
+/** Internal grouped Worker path. Bind the admitted instance's native C export
+ * to its exact root and replica. It translates this virtual byte address on
+ * every call, registers an owned queue node and checks pause/stop before source
+ * re-entry. A plain native wait on group storage would evade those controls.
+ */
+export function waitForGroupedChannelCompletion(
+  wait32: (address: number, expected: number, timeout: bigint) => number,
+  statusAddress: number,
+): void {
+  for (;;) {
+    const result = wait32(statusAddress, CHANNEL_STATUS_PENDING, -1n);
+    if (result === 1) return; // The status no longer matches PENDING.
+    if (result !== 0 && result !== 2) throw new Error('Invalid translated channel wait result');
+    // Notifications can be spurious. The next native helper checks the word
+    // again and supplies its replica checkpoint even for an early completion.
+  }
+}

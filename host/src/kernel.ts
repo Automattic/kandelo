@@ -5,6 +5,8 @@ import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
+import { processAddressFromWasm, type ProcessAddressSpace } from "./process-address-space";
+import { MemoryGroupProtocolFault } from "./memory-group-protocol";
 import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord, type PlanarPlaneStorage } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
@@ -846,6 +848,12 @@ export interface KernelCallbacks {
    * process is gone" and turns the GL call into a silent no-op.
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /** Exact current source for process-copy and wait-completion imports. Native
+   * Memory keeps its direct-copy/comparison path; virtual roots use checked
+   * operations. An absent explicit source never falls back to getProcessMemory.
+   * This alone does not enable grouped launch or adapt graphics consumers.
+   */
+  getProcessAddressSpace?: (pid: number) => ProcessAddressSpace | WebAssembly.Memory | undefined;
   /**
    * The mutation epoch of `pid`'s memory while the process is provably
    * quiescent (every thread parked in a syscall, no vfork child borrowing
@@ -4140,8 +4148,23 @@ export class WasmPosixKernel {
           src_ptr: KernelPointer,
           len: number,
         ): number => {
-          const procMem = this.callbacks.getProcessMemory?.(pid);
-          if (!procMem) return -14;
+          let procMem: WebAssembly.Memory;
+          try {
+            const addressSpace = this.#resolveProcessAddressSpace(pid);
+            if (!addressSpace) return -14;
+            if (addressSpace instanceof IntrinsicWasmMemory) {
+              procMem = addressSpace;
+            } else {
+              this.callbacks.onProcessMemoryChanged?.(pid);
+              processAddressFromWasm(addr, len, addressSpace.byteLength);
+              const source = this.#readKernelBytes(src_ptr, len);
+              const pointer = processAddressFromWasm(addr, len, addressSpace.byteLength);
+              addressSpace.writeBytes(pointer, source);
+              return 0;
+            }
+          } catch (caught) { rethrowNativeGlFault(caught);
+            return -14;
+          }
           // A host write into process memory is a mutation-epoch event, so a
           // quiescence proof taken before it cannot cover the bytes it leaves
           // (`CleanStamp` in crates/runtime-core/src/memory.rs).
@@ -4189,8 +4212,30 @@ export class WasmPosixKernel {
         // Kernel-published wait result (crates/kernel `publish_transfer_directly`):
         // the same writes and wake as the worker's own publication.
         host_publish_wait_completion: (pid: number, channel: bigint, ret: bigint, errno: number): number => {
-          const procMem = this.callbacks.getProcessMemory?.(pid);
-          if (!procMem) return -3; // ESRCH: the kernel queues it for the worker instead
+          let procMem: WebAssembly.Memory;
+          try {
+            const addressSpace = this.#resolveProcessAddressSpace(pid);
+            if (!addressSpace) return -3;
+            if (addressSpace instanceof IntrinsicWasmMemory) {
+              procMem = addressSpace;
+            } else {
+              this.callbacks.onProcessMemoryChanged?.(pid);
+              const base = processAddressFromWasm(channel, CH_ERRNO + 4, addressSpace.byteLength);
+              const bytes = new IntrinsicUint8Array(CH_ERRNO + 4 - CH_RETURN);
+              const result = new IntrinsicDataView(bytes.buffer);
+              intrinsicApply(intrinsicDataViewSetBigInt64, result, [0, ret, true]);
+              intrinsicApply(intrinsicDataViewSetUint32, result, [CH_ERRNO - CH_RETURN, errno, true]);
+              addressSpace.publishBytes(base + CH_RETURN, bytes, base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1);
+              return 0;
+            }
+          } catch (caught) {
+            if (caught instanceof MemoryGroupProtocolFault) {
+              this.callbacks.onHostFault?.(caught);
+              throw caught;
+            }
+            rethrowNativeGlFault(caught);
+            return -14;
+          }
           // Guest code may run once the task wakes: an epoch event.
           this.callbacks.onProcessMemoryChanged?.(pid);
           try {
@@ -4220,11 +4265,17 @@ export class WasmPosixKernel {
         host_proc_quiescent_epoch: (pid: number): bigint =>
           this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n,
         host_proc_validate_range: (pid: number, addr: bigint, len: number): number => {
-          const memory = this.callbacks.getProcessMemory?.(pid);
-          if (!memory) return -14;
           try {
-            checkedWasmImportMemoryRange(memory, addr, len, 8,
-              "host_proc_validate_range process destination", true);
+            const memory = this.#resolveProcessAddressSpace(pid);
+            if (!memory) return -14;
+            if (memory instanceof IntrinsicWasmMemory) {
+              checkedWasmImportMemoryRange(memory, addr, len, 8,
+                "host_proc_validate_range process destination", true);
+            } else {
+              // Match Rust's nonallocating extent check. Actual byte access
+              // still proves current page rights at the read/write boundary.
+              processAddressFromWasm(addr, len, memory.byteLength);
+            }
             return 0;
           } catch (caught) { rethrowNativeGlFault(caught); return -14; }
         },
@@ -4242,8 +4293,14 @@ export class WasmPosixKernel {
               len,
               "host_proc_read_bytes destination",
             );
-            const procMem = this.callbacks.getProcessMemory?.(pid);
+            const procMem = this.#resolveProcessAddressSpace(pid);
             if (!procMem) return -14;
+            if (!(procMem instanceof IntrinsicWasmMemory)) {
+              const pointer = processAddressFromWasm(addr, len, procMem.byteLength);
+              const source = procMem.readBytes(pointer, len);
+              this.#writeKernelBytes(destination, source);
+              return 0;
+            }
             // WHY allowAddressZero: byte 0 of a guest's linear memory is an
             // ordinary addressable byte, and the range proof against `procMem`
             // -- not a null-pointer convention -- is what establishes that the
@@ -4446,6 +4503,15 @@ export class WasmPosixKernel {
     );
   }
 
+  /** Resolve once per import: a missing or retired explicit image must never
+   * expose another source returned by the graphics/native callback. */
+  #resolveProcessAddressSpace(pid: number): ProcessAddressSpace | WebAssembly.Memory | undefined {
+    const explicit = this.callbacks.getProcessAddressSpace;
+    return explicit
+      ? intrinsicApply(explicit, this.callbacks, [pid]) as ProcessAddressSpace | WebAssembly.Memory | undefined
+      : this.callbacks.getProcessMemory?.(pid);
+  }
+
   /** Compare a Rust-lent initialized snapshot without copying either side.
    * Exact 0/1 is equal/different; 2 requests a separately checked owned read.
    * Invalid ranges return EFAULT. All native authority stays synchronous. */
@@ -4465,8 +4531,15 @@ export class WasmPosixKernel {
         memory, snapshotPointer, length, this.#kernelPtrWidth,
         "host_proc_compare_bytes Rust snapshot",
       );
-      const processMemory = this.callbacks.getProcessMemory?.(pid);
+      const processMemory = this.#resolveProcessAddressSpace(pid);
       if (!processMemory) return -14;
+      if (!(processMemory instanceof IntrinsicWasmMemory)) {
+        processAddressFromWasm(addr, length, processMemory.byteLength);
+        if (memory !== this.#memory || generation !== this.#memoryGeneration) return -14;
+        // Native comparator code interprets pointers as physical offsets. Ask
+        // Rust for its owned-read path rather than lend a group's whole backing.
+        return 2;
+      }
       const process = checkedWasmImportMemoryRange(
         processMemory, addr, length, 8,
         "host_proc_compare_bytes process source", true,

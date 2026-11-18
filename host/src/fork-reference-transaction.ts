@@ -34,6 +34,15 @@ import {
   type ForkGcLayoutDescriptor,
 } from "./fork-gc-codec";
 import { ForkStaticRootCatalog } from "./fork-static-root-catalog";
+import { GroupProcessAddressSpace } from "./process-address-space";
+import {
+  fillProcessBytes,
+  processDataView,
+  processMemoryByteLength,
+  readProcessBytes,
+  writeProcessBytes,
+  type ProcessMemorySource,
+} from "./process-memory-views";
 import {
   WPK_FORK_REFERENCE_TRANSACTION_OWNER,
 } from "./generated/abi";
@@ -238,7 +247,7 @@ export class ForkReferenceTransaction {
   constructor(
     readonly functions: ForkFunctionCatalog,
     private readonly externrefs: ForkExternrefRecipeProvider,
-    private readonly memory?: WebAssembly.Memory,
+    private readonly memory?: ProcessMemorySource,
     private readonly allocateScratch?: ForkReferenceScratchAllocate,
     private readonly deallocateScratch?: ForkReferenceScratchDeallocate,
     private readonly label = "fork reference transaction",
@@ -878,7 +887,7 @@ export class ForkReferenceTransaction {
         !Number.isSafeInteger(addr)
         || addr <= 0
         || addr % 16 !== 0
-        || addr > this.requireMemory().buffer.byteLength - chunkSize
+        || addr > processMemoryByteLength(this.requireMemory()) - chunkSize
       ) {
         if (Number.isSafeInteger(addr) && addr > 0) {
           try {
@@ -901,8 +910,8 @@ export class ForkReferenceTransaction {
     }
     const previousUsed = chunk.used;
     const addr = chunk.addr + previousUsed;
+    fillProcessBytes(this.requireMemory(), addr, alignedSize, 0);
     chunk.used += alignedSize;
-    new Uint8Array(this.requireMemory().buffer, addr, alignedSize).fill(0);
     this.scratchReservations.push({
       addr,
       requestedSize,
@@ -928,11 +937,9 @@ export class ForkReferenceTransaction {
         `${this.label} scratch release is not the most recent reservation`,
       );
     }
-    new Uint8Array(
-      this.requireMemory().buffer,
-      reservation.addr,
-      reservation.alignedSize,
-    ).fill(0);
+    fillProcessBytes(
+      this.requireMemory(), reservation.addr, reservation.alignedSize, 0,
+    );
     reservation.chunk.used = reservation.previousUsed;
 
     const tail = this.scratchChunks[this.scratchChunks.length - 1];
@@ -1790,9 +1797,7 @@ export class ForkReferenceTransaction {
     context: string,
   ): Uint8Array {
     const { offset, length } = this.memoryRange(pointer, byteLength, context);
-    return new Uint8Array(
-      new Uint8Array(this.requireMemory().buffer, offset, length),
-    );
+    return readProcessBytes(this.requireMemory(), offset, length);
   }
 
   private writeBytes(
@@ -1801,7 +1806,7 @@ export class ForkReferenceTransaction {
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, bytes.byteLength, context);
-    new Uint8Array(this.requireMemory().buffer, offset, bytes.byteLength).set(bytes);
+    writeProcessBytes(this.requireMemory(), offset, bytes);
   }
 
   private readRecipeIds(
@@ -1830,11 +1835,24 @@ export class ForkReferenceTransaction {
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, ids.length * 4, context);
-    const view = new DataView(this.requireMemory().buffer);
+    const memory = this.requireMemory();
+    if (!(memory instanceof GroupProcessAddressSpace)) {
+      const view = processDataView(memory);
+      ids.forEach((id, index) => {
+        assertRecipeId(id);
+        view.setUint32(offset + index * 4, id, true);
+      });
+      return;
+    }
+    // Stage the complete vector so split-page permission failures precede all
+    // destination writes, and no writable physical group alias escapes.
+    const bytes = new Uint8Array(ids.length * 4);
+    const view = new DataView(bytes.buffer);
     ids.forEach((id, index) => {
       assertRecipeId(id);
-      view.setUint32(offset + index * 4, id, true);
+      view.setUint32(index * 4, id, true);
     });
+    writeProcessBytes(memory, offset, bytes);
   }
 
   private memoryRange(
@@ -1851,14 +1869,14 @@ export class ForkReferenceTransaction {
     ) {
       throw new RangeError(`${context} has an invalid guest pointer`);
     }
-    const memoryLength = this.requireMemory().buffer.byteLength;
+    const memoryLength = processMemoryByteLength(this.requireMemory());
     if (offset > memoryLength || byteLength > memoryLength - offset) {
       throw new RangeError(`${context} exceeds WebAssembly memory`);
     }
     return { offset, length: byteLength };
   }
 
-  private requireMemory(): WebAssembly.Memory {
+  private requireMemory(): ProcessMemorySource {
     if (!this.memory) {
       throw new Error("fork reference transaction has no staging memory");
     }
@@ -2035,7 +2053,7 @@ export class ForkReferenceTransaction {
     // An exception or host callback may have aborted between reserve/release.
     // Zero every transaction-owned byte before returning its mappings.
     for (const chunk of this.scratchChunks) {
-      new Uint8Array(this.requireMemory().buffer, chunk.addr, chunk.size).fill(0);
+      fillProcessBytes(this.requireMemory(), chunk.addr, chunk.size, 0);
     }
     this.scratchReservations.length = 0;
     const chunks = this.scratchChunks.splice(0).reverse();

@@ -171,6 +171,22 @@ These are review boundaries for the integration series. Each stage must leave
 the ordinary backend usable. Incomplete grouped behavior stays
 explicitly gated until its prerequisites are available.
 
+The in-progress runtime backend keeps one exact image source separate from
+each execution replica. Internal kernel-Worker registration accepts an opaque
+published allocation handle and revalidates Rust identity before attaching its
+syscall channel. Both Worker entries validate the prepared transport before
+receiving storage. Byte access, continuation metadata and channel publication
+use virtual addresses explicitly; native execution retains its native path.
+Image-access revocation neither stops replicas nor releases their physical
+pages. Exact native observer pins survive revocation until engine settlement.
+
+These internal components do not expose an embedding launch option. Mapping
+materialization currently operates only within the image's published virtual
+extent; physical group growth cannot establish virtual capacity. Transactional
+map/protect/unmap/remap/break publication and rollback, complete lifecycle,
+shared objects and graphics remain required before preview support. See the
+[address-space architecture](architecture.md#experimental-process-address-spaces).
+
 | Stage | Change | Acceptance focus |
 |---|---|---|
 | 1 | Contract and baseline | Scope, trust, reproducible failure and truthful evidence |

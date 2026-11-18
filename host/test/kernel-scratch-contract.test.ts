@@ -600,6 +600,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     why: "Retires only the exact PID/TID and opaque entropy cursor token during channel teardown. It accesses no guest memory or kernel scratch and is safe after image retirement.",
   },
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.cancelUnexposedMemoryGroupReplica::kernel-export-direct-use::retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact (i32,i32,i32)->i32 export releases only Rust image custody identified by PID and both unsigned generation halves, after exact unexposed task cancellation. It borrows no kernel pointer or memory. Physical pages return only on status0; EBUSY retains the root.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",
     count: 1,
@@ -833,7 +839,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   // the address is guest memory the kernel reads later through
   // host_proc_read_bytes, never a kernel-memory pointer.
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(stableChannelOffsets[0]!))",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(stableChannelOffsets[0]!))",
   ),
   // Kernel-owned waits (wait_park): no arguments, a relative deadline in
   // nanoseconds (or -1) out.
@@ -947,6 +953,30 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.createProcess::kernel-export-direct-use::createProcess(stdinKind, stdoutKind, stderrKind)",
   ),
+  // Group admission uses only u32 budgets/identities and exact generation
+  // halves. These seven calls lend no kernel pointers; record-bearing exports
+  // remain scoped KernelScratchLease calls with their own capacity proofs.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#memoryGroupAdmissionAvailable::kernel-export-direct-use::capabilities()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#memoryGroupAdmissionAvailable::kernel-export-direct-use::protocol()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.configureMemoryGroups::kernel-export-direct-use::configure(maximumPages, maximumGroups)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.createMemoryGroup::kernel-export-direct-use::create(maximumPages, maximumProcesses, maximumTasks)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.prepareMemoryGroupProcess::kernel-export-direct-use::prepare(group, pid, Number(generation & 0xffffffffn), Number(generation >> 32n))",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.removeEmptyMemoryGroup::kernel-export-direct-use::remove(group)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.sealMemoryGroup::kernel-export-direct-use::seal(group)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.fdSupportsMmapWriteback::kernel-export-direct-use::supports(pid, fd)",
   ),
@@ -1053,7 +1083,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.pcmClockUpdate::kernel-export-direct-use::clockUpdate(requestedFrames)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",
@@ -1273,6 +1303,28 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/dri/registry.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "The GBM registry captures only the native buffer getter to authenticate each mapping's original process Memory before copying mapped bytes; no kernel Memory or view is retained.",
+  },
+  {
+    key: "host/src/process-memory-views.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "Module initialization captures only the native buffer getter to authenticate caller process Memory. It retains no Memory instance or buffer; explicit grouped roots take the virtual path and cannot masquerade as native buffer objects.",
+  },
+  {
+    key: "host/src/process-atomic-word.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The Worker-local atomic accessor captures only the native buffer getter to authenticate each ordinary process Memory before constructing one fresh word view. The capture retains no Memory instance or buffer; grouped roots use checked virtual operations and cannot enter the native branch as fabricated Memory values.",
+  },
+  {
+    key: "host/src/process-memory-descriptor.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-control",
+    why: "The Worker-only descriptor codec captures the intrinsic buffer getter to reject fabricated Memory values before binding exact admitted backing/root/scratch identities. This prototype capture retains no Memory instance or buffer and grants no group admission or retirement authority.",
+  },
+  {
+    key: "host/src/memory-group-image-store.ts::MemoryGroupImageStore.constructor::wasm-memory-authority::new WebAssembly.Memory({ initial: initialPhysicalPages, maximum: maximumPhysicalPages, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 1,
+    why: "The disposable kernel-Worker image owner constructs physical guest-group storage only for the exact capacity already reserved in Rust. It is not the Rust kernel Memory. Opaque unpublished handles contain no backing; published descriptors remain on owned kernel/process-Worker channels, never persistent browser/audio realms. Publication ends rollback and no exposed reuse API exists yet.",
   },
   {
     key: "host/src/process-snapshot-comparator.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
@@ -1589,11 +1641,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "This replay-capable main activation receives reconstructed process imports and caller-owned process memory, never kernel memory.",
   },
   {
+    key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, grouped ? grouped.imports(importObject) : importObject)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The SDK process path receives ordinary process imports or the admitted group's guarded imports, never kernel memory.",
+  },
+  {
     key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, importObject)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    count: 2,
-    why: "These two non-replay process launch paths instantiate user modules against caller-owned process memory, never kernel memory.",
+    why: "The separate WASI process path uses caller-owned native memory and explicitly refuses grouped execution.",
   },
   {
     key: "host/src/kernel-scratch.ts::intrinsicWasmMemoryBuffer::kernel-memory-escape::intrinsicMemoryBuffer(memory)",

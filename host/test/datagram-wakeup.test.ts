@@ -71,6 +71,7 @@ describe("datagram send-state wakeups", () => {
     const { handleChannel, worker } = createWorkerHarness();
     const processMemory = createSharedMemory();
     const channel = {
+      source: processMemory,
       pid: 42,
       channelOffset: 0,
       memory: processMemory,
@@ -78,6 +79,7 @@ describe("datagram send-state wakeups", () => {
       consecutiveSyscalls: 0,
     };
     const pollChannel = {
+      source: channel.memory,
       pid: channel.pid,
       channelOffset: 64,
       memory: channel.memory,
@@ -86,7 +88,7 @@ describe("datagram send-state wakeups", () => {
     };
     worker.processes.set(channel.pid, {
       pid: channel.pid,
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
       channels: [channel, pollChannel],
       explicitMaxAddr: true,
     });
