@@ -2,7 +2,9 @@
 
 This records the admission-only kernel candidate, not grouped execution or the
 finished desktop feature. Ordinary execution remains selected. Performance
-results are mixed, and the Node file-write cost remains an open review concern.
+results are mixed. The initial Node file-write reduction did not reproduce as a
+consistent cost in the balanced control follow-up below; all original results
+remain part of the review.
 
 ## Inputs and method
 
@@ -58,6 +60,57 @@ Private profiler runs had equal syscall/write counts and no retries or pending
 pipes. They ran with source instrumentation and concurrent build load, so they
 are investigative evidence only. No source-level cause has been established.
 There is no performance-neutrality or universal speedup claim.
+
+## Balanced fresh-parent control follow-up, November 17
+
+The predeclared follow-up used the unchanged official Node syscall-I/O CLI,
+three rounds per fresh parent, and six balanced triples. A and B were separate
+CLI launches of the identical pinned develop source and artifacts; C was the
+admission candidate. The six orders were ABC, BCA, CAB, CBA, ACB and BAC. Each
+label occupied each position twice. This is 18 independent parents, not 54
+independent samples. Source and normal artifact identities matched the earlier
+focused comparison. No tracked build/test overlap was accepted; retained preview
+process identities and CPU times were recorded. Untracked OS activity is not
+ruled out.
+
+For each triple, C is divided by the geometric mean of A and B. Throughput is
+MiB/s; larger is better. The B/A column measures variation between identical
+controls, not a candidate effect.
+
+| Triple | Develop A | Develop B | Candidate C | Control B/A change | C / paired controls change |
+|---|---:|---:|---:|---:|---:|
+| 1 | 50.96 | 60.11 | 65.34 | +18.0% | +18.1% |
+| 2 | 55.65 | 55.66 | 67.43 | +0.0% | +21.2% |
+| 3 | 55.83 | 54.66 | 53.86 | -2.1% | -2.5% |
+| 4 | 58.61 | 51.47 | 56.10 | -12.2% | +2.1% |
+| 5 | 53.67 | 55.52 | 55.19 | +3.4% | +1.1% |
+| 6 | 52.56 | 49.21 | 63.82 | -6.4% | +25.5% |
+
+The candidate was higher in five of six triples. The median paired ratio was
++10.1%; the remaining triple was -2.5%. Identical control B/A changes ranged
+from -12.2% to +18.0%. The other fifteen I/O metrics had median ratios between
+-1.85% and +2.32%; some are elapsed costs and others are throughput, so their
+signs have different meanings. No consistent large adverse I/O pattern appeared
+in this follow-up.
+
+A separate completed default/Liftoff-only diagnostic used three independent
+parent pairs per mode and twelve guest launches per persistent kernel. The
+predeclared steady median changed by -1.58% under default Node and +0.04% with
+Liftoff-only. The latter is a diagnostic flag, not a product recommendation.
+Cold/default samples varied widely; these observations do not identify a
+compiler-tier cause.
+
+These results do not erase the original -23.3%, -6.1% or -4.2% observations,
+prove zero overhead, or establish a broad speedup. They do not support treating
+the earlier write reduction as a consistent candidate cost, and they do not
+justify a speculative syscall optimization. The admission-stage correctness,
+conformance, memory and performance checks are complete for review; the earlier
+write attribution hold is removed with the full evidence and uncertainty
+visible. The kernel binary grew from 2,987,889 to 3,007,360 bytes (+19,471 bytes,
+0.65%); this is code size, not an RSS measurement.
+
+Grouped execution, actual worker retirement and full desktop resource acceptance
+remain later-stage gates. This conclusion applies only to the admission PR.
 
 ## Complete Node matrix
 
@@ -174,6 +227,8 @@ preview CPU accounting and failed attempts under:
 - `.context/shared-develop-integration-1/write-profile-1/retention.json`
 - `.context/shared-develop-integration-1/persistent-write-complete-1/retention.json`
 - `.context/shared-develop-integration-1/persistent-write-overlap-1/retention.json`
+- `.context/shared-develop-integration-1/node-tier-diagnostic-complete-1/retention.json`
+- `.context/shared-develop-integration-1/kernel-io-control-calibration-complete-1/retention.json`
 
 An earlier persistent pair overlapped another workspace's native compilation and
 was rejected by the load guard. Both raw arms remain retained as exploratory
