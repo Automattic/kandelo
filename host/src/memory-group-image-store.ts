@@ -1,6 +1,6 @@
 import * as G from './generated/program-extensions';
 import { MemoryGroupPagePool, type GroupPageExtent } from './memory-group-pool';
-import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt } from './memory-group-protocol';
+import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt, type GroupMemoryChangeDescription } from './memory-group-protocol';
 import { GroupProcessAddressSpace, ProcessAddressFault } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation,
   type ProcessMemoryEnvelope } from './process-memory-descriptor';
@@ -17,6 +17,8 @@ export interface GroupExecutionPause { readonly [executionPause]: true }
 declare const imageExecutionPause: unique symbol;
 /** Every execution replica of one image, not a terminal retirement fence. */
 export interface GroupImageExecutionPause { readonly [imageExecutionPause]: true }
+declare const preparedMapping: unique symbol;
+export interface PreparedGroupMapping { readonly [preparedMapping]: true }
 export interface GroupImageLayout {
   readonly initialVirtualPages: number;
   readonly maximumVirtualPages: number;
@@ -40,6 +42,9 @@ interface Image {
   source?: GroupProcessAddressSpace;
   exposed: boolean;
   pause?: ImagePause;
+  mapping?: Mapping;
+  /** Removed PTE references stay charged until exact retirement is integrated. */
+  retainedMappingPages?: RetainedMappingPages;
 }
 interface Replica {
   readonly handle: PreparedGroupReplica;
@@ -56,6 +61,19 @@ interface Pause { replica?: Replica; readonly epoch: number }
 interface ImagePause {
   image?: Image;
   members: { readonly replica: Replica; pause?: GroupExecutionPause }[];
+}
+interface RetainedMappingPages { readonly pages: Uint32Array; next?: RetainedMappingPages }
+interface Mapping {
+  image?: Image;
+  readonly barrier: GroupImageExecutionPause;
+  readonly description: GroupMemoryChangeDescription;
+  readonly oldExtent: number;
+  readonly newExtent: number;
+  before?: Uint32Array;
+  after?: Uint32Array;
+  allocated?: Uint32Array;
+  retained?: RetainedMappingPages;
+  state: 'prepared' | 'publishing' | 'committed' | 'cancelled' | 'contained';
 }
 function fault(message: string): never { throw new MemoryGroupProtocolFault(message); }
 function pages(extent: GroupPageExtent | undefined): number[] {
@@ -80,6 +98,7 @@ export class MemoryGroupImageStore {
   private readonly handles = new WeakMap<PreparedGroupReplica, Replica>();
   private readonly pauses = new WeakMap<GroupExecutionPause, Pause>();
   private readonly imagePauses = new WeakMap<GroupImageExecutionPause, ImagePause>();
+  private readonly mappings = new WeakMap<PreparedGroupMapping, Mapping>();
   private nextPauseEpoch = 1;
   private closed = false;
 
@@ -288,6 +307,132 @@ export class MemoryGroupImageStore {
     image.pause = undefined; pause.image = undefined; pause.members = [];
     return resumed;
   }
+
+  /** Internal physical half of a kernel-prepared mmap/munmap/mprotect/mremap.
+   * Receipts do not authorize a syscall: the coordinator must separately
+   * validate the Rust token and pending request before publication. No backing
+   * or PTE leaves this owner. Initial-image/brk ownership remains unfinished.
+   */
+  prepareImageMapping(barrier: GroupImageExecutionPause, input: GroupMemoryChangeDescription):
+      PreparedGroupMapping | 'waiting' | 'busy' | 'exhausted' {
+    const pause = this.imagePauses.get(barrier), image = pause?.image;
+    if (!image || image.pause !== pause || image.mapping) fault('Mapping has no free exact image barrier');
+    if (!pause.members.some(({ replica }) => exact(replica.receipt, input.receipt))) fault('Mapping receipt does not belong to this image barrier');
+    if (!this.imageExecutionPauseAcknowledged(barrier)) return 'waiting';
+    if (input.kind === 'break') fault('Break mapping requires initial-image ownership');
+    const maximum = image.layout.maximumVirtualPages;
+    const aligned = (address: number, length: number) => Number.isSafeInteger(address)
+      && Number.isSafeInteger(length) && address >= 0 && length >= 0
+      && address % PAGE === 0 && length % PAGE === 0 && address + length <= maximum * PAGE;
+    if (!aligned(input.address, input.length) || (input.kind === 'remap' && !aligned(input.oldAddress, input.oldLength))
+        || !Number.isSafeInteger(input.prot) || input.prot < 0 || input.prot > 7 || input.token <= 0n
+        || !['map', 'unmap', 'protect', 'remap'].includes(input.kind)) fault('Invalid kernel-prepared physical mapping');
+    const description = Object.freeze({ ...input, receipt: Object.freeze({ ...input.receipt }) });
+    // Independent undo/staging storage is bounded by this image's admitted
+    // virtual capacity and discarded after commit/cancel. No snapshots of bytes.
+    const before = new Uint32Array(maximum), after = new Uint32Array(maximum);
+    const freshCount = input.kind === 'map' ? input.length / PAGE
+      : input.kind === 'remap' ? Math.max(0, (input.length - input.oldLength) / PAGE) : 0;
+    if ((input.kind === 'map' || input.kind === 'remap') && !input.length) fault('Mapping requires a nonempty target');
+    if (freshCount >= this.maximumPhysicalPages) return 'exhausted';
+    const allocated = new Uint32Array(freshCount), token = Object.freeze(Object.create(null)) as PreparedGroupMapping;
+    const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
+    try {
+      if (!this.imageExecutionPauseAcknowledged(barrier)) return 'waiting';
+      const header = new Uint32Array(this.memory.buffer, image.root, G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4);
+      const oldExtent = Atomics.load(header, 0);
+      if (oldExtent > maximum || header[1] !== maximum) fault('Mapping root capacity changed');
+      before.set(new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, maximum)); after.set(before);
+      for (let at = 0; at < maximum; at++) {
+        const entry = before[at], physical = entry >>> 16;
+        if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE
+            || (at >= oldExtent && entry)) fault('Invalid physical mapping baseline');
+      }
+      const start = input.address / PAGE, count = input.length / PAGE, rights = input.prot & 3;
+      let newExtent = oldExtent;
+      // A sentinel outside the physical layout lets us finish all fallible
+      // undo/retention allocations before reserving actual replacement pages.
+      const fresh = 0xffff0000;
+      if (input.kind === 'map') { after.fill((fresh | rights) >>> 0, start, start + count); newExtent = Math.max(oldExtent, start + count); }
+      else if (input.kind === 'unmap') after.fill(0, start, start + count);
+      else if (input.kind === 'protect') {
+        for (let at = start; at < start + count; at++) {
+          if (at >= oldExtent || !(before[at] >>> 16)) fault('Protection cannot create a mapping in a hole');
+          after[at] = ((before[at] & 0xffff0000) | rights) >>> 0;
+        }
+      } else {
+        const oldStart = input.oldAddress / PAGE, oldCount = input.oldLength / PAGE;
+        if (!oldCount || oldStart + oldCount > oldExtent) fault('Remap source is outside its virtual extent');
+        for (let at = oldStart; at < oldStart + oldCount; at++) if (!(before[at] >>> 16)) fault('Remap source contains a hole');
+        after.fill(0, oldStart, oldStart + oldCount);
+        for (let at = 0; at < count; at++) after[start + at] = at < oldCount ? before[oldStart + at] : (fresh | rights) >>> 0;
+        newExtent = Math.max(oldExtent, start + count);
+      }
+      let removed = 0;
+      for (let at = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) removed++;
+      const retained: RetainedMappingPages = { pages: new Uint32Array(removed) };
+      for (let at = 0, out = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) retained.pages[out++] = before[at] >>> 16;
+      const mapping: Mapping = { image, barrier, description, oldExtent, newExtent, before, after, allocated, retained, state: 'prepared' };
+      // Register custody before acquiring physical pages, so allocation failure
+      // cannot strand an unrecorded successful reservation.
+      this.mappings.set(token, mapping); image.mapping = mapping;
+      let status: 'allocated' | 'busy' | 'exhausted';
+      try { status = allocated.length ? this.pool.tryAllocatePages(allocated) : 'allocated'; }
+      catch (error) { image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; throw error; }
+      if (status !== 'allocated') { image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; return status; }
+      for (let at = 0, next = 0; at < maximum; at++) if ((after[at] >>> 16) === 0xffff) after[at] = (allocated[next++] * PAGE | rights) >>> 0;
+      return token;
+    } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
+  }
+
+  /** Invoke only synchronously within the coordinator's exact kernel entry.
+   * Refused Rust commit rolls PTEs back while all replicas remain paused. A
+   * thrown/invalid result has uncertain publication and contains the image.
+   */
+  commitImageMapping(token: PreparedGroupMapping, validate: (description: GroupMemoryChangeDescription) => boolean,
+      commit: (description: GroupMemoryChangeDescription) => number):
+      'committed' | 'busy' | 'stale' | number {
+    const mapping = this.mappings.get(token), image = mapping?.image;
+    if (!mapping || !image || mapping.state !== 'prepared' || image.mapping !== mapping) fault('Mapping preparation was consumed or is unknown');
+    if (!this.imageExecutionPauseAcknowledged(mapping.barrier)) return 'stale';
+    const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
+    try {
+      if (validate(mapping.description) !== true || mapping.state !== 'prepared' || image.mapping !== mapping
+          || !this.imageExecutionPauseAcknowledged(mapping.barrier)) return 'stale';
+      const header = new Uint32Array(this.memory.buffer, image.root, G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4);
+      const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
+      const before = mapping.before!, after = mapping.after!;
+      if (Atomics.load(header, 0) !== mapping.oldExtent || header[1] !== image.layout.maximumVirtualPages) return 'stale';
+      for (let at = 0; at < before.length; at++) if (table[at] !== before[at]) return 'stale';
+      mapping.state = 'publishing';
+      table.set(after); Atomics.store(header, 0, mapping.newExtent);
+      let result: number;
+      try {
+        result = commit(mapping.description);
+        if (!Number.isSafeInteger(result) || result > 0 || result < -4095) fault('Invalid Rust mapping commit result');
+      } catch (error) {
+        mapping.state = 'contained';
+        for (const replica of image.replicas) try { this.quarantine(replica.handle); } catch { /* retain original commit fault */ }
+        this.revokeSource(image); throw error;
+      }
+      if (result < 0) { table.set(before); Atomics.store(header, 0, mapping.oldExtent); mapping.state = 'prepared'; return result; }
+      if (mapping.retained!.pages.length) { mapping.retained!.next = image.retainedMappingPages; image.retainedMappingPages = mapping.retained; }
+      mapping.state = 'committed'; image.mapping = undefined; mapping.image = undefined;
+      mapping.before = undefined; mapping.after = undefined; mapping.allocated = undefined; mapping.retained = undefined;
+      return 'committed';
+    } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
+  }
+
+  cancelImageMapping(token: PreparedGroupMapping): 'cancelled' | 'busy' {
+    const mapping = this.mappings.get(token), image = mapping?.image;
+    if (!mapping || !image || mapping.state !== 'prepared' || image.mapping !== mapping) fault('Mapping cannot use unpublished rollback');
+    if (mapping.allocated!.length && this.pool.tryReleaseUnpublishedPages(mapping.allocated!) === 'busy') return 'busy';
+    image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled';
+    mapping.before = undefined; mapping.after = undefined; mapping.allocated = undefined; mapping.retained = undefined;
+    return 'cancelled';
+  }
   executionPauseAcknowledged(token: GroupExecutionPause): boolean {
     const pause = this.pauses.get(token);
     if (!pause) fault('Unknown execution-barrier capability');
@@ -465,12 +610,21 @@ export class MemoryGroupImageStore {
   snapshot(): { readonly group: number; readonly images: number; readonly replicas: number;
     readonly exposedReplicas: number; readonly quarantinedReplicas: number; readonly allocatedPages: number;
     readonly pendingWaitDrains: number; readonly nativeObservers: number;
+    readonly mappingStagingBytes: number; readonly retainedMappingReferences: number;
     readonly maximumPages: number; readonly highWaterPages: number; readonly physicalExtentPages: number } {
+    let mappingStagingBytes = 0, retainedMappingReferences = 0;
+    for (const image of this.images.values()) {
+      const pending = image.mapping;
+      mappingStagingBytes += (pending?.before?.byteLength ?? 0) + (pending?.after?.byteLength ?? 0)
+        + (pending?.allocated?.byteLength ?? 0) + (pending?.retained?.pages.byteLength ?? 0);
+      for (let retired = image.retainedMappingPages; retired; retired = retired.next) retainedMappingReferences += retired.pages.length;
+    }
     return Object.freeze({ group: this.group, images: this.images.size, replicas: this.replicas.size,
       exposedReplicas: [...this.replicas.values()].filter(r => r.state === 'exposed').length,
       quarantinedReplicas: [...this.replicas.values()].filter(r => r.state === 'quarantined').length,
       pendingWaitDrains: [...this.replicas.values()].filter(r => r.pendingWaitDrain).length,
       nativeObservers: [...this.images.values()].reduce((sum, image) => sum + image.nativeObservations.size, 0),
+      mappingStagingBytes, retainedMappingReferences,
       ...this.pool.snapshot() });
   }
 }
