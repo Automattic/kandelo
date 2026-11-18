@@ -4030,7 +4030,55 @@ pub extern "C" fn kernel_memory_group_protocol_version() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_memory_group_capabilities() -> u32 {
     wasm_posix_shared::memory_group::CAPABILITY_ADMISSION | wasm_posix_shared::group_memory_change::CAPABILITY
-        | wasm_posix_shared::group_memory_layout::CAPABILITY
+        | wasm_posix_shared::group_memory_layout::CAPABILITY | wasm_posix_shared::group_exec::CAPABILITY
+}
+
+/// Bounded kernel-scratch output only. Future identity is kernel minted; no
+/// prepared target or old MM is consumed by allocation admission failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_exec_prepare(pid: u32, tid: u32, target: u32, out_ptr: *mut u8, out_len: u32) -> i32 {
+    use wasm_posix_shared::group_exec::{PREPARATION_BYTES, Preparation};
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_len as usize != PREPARATION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let prepared = match table.prepare_grouped_exec(pid, tid, target) {
+        Ok(prepared) => prepared, Err(error) => return -(error as i32),
+    };
+    let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, PREPARATION_BYTES) };
+    Preparation { receipt: prepared.receipt.record(), initial_pages: prepared.initial_pages, maximum_pages: prepared.maximum_pages }
+        .encode(output).map(|()| PREPARATION_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_exec_layout(record_ptr: *const u8, record_len: u32) -> i32 {
+    use wasm_posix_shared::group_memory_layout::{BYTES, Record};
+    if record_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if record_len as usize != BYTES { return -(Errno::EINVAL as i32); }
+    let record = match Record::decode(unsafe { core::slice::from_raw_parts(record_ptr, BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.configure_grouped_exec(record).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_exec_action(receipt_ptr: *const u8, receipt_len: u32, action: u32) -> i32 {
+    use wasm_posix_shared::{memory_group::{RECEIPT_BYTES, ReceiptRecord}, group_exec};
+    if receipt_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match action {
+        group_exec::VALIDATE => table.validate_grouped_exec(receipt),
+        group_exec::CANCEL => table.cancel_grouped_exec(receipt),
+        group_exec::FINISH_CANCELLATION => table.finish_grouped_exec_cancellation(receipt),
+        _ => Err(Errno::EINVAL),
+    }.map(|()| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]

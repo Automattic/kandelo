@@ -1302,13 +1302,11 @@ fn commit_exec_state_impl(
     if let Some(locks)=locks.as_deref_mut() {drain_owned_resources(proc,locks,host);} else {
         drain_owned_resources(proc,&mut AdvisoryLockManager::new(),host);
     }
-    let cloexec_fds: Vec<i32> = proc
-        .fd_table
-        .iter()
-        .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
-        .map(|(fd, _)| fd)
-        .collect();
-    for fd in cloexec_fds {
+    // Exec has crossed its prepare boundary. Consume descriptors without a
+    // new allocation that could fail after old-image state has been dropped.
+    let mut next_fd_slot = 0;
+    while let Some(fd) = proc.fd_table.next_close_on_exec(next_fd_slot) {
+        next_fd_slot = fd as usize + 1;
         let _ = match locks.as_deref_mut() {
             Some(locks) => sys_close_implicit_with_locks(proc, locks, host, fd),
             None => sys_close_implicit(proc, host, fd),

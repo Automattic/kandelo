@@ -11,6 +11,7 @@ pub mod kms_cursor;
 pub mod memory_group;
 pub mod group_memory_change;
 pub mod group_memory_layout;
+pub mod group_exec;
 pub mod process_layout;
 
 // The program ABI is owned separately so host-only edits do not rebuild
@@ -2355,7 +2356,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 17;
+    pub const HOST_ADAPTER_VERSION: u32 = 18;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2526,6 +2527,9 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_read"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_validate"),
+        HostAdapterKernelExport::optional("kernel_group_memory_exec_action"),
+        HostAdapterKernelExport::optional("kernel_group_memory_exec_layout"),
+        HostAdapterKernelExport::optional("kernel_group_memory_exec_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_fork"),
         HostAdapterKernelExport::optional("kernel_group_memory_layout_install"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_prepare"),

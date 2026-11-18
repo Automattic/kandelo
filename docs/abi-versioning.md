@@ -3135,6 +3135,20 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
+Host-adapter 18 adds grouped exec reservation metadata. The 40-byte preparation
+record contains the exact future main receipt and the SDK virtual minimum and
+maximum. `kernel_group_memory_exec_prepare` creates it for an exact current
+caller and retained target; `kernel_group_memory_exec_layout` prepares the
+future MM with the existing 96-byte fresh-layout record. The receipt action
+export validates, cancels the unconstructed task, or finishes image custody
+once host scratch/reference cleanup is ready. The host returns final
+root/payload pages in that same serialized entry. All records use bounded kernel scratch. The
+existing Start action now refuses a successor while older same-PID task
+receipts remain, including stopping and quarantined Workers. The image serial
+survives task cancellation to prevent stale cleanup of a later reservation.
+Program ABI 56 and its digest remain unchanged. These interfaces do not enable
+public grouped launch or supply host execution/retirement proof.
+
 The grouped exec preflight selects artifact policy from the kernel's current
 image membership and checks the existing grouped declaration and binding
 signatures. The SDK validates its output with the same reader. This adds no

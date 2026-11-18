@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 17,
+      "required_host_adapter_version": 18,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2556,6 +2556,9 @@
       "kernel_group_memory_change_prepare",
       "kernel_group_memory_change_read",
       "kernel_group_memory_change_validate",
+      "kernel_group_memory_exec_action",
+      "kernel_group_memory_exec_layout",
+      "kernel_group_memory_exec_prepare",
       "kernel_group_memory_fork",
       "kernel_group_memory_layout_install",
       "kernel_group_memory_thread_control_prepare",
@@ -2698,7 +2701,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 17,
+    "version": 18,
     "worker_features": [
       {
         "bit": 2,
@@ -4502,6 +4505,21 @@
       "kind": "func",
       "name": "kernel_group_memory_change_validate",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_exec_action",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_exec_layout",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_exec_prepare",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -8295,6 +8313,21 @@
   },
   "memory_group_contract": {
     "capability_admission": 1,
+    "exec_preparation": {
+      "actions": {
+        "cancel": 2,
+        "finishCancellation": 3,
+        "validate": 1
+      },
+      "bytes": 40,
+      "capability": 8,
+      "fields": {
+        "initialPages": 32,
+        "maximumPages": 36,
+        "receipt": 0
+      },
+      "version": 1
+    },
     "layout": {
       "bytes": 96,
       "capability": 4,
