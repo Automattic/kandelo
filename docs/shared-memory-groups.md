@@ -198,6 +198,20 @@ unsigned 64-bit values, separate from status returns. The program-56 digest
 is unchanged. This transport currently prepares anonymous private metadata;
 file/shared/device effects and normal syscall/PTE coordination remain unfinished.
 
+The internal image owner can now stage anonymous map, unmap, protection and
+remap PTE changes behind its exact all-replica barrier. Replacement maps use
+fresh zeroed physical pages, so a refused Rust commit can restore old entries
+without destroying old bytes. Preparation and unpublished rollback use
+nonblocking root/pool acquisition; a busy owner keeps custody for a later
+worker turn. Unexpected commit traps contain the image and keep storage
+charged. Removed PTE references remain retained, including references moved
+by remap; this is not a completed reclamation mechanism. Snapshots report
+staging-array bytes and retained mapping references separately from allocated
+physical pages. Staging arrays scale with the admitted virtual page-table
+capacity and are dropped after successful commit or cancellation. This path
+still needs the normal syscall/request coordinator and initial-image/brk
+ownership; its synthetic barrier tests do not establish guest quiescence.
+
 These internal components do not expose an embedding launch option. Mapping
 materialization currently operates only within the image's published virtual
 extent; physical group growth cannot establish virtual capacity. Transactional

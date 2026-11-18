@@ -2,6 +2,7 @@ import * as G from './generated/program-extensions.ts';
 
 const PAGE=G.MEMORY_GROUP_PAGE_BYTES,CONTROL=G.MEMORY_GROUP_CONTROL/4;
 export interface GroupPageExtent {readonly first:number;readonly pages:number}
+export type GroupPageAllocationResult = 'allocated' | 'busy' | 'exhausted';
 
 /** Physical allocation primitive shared with the translated C grow helper.
  * Only disposable kernel/process Workers may own it. Its caller must retain
@@ -54,6 +55,53 @@ export class MemoryGroupPagePool {
       return undefined;
     });
   }
+  /** Nonblocking mapping preparation. The caller owns this independent output
+   * before acquiring any lock, and must retain it through publication or exact
+   * unpublished rollback. Busy/exhausted leave both output and bitmap intact.
+   * Fragmented free pages are useful payload: contiguous virtual addresses do
+   * not require contiguous physical storage.
+   */
+  tryAllocatePages(destination:Uint32Array):GroupPageAllocationResult {
+    this.independentPages(destination);
+    if(!destination.length||destination.length>=this.maximumPages)throw RangeError('Invalid physical page count');
+    return this.tryLocked('busy',words=>{
+      let found=0,last=0;
+      for(let page=1;page<this.maximumPages&&found<destination.length;page++) {
+        if(!this.used(words,page)){found++;last=page;}
+      }
+      if(found!==destination.length)return 'exhausted';
+      const size=this.memory.buffer.byteLength/PAGE;
+      if(last>=size) {
+        try{this.memory.grow(last+1-size);}catch(error){if(error instanceof RangeError)return 'exhausted';throw error;}
+      }
+      // Allocate refreshed views and zero every selected page before marking
+      // any ownership bits. No fallible allocation follows bitmap publication.
+      const fresh=new Uint32Array(this.memory.buffer),bytes=new Uint8Array(this.memory.buffer);
+      for(let page=1,at=0;page<=last;page++)if(!this.used(fresh,page)) {
+        bytes.fill(0,page*PAGE,(page+1)*PAGE);destination[at++]=page;
+      }
+      for(let at=0;at<destination.length;at++)this.setUsed(fresh,destination[at],true);
+      fresh[CONTROL+1]=Math.max(fresh[CONTROL+1],last+1);
+      return 'allocated';
+    });
+  }
+  /** Only a never-published allocation may use this rollback. A busy lock
+   * leaves ownership with the caller, which must retry on a later worker turn.
+   * This API provides no execution fence for previously published pages.
+   */
+  tryReleaseUnpublishedPages(pages:Uint32Array):'released'|'busy' {
+    this.independentPages(pages);
+    for(let at=0;at<pages.length;at++) {
+      if(!pages[at]||pages[at]>=this.maximumPages||(at>0&&pages[at]<=pages[at-1])) {
+        throw Error('Unpublished page custody must be strictly ordered and unique');
+      }
+    }
+    return this.tryLocked('busy',words=>{
+      for(let at=0;at<pages.length;at++)if(!this.used(words,pages[at]))throw Error('Unknown or already released unpublished page');
+      for(let at=0;at<pages.length;at++)this.setUsed(words,pages[at],false);
+      return 'released';
+    });
+  }
   /** Requires caller-owned exact retirement proof for every listed page. All
    * validation precedes mutation; a repeated release cannot free a sibling.
    */
@@ -79,6 +127,15 @@ export class MemoryGroupPagePool {
   private validate():void {
     const words=new Uint32Array(this.memory.buffer);
     if(Atomics.load(words,CONTROL+3)!==G.MEMORY_GROUP_MAGIC||words[CONTROL+2]!==this.maximumPages||words[CONTROL+1]<1||words[CONTROL+1]>this.maximumPages||!this.used(words,0))throw Error('Incompatible or corrupt physical group pool');
+  }
+  private independentPages(pages:Uint32Array):void {
+    if(!(pages instanceof Uint32Array)||!(pages.buffer instanceof ArrayBuffer))throw TypeError('Page custody requires independent Uint32 storage');
+  }
+  private tryLocked<T>(busy:T,operation:(words:Uint32Array)=>T):T {
+    this.validate();const lock=new Int32Array(this.memory.buffer,CONTROL*4,1);
+    if(Atomics.compareExchange(lock,0,0,1)!==0)return busy;
+    try {this.validate();return operation(new Uint32Array(this.memory.buffer));}
+    finally {Atomics.store(lock,0,0);Atomics.notify(lock,0,1);}
   }
   private locked<T>(operation:(words:Uint32Array)=>T):T {
     this.validate();const lock=new Int32Array(this.memory.buffer,CONTROL*4,1);

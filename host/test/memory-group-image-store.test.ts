@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { MemoryGroupImageStore } from '../src/memory-group-image-store';
+import { MemoryGroupImageStore, type PreparedGroupMapping } from '../src/memory-group-image-store';
 import { decodeProcessMemoryDescriptor } from '../src/process-memory-descriptor';
 import { GroupProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
-import type { MemoryGroupTaskReceipt } from '../src/memory-group-protocol';
+import type { MemoryGroupTaskReceipt, GroupMemoryChangeDescription } from '../src/memory-group-protocol';
 import * as G from '../src/generated/program-extensions';
 import { publishMemoryGroupNotification } from '../src/memory-group-notification';
 
@@ -11,8 +11,8 @@ const layout = { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 
 function task(patch: Partial<MemoryGroupTaskReceipt> = {}): MemoryGroupTaskReceipt {
   return { group: 7, pid: 100, tid: 100, serial: (1n << 55n) + 1n, generation: (1n << 54n) + 3n, ...patch };
 }
-function imageWithThread() {
-  const store = new MemoryGroupImageStore(7, 32), main = task(), thread = task({ tid: 101, serial: 2n });
+function imageWithThread(maximumPhysicalPages = 32) {
+  const store = new MemoryGroupImageStore(7, maximumPhysicalPages), main = task(), thread = task({ tid: 101, serial: 2n });
   const a = store.prepareImage(main, layout), b = store.prepareThread(thread);
   const leader = store.publish(a, main), peer = store.publish(b, thread);
   const control = (launch: typeof leader) => new Int32Array(launch.envelope.memory.buffer,
@@ -22,6 +22,154 @@ function imageWithThread() {
   const acknowledge = (words: Int32Array) => Atomics.store(words, G.MEMORY_GROUP_REPLICA_ACK / 4, request(words));
   return { store, a, b, main, thread, leader, peer, control, left, right, request, acknowledge };
 }
+function pausedMappingImage(maximumPhysicalPages = 32) {
+  const h = imageWithThread(maximumPhysicalPages), barrier = h.store.beginImageExecutionPause(h.a);
+  h.acknowledge(h.left); h.acknowledge(h.right);
+  const describe = (patch: Partial<GroupMemoryChangeDescription> = {}): GroupMemoryChangeDescription => ({
+    receipt: h.main, token: (1n << 63n) + 7n, kind: 'map', address: 8 * P, length: P,
+    oldAddress: 0, oldLength: 0, result: 8 * P, flags: 0x22, prot: 3, ...patch,
+  });
+  const prepare = (patch: Partial<GroupMemoryChangeDescription> = {}) => {
+    const result = h.store.prepareImageMapping(barrier, describe(patch));
+    if (typeof result === 'string') throw Error(`Unexpected mapping preparation ${result}`);
+    return result;
+  };
+  return { ...h, barrier, describe, prepare };
+}
+describe('owned physical mapping transactions', () => {
+  it('stages fresh MAP_FIXED bytes and restores old PTEs when Rust refuses commit', () => {
+    const h = pausedMappingImage(), { store } = h; h.leader.source.fillBytes(0, P, 0xa5);
+    const charged = store.snapshot().allocatedPages, token = h.prepare({ address: 0, result: 0 });
+    expect(h.leader.source.readBytes(0, 1)[0]).toBe(0xa5);
+    expect(store.snapshot().allocatedPages).toBe(charged + 1);
+    expect(store.snapshot().mappingStagingBytes).toBeGreaterThan(0);
+    expect(store.commitImageMapping(token, () => true, description => {
+      expect(description.token).toBe((1n << 63n) + 7n);
+      expect(h.leader.source.readBytes(0, P).every(byte => byte === 0)).toBe(true);
+      return -12;
+    })).toBe(-12);
+    expect(h.leader.source.readBytes(0, 1)[0]).toBe(0xa5);
+    expect(store.cancelImageMapping(token)).toBe('cancelled');
+    expect(store.snapshot().allocatedPages).toBe(charged);
+    expect(store.snapshot().mappingStagingBytes).toBe(0);
+    expect(() => store.commitImageMapping(token, () => true, () => 0)).toThrow(); store.close();
+  });
+  it('publishes sparse zeroed mappings to every replica and preserves removed pages', () => {
+    const h = pausedMappingImage(), { store } = h, charged = store.snapshot().allocatedPages;
+    const token = h.prepare();
+    expect(h.peer.source.byteLength).toBe(2 * P);
+    expect(store.commitImageMapping(token, () => true, () => 0)).toBe('committed');
+    expect(h.peer.source.byteLength).toBe(9 * P); expect(h.peer.source.readBytes(8 * P, P).every(v => v === 0)).toBe(true);
+    expect(() => h.peer.source.readBytes(3 * P, 1)).toThrow(ProcessAddressFault);
+    expect(() => store.cancelImageMapping(token)).toThrow();
+    const unmap = h.prepare({ kind: 'unmap', result: 0, flags: 0, prot: 0 });
+    expect(store.commitImageMapping(unmap, () => true, () => 0)).toBe('committed');
+    expect(() => h.peer.source.readBytes(8 * P, 1)).toThrow(ProcessAddressFault);
+    expect(store.snapshot().allocatedPages).toBe(charged + 1); store.close();
+  });
+  it('changes protection without copying storage and cannot protect a hole into existence', () => {
+    const h = pausedMappingImage(); h.leader.source.writeBytes(0, new Uint8Array([71]));
+    const charged = h.store.snapshot().allocatedPages;
+    const token = h.prepare({ kind: 'protect', address: 0, result: 0, flags: 0, prot: 1 });
+    expect(h.store.commitImageMapping(token, () => true, () => 0)).toBe('committed');
+    expect(h.peer.source.readBytes(0, 1)[0]).toBe(71); expect(() => h.peer.source.writeBytes(0, new Uint8Array([3]))).toThrow();
+    expect(() => h.prepare({ kind: 'protect', result: 0, flags: 0 })).toThrow(/hole/);
+    expect(h.store.snapshot().allocatedPages).toBe(charged); h.store.close();
+  });
+  it('moves a remap prefix directly, zeroes its growth tail and removes the old address', () => {
+    const h = pausedMappingImage(); h.leader.source.fillBytes(0, P, 0x37);
+    const charged = h.store.snapshot().allocatedPages;
+    const token = h.prepare({ kind: 'remap', flags: 0, oldAddress: 0, oldLength: P, length: 2 * P });
+    expect(h.store.commitImageMapping(token, () => true, () => 0)).toBe('committed');
+    expect(h.peer.source.readBytes(8 * P, P).every(v => v === 0x37)).toBe(true);
+    expect(h.peer.source.readBytes(9 * P, P).every(v => v === 0)).toBe(true);
+    expect(() => h.peer.source.readBytes(0, 1)).toThrow(); expect(h.store.snapshot().allocatedPages).toBe(charged + 1); h.store.close();
+  });
+  it('refuses partial barriers, other receipts and busy root/group locks without ownership changes', () => {
+    const h = pausedMappingImage(), memory = h.leader.envelope.memory;
+    const charged = h.store.snapshot().allocatedPages;
+    Atomics.store(h.right, G.MEMORY_GROUP_REPLICA_ACK / 4, 0);
+    expect(h.store.prepareImageMapping(h.barrier, h.describe())).toBe('waiting'); h.acknowledge(h.right);
+    expect(() => h.store.prepareImageMapping(h.barrier, h.describe({ receipt: task({ serial: 99n }) }))).toThrow(/receipt/);
+    for (const address of [h.leader.expectation.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, G.MEMORY_GROUP_CONTROL]) {
+      const lock = new Int32Array(memory.buffer, address, 1); Atomics.store(lock, 0, 1);
+      try { expect(h.store.prepareImageMapping(h.barrier, h.describe())).toBe('busy'); }
+      finally { Atomics.store(lock, 0, 0); }
+      expect(h.store.snapshot().allocatedPages).toBe(charged);
+    }
+    h.store.cancelImageMapping(h.prepare()); h.store.close();
+  });
+  it('revalidates root extent/PTEs and a cancelled or stopped operation before calling commit', () => {
+    for (const change of ['extent', 'pte', 'cancel', 'stop'] as const) {
+      const h = pausedMappingImage(), token = h.prepare(); let called = false;
+      const words = new Uint32Array(h.leader.envelope.memory.buffer), root = h.leader.expectation.root / 4;
+      const result = h.store.commitImageMapping(token, () => {
+        if (change === 'extent') words[root]++;
+        else if (change === 'pte') words[root + G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4] ^= 1;
+        else if (change === 'cancel') h.store.cancelImageMapping(token);
+        else h.store.requestReplicaStop(h.b);
+        return true;
+      }, () => { called = true; return 0; });
+      expect(result).toBe('stale'); expect(called).toBe(false);
+      if (change !== 'cancel') expect(h.store.cancelImageMapping(token)).toBe('cancelled'); h.store.close();
+    }
+  });
+  it('keeps unpublished rollback custody on a busy pool and forbids reentrant release during publication', () => {
+    const h = pausedMappingImage(), token = h.prepare(), memory = h.leader.envelope.memory;
+    const lock = new Int32Array(memory.buffer, G.MEMORY_GROUP_CONTROL, 1); Atomics.store(lock, 0, 1);
+    try { expect(h.store.cancelImageMapping(token)).toBe('busy'); } finally { Atomics.store(lock, 0, 0); }
+    expect(h.store.commitImageMapping(token, () => true, () => {
+      expect(() => h.store.cancelImageMapping(token)).toThrow(/unpublished/); return 0;
+    })).toBe('committed'); h.store.close();
+  });
+  it('contains uncertain Rust publication and retains both old and replacement storage', () => {
+    const h = pausedMappingImage(), charged = h.store.snapshot().allocatedPages, token = h.prepare();
+    expect(() => h.store.commitImageMapping(token, () => true, () => { throw Error('commit trap'); })).toThrow('commit trap');
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged + 1, quarantinedReplicas: 2 });
+    expect(() => h.store.cancelImageMapping(token)).toThrow(); expect(() => h.store.imageSource(h.a)).toThrow(); h.store.close();
+  });
+  it('refuses unowned tokens, unsupported brk and oversized allocation without pretending support', () => {
+    const h = pausedMappingImage();
+    expect(() => h.store.cancelImageMapping({} as PreparedGroupMapping)).toThrow();
+    expect(() => h.prepare({ kind: 'break' })).toThrow(/initial-image/);
+    expect(() => h.prepare({ length: 17 * P })).toThrow(); h.store.close();
+  });
+  it('leaves the old mapping and barrier usable after physical exhaustion', () => {
+    const h = pausedMappingImage(8), before = h.store.snapshot();
+    expect(h.store.prepareImageMapping(h.barrier, h.describe())).toBe('exhausted');
+    expect(h.store.prepareImageMapping(h.barrier, h.describe({ address: 0, length: 8 * P }))).toBe('exhausted');
+    expect(h.store.snapshot()).toEqual(before);
+    const protect = h.prepare({ kind: 'protect', address: 0, result: 0, flags: 0, prot: 1 });
+    expect(h.store.commitImageMapping(protect, () => true, () => 0)).toBe('committed'); h.store.close();
+  });
+  it('preserves PROT_NONE storage and remap-shrink bytes while charging detached references', () => {
+    const h = pausedMappingImage(); h.leader.source.fillBytes(0, 2 * P, 0x42);
+    const charged = h.store.snapshot().allocatedPages;
+    for (const prot of [0, 3]) {
+      const token = h.prepare({ kind: 'protect', address: 0, result: 0, length: 2 * P, prot, flags: 0 });
+      expect(h.store.commitImageMapping(token, () => true, () => 0)).toBe('committed');
+      if (!prot) expect(() => h.peer.source.readBytes(0, 1)).toThrow();
+    }
+    const shrink = h.prepare({ kind: 'remap', address: 0, result: 0, oldAddress: 0, oldLength: 2 * P, flags: 0 });
+    expect(h.store.commitImageMapping(shrink, () => true, () => 0)).toBe('committed');
+    expect(h.peer.source.readBytes(0, P).every(v => v === 0x42)).toBe(true); expect(() => h.peer.source.readBytes(P, 1)).toThrow();
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged, mappingStagingBytes: 0, retainedMappingReferences: 1 }); h.store.close();
+  });
+  it('takes an independent receipt/effect copy and refuses a busy commit before kernel callbacks', () => {
+    const h = pausedMappingImage(), input = h.describe(), token = h.store.prepareImageMapping(h.barrier, input);
+    if (typeof token === 'string') throw Error(token);
+    (input as any).address = 0; (input.receipt as any).serial = 0n;
+    const lock = new Int32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    Atomics.store(lock, 0, 1); let called = false;
+    try { expect(h.store.commitImageMapping(token, () => { called = true; return true; }, () => 0)).toBe('busy'); }
+    finally { Atomics.store(lock, 0, 0); }
+    expect(called).toBe(false);
+    expect(h.store.commitImageMapping(token, description => {
+      expect(description.address).toBe(8 * P); expect(description.receipt.serial).not.toBe(0n);
+      expect(Object.isFrozen(description)).toBe(true); expect(Object.isFrozen(description.receipt)).toBe(true); return true;
+    }, () => 0)).toBe('committed'); h.store.close();
+  });
+});
 describe('image execution barriers for mapping publication', () => {
   it('requires every exact replica and leaves a successor image alone', () => {
     const h = imageWithThread(), { store } = h;
