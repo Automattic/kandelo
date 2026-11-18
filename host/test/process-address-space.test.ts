@@ -185,6 +185,13 @@ describe('explicit process atomic publication', () => {
 
 
 describe('process views and exact native observations', () => {
+  it('refuses objects that expose a real buffer without native Memory identity', () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const spoof = { buffer: memory.buffer } as WebAssembly.Memory;
+    expect(() => readProcessBytes(spoof, 0, 1)).toThrow(TypeError);
+    expect(() => processDataView(spoof, 0, 1)).toThrow(TypeError);
+    expect(() => new ProcessAtomicU64(spoof, 8).load()).toThrow(TypeError);
+  });
   it('preserves scalar byte order across scattered pages and refuses a partial protected write', () => {
     const { access, words, pte } = fixture();
     const view = processDataView(access, PAGE - 3, 16);
