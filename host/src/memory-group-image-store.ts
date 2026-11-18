@@ -14,6 +14,9 @@ export interface PreparedGroupReplica { readonly [preparedReplica]: true }
 declare const executionPause: unique symbol;
 /** A reversible guest-execution barrier, never a terminal retirement fence. */
 export interface GroupExecutionPause { readonly [executionPause]: true }
+declare const imageExecutionPause: unique symbol;
+/** Every execution replica of one image, not a terminal retirement fence. */
+export interface GroupImageExecutionPause { readonly [imageExecutionPause]: true }
 export interface GroupImageLayout {
   readonly initialVirtualPages: number;
   readonly maximumVirtualPages: number;
@@ -36,8 +39,10 @@ interface Image {
   readonly nativeObservations: Set<object>;
   source?: GroupProcessAddressSpace;
   exposed: boolean;
+  pause?: ImagePause;
 }
 interface Replica {
+  readonly handle: PreparedGroupReplica;
   readonly receipt: MemoryGroupTaskReceipt;
   readonly image: Image;
   readonly scratch: GroupPageExtent;
@@ -48,6 +53,10 @@ interface Replica {
   pendingWaitDrain: boolean;
 }
 interface Pause { replica?: Replica; readonly epoch: number }
+interface ImagePause {
+  image?: Image;
+  members: { readonly replica: Replica; pause?: GroupExecutionPause }[];
+}
 function fault(message: string): never { throw new MemoryGroupProtocolFault(message); }
 function pages(extent: GroupPageExtent | undefined): number[] {
   return extent ? Array.from({ length: extent.pages }, (_, i) => extent.first + i) : [];
@@ -70,6 +79,7 @@ export class MemoryGroupImageStore {
   private readonly replicas = new Map<bigint, Replica>();
   private readonly handles = new WeakMap<PreparedGroupReplica, Replica>();
   private readonly pauses = new WeakMap<GroupExecutionPause, Pause>();
+  private readonly imagePauses = new WeakMap<GroupImageExecutionPause, ImagePause>();
   private nextPauseEpoch = 1;
   private closed = false;
 
@@ -112,8 +122,8 @@ export class MemoryGroupImageStore {
     control.setUint32(G.MEMORY_GROUP_REPLICA_PID, receipt.pid, true);
     control.setUint32(G.MEMORY_GROUP_REPLICA_TID, receipt.tid, true);
     control.setUint32(G.MEMORY_GROUP_REPLICA_GROUP, receipt.group, true);
-    const replica: Replica = { receipt, image, scratch, live: { value: true }, state: 'prepared', pendingWaitDrain: false };
     const handle = Object.freeze(Object.create(null)) as PreparedGroupReplica;
+    const replica: Replica = { handle, receipt, image, scratch, live: { value: true }, state: 'prepared', pendingWaitDrain: false };
     this.handles.set(handle, replica); this.replicas.set(receipt.serial, replica); image.replicas.add(replica);
     return handle;
   }
@@ -159,6 +169,7 @@ export class MemoryGroupImageStore {
     if (!image || !image.sourceLive.value || receipt.tid === receipt.pid || image.receipt.group !== receipt.group) {
       fault('Thread has no exact owned image root');
     }
+    if (image.pause) fault('Image execution barrier forbids new replica preparation');
     const allocated: GroupPageExtent[] = [];
     try { return this.replica(receipt, image,
       this.allocate(Math.ceil((G.MEMORY_GROUP_REPLICA_BYTES + image.layout.scratchBytes) / PAGE), allocated)); }
@@ -189,6 +200,10 @@ export class MemoryGroupImageStore {
   }
   beginExecutionPause(handle: PreparedGroupReplica): GroupExecutionPause {
     const replica = this.owned(handle);
+    if (replica.image.pause) fault('Image execution barrier already owns this replica');
+    return this.startExecutionPause(replica);
+  }
+  private startExecutionPause(replica: Replica): GroupExecutionPause {
     if (this.closed || replica.state !== 'exposed' || replica.pause || this.nextPauseEpoch > 0xffffffff) {
       fault('Replica cannot begin a new execution barrier');
     }
@@ -202,6 +217,76 @@ export class MemoryGroupImageStore {
     // weaker pinned-wait barrier. Busy queue inspection is retried by owner.
     this.executionPauseAcknowledged(token);
     return token;
+  }
+
+  /** Freeze membership before requesting every replica's cooperative barrier.
+   * Mapping publication must wait for all acknowledgments and independently
+   * revalidate its Rust metadata/source. Parked waits remain physically pinned;
+   * this barrier never authorizes releasing their pages or recycling storage.
+   */
+  beginImageExecutionPause(handle: PreparedGroupReplica): GroupImageExecutionPause {
+    const image = this.owned(handle).image;
+    if (this.closed || !image.exposed || !image.sourceLive.value || image.pause) {
+      fault('Image cannot begin an execution barrier');
+    }
+    const members = Array.from(image.replicas, replica => ({ replica, pause: undefined as GroupExecutionPause | undefined }));
+    if (!members.length || this.nextPauseEpoch + members.length - 1 > 0xffffffff) {
+      fault('Image execution barrier has no fresh replica epochs');
+    }
+    // Refuse prepared, stopping, quarantined or independently paused members
+    // before changing any request word. Membership cannot grow under the latch.
+    for (const { replica } of members) {
+      if (replica.state !== 'exposed' || !replica.live.value || replica.pause
+          || Atomics.load(this.controls(replica), G.MEMORY_GROUP_REPLICA_RUN / 4) !== 1) {
+        fault('Image execution barrier requires live unpaused replicas');
+      }
+    }
+    const pause: ImagePause = { image, members };
+    const token = Object.freeze(Object.create(null)) as GroupImageExecutionPause;
+    this.imagePauses.set(token, pause); image.pause = pause;
+    try {
+      for (const member of members) member.pause = this.startExecutionPause(member.replica);
+      return token;
+    } catch (error) {
+      // A malformed queue or partial request failure cannot become a false
+      // all-replica acknowledgment. Contain every member and retain charges.
+      for (const { replica } of members) {
+        try { this.quarantine(replica.handle); } catch { /* original fault remains authoritative */ }
+      }
+      image.pause = undefined; pause.image = undefined; pause.members = [];
+      throw error;
+    }
+  }
+  imageExecutionPauseAcknowledged(token: GroupImageExecutionPause): boolean {
+    const pause = this.imagePauses.get(token);
+    if (!pause) fault('Unknown image execution-barrier capability');
+    const image = pause.image;
+    if (!image) return false;
+    if (this.closed || !image.sourceLive.value || image.pause !== pause
+        || image.replicas.size !== pause.members.length) return false;
+    let acknowledged = true;
+    for (const { replica, pause: member } of pause.members) {
+      if (!image.replicas.has(replica) || replica.state !== 'exposed'
+          || !replica.live.value || !member) return false;
+      // Try every queued waiter even when another member is still running.
+      const current = this.executionPauseAcknowledged(member);
+      acknowledged = current && acknowledged;
+    }
+    return acknowledged;
+  }
+  resumeImageExecutionPause(token: GroupImageExecutionPause): boolean {
+    const pause = this.imagePauses.get(token);
+    if (!pause) fault('Unknown image execution-barrier capability');
+    const image = pause.image;
+    if (!image) return false;
+    if (image.pause !== pause) fault('Image lost its exact execution barrier');
+    let resumed = true;
+    for (const member of pause.members) {
+      const current = member.pause ? this.resumeExecutionPause(member.pause) : false;
+      resumed = current && resumed;
+    }
+    image.pause = undefined; pause.image = undefined; pause.members = [];
+    return resumed;
   }
   executionPauseAcknowledged(token: GroupExecutionPause): boolean {
     const pause = this.pauses.get(token);
@@ -232,10 +317,16 @@ export class MemoryGroupImageStore {
   }
   requestReplicaStop(handle: PreparedGroupReplica): boolean {
     const replica = this.owned(handle);
-    this.controls(replica);
-    replica.pendingWaitDrain = !tryControlMemoryGroupReplicaWait(this.memory, replica.image.root,
-      replica.scratch.first * PAGE, 'stop');
-    if (replica.pause) { replica.pause.replica = undefined; replica.pause = undefined; }
+    try {
+      this.controls(replica);
+      replica.pendingWaitDrain = !tryControlMemoryGroupReplicaWait(this.memory, replica.image.root,
+        replica.scratch.first * PAGE, 'stop');
+    } catch (error) {
+      replica.pendingWaitDrain = true;
+      throw error;
+    } finally {
+      if (replica.pause) { replica.pause.replica = undefined; replica.pause = undefined; }
+    }
     return !replica.pendingWaitDrain;
   }
 
@@ -244,7 +335,8 @@ export class MemoryGroupImageStore {
    * or not a later postMessage/Worker constructor succeeds. */
   publish(handle: PreparedGroupReplica, admission: MemoryGroupTaskReceipt): GroupReplicaLaunch {
     const replica = this.owned(handle);
-    if (this.closed || !replica.image.sourceLive.value || replica.state !== 'prepared' || !exact(replica.receipt, admission)) {
+    if (this.closed || !replica.image.sourceLive.value || replica.image.pause
+        || replica.state !== 'prepared' || !exact(replica.receipt, admission)) {
       fault('Replica launch is stale, repeated or not its exact admission');
     }
     const { image, live } = replica;
