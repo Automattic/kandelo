@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
+import { dirname, join } from "node:path";
 import { NodePlatformIO } from "../../src/platform/node";
 import { NodeWorkerAdapter } from "../../src/worker-adapter";
 import { runSdkExecution } from "./grouped-sdk-execution";
@@ -10,6 +11,7 @@ const { kernelPath, programPath, ordinaryPath, grouped, trace } = workerData;
 try {
   parentPort!.postMessage(await runSdkExecution({
     kernelBytes: buffer(kernelPath), programBytes: buffer(programPath), ordinaryBytes: buffer(ordinaryPath),
+    imageModuleBytes: buffer(join(dirname(dirname(kernelPath)), "kandelo_image_module32.wasm")),
     grouped, trace, io: new NodePlatformIO(), adapter: new NodeWorkerAdapter(), joinOnExit: true,
   }));
 } finally { parentPort!.close(); }

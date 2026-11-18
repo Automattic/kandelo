@@ -9153,7 +9153,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
     fstat_ofd(proc, host, ofd_idx)
 }
 
-fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<WasmStat, Errno> {
+pub(crate) fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<WasmStat, Errno> {
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
@@ -13148,7 +13148,7 @@ fn mapping_file_for_ofd(proc:&Process,host:&mut dyn HostIO,index:usize)->Option<
     let (dev, ino) = fstat_ofd(proc, host, index)
         .map(|st| (st.st_dev, st.st_ino))
         .unwrap_or((0, 0));
-    Some(crate::memory::MappingFile { dev, ino, name })
+    Some(crate::memory::MappingFile { dev, ino, name, private_source: None })
 }
 
 /// Reserve the address range for `sys_mmap` and bind any device to it.

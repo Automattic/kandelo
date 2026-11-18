@@ -437,6 +437,28 @@ export class MemoryGroupImageStore {
     } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
   }
 
+  /** Populate only fresh unpublished pages selected by the exact Rust plan.
+   * Existing payload/aliases and the live PTE table are never write targets.
+   */
+  populateImageMapping(token: PreparedGroupMapping, offset: number, bytes: Uint8Array): void {
+    const mapping = this.mappings.get(token), image = mapping?.image;
+    if (!mapping || !image || mapping.state !== 'prepared' || image.mapping !== mapping
+        || !this.imageExecutionPauseAcknowledged(mapping.barrier)) fault('Population has no paused unpublished mapping');
+    const { populationAddress, populationLength } = mapping.description;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > populationLength || bytes.length > populationLength - offset) {
+      fault('Population exceeds its kernel-selected interval');
+    }
+    let copied = 0;
+    while (copied < bytes.length) {
+      const address = populationAddress + offset + copied, page = Math.floor(address / PAGE);
+      const physical = mapping.after![page] >>> 16, within = address % PAGE;
+      if (!physical || !mapping.allocated!.includes(physical)) fault('Population attempted to overwrite published storage');
+      const count = Math.min(PAGE - within, bytes.length - copied);
+      new Uint8Array(this.memory.buffer, physical * PAGE + within, count).set(bytes.subarray(copied, copied + count));
+      copied += count;
+    }
+  }
+
   /** Invoke only synchronously within the coordinator's exact kernel entry.
    * Refused Rust commit rolls PTEs back while all replicas remain paused. A
    * thrown/invalid result has uncertain publication and contains the image.

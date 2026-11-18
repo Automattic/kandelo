@@ -2192,6 +2192,7 @@ interface PendingGroupMapping {
   readonly finish: () => void;
   barrier?: GroupImageExecutionPause;
   physical?: PreparedGroupMapping;
+  populationCursor: number;
   cancelling: boolean;
   rustCancelled: boolean;
   suppressCompletion: boolean;
@@ -21402,7 +21403,7 @@ export class CentralizedKernelWorker {
     // Host custody is allocated before asking Rust to retain a metadata plan.
     const pending: PendingGroupMapping = { channel, registration, request, receipt, syscall, args: Object.freeze(copied),
       store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
-      suppressCompletion: false, failure: EIO, scheduled: false, done: false };
+      suppressCompletion: false, failure: EIO, scheduled: false, done: false, populationCursor: 0 };
     this.pendingGroupMappings.set(channel, pending); this.#advanceGroupMapping(pending, entry);
   }
 
@@ -21436,7 +21437,7 @@ export class CentralizedKernelWorker {
       let current: GroupMemoryChangeDescription;
       try { current = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), receipt, token); }
       catch (error) { return this.#memoryGroupProtocolError("Invalid validated mapping record", error); }
-      for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags"] as const) {
+      for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags", "populationAddress", "populationLength"] as const) {
         if (current[key] !== description[key]) this.#memoryGroupProtocolError("Prepared mapping effect changed under its exact token");
       }
       return 0;
@@ -21508,6 +21509,45 @@ export class CentralizedKernelWorker {
       if (physical === "waiting" || physical === "busy") { this.#scheduleGroupMapping(pending, physical === "waiting" ? "barrier" : "locks", entry); return; }
       if (physical === "exhausted") { pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return; }
       pending.physical = physical;
+    }
+    // Read through the exact Rust source retained by this token, never the old
+    // descriptor number. Write only allocated unpublished pages. A failure can
+    // still cancel both halves without replacing a live MAP_FIXED interval.
+    for (let batch = 0; batch < 4 && pending.populationCursor < pending.description.populationLength; batch++) {
+      const capacity = Math.min(CH_DATA_SIZE, pending.description.populationLength - pending.populationCursor);
+      const attempt = this.#requireMainScratchRegion().withLease(lease => {
+        const { receipt, token } = pending.description!;
+        const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_read", [
+          receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
+          pending.populationCursor >>> 0, Math.floor(pending.populationCursor / 0x1_0000_0000),
+          lease.exportPointer(0, capacity), capacity,
+        ]);
+        if (!Number.isSafeInteger(count) || count < -4095 || count > capacity) this.#memoryGroupProtocolError("Invalid private mapping read result");
+        return { count, bytes: count > 0 ? lease.copyOut(0, count) : undefined };
+      });
+      if (attempt.count < 0) {
+        if (attempt.count === -EAGAIN) {
+          pending.scheduled = true;
+          entry.deferProtocolEffect(() => {
+            this.#registerTimeout(() => {
+              pending.scheduled = false;
+              if (!pending.done) this.#runOrDeferKernelEntry("private mapping population retry", next => {
+                this.#advanceGroupMapping(pending, next); return undefined;
+              }, pending);
+            }, 10);
+          });
+          return;
+        }
+        pending.cancelling = true; pending.failure = -attempt.count; this.#cancelGroupMapping(pending, entry); return;
+      }
+      if (attempt.count === 0) { pending.populationCursor = pending.description.populationLength; break; }
+      pending.store.populateImageMapping(pending.physical, pending.populationCursor, attempt.bytes!);
+      pending.populationCursor += attempt.count;
+    }
+    if (pending.populationCursor < pending.description.populationLength) {
+      pending.scheduled = true;
+      entry.deferProtocolEffect(() => { this.#queueGroupMappingTurn(pending); return undefined; });
+      return;
     }
     let validation = 0;
     let result: ReturnType<MemoryGroupImageStore["commitImageMapping"]>;

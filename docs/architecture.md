@@ -102,9 +102,18 @@ image intervals, heap and reserved controls; protection/unmap preserve holes,
 and observed virtual growth does not recreate old unmapped pages. Grouped
 fork copies this metadata from its live kernel parent without changing the
 ordinary fork wire. Heap queries allocate no preparation, and growth admission
-failure preserves the old break. Direction-aware protected I/O, physical fork
-integration and file/device effects are still incomplete. Source-only coordinator tests do not establish
-actual C quiescence, POSIX acceptance or Node/browser performance.
+failure preserves the old break. Private-file preparation retains the backing
+and OFD lock identity independently of the descriptor. Rust selects a bounded
+population interval and sequential read cursor; the host writes only fresh
+unpublished pages. Remap tails use that same file and byte offset after
+close/unlink. Population errors cancel the original plan before publication.
+Final native close effects use a budgeted cold journal drained by the outer
+kernel scope, after process/MM borrows end. Anonymous and private-file C probes
+exercise the normal SDK and process Worker entries on Node and the three
+browsers. Whole-page EOF/SIGBUS and truncation, remaining kernel-dereferenced
+I/O, physical fork/thread, shared-object and device effects remain unfinished.
+These mechanism checks do not establish POSIX conformance, reclamation or
+Node/browser performance acceptance.
 
 The Node/browser process entries share a memory-free prepare/ready exchange
 before one backing is transported on the authenticated parent channel. They

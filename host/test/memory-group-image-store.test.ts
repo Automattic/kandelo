@@ -27,7 +27,7 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   h.acknowledge(h.left); h.acknowledge(h.right);
   const describe = (patch: Partial<GroupMemoryChangeDescription> = {}): GroupMemoryChangeDescription => ({
     receipt: h.main, token: (1n << 63n) + 7n, kind: 'map', address: 8 * P, length: P,
-    oldAddress: 0, oldLength: 0, result: 8 * P, flags: 0x22, prot: 3, ...patch,
+    oldAddress: 0, oldLength: 0, result: 8 * P, flags: 0x22, prot: 3, populationAddress: 0, populationLength: 0, ...patch,
   });
   const prepare = (patch: Partial<GroupMemoryChangeDescription> = {}) => {
     const result = h.store.prepareImageMapping(barrier, describe(patch));
@@ -37,6 +37,33 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   return { ...h, barrier, describe, prepare };
 }
 describe('owned physical mapping transactions', () => {
+  it('populates fresh readonly pages before publication and rolls back rejected file replacement', () => {
+    const h = pausedMappingImage(), { store } = h;
+    h.leader.source.fillBytes(0, 2 * P, 0xa5);
+    const charged = store.snapshot().allocatedPages;
+    const patch = { address: 0, result: 0, length: 2 * P, prot: 1, flags: 2, populationAddress: 0, populationLength: 2 * P };
+    const token = h.prepare(patch), bytes = Uint8Array.of(1, 2, 3, 4);
+    store.populateImageMapping(token, P - 2, bytes);
+    expect(h.leader.source.readBytes(P - 2, 4)).toEqual(Uint8Array.of(0xa5, 0xa5, 0xa5, 0xa5));
+    expect(() => store.populateImageMapping(token, 2 * P - 1, bytes)).toThrow(/interval/);
+    expect(store.commitImageMapping(token, () => true, () => -5)).toBe(-5);
+    expect(h.peer.source.readBytes(P - 2, 4)).toEqual(Uint8Array.of(0xa5, 0xa5, 0xa5, 0xa5));
+    store.cancelImageMapping(token);
+    expect(store.snapshot().allocatedPages).toBe(charged);
+    expect(() => store.populateImageMapping(token, 0, bytes)).toThrow(/unpublished/);
+    const accepted = h.prepare(patch); store.populateImageMapping(accepted, P - 2, bytes);
+    expect(store.commitImageMapping(accepted, () => true, () => 0)).toBe('committed');
+    expect(h.peer.source.readBytes(P - 2, 4)).toEqual(bytes);
+    expect(h.peer.source.readBytes(0, 8)).toEqual(new Uint8Array(8));
+    expect(() => h.peer.source.writeBytes(0, bytes)).toThrow(); store.close();
+  });
+  it('refuses population directed at an existing physical page', () => {
+    const h = pausedMappingImage(); h.leader.source.fillBytes(0, P, 0x6a);
+    const token = h.prepare({ populationAddress: 0, populationLength: P });
+    expect(() => h.store.populateImageMapping(token, 0, Uint8Array.of(9))).toThrow(/published storage/);
+    expect(h.peer.source.readBytes(0, 1)[0]).toBe(0x6a);
+    h.store.cancelImageMapping(token); h.store.close();
+  });
   it('grows, shrinks and regrows heap pages without changing partial-page rights or reusing detached storage', () => {
     const h = pausedMappingImage(), charged = h.store.snapshot().allocatedPages;
     h.leader.source.fillBytes(P, P, 0x55);

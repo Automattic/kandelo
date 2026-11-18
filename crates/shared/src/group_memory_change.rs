@@ -1,15 +1,16 @@
 //! Kernel-host records for one prepared grouped mapping. No guest ABI fields.
 use crate::{Errno, memory_group::ReceiptRecord};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const CAPABILITY: u32 = 2;
 pub const REQUEST_BYTES: usize = 64;
-pub const DESCRIPTION_BYTES: usize = 96;
+pub const DESCRIPTION_BYTES: usize = 112;
 pub const REQUEST_FIELDS: &[(&str, usize)] = &[("syscall", 0), ("reserved", 4), ("args", 8), ("observedPages", 56), ("tailReserved", 60)];
 pub const DESCRIPTION_FIELDS: &[(&str, usize)] = &[
     ("receipt", 0), ("token", 32), ("kind", 40), ("prot", 44),
     ("address", 48), ("length", 56), ("oldAddress", 64), ("oldLength", 72),
     ("result", 80), ("flags", 88), ("reserved", 92),
+    ("populationAddress", 96), ("populationLength", 104),
 ];
 pub const KINDS: &[(&str, u32)] = &[("map", 1), ("unmap", 2), ("protect", 3), ("remap", 4), ("break", 5)];
 
@@ -37,6 +38,8 @@ pub struct Description {
     pub old_length: u64,
     pub result: u64,
     pub flags: u32,
+    pub population_address: u64,
+    pub population_length: u64,
 }
 impl Description {
     pub fn encode(&self, out: &mut [u8]) -> Result<(), Errno> {
@@ -53,6 +56,8 @@ impl Description {
             out[48 + i * 8..56 + i * 8].copy_from_slice(&value.to_le_bytes());
         }
         out[88..92].copy_from_slice(&self.flags.to_le_bytes());
+        out[96..104].copy_from_slice(&self.population_address.to_le_bytes());
+        out[104..112].copy_from_slice(&self.population_length.to_le_bytes());
         Ok(())
     }
 }
@@ -75,13 +80,16 @@ mod tests {
     fn description_keeps_unsigned_receipts_tokens_addresses_and_reserved_bytes() {
         let receipt = ReceiptRecord { group: 7, pid: 100, tid: 101, serial: u64::MAX - 1, generation: 1 << 63 };
         let value = Description { receipt, token: u64::MAX, kind: 4, prot: 3,
-            address: 1 << 32, length: 1 << 40, old_address: 65536, old_length: 131072, result: 1 << 32, flags: 0 };
+            address: 1 << 32, length: 1 << 40, old_address: 65536, old_length: 131072, result: 1 << 32, flags: 0,
+            population_address: 65536, population_length: 131072 };
         let mut bytes = [0xa5; DESCRIPTION_BYTES]; value.encode(&mut bytes).unwrap();
         assert_eq!(ReceiptRecord::decode(&bytes[..32]).unwrap(), receipt);
         assert_eq!(u64::from_le_bytes(bytes[32..40].try_into().unwrap()), u64::MAX);
         assert_eq!(u64::from_le_bytes(bytes[48..56].try_into().unwrap()), 1 << 32);
         assert_eq!(u64::from_le_bytes(bytes[56..64].try_into().unwrap()), 1 << 40);
-        assert_eq!(&bytes[92..], &[0; 4]);
+        assert_eq!(&bytes[92..96], &[0; 4]);
+        assert_eq!(u64::from_le_bytes(bytes[96..104].try_into().unwrap()), 65536);
+        assert_eq!(u64::from_le_bytes(bytes[104..112].try_into().unwrap()), 131072);
         let before = bytes; let invalid = Description { token: 0, ..value };
         assert_eq!(invalid.encode(&mut bytes), Err(Errno::EINVAL)); assert_eq!(bytes, before);
     }

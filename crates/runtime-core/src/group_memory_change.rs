@@ -13,6 +13,8 @@ pub struct Description {
     pub token: u64,
     pub receipt: ReceiptRecord,
     pub effect: Effect,
+    pub population_address: usize,
+    pub population_length: usize,
 }
 impl Description {
     pub fn record(&self) -> wasm_posix_shared::group_memory_change::Description {
@@ -25,7 +27,8 @@ impl Description {
         };
         wasm_posix_shared::group_memory_change::Description { receipt: self.receipt, token: self.token,
             kind, prot, address: address as u64, length: length as u64,
-            old_address: old_address as u64, old_length: old_length as u64, result: self.result(), flags }
+            old_address: old_address as u64, old_length: old_length as u64, result: self.result(), flags,
+            population_address: self.population_address as u64, population_length: self.population_length as u64 }
     }
     pub fn result(&self) -> u64 {
         match self.effect {
@@ -40,6 +43,15 @@ impl Description {
 pub(crate) struct Pending {
     description: Description,
     plan: PreparedMemoryChange,
+    population: Option<Population>,
+    population_position: usize,
+    population_eof: bool,
+}
+pub(crate) struct Population {
+    pub address: usize,
+    pub len: usize,
+    pub offset: u64,
+    pub source: crate::private_mapping::Source,
 }
 
 fn pointer(value: u64) -> Result<usize, Errno> {
@@ -52,9 +64,8 @@ fn intent(syscall: u32, args: [u64; 6]) -> Result<MemoryChange, Errno> {
         n if n == Syscall::Mmap as u32 => {
             let prot = u32::try_from(args[2]).map_err(|_| Errno::EINVAL)?;
             let flags = u32::try_from(args[3]).map_err(|_| Errno::EINVAL)?;
-            if flags & mmap::MAP_ANONYMOUS == 0 || flags & mmap::MAP_SHARED != 0 {
-                // Descriptor/device/shared-object preparation must retain its
-                // own real references and effects, never become anonymous.
+            if flags & mmap::MAP_SHARED != 0 {
+                // Shared objects and devices need their own exact effects.
                 return Err(Errno::EOPNOTSUPP);
             }
             if flags & mmap::MAP_PRIVATE == 0 {
@@ -134,8 +145,14 @@ impl ProcessTable {
 
     /// Rust selects the result address and retains both snapshots. Raw host
     /// addresses cannot mint task/image identity or consume another plan.
-    pub fn prepare_group_memory_change(&mut self, pid: u32, tid: u32, syscall: u32,
+    #[cfg(test)]
+    fn prepare_group_memory_change(&mut self, pid: u32, tid: u32, syscall: u32,
         args: [u64; 6], observed_pages: u32) -> Result<Description, Errno> {
+        self.prepare_group_memory_change_with_io(pid, tid, syscall, args, observed_pages, &mut crate::process::test_host::NoopHost)
+    }
+
+    pub fn prepare_group_memory_change_with_io(&mut self, pid: u32, tid: u32, syscall: u32,
+        args: [u64; 6], observed_pages: u32, host: &mut dyn crate::process::HostIO) -> Result<Description, Errno> {
         let receipt = self.running_group_memory_caller(pid, tid)?;
         let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
         if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
@@ -148,6 +165,20 @@ impl ProcessTable {
             return Err(Errno::EOPNOTSUPP);
         }
         let operation = intent(syscall, args)?;
+        let file = if syscall == Syscall::Mmap as u32 && args[3] & mmap::MAP_ANONYMOUS as u64 == 0 {
+            let offset = args[5].checked_mul(4096).filter(|value| *value <= i64::MAX as u64).ok_or(Errno::EINVAL)?;
+            let fd = i32::try_from(args[4] as i64).map_err(|_| Errno::EINVAL)?;
+            let (source, stat) = crate::private_mapping::Source::capture(proc, fd, host)?;
+            let ofd = proc.ofd_table.get(proc.fd_table.get(fd)?.ofd_ref.0).ok_or(Errno::EBADF)?;
+            let mut name = alloc::vec::Vec::new();
+            name.try_reserve_exact(ofd.path.len().checked_add(11).ok_or(Errno::ENOMEM)?).map_err(|_| Errno::ENOMEM)?;
+            name.extend_from_slice(&ofd.path);
+            if ofd.file_type == crate::ofd::FileType::MemFd {
+                name.insert(0, b'/'); name.extend_from_slice(b" (deleted)");
+            }
+            Some((alloc::rc::Rc::try_new(crate::memory::MappingFile { dev: stat.st_dev, ino: stat.st_ino, name,
+                private_source: Some(source) }).map_err(|_| Errno::ENOMEM)?, offset))
+        } else { None };
         // The owning host freezes all execution replicas first. This is the
         // image's logical root extent, never the common physical Memory size.
         proc.memory.observe_group_virtual_growth(observed_pages)?;
@@ -155,9 +186,15 @@ impl ProcessTable {
         // Ordinary processes retain only one optional pointer, not two inline
         // metadata snapshots. No allocation can fail after the live serial.
         let mut storage = crate::IoBox::try_new(None::<Pending>)?;
-        let plan = proc.memory.prepare_memory_change(operation)?;
-        let description = Description { token: plan.serial(), receipt, effect: plan.effect() };
-        *storage = Some(Pending { description, plan });
+        let plan = proc.memory.prepare_memory_change_with_file(operation, file)?;
+        let population = match plan.private_population() {
+            Ok(value) => value,
+            Err(error) => { proc.memory.cancel_memory_change(plan).expect("fresh private mapping plan cancellation"); return Err(error); }
+        };
+        let description = Description { token: plan.serial(), receipt, effect: plan.effect(),
+            population_address: population.as_ref().map_or(0, |p| p.address),
+            population_length: population.as_ref().map_or(0, |p| p.len) };
+        *storage = Some(Pending { description, plan, population, population_position: 0, population_eof: false });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
     }
@@ -178,12 +215,17 @@ impl ProcessTable {
     pub fn commit_group_memory_change(&mut self, pid: u32, tid: u32, token: u64) -> Result<Description, Errno> {
         self.validate_group_memory_change(pid, tid, token)?;
         let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
+        let pending = proc.pending_group_memory_change.as_deref().and_then(Option::as_ref).ok_or(Errno::ESRCH)?;
+        if pending.population.as_ref().is_some_and(|p| pending.population_position < p.len && !pending.population_eof) {
+            return Err(Errno::EBUSY);
+        }
         let mut storage = proc.pending_group_memory_change.take().ok_or(Errno::ESRCH)?;
         let pending = storage.take().expect("published group mapping owner");
         match proc.memory.commit_memory_change(pending.plan) {
             Ok(_) => Ok(pending.description),
             Err((error, plan)) => {
-                *storage = Some(Pending { plan, description: pending.description });
+                *storage = Some(Pending { plan, description: pending.description, population: pending.population,
+                    population_position: pending.population_position, population_eof: pending.population_eof });
                 proc.pending_group_memory_change = Some(storage);
                 Err(error)
             }
@@ -208,11 +250,27 @@ impl ProcessTable {
         match proc.memory.cancel_memory_change(pending.plan) {
             Ok(()) => Ok(()),
             Err((error, plan)) => {
-                *storage = Some(Pending { plan, description: pending.description });
+                *storage = Some(Pending { plan, description: pending.description, population: pending.population,
+                    population_position: pending.population_position, population_eof: pending.population_eof });
                 proc.pending_group_memory_change = Some(storage);
                 Err(error)
             }
         }
+    }
+
+    pub fn read_group_memory_population(&mut self, pid: u32, tid: u32, token: u64, offset: u64,
+        output: &mut [u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+        self.validate_group_memory_change(pid, tid, token)?;
+        let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
+        let pending = proc.pending_group_memory_change.as_deref_mut().and_then(Option::as_mut).ok_or(Errno::ESRCH)?;
+        let population = pending.population.as_ref().ok_or(Errno::EINVAL)?;
+        let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        if offset != pending.population_position || output.is_empty() || pending.population_eof
+            || offset > population.len || output.len() > population.len - offset { return Err(Errno::EINVAL); }
+        let count = population.source.read(population.offset + offset as u64, output, host)?;
+        pending.population_position += count;
+        pending.population_eof = count == 0;
+        Ok(count)
     }
 }
 
@@ -237,6 +295,100 @@ mod tests {
         (table, pid, admission)
     }
     fn map_args() -> [u64; 6] { [0, P as u64, 3, ANON as u64, u64::MAX, 0] }
+    fn file(table: &mut ProcessTable, pid: u32) -> (i32, i64) {
+        use crate::syscalls::*;
+        let proc = table.get_mut(pid).unwrap();
+        let fd = sys_memfd_create(proc, b"private", 0).unwrap();
+        let handle = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().host_handle;
+        let mut host = crate::process::test_host::NoopHost;
+        sys_pwrite(proc, &mut host, fd, b"before", P as i64).unwrap();
+        sys_pwrite(proc, &mut host, fd, b"growth", 2 * P as i64).unwrap();
+        (fd, crate::kernel_file_mapping::mapping_handle_for(crate::ofd::FileType::MemFd, handle).unwrap())
+    }
+    #[test]
+    fn private_mapping_retains_exact_file_across_fd_reuse_and_remap_growth() {
+        use crate::syscalls::*;
+        let (mut table, pid, _) = setup(true);
+        let (fd, handle) = file(&mut table, pid);
+        let args = [0, P as u64, 3, mmap::MAP_PRIVATE as u64, fd as u64, (P / 4096) as u64];
+        let mut host = crate::process::test_host::NoopHost;
+        let d = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+        assert_eq!(d.population_address as u64, d.result()); assert_eq!(d.population_length, P);
+        assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+        assert_eq!(table.commit_group_memory_change(pid, pid, d.token), Err(Errno::EBUSY));
+        sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+        let replacement = sys_memfd_create(table.get_mut(pid).unwrap(), b"replacement", 0).unwrap();
+        assert_eq!(replacement, fd);
+        sys_pwrite(table.get_mut(pid).unwrap(), &mut host, replacement, b"wrong!", P as i64).unwrap();
+        let mut bytes = [0; 6];
+        assert_eq!(table.read_group_memory_population(pid, pid, d.token, 0, &mut bytes, &mut host), Ok(6));
+        assert_eq!(&bytes, b"before");
+        assert_eq!(table.read_group_memory_population(pid, pid, d.token ^ (1 << 40), 0, &mut bytes, &mut host), Err(Errno::ESRCH));
+        assert_eq!(table.read_group_memory_population(pid, pid, d.token, P as u64, &mut bytes, &mut host), Err(Errno::EINVAL));
+        assert_eq!(table.commit_group_memory_change(pid, pid, d.token), Err(Errno::EBUSY));
+        let mut rest = [0; P - 6];
+        assert_eq!(table.read_group_memory_population(pid, pid, d.token, 6, &mut rest, &mut host), Ok(P - 6));
+        table.commit_group_memory_change(pid, pid, d.token).unwrap();
+        let growth = [d.result(), P as u64, (2 * P) as u64, 1, 0, 0];
+        let d = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mremap as u32, growth, 5, &mut host).unwrap();
+        assert_eq!(d.population_address, d.result() as usize + P);
+        assert_eq!(table.read_group_memory_population(pid, pid, d.token, 0, &mut bytes, &mut host), Ok(6));
+        assert_eq!(&bytes, b"growth");
+        assert_eq!(table.read_group_memory_population(pid, pid, d.token, 6, &mut rest, &mut host), Ok(0));
+        table.commit_group_memory_change(pid, pid, d.token).unwrap();
+        let d = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Munmap as u32,
+            [d.result(), (2 * P) as u64, 0, 0, 0, 0], 6, &mut host).unwrap();
+        table.commit_group_memory_change(pid, pid, d.token).unwrap();
+        assert!(crate::kernel_file_mapping::content_generation(handle).is_none());
+        crate::private_mapping::drain_releases(&mut host).unwrap();
+        sys_close(table.get_mut(pid).unwrap(), &mut host, replacement).unwrap();
+    }
+
+    #[test]
+    fn cancelled_private_fixed_mapping_keeps_live_metadata_and_releases_source() {
+        use crate::syscalls::*;
+        let (mut table, pid, _) = setup(true);
+        let initial = prepare(&mut table, pid);
+        table.commit_group_memory_change(pid, pid, initial.token).unwrap();
+        let old = table.get(pid).unwrap().memory.mappings().to_vec();
+        let (fd, handle) = file(&mut table, pid);
+        let mut host = crate::process::test_host::NoopHost;
+        let args = [initial.result(), P as u64, 1, (mmap::MAP_PRIVATE | mmap::MAP_FIXED) as u64, fd as u64, 0];
+        let d = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 5, &mut host).unwrap();
+        sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+        assert!(crate::kernel_file_mapping::content_generation(handle).is_some());
+        assert_eq!(table.get(pid).unwrap().memory.mappings(), old);
+        table.cancel_group_memory_change(pid, pid, d.token).unwrap();
+        assert_eq!(table.get(pid).unwrap().memory.mappings(), old);
+        assert!(crate::kernel_file_mapping::content_generation(handle).is_none());
+        crate::private_mapping::drain_releases(&mut host).unwrap();
+    }
+
+    #[test]
+    fn private_source_refuses_access_and_metadata_budget_before_mapping_custody() {
+        use crate::syscalls::*;
+        let (mut table, pid, _) = setup(true);
+        let (fd, handle) = file(&mut table, pid);
+        let index = table.get(pid).unwrap().fd_table.get(fd).unwrap().ofd_ref.0;
+        let args = [0, P as u64, 3, mmap::MAP_PRIVATE as u64, fd as u64, 0];
+        let mut host = crate::process::test_host::NoopHost;
+        table.get_mut(pid).unwrap().ofd_table.get_mut(index).unwrap().set_status_flags_raw(wasm_posix_shared::flags::O_WRONLY);
+        assert_eq!(table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host), Err(Errno::EACCES));
+        table.get_mut(pid).unwrap().ofd_table.get_mut(index).unwrap().set_status_flags_raw(wasm_posix_shared::flags::O_RDONLY);
+        // Writable private pages need readable bytes, not a writable descriptor.
+        let d = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+        table.cancel_group_memory_change(pid, pid, d.token).unwrap();
+        crate::private_mapping::drain_releases(&mut host).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host), Err(Errno::ENOMEM));
+        }
+        assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+        assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
+        sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+        assert!(crate::kernel_file_mapping::content_generation(handle).is_none());
+    }
     fn initial_record(admission: GroupAdmission) -> wasm_posix_shared::group_memory_layout::Record {
         wasm_posix_shared::group_memory_layout::Record { receipt: admission.record(), initial_pages: 4, maximum_pages: 64,
             brk_base: (3 * P) as u64, mmap_base: (4 * P) as u64, brk_limit: (64 * P) as u64,
@@ -366,7 +518,7 @@ mod tests {
         let mut file = map_args(); file[3] = mmap::MAP_PRIVATE as u64;
         for (nr, args, expected) in [(Syscall::Mmap as u32, wide, Errno::EINVAL),
             (Syscall::Mmap as u32, shared, Errno::EOPNOTSUPP),
-            (Syscall::Mmap as u32, file, Errno::EOPNOTSUPP), (u32::MAX, map_args(), Errno::EINVAL)] {
+            (Syscall::Mmap as u32, file, Errno::EBADF), (u32::MAX, map_args(), Errno::EINVAL)] {
             assert_eq!(table.prepare_group_memory_change(pid, pid, nr, args, table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(expected));
             assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
             assert!(!table.get(pid).unwrap().memory.has_pending_memory_change());

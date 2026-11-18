@@ -2254,6 +2254,7 @@ mod tests {
             dev,
             ino: 1234,
             name: b"/usr/lib/libfoo.so".to_vec(),
+            private_source: None,
         });
         assert!(proc.memory.set_mapping_file(addr, 0x20000, file));
         let line = maps_text(&proc, |_| None);
@@ -2277,6 +2278,7 @@ mod tests {
             dev: 0,
             ino: 9,
             name: b"/dev/fb0".to_vec(),
+            private_source: None,
         });
         proc.memory.set_mapping_file(addr, 0, file);
         let line = maps_text(&proc, |_| None);
@@ -2293,6 +2295,7 @@ mod tests {
             dev: 0x801,
             ino: 55,
             name: b"/dev/shm/pool".to_vec(),
+            private_source: None,
         });
         proc.memory.set_mapping_file(addr, 0x100000, file);
         // Trim the first page, then punch a hole in the middle.
@@ -2352,6 +2355,7 @@ mod tests {
             dev: 0,
             ino: 77,
             name: b"/memfd:pool (deleted)".to_vec(),
+            private_source: None,
         });
         parent.memory.set_mapping_file(addr, 0, file);
         let mut child = Process::new(8);

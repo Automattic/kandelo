@@ -183,6 +183,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_memory_group_task_action",
   "kernel_memory_group_task_receipt",
   "kernel_group_memory_change_prepare",
+  "kernel_group_memory_change_read",
   "kernel_group_memory_layout_install",
   "kernel_group_memory_change_validate",
   "kernel_ipc_shm_read_chunk",
@@ -278,6 +279,7 @@ const REQUIRED_POINTER_0_2 = intrinsicObjectFreeze([0, 2] as const);
 const REQUIRED_POINTER_0_3 = intrinsicObjectFreeze([0, 3] as const);
 const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
+const REQUIRED_POINTER_6 = intrinsicObjectFreeze([6] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
 const NULLABLE_POINTER_1_3_5 = intrinsicObjectFreeze([1, 3, 5] as const);
 
@@ -292,6 +294,8 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_2_4;
     case "kernel_group_memory_change_validate":
       return REQUIRED_POINTER_4;
+    case "kernel_group_memory_change_read":
+      return REQUIRED_POINTER_6;
     case "kernel_overlay_activation_codec":
       return REQUIRED_POINTER_1_3;
     case "kernel_memory_group_task_action":
@@ -430,6 +434,7 @@ function isKernelScratchExportName(
     case "kernel_group_memory_layout_install":
     case "kernel_group_memory_change_prepare":
     case "kernel_group_memory_change_validate":
+    case "kernel_group_memory_change_read":
     case "kernel_memory_group_snapshot":
     case "kernel_memory_group_task_action":
     case "kernel_memory_group_task_receipt":

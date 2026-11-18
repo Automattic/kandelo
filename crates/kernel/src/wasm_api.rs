@@ -1660,6 +1660,11 @@ fn gkl_acquire() {
 fn gkl_release() {
     if unsafe { *GKL_DEPTH.0.get() } == 1 {
         apply_pending_process_exits();
+        // Private metadata drops enqueue already admitted close effects. No
+        // process/MM borrow survives this outer-scope boundary or host call.
+        if let Err(error) = runtime_core::private_mapping::drain_releases(&mut WasmHostIO) {
+            panic!("private mapping native close failed: {error:?}");
+        }
     }
     let depth = unsafe { &mut *GKL_DEPTH.0.get() };
     *depth -= 1;
@@ -4051,7 +4056,7 @@ pub extern "C" fn kernel_group_memory_change_prepare(
     };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let description = match table.prepare_group_memory_change(pid, tid, request.syscall, request.args, request.observed_pages) {
+    let description = match table.prepare_group_memory_change_with_io(pid, tid, request.syscall, request.args, request.observed_pages, &mut WasmHostIO) {
         Ok(description) => description, Err(error) => return -(error as i32),
     };
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) };
@@ -4078,6 +4083,19 @@ pub extern "C" fn kernel_group_memory_change_validate(
     };
     description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
         .map(|()| DESCRIPTION_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_read(pid: u32, tid: u32, token_lo: u32, token_hi: u32,
+    offset_lo: u32, offset_hi: u32, out_ptr: *mut u8, out_capacity: u32) -> i32 {
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity == 0 || out_capacity > 65536 { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_capacity as usize) };
+    table.read_group_memory_population(pid, tid, (u64::from(token_hi) << 32) | u64::from(token_lo),
+        (u64::from(offset_hi) << 32) | u64::from(offset_lo), output, &mut WasmHostIO)
+        .map(|count| count as i32).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
