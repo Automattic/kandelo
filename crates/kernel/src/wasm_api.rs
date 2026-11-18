@@ -5430,10 +5430,7 @@ pub extern "C" fn kernel_exec_target_admit(
     }
     let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let Some(proc) = table.get(owner_pid) else {
-        return -(Errno::ESRCH as i32);
-    };
-    let admission = match crate::exec_target::admit(proc, owner_pid, token, expected_abi) {
+    let admission = match table.admit_exec_target(owner_pid, token, expected_abi) {
         Ok(admission) => admission,
         Err(error) => return -(error as i32),
     };

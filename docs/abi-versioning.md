@@ -3135,6 +3135,15 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
+The grouped exec preflight selects artifact policy from the kernel's current
+image membership and checks the existing grouped declaration and binding
+signatures. The SDK validates its output with the same reader. This adds no
+Wasm export or wire field. Its parser raises the kernel's imported memory
+minimum from 21 to 22 pages (64 KiB per page), so host-adapter 17 records this
+incompatible kernel-host import change. The memory ceiling is unchanged.
+Program ABI 56 and its contract digest remain unchanged. Preflight does not
+authorize replacement allocation or commit.
+
 Host-adapter 16 adds scalar-only grouped thread-control reuse and release.
 Exact replica queue inspection copies only none/waiting/returning/busy inside
 the disposable kernel realm. It adds no Wasm export, wire field or stop/reuse

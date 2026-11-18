@@ -804,6 +804,25 @@ pub fn admit(
     token: u32,
     expected_abi: u32,
 ) -> Result<Admission, Errno> {
+    admit_profile(proc, owner_pid, token, expected_abi, false)
+}
+
+pub(crate) fn admit_grouped(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+) -> Result<Admission, Errno> {
+    admit_profile(proc, owner_pid, token, expected_abi, true)
+}
+
+fn admit_profile(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+    grouped: bool,
+) -> Result<Admission, Errno> {
     let bytes = artifact_bytes(proc, owner_pid, token)?;
     if let Some(script) = parse_shebang(&bytes[..bytes.len().min(SHEBANG_HEADER_MAX_BYTES)]) {
         return Ok(Admission::Script(script));
@@ -812,7 +831,17 @@ pub fn admit(
         expected_abi: Some(expected_abi),
         ..wasm_artifact::ArtifactPolicy::default()
     };
-    let report = wasm_artifact::describe_artifact_policy_failures(bytes, &policy);
+    let report = if grouped {
+        match wasm_artifact::read_artifact_facts(bytes) {
+            Ok(facts) => wasm_artifact::grouped_memory::describe_failures(bytes, &facts, &policy),
+            Err(error) => wasm_artifact::policy::ArtifactPolicyReport {
+                failures: alloc::vec![error.0],
+                warnings: Vec::new(),
+            },
+        }
+    } else {
+        wasm_artifact::describe_artifact_policy_failures(bytes, &policy)
+    };
     if report.failures.is_empty() {
         Ok(Admission::Program)
     } else {

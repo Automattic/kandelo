@@ -17,7 +17,7 @@ serde_json = "1"
 tempfile = "3"
 wasmparser = "0.247"
 wasm-encoder = { version = "0.247", features = ["wasmparser"] }
-wasm-artifact = { path = "../wasm-artifact" }
+wasm-artifact = { path = "../wasm-artifact", features = ["grouped-memory"] }
 wasm-posix-program-abi = { path = "../program-abi" }
 
 [dev-dependencies]

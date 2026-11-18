@@ -167,6 +167,19 @@ operations, permissions and atomics. This artifact preparation does not enable
 grouped launch: the normal launcher still refuses the required group-memory
 import. See [SDK preparation and its limits](sdk-guide.md#experimental-memory-group-translation).
 
+The in-progress exec preflight now shares the Rust grouped-artifact reader
+with SDK output validation. Only a current kernel-owned image membership
+selects that profile for a retained executable target. It checks the versioned
+JSON declaration, physical memory import, deferred initialization and binding
+signatures while ordinary target admission continues to refuse the namespace.
+The parser raises the kernel's minimum imported memory from 21 to 22 pages;
+host-adapter 17 records that change while program ABI 56 remains unchanged.
+The kernel memory ceiling is unchanged. This does not reserve a replacement
+image or enable grouped exec. Exec still
+requires target-bound precommit memory reservation, exact old-image retirement
+and normal Node/browser handoff validation before support is advertised.
+
+
 These are review boundaries for the integration series. Each stage must leave
 the ordinary backend usable. Incomplete grouped behavior stays
 explicitly gated until its prerequisites are available.

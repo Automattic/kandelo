@@ -39,6 +39,8 @@
 extern crate alloc;
 
 pub mod facts;
+#[cfg(feature = "grouped-memory")]
+pub mod grouped_memory;
 pub mod original_program;
 pub mod policy;
 pub mod policy_surface;

@@ -998,6 +998,10 @@ pub fn translate(
     p::Validator::new_with_features(p::WasmFeatures::all())
         .validate_all(&output)
         .context("validating grouped output")?;
+    let facts = wasm_artifact::read_artifact_facts(&output).map_err(anyhow::Error::msg)?;
+    let policy = wasm_artifact::grouped_memory::describe_failures(
+        &output, &facts, &wasm_artifact::ArtifactPolicy::default());
+    ensure!(policy.is_acceptable(), "invalid grouped executable contract: {}", policy.failures.join("; "));
     Ok((output, report))
 }
 use p::ValType::{I32, I64};

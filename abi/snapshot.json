@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 16,
+      "required_host_adapter_version": 17,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2698,7 +2698,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 16,
+    "version": 17,
     "worker_features": [
       {
         "bit": 2,
@@ -6203,7 +6203,7 @@
       "kind": "memory",
       "maximum_pages": 16384,
       "memory64": false,
-      "minimum_pages": 21,
+      "minimum_pages": 22,
       "module": "env",
       "name": "memory",
       "shared": true
