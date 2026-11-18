@@ -170,3 +170,30 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
   }
   return result;
 }
+
+/** Independent copies from the kernel's exact-target future reservation. */
+export function decodeGroupExecPreparation(bytes: Uint8Array, expected: {
+  readonly group: number; readonly pid: number; readonly generation: bigint;
+}): { readonly receipt: MemoryGroupTaskReceipt; readonly initialPages: number; readonly maximumPages: number } {
+  const protocol = P.exec_preparation;
+  if (protocol.version !== 1) throw new MemoryGroupProtocolFault('Unsupported grouped exec preparation');
+  const data = view(bytes, protocol.bytes);
+  const receipt = decodeMemoryGroupReceipt(bytes.subarray(0, P.receipt_bytes), { ...expected, tid: expected.pid });
+  const initialPages = data.getUint32(protocol.fields.initialPages, true), maximumPages = data.getUint32(protocol.fields.maximumPages, true);
+  if (initialPages > maximumPages || maximumPages === 0 || maximumPages > 65536) {
+    throw new MemoryGroupProtocolFault('Invalid grouped exec virtual bounds');
+  }
+  return Object.freeze({ receipt, initialPages, maximumPages });
+}
+
+export function encodeMemoryGroupReceipt(receipt: MemoryGroupTaskReceipt): Uint8Array {
+  if (!memoryGroupU32(receipt.group, receipt.pid, receipt.tid) || receipt.group === 0 || receipt.pid <= 1 || receipt.tid === 0
+      || typeof receipt.serial !== 'bigint' || receipt.serial <= 0n || receipt.serial > 0xffffffffffffffffn
+      || typeof receipt.generation !== 'bigint' || receipt.generation < 0n || receipt.generation > 0xffffffffffffffffn) {
+    throw new MemoryGroupProtocolFault('Invalid exact memory-group receipt');
+  }
+  const bytes = new Uint8Array(P.receipt_bytes), data = new DataView(bytes.buffer), fields = P.receipt_fields;
+  data.setUint32(fields.group, receipt.group, true); data.setUint32(fields.pid, receipt.pid, true); data.setUint32(fields.tid, receipt.tid, true);
+  data.setBigUint64(fields.serial, receipt.serial, true); data.setBigUint64(fields.generation, receipt.generation, true);
+  return bytes;
+}

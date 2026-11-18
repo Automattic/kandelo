@@ -11,6 +11,9 @@ const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
 const probes = [
+  { name: "exec-virtual-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 virtual"], partial: "", groupedOnly: true, targetMinimumPages: 256 },
+  { name: "exec-allocation-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 allocation"], partial: "", groupedOnly: true },
+  { name: "exec-callback-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 callback"], partial: "", groupedOnly: true },
   { name: "mapping", source: "grouped-sdk-mapping.c", markers: ["heap-ok\n", "protection-io-ok\n", "moving-remap-ok\n", "grouped-sdk-mapping PASS"], partial: "ordinary-protection-partial" },
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
   { name: "native-wait-exit", source: "grouped-sdk-native-wait-exit.c", markers: ["grouped-sdk-native-wait-exit PASS wait32-wait64-kill-peer-notify"], partial: "", groupedOnly: true },
@@ -22,7 +25,7 @@ const probes = [
   { name: "pthread-rollback", source: "grouped-sdk-pthread-rollback.c", markers: ["grouped-sdk-pthread-rollback PASS"], partial: "", groupedOnly: true },
   { name: "pthread-churn", source: "grouped-sdk-pthread-churn.c", markers: ["grouped-sdk-pthread-churn PASS 256"], partial: "", groupedOnly: true },
 ];
-const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture>; groupedPath: string }>();
+const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture>; groupedPath: string; execTargetPath?: string }>();
 
 beforeAll(() => {
   for (const probe of probes) {
@@ -32,6 +35,15 @@ beforeAll(() => {
     execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [
       ordinary.programPath, "-o", groupedPath,
     ], { cwd: repository, stdio: "pipe" });
+    if ('targetMinimumPages' in probe && probe.targetMinimumPages !== undefined) {
+      const target = compileSdkFixture(new URL(`./fixtures/${probe.source}`, import.meta.url),
+        [`-Wl,--initial-memory=${probe.targetMinimumPages * 65536}`], { forkInstrument: true });
+      const targetPath = `${target.programPath}.grouped.wasm`;
+      fixtures.set(`${probe.name}-target`, { ordinary: target, groupedPath: targetPath });
+      execFileSync(join(repository, 'sdk/bin/wasm32posix-shared-memory'), [target.programPath, '-o', targetPath],
+        { cwd: repository, stdio: 'pipe' });
+      fixtures.get(probe.name)!.execTargetPath = targetPath;
+    }
   }
 }, 180_000);
 afterAll(() => { for (const fixture of fixtures.values()) fixture.ordinary.cleanup(); });
@@ -53,11 +65,13 @@ it.each(['fork', 'pthread', 'pthread-churn'])('runs the same %s C program throug
 for (const probe of probes) for (const grouped of [false, true]) {
   if ('groupedOnly' in probe && probe.groupedOnly && !grouped) continue;
   it(`runs real SDK libc ${probe.name} in ${grouped ? "grouped" : "ordinary"} dedicated Workers`, async () => {
-    const { ordinary, groupedPath } = fixtures.get(probe.name)!;
+    const { ordinary, groupedPath, execTargetPath } = fixtures.get(probe.name)!;
     const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
       eval: true,
       workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
-        uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: probe.name === "pthread-rollback" ? 196 : undefined, kernelPath: resolveBinary("kernel.wasm"),
+        uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
+        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath,
+        execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -97,6 +111,15 @@ for (const probe of probes) for (const grouped of [false, true]) {
       // Retain ordinary protection/private-growth limits explicitly. Grouped
       // acceptance requires enforcement and retained file-backed growth.
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
+      if (probe.name.startsWith('exec-')) {
+        const returns = result.execReturns as any[], prepared = result.execPreparations as any[];
+        expect(returns).toHaveLength(16);
+        expect(result.execLedger).toMatchObject({ images: 1, tasks: 0, processes: 1 });
+        expect(prepared).toHaveLength(probe.name === 'exec-callback-rollback' ? 16 : 0);
+        expect(prepared.every(row => row.backing.images === 2 && row.backing.replicas === 2 && row.backing.exposedReplicas === 1)).toBe(true);
+        expect(returns.every(row => row.backing.images === 1 && row.backing.replicas === 1)).toBe(true);
+        expect(new Set(returns.slice(1).map(row => row.backing.physicalExtentPages)).size).toBe(1);
+      }
       if (probe.name === 'native-wait-exit') {
         expect(result.children).toEqual([137, 31].map(kernelExit => expect.objectContaining({ kernelExit, ready: true, quiescent: true })));
         const threads = result.threads as any[];

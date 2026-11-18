@@ -190,9 +190,27 @@ image hold; the host must return final root/payload pages in that same
 serialized entry. A stale receipt cannot remove a
 later reservation for the same proposed generation. Host-adapter 18 describes
 these preparation interfaces; they do not prove physical cleanup or Worker
-stop. The public launcher still refuses grouped execution. Normal host
-replacement allocation/handoff, real SDK exec and Node/browser validation are
-required before grouped exec support is advertised.
+stop. The internal host backend now allocates the future physical image in
+the existing group backing before invoking its explicit grouped exec callback.
+The callback receives an opaque reservation and copied layout, without the
+retained kernel target or commit authority. Allocation, compilation, policy
+and callback failures join exact unexposed scratch/image rollback before the
+old syscall resumes. Expected allocation refusal returns `ENOMEM`; uncertain
+commit or failed cleanup retains storage and fails the kernel instance.
+
+The SDK C rollback probe alternates `execve` and `execveat` over sixteen
+attempts, checking unchanged PID, old data and an open `CLOEXEC` descriptor
+after each failed attempt. A guest/host acknowledgement binds each physical
+allocation sample to that actual return. One case exhausts physical allocation
+before the callback; another refuses after a second physical image exists.
+A third builds a larger target through the normal SDK/linker and verifies that
+the old process's virtual ceiling also produces recoverable `ENOMEM`, without
+allocating a physical replacement or failing unrelated kernel state. Cancelled
+opaque reservations lose their private association, so retaining copied layout
+metadata does not retain the old image through that association.
+The public launcher still refuses grouped execution. Successful replacement,
+old-image stop/handoff, repeated exec/destroy and the full promotion gates
+remain required before grouped exec support is advertised.
 
 
 These are review boundaries for the integration series. Each stage must leave

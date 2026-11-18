@@ -1,13 +1,17 @@
+import { compileSdkFixture } from "./support/compile-sdk-fixture";
+import { computeProcessMemoryLayout } from "../src/process-memory";
 import { MemoryGroupImageStore } from "../src/memory-group-image-store";
 import { captureProcessRead, processDataView } from "../src/process-memory-views";
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   decodeExecTargetAdmission,
   launchPreparedExecTarget,
   readPreparedExecTarget,
   type ExecTargetAdmission,
   type PreparedExecKernel,
+  type PreparedExecBackend,
+  type PreparedExecLaunchOptions,
 } from "../src/exec-target";
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -41,9 +45,9 @@ import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 import { createKernelSharedMappingStub } from "./support/kernel-shared-mapping-stub";
-const preparedExecFixture = new Uint8Array(
-  readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
-);
+const preparedExecProduct = compileSdkFixture(new URL("../../programs/exec-child.c", import.meta.url), [], { forkInstrument: true });
+const preparedExecFixture = new Uint8Array(readFileSync(preparedExecProduct.programPath));
+afterAll(() => preparedExecProduct.cleanup());
 
 function preparedExecExports(memory: WebAssembly.Memory) {
   return {
@@ -337,7 +341,7 @@ describe("opaque prepared exec target launch", () => {
 
   it("prepares only the shebang interpreter and keeps diagnosticPath display-only", async () => {
     const interpreter = new Uint8Array(
-      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+      preparedExecFixture,
     );
     const script = new TextEncoder().encode(
       "#!/bin/exact-interpreter --flag\necho must-not-launch\n",
@@ -596,7 +600,7 @@ describe("opaque prepared exec target launch", () => {
 
   it("cancels one precommit callback failure but never cancels after commit", async () => {
     const bytes = new Uint8Array(
-      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+      preparedExecFixture,
     );
     let nextTarget = 40;
     const cancel = vi.fn(() => 0);
@@ -655,7 +659,7 @@ describe("opaque prepared exec target launch", () => {
 
   it("cancels a target only when a thrown commit never consumed it", async () => {
     const bytes = new Uint8Array(
-      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+      preparedExecFixture,
     );
     const cancel = vi.fn(() => 0);
     const kernel: PreparedExecKernel = {
@@ -718,7 +722,7 @@ describe("opaque prepared exec target launch", () => {
 
   it("does not lend commit authority to a callback-queued microtask", async () => {
     const bytes = new Uint8Array(
-      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+      preparedExecFixture,
     );
     const events: string[] = [];
     const cancel = vi.fn(() => {
@@ -784,7 +788,7 @@ describe("opaque prepared exec target launch", () => {
 
   it("allows only one kernel commit before one postcommit start", async () => {
     const bytes = new Uint8Array(
-      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+      preparedExecFixture,
     );
     const cancel = vi.fn(() => 0);
     const events: string[] = [];
@@ -841,7 +845,7 @@ describe("opaque prepared exec target launch", () => {
 
   it("discards one replacement plan after one rejected kernel commit", async () => {
     const bytes = new Uint8Array(
-      readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
+      preparedExecFixture,
     );
     const cancel = vi.fn(() => 0);
     const commitTarget = vi.fn(() => -3);
@@ -2700,3 +2704,83 @@ function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset: n
     consecutiveSyscalls: 0,
   };
 }
+
+
+describe("prepared exec backend ownership", () => {
+  function setup(events: string[]) {
+    const reservation = Object.freeze({ kind: "memory-group-exec" as const,
+      layout: Object.freeze(computeProcessMemoryLayout({ ptrWidth: 4, maxPages: 512, heapBase: 0 })) });
+    const rollback = vi.fn<PreparedExecBackend['rollback']>(() => {});
+    const committed = vi.fn(() => { events.push("committed"); });
+    const prepareBackend = vi.fn(() => ({ reservation, supportedProgramExtensions: new Set<string>(), rollback, committed }));
+    const cancel = vi.fn(() => { events.push("target-cancel"); return 0; });
+    const options: PreparedExecLaunchOptions = {
+      kernel: { execTargetSize: () => BigInt(preparedExecFixture.byteLength),
+        execTargetRead: (_pid, _target, offset, output) => {
+          const count = Math.min(output.length, preparedExecFixture.length - Number(offset));
+          output.set(preparedExecFixture.subarray(Number(offset), Number(offset) + count)); return count;
+        }, execTargetAdmit: () => ({ kind: "program" }), execTargetCancel: cancel },
+      ownerPid: 7, pid: 7, callerTid: 7, diagnosticPath: "/bin/exact", argv: ["exact"], envp: [], expectedAbi: ABI_VERSION,
+      prepareInitialTarget: () => 31, prepareInterpreterTarget: () => { throw Error('not a script'); },
+      compileModule: bytes => WebAssembly.compile(bytes), prepareBackend,
+      commitTarget: (_target, _size, consumed) => { consumed(); events.push('commit'); return 0; },
+    };
+    return { options, reservation, rollback, committed, prepareBackend, cancel };
+  }
+
+  it('joins physical rollback before returning precommit allocation refusal or cancelling the target', async () => {
+    const events: string[] = [], h = setup(events);
+    let enter!: () => void, finish!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    h.rollback.mockImplementation(async outcome => { events.push(outcome); enter(); await finished; events.push('physical-released'); });
+    const launch = launchPreparedExecTarget(h.options, async request => {
+      expect(request.groupedExec).toBe(h.reservation);
+      expect(request).not.toHaveProperty('target'); expect(request).not.toHaveProperty('commit');
+      return -12;
+    });
+    await entered;
+    expect(events).toEqual(['uncommitted']); expect(h.cancel).not.toHaveBeenCalled();
+    finish(); await expect(launch).resolves.toBe(-12);
+    expect(events).toEqual(['uncommitted', 'physical-released', 'target-cancel']);
+    expect(h.rollback).toHaveBeenCalledOnce(); expect(h.committed).not.toHaveBeenCalled();
+  });
+
+  it('joins both backend rollback and async failure hook for a rejected commit', async () => {
+    const events: string[] = [], h = setup(events);
+    h.options = { ...h.options, commitTarget: (_target, _size, consumed) => { consumed(); return -11; } };
+    h.rollback.mockImplementation(async outcome => { await Promise.resolve(); events.push(outcome); });
+    const start = vi.fn(async () => 0);
+    await expect(launchPreparedExecTarget(h.options, async () => ({ startAfterCommit: start,
+      onCommitFailure: async code => { expect(code).toBe(-11); await Promise.resolve(); events.push('failure-hook'); },
+    }))).resolves.toBe(-11);
+    expect(events).toEqual(['rejected', 'failure-hook']); expect(start).not.toHaveBeenCalled(); expect(h.cancel).not.toHaveBeenCalled();
+  });
+
+  it('labels consumed-token exceptions uncertain and never repeats target cancellation', async () => {
+    const events: string[] = [], h = setup(events), failure = Error('host import failed after consume');
+    h.options = { ...h.options, commitTarget: (_target, _size, consumed) => { consumed(); throw failure; } };
+    await expect(launchPreparedExecTarget(h.options, async () => ({ onCommitFailure: async () => { events.push('failure-hook'); },
+      startAfterCommit: async () => { throw Error('must not start'); } }))).rejects.toBe(failure);
+    expect(h.rollback).toHaveBeenCalledExactlyOnceWith('uncertain'); expect(h.cancel).not.toHaveBeenCalled();
+  });
+
+  it('publishes backend ownership and starts on the same commit stack before queued callbacks', async () => {
+    const events: string[] = [], h = setup(events);
+    h.options = { ...h.options, commitTarget: (_target, _size, consumed) => {
+      consumed(); events.push('commit'); queueMicrotask(() => events.push('microtask')); return 0;
+    } };
+    await expect(launchPreparedExecTarget(h.options, async () => ({ onCommitFailure: () => { throw Error('not rejected'); },
+      startAfterCommit: async () => { events.push('start'); return 0; } }))).resolves.toBe(0);
+    expect(events).toEqual(['commit', 'committed', 'start', 'microtask']); expect(h.rollback).not.toHaveBeenCalled();
+  });
+
+  it('rolls back prepared storage after compilation failure before cancelling the retained target', async () => {
+    const events: string[] = [], h = setup(events);
+    h.options = { ...h.options, compileModule: async () => { throw new WebAssembly.CompileError('bad module'); } };
+    h.rollback.mockImplementation(async outcome => { events.push(outcome); });
+    const callback = vi.fn(async () => -1);
+    await expect(launchPreparedExecTarget(h.options, callback)).rejects.toMatchObject({ errno: 8 });
+    expect(events).toEqual(['uncommitted', 'target-cancel']); expect(callback).not.toHaveBeenCalled();
+  });
+});

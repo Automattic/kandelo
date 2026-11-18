@@ -1157,11 +1157,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
           let planState: "ready" | "settled" = "ready";
           return {
-            onCommitFailure: (commitResult?: number) => {
+            onCommitFailure: async (commitResult?: number) => {
               if (planState !== "ready") return;
               planState = "settled";
               try {
-                result.onCommitFailure(commitResult);
+                await result.onCommitFailure(commitResult);
               } finally {
                 creatorAdmission.release();
               }
