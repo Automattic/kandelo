@@ -230,6 +230,18 @@ including controls, holes and permissions; it is not recreated from a fresh
 all-writable image or added to the ordinary fork wire. This metadata behavior
 does not prove the unfinished physical fork integration.
 
+The internal image owner can now prepare a private physical fork under an
+acknowledged image-wide execution barrier. It copies each distinct mapped
+physical page into child-owned storage, preserving holes, protection and
+within-image aliases, including bytes inaccessible under current protection.
+The child gets a separate root and zeroed replica scratch; its initialization
+gate remains fresh for the normal fork-child mode that skips data replay.
+One pool operation reserves contiguous controls and fragmented payload before
+publishing allocation bits. Busy/exhausted preparation leaves parent custody
+unchanged, and exact unconstructed cancellation returns the child allocation.
+This is an internal private-page operation: normal fork dispatch and Worker
+launch are not connected yet, and shared-object inheritance remains separate.
+
 Host-adapter 11 makes process-range preflight direction-aware: the host
 checks every virtual page for guest read or write access without copying a
 payload. Grouped scalar read/write/pread/pwrite/getrandom, including small
