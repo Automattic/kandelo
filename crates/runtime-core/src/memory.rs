@@ -31,6 +31,9 @@ pub struct MappingFile {
     /// Pathname column, already in Linux's spelling for unlinked objects
     /// (for example `/memfd:name (deleted)`).
     pub name: Vec<u8>,
+    /// Exact optional source for grouped private remap growth. Ordinary file
+    /// labels carry no source capability. Fragments share its one backing hold.
+    pub(crate) private_source: Option<crate::private_mapping::Source>,
 }
 
 /// Rust-owned identity and resource authority for one opt-in device mapping.

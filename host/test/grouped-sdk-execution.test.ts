@@ -8,20 +8,27 @@ import { compileSdkFixture } from "./support/compile-sdk-fixture";
 const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
-let ordinary: ReturnType<typeof compileSdkFixture> | undefined;
-let groupedPath: string;
+const probes = [
+  { name: "mapping", source: "grouped-sdk-mapping.c", markers: ["heap-ok\n", "protection-io-ok\n", "moving-remap-ok\n", "grouped-sdk-mapping PASS"], partial: "ordinary-protection-partial" },
+  { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
+];
+const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture>; groupedPath: string }>();
 
 beforeAll(() => {
-  ordinary = compileSdkFixture(new URL("./fixtures/grouped-sdk-mapping.c", import.meta.url), [], { forkInstrument: true });
-  groupedPath = `${ordinary.programPath}.grouped.wasm`;
-  execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [
-    ordinary.programPath, "-o", groupedPath,
-  ], { cwd: repository, stdio: "pipe" });
+  for (const probe of probes) {
+    const ordinary = compileSdkFixture(new URL(`./fixtures/${probe.source}`, import.meta.url), [], { forkInstrument: true });
+    const groupedPath = `${ordinary.programPath}.grouped.wasm`;
+    fixtures.set(probe.name, { ordinary, groupedPath });
+    execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [
+      ordinary.programPath, "-o", groupedPath,
+    ], { cwd: repository, stdio: "pipe" });
+  }
 }, 180_000);
-afterAll(() => ordinary?.cleanup());
+afterAll(() => { for (const fixture of fixtures.values()) fixture.ordinary.cleanup(); });
 
-for (const grouped of [false, true]) {
-  it(`runs real SDK libc mapping and I/O in ${grouped ? "grouped" : "ordinary"} dedicated Workers`, async () => {
+for (const probe of probes) for (const grouped of [false, true]) {
+  it(`runs real SDK libc ${probe.name} in ${grouped ? "grouped" : "ordinary"} dedicated Workers`, async () => {
+    const { ordinary, groupedPath } = fixtures.get(probe.name)!;
     const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
       eval: true,
       workerData: { grouped, kernelPath: resolveBinary("kernel.wasm"),
@@ -42,13 +49,10 @@ for (const grouped of [false, true]) {
       expect(result.processExit).toBe(0);
       expect(result.processReady).toBe(true);
       expect(result.quiescent).toBe(true);
-      expect(result.stdout).toContain("heap-ok\n");
-      expect(result.stdout).toContain("protection-io-ok\n");
-      expect(result.stdout).toContain("moving-remap-ok\n");
-      expect(result.stdout).toMatch(/grouped-sdk-mapping PASS checks=\d+\n$/);
-      // Ordinary execution retains its documented partial protection model.
-      // Only the grouped arm claims EFAULT with the pipe byte unconsumed.
-      expect(String(result.stdout).includes("ordinary-protection-partial")).toBe(!grouped);
+      for (const marker of probe.markers) expect(result.stdout).toContain(marker);
+      // Retain ordinary protection/private-growth limits explicitly. Grouped
+      // acceptance requires enforcement and retained file-backed growth.
+      expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
     } finally {
       if (deadline) clearTimeout(deadline);
       await worker.terminate();

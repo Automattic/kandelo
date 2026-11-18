@@ -53,6 +53,7 @@ pub mod ipc;
 pub mod ipc_wire;
 pub mod kandelo_image_fs;
 pub mod kernel_file_mapping;
+pub mod private_mapping;
 pub mod kandelo_image_write;
 pub mod klogctl;
 pub mod kmsg;

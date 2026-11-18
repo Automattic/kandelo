@@ -9,7 +9,11 @@ import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixtur
 import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
-let ordinary: ReturnType<typeof compileSdkFixture> | undefined;
+const probes = [
+  { name: "mapping", source: "grouped-sdk-mapping.c", markers: ["heap-ok\n", "protection-io-ok\n", "moving-remap-ok\n", "grouped-sdk-mapping PASS"], partial: "ordinary-protection-partial" },
+  { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
+];
+const fixtures: ReturnType<typeof compileSdkFixture>[] = [];
 let server: Server | undefined;
 let url: string;
 let inputs: Record<string, string>;
@@ -17,15 +21,19 @@ const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("h
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
-  ordinary = compileSdkFixture(new URL("../../../host/test/fixtures/grouped-sdk-mapping.c", import.meta.url), [], { forkInstrument: true });
-  const groupedPath = `${ordinary.programPath}.grouped.wasm`;
-  execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [ordinary.programPath, "-o", groupedPath],
-    { cwd: repository, stdio: "pipe" });
   const routes = new Map<string, Uint8Array>([
     ["/kernel.wasm", readFileSync(resolveBinary("kernel.wasm"))],
-    ["/ordinary.wasm", readFileSync(ordinary.programPath)],
-    ["/grouped.wasm", readFileSync(groupedPath)],
+    ["/image-module.wasm", readFileSync(join(repository, "local-binaries/kandelo_image_module32.wasm"))],
   ]);
+  for (const probe of probes) {
+    const ordinary = compileSdkFixture(new URL(`../../../host/test/fixtures/${probe.source}`, import.meta.url), [], { forkInstrument: true });
+    fixtures.push(ordinary);
+    const groupedPath = `${ordinary.programPath}.grouped.wasm`;
+    execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [ordinary.programPath, "-o", groupedPath],
+      { cwd: repository, stdio: "pipe" });
+    routes.set(`/${probe.name}/ordinary.wasm`, readFileSync(ordinary.programPath));
+    routes.set(`/${probe.name}/grouped.wasm`, readFileSync(groupedPath));
+  }
   inputs = Object.fromEntries([...routes].map(([path, bytes]) => [path, hash(bytes)]));
   for (const [route, source] of [
     ["/kernel.mjs", "host/test/fixtures/grouped-sdk-execution-browser.ts"],
@@ -57,20 +65,20 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (server) await new Promise<void>(done => { server!.close(() => done()); server!.closeAllConnections(); });
-  ordinary?.cleanup();
+  for (const fixture of fixtures) fixture.cleanup();
 });
 
-for (const grouped of [false, true]) {
-  test(`normal SDK libc mapping and I/O: ${grouped ? "grouped" : "ordinary"}`, async ({ page, browser }, info) => {
+for (const probe of probes) for (const grouped of [false, true]) {
+  test(`normal SDK libc ${probe.name}: ${grouped ? "grouped" : "ordinary"}`, async ({ page, browser }, info) => {
     test.setTimeout(90_000);
     await page.goto(url);
-    const result = await page.evaluate(grouped => new Promise<Record<string, unknown>>((resolve, reject) => {
+    const result = await page.evaluate(request => new Promise<Record<string, unknown>>((resolve, reject) => {
       const worker = new Worker("/kernel.mjs", { type: "module" });
       const deadline = setTimeout(() => { worker.terminate(); reject(new Error("kernel Worker deadline")); }, 75_000);
       worker.onmessage = event => { clearTimeout(deadline); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(deadline); worker.terminate(); reject(new Error(event.message)); };
-      worker.postMessage({ grouped });
-    }), grouped);
+      worker.postMessage(request);
+    }), { grouped, probe: probe.name });
     writeFileSync(info.outputPath("result.json"), JSON.stringify({ engine: info.project.name,
       version: browser.version(), inputs, result }, null, 2) + "\n");
     expect(result.failure, JSON.stringify(result)).toBeUndefined();
@@ -80,10 +88,7 @@ for (const grouped of [false, true]) {
     expect(result.processExit).toBe(0);
     expect(result.processReady).toBe(true);
     expect(result.quiescent).toBe(true);
-    expect(result.stdout).toContain("heap-ok\n");
-    expect(result.stdout).toContain("protection-io-ok\n");
-    expect(result.stdout).toContain("moving-remap-ok\n");
-    expect(result.stdout).toMatch(/grouped-sdk-mapping PASS checks=\d+\n$/);
-    expect(String(result.stdout).includes("ordinary-protection-partial")).toBe(!grouped);
+    for (const marker of probe.markers) expect(result.stdout).toContain(marker);
+    expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
   });
 }

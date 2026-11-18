@@ -75,12 +75,14 @@ export interface GroupMemoryChangeDescription {
   readonly oldLength: number;
   readonly result: number;
   readonly flags: number;
+  readonly populationAddress: number;
+  readonly populationLength: number;
 }
 
 /** Copied channel scalars only; this packet carries no guest/kernel pointer. */
 export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[], observedPages: number): Uint8Array {
   const mapping = P.mapping;
-  if (mapping.version !== 2 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
+  if (mapping.version !== 3 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
       || args.length !== 6 || args.some(value => typeof value !== 'bigint'
       || value < -(1n << 63n) || value > (1n << 63n) - 1n)) {
     throw new MemoryGroupProtocolFault('Invalid grouped mapping request scalars');
@@ -147,7 +149,8 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
   const result = Object.freeze({ receipt, token: actualToken, kind,
     prot: data.getUint32(f.prot, true), flags: data.getUint32(f.flags, true),
     address: address(f.address), length: address(f.length), oldAddress: address(f.oldAddress),
-    oldLength: address(f.oldLength), result: address(f.result) });
+    oldLength: address(f.oldLength), result: address(f.result),
+    populationAddress: address(f.populationAddress), populationLength: address(f.populationLength) });
   const page = 65536;
   const badRange = (at: number, size: number) => at % page !== 0 || size % page !== 0 || at + size > 0x1_0000_0000;
   if ((result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
@@ -157,7 +160,12 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
       || ((kind === 'unmap' || kind === 'protect') && result.result !== 0)
       || (kind === 'unmap' && (!result.length || result.prot !== 0))
       || (kind === 'remap' && (!result.oldLength || badRange(result.oldAddress, result.oldLength)))
-      || (kind === 'break' && (result.length !== 0 || result.oldLength !== 0 || result.result !== result.address || result.prot !== 3))) {
+      || (kind === 'break' && (result.length !== 0 || result.oldLength !== 0 || result.result !== result.address || result.prot !== 3))
+      || (result.populationLength === 0 ? result.populationAddress !== 0 :
+        badRange(result.populationAddress, result.populationLength)
+        || (kind !== 'map' && kind !== 'remap')
+        || result.populationAddress !== result.address + (kind === 'remap' ? result.oldLength : 0)
+        || result.populationLength !== result.length - (kind === 'remap' ? result.oldLength : 0))) {
     throw new MemoryGroupProtocolFault('Inconsistent grouped mapping effect');
   }
   return result;

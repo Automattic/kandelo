@@ -8,6 +8,7 @@ import { ForkHostImportOwnerRuntime, type ForkHostImportOwnerWorker } from "../.
 import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, waitForGroupedWorkerReady } from "../../src/grouped-worker-initialization";
 import type { CentralizedWorkerInitMessage } from "../../src/worker-protocol";
 import { retryKernelEntryResult } from "../../src/kernel-entry-retry";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 // Invoke only inside a disposable kernel Worker. Results contain copied
 // output/scalars, never a kernel/process Memory or a view of its backing.
@@ -15,6 +16,7 @@ export interface SdkExecutionOptions {
   kernelBytes: ArrayBuffer;
   programBytes: ArrayBuffer;
   ordinaryBytes: ArrayBuffer;
+  imageModuleBytes: ArrayBuffer;
   grouped: boolean;
   io: PlatformIO;
   adapter: WorkerAdapter;
@@ -57,6 +59,18 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
         onKernelFatal: error => reject(error),
       });
       void (async () => {
+        // Compose through the normal image writer, inside this disposable
+        // realm. A real root namespace is needed to reach kernel tmpfs on both
+        // hosts; an empty browser host adapter cannot stand in for `/`.
+        const imageBytes = await (async () => {
+          const image = KandeloImageFs.create(new Uint8Array(options.imageModuleBytes));
+          image.mkdir("/tmp", 0o1777);
+          try { return await image.saveImage(); } finally { image.reset(); }
+        })();
+        kernel.configureRootfsOverlay(() => -2, [], false, imageBytes.byteLength, (offset, output) => {
+          const count = Math.min(output.length, Math.max(0, imageBytes.byteLength - offset));
+          output.set(imageBytes.subarray(offset, offset + count)); return count;
+        });
         await kernel.init(options.kernelBytes);
         if (options.trace) kernel.enableSyscallTrace();
         kernel.setOutputCallbacks({

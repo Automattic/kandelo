@@ -3120,6 +3120,21 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
+Host-adapter 12 adds private-file population to the internal grouped mapping
+transaction. Mapping record version 3 keeps the 64-byte request and expands
+the description to 112 bytes: `populationAddress` and `populationLength` at
+offsets 96 and 104 name only fresh unpublished pages. The new
+`kernel_group_memory_change_read` takes PID/TID, token low/high words,
+relative offset low/high words, a scratch output pointer and capacity. Its
+nonnegative result is a byte count; a negative result is the original errno.
+Rust requires sequential reads through its retained exact source, and refuses
+commit until the whole interval or EOF has been observed. Remap growth reads
+from the retained file at the inherited byte offset. Cancellation releases
+that source without restoring old metadata over a replacement image.
+This kernel-host change leaves program ABI 56, the fork wire and the program
+digest unchanged. It does not claim file-truncation/SIGBUS or shared-object
+acceptance. The standalone resolver must be rebuilt with the new host records.
+
 Host-adapter 11 adds an explicit `ProcessMemoryAccess` argument to
 `host_proc_validate_range(pid, address, length, access)`: guest read is 1,
 guest write is 2, and any other direction is `EINVAL`. The host checks the

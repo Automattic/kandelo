@@ -21,6 +21,7 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_group_memory_layout_install: vi.fn((pointer: number | bigint, length: number) => { layoutRecords.push(new Uint8Array(memory.buffer, Number(pointer), length).slice()); return 0; }),
     kernel_group_memory_break: vi.fn(() => BigInt(3 * 65536)),
     kernel_group_memory_change_prepare: vi.fn(() => -95),
+    kernel_group_memory_change_read: vi.fn(() => -95),
     kernel_group_memory_change_validate: vi.fn(() => -95),
     kernel_group_memory_change_commit: vi.fn(() => -95),
     kernel_group_memory_change_cancel: vi.fn(() => 0),
@@ -356,6 +357,22 @@ describe('grouped mapping metadata transport', () => {
     view.setBigUint64(f.result, BigInt(4 * page), true);
     return { receipt, bytes, view, f };
   }
+  it('bounds file population to the exact new map or remap tail', () => {
+    const { receipt, bytes, view, f } = description();
+    view.setBigUint64(f.populationAddress, BigInt(4 * page), true);
+    view.setBigUint64(f.populationLength, BigInt(page), true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({ populationAddress: 4 * page, populationLength: page });
+    view.setBigUint64(f.populationLength, BigInt(2 * page), true);
+    expect(() => decodeGroupMemoryChangeDescription(bytes, receipt)).toThrow(/effect/);
+    view.setBigUint64(f.populationLength, 0n, true);
+    expect(() => decodeGroupMemoryChangeDescription(bytes, receipt)).toThrow(/effect/);
+    view.setUint32(f.kind, P.mapping.kinds.remap, true);
+    view.setUint32(f.flags, 0, true);
+    view.setBigUint64(f.oldAddress, BigInt(2 * page), true); view.setBigUint64(f.oldLength, BigInt(page), true);
+    view.setBigUint64(f.length, BigInt(2 * page), true); view.setBigUint64(f.populationAddress, BigInt(5 * page), true);
+    view.setBigUint64(f.populationLength, BigInt(page), true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt).kind).toBe('remap');
+  });
   it('encodes every original signed channel bit without narrowing addresses or fd sentinels', () => {
     const args = [-1n, (1n << 63n) - 1n, -(1n << 63n), 0n, 4294967295n, 7n];
     const bytes = encodeGroupMemoryChangeRequest(123, args, 4), view = new DataView(bytes.buffer);
@@ -429,7 +446,7 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
     completeChannelRaw: (_channel, value, errno) => observeCompletion(value, errno),
     completeChannel: (_channel, _syscall, _args, _descs, value, errno) => observeCompletion(Number(value), errno),
   });
-  const effect = { kind: 'map' as 'map' | 'protect' | 'unmap' | 'break', address: 8 * page, length: page, prot: 3, flags: 0x22, result: 8 * page, oldAddress: 0, oldLength: 0 };
+  const effect = { kind: 'map' as 'map' | 'protect' | 'unmap' | 'break', address: 8 * page, length: page, prot: 3, flags: 0x22, result: 8 * page, oldAddress: 0, oldLength: 0, populationAddress: 0, populationLength: 0 };
   const writeDescription = (pointer: number | bigint, capacity: number) => {
     expect(capacity).toBe(P.mapping.description_bytes);
     const data = new DataView(h.memory.buffer, Number(pointer), capacity), f = P.mapping.description_fields;
@@ -438,7 +455,7 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
     data.setBigUint64(P.receipt_fields.serial, SERIAL, true); data.setBigUint64(P.receipt_fields.generation, GENERATION, true);
     data.setBigUint64(f.token, token, true); data.setUint32(f.kind, P.mapping.kinds[effect.kind], true);
     data.setUint32(f.prot, effect.prot, true); data.setUint32(f.flags, effect.flags, true);
-    for (const field of ['address', 'length', 'result', 'oldAddress', 'oldLength'] as const) data.setBigUint64(f[field], BigInt(effect[field]), true);
+    for (const field of ['address', 'length', 'result', 'oldAddress', 'oldLength', 'populationAddress', 'populationLength'] as const) data.setBigUint64(f[field], BigInt(effect[field]), true);
     return capacity;
   };
   const captured: bigint[][] = [], observedPages: number[] = [];
@@ -563,6 +580,67 @@ describe('normal grouped scalar I/O routing', () => {
 });
 
 describe('normal grouped mapping syscall coordination', () => {
+  it('retries temporary file unavailability at the same cursor before publication', async () => {
+    const h = mappingDispatchHarness();
+    let firstRead!: () => void;
+    const unavailable = new Promise<void>(resolve => { firstRead = resolve; });
+    try {
+      Object.assign(h.effect, { flags: 2, populationAddress: 8 * h.page, populationLength: h.page });
+      let reads = 0;
+      h.implementations.kernel_group_memory_change_read = vi.fn((_pid, _tid, _low, _high, offset, _offsetHigh, out) => {
+        reads++;
+        if (reads === 1) { expect(offset).toBe(0); firstRead(); return -11; }
+        if (reads === 2) { expect(offset).toBe(0); new Uint8Array(h.memory.buffer, Number(out), 2).set([7, 8]); return 2; }
+        expect(offset).toBe(2); return 0;
+      });
+      const pending = h.dispatch(); h.acknowledge(); await unavailable;
+      expect(h.implementations.kernel_group_memory_change_commit).not.toHaveBeenCalled();
+      expect(() => h.registration.source.readBytes(8 * h.page, 1)).toThrow();
+      await h.completed; await pending.finished;
+      expect(reads).toBe(3);
+      expect(h.registration.source.readBytes(8 * h.page, 4)).toEqual(Uint8Array.of(7, 8, 0, 0));
+      expect(h.implementations.kernel_group_memory_change_commit).toHaveBeenCalledTimes(1);
+    } finally { await h.close(); }
+  });
+  it('cancels a file replacement on read failure without changing published bytes', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.registration.source.fillBytes(0, h.page, 0xa5);
+      const charged = h.store.snapshot().allocatedPages;
+      Object.assign(h.effect, { address: 0, result: 0, length: 2 * h.page, flags: 0x12, prot: 1,
+        populationAddress: 0, populationLength: 2 * h.page });
+      let reads = 0;
+      h.implementations.kernel_group_memory_change_read = vi.fn((_pid, _tid, low, high, offset, _offsetHigh, out, capacity) => {
+        expect(low >>> 0).toBe(0xfffffff1); expect(high >>> 0).toBe(0x80000000);
+        expect(offset).toBe(reads === 0 ? 0 : h.page);
+        if (reads++ !== 0) return -5;
+        new Uint8Array(h.memory.buffer, Number(out), capacity).fill(0x5a); return capacity;
+      });
+      h.dispatch(); h.acknowledge(); await h.completed;
+      expect(reads).toBe(2);
+      expect(h.completions).toEqual([{ value: -1, errno: 5 }]);
+      expect(h.implementations.kernel_group_memory_change_commit).not.toHaveBeenCalled();
+      expect(h.implementations.kernel_group_memory_change_cancel).toHaveBeenCalledTimes(1);
+      expect(h.registration.source.readBytes(0, h.page).every((byte: number) => byte === 0xa5)).toBe(true);
+      expect(h.store.snapshot().allocatedPages).toBe(charged);
+    } finally { await h.close(); }
+  });
+  it('continues a short private read to EOF and publishes a zero-filled tail', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      Object.assign(h.effect, { flags: 2, prot: 1, populationAddress: 8 * h.page, populationLength: h.page });
+      let reads = 0;
+      h.implementations.kernel_group_memory_change_read = vi.fn((_pid, _tid, _low, _high, offset, _offsetHigh, out) => {
+        if (reads++ !== 0) { expect(offset).toBe(3); return 0; }
+        expect(offset).toBe(0); new Uint8Array(h.memory.buffer, Number(out), 3).set([1, 2, 3]); return 3;
+      });
+      h.dispatch(); h.acknowledge(); await h.completed;
+      expect(reads).toBe(2);
+      expect(h.completions).toEqual([{ value: 8 * h.page, errno: 0 }]);
+      expect(h.registration.source.readBytes(8 * h.page, 6)).toEqual(Uint8Array.of(1, 2, 3, 0, 0, 0));
+      expect(h.implementations.kernel_group_memory_change_commit).toHaveBeenCalledTimes(1);
+    } finally { await h.close(); }
+  });
   it('delivers pending signals through the normal dequeue path before completing a heap query', async () => {
     const h = mappingDispatchHarness();
     try {

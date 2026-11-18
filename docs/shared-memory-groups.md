@@ -196,8 +196,27 @@ exact task receipt and image generation; a sibling, stopped admission or stale
 exec cannot publish it. Cancellation can discard an old preparation without
 changing a successor manager's transaction. All receipt/token bits remain
 unsigned 64-bit values, separate from status returns. The program-56 digest
-is unchanged. This transport currently prepares anonymous private metadata;
-file/shared/device effects remain unfinished.
+is unchanged. Host-adapter 12 extends this transaction to file-backed private
+mappings; shared-object and device effects remain unfinished.
+
+Private file preparation captures a readable regular-file or memfd source,
+its exact underlying backing and OFD lock custody. It retains no descriptor
+number: close, unlink and reuse cannot redirect a pending read or later remap
+growth. Mapping fragments share one admitted source hold; the final metadata
+reference unpins it. Source, file-label and close-journal metadata consume the kernel I/O
+budget before acquisition. Final native close effects use a preallocated
+journal drained at the outer kernel-scope boundary after process borrows end.
+No asynchronous callback or host close runs from a metadata destructor.
+
+Rust describes the initial mapping or remap tail to populate, owns its read
+cursor, and refuses commit before complete population or EOF. The host copies
+bounded scratch results into fresh unpublished physical pages, revalidates
+the exact token and image, and publishes both models. Read errors cancel
+without replacing live mappings; temporary unavailable data is retried while
+the source and barrier remain owned. These eager private copies do not yet
+implement invalidation/SIGBUS after truncation or access to whole pages beyond
+EOF. Those remain semantic gaps, alongside the shared-object work; zero-filled
+storage is not evidence of that behavior.
 
 Fresh registration installs budgeted Rust-owned initial linear intervals and
 exact heap/control bounds in one operation. Protection checks cover both
@@ -286,6 +305,11 @@ coalesces only compatible adjacent metadata with identical backing/driver
 ownership and contiguous file offsets; growing a suffix preserves its
 neighbor's mapping. The ordinary control records its existing partial
 protection behavior explicitly rather than claiming ordinary enforcement.
+The private-file probe also checks offsets, writable private mappings from a
+read-only descriptor, descriptor reuse, close/unlink and file-backed remap
+growth. Its ordinary control records the existing zero-filled remap-growth
+gap. Both hosts compose their fixture's root image through the normal image
+writer inside the disposable kernel realm, so `/tmp` reaches the kernel tmpfs.
 
 Run the Node case with `cd host && npx vitest run test/grouped-sdk-execution.test.ts`
 and the Chromium/Firefox/WebKit cases with
