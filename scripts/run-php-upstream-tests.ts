@@ -585,20 +585,7 @@ function loadExtensionIniArgs(
       args.push("-d", `${directive}=${guestExtensionDir}/${name}.so`);
     }
     if (name === "opcache") {
-      // Kandelo has no cross-process MAP_SHARED yet, so the built-in OPcache
-      // rejects the normal SHM mode. Exercise its supported file-cache-only
-      // boundary explicitly; individual PHPT --INI-- sections can still expose
-      // unsupported SHM assumptions as real failures.
-      args.push(
-        "-d",
-        "opcache.enable=1",
-        "-d",
-        "opcache.enable_cli=1",
-        "-d",
-        "opcache.file_cache=/tmp",
-        "-d",
-        "opcache.file_cache_only=1",
-      );
+      args.push("-d", "opcache.enable=1", "-d", "opcache.enable_cli=1");
     }
   }
   return args;
@@ -762,39 +749,7 @@ function unsupportedReason(test: PhptTest): string | null {
       return "partial CAPTURE_STDIO requires per-descriptor inheritance in the host spawn contract";
     }
   }
-  const requiredExtensions = extensionArgs(test.sections.EXTENSIONS).map(
-    normalizeExtensionName,
-  );
   const source = `${test.sections.SKIPIF ?? ""}\n${test.sections.FILE ?? ""}\n${test.sections.FILEEOF ?? ""}`;
-  const explicitlyLoadsOpcache =
-    /(?:^|[^\w])(?:-d)?zend_extension\s*=\s*["']?opcache(?:\.so)?\b/im.test(
-      source,
-    );
-  const ini = test.sections.INI ?? "";
-  const opcacheConfiguration = `${ini}\n${source}`;
-  const explicitlyActivatesOpcacheCli =
-    /(?:^|[^\w])(?:-d)?opcache\.enable_cli\s*=\s*(?:1|on|yes|true)\b/im.test(
-      opcacheConfiguration,
-    ) ||
-    /(?:^|[^\w])(?:-d)?opcache\.preload\s*=\s*[^\s'";]+/im.test(
-      opcacheConfiguration,
-    );
-  if (
-    requiredExtensions.includes("opcache") ||
-    (explicitlyLoadsOpcache && explicitlyActivatesOpcacheCli)
-  ) {
-    const fileCacheOnly =
-      /(?:^|[^\w])(?:-d)?opcache\.file_cache_only\s*=\s*(?:1|on|yes|true)\b/im.test(
-        opcacheConfiguration,
-      );
-    const fileCachePath =
-      /(?:^|[^\w])(?:-d)?opcache\.file_cache(?!_only)\s*=\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s'";]+)/im.test(
-        opcacheConfiguration,
-      );
-    if (!fileCacheOnly || !fileCachePath) {
-      return "opcache SHM mode requires unsupported cross-process MAP_SHARED; only explicit file-cache-only PHPTs are supported";
-    }
-  }
   if (test.sections.REDIRECTTEST !== undefined)
     return "REDIRECTTEST is not supported by the Kandelo PHPT harness yet";
   if (test.sections.PHPDBG !== undefined) {
