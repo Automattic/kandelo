@@ -1,3 +1,5 @@
+import { GROUPED_WORKER_EXTENSIONS } from "./grouped-worker-runtime";
+import { extractHeapBase } from "./constants";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import type { WorkerHandle } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
@@ -8,7 +10,7 @@ import { captureProcessRead, processDataView, readProcessBytes, writeProcessByte
   fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, type CapturedProcessRead,
   type ProcessMemorySource } from "./process-memory-views";
 import {
-  decodeMemoryGroupReceipt, decodeMemoryGroupSnapshot, memoryGroupU32,
+  decodeMemoryGroupReceipt, decodeMemoryGroupSnapshot, memoryGroupU32, decodeGroupExecPreparation, encodeMemoryGroupReceipt,
   encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout, type GroupMemoryChangeDescription,
   MemoryGroupProtocolFault, type MemoryGroupSnapshot, type MemoryGroupTaskReceipt,
 } from "./memory-group-protocol";
@@ -130,6 +132,8 @@ import {
   type ExecLaunchCallback,
   type PreparedExecKernel,
   type ExecTargetAdmission,
+  type GroupedExecReservation,
+  type PreparedExecBackend,
 } from "./exec-target";
 import {
   type DeferredFetchSettled,
@@ -287,6 +291,8 @@ import {
   FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryRetirementBacklogError,
   PROCESS_MMAP_BASE,
+  computeProcessMemoryLayout,
+  type ProcessMemoryLayout,
   growMemoryToCover,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
@@ -1737,6 +1743,17 @@ interface FrozenChannelRequest extends FrozenCancellationPointIdentity {
 }
 
 /** Exact caller selected before asynchronous exec preparation yields. */
+interface GroupedExecPreparationState {
+  readonly registration: ProcessRegistration;
+  readonly caller: ExecCallerIdentity;
+  readonly target: number;
+  readonly receipt: MemoryGroupTaskReceipt;
+  readonly store: MemoryGroupImageStore;
+  reservation?: GroupedExecReservation;
+  handle?: PreparedGroupReplica;
+  phase: 'prepared' | 'committed' | 'cancelled';
+}
+
 interface ExecCallerIdentity {
   readonly registration: ProcessRegistration;
   readonly channel: ChannelInfo;
@@ -2419,6 +2436,8 @@ export interface CentralizedKernelCallbacks {
    * Returns 0 on success, negative errno on error.
    */
   onExec?: ExecLaunchCallback;
+  /** Explicit disposable-Worker grouped embedding; ordinary launch is separate. */
+  onGroupedExec?: ExecLaunchCallback;
 
   /**
    * Launch a worker for the spawned child with bytes and module derived from
@@ -3256,6 +3275,8 @@ export class CentralizedKernelWorker {
   // Dedicated kernel-Worker custody. Public proxies never receive these
   // stores, their capabilities, or their complete physical guest backings.
   #memoryGroupStores = new Map<number, MemoryGroupImageStore>();
+  #groupExecReservations = new WeakMap<GroupedExecReservation, GroupedExecPreparationState>();
+  #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
   #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
   #observedMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
@@ -8301,6 +8322,116 @@ export class CentralizedKernelWorker {
     });
     return result;
   }
+  #prepareGroupedExecBackend(caller: ExecCallerIdentity, target: number, bytes: ArrayBuffer): PreparedExecBackend {
+    let backend: PreparedExecBackend | undefined;
+    let refusal: PreparedExecTargetError | undefined;
+    this.#runImmediateKernelEntry('reserve exact grouped exec replacement', entry => {
+      try {
+        const registration = this.processes.get(caller.registration.pid), group = registration?.grouped;
+        if (registration !== caller.registration || !group || !this.#isCurrentExecCaller(registration, caller.tid, caller)) {
+          throw new PreparedExecTargetError('Grouped exec caller changed during preparation', ESRCH);
+        }
+        if (!this.#memoryGroupAdmissionAvailable(entry, MEMORY_GROUP_PROTOCOL.exec_preparation.capability)) {
+          throw new PreparedExecTargetError('Kernel grouped exec preparation unavailable', ERRNO.EOPNOTSUPP);
+        }
+        const prepared = this.#requireMainScratchRegion().withLease(lease => {
+          const size = MEMORY_GROUP_PROTOCOL.exec_preparation.bytes;
+          const count = this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_exec_prepare',
+            [registration.pid, caller.tid, target, lease.exportPointer(0, size), size]);
+          if (count < 0) throw new PreparedExecTargetError('Kernel refused grouped exec reservation', -count);
+          if (count !== size) this.#memoryGroupProtocolError('Invalid grouped exec preparation byte count');
+          try { return decodeGroupExecPreparation(lease.copyOut(0, size), {
+            group: group.receipt.group, pid: registration.pid, generation: registration.execGeneration + 1n }); }
+          catch (cause) { return this.#memoryGroupProtocolError('Invalid grouped exec reservation', cause); }
+        });
+        const state: GroupedExecPreparationState = { registration, caller, target, receipt: prepared.receipt,
+          store: group.store, phase: 'prepared' };
+        this.#preparedGroupExecReservations.add(state);
+        try {
+          const maximum = group.store.processRegistration(group.handle).maximumVirtualPages;
+          const layout = Object.freeze(computeProcessMemoryLayout({ ptrWidth: 4, programBytes: bytes,
+            minPages: prepared.initialPages, maxPages: Math.min(maximum, prepared.maximumPages), heapBase: extractHeapBase(bytes) }));
+          const packet = encodeGroupMemoryLayout(prepared.receipt, { ...layout, initialPages: layout.initialPages,
+            maximumPages: layout.maximumPages, channel: layout.channelOffset, mode: 'fresh' });
+          const status = this.#requireMainScratchRegion().withLease(lease => {
+            lease.copyFrom(packet, 0, 0, packet.length);
+            return this.#checkedMemoryGroupStatus(this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_exec_layout',
+              [lease.exportPointer(0, packet.length), packet.length]));
+          });
+          if (status < 0) throw new PreparedExecTargetError('Kernel refused grouped exec layout', -status);
+          state.handle = group.store.prepareImage(prepared.receipt, { initialVirtualPages: layout.initialPages,
+            maximumVirtualPages: layout.maximumPages, scratchBytes: 65536 });
+          this.#memoryGroupReplicas.set(state.handle, group.store);
+          const reservation: GroupedExecReservation = Object.freeze({ kind: 'memory-group-exec', layout });
+          state.reservation = reservation;
+          this.#groupExecReservations.set(reservation, state);
+          backend = { reservation, supportedProgramExtensions: GROUPED_WORKER_EXTENSIONS,
+            rollback: outcome => {
+              if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+              return retryKernelEntryResult(() => {
+                this.#runImmediateKernelEntry('rollback exact grouped exec replacement', rollbackEntry => {
+                  if (outcome === 'uncertain' || state.phase === 'committed') {
+                    this.#memoryGroupProtocolError('Uncertain grouped exec commit retains replacement storage');
+                  }
+                  this.#cancelGroupedExecPreparationWithinKernelEntry(state, rollbackEntry);
+                  return undefined;
+                });
+              });
+            },
+            committed: () => {
+              if (state.phase !== 'committed') this.#memoryGroupProtocolError('Grouped exec commit lost its exact reservation');
+            },
+          };
+        } catch (cause) {
+          this.#cancelGroupedExecPreparationWithinKernelEntry(state, entry);
+          if (cause instanceof RangeError) throw new PreparedExecTargetError('Unable to reserve grouped replacement pages', ENOMEM);
+          throw cause;
+        }
+        return undefined;
+      } catch (cause) {
+        // A normal preparation refusal must leave the void ingress normally.
+        // Throwing through that gate means a protocol failure and poisons the
+        // entire kernel, even when the reservation was fully rolled back.
+        if (!(cause instanceof PreparedExecTargetError)) throw cause;
+        refusal = cause;
+        return undefined;
+      }
+    });
+    if (refusal) throw refusal;
+    if (!backend) throw new KernelReentrantEntryError('reserve exact grouped exec replacement');
+    return backend;
+  }
+
+  #groupExecActionWithinKernelEntry(receipt: MemoryGroupTaskReceipt, action: number, entry: KernelWorkerEntryContext): number {
+    const packet = encodeMemoryGroupReceipt(receipt);
+    return this.#requireMainScratchRegion().withLease(lease => {
+      lease.copyFrom(packet, 0, 0, packet.length);
+      return this.#checkedMemoryGroupStatus(this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_exec_action',
+        [lease.exportPointer(0, packet.length), packet.length, action]));
+    });
+  }
+
+  #cancelGroupedExecPreparationWithinKernelEntry(state: GroupedExecPreparationState, entry: KernelWorkerEntryContext): void {
+    if (state.phase === 'cancelled') return;
+    if (state.phase !== 'prepared') this.#memoryGroupProtocolError('Published exec cannot use unconstructed rollback');
+    if (this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.cancel, entry) !== 0) {
+      this.#memoryGroupProtocolError('Cannot cancel exact grouped exec task');
+    }
+    const hadImage = state.handle !== undefined;
+    if (state.handle) {
+      if (!state.store.isUnexposed(state.handle)) this.#memoryGroupProtocolError('Grouped exec storage already escaped');
+      state.store.cancelUnexposed(state.handle); this.#memoryGroupReplicas.delete(state.handle);
+      if (!state.store.canReleaseUnexposedImage(state.receipt)) this.#memoryGroupProtocolError('Grouped exec image retains references');
+    }
+    if (this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.finishCancellation, entry) !== 0) {
+      this.#memoryGroupProtocolError('Cannot finish exact grouped exec cancellation');
+    }
+    if (hadImage) state.store.releaseUnexposedImage(state.receipt);
+    if (state.reservation) this.#groupExecReservations.delete(state.reservation);
+    state.reservation = undefined;
+    state.handle = undefined; state.phase = 'cancelled'; this.#preparedGroupExecReservations.delete(state);
+  }
+
   #prepareMemoryGroupReplica(receipt: MemoryGroupTaskReceipt, layout?: GroupImageLayout): PreparedGroupReplica | number {
     let result: PreparedGroupReplica | number = -ERRNO.EOPNOTSUPP;
     this.#runImmediateKernelEntry("allocate exact memory-group replica", entry => {
@@ -10499,6 +10630,11 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
+    for (const prepared of [...this.#preparedGroupExecReservations]) {
+      if (prepared.registration === registration && prepared.phase === 'prepared') {
+        this.#cancelGroupedExecPreparationWithinKernelEntry(prepared, entry);
+      }
+    }
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
@@ -11073,6 +11209,11 @@ export class CentralizedKernelWorker {
                 throw new Error(
                   `exec commit has no registered old image for pid=${pid}`,
                 );
+              }
+              for (const prepared of this.#preparedGroupExecReservations) {
+                if (prepared.registration === registration && prepared.target === target) {
+                  prepared.phase = 'committed'; this.#preparedGroupExecReservations.delete(prepared);
+                }
               }
               const retirementMemory = registration.memory, retirementSource = registration.source;
               const retiredChannelOffsets =
@@ -24111,9 +24252,12 @@ export class CentralizedKernelWorker {
     caller: ChannelInfo,
     expectedRequest: FrozenChannelRequest | undefined,
   ): Promise<number> {
-    const callback = this.callbacks.onExec;
-    if (!callback) return -ENOSYS;
     const registration = this.processes.get(pid);
+    // Backend authority comes from the kernel-admitted registration, not the
+    // shape of an arbitrary virtual byte source used to decode metadata.
+    const grouped = registration?.grouped !== undefined;
+    const callback = grouped ? this.callbacks.onGroupedExec : this.callbacks.onExec;
+    if (!callback) return grouped ? -ERRNO.EOPNOTSUPP : -ENOSYS;
     if (!registration || !this.isRegisteredChannel(caller)
       || this.activeChannelRequests.get(caller) !== expectedRequest) return -ESRCH;
     const expectedMemory = registration.memory;
@@ -24156,6 +24300,7 @@ export class CentralizedKernelWorker {
             expectedCaller,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
+        prepareBackend: grouped ? (target, bytes) => this.#prepareGroupedExecBackend(expectedCaller, target, bytes) : undefined,
       }, callback);
     } catch (error) {
       if (error instanceof PreparedExecTargetError) return -error.errno;
@@ -24276,22 +24421,23 @@ export class CentralizedKernelWorker {
       path = resolvedPath.value;
     }
 
-    if (!this.callbacks.onExec) {
+    const grouped = this.processes.get(channel.pid)?.grouped !== undefined;
+    if (!(grouped ? this.callbacks.onGroupedExec : this.callbacks.onExec)) {
       this.completeChannel(
         channel,
         SYS_EXECVE,
         origArgs,
         undefined,
         -1,
-        38,
+        grouped ? ERRNO.EOPNOTSUPP : ENOSYS,
         [],
         undefined,
         entry,
-      ); // ENOSYS
+      );
       return;
     }
 
-    // Call the async exec handler FIRST — onExec returns ENOENT early if the
+    // Call the selected async exec handler first; it returns ENOENT early if the
     // program doesn't exist, allowing posix_spawnp/execvpe PATH search to retry.
     // The exact kernel exec prepare/commit sequence and host teardown are
     // deferred until after onExec confirms the program exists (returns 0).
@@ -24548,18 +24694,19 @@ export class CentralizedKernelWorker {
       execPath = this.normalizeSharedMmapPath(`${base}/${pathStr}`);
     }
 
-    if (!this.callbacks.onExec) {
+    const grouped = this.processes.get(channel.pid)?.grouped !== undefined;
+    if (!(grouped ? this.callbacks.onGroupedExec : this.callbacks.onExec)) {
       this.completeChannel(
         channel,
         SYS_EXECVEAT,
         origArgs,
         undefined,
         -1,
-        38,
+        grouped ? ERRNO.EOPNOTSUPP : ENOSYS,
         [],
         undefined,
         entry,
-      ); // ENOSYS
+      );
       return;
     }
 

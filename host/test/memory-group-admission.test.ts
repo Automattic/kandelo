@@ -1,4 +1,5 @@
-import { encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout } from '../src/memory-group-protocol';
+import { encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout,
+  encodeMemoryGroupReceipt, decodeGroupExecPreparation, MemoryGroupProtocolFault } from '../src/memory-group-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCentralizedKernelWorkerTestDouble, type CentralizedKernelCallbacks } from '../src/kernel-worker';
 import { KernelEntryGate, createKernelEntryGatedInstance, KernelReentrantEntryError } from '../src/kernel-entry-gate';
@@ -18,6 +19,34 @@ import { DeferredWorkerHandle } from '../src/deferred-worker-handle';
 import { ThreadPageAllocator } from '../src/thread-allocator';
 import { emptyProcessTimerCleanup } from './kernel-worker-test-scratch';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
+describe('copied future exec preparation records', () => {
+  const expected = { group: 23, pid: 100, generation: GENERATION + 1n };
+  function packet(initialPages = 149, maximumPages = 2048) {
+    const bytes = new Uint8Array(P.exec_preparation.bytes);
+    bytes.set(encodeMemoryGroupReceipt({ ...expected, tid: 100, serial: SERIAL }));
+    const view = new DataView(bytes.buffer);
+    view.setUint32(P.exec_preparation.fields.initialPages, initialPages, true);
+    view.setUint32(P.exec_preparation.fields.maximumPages, maximumPages, true);
+    return bytes;
+  }
+  it('preserves unsigned serial and future generation above the safe integer range', () => {
+    const bytes = packet(), result = decodeGroupExecPreparation(bytes, expected);
+    bytes.fill(0);
+    expect(result).toEqual({ receipt: { ...expected, tid: 100, serial: SERIAL }, initialPages: 149, maximumPages: 2048 });
+  });
+  it('refuses a reservation for another group, process or image generation', () => {
+    for (const wrong of [{ ...expected, group: 24 }, { ...expected, pid: 101 }, { ...expected, generation: GENERATION }]) {
+      expect(() => decodeGroupExecPreparation(packet(), wrong)).toThrow(MemoryGroupProtocolFault);
+    }
+  });
+  it('refuses truncated receipts and impossible virtual ceilings', () => {
+    expect(() => decodeGroupExecPreparation(packet().subarray(0, 39), expected)).toThrow(MemoryGroupProtocolFault);
+    for (const [initial, maximum] of [[149, 148], [0, 0], [149, 65537]]) {
+      expect(() => decodeGroupExecPreparation(packet(initial, maximum), expected)).toThrow(MemoryGroupProtocolFault);
+    }
+    expect(() => encodeMemoryGroupReceipt({ ...expected, tid: 100, serial: 1n << 64n })).toThrow(MemoryGroupProtocolFault);
+  });
+});
 const groupedOptions = { brkBase: 3 * 65536, brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 };
 function harness(pointerWidth: 4 | 8 = 4, callbacks: CentralizedKernelCallbacks = {}) {
   const layoutRecords: Uint8Array[] = [];

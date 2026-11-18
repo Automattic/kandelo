@@ -28,10 +28,13 @@ export interface SdkExecutionOptions {
   joinOnExit: boolean;
   trace?: boolean;
   physicalPages?: number;
+  maximumVirtualPages?: number;
+  execTargetBytes?: ArrayBuffer;
   rejectThreadLaunchCount?: number;
   uncertainThreadConstructor?: boolean;
   forcedLifecycle?: boolean;
   nativeWaitLifecycle?: boolean;
+  execPrecommitFailure?: 'allocation' | 'callback' | 'virtual';
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -75,6 +78,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   let admittedGroup: number | undefined;
   let rootHandle: PreparedGroupReplica | undefined;
   const imageHandles = new Map<number, PreparedGroupReplica>();
+  const execPreparations: Record<string, unknown>[] = [];
+  const execReturns: Record<string, unknown>[] = [];
   const memoryEvidence = () => ({ group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
     maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount,
     backing: admittedGroup === undefined ? undefined : kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup) });
@@ -211,6 +216,11 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         }, 0);
       };
       const callbacks: CentralizedKernelCallbacks = {
+        onGroupedExec: options.execPrecommitFailure ? async request => {
+          if (!request.groupedExec) throw Error('Grouped exec lost opaque preparation');
+          execPreparations.push({ layout: request.groupedExec.layout, ...memoryEvidence() });
+          return -13; // deliberate embedding refusal after real physical preparation
+        } : undefined,
         onThreadExit: (pid, tid, _channelOffset) => {
           const thread = threads.get(tid);
           if (!thread || thread.pid !== pid) return false;
@@ -347,6 +357,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           const imageBytes = await (async () => {
             const image = KandeloImageFs.create(new Uint8Array(options.imageModuleBytes));
             image.mkdir("/tmp", 0o1777);
+            if (options.execPrecommitFailure) {
+              image.mkdir('/bin', 0o755);
+              image.writeFile('/bin/grouped-exec-target', new Uint8Array(options.execTargetBytes ?? options.programBytes), 0o755);
+            }
             try { return await image.saveImage(); } finally { image.reset(); }
           })();
           kernel.configureRootfsOverlay(() => -2, [], false, imageBytes.byteLength, (offset, output) => {
@@ -360,17 +374,25 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         kernel.setOutputCallbacks({
           onStdout: bytes => {
             stdout += new TextDecoder().decode(bytes);
+            if (options.execPrecommitFailure && /exec-returned \d+\n$/.test(stdout)) {
+              execReturns.push({ attempt: Number(/exec-returned (\d+)\n$/.exec(stdout)![1]), ...memoryEvidence() });
+              // The guest cannot attempt another exec until this exact
+              // post-return sample is recorded. Buffered stdout alone would
+              // coalesce all sixteen returns into a single final observation.
+              kernel.appendStdinData(rootPid!, Uint8Array.of(107));
+            }
             if (lifecycleEnabled) queueMicrotask(() => { void advanceLifecycle().catch(reject); });
           },
           onStderr: bytes => { stderr += new TextDecoder().decode(bytes); },
         });
         const { programBytes, ordinaryBytes: ordinary } = options;
-        const layout = computeProcessMemoryLayout({ ptrWidth: 4, maxPages: 2048,
+        const layout = computeProcessMemoryLayout({ ptrWidth: 4, maxPages: options.maximumVirtualPages ?? 2048,
           programBytes: ordinary, heapBase: extractHeapBase(ordinary) });
         processLayout = layout;
         const pid = status(kernel.createProcess(CAPTURED_STDIO), "create process");
         rootPid = pid;
-        const argv = ["grouped-sdk-mapping", grouped ? "grouped" : "ordinary"], env = ["PATH=/bin"];
+        const argv = ["grouped-sdk-mapping", grouped ? "grouped" : "ordinary",
+          ...(options.execPrecommitFailure ? [options.execPrecommitFailure] : [])], env = ["PATH=/bin"];
         const registration = { ...layout, ptrWidth: 4 as const, argv, env };
         let launch: ReturnType<CentralizedKernelWorker["publishMemoryGroupReplica"]> | undefined;
         if (grouped) {
@@ -396,7 +418,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         status(kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] }), "attach executable");
         const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(pid));
         kernel.installHostStdinPipe(pid);
-        if (lifecycleEnabled) kernel.appendStdinData(pid, new Uint8Array());
+        if (lifecycleEnabled || options.execPrecommitFailure) kernel.appendStdinData(pid, new Uint8Array());
         else kernel.setStdinData(pid, new Uint8Array());
         generation = owner.startGeneration(pid);
         const currentGeneration = generation;
@@ -456,6 +478,11 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       if (value !== busyStopValue) throw Error('Busy child changed its word after published stop');
       lifecycleEvidence.push({ kind: 'busy-still-stopped', pid: busyProbe.pid, value });
     }
+    let execLedger: unknown;
+    if (options.execPrecommitFailure) {
+      await kernelForDiagnostics!.waitForMemoryGroupReplicaQuiescence(rootHandle!);
+      execLedger = await retryKernelEntryResult(() => kernelForDiagnostics!.inspectMemoryGroup(admittedGroup!));
+    }
     let retirement: Record<string, unknown> | undefined;
     if (grouped) {
       const before = memoryEvidence();
@@ -473,13 +500,13 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       }
       retirement = { before, after: memoryEvidence(), statuses };
     }
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execLedger, memory: memoryEvidence(),
       retirement, threadRetirementMemory, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
     if (!kernelFailed) trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, memory: memoryEvidence(),
       lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
