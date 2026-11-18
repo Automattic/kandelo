@@ -170,6 +170,18 @@ export class MemoryGroupPagePool {
       for(const page of pages)this.setUsed(words,page,false);
     });
   }
+  /** Exact owner retirement, with nonblocking pool contention. No bitmap bit
+   * changes unless the entire ordered independent page set is still owned. */
+  tryReleaseRetiredPages(pages:Uint32Array):'released'|'busy' {
+    this.independentPages(pages);
+    for(let at=0;at<pages.length;at++)if(!pages[at]||pages[at]>=this.maximumPages
+        ||(at>0&&pages[at]<=pages[at-1]))throw Error('Retired page custody must be ordered and unique');
+    return this.tryLocked('busy',words=>{
+      for(const page of pages)if(!this.used(words,page))throw Error('Unknown or already retired physical page');
+      for(const page of pages)this.setUsed(words,page,false);
+      return 'released';
+    });
+  }
   snapshot():{maximumPages:number;allocatedPages:number;highWaterPages:number;physicalExtentPages:number} {
     return this.locked(words=>{
       let allocatedPages=0;for(let page=0;page<this.maximumPages;page++)if(this.used(words,page))allocatedPages++;

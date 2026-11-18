@@ -36,6 +36,89 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   };
   return { ...h, barrier, describe, prepare };
 }
+describe('exact whole-image page retirement', () => {
+  const stop = (h: ReturnType<typeof imageWithThread>) => {
+    h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);
+  };
+  it('refuses live replicas and revokes stale access before returning deduplicated mapped and retired storage', () => {
+    const h = pausedMappingImage(), mapping = h.prepare({ kind: 'unmap', address: P, length: P, result: 0 });
+    expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+    h.store.resumeImageExecutionPause(h.barrier);
+    const ptes = new Uint32Array(h.leader.envelope.memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
+    ptes[1] = ptes[0]; // A within-image alias owns no second bitmap allocation.
+    const before = h.store.snapshot();
+    expect(h.store.tryReleaseStoppedImage(h.a)).toBe('busy');
+    stop(h);
+    expect(h.store.tryReleaseStoppedImage(h.a)).toMatchObject({ pages: before.allocatedPages - 1 });
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: 1, images: 0, replicas: 0, retainedMappingReferences: 0 });
+    expect(() => h.leader.source.readBytes(0, 1)).toThrow();
+    expect(() => h.store.receipt(h.a)).toThrow();
+    const receipt = task({ pid: 102, tid: 102, serial: 3n });
+    const next = h.store.prepareImage(receipt, layout), launch = h.store.publish(next, receipt);
+    expect(launch.source.readBytes(0, 32)).toEqual(new Uint8Array(32));
+    expect(h.store.snapshot().physicalExtentPages).toBe(before.physicalExtentPages);
+    h.store.close();
+  });
+  it('keeps storage charged until its actual native observer settles', async () => {
+    const h = imageWithThread(), source = h.store.imageSource(h.a), charged = h.store.snapshot().allocatedPages;
+    source.atomicStoreI32(0, 17);
+    const observation = source.prepareNativeObservationI32(0), wait = observation.arm(17, 1000);
+    expect(wait.async).toBe(true); stop(h);
+    expect(h.store.tryReleaseStoppedImage(h.a)).toBe('busy');
+    expect(h.store.snapshot().allocatedPages).toBe(charged);
+    observation.wake(); if (wait.async) await wait.value;
+    expect(h.store.snapshot().nativeObservers).toBe(0);
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy'); h.store.close();
+  });
+  it.each([G.MEMORY_GROUP_WAIT_WAITING, G.MEMORY_GROUP_WAIT_NOTIFIED, G.MEMORY_GROUP_WAIT_STOPPED])('retains an owned queued or unlinked native node (state=%s)', state => {
+    const h = imageWithThread(), words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4, at = G.MEMORY_GROUP_WAIT_NODES / 4;
+    stop(h); const charged = h.store.snapshot().allocatedPages;
+    words[at] = state; words[at + 3] = h.leader.expectation.root; words[at + 4] = h.leader.expectation.replica;
+    words[q + 4] = 1;
+    if (state === G.MEMORY_GROUP_WAIT_WAITING) words[q + 1] = words[q + 2] = G.MEMORY_GROUP_WAIT_NODES;
+    expect(h.store.tryReleaseStoppedImage(h.a)).toBe('busy'); expect(h.store.snapshot().allocatedPages).toBe(charged);
+    words[at] = 0; words[q + 1] = words[q + 2] = words[q + 4] = 0;
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy'); h.store.close();
+  });
+  it('does not drain a live peer image wait or release its data', () => {
+    const h = imageWithThread(), receipt = task({ pid: 102, tid: 102, serial: 3n });
+    const peer = h.store.prepareImage(receipt, layout), launch = h.store.publish(peer, receipt);
+    launch.source.fillBytes(0, P, 0x97); stop(h);
+    const words = new Int32Array(launch.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4, at = G.MEMORY_GROUP_WAIT_NODES / 4;
+    words[at] = G.MEMORY_GROUP_WAIT_WAITING; words[at + 3] = launch.expectation.root; words[at + 4] = launch.expectation.replica;
+    words[q + 1] = words[q + 2] = G.MEMORY_GROUP_WAIT_NODES; words[q + 4] = 1;
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy');
+    expect(words[at]).toBe(G.MEMORY_GROUP_WAIT_WAITING); expect(words[q + 4]).toBe(1);
+    expect(launch.source.readBytes(0, 32)).toEqual(new Uint8Array(32).fill(0x97));
+    words[at] = 0; words[q + 1] = words[q + 2] = words[q + 4] = 0; h.store.close();
+  });
+  it.each(['queue', 'root', 'pool'])('refuses a busy %s lock without partially releasing pages', target => {
+    const h = imageWithThread(); stop(h); const before = h.store.snapshot();
+    const address = target === 'queue' ? G.MEMORY_GROUP_WAIT_HEADER : target === 'root' ? h.leader.expectation.root + G.MEMORY_GROUP_ROOT_GROW_LOCK : G.MEMORY_GROUP_CONTROL;
+    const lock = new Int32Array(h.leader.envelope.memory.buffer, address, 1); Atomics.store(lock, 0, 1);
+    try { expect(h.store.tryReleaseStoppedImage(h.a)).toBe('busy'); } finally { Atomics.store(lock, 0, 0); }
+    expect(h.store.snapshot()).toEqual(before);
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy'); h.store.close();
+  });
+  it('never writes an old root lock after a peer has reused its physical page', () => {
+    const h = imageWithThread(); stop(h);
+    const pool = (h.store as any).pool, release = pool.tryReleaseRetiredPages.bind(pool);
+    let reused!: Int32Array;
+    pool.tryReleaseRetiredPages = (pages: Uint32Array) => {
+      const status = release(pages);
+      if (status === 'released') {
+        const receipt = task({ pid: 102, tid: 102, serial: 3n });
+        const peer = h.store.prepareImage(receipt, layout), launch = h.store.publish(peer, receipt);
+        expect(launch.expectation.root).toBe(h.leader.expectation.root);
+        reused = new Int32Array(launch.envelope.memory.buffer, launch.expectation.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+        Atomics.store(reused, 0, 1);
+      }
+      return status;
+    };
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy'); expect(Atomics.load(reused, 0)).toBe(1);
+    Atomics.store(reused, 0, 0); h.store.close();
+  });
+});
 it('removes a proven stopped member from an active barrier and settles its exact ACK observer', async () => {
   const h = imageWithThread(), charged = h.store.snapshot().allocatedPages;
   const barrier = h.store.beginImageExecutionPause(h.a);

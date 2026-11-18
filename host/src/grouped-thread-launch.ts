@@ -34,11 +34,13 @@ export class GroupedThreadWorkerOwnership {
   private released = false;
   private endpoint?: ForkHostImportOwnerWorker;
   private cleanup?: () => void;
-  constructor(readonly pid: number, readonly tid: number, readonly plan: GroupedThreadLaunch,
-    readonly worker: DeferredWorkerHandle, private readonly joins: boolean) {}
+  readonly receipt: MemoryGroupTaskReceipt;
+  constructor(readonly pid: number, readonly tid: number, plan: GroupedThreadLaunch,
+    readonly worker: DeferredWorkerHandle, private readonly joins: boolean) {
+    this.receipt = plan.launch.expectation.receipt;
+  }
   get quiescent(): boolean { return this.stopped; }
   get hasJoined(): boolean { return this.joined; }
-  get receipt(): MemoryGroupTaskReceipt { return this.plan.launch.expectation.receipt; }
   attach(endpoint: ForkHostImportOwnerWorker, cleanup: () => void): void {
     this.endpoint = endpoint; this.cleanup = cleanup;
   }

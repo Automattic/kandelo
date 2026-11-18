@@ -4,7 +4,7 @@ import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt, 
 import { GroupProcessAddressSpace, ProcessAddressFault, NativeI32Observation } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation,
   type ProcessMemoryEnvelope } from './process-memory-descriptor';
-import { tryControlMemoryGroupReplicaWait } from './memory-group-notification';
+import { tryControlMemoryGroupReplicaWait, memoryGroupImageWaitsRetired } from './memory-group-notification';
 
 const PAGE = G.MEMORY_GROUP_PAGE_BYTES;
 declare const preparedReplica: unique symbol;
@@ -46,7 +46,7 @@ interface Image {
   pause?: ImagePause;
   replicaPreparationWaiters?: Set<() => void>;
   mapping?: Mapping;
-  /** Removed PTE references stay charged until exact retirement is integrated. */
+  /** Removed PTE references stay charged until exact whole-image retirement. */
   retainedMappingPages?: RetainedMappingPages;
 }
 interface Replica {
@@ -90,8 +90,10 @@ function exact(a: MemoryGroupTaskReceipt, b: MemoryGroupTaskReceipt): boolean {
 
 /** Owned only by a disposable kernel Worker, after Rust reserves the group's
  * physical capacity. Admission is the caller's kernel operation, not this
- * allocator. Post-publication retirement is deliberately unavailable here:
- * no Worker fence or wait retirement can be inferred from a local token.
+ * allocator. Published storage returns only after the kernel owner revokes
+ * image access and every observed replica stops, all native observers settle,
+ * and the queue contains no wait node owned by this image. A local token alone
+ * supplies none of those retirement proofs.
  */
 export class MemoryGroupImageStore {
   private readonly memory: WebAssembly.Memory;
@@ -766,8 +768,76 @@ export class MemoryGroupImageStore {
     Atomics.notify(this.controls(replica), G.MEMORY_GROUP_REPLICA_ACK / 4);
   }
 
+  imageExecutionStopped(handle: PreparedGroupReplica): boolean {
+    const image = this.owned(handle).image;
+    return image.exposed && [...this.replicas.values()].filter(replica => replica.image === image)
+      .every(replica => replica.state === 'stopped');
+  }
+
+  /** Whole-image release only. Live peers and within-image aliases must not
+   * lose storage. Bitmap ownership has no per-PTE reference counts: collect
+   * each physical allocation once, including removed mappings and native grow.
+   * This does not implement per-thread/control or shared-object release. */
+  tryReleaseStoppedImage(handle: PreparedGroupReplica): { readonly replicas: readonly PreparedGroupReplica[]; readonly pages: number } | 'busy' {
+    const image = this.owned(handle).image;
+    if (this.closed || image.sourceLive.value || !this.imageExecutionStopped(handle)
+        || image.pause || image.mapping || image.nativeObservations.size) return 'busy';
+    const replicas = [...this.replicas.values()].filter(replica => replica.image === image);
+    for (const replica of replicas) {
+      const control = this.controls(replica);
+      if (Atomics.load(control, G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4) !== 0) return 'busy';
+    }
+    if (memoryGroupImageWaitsRetired(this.memory, image.root) !== true) return 'busy';
+    const key = imageKey(image.receipt);
+    const lock = new Int32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
+    try {
+      const owned = this.imageOwnedPages(image);
+      for (const peer of this.images.values()) if (peer !== image) {
+        for (const page of this.imageOwnedPages(peer, false)) if (owned.has(page)) fault('Retirement overlaps another image');
+      }
+      const allocation = Uint32Array.from([...owned].sort((a, b) => a - b));
+      const result = Object.freeze({ replicas: Object.freeze(replicas.map(replica => replica.handle)), pages: allocation.length });
+      // No actor of this image can run or create an observer after revocation.
+      // Unlock its root before pool publication; a later allocator may zero and
+      // reuse that same control page, so never write its lock after release.
+      Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1);
+      if (this.pool.tryReleaseRetiredPages(allocation) === 'busy') return 'busy';
+      this.images.delete(key);
+      for (const replica of replicas) {
+        this.handles.delete(replica.handle); this.replicas.delete(replica.receipt.serial);
+      }
+      image.retainedMappingPages = undefined;
+      return result;
+    } finally {
+      // On success the root is no longer ours. Only an unreleased image may
+      // receive this lock cleanup, including exceptions before pool mutation.
+      if (this.images.get(key) === image) { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
+    }
+  }
+
+  private imageOwnedPages(image: Image, stable = true): Set<number> {
+    const owned = new Set([...pages(image.controls), ...pages(image.payload), ...(image.privatePayload ?? [])]);
+    const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
+    const extent = Atomics.load(new Uint32Array(this.memory.buffer, image.root, 1), 0);
+    if (extent > image.layout.maximumVirtualPages) fault('Retiring image has invalid extent');
+    for (let at = 0; at < table.length; at++) {
+      const entry = Atomics.load(table, at), physical = entry >>> 16;
+      if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE || (stable && at >= extent && entry)) {
+        fault('Retiring image has invalid page custody');
+      }
+      if (physical) owned.add(physical);
+    }
+    for (let retired = image.retainedMappingPages; retired; retired = retired.next) for (const page of retired.pages) owned.add(page);
+    for (const replica of this.replicas.values()) if (replica.image === image) for (const page of pages(replica.scratch)) owned.add(page);
+    // An unpublished mapping may also own pages absent from both PTE versions.
+    for (const page of image.mapping?.allocated ?? []) owned.add(page);
+    return owned;
+  }
+
   quarantine(handle: PreparedGroupReplica): void {
     const replica = this.owned(handle);
+    if (replica.state === 'stopped') return;
     try { this.requestReplicaStop(handle); }
     finally {
       replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined;

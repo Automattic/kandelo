@@ -1,4 +1,4 @@
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker, type CentralizedKernelCallbacks } from "../../src/kernel-worker";
 import type { WorkerAdapter, WorkerHandle } from "../../src/worker-adapter";
 import type { PlatformIO } from "../../src/types";
 import { computeProcessMemoryLayout, createProcessMemory } from "../../src/process-memory";
@@ -27,7 +27,29 @@ export interface SdkExecutionOptions {
   joinOnExit: boolean;
   trace?: boolean;
 }
-export async function runSdkExecution(options: SdkExecutionOptions): Promise<Record<string, unknown>> {
+interface SdkExecutionMachine {
+  kernel?: CentralizedKernelWorker;
+  callbacks?: CentralizedKernelCallbacks;
+  initialized?: boolean;
+  group?: number;
+}
+
+// A cohort ends only after its Workers and image storage retire. Keeping this
+// machine inside one disposable kernel realm proves allocator reuse without
+// relying on a new Memory, a new kernel, or collection between launches.
+export async function runSdkCycles(options: SdkExecutionOptions, count: number): Promise<Record<string, unknown>> {
+  if (!options.grouped || !Number.isInteger(count) || count < 2 || count > 100) throw Error('Invalid grouped SDK cycle request');
+  const machine: SdkExecutionMachine = {};
+  const cycles: Record<string, unknown>[] = [];
+  for (let index = 0; index < count; index++) {
+    const result = await runSdkExecution(options, machine);
+    cycles.push(result);
+    if (result.failure) return { failure: `SDK cycle ${index + 1}: ${result.failure}`, cycles };
+  }
+  return { cycles };
+}
+
+export async function runSdkExecution(options: SdkExecutionOptions, machine?: SdkExecutionMachine): Promise<Record<string, unknown>> {
   const { grouped, adapter } = options;
   const status = (value: number, label: string): number => {
     if (value < 0) throw new Error(`${label}: errno ${-value}`);
@@ -45,7 +67,9 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
   let processLayout: ReturnType<typeof computeProcessMemoryLayout> | undefined;
   let kernelForDiagnostics: CentralizedKernelWorker | undefined;
   let admittedGroup: number | undefined;
-  const memoryEvidence = () => ({ initialVirtualPages: processLayout?.initialPages,
+  let rootHandle: PreparedGroupReplica | undefined;
+  const imageHandles = new Map<number, PreparedGroupReplica>();
+  const memoryEvidence = () => ({ group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
     maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount,
     backing: admittedGroup === undefined ? undefined : kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup) });
   const children = new Map<number, GroupedForkWorkerOwnership>();
@@ -75,8 +99,7 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
       // The Node exit event joins the exact process Worker. The deadline is a
       // failure/containment boundary, never permission to reuse grouped pages.
       deadline = setTimeout(() => reject(new Error("guest execution deadline")), 60_000);
-      const kernel = new CentralizedKernelWorker({ maxWorkers: 4, dataBufferSize: 65536,
-        useSharedMemory: true, kernelMaxPages: 1024 }, options.io, {
+      const callbacks: CentralizedKernelCallbacks = {
         onExit: (pid, code) => {
           if (pid === rootPid) kernelExit = code;
           else childStates.set(pid, { ...childStates.get(pid), kernelExit: code });
@@ -109,6 +132,7 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
           });
         },
         onGroupedFork: async request => {
+          imageHandles.set(request.childPid, request.childReplica);
           try {
             const parentGeneration = request.parentPid === rootPid ? generation : children.get(request.parentPid)?.generation;
             if (!parentGeneration || !processLayout) throw Error('Missing exact grouped fork parent');
@@ -130,23 +154,32 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
             return [processLayout.channelOffset];
           } catch (error) { reject(error); throw error; }
         },
-      });
+      };
+      const kernel = machine?.kernel ?? new CentralizedKernelWorker({ maxWorkers: 4, dataBufferSize: 65536,
+        useSharedMemory: true, kernelMaxPages: 1024 }, options.io, callbacks);
+      if (machine) {
+        if (machine.callbacks) Object.assign(machine.callbacks, callbacks);
+        else { machine.kernel = kernel; machine.callbacks = callbacks; }
+      }
       kernelForDiagnostics = kernel;
       void (async () => {
         // Compose through the normal image writer, inside this disposable
         // realm. A real root namespace is needed to reach kernel tmpfs on both
         // hosts; an empty browser host adapter cannot stand in for `/`.
-        const imageBytes = await (async () => {
-          const image = KandeloImageFs.create(new Uint8Array(options.imageModuleBytes));
-          image.mkdir("/tmp", 0o1777);
-          try { return await image.saveImage(); } finally { image.reset(); }
-        })();
-        kernel.configureRootfsOverlay(() => -2, [], false, imageBytes.byteLength, (offset, output) => {
-          const count = Math.min(output.length, Math.max(0, imageBytes.byteLength - offset));
-          output.set(imageBytes.subarray(offset, offset + count)); return count;
-        });
-        await kernel.init(options.kernelBytes);
-        if (options.trace) kernel.enableSyscallTrace();
+        if (!machine?.initialized) {
+          const imageBytes = await (async () => {
+            const image = KandeloImageFs.create(new Uint8Array(options.imageModuleBytes));
+            image.mkdir("/tmp", 0o1777);
+            try { return await image.saveImage(); } finally { image.reset(); }
+          })();
+          kernel.configureRootfsOverlay(() => -2, [], false, imageBytes.byteLength, (offset, output) => {
+            const count = Math.min(output.length, Math.max(0, imageBytes.byteLength - offset));
+            output.set(imageBytes.subarray(offset, offset + count)); return count;
+          });
+          await kernel.init(options.kernelBytes);
+          if (options.trace) kernel.enableSyscallTrace();
+          if (machine) machine.initialized = true;
+        }
         kernel.setOutputCallbacks({
           onStdout: bytes => { stdout += new TextDecoder().decode(bytes); },
           onStderr: bytes => { stderr += new TextDecoder().decode(bytes); },
@@ -160,18 +193,22 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
         const argv = ["grouped-sdk-mapping", grouped ? "grouped" : "ordinary"], env = ["PATH=/bin"];
         const registration = { ...layout, ptrWidth: 4 as const, argv, env };
         let launch: ReturnType<CentralizedKernelWorker["publishMemoryGroupReplica"]> | undefined;
-        let rootHandle: PreparedGroupReplica | undefined;
         if (grouped) {
-          status(kernel.configureMemoryGroups(2048, 1), "configure groups");
-          const group = status(kernel.createMemoryGroup(2048, 4, 8), "create group");
+          let group = machine?.group;
+          if (group === undefined) {
+            status(kernel.configureMemoryGroups(2048, 1), "configure groups");
+            group = status(kernel.createMemoryGroup(2048, 4, 8), "create group");
+            status(kernel.createMemoryGroupBacking(group), "create backing");
+            if (machine) machine.group = group;
+          }
           admittedGroup = group;
-          status(kernel.createMemoryGroupBacking(group), "create backing");
           const receipt = kernel.prepareMemoryGroupProcess(group, pid);
           if (typeof receipt === "number") throw new Error(`prepare process: ${receipt}`);
           const handle = kernel.prepareMemoryGroupImage(receipt, { initialVirtualPages: layout.initialPages,
             maximumVirtualPages: layout.maximumPages, scratchBytes: 65536 });
           if (typeof handle === "number") throw new Error(`prepare image: ${handle}`);
           rootHandle = handle;
+          imageHandles.set(pid, handle);
           launch = kernel.publishMemoryGroupReplica(handle);
           if (typeof launch === "number") throw new Error(`publish replica: ${launch}`);
           kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], registration);
@@ -229,7 +266,25 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
       })().catch(reject);
     });
     await execution;
+    let retirement: Record<string, unknown> | undefined;
+    if (grouped) {
+      const before = memoryEvidence();
+      const statuses: number[] = [];
+      for (const [pid, handle] of imageHandles) {
+        const releaseReferences = () => {
+          for (const thread of threads.values()) if (thread.pid === pid && !thread.releaseAfterStop()) throw Error('Pthread reference retirement is unproven');
+          const child = children.get(pid);
+          if (child && !child.releaseAfterStop()) throw Error('Child reference retirement is unproven');
+          if (pid === rootPid) { importWorker?.close(); if (generation) owner.releaseGeneration(generation); }
+        };
+        const status = await retryKernelEntryResult(() => kernelForDiagnostics!.retireMemoryGroupImage(handle, releaseReferences));
+        statuses.push(status);
+        if (status !== 0) throw Error(`Image retirement refused: ${status}`);
+      }
+      retirement = { before, after: memoryEvidence(), statuses };
+    }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
+      retirement,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
@@ -245,6 +300,10 @@ export async function runSdkExecution(options: SdkExecutionOptions): Promise<Rec
     for (const child of children.values()) { await child.contain(); child.releaseAfterStop(); }
     importWorker?.close();
     if (generation) owner.releaseGeneration(generation);
+    if (machine?.callbacks) {
+      for (const key of Object.keys(machine.callbacks) as (keyof CentralizedKernelCallbacks)[]) delete machine.callbacks[key];
+      machine.kernel?.setOutputCallbacks({});
+    }
   }
   return result;
 }

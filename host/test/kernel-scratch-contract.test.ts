@@ -593,6 +593,18 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireMemoryGroupImage::kernel-export-direct-use::(this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (pid: number) => number)(receipt.pid)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact (i32)->i32 query reads only the registered root PID's Rust process state in the same lexical entry as the already-checked image generation. It borrows no pointer or scratch. A running current generation refuses retirement; a replaced or reaped image still requires its concrete Worker stop proofs.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireMemoryGroupImage::kernel-export-direct-use::retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact (i32,i32,i32)->i32 call retires only Rust image custody identified by PID and unsigned generation halves after every concrete replica stopped. No pointer or allocator authority crosses the export. Status 0 or already-reaped ENOENT permits host retirement to begin; pages remain charged through pending launch callbacks, channel and engine observer settlement, reference closure and the store's independent queue proof.",
+  },
 
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireChannelHostWaits::kernel-export-direct-use::cancel(channel.pid, entropy.tid, entropy.token)",

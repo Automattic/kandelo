@@ -1,9 +1,9 @@
 import { encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout } from '../src/memory-group-protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
+import { createCentralizedKernelWorkerTestDouble, type CentralizedKernelCallbacks } from '../src/kernel-worker';
 import { KernelEntryGate, createKernelEntryGatedInstance, KernelReentrantEntryError } from '../src/kernel-entry-gate';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
-import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING, ABI_SYSCALLS as SYSCALLS,
+import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING, PROCESS_STATE_EXITED, ABI_SYSCALLS as SYSCALLS,
   CH_STATUS, CH_SYSCALL, CH_ARGS, CH_ARG_SIZE, CH_RETURN, CH_ERRNO, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE } from '../src/generated/abi';
 import * as G from '../src/generated/program-extensions';
 import { processDataView } from '../src/process-memory-views';
@@ -14,9 +14,10 @@ import { FORK_SAVE_BUFFER_SIZE } from '../src/process-memory';
 import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import { HOST_INTERCEPTED_SYSCALLS, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS } from '../src/generated/abi';
 import { MockWorkerHandle } from '../src/worker-adapter';
+import { emptyProcessTimerCleanup } from './kernel-worker-test-scratch';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
 const groupedOptions = { brkBase: 3 * 65536, brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 };
-function harness(pointerWidth: 4 | 8 = 4) {
+function harness(pointerWidth: 4 | 8 = 4, callbacks: CentralizedKernelCallbacks = {}) {
   const layoutRecords: Uint8Array[] = [];
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 8 }), gate = new KernelEntryGate();
   const implementations: Record<string, any> = {
@@ -37,6 +38,9 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_group_memory_change_commit: vi.fn(() => -95),
     kernel_group_memory_change_cancel: vi.fn(() => 0),
     kernel_set_current_tid: () => 0,
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(memory),
+    kernel_thread_exit: vi.fn(() => 0n),
+    kernel_validate_task: vi.fn(() => 0),
     kernel_get_process_exit_signal: () => -1,
     kernel_dequeue_signal: vi.fn(() => 0),
     kernel_handle_guest_io: vi.fn(() => 0),
@@ -82,7 +86,7 @@ function harness(pointerWidth: 4 | 8 = 4) {
   const instance = createKernelEntryGatedInstance(raw, gate);
   const scratch = allocateKernelScratchRegion(memory, instance.exports.kernel_alloc_scratch as (size: number) => number | bigint,
     CH_TOTAL_SIZE, pointerWidth, 'group admission test', instance);
-  const worker = createCentralizedKernelWorkerTestDouble();
+  const worker = createCentralizedKernelWorkerTestDouble({ callbacks });
   worker.testAuthority.initializeKernelForTest({ instance, gate, mainScratch: scratch });
   return { worker, instance, implementations, memory, layoutRecords };
 }
@@ -1084,5 +1088,132 @@ describe('grouped image layout transport', () => {
     expect(() => encodeGroupMemoryLayout(receipt, { ...input, initialPages: 17 })).toThrow();
     expect(() => encodeGroupMemoryLayout(receipt, { ...input, mode: 'fresh' })).toThrow();
     expect(() => encodeGroupMemoryLayout({ ...receipt, serial: 0n }, input)).toThrow();
+  });
+});
+
+
+function stoppedImageHarness(callbacks: CentralizedKernelCallbacks = {}) {
+  const h = harness(4, callbacks);
+  h.worker.createMemoryGroupBacking(23, 16);
+  const receipt = h.worker.prepareMemoryGroupProcess(23, 100);
+  if (typeof receipt === 'number') throw Error('missing receipt');
+  const handle = h.worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: 65536 });
+  if (typeof handle === 'number') throw Error('missing image');
+  const launch = h.worker.publishMemoryGroupReplica(handle);
+  if (typeof launch === 'number') throw Error('missing launch');
+  h.worker.registerMemoryGroupProcess(handle, [65536], groupedOptions);
+  const concrete = new MockWorkerHandle();
+  h.worker.observeMemoryGroupReplicaWorker(handle, concrete, { terminationProvesQuiescence: false });
+  const stop = () => concrete.simulateMessage({ type: 'memory_quiescent', pid: 100, memoryGroup: receipt });
+  return { ...h, receipt, handle, launch, concrete, stop };
+}
+
+describe('exact registered image retirement', () => {
+  it('requires both a concrete Worker stop and Rust exit before closing references or freeing pages', async () => {
+    const h = stoppedImageHarness(), close = vi.fn();
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(-16);
+    expect(close).not.toHaveBeenCalled();
+    h.stop();
+    expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(-16);
+    h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    close.mockImplementation(() => expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated));
+    expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(0);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(h.worker.inspectMemoryGroupBacking(23)).toMatchObject({ images: 0, replicas: 0, allocatedPages: 1, nativeObservers: 0 });
+    expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(0);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+  it('does not revoke registration or close references when Rust refuses retirement', async () => {
+    const h = stoppedImageHarness(), close = vi.fn(); h.stop();
+    h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    h.implementations.kernel_memory_group_retire_image.mockReturnValue(-16);
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(-16);
+    expect(close).not.toHaveBeenCalled();
+    expect(h.worker.getProcessMemory(100)).toBeDefined();
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated);
+    h.implementations.kernel_memory_group_retire_image.mockReturnValue(0);
+    expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(0);
+  });
+  it('retains charged storage if ending host references fails, without rerunning that callback', async () => {
+    const h = stoppedImageHarness(); h.stop();
+    h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    const close = vi.fn(() => { throw Error('reference owner refused'); });
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    await expect(h.worker.retireMemoryGroupImage(h.handle, close)).rejects.toThrow('reference owner refused');
+    await expect(h.worker.retireMemoryGroupImage(h.handle, close)).rejects.toThrow('reference owner refused');
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated);
+  });
+  it('leaves a replacement with the same PID and shared Memory intact, including on a repeated old capability', async () => {
+    const h = stoppedImageHarness(); h.stop();
+    expect(h.worker.deactivateMemoryGroupProcess(h.handle)).toBe(true);
+    const replacement = { ...h.receipt, serial: SERIAL - 1n, generation: GENERATION + 1n };
+    h.implementations.kernel_get_process_exec_generation = (_pid: number, pointer: number | bigint) => {
+      new DataView(h.memory.buffer).setBigUint64(Number(pointer), replacement.generation, true); return 8;
+    };
+    h.implementations.kernel_memory_group_task_receipt = (_pid: number, _tid: number, pointer: number | bigint) => {
+      const view = new DataView(h.memory.buffer, Number(pointer), P.receipt_bytes), f = P.receipt_fields;
+      for (const key of ['group', 'pid', 'tid'] as const) view.setUint32(f[key], replacement[key], true);
+      view.setBigUint64(f.serial, replacement.serial, true); view.setBigUint64(f.generation, replacement.generation, true);
+      return P.receipt_bytes;
+    };
+    const receipt = h.worker.prepareMemoryGroupProcess(23, 100);
+    if (typeof receipt === 'number') throw Error('missing replacement receipt');
+    const handle = h.worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('missing replacement image');
+    const launch = h.worker.publishMemoryGroupReplica(handle);
+    if (typeof launch === 'number') throw Error('missing replacement launch');
+    h.worker.registerMemoryGroupProcess(handle, [65536], groupedOptions);
+    const concrete = new MockWorkerHandle();
+    h.worker.observeMemoryGroupReplicaWorker(handle, concrete, { terminationProvesQuiescence: false });
+    processDataView(launch.source, 7, 1).setUint8(0, 0x97);
+    expect(await h.worker.retireMemoryGroupImage(h.handle, () => {})).toBe(0);
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    expect(allocated).toBeGreaterThan(1);
+    expect(h.worker.deactivateMemoryGroupProcess(h.handle)).toBe(false);
+    const closeAgain = vi.fn();
+    expect(await h.worker.retireMemoryGroupImage(h.handle, closeAgain)).toBe(0);
+    expect(closeAgain).not.toHaveBeenCalled();
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated);
+    expect(processDataView(launch.source, 7, 1).getUint8(0)).toBe(0x97);
+    concrete.simulateMessage({ type: 'memory_quiescent', pid: 100, memoryGroup: receipt });
+    h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    expect(await h.worker.retireMemoryGroupImage(handle, () => {})).toBe(0);
+  });
+  it('keeps pages until an old grouped clone callback settles, even when Rust already reaped the image', async () => {
+    let rejectClone!: (error: Error) => void, started!: () => void;
+    const launched = new Promise<void>(resolve => { started = resolve; });
+    const held = new Promise<void>((_resolve, reject) => { rejectClone = reject; });
+    const h = stoppedImageHarness({ onGroupedClone: async () => { started(); await held; } });
+    h.implementations.kernel_handle_channel = (pointer: number | bigint) => {
+      const view = new DataView(h.memory.buffer, Number(pointer));
+      view.setBigInt64(CH_RETURN, 101n, true); view.setUint32(CH_ERRNO, 0, true); return 0;
+    };
+    const channel = (h.worker as any).processes.get(100).channels[0];
+    const view = processDataView(channel.source, 65536);
+    view.setUint32(CH_SYSCALL, SYSCALLS.Clone, true);
+    [0x10100, 5 * 65536, 0, 0, 0, 0].forEach((value, at) => view.setBigInt64(CH_ARGS + at * CH_ARG_SIZE, BigInt(value), true));
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    (h.worker as any).handleSyscall(channel);
+    await launched;
+    h.stop();
+    h.implementations.kernel_get_process_exec_generation = () => -3;
+    h.implementations.kernel_memory_group_retire_image.mockReturnValue(-2);
+    h.implementations.kernel_thread_exit.mockReturnValue(-3n);
+    const allocated = h.worker.inspectMemoryGroupBacking(23)!.allocatedPages;
+    let closed!: () => void;
+    const referencesClosed = new Promise<void>(resolve => { closed = resolve; });
+    const retirement = h.worker.retireMemoryGroupImage(h.handle, closed);
+    await referencesClosed;
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(allocated);
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      rejectClone(Error('late construction failure'));
+      expect(await retirement).toBe(0);
+      expect(h.implementations.kernel_thread_exit).toHaveBeenCalledWith(100, 101, 0);
+      expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(1);
+    } finally { diagnostic.mockRestore(); }
   });
 });

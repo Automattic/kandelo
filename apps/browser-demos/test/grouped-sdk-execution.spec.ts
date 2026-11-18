@@ -91,6 +91,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
     expect(result.processExit).toBe(0);
     expect(result.processReady).toBe(true);
     expect(result.quiescent).toBe(true);
+    if (grouped) expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
     for (const marker of probe.markers) expect(result.stdout).toContain(marker);
     if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
     if (probe.name === 'fork') {
@@ -101,3 +102,33 @@ for (const probe of probes) for (const grouped of [false, true]) {
     }
   });
 }
+
+for (const probe of ['pthread', 'fork']) test(`forty SDK ${probe} cohorts reuse one backing after exact retirement`, async ({ page, browser }, info) => {
+  test.setTimeout(240_000);
+  await page.goto(url);
+  const result = await page.evaluate(probe => new Promise<any>((resolve, reject) => {
+    const worker = new Worker('/kernel.mjs', { type: 'module' });
+    const deadline = setTimeout(() => { worker.terminate(); reject(Error('SDK cycle deadline')); }, 180_000);
+    worker.onmessage = event => { clearTimeout(deadline); worker.terminate(); resolve(event.data); };
+    worker.onerror = event => { clearTimeout(deadline); worker.terminate(); reject(Error(event.message)); };
+    worker.postMessage({ grouped: true, probe, cycles: 40 });
+  }), probe);
+  writeFileSync(info.outputPath('result.json'), JSON.stringify({ engine: info.project.name,
+    version: browser.version(), inputs, result }, null, 2) + '\n');
+  expect(result.failure, JSON.stringify(result)).toBeUndefined();
+  expect(result.cycles).toHaveLength(40);
+  expect(new Set(result.cycles.map((row: any) => row.memory.group)).size).toBe(1);
+  expect(new Set(result.cycles.map((row: any) => row.memory.pid)).size).toBe(40);
+  for (const row of result.cycles) {
+    expect(row.failure, JSON.stringify(row)).toBeUndefined();
+    expect(row.kernelExit).toBe(0); expect(row.processExit).toBe(0);
+    expect(row.stdout).toContain(`grouped-sdk-${probe} PASS`);
+    expect(row.stderr).toBe(''); expect(row.diagnostics).toEqual([]);
+    if (probe === 'pthread') expect(row.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ exited: true, quiescent: true })));
+    else expect(row.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true })]);
+    expect(row.memory).toMatchObject({ maximumVirtualPages: 2048, declaredThreadSlots: probe === 'pthread' ? 1024 : 0,
+      backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } });
+  }
+  const extents = result.cycles.slice(-20).map((row: any) => row.memory.backing.physicalExtentPages);
+  expect(new Set(extents).size, JSON.stringify(extents)).toBe(1);
+});
