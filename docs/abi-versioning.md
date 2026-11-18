@@ -18,6 +18,14 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 20 requires the scalar
+`kernel_get_process_exit_published(pid)` query: 0 before host exit
+acknowledgement, 1 afterward, and `-ESRCH` for an absent or reaped process.
+It reads Rust's existing publication bit. A late generic exec finalizer can
+therefore suppress a duplicate exit callback after old host registration
+retirement without accumulating host PID tombstones. Program ABI 56 and its
+supported digest remain unchanged; host and kernel rebuild together.
+
 Kernel-host adapter version 19 retains a committed exec's unexposed future
 image until Start transfers its custody to the execution receipt or explicit
 unconstructed image retirement ends cancellation. Parent waits cannot reap

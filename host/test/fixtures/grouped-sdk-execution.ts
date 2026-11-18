@@ -289,13 +289,31 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               if (options.execSignal === 'stopped') await retryKernelEntryResult(signal);
             } : undefined,
             onTerminated: signal => {
+              if (options.execSignal) {
+                if (kernel.recordMemoryGroupCrash(previousRoot, 11) !== -3) throw Error('Retired exec accepted a late crash');
+                kernel.finalizeExecHandoffTermination(request.pid);
+                lifecycleEvidence.push({ kind: 'exec-late-exit-finished', code: kernelExit });
+              }
               for (const thread of previousThreads) { stoppedWithProcess.add(thread.tid); retiredThreads.add(thread.tid); }
               execTermination = { signal }; quiescent = true; rootJoined = options.joinOnExit;
               imageHandles.delete(request.pid); rootHandle = undefined; generation = undefined;
               currentExecWorker = undefined; processWorker = undefined; importWorker = undefined;
               execHandoff = false; maybeComplete();
             },
-            retirePreviousReferences: () => {
+            retirePreviousReferences: async () => {
+              // This async closer is joined by physical retirement. Real
+              // public ingress runs after deactivation, while old pages are
+              // still owned; it must not publish or replace the cached signal.
+              if (options.execSignal) await retryKernelEntryResult(() => {
+                const signal = kernel.finalizeExecHandoffTermination(request.pid);
+                kernel.notifyHostProcessCrashed(request.pid, 11);
+                const repeated = kernel.finalizeExecHandoffTermination(request.pid);
+                const backing = memoryEvidence().backing;
+                if (signal !== 9 || repeated !== 9 || kernelExit !== undefined || backing?.images !== 1) {
+                  throw Error(`Late retirement ingress lost exec ownership: ${signal}/${repeated}/${kernelExit}/${backing?.images}`);
+                }
+                lifecycleEvidence.push({ kind: 'exec-late-exit-held', signal, repeated, backing });
+              });
               previousImport?.close();
               if (previousExec && !previousExec.releaseAfterStop()) throw Error('Old exec references lack stop proof');
               for (const thread of previousThreads) if (!thread.releaseAfterStop()) throw Error('Old exec pthread references lack stop proof');

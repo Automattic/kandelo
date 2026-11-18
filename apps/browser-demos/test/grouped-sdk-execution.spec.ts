@@ -141,6 +141,12 @@ for (const probe of probes) for (const grouped of [false, true]) {
       expect(events.filter(row => row.kind === 'exec-old-threads-observed')).toHaveLength(1);
       expect(events.filter(row => row.kind === 'exec-old-threads-stopped')).toHaveLength(1);
       expect(events.filter(row => row.kind === 'exec-termination-published')).toHaveLength(1);
+        expect(events.filter(row => row.kind === 'exec-late-exit-held')).toEqual([
+          expect.objectContaining({ signal: 9, repeated: 9, backing: expect.objectContaining({ images: 1 }) }),
+        ]);
+        expect(events.filter(row => row.kind === 'exec-late-exit-finished')).toEqual([
+          expect.objectContaining({ code: 137 }),
+        ]);
       const sent = events.find(row => row.kind === 'exec-signal-sent');
       expect(sent.stopped).toBe(probe.name === 'exec-signal-commit' ? 0 : 3);
       return;

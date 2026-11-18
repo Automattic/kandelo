@@ -3279,7 +3279,9 @@ export class CentralizedKernelWorker {
   #memoryGroupStores = new Map<number, MemoryGroupImageStore>();
   #groupExecReservations = new WeakMap<GroupedExecReservation, GroupedExecPreparationState>();
   #groupExecImages = new WeakMap<PreparedGroupReplica, GroupedExecPreparationState>();
-  #committedGroupExecs = new Map<ProcessRegistration, GroupedExecPreparationState>();
+  // PID locates the private preparation; its exact registration still owns
+  // authority. Retirement removes that registration before exit publication.
+  #committedGroupExecs = new Map<number, GroupedExecPreparationState>();
   #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
   #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
@@ -8486,7 +8488,7 @@ export class CentralizedKernelWorker {
       this.#memoryGroupProtocolError('Grouped exec replacement lost its exact registration');
     }
     this.finishProcessExecHandoff(state.receipt.pid);
-    this.#committedGroupExecs.delete(state.registration);
+    this.#committedGroupExecs.delete(state.receipt.pid);
     this.#groupExecReservations.delete(reservation); state.reservation = undefined;
   }
 
@@ -8544,7 +8546,7 @@ export class CentralizedKernelWorker {
         this.#memoryGroupProtocolError('Terminated exec has not retired its exact images');
       }
       const pid = state.receipt.pid, signal = state.terminationSignal, parent = state.terminationParentPid;
-      this.#committedGroupExecs.delete(state.registration); this.#groupExecReservations.delete(reservation);
+      this.#committedGroupExecs.delete(pid); this.#groupExecReservations.delete(reservation);
       state.reservation = undefined;
       this.notifyParentOfExitedProcess(pid, entry, parent);
       entry.deferProtocolEffect(() => { this.callbacks.onExit?.(pid, 128 + signal); return undefined; });
@@ -8552,12 +8554,24 @@ export class CentralizedKernelWorker {
     });
   }
 
-  #holdCommittedGroupExecTermination(pid: number, signal: number, entry: KernelWorkerEntryContext): boolean {
-    const registration = this.processes.get(pid), state = registration && this.#committedGroupExecs.get(registration);
-    if (!state || (state.phase !== 'committed' && state.phase !== 'handoff')) return false;
-    state.terminationSignal = signal; state.terminationParentPid = this.getParentPid(pid, entry);
-    state.store.requestImageStop(state.registration.grouped!.handle);
-    return true;
+  #holdCommittedGroupExecTermination(pid: number, entry: KernelWorkerEntryContext, observedSignal?: number): number | undefined {
+    const state = this.#committedGroupExecs.get(pid);
+    if (!state || (state.phase !== 'committed' && state.phase !== 'handoff' && state.phase !== 'cancelled')) return undefined;
+    const registration = this.processes.get(pid);
+    if (registration !== state.registration && (registration || state.phase !== 'cancelled')) {
+      this.#memoryGroupProtocolError('Grouped exec exit owner lost its exact registration');
+    }
+    // Cancellation can release the last kernel reaping hold. Its cached real
+    // signal/parent must survive both that reap and old transport deactivation.
+    const signal = state.terminationSignal ?? observedSignal ?? this.#getProcessExitSignal(pid, entry);
+    if (signal <= 0) return undefined;
+    if (state.terminationSignal === undefined) {
+      state.terminationSignal = signal; state.terminationParentPid = this.getParentPid(pid, entry);
+    }
+    // cancelTerminatedMemoryGroupExec already proved the old image stopped;
+    // its physical storage may now be released and cannot be touched again.
+    if (state.phase !== 'cancelled') state.store.requestImageStop(state.registration.grouped!.handle);
+    return signal;
   }
 
   /** Postcommit failure cannot restore the old image or prove page reuse. */
@@ -10649,7 +10663,7 @@ export class CentralizedKernelWorker {
   /** Release host reference owners once, then join exact channel/operation
    * retirement. A busy queue/pool remains charged and may be retried. Neither
    * PID disappearance nor a caller callback supplies the Worker stop proof. */
-  retireMemoryGroupImage(handle: PreparedGroupReplica, retireHostReferences: () => void): Promise<number> {
+  retireMemoryGroupImage(handle: PreparedGroupReplica, retireHostReferences: () => void | Promise<void>): Promise<number> {
     let record = this.#groupImageRetirements.get(handle);
     if (record?.released) return Promise.resolve(0);
     let refusal = -EBUSY;
@@ -10702,8 +10716,8 @@ export class CentralizedKernelWorker {
   }
 
   async #settleGroupImageRetirement(record: GroupImageRetirement, operations: readonly Promise<void>[],
-    retireHostReferences: () => void): Promise<void> {
-    retireHostReferences();
+    retireHostReferences: () => void | Promise<void>): Promise<void> {
+    await retireHostReferences();
     await Promise.all(operations);
     const { pid, memory, source } = record.owner!;
     await this.settleRetiredChannelListeners(pid, memory, undefined, source);
@@ -11358,7 +11372,7 @@ export class CentralizedKernelWorker {
               for (const prepared of this.#preparedGroupExecReservations) {
                 if (prepared.registration === registration && prepared.target === target) {
                   prepared.phase = 'committed'; this.#preparedGroupExecReservations.delete(prepared);
-                  this.#committedGroupExecs.set(registration, prepared);
+                  this.#committedGroupExecs.set(registration.pid, prepared);
                 }
               }
               const retirementMemory = registration.memory, retirementSource = registration.source;
@@ -25797,8 +25811,8 @@ export class CentralizedKernelWorker {
   ): void {
     const exitingPid = channel.pid;
     const registration = this.processes.get(exitingPid);
+    if (this.#holdCommittedGroupExecTermination(exitingPid, entry) !== undefined) return;
     const signal = this.#getProcessExitSignal(exitingPid, entry);
-    if (signal > 0 && this.#holdCommittedGroupExecTermination(exitingPid, signal, entry)) return;
     const canQuiesceBorrowedWorker =
       registration?.borrowedAddressSpace === true
       && registration.channels.length === 1
@@ -25937,6 +25951,9 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     if (this.hostReaped.has(pid)) return;
+    // A late old-Worker error cannot overwrite an already recorded exec
+    // signal, or re-enter Rust after the cancelled future permits reaping.
+    if (this.#holdCommittedGroupExecTermination(pid, entry) !== undefined) return;
     const markSignaled = entry.instance.exports
       .kernel_mark_process_signaled as
       ((pid: number, signum: number) => number) | undefined;
@@ -25950,7 +25967,7 @@ export class CentralizedKernelWorker {
         `Kernel rejected signal-death transition for process ${pid}: ${detail}`,
       );
     }
-    if (this.#holdCommittedGroupExecTermination(pid, this.#getProcessExitSignal(pid, entry), entry)) {
+    if (this.#holdCommittedGroupExecTermination(pid, entry) !== undefined) {
       this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
       return;
     }
@@ -26011,7 +26028,7 @@ export class CentralizedKernelWorker {
       } else if (ch) {
         this.handleProcessTerminated(ch);
       } else if (proc?.grouped && entry && signal > 0) {
-        this.#holdCommittedGroupExecTermination(pid, signal, entry);
+        this.#holdCommittedGroupExecTermination(pid, entry, signal);
       }
     }
   }
@@ -26076,9 +26093,14 @@ export class CentralizedKernelWorker {
     pid: number,
     entry: KernelWorkerEntryContext,
   ): number {
+    const held = this.#holdCommittedGroupExecTermination(pid, entry);
+    if (held !== undefined) return held;
     const signal = this.#getProcessExitSignal(pid, entry);
     if (signal <= 0) return signal;
-    if (this.#holdCommittedGroupExecTermination(pid, signal, entry)) return signal;
+    // Grouped exec retires the old registration before its final callback.
+    // Rust's existing publication bit survives that removal; no per-PID host
+    // tombstone is needed to suppress a later generic finalizer.
+    if (this.#isKernelProcessExitPublished(pid, entry)) return signal;
     this.discardStoppedChannelStateForProcess(pid);
     if (this.hostReaped.has(pid)) return signal;
 
@@ -26126,6 +26148,15 @@ export class CentralizedKernelWorker {
    *  the same already-Exited process). Kernel task IDs are monotonic and
    *  never reused; entries are cleared only with retired host transport state. */
   private hostReaped = new Set<number>();
+
+  #isKernelProcessExitPublished(pid: number, entry: KernelWorkerEntryContext): boolean {
+    const readPublished = this.#kernelInstanceForEntry(entry).exports.kernel_get_process_exit_published;
+    if (typeof readPublished !== 'function') this.#memoryGroupProtocolError('Missing kernel exit publication query');
+    const status = readPublished(pid);
+    if (status === 0) return false;
+    if (status === 1 || status === -ESRCH) return true;
+    return this.#memoryGroupProtocolError('Invalid kernel exit publication query result');
+  }
 
   private getParentPid(
     pid: number,

@@ -594,6 +594,12 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#isKernelProcessExitPublished::kernel-export-direct-use::readPublished(pid)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "Host20 reads Rust's existing exit-publication bit for one kernel PID under the same lexical entry as finalization. It returns only 0, 1 or ESRCH; no address, kernel-memory borrow or scratch authority crosses the call. This avoids retaining host PID tombstones after grouped exec image retirement.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.cancelTerminatedMemoryGroupExec::kernel-export-direct-use::retire(state.receipt.pid, Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n))",
     disposition: "kernel-control",
     count: 1,
