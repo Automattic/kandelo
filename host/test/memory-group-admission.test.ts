@@ -46,6 +46,7 @@ function harness(pointerWidth: 4 | 8 = 4, callbacks: CentralizedKernelCallbacks 
     kernel_thread_exit: vi.fn(() => 0n),
     kernel_validate_task: vi.fn(() => 0),
     kernel_get_process_exit_signal: () => -1,
+    kernel_mark_process_signaled: vi.fn(() => 0),
     kernel_dequeue_signal: vi.fn(() => 0),
     kernel_handle_guest_io: vi.fn(() => 0),
     kernel_handle_channel: vi.fn(() => 0),
@@ -1259,6 +1260,56 @@ describe('unconstructed clone control retirement', () => {
         Number(SERIAL & 0xffffffffn) | 0, Number(SERIAL >> 32n) | 0, Number(GENERATION & 0xffffffffn) | 0, Number(GENERATION >> 32n) | 0);
       expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBe(1);
     } finally { observation?.wake(); diagnostic.mockRestore(); }
+  });
+});
+
+describe('grouped late rollback failure containment', () => {
+  it('reports a late old-image rollback error without signaling the replacement PID', async () => {
+    let started!: () => void, rejectLaunch!: (error: Error) => void, failed!: (error: Error) => void;
+    const launched = new Promise<void>(resolve => { started = resolve; });
+    const held = new Promise<void>((_resolve, reject) => { rejectLaunch = reject; });
+    const fatal = new Promise<Error>(resolve => { failed = resolve; });
+    const h = stoppedImageHarness({ onGroupedClone: async () => { started(); await held; }, onKernelFatal: failed });
+    h.implementations.kernel_handle_channel = (pointer: number | bigint) => {
+      const view = new DataView(h.memory.buffer, Number(pointer)); view.setBigInt64(CH_RETURN, 101n, true); view.setUint32(CH_ERRNO, 0, true); return 0;
+    };
+    const main = (h.worker as any).processes.get(100).channels[0], view = processDataView(main.source, 65536);
+    view.setUint32(CH_SYSCALL, SYSCALLS.Clone, true);
+    [0x10100, 5 * 65536, 0, 0, 0, 0].forEach((value, at) => view.setBigInt64(CH_ARGS + at * CH_ARG_SIZE, BigInt(value), true));
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true); (h.worker as any).handleSyscall(main); await launched;
+    const replacement = new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true });
+    h.worker.testAuthority.replaceProcessRegistrationForLifecycleTest({ pid: 100, memory: replacement, channelOffsets: [] });
+    h.implementations.kernel_thread_exit.mockReturnValue(-5n);
+    rejectLaunch(Error('late setup failure'));
+    expect((await fatal).message).toContain('could not roll back allocated tid 101');
+    expect(h.implementations.kernel_mark_process_signaled).not.toHaveBeenCalled();
+    expect((h.worker as any).processes.get(100).memory).toBe(replacement);
+    expect(h.worker.inspectMemoryGroupBacking(23)!.allocatedPages).toBeGreaterThan(1);
+  });
+});
+
+describe('exact grouped crash authority', () => {
+  it('refuses an invented image and old source before signaling a replacement PID', () => {
+    const h = stoppedImageHarness();
+    expect(h.worker.recordMemoryGroupCrash({} as any)).toBe(-3);
+    expect(h.worker.recordMemoryGroupCrash(h.handle, 0)).toBe(-22);
+    h.worker.testAuthority.replaceProcessRegistrationForLifecycleTest({ pid: 100,
+      memory: new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true }), channelOffsets: [] });
+    expect(h.worker.recordMemoryGroupCrash(h.handle)).toBe(-3);
+  });
+});
+
+describe('bounded exact image inspection', () => {
+  it('returns only a scalar from the exact image and refuses a retired or invented capability', async () => {
+    const h = stoppedImageHarness(), source = (h.worker as any).processes.get(100).source;
+    source.atomicStoreI32(4, 0xf1234567 | 0);
+    expect(h.worker.inspectMemoryGroupWord(h.handle, 4)).toBe(0xf1234567);
+    expect(h.worker.inspectMemoryGroupWord({} as any, 4)).toBe(-3);
+    expect(h.worker.inspectMemoryGroupWord(h.handle, 3)).toBe(-22);
+    expect(h.worker.inspectMemoryGroupWord(h.handle, 15 * 65536)).toBe(-14);
+    h.stop(); h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
+    expect(await h.worker.retireMemoryGroupImage(h.handle, () => {})).toBe(0);
+    expect(h.worker.inspectMemoryGroupWord(h.handle, 4)).toBe(-3);
   });
 });
 

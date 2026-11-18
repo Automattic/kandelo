@@ -36,6 +36,35 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   };
   return { ...h, barrier, describe, prepare };
 }
+describe('exact image cooperative stop', () => {
+  it('stops only the exact image peers, retaining a natural actor until its real fence', async () => {
+    const h = imageWithThread(), otherReceipt = task({ pid: 200, tid: 200, serial: 3n });
+    const other = h.store.prepareImage(otherReceipt, layout), launch = h.store.publish(other, otherReceipt), control = h.control(launch);
+    const charged = h.store.snapshot().allocatedPages;
+    expect(h.store.requestImageStop(h.a, h.main.tid)).toBe(true);
+    expect(Atomics.load(h.left, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(1);
+    expect(Atomics.load(h.right, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(0);
+    expect(Atomics.load(control, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(1);
+    expect(() => h.store.prepareThread(task({ tid: 102, serial: 4n }))).toThrow(/stop/);
+    expect(() => h.store.beginImageExecutionPause(h.a)).toThrow(/barrier/);
+    let settled = false; const stopped = h.store.waitForImageQuiescence(h.a).then(() => { settled = true; });
+    h.store.noteReplicaQuiescent(h.b); await Promise.resolve(); expect(settled).toBe(false);
+    h.store.noteReplicaQuiescent(h.a); await stopped;
+    expect(h.store.snapshot().allocatedPages).toBe(charged); expect(launch.source.readBytes(0, 1)).toEqual(Uint8Array.of(0)); h.store.close();
+  });
+  it('keeps a busy queue charged and re-drains only this image after actual lock release', () => {
+    const h = imageWithThread(), lock = new Int32Array(h.leader.envelope.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1);
+    const charged = h.store.snapshot().allocatedPages; Atomics.store(lock, 0, 1);
+    expect(h.store.requestImageStop(h.a)).toBe(false);
+    expect(Atomics.load(h.left, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(0);
+    expect(Atomics.load(h.right, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(0);
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged, pendingWaitDrains: 2, exposedReplicas: 2 });
+    Atomics.store(lock, 0, 0); Atomics.notify(lock, 0);
+    expect(h.store.requestImageStop(h.a)).toBe(true);
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged, pendingWaitDrains: 0, exposedReplicas: 2 }); h.store.close();
+  });
+});
+
 describe('exact whole-image page retirement', () => {
   const stop = (h: ReturnType<typeof imageWithThread>) => {
     h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);

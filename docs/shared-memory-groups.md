@@ -397,10 +397,36 @@ explicit missing-stop-proof error and retains all affected storage. Returning
 an errno in that case would let musl unmap its stack while an uncertain realm
 might still use it.
 
-Full forced lifecycle, browser-memory, conformance, canonical desktop and
-performance acceptance remains open. Unit coverage of proven stopped launch
-failure does not establish the real blocked/busy kill, exec, crash and destroy
-matrix.
+Grouped process exit has an exact image owner. Rust records exit first and
+withholds wait status while any execution receipt lives. The host requests
+cooperative stop only for that image, retries a busy wait-queue drain and joins
+every actual Worker fence before publishing SIGCHLD and onExit. A natural exit
+actor finishes its existing syscall/import handshake; signal death exempts no
+actor. Image storage retirement also joins this publication owner, whose
+registration reference is cleared after successful publication.
+
+The C forced-exit probe blocks one child in a pipe read, runs another in a pure
+atomic-counter loop and traps a third with an unreachable instruction. The host
+observes the actual registered pipe-read wait and changing child counter before
+allowing the guest parent to issue SIGKILL. Wait status is SIGKILL for both
+killed children; the existing host-crash policy records the trap as SIGSEGV.
+Each onExit follows the exact Worker fence. The busy counter remains unchanged
+after publication, the parent remains active in the same backing, and forty
+same-backing cohorts check bounded allocation and complete image release.
+
+Bounded kernel-realm inspection returns a copied atomic guest word from an
+opaque image capability. It exposes no Memory or view. Crash recording checks
+both current registration/source and Rust exec generation, so a late old-image
+error cannot signal a replacement PID. Grouped clone protocol/rollback errors
+fail the instance with charges retained instead of targeting a PID alone. The
+optional blocked-syscall observer reports whether Rust or a host pipe wait owns
+the block; that observation is not a completion or stop proof.
+
+Forced pthread/native-wait cancellation races, exec replacement and destroy
+still require real C/browser lifecycle coverage. Full browser-memory,
+conformance, canonical desktop and performance acceptance remains open. Unit
+coverage of a stopped callback failure does not establish guest post-adoption
+rollback semantics.
 
 An exact stopped replica can leave an active image barrier. Its member is
 removed without fabricating an execution ACK, and its ACK observer is notified
