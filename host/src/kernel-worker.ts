@@ -1,5 +1,6 @@
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import type { WorkerHandle } from "./worker-adapter";
+import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator, type ThreadAllocation } from './thread-allocator';
 import { retryKernelEntryResult } from './kernel-entry-retry';
 import { GroupProcessAddressSpace, ProcessAddressFault, type NativeI32Observation } from "./process-address-space";
@@ -2158,6 +2159,8 @@ interface CloneRollbackState {
   finish?: () => void;
   controlCleanup?: Promise<void>;
   failureCompletionPending?: boolean;
+  launchSettled?: Promise<void>;
+  settleLaunch?: () => void;
 }
 
 interface GroupThreadControlOwner {
@@ -2169,6 +2172,7 @@ interface GroupThreadControlOwner {
   readonly receipt: MemoryGroupTaskReceipt;
   readonly allocation: ThreadAllocation;
   readonly allocator: ThreadPageAllocator;
+  retireHostReferences?: () => boolean;
 }
 interface GroupThreadRetirement {
   owner?: GroupThreadControlOwner;
@@ -3245,6 +3249,7 @@ export class CentralizedKernelWorker {
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
   #observedMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
   #observedMemoryGroupWorkers = new WeakSet<WorkerHandle>();
+  #memoryGroupWorkerBindings = new WeakMap<PreparedGroupReplica, { worker: WorkerHandle; retire: () => void }>();
   #groupImageRetirements = new WeakMap<PreparedGroupReplica, GroupImageRetirement>();
   #memoryGroupImageRegistrations = new WeakMap<PreparedGroupReplica, {
     readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace }>();
@@ -8328,7 +8333,7 @@ export class CentralizedKernelWorker {
    * notifications (including terminate's synthetic exit) are not proof.
    * No physical pages are released by this execution-custody transition. */
   observeMemoryGroupReplicaWorker(handle: PreparedGroupReplica, worker: WorkerHandle,
-    options: { terminationProvesQuiescence: boolean }): void {
+    options: { terminationProvesQuiescence: boolean; retireHostReferences?: () => boolean }): void {
     const store = this.#memoryGroupReplicas.get(handle);
     if (!store || store.isUnexposed(handle)) throw Error('Grouped Worker needs a published replica');
     if (this.#observedMemoryGroupReplicas.has(handle) || this.#observedMemoryGroupWorkers.has(worker)) {
@@ -8337,14 +8342,18 @@ export class CentralizedKernelWorker {
     const receipt = store.receipt(handle);
     const joins = options.terminationProvesQuiescence;
     this.#runImmediateKernelEntry('observe exact grouped Worker', entry => {
-      if (typeof this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry) === 'number') {
-        throw Error('Grouped Worker has a stale admission');
-      }
+      const stale = typeof this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry) === 'number';
+      // A stale deferred launch may still prove absence. Seal it before any
+      // binding; ordinary or constructor-attempted Workers remain refused.
+      if (stale && !DeferredWorkerHandle.sealNeverStarted(worker)) throw Error('Grouped Worker has a stale admission');
+      const controlOwner = this.#memoryGroupThreadControls.get(handle);
+      if (controlOwner) controlOwner.retireHostReferences = options.retireHostReferences;
       let settled = false;
       const retire = (): void => {
         if (settled) return;
-        settled = true;
+        settled = true; this.#memoryGroupWorkerBindings.delete(handle);
         worker.off('message', onMessage); worker.off('exit', onExit);
+        if (this.#kernelFatalError !== null) return;
         this.#runOrDeferKernelEntry('retire quiescent grouped Worker', stopEntry => {
           const begin = this.#memoryGroupTaskActionWithinKernelEntry(receipt,
             MEMORY_GROUP_PROTOCOL.task_actions.beginRetirement, stopEntry);
@@ -8372,9 +8381,24 @@ export class CentralizedKernelWorker {
       };
       const onExit = (): void => { if (joins) retire(); };
       this.#observedMemoryGroupReplicas.add(handle); this.#observedMemoryGroupWorkers.add(worker);
+      this.#memoryGroupWorkerBindings.set(handle, { worker, retire });
       worker.on('message', onMessage); worker.on('exit', onExit);
+      if (stale) retire();
       return undefined;
     });
+  }
+
+  /** Only the very same observed private Deferred handle can seal absence.
+   * No constructor attempt, other handle or synthetic exit grants this proof. */
+  sealMemoryGroupReplicaWorkerAbsence(handle: PreparedGroupReplica, worker: WorkerHandle): boolean {
+    let sealed = false;
+    this.#runImmediateKernelEntry('seal exact grouped Worker absence', _entry => {
+      const binding = this.#memoryGroupWorkerBindings.get(handle);
+      if (binding?.worker !== worker || !DeferredWorkerHandle.sealNeverStarted(worker)) return undefined;
+      sealed = true; binding.retire();
+      return undefined;
+    });
+    return sealed;
   }
 
   cancelUnexposedMemoryGroupReplica(handle: PreparedGroupReplica): number {
@@ -10209,20 +10233,26 @@ export class CentralizedKernelWorker {
       if (!owner.store.replicaExecutionStopped(handle)) return undefined;
       const registration = this.processes.get(owner.receipt.pid);
       if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.allocation.channelOffset)) return undefined;
-      const launches = [...this.#pendingGroupClones].filter(clone => clone.pendingAttachment?.groupedReplica === handle).map(clone => clone.finished!);
-      let resolve!: (result: number) => void, reject!: (cause: unknown) => void;
-      const finished = new this.#promiseReceiver<number>((yes, no) => { resolve = yes; reject = no; });
-      record = { owner, finished, released: false };
-      const owned = record;
-      this.#groupThreadRetirements.set(handle, owned); this.#pendingGroupThreadRetirements.add(owned);
-      entry.deferProtocolEffect(() => {
-        void this.#settleGroupThreadRetirement(owned, launches, retireHostReferences).then(resolve, reject)
-          .finally(() => { this.#pendingGroupThreadRetirements.delete(owned); });
-        return undefined;
-      });
+      const launches = [...this.#pendingGroupClones].filter(clone => clone.pendingAttachment?.groupedReplica === handle).map(clone => clone.launchSettled!);
+      record = this.#beginGroupThreadRetirement(owner, launches, retireHostReferences, entry);
       return undefined;
     });
     return record?.finished ?? Promise.resolve(refusal);
+  }
+
+  #beginGroupThreadRetirement(owner: GroupThreadControlOwner, launches: readonly Promise<void>[],
+    retireHostReferences: () => void, entry: KernelWorkerEntryContext): GroupThreadRetirement {
+    if (this.#groupThreadRetirements.has(owner.handle)) this.#memoryGroupProtocolError('Duplicate exact thread retirement');
+    let resolve!: (result: number) => void, reject!: (cause: unknown) => void;
+    const finished = new this.#promiseReceiver<number>((yes, no) => { resolve = yes; reject = no; });
+    const record: GroupThreadRetirement = { owner, finished, released: false };
+    this.#groupThreadRetirements.set(owner.handle, record); this.#pendingGroupThreadRetirements.add(record);
+    entry.deferProtocolEffect(() => {
+      void this.#settleGroupThreadRetirement(record, launches, retireHostReferences).then(resolve, reject)
+        .finally(() => { this.#pendingGroupThreadRetirements.delete(record); });
+      return undefined;
+    });
+    return record;
   }
 
   async #settleGroupThreadRetirement(record: GroupThreadRetirement, launches: readonly Promise<void>[],
@@ -12807,6 +12837,15 @@ export class CentralizedKernelWorker {
         cause,
       ));
     }
+  }
+
+  /** Terminal reporting only: completion/rollback callbacks above still own
+   * fresh ingress. This observer neither enters Rust nor publishes a mailbox,
+   * and must also consume a rejection after that ingress has failed the gate. */
+  #observeProtocolCompletionFailure(completion: Promise<unknown>): void {
+    kernelEntryIntrinsicApply(this.#promiseThen, completion, [undefined, (cause: unknown) => {
+      this.#failKernelInstance(kernelEntryEffectFailure('protocol completion failed', cause));
+    }]);
   }
 
   #continuePromise<T>(
@@ -24740,6 +24779,7 @@ export class CentralizedKernelWorker {
     const attachment = cloneState.cloneAttachment!;
     if (groupedClone) {
       cloneState.finished = new this.#promiseReceiver<void>(resolve => { cloneState.finish = resolve; });
+      cloneState.launchSettled = new this.#promiseReceiver<void>(resolve => { cloneState.settleLaunch = resolve; });
       this.#pendingGroupClones.add(cloneState);
     }
     entry.deferProtocolTransactionStart(() => {
@@ -24782,7 +24822,7 @@ export class CentralizedKernelWorker {
         );
         return undefined;
       }
-      this.#continuePromise(transaction, () => {
+      const completion = this.#continuePromise(transaction, () => {
         this.#runOrDeferAllocatedCloneCompletionKernelEntry(
           tid,
           `clone launch completion pid=${channel.pid}`,
@@ -24851,6 +24891,7 @@ export class CentralizedKernelWorker {
           cloneState,
         );
       });
+      this.#observeProtocolCompletionFailure(completion);
       return undefined;
     });
   }
@@ -24948,6 +24989,15 @@ export class CentralizedKernelWorker {
         );
         return;
       }
+      const replica = state.pendingAttachment?.groupedReplica;
+      if (replica && !this.#memoryGroupReplicas.get(replica)!.replicaExecutionStopped(replica)) {
+        // Returning an errno would let musl unmap/reuse the failed stack while
+        // an uncertain realm may still execute. Keep the creator pending and
+        // retain all charges; never report a synthetic exit or crash a successor.
+        state.failureCompletionPending = true;
+        this.#failKernelInstance(new MemoryGroupProtocolFault('Failed grouped thread has no execution-stop proof', { cause }));
+        return;
+      }
       if (state.controlCleanup) {
         state.failureCompletionPending = true;
         entry.deferProtocolEffect(() => {
@@ -24986,6 +25036,12 @@ export class CentralizedKernelWorker {
   }
 
   #finishGroupClone(state: CloneRollbackState, entry: KernelWorkerEntryContext): void {
+    if (this.#kernelFatalError !== null) return;
+    const settle = state.settleLaunch;
+    if (settle) {
+      state.settleLaunch = undefined;
+      entry.deferProtocolEffect(() => { settle(); return undefined; });
+    }
     if (state.failureCompletionPending || !this.#pendingGroupClones.delete(state)) return;
     const finish = state.finish!;
     entry.deferProtocolEffect(() => { finish(); return undefined; });
@@ -25080,7 +25136,7 @@ export class CentralizedKernelWorker {
     if (groupedReplica) {
       const store = this.#memoryGroupReplicas.get(groupedReplica);
       if (!store) this.#memoryGroupProtocolError('Clone rollback lost its exact replica');
-      this.#quarantineStartedMemoryGroupReplica(store, groupedReplica, entry, true);
+      if (!store.replicaExecutionStopped(groupedReplica)) this.#quarantineStartedMemoryGroupReplica(store, groupedReplica, entry, true);
     }
     this.#rollbackKernelThreadWithinKernelEntry(
       channel.pid,
@@ -25091,6 +25147,21 @@ export class CentralizedKernelWorker {
       throw transportRollbackError;
     }
     const pending = state.pendingAttachment;
+    if (groupedReplica && !state.controlCleanup) {
+      const owner = this.#memoryGroupThreadControls.get(groupedReplica);
+      if (owner?.store.replicaExecutionStopped(groupedReplica)) {
+        const retire = owner.retireHostReferences;
+        if (!retire) this.#memoryGroupProtocolError('Failed published thread lost its reference owner');
+        // This cleanup itself owns clone.finished. Joining that same promise
+        // here would deadlock refusal and image retirement behind one another.
+        const record = this.#groupThreadRetirements.get(groupedReplica) ?? this.#beginGroupThreadRetirement(owner, [], () => {
+          if (!retire()) throw new MemoryGroupProtocolFault('Failed published thread references have no stop proof');
+        }, entry);
+        state.controlCleanup = record.finished.then(status => {
+          if (status !== 0) throw new MemoryGroupProtocolFault(`Failed published thread retirement refused: ${status}`);
+        });
+      }
+    }
     if (pending?.controlSlot && pending.controlOwner && !pending.controlStarted && !state.controlCleanup) {
       // Keep the exact clone/image owner until fresh-entry cleanup completes.
       state.controlCleanup = new this.#promiseReceiver<void>((resolve, reject) => {

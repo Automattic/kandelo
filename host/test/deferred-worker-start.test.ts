@@ -56,6 +56,16 @@ describe("DeferredWorkerHandle", () => {
     expect(messages).toEqual([{ type: "ready" }]);
   });
 
+  it('removes exact listeners from a retired backing after dropping its strong reference', async () => {
+    const adapter = new MockWorkerAdapter(), handle = new DeferredWorkerHandle(() => adapter.createWorker({}));
+    const message = vi.fn(), exit = vi.fn(); handle.on('message', message); handle.on('exit', exit); handle.start();
+    const backing = adapter.lastWorker!;
+    await handle.terminate();
+    expect((handle as any).worker).toBeNull();
+    handle.off('message', message); handle.off('exit', exit);
+    backing.simulateMessage({ type: 'stale' }); backing.simulateExit(0);
+    expect(message).not.toHaveBeenCalled(); expect(exit).not.toHaveBeenCalled();
+  });
   it("permanently cancels construction when terminated before start", async () => {
     const create = vi.fn(() => new MockWorkerAdapter().createWorker({}));
     const handle = new DeferredWorkerHandle(create);

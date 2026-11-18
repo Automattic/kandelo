@@ -14,6 +14,8 @@ const probes = [
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
   { name: "fork", source: "grouped-sdk-fork.c", markers: ["grouped-fork-child PASS", "grouped-sdk-fork PASS"], partial: "", groupedOnly: true },
   { name: "pthread", source: "grouped-sdk-pthread.c", markers: ["grouped-sdk-pthread PASS tls-init-growth-wait32-wait64-join"], partial: "", groupedOnly: true },
+  { name: "pthread-launch-rollback", source: "grouped-sdk-pthread-launch-rollback.c", markers: ["grouped-sdk-pthread-launch-rollback PASS 16"], partial: "", groupedOnly: true },
+  { name: "pthread-constructor-failure", source: "grouped-sdk-pthread-launch-rollback.c", markers: [], partial: "", groupedOnly: true },
   { name: "pthread-rollback", source: "grouped-sdk-pthread-rollback.c", markers: ["grouped-sdk-pthread-rollback PASS"], partial: "", groupedOnly: true },
   { name: "pthread-churn", source: "grouped-sdk-pthread-churn.c", markers: ["grouped-sdk-pthread-churn PASS 256"], partial: "", groupedOnly: true },
 ];
@@ -83,9 +85,22 @@ for (const probe of probes) for (const grouped of [false, true]) {
       worker.onmessage = event => { clearTimeout(deadline); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(deadline); worker.terminate(); reject(new Error(event.message)); };
       worker.postMessage(request);
-    }), { grouped, probe: probe.name, physicalPages: probe.name === "pthread-rollback" ? 196 : undefined });
+    }), { grouped, probe: probe.name, physicalPages: probe.name === "pthread-rollback" ? 196 : undefined,
+      rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined, uncertainThreadConstructor: probe.name === "pthread-constructor-failure" });
     writeFileSync(info.outputPath("result.json"), JSON.stringify({ engine: info.project.name,
       version: browser.version(), inputs, result }, null, 2) + "\n");
+    if (probe.name === 'pthread-constructor-failure') {
+      expect(result.failureMessage).toBe('Failed grouped thread has no execution-stop proof');
+      expect(result.stdout).toBe('');
+      expect(result.kernelExit).toBeUndefined();
+      expect(result.processExit).toBeUndefined();
+      expect(result.failedThreadLaunches).toEqual([expect.objectContaining({ cause: 'Error: fixture uncertain thread constructor' })]);
+      expect(result.failedThreadWorkers).toEqual([expect.objectContaining({ executionAbsent: false, quiescent: false, joined: false })]);
+      expect(result.threadConstructionAttempts).toBe(1);
+      expect(result.memory).toMatchObject({ backing: { images: 1, replicas: 2, quarantinedReplicas: 2 } });
+      expect(result.retirement).toBeUndefined();
+      return;
+    }
     expect(result.failure, JSON.stringify(result)).toBeUndefined();
     expect(result.diagnostics).toEqual([]);
     expect(result.stderr).toBe("");
@@ -98,6 +113,15 @@ for (const probe of probes) for (const grouped of [false, true]) {
     if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
     if (probe.name === 'fork') {
       expect(result.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true })]);
+    }
+    if (probe.name === 'pthread-launch-rollback') {
+      expect(result.failedThreadLaunches).toHaveLength(16);
+      expect(result.failedThreadWorkers).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ executionAbsent: true, quiescent: true, joined: false })));
+      expect(result.threadConstructionAttempts).toBe(16);
+      expect(result.threads).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ exited: true, quiescent: true, retired: true })));
+      const samples = result.threadRetirementMemory as any[];
+      expect(samples).toHaveLength(16);
+      expect(new Set(samples.slice(-8).map(row => row.backing.physicalExtentPages)).size).toBe(1);
     }
     if (probe.name === 'pthread-rollback') {
       expect(result.failedThreadLaunches).toEqual([expect.objectContaining({

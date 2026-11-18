@@ -24,7 +24,7 @@ function ownership(joins: boolean, constructorFails = false) {
 it('seals an absent pthread and closes only its endpoint, preserving the process generation', () => {
   const h = ownership(false), charged = h.store.snapshot().allocatedPages;
   expect(h.child.releaseAfterStop()).toBe(true); expect(h.worker.start()).toBe(false);
-  expect(h.child.quiescent).toBe(false); expect(h.closed).toHaveBeenCalledTimes(1);
+  expect(h.child.executionAbsent).toBe(true); expect(h.child.quiescent).toBe(true); expect(h.closed).toHaveBeenCalledTimes(1);
   expect(h.child.releaseAfterStop()).toBe(true); expect(h.cleanup).toHaveBeenCalledTimes(1);
   expect(() => h.owner.startGeneration(100)).toThrow(/live generation/);
   expect(h.store.snapshot().allocatedPages).toBe(charged); h.store.close();
