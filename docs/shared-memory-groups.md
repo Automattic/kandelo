@@ -271,8 +271,28 @@ query reads the committed kernel break without a barrier or allocation;
 memory-admission failure on growth reports the unchanged break. Queries and
 failed mutations use the normal signal-delivery path before completion, and
 cancelling a queued owner preserves its earlier dependency for successors. These
-internal tests do not establish usable grouped program execution or measured
+unit tests alone do not establish usable grouped program execution or measured
 dispatch cost.
+
+The standalone `grouped-sdk-execution` fixtures also run a real libc C program
+prepared by `wasm32posix-cc`, the normal fork instrumenter and
+`wasm32posix-shared-memory`. A disposable kernel Worker admits the image and
+launches the normal process Worker entry through the memory-free readiness
+handshake. The page receives only copied output and status. The probe covers
+an observable heap allocation, atomics, read-only pipe sources, rejected
+read-only destinations without consuming the pipe byte, protection restoration,
+in-place and moved remaps, fixed replacement and zeroing. Restored protection
+coalesces only compatible adjacent metadata with identical backing/driver
+ownership and contiguous file offsets; growing a suffix preserves its
+neighbor's mapping. The ordinary control records its existing partial
+protection behavior explicitly rather than claiming ordinary enforcement.
+
+Run the Node case with `cd host && npx vitest run test/grouped-sdk-execution.test.ts`
+and the Chromium/Firefox/WebKit cases with
+`cd apps/browser-demos && npx playwright test --config playwright.grouped-sdk.config.ts`,
+each through `scripts/dev-shell.sh`. These are internal admission and syscall
+integration checks, not a public launcher, package/image desktop, fork/pthread,
+reclamation, conformance, browser-memory or performance acceptance result.
 
 These internal components do not expose an embedding launch option. Mapping
 publication stays within the admitted virtual capacity; physical group growth
