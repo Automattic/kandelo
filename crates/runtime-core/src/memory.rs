@@ -1,4 +1,5 @@
 extern crate alloc;
+pub(crate) mod change;
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::collections::BTreeSet;
@@ -99,6 +100,8 @@ pub struct MemoryLayoutMetadata {
 
 /// Kernel memory manager for mmap/munmap/brk.
 pub struct MemoryManager {
+    /// Exact staged-change owner; ordinary operations leave this empty.
+    pending_change: Option<u64>,
     /// List of active mappings, kept sorted by address.
     mappings: IoBuffer<MappedRegion>,
     last_exact_mapping_id: u64,
@@ -157,6 +160,7 @@ impl MemoryManager {
 
     pub fn new() -> Self {
         MemoryManager {
+            pending_change: None,
             mappings: IoBuffer::new(),
             reserved_regions: IoBuffer::new(),
             last_exact_mapping_id: 0,
