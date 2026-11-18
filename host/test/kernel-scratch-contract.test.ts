@@ -1163,6 +1163,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "apps/browser-demos/test/fixtures/process-address-space-worker.ts::runProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This disposable browser test Worker owns a synthetic two-MiB-maximum group backing to check address access and actual engine wait settlement. Only scalar verdicts leave the Worker; it is not kernel memory or a guest launch.",
+  },
+  {
+    key: "apps/browser-demos/test/fixtures/process-address-space-worker.ts::runProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 3, maximum: 4, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The same disposable browser test Worker owns this bounded native control memory. No Memory or view reaches the page, and the fixture closes the Worker after the actual native wait settles.",
+  },
+  {
     key: "host/src/dri/byte-snapshot.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "Captures only the native buffer getter for authenticating the original mapped process Memory and the independent device baseline; no Memory or buffer is captured at module scope.",
