@@ -856,6 +856,30 @@ export class MemoryGroupImageStore {
     return 'released';
   }
 
+  /** No replica was Started or exposed for this reservation. Keep its
+   * mapped storage, proving physical words unobserved before Rust rebinds the
+   * row. The caller retains the cancelled receipt and root through completion. */
+  tryReleaseUnconstructedThreadControl(rootHandle: PreparedGroupReplica, address: number, length: number,
+    releaseControl: () => boolean): 'released' | 'busy' {
+    const root = this.owned(rootHandle), image = root.image;
+    if (this.closed || image.mapping) return 'busy';
+    if (root.receipt.pid !== root.receipt.tid || !memoryGroupU32(address, length) || !length
+        || address % PAGE || length % PAGE || address + length > image.layout.maximumVirtualPages * PAGE) {
+      fault('Invalid unconstructed thread control interval');
+    }
+    const ranges: { start: number; end: number }[] = [];
+    const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
+    for (let page = address / PAGE; page < (address + length) / PAGE; page++) {
+      const entry = Atomics.load(table, page), start = (entry >>> 16) * PAGE;
+      if (!start || (entry & 0xffff) !== 3 || start + PAGE > this.memory.buffer.byteLength) fault('Invalid unconstructed control PTE');
+      ranges.push({ start, end: start + PAGE });
+    }
+    if ([...image.nativeObservations].some(pin => ranges.some(range => pin.physicalAddress >= range.start && pin.physicalAddress < range.end))) return 'busy';
+    // Zero cannot name a replica. Select physical targets, including peer waits.
+    if (memoryGroupReplicaWaitsRetired(this.memory, image.root, 0, ranges) !== true) return 'busy';
+    return this.pool.tryReleaseRetiredPages(new Uint32Array(), releaseControl) === 'busy' ? 'busy' : 'released';
+  }
+
   /** Retry scheduling only. The bounded engine wait must actually settle and
    * the next entry must prove retirement again; elapsed time grants no reuse. */
   waitForThreadRetirementProgress(handle: PreparedGroupReplica): Promise<void> {

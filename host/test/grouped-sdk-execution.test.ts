@@ -15,6 +15,7 @@ const probes = [
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
   { name: "fork", source: "grouped-sdk-fork.c", markers: ["grouped-fork-child PASS", "grouped-sdk-fork PASS"], partial: "", groupedOnly: true },
   { name: "pthread", source: "grouped-sdk-pthread.c", markers: ["grouped-sdk-pthread PASS tls-init-growth-wait32-wait64-join"], partial: "", groupedOnly: true },
+  { name: "pthread-rollback", source: "grouped-sdk-pthread-rollback.c", markers: ["grouped-sdk-pthread-rollback PASS"], partial: "", groupedOnly: true },
   { name: "pthread-churn", source: "grouped-sdk-pthread-churn.c", markers: ["grouped-sdk-pthread-churn PASS 256"], partial: "", groupedOnly: true },
 ];
 const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture>; groupedPath: string }>();
@@ -51,7 +52,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
     const { ordinary, groupedPath } = fixtures.get(probe.name)!;
     const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
       eval: true,
-      workerData: { grouped, trace: true, kernelPath: resolveBinary("kernel.wasm"),
+      workerData: { grouped, trace: true, physicalPages: probe.name === "pthread-rollback" ? 196 : undefined, kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -81,6 +82,14 @@ for (const probe of probes) for (const grouped of [false, true]) {
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
       if (probe.name === 'fork') {
         expect(result.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true, joined: true })]);
+      }
+      if (probe.name === 'pthread-rollback') {
+        expect(result.failedThreadLaunches).toEqual([expect.objectContaining({
+          cause: 'Error: Cannot prepare grouped pthread: errno 12',
+          before: expect.objectContaining({ maximumVirtualPages: 2048, backing: expect.objectContaining({ maximumPages: 196, allocatedPages: 192 }) }),
+          after: expect.objectContaining({ backing: expect.objectContaining({ allocatedPages: 196 }) }),
+        })]);
+        expect(result.threads).toEqual([expect.objectContaining({ exited: true, quiescent: true, retired: true })]);
       }
       if (probe.name === 'pthread-churn') {
         expect(result.threads).toEqual(Array.from({ length: 256 }, () => expect.objectContaining({ exited: true, quiescent: true, retired: true })));

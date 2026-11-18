@@ -26,6 +26,7 @@ export interface SdkExecutionOptions {
   adapter: WorkerAdapter;
   joinOnExit: boolean;
   trace?: boolean;
+  physicalPages?: number;
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -81,6 +82,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const threadAllocators = new Map<number, ThreadPageAllocator>();
   const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
+  const failedThreadLaunches: Record<string, unknown>[] = [];
   const trace: string[] = [];
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let result: Record<string, unknown>;
@@ -134,7 +136,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               maxPageExclusive: processLayout.threadArenaEndPage, reservedSlots: processLayout.threadSlotCount, ptrWidth: 4 });
             threadAllocators.set(attachment.pid, allocator);
           }
-          await launchGroupedThreadWorker({ kernel, attachment, allocator, adapter, imports, generation: processGeneration,
+          const before = memoryEvidence();
+          try { await launchGroupedThreadWorker({ kernel, attachment, allocator, adapter, imports, generation: processGeneration,
             programBytes: options.programBytes, terminationProvesQuiescence: options.joinOnExit,
             isCurrent: thread => threads.get(thread.tid) === thread,
             retain: thread => threads.set(thread.tid, thread),
@@ -147,7 +150,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             },
             onError: reject,
             onExit: (code, _thread) => { if (code !== 0) reject(Error(`pthread Worker exit ${code}`)); else maybeComplete(); },
-          });
+          }); } catch (error) {
+            failedThreadLaunches.push({ before, after: memoryEvidence(), cause: String(error) });
+            throw error;
+          }
         },
         onGroupedFork: async request => {
           imageHandles.set(request.childPid, request.childReplica);
@@ -214,8 +220,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         if (grouped) {
           let group = machine?.group;
           if (group === undefined) {
-            status(kernel.configureMemoryGroups(2048, 1), "configure groups");
-            group = status(kernel.createMemoryGroup(2048, 4, 8), "create group");
+            status(kernel.configureMemoryGroups(options.physicalPages ?? 2048, 1), "configure groups");
+            group = status(kernel.createMemoryGroup(options.physicalPages ?? 2048, 4, 8), "create group");
             status(kernel.createMemoryGroupBacking(group), "create backing");
             if (machine) machine.group = group;
           }
@@ -302,12 +308,13 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       retirement = { before, after: memoryEvidence(), statuses };
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
-      retirement, threadRetirementMemory,
+      retirement, threadRetirementMemory, failedThreadLaunches,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
     trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
+      failedThreadLaunches,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
       failure: error instanceof Error ? error.stack : String(error) };

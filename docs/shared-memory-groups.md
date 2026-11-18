@@ -351,9 +351,28 @@ reach zero; image exit returns allocation to the single metadata page. Limits
 stay at 2,048 maximum pages and 1,024 declared thread slots. This is allocator
 reuse evidence, not an RSS or reservation reduction claim.
 
-A known quota refusal is checked before requesting controls. Racing admissions
-and later launch failures still need complete control rollback. Full forced
-lifecycle, browser-memory, conformance and performance acceptance remains open.
+A known quota refusal is checked before requesting controls. If control
+reservation commits but replica scratch allocation fails before Start, clone
+rollback retains the exact thread receipt and image capability. After Rust
+cancels the unconstructed admission, the host settles any attached channel and
+physical native/queue pins before releasing the control row to the reusable
+cache. Creator failure completion and whole-image release join that cleanup.
+Start is recorded before publication: a publication exception is never treated
+as proof that no execution realm exists.
+
+A real SDK C probe uses a 196-page physical budget with the unchanged 2,048-page
+virtual ceiling. The first clone reserves four control pages, exhausts the
+physical budget and fails its two-page scratch allocation. Musl reports
+EAGAIN, then frees its failed stack. The guest frees two held anonymous pages
+for scratch headroom; retry must reuse the existing four-page controls and
+runs/joins normally. The previous host fails the same retry by requesting
+another control slot. Node, Chromium, Firefox and WebKit pass the corrected
+path and return image allocation to one metadata page after exit. The initial
+experiment without freeing scratch headroom failed and is retained.
+
+Published deferred cancellation, attempted-constructor failures and full forced
+lifecycle still need their separate absence/stop proofs. Full browser-memory,
+conformance, canonical desktop and performance acceptance remains open.
 
 An exact stopped replica can leave an active image barrier. Its member is
 removed without fabricating an execution ACK, and its ACK observer is notified
