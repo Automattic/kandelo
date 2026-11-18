@@ -2,6 +2,7 @@ import * as G from './generated/program-extensions.ts';
 
 const PAGE=G.MEMORY_GROUP_PAGE_BYTES,CONTROL=G.MEMORY_GROUP_CONTROL/4;
 export interface GroupPageExtent {readonly first:number;readonly pages:number}
+export interface GroupImagePageAllocation {readonly controls:GroupPageExtent;readonly scratch:GroupPageExtent}
 export type GroupPageAllocationResult = 'allocated' | 'busy' | 'exhausted';
 
 /** Physical allocation primitive shared with the translated C grow helper.
@@ -83,6 +84,62 @@ export class MemoryGroupPagePool {
       for(let at=0;at<destination.length;at++)this.setUsed(fresh,destination[at],true);
       fresh[CONTROL+1]=Math.max(fresh[CONTROL+1],last+1);
       return 'allocated';
+    });
+  }
+  /** Reserve an unpublished image in one pool entry. Roots and replica controls
+   * need contiguous storage; private payload pages may use fragmented holes.
+   * Busy/exhausted preserve the caller's output and every allocation bit.
+   */
+  tryAllocateImage(controlsPages:number,scratchPages:number,payload:Uint32Array):GroupImagePageAllocation|'busy'|'exhausted' {
+    this.independentPages(payload);
+    const total=controlsPages+scratchPages+payload.length;
+    if(!Number.isSafeInteger(controlsPages)||controlsPages<1||!Number.isSafeInteger(scratchPages)||scratchPages<1
+        ||!Number.isSafeInteger(total))throw RangeError('Invalid image page allocation');
+    if(total>=this.maximumPages)return 'exhausted';
+    const selected=new Uint32Array(payload.length);
+    return this.tryLocked<GroupImagePageAllocation|'busy'|'exhausted'>('busy',words=>{
+      const findRun=(count:number,excludeFirst=0,excludePages=0):number=>{
+        let run=0;
+        for(let page=1;page<this.maximumPages;page++) {
+          if(this.used(words,page)||(page>=excludeFirst&&page<excludeFirst+excludePages))run=0;
+          else if(++run===count)return page-count+1;
+        }
+        return 0;
+      };
+      // Place the larger contiguous region first, so a small control region
+      // cannot consume the only run that fits replica scratch.
+      const controlsFirst=controlsPages>=scratchPages;
+      const firstCount=controlsFirst?controlsPages:scratchPages,secondCount=controlsFirst?scratchPages:controlsPages;
+      const first=findRun(firstCount);
+      if(!first)return 'exhausted';
+      const second=findRun(secondCount,first,firstCount);
+      if(!second)return 'exhausted';
+      const controlsStart=controlsFirst?first:second,scratchStart=controlsFirst?second:first;
+      let found=0,last=Math.max(controlsStart+controlsPages-1,scratchStart+scratchPages-1);
+      for(let page=1;page<this.maximumPages&&found<selected.length;page++) {
+        if(!this.used(words,page)&&!(page>=controlsStart&&page<controlsStart+controlsPages)
+            &&!(page>=scratchStart&&page<scratchStart+scratchPages)) {
+          selected[found++]=page;last=Math.max(last,page);
+        }
+      }
+      if(found!==selected.length)return 'exhausted';
+      const size=this.memory.buffer.byteLength/PAGE;
+      if(last>=size) {
+        try{this.memory.grow(last+1-size);}catch(error){if(error instanceof RangeError)return 'exhausted';throw error;}
+      }
+      // Prepare every view and result object before publishing ownership.
+      const fresh=new Uint32Array(this.memory.buffer),bytes=new Uint8Array(this.memory.buffer);
+      const result=Object.freeze({controls:Object.freeze({first:controlsStart,pages:controlsPages}),
+        scratch:Object.freeze({first:scratchStart,pages:scratchPages})});
+      bytes.fill(0,controlsStart*PAGE,(controlsStart+controlsPages)*PAGE);
+      bytes.fill(0,scratchStart*PAGE,(scratchStart+scratchPages)*PAGE);
+      for(const page of selected)bytes.fill(0,page*PAGE,(page+1)*PAGE);
+      payload.set(selected);
+      for(let page=controlsStart;page<controlsStart+controlsPages;page++)this.setUsed(fresh,page,true);
+      for(let page=scratchStart;page<scratchStart+scratchPages;page++)this.setUsed(fresh,page,true);
+      for(const page of selected)this.setUsed(fresh,page,true);
+      fresh[CONTROL+1]=Math.max(fresh[CONTROL+1],last+1);
+      return result;
     });
   }
   /** Only a never-published allocation may use this rollback. A busy lock

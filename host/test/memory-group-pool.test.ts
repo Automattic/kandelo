@@ -7,6 +7,42 @@ function fixture(initial=2,maximum=8,capacity=maximum) {
   return {memory,pool:MemoryGroupPagePool.initialize(memory,capacity)};
 }
 describe('shared physical page pool primitive',()=>{
+ it('reserves image controls and fragmented payload atomically and zeroes every reused page',()=>{
+  const {pool,memory}=fixture(1,16);pool.allocateContiguous(15);
+  new Uint8Array(memory.buffer,PAGE,15*PAGE).fill(0xad);
+  pool.releaseRetiredPages([1,2,4,6,8]);
+  const payload=new Uint32Array([99,99]),result=pool.tryAllocateImage(1,2,payload);
+  expect(result).toEqual({controls:{first:4,pages:1},scratch:{first:1,pages:2}});
+  expect([...payload]).toEqual([6,8]);expect(pool.snapshot().allocatedPages).toBe(16);
+  for(const page of [1,2,4,6,8])expect(new Uint8Array(memory.buffer,page*PAGE,PAGE).every(v=>v===0)).toBe(true);
+  for(const page of [3,5,7,9])expect(new Uint8Array(memory.buffer,page*PAGE,PAGE).every(v=>v===0xad)).toBe(true);
+ });
+ it('leaves image output and ownership intact on busy, exhaustion and real growth refusal',()=>{
+  const {pool,memory}=fixture(1,16),payload=new Uint32Array([99,99]);
+  const lock=new Int32Array(memory.buffer,G.MEMORY_GROUP_CONTROL,1);Atomics.store(lock,0,1);
+  try {expect(pool.tryAllocateImage(1,2,payload)).toBe('busy');expect([...payload]).toEqual([99,99]);}
+  finally {Atomics.store(lock,0,0);}
+  expect(pool.snapshot().allocatedPages).toBe(1);
+  pool.allocateContiguous(13);const before=pool.snapshot();
+  expect(pool.tryAllocateImage(1,2,payload)).toBe('exhausted');
+  expect(pool.snapshot()).toEqual(before);expect([...payload]).toEqual([99,99]);
+  const limited=fixture(1,2,16),limitedBefore=limited.pool.snapshot();
+  expect(limited.pool.tryAllocateImage(1,2,payload)).toBe('exhausted');
+  expect(limited.pool.snapshot()).toEqual(limitedBefore);expect([...payload]).toEqual([99,99]);
+ });
+ it('supports empty image payloads and multi-page controls without overlapping scratch',()=>{
+  const {pool}=fixture(1,16);
+  expect(pool.tryAllocateImage(3,2,new Uint32Array())).toEqual({controls:{first:1,pages:3},scratch:{first:4,pages:2}});
+  expect(pool.snapshot()).toMatchObject({allocatedPages:6,highWaterPages:6,physicalExtentPages:6});
+ });
+ it('rejects invalid image extents and shared output before taking the pool lock',()=>{
+  const {pool}=fixture(),before=pool.snapshot();
+  for(const [controls,scratch] of [[0,2],[1,0],[-1,2],[1,1.5],[NaN,2],[1,Infinity]]) {
+   expect(()=>pool.tryAllocateImage(controls,scratch,new Uint32Array())).toThrow();
+  }
+  expect(()=>pool.tryAllocateImage(1,2,new Uint32Array(new SharedArrayBuffer(4)))).toThrow();
+  expect(pool.snapshot()).toEqual(before);
+ });
  it('keeps groups independent and reserves page zero',()=>{
   const a=fixture(),b=fixture();const first=a.pool.allocateContiguous(1)!;
   expect(first).toEqual({first:1,pages:1});expect(b.pool.snapshot().allocatedPages).toBe(1);

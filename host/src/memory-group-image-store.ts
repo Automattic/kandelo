@@ -35,6 +35,8 @@ interface Image {
   readonly layout: GroupImageLayout;
   readonly controls: GroupPageExtent;
   readonly payload?: GroupPageExtent;
+  /** Exact unpublished private-fork custody, including fragmented pages. */
+  readonly privatePayload?: Uint32Array;
   readonly replicas: Set<Replica>;
   /** Kernel image access outlives any one execution replica. */
   readonly sourceLive: { value: boolean };
@@ -193,6 +195,75 @@ export class MemoryGroupImageStore {
     try { return this.replica(receipt, image,
       this.allocate(Math.ceil((G.MEMORY_GROUP_REPLICA_BYTES + image.layout.scratchBytes) / PAGE), allocated)); }
     catch (error) { this.pool.releaseRetiredPages(allocated.flatMap(pages)); throw error; }
+  }
+
+  /** Physical private-page inheritance only. The coordinator must freeze and
+   * synchronize Rust's parent MM before allocating its child, then revalidate
+   * both identities before publishing this prepared replica. This operation
+   * neither allocates a PID nor implements MAP_SHARED inheritance.
+   */
+  preparePrivateFork(barrier: GroupImageExecutionPause, admission: MemoryGroupTaskReceipt):
+      PreparedGroupReplica | 'waiting' | 'busy' | 'exhausted' {
+    const receipt = this.check(admission), pause = this.imagePauses.get(barrier), parent = pause?.image;
+    if (!parent || parent.pause !== pause || parent.mapping || receipt.tid !== receipt.pid
+        || receipt.pid === parent.receipt.pid || this.images.has(imageKey(receipt))) {
+      fault('Private fork has no exact paused parent and new child image');
+    }
+    if (!this.imageExecutionPauseAcknowledged(barrier)) return 'waiting';
+    const lock = new Int32Array(this.memory.buffer, parent.root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+    if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return 'busy';
+    try {
+      if (!this.imageExecutionPauseAcknowledged(barrier)) return 'waiting';
+      const header = new Uint32Array(this.memory.buffer, parent.root, G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4);
+      const extent = Atomics.load(header, 0), maximum = parent.layout.maximumVirtualPages;
+      if (extent > maximum || header[1] !== maximum || header[2] !== parent.layout.scratchBytes) {
+        fault('Invalid paused fork root');
+      }
+      const entries = new Uint32Array(maximum);
+      entries.set(new Uint32Array(this.memory.buffer, parent.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, maximum));
+      const copies = new Map<number, number>();
+      for (let at = 0; at < maximum; at++) {
+        const entry = entries[at], physical = entry >>> 16;
+        if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE
+            || (at >= extent && entry)) fault('Invalid private fork PTE');
+        if (physical && !copies.has(physical)) copies.set(physical, copies.size);
+      }
+      const privatePayload = new Uint32Array(copies.size);
+      const allocated = this.pool.tryAllocateImage(
+        Math.ceil((G.MEMORY_GROUP_ROOT_HEADER_BYTES + maximum * 4) / PAGE),
+        Math.ceil((G.MEMORY_GROUP_REPLICA_BYTES + parent.layout.scratchBytes) / PAGE), privatePayload);
+      if (typeof allocated === 'string') return allocated;
+      let image: Image | undefined;
+      try {
+        // Pool growth replaces bounded buffers. Refresh after reservation, and
+        // copy physical storage even when guest permissions are PROT_NONE.
+        const bytes = new Uint8Array(this.memory.buffer);
+        for (const [physical, index] of copies) {
+          bytes.set(bytes.subarray(physical * PAGE, (physical + 1) * PAGE), privatePayload[index] * PAGE);
+        }
+        const root = allocated.controls.first * PAGE;
+        const childHeader = new Uint32Array(this.memory.buffer, root, G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4);
+        childHeader[1] = maximum; childHeader[2] = parent.layout.scratchBytes;
+        childHeader[G.MEMORY_GROUP_ROOT_RUN / 4] = 1;
+        // Initialization stays zero: normal isForkChild binds in mode 0,
+        // claiming this new root while dropping rather than replaying data.
+        const ptes = new Uint32Array(this.memory.buffer, root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, maximum);
+        for (let at = 0; at < extent; at++) {
+          const entry = entries[at], physical = entry >>> 16;
+          if (physical) ptes[at] = (privatePayload[copies.get(physical)!] * PAGE | (entry & 3)) >>> 0;
+        }
+        Atomics.store(childHeader, 0, extent);
+        image = { receipt, root, layout: Object.freeze({ ...parent.layout, initialVirtualPages: extent }),
+          controls: allocated.controls, privatePayload, replicas: new Set(),
+          sourceLive: { value: true }, nativeObservations: new Set(), exposed: false };
+        this.images.set(imageKey(receipt), image);
+        return this.replica(receipt, image, allocated.scratch);
+      } catch (error) {
+        if (image) this.images.delete(imageKey(receipt));
+        this.pool.releaseRetiredPages([...pages(allocated.controls), ...pages(allocated.scratch), ...privatePayload]);
+        throw error;
+      }
+    } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
   }
 
   private owned(handle: PreparedGroupReplica): Replica {
@@ -652,7 +723,7 @@ export class MemoryGroupImageStore {
       fault('Image still has publication or replica custody');
     }
     this.revokeSource(image);
-    this.pool.releaseRetiredPages([...pages(image.controls), ...pages(image.payload)]); this.images.delete(key);
+    this.pool.releaseRetiredPages([...pages(image.controls), ...pages(image.payload), ...(image.privatePayload ?? [])]); this.images.delete(key);
   }
 
   quarantine(handle: PreparedGroupReplica): void {
