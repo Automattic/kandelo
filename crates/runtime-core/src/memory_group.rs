@@ -869,6 +869,44 @@ mod tests {
     }
 
     #[test]
+    fn grouped_exit_wait_preserves_status_until_every_exact_worker_retires() {
+        use wasm_posix_shared::memory_group::TaskAction;
+        use wasm_posix_shared::wait::{EVENT_EXITED, WNOWAIT};
+        let (mut table, group, parent) = grouped_table();
+        let parent_pid = parent.execution.pid;
+        let child = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        let main = table.memory_group_task(child, child).unwrap().unwrap();
+        table.memory_group_task_action(main.record(), TaskAction::Start).unwrap();
+        let tid = table.create_thread(child, child, 0x8000, 0, 0).unwrap();
+        let thread = table.memory_group_task(child, tid).unwrap().unwrap();
+        table.memory_group_task_action(thread.record(), TaskAction::Start).unwrap();
+        assert!(table.get_mut(child).unwrap().record_normal_exit(23));
+        for flags in [0, WNOWAIT] {
+            assert_eq!(table.poll_wait_event(parent_pid, child as i32, EVENT_EXITED, flags), Ok(None));
+        }
+        for receipt in [main, thread] {
+            assert_eq!(table.poll_wait_event(parent_pid, child as i32, EVENT_EXITED, 0), Ok(None));
+            table.memory_group_task_action(receipt.record(), TaskAction::BeginRetirement).unwrap();
+            table.memory_group_task_action(receipt.record(), TaskAction::Quarantine).unwrap();
+            assert_eq!(table.poll_wait_event(parent_pid, child as i32, EVENT_EXITED, 0), Ok(None));
+            // Another receipt, even one in the same group, proves no stop.
+            let forged = wasm_posix_shared::memory_group::ReceiptRecord { generation: 1, ..receipt.record() };
+            assert_eq!(table.memory_group_task_action(forged, TaskAction::RetireQuiescent), Err(Errno::ESRCH));
+            table.memory_group_task_action(receipt.record(), TaskAction::RetireQuiescent).unwrap();
+        }
+        for _ in 0..2 {
+            let (_, event) = table.poll_wait_event(parent_pid, child as i32, EVENT_EXITED, WNOWAIT).unwrap().unwrap();
+            assert_eq!(event.wait_status, 23 << 8);
+        }
+        let (_, event) = table.poll_wait_event(parent_pid, child as i32, EVENT_EXITED, 0).unwrap().unwrap();
+        assert_eq!(event.wait_status, 23 << 8);
+        assert_eq!(table.poll_wait_event(parent_pid, child as i32, EVENT_EXITED, 0), Ok(None));
+        table.remove_process(child).unwrap();
+        assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 1);
+        finish_member(&mut table, parent);
+    }
+
+    #[test]
     fn failed_grouped_fork_preserves_parent_and_resource_counts() {
         let mut table = crate::process_table::ProcessTable::new();
         table.memory_groups().configure(8192, 4).unwrap();

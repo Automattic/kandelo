@@ -12,6 +12,7 @@ const repository = resolve(import.meta.dirname, "../../..");
 const probes = [
   { name: "mapping", source: "grouped-sdk-mapping.c", markers: ["heap-ok\n", "protection-io-ok\n", "moving-remap-ok\n", "grouped-sdk-mapping PASS"], partial: "ordinary-protection-partial" },
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
+  { name: "fork", source: "grouped-sdk-fork.c", markers: ["grouped-fork-child PASS", "grouped-sdk-fork PASS"], partial: "", groupedOnly: true },
 ];
 const fixtures: ReturnType<typeof compileSdkFixture>[] = [];
 let server: Server | undefined;
@@ -69,6 +70,7 @@ test.afterAll(async () => {
 });
 
 for (const probe of probes) for (const grouped of [false, true]) {
+  if ('groupedOnly' in probe && probe.groupedOnly && !grouped) continue;
   test(`normal SDK libc ${probe.name}: ${grouped ? "grouped" : "ordinary"}`, async ({ page, browser }, info) => {
     test.setTimeout(90_000);
     await page.goto(url);
@@ -89,6 +91,9 @@ for (const probe of probes) for (const grouped of [false, true]) {
     expect(result.processReady).toBe(true);
     expect(result.quiescent).toBe(true);
     for (const marker of probe.markers) expect(result.stdout).toContain(marker);
-    expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
+    if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
+    if (probe.name === 'fork') {
+      expect(result.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true })]);
+    }
   });
 }

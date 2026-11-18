@@ -54,7 +54,7 @@ interface Replica {
   readonly image: Image;
   readonly scratch: GroupPageExtent;
   readonly live: { value: boolean };
-  state: 'prepared' | 'exposed' | 'quarantined' | 'cancelled';
+  state: 'prepared' | 'exposed' | 'quarantined' | 'cancelled' | 'stopped';
   source?: GroupProcessAddressSpace;
   pause?: Pause;
   pendingWaitDrain: boolean;
@@ -724,6 +724,18 @@ export class MemoryGroupImageStore {
     }
     this.revokeSource(image);
     this.pool.releaseRetiredPages([...pages(image.controls), ...pages(image.payload), ...(image.privatePayload ?? [])]); this.images.delete(key);
+  }
+
+  /** Execution proof is owned by KernelWorker's exact Worker observer. End
+   * replica access and barrier membership, retaining every physical charge.
+   * The kernel's distinct image source still serves exit/wait publication. */
+  noteReplicaQuiescent(handle: PreparedGroupReplica): void {
+    const replica = this.owned(handle);
+    if (replica.state !== 'exposed' && replica.state !== 'quarantined') fault('Replica has no published execution custody');
+    replica.live.value = false;
+    replica.source?.detachHostAccess(); replica.source = undefined;
+    replica.state = 'stopped';
+    replica.image.replicas.delete(replica);
   }
 
   quarantine(handle: PreparedGroupReplica): void {

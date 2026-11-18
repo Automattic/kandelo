@@ -1,4 +1,5 @@
 import type { HostDiagnostic } from "./host-diagnostic.js";
+import type { WorkerHandle } from "./worker-adapter";
 import { GroupProcessAddressSpace, ProcessAddressFault, type NativeI32Observation } from "./process-address-space";
 import { captureProcessRead, processDataView, readProcessBytes, writeProcessBytes,
   fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, type CapturedProcessRead,
@@ -3186,6 +3187,8 @@ export class CentralizedKernelWorker {
   #memoryGroupStores = new Map<number, MemoryGroupImageStore>();
   #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
+  #observedMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
+  #observedMemoryGroupWorkers = new WeakSet<WorkerHandle>();
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
    *
@@ -8167,6 +8170,60 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /** Bind before starting the concrete Worker. Only a fence from this handle,
+   * or an actual Node join, retires its captured Rust receipt. Browser exit
+   * notifications (including terminate's synthetic exit) are not proof.
+   * No physical pages are released by this execution-custody transition. */
+  observeMemoryGroupReplicaWorker(handle: PreparedGroupReplica, worker: WorkerHandle,
+    options: { terminationProvesQuiescence: boolean }): void {
+    const store = this.#memoryGroupReplicas.get(handle);
+    if (!store || store.isUnexposed(handle)) throw Error('Grouped Worker needs a published replica');
+    if (this.#observedMemoryGroupReplicas.has(handle) || this.#observedMemoryGroupWorkers.has(worker)) {
+      throw Error('Grouped Worker or replica already has an execution observer');
+    }
+    const receipt = store.receipt(handle);
+    const joins = options.terminationProvesQuiescence;
+    this.#runImmediateKernelEntry('observe exact grouped Worker', entry => {
+      if (typeof this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry) === 'number') {
+        throw Error('Grouped Worker has a stale admission');
+      }
+      let settled = false;
+      const retire = (): void => {
+        if (settled) return;
+        settled = true;
+        worker.off('message', onMessage); worker.off('exit', onExit);
+        this.#runOrDeferKernelEntry('retire quiescent grouped Worker', stopEntry => {
+          const begin = this.#memoryGroupTaskActionWithinKernelEntry(receipt,
+            MEMORY_GROUP_PROTOCOL.task_actions.beginRetirement, stopEntry);
+          // EBUSY here means this exact receipt was quarantined; its terminal
+          // proof is still valid and RetireQuiescent accepts that phase.
+          if (begin !== 0 && begin !== -EBUSY) this.#memoryGroupProtocolError('Cannot begin proven grouped Worker retirement');
+          if (this.#memoryGroupTaskActionWithinKernelEntry(receipt,
+            MEMORY_GROUP_PROTOCOL.task_actions.retireQuiescent, stopEntry) !== 0) {
+            this.#memoryGroupProtocolError('Cannot retire proven grouped Worker');
+          }
+          store.noteReplicaQuiescent(handle);
+          this.#settleKernelWaitsWithinKernelEntry(stopEntry);
+          return undefined;
+        });
+      };
+      const onMessage = (raw: unknown): void => {
+        if (!raw || typeof raw !== 'object' || !('type' in raw) || raw.type !== 'memory_quiescent') return;
+        const message = raw as { pid?: number; tid?: number; memoryGroup?: MemoryGroupTaskReceipt };
+        if (message.pid !== receipt.pid || message.tid !== (receipt.tid === receipt.pid ? undefined : receipt.tid)
+            || !['group', 'pid', 'tid', 'serial', 'generation'].every(key =>
+              message.memoryGroup?.[key as keyof MemoryGroupTaskReceipt] === receipt[key as keyof MemoryGroupTaskReceipt])) {
+          this.#memoryGroupProtocolError('Wrong terminal grouped Worker receipt');
+        }
+        retire();
+      };
+      const onExit = (): void => { if (joins) retire(); };
+      this.#observedMemoryGroupReplicas.add(handle); this.#observedMemoryGroupWorkers.add(worker);
+      worker.on('message', onMessage); worker.on('exit', onExit);
+      return undefined;
+    });
+  }
+
   cancelUnexposedMemoryGroupReplica(handle: PreparedGroupReplica): number {
     let result = -ERRNO.EOPNOTSUPP;
     this.#runImmediateKernelEntry("cancel unexposed memory-group replica", entry => {
@@ -9973,6 +10030,22 @@ export class CentralizedKernelWorker {
       this.applyProcessHostTimerCleanup(pid, plan);
       return undefined;
     });
+  }
+
+  /** A group shares one physical Memory across images. Only the exact
+   * published image handle may withdraw its registration during rollback. */
+  deactivateMemoryGroupProcess(handle: PreparedGroupReplica): boolean {
+    let result = false;
+    this.#runImmediateKernelEntry('deactivate exact grouped image', entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store) return undefined;
+      const { pid } = store.receipt(handle), registration = this.processes.get(pid);
+      if (!registration) { result = true; return undefined; }
+      if (registration.grouped?.handle !== handle) return undefined;
+      result = this.#deactivateProcessWithinKernelEntry(pid, entry, registration.memory);
+      return undefined;
+    });
+    return result;
   }
 
   deactivateProcess(
@@ -12045,6 +12118,24 @@ export class CentralizedKernelWorker {
    * Deferred constructors retain the selected registration and source, so a
    * replacement sharing the backing cannot inherit the old constructor.
    */
+  /** Capability-bound form of the ordinary runnable gate. No physical
+   * Memory identity can select another grouped image's constructor. */
+  startMemoryGroupProcessWorkerWhenRunnable(handle: PreparedGroupReplica, start: () => void,
+    cancel: () => void, onStartError?: (error: unknown) => boolean): ProcessWorkerStartDisposition {
+    let result: ProcessWorkerStartDisposition = 'stale';
+    this.#runImmediateKernelEntry('start exact grouped process Worker', entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      const registration = store && this.processes.get(store.receipt(handle).pid);
+      if (!registration || registration.grouped?.handle !== handle) {
+        entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
+      }
+      result = this.#startProcessWorkerWhenRunnableWithinKernelEntry(registration.pid, registration.memory,
+        start, cancel, onStartError, entry, registration.source);
+      return undefined;
+    });
+    return result;
+  }
+
   startProcessWorkerWhenRunnable(
     pid: number,
     expectedMemory: WebAssembly.Memory,
