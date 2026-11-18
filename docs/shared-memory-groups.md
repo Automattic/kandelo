@@ -180,6 +180,15 @@ use virtual addresses explicitly; native execution retains its native path.
 Image-access revocation neither stops replicas nor releases their physical
 pages. Exact native observer pins survive revocation until engine settlement.
 
+The mapping coordinator's internal image barrier freezes replica membership
+and requests a distinct epoch from every live execution replica. A partial
+acknowledgment, stopped member or revoked image is insufficient. Barrier setup
+faults quarantine uncertain replicas and retain failed wait drains and storage
+charges. This is reversible execution coordination, not a terminal fence or
+permission to recycle pages. The staged Rust metadata owner separately checks
+exact transaction custody and intervening changes before publication; neither
+component is connected to normal mapping syscalls yet.
+
 These internal components do not expose an embedding launch option. Mapping
 materialization currently operates only within the image's published virtual
 extent; physical group growth cannot establish virtual capacity. Transactional

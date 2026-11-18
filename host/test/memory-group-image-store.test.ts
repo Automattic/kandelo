@@ -11,6 +11,101 @@ const layout = { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 
 function task(patch: Partial<MemoryGroupTaskReceipt> = {}): MemoryGroupTaskReceipt {
   return { group: 7, pid: 100, tid: 100, serial: (1n << 55n) + 1n, generation: (1n << 54n) + 3n, ...patch };
 }
+function imageWithThread() {
+  const store = new MemoryGroupImageStore(7, 32), main = task(), thread = task({ tid: 101, serial: 2n });
+  const a = store.prepareImage(main, layout), b = store.prepareThread(thread);
+  const leader = store.publish(a, main), peer = store.publish(b, thread);
+  const control = (launch: typeof leader) => new Int32Array(launch.envelope.memory.buffer,
+    launch.expectation.replica, G.MEMORY_GROUP_REPLICA_BYTES / 4);
+  const left = control(leader), right = control(peer);
+  const request = (words: Int32Array) => Atomics.load(words, G.MEMORY_GROUP_REPLICA_REQUEST / 4);
+  const acknowledge = (words: Int32Array) => Atomics.store(words, G.MEMORY_GROUP_REPLICA_ACK / 4, request(words));
+  return { store, a, b, main, thread, leader, peer, control, left, right, request, acknowledge };
+}
+describe('image execution barriers for mapping publication', () => {
+  it('requires every exact replica and leaves a successor image alone', () => {
+    const h = imageWithThread(), { store } = h;
+    const next = task({ serial: 3n, generation: h.main.generation + 1n });
+    const successor = store.publish(store.prepareImage(next, layout), next), other = h.control(successor);
+    const charged = store.snapshot().allocatedPages, pause = store.beginImageExecutionPause(h.a);
+    expect(Object.getPrototypeOf(pause)).toBeNull(); expect(Object.keys(pause)).toEqual([]);
+    expect(h.request(h.left)).toBeGreaterThan(0); expect(h.request(h.right)).toBeGreaterThan(0);
+    expect(h.request(h.left)).not.toBe(h.request(h.right)); expect(h.request(other)).toBe(0);
+    // Synthetic acknowledgments test owner state, not real C quiescence.
+    h.acknowledge(h.left); expect(store.imageExecutionPauseAcknowledged(pause)).toBe(false);
+    h.acknowledge(h.right); expect(store.imageExecutionPauseAcknowledged(pause)).toBe(true);
+    expect(store.resumeImageExecutionPause(pause)).toBe(true);
+    expect(h.request(h.left)).toBe(0); expect(h.request(h.right)).toBe(0);
+    expect(store.imageExecutionPauseAcknowledged(pause)).toBe(false);
+    expect(store.resumeImageExecutionPause(pause)).toBe(false);
+    expect(store.snapshot().allocatedPages).toBe(charged);
+    expect(successor.source.byteLength).toBe(2 * P);
+    expect(() => store.imageExecutionPauseAcknowledged({} as any)).toThrow();
+    expect(() => new MemoryGroupImageStore(7, 32).resumeImageExecutionPause(pause)).toThrow();
+    store.close();
+  });
+  it('freezes membership and refuses a prepared member before any request changes', () => {
+    const store = new MemoryGroupImageStore(7, 32), main = task(), thread = task({ tid: 101, serial: 2n });
+    const a = store.prepareImage(main, layout), b = store.prepareThread(thread), launch = store.publish(a, main);
+    const control = new Int32Array(launch.envelope.memory.buffer, launch.expectation.replica, G.MEMORY_GROUP_REPLICA_BYTES / 4);
+    expect(() => store.beginImageExecutionPause(a)).toThrow(/live unpaused/);
+    expect(Atomics.load(control, G.MEMORY_GROUP_REPLICA_REQUEST / 4)).toBe(0);
+    store.publish(b, thread);
+    const pause = store.beginImageExecutionPause(b);
+    expect(() => store.prepareThread(task({ tid: 102, serial: 3n }))).toThrow(/forbids new replica/);
+    expect(() => store.beginImageExecutionPause(a)).toThrow();
+    expect(() => store.beginExecutionPause(a)).toThrow(/already owns/);
+    expect(store.resumeImageExecutionPause(pause)).toBe(true);
+    const fresh = store.prepareThread(task({ tid: 102, serial: 3n }));
+    store.cancelUnexposed(fresh); store.close();
+  });
+  it('cannot absorb an independently paused member or wrap the epoch sequence', () => {
+    const h = imageWithThread(), single = h.store.beginExecutionPause(h.b);
+    const before = h.request(h.right);
+    expect(() => h.store.beginImageExecutionPause(h.a)).toThrow(/live unpaused/);
+    expect(h.request(h.left)).toBe(0); expect(h.request(h.right)).toBe(before);
+    h.store.resumeExecutionPause(single);
+    (h.store as any).nextPauseEpoch = 0xffffffff;
+    expect(() => h.store.beginImageExecutionPause(h.a)).toThrow(/fresh replica epochs/);
+    expect(h.request(h.left)).toBe(0); expect(h.request(h.right)).toBe(0);
+    h.store.close();
+  });
+  it('invalidates an all-replica acknowledgment when a member stops without freeing pages', () => {
+    const h = imageWithThread(), charged = h.store.snapshot().allocatedPages;
+    const pause = h.store.beginImageExecutionPause(h.a);
+    h.acknowledge(h.left); h.acknowledge(h.right);
+    expect(h.store.imageExecutionPauseAcknowledged(pause)).toBe(true);
+    h.store.requestReplicaStop(h.b);
+    expect(h.store.imageExecutionPauseAcknowledged(pause)).toBe(false);
+    expect(h.store.resumeImageExecutionPause(pause)).toBe(false);
+    expect(h.request(h.left)).toBe(0);
+    expect(Atomics.load(h.right, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(0);
+    expect(h.store.snapshot().allocatedPages).toBe(charged);
+    expect(() => h.store.beginImageExecutionPause(h.a)).toThrow(/live unpaused/);
+    h.store.close();
+  });
+  it('revokes mapping authority with image custody while still permitting barrier cleanup', () => {
+    const h = imageWithThread(), pause = h.store.beginImageExecutionPause(h.a);
+    h.acknowledge(h.left); h.acknowledge(h.right); h.store.revokeImageAccess(h.a);
+    expect(h.store.imageExecutionPauseAcknowledged(pause)).toBe(false);
+    expect(h.store.resumeImageExecutionPause(pause)).toBe(true);
+    expect(h.request(h.left)).toBe(0); expect(h.request(h.right)).toBe(0);
+    h.store.close();
+  });
+  it('contains partial barrier faults and retains every uncertain wait drain and allocation', () => {
+    const h = imageWithThread(), charged = h.store.snapshot().allocatedPages;
+    const words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const node = G.MEMORY_GROUP_WAIT_NODES;
+    words[q + 1] = node; words[q + 2] = node; words[q + 4] = 1;
+    words[node / 4] = G.MEMORY_GROUP_WAIT_WAITING; words[node / 4 + 1] = node;
+    expect(() => h.store.beginImageExecutionPause(h.a)).toThrow(/Corrupt memory-group wait queue/);
+    expect(h.store.snapshot()).toMatchObject({ quarantinedReplicas: 2, pendingWaitDrains: 2, allocatedPages: charged });
+    expect(() => h.leader.source.readBytes(0, 1)).toThrow();
+    expect(() => h.peer.source.readBytes(0, 1)).toThrow();
+    expect(() => h.store.beginImageExecutionPause(h.a)).toThrow(/live unpaused/);
+    h.store.close();
+  });
+});
 describe('kernel-realm group image custody', () => {
   it('provides registration custody only for a live published main replica', () => {
     const store = new MemoryGroupImageStore(7, 32), main = task(), peer = task({ tid: 101, serial: 2n });
