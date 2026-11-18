@@ -33,6 +33,7 @@ export class GroupedThreadWorkerOwnership {
   private stopped = false;
   private absent = false;
   private joined = false;
+  private joinWaiters?: Set<() => void>;
   private released = false;
   private endpoint?: ForkHostImportOwnerWorker;
   private cleanup?: () => void;
@@ -55,10 +56,21 @@ export class GroupedThreadWorkerOwnership {
     }
     this.stopped = true;
   }
-  noteExit(): void { if (this.joins) this.joined = true; }
+  noteExit(): void {
+    if (!this.joins) return;
+    this.joined = true;
+    for (const resolve of this.joinWaiters ?? []) resolve();
+    this.joinWaiters = undefined;
+  }
+  /** Exact Node thread exit only. A browser's synthetic exit is never a join. */
+  waitForNodeJoin(): Promise<void> {
+    if (!this.joins) return Promise.reject(Error('Browser Worker exit cannot prove a Node join'));
+    if (this.joined) return Promise.resolve();
+    return new Promise<void>(resolve => { (this.joinWaiters ??= new Set()).add(resolve); });
+  }
   async contain(): Promise<void> {
     await this.worker.terminate();
-    if (this.joins && DeferredWorkerHandle.hasCompletedBackingTermination(this.worker)) this.joined = true;
+    if (this.joins && DeferredWorkerHandle.hasCompletedBackingTermination(this.worker)) this.noteExit();
   }
   releaseAfterStop(): boolean {
     if (this.released) return true;

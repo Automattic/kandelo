@@ -31,6 +31,7 @@ export interface SdkExecutionOptions {
   rejectThreadLaunchCount?: number;
   uncertainThreadConstructor?: boolean;
   forcedLifecycle?: boolean;
+  nativeWaitLifecycle?: boolean;
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -80,7 +81,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const children = new Map<number, GroupedForkWorkerOwnership>();
   const threads = new Map<number, GroupedThreadWorkerOwnership>();
   const threadExits = new Set<number>();
+  const logicalThreadExits = new Set<number>();
+  const stoppedWithProcess = new Set<number>();
   const threadRetirements = new Map<number, Promise<void>>();
+  const processDeactivations: Promise<void>[] = [];
   const retiredThreads = new Set<number>();
   const threadRetirementMemory: Record<string, unknown>[] = [];
   const threadAllocators = new Map<number, ThreadPageAllocator>();
@@ -95,6 +99,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     return adapter.createWorker(init);
   } };
   const lifecycleEvidence: Record<string, unknown>[] = [];
+  const lifecycleEnabled = options.forcedLifecycle || options.nativeWaitLifecycle;
+  let nativeKillReleased = false, nativeSurvivorReleased = false;
   const parkedCalls: { pid: number; tid: number; syscallNr: number; firstArgument: number; owner: 'kernel' | 'pipe-read' | 'pipe-write' }[] = [];
   let blockedReleased = false, busyReleased = false, busyFirst: number | undefined, busyStopValue: number | undefined;
   let busyProbe: { pid: number; address: number } | undefined;
@@ -106,30 +112,34 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   let result: Record<string, unknown>;
   try {
     const execution = new Promise<void>((resolve, reject) => {
+      const retireThread = (tid: number, thread: GroupedThreadWorkerOwnership) => {
+        if (threadRetirements.has(tid)) return;
+        const retirement = (async () => {
+          await kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
+          if (options.joinOnExit) await thread.waitForNodeJoin();
+          const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupThread(thread.handle, () => {
+            if (!thread.releaseAfterStop()) throw Error('Thread references have no stop proof');
+          }));
+          if (result !== 0) throw Error(`Thread retirement refused: ${result}`);
+          await thread.contain();
+          retiredThreads.add(tid); threadRetirementMemory.push({ tid, ...memoryEvidence() });
+          maybeComplete();
+        })();
+        threadRetirements.set(tid, retirement); void retirement.catch(reject);
+      };
       const maybeComplete = () => {
         for (const [tid, thread] of threads) {
-          if (!threadExits.has(tid) || !thread.quiescent || options.joinOnExit && !thread.hasJoined || threadRetirements.has(tid)) continue;
-          const retirement = (async () => {
-            await kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
-            const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupThread(thread.handle, () => {
-              if (!thread.releaseAfterStop()) throw Error('Thread references have no stop proof');
-            }));
-            if (result !== 0) throw Error(`Thread retirement refused: ${result}`);
-            await thread.contain();
-            retiredThreads.add(tid); threadRetirementMemory.push({ tid, ...memoryEvidence() });
-            maybeComplete();
-          })();
-          threadRetirements.set(tid, retirement); void retirement.catch(reject);
+          if (logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) retireThread(tid, thread);
         }
         if (kernelExit === undefined || processExit === undefined || !quiescent || !processReady
             || (options.joinOnExit && !rootJoined) || options.forcedLifecycle && busyReleased && busyStopValue === undefined) return;
         for (const [pid, child] of children) {
           const state = childStates.get(pid);
-          if (state?.kernelExit === undefined || (state.processExit === undefined && !(options.forcedLifecycle && (state.kernelExit ?? 0) >= 128)) || !state.ready || !child.quiescent
+          if (state?.kernelExit === undefined || (state.processExit === undefined && !(lifecycleEnabled && (state.kernelExit ?? 0) >= 128)) || !state.ready || !child.quiescent
               || (options.joinOnExit && !child.hasJoined)) return;
         }
         for (const [tid, thread] of threads) {
-          if (!threadExits.has(tid) || !thread.quiescent || !retiredThreads.has(tid) || (options.joinOnExit && !thread.hasJoined)) return;
+          if (!(logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) || !thread.quiescent || !retiredThreads.has(tid) || (options.joinOnExit && !thread.hasJoined)) return;
         }
         resolve();
       };
@@ -137,7 +147,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       // failure/containment boundary, never permission to reuse grouped pages.
       deadline = setTimeout(() => reject(new Error("guest execution deadline")), 60_000);
       const advanceLifecycle = async () => {
-        if (!options.forcedLifecycle || rootPid === undefined || !lifecycleActive) return;
+        if (!lifecycleEnabled || rootPid === undefined || !lifecycleActive) return;
+        if (options.nativeWaitLifecycle) {
+          await advanceNativeWaitLifecycle(); return;
+        }
         const blocked = /blocked-ready pid=(\d+) fd=(\d+)/.exec(stdout);
         if (blocked && !blockedReleased) {
           const pid = Number(blocked[1]), fd = Number(blocked[2]);
@@ -165,8 +178,47 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           }, 0);
         }
       };
+      const advanceNativeWaitLifecycle = async () => {
+        const match = /native-ready victim=(\d+) survivor=(\d+) ready32=(\d+) ready64=(\d+) returned=(\d+)/.exec(stdout);
+        if (!match || !lifecycleActive || nativeSurvivorReleased) return;
+        const victim = Number(match[1]), survivor = Number(match[2]);
+        const observe = async (pid: number) => {
+          const handle = imageHandles.get(pid), members = [...threads.values()].filter(thread => thread.pid === pid);
+          if (!handle || members.length !== 2) return false;
+          const scalars = await retryKernelEntryResult(() => [3, 4, 5].map(index => kernel.inspectMemoryGroupWord(handle, Number(match[index]))));
+          if (scalars.some(value => value < 0)) throw Error(`Native wait ready inspection refused: ${scalars}`);
+          if (scalars[0] !== 1 || scalars[1] !== 1 || scalars[2] !== 0) return false;
+          const states = await retryKernelEntryResult(() => members.map(thread => kernel.inspectMemoryGroupReplicaWait(thread.handle)));
+          if (states.some(value => typeof value === 'number')) throw Error(`Native queue inspection refused: ${states}`);
+          return states.every(state => state === 'waiting');
+        };
+        if (!nativeKillReleased && await observe(victim) && await observe(survivor)) {
+          if (!lifecycleActive || nativeKillReleased) return;
+          nativeKillReleased = true;
+          lifecycleEvidence.push({ kind: 'native-waits-registered', victim, survivor, threads: [...threads.values()].map(thread => ({ pid: thread.pid, tid: thread.tid })) });
+          kernel.appendStdinData(rootPid!, Uint8Array.of(107));
+        } else if (nativeKillReleased && stdout.includes('native-victim-reaped') && !nativeSurvivorReleased) {
+          const victims = [...threads.values()].filter(thread => thread.pid === victim);
+          if (victims.length === 2 && victims.every(thread => retiredThreads.has(thread.tid)) && await observe(survivor)) {
+            if (!lifecycleActive || nativeSurvivorReleased) return;
+            nativeSurvivorReleased = true;
+            lifecycleEvidence.push({ kind: 'native-survivor-preserved', victim, survivor, retiredVictimThreads: victims.map(thread => thread.tid) });
+            kernel.appendStdinData(rootPid!, Uint8Array.of(119));
+          }
+        }
+        if (!nativeSurvivorReleased && lifecycleActive && probeTimer === undefined) probeTimer = setTimeout(() => {
+          probeTimer = undefined; void advanceLifecycle().catch(reject);
+        }, 0);
+      };
       const callbacks: CentralizedKernelCallbacks = {
-        onSyscallBlocked: options.forcedLifecycle ? (pid, tid, syscallNr, firstArgument, owner) => {
+        onThreadExit: (pid, tid, _channelOffset) => {
+          const thread = threads.get(tid);
+          if (!thread || thread.pid !== pid) return false;
+          // Register before another clone can reserve a fresh control row.
+          // Actual cleanup still awaits the exact stop and real Node join.
+          logicalThreadExits.add(tid); retireThread(tid, thread); return true;
+        },
+        onSyscallBlocked: lifecycleEnabled ? (pid, tid, syscallNr, firstArgument, owner) => {
           parkedCalls.push({ pid, tid, syscallNr, firstArgument: Number(firstArgument), owner });
           queueMicrotask(() => { void advanceLifecycle().catch(reject); });
         } : undefined,
@@ -174,10 +226,25 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           if (pid === rootPid) kernelExit = code;
           else {
             childStates.set(pid, { ...childStates.get(pid), kernelExit: code });
-            if (options.forcedLifecycle) {
+            if (lifecycleEnabled) {
               const child = children.get(pid);
               if (!child?.quiescent) return reject(Error('Grouped signal exit preceded exact Worker fence'));
               lifecycleEvidence.push({ kind: 'kernel-exit-after-stop', pid, code, quiescent: child.quiescent });
+              if (options.nativeWaitLifecycle) {
+                const members = [...threads.values()].filter(thread => thread.pid === pid);
+                if (members.some(thread => !thread.quiescent)) return reject(Error('Grouped process exit preceded a pthread stop fence'));
+                const handle = imageHandles.get(pid);
+                if (!handle) return reject(Error('Stopped process lost its exact image'));
+                // Process death ends transport ownership before individual
+                // thread-control recycling. This deactivates only that image;
+                // its pages and real wait/observer fences remain charged.
+                const deactivation = retryKernelEntryResult(() => kernel.deactivateMemoryGroupProcess(handle)).then(deactivated => {
+                  if (!deactivated) throw Error('Exact stopped process deactivation refused');
+                  for (const thread of members) if (!threadExits.has(thread.tid)) stoppedWithProcess.add(thread.tid);
+                  lifecycleEvidence.push({ kind: 'stopped-image-deactivated', pid }); maybeComplete();
+                });
+                processDeactivations.push(deactivation); void deactivation.catch(reject);
+              }
               if (busyProbe?.pid === pid) {
                 const address = busyProbe.address;
                 void retryKernelEntryResult(() => kernel.inspectMemoryGroupWord(imageHandles.get(pid)!, address)).then(value => {
@@ -293,7 +360,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         kernel.setOutputCallbacks({
           onStdout: bytes => {
             stdout += new TextDecoder().decode(bytes);
-            if (options.forcedLifecycle) queueMicrotask(() => { void advanceLifecycle().catch(reject); });
+            if (lifecycleEnabled) queueMicrotask(() => { void advanceLifecycle().catch(reject); });
           },
           onStderr: bytes => { stderr += new TextDecoder().decode(bytes); },
         });
@@ -329,7 +396,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         status(kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] }), "attach executable");
         const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(pid));
         kernel.installHostStdinPipe(pid);
-        if (options.forcedLifecycle) kernel.appendStdinData(pid, new Uint8Array());
+        if (lifecycleEnabled) kernel.appendStdinData(pid, new Uint8Array());
         else kernel.setStdinData(pid, new Uint8Array());
         generation = owner.startGeneration(pid);
         const currentGeneration = generation;
@@ -380,6 +447,9 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       })().catch(reject);
     });
     await execution;
+    // An exit callback can precede a deferred exact-image deactivation. Join
+    // every owner before releasing images or beginning another cohort.
+    await Promise.all(processDeactivations);
     lifecycleActive = false;
     if (busyProbe && busyStopValue !== undefined) {
       const value = kernelForDiagnostics!.inspectMemoryGroupWord(imageHandles.get(busyProbe.pid)!, busyProbe.address);
@@ -405,13 +475,13 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
       retirement, threadRetirementMemory, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
-      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
+      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
     if (!kernelFailed) trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, memory: memoryEvidence(),
       lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
-      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
+      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
       failureMessage: error instanceof Error ? error.message : String(error),
       failure: error instanceof Error ? error.stack : String(error) };

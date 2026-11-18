@@ -422,7 +422,32 @@ fail the instance with charges retained instead of targeting a PID alone. The
 optional blocked-syscall observer reports whether Rust or a host pipe wait owns
 the block; that observation is not a completion or stop proof.
 
-Forced pthread/native-wait cancellation races, exec replacement and destroy
+A second real C probe forks a victim and survivor, each with pthreads issuing
+indefinite wait32 and wait64. Copied ready words establish that these pthreads
+have left their earlier syscall handshakes. Exact queue observation under its
+lock then establishes four registered waits before the parent may kill the
+victim. This observes queue registration, including notify-before-park, rather
+than claiming the engine has already parked. After actual victim stop, the
+embedding deactivates that exact process's host channels before retiring its
+thread controls. The survivor must retain both waits and its unchanged return
+word after the victim is reaped; only then may normal guest notifications wake
+it. Each notification must report one waiter, and both joins check actual return
+values. Threads stopped by process exit are recorded separately from guest thread_exit.
+A successful guest join can precede its Worker's final thread_exit message;
+natural process exit still joins the actual stop fence and retires its channels.
+Forty same-backing cohorts repeat this contract without replacing the Memory.
+Queue inspection exposes only none/waiting/returning/busy and grants no stop or
+reuse authority. A busy drain remains retryable after the stop receipt arrives;
+stopped replicas must not be skipped while their exact drain is still pending.
+Thread scratch retirement retries that drain before releasing storage.
+The embedding registers pending retirement from Rust's onThreadExit before a
+subsequent clone may reserve another control row. Cleanup still waits for the
+exact stop receipt, and Node also joins the real Worker exit. This prevents
+sequential joined-thread churn from allocating an avoidable second control row
+when its earlier Worker is only finishing host shutdown. A final thread_exit
+message is separate from Rust logical exit and is not the reuse authority.
+
+Further notification/timeout/cancellation races, exec replacement and destroy
 still require real C/browser lifecycle coverage. Full browser-memory,
 conformance, canonical desktop and performance acceptance remains open. Unit
 coverage of a stopped callback failure does not establish guest post-adoption

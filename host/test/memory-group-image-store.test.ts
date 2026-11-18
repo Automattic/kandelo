@@ -65,6 +65,56 @@ describe('exact image cooperative stop', () => {
   });
 });
 
+describe('stop proof after contended wait drain', () => {
+  it('retries a pending drain even after every exact stop receipt arrives', () => {
+    const h = imageWithThread(), lock = new Int32Array(h.leader.envelope.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1);
+    const charged = h.store.snapshot().allocatedPages; Atomics.store(lock, 0, 1);
+    expect(h.store.requestImageStop(h.a)).toBe(false);
+    h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b);
+    expect(h.store.snapshot().pendingWaitDrains).toBe(2);
+    expect(h.store.requestImageStop(h.a)).toBe(false);
+    Atomics.store(lock, 0, 0);
+    expect(h.store.requestImageStop(h.a)).toBe(true);
+    expect(h.store.snapshot()).toMatchObject({ pendingWaitDrains: 0, allocatedPages: charged }); h.store.close();
+  });
+  it('retries the stopped thread drain before freeing scratch while a peer remains active', () => {
+    const h = imageWithThread(), lock = new Int32Array(h.leader.envelope.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1);
+    const release = vi.fn(() => true); Atomics.store(lock, 0, 1);
+    expect(h.store.requestReplicaStop(h.b)).toBe(false); h.store.noteReplicaQuiescent(h.b);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, release)).toBe('busy'); expect(release).not.toHaveBeenCalled();
+    Atomics.store(lock, 0, 0);
+    expect(h.store.tryReleaseStoppedThread(h.b, P, P, release)).toBe('released'); expect(release).toHaveBeenCalledOnce();
+    expect(h.store.snapshot()).toMatchObject({ replicas: 1, pendingWaitDrains: 0 });
+    expect(Atomics.load(h.left, G.MEMORY_GROUP_REPLICA_RUN / 4)).toBe(1); h.store.close();
+  });
+});
+
+describe('bounded exact replica wait observation', () => {
+  it('distinguishes actual queue membership from a returning stopped node without draining a peer', () => {
+    const h = imageWithThread(), words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const node = G.MEMORY_GROUP_WAIT_NODES, at = node / 4;
+    expect(h.store.inspectReplicaWait(h.b)).toBe('none');
+    words[at] = G.MEMORY_GROUP_WAIT_WAITING; words[at + 3] = h.peer.expectation.root;
+    words[at + 4] = h.peer.expectation.replica; words[q + 1] = words[q + 2] = node; words[q + 4] = 1;
+    Atomics.store(h.right, G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4, node);
+    expect(h.store.inspectReplicaWait(h.a)).toBe('none'); expect(h.store.inspectReplicaWait(h.b)).toBe('waiting');
+    expect(words[at]).toBe(G.MEMORY_GROUP_WAIT_WAITING); expect(words[q + 4]).toBe(1);
+    h.store.requestReplicaStop(h.b);
+    expect(h.store.inspectReplicaWait(h.b)).toBe('returning'); expect(words[q + 4]).toBe(1);
+    expect(h.store.replicaExecutionStopped(h.b)).toBe(false); h.store.close();
+  });
+  it('refuses stale ownership and reports queue contention without granting a fence', () => {
+    const h = imageWithThread(), words = new Int32Array(h.leader.envelope.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    Atomics.store(words, q, 1); expect(h.store.inspectReplicaWait(h.b)).toBe('busy'); Atomics.store(words, q, 0);
+    const node = G.MEMORY_GROUP_WAIT_NODES, at = node / 4;
+    words[at] = G.MEMORY_GROUP_WAIT_WAITING; words[at + 3] = h.peer.expectation.root;
+    words[at + 4] = h.leader.expectation.replica; words[q + 1] = words[q + 2] = node; words[q + 4] = 1;
+    Atomics.store(h.right, G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4, node);
+    expect(() => h.store.inspectReplicaWait(h.b)).toThrow(/another replica/);
+    expect(Atomics.load(words, q)).toBe(0); expect(h.store.replicaExecutionStopped(h.b)).toBe(false); h.store.close();
+  });
+});
+
 describe('exact whole-image page retirement', () => {
   const stop = (h: ReturnType<typeof imageWithThread>) => {
     h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);

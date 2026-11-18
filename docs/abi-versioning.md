@@ -3136,6 +3136,9 @@ and does not itself change the ABI.
 ## ABI bumps and package rebuilds
 
 Host-adapter 16 adds scalar-only grouped thread-control reuse and release.
+Exact replica queue inspection copies only none/waiting/returning/busy inside
+the disposable kernel realm. It adds no Wasm export, wire field or stop/reuse
+authority; the host-adapter and program versions remain unchanged.
 `kernel_group_memory_thread_control_reuse(pid, callerTid, newTid) -> i64`
 returns a Rust-selected guest virtual address or a negative errno.
 `kernel_group_memory_thread_control_release(group, pid, tid, serialLo,

@@ -50,3 +50,15 @@ it('does not invent a Node join after a constructor failed without returning a b
   expect(h.child.hasJoined).toBe(false); expect(h.child.releaseAfterStop()).toBe(false);
   expect(h.closed).not.toHaveBeenCalled(); expect(h.cleanup).not.toHaveBeenCalled(); h.store.close();
 });
+
+it('joins the exact Node exit after quiescence and refuses a browser synthetic exit', async () => {
+  const h = ownership(true); h.worker.start(); let settled = false;
+  const joined = h.child.waitForNodeJoin().then(() => { settled = true; });
+  h.child.acceptQuiescence({ pid: 100, tid: 101, memoryGroup: h.thread });
+  await Promise.resolve(); expect(settled).toBe(false);
+  h.child.noteExit(); await joined; expect(h.child.hasJoined).toBe(true);
+  await h.child.waitForNodeJoin(); h.store.close();
+  const browser = ownership(false); browser.worker.start(); browser.child.noteExit();
+  await expect(browser.child.waitForNodeJoin()).rejects.toThrow(/cannot prove/);
+  expect(browser.child.hasJoined).toBe(false); browser.store.close();
+});
