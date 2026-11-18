@@ -231,6 +231,7 @@ function signatures(
     kernel_group_memory_change_read: { parameters: [i32, i32, i32, i32, i32, i32, pointer, i32], result: i32 },
     kernel_group_memory_layout_install: { parameters: [pointer, i32], result: i32 },
     kernel_group_memory_break: { parameters: [i32, i32], result: i64 },
+    kernel_group_memory_fork: { parameters: [i32, i32, i32, i32, i32, i32, i32, i32], result: i32 },
     kernel_group_memory_change_validate: { parameters: [i32, i32, i32, i32, pointer, i32], result: i32 },
     kernel_group_memory_change_commit: { parameters: [i32, i32, i32, i32], result: i32 },
     kernel_group_memory_change_cancel: { parameters: [i32, i32, i32, i32], result: i32 },

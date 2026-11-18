@@ -129,6 +129,28 @@ impl ProcessTable {
         if proc.memory.group_virtual_extent().is_none() { return Err(Errno::EOPNOTSUPP); }
         Ok(proc.memory.get_brk() as u64)
     }
+
+    /// The owning host must first pause every replica and read the logical
+    /// virtual extent under its root lock. Observe that actual growth before
+    /// cloning the MM; physical Memory size is never an address-space bound.
+    /// No PID is allocated for stale, busy or unsupported private-copy input.
+    pub fn fork_group_memory_process(&mut self, receipt: ReceiptRecord, observed_pages: u32) -> Result<u32, Errno> {
+        if self.running_group_memory_caller(receipt.pid, receipt.tid)? != receipt {
+            return Err(Errno::ESRCH);
+        }
+        let proc = self.get_mut(receipt.pid).ok_or(Errno::ESRCH)?;
+        if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
+            return Err(Errno::EBUSY);
+        }
+        // The physical copy coordinator currently implements private pages.
+        // Do not silently copy storage that must remain a shared alias.
+        if proc.fb_binding.is_some() || !proc.dri_bindings.is_empty()
+            || !proc.shm_mappings.is_empty() || proc.memory.has_shared_mapping() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        proc.memory.observe_group_virtual_growth(observed_pages)?;
+        self.fork_process_for_caller_with_mode(receipt.pid, receipt.tid, wasm_posix_shared::fork_contract::Mode::Fork)
+    }
     fn admitted_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
         let admission = self.memory_group_task(pid, tid)?.ok_or(Errno::EOPNOTSUPP)?;
         self.memory_group_running_admission(admission)?;
@@ -295,6 +317,99 @@ mod tests {
         (table, pid, admission)
     }
     fn map_args() -> [u64; 6] { [0, P as u64, 3, ANON as u64, u64::MAX, 0] }
+    #[test]
+    fn private_fork_observes_actual_growth_before_child_snapshot_without_resetting_live_layout() {
+        let (mut table, pid, admission) = setup(true);
+        let d = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32,
+            [0, P as u64, 1, ANON as u64, u64::MAX, 0], 4).unwrap();
+        table.commit_group_memory_change(pid, pid, d.token).unwrap();
+        let unmap = table.prepare_group_memory_change(pid, pid, Syscall::Munmap as u32,
+            [(3 * P) as u64, P as u64, 0, 0, 0, 0], 5).unwrap();
+        table.commit_group_memory_change(pid, pid, unmap.token).unwrap();
+        let child = table.fork_group_memory_process(admission.record(), 8).unwrap();
+        assert_eq!(child, 101);
+        assert_eq!(table.get(pid).unwrap().fork_count, 1);
+        for id in [pid, child] {
+            let mm = &table.get(id).unwrap().memory;
+            assert_eq!(mm.group_virtual_extent(), Some(8));
+            assert_eq!(mm.group_virtual_maximum(), Some(64));
+            assert_eq!(mm.mappings()[0].addr, 4 * P);
+            assert_eq!(mm.mappings()[0].prot, 1);
+            assert_eq!(mm.reserved_regions()[0].addr, 0);
+        }
+        let child_admission = table.memory_group_task(child, child).unwrap().unwrap();
+        assert_eq!(child_admission.record().group, admission.record().group);
+        assert_eq!(table.memory_group_running_admission(child_admission), Err(Errno::EBUSY));
+        table.memory_groups().start(child_admission).unwrap();
+        // A real inherited hole stays a hole; newly observed pages exist.
+        assert_eq!(table.prepare_group_memory_change(child, child, Syscall::Mprotect as u32,
+            [(3 * P) as u64, P as u64, 3, 0, 0, 0], 8), Err(Errno::ENOMEM));
+        let protect = table.prepare_group_memory_change(child, child, Syscall::Mprotect as u32,
+            [(6 * P) as u64, P as u64, 1, 0, 0, 0], 8).unwrap();
+        table.commit_group_memory_change(child, child, protect.token).unwrap();
+    }
+    #[test]
+    fn private_fork_refuses_stale_or_foreign_receipts_before_observing_growth_or_allocating_pid() {
+        let (mut table, pid, admission) = setup(true);
+        let receipt = admission.record();
+        for stale in [ReceiptRecord { serial: receipt.serial ^ (1 << 40), ..receipt },
+            ReceiptRecord { generation: receipt.generation + 1, ..receipt },
+            ReceiptRecord { group: receipt.group + 1, ..receipt },
+            ReceiptRecord { tid: pid + 99, ..receipt }] {
+            assert_eq!(table.fork_group_memory_process(stale, 8), Err(Errno::ESRCH));
+        }
+        assert_eq!(table.get(pid).unwrap().memory.group_virtual_extent(), Some(4));
+        assert_eq!(table.get(pid).unwrap().fork_count, 0);
+        assert_eq!(table.create_process().unwrap(), 101);
+    }
+    #[test]
+    fn private_fork_refuses_busy_stopped_or_invalid_extent_without_publishing_child() {
+        let (mut table, pid, admission) = setup(false);
+        assert_eq!(table.fork_group_memory_process(admission.record(), 8), Err(Errno::EBUSY));
+        table.memory_groups().start(admission).unwrap();
+        table.get_mut(pid).unwrap().state = ProcessState::Stopped;
+        assert_eq!(table.fork_group_memory_process(admission.record(), 8), Err(Errno::EAGAIN));
+        table.get_mut(pid).unwrap().state = ProcessState::Running;
+        for pages in [3, 65, u32::MAX] {
+            assert_eq!(table.fork_group_memory_process(admission.record(), pages), Err(Errno::EINVAL));
+        }
+        let pending = prepare(&mut table, pid);
+        assert_eq!(table.fork_group_memory_process(admission.record(), 8), Err(Errno::EBUSY));
+        table.cancel_group_memory_change(pid, pid, pending.token).unwrap();
+        assert_eq!(table.get(pid).unwrap().memory.group_virtual_extent(), Some(4));
+        assert_eq!(table.get(pid).unwrap().fork_count, 0);
+        assert_eq!(table.create_process().unwrap(), 101);
+    }
+    #[test]
+    fn private_fork_refuses_shared_backing_before_growth_or_pid_allocation() {
+        let (mut table, pid, admission) = setup(true);
+        table.get_mut(pid).unwrap().memory.try_mmap_anonymous(0, P, 3,
+            mmap::MAP_SHARED | mmap::MAP_ANONYMOUS).unwrap();
+        assert_eq!(table.fork_group_memory_process(admission.record(), 8), Err(Errno::EOPNOTSUPP));
+        assert_eq!(table.get(pid).unwrap().memory.group_virtual_extent(), Some(4));
+        assert_eq!(table.get(pid).unwrap().fork_count, 0);
+        assert_eq!(table.create_process().unwrap(), 101);
+    }
+    #[test]
+    fn private_fork_from_pthread_uses_its_exact_receipt_and_callers_signal_mask() {
+        let (mut table, pid, admission) = setup(true);
+        let tid = table.create_thread(pid, pid, 0, 0, 0).unwrap();
+        let thread = table.memory_group_task(pid, tid).unwrap().unwrap();
+        table.memory_groups().start(thread).unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        proc.signals.blocked = 0x11;
+        proc.get_thread_mut(tid).unwrap().signals.blocked = 0x22;
+        let mut wrong = thread.record(); wrong.serial = admission.record().serial;
+        assert_eq!(table.fork_group_memory_process(wrong, 8), Err(Errno::ESRCH));
+        let child = table.fork_group_memory_process(thread.record(), 8).unwrap();
+        assert_eq!(child, 102);
+        assert_eq!(table.get(child).unwrap().signals.blocked, 0x22);
+        assert_eq!(table.get(child).unwrap().memory.group_virtual_extent(), Some(8));
+        let receipt = table.memory_group_task(child, child).unwrap().unwrap().record();
+        assert_eq!(receipt.pid, child); assert_eq!(receipt.tid, child);
+        assert_eq!(receipt.group, admission.record().group);
+        assert_ne!(receipt.serial, thread.record().serial);
+    }
     fn file(table: &mut ProcessTable, pid: u32) -> (i32, i64) {
         use crate::syscalls::*;
         let proc = table.get_mut(pid).unwrap();

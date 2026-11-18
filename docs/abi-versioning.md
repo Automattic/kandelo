@@ -3120,6 +3120,20 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
+Host-adapter 13 adds optional `kernel_group_memory_fork(group, pid, tid,
+serialLo, serialHi, generationLo, generationHi, observedPages) -> i32`.
+The host must first acknowledge an image-wide execution barrier and read the
+logical root extent. Rust validates the exact running receipt, refuses pending
+mapping plans and unsupported shared/device inheritance, observes actual
+virtual growth, and only then allocates the child and copies its MM metadata.
+It returns the kernel-assigned child PID or the original negative errno; the
+child's group admission remains prepared until normal publication. The
+ordinary `kernel_fork_process` export refuses grouped images, so it cannot
+silently omit growth synchronization. All eight parameters are scalar `i32`
+words, with unsigned low/high receipt fields. This does not implement the
+unfinished host fork dispatcher or Worker launch. Program ABI 56 and its
+contract digest are unchanged.
+
 Host-adapter 12 adds private-file population to the internal grouped mapping
 transaction. Mapping record version 3 keeps the 64-byte request and expands
 the description to 112 bytes: `populationAddress` and `populationLength` at

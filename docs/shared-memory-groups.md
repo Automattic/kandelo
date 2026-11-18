@@ -242,6 +242,14 @@ unchanged, and exact unconstructed cancellation returns the child allocation.
 This is an internal private-page operation: normal fork dispatch and Worker
 launch are not connected yet, and shared-object inheritance remains separate.
 
+Host-adapter 13 adds a receipt-bound private fork metadata operation. After the
+host pauses the image and reads its logical extent, Rust validates the exact
+running caller and absence of pending mappings, observes virtual growth, then
+allocates the child with the inherited live MM. Shared/device inheritance is
+refused until its effects are connected. The ordinary fork export refuses
+grouped images rather than snapshotting stale virtual metadata. This boundary
+does not establish host barrier or Worker-launch acceptance on its own.
+
 Host-adapter 11 makes process-range preflight direction-aware: the host
 checks every virtual page for guest read or write access without copying a
 payload. Grouped scalar read/write/pread/pwrite/getrandom, including small
