@@ -62,17 +62,44 @@ import { OverlayStorageFile } from "./vfs/overlay-storage";
 import { parseSealedGenerationSlot } from "./vfs/overlay-generation-seal";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError, type OverlayCompactionHandoff } from "./vfs/overlay-generation-selection";
 import { UnconfirmedOverlayActivationError } from "./vfs/overlay-generation-activation";
 import { OverlayGenerationMetadata } from "./vfs/overlay-generation-metadata";
+import { restorePersistentRoot, type PersistentRootSource } from "./migration/persistent-root";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   HostFileSystem,
+  HostRandomProvider,
   readPreparedPlatformFile,
   vfsPathIsWithin,
 } from "./vfs";
+import {
+  ReplicationLogRecorder,
+  ptsDeviceIndex,
+  ptsDevicePath,
+  type ReplicationDivergence,
+  type ReplicationLogEntry,
+  type ReplicationLogReader,
+  type ReplicationPushedDecision,
+} from "./replication/log";
+import { RecordingTimeProvider } from "./replication/clock";
+import { RecordingRandomProvider } from "./replication/random";
+import {
+  acceptSelectionRecordTap,
+  beginReplicationReplay,
+  beginReplicationStream,
+  glQueryRecordTap,
+  httpExchangeRecordTap,
+  dispatchOrderRecordTap,
+  ReplayedHttpExchanges,
+  describeReplayedHttp,
+} from "./replication/worker";
+import {
+  parseRawRequestLine,
+  type HttpResponse,
+} from "./networking/in-kernel-http";
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import type { LazyPrepare } from "./vfs/lazy-fetch-bytes";
@@ -110,8 +137,10 @@ import {
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
+  ABI_VERSION,
   DIRENT_TYPES,
   FILE_MODES,
+  PROCESS_FORK_MODE_FORK,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
@@ -145,6 +174,22 @@ import {
   retireForkReplayWorker,
   waitForForkReplayRetirement,
 } from "./fork-replay-gate";
+import { CheckpointFreezeGateCoordinator } from "./checkpoint-freeze-gate";
+import { ProcessExecutionGenerationAllocator } from "./process-execution-generation";
+import {
+  rootfsImageSha256,
+  captureMachineCheckpoint,
+  captureMachineCheckpointSummary,
+  machineCheckpointTransferList,
+  type CheckpointMachine,
+  type CheckpointProcessBucket,
+  type CheckpointProcessThread,
+} from "./migration/checkpoint";
+import {
+  describeCheckpointMountGaps,
+  validateMachineCheckpoint,
+} from "./migration/restore";
+import { readForkContinuationAnchor } from "./fork-continuation";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import {
@@ -191,7 +236,10 @@ import type {
   SpawnMessage,
   TerminateProcessMessage,
   HttpRequestMessage,
+  ReplicationSealResponse,
+  ReplicationReplicaHashResponse,
 } from "./node-kernel-protocol";
+import { hashMachineCheckpoint } from "./replication/state-hash";
 import { OwnedJobs } from "./owned-jobs";
 import { formatHostErrorDiagnostic } from "./host-diagnostic";
 import { closeKernelRealmStorageAsync, kernelRealmDestroyResult } from "./kernel-realm-destroy";
@@ -227,6 +275,8 @@ let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
 let liveOverlayCompactor: LiveOverlayCompactor | null = null;
 let overlayGenerationMetadata: OverlayGenerationMetadata | null = null;
+/** The persistent `/` a checkpoint carries whole; null for an in-memory `/`. */
+let persistentRootSource: PersistentRootSource | null = null;
 let persistentOverlayLock: import("node:sqlite").DatabaseSync | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
@@ -273,6 +323,27 @@ let deferredByteSpool: DeferredByteSpool | undefined;
  *  kernel's rootfs so it does not claim their paths. */
 let rootfsForeignPrefixes: string[] = [];
 const vfsChangeSubscriptions = new Map<string, () => void>();
+/**
+ * This machine's own clock, and the IO that reads it.
+ *
+ * Replication swaps the clock rather than replacing the IO, so a recording or
+ * a replay can start and stop on a running machine. The base provider is kept
+ * so stopping restores it: a fresh `NodeTimeProvider` would carry a monotonic
+ * origin behind readings the guest has already seen.
+ */
+let baseTimeProvider: NodeTimeProvider | null = null;
+/**
+ * This machine's own randomness, kept so recording can be turned off again.
+ * Stateless, unlike the clock, so one instance serves boot and restore alike.
+ */
+const baseRandomProvider = new HostRandomProvider();
+let replicationIO: VirtualPlatformIO | null = null;
+let replicationRecorder: ReplicationLogRecorder | null = null;
+let replicationReplay: { reader: ReplicationLogReader } | null = null;
+/** The host directories mounted beneath `/`, which a checkpoint leaves behind. */
+let checkpointHostMounts: string[] = [];
+/** SHA-256 of this machine's `/` image; null when it booted without one. */
+let bootImageSha256: string | null = null;
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -298,6 +369,8 @@ interface ForkReplayContext {
 
 interface ProcessInfo extends ProcessGenerationOwnership {
   workerAbsence?: WorkerAbsence;
+  /** Serialisable identity for one execution image. A PID survives exec. */
+  executionGeneration: number;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   programBytes: ArrayBuffer;
@@ -308,6 +381,9 @@ interface ProcessInfo extends ProcessGenerationOwnership {
    */
   programModule: WebAssembly.Module;
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+  argv: string[];
+  /** Launch environment for this exact image; a resumed `_start` re-reads it. */
+  env: string[];
   channelOffset: number;
   ptrWidth: 4 | 8;
   /** Kernel-owned sticky secure-execution state for this exact image. */
@@ -320,6 +396,8 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   forkReplayContext?: ForkReplayContext;
   /** Parent-owned control slot borrowed only until exact exec/exit teardown. */
   vforkWorkspace?: VforkWorkspaceOwnership;
+  /** Host half of this process's checkpoint freeze, reused for its lifetime. */
+  checkpointFreeze: CheckpointFreezeGateCoordinator;
 }
 const processes = new Map<number, ProcessInfo>();
 let observeProcessGenerations = false;
@@ -340,6 +418,7 @@ function registerObservedProcess(pid: number, info: ProcessInfo): void {
   } catch { /* no authenticated observation */ }
 }
 
+const processExecutionGenerations = new ProcessExecutionGenerationAllocator();
 const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
 const forkHostImportOwnerRuntime =
@@ -353,6 +432,75 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
 const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
+
+/**
+ * The freeze's view of this machine. The ordering between these members lives
+ * in `migration/checkpoint.ts`, which both hosts share.
+ */
+const checkpointMachine: CheckpointMachine = {
+  runWithoutWorkerCreation: (operation, exclusive) =>
+    processMemoryCreators.runExclusive(operation, exclusive),
+  hasQueuedLaunch: () => processMemoryCreators.hasQueuedAdmissions(),
+  onLaunchQueuedDuringFreeze: (listener) =>
+    processMemoryCreators.onLaunchQueuedDuringExclusive(listener),
+  runWithoutRootfsMutation: (operation) => rootfsSnapshotGate.runSnapshot(operation),
+  settleActiveVforkBorrows: () => vforkLifetimes.settleActiveBorrows(),
+  holdProcessDispatch: () => kernelWorker.holdProcessDispatchForCheckpoint(),
+  releaseProcessDispatch: () => kernelWorker.releaseProcessDispatchForCheckpoint(),
+  armUnwindRequests: () => kernelWorker.armCheckpointUnwind(),
+  disarmUnwindRequests: () => kernelWorker.disarmCheckpointUnwind(),
+  copyKernelMemory: () => kernelWorker.copyKernelMemoryForCheckpoint(),
+  rootfsImageSha256: () => bootImageSha256,
+  persistentRoot: () => persistentRootSource,
+  hostMounts: () => checkpointHostMounts,
+  monotonicNowNs: () => {
+    if (!vfsExecIO) {
+      throw new Error("this machine has no PlatformIO clock to checkpoint");
+    }
+    const now = vfsExecIO.clockGettime(1);
+    return now.sec * 1_000_000_000 + now.nsec;
+  },
+  kmsState: () => ({
+    ...kernelWorker.kms.snapshot(),
+    buffers: kernelWorker.bos.snapshot(),
+  }),
+  gl: () => kernelWorker.captureGlForCheckpoint(),
+  framebuffers: () =>
+    kernelWorker.framebuffers.list().map((binding) => ({
+      pid: binding.pid,
+      addr: binding.addr,
+      len: binding.len,
+      w: binding.w,
+      h: binding.h,
+      stride: binding.stride,
+      fmt: binding.fmt,
+      hostBuffer: binding.hostBuffer === null
+        ? null
+        : new Uint8Array(
+          binding.hostBuffer.buffer,
+          binding.hostBuffer.byteOffset,
+          binding.hostBuffer.byteLength,
+        ),
+    })),
+  kernelAbiVersion: () => kernelWorker.getKernelAbiVersion(),
+  liveProcesses: () =>
+    [...processes.entries()].map(([pid, info]) => ({
+      pid,
+      executionGeneration: info.executionGeneration,
+      ptrWidth: info.ptrWidth,
+      channelOffset: info.channelOffset,
+      layout: info.layout,
+      argv: info.argv,
+      env: info.env,
+      memory: info.memory,
+      programBytes: () => info.programBytes,
+      threadAllocatorState: () => info.threadAllocator.snapshotState(),
+      threads: () =>
+        (threadWorkers.get(pid) ?? []).map((thread) => thread.launch),
+      forkReplayContext: info.forkReplayContext,
+      checkpointFreeze: info.checkpointFreeze,
+    })),
+};
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
 
 /**
@@ -460,6 +608,26 @@ function installProcessWorkerListeners(
       process.execRetirement.settle();
       return;
     }
+    if (
+      message.type === "checkpoint_unwound"
+      && message.pid === pid
+      && message.tid === undefined
+    ) {
+      // The frames exist only until the gate reopens, so the report and the
+      // read that follows it are the whole capture window.
+      process.checkpointFreeze.unwound();
+      return;
+    }
+    if (
+      message.type === "checkpoint_refused"
+      && message.pid === pid
+      && message.tid === undefined
+    ) {
+      // This thread read the request and could not reach its capture. Fail the
+      // freeze on the real reason rather than let it expire on its deadline.
+      process.checkpointFreeze.abandon(message.reason);
+      return;
+    }
     if (message.type === "error" && message.pid === pid) {
       finalizeProcessWorkerError(pid, worker, message.message);
     } else if (message.type === "exit" && message.pid === pid) {
@@ -486,6 +654,8 @@ interface ThreadWorkerInfo {
   tid: number;
   basePage: number;
   workerAbsence: WorkerAbsence;
+  /** Clone-time launch values a checkpoint carries so a restore can relaunch. */
+  launch: CheckpointProcessThread;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   termination?: Promise<void>;
@@ -563,6 +733,9 @@ const processGenerationDetaches =
       const current = processes.get(pid);
       if (current !== exactGeneration) return;
       vmInterruptTimers.clear(pid, current);
+      // A freeze waiting on this generation's unwind will never get one.
+      // Settle it now rather than let it sit until its timeout.
+      current.checkpointFreeze.end();
       processes.delete(pid);
       threadModuleCache.delete(pid);
       ptyByPid.delete(pid);
@@ -584,7 +757,8 @@ async function detachExactProcessGeneration(options: {
     detach: () => {
       if (operation === "none") return true;
       if (operation === "deactivate") {
-        return kernelWorker.deactivateProcess(pid, generation.memory);
+        return retryKernelEntryResult(() =>
+          kernelWorker.deactivateProcess(pid, generation.memory));
       }
       return kernelWorker.unregisterProcess(pid, generation.memory);
     },
@@ -757,10 +931,112 @@ const ownedJobs = new OwnedJobs(pid => {
   terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
 });
 
-function post(msg: KernelToMainMessage) {
+function post(msg: KernelToMainMessage, transfer?: ArrayBuffer[]) {
   if ((msg.type === "stdout" || msg.type === "stderr") && ownedJobs.output(msg.pid, msg.type, msg.data)) return;
   if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
-  port.postMessage(msg);
+  port.postMessage(msg, transfer ?? []);
+}
+
+function publishLog(entries: readonly ReplicationLogEntry[]): void {
+  post({ type: "replication_recorded", entries });
+}
+
+/**
+ * Start the decision log at the state a checkpoint just read.
+ *
+ * Runs inside the freeze, so it refuses rather than responding: a capture that
+ * cannot start the log must fail as a capture, not resume a machine whose
+ * replica would then be following a log that begins somewhere else.
+ */
+function beginStreamAtCapture(): void {
+  if (!replicationIO || !baseTimeProvider) {
+    throw new Error(
+      "replication needs a machine booted from a rootfs image: this one has "
+        + "no swappable guest clock",
+    );
+  }
+  replicationRecorder = beginReplicationStream(
+    replicationIO,
+    baseTimeProvider,
+    publishLog,
+    kernelWorker,
+  );
+}
+
+/**
+ * Swap the guest clock for replication, and name the boundary when there is
+ * no clock to swap.
+ *
+ * A machine booted without a rootfs image runs on `NodePlatformIO`, which owns
+ * no swappable clock. Refusing here is what keeps a caller from holding a log
+ * that is silently empty, or a replay that silently read this host's time.
+ */
+/**
+ * Stop the decision log at the state a checkpoint just read, and say where.
+ *
+ * `beginStreamAtCapture`'s other half, for the take-over seal: it runs inside
+ * the freeze, so the log's final entry and the frozen state name one instant.
+ * Returns the seal position — the sequence number the next entry would have
+ * taken.
+ */
+function endStreamAtCapture(): number {
+  const recorder = replicationRecorder;
+  if (!recorder) {
+    throw new Error("this machine is not recording a decision log to seal");
+  }
+  replicationRecorder = null;
+  if (replicationIO && baseTimeProvider) {
+    replicationIO.setTimeProvider(baseTimeProvider);
+  }
+  replicationIO?.setRandomProvider(baseRandomProvider);
+  kernelWorker?.setGlQueryTap(null);
+  kernelWorker?.setAcceptSelectionTap(null);
+  kernelWorker?.setHttpExchangeTap(null);
+  kernelWorker?.setDispatchOrderTap(null);
+  return recorder.nextSeq;
+}
+
+function respondToReplication(
+  requestId: number,
+  swap: (io: VirtualPlatformIO, clock: NodeTimeProvider) => void,
+): void {
+  if (!replicationIO || !baseTimeProvider) {
+    post({
+      type: "response",
+      requestId,
+      result: undefined,
+      error: "replication needs a machine booted from a rootfs image: this one "
+        + "has no swappable guest clock",
+    });
+    return;
+  }
+  try {
+    swap(replicationIO, baseTimeProvider);
+    post({ type: "response", requestId, result: undefined });
+  } catch (err) {
+    post({
+      type: "response",
+      requestId,
+      result: undefined,
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
+
+/**
+ * Say out loud that this replica stopped being the machine it follows.
+ *
+ * The guest's read fails with an errno whatever happens here, and a program
+ * handed a failed clock goes wrong quietly: nginx stamps 1970 and the worker
+ * behind it dies. Reporting is what puts the reason in front of the person
+ * watching instead of leaving them a machine that merely looks broken.
+ */
+function reportReplicationDivergence(error: ReplicationDivergence): void {
+  reportHostDiagnostic({
+    pid: kernelWorker.currentGuestPid(),
+    source: "replication",
+    message: error.message,
+  });
 }
 
 function terminatePoisonedKernelWorker(error: Error): void {
@@ -999,7 +1275,9 @@ async function buildVirtualPlatformIO(
   // must not claim; hand their prefixes over so they keep resolving through
   // their own backend. (The kernel excludes its own tmpfs prefixes itself.)
   rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
-  return new VirtualPlatformIO(mounts, new NodeTimeProvider());
+  checkpointHostMounts = mounts.map((m) => m.mountPoint);
+  baseTimeProvider = new NodeTimeProvider();
+  return new VirtualPlatformIO(mounts, baseTimeProvider, baseRandomProvider);
 }
 
 let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
@@ -1061,7 +1339,12 @@ async function handleInit(msg: InitMessage) {
   } else if (msg.rootfsPersistentImageBinding !== undefined) {
     throw new Error("persistent image binding requires a file source");
   }
-  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
+  const restoredRoot = msg.restoreCheckpoint?.persistentRoot ?? null;
+  if (restoredRoot !== null && (msg.rootfsImage !== undefined || nodeImageReader !== null
+    || msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined)) {
+    throw new Error("a checkpoint of a persistent / brings its own image and journal, so boot it with neither");
+  }
+  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null || restoredRoot !== null;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -1081,6 +1364,19 @@ async function handleInit(msg: InitMessage) {
   if (!hasRootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
   }
+  let restoredProgramModules:
+    | ReadonlyMap<number, WebAssembly.Module>
+    | undefined;
+  bootImageSha256 = msg.rootfsImage ? await rootfsImageSha256(msg.rootfsImage) : null;
+  if (msg.restoreCheckpoint) {
+    if (!msg.rootfsImage && restoredRoot === null) {
+      throw new Error("restoreCheckpoint requires rootfsImage");
+    }
+    restoredProgramModules = await validateMachineCheckpoint(
+      msg.restoreCheckpoint,
+      { kernelAbiVersion: ABI_VERSION, rootfsImageSha256: bootImageSha256 },
+    );
+  }
 
   const io: PlatformIO = hasRootfsImage
     ? await buildVirtualPlatformIO(
@@ -1096,11 +1392,24 @@ async function handleInit(msg: InitMessage) {
   if (msg.enableTcpNetwork && msg.offlineEgressLink) {
     throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
   }
+  replicationIO = io instanceof VirtualPlatformIO ? io : null;
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
   } else if (msg.offlineEgressLink) {
     io.network = new OfflineEgressBackend();
   }
+  if (msg.restoreCheckpoint) {
+    if (!io.advanceMonotonicFloor) {
+      throw new Error(
+        "restoring a checkpoint requires a PlatformIO with a monotonic floor",
+      );
+    }
+    // The adopted kernel memory carries monotonic deadlines measured on the
+    // captured machine's clock, and a guest's monotonic clock must never run
+    // backwards. Advance before anything reads this machine's clock.
+    io.advanceMonotonicFloor(msg.restoreCheckpoint.monotonicNs);
+  }
+
   // The session network wraps the configured backend (or none) for the
   // machine's life, so a session can start or end under running programs.
   io.network = msg.remoteNetwork
@@ -1131,6 +1440,9 @@ async function handleInit(msg: InitMessage) {
       onHostDiagnostic: (diagnostic) => {
         console.error(diagnostic.message);
         post({ type: "host_diagnostic", ...diagnostic });
+      },
+      onInputEventsInjected: (records) => {
+        replicationRecorder?.record({ kind: "evdev", records: [...records] });
       },
       onFork: ({
         parentPid,
@@ -1174,7 +1486,7 @@ async function handleInit(msg: InitMessage) {
             ));
       },
       onExec: async (request) => {
-        const creatorAdmission = processMemoryCreators.acquire(
+        const creatorAdmission = await processMemoryCreators.acquire(
           "an exec process Worker",
         );
         try {
@@ -1295,21 +1607,24 @@ async function handleInit(msg: InitMessage) {
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them.
   let finalizeRootfsTransport: (() => Map<string, number>) | undefined;
+  const reader = nodeImageReader;
+  const rootfsContainer = restoredRoot?.image ?? (msg.rootfsImage === undefined
+    ? null
+    : new Uint8Array(msg.rootfsImage));
+  const rootfsImageRead = reader === null
+    ? imageReadFromContainer(rootfsContainer ?? new Uint8Array())
+    : (at: number, destination: Uint8Array) => reader.readAt(at, destination);
+  const rootfsImageLength = reader?.length ?? rootfsContainer?.byteLength ?? 0;
+  const rootfsImageBinding = restoredRoot === null ? msg.rootfsPersistentImageBinding ?? null : restoredRoot.binding;
   if (rootImage.has()) {
-    const reader = nodeImageReader;
-    const rootfsContainer = msg.rootfsImage === undefined
-      ? null
-      : new Uint8Array(msg.rootfsImage);
     if (msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined) {
       if (sessionDir === null) throw new Error("Persistent rootfs byte storage requires a session directory");
       deferredByteSpool = await DeferredByteSpool.open(() => openNodeDeferredByteStorage(sessionDir!), kernelWorker.rootfsTransportMetadataBudget());
     }
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: reader === null
-        ? imageReadFromContainer(rootfsContainer!)
-        : (at, destination) => reader.readAt(at, destination),
-      imageLength: reader?.length ?? rootfsContainer!.byteLength,
-      persistentImageBinding: msg.rootfsPersistentImageBinding,
+      imageRead: rootfsImageRead,
+      imageLength: rootfsImageLength,
+      persistentImageBinding: rootfsImageBinding ?? undefined,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -1337,7 +1652,139 @@ async function handleInit(msg: InitMessage) {
   if (msg.config.exchangeByteLimit !== undefined) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
-  await kernelWorker.init(msg.kernelWasmBytes);
+  await kernelWorker.init(
+    msg.kernelWasmBytes,
+    msg.restoreCheckpoint === undefined
+      ? undefined
+      : { adoptKernelMemoryImage: msg.restoreCheckpoint.kernelMemory },
+  );
+  if (restoredRoot !== null) {
+    overlayGenerationMetadata = new OverlayGenerationMetadata(kernelWorker.rootfsTransportMetadataBudget());
+    const restored = restorePersistentRoot(
+      restoredRoot,
+      {
+        activationCodec: kernelWorker.overlayActivationCodec(),
+        sealCodec: kernelWorker.overlaySealCodec(),
+        metadata: overlayGenerationMetadata,
+      },
+      (journal, index, slots) => kernelWorker.adoptRootfsPersistence(journal, index, slots),
+      rootfsCompactionHandoff(),
+      (next) => {
+        persistentOverlay = next.journal;
+        persistentOverlayIndex = next.index ?? null;
+      },
+      reportLiveCompactionFailure,
+    );
+    persistentOverlay = restored.journal;
+    persistentOverlayIndex = restored.index;
+    liveOverlayCompactor = restored.compactor;
+    persistentRootSource = {
+      compactor: restored.compactor,
+      files: restored.files,
+      imageLength: rootfsImageLength,
+      imageRead: rootfsImageRead,
+      binding: rootfsImageBinding,
+      slots: () => kernelWorker.rootfsPersistenceSlots(),
+    };
+  }
+
+  if (msg.restoreCheckpoint && restoredProgramModules) {
+    const gaps = describeCheckpointMountGaps(msg.restoreCheckpoint);
+    if (gaps !== null) {
+      reportHostDiagnostic(
+        { pid: 0, source: "checkpoint restore", message: gaps },
+        "warn",
+      );
+    }
+    // Before the replay: re-arming a restored timer reads the clock for this
+    // host's own scheduling. Under the replay that read would take a reading
+    // the primary recorded for the process's next clock read.
+    kernelWorker.rebindRestoredHostHandles(
+      msg.restoreCheckpoint.processes.map((bucket) => ({ pid: bucket.pid })),
+    );
+  }
+
+  // Before the first restored process, not after `init` answers. A restored
+  // process resumes below and reads the clock immediately; a replay installed
+  // once this function returns would have let it read this computer's.
+  if (msg.replicationReplay) {
+    if (!replicationIO || !baseTimeProvider) {
+      throw new Error(
+        "replaying a decision log needs a machine with a swappable guest "
+          + "clock: this one runs on a PlatformIO that has none",
+      );
+    }
+    replicationReplay = {
+      reader: beginReplicationReplay(
+        replicationIO,
+        msg.replicationReplay,
+        kernelWorker,
+        applyPushedDecision,
+        reportReplicationDivergence,
+      ),
+    };
+  }
+
+  if (msg.restoreCheckpoint && restoredProgramModules) {
+    // Before the first restored process resumes: its next GL submit must
+    // find a binding, or a machine that was healthy when captured fails
+    // with EIO. Node attaches no canvas, so the contexts stay pending and
+    // a re-capture hands them on verbatim.
+    kernelWorker.restoreGlFromCheckpoint(
+      msg.restoreCheckpoint.gl,
+      (line) => {
+        reportHostDiagnostic(
+          { pid: 0, source: "checkpoint restore", message: line },
+          "warn",
+        );
+      },
+    );
+    for (const bucket of msg.restoreCheckpoint.processes) {
+      const programModule = restoredProgramModules.get(bucket.pid);
+      if (!programModule) {
+        throw new Error(
+          `no validated program module for restored pid ${bucket.pid}`,
+        );
+      }
+      await restoreProcessFromBucket(bucket, programModule);
+      const restoredPtyIdx = kernelWorker.ptyIndexFor(bucket.pid);
+      if (restoredPtyIdx !== undefined) {
+        const restoredPid = bucket.pid;
+        ptyByPid.set(restoredPid, restoredPtyIdx);
+        const outputPid =
+          kernelWorker.restoredPtySessionFor(restoredPtyIdx) ?? restoredPid;
+        kernelWorker.onPtyOutput(restoredPtyIdx, (data: Uint8Array) => {
+          post({ type: "pty_output", pid: outputPid, data });
+        });
+      }
+    }
+    for (const framebuffer of msg.restoreCheckpoint.framebuffers) {
+      // Seeding through fbWrite replays the captured frame down the same
+      // path live pixels take, so a registry consumer sees the checkpoint's
+      // current frame before the restored guest writes its next one.
+      kernelWorker.framebuffers.bind({
+        pid: framebuffer.pid,
+        addr: framebuffer.addr,
+        len: framebuffer.len,
+        w: framebuffer.w,
+        h: framebuffer.h,
+        stride: framebuffer.stride,
+        fmt: framebuffer.fmt,
+      });
+      if (framebuffer.hostBuffer !== null) {
+        kernelWorker.framebuffers.fbWrite(
+          framebuffer.pid,
+          0,
+          framebuffer.hostBuffer,
+        );
+      }
+    }
+    // Buffer objects first: a restored CRTC scans out through the framebuffer
+    // that names one, so the pixels must be in place before the binding is.
+    kernelWorker.bos.restore(msg.restoreCheckpoint.kms.buffers);
+    kernelWorker.kms.restore(msg.restoreCheckpoint.kms);
+    await kernelWorker.releaseProcessDispatchForCheckpoint();
+  }
   const rootfsResourceLimits = finalizeRootfsTransport?.();
   if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
     // Read metadata after native validation, outside a Wasm import callback.
@@ -1431,14 +1878,7 @@ async function handleInit(msg: InitMessage) {
           post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `conversion cleanup failed: ${error}` });
         },
       );
-      const handoff = {
-        memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
-        prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
-        checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
-        activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
-        cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
-        fail: (error: UnconfirmedOverlayActivationError) => kernelWorker.failPersistenceWriter(error),
-      };
+      const handoff = rootfsCompactionHandoff();
       const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
         post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${error}` });
       });
@@ -1452,10 +1892,15 @@ async function handleInit(msg: InitMessage) {
       liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
         persistentOverlay = next.journal;
         persistentOverlayIndex = next.index ?? null;
-      }, (error) => {
-        if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
-        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
-      });
+      }, reportLiveCompactionFailure);
+      persistentRootSource = {
+        compactor: liveOverlayCompactor,
+        files,
+        imageLength: rootfsImageLength,
+        imageRead: rootfsImageRead,
+        binding: rootfsImageBinding,
+        slots: () => kernelWorker.rootfsPersistenceSlots(),
+      };
     } catch (error) {
       if (persistentOverlayLock !== lock) lock.close();
       throw error;
@@ -1470,6 +1915,391 @@ async function handleInit(msg: InitMessage) {
     kernelWorker.setRootfsCompactionHandler(() => compactor.compactNow());
   }
   post({ type: "ready" });
+}
+
+/**
+ * Relaunch one checkpointed process inside this freshly restored machine.
+ *
+ * The restored kernel memory already holds the process: its pid, fds, cwd,
+ * credentials, and metadata. This launch therefore creates no kernel process;
+ * it rebuilds the host side — a memory holding the captured bytes, the host
+ * registration, and a worker — and enters the worker down the fork-child
+ * replay path. The captured frames end at the `kernel_checkpoint` import
+ * rather than the fork import, so the replay resumes the process at its
+ * parked syscall boundary; the fork replay commit gate is never reached and
+ * is deliberately not supplied.
+ */
+async function restoreProcessFromBucket(
+  bucket: CheckpointProcessBucket,
+  programModule: WebAssembly.Module,
+): Promise<void> {
+  const { pid, ptrWidth, channelOffset } = bucket;
+  if (bucket.threads.length !== bucket.threadAllocator.activeCount) {
+    // A missing record would leave a live thread's frames parked forever;
+    // a surplus record would relaunch a worker for a slot nobody owns.
+    throw new Error(
+      `restored pid ${pid} carries ${bucket.threads.length} thread record(s) `
+      + `but its allocator holds ${bucket.threadAllocator.activeCount} live slot(s)`,
+    );
+  }
+  const programBytes = bucket.programBytes;
+  const { memory, memoryLease, layout, threadAllocator } =
+    await createFreshProcessMemory(pid, programBytes, ptrWidth);
+  try {
+    for (const key of Object.keys(layout) as (keyof ProcessMemoryLayout)[]) {
+      if (layout[key] !== bucket.layout[key]) {
+        throw new Error(
+          `restored pid ${pid}'s captured layout ${key}=`
+          + `${bucket.layout[key]} does not match this host's computed `
+          + `${key}=${layout[key]}; boot with the captured machine's `
+          + `memory configuration`,
+        );
+      }
+    }
+    const freshBytes = memory.buffer.byteLength;
+    if (bucket.memory.byteLength < freshBytes) {
+      throw new Error(
+        `restored pid ${pid}'s ${bucket.memory.byteLength}-byte image is `
+        + `smaller than its ${freshBytes}-byte initial layout`,
+      );
+    }
+    const deltaPages =
+      (bucket.memory.byteLength - freshBytes) / WASM_PAGE_SIZE;
+    if (deltaPages > 0) memory.grow(deltaPages);
+    new Uint8Array(memory.buffer).set(bucket.memory);
+    threadAllocator.adoptState(bucket.threadAllocator);
+
+    kernelWorker.registerProcess(pid, memory, [channelOffset], {
+      ptrWidth,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
+    });
+    kernelWorker.holdRestoredProcessDispatch(pid);
+    const secureExec = kernelWorker.processSecureExec(pid);
+    const externrefGeneration = externrefProcessOwner.startGeneration(pid);
+    let launchedWorker: ProcessInfo["worker"];
+    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid,
+      generationId: externrefGeneration.id,
+      authorizeSender: () => {
+        const current = processes.get(pid);
+        if (
+          !current
+          || current.worker !== launchedWorker
+          || current.externrefGeneration !== externrefGeneration
+        ) {
+          throw new Error(`stale fork host-import sender for pid=${pid}`);
+        }
+      },
+    });
+    const checkpointFreeze = new CheckpointFreezeGateCoordinator(`pid=${pid}`);
+    const forkBufAddr = readForkContinuationAnchor(
+      memory,
+      channelOffset - FORK_SAVE_BUFFER_SIZE,
+      ptrWidth,
+    );
+    const initData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid,
+      programBytes,
+      programModule,
+      memory,
+      channelOffset,
+      secureExec,
+      externrefGenerationId: externrefGeneration.id,
+      forkHostImports: forkHostImports.init,
+      checkpointFreezeGate: checkpointFreeze.gate,
+      // A guest captured inside _start resumes into its argv/environ copy
+      // loops, which re-read these startup imports. Relaunching without them
+      // would trip the CRT's startup contract.
+      argv: [...bucket.argv],
+      env: [...bucket.env],
+      isForkChild: true,
+      forkMode: PROCESS_FORK_MODE_FORK,
+      forkBufAddr,
+      forkChildThreadFnPtr: bucket.forkReplayContext?.fnPtr,
+      forkChildThreadArgPtr: bucket.forkReplayContext?.argPtr,
+      ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    };
+    const worker = workerAdapter.createWorker(initData);
+    launchedWorker = worker;
+    const mainWorkerReady = bucket.threads.length === 0
+      ? undefined
+      : new Promise<void>((resolve, reject) => {
+          worker.on("message", (raw: unknown) => {
+            const message = raw as WorkerToHostMessage;
+            if (message.type === "ready" && message.pid === pid) resolve();
+            else if (message.type === "error" && message.pid === pid) {
+              reject(new Error(message.message));
+            }
+          });
+          worker.on("error", (error: Error) => reject(error));
+        });
+    bindForkHostImports(worker, forkHostImports);
+    registerObservedProcess(pid, {
+      memory,
+      memoryLease,
+      executionGeneration: processExecutionGenerations.allocate(),
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      programBytes,
+      programModule,
+      worker,
+      argv: [...bucket.argv],
+      env: [...bucket.env],
+      channelOffset,
+      ptrWidth,
+      secureExec,
+      layout,
+      threadAllocator,
+      ...(bucket.forkReplayContext
+        ? { forkReplayContext: { ...bucket.forkReplayContext } }
+        : {}),
+      externrefGeneration,
+      checkpointFreeze,
+    });
+    installProcessWorkerListeners(worker, pid);
+    if (mainWorkerReady) {
+      // The fork-child boot resets the shared dlopen archive lock word before
+      // it reports ready, and a pthread boot takes readers on that same word.
+      // No thread worker may start until the reset has happened.
+      await mainWorkerReady;
+      for (const thread of bucket.threads) {
+        await restoreThreadFromRecord(pid, thread);
+      }
+    }
+  } catch (error) {
+    memoryLease.release();
+    throw error;
+  }
+}
+
+/**
+ * Relaunch one checkpointed pthread inside a restored process.
+ *
+ * The restored kernel and process memory already hold the thread: its TID,
+ * its channel, its TLS, and its parked frames. This launch rebuilds only the
+ * host side — the channel transport, the freeze-gate slot, and a worker that
+ * rewinds through the captured continuation at the thread's anchor instead
+ * of entering its entry function fresh. Mirrors handleClone's launch tail.
+ */
+async function restoreThreadFromRecord(
+  pid: number,
+  thread: CheckpointProcessThread,
+): Promise<void> {
+  const processInfo = processes.get(pid);
+  if (!processInfo) throw new Error(`Unknown pid ${pid} for restored thread`);
+  const { tid } = thread;
+  const memory = processInfo.memory;
+
+  let threadModule = threadModuleCache.get(pid);
+  if (!threadModule) {
+    const patched = patchWasmForThread(processInfo.programBytes);
+    threadModule = await WebAssembly.compile(patched);
+    threadModuleCache.set(pid, threadModule);
+  }
+
+  const restoredForkBufAddr = readForkContinuationAnchor(
+    memory,
+    thread.channelOffset - FORK_SAVE_BUFFER_SIZE,
+    processInfo.ptrWidth,
+  );
+  kernelWorker.attachRestoredThreadChannel(
+    pid,
+    tid,
+    thread.fnPtr,
+    thread.argPtr,
+    thread.channelOffset,
+  );
+
+  let threadWorker: DeferredWorkerHandle;
+  let threadEntry: ThreadWorkerInfo;
+  const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+    pid,
+    generationId: processInfo.externrefGeneration.id,
+    authorizeSender: () => {
+      const entries = threadWorkers.get(pid);
+      if (
+        !belongsToCurrentProcessImage()
+        || !threadEntry
+        || threadEntry.worker !== threadWorker
+        || !entries?.includes(threadEntry)
+      ) {
+        throw new Error(
+          `stale fork host-import sender for pid=${pid} tid=${tid}`,
+        );
+      }
+    },
+  });
+  const threadInitData: CentralizedThreadInitMessage = {
+    type: "centralized_thread_init",
+    pid,
+    tid,
+    programBytes: processInfo.programBytes,
+    programModule: threadModule,
+    memory,
+    processChannelOffset: processInfo.channelOffset,
+    channelOffset: thread.channelOffset,
+    secureExec: processInfo.secureExec,
+    externrefGenerationId: processInfo.externrefGeneration.id,
+    forkHostImports: forkHostImports.init,
+    fnPtr: thread.fnPtr,
+    argPtr: thread.argPtr,
+    stackPtr: thread.stackPtr,
+    tlsPtr: thread.tlsPtr,
+    ctidPtr: thread.ctidPtr,
+    tlsOffset: thread.tlsOffset,
+    tlsAllocAddr: thread.tlsOffset,
+    ptrWidth: processInfo.ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    checkpointFreezeGate: processInfo.checkpointFreeze.registerThread(tid),
+    restoredForkBufAddr,
+  };
+
+  threadWorker = new DeferredWorkerHandle(
+    () => workerAdapter.createWorker(threadInitData),
+  );
+  bindForkHostImports(threadWorker, forkHostImports);
+  if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
+  threadEntry = {
+    worker: threadWorker,
+    channelOffset: thread.channelOffset,
+    tid,
+    basePage: thread.slotStartPage,
+    launch: thread,
+    workerQuiescence: createWorkerQuiescence(),
+    execRetirement: createWorkerQuiescence(),
+    workerAbsence: createWorkerAbsence(threadWorker, () =>
+      generationObservations.threadAbsent(processInfo, threadEntry)),
+  };
+  threadWorkers.get(pid)!.push(threadEntry);
+
+  const belongsToCurrentProcessImage = () =>
+    isCurrentProcessGeneration(
+      processes,
+      pid,
+      processInfo,
+      memory,
+      kernelWorker.isExecHandoffActive(pid),
+    );
+  let reclaimed = false;
+  const reclaimThread = async () => {
+    if (reclaimed) return;
+    reclaimed = true;
+    // The Worker is stopped at this point, so waking the retired host
+    // waitAsync listener cannot race the guest or a newly reused thread slot.
+    await kernelWorker.settleRetiredChannelListeners(
+      pid,
+      memory,
+      thread.channelOffset,
+    );
+    processInfo.threadAllocator.free(thread.slotStartPage);
+    // A freeze still waiting on this thread would wait until its timeout, so
+    // release its participant slot as the thread goes away.
+    processInfo.checkpointFreeze.unregisterThread(tid);
+    if (belongsToCurrentProcessImage()) {
+      threadExits.release(pid, thread.channelOffset);
+    }
+    removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
+  };
+  const terminateThreadEntry = (): Promise<void> => {
+    if (!threadEntry.termination) {
+      threadEntry.termination = terminateTrackedWorker(threadWorker).then(
+        reclaimThread,
+      );
+    }
+    return threadEntry.termination;
+  };
+  threadExits.register(pid, thread.channelOffset, terminateThreadEntry);
+
+  const isCurrentThreadGeneration = () =>
+    !intentionallyTerminated.has(threadWorker as object)
+    && belongsToCurrentProcessImage();
+  const failThread = (reason: string, awaitQuiescence = false) => {
+    if (!isCurrentThreadGeneration()) {
+      void terminateThreadEntry();
+      return;
+    }
+    const disposition = threadWorkerFailureDisposition(reason);
+    reportHostDiagnostic({
+      pid,
+      status: disposition.kind === "guest-fatal-trap"
+        ? disposition.exitStatus
+        : undefined,
+      source: "restored thread worker failure",
+      message: `[kernel-worker] pid=${pid} tid=${tid}: ${reason}`,
+    });
+    kernelWorker.finalizeThreadExit(pid, tid, thread.channelOffset);
+    if (!awaitQuiescence) void terminateThreadEntry();
+    if (disposition.kind === "guest-fatal-trap") {
+      try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
+      void finishProcessExit(pid, disposition.exitStatus);
+    }
+  };
+  threadWorker.on("message", (msg: unknown) => {
+    const m = msg as WorkerToHostMessage;
+    if (m.type === "exec_retired" && m.tid === tid) {
+      threadEntry.execRetirement.settle();
+    } else if (m.type === "checkpoint_unwound" && m.tid === tid) {
+      // The frames exist only until the gate reopens, so the report and the
+      // read that follows it are the whole capture window.
+      processInfo.checkpointFreeze.unwound(tid);
+    } else if (m.type === "checkpoint_refused" && m.tid === tid) {
+      processInfo.checkpointFreeze.abandon(m.reason);
+    } else if (m.type === "thread_exit") {
+      if (!isCurrentThreadGeneration()) {
+        void terminateThreadEntry();
+      }
+      // memory_quiescent follows after worker-main returns; terminating here
+      // would discard the exact ownership fence.
+    } else if (m.type === "memory_quiescent" && m.tid === tid) {
+      threadEntry.workerQuiescence.settle();
+      void terminateThreadEntry();
+    } else if (m.type === "error") {
+      failThread(m.message, true);
+    } else if (m.type === "vm_interrupt_timer") {
+      if (isCurrentThreadGeneration() && m.pid === pid) {
+        handleVmInterruptTimer(m, pid, processInfo);
+      }
+    } else if (m.type === "fork_host_import") {
+      dispatchForkHostImport(threadWorker, m);
+    }
+  });
+  threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+
+  let startDisposition: ReturnType<
+    CentralizedKernelWorker["startProcessWorkerWhenRunnable"]
+  >;
+  try {
+    startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
+      pid,
+      memory,
+      () => { threadWorker.start(); },
+      () => {
+        forkHostImports.close();
+        void threadWorker.terminate();
+      },
+      () => {
+        // No clone syscall is waiting on this launch, so there is nothing to
+        // fail back to the guest; surface the start error to the boot.
+        kernelWorker.finalizeThreadExit(pid, tid, thread.channelOffset);
+        void terminateThreadEntry();
+        return false;
+      },
+    );
+  } catch (error) {
+    kernelWorker.finalizeThreadExit(pid, tid, thread.channelOffset);
+    void terminateThreadEntry();
+    throw error;
+  }
+  if (startDisposition === "stale") {
+    void terminateThreadEntry();
+    throw new Error(
+      `Process ${pid} changed generation before restored thread Worker launch`,
+    );
+  }
 }
 
 // --- Spawn ---
@@ -1627,6 +2457,7 @@ async function handleSpawn(msg: SpawnMessage) {
         },
       });
       createdForkHostImports = forkHostImports;
+      const checkpointFreeze = new CheckpointFreezeGateCoordinator(`pid=${pid}`);
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid,
@@ -1637,6 +2468,7 @@ async function handleSpawn(msg: SpawnMessage) {
         secureExec,
         externrefGenerationId: externrefGeneration.id,
         forkHostImports: forkHostImports.init,
+        checkpointFreezeGate: checkpointFreeze.gate,
         env: msg.env,
         argv,
         ptrWidth,
@@ -1651,6 +2483,7 @@ async function handleSpawn(msg: SpawnMessage) {
       createdWorker = worker;
       bindForkHostImports(worker, forkHostImports);
       createdGeneration = {
+        executionGeneration: processExecutionGenerations.allocate(),
         memory,
         memoryLease,
         workerQuiescence: createWorkerQuiescence(),
@@ -1658,12 +2491,15 @@ async function handleSpawn(msg: SpawnMessage) {
         programBytes,
         programModule,
         worker,
+        argv,
+        env: msg.env ?? [],
         channelOffset,
         ptrWidth,
         secureExec,
         layout,
         threadAllocator,
         externrefGeneration,
+        checkpointFreeze,
       };
       registerObservedProcess(pid, createdGeneration);
 
@@ -2006,6 +2842,8 @@ async function handleVfork(
       },
     });
     childForkHostImports = forkHostImports;
+    const childCheckpointFreeze =
+      new CheckpointFreezeGateCoordinator(`pid=${childPid}`);
     const childInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
@@ -2016,6 +2854,7 @@ async function handleVfork(
       secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
+      checkpointFreezeGate: childCheckpointFreeze.gate,
       isForkChild: true,
       forkMode: PROCESS_FORK_MODE_VFORK,
       forkMemoryOwnership: "borrowed",
@@ -2043,11 +2882,14 @@ async function handleVfork(
     childGeneration = {
       memory: parentMemory,
       memoryLease: childMemoryLease,
+      executionGeneration: processExecutionGenerations.allocate(),
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
       programBytes: parentProgram,
       programModule: parentInfo.programModule,
       worker: childWorker,
+      argv: parentInfo.argv,
+      env: parentInfo.env,
       channelOffset: childChannelOffset,
       ptrWidth,
       secureExec: childInitData.secureExec,
@@ -2056,6 +2898,7 @@ async function handleVfork(
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
       vforkWorkspace: workspaceOwnership,
+      checkpointFreeze: childCheckpointFreeze,
     };
     if (memoryStatsBefore && memoryStatsAfterAlias) {
       traceVforkMechanism(
@@ -2389,6 +3232,8 @@ async function handleOrdinaryFork(
       },
     });
     childForkHostImports = forkHostImports;
+    const childCheckpointFreeze =
+      new CheckpointFreezeGateCoordinator(`pid=${childPid}`);
     const childInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
@@ -2399,6 +3244,7 @@ async function handleOrdinaryFork(
       secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
+      checkpointFreezeGate: childCheckpointFreeze.gate,
       isForkChild: true,
       forkMode: mode,
       forkBufAddr,
@@ -2422,11 +3268,14 @@ async function handleOrdinaryFork(
     childGeneration = {
       memory: childMemory,
       memoryLease: childMemoryLease,
+      executionGeneration: processExecutionGenerations.allocate(),
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
       programBytes: parentProgram,
       programModule: parentInfo.programModule,
       worker,
+      argv: parentInfo.argv,
+      env: parentInfo.env,
       channelOffset: childChannelOffset,
       ptrWidth,
       secureExec: childInitData.secureExec,
@@ -2434,6 +3283,7 @@ async function handleOrdinaryFork(
       threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
+      checkpointFreeze: childCheckpointFreeze,
     };
     registerObservedProcess(childPid, childGeneration);
 
@@ -2752,6 +3602,8 @@ async function handleExec(
         },
       });
 
+      const replacementCheckpointFreeze =
+        new CheckpointFreezeGateCoordinator(`pid=${pid}`);
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid,
@@ -2762,6 +3614,7 @@ async function handleExec(
         secureExec,
         externrefGenerationId: replacementExternrefGeneration.id,
         forkHostImports: replacementForkHostImports.init,
+        checkpointFreezeGate: replacementCheckpointFreeze.gate,
         argv: launchArgv,
         env: envp,
         ptrWidth: newPtrWidth,
@@ -2807,17 +3660,21 @@ async function handleExec(
       registerObservedProcess(pid, {
         memory: newMemory,
         memoryLease: newMemoryLease,
+        executionGeneration: processExecutionGenerations.allocate(),
         workerQuiescence: createWorkerQuiescence(),
         execRetirement: createWorkerQuiescence(),
         programBytes,
         programModule,
         worker: replacementWorker,
+        argv: launchArgv,
+        env: envp,
         channelOffset: newChannelOffset,
         ptrWidth: newPtrWidth,
         secureExec,
         layout: newLayout,
         threadAllocator: newThreadAllocator,
         externrefGeneration: replacementExternrefGeneration,
+        checkpointFreeze: replacementCheckpointFreeze,
       });
       preparedTransferred = true;
 
@@ -3091,6 +3948,7 @@ async function handlePosixSpawn(
       },
     });
     forkHostImports = processForkHostImports;
+    const checkpointFreeze = new CheckpointFreezeGateCoordinator(`pid=${childPid}`);
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
@@ -3101,6 +3959,7 @@ async function handlePosixSpawn(
       secureExec,
       externrefGenerationId: processExternrefGeneration.id,
       forkHostImports: processForkHostImports.init,
+      checkpointFreezeGate: checkpointFreeze.gate,
       argv,
       env: envp,
       ptrWidth,
@@ -3116,17 +3975,21 @@ async function handlePosixSpawn(
     childGeneration = {
       memory,
       memoryLease,
+      executionGeneration: processExecutionGenerations.allocate(),
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
       programBytes,
       programModule,
       worker,
+      argv,
+      env: envp,
       channelOffset,
       ptrWidth,
       secureExec,
       layout,
       threadAllocator,
       externrefGeneration: processExternrefGeneration,
+      checkpointFreeze,
     };
     registerObservedProcess(childPid, childGeneration);
 
@@ -3323,6 +4186,7 @@ async function handleClone(
     ptrWidth: processInfo.ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+    checkpointFreezeGate: processInfo.checkpointFreeze.registerThread(tid),
   };
 
   threadWorker = new DeferredWorkerHandle(
@@ -3337,6 +4201,17 @@ async function handleClone(
     basePage: alloc.slotStartPage,
     workerAbsence: createWorkerAbsence(threadWorker, () =>
       generationObservations.threadAbsent(processInfo, threadEntry)),
+    launch: {
+      tid,
+      channelOffset: alloc.channelOffset,
+      slotStartPage: alloc.slotStartPage,
+      fnPtr,
+      argPtr,
+      stackPtr,
+      tlsPtr,
+      ctidPtr,
+      tlsOffset: alloc.tlsOffset,
+    },
     workerQuiescence: createWorkerQuiescence(),
     execRetirement: createWorkerQuiescence(),
   };
@@ -3371,6 +4246,9 @@ async function handleClone(
     } else {
       console.warn(`[kernel-worker] pid=${pid} tid=${tid}: retaining thread slot without an ACK, sealed absence, or joined backing`);
     }
+    // A freeze still waiting on this thread would wait until its timeout, so
+    // release its participant slot as the thread goes away.
+    processInfo.checkpointFreeze.unregisterThread(tid);
     if (belongsToCurrentProcessImage()) {
       threadExits.release(pid, alloc.channelOffset);
     }
@@ -3420,6 +4298,12 @@ async function handleClone(
     const m = msg as WorkerToHostMessage;
     if (m.type === "exec_retired" && m.tid === tid) {
       threadEntry.execRetirement.settle();
+    } else if (m.type === "checkpoint_unwound" && m.tid === tid) {
+      // The frames exist only until the gate reopens, so the report and the
+      // read that follows it are the whole capture window.
+      processInfo.checkpointFreeze.unwound(tid);
+    } else if (m.type === "checkpoint_refused" && m.tid === tid) {
+      processInfo.checkpointFreeze.abandon(m.reason);
     } else if (m.type === "thread_exit") {
       if (!isCurrentThreadGeneration()) {
         void terminateThreadEntry();
@@ -3713,9 +4597,26 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
 // --- Destroy ---
 
+function rootfsCompactionHandoff(): OverlayCompactionHandoff {
+  return {
+    memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
+    prepare: (storage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+    checkpoint: (index) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+    activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+    cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+    fail: (error) => kernelWorker.failPersistenceWriter(error),
+  };
+}
+
+function reportLiveCompactionFailure(error: unknown): void {
+  if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
+  post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
+}
+
 async function performDestroy() {
   await liveOverlayCompactor?.stop();
   liveOverlayCompactor = null;
+  persistentRootSource = null;
   await repoLazyAssetResolver?.close();
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
   // WORKAROUND, remove when the engine bug is fixed; see
@@ -3908,12 +4809,91 @@ async function handleDestroy(msg: { requestId: number }) {
 function handlePtyWrite(pid: number, data: Uint8Array) {
   const ptyIdx = ptyByPid.get(pid);
   if (ptyIdx === undefined) return;
+  // Recorded before it is delivered, so the log holds it at the position the
+  // guest read it. A keystroke is a decision no replica can derive: without it
+  // the primary's shell runs a command the copy never sees, and the two are
+  // different machines from the next clock reading onwards.
+  replicationRecorder?.record({
+    kind: "input",
+    device: ptsDevicePath(ptyIdx),
+    bytes: data,
+  });
   kernelWorker.ptyMasterWrite(ptyIdx, data);
+}
+
+/**
+ * Deliver a decision the primary made without the guest asking for it.
+ *
+ * A device write replays into the same PTY master the primary wrote to: the
+ * index is kernel state, so the checkpoint restored it, and the guest reads
+ * the bytes where the primary's guest read them. A pointer movement replays as
+ * the delta the host handed the kernel, so the kernel builds the same PS/2
+ * frame; nothing on this host injects one yet, and applying it here is what
+ * lets a machine recorded in a browser be replayed by this one. Evdev records
+ * replay as the records the host handed the kernel.
+ *
+ * A device this host has no way to write to throws rather than being dropped.
+ * A dropped decision is a replica that silently stopped being the same machine.
+ */
+function applyPushedDecision(decision: ReplicationPushedDecision): void {
+  if (decision.kind === "pointer") {
+    kernelWorker.injectMouseEvent(decision.dx, decision.dy, decision.buttons);
+    return;
+  }
+  if (decision.kind === "evdev") {
+    kernelWorker.injectInputEventBatch(decision.records);
+    return;
+  }
+  if (decision.kind === "http") {
+    // The injection lands synchronously, at this log position. The response
+    // is this machine's own output; it settles later, into the store a
+    // viewer's fetch is served from.
+    //
+    // The store is told to expect it here, before anything is awaited, so a
+    // viewer that asks first waits for this machine's answer instead of for a
+    // deadline. A replay that ends without one says why, in the same place.
+    const line = parseRawRequestLine(decision.request);
+    const key = `${line.method} ${line.target}`;
+    replayedHttpExchanges.expect(key);
+    void kernelWorker
+      .replayHttpExchange(decision)
+      .then((response) => {
+        replayedHttpExchanges.deliver(key, response);
+      })
+      .catch((err) => {
+        replayedHttpExchanges.fail(
+          key,
+          (err as Error)?.message ?? String(err),
+        );
+      });
+    return;
+  }
+  const ptyIdx = ptsDeviceIndex(decision.device);
+  if (ptyIdx === undefined) {
+    throw new Error(
+      `the log carries ${decision.kind} for ${decision.device}, which this `
+        + `host cannot replay`,
+    );
+  }
+  if (decision.kind === "resize") {
+    kernelWorker.ptySetWinsize(ptyIdx, decision.rows, decision.cols);
+    return;
+  }
+  kernelWorker.ptyMasterWrite(ptyIdx, decision.bytes);
 }
 
 function handlePtyResize(pid: number, rows: number, cols: number) {
   const ptyIdx = ptyByPid.get(pid);
   if (ptyIdx === undefined) return;
+  // A resize is a decision like a keystroke: it delivers SIGWINCH and a new
+  // TIOCGWINSZ, so a program that redraws on it takes a turn a copy that
+  // never heard of it does not take.
+  replicationRecorder?.record({
+    kind: "resize",
+    device: ptsDevicePath(ptyIdx),
+    rows,
+    cols,
+  });
   kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
 }
 
@@ -3961,7 +4941,22 @@ function handleInjectConnection(
 
 // --- External HTTP request bridge ---
 
+const replayedHttpExchanges = new ReplayedHttpExchanges<HttpResponse>();
+
 async function handleHttpRequest(msg: HttpRequestMessage) {
+  if (replicationReplay !== null) {
+    // A replaying machine takes its injections from the primary's log; a
+    // fetch here reads the response the replayed injection produced instead
+    // of making an injection of its own.
+    const key = `${msg.request.method} ${msg.request.url}`;
+    const replayed = await replayedHttpExchanges.take(key);
+    if (replayed.kind !== "served") {
+      respondError(msg.requestId, describeReplayedHttp(key, replayed));
+      return;
+    }
+    respond(msg.requestId, replayed.response);
+    return;
+  }
   try {
     const options = {
       timeoutMs: msg.timeoutMs,
@@ -4507,9 +5502,262 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "capture_checkpoint": {
+      const { requestId, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const postError = (err: unknown) => post({
+        type: "response",
+        requestId,
+        result: undefined,
+        error: (err as Error)?.message ?? String(err),
+      });
+      const onRead = msg.beginReplicationStream
+        ? beginStreamAtCapture
+        : undefined;
+      if (msg.includeBytes) {
+        void captureMachineCheckpoint(checkpointMachine, {
+          unwindTimeoutMs,
+          vforkTimeoutMs,
+          onRead,
+        }).then(
+          (result) => post(
+            { type: "response", requestId, result },
+            result.status === "captured"
+              ? machineCheckpointTransferList(result.checkpoint)
+              : [],
+          ),
+          postError,
+        );
+        break;
+      }
+      void captureMachineCheckpointSummary(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        onRead,
+      }).then(
+        (result) => post({ type: "response", requestId, result }),
+        postError,
+      );
+      break;
+    }
     case "set_syscall_trace": {
       if (msg.enabled) kernelWorker.enableSyscallTrace();
       else kernelWorker.disableSyscallTrace();
+      break;
+    }
+    case "replication_record_start": {
+      respondToReplication(msg.requestId, (io, clock) => {
+        if (msg.stream) {
+          replicationRecorder = beginReplicationStream(
+            io,
+            clock,
+            publishLog,
+            kernelWorker,
+          );
+          return;
+        }
+        replicationRecorder = new ReplicationLogRecorder();
+        io.setTimeProvider(
+          new RecordingTimeProvider(
+            clock,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
+        );
+        io.setRandomProvider(
+          new RecordingRandomProvider(
+            baseRandomProvider,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
+        );
+        kernelWorker.setGlQueryTap(
+          glQueryRecordTap(replicationRecorder, kernelWorker),
+        );
+        kernelWorker.setAcceptSelectionTap(
+          acceptSelectionRecordTap(replicationRecorder),
+        );
+        kernelWorker.setHttpExchangeTap(
+          httpExchangeRecordTap(replicationRecorder),
+        );
+        kernelWorker.setDispatchOrderTap(
+          dispatchOrderRecordTap(replicationRecorder),
+        );
+      });
+      break;
+    }
+    case "replication_record_stop": {
+      const recorder = replicationRecorder;
+      replicationRecorder = null;
+      if (replicationIO && baseTimeProvider) {
+        replicationIO.setTimeProvider(baseTimeProvider);
+      }
+      replicationIO?.setRandomProvider(baseRandomProvider);
+      kernelWorker?.setGlQueryTap(null);
+      kernelWorker?.setAcceptSelectionTap(null);
+      kernelWorker?.setHttpExchangeTap(null);
+      kernelWorker?.setDispatchOrderTap(null);
+      post({
+        type: "response",
+        requestId: msg.requestId,
+        result: recorder?.entries ?? [],
+      });
+      break;
+    }
+    case "replication_seal": {
+      const { requestId, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const refuse = (reason: string) => post({
+        type: "response",
+        requestId,
+        result: { status: "refused", reason } satisfies ReplicationSealResponse,
+      });
+      let sealSeq = -1;
+      let armSeq = -1;
+      void captureMachineCheckpoint(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        onArm: () => {
+          armSeq = replicationRecorder?.nextSeq ?? -1;
+          kernelWorker?.recordReplicationSeal();
+        },
+        onRead: () => {
+          sealSeq = endStreamAtCapture();
+        },
+      }).then(
+        async (result) => {
+          if (result.status !== "captured") {
+            refuse(result.reason);
+            return;
+          }
+          const hash = await hashMachineCheckpoint(result.checkpoint, sealSeq);
+          post({
+            type: "response",
+            requestId,
+            result: {
+              status: "sealed",
+              seq: sealSeq,
+              armSeq,
+              hash,
+            } satisfies ReplicationSealResponse,
+          });
+        },
+        (err: unknown) => refuse((err as Error)?.message ?? String(err)),
+      );
+      break;
+    }
+    case "replication_hash_replica": {
+      const { requestId, seq, armSeq, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const refuse = (reason: string) => post({
+        type: "response",
+        requestId,
+        result: {
+          status: "refused",
+          reason,
+        } satisfies ReplicationReplicaHashResponse,
+      });
+      // Before the freeze, not inside it. A replica short of the place the
+      // seal's freeze began would do that freeze's work early: the syscalls
+      // it unwinds at would take the log turns of syscalls the primary made.
+      const standing = replicationReplay?.reader.nextSeq;
+      if (standing !== undefined && standing < armSeq) {
+        refuse(
+          `this replica stands at ${standing}, short of the seal's freeze at `
+            + `${armSeq}`,
+        );
+        break;
+      }
+      void captureMachineCheckpoint(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        // Inside the freeze, so no read can move the replica between the
+        // position check and the state the hash covers.
+        onRead: () => {
+          const reader = replicationReplay?.reader;
+          if (!reader) {
+            throw new Error("this machine is not replaying a decision log");
+          }
+          if (reader.nextSeq !== seq) {
+            throw new Error(
+              `this replica stands at ${reader.nextSeq}, not at the seal `
+                + `${seq}`,
+            );
+          }
+        },
+      }).then(
+        async (result) => {
+          if (result.status !== "captured") {
+            refuse(result.reason);
+            return;
+          }
+          const hash = await hashMachineCheckpoint(result.checkpoint, seq);
+          post({
+            type: "response",
+            requestId,
+            result: {
+              status: "hashed",
+              hash,
+            } satisfies ReplicationReplicaHashResponse,
+          });
+        },
+        (err: unknown) => refuse((err as Error)?.message ?? String(err)),
+      );
+      break;
+    }
+    case "replication_replay_start": {
+      respondToReplication(msg.requestId, (io) => {
+        replicationReplay = {
+          reader: beginReplicationReplay(
+            io,
+            msg,
+            kernelWorker,
+            applyPushedDecision,
+            reportReplicationDivergence,
+          ),
+        };
+      });
+      break;
+    }
+    case "replication_replay_stop": {
+      const replay = replicationReplay;
+      replicationReplay = null;
+      replay?.reader.passOverTrailingHostWork();
+      if (replicationIO && baseTimeProvider) {
+        replicationIO.setTimeProvider(baseTimeProvider);
+        if (replay) baseTimeProvider.advanceMonotonicFloor(replay.reader.monotonicHighNs);
+      }
+      replicationIO?.setRandomProvider(baseRandomProvider);
+      kernelWorker?.setGlQueryTap(null);
+      kernelWorker?.setAcceptSelectionTap(null);
+      kernelWorker?.setReplicationAheadProbe(null);
+      kernelWorker?.setHttpExchangeTap(null);
+      kernelWorker?.setDispatchOrderTap(null);
+      replayedHttpExchanges.drop();
+      post({
+        type: "response",
+        requestId: msg.requestId,
+        result: {
+          consumed: replay?.reader.consumed ?? 0,
+          total: replay?.reader.known ?? 0,
+          borrowedClockReadings: replay?.reader.borrowedClockReadings ?? 0,
+          borrowedAcceptSelections:
+            replay?.reader.borrowedAcceptSelections ?? 0,
+          scannedAheadClockReadings:
+            replay?.reader.scannedAheadClockReadings ?? 0,
+          dispatchOrderAbandoned:
+            replay?.reader.dispatchOrderAbandoned ?? false,
+        },
+      });
+      break;
+    }
+    case "replication_replay_drain": {
+      // The primary delivered something between two guest requests — a
+      // keystroke, a resize — and a guest that is not reading the clock would
+      // never pull it through. The main thread says entries arrived; this
+      // takes what is ready and applies it, and never blocks: waiting for the
+      // primary belongs to the guest's own clock reads.
+      replicationReplay?.reader.drainPushed();
+      kernelWorker?.releaseOrderedDispatches();
       break;
     }
     case "watch_vfs_changes": handleWatchVfsChanges(msg); break;

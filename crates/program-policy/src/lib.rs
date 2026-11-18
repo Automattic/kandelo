@@ -173,7 +173,7 @@ fn identity(source: &[u8]) -> OriginalProgramReference {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const SOURCE: &[u8] = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
+    const SOURCE: &[u8] = include_bytes!("../../../abi/program-fixtures/v57/raw-fork.wasm");
     fn limits() -> PolicyReadLimits {
         PolicyReadLimits {
             metadata_bytes: 1024 * 1024,
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn inspection_round_trips_exact_source_policy_and_limits() {
         let inspection = Inspection::read(SOURCE, limits()).unwrap();
-        assert_eq!(inspection.surface().abi_version, Some(56));
+        assert_eq!(inspection.surface().abi_version, Some(57));
         assert_eq!(inspection.source(), identity(SOURCE));
         assert_eq!(inspection.original(), None);
         assert_eq!(Inspection::decode(&inspection.encode()), Ok(inspection));

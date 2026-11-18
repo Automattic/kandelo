@@ -7,6 +7,7 @@
 mod activation;
 mod bootstrap;
 mod catalogs;
+pub mod checkpoint;
 mod continuation;
 mod declarations;
 mod definitions;

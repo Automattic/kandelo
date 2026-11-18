@@ -69,7 +69,7 @@ is the prerequisite for this work, not evidence that all older binaries now
 run unchanged. An exact current-program digest is still a strict admission
 rule, not a supported-baseline compatibility policy.
 
-The minimum supported program baseline is ABI 56 and the exact digest recorded
+The minimum supported program baseline is ABI 57 and the exact digest recorded
 in `abi/supported-program-baseline.json`. `xtask check-program-baseline` checks
 it against the source-derived program surface, independently of ordinary
 snapshot regeneration, and refuses a stale snapshot. Bootstrap, local package
@@ -90,18 +90,21 @@ accessed libc layouts retain their meaning.
 The maintainer deliberately retired the initial ABI-55 baseline before
 release: nothing deployed relies on those binaries. This is an explicit
 baseline decision, not evidence that ABI-55 binaries remain compatible.
-ABI 55 and earlier are refused. Existing saved executable files are preserved;
+ABI 57 (machine checkpoints) retired the ABI-56 baseline the same way, also
+before release. ABI 56 and earlier are refused. Existing saved executable files are preserved;
 rebuilding is required, not silent restamping or a fallback runtime. Persistence
 format versions and the first-release warning remain separate contracts.
 
 `abi/program-fixtures/v55/manifest.json` and any generated ABI-55 bytes remain
 unchanged historical evidence and refusal/parser controls. They must never be
-used as the inputs to a new ABI stamp. The active cohort lives under
-`abi/program-fixtures/v56/`: its source plan names six C programs and one raw
-fork source. A new manifest must measure freshly compiled normal ABI-56 output;
-there are no predeclared output hashes or fabricated fixture files.
+used as the inputs to a new ABI stamp. `abi/program-fixtures/v56/` keeps the
+retired ABI-56 manifest as a record; nothing reads its bytes. The active cohort
+lives under `abi/program-fixtures/v57/`: its source plan names six C programs
+and one raw fork source. A new manifest must measure freshly compiled normal
+ABI-57 output; there are no predeclared output hashes or fabricated fixture
+files.
 
-After the source-derived ABI-56 snapshot and declared baseline digest are
+After the source-derived ABI-57 snapshot and declared baseline digest are
 reviewed and the producer source is committed cleanly, establish the cohort
 once through the normal tools:
 
@@ -115,7 +118,7 @@ only those freshly compiled outputs and the fresh raw fork source. It refuses
 existing destination outputs/manifest, checks clean producer source before and
 after, and records its commit, input hashes, contract and actual output hashes.
 Review and commit the resulting manifest, not the ignored generated Wasm files.
-No ABI-56 cohort is ready until that command has actually completed.
+No ABI-57 cohort is ready until that command has actually completed.
 
 Normal program builds and test setup then run
 `python3 scripts/build-program-baseline.py`. A missing active manifest is a
@@ -127,7 +130,7 @@ checkouts fetch missing producer history from the official repository; tool
 realization and first builds need network access. Existing wrong output hashes
 fail rather than being replaced.
 
-Tests load the active ABI-56 bytes unchanged and cover output, spawn/wait,
+Tests load the active ABI-57 bytes unchanged and cover output, spawn/wait,
 filesystem metadata, private mappings, threads and fork/exec environment
 isolation. They separately require the current runtime to refuse unchanged
 ABI-55 bytes without deleting/restamping them. Metadata-only readers may still
@@ -147,7 +150,7 @@ does not retroactively decouple programs linked against today's channel.
 For this iteration the fork instrumentation contract is versioned, not declared
 stable. Its linked-frame, module-state, reference, exception and capability
 descriptors have explicit format versions checked before launch. The current
-program digest also binds this surface; the ABI-56 baseline is a regression
+program digest also binds this surface; the ABI-57 baseline is a regression
 gate for this release, not a promise to freeze the unfinished fork protocol.
 A future incompatible fork change needs an explicit compatibility decision and
 corresponding version/baseline changes, not a silent snapshot refresh.
@@ -516,7 +519,7 @@ sealed output custody and cache publication remain required. Production must
 not call the direct parsing methods and claim inspection-worker containment.
 
 The initial-tool launch primitive uses kernel-host adapter 4 without changing
-the ABI-56 program baseline. Rust can retain a readonly, anonymous current-runtime tool for a
+the program baseline. Rust can retain a readonly, anonymous current-runtime tool for a
 pending child's initial generation, then require the same complete observation
 and spawn commit as any other executable. The shared host wrapper snapshots
 code bytes inside its admitted entry; a busy gate retains no new program.

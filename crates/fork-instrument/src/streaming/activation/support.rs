@@ -145,8 +145,9 @@ impl ActivationSupportCatalog {
     pub fn frame_select(&self) -> u32 {
         self.first_function
     }
-    /// Guard generated source-table transports at entry. The private process
-    /// resume table remains outside this policy. Bind before freezing helpers.
+    /// Guard generated source-table transports after their replay routing: a
+    /// replay routed through the private process resume table never reads the
+    /// source table, so it does not reconcile it. Bind before freezing helpers.
     pub fn reconcile_table(&mut self, table: u32, guard: u32) -> Result<()> {
         if let Some(&previous) = self.table_guards.get(&table) {
             ensure!(previous == guard, "conflicting transport table guards");

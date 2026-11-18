@@ -133,6 +133,26 @@ export const Dock: React.FC<{
   themeOpen: boolean;
   shareAvailable: boolean;
   status: MachineStatus;
+  /**
+   * Which side of a shared pair this computer is on, or null when it is not in
+   * one.
+   *
+   * A shared terminal is read-only and gives no sign of it, because a caption
+   * over the screen covers the thing the person came to watch. The dock is
+   * always visible and never over the machine, so the answer to "why does my
+   * keyboard do nothing" lives here instead.
+   */
+  role: "user" | "viewer" | null;
+  /**
+   * The name of the person this page watches, or null: no name is shown for
+   * yourself, only for someone else.
+   *
+   * It replaces the role word for the eye — on the watching page, "Viewer"
+   * becomes who you are viewing. The role itself stays in the aria-label and
+   * the data-role styling, so the read-only state is still said and shown
+   * whatever the name is.
+   */
+  roleName: string | null;
   machineTitle?: string;
   temporary?: boolean;
   onKeepComputer?: () => void;
@@ -171,6 +191,8 @@ export const Dock: React.FC<{
   themeOpen,
   shareAvailable,
   status,
+  role,
+  roleName,
   machineTitle,
   temporary = false,
   onKeepComputer,
@@ -534,10 +556,14 @@ export const Dock: React.FC<{
           </div>
 
           <div ref={rowRef} className="kdock-row">
-            <div className="kdock-status">
+            <div
+              className="kdock-status"
+              data-role={role ?? undefined}
+              data-named={role !== null && roleName !== null ? "" : undefined}
+            >
               <img src={markUrl} alt="" />
               <span className="kdock-status-copy">
-                <button type="button" className="kdock-status-title" onClick={() => onSelectPane(null)} title={`${title}: ${statusLabel}`} aria-label={`Current computer: ${title}, ${statusLabel}`}>{title}</button>
+                <button type="button" className="kdock-status-title" onClick={() => onSelectPane(null)} title={`${title}: ${statusLabel}`} aria-label={`Current computer: ${title}, ${statusLabel}${role === null ? "" : `${role === "user" ? ", User" : ", Viewer"}${roleName === null ? "" : ` (${roleName})`}`}`}>{title}</button>
                 <span className="kdock-status-text" data-status={status}>
                   <span className="kdock-status-dot" />
                   {statusLabel}
@@ -545,6 +571,11 @@ export const Dock: React.FC<{
                   {onShowPersistenceWarning && <button type="button" className="kdock-temporary-badge kdock-warning-badge" title="Show the warning about saved computers" aria-label="Show saved computer warning" onClick={onShowPersistenceWarning}>Warning: Not Upgradeable</button>}
                 </span>
               </span>
+              {role !== null && (
+                <span className="kdock-role">
+                  {roleName ?? (role === "user" ? "Sharing" : "Anonymous")}
+                </span>
+              )}
             </div>
             <div className="kdock">
               <div className="kdock-section" aria-label="Computer tools">

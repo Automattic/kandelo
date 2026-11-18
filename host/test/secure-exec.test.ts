@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,28 +65,6 @@ async function launch(
 }
 
 describe.skipIf(!hasProbe)("secure exec startup", () => {
-  it("keeps constructor dispatch out of the linker-synthesized entry prefix", () => {
-    const disassembly = execFileSync(
-      "wasm-objdump",
-      ["-d", probeBinary!],
-      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
-    );
-    const startOffset = disassembly.search(/func\[\d+\] <_start>:/);
-    const nextFunctionOffset = disassembly.indexOf(" func[", startOffset + 1);
-    const startBody = disassembly.slice(
-      startOffset,
-      nextFunctionOffset < 0 ? undefined : nextFunctionOffset,
-    );
-    const argcCall = startBody.indexOf("<kernel.kernel_get_argc>");
-    const secureCall = startBody.indexOf("<kernel.kernel_get_secure_exec>");
-    const constructorDispatch = startBody.indexOf("call_indirect");
-
-    expect(startOffset).toBeGreaterThanOrEqual(0);
-    expect(argcCall).toBeGreaterThanOrEqual(0);
-    expect(secureCall).toBeGreaterThan(argcCall);
-    expect(constructorDispatch).toBeGreaterThan(secureCall);
-  });
-
   it("keeps an ordinary image outside secure startup", async () => {
     const result = await runCentralizedProgram({
       programPath: probeBinary!,

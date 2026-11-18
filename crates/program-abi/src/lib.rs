@@ -227,7 +227,17 @@
 /// 56: combine main's program-surface digest with kernel-owned graphics
 ///     sessions, shared contexts, acknowledged surfaces and retained storage.
 ///     One epoch covers the unpublished graphics compatibility effort.
-pub const ABI_VERSION: u32 = 56;
+/// 57: machine checkpoints. Each channel reserves a checkpoint request word
+///     (a bit set: `CHECKPOINT_REQUEST_UNWIND`, `CHECKPOINT_REQUEST_RESTART`)
+///     directly below the signal delivery area. Programs import the
+///     no-argument, no-result `kernel.kernel_checkpoint` unwind hook from the
+///     post-syscall trampoline, and `kernel.kernel_checkpoint_covered() -> i32`,
+///     which libc asks before it takes a checkpoint; instrumented modules
+///     export the mutable `i32` global `__wpk_checkpoint_cover`. The freeze
+///     completes a parked blocking syscall with `EINTR` and sets
+///     `CHECKPOINT_REQUEST_RESTART` so the guest resubmits it after the
+///     rewind. docs/abi-versioning.md ("ABI 57").
+pub const ABI_VERSION: u32 = 57;
 
 
 pub mod program_extensions;
@@ -860,6 +870,40 @@ pub mod abi {
         params: &[I32],
         results: &[I32],
     };
+
+    /// Exact process-worker import that seeds checkpoint discovery.
+    ///
+    /// The glue calls it from the post-syscall hook when the channel
+    /// checkpoint request word is set. The capture pass unwinds instead of
+    /// returning and a rewind resumes the guest after the carrying syscall,
+    /// so the import takes nothing and returns nothing. Side modules do not
+    /// import it; the requirement is therefore validated conditionally only
+    /// when a program imports `kernel.kernel_checkpoint`.
+    pub const WPK_CHECKPOINT_PROCESS_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_checkpoint",
+        params: &[],
+        results: &[],
+    };
+
+    /// Process-worker import the glue asks before it takes a checkpoint:
+    /// whether every frame on the calling thread's stack can be unwound.
+    ///
+    /// wasm-fork-instrument replaces each call with the calling frame's own
+    /// coverage. The host answers 1: a module whose whole checkpoint closure
+    /// is instrumented keeps the import, and a module never instrumented
+    /// reaches `kernel_checkpoint`, which reports the refusal.
+    pub const WPK_CHECKPOINT_COVERED_PROCESS_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_checkpoint_covered",
+        params: &[],
+        results: &[I32],
+    };
+
+    /// Mutable `i32` global an instrumented module exports to pass checkpoint
+    /// coverage from a covered caller to its covered callee. The host writes
+    /// 1 into it before it enters `_start` or a thread's start function.
+    pub const WPK_CHECKPOINT_COVER_EXPORT: &str = "__wpk_checkpoint_cover";
 
     /// Process-worker import the syscall glue calls after a bounded wait
     /// times out (ABI 52).

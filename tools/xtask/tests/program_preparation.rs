@@ -3,7 +3,7 @@ use fork_instrument::original_artifact::{OriginalReference, attach_original_refe
 use runtime_core::program_preparation::{PreparationLimits, PreparationPlan, PreparationProfile};
 use sha2::{Digest, Sha256};
 
-const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
+const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v57/raw-fork.wasm");
 
 fn profile() -> PreparationProfile {
     PreparationProfile {
@@ -13,12 +13,12 @@ fn profile() -> PreparationProfile {
         dependency_closure_sha256: Sha256::digest(b"frozen-statically-linked-program").into(),
         program_contract_sha256: {
             let baseline: serde_json::Value = serde_json::from_str(include_str!("../../../abi/supported-program-baseline.json")).unwrap();
-            assert_eq!(baseline["abi_version"], 56);
+            assert_eq!(baseline["abi_version"], 57);
             let hex = baseline["program_contract_digest"].as_str().unwrap();
-            assert_eq!(hex.len(), 64, "ABI-56 digest must be sealed before fixture tests");
+            assert_eq!(hex.len(), 64, "ABI-57 digest must be sealed before fixture tests");
             core::array::from_fn(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
         },
-        program_abi: 56,
+        program_abi: 57,
     }
 }
 

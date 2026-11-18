@@ -1067,9 +1067,22 @@ Offset  Size   Field
 64      4      errno_value (i32)
 68      4      request_flags (u32; cancellation and signal-delivery authority)
 72      65536  data_buffer (for path strings, read/write buffers, etc.)
+65544   8      checkpoint request area (reserved data_buffer tail)
+65552   56     signal delivery area (reserved data_buffer tail)
 ```
 
 Total: 65,608 bytes (header 72 bytes + data buffer 65,536 bytes).
+
+The last 64 bytes of the data buffer are reserved. The signal delivery area
+holds one dequeued caught signal for libc's post-syscall trampoline. The
+checkpoint request area holds one `u32` request word directly below it: the
+host publishes the word before completing a process's pending syscall, and
+the glue clears it and calls `kernel.kernel_checkpoint` from the same
+post-syscall hook that delivers signals. Both reservations sit inside the
+declared 65,536-byte buffer, so a syscall that transfers the full buffer
+writes across them; neither value is expected to survive such a transfer.
+The host rewrites both on every completion, zero when nothing is pending,
+so the bytes of a transfer never reach the glue as a signal or a request.
 
 Both wasm32 and wasm64 write six 64-bit argument slots. On wasm32, musl's
 public variadic `syscall()` entry point still reads 32-bit `long` arguments,
@@ -9037,6 +9050,63 @@ one such package: its VFS image installs `/usr/bin/modeset`, and
 `/etc/kandelo/demo.json` selects the KMS surface and the `init.shellCommand`
 that starts it. The browser loader stays generic; it does not special-case
 `modeset.wasm`.
+
+## Machine Checkpoint and Replication
+
+A checkpoint is the whole machine at one instant: kernel memory, every
+process's memory and thread records, the `/` image identity or the
+persistent `/` it runs on, and the host-side device state (framebuffers,
+GBM buffer objects, KMS, GL sessions). `captureMachineCheckpoint`
+(`host/src/migration/checkpoint.ts`) freezes the machine first. It parks
+every thread at a syscall boundary, publishes the checkpoint request word
+on each completion, and waits until every thread has unwound its stack
+into its own memory through the fork instrumentation
+([fork-instrumentation.md](fork-instrumentation.md)). A thread whose
+stack holds an uninstrumented frame waits for a later syscall; a freeze
+that does not finish in time resumes the machine and reports which
+process held it.
+
+`validateMachineCheckpoint` (`host/src/migration/restore.ts`) treats a
+checkpoint as untrusted input. It refuses an unknown format, another
+kernel ABI, a `/` image other than the one this host booted, an image
+with no identity (a file-streamed image), and a malformed persistent root,
+before anything is adopted. A restore adopts the kernel memory, starts
+each process from its bucket and holds its syscalls until the device
+state is restored, on Node and in the browser alike.
+
+Replication keeps a second computer's machine equal to the first one
+by following its decision log: the order in which the kernel served
+syscalls and host entries, and every nondeterministic value (clock
+readings, entropy, alarm and timer expiries, network and HTTP
+exchanges). A replica joins from a checkpoint and replays the log from
+that point. A replay never invents a value; it waits for the logged one,
+and stops following the order when the logged entry never runs. A
+take-over promotes the replica: the keeper seals the log inside a freeze,
+the replica drains to the seal, and both hash their state before the
+replica adopts the machine. The promoted machine's monotonic clock never
+reads earlier than the last reading the replay served. The design and
+its measurements are in
+[the replication design](plans/2026-08-23-state-machine-replication-design.md).
+
+Known gaps:
+
+- A program built with `fork_instrumentation = "disabled"` cannot unwind,
+  so a machine running one cannot be checkpointed.
+- Host handles held outside descriptor tables (a descriptor queued in an
+  `SCM_RIGHTS` message, a `MAP_SHARED` mapping of a closed host file) are
+  not reopened on restore. Host-backed mounts are already reported as
+  unreadable filesystems.
+- A GL program whose shaders, sources or attribute bindings changed after
+  its link (the common detach-and-delete pattern included) refuses the
+  checkpoint: the rebuild relinks from the current attachments.
+- POSIX timer (`timer_create`) expiries are not ordered by the log.
+- A persistent `/` sends its base image with every capture, compacts on
+  each computer's own schedule, and keeps a replica's journal in memory.
+- A Node replica does not forward an HTTP request the log cannot answer
+  to the primary; the browser does.
+- A take-over releases the keeper's machine once the checkpoint has
+  been sent, not once the taker confirms the adoption. A taker that fails
+  to adopt leaves the machine on neither computer.
 
 ## Performance Architecture
 

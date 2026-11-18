@@ -157,6 +157,19 @@ export function noteProgramRelinked(previous: WebGLProgram, next: WebGLProgram):
   if (prior) predecessors.set(next, prior); else predecessors.delete(next);
 }
 
+/** Make `entries`, a numbering a machine checkpoint carried, the relink
+ * template of a rebuilt executable before its first link, so the guest's
+ * locations survive the move when the new renderer reflects the same
+ * active set. */
+export function seedUniformTemplate(executable: WebGLProgram,
+    entries: readonly Omit<GlUniformEntry, "native">[]): void {
+  const seeded = entries.map(entry => Object.freeze({ ...entry, native: entry.name }));
+  const slots: GlUniformEntry[] = [];
+  for (const entry of seeded) for (let element = 0; element < entry.size; element++) slots[entry.location + element] = entry;
+  predecessors.set(executable, new GlUniformLayout(executable, { value: -1 }, 0, seeded, slots,
+    new Map(seeded.map(entry => [entry.name, entry])), []));
+}
+
 /** The numbering of an executable's current link, built on first use.
  * Null when native reflection failed; the error is recorded. */
 export function uniformLayout(b: GlBinding, executable: WebGLProgram): GlUniformLayout | null {

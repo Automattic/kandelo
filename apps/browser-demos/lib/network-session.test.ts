@@ -3,12 +3,13 @@ import test from "node:test";
 import { encodeSessionInvitation } from "../../../web-libs/kandelo-session/src/session-invitation";
 
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime.ts";
-import type { PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection.ts";
+import { encodePeerSignal, type PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection.ts";
 import * as realSignalling from "./peer-signalling.ts";
 import {
   NetworkSessionController, SESSION_MEMBER_CAP, sessionInvitation, sessionLink,
-  type SessionMachine, type SessionSignalling, type SessionTransport,
+  type SessionMachine, type SessionSignalling, type SessionTransport, type SharingTransport,
 } from "./network-session.ts";
+import type { PeerLink } from "./sharing-peer.ts";
 
 const SERVER = "https://signal.test/piplet.php";
 test("activity invitations carry typed offers while ordinary room links drop startup fragments", () => {
@@ -119,9 +120,48 @@ function fakeMachine(): SessionMachine & { attached: number; joined: number; lef
   return machine;
 }
 
-function controller(machine: SessionMachine | null, api: SessionSignalling, pairs = new Map<string, PeerConnection>()) {
+/** A sharing link the test can close from either end. */
+function fakeSharingLink(): PeerLink & { closed: boolean } {
+  const listeners = new Set<() => void>();
+  const link = {
+    handover: {}, mirror: {}, terminal: {}, replication: {}, closed: false,
+    onClose(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
+    close() { if (link.closed) return; link.closed = true; for (const listener of listeners) listener(); },
+  };
+  return link as unknown as PeerLink & { closed: boolean };
+}
+
+/**
+ * Sharing offers are real connect codes declaring `sharing`, since that is
+ * how the host tells them from network joins. Both ends of a pair share one
+ * fake link, so closing it closes the pair.
+ */
+function fakeSharing(options: { failInvite?: string } = {}): SharingTransport & { links: Map<string, PeerLink & { closed: boolean }> } {
+  const links = new Map<string, PeerLink & { closed: boolean }>();
+  let next = 0;
+  const code = (type: "offer" | "answer", sdp: string) =>
+    encodePeerSignal({ type, sdp }, { purpose: "sharing", channels: [{ label: "foo" }] });
+  return {
+    links,
+    async createInvite() {
+      if (options.failInvite) throw new Error(options.failInvite);
+      const sdp = `sharing-${next++}`;
+      const link = fakeSharingLink();
+      links.set(sdp, link);
+      return { invite: code("offer", sdp), async acceptAnswer() { return link; }, cancel() {} };
+    },
+    async answerInvite(offer) {
+      const sdp = JSON.parse(atob(offer.slice("kandelo1:".length))).sdp as string;
+      return { answer: code("answer", sdp), connected: Promise.resolve(links.get(sdp)!), cancel() {} };
+    },
+  };
+}
+
+function controller(
+  machine: SessionMachine | null, api: SessionSignalling, pairs = new Map<string, PeerConnection>(), sharing?: SharingTransport,
+) {
   return new NetworkSessionController({
-    machine: () => machine, server: () => SERVER, transport: fakeTransport(pairs),
+    machine: () => machine, server: () => SERVER, transport: fakeTransport(pairs), sharing,
     pageHref: () => "https://kandelo.test/app/?vfs=https://evil.test/x.vfs#boot", api,
     hostPollMs: 5, snapshotPollMs: 5,
   });
@@ -218,4 +258,128 @@ test("no machine means no session", async () => {
   await host.create("Nothing");
   assert.equal(host.getState().phase, "error");
   assert.match(host.getState().error!, /Start a computer/);
+});
+
+test("joining pairs a sharing link with the host, named as the network names each end", async () => {
+  const { api } = fakeSignalling();
+  const sharing = fakeSharing();
+  const host = controller(fakeMachine(), api, new Map(), sharing);
+  await host.create("Pair");
+  const { room, name } = sessionInvitation(host.getState().link!)!;
+  const joiner = controller(fakeMachine(), api, new Map(), sharing);
+  await joiner.join(room, name);
+  assert.equal(joiner.getState().phase, "connected", joiner.getState().error ?? "");
+  assert.deepEqual(joiner.getState().partners.map((partner) => partner.name), ["host"]);
+  await until(() => host.getState().partners.length === 1, "the host's partner");
+  assert.equal(host.getState().partners[0]!.name, "peer-1");
+  assert.equal(host.getState().partners[0]!.link, joiner.getState().partners[0]!.link);
+  await joiner.leave();
+  await until(() => host.getState().partners.length === 0, "the host to drop the partner that left");
+  await host.leave();
+});
+
+test("a sharing offer that extends no admitted join is refused", async () => {
+  const { api, rooms } = fakeSignalling();
+  const sharing = fakeSharing();
+  const host = controller(fakeMachine(), api, new Map(), sharing);
+  await host.create("Strangers");
+  const { room } = sessionInvitation(host.getState().link!)!;
+  const invite = await sharing.createInvite();
+  await api.postRoomJoin(SERVER, room, "foosharingbar", invite.invite);
+  await until(() => rooms.get(room)!.joins.get("foosharingbar")!.refused !== null, "the host to answer the stranger");
+  assert.equal(rooms.get(room)!.joins.get("foosharingbar")!.refused, "the sharing link names no computer in this session");
+  assert.equal(host.getState().partners.length, 0);
+  await host.leave();
+});
+
+test("a machine switch detaches the network and keeps the session and its partner", async () => {
+  const { api } = fakeSignalling();
+  const sharing = fakeSharing();
+  const host = controller(fakeMachine(), api, new Map(), sharing);
+  await host.create("Switch");
+  const { room, name } = sessionInvitation(host.getState().link!)!;
+  const joinerMachine = fakeMachine();
+  const joiner = controller(joinerMachine, api, new Map(), sharing);
+  await joiner.join(room, name);
+  await until(() => host.getState().partners.length === 1, "the host's partner");
+
+  await joiner.machineChanged();
+  assert.equal(joiner.getState().phase, "connected");
+  assert.equal(joiner.getState().networkAttached, false);
+  assert.equal(joiner.getState().partners.length, 1);
+  // The machine that replaced it reports no session of its own; with the
+  // network detached, that is not the session ending.
+  joinerMachine.state = "offline";
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(joiner.getState().phase, "connected");
+  await joiner.leave();
+  await host.leave();
+});
+
+test("a joiner whose host left and whose network is gone has no session left", async () => {
+  const { api } = fakeSignalling();
+  const sharing = fakeSharing();
+  const host = controller(fakeMachine(), api, new Map(), sharing);
+  await host.create("Gone");
+  const { room, name } = sessionInvitation(host.getState().link!)!;
+  const joiner = controller(fakeMachine(), api, new Map(), sharing);
+  await joiner.join(room, name);
+  await joiner.machineChanged();
+  await host.leave();
+  await until(() => joiner.getState().phase === "error", "the joiner to notice");
+  assert.match(joiner.getState().error!, /The host left, or the link between you failed/);
+  assert.equal(joiner.getState().roomClosed, true);
+});
+
+test("a closed sharing link leaves the session, and the joiner connects it again", async () => {
+  const { api } = fakeSignalling();
+  const sharing = fakeSharing();
+  const host = controller(fakeMachine(), api, new Map(), sharing);
+  await host.create("Again");
+  const { room, name } = sessionInvitation(host.getState().link!)!;
+  const joiner = controller(fakeMachine(), api, new Map(), sharing);
+  await joiner.join(room, name);
+  await joiner.machineChanged();
+  await until(() => host.getState().partners.length === 1, "the host's partner");
+  const first = host.getState().partners[0]!;
+  host.disconnectPartner(first.id);
+  await until(() => joiner.getState().partners.length === 0, "the joiner to lose its partner");
+  // The room is still open, so only the sharing link went.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(joiner.getState().phase, "connected");
+  assert.equal(joiner.getState().joined, true);
+  assert.equal(host.getState().joined, false);
+
+  await joiner.reconnectSharing();
+  assert.equal(joiner.getState().partners.length, 1);
+  await until(() => host.getState().partners.length === 1, "the host's new partner");
+  const second = host.getState().partners[0]!;
+  assert.notEqual(second.id, first.id, "a reconnect never reuses a join token");
+  assert.equal(second.name, "peer-1");
+  await joiner.leave();
+  await host.leave();
+});
+
+test("a host with no partner leaves the session when its machine changes", async () => {
+  const { api, rooms } = fakeSignalling();
+  const host = controller(fakeMachine(), api, new Map(), fakeSharing());
+  await host.create("Alone");
+  const { room } = sessionInvitation(host.getState().link!)!;
+  await host.machineChanged();
+  await until(() => host.getState().phase === "offline", "the host to leave");
+  assert.equal(rooms.has(room), false);
+});
+
+test("a sharing link that fails leaves the session connected and says why", async () => {
+  const { api } = fakeSignalling();
+  const host = controller(fakeMachine(), api, new Map(), fakeSharing());
+  await host.create("No sharing");
+  const { room, name } = sessionInvitation(host.getState().link!)!;
+  const joiner = controller(fakeMachine(), api, new Map(), fakeSharing({ failInvite: "no route" }));
+  await joiner.join(room, name);
+  assert.equal(joiner.getState().phase, "connected");
+  assert.equal(joiner.getState().partners.length, 0);
+  assert.equal(joiner.getState().sharingError, "no route");
+  await joiner.leave();
+  await host.leave();
 });

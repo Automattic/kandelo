@@ -76,6 +76,7 @@ import {
   WPK_FORK_BOUNDARY_IMPORT,
   WPK_FORK_BOUNDARIES_SECTION,
   WPK_FORK_RESUME_SINK_EXPORT,
+  WPK_CHECKPOINT_COVER_EXPORT,
   type ProcessForkMode,
 } from "./generated/abi";
 import { assertDeclaredEnvImports } from "./env-imports";
@@ -98,6 +99,7 @@ import {
   requireForkUnwindTag,
 } from "./fork-unwind-transport";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
+import { waitForCheckpointFreezeResume } from "./checkpoint-freeze-gate";
 import {
   computeForkModuleTemplateId,
   computeForkModuleTemplateIdSync,
@@ -313,6 +315,19 @@ function continuationMmap(
   return result;
 }
 
+/**
+ * Mark the bottom frame of a fresh entry as unwindable by a checkpoint.
+ *
+ * wasm-fork-instrument passes coverage from each covered caller to its
+ * covered callee through this exported token. The host is the caller of
+ * `_start` and of a thread's start function, so it writes the first token.
+ * A rewound frame restores its coverage with its other locals and gets none.
+ */
+function coverCheckpointEntry(instance: WebAssembly.Instance): void {
+  const token = instance.exports[WPK_CHECKPOINT_COVER_EXPORT];
+  if (token instanceof WebAssembly.Global) token.value = 1;
+}
+
 function continuationMunmap(
   memory: WebAssembly.Memory,
   channelOffset: number,
@@ -359,6 +374,7 @@ function continuationMunmap(
  * pointer width before any guest-memory view is created.
  */
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
+  kernel_checkpoint: () => void;
   kernel_exit: (status: number) => void;
   kernel_fork: (mode: number) => number;
 };
@@ -611,6 +627,22 @@ function buildKernelImports(
       if (err) return -err;
       return result;
     },
+
+    // Replaced by the capturing implementation once the process instance and
+    // its continuation coordinator exist, exactly as kernel_fork is. Reaching
+    // this one means a checkpoint was requested before the process could
+    // unwind, so fail loudly rather than let the guest continue as if it had.
+    kernel_checkpoint: (): void => {
+      throw new Error(
+        "kernel_checkpoint reached before the process continuation exists.",
+      );
+    },
+
+    // wasm-fork-instrument answers this inside every module it instruments,
+    // from the calling frame's coverage. Only a module that was never
+    // instrumented reaches the host; it answers yes, so that module's
+    // kernel_checkpoint reports the refusal instead of waiting silently.
+    kernel_checkpoint_covered: (): number => 1,
 
     // Fork dispatches through the mode's dedicated channel syscall.
     kernel_fork: (rawMode: number): number => {
@@ -2694,6 +2726,17 @@ interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   reconcileNow(): number;
   /** Check the archive fence while the caller already excludes writers. */
   isCurrentUnderLock(): boolean;
+  /**
+   * Bring this Worker to the latest generation while the caller holds a reader.
+   *
+   * A held reader excludes every writer, so the archive cannot change and no
+   * dlopen transaction is in flight. Adopting it then reads the archive and
+   * writes only this Worker's table: the one start function a replay runs is
+   * wasm-ld's `__wasm_init_memory`, which the publisher already completed.
+   * A checkpoint needs this. Its peers park holding readers, so a thread that
+   * is behind can never take the writer that `reconcileNow` waits for.
+   */
+  reconcileUnderLock(): number;
   /** Release any mutation writer depths unwound by a Wasm trap. */
   abortActiveMutations(): void;
 }
@@ -2919,6 +2962,7 @@ function createProcessTableReplicationOwner(options: {
     reconcileNow,
     isCurrentUnderLock: () =>
       replica.generation() === options.dlopen.archive.generation(),
+    reconcileUnderLock: reconcileLocked,
     abortActiveMutations,
   };
 }
@@ -3178,6 +3222,12 @@ export async function centralizedWorkerMain(
     );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
+    // Which import opened the capture the entry loop is about to seal. Both
+    // unwind through the same instrumented path, but only fork sends a fork
+    // syscall afterwards. The loop reads it through a call so control-flow
+    // analysis uses the declared type rather than the initializer.
+    let captureReason: "fork" | "checkpoint" = "fork";
+    const capturingCheckpoint = (): boolean => captureReason === "checkpoint";
     let completeCapturedFork: () => void = () => {
       throw new Error(`pid=${pid}: fork capture completed before the coordinator exists`);
     };
@@ -3258,6 +3308,23 @@ export async function centralizedWorkerMain(
       // the request off its channel entirely; Rust's Process marker remains a
       // second defense for malformed or direct host traffic.
       kernelImports.kernel_clone = () => -STARTUP_EAGAIN;
+    }
+
+    if (!hasForkInstrumentation) {
+      // The capturing kernel_checkpoint below is only installed for
+      // instrumented modules, so a freeze request would otherwise reach the
+      // startup stub, whose throw takes the process down. A program that
+      // cannot unwind is a boundary the capture reports; asking to read the
+      // machine must never be what kills a process on it.
+      kernelImports.kernel_checkpoint = (): void => {
+        port.postMessage({
+          type: "checkpoint_refused",
+          pid,
+          reason:
+            "this program was built without checkpoint instrumentation "
+            + "(wasm-fork-instrument), so its frames cannot be unwound",
+        } satisfies WorkerToHostMessage);
+      };
     }
 
     if (hasForkInstrumentation) {
@@ -3626,6 +3693,14 @@ export async function centralizedWorkerMain(
           releaseProcessForkArchiveReader();
         }
       };
+      const acquireCheckpointProcessForkArchiveReader = (): void => {
+        if (!processDlopenSupport || !processTableReplication) {
+          throw new Error(`pid=${pid}: fork archive owner is not initialized`);
+        }
+        processDlopenSupport.acquireArchiveReader();
+        processForkArchiveReaderHeld = true;
+        processTableReplication.reconcileUnderLock();
+      };
 
       // Seal the captured continuation, issue SYS_FORK or SYS_VFORK, and begin
       // parent (or errno abort) replay. The `_start` loop calls it when the
@@ -3668,7 +3743,13 @@ export async function centralizedWorkerMain(
           } finally {
             releaseProcessForkArchiveReader();
           }
-          if (initData.isForkChild) {
+          // The commit handshake belongs to a child rebuilding the stack it was
+          // given, not to a parent rebuilding its own. `isForkChild` says how
+          // this worker started and stays true for its whole life, so a process
+          // that started as a fork child — or was reconstructed as one by a
+          // checkpoint restore — would demand a gate on every later fork it
+          // performs, where no child is waiting to be committed.
+          if (initData.isForkChild && phase === "child-replay") {
             const gate = initData.forkReplayGate;
             if (!gate) {
               throw new Error(
@@ -3711,6 +3792,7 @@ export async function centralizedWorkerMain(
           return -STARTUP_EAGAIN;
         }
         forkMode = mode;
+        captureReason = "fork";
 
         // The arena and every activation prefix are allocated before any user
         // frame commits. If this fails, fork returns errno with no partially
@@ -3738,6 +3820,55 @@ export async function centralizedWorkerMain(
           throw error;
         }
         return 0; // ignored during unwind
+      };
+
+      kernelImports.kernel_checkpoint = (): void => {
+        if (!processInstance) return;
+        const phase = processContinuation.phaseName();
+        if (phase === "parent-replay" || phase === "child-replay") {
+          try {
+            processContinuation.finishReplay();
+          } finally {
+            releaseProcessForkArchiveReader();
+          }
+          return;
+        }
+        // A checkpoint request is published while the process is parked in a
+        // syscall, so the continuation is idle by the time the post-syscall
+        // hook runs. Any other phase means a fork is mid-flight on this stack
+        // and the two captures would share one arena.
+        if (phase !== "idle") {
+          throw new Error(
+            `pid=${pid}: checkpoint import reached while process continuation is ${phase}`,
+          );
+        }
+        if (borrowedForkChild) return;
+        if (!initData.checkpointFreezeGate) {
+          throw new Error(`pid=${pid}: checkpoint request without a freeze gate`);
+        }
+        captureReason = "checkpoint";
+
+        acquireCheckpointProcessForkArchiveReader();
+        const arena = newModuleStateArena();
+        try {
+          arena.begin();
+          processContinuation.beginCapture(arena);
+          importedStateCapture?.appendTo(arena);
+        } catch (error) {
+          if (processContinuation.phaseName() !== "idle") {
+            try {
+              processContinuation.abort();
+            } catch {
+              // Preserve the capture failure; abort has already made the
+              // transaction unreachable before attempting cleanup.
+            }
+          } else if (arena.hasActiveArena()) {
+            arena.release();
+          }
+          releaseProcessForkArchiveReader();
+          if (error instanceof ContinuationAllocationError) return;
+          throw error;
+        }
       };
 
       const dylinkForkActivationOwner = hasDylinkForkRole
@@ -3938,6 +4069,12 @@ export async function centralizedWorkerMain(
             throw new Error(
               `pid=${pid}: fork boundary reached while process continuation is ${phase}`,
             );
+          }
+          // A fork boundary is a sink only for a fork child, which never
+          // returns through the frames above it. A checkpoint restore returns
+          // through every frame, so its unwind continues to the stack root.
+          if (capturingCheckpoint()) {
+            throw new WebAssembly.Exception(processForkUnwindTag, []);
           }
           completeCapturedFork();
         },
@@ -4250,7 +4387,10 @@ export async function centralizedWorkerMain(
             resumeThread(fnIdx, threadArg);
           };
         } else {
-          lexicalEntry = start;
+          lexicalEntry = () => {
+            coverCheckpointEntry(instance);
+            start();
+          };
           replayEntry = resumeStart;
         }
 
@@ -4275,6 +4415,22 @@ export async function centralizedWorkerMain(
               `pid=${pid}: private fork-unwind exception escaped while ` +
                 `process continuation is ${phase}`,
             );
+          }
+          if (phase === "capture" && capturingCheckpoint()) {
+            processContinuation.sealCapture();
+            // The frames only exist between this seal and the replay below, so
+            // the keeper must read this memory inside that window. Report, then
+            // park until it says the machine is resuming.
+            port.postMessage({
+              type: "checkpoint_unwound",
+              pid,
+            } satisfies WorkerToHostMessage);
+            waitForCheckpointFreezeResume(
+              initData.checkpointFreezeGate as SharedArrayBuffer,
+              `pid=${pid}`,
+            );
+            processContinuation.beginParentReplay();
+            continue;
           }
           if (phase === "capture") {
             completeCapturedFork();
@@ -5294,6 +5450,7 @@ export async function centralizedThreadWorkerMain(
   } = initData;
   const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
   const ptrWidth = initData.ptrWidth ?? 4;
+  const restoredForkBufAddr = initData.restoredForkBufAddr;
 
   // WHY: synchronize the received memory before this isolate binds any view
   // or Wasm instance to a possibly stale fixed-length view of its backing.
@@ -5465,16 +5622,19 @@ export async function centralizedThreadWorkerMain(
           ),
         `pid=${pid} tid=${tid}`,
       );
+    const threadExternrefRecipes = hasForkInstrumentation
+      ? new ForkExternrefTokenRecipeProvider(
+          threadExternrefTokens!,
+          (value) =>
+            threadHostImportRuntime!.localExceptions.normalizeUnclaimedForkValue(
+              value,
+            ),
+        )
+      : null;
     const threadActivationRegistry = hasForkInstrumentation
       ? new ForkActivationRegistry(
           memory,
-          new ForkExternrefTokenRecipeProvider(
-            threadExternrefTokens!,
-            (value) =>
-              threadHostImportRuntime!.localExceptions.normalizeUnclaimedForkValue(
-                value,
-              ),
-          ),
+          threadExternrefRecipes!,
           `pid=${pid} tid=${tid}: fork activations`,
           (size) =>
             continuationMmap(
@@ -5605,6 +5765,9 @@ export async function centralizedThreadWorkerMain(
     };
     let forkResult = 0;
     let forkMode: ProcessForkMode = PROCESS_FORK_MODE_FORK;
+    let threadCaptureReason: "fork" | "checkpoint" = "fork";
+    const threadCapturingCheckpoint = (): boolean =>
+      threadCaptureReason === "checkpoint";
     // See the process worker's completeCapturedFork: the pthread entry loop
     // and env.__wpk_fork_boundary share it.
     const completeThreadCapturedFork = (): void => {
@@ -5683,6 +5846,7 @@ export async function centralizedThreadWorkerMain(
           );
         }
         forkMode = mode;
+        threadCaptureReason = "fork";
 
         try {
           // Reconciliation may instantiate a missing side module and execute
@@ -5718,6 +5882,61 @@ export async function centralizedThreadWorkerMain(
         }
         return 0;
       };
+
+      kernelImports.kernel_checkpoint = (): void => {
+        if (!threadInstance || !threadProcessContinuation) return;
+        const phase = threadProcessContinuation.phaseName();
+        if (phase === "parent-replay" || phase === "child-replay") {
+          try {
+            threadProcessContinuation.finishReplay();
+            // The restore must follow finishReplay: beginParentReplay's
+            // registry.restoreModuleState() has to read the same ownership
+            // answer the save read.
+            threadProcessContinuation.restoreProcessTableStateOwnership();
+          } finally {
+            releasePthreadForkLock();
+          }
+          return;
+        }
+        if (phase !== "idle") {
+          throw new Error(
+            `pid=${pid} tid=${tid}: checkpoint import reached while process ` +
+              `continuation is ${phase}`,
+          );
+        }
+        if (!initData.checkpointFreezeGate) {
+          throw new Error(
+            `pid=${pid} tid=${tid}: checkpoint request without a freeze gate`,
+          );
+        }
+        threadCaptureReason = "checkpoint";
+
+        acquirePthreadForkLock();
+        threadTableReplication?.reconcileUnderLock();
+
+        // The process image is shared, so the main thread writes the sparse
+        // table state and every pthread leaves it alone.
+        threadProcessContinuation.releaseProcessTableStateOwnership();
+
+        const arena = newThreadModuleStateArena();
+        try {
+          arena.begin();
+          threadProcessContinuation.beginCapture(arena);
+          threadImportedStateCapture?.appendTo(arena);
+        } catch (error) {
+          if (arena.hasActiveArena()) arena.release();
+          // A capture that never starts has no replay to take the coordinates
+          // back in, and the guest keeps running. beginCapture cancels itself
+          // to idle, so any other phase is a transaction this thread cannot
+          // finish and its ownership is the smaller problem.
+          if (threadProcessContinuation.phaseName() === "idle") {
+            threadProcessContinuation.restoreProcessTableStateOwnership();
+          }
+          releasePthreadForkLock();
+          if (error instanceof ContinuationAllocationError) return;
+          throw error;
+        }
+      };
     } else {
       kernelImports.kernel_fork = (_mode: number): number => {
         throw new Error(
@@ -5725,6 +5944,18 @@ export async function centralizedThreadWorkerMain(
             "wasm-fork-instrument exports. Rebuild the program with " +
             "scripts/run-wasm-fork-instrument.sh.",
         );
+      };
+      // Mirrors the process worker: a freeze request to a program that
+      // cannot unwind is refused, and the guest keeps running.
+      kernelImports.kernel_checkpoint = (): void => {
+        port.postMessage({
+          type: "checkpoint_refused",
+          pid,
+          tid,
+          reason:
+            "this program was built without checkpoint instrumentation "
+            + "(wasm-fork-instrument), so its frames cannot be unwound",
+        } satisfies WorkerToHostMessage);
       };
     }
     const threadLongjmpTag = createLongjmpTag(ptrWidth);
@@ -5801,6 +6032,121 @@ export async function centralizedThreadWorkerMain(
         label: `pid=${pid} tid=${tid}`,
       });
     }
+
+    // A restored pthread mirrors the fork-child main boot: its frames and
+    // module state are already parked in the shared memory copy, so validate
+    // and attach that captured transaction instead of entering `fnPtr` fresh.
+    let restoredArena: ForkModuleStateArena | null = null;
+    let restoredDecodedReferences:
+      | DecodedSegmentedForkReferenceTransaction
+      | null = null;
+    let restoredEarlyReferences: ForkEarlyChildReferenceProvider | null = null;
+    let restoredPlanner: ForkImportedGlobalPlanner | null = null;
+    if (restoredForkBufAddr !== undefined) {
+      if (
+        !hasForkInstrumentation ||
+        !threadProcessContinuation ||
+        !threadActivationRegistry ||
+        !threadExternrefRecipes
+      ) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: a restored pthread requires complete ` +
+            "wasm-fork-instrument exports",
+        );
+      }
+      const anchorView = new DataView(memory.buffer);
+      const inheritedRoot =
+        ptrWidth === 8
+          ? Number(anchorView.getBigUint64(forkAnchorAddr, true))
+          : anchorView.getUint32(forkAnchorAddr, true);
+      if (inheritedRoot !== restoredForkBufAddr) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: inherited thread launch root ` +
+            `${inheritedRoot} does not match launch root ${restoredForkBufAddr}`,
+        );
+      }
+      if (!Number.isSafeInteger(inheritedRoot) || inheritedRoot <= 0) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: restored pthread has no inherited launch root`,
+        );
+      }
+      const restoredDylinkState = threadDlopenSupport.readForkState();
+      if (
+        restoredDylinkState.libraries.some(
+          (library) => library.activationId !== undefined,
+        )
+      ) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: restoring a pthread with dynamically ` +
+            "loaded side activations is not implemented yet",
+        );
+      }
+      const moduleStateRoot = readForkModuleStateRoot(
+        memory,
+        inheritedRoot,
+        ptrWidth,
+      );
+      restoredArena = newThreadModuleStateArena();
+      restoredArena.attach(
+        ptrWidth === 8 ? BigInt(moduleStateRoot) : moduleStateRoot,
+      );
+      const records = restoredArena.recordViews();
+      restoredDecodedReferences = decodeSegmentedForkReferenceTransaction(
+        records,
+        FORK_REFERENCE_TRANSACTION_OWNER_ID,
+      );
+      restoredEarlyReferences = new ForkEarlyChildReferenceProvider({
+        records,
+        transaction: restoredDecodedReferences,
+        declarations: [
+          {
+            activationId: 0,
+            gcDescriptor: readForkGcCodecDescriptor(module),
+            exceptionDescriptor: readForkExceptionCodecDescriptor(module),
+          },
+        ],
+        externrefs: threadExternrefRecipes,
+        transit: {
+          prepare: (maxRecipeId) =>
+            threadActivationRegistry.prepareEarlyGcTransit(maxRecipeId),
+          publish: (recipeId, value) =>
+            threadActivationRegistry.publishEarlyGcTransit(recipeId, value),
+          read: (recipeId) =>
+            threadActivationRegistry.readEarlyGcTransit(recipeId),
+          abort: () => threadActivationRegistry.abortEarlyGcTransit(),
+        },
+        memory,
+        allocateScratch: (size) =>
+          continuationMmap(
+            memory,
+            channelOffset,
+            size,
+            `pid=${pid} tid=${tid}: early reference scratch`,
+          ),
+        deallocateScratch: (addr, size) =>
+          continuationMunmap(
+            memory,
+            channelOffset,
+            addr,
+            size,
+            `pid=${pid} tid=${tid}: early reference scratch`,
+          ),
+        label: `pid=${pid} tid=${tid}: early restored references`,
+      });
+      restoredPlanner = new ForkImportedGlobalPlanner(
+        records,
+        new Map<number, WebAssembly.Module>([[0, module]]),
+        restoredEarlyReferences,
+        `pid=${pid} tid=${tid}: restored imported activation state`,
+      );
+      const plannedOrder = restoredPlanner.instantiationOrder();
+      if (plannedOrder.length !== 1 || plannedOrder[0] !== 0) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: restored pthread replay expects only the ` +
+            `main activation, but the archive provides ${plannedOrder.join(",")}`,
+        );
+      }
+    }
     const threadCoordinator = threadProcessContinuation;
     const threadForkEnvImports =
       threadCoordinator && threadActivationRegistry && threadExceptionBroker
@@ -5815,6 +6161,10 @@ export async function centralizedThreadWorkerMain(
                   `pid=${pid} tid=${tid}: fork boundary reached while process ` +
                     `continuation is ${phase}`,
                 );
+              }
+              // See the process worker's boundary: a checkpoint unwinds on.
+              if (threadCapturingCheckpoint()) {
+                throw new WebAssembly.Exception(threadForkUnwindTag, []);
               }
               completeThreadCapturedFork();
             },
@@ -5868,14 +6218,22 @@ export async function centralizedThreadWorkerMain(
           importObject,
         )
       : importObject;
+    // Reconstruction supplies the captured imported identities; capture wraps
+    // that resolved view exactly as the fork-child main boot does.
+    const reconstructedThreadImports = restoredPlanner
+      ? restoredPlanner.importsForActivation(
+          0,
+          routedThreadImportObject as unknown as ForkWasmImports,
+        )
+      : routedThreadImportObject;
     const threadMainImportedState =
       threadImportedStateCapture?.prepareActivation(
         0,
         module,
-        routedThreadImportObject,
+        reconstructedThreadImports,
       );
     const threadInstanceImports = (threadMainImportedState?.imports ??
-      routedThreadImportObject) as WebAssembly.Imports;
+      reconstructedThreadImports) as WebAssembly.Imports;
     const instance = new WebAssembly.Instance(module, threadInstanceImports);
     noteProcessMemoryInstance(instance);
     threadInstance = instance;
@@ -5894,16 +6252,60 @@ export async function centralizedThreadWorkerMain(
         );
       }
       threadExceptionProvider = forkExceptionProviderFromInstance(0, instance);
+      const threadTypedReferenceProvider = restoredPlanner
+        ? forkGcCodecProviderFromInstance(0, module, instance)
+        : undefined;
+      const threadRegistration = forkActivationRegistrationFromInstance({
+        activationId: 0,
+        module,
+        instance,
+        templateId: threadTemplateId,
+        exceptionProvider: threadExceptionProvider,
+        ...(threadTypedReferenceProvider
+          ? { typedReferenceProvider: threadTypedReferenceProvider }
+          : {}),
+      });
       threadProcessContinuation.registerActivation(
-        forkActivationRegistrationFromInstance({
-          activationId: 0,
-          module,
-          instance,
-          templateId: threadTemplateId,
-          exceptionProvider: threadExceptionProvider,
-        }),
+        threadRegistration,
         forkResumeTargetsFromInstance(module, instance),
       );
+      restoredPlanner?.registerInstance(0, instance);
+      if (restoredEarlyReferences && threadTypedReferenceProvider) {
+        // These catalogs contain fresh-instance identities. Register only
+        // after the registry has harvested static roots, before any immutable
+        // import getter can request one.
+        restoredEarlyReferences.registerActivation({
+          activationId: 0,
+          functions: {
+            decode(ordinal) {
+              if (
+                !Number.isInteger(ordinal) ||
+                ordinal < 0 ||
+                ordinal >= threadRegistration.functionCatalog.length
+              ) {
+                throw new RangeError(
+                  `pid=${pid} tid=${tid}: function recipe 0:` +
+                    `${String(ordinal)} is out of bounds`,
+                );
+              }
+              const value = threadRegistration.functionCatalog.get(ordinal);
+              if (typeof value !== "function") {
+                throw new TypeError(
+                  `pid=${pid} tid=${tid}: function recipe 0:${ordinal} ` +
+                    "did not resolve to a function",
+                );
+              }
+              return value as CallableFunction;
+            },
+          },
+          staticRoots: {
+            decode: (ordinal) =>
+              threadActivationRegistry.decodeStaticRoot(0, ordinal),
+          },
+          typed: threadTypedReferenceProvider,
+          exceptions: threadRegistration.exceptionProvider,
+        });
+      }
       try {
         // The pthread bootstrap consumes passive element segments, so static
         // root harvesting and table-dirty registration must precede it just as
@@ -5940,14 +6342,27 @@ export async function centralizedThreadWorkerMain(
           "the pthread instance has no shared table/stack binding",
       );
     }
-    threadTableReplication?.reconcileNow();
+    // A thread can start while its peers are parked in a checkpoint freeze
+    // holding archive readers, and reconcileNow needs the writer, so it adopts
+    // the latest generation under a reader of its own.
+    if (threadTableReplication) {
+      acquirePthreadForkLock();
+      try {
+        threadTableReplication.reconcileUnderLock();
+      } finally {
+        releasePthreadForkLock();
+      }
+    }
 
     // Initialize Wasm TLS for this thread in the slot's explicit TLS/control page.
+    // A restored pthread's TLS content is live state inside the memory copy;
+    // rewriting the template over it would clobber it, and child attach below
+    // restores the __tls_base global from the captured activation state.
     const wasmInitTls = instance.exports.__wasm_init_tls as
       ((addr: number | bigint) => void) | undefined;
     const tlsBlock = tlsOffset;
 
-    if (wasmInitTls && tlsBlock > 0) {
+    if (wasmInitTls && tlsBlock > 0 && restoredForkBufAddr === undefined) {
       wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
     }
 
@@ -5985,6 +6400,50 @@ export async function centralizedThreadWorkerMain(
       ptrWidth,
     );
 
+    if (restoredArena) {
+      if (
+        !threadProcessContinuation ||
+        !threadActivationRegistry ||
+        !restoredPlanner ||
+        !restoredEarlyReferences
+      ) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: restored pthread lost its validated ` +
+            "replay state",
+        );
+      }
+      restoredPlanner.bindTableDirtyTrackers(
+        new Map(
+          threadActivationRegistry
+            .activations()
+            .map((activation) => [
+              activation.activationId,
+              activation.tableDirty,
+            ]),
+        ),
+      );
+      const early = restoredEarlyReferences;
+      const adoptEarlyReferences = (): void => {
+        early.adoptInto(threadActivationRegistry.currentReferences());
+        restoredEarlyReferences = null;
+      };
+      // Child attach restores __tls_base/__stack_pointer from the captured
+      // activation state and puts the coordinator in child-replay, so the run
+      // loop below selects wpk_fork_resume_thread instead of a fresh entry.
+      // The capturing pthread left the shared tables to the main thread, so
+      // the restore must read the same ownership answer the save read; the
+      // replay's end re-elects the owner.
+      threadProcessContinuation.releaseProcessTableStateOwnership();
+      threadProcessContinuation.attachChild(
+        restoredArena,
+        adoptEarlyReferences,
+        restoredDecodedReferences ?? undefined,
+      );
+      restoredDecodedReferences = null;
+      restoredPlanner.clear();
+      restoredPlanner = null;
+    }
+
     // Call the thread function via indirect function table
     const table = threadTable;
     if (!table) {
@@ -6019,10 +6478,11 @@ export async function centralizedThreadWorkerMain(
       for (;;) {
         let transportedForkUnwind = false;
         try {
-          const raw =
-            threadProcessContinuation.phaseName() === "idle"
-              ? threadFn(...threadArgs)
-              : resumeThread!(fnPtr, threadArg);
+          const fresh = threadProcessContinuation.phaseName() === "idle";
+          if (fresh) coverCheckpointEntry(instance);
+          const raw = fresh
+            ? threadFn(...threadArgs)
+            : resumeThread!(fnPtr, threadArg);
           result = Number(raw);
         } catch (e) {
           if (isForkUnwindException(e, threadForkUnwindTag)) {
@@ -6038,6 +6498,22 @@ export async function centralizedThreadWorkerMain(
             `pid=${pid} tid=${tid}: private fork-unwind exception escaped ` +
               `while process continuation is ${phase}`,
           );
+        }
+        if (phase === "capture" && threadCapturingCheckpoint()) {
+          threadProcessContinuation.sealCapture();
+          // The frames exist only until the gate reopens, so the report and
+          // the read that follows it are the whole capture window.
+          port.postMessage({
+            type: "checkpoint_unwound",
+            pid,
+            tid,
+          } satisfies WorkerToHostMessage);
+          waitForCheckpointFreezeResume(
+            initData.checkpointFreezeGate as SharedArrayBuffer,
+            `pid=${pid} tid=${tid}`,
+          );
+          threadProcessContinuation.beginParentReplay();
+          continue;
         }
         if (phase === "capture") {
           completeThreadCapturedFork();

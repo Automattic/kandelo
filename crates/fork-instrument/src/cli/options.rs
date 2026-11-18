@@ -75,6 +75,14 @@ pub(super) struct Cli {
     #[arg(long, default_value = "kernel.kernel_fork")]
     pub(super) entry: String,
 
+    /// The fully-qualified name of a second seed import, added to the
+    /// closure beside `--entry` rather than replacing it. Format:
+    /// `module.field`. Pass `kernel.kernel_checkpoint` to cover the stacks a
+    /// machine checkpoint unwinds; it is the only seed of a program that
+    /// never forks.
+    #[arg(long)]
+    pub(super) checkpoint_entry: Option<String>,
+
     /// Instrument the full fork closure instead of stopping the unwind at
     /// fork boundaries (sinks). For comparison and diagnosis.
     #[arg(long)]

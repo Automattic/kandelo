@@ -341,3 +341,33 @@ it("borrows only target selectors for a cold-reserved clear or prepared sampled 
     expect(f.bank.changes(capture)).toBe(plan);expect(plan.execute(work)).toBe(true);expect(textureBinds).toBe(2);
   }finally{f.dispose();}
 });
+it("hands a checkpoint each cell's private copy and refills a new bank with it",()=>{
+  const f=fixture();expect(f.bank.define(f.b,1,1,ARRAY,new Uint8Array([1,2,3,4]),STATIC)).toBe(true);
+  expect(replaceBufferData(f.b,ARRAY,new Uint8Array([9]),STATIC)).toBe(true);
+  const read=(native:WebGLBuffer,bytes:number)=>f.native.data.get(native)!.slice(0,bytes);
+  const carried=f.bank.checkpoint(reason=>{throw new Error(reason);},object=>object===f.object?7:0,read);
+  expect(carried).toEqual({capacity:2,cells:[{token:0,buffer:0,bytes:null},{token:1,buffer:7,bytes:new Uint8Array([1,2,3,4])}]});
+  const g=fixture();
+  expect(g.bank.restore(carried.cells,name=>g.b.buffers.get(name)??null)).toBe(true);
+  expect([...g.native.data.get(g.bank.resolve(g.b,1,1,g.object,4)!)!]).toEqual([1,2,3,4]);
+  expect(g.bank.resolve(g.b,0,0,g.object,0)).toBeNull();
+  expect(g.bank.define(g.b,1,2,ARRAY,new Uint8Array([5]),STATIC)).toBe(true);
+  expect(g.bank.restore(carried.cells.slice(1),name=>g.b.buffers.get(name)??null)).toBe(false);
+  f.dispose();g.dispose();
+});
+it("hands a checkpoint each framebuffer capture by name and captures it again from those names",async()=>{
+  const f=await framebufferFixture(),names={framebuffer:(o:WebGLFramebuffer)=>o===f.framebuffer?3:0,texture:(o:WebGLTexture)=>o===f.input?2:0};
+  const refuse=(reason:string):never=>{throw new Error(reason);};
+  expect(f.bank.capture(0,1,3)).toBe(1);
+  const carried=f.bank.checkpoint(refuse,names);
+  expect(carried[0]).toEqual({token:1,framebuffer:3,inputs:[{unit:0,texture:2}]});
+  expect(carried.slice(1).every(cell=>cell.framebuffer===0&&cell.inputs.length===0)).toBe(true);
+  const g=await framebufferFixture();g.b.shadow.textureUnits[0]=null;
+  expect(g.bank.restore(carried)).toBe(true);g.b.shadow.textureUnits[0]=g.input;
+  expect(g.bank.resolve(0,1)!.inputs[0].native).toBe(g.input);
+  expect(g.bank.restore([{token:1,framebuffer:9,inputs:[]},...carried.slice(1)])).toBe(false);
+  f.b.framebufferAttachments.set(f.framebuffer,new Map([[0x8ce0,{kind:"texture",object:f.input,target:0xde1,level:0}]]));
+  expect(()=>f.bank.checkpoint(refuse,names)).toThrow("holds storage its names no longer hold");
+  f.b.framebufferAttachments.set(f.framebuffer,new Map([[0x8ce0,{kind:"texture",object:f.target,target:0xde1,level:0}]]));
+  f.dispose();g.dispose();
+});

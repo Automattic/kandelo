@@ -44,8 +44,19 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  ReplicationReplayProgress,
+  ReplicationReplicaHashResponse,
+  ReplicationSealResponse,
   DestroyProgressEvent,
 } from "./node-kernel-protocol";
+import {
+  machineCheckpointTransferList,
+  type CheckpointCaptureResponse,
+  type CheckpointFreezeResult,
+  type MachineCheckpoint,
+} from "./migration/checkpoint";
+import type { ReplicationLogEntry } from "./replication/log";
+import type { ReplicationReplaySpec } from "./replication/worker";
 import type { OwnedJobRead } from "./owned-jobs";
 import { createOwnedJobLifetime } from "./owned-job-lifetime";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
@@ -210,6 +221,35 @@ export interface NodeKernelHostOptions {
   /** Exact image/scratch mount contract. Requires an image byte or file source. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
+   * Boot this machine from a captured checkpoint instead of fresh state.
+   *
+   * Requires `rootfsImage`: the mount layout is host configuration a
+   * checkpoint does not carry, so pass the same mounts the captured machine
+   * ran with. A checkpoint of a persistent `/` is the exception: it carries
+   * its base image and journal, so pass neither an image nor a journal path.
+   * The worker validates the checkpoint before instantiating anything and
+   * refuses it loudly when it cannot be adopted.
+   */
+  restoreCheckpoint?: MachineCheckpoint;
+  /**
+   * Transfer the checkpoint's buffers to the kernel worker instead of
+   * structured-cloning them, detaching them from the caller. A checkpoint
+   * that arrived from another computer is single-use, and cloning one can
+   * exceed what the runtime will allocate for a large machine. Defaults to
+   * copy semantics for callers that restore one checkpoint more than once.
+   * Mirrors `BrowserKernelOwnedImageInitOptions.takeRestoreCheckpointOwnership`.
+   */
+  takeRestoreCheckpointOwnership?: boolean;
+  /**
+   * Run this machine on a primary's decisions from its very first instruction.
+   *
+   * This is how a replica joins a machine that is already running: a restored
+   * process resumes inside `init`, so {@link NodeKernelHost.startReplicationReplay}
+   * would install the replay after that process had read this computer's clock.
+   * Mirrors `BrowserKernelOwnedImageInitOptions.replicationReplay`.
+   */
+  replicationReplay?: ReplicationReplaySpec;
+  /**
    * Resolve relative lazy URLs embedded in rootfsImage before transport.
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
    */
@@ -316,6 +356,9 @@ export class NodeKernelHost {
   });
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private replicationListeners = new Set<
+    (entries: readonly ReplicationLogEntry[]) => void
+  >();
   private destroyProgress = createDestroyProgressFanout();
   private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
 
@@ -349,7 +392,8 @@ export class NodeKernelHost {
     if (this.options.enableTcpNetwork && this.options.offlineEgressLink) {
       throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
     }
-    const hasRootfsImage = rootfsImage !== null || this.options.rootfsImageFile !== undefined;
+    const hasRootfsImage = rootfsImage !== null || this.options.rootfsImageFile !== undefined
+      || (this.options.restoreCheckpoint?.persistentRoot ?? null) !== null;
     if (this.options.rootfsLazyAssets !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
@@ -566,6 +610,8 @@ export class NodeKernelHost {
           experimentalFixedPersistencePath: this.options.experimentalFixedPersistencePath,
           experimentalResizablePersistencePath: this.options.experimentalResizablePersistencePath,
           requireExistingRootfsPersistence: this.options.requireExistingRootfsPersistence,
+          restoreCheckpoint: this.options.restoreCheckpoint,
+          replicationReplay: this.options.replicationReplay,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssetDirectory: this.options.rootfsLazyAssetDirectory,
           rootfsLazyAssets,
@@ -582,6 +628,10 @@ export class NodeKernelHost {
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
+          ...(this.options.takeRestoreCheckpointOwnership &&
+              this.options.restoreCheckpoint
+            ? machineCheckpointTransferList(this.options.restoreCheckpoint)
+            : []),
         ];
         this.worker.postMessage(initMsg, transfer);
       });
@@ -1030,6 +1080,248 @@ export class NodeKernelHost {
       pid,
     });
     return (result as string | null) ?? null;
+  }
+
+  /**
+   * Freeze this machine, read it, and resume it.
+   *
+   * A timeout is an ordinary outcome, not an error: a process that makes no
+   * syscall never reaches its unwind hook. The machine keeps running either
+   * way, and the reason says which happened.
+   */
+  async captureCheckpoint(options: {
+    unwindTimeoutMs: number;
+    vforkTimeoutMs: number;
+  }): Promise<CheckpointCaptureResponse> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "capture_checkpoint",
+      requestId,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+    });
+    return result as CheckpointCaptureResponse;
+  }
+
+  /**
+   * Freeze this machine, read it, resume it, and hand back the whole
+   * checkpoint rather than its summary. Mirrors
+   * `BrowserKernel.captureCheckpointBytes`.
+   *
+   * The machine keeps running: every buffer in the checkpoint is a copy the
+   * freeze took, transferred out of the kernel worker. This is what a restore
+   * consumes.
+   */
+  async captureCheckpointBytes(options: {
+    unwindTimeoutMs: number;
+    vforkTimeoutMs: number;
+  }): Promise<CheckpointFreezeResult> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "capture_checkpoint",
+      requestId,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+      includeBytes: true,
+    });
+    return result as CheckpointFreezeResult;
+  }
+
+  /**
+   * Record every decision this machine's host makes for its guest, from now.
+   *
+   * A checkpoint carries the machine's state; this carries the values the
+   * machine could not derive from that state. A replica that adopts the same
+   * checkpoint and replays this log runs the same machine, and renders it
+   * itself rather than being sent pixels.
+   *
+   * The log carries every host-produced value a replay needs: clock
+   * readings and random draws per task, GL query answers, accept
+   * selections, injected HTTP exchanges, and the pushed input decisions.
+   */
+  async startReplicationRecording(): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "replication_record_start",
+      requestId,
+    });
+  }
+
+  /** Stop recording and take the log. */
+  async stopReplicationRecording(): Promise<ReplicationLogEntry[]> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "replication_record_stop",
+      requestId,
+    });
+    return (result as ReplicationLogEntry[]) ?? [];
+  }
+
+  /**
+   * Publish this machine's decisions to `onEntries` as it makes them.
+   *
+   * This is what a machine being replicated live does instead of
+   * `startReplicationRecording`. The listener becomes the log's only holder:
+   * the kernel worker keeps nothing, because a replica joins at boot and needs
+   * every entry from sequence 0, and one growing copy of that is enough.
+   *
+   * Returns a function that stops the recording.
+   */
+  /**
+   * Read this machine and start publishing its decisions from that state.
+   *
+   * This is how a replica joins a machine that is already running: it restores
+   * the checkpoint and replays the log from its first entry. The two meet at
+   * one instant because the recorder starts inside the freeze, while every
+   * process is parked. A caller that captured and then called
+   * `streamReplicationLog` would lose the decisions the machine made as it
+   * resumed, and its replica would follow a log that begins somewhere its
+   * state does not.
+   *
+   * Returns the checkpoint result and a function that stops the recording.
+   * Nothing is being recorded when the capture did not succeed.
+   */
+  async captureAndStreamReplicationLog(
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+    onEntries: (entries: readonly ReplicationLogEntry[]) => void,
+  ): Promise<{ capture: CheckpointFreezeResult; stop: () => Promise<void> }> {
+    this.replicationListeners.add(onEntries);
+    const requestId = this._nextRequestId++;
+    const capture = await this.request(requestId, {
+      type: "capture_checkpoint",
+      requestId,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+      includeBytes: true,
+      beginReplicationStream: true,
+    }) as CheckpointFreezeResult;
+    if (capture.status !== "captured") {
+      this.replicationListeners.delete(onEntries);
+      return { capture, stop: async () => {} };
+    }
+    return {
+      capture,
+      stop: async () => {
+        await this.stopReplicationRecording();
+        this.replicationListeners.delete(onEntries);
+      },
+    };
+  }
+
+  async streamReplicationLog(
+    onEntries: (entries: readonly ReplicationLogEntry[]) => void,
+  ): Promise<() => Promise<void>> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "replication_record_start",
+      requestId,
+      stream: true,
+    });
+    this.replicationListeners.add(onEntries);
+    return async () => {
+      // Dropped after the stop, not before it. The worker publishes every
+      // batch it recorded ahead of the stop response, and a listener removed
+      // first would miss the last of them.
+      await this.stopReplicationRecording();
+      this.replicationListeners.delete(onEntries);
+    };
+  }
+
+  /**
+   * Serve this machine's guest clock from `entries` instead of from this host.
+   *
+   * Call it after `init` and before the replayed guest runs. A replay that
+   * reads a clock the recording does not hold at that position throws
+   * `ReplicationDivergence` at the guest's clock read rather than inventing a
+   * value.
+   *
+   * `queue` follows a primary that is still running: the replica blocks there
+   * when it catches up, instead of reaching past the end of the log. Without
+   * it the log is taken as complete, and reaching its end is the end of the
+   * replay.
+   */
+  async startReplicationReplay(
+    entries: readonly ReplicationLogEntry[],
+    queue?: SharedArrayBuffer,
+  ): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "replication_replay_start",
+      requestId,
+      entries,
+      queue,
+    });
+  }
+
+  /**
+   * Seal this machine's recording for a take-over.
+   *
+   * The freeze stops the recorder while every process is parked, so the
+   * log's final entry and the frozen state name one instant, and the hash
+   * covers exactly the machine a drained replica should hold. The machine
+   * resumes and keeps running, unrecorded: the taker that adopts it
+   * discards what the keeper decided after the seal, the way a checkpoint
+   * handover already discards what follows its freeze.
+   */
+  async sealReplicationRecording(
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+  ): Promise<ReplicationSealResponse> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "replication_seal",
+      requestId,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+    });
+    return result as ReplicationSealResponse;
+  }
+
+  /**
+   * Freeze this replica at the seal and hash its state.
+   *
+   * Refused while the replica has not consumed the log through `seq`; the
+   * caller drains and asks again. The position check runs inside the
+   * freeze, so the hash covers the machine exactly at the seal. A replica
+   * short of `armSeq`, where the seal's freeze began, is refused without a
+   * freeze.
+   */
+  async hashReplicaAtSeal(
+    seq: number,
+    armSeq: number,
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+  ): Promise<ReplicationReplicaHashResponse> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "replication_hash_replica",
+      requestId,
+      seq,
+      armSeq,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+    });
+    return result as ReplicationReplicaHashResponse;
+  }
+
+  /** Stop replaying, and report how much of the log this machine took. */
+  async stopReplicationReplay(): Promise<ReplicationReplayProgress> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "replication_replay_stop",
+      requestId,
+    });
+    return result as ReplicationReplayProgress;
+  }
+
+  /**
+   * Tell a replaying machine the log grew, so it applies what needs no guest.
+   *
+   * A keystroke or a resize the primary recorded has no guest request to
+   * answer, and the queue is shared memory the kernel worker only reads when
+   * asked — a replica whose guest sits at a prompt would otherwise never see
+   * it. Call it after pushing entries into the replay's queue.
+   */
+  drainReplicationReplay(): void {
+    this.sendToWorker({ type: "replication_replay_drain" });
   }
 
   /**
@@ -1617,6 +1909,11 @@ export class NodeKernelHost {
         break;
       case "vfs_change":
         this.emitVfsChange(msg.event);
+        break;
+      case "replication_recorded":
+        for (const listener of [...this.replicationListeners]) {
+          listener(msg.entries);
+        }
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol

@@ -430,6 +430,50 @@ describe("overlay generation boot selection", () => {
     await compactor.stop();
   });
 
+  it("holds compaction off until a hold ends, after waiting out the handoff in flight", async () => {
+    const source = new MemoryStorage(journalBytes());
+    const backend = files({ "legacy.journal": source });
+    const selected = await enableBestOverlayGeneration(backend, () => {}, true);
+    let release!: () => void;
+    let reached!: () => void;
+    const opened = new Promise<void>(done => { reached = done; });
+    const opening = new Promise<void>(done => { release = done; });
+    let activated = 0;
+    const compactor = new LiveOverlayCompactor(selected, {
+      ...backend,
+      open: async (slot, file, create) => {
+        const result = await backend.open(slot, file, create);
+        if (slot !== "legacy" && file === "journal" && activated === 0) { reached(); await opening; }
+        return result;
+      },
+    }, {
+      prepare: target => { target.writeAllAt(0, source.bytes); },
+      checkpoint: index => { index.writeAllAt(0, Uint8Array.of(1)); },
+      activate: () => { activated++; }, cancel: () => {}, fail: () => {},
+    }, () => {}, () => {}, 0);
+    const inFlight = compactor.compactNow();
+    await opened;
+    const seen: number[] = [];
+    let demands = 0;
+    let demanded: Promise<void> | undefined;
+    const held = compactor.whileHeld(async generation => {
+      seen.push(activated, generation.generation);
+      await compactor.compactIfNeeded();
+      demanded = compactor.compactNow();
+      await Promise.resolve();
+      seen.push(activated);
+    }, () => { demands++; });
+    release();
+    await Promise.all([inFlight, held]);
+    expect(seen).toEqual([1, selected.generation + 1, 1]);
+    expect(demands).toBe(1);
+    await compactor.whileHeld(async () => { seen.push(activated); }, () => { demands++; });
+    expect(seen).toEqual([1, selected.generation + 1, 1, 2]);
+    expect(demands).toBe(1);
+    await demanded;
+    await compactor.stop();
+  });
+
   it("returns real quota failures to demand waiters and permits demand during polling backoff", async () => {
     const source = new MemoryStorage(journalBytes());
     const backend = files({ "legacy.journal": source });

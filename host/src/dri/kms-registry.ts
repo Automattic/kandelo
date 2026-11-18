@@ -25,6 +25,52 @@ export type KmsViewport = { x: number; y: number; width: number; height: number 
  *  `offset` the byte offset of the viewport's first pixel in the BO, so a
  *  CPU presenter reads `pitch`-strided rows from there. */
 export type HostScanout = HostFb & { x: number; y: number; offset: number };
+/** One CRTC the guest drove `drmModeSetCrtc` on, the framebuffer it scans
+ *  out, and the viewport the kernel latched with it, when it latched one. */
+export type KmsCrtcBinding = {
+  readonly crtc_id: number;
+  readonly fb_id: number;
+  readonly viewport?: KmsViewport;
+};
+
+/** The DRM file that holds master and the lease it holds it under. Both are
+ *  kernel u64 identities, written in decimal because a checkpoint crosses a
+ *  JSON wire. */
+export type KmsMasterGrant = {
+  readonly fileId: string;
+  readonly leaseId: string;
+};
+
+/** The cursor plane without its pixels, which a restore reads back from
+ *  `bo`. `bo` and `fbId` are 0 when the plane shows no image. */
+export type KmsCursorPlaneState = {
+  readonly bo: number;
+  readonly fbId: number;
+  readonly x: number;
+  readonly y: number;
+  readonly hotX: number;
+  readonly hotY: number;
+  readonly width: number;
+  readonly height: number;
+};
+
+/** Every DRM object and display setting this registry holds, without the
+ *  pixels.
+ *
+ *  Pixels belong to the buffer objects the framebuffers name, so a caller that
+ *  carries this also carries `GbmBoRegistry.snapshot`. */
+export type KmsSnapshot = {
+  readonly fbs: readonly HostFb[];
+  readonly crtcs: readonly KmsCrtcBinding[];
+  readonly masterPid: number | null;
+  readonly master: KmsMasterGrant | null;
+  /** The newest lease ever granted, in decimal, so an older grant stays
+   *  refused after a restore. */
+  readonly lastMasterLeaseId: string;
+  /** Each CRTC's color stage; `table` as in `KmsGamma`. */
+  readonly gammas: readonly { readonly crtc_id: number; readonly table: Uint8Array }[];
+  readonly cursor: KmsCursorPlaneState;
+};
 
 /** The size the virtual connector advertises for a reported display size:
  *  even-aligned and clamped to the mode range, or the 1920x1080 default
@@ -337,6 +383,54 @@ export class KmsRegistry {
     if (!this.isMasterFile(fileId)) return null;
     for (const crtcId of this.crtcBindings.keys()) return crtcId;
     return null;
+  }
+
+  /** Every DRM object and display setting the guest made, for a checkpoint
+   *  to carry.
+   *
+   *  A CRTC binding outlives `rmFb` on its framebuffer, matching DRM, where
+   *  removing a scanned-out framebuffer leaves the CRTC modeset. A snapshot
+   *  can therefore name a framebuffer it does not list, and a restore must
+   *  accept that rather than treat it as a broken record. */
+  snapshot(): KmsSnapshot {
+    const { x, y, hotX, hotY, width, height } = this.cursor;
+    return {
+      fbs: [...this.fbs.values()].map((fb) => ({ ...fb })),
+      crtcs: [...this.crtcBindings].map(([crtc_id, fb_id]) => {
+        const viewport = this.crtcViewports.get(crtc_id);
+        return viewport ? { crtc_id, fb_id, viewport: { ...viewport } } : { crtc_id, fb_id };
+      }),
+      masterPid: this.masterPid,
+      master: this.masterFileId === null
+        ? null
+        : { fileId: String(this.masterFileId), leaseId: String(this.masterLeaseId) },
+      lastMasterLeaseId: String(this.lastMasterLeaseId),
+      gammas: [...this.gammas].map(([crtc_id, gamma]) => ({ crtc_id, table: gamma.table.slice() })),
+      cursor: { bo: this.cursorBo, fbId: this.cursorFbId, x, y, hotX, hotY, width, height },
+    };
+  }
+
+  /** Adopt a snapshot, replacing whatever this registry holds.
+   *
+   *  A restore runs this on a registry a fresh machine has not touched yet. */
+  restore(state: KmsSnapshot): void {
+    this.fbs = new Map(state.fbs.map((fb) => [fb.fb_id, { ...fb }]));
+    this.crtcBindings = new Map(
+      state.crtcs.map(({ crtc_id, fb_id }) => [crtc_id, fb_id]),
+    );
+    this.crtcViewports = new Map(state.crtcs.flatMap(({ crtc_id, viewport }) =>
+      viewport ? [[crtc_id, { ...viewport }]] : []));
+    this.masterPid = state.masterPid;
+    this.masterFileId = state.master ? BigInt(state.master.fileId) : null;
+    this.masterLeaseId = state.master ? BigInt(state.master.leaseId) : 0n;
+    this.lastMasterLeaseId = BigInt(state.lastMasterLeaseId);
+    this.gammas = new Map(state.gammas.map(({ crtc_id, table }) =>
+      [crtc_id, { version: ++this.gammaVersion, table: table.slice() }]));
+    const { bo, fbId, ...geometry } = state.cursor;
+    this.cursorBo = bo;
+    this.cursorFbId = fbId;
+    this.cursorBytes = null;
+    this.cursor = { ...geometry, version: this.cursor.version + 1, pixels: null, premultiplied: null };
   }
 
   /** The scanned bytes, starting at the viewport's first pixel; rows are

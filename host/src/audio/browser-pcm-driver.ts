@@ -48,6 +48,16 @@ export interface BrowserPcmDriverOptions {
  */
 let sharedAudioContext: AudioContext | null = null;
 const sharedRegisteredWorklets = new Set<string>();
+/**
+ * True while the shared context is suspended only because a machine's
+ * teardown settled its output, not because the user or the browser paused it.
+ * The next machine resumes it, so the activation the user gave the page
+ * outlives the machine switch instead of leaving the new machine's PCM ring
+ * without a consumer until the next gesture.
+ */
+let sharedContextSuspendedByTeardown = false;
+/** Drivers whose worklet node is connected to the shared context. */
+const sharedContextDrivers = new Set<BrowserPcmDriver>();
 let sharedTransportRetirementFailure: Error | null = null;
 let sharedContextTransitionFailure: Error | null = null;
 const retiredContextFailures = new WeakSet<object>();
@@ -108,6 +118,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
         if (!sharedAudioContext || sharedAudioContext.state === "closed") {
           sharedAudioContext = new (AudioContextCtor as typeof AudioContext)({ latencyHint: "interactive" });
           sharedRegisteredWorklets.clear();
+          sharedContextSuspendedByTeardown = false;
         }
         context = sharedAudioContext;
         this.ownsContext = false;
@@ -272,18 +283,27 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     if (!context || context.state !== "running") return;
     const hasOutput = this.node !== null;
 
+    // Another machine's worklet still renders through the shared context, so
+    // the context keeps running and carries this machine's tail out with it.
+    const shared = !this.ownsContext;
+    const otherMachineAttached = shared
+      && [...sharedContextDrivers].some((driver) => driver !== this);
+
     const startedAt = performance.now();
-    const suspension = this.beginSuspension(true);
-    if (!await waitForPromiseWithin(
-      suspension,
-      MAX_OUTPUT_PIPELINE_SETTLE_MS,
-    )) {
-      const error = new Error("PCM output suspension did not settle before shutdown");
-      this.recordContextTransitionFailure(error);
-      throw error;
+    if (!otherMachineAttached) {
+      if (shared) sharedContextSuspendedByTeardown = true;
+      const suspension = this.beginSuspension(true);
+      if (!await waitForPromiseWithin(
+        suspension,
+        MAX_OUTPUT_PIPELINE_SETTLE_MS,
+      )) {
+        const error = new Error("PCM output suspension did not settle before shutdown");
+        this.recordContextTransitionFailure(error);
+        throw error;
+      }
+      await suspension;
+      this.syncContextState();
     }
-    await suspension;
-    this.syncContextState();
     if (!hasOutput) return;
 
     if ((context.state as string) === "closed" || context !== this.context) {
@@ -342,6 +362,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
         this.recordContextTransitionFailure(error);
       });
     }
+    sharedContextDrivers.delete(this);
     this.node = null;
     this.context = null;
     this.transport = null;
@@ -490,6 +511,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       };
       if (remotePort) node.port.postMessage({ type: "attach", port: remotePort }, [remotePort]);
       node.connect(context.destination);
+      if (!this.ownsContext) sharedContextDrivers.add(this);
       this.syncContextState();
     } catch (error) {
       this.markFatalError();
@@ -526,6 +548,11 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       }
       this.setState("error");
       throw failure;
+    }
+    if (!this.ownsContext && sharedContextSuspendedByTeardown) {
+      sharedContextSuspendedByTeardown = false;
+      await context.resume().catch(() => {});
+      this.syncContextState();
     }
   }
 

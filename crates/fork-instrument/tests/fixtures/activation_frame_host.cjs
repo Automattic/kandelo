@@ -49,7 +49,7 @@ module.exports = function createFrameJournal(wide, wasmModule, { requireIndirect
         return pointer(pending[0].address);
       },
       __wpk_fork_resume_peek() {
-        if (requireIndirectGuard) assert(publication.reconciles > 0, 'generated indirect transport reconciles before replay routing');
+        if (requireIndirectGuard && mode === 'rewind' && pending.length) assert.equal(publication.reconciles, 0, 'a replay routed through the resume table does not reconcile');
         return pending.length ? pending[0].ordinal + 1 : 0;
       },
     };
@@ -76,7 +76,7 @@ module.exports = function createFrameJournal(wide, wasmModule, { requireIndirect
       if (state.calls === 1 && getInstance().exports.sp instanceof WebAssembly.Global) {
         state.forkStackPointer = Number(getInstance().exports.sp.value);
       }
-      if (requireIndirectGuard) assert(publication.reconciles > 0, 'the original indirect call also uses its generated guard');
+      if (requireIndirectGuard && mode !== 'rewind') assert(publication.reconciles > 0, 'the original indirect call also uses its generated guard');
       const exports = getInstance().exports;
       if (state.mode === 'rewind') { state.mode = 'normal'; exports.wpk_fork_rewind_end(); return 0; }
       if (state.mode === 'abort') { state.mode = 'normal'; exports.wpk_fork_abort_end(); return -1; }

@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
+//!                      [--checkpoint-entry kernel.kernel_checkpoint]
 //!                      [--post-optimize Os|O1|O2|O3|Oz|none] [--keep-names]
 //! ```
 //!
@@ -186,6 +187,7 @@ fn main() -> Result<()> {
 
     let opts = Options {
         entry_import: cli.entry,
+        checkpoint_import: cli.checkpoint_entry,
         sinks: !cli.no_sinks,
         facts: !cli.no_facts,
         effective_types: !cli.no_effective_types,

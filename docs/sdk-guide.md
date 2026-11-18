@@ -379,9 +379,11 @@ which would move call sites to other functions and make per-function facts
 describe the wrong code. So the SDK holds that step back and inspects the
 linked module:
 
-- A module that imports `kernel.kernel_fork` (it can fork) keeps its
-  `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
-  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+- A module that imports `kernel.kernel_fork` (it can fork) or
+  `kernel.kernel_checkpoint` (it can take part in a machine checkpoint)
+  keeps its `kandelo.calltypes` section and its name section and is left
+  as wasm-ld wrote it. It must be fork-instrumented next; the instrumenter
+  selects checkpoint frames by name, and runs `wasm-opt` itself after
   instrumenting.
 - Any other module loses the section and then gets exactly the `wasm-opt`
   command clang scheduled.
@@ -851,22 +853,26 @@ export legacy `asyncify_*` symbols.
 # Compile normally
 wasm32posix-cc program.c -o program.wasm
 
-# Do not run wasm-opt here. The SDK leaves a fork-capable link unoptimized
-# on purpose: its kandelo.calltypes facts describe the functions as linked
-# (see "Compiler facts for fork instrumentation").
+# Do not run wasm-opt here. The SDK leaves a link that imports
+# kernel.kernel_fork or kernel.kernel_checkpoint unoptimized on purpose: its
+# kandelo.calltypes facts describe the functions as linked, and its name
+# section lets the instrumenter select checkpoint frames (see "Compiler facts
+# for fork instrumentation").
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
-# call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
-# the tool on demand if tools/bin is absent.
+# call-graph analysis from the kernel.kernel_fork import, and checkpoint
+# frames from kernel.kernel_checkpoint (the wrapper adds that seed) — no
+# onlylist file needed — then runs wasm-opt -O2 over the result. The wrapper
+# builds the tool on demand if tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
 ```
 
 The tool emits seven `wpk_fork_*` exports that the host runtime drives during
-fork. Programs that don't use fork can skip this step entirely, but a program
-that reaches `kernel_fork` without complete `wpk_fork_*` instrumentation is
-invalid.
+fork and checkpoint. The libc glue imports `kernel.kernel_checkpoint`, so
+every program has a checkpoint seed. A program that skips this step still
+runs, but a machine checkpoint refuses it, and a program that reaches
+`kernel_fork` without complete `wpk_fork_*` instrumentation is invalid.
 
 See [`docs/fork-instrumentation.md`](fork-instrumentation.md) for the
 exported ABI, save-buffer format, and the dispatch-scheme decisions.

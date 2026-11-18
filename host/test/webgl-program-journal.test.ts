@@ -4,8 +4,8 @@ import {RENDERER_LOST,rendererLost} from "../src/webgl/renderer-loss.js";
 import {expect,it,vi} from "vitest";
 import {GlContextRegistry} from "../src/webgl/registry.js";
 import {GlMuxer} from "../src/webgl/muxer.js";
-import {GlProgramJournal,createProgramJournalControl} from "../src/webgl/program-journal.js";
-import {captureContextGlProgram,releaseGlProgramCapture} from "../src/webgl/program-captures.js";
+import {GlProgramJournal,createProgramJournalControl,lookupProgramJournal,checkpointProgramJournalOrder,restoreProgramJournalOrder} from "../src/webgl/program-journal.js";
+import {captureContextGlProgram,releaseGlProgramCapture,checkpointGlProgramCaptures,restoreGlProgramCaptures} from "../src/webgl/program-captures.js";
 import {GlProgramQueryPin,currentProgramName,publicCurrentProgramName,finalizeProgram,useProgramIfAccepted,
   linkProgramRetainingExecutable} from "../src/webgl/program-objects.js";
 import {consumeObservedGlError} from "../src/webgl/errors.js";
@@ -320,4 +320,54 @@ it("seals optional draw unavailability while consuming only its completed cell t
  expect(query(1,1).slice(0,5)).toEqual([0,1,13,f.journal.id,0]);expect(f.b.errors).toEqual([]);
  expect(query(2,1)[0]).toBe(1);expect(f.b.errors).toEqual([0x502]);f.b.errors.length=0;
  expect(query(3,2).slice(0,5)).toEqual([0,3,13,f.journal.id,0]);expect(f.b.errors).toEqual([]);f.dispose();
+});
+const refuse=(reason:string):never=>{throw new Error(reason);};
+const names={framebuffer:()=>0,texture:()=>0,buffer:()=>0},read=()=>new Uint8Array(0);
+it("hands a drained journal to a checkpoint and restores its id, tokens and tickets on another context",()=>{
+  const f=fixture();
+  expect(f.journal.publish(f.b,0,1,1,20,f.token)).toBe(true);expect(f.journal.execute(0,1)).toBe(true);
+  expect(f.journal.publish(f.b,1,2,2,30,f.tokenQ)).toBe(true);expect(f.journal.execute(1,2)).toBe(true);
+  const carried=f.journal.checkpoint(refuse,names,read),order=checkpointProgramJournalOrder(f.b)!,captures=checkpointGlProgramCaptures(f.b,refuse)!;
+  expect(carried).toMatchObject({id:f.journal.id,capacity:4,published:2,executed:2,current:f.tokenQ,logicalName:30,
+    generations:[{token:f.token,name:20,cache:true},{token:f.tokenQ,name:30,cache:true}],
+    slots:[{index:0,ticket:1,sequence:1},{index:1,ticket:2,sequence:2}],buffers:null,framebuffers:null});
+  expect(order).toEqual({sequence:2,nextJournal:f.journal.id+1});
+  const g=fixture(),other=new GlContextRegistry();
+  other.bind({pid:1,sessionId:0,cmdbufAddr:0,cmdbufLen:64});
+  const b=other.get(1,0)!;b.gl=g.gl;b.contextId=1;
+  for(const [name,program] of [[20,g.p],[30,g.q]] as const){b.programs.set(name,program);b.programShaders.set(name,new Set());}
+  expect(useProgramIfAccepted(b,30)).toBe(true);
+  const execution=other.retainContextExecution(1,0,g.muxer)!;
+  restoreProgramJournalOrder(b,order);expect(restoreGlProgramCaptures(execution,captures)).toBe(true);
+  const journal=GlProgramJournal.restore(execution,carried)!;
+  expect(journal).not.toBeNull();expect(lookupProgramJournal(b,carried.id)).toBe(journal);
+  expect(publicCurrentProgramName(b)).toBe(30);expect(journal.checkpoint(refuse,names,read)).toEqual(carried);
+  expect(journal.publish(b,0,2,3,20,f.token)).toBe(false);
+  expect(journal.publish(b,0,3,3,20,f.token)).toBe(true);expect(journal.execute(0,3)).toBe(true);
+  expect(g.selected.at(-1)).toBe(g.p);expect(currentProgramName(b)).toBe(20);
+  journal.retire();execution.release();other.unbind(1);f.dispose();g.dispose();
+});
+it("carries a restored owned draw until the guest draws with it, then proves it against that draw's state",()=>{
+  const f=fixture(),carried=f.journal.checkpoint(refuse,names,read),order=checkpointProgramJournalOrder(f.b)!;
+  carried.ownedDraws[0]={token:1,family:0,target:0xffff_ffff,targetToken:0,ready:true};
+  const other=new GlContextRegistry();
+  other.bind({pid:1,sessionId:0,cmdbufAddr:0,cmdbufLen:64});
+  const b=other.get(1,0)!;b.gl=f.gl;b.contextId=1;
+  for(const [name,program] of [[20,f.p],[30,f.q]] as const){b.programs.set(name,program);b.programShaders.set(name,new Set());}
+  const execution=other.retainContextExecution(1,0,f.muxer)!;
+  restoreProgramJournalOrder(b,order);
+  const journal=GlProgramJournal.restore(execution,carried)!;
+  expect(journal.checkpoint(refuse,names,read).ownedDraws[0]).toEqual(carried.ownedDraws[0]);
+  expect(journal.ownedDraw(0,2,0xffff_ffff,0)).toBeNull();
+  expect(journal.checkpoint(refuse,names,read).ownedDraws[0]!.ready).toBe(true);
+  expect(journal.ownedDraw(0,1,0xffff_ffff,0)).toBeNull();
+  expect(journal.checkpoint(refuse,names,read).ownedDraws[0]!.ready).toBe(false);
+  journal.retire();execution.release();other.unbind(1);f.dispose();
+});
+it("refuses a checkpoint of a journal with work in flight or a relinked generation",()=>{
+  const f=fixture();expect(f.journal.publish(f.b,0,1,1,20,f.token)).toBe(true);
+  expect(()=>f.journal.checkpoint(refuse,names,read)).toThrow("work in flight");
+  expect(f.journal.execute(0,1)).toBe(true);f.b.programs.set(30,{} as WebGLProgram);
+  expect(()=>f.journal.checkpoint(refuse,names,read)).toThrow("no longer links");
+  f.b.programs.set(30,f.q);f.dispose();
 });

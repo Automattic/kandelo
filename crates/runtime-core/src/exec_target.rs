@@ -1540,7 +1540,7 @@ mod tests {
     #[test]
     fn preparation_uses_the_exact_observed_lease_without_changing_source_authority() {
         use crate::program_preparation::{PreparationLimits, PreparationProfile};
-        let original = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
+        let original = include_bytes!("../../../abi/program-fixtures/v57/raw-fork.wasm");
         let mut metadata = stat();
         metadata.st_size = original.len() as u64;
         metadata.st_mode |= wasm_posix_shared::mode::S_ISUID;

@@ -910,8 +910,9 @@ fn with_trace_flag(args: &[String]) -> Vec<String> {
     traced
 }
 
-/// The import whose presence makes a module fork-capable (wasm-fork-instrument's default entry).
-pub const FORK_ENTRY_IMPORT: (&str, &str) = ("kernel", "kernel_fork");
+/// The imports that seed wasm-fork-instrument: the fork entry and the checkpoint entry.
+const MIGRATION_SEED_IMPORTS: [(&str, &str); 2] =
+    [("kernel", "kernel_fork"), ("kernel", "kernel_checkpoint")];
 
 const KEEP_TARGET_FEATURES: &str = "--keep-section=target_features";
 
@@ -947,18 +948,25 @@ fn comparable_linker(jobs: &[Vec<String>], linker: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Does the linked module import the fork entry? Such a link skips clang's
-/// scheduled post-link wasm-opt and keeps its facts.
+/// Does the linked module import a migration seed? Such a link skips clang's
+/// scheduled post-link wasm-opt and keeps its facts and names.
 ///
-/// WHY: a fork-capable module is instrumented next, and the instrumenter
-/// analyses it with the per-function facts in its `kandelo.calltypes`
-/// section. Binaryen's inlining would move call sites between functions and
-/// make those facts describe the wrong functions, so the module must reach
-/// the instrumenter as wasm-ld wrote it. The instrumenter runs wasm-opt
-/// itself after instrumenting. Any other module needs no facts: it loses the
-/// section and gets exactly the optimization clang would have run.
-pub fn is_fork_capable(module: &[u8]) -> Result<bool> {
-    imports_function(module, FORK_ENTRY_IMPORT.0, FORK_ENTRY_IMPORT.1)
+/// WHY: a module that imports the fork or the checkpoint entry is
+/// instrumented next, and the instrumenter analyses it with the per-function
+/// facts in its `kandelo.calltypes` section and selects checkpoint frames by
+/// function name. Binaryen's inlining would move call sites between functions
+/// and make those facts describe the wrong functions, and without `-g` it
+/// drops the name section, so the module must reach the instrumenter as
+/// wasm-ld wrote it. The instrumenter runs wasm-opt itself after
+/// instrumenting. Any other module needs no facts: it loses the section and
+/// gets exactly the optimization clang would have run.
+pub fn imports_migration_seed(module: &[u8]) -> Result<bool> {
+    for (import_module, field) in MIGRATION_SEED_IMPORTS {
+        if imports_function(module, import_module, field)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn is_linker_job(job: &[String]) -> bool {
@@ -967,8 +975,8 @@ fn is_linker_job(job: &[String]) -> bool {
 
 /// Run the compiler driver. Compile-only invocations pass straight through.
 /// A link is run with clang's post-link wasm-opt (if clang schedules one)
-/// held back, then finished per `is_fork_capable`. An executable link passes
-/// its SDK's program ABI-contract digest as `abi_contract`, which the
+/// held back, then finished per `imports_migration_seed`. An executable link
+/// passes its SDK's program ABI-contract digest as `abi_contract`, which the
 /// finished program carries (`stamp_abi_contract`).
 pub fn run_compiler_driver(
     compiler: &str,
@@ -1048,7 +1056,7 @@ pub fn run_compiler_driver(
         let facts = wasm_artifact::read_artifact_facts(module).map_err(|error| error.0)?;
         let failures = wasm_artifact::program_extensions::describe_failures(&facts, wasm_artifact::program_extensions::IMPLEMENTED);
         if !failures.is_empty() { return Err(failures.join("; ")); }
-        if is_fork_capable(module)? {
+        if imports_migration_seed(module)? {
             if let Some(hashed) = with_code_hash_section(module)? {
                 write_output(&output, &hashed)?;
             }

@@ -21,6 +21,10 @@ export const BUFFER_SNAPSHOT_CAPACITY=32;
 export const BUFFER_SNAPSHOT_MAX_BYTES=32768;
 const ARRAY=0x8892;
 type Cell={native:WebGLBuffer|null;object:WebGLBuffer|null;token:number;bytes:number;ready:boolean};
+/** A cell's token, and for a ready cell its source buffer's guest name and
+ * the private bytes it copied, which may differ from that buffer's now. */
+export type CheckpointGlBufferSnapshot={token:number;buffer:number;bytes:Uint8Array|null};
+export type CheckpointGlBufferSnapshots={capacity:number;cells:CheckpointGlBufferSnapshot[]};
 
 /** Receivers and deletion custody precede every native allocation. Keep the
  * reserved bank in its manager even when initialize/retire fails. Reusing a
@@ -203,6 +207,27 @@ export class GlBufferSnapshots {
       !Number.isSafeInteger(requiredBytes) || requiredBytes<0)return null;
     const cell=this.cells[index]!;
     return cell.ready && cell.token===token && cell.object===object && requiredBytes<=cell.bytes?cell.native:null;
+  }
+
+  checkpoint(refuse:(reason:string)=>never,nameOf:(object:WebGLBuffer|null)=>number,
+      read:(native:WebGLBuffer,bytes:number)=>Uint8Array):CheckpointGlBufferSnapshots {
+    if(this.phase!=="ready")refuse(`pid ${this.binding.pid}'s buffer snapshot bank is ${this.phase}`);
+    return {capacity:this.cells.length,cells:this.cells.map(cell=>({token:cell.token,
+      buffer:cell.ready?nameOf(cell.object):0,bytes:cell.ready?read(cell.native!,cell.bytes):null}))};
+  }
+
+  /** Refill an initialized bank's cells with their checkpointed copies. */
+  restore(cells:readonly CheckpointGlBufferSnapshot[],objectOf:(name:number)=>WebGLBuffer|null):boolean {
+    if(this.phase!=="ready" || cells.length!==this.cells.length)return false;
+    const b=this.binding,gl=b.gl!;
+    for(let i=0;i<cells.length;i++) {
+      const from=cells[i]!,cell=this.cells[i]!,bytes=from.bytes;
+      cell.token=from.token;
+      if(bytes===null)continue;
+      if(!withBufferTransfer(b,cell.native!,cell.native!,()=>checkedGlCall(b,()=>gl.bufferData(0x8f37,bytes,0x88e4))))return false;
+      cell.object=objectOf(from.buffer);cell.bytes=bytes.byteLength;cell.ready=true;
+    }
+    return true;
   }
 
   retire():boolean {

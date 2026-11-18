@@ -38,6 +38,89 @@ describe("KmsRegistry", () => {
     expect(kms.isDark(1)).toBe(true);
   });
 
+  it("snapshot lists every modeset CRTC and survives rmFb", () => {
+    const kms = new KmsRegistry(new GbmBoRegistry());
+    expect(kms.snapshot()).toEqual({
+      fbs: [],
+      crtcs: [],
+      masterPid: null,
+      master: null,
+      lastMasterLeaseId: "0",
+      gammas: [],
+      cursor: { bo: 0, fbId: 0, x: 0, y: 0, hotX: 0, hotY: 0, width: 0, height: 0 },
+    });
+
+    kms.addFb(fb(10));
+    expect(kms.snapshot().crtcs).toEqual([]);
+
+    kms.setFb(1, 10, { x: 8, y: 4, width: 32, height: 16 });
+    kms.setFb(2, 10);
+    expect(kms.snapshot().crtcs).toEqual([
+      { crtc_id: 1, fb_id: 10, viewport: { x: 8, y: 4, width: 32, height: 16 } },
+      { crtc_id: 2, fb_id: 10 },
+    ]);
+
+    // DRM leaves a CRTC modeset when its scanned-out framebuffer goes, so the
+    // snapshot keeps naming an fb_id it no longer lists.
+    kms.rmFb(10);
+    expect(kms.currentFb(1)).toBeUndefined();
+    expect(kms.snapshot().fbs).toEqual([]);
+    expect(kms.snapshot().crtcs.map(({ crtc_id, fb_id }) => [crtc_id, fb_id])).toEqual([
+      [1, 10],
+      [2, 10],
+    ]);
+  });
+
+  it("restore rebuilds a snapshotted display and replaces what it held", () => {
+    const bos = new GbmBoRegistry();
+    bos.create({ pid: 7, bo_id: 5, size: 16 * 16 * 4, w: 16, h: 16, stride: 64 });
+    const source = new KmsRegistry(bos);
+    source.addFb(fb(10));
+    source.setFb(1, 10, { x: 8, y: 4, width: 32, height: 16 });
+    source.setMaster(7, 0xffff_ffff_ffff_fff0n, 3n);
+    source.setGamma(1, new Uint16Array(768).fill(0x8000));
+    source.setCursor(7, 3, 5, 16, 16, 20, 30, 1, 2, 11);
+
+    const target = new KmsRegistry(new GbmBoRegistry());
+    target.addFb(fb(99, 555));
+    target.setFb(3, 99);
+    target.restore(source.snapshot());
+
+    expect(target.snapshot()).toEqual(source.snapshot());
+    expect(target.currentFb(1)).toMatchObject({ bo_id: 100, x: 8, y: 4, width: 32, height: 16 });
+    expect(target.currentFb(3)).toBeUndefined();
+    expect(target.getMasterPid()).toBe(7);
+    expect(target.isMasterFile(0xffff_ffff_ffff_fff0n)).toBe(true);
+    expect(target.gamma(1)?.table).toEqual(source.gamma(1)?.table);
+    expect(target.currentCursor()).toMatchObject({ x: 20, y: 30, hotX: 1, hotY: 2, width: 16, height: 16 });
+  });
+
+  it("refuses an older master grant after a restore", () => {
+    const source = new KmsRegistry(new GbmBoRegistry());
+    source.setMaster(7, 1n, 4n);
+    source.dropMaster(1n, 4n);
+
+    const target = new KmsRegistry(new GbmBoRegistry());
+    target.restore(source.snapshot());
+
+    expect(target.setMaster(8, 2n, 3n)).toBe(false);
+    expect(target.setMaster(8, 2n, 5n)).toBe(true);
+  });
+
+  it("neither snapshot nor restore aliases a framebuffer record", () => {
+    const source = new KmsRegistry(new GbmBoRegistry());
+    source.addFb(fb(10));
+    source.setFb(1, 10);
+    const snapshot = source.snapshot();
+
+    const target = new KmsRegistry(new GbmBoRegistry());
+    target.restore(snapshot);
+    snapshot.fbs[0]!.width = 1;
+
+    expect(source.currentFb(1)?.width).toBe(64);
+    expect(target.currentFb(1)?.width).toBe(64);
+  });
+
   it("flipCount counts every latch, including a rebind of the same fb", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
     expect(kms.flipCount()).toBe(0);

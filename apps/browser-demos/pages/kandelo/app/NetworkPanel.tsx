@@ -10,7 +10,7 @@ import { SessionNotice } from "./SessionNotice";
 import { randomSessionName } from "./session-name";
 import { networkJoinReadiness } from "./network-join-readiness";
 
-export const NetworkPanel: React.FC<{ session: NetworkSession; activity: PackageSessionControls; running: boolean; failed?: boolean; initialSelection?: { activity: string; imageId?: string }; onActivityStarted?: () => void }> = ({ session, activity, running, failed, initialSelection, onActivityStarted }) => {
+export const NetworkPanel: React.FC<{ session: NetworkSession; activity: PackageSessionControls; running: boolean; failed?: boolean; initialSelection?: { activity: string; imageId?: string }; onActivityStarted?: () => void; sharing?: React.ReactNode }> = ({ session, activity, running, failed, initialSelection, onActivityStarted, sharing }) => {
   const { state, invitation } = session;
   const [name, setName] = React.useState(() => state.name ?? randomSessionName());
   const [editing, setEditing] = React.useState<{ mode: "activity" | "new"; selection?: string; imageId?: string } | null>(() =>
@@ -85,7 +85,7 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
                 ? <div className="kshare-url" data-network-link={activity.link}>{activity.link}</div>
                 : <p className="knetwork-note">{activity.linkUnavailable}</p>}
             </div>
-            <div>
+            {state.networkAttached ? <div>
               <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Computers</div>
               <ul className="knetwork-members" aria-label="Computers in this session">
                 {members.map(member => <li key={member.address}>
@@ -93,7 +93,8 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
                   {member.address === self && <small>this computer</small>}
                 </li>)}
               </ul>
-            </div>
+            </div> : <p className="knetwork-note">This computer's machine is not on the session's network: it changed since joining. The computers can still share a machine.</p>}
+            {sharing}
           </> : <>
             {state.phase === "connected" && joined && editing?.mode !== "new" && editing?.selection === undefined
               ? <ActivityClientForm activity={activity} blocked={blocked} session={session} onComplete={() => setEditing(null)} />

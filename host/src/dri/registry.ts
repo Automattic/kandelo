@@ -82,6 +82,18 @@ export class GbmMappingFault extends Error {
     this.name = "GbmMappingFault";
   }
 }
+/** One buffer object with its canonical pixels, as a checkpoint carries it. */
+export type GbmBoSnapshot = {
+  readonly bo_id: number;
+  readonly size: number;
+  readonly w: number;
+  readonly h: number;
+  readonly stride: number;
+  /** Every pid holding a handle: the creator plus any PRIME importer. */
+  readonly pids: readonly number[];
+  readonly bindings: readonly (GbmBoBinding & { readonly pid: number })[];
+  readonly pixels: Uint8Array;
+};
 
 export type GbmBoChangeEvent = "create" | "bind" | "unbind" | "destroy";
 export type GbmBoChangeListener = (
@@ -710,6 +722,91 @@ export class GbmBoRegistry {
     const e = this.bos.get(bo_id);
     if (!e) return;
     this.syncToSab(bo_id);
+  }
+
+  /**
+   * Every buffer object, with each one's pixels flushed out of process memory.
+   *
+   * A bound pid's latest paint sits in its wasm Memory until a bind boundary
+   * moves it, so the flush runs first. The bytes are then copied out, leaving
+   * the SAB serving the machine the checkpoint gives back.
+   *
+   * Every bo's pixels are carried, not only an unbound one's. A bound bo's
+   * bytes do also ride inside the process memory copy, but `scanoutBytes`
+   * reads the SAB rather than process memory, so a restore that rebuilt only
+   * the mapped ranges would scan out a black frame.
+   */
+  snapshot(): GbmBoSnapshot[] {
+    const out: GbmBoSnapshot[] = [];
+    for (const e of this.bos.values()) {
+      this.syncFromMemory(e.bo_id);
+      out.push({
+        bo_id: e.bo_id,
+        size: e.size,
+        w: e.w,
+        h: e.h,
+        stride: e.stride,
+        pids: [...e.pids],
+        bindings: [...this.bindings(e)].map((binding) => ({
+          pid: binding.pid,
+          addr: binding.addr,
+          len: binding.len,
+          ...(binding.boOffset ? { boOffset: binding.boOffset } : {}),
+        })),
+        pixels: new Uint8Array(e.sab).slice(),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Adopt checkpointed buffer objects, replacing whatever this registry holds.
+   *
+   * The pixels land in fresh SABs. Nothing here writes into process memory: a
+   * restored process adopts a byte copy of its captured memory, so a mapped
+   * range already holds the same pixels this seeds the SAB with, and those
+   * pixels are each binding's publication baseline. Each binding takes the
+   * memory its restored process registered, so this runs after the processes
+   * are restored, and a write a resumed process already made still publishes.
+   */
+  restore(buffers: readonly GbmBoSnapshot[]): void {
+    this.bos.clear();
+    this.bindingCounts.clear();
+    for (const b of buffers) {
+      const sab = new SharedArrayBuffer(b.size);
+      new Uint8Array(sab).set(b.pixels.subarray(0, b.size));
+      const entry: InternalEntry = {
+        bo_id: b.bo_id,
+        size: b.size,
+        w: b.w,
+        h: b.h,
+        stride: b.stride,
+        sab,
+        pids: new Set(b.pids),
+        bindingsByPid: new Map(),
+        pendingReaders: new Set(),
+        writes: 0,
+        exposedPixels: false,
+      };
+      this.bos.set(b.bo_id, entry);
+      for (const { pid, addr, len, boOffset = 0 } of b.bindings) {
+        const memory = this.getProcessMemory?.(pid);
+        if (!memory) {
+          throw new Error(`GBM BO ${b.bo_id}: restored pid ${pid} has no process memory to map`);
+        }
+        const lineage: MappingLineage = { memory, fragments: new Set() };
+        const start = Math.min(boOffset, b.size);
+        const binding: InternalBinding = {
+          pid, addr, len, boOffset, primed: true, lineage,
+          snapshot: b.pixels.slice(start, Math.min(start + len, b.size)),
+        };
+        lineage.fragments.add(binding);
+        let aliases = entry.bindingsByPid.get(pid);
+        if (!aliases) entry.bindingsByPid.set(pid, aliases = new Map());
+        aliases.set(addr, binding);
+        this.bindingCounts.set(pid, (this.bindingCounts.get(pid) ?? 0) + 1);
+      }
+    }
   }
 
   /** O(1) for processes without BO mappings. A mapping can be stale when

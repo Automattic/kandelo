@@ -19,6 +19,7 @@ import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
 import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import type { ComputerServiceStatus } from "../../../../../web-libs/kandelo-session/src/computer-services";
+import type { PreviewCursor, PreviewScroll } from "@host/replication/log-local";
 import type {
   DemoPresentation,
   MachineStatus,
@@ -198,6 +199,15 @@ export interface MachineViewProps {
   activeTerminalId: string;
   onActiveTerminalId: (id: string) => void;
   onAddTerminal: () => void;
+  onPreviewPathChange?: (path: string) => void;
+  previewViewerPath?: string | null;
+  onPreviewCursorChange?: (position: PreviewCursor | null) => void;
+  previewViewerCursor?: PreviewCursor | null;
+  onPreviewScrollChange?: (position: PreviewScroll) => void;
+  previewViewerScroll?: PreviewScroll | null;
+  /** Reloads the web preview when it changes, so a recording that just
+   *  started carries the exchanges behind the page the user is on. */
+  previewReloadToken?: number;
 }
 
 export const MachineView: React.FC<MachineViewProps> = ({
@@ -217,12 +227,24 @@ export const MachineView: React.FC<MachineViewProps> = ({
   activeTerminalId,
   onActiveTerminalId,
   onAddTerminal,
+  onPreviewPathChange,
+  previewViewerPath,
+  onPreviewCursorChange,
+  previewViewerCursor,
+  onPreviewScrollChange,
+  previewViewerScroll,
+  previewReloadToken,
 }) => {
   const [kmsControls, setKmsControls] = React.useState<React.ReactNode>(null);
   const [framebufferControls, setFramebufferControls] = React.useState<React.ReactNode>(null);
   const [webControls, setWebControls] = React.useState<React.ReactNode>(null);
   const localDisplayRef = React.useRef<DisplayHandle | null>(null);
   const displayRef = webMcpPreviewRef ?? localDisplayRef;
+
+  React.useEffect(() => {
+    if (!previewReloadToken) return;
+    displayRef.current?.reloadPreview();
+  }, [previewReloadToken, displayRef]);
   const {
     activePrimary,
     canUseTerminal,
@@ -300,7 +322,13 @@ export const MachineView: React.FC<MachineViewProps> = ({
           {surface.availability.web && (
             <PrimarySurfaceSlot active={activePrimary === "web"}>
               <Display ref={displayRef} active={activePrimary === "web"} autoFocus={activePrimary === "web"}
-                surface="web" onDockControlsChange={setWebControls} onChangeWebTarget={onChangeWebTarget} />
+                surface="web" onDockControlsChange={setWebControls} onChangeWebTarget={onChangeWebTarget}
+                onPreviewPathChange={onPreviewPathChange}
+                previewViewerPath={previewViewerPath}
+                onPreviewCursorChange={onPreviewCursorChange}
+                previewViewerCursor={previewViewerCursor}
+                onPreviewScrollChange={onPreviewScrollChange}
+                previewViewerScroll={previewViewerScroll} />
             </PrimarySurfaceSlot>
           )}
           {canUseTerminal && (terminalActive || terminalVisited) && (

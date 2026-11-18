@@ -3,7 +3,8 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import { NativeGlFault } from "../src/webgl/native-recovery.js";
 import { GlProgramQueryPin } from "../src/webgl/program-objects.js";
-import { captureContextGlProgram,captureGlProgram,retainGlProgramCapture,releaseGlProgramCapture } from "../src/webgl/program-captures.js";
+import { captureContextGlProgram,captureGlProgram,retainGlProgramCapture,releaseGlProgramCapture,
+  checkpointGlProgramCaptures,restoreGlProgramCaptures } from "../src/webgl/program-captures.js";
 
 function fixture() {
   const live=new Set<object>(),deleted:object[]=[];
@@ -141,3 +142,22 @@ for(const mode of ["refusal","throw"] as const)
     expect(f.group.members.size).toBe(0);expect(f.group.programQueryPins.size).toBe(0);
     f.registry.unbind(1);
   });
+const refuse=(reason:string):never=>{throw new Error(reason);};
+it("hands a checkpoint the handles the guest holds and captures them again under those numbers",()=>{
+  const f=fixture(),other=f.gl.createProgram()!;f.owner.programs.set(30,other);f.owner.programShaders.set(30,new Set());
+  const first=captureContextGlProgram(f.execution,20),second=captureContextGlProgram(f.execution,30);
+  expect(releaseGlProgramCapture(f.owner,first)).toBe(true);
+  const carried=checkpointGlProgramCaptures(f.owner,refuse)!;
+  expect(carried).toEqual({next:3,handles:[{handle:second,name:30}]});
+  const g=fixture(),restored=g.gl.createProgram()!;g.owner.programs.set(30,restored);g.owner.programShaders.set(30,new Set());
+  expect(restoreGlProgramCaptures(g.execution,carried)).toBe(true);
+  expect(retainGlProgramCapture(g.owner,second)?.program).toBe(restored);
+  expect(captureContextGlProgram(g.execution,20)).toBe(3);
+  expect(restoreGlProgramCaptures(g.execution,carried)).toBe(false);
+});
+it("refuses a checkpoint of a capture whose program has relinked since",()=>{
+  const f=fixture();captureContextGlProgram(f.execution,20);
+  f.owner.programs.set(20,f.gl.createProgram()!);
+  expect(()=>checkpointGlProgramCaptures(f.owner,refuse)).toThrow("no longer links");
+  expect(checkpointGlProgramCaptures(fixture().owner,refuse)).toBeNull();
+});

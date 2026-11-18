@@ -518,6 +518,61 @@ if wasm_has_stale_abi "$work/no-abi.wasm" 18; then
     exit 1
 fi
 
+cat >"$work/checkpoint-only.wat" <<'WAT'
+(module
+  (import "kernel" "kernel_checkpoint" (func))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/checkpoint-only.wat" -o "$work/checkpoint-only.wasm"
+if wasm_imports_kernel_fork "$work/checkpoint-only.wasm"; then
+    echo "ERROR: a checkpoint-only program was read as importing kernel_fork" >&2
+    exit 1
+fi
+if ! wasm_imports_kernel_checkpoint "$work/checkpoint-only.wasm"; then
+    echo "ERROR: the checkpoint import predicate missed kernel_checkpoint" >&2
+    exit 1
+fi
+if ! wasm_imports_migration_seed "$work/checkpoint-only.wasm"; then
+    echo "ERROR: a checkpoint-only program carries no migration seed" >&2
+    exit 1
+fi
+if wasm_imports_migration_seed "$work/no-abi.wasm"; then
+    echo "ERROR: a program importing neither seed was read as seeded" >&2
+    exit 1
+fi
+
+mkdir "$work/failing-objdump-bin"
+cat >"$work/failing-objdump-bin/wasm-objdump" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$work/failing-objdump-bin/wasm-objdump"
+if ! PATH="$work/failing-objdump-bin:$PATH" \
+    wasm_imports_kernel_checkpoint "$work/checkpoint-only.wasm"; then
+    echo "ERROR: a failed wasm-objdump decode reported kernel_checkpoint absent" >&2
+    exit 1
+fi
+if PATH="$work/failing-objdump-bin:$PATH" \
+    wasm_imports_kernel_checkpoint "$work/no-abi.wasm"; then
+    echo "ERROR: a failed wasm-objdump decode invented a kernel_checkpoint import" >&2
+    exit 1
+fi
+
+cat >"$work/fork-only.wat" <<'WAT'
+(module
+  (import "kernel" "kernel_fork" (func (param i32 i32 i32) (result i32)))
+  (func (export "_start")))
+WAT
+wat2wasm "$work/fork-only.wat" -o "$work/fork-only.wasm"
+if wasm_imports_kernel_checkpoint "$work/fork-only.wasm"; then
+    echo "ERROR: a fork-only program was read as importing kernel_checkpoint" >&2
+    exit 1
+fi
+if ! wasm_imports_migration_seed "$work/fork-only.wasm"; then
+    echo "ERROR: a fork-only program carries no migration seed" >&2
+    exit 1
+fi
+
 cat >"$work/unapproved-reserved-import.wat" <<'WAT'
 (module
   (import "env" "__wasm_posix_after_fork_child" (func))
@@ -1301,5 +1356,36 @@ if WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
     echo "ERROR: decoder-free fork guard accepted raw export-name strings" >&2
     exit 1
 fi
+
+argument_echo_tool="$work/argument-echo-instrument"
+cat > "$argument_echo_tool" <<'TOOL'
+#!/usr/bin/env bash
+printf '%s\n' "$*"
+TOOL
+chmod +x "$argument_echo_tool"
+instrument_arguments() {
+    WASM_POSIX_FORK_INSTRUMENT="$argument_echo_tool" \
+        bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$@"
+}
+expect_instrument_arguments() {
+    local expected="$1"
+    shift
+    local actual
+    actual="$(instrument_arguments "$@")"
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: run-wasm-fork-instrument.sh $* ran the tool with '$actual', expected '$expected'" >&2
+        exit 1
+    fi
+}
+expect_instrument_arguments \
+    "--checkpoint-entry kernel.kernel_checkpoint in.wasm -o out.wasm" \
+    in.wasm -o out.wasm
+expect_instrument_arguments \
+    "--checkpoint-entry kernel.kernel_checkpoint in.wasm --output=out.wasm" \
+    in.wasm --output=out.wasm
+expect_instrument_arguments "--report in.wasm" --report in.wasm
+expect_instrument_arguments \
+    "--checkpoint-entry env.own in.wasm -o out.wasm" \
+    --checkpoint-entry env.own in.wasm -o out.wasm
 
 echo "test-wasm-artifact-guards.sh: ok"

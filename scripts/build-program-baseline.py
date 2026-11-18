@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Reproduce pinned program cohorts; establish a new cohort only explicitly.
 
-The active ABI-56 cohort must be compiled from its own normal SDK. ABI-55
+The active ABI-57 cohort must be compiled from its own normal SDK. ABI-55
 artifacts remain an immutable historical negative control, never stamp inputs.
+The retired ABI-56 manifest stays as a record; nothing reads its bytes.
 """
 import fcntl
 import hashlib
@@ -16,7 +17,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-ACTIVE_ABI = 56
+ACTIVE_ABI = 57
 
 
 def run(*args, cwd=ROOT, **kwargs):
@@ -38,19 +39,19 @@ def records(manifest):
 def active_contract():
     baseline = json.loads((ROOT / "abi/supported-program-baseline.json").read_text())
     if baseline["abi_version"] != ACTIVE_ABI or not re.fullmatch(r"[0-9a-f]{64}", baseline["program_contract_digest"]):
-        raise RuntimeError("ABI-56 baseline digest is not sealed; regenerate/review the source-derived ABI snapshot first")
+        raise RuntimeError(f"ABI-{ACTIVE_ABI} baseline digest is not sealed; regenerate/review the source-derived ABI snapshot first")
     return baseline["program_contract_digest"]
 
 
 def read_manifest(version):
     path = directory(version) / "manifest.json"
     if not path.is_file():
-        raise RuntimeError(f"Missing pinned ABI-{version} fixture manifest. Establish ABI-56 with scripts/dev-shell.sh python3 scripts/build-program-baseline.py --create-current; never relabel ABI-55 bytes")
+        raise RuntimeError(f"Missing pinned ABI-{version} fixture manifest. Establish ABI-{ACTIVE_ABI} with scripts/dev-shell.sh python3 scripts/build-program-baseline.py --create-current; never relabel ABI-55 bytes")
     manifest = json.loads(path.read_text())
     if manifest["version"] != 1 or manifest["programAbi"] != version:
         raise RuntimeError(f"Wrong baseline fixture manifest: {path}")
     if version == ACTIVE_ABI and manifest["programContractDigest"] != active_contract():
-        raise RuntimeError("ABI-56 fixture manifest does not match the declared program baseline")
+        raise RuntimeError(f"ABI-{ACTIVE_ABI} fixture manifest does not match the declared program baseline")
     return manifest
 
 
@@ -102,7 +103,7 @@ def produce(source, manifest, output, capture=False):
 def create_current():
     """One intentional new-baseline operation, never called by test setup."""
     target = directory(ACTIVE_ABI)
-    run("git", "cat-file", "-e", "HEAD:abi/program-fixtures/v56/inputs.json")
+    run("git", "cat-file", "-e", f"HEAD:abi/program-fixtures/v{ACTIVE_ABI}/inputs.json")
     plan = json.loads((target / "inputs.json").read_text())
     if plan["version"] != 1 or plan["programAbi"] != ACTIVE_ABI:
         raise RuntimeError("Wrong new-baseline source plan")
@@ -120,7 +121,7 @@ def create_current():
                     "producer": "scripts/build-program-baseline.py --create-current with the sourceRevision normal SDK, musl, instrumenter and ABI stamp tool"}
         for fixture in records(manifest):
             fixture["sourceSha256"] = digest(ROOT / fixture["sourcePath"])
-        with tempfile.TemporaryDirectory(prefix="new-v56-", dir=cache) as temp:
+        with tempfile.TemporaryDirectory(prefix=f"new-v{ACTIVE_ABI}-", dir=cache) as temp:
             output = Path(temp)
             produce(ROOT, manifest, output, capture=True)
             for fixture in records(manifest):
@@ -131,7 +132,7 @@ def create_current():
                     os.link(copied.name, target / fixture["file"])
             with (target / "manifest.json").open("x") as stream:
                 stream.write(json.dumps(manifest, indent=2) + "\n")
-        print("Fresh normal ABI-56 fixtures captured. Review/commit the manifest; ABI-55 files were not touched.")
+        print(f"Fresh normal ABI-{ACTIVE_ABI} fixtures captured. Review/commit the manifest; ABI-55 files were not touched.")
 
 
 def provision_one(version):

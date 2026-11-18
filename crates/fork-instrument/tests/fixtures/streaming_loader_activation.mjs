@@ -23,6 +23,7 @@ for (const checkpoint of [0, 1, 2, 5]) {
         const imports = tables.bind(getInstance, memory);
         const publication = tables.bindings.at(-1);
         const frame = frames.bind(getInstance, memory, publication, nextMode, failAt);
+        const replay = nextMode === 'rewind';
         const transaction = { cursor: nextMode === 'rewind' ? transactions[0].cursor : 0, prepare: 0, next: 0, commit: 0 };
         transactions.push(transaction);
         Object.assign(imports.env, frame.env, {
@@ -40,7 +41,7 @@ for (const checkpoint of [0, 1, 2, 5]) {
           check(count) { return Number(count === checkpoint); },
           fork(...args) {
             const signal = getInstance().exports.in_checkpoint.value !== 0;
-            if (!signal) assert(publication.reconciles > 0, 'generated initializer transport reconciles its source table');
+            if (!signal && !replay) assert(publication.reconciles > 0, 'generated initializer transport reconciles its source table');
             if (checkpoint && !signal) return 13;
             return frame.h.fork(...args);
           },

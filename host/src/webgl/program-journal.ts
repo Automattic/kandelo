@@ -7,7 +7,7 @@ import {PreparedOwnedDraw} from "./prepared-owned-draw.js";
 import {GlUniformCpuPreparation} from "./uniform-cpu-preparation.js";
 import {prepareUniformWrites} from "./reversed-depth.js";
 import {prepareSamplerWrites} from "./depth-sampling.js";
-import {GlFramebufferSnapshots} from "./framebuffer-snapshots.js";
+import {GlFramebufferSnapshots,type CheckpointGlFramebufferSnapshot} from "./framebuffer-snapshots.js";
 /** Pre-admitted logical program history. This is shared Node/browser device
  * state, not a guest wire entrypoint. The driver transport must publish each
  * committed shared intent before a peer changes its namespace. */
@@ -19,7 +19,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { recordGlError } from "./errors.js";
 import type { GlObjectGroup } from "./object-group.js";
 import { uniformLayout } from "./uniform-layout.js";
-import {GlBufferSnapshots,BUFFER_SNAPSHOT_CAPACITY} from "./buffer-snapshots.js";
+import {GlBufferSnapshots,BUFFER_SNAPSHOT_CAPACITY,type CheckpointGlBufferSnapshots} from "./buffer-snapshots.js";
 
 type Generation = { token: number; pin: GlProgramQueryPin | null; cache: boolean; references: number };
 type Slot = { phase: "free" | "published" | "executing" | "failed"; ticket: number;
@@ -28,6 +28,23 @@ type Slot = { phase: "free" | "published" | "executing" | "failed"; ticket: numb
 type GroupOrder = { sequence: number; nextJournal: number; journals: Map<number,GlProgramJournal> };
 const orders = new WeakMap<GlObjectGroup, GroupOrder>();
 const MAX = Number.MAX_SAFE_INTEGER;
+
+/** A drained journal as a machine checkpoint carries it. At a syscall
+ * boundary every cell is free, so what remains are the counters the guest
+ * driver compares against, the cached generations and the prepared banks.
+ * An owned draw carries its authority's operands, not its proof: the proof
+ * is prepared again when the guest next draws with it. */
+export type CheckpointGlProgramJournal = {
+  id:number;capacity:number;guestMetadata:boolean;
+  nextGeneration:number;published:number;executed:number;
+  current:number|null;logicalName:number;
+  generations:{token:number;name:number;cache:boolean}[];
+  slots:{index:number;ticket:number;sequence:number}[];
+  uniformCpu:boolean;
+  buffers:CheckpointGlBufferSnapshots|null;
+  framebuffers:CheckpointGlFramebufferSnapshot[]|null;
+  ownedDraws:{token:number;family:number;target:number;targetToken:number;ready:boolean}[];
+};
 
 /** Native pins and every pending/result cell are reserved at cold admission.
  * Publishing a logical selection never clones a pin or allocates a result.
@@ -55,7 +72,7 @@ export class GlProgramJournal {
     if(!reader)nativeGlFault("An admitted journal lost its cold payload receiver");
     return reader;
   }
-  private readonly ownedDrawCells=Array.from({length:16},()=>({token:0,proof:null as PreparedOwnedDraw|null,ready:false,family:0,target:0xffff_ffff,targetToken:0}));
+  private readonly ownedDrawCells=Array.from({length:16},()=>({token:0,proof:null as PreparedOwnedDraw|null,ready:false,family:0,target:0xffff_ffff,targetToken:0,restored:false}));
   private inlineDraws:GlInlineDraws|null=null;
   inlineDrawWorkspace():GlInlineDraws|null{return this.ready&&!this.closed&&!this.poisoned?this.inlineDraws:null;}
   prepareOwnedDraw(index:number,token:number,family:number,target:number,targetToken:number):number|null {
@@ -64,6 +81,11 @@ export class GlProgramJournal {
     if(!Number.isInteger(token)||token===0||cell.token===0xffff_ffff||token!==cell.token+1)return null;
     if(cell.proof&&!cell.proof.retire())nativeGlFault("Owned draw cold replacement could not retire its exact authority");
     cell.proof=null;cell.ready=false;cell.token=token;cell.family=family;cell.target=target;cell.targetToken=targetToken;
+    return this.proveOwnedDraw(cell);
+  }
+  private proveOwnedDraw(cell:GlProgramJournal["ownedDrawCells"][number]):number {
+    const family=cell.family,target=cell.target,targetToken=cell.targetToken;
+    if(!this.execution)return 0;
     if(family===1){
       // The selected inline family addresses the default target. An optional
       // offscreen request gets no proof; its original GL draw stays observed.
@@ -84,6 +106,11 @@ export class GlProgramJournal {
   }
   ownedDraw(index:number,token:number,target:number,targetToken:number,family=0):PreparedOwnedDraw|null {
     const cell=this.ownedDrawCells[index];
+    // A restored authority proves itself against the state the guest draws
+    // in: the guest uses it only where its own cache says that state holds.
+    if(cell?.restored&&this.ready&&!this.closed&&!this.poisoned&&cell.token===token&&cell.target===target&&cell.targetToken===targetToken&&cell.family===family){
+      cell.restored=false;this.proveOwnedDraw(cell);
+    }
     return this.ready&&!this.closed&&!this.poisoned&&cell?.ready&&cell.token===token&&cell.target===target&&cell.targetToken===targetToken&&cell.family===family&&cell.proof?.matches()?cell.proof:null;
   }
   private uniformCpu:GlUniformCpuPreparation|null=null;
@@ -157,6 +184,75 @@ export class GlProgramJournal {
       if(journal)journal.retire();
       recordGlError(b,0x505);return null;
     }
+  }
+
+  /** Refuses a journal with work in flight: its cells name guest progress
+   * past the freeze. A generation must still be its name's linked program,
+   * because the restore pins it by that name. */
+  checkpoint(refuse:(reason:string)=>never,names:{framebuffer(object:WebGLFramebuffer):number;texture(object:WebGLTexture):number;buffer(object:WebGLBuffer|null):number},
+      readBuffer:(native:WebGLBuffer,bytes:number)=>Uint8Array):CheckpointGlProgramJournal {
+    const where=`pid ${this.binding.pid}'s program journal ${this.id}`;
+    if(!this.ready||this.closed||this.poisoned||this.active||this.pending||this.previewActive||this.retiringName)refuse(`${where} has work in flight`);
+    if(this.order.journals.size!==1)refuse(`${where} shares its order with a retired journal`);
+    const generations=[...this.generations.values()].map(generation=>{
+      const pin=generation.pin;
+      if(!pin||this.binding.programs.get(pin.name)!==pin.program)refuse(`${where} caches an executable its program no longer links`);
+      if(generation.references!==(generation===this.current?1:0))refuse(`${where} holds a generation for work in flight`);
+      return {token:generation.token,name:pin.name,cache:generation.cache};
+    });
+    const slots=this.slots.flatMap((slot,index)=>slot.ticket||slot.sequence?[{index,ticket:slot.ticket,sequence:slot.sequence}]:[]);
+    return {id:this.id,capacity:this.capacity,guestMetadata:this.unsubmittedTransport,
+      nextGeneration:this.nextGeneration,published:this.published,executed:this.executed,
+      current:this.current?.token??null,logicalName:this.binding.logicalProgramCurrent?.name??0,generations,slots,
+      uniformCpu:this.uniformCpuAttempted,
+      buffers:this.bufferSnapshots?.checkpoint(refuse,names.buffer,readBuffer)??null,
+      framebuffers:this.framebufferSnapshots?.checkpoint(refuse,names)??null,
+      ownedDraws:this.ownedDrawCells.map(cell=>({token:cell.token,family:cell.family,target:cell.target,targetToken:cell.targetToken,ready:cell.restored||cell.ready&&!!cell.proof})),
+    };
+  }
+
+  /** Rebuild a checkpointed journal on a context whose objects and state the
+   * rebuild has already replayed (`webgl/rebuild.ts`), under the id, tokens
+   * and tickets the restored guest holds. Null when a step fails. */
+  static restore(execution: GlContextExecutionLease, r: CheckpointGlProgramJournal): GlProgramJournal | null {
+    const b=execution.binding;
+    if(!b.gl || b.contextId===null || b.programJournal || r.capacity<1 || r.capacity>256)return null;
+    const order=orders.get(b.objects);
+    if(!order)return null;
+    const journal=new GlProgramJournal(b,r.capacity,r.id,order,r.guestMetadata);
+    b.programJournal=journal;order.journals.set(journal.id,journal);
+    journal.execution=execution.clone();
+    if(!journal.execution)return null;
+    for(const {token,name,cache} of r.generations) {
+      const pin=GlProgramQueryPin.acquire(execution,name);
+      if(!pin)return null;
+      journal.generations.set(token,{token,pin,cache,references:0});
+    }
+    if(r.current!==null) {
+      journal.current=journal.generations.get(r.current)??null;
+      if(!journal.current)return null;
+      journal.current.references++;
+    }
+    b.logicalProgramCurrent={name:r.logicalName};
+    journal.nextGeneration=r.nextGeneration;journal.published=journal.previewTicket=r.published;journal.executed=r.executed;
+    for(const {index,ticket,sequence} of r.slots) {
+      const slot=journal.slots[index];
+      if(!slot)return null;
+      slot.ticket=ticket;slot.sequence=sequence;
+    }
+    journal.ready=true;
+    if(r.uniformCpu)journal.prepareUniformCpu();
+    if(r.buffers && (journal.prepareBufferSnapshots(r.buffers.capacity)!==r.buffers.capacity ||
+      !journal.bufferSnapshots!.restore(r.buffers.cells,name=>b.buffers.get(name)??null)))return null;
+    if(r.framebuffers) {
+      journal.framebufferSnapshots=GlFramebufferSnapshots.create(journal.execution);
+      if(!journal.framebufferSnapshots?.restore(r.framebuffers))return null;
+    }
+    r.ownedDraws.forEach((from,index)=>{
+      const cell=journal.ownedDrawCells[index]!;
+      cell.token=from.token;cell.family=from.family;cell.target=from.target;cell.targetToken=from.targetToken;cell.restored=from.ready;
+    });
+    return journal;
   }
 
   /** Own-context cold acquisition only; the opaque capture must not be a
@@ -470,6 +566,17 @@ export function lookupProgramJournal(authority: GlBinding,id: number): GlProgram
   return journal && journal.binding.pid===authority.pid && journal.binding.objects===authority.objects ? journal : null;
 }
 export function programJournalSequence(binding: GlBinding): number {return orders.get(binding.objects)?.sequence ?? 0;}
+/** The group's publication sequence and next journal id, which outlive any
+ * one journal; null when the group never admitted one. */
+export function checkpointProgramJournalOrder(binding: GlBinding): {sequence:number;nextJournal:number} | null {
+  const order=orders.get(binding.objects);
+  return order?{sequence:order.sequence,nextJournal:order.nextJournal}:null;
+}
+export function restoreProgramJournalOrder(binding: GlBinding, r: {sequence:number;nextJournal:number}): void {
+  let order=orders.get(binding.objects);
+  if(!order) {order={sequence:0,nextJournal:1,journals:new Map()};orders.set(binding.objects,order);}
+  order.sequence=r.sequence;order.nextJournal=r.nextJournal;
+}
 export type GlProgramJournalControl={receipt:Uint32Array;bytes:Uint8Array;snapshot:Uint32Array;snapshotBytes:Uint8Array;errors:number[];cpuPreparation:OptionalCpuPreparation};
 export function createProgramJournalControl(): GlProgramJournalControl {
   const receipt=new Uint32Array(12),snapshot=new Uint32Array(12);

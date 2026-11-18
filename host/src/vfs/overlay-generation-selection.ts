@@ -1037,6 +1037,8 @@ export class LiveOverlayCompactor {
   #selected: SelectedOverlayGeneration;
   #timer: ReturnType<typeof setInterval> | null = null;
   #running: Promise<void> | null = null;
+  #held: Promise<void> | null = null;
+  #onDemand: (() => void) | null = null;
   #stopped = false;
   #retryAfter = 0;
   #failure: unknown = null;
@@ -1065,7 +1067,7 @@ export class LiveOverlayCompactor {
   }
 
   compactIfNeeded(): Promise<void> {
-    if (this.#stopped || Date.now() < this.#retryAfter) return Promise.resolve();
+    if (this.#stopped || this.#held !== null || Date.now() < this.#retryAfter) return Promise.resolve();
     if (this.#running !== null) return this.#running;
     this.#running = this.#compact();
     return this.#running;
@@ -1075,10 +1077,43 @@ export class LiveOverlayCompactor {
     if (this.#stopped) throw new Error("persistent overlay compactor is stopped");
     // A syscall at the tail bound cannot wait for the periodic timer or its
     // failure backoff. Share a running handoff rather than starting two writers.
+    while (this.#held !== null) {
+      this.#onDemand?.();
+      await this.#held;
+    }
     if (this.#running === null) this.#running = this.#compact(0);
     await this.#running;
     if (this.#failure !== null) throw this.#failure;
     if (this.#stopped) throw new Error("persistent overlay compactor stopped during compaction");
+  }
+
+  /**
+   * Run `operation` with no compaction in flight, and hand it the generation
+   * that holds still meanwhile.
+   *
+   * A checkpoint reads the generation's files and the kernel's view of them as
+   * one machine. A compaction between the two would move the journal the
+   * kernel names out from under the copy.
+   *
+   * A syscall at the tail bound waits for the hold to end, so `onDemand`
+   * tells the holder that one is waiting.
+   */
+  async whileHeld<T>(
+    operation: (selected: SelectedOverlayGeneration) => Promise<T>,
+    onDemand: () => void,
+  ): Promise<T> {
+    if (this.#held !== null) throw new Error("persistent overlay compactor is already held");
+    let release!: () => void;
+    this.#held = new Promise<void>(resolve => { release = resolve; });
+    this.#onDemand = onDemand;
+    try {
+      await this.#running;
+      return await operation(this.#selected);
+    } finally {
+      this.#held = null;
+      this.#onDemand = null;
+      release();
+    }
   }
 
   async #compact(minTailBytes = this.minTailBytes): Promise<void> {

@@ -62,6 +62,7 @@ import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-clien
 import { installExistingVertexAttribute, installVertexAttribute, installVertexConstant } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
+import { recordLinkInputs } from "./link-inputs.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject, shaderType } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { attachShaderError, bindAttribLocationError, renderbufferStorageError, subImageError, texImageSizeError,
@@ -1467,7 +1468,9 @@ function dispatch(
       return;
     }
     case O.OP_LINK_PROGRAM: {
-      linkProgramRetainingExecutable(b, v.getUint32(p, true));
+      const programName = v.getUint32(p, true);
+      recordLinkInputs(b, programName);
+      linkProgramRetainingExecutable(b, programName);
       return;
     }
     case O.OP_USE_PROGRAM_JOURNAL: {

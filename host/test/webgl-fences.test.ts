@@ -276,3 +276,12 @@ it("keeps an off-batch native polling failure private after capturing the select
   expect(value.source.errors).toEqual([]);
   lease.release(); value.owner.destroy(token);
 });
+
+it("counts live fences until each is destroyed", () => {
+  const value = fixture();
+  expect(value.owner.size).toBe(0);
+  const token = published(value);
+  expect(value.owner.size).toBe(1);
+  value.owner.destroy(token);
+  expect(value.owner.size).toBe(0);
+});
