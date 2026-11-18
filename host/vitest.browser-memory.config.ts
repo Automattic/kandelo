@@ -31,6 +31,8 @@ const include = [
   "test/dylink-fork-archive.test.ts",
   "test/fork-module-state.test.ts",
   "test/kernel-public-scratch.test.ts",
+  "test/kernel-large-transfer-protocol.test.ts",
+  "test/kernel-scratch-transfer-boundaries.test.ts",
   "test/dlopen-host-imports.test.ts",
   "test/fork-continuation.test.ts",
   "test/fork-reference-transaction.test.ts",

@@ -146,6 +146,13 @@ pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<usize, Errno> {
     }
 }
 
+fn require_io_fd_access(proc: &Process, fd: i32, write: bool) -> Result<usize, Errno> {
+    let index = require_io_fd(proc, fd)?;
+    let mode = proc.ofd_table.get(index).ok_or(Errno::EBADF)?.status_flags() & O_ACCMODE;
+    if (write && mode == O_RDONLY) || (!write && mode == O_WRONLY) { return Err(Errno::EBADF); }
+    Ok(index)
+}
+
 /// Parse a byte slice as an ASCII unsigned integer.
 fn parse_ascii_usize(bytes: &[u8]) -> Option<usize> {
     if bytes.is_empty() {
@@ -22939,7 +22946,7 @@ pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
         n if n == Syscall::Pwrite as u32 => VectorIoKind::Pwrite { offset },
         _ => return Err(Errno::EINVAL),
     };
-    let index = require_io_fd(proc, fd)?;
+    let index = require_io_fd_access(proc, fd, kind.is_write())?;
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     let request = match take_active_vector_io(proc, tid, operation)? {
         Some(pending) => pending,
@@ -22949,7 +22956,7 @@ pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
                 return Err(Errno::EINVAL);
             }
             if length != 0 && (address == 0
-                || host.proc_validate_range(proc.pid as i32, address, length) < 0) {
+                || host.proc_validate_range(proc.pid as i32, address, length, if kind.is_write() { wasm_posix_shared::ProcessMemoryAccess::Read } else { wasm_posix_shared::ProcessMemoryAccess::Write }) < 0) {
                 return Err(Errno::EFAULT);
             }
             let mut entries = crate::IoBuffer::try_with_capacity(1)?;
@@ -22999,7 +23006,7 @@ pub fn sys_vector_io(
 ) -> Result<GuestIoOutcome, Errno> {
     // Reject a descriptor that cannot carry I/O before reading caller memory,
     // so a zero-length vector on a closed or path-only fd still fails.
-    let index = require_io_fd(proc, fd)?;
+    let index = require_io_fd_access(proc, fd, kind.is_write())?;
     let entropy = kind == VectorIoKind::Read && crate::entropy_read::EntropyRead::is_device(proc, index)?;
     let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
     let pid = proc.pid as i32;
@@ -23038,6 +23045,14 @@ fn execute_vector_request(proc: &mut Process, host: &mut dyn HostIO,
         VectorIoKind::Write => sys_write(proc, host, fd, &request.outgoing),
         VectorIoKind::Pwrite { offset } => sys_pwrite(proc, host, fd, &request.outgoing, offset),
         VectorIoKind::Read | VectorIoKind::Pread { .. } => {
+            // Include frozen retries: current permissions may have changed
+            // while the exact OFD request was parked. Refuse before consuming
+            // a pipe/socket/event or advancing a file offset.
+            for entry in &*request.entries {
+                if entry.len != 0 && host.proc_validate_range(pid, entry.base, entry.len, wasm_posix_shared::ProcessMemoryAccess::Write) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
             match crate::guest_ptr::zeroed_io_staging(request.total, wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES) {
                 Err(error) => Err(error),
                 Ok(mut staging) => {
@@ -25814,6 +25829,8 @@ mod tests {
         /// the trait's `-ENOSYS` default, which would make a test that means
         /// to prove "this address is REJECTED" pass for the wrong reason.
         proc_memory: Vec<u8>,
+        proc_read_denied: Option<core::ops::Range<u64>>,
+        proc_write_denied: Option<core::ops::Range<u64>>,
         /// Real process-memory imports allow byte zero; null meaning belongs
         /// to each kernel operation rather than the memory bridge.
         proc_read_allows_address_zero: bool,
@@ -26012,6 +26029,8 @@ mod tests {
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
                 proc_memory: alloc::vec![0u8; 65536],
+                proc_read_denied: None,
+                proc_write_denied: None,
                 proc_read_allows_address_zero: false,
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
@@ -26950,6 +26969,7 @@ mod tests {
             self.gl_create_context_rc
         }
         fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
+            if bytes.len() != 0 && self.proc_write_denied.as_ref().is_some_and(|r| ptr < r.end && r.start < ptr.saturating_add(bytes.len() as u64)) { return -(Errno::EFAULT as i32); }
             let Some(offset) = Self::proc_range(&self.proc_memory, ptr, bytes.len()) else {
                 return -(Errno::EFAULT as i32);
             };
@@ -26958,12 +26978,15 @@ mod tests {
             0
         }
 
-        fn proc_validate_range(&mut self, _pid: i32, ptr: u64, len: usize) -> i32 {
+        fn proc_validate_range(&mut self, _pid: i32, ptr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
+            let denied = match access { wasm_posix_shared::ProcessMemoryAccess::Read => &self.proc_read_denied, wasm_posix_shared::ProcessMemoryAccess::Write => &self.proc_write_denied };
+            if len != 0 && denied.as_ref().is_some_and(|r| ptr < r.end && r.start < ptr.saturating_add(len as u64)) { return -(Errno::EFAULT as i32); }
             if Self::proc_range(&self.proc_memory, ptr, len).is_some() { 0 }
             else { -(Errno::EFAULT as i32) }
         }
 
         fn proc_read_bytes(&mut self, _pid: i32, ptr: u64, dst: &mut [u8]) -> i32 {
+            if dst.len() != 0 && self.proc_read_denied.as_ref().is_some_and(|r| ptr < r.end && r.start < ptr.saturating_add(dst.len() as u64)) { return -(Errno::EFAULT as i32); }
             if ptr == 0 && self.proc_read_allows_address_zero {
                 let Some(source) = self.proc_memory.get(..dst.len()) else {
                     return -(Errno::EFAULT as i32);
@@ -42395,6 +42418,67 @@ mod tests {
         assert_eq!(host.pwrite_calls.last().unwrap().1, offset);
         assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR), Ok(0));
         for fd in [sender, receiver, fd] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+    }
+
+    #[test]
+    fn guest_input_preflight_preserves_pipe_and_all_destinations() {
+        for width in [4, 8] { for vector in [false, true] { for hole in [false, true] {
+            let mut proc = Process::new(81_153); proc.pointer_width = width;
+            let tid = proc.pid; let mut host = MockHostIO::new(); let mut locks = AdvisoryLockManager::new();
+            let (reader, writer) = sys_pipe(&mut proc).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"data"), Ok(4));
+            let address = IOV_BUFFERS_ADDR;
+            let table = stage_guest_iovecs(&mut host, IOV_TABLE_ADDR, address, &[&[0xa5; 2], &[0xa5; 2]], width);
+            host.proc_write_denied = Some(address + 2..address + 4);
+            if hole { host.proc_read_denied = host.proc_write_denied.clone(); }
+            let result = if vector { sys_vector_io(&mut proc, &mut host, &mut locks, tid, Syscall::Readv as u32,
+                reader, table, 2, width, VectorIoKind::Read) }
+                else { sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Read as u32, reader, address, 4, 0) };
+            assert_eq!(result, Err(Errno::EFAULT));
+            assert_eq!(&host.proc_memory[address as usize..address as usize + 4], &[0xa5; 4]);
+            let mut bytes = [0; 4];
+            assert_eq!(sys_read(&mut proc, &mut host, reader, &mut bytes), Ok(4));
+            assert_eq!(&bytes, b"data");
+            for fd in [reader, writer] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        } } }
+    }
+
+    #[test]
+    fn guest_io_direction_preserves_readonly_sources_and_fd_errors() {
+        for width in [4, 8] {
+            let mut proc = Process::new(81_154); proc.pointer_width = width;
+            let tid = proc.pid; let mut host = MockHostIO::new(); let mut locks = AdvisoryLockManager::new();
+            let (reader, writer) = sys_pipe(&mut proc).unwrap();
+            let address = IOV_BUFFERS_ADDR;
+            let table = stage_guest_iovecs(&mut host, IOV_TABLE_ADDR, address, &[b"ok"], width);
+            host.proc_write_denied = Some(address..address + 2);
+            assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Write as u32, writer, address, 2, 0), Ok(GuestIoOutcome::Complete(2)));
+            assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, tid, Syscall::Writev as u32, writer, table, 1, width, VectorIoKind::Write), Ok(GuestIoOutcome::Complete(2)));
+            for (nr, fd) in [(Syscall::Read, writer), (Syscall::Write, reader), (Syscall::Read, -1)] {
+                assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, nr as u32, fd, u64::MAX, 2, 0), Err(Errno::EBADF));
+            }
+            assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, tid, Syscall::Readv as u32, writer, u64::MAX, 1, width, VectorIoKind::Read), Err(Errno::EBADF));
+            let mut bytes = [0; 4]; assert_eq!(sys_read(&mut proc, &mut host, reader, &mut bytes), Ok(4)); assert_eq!(&bytes, b"okok");
+            for fd in [reader, writer] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        }
+    }
+
+    #[test]
+    fn guest_read_retry_checks_current_destination_before_consuming() {
+        let mut proc = Process::new(81_155); let tid = proc.pid; set_test_current_tid(tid);
+        let mut host = MockHostIO::new(); let mut locks = AdvisoryLockManager::new();
+        let (reader, writer) = sys_pipe(&mut proc).unwrap();
+        assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Read as u32, reader, IOV_BUFFERS_ADDR, 4, 0), Err(Errno::EAGAIN));
+        let token = proc.blocked_retries.token_for(tid, BlockingRetryOperation::Read).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, writer, b"data"), Ok(4));
+        host.proc_write_denied = Some(IOV_BUFFERS_ADDR..IOV_BUFFERS_ADDR + 4);
+        proc.blocked_retries.activate(tid, token, BlockingRetryOperation::Read).unwrap();
+        assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Read as u32, reader, IOV_BUFFERS_ADDR, 4, 0), Err(Errno::EFAULT));
+        proc.blocked_retries.clear_active();
+        release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+        let mut bytes = [0; 4]; assert_eq!(sys_read(&mut proc, &mut host, reader, &mut bytes), Ok(4)); assert_eq!(&bytes, b"data");
+        for fd in [reader, writer] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        set_test_current_tid(0);
     }
 
     #[test]

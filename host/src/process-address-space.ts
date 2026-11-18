@@ -59,6 +59,7 @@ export interface ProcessAddressSpace {
   readonly kind: 'linear' | 'grouped';
   readonly identity: object;
   readonly byteLength: number;
+  checkAccessRange(address: number, length: number, access: 'read' | 'write'): void;
   readBytes(address: number, length: number): Uint8Array;
   writeBytes(address: number, source: Uint8Array): void;
   fillBytes(address: number, length: number, value: number): void;
@@ -112,6 +113,10 @@ export class LinearProcessAddressSpace implements ProcessAddressSpace {
   }
   detachHostAccess(): void { this.memory = undefined; }
   get byteLength(): number { return this.current().buffer.byteLength; }
+  checkAccessRange(address: number, length: number, access: 'read' | 'write'): void {
+    if (access !== 'read' && access !== 'write') throw new ProcessAddressFault('metadata');
+    range(address, length, this.byteLength);
+  }
   readBytes(address: number, length: number): Uint8Array {
     range(address, length, this.byteLength);
     const copy = new Uint8Array(length);
@@ -198,16 +203,14 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
    * Clearing the entire binding also drops any owner callback retaining storage.
    */
   detachHostAccess(): void { this.binding = undefined; }
-  private plan(address: number, length: number, rights: number): {
-    binding: GroupAddressSpaceBinding; spans: Span[];
-  } {
+  private walk(address: number, length: number, rights: number,
+    visit?: (physical: number, length: number) => void): GroupAddressSpaceBinding {
     const { binding, pages } = this.current();
     range(address, length, pages * PAGE);
     // Refresh after the acquire of logical size: C may have grown physical
     // memory and published new PTEs immediately before that acquire.
     const table = new Uint32Array(binding.memory.buffer,
       binding.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, binding.maximumPages);
-    const spans: Span[] = [];
     let at = address, remaining = length;
     while (remaining) {
       const entry = table[Math.floor(at / PAGE)];
@@ -219,11 +222,24 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
         throw new ProcessAddressFault('metadata');
       }
       const offset = at % PAGE, count = Math.min(remaining, PAGE - offset);
-      const physical = physicalPage + offset, previous = spans[spans.length - 1];
-      if (previous && previous.physical + previous.length === physical) previous.length += count;
-      else spans.push({ physical, length: count });
+      visit?.(physicalPage + offset, count);
       at += count; remaining -= count;
     }
+    return binding;
+  }
+  checkAccessRange(address: number, length: number, access: 'read' | 'write'): void {
+    if (access !== 'read' && access !== 'write') throw new ProcessAddressFault('metadata');
+    // Walk every page without a payload copy or span-array allocation. This
+    // observation grants no future authority; actual access checks again.
+    this.walk(address, length, access === 'read' ? READ : WRITE);
+  }
+  private plan(address: number, length: number, rights: number): { binding: GroupAddressSpaceBinding; spans: Span[] } {
+    const spans: Span[] = [];
+    const binding = this.walk(address, length, rights, (physical, length) => {
+      const previous = spans[spans.length - 1];
+      if (previous && previous.physical + previous.length === physical) previous.length += length;
+      else spans.push({ physical, length });
+    });
     return { binding, spans };
   }
   readBytes(address: number, length: number): Uint8Array {
@@ -240,7 +256,7 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
    * The eventual store must still revalidate after that callback returns.
    */
   checkWritableRange(address: number, length: number): void {
-    this.plan(address, length, WRITE);
+    this.checkAccessRange(address, length, 'write');
   }
   writeBytes(address: number, source: Uint8Array): void {
     const { binding, spans } = this.plan(address, source.byteLength, WRITE);

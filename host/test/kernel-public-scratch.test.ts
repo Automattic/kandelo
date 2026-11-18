@@ -1301,9 +1301,9 @@ describe("Rust-owned host import ranges", () => {
     const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
     const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
     new Uint8Array(processMemory.buffer).fill(0xa5);
-    expect(imports.env.host_proc_validate_range(7, 0n, 65536)).toBe(0);
+    expect(imports.env.host_proc_validate_range(7, 0n, 65536, 2)).toBe(0);
     for (const [address, length] of [[1n, 65536], [0xffffffffffffffffn, 1], [0n, 2147483647]] as const) {
-      expect(imports.env.host_proc_validate_range(7, address, length)).toBe(-14);
+      expect(imports.env.host_proc_validate_range(7, address, length, 2)).toBe(-14);
     }
     expect(new Uint8Array(processMemory.buffer)).toEqual(new Uint8Array(65536).fill(0xa5));
   });
@@ -1885,8 +1885,8 @@ describe("explicit grouped process byte imports", () => {
     expect(env.host_proc_read_bytes(8, 0n, ptr(8192), 4)).toBe(-14);
     expect(env.host_proc_write_bytes(8, 0n, ptr(4096), 4)).toBe(-14);
     expect(env.host_proc_compare_bytes(8, 0n, ptr(4096), 4)).toBe(-14);
-    expect(env.host_proc_validate_range(7, 0n, 2 * 65536)).toBe(0);
-    expect(env.host_proc_validate_range(8, 0n, 0)).toBe(-14);
+    expect(env.host_proc_validate_range(7, 0n, 2 * 65536, 2)).toBe(0);
+    expect(env.host_proc_validate_range(8, 0n, 0, 2)).toBe(-14);
     expect(legacy).not.toHaveBeenCalled();
   });
   it.each([false, true])("refuses absent or failed explicit custody without falling back (throw=%s)", throws => {
@@ -1901,7 +1901,7 @@ describe("explicit grouped process byte imports", () => {
     for (const name of ['host_proc_write_bytes', 'host_proc_read_bytes', 'host_proc_compare_bytes']) {
       expect(env[name](7, 0n, 4096, 4)).toBe(-14);
     }
-    expect(env.host_proc_validate_range(7, 0n, 4)).toBe(-14);
+    expect(env.host_proc_validate_range(7, 0n, 4, 2)).toBe(-14);
     expect(legacy).not.toHaveBeenCalled();
     expect([...new Uint8Array(decoy.buffer, 0, 4)]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
   });
@@ -1925,15 +1925,36 @@ describe("explicit grouped process byte imports", () => {
   it("validates the exact virtual extent without copying or using physical capacity", () => {
     const { access, env } = grouped();
     const read = vi.spyOn(access, "readBytes"), write = vi.spyOn(access, "writeBytes");
-    expect(env.host_proc_validate_range(7, 0n, 2 * 65536)).toBe(0);
-    expect(env.host_proc_validate_range(7, 2n * 65536n, 0)).toBe(0);
+    expect(env.host_proc_validate_range(7, 0n, 2 * 65536, 2)).toBe(0);
+    expect(env.host_proc_validate_range(7, 2n * 65536n, 0, 2)).toBe(0);
     for (const [address, length] of [[2n * 65536n, 1], [0n, 8 * 65536],
       [-1n, 0], [(1n << 32n), 1]] as const) {
-      expect(env.host_proc_validate_range(7, address, length)).toBe(-14);
+      expect(env.host_proc_validate_range(7, address, length, 2)).toBe(-14);
     }
     expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
     access.detachHostAccess();
-    expect(env.host_proc_validate_range(7, 0n, 0)).toBe(-14);
+    expect(env.host_proc_validate_range(7, 0n, 0, 2)).toBe(-14);
+  });
+  it("preflights the requested access across every mapped page before an I/O effect", () => {
+    const { access, env, words, pte, process } = grouped();
+    const read = vi.spyOn(access, "readBytes"), write = vi.spyOn(access, "writeBytes");
+    new Uint8Array(process.buffer, 4 * 65536, 65536).fill(0xa5);
+    words[pte] = 4 * 65536 | 1; // readable source, unwritable destination
+    expect(env.host_proc_validate_range(7, 0n, 4, 1)).toBe(0);
+    expect(env.host_proc_validate_range(7, 0n, 4, 2)).toBe(-14);
+    words[pte] = 4 * 65536 | 2; // writable destination need not be readable
+    expect(env.host_proc_validate_range(7, 0n, 4, 2)).toBe(0);
+    expect(env.host_proc_validate_range(7, 0n, 4, 1)).toBe(-14);
+    words[pte] = 4 * 65536 | 3;
+    for (const denied of [0, 6 * 65536, 6 * 65536 | 1]) {
+      words[pte + 1] = denied;
+      expect(env.host_proc_validate_range(7, 65534n, 4, 2)).toBe(-14);
+    }
+    for (const invalid of [0, 3, -1, 8, undefined]) {
+      expect(env.host_proc_validate_range(7, 0n, 4, invalid)).toBe(-22);
+    }
+    expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
+    expect(new Uint8Array(process.buffer, 4 * 65536, 4)).toEqual(new Uint8Array(4).fill(0xa5));
   });
   it("refuses completion before changing an inaccessible status or result", () => {
     const { access, words, pte, env } = grouped();

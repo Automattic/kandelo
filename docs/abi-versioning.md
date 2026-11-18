@@ -3120,7 +3120,17 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
-Host-adapter 10 extends the internal grouped mapping preparation transport:
+Host-adapter 11 adds an explicit `ProcessMemoryAccess` argument to
+`host_proc_validate_range(pid, address, length, access)`: guest read is 1,
+guest write is 2, and any other direction is `EINVAL`. The host checks the
+entire current virtual range and page rights without a payload copy. Rust
+uses write preflight before destructive scalar/vector reads and entropy,
+including resumed operations, and read preflight for scalar write sources.
+All grouped scalar I/O uses the existing guest-address transport, regardless
+of size. This kernel-host change leaves program ABI 56 and its digest intact;
+it does not establish complete grouped I/O or execution acceptance.
+
+Host-adapter 10 introduced the internal grouped mapping preparation transport:
 `kernel_group_memory_change_prepare`, `validate`, `commit` and `cancel`.
 The first two use fixed scratch records, and the latter two consume exact
 unsigned 64-bit tokens through separate low/high words and status returns.

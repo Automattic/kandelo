@@ -148,6 +148,13 @@ pub mod legacy_pshared {
     ];
 }
 
+/// Kernel-host byte-range access, from the guest's perspective. The import
+/// accepts exactly one direction, never an unchecked mask or bounds-only mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ProcessMemoryAccess { Read = 1, Write = 2 }
+
+
 pub mod platform_limits {
     pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
     pub const PATH_MAX_BYTES: usize = 4096;
@@ -2348,7 +2355,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 10;
+    pub const HOST_ADAPTER_VERSION: u32 = 11;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

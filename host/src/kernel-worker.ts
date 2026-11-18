@@ -13786,9 +13786,9 @@ export class CentralizedKernelWorker {
     if (
       ((syscallNr === SYS_READ || syscallNr === SYS_WRITE
         || syscallNr === SYS_PREAD || syscallNr === SYS_PWRITE)
-        && (origArgs[2] ?? 0) > CH_DATA_SIZE)
+        && ((origArgs[2] ?? 0) > CH_DATA_SIZE || channel.source instanceof GroupProcessAddressSpace))
       || (syscallNr === ABI_SYSCALLS.Getrandom
-        && BigInt.asUintN(64, rawArgs[1] ?? 0n) > BigInt(CH_DATA_SIZE))
+        && (BigInt.asUintN(64, rawArgs[1] ?? 0n) > BigInt(CH_DATA_SIZE) || channel.source instanceof GroupProcessAddressSpace))
     ) {
       try {
         const random = syscallNr === ABI_SYSCALLS.Getrandom;
@@ -21218,7 +21218,7 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** Execute only large scalar I/O, with guest addresses in a fixed header. */
+  /** Execute guest-address I/O in a fixed header (all grouped scalar I/O). */
   #executeGuestIo(
     channel: ChannelInfo,
     request: GuestIoRequest,

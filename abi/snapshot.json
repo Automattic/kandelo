@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 10,
+      "required_host_adapter_version": 11,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2575,6 +2575,10 @@
       "kernel_wait_park_followup"
     ],
     "optional_kernel_features": 0,
+    "process_memory_access": {
+      "read": 1,
+      "write": 2
+    },
     "required_kernel_exports": [
       "__abi_version",
       "kernel_alloc_scratch",
@@ -2689,7 +2693,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 10,
+    "version": 11,
     "worker_features": [
       {
         "bit": 2,
@@ -6049,7 +6053,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_proc_validate_range",
-      "signature": "(i32,i64,i32) -> (i32)"
+      "signature": "(i32,i64,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

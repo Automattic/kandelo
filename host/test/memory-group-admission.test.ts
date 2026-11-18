@@ -4,7 +4,7 @@ import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
 import { KernelEntryGate, createKernelEntryGatedInstance, KernelReentrantEntryError } from '../src/kernel-entry-gate';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
 import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING, ABI_SYSCALLS as SYSCALLS,
-  CH_STATUS, CH_SYSCALL, CH_ARGS, CH_ARG_SIZE, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE } from '../src/generated/abi';
+  CH_STATUS, CH_SYSCALL, CH_ARGS, CH_ARG_SIZE, CH_RETURN, CH_ERRNO, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE } from '../src/generated/abi';
 import * as G from '../src/generated/program-extensions';
 import { processDataView } from '../src/process-memory-views';
 import { MemoryGroupPagePool } from '../src/memory-group-pool';
@@ -27,6 +27,7 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_set_current_tid: () => 0,
     kernel_get_process_exit_signal: () => -1,
     kernel_dequeue_signal: vi.fn(() => 0),
+    kernel_handle_guest_io: vi.fn(() => 0),
     kernel_memory_group_configure: vi.fn(() => 0),
     kernel_memory_group_create: vi.fn(() => 23),
     kernel_memory_group_seal: vi.fn(() => 0),
@@ -414,11 +415,13 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
   const completions: { value: number; errno: number }[] = [];
   let complete!: (value: { value: number; errno: number }) => void;
   const completed = new Promise<{ value: number; errno: number }>(resolve => { complete = resolve; });
+  const observeCompletion = (value: number, errno: number) => {
+    const record = { value, errno }; completions.push(record);
+    processDataView(channel.source, page).setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true); complete(record);
+  };
   h.worker.testAuthority.configureScratchBoundaryHooksForTest({
-    completeChannelRaw: (_channel, value, errno) => {
-      const record = { value, errno }; completions.push(record);
-      processDataView(channel.source, page).setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true); complete(record);
-    },
+    completeChannelRaw: (_channel, value, errno) => observeCompletion(value, errno),
+    completeChannel: (_channel, _syscall, _args, _descs, value, errno) => observeCompletion(Number(value), errno),
   });
   const effect = { kind: 'map' as 'map' | 'protect' | 'unmap' | 'break', address: 8 * page, length: page, prot: 3, flags: 0x22, result: 8 * page, oldAddress: 0, oldLength: 0 };
   const writeDescription = (pointer: number | bigint, capacity: number) => {
@@ -463,6 +466,25 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
   };
   return { ...h, kw, page, token, registration, channel, store, launch, captured, observedPages, effect, completed, completions, control, acknowledge, dispatch, close };
 }
+
+describe('normal grouped scalar I/O routing', () => {
+  it.each([SYSCALLS.Read, SYSCALLS.Write, SYSCALLS.Pread, SYSCALLS.Pwrite, SYSCALLS.Getrandom])('sends syscall %i through Rust guest-address I/O even for a small buffer', async syscall => {
+    const h = mappingDispatchHarness();
+    try {
+      const args = syscall === SYSCALLS.Getrandom ? [17n, 4n, 0n, 0n, 0n, 0n] : [9n, 17n, 4n, 23n, 0n, 0n];
+      h.implementations.kernel_handle_guest_io = vi.fn((pointer: number | bigint, capacity: number, pid: number, retry: bigint) => {
+        expect(capacity).toBe(CH_TOTAL_SIZE); expect(pid).toBe(100); expect(retry).toBe(0n);
+        const view = new DataView(h.memory.buffer, Number(pointer), capacity);
+        expect(view.getUint32(CH_SYSCALL, true)).toBe(syscall);
+        args.forEach((value, at) => expect(view.getBigInt64(CH_ARGS + at * CH_ARG_SIZE, true)).toBe(value));
+        view.setBigInt64(CH_RETURN, 4n, true); view.setUint32(CH_ERRNO, 0, true); return 0;
+      });
+      h.dispatch(syscall, args); await h.completed;
+      expect(h.implementations.kernel_handle_guest_io).toHaveBeenCalledTimes(1);
+      expect(h.completions).toEqual([{ value: 4, errno: 0 }]);
+    } finally { await h.close(); }
+  });
+});
 
 describe('normal grouped mapping syscall coordination', () => {
   it('delivers pending signals through the normal dequeue path before completing a heap query', async () => {
