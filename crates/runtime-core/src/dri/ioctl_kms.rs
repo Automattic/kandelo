@@ -3,6 +3,7 @@
 //! DRM master. Moved out of `syscalls.rs`; the shared render-node ioctls
 //! (`handle_dri_ioctl`) and the open/close plumbing stay there.
 
+use wasm_posix_shared::ProcessMemoryAccess;
 use alloc::vec::Vec;
 
 use wasm_posix_shared::Errno;
@@ -52,8 +53,8 @@ pub(crate) fn probe_dri_properties(
     host: &mut dyn HostIO, pid: i32, count: usize, ids: u64, values: u64,
 ) -> Result<(), Errno> {
     if count != 0 {
-        probe_dri_process_pointer(host, pid, ids, count * 4)?;
-        probe_dri_process_pointer(host, pid, values, count * 8)?;
+        probe_dri_process_pointer(host, pid, ids, count * 4, ProcessMemoryAccess::Write)?;
+        probe_dri_process_pointer(host, pid, values, count * 8, ProcessMemoryAccess::Write)?;
     }
     Ok(())
 }
@@ -280,7 +281,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
             for &(pointer, capacity, ids) in &outputs {
                 let copied = ids.len().min(capacity as usize);
                 if copied != 0 {
-                    probe_dri_process_pointer(host, pid, pointer, copied * 4)?;
+                    probe_dri_process_pointer(host, pid, pointer, copied * 4, ProcessMemoryAccess::Write)?;
                 }
             }
             for &(pointer, capacity, ids) in &outputs {
@@ -377,11 +378,12 @@ pub(crate) fn handle_dri_card_ioctl_target(
                         pid,
                         req.modes_ptr,
                         modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        ProcessMemoryAccess::Write,
                     )
                 })
                 .transpose()?;
             let encoders_ptr = (req.count_encoders >= 1)
-                .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4, ProcessMemoryAccess::Write))
                 .transpose()?;
             let property_count = props.len().min(req.count_props as usize);
             probe_dri_properties(host, pid, property_count, req.props_ptr, req.prop_values_ptr)?;
@@ -674,7 +676,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
             }
             if req.count_connectors > 0 {
                 let len = req.count_connectors as usize * 4;
-                let pointer = probe_dri_process_pointer(host, pid, req.set_connectors_ptr, len)?;
+                let pointer = probe_dri_process_pointer(host, pid, req.set_connectors_ptr, len, ProcessMemoryAccess::Read)?;
                 let mut ids = alloc::vec![0u8; len];
                 if host.proc_read_bytes(pid, pointer, &mut ids) < 0 {
                     return Err(Errno::EFAULT);
@@ -839,7 +841,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
                 &[]
             };
             if !planes.is_empty() && req.count_planes as usize >= planes.len() {
-                let pointer = probe_dri_process_pointer(host, pid, req.plane_id_ptr, planes.len() * 4)?;
+                let pointer = probe_dri_process_pointer(host, pid, req.plane_id_ptr, planes.len() * 4, ProcessMemoryAccess::Write)?;
                 write_dri_u32s(host, pid, pointer, planes)?;
             }
             req.count_planes = planes.len() as u32;
@@ -855,7 +857,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
                 _ => return Err(Errno::ENOENT),
             };
             if req.count_format_types as usize >= formats.len() {
-                let pointer = probe_dri_process_pointer(host, pid, req.format_type_ptr, formats.len() * 4)?;
+                let pointer = probe_dri_process_pointer(host, pid, req.format_type_ptr, formats.len() * 4, ProcessMemoryAccess::Write)?;
                 write_dri_u32s(host, pid, pointer, formats)?;
             }
             req.crtc_id = if fb_id != 0 { kms::CRTC_ID } else { 0 };
@@ -895,10 +897,10 @@ pub(crate) fn handle_dri_card_ioctl_target(
                 _ => 0,
             };
             if copied != 0 {
-                probe_dri_process_pointer(host, pid, req.values_ptr, copied * 8)?;
+                probe_dri_process_pointer(host, pid, req.values_ptr, copied * 8, ProcessMemoryAccess::Write)?;
             }
             if enum_count != 0 {
-                probe_dri_process_pointer(host, pid, req.enum_blob_ptr, enum_count * 40)?;
+                probe_dri_process_pointer(host, pid, req.enum_blob_ptr, enum_count * 40, ProcessMemoryAccess::Write)?;
             }
             if copied > 0 {
                 let pointer = req.values_ptr;
@@ -934,7 +936,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
             let mut req: WpkDrmModeGetBlob = read_dri_struct(buf)?;
             let data = kms::blob(req.blob_id).ok_or(Errno::ENOENT)?;
             if req.length as usize == data.len() && !data.is_empty() {
-                let pointer = probe_dri_process_pointer(host, pid, req.data, data.len())?;
+                let pointer = probe_dri_process_pointer(host, pid, req.data, data.len(), ProcessMemoryAccess::Write)?;
                 write_dri_bytes(host, pid, pointer, &data)?;
             }
             req.length = data.len() as u32;
@@ -953,7 +955,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
             if length > kms::MAX_BLOB_BYTES {
                 return Err(Errno::ENOMEM);
             }
-            let pointer = probe_dri_process_pointer(host, pid, data_ptr, length)?;
+            let pointer = probe_dri_process_pointer(host, pid, data_ptr, length, ProcessMemoryAccess::Read)?;
             let mut data = alloc::vec![0u8; length];
             if host.proc_read_bytes(pid, pointer, &mut data) < 0 {
                 return Err(Errno::EFAULT);
@@ -1038,7 +1040,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
             }
             if num_clips != 0 {
                 // struct drm_clip_rect is four u16s.
-                probe_dri_process_pointer(host, pid, clips, num_clips as usize * 8)?;
+                probe_dri_process_pointer(host, pid, clips, num_clips as usize * 8, ProcessMemoryAccess::Read)?;
             }
             Ok(())
         }

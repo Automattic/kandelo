@@ -3,6 +3,7 @@ mod owned;
 pub(crate) use owned::*;
 extern crate alloc;
 
+use wasm_posix_shared::ProcessMemoryAccess;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use wasm_posix_shared::access::{R_OK, W_OK, X_OK};
@@ -1455,7 +1456,7 @@ fn handle_drm_version(host: &mut dyn HostIO, pid: i32, request: u32, buf: &mut [
         let pointer = read_word(buf, len_at + word);
         let len = (value.len() as u64).min(capacity) as usize;
         if len != 0 && pointer != 0 {
-            copies.push((probe_dri_process_pointer(host, pid, pointer, len)?, &value[..len]));
+            copies.push((probe_dri_process_pointer(host, pid, pointer, len, ProcessMemoryAccess::Write)?, &value[..len]));
         }
     }
     for (pointer, bytes) in copies {
@@ -1486,25 +1487,21 @@ fn handle_drm_version(host: &mut dyn HostIO, pid: i32, request: u32, buf: &mut [
 /// there is nothing left to narrow — but the ordering guarantee still has to
 /// come from somewhere, and only the host knows a process's real extent.
 ///
-/// So the pre-pass now probes each address with a `proc_read_bytes` of the
-/// exact length that will later be written. Reading is side-effect-free, and
-/// a range that is inside the process's memory now is still inside it when
-/// the writes begin a few instructions later: linear memory only ever grows,
-/// and the host dispatches this syscall synchronously without re-entering the
-/// kernel. A concurrent thread may change the *bytes* in between — that is
-/// inherent and documented on `HostIO::proc_write_bytes` — but it cannot
-/// shrink the range out from under the write.
+/// Each caller declares guest read or write authority. The pre-pass checks
+/// that authority without copying bytes or allocating a payload. Mapping
+/// changes are serialized by the kernel worker;
+/// actual writes still validate again, including after a renderer callback.
 pub(crate) fn probe_dri_process_pointer(
     host: &mut dyn HostIO,
     pid: i32,
     pointer: u64,
     len: usize,
+    access: ProcessMemoryAccess,
 ) -> Result<u64, Errno> {
     if len != 0 && pointer == 0 {
         return Err(Errno::EFAULT);
     }
-    let mut probe = crate::guest_ptr::zeroed_io_staging(len, len)?;
-    if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
+    if host.proc_validate_range(pid, pointer, len, access) < 0 {
         return Err(Errno::EFAULT);
     }
     Ok(pointer)
@@ -1719,6 +1716,7 @@ fn capture_gl_query_info_target(
     if info.out_buf_len != 0 {
         probe_dri_process_pointer(
             host, pid, u64::from(info.out_buf_ptr), info.out_buf_len as usize,
+            ProcessMemoryAccess::Write,
         )?;
     }
     // Freeze nested process bytes before choosing immediate execution or
@@ -24118,6 +24116,42 @@ pub fn sys_sendmsg(
     }
 }
 
+pub(crate) fn recvmsg_socket_index(proc: &Process, fd: i32) -> Result<usize, Errno> {
+    let index = require_io_fd(proc, fd)?;
+    let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket { return Err(Errno::ENOTSOCK); }
+    let socket = (-(ofd.host_handle + 1)) as usize;
+    proc.sockets.get(socket).ok_or(Errno::EBADF)?;
+    Ok(socket)
+}
+
+/// Bounded potential output from the exact queued carrier. No payload copy,
+/// descriptor retain, socket read or queue mutation occurs here. Syscall entry
+/// remains synchronous through preflight and the consuming receive.
+pub(crate) fn recvmsg_output_shape(proc: &Process, fd: i32, capacity: usize, flags: u32) -> Result<(usize, usize), Errno> {
+    use crate::socket::{SocketDomain, SocketType};
+    let socket = proc.sockets.get(recvmsg_socket_index(proc, fd)?).ok_or(Errno::EBADF)?;
+    if socket.shut_rd { return Ok((0, 0)); }
+    if socket.sock_type == SocketType::Dgram {
+        let message = socket.dgram_queue.iter().find(|d| dgram_matches_connected_peer(socket, proc.pid, d));
+        let Some(message) = message else { return Ok((0, 0)); };
+        let address = match socket.domain {
+            SocketDomain::Inet => write_sockaddr_in(&mut [], message.src_addr, message.src_port),
+            SocketDomain::Inet6 => write_sockaddr_in6(&mut [], message.src_addr6, message.src_port),
+            SocketDomain::Unix => wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_PATH_OFFSET_BYTES as usize,
+            SocketDomain::Netlink => 0,
+        };
+        return Ok((message.ancillary_fds.len(), address));
+    }
+    if socket.domain == SocketDomain::Unix && flags & wasm_posix_shared::socket::MSG_OOB == 0 {
+        if let Some(index) = socket.recv_buf_idx {
+            let pipe = unsafe { crate::pipe::global_pipe_table().get(index) }.ok_or(Errno::EBADF)?;
+            return Ok((pipe.ancillary_count_within(capacity), 0));
+        }
+    }
+    Ok((0, 0))
+}
+
 /// Receive one stream segment or datagram together with its descriptor batch.
 pub fn sys_recvmsg(
     proc: &mut Process,
@@ -24131,15 +24165,10 @@ pub fn sys_recvmsg(
     use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
-    if is_netlink_socket(proc, fd) {
+    let sock_idx = recvmsg_socket_index(proc, fd)?;
+    if proc.sockets.get(sock_idx).is_some_and(|socket| socket.domain == SocketDomain::Netlink) {
         return Err(Errno::EAGAIN);
     }
-    let ofd_idx = resolve_io_ofd(proc, fd)?;
-    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Socket {
-        return Err(Errno::ENOTSOCK);
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let (domain, socket_type, state, shut_rd, recv_buf_idx) = {
         let socket = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (
@@ -42421,6 +42450,18 @@ mod tests {
     }
 
     #[test]
+    fn dri_output_preflight_uses_write_authority_without_payload_admission() {
+        let mut host = MockHostIO::new(); let address = IOV_BUFFERS_ADDR;
+        host.proc_read_denied = Some(address..address + 16);
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        { let _limit = crate::io_buffer::test_budget(held);
+          assert_eq!(probe_dri_process_pointer(&mut host, 100, address, 16, ProcessMemoryAccess::Write), Ok(address)); }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        host.proc_write_denied = Some(address + 15..address + 16);
+        assert_eq!(probe_dri_process_pointer(&mut host, 100, address, 16, ProcessMemoryAccess::Write), Err(Errno::EFAULT));
+    }
+
+    #[test]
     fn guest_input_preflight_preserves_pipe_and_all_destinations() {
         for width in [4, 8] { for vector in [false, true] { for hole in [false, true] {
             let mut proc = Process::new(81_153); proc.pointer_width = width;
@@ -59108,6 +59149,23 @@ impl HostIO for RelSymlinkMock {
         sys_close(&mut proc, &mut host, plain).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_property_blob_accepts_readonly_guest_input() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test(); kms::reset_for_test();
+        let mut proc = Process::new(81_166); let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        host.proc_memory[0x2000..0x2006].copy_from_slice(b"source");
+        host.proc_write_denied = Some(0x2000..0x2006);
+        let created = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATEPROPBLOB, [0x2000u32, 0, 6, 0]);
+        assert!(created.is_ok(), "readonly blob input refused: {created:?}");
+        let blob = created.unwrap()[3];
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPROPBLOB, WpkDrmModeGetBlob { blob_id: blob, length: 6, data: 0x3000 }).unwrap();
+        assert_eq!(&host.proc_memory[0x3000..0x3006], b"source");
+        sys_close(&mut proc, &mut host, fd).unwrap(); kms::reset_for_test();
     }
 
     #[test]

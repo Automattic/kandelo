@@ -3129,6 +3129,9 @@ including resumed operations, and read preflight for scalar write sources.
 All grouped scalar I/O uses the existing guest-address transport, regardless
 of size. This kernel-host change leaves program ABI 56 and its digest intact;
 it does not establish complete grouped I/O or execution acceptance.
+The same access import serves generic grouped output plans, frozen retries,
+recvmsg nested output preparation and DRI/GL probes. Moving receive/publication
+ownership into runtime-core adds no new program record, host import or export.
 
 Host-adapter 10 introduced the internal grouped mapping preparation transport:
 `kernel_group_memory_change_prepare`, `validate`, `commit` and `cancel`.

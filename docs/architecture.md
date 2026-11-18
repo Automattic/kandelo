@@ -3027,6 +3027,20 @@ Preflight is an observation, not a lease: actual byte transfers validate
 again. Mapping publication is serialized through the kernel worker; logical
 C memory growth can append pages but cannot revoke existing permissions.
 
+Generic grouped output plans and frozen retries check write authority before
+kernel effects. `runtime-core::guest_recvmsg::GuestRecvmsg` copies caller
+metadata, resolves the exact socket/OFD, observes bounded output shape from
+kernel-owned queue metadata and preflights before receive. The Wasm adapter
+ends its active retry binding before the owned result publishes fields and
+SCM_RIGHTS descriptors, so publication cannot accidentally target the parked
+carrier's OFD. A stale process/image refuses publication and releases its
+owned references. Name/control checks cover only the possible kernel output
+prefix; caller inputs, padding and unused capacity are not output buffers.
+DRI/GL output probes use explicit write preflight instead of reading an
+allocation sized to the output; KMS inputs explicitly request read access.
+Generic input and captured-length faults remain EFAULT before kernel effects. These observations do not promise that a later failing
+host callback or concurrent writer can be rolled back.
+
 ### Heap initialization (brk)
 
 The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`), computes the low control slab, and calls `kernel_set_brk_base(pid, control_end)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` returns the first guest-managed byte after host control memory, so musl's malloc places the heap above the data, shadow-stack, and host control regions.

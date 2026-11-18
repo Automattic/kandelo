@@ -7468,6 +7468,20 @@ export class CentralizedKernelWorker {
     retryToken = 0n,
     finishOwnedMappings = true,
   ): PlannedChannelDispatchResult {
+    if (retryToken !== 0n && channel.source instanceof GroupProcessAddressSpace) {
+      try {
+        for (const argument of plan.plannedChannelScratchArgs) {
+          if (argument.desc.direction === "out" || argument.desc.direction === "inout") {
+            checkProcessWriteRange(channel.source, argument.processPointer, argument.size);
+          }
+        }
+      } catch {
+        if (!this.#cancelHostOwnedKernelWait(channel, plan.syscallNr, entry)) {
+          this.#failBlockingRetryProtocol("Cannot retire a grouped retry with inaccessible output");
+        }
+        return { retVal: -1, publicationRetVal: -1, rawRetVal: -1n, errVal: EFAULT, outputWrites: [] };
+      }
+    }
     const dispatched = this.#executeCapacityOwnedChannel(
       channel,
       plan.plannedChannelCapacity,
@@ -14128,10 +14142,14 @@ export class CentralizedKernelWorker {
           }
           continue;
         }
-        capturedDerefU32Inputs[desc.size.argIndex] = {
-          processPointer: derefPtr,
-          value: processMem.dataView(derefPtr, 4).getUint32(0, true),
-        };
+        let value: number;
+        try {
+          value = processMem.dataView(derefPtr, 4).getUint32(0, true);
+        } catch {
+          this.completeChannel(channel, syscallNr, origArgs, undefined, -1, EFAULT, [], undefined, entry);
+          return;
+        }
+        capturedDerefU32Inputs[desc.size.argIndex] = { processPointer: derefPtr, value };
       }
 
       // Resolve every Deref capacity before descriptor-order-dependent
@@ -14496,6 +14514,14 @@ export class CentralizedKernelWorker {
             pointerWidth,
             `syscall ${syscallNr} arg ${desc.argIndex} data`,
           );
+          if (channel.source instanceof GroupProcessAddressSpace) {
+            if (desc.direction === "in" || desc.direction === "inout") {
+              channel.source.checkAccessRange(ptr, size, "read");
+            }
+            if (desc.direction === "out" || desc.direction === "inout") {
+              checkProcessWriteRange(channel.source, ptr, size);
+            }
+          }
         } catch {
           if (deferSchedGetaffinityOutputError) {
             // Linux resolves the requested task before copying its affinity

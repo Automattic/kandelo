@@ -42,6 +42,7 @@ pub mod fork;
 pub mod framebuffer;
 pub mod fs_changes;
 pub mod guest_ptr;
+pub mod guest_recvmsg;
 pub mod gl_query_request;
 pub mod hostdir;
 pub mod image_build_determinism;
