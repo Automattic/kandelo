@@ -63,6 +63,30 @@ fn interval(addr: usize, len: usize) -> Result<usize, Errno> {
     addr.checked_add(len).ok_or(Errno::EINVAL)
 }
 
+/// Restoring protection must restore a contiguous VMA, so a later mremap
+/// does not mistake our own protection fragments for unrelated mappings.
+/// Equal file labels are insufficient: backing and driver authority must be
+/// identical, and file offsets must remain exactly contiguous.
+fn append_protection_fragment(regions: &mut IoBuffer<MappedRegion>, next: MappedRegion) {
+    if let Some(previous) = regions.last_mut() {
+        let same_backing = match (&previous.file, &next.file) {
+            (None, None) => previous.file_offset == 0 && next.file_offset == 0,
+            (Some(a), Some(b)) => alloc::rc::Rc::ptr_eq(a, b)
+                && previous.file_offset.checked_add(previous.len as u64) == Some(next.file_offset),
+            _ => false,
+        };
+        if previous.addr.checked_add(previous.len) == Some(next.addr)
+            && previous.prot == next.prot && previous.flags == next.flags
+            && previous.exact_mapping == next.exact_mapping && same_backing {
+            if let Some(len) = previous.len.checked_add(next.len) {
+                previous.len = len;
+                return;
+            }
+        }
+    }
+    regions.push(next);
+}
+
 impl MemoryManager {
     pub(crate) fn has_pending_memory_change(&self) -> bool { self.pending_change.is_some() }
     pub(crate) fn owns_memory_change(&self, plan: &PreparedMemoryChange) -> bool {
@@ -187,7 +211,12 @@ impl MemoryManager {
                     if new_len < old_len { self.munmap(addr + new_len, old_len - new_len)?; }
                     addr
                 } else if self.can_grow_at(end, new_len - old_len) {
-                    if !self.extend_mapping(addr, old_len, new_len) { return Err(Errno::EFAULT); }
+                    // Protection restoration may have joined this interval
+                    // with its predecessor. Free space at `end` proves this
+                    // is a suffix of the containing VMA; grow that VMA while
+                    // preserving the predecessor's address and backing offset.
+                    let extended = original.len.checked_add(new_len - old_len).ok_or(Errno::ENOMEM)?;
+                    if !self.extend_mapping(original.addr, original.len, extended) { return Err(Errno::EFAULT); }
                     addr
                 } else if flags & 1 != 0 {
                     self.reserve_mapping_slots(2)?;
@@ -238,13 +267,13 @@ impl MemoryManager {
             let map_end = mapping.addr + mapping.len;
             let start = addr.max(mapping.addr);
             let finish = end.min(map_end);
-            if start >= finish { replacement.push(mapping.clone()); continue; }
+            if start >= finish { append_protection_fragment(&mut replacement, mapping.clone()); continue; }
             for (base, limit, rights) in [(mapping.addr, start, mapping.prot), (start, finish, prot), (finish, map_end, mapping.prot)] {
                 if base >= limit { continue; }
                 let mut fragment: MappedRegion = mapping.clone();
                 fragment.addr = base; fragment.len = limit - base; fragment.prot = rights;
                 fragment.file_offset = mapping.offset_after(base - mapping.addr);
-                replacement.push(fragment);
+                append_protection_fragment(&mut replacement, fragment);
             }
         }
         self.mappings = replacement;
@@ -328,6 +357,94 @@ mod tests {
         for (i, m) in mm.mappings().iter().enumerate() {
             assert!(Rc::ptr_eq(m.file.as_ref().unwrap(), &file));
             assert_eq!(m.file_offset, 4096 + (i * PAGE) as u64);
+        }
+    }
+
+    #[test]
+    fn restored_protection_allows_remapping_the_original_anonymous_interval() {
+        let mut mm = manager();
+        let base = mm.mmap_anonymous(0, 2 * PAGE, 3, ANON);
+        for prot in [1, 3] {
+            let plan = mm.prepare_memory_change(MemoryChange::Protect { addr: base, len: PAGE, prot }).unwrap();
+            mm.commit_memory_change(plan).unwrap();
+        }
+        let plan = mm.prepare_memory_change(MemoryChange::Remap {
+            addr: base, old_len: 2 * PAGE, new_len: 3 * PAGE, flags: 1,
+        }).unwrap();
+        assert_eq!(plan.effect(), MemoryChangeEffect::Remap {
+            old_addr: base, old_len: 2 * PAGE, new_addr: base, new_len: 3 * PAGE, prot: 3,
+        });
+        mm.commit_memory_change(plan).unwrap();
+        assert_eq!(mm.mappings().len(), 1);
+        assert_eq!(mm.mappings()[0].len, 3 * PAGE);
+    }
+
+    #[test]
+    fn protection_fragments_rejoin_only_with_contiguous_identical_backing() {
+        let mut mm = manager();
+        let base = mm.mmap_anonymous(0, 3 * PAGE, 3, ANON);
+        let file = Rc::new(MappingFile { dev: 7, ino: 9, name: vec![b'x'] });
+        mm.set_mapping_file(base, 4096, file.clone());
+        for prot in [0, 3] {
+            let plan = mm.prepare_memory_change(MemoryChange::Protect { addr: base + PAGE, len: PAGE, prot }).unwrap();
+            mm.commit_memory_change(plan).unwrap();
+        }
+        assert_eq!(mm.mappings().len(), 1);
+        assert_eq!(mm.mappings()[0].file_offset, 4096);
+        assert!(Rc::ptr_eq(mm.mappings()[0].file.as_ref().unwrap(), &file));
+        // Distinct Rc ownership must not be merged merely because metadata is
+        // equal, and a gap/overlap in file offsets must remain a separate VMA.
+        let mut parts = IoBuffer::try_with_capacity(3).unwrap();
+        for (i, offset, backing) in [(0, 0, file.clone()), (1, PAGE as u64, Rc::new((*file).clone())),
+            (2, PAGE as u64, file.clone())] {
+            let mut part = MappedRegion::anonymous(base + i * PAGE, PAGE, 3, ANON);
+            part.file = Some(backing); part.file_offset = offset;
+            append_protection_fragment(&mut parts, part);
+        }
+        assert_eq!(parts.len(), 3);
+        parts.clear();
+        for (i, offset) in [(0, 0), (1, 2 * PAGE as u64)] {
+            let mut part = MappedRegion::anonymous(base + i * PAGE, PAGE, 3, ANON);
+            part.file = Some(file.clone()); part.file_offset = offset;
+            append_protection_fragment(&mut parts, part);
+        }
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn remap_grows_a_suffix_after_restored_protection_joins_a_neighbor() {
+        let mut mm = manager();
+        let neighbor = mm.mmap_anonymous(0, PAGE, 3, ANON);
+        let base = mm.mmap_anonymous(0, 2 * PAGE, 3, ANON);
+        assert_eq!(base, neighbor + PAGE);
+        for prot in [1, 3] {
+            let plan = mm.prepare_memory_change(MemoryChange::Protect { addr: base, len: PAGE, prot }).unwrap();
+            mm.commit_memory_change(plan).unwrap();
+        }
+        assert_eq!(mm.mappings().len(), 1);
+        let plan = mm.prepare_memory_change(MemoryChange::Remap {
+            addr: base, old_len: 2 * PAGE, new_len: 3 * PAGE, flags: 1,
+        }).unwrap();
+        mm.commit_memory_change(plan).unwrap();
+        assert_eq!(mm.mappings()[0].addr, neighbor);
+        assert_eq!(mm.mappings()[0].len, 4 * PAGE);
+    }
+
+    #[test]
+    fn protection_coalescing_preserves_holes_flags_rights_and_driver_identity() {
+        use super::super::ExactMappingIdentity;
+        let mut parts = IoBuffer::try_with_capacity(2).unwrap();
+        let a = MappedRegion::anonymous(PAGE, PAGE, 3, ANON);
+        for mut next in [MappedRegion::anonymous(3 * PAGE, PAGE, 3, ANON),
+            MappedRegion::anonymous(2 * PAGE, PAGE, 1, ANON),
+            MappedRegion::anonymous(2 * PAGE, PAGE, 3, ANON | mmap::MAP_FIXED),
+            MappedRegion::anonymous(2 * PAGE, PAGE, 3, ANON)] {
+            parts.clear(); parts.push(a.clone());
+            if next.addr == 2 * PAGE && next.prot == 3 && next.flags == ANON {
+                next.exact_mapping = Some(ExactMappingIdentity { id: 1, source_file: 2, source_bo: None });
+            }
+            append_protection_fragment(&mut parts, next);
+            assert_eq!(parts.len(), 2);
         }
     }
 
