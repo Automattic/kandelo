@@ -3783,6 +3783,18 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
         return -(Errno::EINVAL as i32);
     };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    // Grouped images must report their paused logical growth through the
+    // dedicated receipt-bound export before their MM can be snapshotted.
+    match table.process_memory_group(parent_pid) {
+        Ok(Some(_)) => {
+            if !table.get(parent_pid).is_some_and(|proc| proc.is_live_explicit_tid(caller_tid)) {
+                return -(Errno::ESRCH as i32);
+            }
+            return -(Errno::EOPNOTSUPP as i32);
+        },
+        Ok(None) => {},
+        Err(error) => return -(error as i32),
+    }
     match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
         Ok(child_pid) => {
             let mut host = WasmHostIO;
@@ -4039,6 +4051,22 @@ pub extern "C" fn kernel_group_memory_break(pid: u32, tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     table.group_memory_break(pid, tid).map(|address| address as i64).unwrap_or_else(|error| -(error as i64))
+}
+
+/// Private grouped fork after an acknowledged host-owned image barrier. All
+/// identity words are copied scalars, never guest pointers or caller PIDs to
+/// allocate. The normal fork export remains unchanged for ordinary execution.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_fork(group: u32, pid: u32, tid: u32,
+    serial_lo: u32, serial_hi: u32, generation_lo: u32, generation_hi: u32, observed_pages: u32,
+) -> i32 {
+    let receipt = wasm_posix_shared::memory_group::ReceiptRecord { group, pid, tid,
+        serial: serial_lo as u64 | ((serial_hi as u64) << 32),
+        generation: generation_lo as u64 | ((generation_hi as u64) << 32) };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.fork_group_memory_process(receipt, observed_pages)
+        .map(|child| child as i32).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]

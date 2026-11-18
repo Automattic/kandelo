@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 12,
+      "required_host_adapter_version": 13,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2556,6 +2556,7 @@
       "kernel_group_memory_change_prepare",
       "kernel_group_memory_change_read",
       "kernel_group_memory_change_validate",
+      "kernel_group_memory_fork",
       "kernel_group_memory_layout_install",
       "kernel_memory_group_capabilities",
       "kernel_memory_group_configure",
@@ -2694,7 +2695,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 12,
+    "version": 13,
     "worker_features": [
       {
         "bit": 2,
@@ -4498,6 +4499,11 @@
       "kind": "func",
       "name": "kernel_group_memory_change_validate",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_fork",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
