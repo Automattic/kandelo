@@ -1,5 +1,6 @@
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import type { WorkerHandle } from "./worker-adapter";
+import { ThreadPageAllocator, type ThreadAllocation } from './thread-allocator';
 import { GroupProcessAddressSpace, ProcessAddressFault, type NativeI32Observation } from "./process-address-space";
 import { captureProcessRead, processDataView, readProcessBytes, writeProcessBytes,
   fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, type CapturedProcessRead,
@@ -2097,6 +2098,19 @@ export interface ThreadChannelAttachment {
   readonly memory: WebAssembly.Memory;
 }
 
+/** Same one-shot Rust clone authority, with no ordinary Memory transport. */
+export interface GroupedThreadChannelAttachment extends Omit<ThreadChannelAttachment, 'memory'> {
+  readonly memoryBackend: 'grouped';
+}
+type AnyThreadChannelAttachment = ThreadChannelAttachment | GroupedThreadChannelAttachment;
+export interface GroupedThreadLaunch {
+  readonly status: 'ready';
+  readonly handle: PreparedGroupReplica;
+  readonly launch: GroupReplicaLaunch;
+  readonly allocation: ThreadAllocation;
+  readonly processChannelOffset: number;
+}
+
 interface PendingThreadChannelAttachment {
   readonly owner: CentralizedKernelWorker;
   readonly pid: number;
@@ -2107,6 +2121,11 @@ interface PendingThreadChannelAttachment {
   readonly source: ProcessMemorySource;
   attachedChannelOffset?: number;
   attachedChannel?: ChannelInfo;
+  groupedReplica?: PreparedGroupReplica;
+  readonly creatorChannel: ChannelInfo;
+  readonly creatorRequest: FrozenChannelRequest | undefined;
+  controlSlot?: { address: number; length: number };
+  controlPending?: Promise<number>;
 }
 
 /** One Rust fork allocation owns cleanup independently of its caller mailbox. */
@@ -2130,14 +2149,14 @@ interface CloneRollbackState {
   readonly origArgs: number[];
   transferred?: boolean;
   parentTidWritten: boolean;
-  cloneAttachment?: ThreadChannelAttachment;
+  cloneAttachment?: AnyThreadChannelAttachment;
   pendingAttachment?: PendingThreadChannelAttachment;
 }
 
 // Module-private authority store: neither a caller nor a subclass can mint a
 // capability or install a forged WeakMap record through the public object.
 const pendingThreadChannelAttachments =
-  new WeakMap<ThreadChannelAttachment, PendingThreadChannelAttachment>();
+  new WeakMap<AnyThreadChannelAttachment, PendingThreadChannelAttachment>();
 
 function createThreadChannelAttachment(
   owner: CentralizedKernelWorker,
@@ -2150,8 +2169,10 @@ function createThreadChannelAttachment(
   ctidPtr: number,
   memory: WebAssembly.Memory,
   source: ProcessMemorySource,
+  creatorChannel: ChannelInfo,
+  creatorRequest: FrozenChannelRequest | undefined,
 ): {
-  attachment: ThreadChannelAttachment;
+  attachment: AnyThreadChannelAttachment;
   pending: PendingThreadChannelAttachment;
 } {
   const attachment = Object.freeze({
@@ -2163,8 +2184,8 @@ function createThreadChannelAttachment(
     stackPtr,
     tlsPtr,
     ctidPtr,
-    memory,
-  }) as ThreadChannelAttachment;
+    ...(source instanceof GroupProcessAddressSpace ? { memoryBackend: 'grouped' as const } : { memory }),
+  }) as AnyThreadChannelAttachment;
   const pending: PendingThreadChannelAttachment = {
     owner,
     pid,
@@ -2173,6 +2194,8 @@ function createThreadChannelAttachment(
     argPtr,
     memory,
     source,
+    creatorChannel,
+    creatorRequest,
   };
   pendingThreadChannelAttachments.set(attachment, pending);
   return { attachment, pending };
@@ -2217,6 +2240,7 @@ interface PendingGroupMapping extends PendingGroupImageOperation {
   suppressCompletion: boolean;
   failure: number;
   scheduled: boolean;
+  hostControl?: { thread: PendingThreadChannelAttachment; complete: (result: number) => void };
 }
 interface PendingGroupFork extends PendingGroupImageOperation {
   readonly kind: 'fork';
@@ -2398,6 +2422,8 @@ export interface CentralizedKernelCallbacks {
    * rejection retains clone rollback responsibility here.
    */
   onClone?: (attachment: ThreadChannelAttachment) => Promise<void>;
+  /** Explicit virtual-memory backend; never falls back to ordinary onClone. */
+  onGroupedClone?: (attachment: GroupedThreadChannelAttachment) => Promise<void>;
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
@@ -8131,6 +8157,91 @@ export class CentralizedKernelWorker {
   prepareMemoryGroupThread(receipt: MemoryGroupTaskReceipt): PreparedGroupReplica | number {
     return this.#prepareMemoryGroupReplica(receipt);
   }
+  /** Reserve controls on demand through the same image FIFO/physical commit
+   * as mappings. The exact clone remains pending until its Worker is adopted. */
+  reserveMemoryGroupThreadControl(attachment: GroupedThreadChannelAttachment): Promise<number> {
+    const thread = pendingThreadChannelAttachments.get(attachment);
+    if (!thread || thread.owner !== this || !(thread.source instanceof GroupProcessAddressSpace)) return Promise.resolve(-ESRCH);
+    let result: Promise<number> = Promise.resolve(-ESRCH);
+    this.#runImmediateKernelEntry('reserve exact grouped thread controls', entry => {
+      const channel = thread.creatorChannel, registration = this.processes.get(thread.pid);
+      const request = thread.creatorRequest, group = registration?.grouped;
+      if (!group || !request || request.syscallNr !== SYS_CLONE || registration?.source !== thread.source
+          || this.activeChannelRequests.get(channel) !== request || !this.isRegisteredChannel(channel)
+          || this.loadChannelStatus(channel) !== CH_PENDING) return undefined;
+      if (thread.controlPending) { result = thread.controlPending; return undefined; }
+      const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(thread.pid, this.guestTidForChannel(channel), registration.execGeneration, entry);
+      if (typeof receipt === 'number') { result = Promise.resolve(receipt); return undefined; }
+      let finish!: () => void, complete!: (address: number) => void;
+      const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+      result = new this.#promiseReceiver<number>(resolve => { complete = resolve; });
+      thread.controlPending = result;
+      const predecessor = Array.from(this.pendingGroupImageOperations.values()).reverse()
+        .find(other => other.registration === registration && !other.done);
+      const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall: SYS_CLONE,
+        args: Object.freeze([]), store: group.store, finished, finish, predecessor,
+        cancelling: false, rustCancelled: false, suppressCompletion: false, failure: EIO, scheduled: false,
+        done: false, populationCursor: 0, hostControl: { thread, complete } };
+      this.pendingGroupImageOperations.set(channel, pending); this.pendingGroupMappings.set(channel, pending);
+      this.#advanceGroupMapping(pending, entry);
+      return undefined;
+    });
+    return result;
+  }
+  /** One entry owns membership, control-slot initialization, channel attachment
+   * and publication. A competing image barrier cannot see a half-built member.
+   * Pre-entry contention is retryable; a ready result has consumed attachment. */
+  prepareMemoryGroupThreadLaunch(attachment: GroupedThreadChannelAttachment,
+    allocator: ThreadPageAllocator): GroupedThreadLaunch | { status: 'waiting'; progress: Promise<void> } | number {
+    const pending = pendingThreadChannelAttachments.get(attachment);
+    if (!pending || pending.owner !== this || !(pending.source instanceof GroupProcessAddressSpace)) return -ESRCH;
+    const source = pending.source;
+    let result: GroupedThreadLaunch | { status: 'waiting'; progress: Promise<void> } | number = -ESRCH;
+    this.#runImmediateKernelEntry('prepare exact grouped thread launch', entry => {
+      const registration = this.processes.get(pending.pid), group = registration?.grouped;
+      if (!registration || !group || registration.source !== pending.source || registration.memory !== pending.memory
+          || !pending.controlSlot) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(pending.pid, entry);
+      if (generation instanceof Error || generation !== registration.execGeneration) return undefined;
+      const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(pending.pid, pending.tid, generation, entry);
+      if (typeof receipt === 'number') { result = receipt; return undefined; }
+      if (receipt.group !== group.receipt.group) return undefined;
+      if (group.store.imageHasExecutionPause(group.handle)) {
+        result = { status: 'waiting', progress: group.store.waitForImageExecutionPause(group.handle) };
+        return undefined;
+      }
+      let handle: PreparedGroupReplica | undefined, allocation: ThreadAllocation | undefined, started = false;
+      try {
+        handle = group.store.prepareThread(receipt);
+        this.#memoryGroupReplicas.set(handle, group.store);
+        allocation = allocator.allocateMapped(source, { start: pending.controlSlot.address,
+          end: pending.controlSlot.address + pending.controlSlot.length,
+          occupiedChannels: registration.channels.map(channel => channel.channelOffset) }, pending.controlSlot.address / WASM_PAGE_SIZE);
+        const attachError = this.#attachThreadChannelWithinKernelEntry(attachment, allocation.channelOffset, entry);
+        if (attachError) throw attachError;
+        const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.start, entry);
+        if (status !== 0) throw new Error(`Cannot start grouped thread admission: ${status}`);
+        started = true;
+        const launch = group.store.publish(handle, receipt);
+        pending.groupedReplica = handle;
+        result = { status: 'ready', handle, launch, allocation, processChannelOffset: registration.channels[0]!.channelOffset };
+      } catch (error) {
+        if (handle) {
+          if (started) this.#quarantineStartedMemoryGroupReplica(group.store, handle, entry);
+          else {
+            const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+            if (status !== 0) this.#memoryGroupProtocolError('Cannot cancel unpublished grouped thread');
+            group.store.cancelUnexposed(handle); this.#memoryGroupReplicas.delete(handle);
+          }
+        }
+        if (!started && allocation) allocator.free(allocation.slotStartPage);
+        if (error instanceof RangeError || error instanceof ProcessAddressFault) result = -ENOMEM;
+        else throw error;
+      }
+      return undefined;
+    });
+    return result;
+  }
   #prepareMemoryGroupReplica(receipt: MemoryGroupTaskReceipt, layout?: GroupImageLayout): PreparedGroupReplica | number {
     let result: PreparedGroupReplica | number = -ERRNO.EOPNOTSUPP;
     this.#runImmediateKernelEntry("allocate exact memory-group replica", entry => {
@@ -11535,7 +11646,7 @@ export class CentralizedKernelWorker {
    * attachment object to create another authority.
    */
   attachThreadChannel(
-    attachment: ThreadChannelAttachment,
+    attachment: AnyThreadChannelAttachment,
     channelOffset: number,
   ): void {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
@@ -11561,7 +11672,7 @@ export class CentralizedKernelWorker {
   }
 
   #attachThreadChannelWithinKernelEntry(
-    attachment: ThreadChannelAttachment,
+    attachment: AnyThreadChannelAttachment,
     channelOffset: number,
     entry: KernelWorkerEntryContext,
   ): Error | undefined {
@@ -12130,6 +12241,24 @@ export class CentralizedKernelWorker {
         entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
       }
       result = this.#startProcessWorkerWhenRunnableWithinKernelEntry(registration.pid, registration.memory,
+        start, cancel, onStartError, entry, registration.source);
+      return undefined;
+    });
+    return result;
+  }
+
+  startMemoryGroupThreadWorkerWhenRunnable(handle: PreparedGroupReplica, start: () => void,
+    cancel: () => void, onStartError?: (error: unknown) => boolean): ProcessWorkerStartDisposition {
+    let result: ProcessWorkerStartDisposition = 'stale';
+    this.#runImmediateKernelEntry('start exact grouped thread Worker', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), receipt = store?.receipt(handle);
+      const registration = receipt && this.processes.get(receipt.pid);
+      if (!store || !receipt || receipt.tid === receipt.pid || !registration?.grouped
+          || registration.grouped.store !== store || registration.source !== store.imageSource(handle)
+          || typeof this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry) === 'number') {
+        entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
+      }
+      result = this.#startProcessWorkerWhenRunnableWithinKernelEntry(receipt.pid, registration.memory,
         start, cancel, onStartError, entry, registration.source);
       return undefined;
     });
@@ -21764,8 +21893,21 @@ export class CentralizedKernelWorker {
   }
 
   #prepareGroupMapping(pending: PendingGroupMapping, observedPages: number, entry: KernelWorkerEntryContext): GroupMemoryChangeDescription | number {
-    const packet = encodeGroupMemoryChangeRequest(pending.syscall, pending.args, observedPages), protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    const protocol = MEMORY_GROUP_PROTOCOL.mapping;
     return this.#requireMainScratchRegion().withLease(lease => {
+      if (pending.hostControl) {
+        const count = this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_thread_control_prepare', [
+          pending.receipt.pid, pending.receipt.tid, pending.hostControl.thread.tid, observedPages,
+          lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+        ]);
+        if (count < 0) return this.#checkedMemoryGroupStatus(count);
+        if (count !== protocol.description_bytes) this.#memoryGroupProtocolError('Invalid thread control preparation length');
+        const description = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), pending.receipt);
+        if (description.kind !== 'map' || description.length !== PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE
+            || description.prot !== 3 || description.populationLength !== 0) this.#memoryGroupProtocolError('Invalid thread control effect');
+        return description;
+      }
+      const packet = encodeGroupMemoryChangeRequest(pending.syscall, pending.args, observedPages);
       lease.copyFrom(packet, 0, 0, packet.length);
       const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_prepare", [
         pending.receipt.pid, pending.receipt.tid, lease.exportPointer(0, packet.length), packet.length,
@@ -21921,6 +22063,12 @@ export class CentralizedKernelWorker {
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     pending.store.resumeImageExecutionPause(pending.barrier);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+    if (pending.hostControl) {
+      pending.hostControl.thread.controlSlot = { address: pending.description.address, length: pending.description.length };
+      const { complete } = pending.hostControl, address = pending.description.address;
+      entry.deferProtocolEffect(() => { complete(address); return undefined; });
+      return;
+    }
     this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
   }
 
@@ -21938,6 +22086,11 @@ export class CentralizedKernelWorker {
     if (this.pendingGroupMappings.get(pending.channel) === pending) this.pendingGroupMappings.delete(pending.channel);
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+    if (pending.hostControl) {
+      const { complete } = pending.hostControl;
+      entry.deferProtocolEffect(() => { complete(-pending.failure); return undefined; });
+      return;
+    }
     if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
       // brk's raw ABI reports the unchanged break on memory-admission failure.
       const oldBreak = pending.syscall === SYS_BRK && pending.failure === ENOMEM ? pending.oldBreak : undefined;
@@ -24174,14 +24327,16 @@ export class CentralizedKernelWorker {
     // come from the channel in Linux syscall convention:
     //   origArgs[0]=flags, [1]=stack, [2]=ptid, [3]=tls, [4]=ctid
 
-    if (!this.callbacks.onClone) {
+    const groupedClone = channel.source instanceof GroupProcessAddressSpace;
+    const cloneCallback = groupedClone ? this.callbacks.onGroupedClone : this.callbacks.onClone;
+    if (!cloneCallback) {
       this.completeChannel(
         channel,
         SYS_CLONE,
         origArgs,
         undefined,
         -1,
-        38,
+        groupedClone ? ERRNO.EOPNOTSUPP : 38,
         [],
         undefined,
         entry,
@@ -24323,6 +24478,8 @@ export class CentralizedKernelWorker {
         ctidPtr,
         channel.memory,
         channel.source,
+        channel,
+        cloneState.request,
       );
       cloneState.cloneAttachment = createdAttachment.attachment;
       cloneState.pendingAttachment = createdAttachment.pending;
@@ -24365,7 +24522,9 @@ export class CentralizedKernelWorker {
       let transaction: Promise<void>;
       try {
         transaction = this.#resolvePromise(
-          this.callbacks.onClone!(attachment),
+          groupedClone
+            ? this.callbacks.onGroupedClone!(attachment as GroupedThreadChannelAttachment)
+            : this.callbacks.onClone!(attachment as ThreadChannelAttachment),
         );
       } catch (cause) {
         this.#runOrDeferAllocatedCloneCompletionKernelEntry(
@@ -24394,6 +24553,13 @@ export class CentralizedKernelWorker {
                 new Error(`onClone returned without attaching kernel tid ${tid}`),
                 false, completionEntry,
               );
+              return undefined;
+            }
+            const groupedReplica = cloneState.pendingAttachment.groupedReplica;
+            if (groupedClone && (!groupedReplica || !this.#observedMemoryGroupReplicas.has(groupedReplica))) {
+              this.#finishFailedCloneWithinKernelEntry(channel, tid, ptidPtr, cloneState,
+                new Error(`onGroupedClone returned without publishing an observed Worker for tid ${tid}`),
+                false, completionEntry);
               return undefined;
             }
             // The callback published its Worker owner before resolving. A
@@ -24610,6 +24776,12 @@ export class CentralizedKernelWorker {
         }
       }
       state.parentTidWritten = false;
+    }
+    const groupedReplica = state.pendingAttachment?.groupedReplica;
+    if (groupedReplica) {
+      const store = this.#memoryGroupReplicas.get(groupedReplica);
+      if (!store) this.#memoryGroupProtocolError('Clone rollback lost its exact replica');
+      this.#quarantineStartedMemoryGroupReplica(store, groupedReplica, entry, true);
     }
     this.#rollbackKernelThreadWithinKernelEntry(
       channel.pid,

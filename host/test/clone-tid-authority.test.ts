@@ -667,6 +667,9 @@ describe("thread channel ownership", () => {
 
 describe("clone transport with virtual images", () => {
   function group(h: ReturnType<typeof makeCloneHarness>) {
+    const callbacks = (h.worker as any).callbacks;
+    callbacks.onGroupedClone = callbacks.onClone;
+    callbacks.onClone = vi.fn(() => { throw Error('Grouped clone reached the ordinary backend'); });
     const store = new MemoryGroupImageStore(7, 64, 64);
     const task = { group: 7, pid: PID, tid: PID, serial: 1n, generation: 0n };
     const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: WASM_PAGE_SIZE });
@@ -681,22 +684,40 @@ describe("clone transport with virtual images", () => {
   const parentTidPointer = 4 * WASM_PAGE_SIZE + 256;
   const args = () => [CLONE_ARGS[0] | 0x00100000, CLONE_ARGS[1], parentTidPointer, CLONE_ARGS[3], CLONE_ARGS[4], 0];
 
-  it("attaches a source-bound channel and writes the logical parent TID", async () => {
+  it('refuses grouped clone before allocating a task when only the ordinary backend is present', () => {
+    const h = makeCloneHarness(async () => {}), { store } = group(h);
+    (h.worker as any).callbacks.onGroupedClone = undefined;
+    try {
+      h.dispatch(args());
+      expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 95 });
+      expect(h.kernelHandleChannel).not.toHaveBeenCalled();
+      expect((h.worker as any).callbacks.onClone).not.toHaveBeenCalled();
+    } finally { store.close(); }
+  });
+
+  it("attaches through the virtual source but refuses success without a published Worker owner", async () => {
     let h!: ReturnType<typeof makeCloneHarness>;
+    let attached: any;
     h = makeCloneHarness(async attachment => {
       expect(attachment).toMatchObject({ tid: KERNEL_TID, fnPtr: 11, argPtr: 22 });
+      expect(attachment).toMatchObject({ memoryBackend: 'grouped' });
+      expect(attachment).not.toHaveProperty('memory');
       h.worker.attachThreadChannel(attachment as any, 3 * WASM_PAGE_SIZE);
+      attached = (h.worker as any).processes.get(PID).channels[1];
+      expect(processDataView(attached.source).getInt32(parentTidPointer, true)).toBe(KERNEL_TID);
     }, KERNEL_TID, false);
     const { store, source } = group(h);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       h.dispatch(args());
       await vi.waitFor(() => expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_COMPLETE));
-      expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: KERNEL_TID, errno: 0 });
-      expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(KERNEL_TID);
-      const attached = (h.worker as any).processes.get(PID).channels[1];
+      expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12 });
+      expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(0);
       expect(attached.source).toBe(source); expect(attached.i32View).toBeUndefined();
-      expect(h.notifyThreadExit).not.toHaveBeenCalled();
-    } finally { store.close(); }
+      expect(h.notifyThreadExit).toHaveBeenCalledExactlyOnceWith(PID, KERNEL_TID, 0);
+      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('without publishing an observed Worker'));
+    } finally { consoleError.mockRestore(); store.close(); }
   });
 
   it.each([false, true])("refuses an old attachment on the same backing and rolls back its own TID (revoked=%s)", async revoke => {

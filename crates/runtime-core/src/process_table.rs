@@ -759,6 +759,11 @@ impl ProcessTable {
         Ok(())
     }
 
+    pub(crate) fn memory_group_prepared_admission(&self, execution: crate::memory_group::GroupExecution)
+        -> Result<crate::memory_group::GroupAdmission, Errno> {
+        self.memory_groups.prepared_image_task(execution)
+    }
+
     /// Starting a Worker needs the current live task. Retirement intentionally
     /// resolves older receipts without consulting the replacement image.
     pub fn memory_group_task_action(

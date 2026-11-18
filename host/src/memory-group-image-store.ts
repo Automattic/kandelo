@@ -44,6 +44,7 @@ interface Image {
   source?: GroupProcessAddressSpace;
   exposed: boolean;
   pause?: ImagePause;
+  replicaPreparationWaiters?: Set<() => void>;
   mapping?: Mapping;
   /** Removed PTE references stay charged until exact retirement is integrated. */
   retainedMappingPages?: RetainedMappingPages;
@@ -195,6 +196,19 @@ export class MemoryGroupImageStore {
     try { return this.replica(receipt, image,
       this.allocate(Math.ceil((G.MEMORY_GROUP_REPLICA_BYTES + image.layout.scratchBytes) / PAGE), allocated)); }
     catch (error) { this.pool.releaseRetiredPages(allocated.flatMap(pages)); throw error; }
+  }
+
+  imageHasExecutionPause(handle: PreparedGroupReplica): boolean {
+    return this.owned(handle).image.pause !== undefined;
+  }
+  /** Membership preparation waits on the existing image owner, without a
+   * native futex observer or a timer masquerading as a retirement fence. */
+  waitForImageExecutionPause(handle: PreparedGroupReplica): Promise<void> {
+    const image = this.owned(handle).image;
+    if (!image.pause) return Promise.resolve();
+    return new Promise(resolve => {
+      (image.replicaPreparationWaiters ??= new Set()).add(resolve);
+    });
   }
 
   /** Physical private-page inheritance only. The coordinator must freeze and
@@ -417,6 +431,8 @@ export class MemoryGroupImageStore {
       resumed = current && resumed;
     }
     image.pause = undefined; pause.image = undefined; pause.members = [];
+    for (const resolve of image.replicaPreparationWaiters ?? []) resolve();
+    image.replicaPreparationWaiters = undefined;
     return resumed;
   }
 
@@ -701,6 +717,8 @@ export class MemoryGroupImageStore {
   private revokeSource(image: Image): void {
     image.sourceLive.value = false;
     image.source?.detachHostAccess(); image.source = undefined;
+    for (const resolve of image.replicaPreparationWaiters ?? []) resolve();
+    image.replicaPreparationWaiters = undefined;
   }
 
   /** Only after Rust accepts cancelUnconstructed for this exact receipt. This
@@ -735,7 +753,17 @@ export class MemoryGroupImageStore {
     replica.live.value = false;
     replica.source?.detachHostAccess(); replica.source = undefined;
     replica.state = 'stopped';
+    const barrier = replica.image.pause;
+    if (barrier) barrier.members = barrier.members.filter(member => member.replica !== replica);
+    if (replica.pause) {
+      replica.pause.replica = undefined;
+      replica.pause = undefined;
+    }
     replica.image.replicas.delete(replica);
+    // An engine observer may still be waiting for this exact member's ACK.
+    // Wake it to revalidate membership; never invent an execution ACK or free
+    // its control pages before that observer has actually settled.
+    Atomics.notify(this.controls(replica), G.MEMORY_GROUP_REPLICA_ACK / 4);
   }
 
   quarantine(handle: PreparedGroupReplica): void {

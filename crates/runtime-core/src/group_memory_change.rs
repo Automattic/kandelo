@@ -46,6 +46,7 @@ pub(crate) struct Pending {
     population: Option<Population>,
     population_position: usize,
     population_eof: bool,
+    control_thread: Option<crate::memory_group::GroupAdmission>,
 }
 pub(crate) struct Population {
     pub address: usize,
@@ -216,7 +217,33 @@ impl ProcessTable {
         let description = Description { token: plan.serial(), receipt, effect: plan.effect(),
             population_address: population.as_ref().map_or(0, |p| p.address),
             population_length: population.as_ref().map_or(0, |p| p.len) };
-        *storage = Some(Pending { description, plan, population, population_position: 0, population_eof: false });
+        *storage = Some(Pending { description, plan, population, population_position: 0, population_eof: false, control_thread: None });
+        proc.pending_group_memory_change = Some(storage);
+        Ok(description)
+    }
+
+    /// Reserve only the exact unconstructed pthread's control slot. The
+    /// ordinary mapping transaction owns both MM snapshots and physical work.
+    pub fn prepare_group_thread_control(&mut self, pid: u32, caller_tid: u32, thread_tid: u32,
+        observed_pages: u32) -> Result<Description, Errno> {
+        let receipt = self.running_group_memory_caller(pid, caller_tid)?;
+        self.validate_task(pid, thread_tid)?;
+        if thread_tid == pid { return Err(Errno::EINVAL); }
+        let thread = self.memory_group_prepared_admission(crate::memory_group::GroupExecution {
+            pid, tid: thread_tid, exec_generation: receipt.generation,
+        })?;
+        if thread.group().as_raw() != receipt.group { return Err(Errno::ESRCH); }
+        let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
+        if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
+            return Err(Errno::EBUSY);
+        }
+        proc.memory.observe_group_virtual_growth(observed_pages)?;
+        let mut storage = crate::IoBox::try_new(None::<Pending>)?;
+        let plan = proc.memory.prepare_memory_change(MemoryChange::ReserveHost {
+            len: wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize * 65536,
+        })?;
+        let description = Description { token: plan.serial(), receipt, effect: plan.effect(), population_address: 0, population_length: 0 };
+        *storage = Some(Pending { description, plan, population: None, population_position: 0, population_eof: false, control_thread: Some(thread) });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
     }
@@ -230,6 +257,9 @@ impl ProcessTable {
         }
         let receipt = self.running_group_memory_caller(pid, tid)?;
         if pending.description.receipt != receipt { return Err(Errno::ESRCH); }
+        if let Some(thread) = pending.control_thread {
+            if self.memory_group_prepared_admission(thread.execution())? != thread { return Err(Errno::ESRCH); }
+        }
         proc.memory.validate_memory_change(&pending.plan)?;
         Ok(pending.description)
     }
@@ -247,7 +277,8 @@ impl ProcessTable {
             Ok(_) => Ok(pending.description),
             Err((error, plan)) => {
                 *storage = Some(Pending { plan, description: pending.description, population: pending.population,
-                    population_position: pending.population_position, population_eof: pending.population_eof });
+                    population_position: pending.population_position, population_eof: pending.population_eof,
+                    control_thread: pending.control_thread });
                 proc.pending_group_memory_change = Some(storage);
                 Err(error)
             }
@@ -273,7 +304,8 @@ impl ProcessTable {
             Ok(()) => Ok(()),
             Err((error, plan)) => {
                 *storage = Some(Pending { plan, description: pending.description, population: pending.population,
-                    population_position: pending.population_position, population_eof: pending.population_eof });
+                    population_position: pending.population_position, population_eof: pending.population_eof,
+                    control_thread: pending.control_thread });
                 proc.pending_group_memory_change = Some(storage);
                 Err(error)
             }
@@ -317,6 +349,43 @@ mod tests {
         (table, pid, admission)
     }
     fn map_args() -> [u64; 6] { [0, P as u64, 3, ANON as u64, u64::MAX, 0] }
+    #[test]
+    fn thread_control_reservation_is_staged_cancellable_and_protected_from_guest_remapping() {
+        let (mut table, pid, _) = setup(true);
+        let tid = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        let original = table.get(pid).unwrap().memory.reserved_regions().to_vec();
+        let first = table.prepare_group_thread_control(pid, pid, tid, 4).unwrap();
+        assert_eq!(table.get(pid).unwrap().memory.reserved_regions(), original);
+        assert_eq!(first.population_length, 0);
+        assert!(matches!(first.effect, Effect::Map { len, prot: 3, .. } if len == 4 * P));
+        table.cancel_group_memory_change(pid, pid, first.token).unwrap();
+        assert_eq!(table.get(pid).unwrap().memory.reserved_regions(), original);
+        let next = table.prepare_group_thread_control(pid, pid, tid, 4).unwrap();
+        table.commit_group_memory_change(pid, pid, next.token).unwrap();
+        let address = next.result();
+        assert!(table.get(pid).unwrap().memory.reserved_regions().iter().any(|r| r.addr == address as usize && r.len == 4 * P));
+        for (syscall, args) in [
+            (Syscall::Munmap, [address, (4 * P) as u64, 0, 0, 0, 0]),
+            (Syscall::Mprotect, [address, (4 * P) as u64, 1, 0, 0, 0]),
+            (Syscall::Mmap, [address, (4 * P) as u64, 3, (ANON | mmap::MAP_FIXED) as u64, u64::MAX, 0]),
+        ] {
+            assert_eq!(table.prepare_group_memory_change(pid, pid, syscall as u32, args, 8), Err(Errno::EINVAL));
+        }
+    }
+    #[test]
+    fn thread_control_commit_requires_the_same_unconstructed_task() {
+        let (mut table, pid, _) = setup(true);
+        let tid = table.create_thread(pid, pid, 0x8000, 0, 0).unwrap();
+        let description = table.prepare_group_thread_control(pid, pid, tid, 4).unwrap();
+        let thread = table.memory_group_task(pid, tid).unwrap().unwrap();
+        table.memory_groups().start(thread).unwrap();
+        assert_eq!(table.validate_group_memory_change(pid, pid, description.token), Err(Errno::EBUSY));
+        assert_eq!(table.commit_group_memory_change(pid, pid, description.token), Err(Errno::EBUSY));
+        table.cancel_group_memory_change(pid, pid, description.token).unwrap();
+        assert_eq!(table.prepare_group_thread_control(pid, pid, tid, 4), Err(Errno::EBUSY));
+        assert_eq!(table.prepare_group_thread_control(pid, pid, pid, 4), Err(Errno::EINVAL));
+        assert_eq!(table.prepare_group_thread_control(pid, pid, tid + 100, 4), Err(Errno::ESRCH));
+    }
     #[test]
     fn private_fork_observes_actual_growth_before_child_snapshot_without_resetting_live_layout() {
         let (mut table, pid, admission) = setup(true);

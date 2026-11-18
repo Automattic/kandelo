@@ -57,6 +57,8 @@ const include = [
   "test/fork-worker-import-exceptions.test.ts",
   "test/fork-replay-gate.test.ts",
   "test/grouped-fork-launch.test.ts",
+  "test/grouped-thread-launch.test.ts",
+  "test/thread-allocator.test.ts",
   "test/fork-replay-host-parity.test.ts",
   "test/process-generation-detach.test.ts",
   "test/node-process-teardown-ordering.test.ts",

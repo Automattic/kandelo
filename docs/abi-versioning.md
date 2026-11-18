@@ -18,6 +18,13 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 15 adds exact on-demand grouped pthread control
+reservation. Rust stages a host-reserved interval for the same unconstructed
+TID; the host commits its pages through the image mapping transaction before
+attaching the thread. The descriptor format is unchanged, and controls remain
+protected from guest remapping. Program ABI 56 and its supported digest are
+unchanged; the host and kernel must be rebuilt together.
+
 Kernel-host adapter version 14 connects exact grouped Worker stop receipts
 to execution admission retirement. Grouped child exit waits remain pending
 until all execution admissions retire, and the final receipt wakes parked
