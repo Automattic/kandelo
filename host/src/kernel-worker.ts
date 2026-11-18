@@ -2051,6 +2051,21 @@ export interface ForkLaunchRequest {
   readonly borrowedReplay?: ForkBorrowedReplayWorkspace;
 }
 
+/** Disposable-kernel-realm launch only. The child already owns its private
+ * page snapshot and Rust admission; never clone the group's physical Memory.
+ * Resolve after normal Worker continuation replay/adoption, and retire any
+ * partial host registration before rejecting, as for ordinary onFork.
+ * Result-bearing kernel calls retry only pre-entry contention through
+ * retryKernelEntryResult, separately for each publication/registration step.
+ */
+export interface GroupedForkLaunchRequest {
+  readonly parentPid: number;
+  readonly childPid: number;
+  readonly parentSource: GroupProcessAddressSpace;
+  readonly childReplica: PreparedGroupReplica;
+  readonly continuation: ForkContinuationContext;
+}
+
 export interface ResolvedSpawnProgram {
   programBytes: ArrayBuffer;
   programModule: WebAssembly.Module;
@@ -2176,21 +2191,24 @@ interface PendingEntropyRead {
   request: object;
   timer: ReturnType<typeof setTimeout> | null;
 }
-interface PendingGroupMapping {
+interface PendingGroupImageOperation {
   readonly channel: ChannelInfo;
   readonly registration: ProcessRegistration;
   readonly request: FrozenChannelRequest;
   readonly receipt: MemoryGroupTaskReceipt;
+  predecessor?: PendingGroupImageOperation;
+  readonly store: MemoryGroupImageStore;
+  readonly finished: Promise<void>;
+  readonly finish: () => void;
+  barrier?: GroupImageExecutionPause;
+  done: boolean;
+}
+interface PendingGroupMapping extends PendingGroupImageOperation {
+  readonly kind: 'mapping';
   readonly syscall: number;
   readonly args: readonly bigint[];
   description?: GroupMemoryChangeDescription;
   oldBreak?: number;
-  predecessor?: PendingGroupMapping;
-  readonly store: MemoryGroupImageStore;
-  /** Mapping custody only; engine observer and execution fences are separate. */
-  readonly finished: Promise<void>;
-  readonly finish: () => void;
-  barrier?: GroupImageExecutionPause;
   physical?: PreparedGroupMapping;
   populationCursor: number;
   cancelling: boolean;
@@ -2198,7 +2216,20 @@ interface PendingGroupMapping {
   suppressCompletion: boolean;
   failure: number;
   scheduled: boolean;
-  done: boolean;
+}
+interface PendingGroupFork extends PendingGroupImageOperation {
+  readonly kind: 'fork';
+  readonly args: number[];
+  readonly launch: NonNullable<CentralizedKernelCallbacks['onGroupedFork']>;
+  continuation?: ForkContinuationContext;
+  allocation?: ForkRollbackState;
+  childReceipt?: MemoryGroupTaskReceipt;
+  prepared?: PreparedGroupReplica;
+  launching: boolean;
+  cancelling: boolean;
+  suppressCompletion: boolean;
+  failure: number;
+  scheduled: boolean;
 }
 
 interface BlockingRetryDisposition extends FrozenCancellationPointIdentity {
@@ -2314,6 +2345,8 @@ export interface CentralizedKernelCallbacks {
    * continuation address in `request.continuation.forkBufAddr`.
    */
   onFork?: (request: ForkLaunchRequest) => Promise<number[]>;
+  /** Explicit grouped backend. No fallback to the native Memory-copy path. */
+  onGroupedFork?: (request: GroupedForkLaunchRequest) => Promise<number[]>;
 
   /**
    * Called when a process calls execve. The callback should resolve the
@@ -3082,6 +3115,8 @@ export class CentralizedKernelWorker {
   private processes = new Map<number, ProcessRegistration>();
   private pendingEntropyReads = new Map<ChannelInfo, PendingEntropyRead>();
   private pendingGroupMappings = new Map<ChannelInfo, PendingGroupMapping>();
+  private pendingGroupForks = new Map<ChannelInfo, PendingGroupFork>();
+  private pendingGroupImageOperations = new Map<ChannelInfo, PendingGroupMapping | PendingGroupFork>();
   /** Detached cleanup remains owned even after its exact channel is removed. */
   private retiringGroupMappings = new Set<PendingGroupMapping>();
   private activeChannels: ChannelInfo[] = [];
@@ -8124,9 +8159,7 @@ export class CentralizedKernelWorker {
       if (status < 0) { result = status; return undefined; }
       try { result = store.publish(handle, admitted); }
       catch (error) {
-        store.quarantine(handle);
-        const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.quarantine, entry);
-        if (status < 0) this.#memoryGroupProtocolError("Unable to quarantine failed replica publication", error);
+        this.#quarantineStartedMemoryGroupReplica(store, handle, entry);
         throw error;
       }
       return undefined;
@@ -8156,6 +8189,22 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     return result;
+  }
+
+  #quarantineStartedMemoryGroupReplica(store: MemoryGroupImageStore, handle: PreparedGroupReplica,
+    entry: KernelWorkerEntryContext, allowRetired = false): void {
+    const receipt = store.receipt(handle);
+    const begin = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.beginRetirement, entry);
+    if (begin !== 0 && !(allowRetired && (begin === -EBUSY || begin === -ESRCH))) {
+      this.#memoryGroupProtocolError('Unable to begin exact failed replica retirement');
+    }
+    try { store.quarantine(handle); }
+    finally {
+      // Even failed physical stop control must retain a truthful Rust ledger.
+      if (begin !== -ESRCH && this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.quarantine, entry) !== 0) {
+        this.#memoryGroupProtocolError('Unable to quarantine exact failed replica');
+      }
+    }
   }
 
   inspectMemoryGroupBacking(group: number): ReturnType<MemoryGroupImageStore["snapshot"]> | undefined {
@@ -11634,6 +11683,14 @@ export class CentralizedKernelWorker {
   }
 
   private retireChannelHostWaits(channel: ChannelInfo, entry?: KernelWorkerEntryContext): void {
+    const fork = this.pendingGroupForks?.get(channel);
+    if (fork) {
+      fork.cancelling = true; fork.suppressCompletion = true;
+      if (entry) this.#cancelGroupFork(fork, entry);
+      else this.#runOrDeferKernelEntry('retire exact grouped fork', next => {
+        this.#cancelGroupFork(fork, next); return undefined;
+      }, fork);
+    }
     const mapping = this.pendingGroupMappings?.get(channel);
     if (mapping) {
       mapping.cancelling = true; mapping.suppressCompletion = true;
@@ -11710,6 +11767,9 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingGroupMappings?.keys() ?? []) {
+      if (channel.pid === pid) channels.add(channel);
+    }
+    for (const channel of this.pendingGroupForks?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingSelectRetries?.keys() ?? []) {
@@ -12680,8 +12740,12 @@ export class CentralizedKernelWorker {
   ): FrozenChannelRequest | null {
     const active = this.activeChannelRequests.get(channel);
     if (active) {
-      const mapping = this.pendingGroupMappings.get(channel);
-      if (mapping) { this.#advanceGroupMapping(mapping, entry); return null; }
+      const grouped = this.pendingGroupImageOperations.get(channel);
+      if (grouped) {
+        if (grouped.kind === 'fork') this.#advanceGroupFork(grouped, entry);
+        else this.#advanceGroupMapping(grouped, entry);
+        return null;
+      }
       const entropy = this.pendingEntropyReads.get(channel);
       if (entropy) {
         if (this.#completeTerminalTeardownChannel(channel, entry)
@@ -16860,6 +16924,10 @@ export class CentralizedKernelWorker {
       cancel(channel.pid, pending.tid, pending.token);
     }
     this.pendingEntropyReads.clear();
+    for (const pending of this.pendingGroupForks.values()) {
+      pending.cancelling = true; pending.suppressCompletion = true;
+      this.#cancelGroupFork(pending, entry);
+    }
     for (const pending of this.pendingGroupMappings.values()) {
       pending.cancelling = true; pending.suppressCompletion = true;
       this.retiringGroupMappings.add(pending); this.#cancelGroupMapping(pending, entry);
@@ -20070,8 +20138,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const mapping = this.pendingGroupMappings.get(channel);
-    if (mapping) { this.#advanceGroupMapping(mapping, entry); return; }
+    const grouped = this.pendingGroupImageOperations.get(channel);
+    if (grouped) {
+      if (grouped.kind === 'fork') this.#advanceGroupFork(grouped, entry);
+      else this.#advanceGroupMapping(grouped, entry);
+      return;
+    }
     const entropy = this.pendingEntropyReads.get(channel);
     if (entropy) {
       this.#advanceEntropyRead(channel, entropy, entry);
@@ -21344,7 +21416,7 @@ export class CentralizedKernelWorker {
       result.retVal, result.errVal, [], undefined, entry);
   }
 
-  #groupMappingCallerCurrent(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): boolean {
+  #groupMappingCallerCurrent(pending: PendingGroupImageOperation, entry: KernelWorkerEntryContext): boolean {
     const { channel, registration, request } = pending;
     if (this.processes.get(channel.pid) !== registration || channel.source !== registration.source
         || channel.memory !== registration.memory || !this.isRegisteredChannel(channel)
@@ -21354,6 +21426,198 @@ export class CentralizedKernelWorker {
     if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH) return false;
     if (generation instanceof Error) this.#memoryGroupProtocolError("Cannot validate pending mapping generation", generation);
     return generation === registration.execGeneration;
+  }
+
+  #beginGroupFork(channel: ChannelInfo, args: number[], entry: KernelWorkerEntryContext): void {
+    const previous = this.pendingGroupForks.get(channel);
+    if (previous) { this.#advanceGroupFork(previous, entry); return; }
+    const registration = this.processes.get(channel.pid), request = this.activeChannelRequests.get(channel);
+    const grouped = registration?.grouped, launch = this.callbacks.onGroupedFork;
+    if (!registration || !request || !grouped || !launch || registration.source !== channel.source) {
+      this.#memoryGroupProtocolError('Grouped fork has no exact image/request/backend');
+    }
+    this.#bindKernelTidForChannel(channel, entry);
+    const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(channel.pid, this.guestTidForChannel(channel), registration.execGeneration, entry);
+    if (typeof receipt === 'number' || receipt.group !== grouped.receipt.group) this.#memoryGroupProtocolError('Grouped fork caller has lost its image admission');
+    let finish!: () => void;
+    const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+    const pending: PendingGroupFork = { kind: 'fork', channel, registration, request, receipt, store: grouped.store,
+      args: [...args], launch, finished, finish, predecessor: Array.from(this.pendingGroupImageOperations.values()).reverse().find(other => other.registration === registration && !other.done),
+      launching: false, cancelling: false, suppressCompletion: false, failure: EIO, scheduled: false, done: false };
+    channel.handling = true;
+    this.pendingGroupImageOperations.set(channel, pending);
+    this.pendingGroupForks.set(channel, pending); this.#advanceGroupFork(pending, entry);
+  }
+
+  #advanceGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    if (pending.done || pending.launching) return;
+    if (!this.#groupMappingCallerCurrent(pending, entry)) { pending.cancelling = true; pending.suppressCompletion = true; }
+    if (pending.cancelling) { this.#cancelGroupFork(pending, entry); return; }
+    if (this.deferChannelWhileStopped(pending.channel)) return;
+    while (pending.predecessor?.done) pending.predecessor = pending.predecessor.predecessor;
+    if (pending.predecessor) {
+      if (!pending.scheduled) {
+        const predecessor = pending.predecessor; pending.scheduled = true;
+        entry.deferProtocolEffect(() => {
+          predecessor.finished.then(() => this.#queueGroupForkTurn(pending)).catch(error => this.#failKernelInstance(error));
+        });
+      }
+      return;
+    }
+    if (!pending.barrier) pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle);
+    if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier)) { this.#scheduleGroupFork(pending, 'barrier', entry); return; }
+    if (!pending.allocation) {
+      const extent = pending.store.virtualExtentAtBarrier(pending.barrier);
+      if (typeof extent !== 'number') { this.#scheduleGroupFork(pending, extent === 'waiting' ? 'barrier' : 'locks', entry); return; }
+      const channel = pending.channel, parentPid = channel.pid;
+      try {
+        const forkBufAddr = readForkContinuationAnchor(channel.source, channel.channelOffset - FORK_BUF_SIZE, 4);
+        const thread = this.threadForkContexts.get(`${parentPid}:${channel.channelOffset}`);
+        const continuation: ForkContinuationContext = thread ? { kind: 'thread', fnPtr: thread.fnPtr, argPtr: thread.argPtr,
+          forkBufAddr, slotStart: channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE,
+          slotLen: PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE } : { kind: 'main', forkBufAddr };
+        if (continuation.kind === 'thread') checkedWasmAddressRange(continuation.slotStart, continuation.slotLen, 4, 'grouped fork caller control slot');
+        pending.continuation = continuation;
+      } catch {
+        pending.cancelling = true; pending.failure = EFAULT; this.#cancelGroupFork(pending, entry); return;
+      }
+      const fork = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_fork;
+      if (typeof fork !== 'function') { pending.cancelling = true; pending.failure = ERRNO.EOPNOTSUPP; this.#cancelGroupFork(pending, entry); return; }
+      const r = pending.receipt;
+      const childPid = fork(r.group, r.pid, r.tid, Number(r.serial & 0xffffffffn), Number(r.serial >> 32n),
+        Number(r.generation & 0xffffffffn), Number(r.generation >> 32n), extent);
+      if (!Number.isSafeInteger(childPid) || childPid === 0 || childPid < -4095 || childPid > MAX_KERNEL_TASK_ID) {
+        this.#memoryGroupProtocolError('Invalid grouped fork allocation result');
+      }
+      if (childPid < 0) { pending.cancelling = true; pending.failure = -childPid; this.#cancelGroupFork(pending, entry); return; }
+      const childExecGeneration = this.#processExecGenerationWithinKernelEntry(childPid, entry);
+      if (childExecGeneration instanceof Error) this.#memoryGroupProtocolError('Cannot confirm allocated grouped fork child', childExecGeneration);
+      pending.allocation = { registration: pending.registration, request: pending.request,
+        memory: channel.memory, source: channel.source, origArgs: pending.args,
+        childPid, childExecGeneration, childOwned: true, transferred: false };
+      const childReceipt = this.#readMemoryGroupReceiptWithinKernelEntry(childPid, childPid, childExecGeneration, entry);
+      if (typeof childReceipt === 'number' || childReceipt.group !== r.group) this.#memoryGroupProtocolError('Allocated fork child has no exact group admission');
+      pending.childReceipt = childReceipt;
+      const clear = this.#kernelInstanceForEntry(entry).exports.kernel_clear_fork_child;
+      if (typeof clear !== 'function' || clear(childPid) !== 0) this.#memoryGroupProtocolError('Cannot clear allocated grouped fork child marker');
+      // The grouped MM inherited every reserved control interval; no fresh
+      // all-writable image or ordinary thread-slot reservation may replace it.
+      try { this.inheritHostFdMirrors(parentPid, childPid, entry); }
+      catch (error) {
+        this.#rethrowKernelEntryFatal(error);
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupFork(pending, entry); return;
+      }
+    }
+    const admitted = this.#exactMemoryGroupReceiptWithinKernelEntry(pending.childReceipt!, entry);
+    if (typeof admitted === 'number') { pending.cancelling = true; pending.failure = -admitted; this.#cancelGroupFork(pending, entry); return; }
+    if (!pending.prepared) {
+      let prepared: ReturnType<MemoryGroupImageStore['preparePrivateFork']>;
+      try { prepared = pending.store.preparePrivateFork(pending.barrier, admitted); }
+      catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupFork(pending, entry); return;
+      }
+      if (prepared === 'waiting' || prepared === 'busy') { this.#scheduleGroupFork(pending, prepared === 'waiting' ? 'barrier' : 'pool', entry); return; }
+      if (prepared === 'exhausted') { pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupFork(pending, entry); return; }
+      pending.prepared = prepared; this.#memoryGroupReplicas.set(prepared, pending.store);
+    }
+    this.#launchGroupFork(pending, entry);
+  }
+
+  #launchGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    const state = pending.allocation!, handle = pending.prepared!;
+    pending.launching = true;
+    const reject = (cause: unknown) => {
+      this.#runOrDeferAllocatedForkCompletionKernelEntry(state.childPid, 'grouped fork launch rejection', next => {
+        pending.launching = false; pending.cancelling = true; pending.failure = ENOMEM;
+        next.deferObserverEffect(() => { console.error(`[kernel-worker] grouped fork launch failed: ${String(cause)}`); return undefined; });
+        this.#cancelGroupFork(pending, next); return undefined;
+      }, state);
+    };
+    entry.deferProtocolTransactionStart(() => {
+      let launch: Promise<number[]>;
+      try {
+        launch = this.#resolvePromise(pending.launch({ parentPid: pending.receipt.pid, childPid: state.childPid,
+          parentSource: pending.registration.source as GroupProcessAddressSpace, childReplica: handle, continuation: pending.continuation! }));
+      } catch (cause) { reject(cause); return undefined; }
+      this.#continuePromise(launch, () => {
+        this.#runOrDeferAllocatedForkCompletionKernelEntry(state.childPid, 'grouped fork launch completion', next => {
+          if (!this.#registeredMemoryGroupReplicas.has(handle) || pending.store.isUnexposed(handle)) {
+            this.#memoryGroupProtocolError('Grouped fork callback resolved without child image adoption');
+          }
+          state.transferred = true; state.childOwned = false;
+          pending.launching = false; this.#finishGroupFork(pending, next);
+          try {
+            this.#finalizePendingChildTerminationWithinKernelEntry(state.childPid, next);
+            if (this.#isCurrentForkImageWithinKernelEntry(pending.channel, state, next)) {
+              this.#completeForkWithinKernelEntry(pending.channel, state.origArgs, state.childPid, 0, next);
+            }
+          } catch (cause) { this.#rethrowKernelEntryFatal(cause); this.#rollbackForkWithinKernelEntry(pending.channel, state, cause, next); }
+          return undefined;
+        }, state);
+      }, reject);
+      return undefined;
+    });
+  }
+
+  #finishGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    if (pending.done) return;
+    if (pending.barrier) pending.store.resumeImageExecutionPause(pending.barrier);
+    pending.done = true;
+    if (this.pendingGroupForks.get(pending.channel) === pending) this.pendingGroupForks.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    pending.prepared = undefined; pending.childReceipt = undefined; pending.allocation = undefined;
+    entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+  }
+
+  #cancelGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    // A launched callback owns partial Worker publication until it settles.
+    // Parent teardown cannot revoke its child or infer a terminal fence.
+    if (pending.done || pending.launching) return;
+    const state = pending.allocation, receipt = pending.childReceipt, handle = pending.prepared;
+    try {
+      if (receipt) {
+        if (handle && this.#memoryGroupReplicas.get(handle) !== pending.store) {
+          // Callback already consumed exact unconstructed cancellation.
+        } else if (handle && !pending.store.isUnexposed(handle)) {
+          this.#quarantineStartedMemoryGroupReplica(pending.store, handle, entry, true);
+          // Never return published storage, including failed Worker launches.
+        } else {
+          const cancel = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+          if (cancel !== 0 && cancel !== -ESRCH) this.#memoryGroupProtocolError('Cannot cancel unconstructed fork child');
+          if (handle) { pending.store.cancelUnexposed(handle); this.#memoryGroupReplicas.delete(handle); }
+          const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+          if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing fork image retirement export');
+          const status = retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n));
+          if (status !== 0 && status !== -ERRNO.ENOENT) this.#memoryGroupProtocolError('Cannot retire exact unconstructed fork image');
+          if (handle) pending.store.releaseUnexposedImage(receipt);
+        }
+      }
+      if (state) this.#rollbackForkAllocationWithinKernelEntry(state, entry);
+    } catch (cause) { this.#memoryGroupProtocolError('Unable to roll back exact grouped fork owner', cause); }
+    this.#finishGroupFork(pending, entry);
+    if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
+      this.#completeForkWithinKernelEntry(pending.channel, pending.args, -1, pending.failure, entry);
+    }
+  }
+
+  #queueGroupForkTurn(pending: PendingGroupFork): void {
+    if (pending.done || this.#kernelFatalError !== null || !this.#kernelInstance) return;
+    this.#registerTimeout(() => {
+      pending.scheduled = false;
+      if (pending.done || this.#kernelFatalError !== null) return;
+      this.#runOrDeferKernelEntry('exact grouped fork continuation', next => { this.#advanceGroupFork(pending, next); return undefined; }, pending);
+    }, 0);
+  }
+
+  #scheduleGroupFork(pending: PendingGroupFork, target: 'barrier' | 'locks' | 'pool', entry: KernelWorkerEntryContext): void {
+    if (pending.done || pending.scheduled) return;
+    pending.scheduled = true;
+    entry.deferProtocolEffect(() => {
+      if (pending.done || this.#kernelFatalError !== null) return;
+      pending.store.waitForMappingProgress(pending.barrier!, target).then(() => this.#queueGroupForkTurn(pending))
+        .catch(error => this.#failKernelInstance(error));
+    });
   }
 
   #readGroupMemoryBreak(pid: number, tid: number, entry: KernelWorkerEntryContext): number {
@@ -21399,11 +21663,12 @@ export class CentralizedKernelWorker {
     }
     let finish!: () => void;
     const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
-    const predecessor = Array.from(this.pendingGroupMappings.values()).reverse().find(other => other.registration === registration && !other.done);
+    const predecessor = Array.from(this.pendingGroupImageOperations.values()).reverse().find(other => other.registration === registration && !other.done);
     // Host custody is allocated before asking Rust to retain a metadata plan.
-    const pending: PendingGroupMapping = { channel, registration, request, receipt, syscall, args: Object.freeze(copied),
+    const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall, args: Object.freeze(copied),
       store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
       suppressCompletion: false, failure: EIO, scheduled: false, done: false, populationCursor: 0 };
+    this.pendingGroupImageOperations.set(channel, pending);
     this.pendingGroupMappings.set(channel, pending); this.#advanceGroupMapping(pending, entry);
   }
 
@@ -21562,6 +21827,7 @@ export class CentralizedKernelWorker {
       this.#cancelGroupMapping(pending, entry); return;
     }
     pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     pending.store.resumeImageExecutionPause(pending.barrier);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
     this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
@@ -21579,6 +21845,7 @@ export class CentralizedKernelWorker {
     if (pending.barrier) pending.store.resumeImageExecutionPause(pending.barrier);
     pending.done = true; this.retiringGroupMappings.delete(pending);
     if (this.pendingGroupMappings.get(pending.channel) === pending) this.pendingGroupMappings.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
     if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
       // brk's raw ABI reports the unchanged break on memory-admission failure.
@@ -22139,6 +22406,12 @@ export class CentralizedKernelWorker {
     mode: ProcessForkMode,
     entry: KernelWorkerEntryContext,
   ): void {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      if (mode !== PROCESS_FORK_MODE_FORK || !this.callbacks.onGroupedFork) {
+        this.#completeForkWithinKernelEntry(channel, _origArgs, -1, ERRNO.EOPNOTSUPP, entry); return;
+      }
+      this.#beginGroupFork(channel, _origArgs, entry); return;
+    }
     if (!this.callbacks.onFork) {
       // No fork handler — return -ENOSYS
       this.#completeForkWithinKernelEntry(

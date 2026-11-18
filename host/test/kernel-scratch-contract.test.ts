@@ -606,6 +606,24 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     why: "This exact (i32,i32,i32)->i32 export releases only Rust image custody identified by PID and both unsigned generation halves, after exact unexposed task cancellation. It borrows no kernel pointer or memory. Physical pages return only on status0; EBUSY retains the root.",
   },
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#advanceGroupFork::kernel-export-direct-use::fork(r.group, r.pid, r.tid, Number(r.serial & 0xffffffffn), Number(r.serial >> 32n), Number(r.generation & 0xffffffffn), Number(r.generation >> 32n), extent)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "Host13 kernel_group_memory_fork takes eight i32 control scalars: group/PID/TID, unsigned receipt serial/generation halves and paused logical page count. It returns a kernel-assigned child PID or errno. No parameter is a kernel pointer, byte range or allocator authority; this exact call stays inside the lexical kernel entry after the image barrier.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#advanceGroupFork::kernel-export-direct-use::clear(childPid)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "kernel_clear_fork_child takes only the validated Rust-assigned child PID and returns i32 status. This exact entry-scoped call has no pointer or borrowed scratch output and clears the marker before any child Worker launch.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#cancelGroupFork::kernel-export-direct-use::retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
+    disposition: "kernel-control",
+    count: 1,
+    why: "kernel_memory_group_retire_image takes three i32 control scalars: the exact unpublished child's PID and unsigned image-generation halves. It returns status without any pointer or borrowed storage; this call follows exact unconstructed task cancellation within the same lexical entry.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",
     count: 1,

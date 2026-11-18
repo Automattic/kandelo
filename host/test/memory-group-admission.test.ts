@@ -9,6 +9,10 @@ import * as G from '../src/generated/program-extensions';
 import { processDataView } from '../src/process-memory-views';
 import { MemoryGroupPagePool } from '../src/memory-group-pool';
 import { createKernelScratchTestInstance } from './support/kernel-scratch-instance';
+import { writeForkContinuationAnchor } from '../src/fork-continuation';
+import { FORK_SAVE_BUFFER_SIZE } from '../src/process-memory';
+import { retryKernelEntryResult } from '../src/kernel-entry-retry';
+import { HOST_INTERCEPTED_SYSCALLS, WPK_FORK_LINKED_FRAME_POINTER_WIDTHS } from '../src/generated/abi';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
 const groupedOptions = { brkBase: 3 * 65536, brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 };
 function harness(pointerWidth: 4 | 8 = 4) {
@@ -20,6 +24,10 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_memory_group_capabilities: () => P.capability_admission | P.mapping.capability | P.layout.capability,
     kernel_group_memory_layout_install: vi.fn((pointer: number | bigint, length: number) => { layoutRecords.push(new Uint8Array(memory.buffer, Number(pointer), length).slice()); return 0; }),
     kernel_group_memory_break: vi.fn(() => BigInt(3 * 65536)),
+    kernel_group_memory_fork: vi.fn(() => -95),
+    kernel_clear_fork_child: vi.fn(() => 0),
+    kernel_remove_process: vi.fn(() => 0),
+    kernel_drain_wakeup_events: vi.fn(() => 0),
     kernel_group_memory_change_prepare: vi.fn(() => -95),
     kernel_group_memory_change_read: vi.fn(() => -95),
     kernel_group_memory_change_validate: vi.fn(() => -95),
@@ -182,7 +190,7 @@ describe('kernel-Worker memory group admission', () => {
     // generation, so even the already published main accessor is revoked.
     expect(worker.inspectMemoryGroupBacking(23)).toMatchObject({ allocatedPages: before, quarantinedReplicas: 2, exposedReplicas: 0 });
     expect(implementations.kernel_memory_group_task_action.mock.calls.map((call: any[]) => call[2]))
-      .toEqual([P.task_actions.start, P.task_actions.start, P.task_actions.quarantine]);
+      .toEqual([P.task_actions.start, P.task_actions.start, P.task_actions.beginRetirement, P.task_actions.quarantine]);
     expect(() => worker.cancelUnexposedMemoryGroupReplica(peer)).toThrow();
     expect(() => launch.source.readBytes(0, 1)).toThrow();
   });
@@ -483,12 +491,185 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
     return kw.pendingGroupMappings.get(channel);
   };
   const close = async () => {
+    const fork = kw.pendingGroupForks.get(channel);
+    if (fork) { kw.retireChannelHostWaits(channel); await fork.finished; }
     const pending = kw.pendingGroupMappings.get(channel);
     if (pending) { kw.retireChannelHostWaits(channel); await pending.finished; }
     store.close();
   };
   return { ...h, kw, page, token, registration, channel, store, launch, captured, observedPages, effect, completed, completions, control, acknowledge, dispatch, close };
 }
+
+function forkDispatchHarness() {
+  const h = mappingDispatchHarness(), generations = new Map([[100, GENERATION]]);
+  const ordinary = vi.fn(), fatal = vi.fn();
+  h.kw.callbacks.onFork = ordinary; h.kw.callbacks.onKernelFatal = fatal;
+  h.implementations.kernel_get_process_exec_generation = (pid: number, pointer: number | bigint) => {
+    const value = generations.get(pid); if (value === undefined) return -3;
+    new DataView(h.memory.buffer).setBigUint64(Number(pointer), value, true); return 8;
+  };
+  const originalReceipt = h.implementations.kernel_memory_group_task_receipt;
+  h.implementations.kernel_memory_group_task_receipt = (pid: number, tid: number, pointer: number | bigint, size: number) => {
+    if (!generations.has(pid)) return -3;
+    const count = originalReceipt(pid, tid, pointer, size), view = new DataView(h.memory.buffer, Number(pointer), size);
+    if (pid !== 100) {
+      view.setBigUint64(P.receipt_fields.serial, SERIAL - BigInt(pid), true);
+      view.setBigUint64(P.receipt_fields.generation, generations.get(pid)!, true);
+    }
+    return count;
+  };
+  h.implementations.kernel_group_memory_fork = vi.fn((group, pid, tid, low, high, generationLow, generationHigh, extent) => {
+    expect([group, pid, tid]).toEqual([23, 100, 100]);
+    expect(BigInt(low >>> 0) | BigInt(high >>> 0) << 32n).toBe(SERIAL);
+    expect(BigInt(generationLow >>> 0) | BigInt(generationHigh >>> 0) << 32n).toBe(GENERATION);
+    expect(extent).toBe(4); // Physical storage is sixteen pages, not four.
+    generations.set(101, 0n); return 101;
+  });
+  h.implementations.kernel_remove_process = vi.fn((pid: number) => generations.delete(pid) ? 0 : -3);
+  const forkBufAddr = 3 * h.page + WPK_FORK_LINKED_FRAME_POINTER_WIDTHS[0].chunkHeaderSize;
+  writeForkContinuationAnchor(h.registration.source, h.page - FORK_SAVE_BUFFER_SIZE, 4, forkBufAddr);
+  const adopt = async (request: any) => {
+    const child = await retryKernelEntryResult(() => h.worker.publishMemoryGroupReplica(request.childReplica));
+    if (typeof child === 'number') throw Error(`Child publication ${child}`);
+    child.source.fillBytes(h.page, CH_TOTAL_SIZE, 0);
+    await retryKernelEntryResult(() => h.worker.registerMemoryGroupProcess(request.childReplica, [h.page], { ptrWidth: 4, maxAddr: 16 * h.page, preserveProcessState: true }));
+    return child;
+  };
+  const dispatchFork = () => { h.dispatch(HOST_INTERCEPTED_SYSCALLS.SYS_FORK, [0n, 0n, 0n, 0n, 0n, 0n]); return h.kw.pendingGroupForks.get(h.channel); };
+  return { ...h, generations, ordinary, fatal, forkBufAddr, adopt, dispatchFork };
+}
+
+describe('normal grouped fork dispatch ownership', () => {
+  it('waits for the image barrier, snapshots logical pages once and adopts a private child through an explicit backend', async () => {
+    const h = forkDispatchHarness(); let child: Awaited<ReturnType<typeof h.adopt>> | undefined;
+    h.kw.callbacks.onGroupedFork = vi.fn(async request => {
+      expect(request.continuation).toEqual({ kind: 'main', forkBufAddr: h.forkBufAddr });
+      expect(request.parentSource).toBe(h.registration.source);
+      child = await h.adopt(request); return [h.page];
+    });
+    try {
+      h.registration.source.writeBytes(3 * h.page + 100, Uint8Array.of(0xa5));
+      const pending = h.dispatchFork();
+      expect(h.implementations.kernel_group_memory_fork).not.toHaveBeenCalled();
+      h.acknowledge(); expect(await h.completed).toEqual({ value: 101, errno: 0 }); await pending.finished;
+      expect(h.implementations.kernel_group_memory_fork).toHaveBeenCalledTimes(1);
+      expect(child!.source.readBytes(3 * h.page + 100, 1)).toEqual(Uint8Array.of(0xa5));
+      child!.source.writeBytes(3 * h.page + 100, Uint8Array.of(0x19));
+      expect(h.registration.source.readBytes(3 * h.page + 100, 1)).toEqual(Uint8Array.of(0xa5));
+      expect(h.kw.pendingGroupImageOperations.size).toBe(0);
+      expect(h.ordinary).not.toHaveBeenCalled(); expect(h.fatal).not.toHaveBeenCalled();
+    } finally { await h.close(); }
+  });
+  it('preserves a Rust refusal and releases the parent barrier without allocating child storage', async () => {
+    const h = forkDispatchHarness(), charged = h.store.snapshot().allocatedPages;
+    h.kw.callbacks.onGroupedFork = vi.fn(); h.implementations.kernel_group_memory_fork = vi.fn(() => -11);
+    try {
+      h.dispatchFork(); h.acknowledge(); expect(await h.completed).toEqual({ value: -1, errno: 11 });
+      expect(h.kw.callbacks.onGroupedFork).not.toHaveBeenCalled(); expect(h.store.snapshot().allocatedPages).toBe(charged);
+      expect(Atomics.load(h.control, G.MEMORY_GROUP_REPLICA_REQUEST / 4)).toBe(0);
+      expect(h.fatal).not.toHaveBeenCalled();
+    } finally { await h.close(); }
+  });
+  it('never falls back to ordinary fork when the grouped backend is absent', async () => {
+    const h = forkDispatchHarness();
+    try {
+      h.dispatchFork(); expect(await h.completed).toEqual({ value: -1, errno: 95 });
+      expect(h.ordinary).not.toHaveBeenCalled(); expect(h.implementations.kernel_group_memory_fork).not.toHaveBeenCalled();
+      expect(Atomics.load(h.control, G.MEMORY_GROUP_REPLICA_REQUEST / 4)).toBe(0);
+    } finally { await h.close(); }
+  });
+  it('cancels a retired caller before allocating any child and suppresses its completion', async () => {
+    const h = forkDispatchHarness(); h.kw.callbacks.onGroupedFork = vi.fn();
+    try {
+      const pending = h.dispatchFork(); h.kw.retireChannelHostWaits(h.channel); await pending.finished;
+      expect(h.implementations.kernel_group_memory_fork).not.toHaveBeenCalled(); expect(h.completions).toEqual([]);
+      expect(h.kw.pendingGroupImageOperations.size).toBe(0); expect(h.fatal).not.toHaveBeenCalled();
+    } finally { await h.close(); }
+  });
+  it('retains one Rust child across a busy physical pool and retries before launch', async () => {
+    const h = forkDispatchHarness(), prepare = h.store.preparePrivateFork.bind(h.store);
+    let retry!: () => void; const firstAttempt = new Promise<void>(resolve => { retry = resolve; });
+    const spy = vi.spyOn(h.store, 'preparePrivateFork').mockImplementationOnce(() => { retry(); return 'busy'; }).mockImplementation(prepare);
+    h.kw.callbacks.onGroupedFork = vi.fn(async request => { await h.adopt(request); return [h.page]; });
+    try {
+      h.dispatchFork(); h.acknowledge(); await firstAttempt;
+      expect(await h.completed).toEqual({ value: 101, errno: 0 });
+      expect(h.implementations.kernel_group_memory_fork).toHaveBeenCalledTimes(1); expect(spy).toHaveBeenCalledTimes(2);
+      expect(h.fatal).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); await h.close(); }
+  });
+  it('rolls back exact never-published child pages and Rust admission after launch rejection', async () => {
+    const h = forkDispatchHarness(), charged = h.store.snapshot().allocatedPages;
+    h.kw.callbacks.onGroupedFork = vi.fn(async () => { throw Error('injected pre-publication launch failure'); });
+    try {
+      h.dispatchFork(); h.acknowledge(); expect(await h.completed).toEqual({ value: -1, errno: 12 });
+      expect(h.store.snapshot()).toMatchObject({ images: 1, replicas: 1, allocatedPages: charged });
+      expect(h.generations.has(101)).toBe(false); expect(h.implementations.kernel_memory_group_retire_image).toHaveBeenCalledWith(101, 0, 0);
+      expect(h.fatal).not.toHaveBeenCalled();
+    } finally { await h.close(); }
+  });
+  it('refuses a bad virtual continuation anchor before asking Rust to allocate a child', async () => {
+    const h = forkDispatchHarness(); h.kw.callbacks.onGroupedFork = vi.fn();
+    try {
+      writeForkContinuationAnchor(h.registration.source, h.page - FORK_SAVE_BUFFER_SIZE, 4, 0);
+      h.dispatchFork(); h.acknowledge(); expect(await h.completed).toEqual({ value: -1, errno: 14 });
+      expect(h.implementations.kernel_group_memory_fork).not.toHaveBeenCalled(); expect(h.fatal).not.toHaveBeenCalled();
+    } finally { await h.close(); }
+  });
+  it('queues fork behind a mapping owner before starting its image barrier', async () => {
+    const h = forkDispatchHarness(); let finish!: () => void, started!: () => void;
+    const predecessor = { kind: 'mapping', registration: h.registration, done: false, finished: new Promise<void>(resolve => { finish = resolve; }) };
+    const key = {}; h.kw.pendingGroupImageOperations.set(key, predecessor);
+    const barrierStarted = new Promise<void>(resolve => { started = resolve; });
+    const original = h.store.beginImageExecutionPause.bind(h.store);
+    const spy = vi.spyOn(h.store, 'beginImageExecutionPause').mockImplementation((...args: any[]) => { const value = original(...args); started(); return value; });
+    h.kw.callbacks.onGroupedFork = vi.fn(async request => { await h.adopt(request); return [h.page]; });
+    try {
+      h.dispatchFork(); expect(spy).not.toHaveBeenCalled(); expect(h.implementations.kernel_group_memory_fork).not.toHaveBeenCalled();
+      predecessor.done = true; h.kw.pendingGroupImageOperations.delete(key); finish(); await barrierStarted;
+      h.acknowledge(); expect(await h.completed).toEqual({ value: 101, errno: 0 }); expect(h.fatal).not.toHaveBeenCalled();
+    } finally { predecessor.done = true; h.kw.pendingGroupImageOperations.delete(key); finish(); spy.mockRestore(); await h.close(); }
+  });
+  it('quarantines published child storage on failed launch without returning its pages', async () => {
+    const h = forkDispatchHarness(), charged = h.store.snapshot().allocatedPages;
+    h.kw.callbacks.onGroupedFork = vi.fn(async request => {
+      const published = await retryKernelEntryResult(() => h.worker.publishMemoryGroupReplica(request.childReplica));
+      if (typeof published === 'number') throw Error('publication refused');
+      throw Error('injected failure after backing publication');
+    });
+    try {
+      h.dispatchFork(); h.acknowledge(); expect(await h.completed).toEqual({ value: -1, errno: 12 });
+      expect(h.store.snapshot()).toMatchObject({ images: 2, replicas: 2, allocatedPages: charged + 7, quarantinedReplicas: 1 });
+      const actions = h.implementations.kernel_memory_group_task_action.mock.calls.map((call: any[]) => call[2]);
+      expect(actions.slice(-2)).toEqual([P.task_actions.beginRetirement, P.task_actions.quarantine]);
+      expect(h.implementations.kernel_memory_group_retire_image).not.toHaveBeenCalled(); expect(h.fatal).not.toHaveBeenCalled();
+    } finally { await h.close(); }
+  });
+  it('preserves an adopted child when the caller retires during asynchronous launch', async () => {
+    const h = forkDispatchHarness(); let adopted!: () => void, release!: () => void;
+    const adoption = new Promise<void>(resolve => { adopted = resolve; }), launched = new Promise<number[]>(resolve => { release = () => resolve([h.page]); });
+    h.kw.callbacks.onGroupedFork = vi.fn(async request => { await h.adopt(request); adopted(); return launched; });
+    try {
+      const pending = h.dispatchFork(); h.acknowledge(); await adoption;
+      processDataView(h.channel.source, h.page).setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+      h.kw.retireChannelHostWaits(h.channel); expect(pending.done).toBe(false);
+      release(); await pending.finished;
+      expect(h.kw.processes.has(101)).toBe(true); expect(h.implementations.kernel_remove_process).not.toHaveBeenCalled();
+      expect(h.completions).toEqual([]); expect(h.fatal).not.toHaveBeenCalled();
+    } finally { release(); await h.close(); }
+  });
+  it('contains a callback that resolves without publishing the child image', async () => {
+    const h = forkDispatchHarness(); let failed!: (error: Error) => void;
+    const failure = new Promise<Error>(resolve => { failed = resolve; });
+    h.kw.callbacks.onKernelFatal = (error: Error) => { h.fatal(error); failed(error); };
+    h.kw.callbacks.onGroupedFork = vi.fn(async () => []);
+    try {
+      h.dispatchFork(); h.acknowledge(); expect((await failure).message).toContain('without child image adoption');
+      expect(h.completions).toEqual([]); expect(h.store.snapshot().allocatedPages).toBeGreaterThan(8);
+      expect(() => h.worker.configureMemoryGroups(2048, 2)).toThrow();
+    } finally { h.store.close(); }
+  });
+});
 
 describe('normal grouped generic output preparation', () => {
   it('refuses a protected pipe result before allocating kernel descriptors', async () => {
@@ -656,16 +837,16 @@ describe('normal grouped mapping syscall coordination', () => {
     const barrierStarted = new Promise<'barrier'>(resolve => { started = () => resolve('barrier'); });
     const a = { registration: h.registration, done: false, get finished() { waitingA(); return aDone; } };
     const b = { registration: h.registration, done: false, finished: bDone, predecessor: a };
-    const keyA = {}, keyB = {}; h.kw.pendingGroupMappings.set(keyA, a); h.kw.pendingGroupMappings.set(keyB, b);
+    const keyA = {}, keyB = {}; h.kw.pendingGroupImageOperations.set(keyA, a); h.kw.pendingGroupImageOperations.set(keyB, b);
     const original = h.store.beginImageExecutionPause.bind(h.store);
     const spy = vi.spyOn(h.store, 'beginImageExecutionPause').mockImplementation((...args: any[]) => { const value = original(...args); started(); return value; });
     try {
-      const pending = h.dispatch(); b.done = true; h.kw.pendingGroupMappings.delete(keyB); finishB();
+      const pending = h.dispatch(); b.done = true; h.kw.pendingGroupImageOperations.delete(keyB); finishB();
       expect(await Promise.race([waiting, barrierStarted])).toBe('waiting'); expect(spy).not.toHaveBeenCalled();
-      a.done = true; h.kw.pendingGroupMappings.delete(keyA); finishA(); await barrierStarted;
+      a.done = true; h.kw.pendingGroupImageOperations.delete(keyA); finishA(); await barrierStarted;
       h.acknowledge(); await h.completed; await pending.finished;
       expect(h.implementations.kernel_group_memory_change_prepare).toHaveBeenCalledTimes(1);
-    } finally { a.done = true; b.done = true; h.kw.pendingGroupMappings.delete(keyA); h.kw.pendingGroupMappings.delete(keyB); finishA(); finishB(); spy.mockRestore(); await h.close(); }
+    } finally { a.done = true; b.done = true; h.kw.pendingGroupImageOperations.delete(keyA); h.kw.pendingGroupImageOperations.delete(keyB); finishA(); finishB(); spy.mockRestore(); await h.close(); }
   });
   it('observes appended virtual pages after the barrier rather than the physical group extent', async () => {
     const h = mappingDispatchHarness();
@@ -691,7 +872,7 @@ describe('normal grouped mapping syscall coordination', () => {
     const h = mappingDispatchHarness(); let finish!: () => void;
     const predecessor = { registration: h.registration, done: false, finished: new Promise<void>(resolve => { finish = resolve; }) };
     const key = {};
-    h.kw.pendingGroupMappings.set(key, predecessor);
+    h.kw.pendingGroupImageOperations.set(key, predecessor);
     let started!: () => void; const barrierStarted = new Promise<void>(resolve => { started = resolve; });
     const original = h.store.beginImageExecutionPause.bind(h.store);
     const spy = vi.spyOn(h.store, 'beginImageExecutionPause').mockImplementation((...args: any[]) => {
@@ -701,11 +882,11 @@ describe('normal grouped mapping syscall coordination', () => {
       const pending = h.dispatch(); expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
       expect(spy).not.toHaveBeenCalled();
       if (retire) { h.kw.retireChannelHostWaits(h.channel); await pending.finished; }
-      predecessor.done = true; h.kw.pendingGroupMappings.delete(key); finish();
+      predecessor.done = true; h.kw.pendingGroupImageOperations.delete(key); finish();
       if (!retire) { await barrierStarted; h.acknowledge(); await h.completed; await pending.finished; }
       expect(h.implementations.kernel_group_memory_change_prepare).toHaveBeenCalledTimes(retire ? 0 : 1);
       expect(h.completions.length).toBe(retire ? 0 : 1);
-    } finally { h.kw.pendingGroupMappings.delete(key); predecessor.done = true; finish(); spy.mockRestore(); await h.close(); }
+    } finally { h.kw.pendingGroupImageOperations.delete(key); predecessor.done = true; finish(); spy.mockRestore(); await h.close(); }
   });
   it('materializes heap growth through the prepared break and preserves initial bytes', async () => {
     const h = mappingDispatchHarness();

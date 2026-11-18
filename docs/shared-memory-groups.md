@@ -239,8 +239,9 @@ gate remains fresh for the normal fork-child mode that skips data replay.
 One pool operation reserves contiguous controls and fragmented payload before
 publishing allocation bits. Busy/exhausted preparation leaves parent custody
 unchanged, and exact unconstructed cancellation returns the child allocation.
-This is an internal private-page operation: normal fork dispatch and Worker
-launch are not connected yet, and shared-object inheritance remains separate.
+This is an internal private-page operation. The dispatcher connects it to an
+explicitly configured grouped-fork backend; normal embedding launch and child
+Worker replay are not integrated yet. Shared-object inheritance remains separate.
 
 Host-adapter 13 adds a receipt-bound private fork metadata operation. After the
 host pauses the image and reads its logical extent, Rust validates the exact
@@ -249,6 +250,25 @@ allocates the child with the inherited live MM. Shared/device inheritance is
 refused until its effects are connected. The ordinary fork export refuses
 grouped images rather than snapshotting stale virtual metadata. This boundary
 does not establish host barrier or Worker-launch acceptance on its own.
+
+The kernel Worker queues grouped fork and mapping changes in one image-owned
+FIFO. Fork waits for every parent replica's acknowledgment, reads its logical
+extent and continuation through the image source, and then calls the exact
+Rust fork boundary. A busy physical allocator retains the same child identity
+across retries. A separate `onGroupedFork` callback receives the prepared child
+replica; ordinary `onFork` never receives the common physical Memory as a
+native clone source. The callback must publish/register and complete normal
+continuation replay before resolving, retrying each kernel publication step's
+pre-entry contention independently. The image barrier remains owned through
+that callback. Resolving without image adoption poisons the kernel generation.
+
+Channel retirement before launch cancels the exact unpublished child; once a
+callback starts, it owns partial publication until it settles. An adopted child
+survives retirement of its caller. Failed publication begins Rust retirement
+before quarantine. Unpublished cancellation returns its exact allocation;
+published or uncertain storage stays charged. Source-only dispatcher tests
+cover these transitions, not actual grouped C fork/pthread Worker replay or
+terminal reclamation. Those and the broader release gates remain unfinished.
 
 Host-adapter 11 makes process-range preflight direction-aware: the host
 checks every virtual page for guest read or write access without copying a
