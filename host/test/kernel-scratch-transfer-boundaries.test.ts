@@ -127,6 +127,7 @@ const NETWORK_IFREQ_HANDLERS = [
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -248,6 +249,7 @@ function makeScratchHarness(
   const channel: TestChannel = {
     pid,
     memory: processMemory,
+    source: processMemory,
     channelOffset,
     i32View: new Int32Array(
       processMemory.buffer,
@@ -402,6 +404,7 @@ function makeScratchHarness(
       {
         pid,
         memory: processMemory,
+        source: processMemory,
         channels: [channel],
         ptrWidth,
       },
@@ -450,6 +453,7 @@ function prepareGenericSyscallHarness(
       {
         pid: harness.channel.pid,
         memory: harness.channel.memory,
+        source: harness.channel.source,
         channels: [harness.channel],
         ptrWidth,
       },
@@ -4674,7 +4678,7 @@ describe("kernel scratch transfer capacity regressions", () => {
         const value = super.getUint32(byteOffset, littleEndian);
         if (
           this.buffer === harness.channel.memory.buffer &&
-          byteOffset === lengthPointer &&
+          this.byteOffset + byteOffset === lengthPointer &&
           capturedReads++ === 0
         ) {
           // Model a second guest thread changing socklen_t after the sizing
@@ -4783,7 +4787,7 @@ describe("kernel scratch transfer capacity regressions", () => {
       getUint32(byteOffset: number, littleEndian?: boolean): number {
         if (
           this.buffer === harness.channel.memory.buffer &&
-          byteOffset === lengthPointer &&
+          this.byteOffset + byteOffset === lengthPointer &&
           sizingReads++ === 0
         ) {
           // With the old order-dependent planner, the preceding fixed

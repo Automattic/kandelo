@@ -3014,6 +3014,19 @@ The dynamic slot rules follow that POSIX shape:
 
 Retaining the caller slot instead of migrating its TLS into the main control prefix keeps fork replay simple: `wpk_fork_rewind_begin` restores the saved `__tls_base`, `__stack_pointer`, and other mutable globals exactly as the calling thread wrote them. The cost is one retained 256 KiB address-space reservation for fork-from-pthread children.
 
+### Process byte-transfer preflight
+
+`HostIO::proc_validate_range` carries an explicit guest access direction.
+The kernel/host import checks the complete virtual range and, for grouped
+images, the required page rights without copying a payload. Scalar and
+vector reads preflight output before consuming descriptor state and recheck
+on retry; entropy rechecks its remaining destinations on each resumed turn.
+Grouped scalar I/O uses the Rust guest-address path for every buffer size.
+Writes gather from readable memory, so a read-only source remains valid.
+Preflight is an observation, not a lease: actual byte transfers validate
+again. Mapping publication is serialized through the kernel worker; logical
+C memory growth can append pages but cannot revoke existing permissions.
+
 ### Heap initialization (brk)
 
 The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`), computes the low control slab, and calls `kernel_set_brk_base(pid, control_end)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` returns the first guest-managed byte after host control memory, so musl's malloc places the heap above the data, shadow-stack, and host control regions.

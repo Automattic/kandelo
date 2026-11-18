@@ -90,6 +90,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
   DRI_CLEANUP_COMPLETE,
+  PROCESS_MEMORY_ACCESS_READ, PROCESS_MEMORY_ACCESS_WRITE,
 } from "./generated/abi";
 import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
@@ -4264,7 +4265,8 @@ export class WasmPosixKernel {
         // -1 (never provably quiescent) unless the embedder tracks epochs.
         host_proc_quiescent_epoch: (pid: number): bigint =>
           this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n,
-        host_proc_validate_range: (pid: number, addr: bigint, len: number): number => {
+        host_proc_validate_range: (pid: number, addr: bigint, len: number, access: number): number => {
+          if (access !== PROCESS_MEMORY_ACCESS_READ && access !== PROCESS_MEMORY_ACCESS_WRITE) return -22;
           try {
             const memory = this.#resolveProcessAddressSpace(pid);
             if (!memory) return -14;
@@ -4272,9 +4274,8 @@ export class WasmPosixKernel {
               checkedWasmImportMemoryRange(memory, addr, len, 8,
                 "host_proc_validate_range process destination", true);
             } else {
-              // Match Rust's nonallocating extent check. Actual byte access
-              // still proves current page rights at the read/write boundary.
-              processAddressFromWasm(addr, len, memory.byteLength);
+              const pointer = processAddressFromWasm(addr, len, memory.byteLength);
+              memory.checkAccessRange(pointer, len, access === PROCESS_MEMORY_ACCESS_READ ? 'read' : 'write');
             }
             return 0;
           } catch (caught) { rethrowNativeGlFault(caught); return -14; }

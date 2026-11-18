@@ -3357,6 +3357,8 @@ fn render_ts_module() -> String {
         "export const HOST_ADAPTER_VERSION = {} as const;\n",
         shared::abi::HOST_ADAPTER_VERSION
     ));
+    out.push_str(&format!("export const PROCESS_MEMORY_ACCESS_READ = {} as const;\nexport const PROCESS_MEMORY_ACCESS_WRITE = {} as const;\n",
+        shared::ProcessMemoryAccess::Read as u32, shared::ProcessMemoryAccess::Write as u32));
     out.push_str("export const MEMORY_GROUP_PROTOCOL = ");
     out.push_str(&memory_group_contract().to_string());
     out.push_str(" as const;");
@@ -7154,6 +7156,7 @@ fn host_adapter() -> Value {
 
     let mut m: JsonMap = BTreeMap::new();
     m.insert("version".into(), json!(shared::abi::HOST_ADAPTER_VERSION));
+    m.insert("process_memory_access".into(), json!({ "read": shared::ProcessMemoryAccess::Read as u32, "write": shared::ProcessMemoryAccess::Write as u32 }));
     m.insert(
         "manifest".into(),
         Value::Object(manifest_json.into_iter().collect()),

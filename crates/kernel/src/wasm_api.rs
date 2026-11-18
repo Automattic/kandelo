@@ -373,7 +373,7 @@ unsafe extern "C" {
     /// `publish_transfer_directly`.
     fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
-    fn host_proc_validate_range(pid: i32, addr: u64, len: u32) -> i32;
+    fn host_proc_validate_range(pid: i32, addr: u64, len: u32, access: u32) -> i32;
     /// Compare a complete process range against a live initialized Rust
     /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
     /// The host may read but never mutate or retain the snapshot allocation.
@@ -1270,9 +1270,9 @@ impl HostIO for WasmHostIO {
         unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
     }
 
-    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize) -> i32 {
+    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
         match u32::try_from(len) {
-            Ok(len) => unsafe { host_proc_validate_range(pid, addr, len) },
+            Ok(len) => unsafe { host_proc_validate_range(pid, addr, len, access as u32) },
             Err(_) => -(Errno::EFAULT as i32),
         }
     }

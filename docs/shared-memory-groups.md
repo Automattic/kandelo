@@ -211,6 +211,18 @@ including controls, holes and permissions; it is not recreated from a fresh
 all-writable image or added to the ordinary fork wire. This metadata behavior
 does not prove the unfinished physical fork integration.
 
+Host-adapter 11 makes process-range preflight direction-aware: the host
+checks every virtual page for guest read or write access without copying a
+payload. Grouped scalar read/write/pread/pwrite/getrandom, including small
+buffers, use Rust's existing guest-address transport. Rust resolves the fd
+and access mode before destination checks, validates every read/readv/preadv
+destination before consuming input, and rechecks frozen read retries.
+Read-only sources remain valid for write/writev. Entropy also rechecks only
+its remaining destinations before generating a resumed batch. Actual byte
+transfers revalidate current access; preflight never grants future authority.
+This closes those scalar/vector/entropy paths; the remaining nested output
+and device paths still require their own preparation and acceptance.
+
 The internal image owner can now stage anonymous map, unmap, protection and
 remap PTE changes behind its exact all-replica barrier. Replacement maps use
 fresh zeroed physical pages, so a refused Rust commit can restore old entries

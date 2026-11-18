@@ -682,10 +682,11 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
-    /// Nonallocating bounds check against the current dispatching process's
-    /// registered memory. Does not dereference or copy the requested range.
+    /// Check the current dispatching process's whole range for the requested
+    /// guest access without copying bytes or allocating payload storage. Does
+    /// not grant future access: transfers and resumed input must revalidate.
     #[allow(unused_variables)]
-    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize) -> i32 {
+    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -3180,6 +3181,7 @@ pub mod test_host {
     pub struct GuestMemoryHost {
         pub base: u64,
         pub memory: alloc::vec::Vec<u8>,
+        pub write_denied: bool,
         pub entropy_calls: usize,
         pub entropy_failure_at: Option<usize>,
         pub entropy_max_window: usize,
@@ -3192,6 +3194,7 @@ pub mod test_host {
             Self {
                 base,
                 memory: alloc::vec![0u8; len],
+                write_denied: false,
                 entropy_calls: 0,
                 entropy_failure_at: None,
                 entropy_max_window: 0,
@@ -3224,8 +3227,8 @@ pub mod test_host {
     }
 
     impl HostIO for GuestMemoryHost {
-        fn proc_validate_range(&mut self, _pid: i32, addr: u64, len: usize) -> i32 {
-            if self.range(addr, len).is_some() { 0 } else { -(Errno::EFAULT as i32) }
+        fn proc_validate_range(&mut self, _pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
+            if self.range(addr, len).is_some() && !(len != 0 && self.write_denied && access == wasm_posix_shared::ProcessMemoryAccess::Write) { 0 } else { -(Errno::EFAULT as i32) }
         }
         fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
             match self.range(addr, dst.len()) {
@@ -3238,6 +3241,7 @@ pub mod test_host {
         }
 
         fn proc_write_bytes(&mut self, _pid: i32, addr: u64, src: &[u8]) -> i32 {
+            if !src.is_empty() && self.write_denied { return -(Errno::EFAULT as i32); }
             match self.range(addr, src.len()) {
                 Some(range) => {
                     self.memory[range].copy_from_slice(src);
