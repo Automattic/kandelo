@@ -8497,6 +8497,17 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /** Exact queue state only. Does not expose the node/target or prove stop. */
+  inspectMemoryGroupReplicaWait(handle: PreparedGroupReplica): 'none' | 'waiting' | 'returning' | 'busy' | number {
+    let result: 'none' | 'waiting' | 'returning' | 'busy' | number = -ESRCH;
+    this.#runImmediateKernelEntry('inspect exact grouped replica wait', _entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (store) result = store.inspectReplicaWait(handle);
+      return undefined;
+    });
+    return result;
+  }
+
   inspectMemoryGroupBacking(group: number): ReturnType<MemoryGroupImageStore["snapshot"]> | undefined {
     return this.#memoryGroupStores.get(group)?.snapshot();
   }

@@ -25,6 +25,44 @@ function waitingNodes(words: Int32Array): number[] {
   return nodes;
 }
 
+/** Copied state of this exact replica's actual queue registration. A waiting
+ * node may be between publication and native park; observing it grants no
+ * execution-stop, notification or storage-retirement authority. */
+export function inspectMemoryGroupReplicaWait(memory: WebAssembly.Memory, root: number, replica: number):
+  'none' | 'waiting' | 'returning' | 'busy' {
+  if (!Number.isSafeInteger(replica) || replica < G.MEMORY_GROUP_PAGE_BYTES
+      || replica % G.MEMORY_GROUP_REPLICA_BYTES || replica > memory.buffer.byteLength - G.MEMORY_GROUP_REPLICA_BYTES
+      || !Number.isSafeInteger(root) || root < G.MEMORY_GROUP_PAGE_BYTES || root % G.MEMORY_GROUP_PAGE_BYTES
+      || root > memory.buffer.byteLength - G.MEMORY_GROUP_ROOT_HEADER_BYTES) {
+    throw new MemoryGroupProtocolFault('Invalid replica wait observation');
+  }
+  const words = new Int32Array(memory.buffer), control = replica / 4;
+  if ((words[control + G.MEMORY_GROUP_REPLICA_ROOT / 4] >>> 0) !== root
+      || (words[control + G.MEMORY_GROUP_REPLICA_MAGIC_OFFSET / 4] >>> 0) !== G.MEMORY_GROUP_REPLICA_MAGIC) {
+    throw new MemoryGroupProtocolFault('Stale replica wait observation');
+  }
+  if (Atomics.compareExchange(words, Q, 0, 1) !== 0) return 'busy';
+  try {
+    const nodes = waitingNodes(words), at = Atomics.load(words, control + G.MEMORY_GROUP_REPLICA_WAIT_NODE / 4) >>> 0;
+    const linked = nodes.filter(node => (words[node / 4 + 4] >>> 0) === replica);
+    if (!at) {
+      if (linked.length) throw new MemoryGroupProtocolFault('Replica lost observed wait ownership');
+      return 'none';
+    }
+    if (at < FIRST || at >= G.MEMORY_GROUP_PAGE_BYTES || (at - FIRST) % STRIDE
+        || (words[at / 4 + 3] >>> 0) !== root || (words[at / 4 + 4] >>> 0) !== replica) {
+      throw new MemoryGroupProtocolFault('Observed wait belongs to another replica');
+    }
+    const state = Atomics.load(words, at / 4);
+    if (state < G.MEMORY_GROUP_WAIT_WAITING || state > G.MEMORY_GROUP_WAIT_STOPPED
+        || (words[Q + 4] >>> 0) === 0
+        || (state === G.MEMORY_GROUP_WAIT_WAITING ? linked.length !== 1 || linked[0] !== at : linked.length !== 0)) {
+      throw new MemoryGroupProtocolFault('Invalid observed replica wait state');
+    }
+    return state === G.MEMORY_GROUP_WAIT_WAITING ? 'waiting' : 'returning';
+  } finally { Atomics.store(words, Q, 0); Atomics.notify(words, Q, 1); }
+}
+
 /** Read-only queue retirement proof. An unlinked notified/stopped node still
  * owns storage until its returning native waiter recycles it. Peer images may
  * remain waiting; never drain their nodes to retire this root. */

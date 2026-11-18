@@ -4,7 +4,7 @@ import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt, 
 import { GroupProcessAddressSpace, ProcessAddressFault, NativeI32Observation } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation,
   type ProcessMemoryEnvelope } from './process-memory-descriptor';
-import { tryControlMemoryGroupReplicaWait, memoryGroupImageWaitsRetired, memoryGroupReplicaWaitsRetired, memoryGroupPinnedPages } from './memory-group-notification';
+import { tryControlMemoryGroupReplicaWait, inspectMemoryGroupReplicaWait, memoryGroupImageWaitsRetired, memoryGroupReplicaWaitsRetired, memoryGroupPinnedPages } from './memory-group-notification';
 
 const PAGE = G.MEMORY_GROUP_PAGE_BYTES;
 declare const preparedReplica: unique symbol;
@@ -651,7 +651,8 @@ export class MemoryGroupImageStore {
     image.stopping = true;
     let drained = true;
     for (const replica of this.replicas.values()) {
-      if (replica.image !== image || replica.state === 'stopped' || replica.receipt.tid === naturalExitTid) continue;
+      if (replica.image !== image || replica.receipt.tid === naturalExitTid
+          || replica.state === 'stopped' && !replica.pendingWaitDrain) continue;
       if (!this.requestReplicaStop(replica.handle)) drained = false;
     }
     return drained;
@@ -848,6 +849,11 @@ export class MemoryGroupImageStore {
     } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
   }
 
+  inspectReplicaWait(handle: PreparedGroupReplica): ReturnType<typeof inspectMemoryGroupReplicaWait> {
+    const replica = this.owned(handle);
+    return inspectMemoryGroupReplicaWait(this.memory, replica.image.root, replica.scratch.first * PAGE);
+  }
+
   replicaExecutionStopped(handle: PreparedGroupReplica): boolean { return this.owned(handle).state === 'stopped'; }
 
   /** Control pages stay mapped in the kernel's bounded cache. Return only the
@@ -857,8 +863,10 @@ export class MemoryGroupImageStore {
   tryReleaseStoppedThread(handle: PreparedGroupReplica, controlAddress: number, controlLength: number,
     releaseControl: () => boolean): 'released' | 'busy' {
     const replica = this.owned(handle), image = replica.image;
-    if (this.closed || replica.receipt.pid === replica.receipt.tid || replica.state !== 'stopped'
-        || replica.pendingWaitDrain) return 'busy';
+    if (this.closed || replica.receipt.pid === replica.receipt.tid || replica.state !== 'stopped') return 'busy';
+    // Stop proof can arrive after a contended drain attempt. Keep retrying
+    // that exact registration; a stale pending bit must not prevent progress.
+    if (replica.pendingWaitDrain && !this.requestReplicaStop(handle)) return 'busy';
     if (!memoryGroupU32(controlAddress, controlLength) || !controlLength || controlAddress % PAGE || controlLength % PAGE
         || controlAddress + controlLength > image.layout.maximumVirtualPages * PAGE) fault('Invalid exact thread control interval');
     const ranges = [{ start: replica.scratch.first * PAGE, end: (replica.scratch.first + replica.scratch.pages) * PAGE }];

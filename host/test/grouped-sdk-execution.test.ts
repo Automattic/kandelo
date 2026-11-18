@@ -13,6 +13,7 @@ const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.
 const probes = [
   { name: "mapping", source: "grouped-sdk-mapping.c", markers: ["heap-ok\n", "protection-io-ok\n", "moving-remap-ok\n", "grouped-sdk-mapping PASS"], partial: "ordinary-protection-partial" },
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
+  { name: "native-wait-exit", source: "grouped-sdk-native-wait-exit.c", markers: ["grouped-sdk-native-wait-exit PASS wait32-wait64-kill-peer-notify"], partial: "", groupedOnly: true },
   { name: "forced-exit", source: "grouped-sdk-forced-exit.c", markers: ["wait-blocked PASS", "wait-busy PASS", "wait-crash PASS", "grouped-sdk-forced-exit PASS"], partial: "", groupedOnly: true },
   { name: "fork", source: "grouped-sdk-fork.c", markers: ["grouped-fork-child PASS", "grouped-sdk-fork PASS"], partial: "", groupedOnly: true },
   { name: "pthread", source: "grouped-sdk-pthread.c", markers: ["grouped-sdk-pthread PASS tls-init-growth-wait32-wait64-join"], partial: "", groupedOnly: true },
@@ -55,7 +56,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
     const { ordinary, groupedPath } = fixtures.get(probe.name)!;
     const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
       eval: true,
-      workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
+      workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: probe.name === "pthread-rollback" ? 196 : undefined, kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
@@ -96,6 +97,19 @@ for (const probe of probes) for (const grouped of [false, true]) {
       // Retain ordinary protection/private-growth limits explicitly. Grouped
       // acceptance requires enforcement and retained file-backed growth.
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
+      if (probe.name === 'native-wait-exit') {
+        expect(result.children).toEqual([137, 31].map(kernelExit => expect.objectContaining({ kernelExit, ready: true, quiescent: true })));
+        const threads = result.threads as any[];
+        expect(threads).toHaveLength(4);
+        const victim = (result.children as any[])[0].pid;
+        expect(threads.filter(row => row.pid === victim)).toEqual(Array.from({ length: 2 }, () => expect.objectContaining({ exited: false, stoppedWithProcess: true, quiescent: true, retired: true })));
+        expect(threads.filter(row => row.pid !== victim)).toEqual(Array.from({ length: 2 }, () => expect.objectContaining({ quiescent: true, retired: true })));
+        expect(threads.every(row => row.exited || row.stoppedWithProcess)).toBe(true);
+        const evidence = result.lifecycleEvidence as any[];
+        expect(evidence.filter(row => row.kind === 'native-waits-registered')).toHaveLength(1);
+        expect(evidence.filter(row => row.kind === 'native-survivor-preserved')).toHaveLength(1);
+        expect(evidence.filter(row => row.kind === 'kernel-exit-after-stop')).toHaveLength(2);
+      }
       if (probe.name === 'forced-exit') {
         expect(result.children).toEqual([137, 137, 139].map(kernelExit => expect.objectContaining({ kernelExit, ready: true, quiescent: true })));
         const evidence = result.lifecycleEvidence as any[];
@@ -112,7 +126,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(result.failedThreadLaunches).toHaveLength(16);
         expect(result.failedThreadWorkers).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ executionAbsent: true, quiescent: true, joined: false })));
         expect(result.threadConstructionAttempts).toBe(16);
-        expect(result.threads).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ exited: true, quiescent: true, retired: true })));
+        expect(result.threads).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, retired: true })));
         const samples = result.threadRetirementMemory as any[];
         expect(samples).toHaveLength(16);
         expect(new Set(samples.slice(-8).map(row => row.backing.physicalExtentPages)).size).toBe(1);
@@ -123,17 +137,17 @@ for (const probe of probes) for (const grouped of [false, true]) {
           before: expect.objectContaining({ maximumVirtualPages: 2048, backing: expect.objectContaining({ maximumPages: 196, allocatedPages: 192 }) }),
           after: expect.objectContaining({ backing: expect.objectContaining({ allocatedPages: 196 }) }),
         })]);
-        expect(result.threads).toEqual([expect.objectContaining({ exited: true, quiescent: true, retired: true })]);
+        expect(result.threads).toEqual([expect.objectContaining({ logicalExited: true, quiescent: true, retired: true })]);
       }
       if (probe.name === 'pthread-churn') {
-        expect(result.threads).toEqual(Array.from({ length: 256 }, () => expect.objectContaining({ exited: true, quiescent: true, retired: true })));
+        expect(result.threads).toEqual(Array.from({ length: 256 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, retired: true })));
         const samples = result.threadRetirementMemory as any[];
         expect(samples).toHaveLength(256);
         const extents = samples.slice(-128).map(row => row.backing.physicalExtentPages);
         expect(new Set(extents).size, JSON.stringify(extents)).toBe(1);
       }
       if (probe.name === 'pthread') {
-        expect(result.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ exited: true, quiescent: true, joined: true })));
+        expect(result.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, joined: true })));
       }
     } finally {
       if (deadline) clearTimeout(deadline);
@@ -142,10 +156,10 @@ for (const probe of probes) for (const grouped of [false, true]) {
   }, 90_000);
 }
 
-it.each(['pthread', 'fork', 'forced-exit'])('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
+it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit'])('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
   const { ordinary, groupedPath } = fixtures.get(probe)!;
   const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
-    eval: true, workerData: { grouped: true, cycles: 40, forcedLifecycle: probe === "forced-exit", kernelPath: resolveBinary('kernel.wasm'),
+    eval: true, workerData: { grouped: true, cycles: 40, forcedLifecycle: probe === "forced-exit", nativeWaitLifecycle: probe === "native-wait-exit", kernelPath: resolveBinary('kernel.wasm'),
       ordinaryPath: ordinary.programPath, programPath: groupedPath },
   });
   let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -168,12 +182,21 @@ it.each(['pthread', 'fork', 'forced-exit'])('reuses one backing for forty SDK %s
       expect(row.kernelExit).toBe(0); expect(row.processExit).toBe(0);
       expect(row.stdout).toContain(`grouped-sdk-${probe} PASS`);
       expect(row.stderr).toBe(''); expect(row.diagnostics).toEqual([]);
-      if (probe === 'pthread') expect(row.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ exited: true, quiescent: true, joined: true })));
+      if (probe === 'pthread') expect(row.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, joined: true })));
+      else if (probe === 'native-wait-exit') {
+        expect(row.children).toEqual([137, 31].map(kernelExit => expect.objectContaining({ kernelExit, ready: true, quiescent: true })));
+        expect(row.threads).toHaveLength(4);
+        expect(row.threads.every((thread: any) => thread.joined)).toBe(true);
+        expect(row.threads.every((thread: any) => thread.quiescent && thread.retired)).toBe(true);
+        expect(row.threads.filter((thread: any) => thread.pid === row.children[0].pid)).toEqual(Array.from({ length: 2 }, () => expect.objectContaining({ stoppedWithProcess: true, exited: false })));
+        expect(row.threads.every((thread: any) => thread.exited || thread.stoppedWithProcess)).toBe(true);
+        expect(row.lifecycleEvidence.filter((event: any) => event.kind === 'native-survivor-preserved')).toHaveLength(1);
+      }
       else if (probe === 'forced-exit') {
         expect(row.children).toEqual([137, 137, 139].map(kernelExit => expect.objectContaining({ kernelExit, ready: true, quiescent: true, joined: true })));
         expect(row.lifecycleEvidence.filter((event: any) => event.kind === 'kernel-exit-after-stop')).toHaveLength(3);
       } else expect(row.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true, joined: true })]);
-      expect(row.memory).toMatchObject({ maximumVirtualPages: 2048, declaredThreadSlots: probe === 'pthread' ? 1024 : 0,
+      expect(row.memory).toMatchObject({ maximumVirtualPages: 2048, declaredThreadSlots: probe === 'pthread' || probe === 'native-wait-exit' ? 1024 : 0,
         backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } });
     }
     const extents = result.cycles.slice(-20).map((row: any) => row.memory.backing.physicalExtentPages);

@@ -1305,11 +1305,14 @@ describe('bounded exact image inspection', () => {
     source.atomicStoreI32(4, 0xf1234567 | 0);
     expect(h.worker.inspectMemoryGroupWord(h.handle, 4)).toBe(0xf1234567);
     expect(h.worker.inspectMemoryGroupWord({} as any, 4)).toBe(-3);
+    expect(h.worker.inspectMemoryGroupReplicaWait({} as any)).toBe(-3);
+    expect(h.worker.inspectMemoryGroupReplicaWait(h.handle)).toBe('none');
     expect(h.worker.inspectMemoryGroupWord(h.handle, 3)).toBe(-22);
     expect(h.worker.inspectMemoryGroupWord(h.handle, 15 * 65536)).toBe(-14);
     h.stop(); h.implementations.kernel_get_process_state = () => PROCESS_STATE_EXITED;
     expect(await h.worker.retireMemoryGroupImage(h.handle, () => {})).toBe(0);
     expect(h.worker.inspectMemoryGroupWord(h.handle, 4)).toBe(-3);
+    expect(h.worker.inspectMemoryGroupReplicaWait(h.handle)).toBe(-3);
   });
 });
 
