@@ -177,6 +177,13 @@ Native wait observations pin their exact physical word through engine promise
 settlement, including after virtual access is revoked. Queue notifications
 preserve guest waiter counts separately from native host observers.
 
+The source-only browser component check runs with
+`cd apps/browser-demos && npx playwright test --config playwright.process-memory.config.ts`.
+It tests the authored accessors in disposable Workers with the normal three
+engines, quiet-audio policy and isolated browser storage. The separate
+`./run.sh test browser-memory` gate builds current products and exercises
+whole-machine lifecycle behavior before this work is ready.
+
 These primitives are not connected to normal launch, syscall channels or
 loader state yet. They add no default memory reservation and do not enable
 public grouped execution. Descriptor validation, image ownership, mapping
