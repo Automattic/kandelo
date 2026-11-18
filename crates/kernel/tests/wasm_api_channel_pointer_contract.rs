@@ -57,10 +57,44 @@ fn message_exports_never_borrow_a_guest_address_as_kernel_memory() {
             !body.contains("from_raw_parts"),
             "{name} must not borrow a guest address as kernel memory"
         );
-        assert!(
-            body.contains("crate::msghdr::read_msghdr("),
-            "{name} must decode the caller's msghdr through the shared reader"
-        );
+        if name == "kernel_sendmsg" {
+            assert!(
+                body.contains("crate::msghdr::read_msghdr("),
+                "sendmsg must decode the caller's msghdr through the shared reader"
+            );
+        } else {
+            // Receive preparation moved into runtime-core so channel and
+            // direct adapters share exact descriptor/output ownership. Audit
+            // both ends of that delegation rather than requiring inline code.
+            let receive = body
+                .find("runtime_core::guest_recvmsg::GuestRecvmsg::receive(")
+                .expect("recvmsg must delegate guest decoding to the shared receiver");
+            let end_retry = body[receive..]
+                .find("finish_direct_blocking_retry_dispatch(")
+                .map(|offset| receive + offset)
+                .expect("recvmsg must end its active retry before publication");
+            let publish = body
+                .find("received.publish(proc, &mut host, advisory_locks)")
+                .expect("recvmsg must publish through the shared receiver");
+            assert!(receive < end_retry && end_retry < publish);
+            let receiver = include_str!("../../runtime-core/src/guest_recvmsg.rs");
+            assert!(
+                !receiver.contains("from_raw_parts"),
+                "shared recvmsg must not borrow a guest address as kernel memory"
+            );
+            for checked_access in [
+                "crate::msghdr::read_msghdr(",
+                "crate::msghdr::read_iovecs(",
+                "crate::msghdr::prepare_receive_outputs(",
+                "crate::msghdr::scatter(",
+                "crate::msghdr::write_msghdr_results(",
+            ] {
+                assert!(
+                    receiver.contains(checked_access),
+                    "shared recvmsg must retain checked access: {checked_access}"
+                );
+            }
+        }
     }
 }
 
