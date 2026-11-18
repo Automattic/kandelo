@@ -1,4 +1,4 @@
-import { encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription } from '../src/memory-group-protocol';
+import { encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout } from '../src/memory-group-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
 import { KernelEntryGate, createKernelEntryGatedInstance, KernelReentrantEntryError } from '../src/kernel-entry-gate';
@@ -7,20 +7,26 @@ import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING, ABI_S
   CH_STATUS, CH_SYSCALL, CH_ARGS, CH_ARG_SIZE, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE } from '../src/generated/abi';
 import * as G from '../src/generated/program-extensions';
 import { processDataView } from '../src/process-memory-views';
+import { MemoryGroupPagePool } from '../src/memory-group-pool';
 import { createKernelScratchTestInstance } from './support/kernel-scratch-instance';
 const GENERATION = 0x8000000100000003n, SERIAL = 0xfffffffffffffff1n;
+const groupedOptions = { brkBase: 3 * 65536, brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 };
 function harness(pointerWidth: 4 | 8 = 4) {
+  const layoutRecords: Uint8Array[] = [];
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 8 }), gate = new KernelEntryGate();
   const implementations: Record<string, any> = {
     kernel_get_process_state: () => PROCESS_STATE_RUNNING,
     kernel_memory_group_protocol_version: () => P.version,
-    kernel_memory_group_capabilities: () => P.capability_admission,
+    kernel_memory_group_capabilities: () => P.capability_admission | P.mapping.capability | P.layout.capability,
+    kernel_group_memory_layout_install: vi.fn((pointer: number | bigint, length: number) => { layoutRecords.push(new Uint8Array(memory.buffer, Number(pointer), length).slice()); return 0; }),
+    kernel_group_memory_break: vi.fn(() => BigInt(3 * 65536)),
     kernel_group_memory_change_prepare: vi.fn(() => -95),
     kernel_group_memory_change_validate: vi.fn(() => -95),
     kernel_group_memory_change_commit: vi.fn(() => -95),
     kernel_group_memory_change_cancel: vi.fn(() => 0),
     kernel_set_current_tid: () => 0,
     kernel_get_process_exit_signal: () => -1,
+    kernel_dequeue_signal: vi.fn(() => 0),
     kernel_memory_group_configure: vi.fn(() => 0),
     kernel_memory_group_create: vi.fn(() => 23),
     kernel_memory_group_seal: vi.fn(() => 0),
@@ -56,10 +62,10 @@ function harness(pointerWidth: 4 | 8 = 4) {
     () => pointerWidth === 8 ? 4096n : 4096, 4, Object.keys(implementations));
   const instance = createKernelEntryGatedInstance(raw, gate);
   const scratch = allocateKernelScratchRegion(memory, instance.exports.kernel_alloc_scratch as (size: number) => number | bigint,
-    256, pointerWidth, 'group admission test', instance);
+    CH_TOTAL_SIZE, pointerWidth, 'group admission test', instance);
   const worker = createCentralizedKernelWorkerTestDouble();
   worker.testAuthority.initializeKernelForTest({ instance, gate, mainScratch: scratch });
-  return { worker, instance, implementations, memory };
+  return { worker, instance, implementations, memory, layoutRecords };
 }
 describe('kernel-Worker memory group admission', () => {
   it('allocates only a kernel-reserved backing and publishes after the exact start action', () => {
@@ -187,10 +193,10 @@ describe('kernel-Worker memory group admission', () => {
     const handle = worker.prepareMemoryGroupImage(receipt,
       { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
     if (typeof handle === 'number') throw Error('missing image');
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536])).toThrow(/published main/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], groupedOptions)).toThrow(/published main/);
     const launch = worker.publishMemoryGroupReplica(handle);
     if (typeof launch === 'number') throw Error('missing launch');
-    worker.registerMemoryGroupProcess(handle, [65536], { maxAddr: 16 * 65536 });
+    worker.registerMemoryGroupProcess(handle, [65536], { ...groupedOptions, maxAddr: 16 * 65536 });
     const registration = (worker as any).processes.get(100);
     expect(registration.source).not.toBe(launch.source);
     expect(registration.source).not.toBe(launch.envelope.memory);
@@ -199,12 +205,13 @@ describe('kernel-Worker memory group admission', () => {
     expect(registration.channels[0]).toMatchObject({ source: registration.source, channelOffset: 65536 });
     expect(registration.channels[0].i32View).toBeUndefined();
     expect(registration.execGeneration).toBe(GENERATION);
-    expect(implementations.kernel_set_main_channel_addr).toHaveBeenCalledWith(100, 65536n);
-    expect(implementations.kernel_set_max_addr).toHaveBeenCalledWith(100, 16 * 65536);
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536])).toThrow(/already installed/);
+    expect(implementations.kernel_set_main_channel_addr).not.toHaveBeenCalled();
+    expect(implementations.kernel_group_memory_layout_install).toHaveBeenCalledTimes(1);
+    expect(implementations.kernel_set_max_addr).not.toHaveBeenCalled();
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], groupedOptions)).toThrow(/already installed/);
     // Withdrawal of a host record does not make a published task a new image.
     (worker as any).processes.delete(100);
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536])).toThrow(/already installed/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], groupedOptions)).toThrow(/already installed/);
   });
   it.each(['serial', 'group', 'generation'] as const)('refuses a stale %s before publishing a grouped registration', field => {
     const { worker, implementations, memory } = harness();
@@ -227,7 +234,7 @@ describe('kernel-Worker memory group admission', () => {
       else view.setBigUint64(P.receipt_fields[field], (field === 'serial' ? SERIAL : GENERATION) ^ (1n << 32n), true);
       return result;
     };
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536])).toThrow(/exact kernel task image/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], groupedOptions)).toThrow(/exact kernel task image/);
     expect(worker.configureMemoryGroups(2048, 2)).toBe(0);
     expect((worker as any).processes.has(100)).toBe(false);
     expect(implementations.kernel_set_main_channel_addr).not.toHaveBeenCalled();
@@ -241,12 +248,12 @@ describe('kernel-Worker memory group admission', () => {
       { initialVirtualPages: 4, maximumVirtualPages: 16, scratchBytes: 65536 });
     if (typeof handle === 'number') throw Error('missing image');
     worker.publishMemoryGroupReplica(handle);
-    expect(() => worker.registerMemoryGroupProcess({} as any, [65536])).toThrow(/Unknown/);
-    expect(() => worker.registerMemoryGroupProcess(handle, [4 * 65536 - CH_TOTAL_SIZE + 4])).toThrow();
-    expect(() => worker.registerMemoryGroupProcess(handle, [65537])).toThrow(/aligned/);
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536], { ptrWidth: 8 })).toThrow(/wasm32/);
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536], { borrowedAddressSpace: true })).toThrow(/owned image/);
-    expect(() => worker.registerMemoryGroupProcess(handle, [65536], { maxAddr: 17 * 65536 })).toThrow(/virtual ceiling/);
+    expect(() => worker.registerMemoryGroupProcess({} as any, [65536], groupedOptions)).toThrow(/Unknown/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [4 * 65536 - CH_TOTAL_SIZE + 4], groupedOptions)).toThrow();
+    expect(() => worker.registerMemoryGroupProcess(handle, [65537], groupedOptions)).toThrow(/aligned/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], { ...groupedOptions, ptrWidth: 8 })).toThrow(/wasm32/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], { ...groupedOptions, borrowedAddressSpace: true })).toThrow(/owned image/);
+    expect(() => worker.registerMemoryGroupProcess(handle, [65536], { ...groupedOptions, maxAddr: 17 * 65536 })).toThrow(/virtual ceiling/);
     expect(implementations.kernel_set_main_channel_addr).not.toHaveBeenCalled();
     expect((worker as any).processes.has(100)).toBe(false);
   });
@@ -285,7 +292,7 @@ describe('kernel-Worker memory group admission', () => {
       { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 }));
     calls.push(() => worker.publishMemoryGroupReplica({} as any));
     calls.push(() => worker.cancelUnexposedMemoryGroupReplica({} as any));
-    calls.push(() => worker.registerMemoryGroupProcess({} as any, [65536]));
+    calls.push(() => worker.registerMemoryGroupProcess({} as any, [65536], groupedOptions));
     implementations.kernel_vblank = () => { for (const call of calls) expect(call).toThrow(KernelReentrantEntryError); return 0; };
     (instance.exports.kernel_vblank as () => void)();
     expect(implementations.kernel_memory_group_configure).not.toHaveBeenCalled();
@@ -344,14 +351,14 @@ describe('grouped mapping metadata transport', () => {
   }
   it('encodes every original signed channel bit without narrowing addresses or fd sentinels', () => {
     const args = [-1n, (1n << 63n) - 1n, -(1n << 63n), 0n, 4294967295n, 7n];
-    const bytes = encodeGroupMemoryChangeRequest(123, args), view = new DataView(bytes.buffer);
+    const bytes = encodeGroupMemoryChangeRequest(123, args, 4), view = new DataView(bytes.buffer);
     expect(bytes.byteLength).toBe(P.mapping.request_bytes);
     expect(view.getUint32(P.mapping.request_fields.syscall, true)).toBe(123);
     expect(view.getUint32(P.mapping.request_fields.reserved, true)).toBe(0);
     expect(args.map((_, i) => view.getBigInt64(P.mapping.request_fields.args + 8 * i, true))).toEqual(args);
-    expect(() => encodeGroupMemoryChangeRequest(1, args.slice(0, 5))).toThrow();
-    expect(() => encodeGroupMemoryChangeRequest(1, [1n << 63n, 0n, 0n, 0n, 0n, 0n])).toThrow();
-    expect(() => encodeGroupMemoryChangeRequest(0x100000001, args)).toThrow();
+    expect(() => encodeGroupMemoryChangeRequest(1, args.slice(0, 5), 4)).toThrow();
+    expect(() => encodeGroupMemoryChangeRequest(1, [1n << 63n, 0n, 0n, 0n, 0n, 0n], 4)).toThrow();
+    expect(() => encodeGroupMemoryChangeRequest(0x100000001, args, 4)).toThrow();
   });
   it('keeps high receipt/token bits in independent frozen metadata', () => {
     const { receipt, bytes, view, f } = description();
@@ -394,7 +401,7 @@ describe('grouped mapping metadata transport', () => {
 
 function mappingDispatchHarness(width: 4 | 8 = 4) {
   const h = harness(width), kw = h.worker as any, page = 65536, token = (1n << 63n) + 0xfffffff1n;
-  h.implementations.kernel_memory_group_capabilities = () => P.capability_admission | P.mapping.capability;
+  h.implementations.kernel_memory_group_capabilities = () => P.capability_admission | P.mapping.capability | P.layout.capability;
   h.worker.createMemoryGroupBacking(23, 16);
   const receipt = h.worker.prepareMemoryGroupProcess(23, 100);
   if (typeof receipt === 'number') throw Error('missing admitted task');
@@ -402,7 +409,7 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
   if (typeof handle === 'number') throw Error('missing image');
   const launch = h.worker.publishMemoryGroupReplica(handle);
   if (typeof launch === 'number') throw Error('missing published replica');
-  h.worker.registerMemoryGroupProcess(handle, [page], { maxAddr: 16 * page });
+  h.worker.registerMemoryGroupProcess(handle, [page], { ...groupedOptions, maxAddr: 16 * page });
   const registration = kw.processes.get(100), channel = registration.channels[0], store = registration.grouped.store;
   const completions: { value: number; errno: number }[] = [];
   let complete!: (value: { value: number; errno: number }) => void;
@@ -413,7 +420,7 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
       processDataView(channel.source, page).setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true); complete(record);
     },
   });
-  const effect = { kind: 'map' as 'map' | 'protect' | 'unmap', address: 8 * page, length: page, prot: 3, flags: 0x22, result: 8 * page };
+  const effect = { kind: 'map' as 'map' | 'protect' | 'unmap' | 'break', address: 8 * page, length: page, prot: 3, flags: 0x22, result: 8 * page, oldAddress: 0, oldLength: 0 };
   const writeDescription = (pointer: number | bigint, capacity: number) => {
     expect(capacity).toBe(P.mapping.description_bytes);
     const data = new DataView(h.memory.buffer, Number(pointer), capacity), f = P.mapping.description_fields;
@@ -422,13 +429,14 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
     data.setBigUint64(P.receipt_fields.serial, SERIAL, true); data.setBigUint64(P.receipt_fields.generation, GENERATION, true);
     data.setBigUint64(f.token, token, true); data.setUint32(f.kind, P.mapping.kinds[effect.kind], true);
     data.setUint32(f.prot, effect.prot, true); data.setUint32(f.flags, effect.flags, true);
-    for (const field of ['address', 'length', 'result'] as const) data.setBigUint64(f[field], BigInt(effect[field]), true);
+    for (const field of ['address', 'length', 'result', 'oldAddress', 'oldLength'] as const) data.setBigUint64(f[field], BigInt(effect[field]), true);
     return capacity;
   };
-  const captured: bigint[][] = [];
+  const captured: bigint[][] = [], observedPages: number[] = [];
   h.implementations.kernel_group_memory_change_prepare = vi.fn((_pid, _tid, request, size, output, capacity) => {
     expect(size).toBe(P.mapping.request_bytes);
     const view = new DataView(h.memory.buffer, Number(request), size);
+    observedPages.push(view.getUint32(P.mapping.request_fields.observedPages, true));
     captured.push(Array.from({ length: 6 }, (_, at) => view.getBigInt64(P.mapping.request_fields.args + at * 8, true)));
     return writeDescription(output, capacity);
   });
@@ -453,17 +461,106 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
     if (pending) { kw.retireChannelHostWaits(channel); await pending.finished; }
     store.close();
   };
-  return { ...h, kw, page, token, registration, channel, store, launch, captured, effect, completed, completions, control, acknowledge, dispatch, close };
+  return { ...h, kw, page, token, registration, channel, store, launch, captured, observedPages, effect, completed, completions, control, acknowledge, dispatch, close };
 }
 
 describe('normal grouped mapping syscall coordination', () => {
+  it('delivers pending signals through the normal dequeue path before completing a heap query', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.implementations.kernel_dequeue_signal = vi.fn(() => { expect(h.completions).toEqual([]); return 0; });
+      h.dispatch(SYSCALLS.Brk, [0n, 0n, 0n, 0n, 0n, 0n]); await h.completed;
+      expect(h.implementations.kernel_dequeue_signal).toHaveBeenCalledTimes(1);
+    } finally { await h.close(); }
+  });
+  it('keeps a cancelled middle queue owner from bypassing an earlier live image owner', async () => {
+    const h = mappingDispatchHarness(); let finishA!: () => void, finishB!: () => void, waitingA!: () => void, started!: () => void;
+    const aDone = new Promise<void>(resolve => { finishA = resolve; }), bDone = new Promise<void>(resolve => { finishB = resolve; });
+    const waiting = new Promise<'waiting'>(resolve => { waitingA = () => resolve('waiting'); });
+    const barrierStarted = new Promise<'barrier'>(resolve => { started = () => resolve('barrier'); });
+    const a = { registration: h.registration, done: false, get finished() { waitingA(); return aDone; } };
+    const b = { registration: h.registration, done: false, finished: bDone, predecessor: a };
+    const keyA = {}, keyB = {}; h.kw.pendingGroupMappings.set(keyA, a); h.kw.pendingGroupMappings.set(keyB, b);
+    const original = h.store.beginImageExecutionPause.bind(h.store);
+    const spy = vi.spyOn(h.store, 'beginImageExecutionPause').mockImplementation((...args: any[]) => { const value = original(...args); started(); return value; });
+    try {
+      const pending = h.dispatch(); b.done = true; h.kw.pendingGroupMappings.delete(keyB); finishB();
+      expect(await Promise.race([waiting, barrierStarted])).toBe('waiting'); expect(spy).not.toHaveBeenCalled();
+      a.done = true; h.kw.pendingGroupMappings.delete(keyA); finishA(); await barrierStarted;
+      h.acknowledge(); await h.completed; await pending.finished;
+      expect(h.implementations.kernel_group_memory_change_prepare).toHaveBeenCalledTimes(1);
+    } finally { a.done = true; b.done = true; h.kw.pendingGroupMappings.delete(keyA); h.kw.pendingGroupMappings.delete(keyB); finishA(); finishB(); spy.mockRestore(); await h.close(); }
+  });
+  it('observes appended virtual pages after the barrier rather than the physical group extent', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      const pending = h.dispatch(); expect(h.captured).toEqual([]);
+      // Emulate the shared C grow transaction using its real bitmap and lock
+      // order. This is a mechanism fixture, not compiled C execution.
+      const memory = h.launch.envelope.memory, root = h.launch.expectation.root;
+      const lock = new Int32Array(memory.buffer, root + G.MEMORY_GROUP_ROOT_GROW_LOCK, 1);
+      Atomics.store(lock, 0, 1);
+      try {
+        const pool = MemoryGroupPagePool.attach(memory, 1024), extent = pool.allocateContiguous(1)!;
+        new Uint8Array(memory.buffer, extent.first * h.page, h.page).fill(0x42);
+        new Uint32Array(memory.buffer, root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16)[4] = extent.first * h.page | 3;
+        Atomics.store(new Uint32Array(memory.buffer, root, 1), 0, 5);
+      } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+      h.acknowledge(); await h.completed; await pending.finished;
+      expect(h.observedPages).toEqual([5]); expect(memory.buffer.byteLength / h.page).not.toBe(5);
+      expect(h.launch.source.readBytes(4 * h.page, h.page).every(byte => byte === 0x42)).toBe(true);
+    } finally { await h.close(); }
+  });
+  it.each([false, true])('queues behind the exact image owner and can retire before handoff=%s', async retire => {
+    const h = mappingDispatchHarness(); let finish!: () => void;
+    const predecessor = { registration: h.registration, done: false, finished: new Promise<void>(resolve => { finish = resolve; }) };
+    const key = {};
+    h.kw.pendingGroupMappings.set(key, predecessor);
+    let started!: () => void; const barrierStarted = new Promise<void>(resolve => { started = resolve; });
+    const original = h.store.beginImageExecutionPause.bind(h.store);
+    const spy = vi.spyOn(h.store, 'beginImageExecutionPause').mockImplementation((...args: any[]) => {
+      const barrier = original(...args); started(); return barrier;
+    });
+    try {
+      const pending = h.dispatch(); expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
+      expect(spy).not.toHaveBeenCalled();
+      if (retire) { h.kw.retireChannelHostWaits(h.channel); await pending.finished; }
+      predecessor.done = true; h.kw.pendingGroupMappings.delete(key); finish();
+      if (!retire) { await barrierStarted; h.acknowledge(); await h.completed; await pending.finished; }
+      expect(h.implementations.kernel_group_memory_change_prepare).toHaveBeenCalledTimes(retire ? 0 : 1);
+      expect(h.completions.length).toBe(retire ? 0 : 1);
+    } finally { h.kw.pendingGroupMappings.delete(key); predecessor.done = true; finish(); spy.mockRestore(); await h.close(); }
+  });
+  it('materializes heap growth through the prepared break and preserves initial bytes', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.launch.source.fillBytes(3 * h.page, h.page, 0x27);
+      Object.assign(h.effect, { kind: 'break', oldAddress: 3 * h.page, address: 5 * h.page + 7, result: 5 * h.page + 7, length: 0, prot: 3, flags: 0 });
+      const pending = h.dispatch(SYSCALLS.Brk, [BigInt(h.effect.address), 0n, 0n, 0n, 0n, 0n]);
+      h.acknowledge(); expect(await h.completed).toEqual({ value: h.effect.address, errno: 0 }); await pending.finished;
+      expect(h.launch.source.readBytes(3 * h.page, h.page).every(byte => byte === 0x27)).toBe(true);
+      expect(h.launch.source.readBytes(4 * h.page, 2 * h.page).every(byte => byte === 0)).toBe(true);
+      expect(h.launch.source.byteLength).toBe(6 * h.page);
+    } finally { await h.close(); }
+  });
+  it('reports the unchanged break when metadata admission refuses heap growth', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      h.implementations.kernel_group_memory_change_prepare = vi.fn(() => -12);
+      const pending = h.dispatch(SYSCALLS.Brk, [BigInt(5 * h.page), 0n, 0n, 0n, 0n, 0n]);
+      h.acknowledge(); expect(await h.completed).toEqual({ value: 3 * h.page, errno: 0 }); await pending.finished;
+      expect(h.implementations.kernel_group_memory_change_cancel).not.toHaveBeenCalled();
+      expect(h.launch.source.byteLength).toBe(4 * h.page);
+    } finally { await h.close(); }
+  });
   it.each([4, 8] as const)('publishes Rust-selected virtual addresses with independent scratch records at kernel width %s', async width => {
     const h = mappingDispatchHarness(width);
     try {
       const pending = h.dispatch(); expect(pending).toBeDefined(); expect(h.completions).toEqual([]);
-      expect(h.captured).toEqual([[0n, BigInt(h.page), 3n, 0x22n, -1n, 0n]]);
+      expect(h.captured).toEqual([]);
       new Uint8Array(h.memory.buffer, 4096, 128).fill(0x91);
       h.acknowledge(); expect(await h.completed).toEqual({ value: 8 * h.page, errno: 0 }); await pending.finished;
+      expect(h.captured).toEqual([[0n, BigInt(h.page), 3n, 0x22n, -1n, 0n]]);
       expect(h.launch.source.readBytes(8 * h.page, h.page).every(byte => byte === 0)).toBe(true);
       expect(h.implementations.kernel_group_memory_change_commit).toHaveBeenCalledTimes(1);
       expect(h.implementations.kernel_group_memory_change_cancel).not.toHaveBeenCalled();
@@ -474,7 +571,7 @@ describe('normal grouped mapping syscall coordination', () => {
     const h = mappingDispatchHarness();
     try {
       const pending = h.dispatch(); processDataView(h.channel.source, h.page).setBigInt64(CH_ARGS, 123n, true);
-      h.kw.handleSyscall(h.channel); expect(h.implementations.kernel_group_memory_change_prepare).toHaveBeenCalledTimes(1);
+      h.kw.handleSyscall(h.channel); expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
       h.acknowledge(); expect(await h.completed).toEqual({ value: 8 * h.page, errno: 0 }); await pending.finished;
       expect(h.captured[0][0]).toBe(0n);
     } finally { await h.close(); }
@@ -491,7 +588,7 @@ describe('normal grouped mapping syscall coordination', () => {
       const successor = h.kw.processes.get(100), request = h.kw.activeChannelRequests.get(h.channel);
       h.acknowledge(); await pending.finished;
       expect(h.completions).toEqual([]); expect(h.implementations.kernel_group_memory_change_commit).not.toHaveBeenCalled();
-      expect(h.implementations.kernel_group_memory_change_cancel).toHaveBeenCalledTimes(1);
+      expect(h.implementations.kernel_group_memory_change_cancel).not.toHaveBeenCalled();
       expect(h.kw.processes.get(100)).toBe(successor); expect(h.kw.activeChannelRequests.get(h.channel)).toBe(request);
       expect(h.launch.source.byteLength).toBe(4 * h.page);
     } finally { await h.close(); }
@@ -551,11 +648,34 @@ describe('normal grouped mapping syscall coordination', () => {
       expect(h.kw.retiringGroupMappings.size).toBe(0); expect(h.kw.pendingGroupMappings.size).toBe(0);
     } finally { Atomics.store(poolLock, 0, 0); Atomics.notify(poolLock, 0); await h.close(); }
   });
-  it('keeps unsupported brk visible and never invokes ordinary mapping dispatch', async () => {
+  it('queries the kernel-owned break without a barrier or Rust preparation', async () => {
     const h = mappingDispatchHarness();
     try {
-      h.dispatch(SYSCALLS.Brk, [0n, 0n, 0n, 0n, 0n, 0n]); expect(await h.completed).toEqual({ value: -1, errno: 95 });
+      h.dispatch(SYSCALLS.Brk, [0n, 0n, 0n, 0n, 0n, 0n]); expect(await h.completed).toEqual({ value: 3 * h.page, errno: 0 });
       expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
     } finally { await h.close(); }
+  });
+});
+
+describe('grouped image layout transport', () => {
+  const receipt = { group: 23, pid: 100, tid: 100, serial: SERIAL, generation: GENERATION };
+  it('copies exact identities, admitted bounds and control ranges into one owned record', () => {
+    const input = { mode: 'fresh' as const, initialPages: 4, maximumPages: 16, channel: 65536, ...groupedOptions };
+    const bytes = encodeGroupMemoryLayout(receipt, input), view = new DataView(bytes.buffer), f = P.layout.fields;
+    input.controlEnd = 0;
+    expect(bytes.length).toBe(P.layout.bytes); expect(view.getBigUint64(P.receipt_fields.serial, true)).toBe(SERIAL);
+    expect(view.getBigUint64(P.receipt_fields.generation, true)).toBe(GENERATION);
+    expect(view.getBigUint64(f.controlEnd, true)).toBe(3n * 65536n); expect(view.getBigUint64(f.channel, true)).toBe(65536n);
+    expect(view.getUint32(f.maximumPages, true)).toBe(16); expect(view.getUint32(f.reserved, true)).toBe(0);
+  });
+  it('keeps inherited layout values absent and refuses hidden resets or malformed bounds', () => {
+    const input = { mode: 'inherited' as const, initialPages: 4, maximumPages: 16, channel: 65536 };
+    const bytes = encodeGroupMemoryLayout(receipt, input), view = new DataView(bytes.buffer);
+    expect(view.getUint32(P.layout.fields.mode, true)).toBe(P.layout.modes.inherited);
+    expect([...bytes.subarray(40, 80)].every(byte => byte === 0)).toBe(true);
+    expect(() => encodeGroupMemoryLayout(receipt, { ...input, brkBase: 65536 })).toThrow();
+    expect(() => encodeGroupMemoryLayout(receipt, { ...input, initialPages: 17 })).toThrow();
+    expect(() => encodeGroupMemoryLayout(receipt, { ...input, mode: 'fresh' })).toThrow();
+    expect(() => encodeGroupMemoryLayout({ ...receipt, serial: 0n }, input)).toThrow();
   });
 });

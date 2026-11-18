@@ -37,6 +37,23 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   return { ...h, barrier, describe, prepare };
 }
 describe('owned physical mapping transactions', () => {
+  it('grows, shrinks and regrows heap pages without changing partial-page rights or reusing detached storage', () => {
+    const h = pausedMappingImage(), charged = h.store.snapshot().allocatedPages;
+    h.leader.source.fillBytes(P, P, 0x55);
+    const protect = h.prepare({ kind: 'protect', address: P, result: 0, length: P, flags: 0, prot: 1 });
+    h.store.commitImageMapping(protect, () => true, () => 0);
+    const change = (oldAddress: number, address: number) => h.prepare({ kind: 'break', oldAddress, address, result: address, length: 0, oldLength: 0, flags: 0, prot: 3 });
+    const grow = change(P + 7, 3 * P + 9); expect(h.store.commitImageMapping(grow, () => true, () => 0)).toBe('committed');
+    expect(h.peer.source.readBytes(P, P).every(byte => byte === 0x55)).toBe(true);
+    expect(() => h.peer.source.writeBytes(P, Uint8Array.of(1))).toThrow();
+    expect(h.peer.source.readBytes(2 * P, 2 * P).every(byte => byte === 0)).toBe(true);
+    const shrink = change(3 * P + 9, P + 9); h.store.commitImageMapping(shrink, () => true, () => 0);
+    expect(h.peer.source.byteLength).toBe(4 * P); expect(() => h.peer.source.readBytes(2 * P, 1)).toThrow();
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged + 2, retainedMappingReferences: 2 });
+    const regrow = change(P + 9, 3 * P + 9); h.store.commitImageMapping(regrow, () => true, () => 0);
+    expect(h.peer.source.readBytes(2 * P, 2 * P).every(byte => byte === 0)).toBe(true);
+    expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged + 4, mappingStagingBytes: 0 }); h.store.close();
+  });
   it('stages fresh MAP_FIXED bytes and restores old PTEs when Rust refuses commit', () => {
     const h = pausedMappingImage(), { store } = h; h.leader.source.fillBytes(0, P, 0xa5);
     const charged = store.snapshot().allocatedPages, token = h.prepare({ address: 0, result: 0 });
@@ -128,16 +145,18 @@ describe('owned physical mapping transactions', () => {
     expect(h.store.snapshot()).toMatchObject({ allocatedPages: charged + 1, quarantinedReplicas: 2 });
     expect(() => h.store.cancelImageMapping(token)).toThrow(); expect(() => h.store.imageSource(h.a)).toThrow(); h.store.close();
   });
-  it('refuses unowned tokens, unsupported brk and oversized allocation without pretending support', () => {
+  it('refuses unowned tokens, malformed brk and oversized allocation', () => {
     const h = pausedMappingImage();
     expect(() => h.store.cancelImageMapping({} as PreparedGroupMapping)).toThrow();
-    expect(() => h.prepare({ kind: 'break' })).toThrow(/initial-image/);
+    expect(() => h.prepare({ kind: 'break' })).toThrow(/Invalid/);
     expect(() => h.prepare({ length: 17 * P })).toThrow(); h.store.close();
   });
   it('leaves the old mapping and barrier usable after physical exhaustion', () => {
     const h = pausedMappingImage(8), before = h.store.snapshot();
     expect(h.store.prepareImageMapping(h.barrier, h.describe())).toBe('exhausted');
     expect(h.store.prepareImageMapping(h.barrier, h.describe({ address: 0, length: 8 * P }))).toBe('exhausted');
+    expect(h.store.prepareImageMapping(h.barrier, h.describe({ kind: 'break', oldAddress: P, address: 3 * P + 7,
+      result: 3 * P + 7, length: 0, oldLength: 0, flags: 0 }))).toBe('exhausted');
     expect(h.store.snapshot()).toEqual(before);
     const protect = h.prepare({ kind: 'protect', address: 0, result: 0, flags: 0, prot: 1 });
     expect(h.store.commitImageMapping(protect, () => true, () => 0)).toBe('committed'); h.store.close();

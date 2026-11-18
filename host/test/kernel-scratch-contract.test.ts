@@ -968,6 +968,11 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#beginGroupMapping::kernel-export-direct-use::capabilities()",
   ),
+  // An i64 result carries a memory32 committed break or negative errno; no
+  // borrowed pointer or metadata mutation is involved in a heap query.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#readGroupMemoryBreak::kernel-export-direct-use::getBreak(pid, tid)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#groupMappingAction::kernel-export-direct-use::operation(receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n))",
   ),

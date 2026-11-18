@@ -7071,6 +7071,13 @@ fn memory_group_contract() -> Value {
     json!({
         "version":group::PROTOCOL_VERSION,
         "capability_admission":group::CAPABILITY_ADMISSION,
+        "layout": {
+            "version": shared::group_memory_layout::VERSION,
+            "capability": shared::group_memory_layout::CAPABILITY,
+            "bytes": shared::group_memory_layout::BYTES,
+            "fields": fields(shared::group_memory_layout::FIELDS),
+            "modes": { "fresh": shared::group_memory_layout::FRESH, "inherited": shared::group_memory_layout::INHERITED },
+        },
         "receipt_bytes":group::RECEIPT_BYTES,
         "snapshot_bytes":group::SNAPSHOT_BYTES,
         "receipt_fields":fields(group::RECEIPT_FIELDS),

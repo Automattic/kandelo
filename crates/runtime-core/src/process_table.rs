@@ -1796,6 +1796,9 @@ impl ProcessTable {
         child.memory.inherit_exact_mapping_ids(
             &self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.memory,
         );
+        child.memory.inherit_group_linear_memory(
+            &self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.memory,
+        )?;
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
         // leader's mask.

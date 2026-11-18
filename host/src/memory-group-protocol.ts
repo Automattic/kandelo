@@ -78,15 +78,48 @@ export interface GroupMemoryChangeDescription {
 }
 
 /** Copied channel scalars only; this packet carries no guest/kernel pointer. */
-export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[]): Uint8Array {
+export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[], observedPages: number): Uint8Array {
   const mapping = P.mapping;
-  if (!memoryGroupU32(syscall) || args.length !== 6 || args.some(value => typeof value !== 'bigint'
+  if (mapping.version !== 2 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
+      || args.length !== 6 || args.some(value => typeof value !== 'bigint'
       || value < -(1n << 63n) || value > (1n << 63n) - 1n)) {
     throw new MemoryGroupProtocolFault('Invalid grouped mapping request scalars');
   }
   const bytes = new Uint8Array(mapping.request_bytes), data = new DataView(bytes.buffer);
   data.setUint32(mapping.request_fields.syscall, syscall, true);
+  data.setUint32(mapping.request_fields.observedPages, observedPages, true);
   args.forEach((value, index) => data.setBigUint64(mapping.request_fields.args + index * 8, BigInt.asUintN(64, value), true));
+  return bytes;
+}
+
+export interface GroupMemoryLayoutInput {
+  readonly initialPages: number; readonly maximumPages: number; readonly channel: number;
+  readonly mode: 'fresh' | 'inherited';
+  readonly brkBase?: number; readonly mmapBase?: number; readonly brkLimit?: number;
+  readonly controlBase?: number; readonly controlEnd?: number;
+}
+export function encodeGroupMemoryLayout(receipt: MemoryGroupTaskReceipt, input: GroupMemoryLayoutInput): Uint8Array {
+  const layout = P.layout;
+  if (layout.version !== 1 || !memoryGroupU32(receipt.group, receipt.pid, receipt.tid, input.initialPages, input.maximumPages, input.channel)
+      || receipt.group === 0 || receipt.group > 0x7fffffff || receipt.pid <= 1 || receipt.tid !== receipt.pid
+      || typeof receipt.serial !== 'bigint' || receipt.serial <= 0n || receipt.serial > 0xffffffffffffffffn
+      || typeof receipt.generation !== 'bigint' || receipt.generation < 0n || receipt.generation > 0xffffffffffffffffn
+      || input.initialPages < 1 || input.initialPages > input.maximumPages || input.maximumPages > 65536
+      || (input.mode !== 'fresh' && input.mode !== 'inherited')) throw new MemoryGroupProtocolFault('Invalid grouped layout identity/capacity');
+  const bytes = new Uint8Array(layout.bytes), data = new DataView(bytes.buffer), f = layout.fields, r = P.receipt_fields;
+  data.setUint32(r.group, receipt.group, true); data.setUint32(r.pid, receipt.pid, true); data.setUint32(r.tid, receipt.tid, true);
+  data.setBigUint64(r.serial, receipt.serial, true); data.setBigUint64(r.generation, receipt.generation, true);
+  data.setUint32(f.initialPages, input.initialPages, true); data.setUint32(f.maximumPages, input.maximumPages, true);
+  data.setUint32(f.mode, layout.modes[input.mode], true); data.setBigUint64(f.channel, BigInt(input.channel), true);
+  for (const key of ['brkBase', 'mmapBase', 'brkLimit', 'controlBase', 'controlEnd'] as const) {
+    const value = input[key];
+    if (input.mode === 'inherited') {
+      if (value !== undefined && value !== 0) throw new MemoryGroupProtocolFault('Inherited layout cannot reset kernel state');
+    } else {
+      if (!Number.isSafeInteger(value) || value! < 0 || value! > input.maximumPages * 65536) throw new MemoryGroupProtocolFault('Invalid grouped virtual layout address');
+      data.setBigUint64(f[key], BigInt(value!), true);
+    }
+  }
   return bytes;
 }
 

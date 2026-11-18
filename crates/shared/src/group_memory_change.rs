@@ -1,11 +1,11 @@
 //! Kernel-host records for one prepared grouped mapping. No guest ABI fields.
 use crate::{Errno, memory_group::ReceiptRecord};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const CAPABILITY: u32 = 2;
-pub const REQUEST_BYTES: usize = 56;
+pub const REQUEST_BYTES: usize = 64;
 pub const DESCRIPTION_BYTES: usize = 96;
-pub const REQUEST_FIELDS: &[(&str, usize)] = &[("syscall", 0), ("reserved", 4), ("args", 8)];
+pub const REQUEST_FIELDS: &[(&str, usize)] = &[("syscall", 0), ("reserved", 4), ("args", 8), ("observedPages", 56), ("tailReserved", 60)];
 pub const DESCRIPTION_FIELDS: &[(&str, usize)] = &[
     ("receipt", 0), ("token", 32), ("kind", 40), ("prot", 44),
     ("address", 48), ("length", 56), ("oldAddress", 64), ("oldLength", 72),
@@ -14,13 +14,14 @@ pub const DESCRIPTION_FIELDS: &[(&str, usize)] = &[
 pub const KINDS: &[(&str, u32)] = &[("map", 1), ("unmap", 2), ("protect", 3), ("remap", 4), ("break", 5)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Request { pub syscall: u32, pub args: [u64; 6] }
+pub struct Request { pub syscall: u32, pub args: [u64; 6], pub observed_pages: u32 }
 impl Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Errno> {
-        if bytes.len() != REQUEST_BYTES || bytes[4..8] != [0; 4] { return Err(Errno::EINVAL); }
+        if bytes.len() != REQUEST_BYTES || bytes[4..8] != [0; 4] || bytes[60..64] != [0; 4] { return Err(Errno::EINVAL); }
         let syscall = u32::from_le_bytes(bytes[..4].try_into().unwrap());
         let args = core::array::from_fn(|i| u64::from_le_bytes(bytes[8 + i * 8..16 + i * 8].try_into().unwrap()));
-        Ok(Self { syscall, args })
+        let observed_pages = u32::from_le_bytes(bytes[56..60].try_into().unwrap());
+        Ok(Self { syscall, args, observed_pages })
     }
 }
 
@@ -65,6 +66,8 @@ mod tests {
         for i in 0..6 { bytes[8 + i * 8..16 + i * 8].copy_from_slice(&(u64::MAX - i as u64).to_le_bytes()); }
         let value = Request::decode(&bytes).unwrap();
         assert_eq!(value.syscall, 123); assert_eq!(value.args[5], u64::MAX - 5);
+        bytes[56..60].copy_from_slice(&65536u32.to_le_bytes()); assert_eq!(Request::decode(&bytes).unwrap().observed_pages, 65536);
+        bytes[60] = 1; assert_eq!(Request::decode(&bytes), Err(Errno::EINVAL)); bytes[60] = 0;
         bytes[4] = 1; assert_eq!(Request::decode(&bytes), Err(Errno::EINVAL));
         assert_eq!(Request::decode(&bytes[..REQUEST_BYTES - 1]), Err(Errno::EINVAL));
     }

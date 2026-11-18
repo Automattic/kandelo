@@ -188,9 +188,9 @@ charges. This is reversible execution coordination, not a terminal fence or
 permission to recycle pages. The staged Rust metadata owner separately checks
 exact transaction custody and intervening changes before publication. Normal
 grouped memory-call dispatch now joins these owners for the implemented
-anonymous map/unmap/protect/remap path; this remains an internal integration.
+anonymous map/unmap/protect/remap/brk path; this remains an internal integration.
 
-Host-adapter 9 adds fixed copied records for grouped mapping preparation,
+Host-adapter 10 carries fixed copied records for grouped mapping preparation,
 validation, commit and cancellation. Rust retains a budgeted owner for one
 exact task receipt and image generation; a sibling, stopped admission or stale
 exec cannot publish it. Cancellation can discard an old preparation without
@@ -198,6 +198,18 @@ changing a successor manager's transaction. All receipt/token bits remain
 unsigned 64-bit values, separate from status returns. The program-56 digest
 is unchanged. This transport currently prepares anonymous private metadata;
 file/shared/device effects remain unfinished.
+
+Fresh registration installs budgeted Rust-owned initial linear intervals and
+exact heap/control bounds in one operation. Protection checks cover both
+linear and mmap regions; unmap leaves real holes. Observed virtual growth
+adds only newly appended pages, preserving existing holes and permissions.
+Heap growth preserves existing partial pages and their rights, while newly
+materialized pages are zeroed; shrink removes whole trailing page mappings.
+The logical extent remains a high-water bound rather than proof every page
+is mapped. Grouped fork metadata is copied from the live kernel parent,
+including controls, holes and permissions; it is not recreated from a fresh
+all-writable image or added to the ordinary fork wire. This metadata behavior
+does not prove the unfinished physical fork integration.
 
 The internal image owner can now stage anonymous map, unmap, protection and
 remap PTE changes behind its exact all-replica barrier. Replacement maps use
@@ -210,20 +222,25 @@ by remap; this is not a completed reclamation mechanism. Snapshots report
 staging-array bytes and retained mapping references separately from allocated
 physical pages. Staging arrays scale with the admitted virtual page-table
 capacity and are dropped after successful commit or cancellation. This path
-still needs initial-image/brk ownership and actual guest acceptance; its
-synthetic barrier tests do not establish guest quiescence.
+still needs actual guest acceptance; its synthetic barrier tests do not
+establish guest quiescence.
 
 The shared Node/browser kernel Worker retains each mapping's exact pending
 channel request, image source, registration, generation and Rust token. It
-copies scalar arguments once and uses separate bounded scratch request/result
-records. Before publication it revalidates both Rust metadata and the current
+copies scalar arguments once and serializes same-image requests before taking
+an execution barrier. Once every replica acknowledges, it captures the
+logical root extent and prepares Rust metadata with separate bounded scratch
+request/result records. Before publication it revalidates both Rust metadata and the current
 caller; it never completes a replacement request or registration. Deferred
 barrier/lock progress observes native control-word notifications with bounded
 engine waits, retaining each image pin until its promise actually settles.
 Timeouts only schedule revalidation. Detached unpublished cleanup survives
 channel removal and keeps allocation custody when the pool is busy. Its
-completion is not an execution or engine-observer retirement fence. Grouped
-brk currently refuses EOPNOTSUPP pending initial-image/heap ownership. These
+completion is not an execution or engine-observer retirement fence. A brk
+query reads the committed kernel break without a barrier or allocation;
+memory-admission failure on growth reports the unchanged break. Queries and
+failed mutations use the normal signal-delivery path before completion, and
+cancelling a queued owner preserves its earlier dependency for successors. These
 internal tests do not establish usable grouped program execution or measured
 dispatch cost.
 

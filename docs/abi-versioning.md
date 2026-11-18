@@ -3120,12 +3120,19 @@ and does not itself change the ABI.
 
 ## ABI bumps and package rebuilds
 
-Host-adapter 9 adds the internal grouped mapping preparation transport:
+Host-adapter 10 extends the internal grouped mapping preparation transport:
 `kernel_group_memory_change_prepare`, `validate`, `commit` and `cancel`.
 The first two use fixed scratch records, and the latter two consume exact
 unsigned 64-bit tokens through separate low/high words and status returns.
 The kernel-host memory-group contract records their sizes, fields and effect
-kinds. Program ABI 56 and its digest stay unchanged. This interface does not
+kinds. Mapping record version 2 includes the observed paused virtual extent;
+the request is 64 bytes. `kernel_group_memory_layout_install` takes a fixed
+96-byte receipt/layout record, atomically installs fresh image/heap/control
+metadata or validates inherited state, and registers the main channel.
+`kernel_group_memory_break` returns a memory32 committed break or negative
+errno as i64 without a metadata allocation. These are kernel-host records;
+the existing program fork wire is unchanged, with grouped state inherited
+from the live Rust parent. Program ABI 56 and its digest stay unchanged. This interface does not
 advertise complete grouped mapping, execution or retirement support.
 
 Every built binary carries the ABI version it was compiled against in a
