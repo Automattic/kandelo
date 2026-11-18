@@ -1,6 +1,7 @@
 import { GroupProcessAddressSpace, LinearProcessAddressSpace } from '../../../../host/src/process-address-space';
-import { captureProcessRead, processDataView } from '../../../../host/src/process-memory-views';
+import { captureProcessRead, processDataView, fillProcessBytes, readProcessBytes, processMemoryByteLength, type ProcessMemorySource } from '../../../../host/src/process-memory-views';
 import * as G from '../../../../host/src/generated/program-extensions';
+import { ForkModuleStateArena, ForkModuleStateRecordKind } from '../../../../host/src/fork-module-state';
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw Error(message);
@@ -8,10 +9,40 @@ function check(value: unknown, message: string): asserts value {
 function refuses(operation: () => unknown): boolean {
   try { operation(); return false; } catch { return true; }
 }
+function checkArena(source: ProcessMemorySource, first: number): void {
+  const p = G.MEMORY_GROUP_PAGE_BYTES;
+  let next = first, released = 0;
+  fillProcessBytes(source, 36, 4, 0x5a);
+  fillProcessBytes(source, first, 40, 0xcc);
+  const arena = new ForkModuleStateArena(source, 4, size => {
+    const address = next; next += size;
+    const missing = next - processMemoryByteLength(source);
+    if (missing > 0) {
+      check(!(source instanceof GroupProcessAddressSpace), 'virtual arena capacity');
+      source.grow(Math.ceil(missing / p));
+    }
+    return address;
+  }, () => { released++; }, 'browser fork arena');
+  const root = arena.begin();
+  check(readProcessBytes(source, first + 36, 4).every(byte => byte === 0), 'allocated header padding');
+  check(readProcessBytes(source, 36, 4).every(byte => byte === 0x5a), 'low process bytes preserved');
+  arena.appendModule({ activationId: 0, templateId: new Uint8Array(32).fill(1) });
+  arena.appendRecord({ kind: ForkModuleStateRecordKind.ReferenceRecipe, activationId: 0,
+    ownerId: 1, payload: new Uint8Array(70000).fill(0x91) });
+  arena.seal();
+  const borrowed = new ForkModuleStateArena(source, 4,
+    () => { throw Error('borrow allocated'); }, () => { throw Error('borrow freed'); }, 'borrowed browser arena');
+  borrowed.attachBorrowed(root);
+  const records = borrowed.records();
+  check(records.length === 2 && records[1].payload.length === 70000
+    && records[1].payload.every(byte => byte === 0x91), 'cross-chunk fork state');
+  borrowed.detachBorrowed(); arena.release();
+  check(released === 2, 'arena allocation ownership');
+}
 async function runProbe() {
   // These small synthetic memories remain in this disposable Worker. Neither
   // the common backing nor any view is sent to the persistent page realm.
-  const memory = new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true });
+  const memory = new WebAssembly.Memory({ initial: 24, maximum: 32, shared: true });
   const native = new WebAssembly.Memory({ initial: 3, maximum: 4, shared: true });
   const p = G.MEMORY_GROUP_PAGE_BYTES, root = p, words = new Uint32Array(memory.buffer);
   const table = (root + G.MEMORY_GROUP_ROOT_HEADER_BYTES) / 4;
@@ -43,7 +74,11 @@ async function runProbe() {
   check(refuses(() => access.readBytes(24, 1)) && !observer.settled && pins === 1, 'revoked access retains engine pin');
   observer.wake(); check(await pending.value === 'ok', 'actual wait settlement');
   check(observer.settled && Number(pins) === 0, 'pin released once');
-  return { crossPage: true, alias: true, byteOrder: true, protectedWrite: true,
+  for (let i = 0; i < 8; i++) words[table + i] = (4 + i * 2) * p | 3;
+  Atomics.store(words, root / 4, 8);
+  checkArena(new GroupProcessAddressSpace({ memory, root, maximumPages: 32, assertLive: () => {} }), 3 * p);
+  checkArena(native, p);
+  return { forkArena: true, crossPage: true, alias: true, byteOrder: true, protectedWrite: true,
     capturedExtent: true, revokedWaitSettled: true, finalPins: pins };
 }
 self.onmessage = () => {

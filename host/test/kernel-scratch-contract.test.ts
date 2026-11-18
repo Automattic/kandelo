@@ -1163,7 +1163,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
-    key: "apps/browser-demos/test/fixtures/process-address-space-worker.ts::runProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true })",
+    key: "apps/browser-demos/test/fixtures/process-address-space-worker.ts::runProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 24, maximum: 32, shared: true })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "This disposable browser test Worker owns a synthetic two-MiB-maximum group backing to check address access and actual engine wait settlement. Only scalar verdicts leave the Worker; it is not kernel memory or a guest launch.",

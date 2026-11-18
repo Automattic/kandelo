@@ -5,6 +5,18 @@ import base from "./vitest.config.ts";
 // This same source-only selection runs locally and in the browser smoke CI.
 // No global fixture compiler: these cases need no guest binaries or images.
 const include = [
+  "test/wasm-stack-capture.test.ts",
+  "test/dylink.test.ts",
+  "test/fork-exception-provider.test.ts",
+  "test/dylink-fork-archive.test.ts",
+  "test/fork-continuation.test.ts",
+  "test/fork-module-state.test.ts",
+  "test/fork-activation-registry.test.ts",
+  "test/fork-reference-transaction.test.ts",
+  "test/fork-early-reference-provider.test.ts",
+  "test/fork-process-continuation.test.ts",
+  "test/process-memory-views.test.ts",
+
   "test/process-address-space.test.ts",
   "test/memory-group-pool.test.ts",
   "test/kernel-scratch-contract.test.ts",

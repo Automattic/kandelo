@@ -1,7 +1,7 @@
 import { expect, test } from '../playwright-test';
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from './support/browser-memory-boundary';
 
-test('explicit process access preserves aliases, protection and exact native waits in a Worker', async ({ page }) => {
+test('process access preserves aliases, fork state, protection and exact native waits in a Worker', async ({ page }) => {
   await installBrowserMemoryBoundaryProbe(page);
   const response = await page.goto('/test/fixtures/process-address-space.html');
   expect(response?.status()).toBe(200);
@@ -12,7 +12,7 @@ test('explicit process access preserves aliases, protection and exact native wai
     worker.onmessage = event => event.data.error ? reject(Error(event.data.error)) : resolve(event.data.result);
     worker.postMessage('run');
   }));
-  expect(outcome).toEqual({ crossPage: true, alias: true, byteOrder: true, protectedWrite: true,
+  expect(outcome).toEqual({ forkArena: true, crossPage: true, alias: true, byteOrder: true, protectedWrite: true,
     capturedExtent: true, revokedWaitSettled: true, finalPins: 0 });
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });

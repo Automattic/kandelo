@@ -1,3 +1,5 @@
+import { GroupProcessAddressSpace } from "../src/process-address-space";
+import * as G from "../src/generated/program-extensions";
 import { describe, expect, it } from "vitest";
 import {
   WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER,
@@ -257,6 +259,35 @@ function nullGraph(): ForkReferenceRecipeGraph {
 }
 
 describe("early child reference provider", () => {
+  it("clears virtual scratch and retains a reservation when protected output refuses release", () => {
+    const memory = new WebAssembly.Memory({ initial: 24, maximum: 32, shared: true });
+    const root = G.MEMORY_GROUP_PAGE_BYTES;
+    const pte = new Uint32Array(memory.buffer, root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
+    new Uint32Array(memory.buffer, root, 1)[0] = 8;
+    for (let i = 0; i < 8; i++) pte[i] = (4 + i * 2) * G.MEMORY_GROUP_PAGE_BYTES | 3;
+    const source = new GroupProcessAddressSpace({ memory, root, maximumPages: 16, assertLive: () => {} });
+    const base = providerOptions(recordsFor(nullGraph(), [1]), [{ activationId: 1 }], externrefs(new Map()).provider, new TestTransit());
+    const released: number[] = []; let next = 65536;
+    const provider = new ForkEarlyChildReferenceProvider({ ...base, memory: source,
+      allocateScratch(size) { const address = next; next += size; return address; },
+      deallocateScratch(address) { released.push(address); },
+    });
+    const pointer = provider.reserveScratch(65553);
+    source.fillBytes(pointer, 65553, 0x77);
+    provider.releaseScratch(pointer, 65553);
+    expect(source.readBytes(pointer, 65553).every(byte => byte === 0)).toBe(true);
+    const second = provider.reserveScratch(32);
+    source.fillBytes(second, 32, 0x5a);
+    const page = Math.floor(second / 65536), entry = pte[page]!;
+    pte[page] = entry & ~2;
+    expect(() => provider.releaseScratch(second, 32)).toThrow();
+    expect(source.readBytes(second, 32)).toEqual(new Uint8Array(32).fill(0x5a));
+    pte[page] = entry;
+    provider.releaseScratch(second, 32);
+    expect(source.readBytes(second, 32).every(byte => byte === 0)).toBe(true);
+    provider.abort(); expect(released).toEqual([65536]); source.detachHostAccess();
+  });
+
   it("materializes funcref, externref, and static-root recipes once", () => {
     const callback = (() => 73) as CallableFunction;
     const token = Object.freeze({ token: "child" });

@@ -184,8 +184,16 @@ engines, quiet-audio policy and isolated browser storage. The separate
 `./run.sh test browser-memory` gate builds current products and exercises
 whole-machine lifecycle behavior before this work is ready.
 
-These primitives are not connected to normal launch, syscall channels or
-loader state yet. They add no default memory reservation and do not enable
+Fork continuation frames, module-state arenas, reference staging and dynamic
+linker archives now use these explicit address accessors. Their metadata
+continues to contain guest virtual addresses; grouped roots never provide a
+physical buffer for metadata parsing or writes. Native record streaming keeps
+its existing borrowed lifetime, while scattered grouped records use owned
+copies. Module-state chunk initialization clears padding in the allocated
+chunk rather than at the same offset in low process memory.
+
+These primitives are not connected to normal launch or syscall channels yet.
+They add no default memory reservation and do not enable
 public grouped execution. Descriptor validation, image ownership, mapping
 publication and Worker integration are subsequent backend changes.
 
