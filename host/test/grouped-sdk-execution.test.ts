@@ -11,6 +11,8 @@ const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
 const probes = [
+  { name: "exec-handoff-threads", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-handoff", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true },
   { name: "exec-virtual-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 virtual"], partial: "", groupedOnly: true, targetMinimumPages: 256 },
   { name: "exec-allocation-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 allocation"], partial: "", groupedOnly: true },
   { name: "exec-callback-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 callback"], partial: "", groupedOnly: true },
@@ -29,7 +31,7 @@ const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture
 
 beforeAll(() => {
   for (const probe of probes) {
-    const ordinary = compileSdkFixture(new URL(`./fixtures/${probe.source}`, import.meta.url), [], { forkInstrument: true });
+    const ordinary = compileSdkFixture(new URL(`./fixtures/${probe.source}`, import.meta.url), "oldExecThreads" in probe ? ["-DEXEC_OLD_THREADS"] : [], { forkInstrument: true });
     const groupedPath = `${ordinary.programPath}.grouped.wasm`;
     fixtures.set(probe.name, { ordinary, groupedPath });
     execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [
@@ -70,7 +72,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
       eval: true,
       workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
-        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath,
+        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads', execOldThreads: probe.name === 'exec-handoff-threads',
         execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
@@ -111,7 +113,18 @@ for (const probe of probes) for (const grouped of [false, true]) {
       // Retain ordinary protection/private-growth limits explicitly. Grouped
       // acceptance requires enforcement and retained file-backed growth.
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
-      if (probe.name.startsWith('exec-')) {
+      if (probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads') {
+        const samples = result.execHandoffs as any[];
+        expect(samples).toHaveLength(16);
+        if (probe.name === 'exec-handoff-threads') {
+          expect(result.threads).toHaveLength(48);
+          expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);
+          expect((result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-old-threads-observed')).toHaveLength(16);
+          expect((result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-old-threads-stopped')).toHaveLength(16);
+        }
+        expect(samples.every(row => row.backing.images === 1 && row.backing.replicas === 1)).toBe(true);
+        expect(new Set(samples.slice(-8).map(row => row.backing.physicalExtentPages)).size).toBe(1);
+      } else if (probe.name.startsWith('exec-')) {
         const returns = result.execReturns as any[], prepared = result.execPreparations as any[];
         expect(returns).toHaveLength(16);
         expect(result.execLedger).toMatchObject({ images: 1, tasks: 0, processes: 1 });
@@ -152,6 +165,12 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(result.threads).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, retired: true })));
         const samples = result.threadRetirementMemory as any[];
         expect(samples).toHaveLength(16);
+        if (probe.name === 'exec-handoff-threads') {
+          expect(result.threads).toHaveLength(48);
+          expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);
+          expect((result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-old-threads-observed')).toHaveLength(16);
+          expect((result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-old-threads-stopped')).toHaveLength(16);
+        }
         expect(new Set(samples.slice(-8).map(row => row.backing.physicalExtentPages)).size).toBe(1);
       }
       if (probe.name === 'pthread-rollback') {

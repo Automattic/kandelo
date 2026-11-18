@@ -14,6 +14,7 @@ import { launchGroupedForkWorker, type GroupedForkWorkerOwnership } from '../../
 import type { PreparedGroupReplica } from '../../src/memory-group-image-store';
 import { ThreadPageAllocator } from '../../src/thread-allocator';
 import { launchGroupedThreadWorker, type GroupedThreadWorkerOwnership } from '../../src/grouped-thread-launch';
+import { prepareGroupedExecWorker, type GroupedExecWorkerOwnership } from '../../src/grouped-exec-launch';
 
 // Invoke only inside a disposable kernel Worker. Results contain copied
 // output/scalars, never a kernel/process Memory or a view of its backing.
@@ -35,6 +36,8 @@ export interface SdkExecutionOptions {
   forcedLifecycle?: boolean;
   nativeWaitLifecycle?: boolean;
   execPrecommitFailure?: 'allocation' | 'callback' | 'virtual';
+  execSuccess?: boolean;
+  execOldThreads?: boolean;
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -80,6 +83,12 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const imageHandles = new Map<number, PreparedGroupReplica>();
   const execPreparations: Record<string, unknown>[] = [];
   const execReturns: Record<string, unknown>[] = [];
+  const execHandoffs: Record<string, unknown>[] = [];
+  let execHandoff = false;
+  let currentExecWorker: GroupedExecWorkerOwnership | undefined;
+  const execRetiringThreads = new WeakSet<GroupedThreadWorkerOwnership>();
+  let execThreadProbe: { step: number; busy: number; ready32: number; ready64: number; returned: number; firstBusy?: number; released: boolean } | undefined;
+  let execProbeActive = false;
   const memoryEvidence = () => ({ group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
     maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount,
     backing: admittedGroup === undefined ? undefined : kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup) });
@@ -118,6 +127,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   try {
     const execution = new Promise<void>((resolve, reject) => {
       const retireThread = (tid: number, thread: GroupedThreadWorkerOwnership) => {
+        if (retiredThreads.has(tid)) return;
         if (threadRetirements.has(tid)) return;
         const retirement = (async () => {
           await kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
@@ -215,8 +225,88 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           probeTimer = undefined; void advanceLifecycle().catch(reject);
         }, 0);
       };
+      const advanceExecThreads = async () => {
+        const probe = execThreadProbe, handle = rootHandle;
+        if (!probe || probe.released || !handle || execHandoff || !lifecycleActive || execProbeActive) return;
+        execProbeActive = true;
+        try {
+          const members = [...threads.values()].filter(thread => thread.pid === rootPid && !retiredThreads.has(thread.tid));
+          const words = await retryKernelEntryResult(() => [probe.busy, probe.ready32, probe.ready64, probe.returned]
+            .map(address => kernel.inspectMemoryGroupWord(handle, address)));
+          if (words.some(word => word < 0)) throw Error(`Cannot inspect exec predecessor: ${words}`);
+          if (members.length === 3 && words[1] === 1 && words[2] === 1 && words[3] === 0) {
+            const states = await retryKernelEntryResult(() => members.map(thread => kernel.inspectMemoryGroupReplicaWait(thread.handle)));
+            if (probe === execThreadProbe && handle === rootHandle && !execHandoff
+                && states.filter(state => state === 'waiting').length === 2 && probe.firstBusy !== undefined && words[0] !== probe.firstBusy) {
+              probe.released = true;
+              lifecycleEvidence.push({ kind: 'exec-old-threads-observed', step: probe.step, states, busyBefore: probe.firstBusy, busyAfter: words[0] });
+              kernel.appendStdinData(rootPid!, Uint8Array.of(107));
+            }
+          }
+          probe.firstBusy = words[0];
+        } finally { execProbeActive = false; }
+        if (!probe.released && lifecycleActive && probeTimer === undefined) probeTimer = setTimeout(() => {
+          probeTimer = undefined; void advanceExecThreads().catch(reject);
+        }, 0);
+      };
       const callbacks: CentralizedKernelCallbacks = {
-        onGroupedExec: options.execPrecommitFailure ? async request => {
+        onGroupedExec: options.execSuccess ? async request => {
+          if (!request.groupedExec || !rootHandle || !processWorker || !generation) throw Error('Missing exact exec predecessor');
+          const previousImport = importWorker, previousExec = currentExecWorker, previousRoot = rootHandle, probe = execThreadProbe;
+          const previousThreads = [...threads.values()].filter(thread => thread.pid === request.pid && !retiredThreads.has(thread.tid));
+          return prepareGroupedExecWorker({ kernel, request, adapter, externrefs: owner, imports,
+            previousImage: rootHandle, previousWorkers: [processWorker, ...previousThreads.map(thread => thread.worker)],
+            previousGeneration: generation, terminationProvesQuiescence: options.joinOnExit,
+            onCommitted: () => {
+              execHandoff = true;
+              for (const thread of previousThreads) execRetiringThreads.add(thread);
+            },
+            onStopped: options.execOldThreads ? async () => {
+              if (!probe?.released || previousThreads.length !== 3 || previousThreads.some(thread => !thread.quiescent)) {
+                throw Error('Exec predecessor lacks three exact pthread stop fences');
+              }
+              const returned = await retryKernelEntryResult(() => kernel.inspectMemoryGroupWord(previousRoot, probe.returned));
+              const busy = await retryKernelEntryResult(() => kernel.inspectMemoryGroupWord(previousRoot, probe.busy));
+              await new Promise<void>(resolve => setTimeout(resolve, 0));
+              const after = await retryKernelEntryResult(() => kernel.inspectMemoryGroupWord(previousRoot, probe.busy));
+              if (returned !== 0 || busy !== after) throw Error('Exec predecessor executed after its stop fence');
+              lifecycleEvidence.push({ kind: 'exec-old-threads-stopped', step: probe.step, returned, busy, after,
+                joined: previousThreads.map(thread => thread.hasJoined) });
+            } : undefined,
+            retirePreviousReferences: () => {
+              previousImport?.close();
+              if (previousExec && !previousExec.releaseAfterStop()) throw Error('Old exec references lack stop proof');
+              for (const thread of previousThreads) if (!thread.releaseAfterStop()) throw Error('Old exec pthread references lack stop proof');
+            },
+            onRetired: () => {
+              for (const thread of previousThreads) { stoppedWithProcess.add(thread.tid); retiredThreads.add(thread.tid); }
+              execHandoffs.push({ step: execHandoffs.length + 1, ...memoryEvidence() });
+            },
+            isCurrent: worker => currentExecWorker === worker,
+            retain: worker => {
+              if (!lifecycleActive) throw Error('Exec cannot publish into a retired embedding');
+              currentExecWorker = worker; processWorker = worker.worker; generation = worker.generation;
+              rootHandle = worker.handle; imageHandles.set(request.pid, worker.handle);
+              importWorker = undefined; processLayout = request.groupedExec!.layout;
+              threadAllocators.delete(request.pid);
+              processReady = false; processExit = undefined; quiescent = false; rootJoined = false; execHandoff = false;
+            },
+            onMessage: (message, worker) => {
+              if (currentExecWorker !== worker || execHandoff) return;
+              if (message.type === 'ready') processReady = message.pid === worker.pid;
+              else if (message.type === 'exit') processExit = message.status;
+              else if (message.type === 'memory_quiescent') quiescent = worker.quiescent;
+              else if (message.type === 'error') reject(Error(message.message));
+              maybeComplete();
+            },
+            onError: reject,
+            onExit: (code, worker) => {
+              if (currentExecWorker !== worker || execHandoff) return;
+              if (code !== 0) reject(Error(`Exec Worker exit ${code}`));
+              else { rootJoined = worker.hasJoined; maybeComplete(); }
+            },
+          });
+        } : options.execPrecommitFailure ? async request => {
           if (!request.groupedExec) throw Error('Grouped exec lost opaque preparation');
           execPreparations.push({ layout: request.groupedExec.layout, ...memoryEvidence() });
           return -13; // deliberate embedding refusal after real physical preparation
@@ -300,7 +390,13 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               maybeComplete();
             },
             onError: reject,
-            onExit: (code, _thread) => { if (code !== 0) reject(Error(`pthread Worker exit ${code}`)); else maybeComplete(); },
+            onExit: (code, thread) => {
+              // The shared exec helper joins this exact old Worker only
+              // after all image fences. Node terminate() may then report 1;
+              // that host-realm outcome is not a guest pthread failure.
+              if (code !== 0 && !(execRetiringThreads.has(thread) && thread.quiescent)) reject(Error(`pthread Worker exit ${code}`));
+              else maybeComplete();
+            },
           }); } catch (error) {
             if (options.uncertainThreadConstructor) {
               const thread = threads.get(attachment.tid);
@@ -357,7 +453,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           const imageBytes = await (async () => {
             const image = KandeloImageFs.create(new Uint8Array(options.imageModuleBytes));
             image.mkdir("/tmp", 0o1777);
-            if (options.execPrecommitFailure) {
+            if (options.execPrecommitFailure || options.execSuccess) {
               image.mkdir('/bin', 0o755);
               image.writeFile('/bin/grouped-exec-target', new Uint8Array(options.execTargetBytes ?? options.programBytes), 0o755);
             }
@@ -374,6 +470,14 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         kernel.setOutputCallbacks({
           onStdout: bytes => {
             stdout += new TextDecoder().decode(bytes);
+            if (options.execOldThreads) {
+              const match = /exec-ready step=(\d+) busy=(\d+) ready32=(\d+) ready64=(\d+) returned=(\d+)\n$/.exec(stdout);
+              if (match) {
+                execThreadProbe = { step: Number(match[1]), busy: Number(match[2]), ready32: Number(match[3]),
+                  ready64: Number(match[4]), returned: Number(match[5]), released: false };
+                queueMicrotask(() => { void advanceExecThreads().catch(reject); });
+              }
+            }
             if (options.execPrecommitFailure && /exec-returned \d+\n$/.test(stdout)) {
               execReturns.push({ attempt: Number(/exec-returned (\d+)\n$/.exec(stdout)![1]), ...memoryEvidence() });
               // The guest cannot attempt another exec until this exact
@@ -392,7 +496,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         const pid = status(kernel.createProcess(CAPTURED_STDIO), "create process");
         rootPid = pid;
         const argv = ["grouped-sdk-mapping", grouped ? "grouped" : "ordinary",
-          ...(options.execPrecommitFailure ? [options.execPrecommitFailure] : [])], env = ["PATH=/bin"];
+          ...(options.execPrecommitFailure ? [options.execPrecommitFailure] : options.execSuccess ? ['success'] : [])], env = ["PATH=/bin"];
         const registration = { ...layout, ptrWidth: 4 as const, argv, env };
         let launch: ReturnType<CentralizedKernelWorker["publishMemoryGroupReplica"]> | undefined;
         if (grouped) {
@@ -418,7 +522,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         status(kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] }), "attach executable");
         const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(pid));
         kernel.installHostStdinPipe(pid);
-        if (lifecycleEnabled || options.execPrecommitFailure) kernel.appendStdinData(pid, new Uint8Array());
+        if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads) kernel.appendStdinData(pid, new Uint8Array());
         else kernel.setStdinData(pid, new Uint8Array());
         generation = owner.startGeneration(pid);
         const currentGeneration = generation;
@@ -446,7 +550,9 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           if (!memory) throw new Error("ordinary process registration lost Memory");
           processWorker = adapter.createWorker({ ...init, memory });
         }
+        const initialWorker = processWorker;
         processWorker.on("message", (message: any) => {
+          if (processWorker !== initialWorker || execHandoff) return;
           if (message.type === "fork_host_import") {
             if (!importWorker!.dispatch(message.wake)) reject(new Error("stale host-import wake"));
           } else if (message.type === "ready") processReady = message.pid === pid;
@@ -464,7 +570,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           maybeComplete();
         });
         processWorker.on("error", reject);
-        processWorker.on("exit", code => { if (code !== 0) reject(new Error(`process Worker exit ${code}`)); else { rootJoined = options.joinOnExit; maybeComplete(); } });
+        processWorker.on("exit", code => {
+          if (processWorker !== initialWorker || execHandoff) return;
+          if (code !== 0) reject(new Error(`process Worker exit ${code}`)); else { rootJoined = options.joinOnExit; maybeComplete(); }
+        });
         if (launch && typeof launch !== "number") processWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
       })().catch(reject);
     });
@@ -492,7 +601,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           for (const thread of threads.values()) if (thread.pid === pid && !thread.releaseAfterStop()) throw Error('Pthread reference retirement is unproven');
           const child = children.get(pid);
           if (child && !child.releaseAfterStop()) throw Error('Child reference retirement is unproven');
-          if (pid === rootPid) { importWorker?.close(); if (generation) owner.releaseGeneration(generation); }
+          if (pid === rootPid) {
+            if (currentExecWorker && !currentExecWorker.releaseAfterStop()) throw Error('Final exec references lack stop proof');
+            importWorker?.close(); if (generation) owner.releaseGeneration(generation);
+          }
         };
         const status = await retryKernelEntryResult(() => kernelForDiagnostics!.retireMemoryGroupImage(handle, releaseReferences));
         statuses.push(status);
@@ -500,23 +612,28 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       }
       retirement = { before, after: memoryEvidence(), statuses };
     }
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execLedger, memory: memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execLedger, memory: memoryEvidence(),
       retirement, threadRetirementMemory, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
+    const failureCauses: string[] = [];
+    for (let cause = error; cause instanceof Error && failureCauses.length < 8; cause = cause.cause) {
+      failureCauses.push(`${cause.name}: ${cause.message}`);
+    }
     if (!kernelFailed) trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, memory: memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, memory: memoryEvidence(),
       lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
-      failureMessage: error instanceof Error ? error.message : String(error),
+      failureCauses, failureMessage: error instanceof Error ? error.message : String(error),
       failure: error instanceof Error ? error.stack : String(error) };
   } finally {
     lifecycleActive = false;
     if (deadline) clearTimeout(deadline);
     if (probeTimer) clearTimeout(probeTimer);
     await processWorker?.terminate();
+    currentExecWorker?.releaseAfterStop();
     for (const thread of threads.values()) { await thread.contain(); thread.releaseAfterStop(); }
     for (const child of children.values()) { await child.contain(); child.releaseAfterStop(); }
     importWorker?.close();
