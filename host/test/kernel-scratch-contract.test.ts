@@ -594,6 +594,12 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.cancelTerminatedMemoryGroupExec::kernel-export-direct-use::retire(state.receipt.pid, Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n))",
+    disposition: "kernel-control",
+    count: 1,
+    why: "Three control scalars identify the private committed future image: PID and unsigned generation halves. The same lexical entry proves signal death, exact old-image stop and never-exposed future custody, cancels its task and scratch, then ends the kernel image hold before returning physical root pages. No kernel pointer or borrowed output is passed.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#reuseGroupThreadControl::kernel-export-direct-use::reuse(pending.receipt.pid, pending.receipt.tid, pending.hostControl!.thread.tid)",
     disposition: "kernel-control", count: 1,
     why: "Host16 (i32,i32,i32)->i64 takes the exact caller and unconstructed Rust TID, returning a Rust-selected guest virtual address or errno. There is no kernel pointer, byte borrow or raw host slot selection. It runs under the owning image FIFO/barrier before mapped-slot initialization.",

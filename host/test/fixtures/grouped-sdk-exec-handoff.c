@@ -35,8 +35,8 @@ int main(int argc, char **argv) {
     pid_t original;
     if (argc == 3) {
         step = 0; original = getpid();
-        fd = open("/tmp/exec-inherited", O_CREAT | O_RDWR, 0600);
-        cloexec = open("/tmp/exec-closed", O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+        fd = open("/tmp/exec-inherited", O_CREAT | O_TRUNC | O_RDWR, 0600);
+        cloexec = open("/tmp/exec-closed", O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
         if (fd < 0 || cloexec < 0 || fd == cloexec) return 10;
     } else if (argc == 5) {
         step = atoi(argv[1]); original = atoi(argv[2]);

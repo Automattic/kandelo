@@ -18,6 +18,14 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 19 retains a committed exec's unexposed future
+image until Start transfers its custody to the execution receipt or explicit
+unconstructed image retirement ends cancellation. Parent waits cannot reap
+that process while this host-owned hold remains. Image retirement revisits
+parked child waits and already-published synthetic-init reaping after the hold
+ends. Program ABI 56 and its digest are unchanged; host and kernel rebuild
+together.
+
 Kernel-host adapter version 15 adds exact on-demand grouped pthread control
 reservation. Rust stages a host-reserved interval for the same unconstructed
 TID; the host commits its pages through the image mapping transaction before

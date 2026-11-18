@@ -38,6 +38,7 @@ export interface SdkExecutionOptions {
   execPrecommitFailure?: 'allocation' | 'callback' | 'virtual';
   execSuccess?: boolean;
   execOldThreads?: boolean;
+  execSignal?: 'commit' | 'stopped';
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -70,6 +71,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const owner = new ForkExternrefProcessOwner();
   const imports = new ForkHostImportOwnerRuntime(owner);
   let processWorker: WorkerHandle | undefined;
+  let processWorkerConstructionAttempts = 0;
+  const processAdapter: WorkerAdapter = { createWorker: init => {
+    processWorkerConstructionAttempts++; return adapter.createWorker(init);
+  } };
   let importWorker: ForkHostImportOwnerWorker | undefined;
   let generation: ReturnType<ForkExternrefProcessOwner["startGeneration"]> | undefined;
   let stdout = "", stderr = "";
@@ -89,6 +94,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const execRetiringThreads = new WeakSet<GroupedThreadWorkerOwnership>();
   let execThreadProbe: { step: number; busy: number; ready32: number; ready64: number; returned: number; firstBusy?: number; released: boolean } | undefined;
   let execProbeActive = false;
+  let execTermination: { signal: number } | undefined;
+  let execReplacementPublications = 0;
   const memoryEvidence = () => ({ group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
     maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount,
     backing: admittedGroup === undefined ? undefined : kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup) });
@@ -146,7 +153,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         for (const [tid, thread] of threads) {
           if (logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) retireThread(tid, thread);
         }
-        if (kernelExit === undefined || processExit === undefined || !quiescent || !processReady
+        if (kernelExit === undefined || processExit === undefined && !execTermination || !quiescent || !processReady
             || (options.joinOnExit && !rootJoined) || options.forcedLifecycle && busyReleased && busyStopValue === undefined) return;
         for (const [pid, child] of children) {
           const state = childStates.get(pid);
@@ -254,12 +261,19 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           if (!request.groupedExec || !rootHandle || !processWorker || !generation) throw Error('Missing exact exec predecessor');
           const previousImport = importWorker, previousExec = currentExecWorker, previousRoot = rootHandle, probe = execThreadProbe;
           const previousThreads = [...threads.values()].filter(thread => thread.pid === request.pid && !retiredThreads.has(thread.tid));
-          return prepareGroupedExecWorker({ kernel, request, adapter, externrefs: owner, imports,
+          const signal = () => {
+            const stopped = previousThreads.filter(thread => thread.quiescent).length;
+            if (options.execSignal === 'commit' && stopped === previousThreads.length) throw Error('Commit signal missed live predecessor');
+            if (!kernel.signalProcess(request.pid, 9)) throw Error('Kernel refused exec signal');
+            lifecycleEvidence.push({ kind: 'exec-signal-sent', stage: options.execSignal, stopped });
+          };
+          return prepareGroupedExecWorker({ kernel, request, adapter: processAdapter, externrefs: owner, imports,
             previousImage: rootHandle, previousWorkers: [processWorker, ...previousThreads.map(thread => thread.worker)],
             previousGeneration: generation, terminationProvesQuiescence: options.joinOnExit,
             onCommitted: () => {
               execHandoff = true;
               for (const thread of previousThreads) execRetiringThreads.add(thread);
+              if (options.execSignal === 'commit') void retryKernelEntryResult(signal).catch(reject);
             },
             onStopped: options.execOldThreads ? async () => {
               if (!probe?.released || previousThreads.length !== 3 || previousThreads.some(thread => !thread.quiescent)) {
@@ -272,7 +286,15 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               if (returned !== 0 || busy !== after) throw Error('Exec predecessor executed after its stop fence');
               lifecycleEvidence.push({ kind: 'exec-old-threads-stopped', step: probe.step, returned, busy, after,
                 joined: previousThreads.map(thread => thread.hasJoined) });
+              if (options.execSignal === 'stopped') await retryKernelEntryResult(signal);
             } : undefined,
+            onTerminated: signal => {
+              for (const thread of previousThreads) { stoppedWithProcess.add(thread.tid); retiredThreads.add(thread.tid); }
+              execTermination = { signal }; quiescent = true; rootJoined = options.joinOnExit;
+              imageHandles.delete(request.pid); rootHandle = undefined; generation = undefined;
+              currentExecWorker = undefined; processWorker = undefined; importWorker = undefined;
+              execHandoff = false; maybeComplete();
+            },
             retirePreviousReferences: () => {
               previousImport?.close();
               if (previousExec && !previousExec.releaseAfterStop()) throw Error('Old exec references lack stop proof');
@@ -285,6 +307,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             isCurrent: worker => currentExecWorker === worker,
             retain: worker => {
               if (!lifecycleActive) throw Error('Exec cannot publish into a retired embedding');
+              execReplacementPublications++;
               currentExecWorker = worker; processWorker = worker.worker; generation = worker.generation;
               rootHandle = worker.handle; imageHandles.set(request.pid, worker.handle);
               importWorker = undefined; processLayout = request.groupedExec!.layout;
@@ -323,7 +346,16 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           queueMicrotask(() => { void advanceLifecycle().catch(reject); });
         } : undefined,
         onExit: (pid, code) => {
-          if (pid === rootPid) kernelExit = code;
+          if (pid === rootPid) {
+            if (options.execSignal) {
+              const backing = memoryEvidence().backing;
+              if (backing?.images !== 0 || [...threads.values()].some(thread => !thread.quiescent)) {
+                return reject(Error('Exec signal notification preceded exact image retirement'));
+              }
+              lifecycleEvidence.push({ kind: 'exec-termination-published', code, backing });
+            }
+            kernelExit = code;
+          }
           else {
             childStates.set(pid, { ...childStates.get(pid), kernelExit: code });
             if (lifecycleEnabled) {
@@ -539,7 +571,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         };
         if (launch && typeof launch !== "number") {
           const { assertLive: _live, ...expected } = launch.expectation;
-          processWorker = adapter.createWorker(createGroupedWorkerPrepare(expected));
+          processWorker = processAdapter.createWorker(createGroupedWorkerPrepare(expected));
           // Install ordinary message handling after readiness: that protocol has
           // its own exact receipt check and permits no unrelated message.
           await waitForGroupedWorkerReady(processWorker, expected);
@@ -548,7 +580,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         } else {
           const memory = kernel.getProcessMemory(pid);
           if (!memory) throw new Error("ordinary process registration lost Memory");
-          processWorker = adapter.createWorker({ ...init, memory });
+          processWorker = processAdapter.createWorker({ ...init, memory });
         }
         const initialWorker = processWorker;
         processWorker.on("message", (message: any) => {
@@ -591,6 +623,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     if (options.execPrecommitFailure) {
       await kernelForDiagnostics!.waitForMemoryGroupReplicaQuiescence(rootHandle!);
       execLedger = await retryKernelEntryResult(() => kernelForDiagnostics!.inspectMemoryGroup(admittedGroup!));
+    } else if (options.execSignal) {
+      execLedger = await retryKernelEntryResult(() => kernelForDiagnostics!.inspectMemoryGroup(admittedGroup!));
     }
     let retirement: Record<string, unknown> | undefined;
     if (grouped) {
@@ -612,7 +646,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       }
       retirement = { before, after: memoryEvidence(), statuses };
     }
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execLedger, memory: memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execTermination, execReplacementPublications, processWorkerConstructionAttempts, execLedger, memory: memoryEvidence(),
       retirement, threadRetirementMemory, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
@@ -622,7 +656,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       failureCauses.push(`${cause.name}: ${cause.message}`);
     }
     if (!kernelFailed) trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, memory: memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execTermination, execReplacementPublications, processWorkerConstructionAttempts, memory: memoryEvidence(),
       lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),

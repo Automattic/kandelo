@@ -11,6 +11,8 @@ const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
 const probes = [
+  { name: "exec-signal-commit", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-signal-stopped", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-handoff-threads", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-handoff", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true },
   { name: "exec-virtual-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 virtual"], partial: "", groupedOnly: true, targetMinimumPages: 256 },
@@ -72,7 +74,8 @@ for (const probe of probes) for (const grouped of [false, true]) {
       eval: true,
       workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
-        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads', execOldThreads: probe.name === 'exec-handoff-threads',
+        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
+        execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
         execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
@@ -104,6 +107,26 @@ for (const probe of probes) for (const grouped of [false, true]) {
       expect(result.failure, JSON.stringify(result)).toBeUndefined();
       expect(result.diagnostics).toEqual([]);
       expect(result.stderr).toBe("");
+      if (probe.name.startsWith('exec-signal-')) {
+        expect(result.kernelExit).toBe(137);
+        expect(result.processExit).toBeUndefined();
+        expect(result.execTermination).toEqual({ signal: 9 });
+        expect(result.execReplacementPublications).toBe(0);
+        expect(result.processWorkerConstructionAttempts).toBe(1);
+        expect(result.execHandoffs).toEqual([]);
+        expect(result.quiescent).toBe(true);
+        expect(result.threads).toHaveLength(3);
+        expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);
+        expect(result.execLedger).toMatchObject({ processes: 0, tasks: 0, images: 0 });
+        expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
+        const events = result.lifecycleEvidence as any[];
+        expect(events.filter(row => row.kind === 'exec-old-threads-observed')).toHaveLength(1);
+        expect(events.filter(row => row.kind === 'exec-old-threads-stopped')).toHaveLength(1);
+        expect(events.filter(row => row.kind === 'exec-termination-published')).toHaveLength(1);
+        const sent = events.find(row => row.kind === 'exec-signal-sent');
+        expect(sent.stopped).toBe(probe.name === 'exec-signal-commit' ? 0 : 3);
+        return;
+      }
       expect(result.kernelExit).toBe(0);
       expect(result.processExit).toBe(0);
       expect(result.processReady).toBe(true);
@@ -114,6 +137,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
       // acceptance requires enforcement and retained file-backed growth.
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
       if (probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads') {
+        expect(result.processWorkerConstructionAttempts).toBe(17);
         const samples = result.execHandoffs as any[];
         expect(samples).toHaveLength(16);
         if (probe.name === 'exec-handoff-threads') {
@@ -165,12 +189,6 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(result.threads).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ logicalExited: true, quiescent: true, retired: true })));
         const samples = result.threadRetirementMemory as any[];
         expect(samples).toHaveLength(16);
-        if (probe.name === 'exec-handoff-threads') {
-          expect(result.threads).toHaveLength(48);
-          expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);
-          expect((result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-old-threads-observed')).toHaveLength(16);
-          expect((result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-old-threads-stopped')).toHaveLength(16);
-        }
         expect(new Set(samples.slice(-8).map(row => row.backing.physicalExtentPages)).size).toBe(1);
       }
       if (probe.name === 'pthread-rollback') {
