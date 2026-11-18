@@ -1132,6 +1132,13 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner private-code  "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c"
     wayland-scanner server-header "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-server-protocol.h"
     wayland-scanner client-header "$SHORTCUTS_XML" "$WLC_GEN/hyprland-global-shortcuts-v1-client-protocol.h"
+    # wp_cursor_shape_manager_v1, for wlclient-test's WLC_CURSOR. Its glue
+    # references the tablet tool interface, so tablet-v2 comes too.
+    CURSOR_SHAPE_XML="$WLC_WP_XML/staging/cursor-shape/cursor-shape-v1.xml"
+    wayland-scanner private-code  "$CURSOR_SHAPE_XML" "$WLC_GEN/cursor-shape-v1-protocol.c"
+    wayland-scanner client-header "$CURSOR_SHAPE_XML" "$WLC_GEN/cursor-shape-v1-client-protocol.h"
+    TABLET_XML="$WLC_WP_XML/stable/tablet/tablet-v2.xml"
+    wayland-scanner private-code  "$TABLET_XML" "$WLC_GEN/tablet-v2-protocol.c"
 
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType (see
@@ -1199,6 +1206,8 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/ext-session-lock-v1-protocol.c" \
         "$WLC_GEN/ext-idle-notify-v1-protocol.c" \
         "$WLC_GEN/hyprland-global-shortcuts-v1-protocol.c" \
+        "$WLC_GEN/cursor-shape-v1-protocol.c" \
+        "$WLC_GEN/tablet-v2-protocol.c" \
         "$SYSROOT/lib/libwayland-client.a" \
         "$SYSROOT/lib/libxkbcommon.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
