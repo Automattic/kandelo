@@ -1,3 +1,5 @@
+import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { processDataView, type ProcessMemorySource } from "../src/process-memory-views";
 import { describe, expect, it, vi } from "vitest";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
@@ -33,13 +35,14 @@ interface TestChannel {
   readonly pid: number;
   readonly channelOffset: number;
   readonly memory: WebAssembly.Memory;
+  source: ProcessMemorySource;
   i32View: Int32Array;
   consecutiveSyscalls: number;
   handling?: boolean;
 }
 
 function writeCloneRequest(channel: TestChannel, args: readonly number[]): void {
-  const view = new DataView(channel.memory.buffer, channel.channelOffset);
+  const view = processDataView(channel.source, channel.channelOffset);
   view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
   view.setUint32(CH_DATA, 11, true);
   view.setUint32(CH_DATA + 4, 22, true);
@@ -54,7 +57,7 @@ function readCloneCompletion(channel: TestChannel): {
   readonly retVal: number;
   readonly errno: number;
 } {
-  const view = new DataView(channel.memory.buffer, channel.channelOffset);
+  const view = processDataView(channel.source, channel.channelOffset);
   return {
     status: view.getUint32(CH_STATUS, true),
     retVal: Number(view.getBigInt64(CH_RETURN, true)),
@@ -75,6 +78,7 @@ function makeCloneHarness(
     shared: true,
   });
   const channel: TestChannel = {
+    source: memory,
     pid: PID,
     channelOffset: CHANNEL_OFFSET,
     memory,
@@ -123,7 +127,7 @@ function makeCloneHarness(
       pid: PID,
       execGeneration: 0n,
       channels: [channel],
-      memory,
+      memory, source: memory,
       ptrWidth: pointerWidth,
       explicitMaxAddr: true,
     }]]),
@@ -178,6 +182,7 @@ function makeChannelOwnershipHarness() {
   });
   const mainChannelOffset = WASM_PAGE_SIZE;
   const mainChannel: TestChannel = {
+    source: memory,
     pid: PID,
     channelOffset: mainChannelOffset,
     memory,
@@ -215,7 +220,7 @@ function makeChannelOwnershipHarness() {
       [PID, {
         pid: PID,
         execGeneration: 0n,
-        memory,
+        memory, source: memory,
         channels: [mainChannel],
         explicitMaxAddr: true,
       }],
@@ -660,6 +665,70 @@ describe("thread channel ownership", () => {
 });
 
 
+describe("clone transport with virtual images", () => {
+  function group(h: ReturnType<typeof makeCloneHarness>) {
+    const store = new MemoryGroupImageStore(7, 64, 64);
+    const task = { group: 7, pid: PID, tid: PID, serial: 1n, generation: 0n };
+    const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: WASM_PAGE_SIZE });
+    const launch = store.publish(owner, task), source = store.imageSource(owner);
+    const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
+    [ptes[1], ptes[6]] = [ptes[6], ptes[1]];
+    [ptes[2], ptes[5]] = [ptes[5], ptes[2]];
+    Object.assign(h.channel, { memory: launch.envelope.memory, source });
+    Object.assign((h.worker as any).processes.get(PID), { memory: launch.envelope.memory, source });
+    return { store, owner, source, memory: launch.envelope.memory };
+  }
+  const parentTidPointer = 4 * WASM_PAGE_SIZE + 256;
+  const args = () => [CLONE_ARGS[0] | 0x00100000, CLONE_ARGS[1], parentTidPointer, CLONE_ARGS[3], CLONE_ARGS[4], 0];
+
+  it("attaches a source-bound channel and writes the logical parent TID", async () => {
+    let h!: ReturnType<typeof makeCloneHarness>;
+    h = makeCloneHarness(async attachment => {
+      expect(attachment).toMatchObject({ tid: KERNEL_TID, fnPtr: 11, argPtr: 22 });
+      h.worker.attachThreadChannel(attachment as any, 3 * WASM_PAGE_SIZE);
+    }, KERNEL_TID, false);
+    const { store, source } = group(h);
+    try {
+      h.dispatch(args());
+      await vi.waitFor(() => expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_COMPLETE));
+      expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: KERNEL_TID, errno: 0 });
+      expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(KERNEL_TID);
+      const attached = (h.worker as any).processes.get(PID).channels[1];
+      expect(attached.source).toBe(source); expect(attached.i32View).toBeUndefined();
+      expect(h.notifyThreadExit).not.toHaveBeenCalled();
+    } finally { store.close(); }
+  });
+
+  it.each([false, true])("refuses an old attachment on the same backing and rolls back its own TID (revoked=%s)", async revoke => {
+    const started = Promise.withResolvers<any>(), launch = Promise.withResolvers<void>();
+    const h = makeCloneHarness(async attachment => { started.resolve(attachment); return launch.promise; }, KERNEL_TID, false);
+    const { store, owner, source, memory } = group(h);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(args()); const attachment = await started.promise;
+      const nextTask = { group: 7, pid: PID, tid: PID, serial: 2n, generation: 1n };
+      const nextOwner = store.prepareImage(nextTask, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: WASM_PAGE_SIZE });
+      const nextLaunch = store.publish(nextOwner, nextTask), nextSource = store.imageSource(nextOwner);
+      expect(nextLaunch.envelope.memory).toBe(memory);
+      nextSource.fillBytes(CHANNEL_OFFSET, 64, 0);
+      processDataView(nextSource).setInt32(parentTidPointer, 77, true);
+      const replacement = { ...h.channel, source: nextSource };
+      const oldRegistration = (h.worker as any).processes.get(PID);
+      (h.worker as any).processes.set(PID, { ...oldRegistration, source: nextSource, channels: [replacement] });
+      (h.worker as any).activeChannels = [replacement];
+      if (revoke) store.revokeImageAccess(owner);
+      expect(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE)).toThrow("changed memory generation");
+      launch.reject(Error("old image launch failed"));
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(h.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
+      expect(processDataView(nextSource).getInt32(parentTidPointer, true)).toBe(77);
+      expect(processDataView(nextSource, CHANNEL_OFFSET).getUint32(CH_STATUS, true)).toBe(0);
+      expect((h.worker as any).processes.get(PID).channels).toEqual([replacement]);
+      if (!revoke) expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(0);
+    } finally { consoleError.mockRestore(); store.close(); }
+  });
+});
+
 describe("clone teardown ownership", () => {
   const parentTidPointer = 0x6000;
   const cloneArgs = () => [
@@ -889,12 +958,12 @@ describe("clone teardown ownership", () => {
       h.dispatch(cloneArgs()); await started.promise;
       const w = h.worker as any;
       const memory = new WebAssembly.Memory({initial: 16, maximum: 16, shared: true});
-      const replacement = {...h.channel, memory, i32View: new Int32Array(memory.buffer, h.channel.channelOffset)};
+      const replacement = {...h.channel, memory, source: memory, i32View: new Int32Array(memory.buffer, h.channel.channelOffset)};
       writeCloneRequest(replacement, cloneArgs());
       const view = new DataView(memory.buffer, replacement.channelOffset);
       view.setBigInt64(CH_RETURN, 987n, true); view.setUint32(CH_ERRNO, 77, true);
       new DataView(memory.buffer).setInt32(parentTidPointer, KERNEL_TID + 1, true);
-      const registration = {pid: PID, memory, channels: [replacement], ptrWidth: width, explicitMaxAddr: true};
+      const registration = {pid: PID, memory, source: memory, channels: [replacement], ptrWidth: width, explicitMaxAddr: true};
       w.processes.set(PID, registration); w.activeChannels = [replacement]; h.setGeneration(1n);
       launch.reject(new Error("old image launch failed"));
       await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());

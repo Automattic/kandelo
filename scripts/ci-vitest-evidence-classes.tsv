@@ -214,6 +214,7 @@ host/test/gles-surfaceless-default.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
+host/test/grouped-worker-initialization.test.ts	source-only
 host/test/gtk3-smoke.test.ts	prepared-product
 host/test/guest-autotools.test.ts	prepared-product
 host/test/guest-bash-subshells.test.ts	prepared-product
@@ -323,6 +324,9 @@ host/test/man-shell-lazy-archive.test.ts	prepared-product
 host/test/mariadb-image-helpers.test.ts	prepared-product
 host/test/mariadb-test-source-copy.test.ts	prepared-product
 host/test/masked-wait-wake.test.ts	prepared-product
+host/test/memory-group-admission.test.ts	source-only
+host/test/memory-group-image-store.test.ts	source-only
+host/test/memory-group-import-guard.test.ts	source-only
 host/test/memory-group-pool.test.ts	source-only
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
@@ -415,6 +419,7 @@ host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
+host/test/process-address-space.test.ts	source-only
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-generation-observation.test.ts	source-only
@@ -422,8 +427,10 @@ host/test/process-group-leader-timer.test.ts	prepared-product
 host/test/process-memory-allocator.test.ts	source-only
 host/test/process-memory-async-allocation.test.ts	source-only
 host/test/process-memory-creator-gate.test.ts	source-only
+host/test/process-memory-descriptor.test.ts	source-only
 host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
+host/test/process-memory-views.test.ts	source-only
 host/test/process-memory.test.ts	source-only
 host/test/process-native-layout.test.ts	prepared-product
 host/test/process-snapshot-comparator.test.ts	source-only

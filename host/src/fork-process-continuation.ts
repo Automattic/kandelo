@@ -30,6 +30,7 @@ import {
 import type {
   DecodedSegmentedForkReferenceTransaction,
 } from "./fork-reference-segments";
+import { processDataView, processMemoryByteLength, type ProcessMemorySource } from "./process-memory-views";
 
 const WPK_FORK_NORMAL = 0;
 const WPK_FORK_UNWINDING = 1;
@@ -135,7 +136,7 @@ export class ForkProcessContinuationCoordinator {
   private replayOwnership: ProcessReplayOwnership | null = null;
 
   constructor(
-    private readonly memory: WebAssembly.Memory,
+    private readonly memory: ProcessMemorySource,
     private readonly registry: ForkActivationRegistry,
     private readonly label: string,
   ) {}
@@ -1017,12 +1018,12 @@ export class ForkProcessContinuationCoordinator {
       continuation.format.ptrWidth,
       `${this.label}: ${operation} frame`,
     );
-    if (offset > this.memory.buffer.byteLength - 4) {
+    if (offset > processMemoryByteLength(this.memory) - 4) {
       throw new RangeError(
         `${this.label}: ${operation} frame header escapes process memory`,
       );
     }
-    return new DataView(this.memory.buffer).getUint32(offset, true);
+    return processDataView(this.memory).getUint32(offset, true);
   }
 
   private getActivation(activationId: number): CompleteForkProcessActivation {

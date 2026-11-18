@@ -64,6 +64,39 @@ Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A sing
      └────────────┘  └───────────┘  └───────────┘
 ```
 
+## Experimental process address spaces
+
+The internal shared-memory backend distinguishes a process's guest addresses
+from its physical instantiation memory. Ordinary processes keep genuine linear
+memory and direct native views. Grouped images use explicit checked byte,
+scalar and atomic operations over a page-table root; they expose no substitute
+`.buffer` or rewritten global constructors. Fork continuation, reference and
+loader metadata use the same image source. Grouped side modules are refused
+before dependency I/O; compatible static executables use the SDK producer.
+
+The dedicated kernel Worker registers an image source only through its owned
+published replica handle and an exact Rust receipt/generation check. Once an
+explicit source provider is installed, missing custody never falls back to a
+native or graphics lookup. Kernel process-byte imports, extent validation,
+syscall planning and completion use that source. The native snapshot comparator
+remains on its direct path; grouped comparisons request an owned read.
+
+Kernel image access outlives any one execution replica. Native channel listeners
+pin the exact physical word they armed until the engine promise settles, even
+after source revocation or a page-table change. Notification alone proves no
+retirement. Unpublished allocation rollback requires exact Rust cancellation;
+published or uncertain storage stays charged. Independent device buffers remain
+the only transport into persistent page/audio realms.
+
+The Node/browser process entries share a memory-free prepare/ready exchange
+before one backing is transported on the authenticated parent channel. They
+validate the versioned artifact, reject an implicit Wasm start, and bind replica
+controls before initialization. Public grouped launch remains unavailable.
+Dynamic mapping transactions, complete worker/wait retirement, shared-object
+semantics, graphics and preview acceptance are still under development; these
+internal paths do not establish their support. See
+[shared-memory groups](shared-memory-groups.md).
+
 ## Three Layers
 
 ### 1. Kernel (Rust → Wasm)

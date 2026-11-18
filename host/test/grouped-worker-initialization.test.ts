@@ -1,0 +1,128 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MemoryGroupImageStore } from '../src/memory-group-image-store';
+import { GroupedWorkerRuntime, GROUPED_WORKER_EXTENSIONS } from '../src/grouped-worker-runtime';
+import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, receiveGroupedWorkerInitialization, waitForGroupedWorkerReady } from '../src/grouped-worker-initialization';
+import { centralizedThreadWorkerMain } from '../src/worker-main';
+import { MockWorkerHandle } from '../src/worker-adapter';
+import { runWithProcessWorkerQuiescence } from '../src/worker-quiescence';
+import { describeWasmArtifactPolicyFailures } from '../src/constants';
+import * as G from '../src/generated/program-extensions';
+const P = 65536;
+function fixture() {
+  const store = new MemoryGroupImageStore(7, 32, 32);
+  const receipt = { group: 7, pid: 100, tid: 100, serial: (1n << 55n) + 1n, generation: (1n << 54n) + 3n };
+  const handle = store.prepareImage(receipt, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: P });
+  const launch = store.publish(handle, receipt);
+  const { assertLive: _live, ...expected } = launch.expectation;
+  const init = { type: 'centralized_init' as const, pid: 100, programBytes: new ArrayBuffer(0), channelOffset: 4096, secureExec: false };
+  return { store, handle, launch, expected, init };
+}
+function leb(value: number): number[] { const out: number[] = []; do { const byte = value & 127; value >>>= 7; out.push(byte | (value ? 128 : 0)); } while (value); return out; }
+const text = (value: string): number[] => { const bytes = [...new TextEncoder().encode(value)]; return [...leb(bytes.length), ...bytes]; };
+function artifact(patch: object = {}, start = false): ArrayBuffer {
+  const metadata = { version: 3, layout: 3, threadAttach: 2, cooperativeStop: 3, executionBarrier: 1, orderedWaitQueue: 2,
+    initialPages: 1, maximumPages: 16, accessProfile: 'outlined', sourceSha256: '0'.repeat(64), helpersSha256: '1'.repeat(64), ...patch };
+  const bytes = [0,97,115,109,1,0,0,0];
+  const section = (id: number, body: number[]) => bytes.push(id, ...leb(body.length), ...body);
+  if (start) section(1, [1,0x60,0,0]);
+  section(2, [1,...text(G.MEMORY_GROUP_MODULE),...text('memory'),2,3,1,32]);
+  if (start) { section(3,[1,0]); section(8,[0]); section(10,[1,2,0,0x0b]); }
+  section(0,[...text(G.MEMORY_GROUP_SECTION), ...new TextEncoder().encode(JSON.stringify(metadata))]);
+  return Uint8Array.from(bytes).buffer;
+}
+afterEach(() => vi.useRealTimers());
+describe('normal grouped Worker initialization', () => {
+  it('retains the ordinary entry contract without adding a memory handshake', async () => {
+    const init = { type: 'centralized_init' }, receive = vi.fn(), post = vi.fn();
+    const result = await receiveGroupedWorkerInitialization(init, receive, post);
+    expect(result.init).toBe(init); expect(result.grouped).toBeUndefined();
+    expect(receive).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled();
+  });
+  it('exchanges exact memory-free readiness before accepting one admitted backing', async () => {
+    const f = fixture(), posts: any[] = [];
+    let next!: (value: unknown) => void;
+    const initialization = receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected),
+      () => new Promise(resolve => { next = resolve; }), message => posts.push(message));
+    expect(posts).toHaveLength(1);
+    const inspect = (value: unknown): void => {
+      if (value && typeof value === 'object') {
+        expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+        for (const child of Object.values(value)) inspect(child);
+      } else expect(['string','number','bigint']).toContain(typeof value);
+    };
+    inspect(posts[0]); expect(posts[0].receipt.serial).toBe(f.expected.receipt.serial);
+    const worker = new MockWorkerHandle(), prepared = waitForGroupedWorkerReady(worker, f.expected);
+    worker.simulateMessage(posts[0]); await prepared;
+    next(createGroupedWorkerLaunch(f.init, f.launch.envelope));
+    const received = await initialization;
+    expect(received.init.memory).toBe(f.launch.envelope.memory);
+    expect(received.grouped!.descriptor.receipt).toEqual(f.expected.receipt);
+    received.grouped!.detach(); f.store.close();
+  });
+  it('refuses memory-bearing launch without a preceding expectation', async () => {
+    const f = fixture(), receive = vi.fn(), post = vi.fn();
+    await expect(receiveGroupedWorkerInitialization(createGroupedWorkerLaunch(f.init, f.launch.envelope), receive, post)).rejects.toThrow('without its readiness');
+    expect(receive).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled(); f.store.close();
+  });
+  it('rejects expectation getters before receiving or acknowledging anything', async () => {
+    const get = vi.fn(), receive = vi.fn(), post = vi.fn();
+    const value = { type: 'kandelo.memory-group.worker-prepare.v3', get expected() { get(); return {}; } };
+    await expect(receiveGroupedWorkerInitialization(value, receive, post)).rejects.toThrow('accessors');
+    expect(get).not.toHaveBeenCalled(); expect(receive).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled();
+  });
+  it.each(['pid', 'memory'] as const)('rejects a second launch with mismatched %s', async field => {
+    const f = fixture(), init: any = { ...f.init, [field]: field === 'pid' ? 101 : f.launch.envelope.memory };
+    const message = { type: 'kandelo.memory-group.worker-launch.v3', init, envelope: f.launch.envelope };
+    await expect(receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected), async () => message, () => {})).rejects.toThrow('disagrees');
+    f.store.close();
+  });
+  it('rejects stale readiness and leaves ownership with the caller', async () => {
+    const f = fixture(), posts: any[] = [];
+    const pending = receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected), async () => ({ type: 'wrong' }), message => posts.push(message));
+    await expect(pending).rejects.toThrow();
+    const worker = new MockWorkerHandle(), terminate = vi.spyOn(worker, 'terminate');
+    const ready = waitForGroupedWorkerReady(worker, f.expected);
+    worker.simulateMessage({ ...posts[0], receipt: { ...f.expected.receipt, serial: f.expected.receipt.serial + 1n } });
+    await expect(ready).rejects.toThrow('another admission'); expect(terminate).not.toHaveBeenCalled(); f.store.close();
+  });
+  it('times out readiness without claiming Worker retirement', async () => {
+    vi.useFakeTimers(); const f = fixture(), worker = new MockWorkerHandle(), terminate = vi.spyOn(worker, 'terminate');
+    const refusal = expect(waitForGroupedWorkerReady(worker, f.expected, 5)).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(5); await refusal;
+    expect(terminate).not.toHaveBeenCalled(); f.store.close();
+  });
+  it.each([{ layout: 2 }, { threadAttach: 1 }, { maximumPages: 1 }, { accessProfile: 'research' }])('refuses incompatible executable metadata %j', patch => {
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), bytes = artifact(patch);
+    expect(() => runtime.validate(new WebAssembly.Module(bytes), bytes, 100, 100)).toThrow('Incompatible');
+    runtime.detach(); f.store.close();
+  });
+  it('refuses a start section before binding controls or executing Wasm', () => {
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), bytes = artifact({}, true);
+    expect(() => runtime.validate(new WebAssembly.Module(bytes), bytes, 100, 100)).toThrow('defer its start');
+    runtime.detach(); f.store.close();
+  });
+  it('rejects an original thread start before constructor patching can hide it', async () => {
+    const f = fixture(), task = { ...f.expected.receipt, tid: 101, serial: f.expected.receipt.serial + 1n };
+    const handle = f.store.prepareThread(task), launch = f.store.publish(handle, task);
+    const runtime = new GroupedWorkerRuntime(launch.envelope, launch.expectation), events: any[] = [];
+    await centralizedThreadWorkerMain({ postMessage: (message: unknown) => events.push(message) } as any, {
+      type: 'centralized_thread_init', pid: 100, tid: 101, memory: runtime.memory, programBytes: artifact({}, true),
+      processChannelOffset: 4096, channelOffset: 8192, secureExec: false, fnPtr: 0, argPtr: 0,
+      stackPtr: 32768, tlsPtr: 0, ctidPtr: 0, tlsOffset: 16384, tlsAllocAddr: 16384,
+    }, runtime);
+    expect(events).toHaveLength(1); expect(events[0].type).toBe('error');
+    expect(events[0].message).toContain('defer its start'); runtime.detach(); f.store.close();
+  });
+  it('keeps ordinary artifact refusal and admits only the explicit grouped extension policy', () => {
+    const bytes = artifact();
+    expect(describeWasmArtifactPolicyFailures(bytes).join(' ')).toContain('unsupported required program extension');
+    expect(describeWasmArtifactPolicyFailures(bytes, { supportedProgramExtensions: GROUPED_WORKER_EXTENSIONS })).toEqual([]);
+  });
+  it('revokes storage before publishing an exact grouped terminal fence', async () => {
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), events: any[] = [];
+    await runWithProcessWorkerQuiescence({ postMessage: message => {
+      expect(() => runtime.source.readBytes(0, 1)).toThrow(); events.push(message);
+    }, close: () => events.push('close') }, { pid: 100, memoryGroup: f.expected.receipt }, async () => runtime.detach(), () => {});
+    expect(events).toEqual([{ type: 'memory_quiescent', pid: 100, memoryGroup: f.expected.receipt }, 'close']); f.store.close();
+  });
+});

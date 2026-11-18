@@ -2529,6 +2529,9 @@ export function describeWasmArtifactPolicyFailures(
     forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
     forbidForkInstrumentation?: boolean;
+    /** Only the admitted group Worker path supplies this set. Ordinary
+     * launch keeps rejecting every unsupported required namespace. */
+    supportedProgramExtensions?: ReadonlySet<string>;
   } = {},
 ): string[] {
   const failures: string[] = [];
@@ -2595,6 +2598,7 @@ export function describeWasmArtifactPolicyFailures(
       failures.push(...describeProgramExtensionFailures(
         readWasmImportDescriptors(programBytes), facts.functionImportEntries,
         facts.memoryPointerWidths,
+        options.supportedProgramExtensions,
       ));
     } catch (error) {
       failures.push(`cannot validate required program extensions: ${error instanceof Error ? error.message : String(error)}`);

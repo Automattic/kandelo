@@ -1,3 +1,5 @@
+import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { captureProcessRead, processDataView } from "../src/process-memory-views";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -79,6 +81,157 @@ function admitProgram(memory: WebAssembly.Memory) {
     return 1;
   });
 }
+
+function groupedExecInput() {
+  const store = new MemoryGroupImageStore(7, 32, 32);
+  const task = { group: 7, pid: 7, tid: 7, serial: 1n, generation: 0n };
+  const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: 65536 });
+  const launch = store.publish(owner, task), source = store.imageSource(owner);
+  const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
+  [ptes[0], ptes[7]] = [ptes[7], ptes[0]];
+  [ptes[1], ptes[4]] = [ptes[4], ptes[1]];
+  return { store, source, ptes, memory: launch.envelope.memory };
+}
+
+describe("exec metadata through explicit image sources", () => {
+  it.each([4, 8] as const)("reads scattered strings and unaligned wasm%s pointer arrays", pointerWidth => {
+    const { store, source } = groupedExecInput(), worker = createWorker({});
+    const array = 65536 - 2, string = 2 * 65536 - 3, text = "héllo🙂";
+    try {
+      source.writeBytes(string, new TextEncoder().encode(text + "\0"));
+      const view = processDataView(source);
+      if (pointerWidth === 8) {
+        view.setBigUint64(array, BigInt(string), true); view.setBigUint64(array + 8, 0n, true);
+      } else {
+        view.setUint32(array, string, true); view.setUint32(array + 4, 0, true);
+      }
+      expect(worker.readStringArrayFromProcess(captureProcessRead(source), array, pointerWidth)).toEqual({ values: [text] });
+    } finally { store.close(); }
+  });
+
+  it("stops at a NUL before a hole and reports EFAULT when the string reaches it", () => {
+    const { store, source, ptes } = groupedExecInput(), worker = createWorker({});
+    const path = 65536 - 2;
+    try {
+      source.writeBytes(path, Uint8Array.of(47, 120, 0));
+      const saved = ptes[1]; ptes[1] &= ~1;
+      expect(worker.readExecPathFromProcess(captureProcessRead(source), path)).toEqual({ errno: 14 });
+      source.writeBytes(path, Uint8Array.of(47, 0));
+      expect(worker.readExecPathFromProcess(captureProcessRead(source), path)).toEqual({ value: "/" });
+      ptes[1] = saved;
+    } finally { store.close(); }
+  });
+
+  it("does not require unrelated image pages while decoding argv", () => {
+    const { store, source, ptes } = groupedExecInput(), worker = createWorker({});
+    const array = 2 * 65536 - 2, string = 3 * 65536 - 2;
+    try {
+      source.writeBytes(string, new TextEncoder().encode("arg\0"));
+      processDataView(source).setUint32(array, string, true);
+      processDataView(source).setUint32(array + 4, 0, true);
+      ptes[0] &= ~1;
+      expect(worker.readStringArrayFromProcess(captureProcessRead(source), array, 4)).toEqual({ values: ["arg"] });
+    } finally { store.close(); }
+  });
+
+  it("refuses metadata outside the captured native extent after growth", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    const captured = captureProcessRead(memory), worker = createWorker({});
+    memory.grow(1);
+    new Uint8Array(memory.buffer).set(new TextEncoder().encode("/x\0"), 65536 + 16);
+    expect(worker.readExecPathFromProcess(captured, 65536 + 16)).toEqual({ errno: 14 });
+    expect(worker.readExecPathFromProcess(captureProcessRead(memory), 65536 + 16)).toEqual({ value: "/x" });
+  });
+
+  it.each([HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT])("refuses inaccessible virtual paths before launching syscall %i", syscall => {
+    const { store, source, ptes, memory } = groupedExecInput();
+    const channel = { ...createChannel(7, memory, 6 * 65536), source }, onExec = vi.fn();
+    const worker = createWorker({ processes: new Map([[7, { channels: [channel], memory, source }]]), callbacks: { onExec } });
+    const path = 65536 - 2;
+    try {
+      source.writeBytes(path, Uint8Array.of(47, 120, 0)); ptes[1] &= ~1;
+      const view = processDataView(source, channel.channelOffset);
+      view.setInt32(CH_STATUS, CHANNEL_STATUS_PENDING, true); view.setUint32(CH_SYSCALL, syscall, true);
+      const args = syscall === HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE ? [path, 0, 0] : [-100, path, 0, 0, 0];
+      args.forEach((arg, i) => view.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(arg), true));
+      worker.handleSyscall(channel);
+      expect(onExec).not.toHaveBeenCalled();
+      expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(view.getUint32(CH_ERRNO, true)).toBe(14);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
+    } finally { store.close(); }
+  });
+});
+
+describe("exact virtual exec caller identity", () => {
+  it.each(["image", "request"] as const)("cancels an old preparation without completing its replacement %s", async replacement => {
+    const { store, source, memory } = groupedExecInput();
+    const channel = { ...createChannel(7, memory, 6 * 65536), source };
+    const registration = { pid: 7, channels: [channel], memory, source, ptrWidth: 4 };
+    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
+    const exports = preparedExecExports(kernelMemory), commit = vi.fn(() => 0);
+    let finish!: (value: any) => void;
+    const decision = new Promise<any>(resolve => { finish = resolve; });
+    const onExec = vi.fn(() => decision), discard = vi.fn(), start = vi.fn(async () => 0);
+    const worker = createWorker({ processes: new Map([[7, registration]]), activeChannels: [channel],
+      callbacks: { onExec }, kernelMemory, kernelAbiVersion: ABI_VERSION,
+      kernelInstance: { exports: { ...exports, kernel_exec_commit: commit, kernel_get_process_exit_signal: () => -1 } } });
+    try {
+      const path = 65536 - 3, view = processDataView(source, channel.channelOffset);
+      source.writeBytes(path, new TextEncoder().encode("/bin/next\0"));
+      view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+      view.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
+      view.setBigInt64(CH_ARGS, BigInt(path), true);
+      worker.handleSyscall(channel);
+      await flushMicrotasksUntil(() => onExec.mock.calls.length === 1, "exec preflight did not start");
+      let replacementView = view;
+      if (replacement === "image") {
+        const task = { group: 7, pid: 7, tid: 7, serial: 2n, generation: 1n };
+        const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: 65536 });
+        const launch = store.publish(owner, task), nextSource = store.imageSource(owner);
+        const next = { ...channel, source: nextSource };
+        worker.processes.set(7, { ...registration, source: nextSource, channels: [next] });
+        worker.activeChannels = [next]; replacementView = processDataView(nextSource, next.channelOffset);
+        replacementView.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+        replacementView.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
+      } else {
+        worker.activeChannelRequests.set(channel, Object.freeze({ ...worker.activeChannelRequests.get(channel) }));
+      }
+      finish({ onCommitFailure: discard, startAfterCommit: start });
+      await flushMicrotasksUntil(() => discard.mock.calls.length === 1, "stale exec preparation was not discarded");
+      // No I/O or compilation remains after this observed commit refusal.
+      // Its remaining Promise reactions drain before the next host task.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(commit).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
+      expect(exports.kernel_exec_target_cancel).toHaveBeenCalledExactlyOnceWith(7, 31);
+      expect(replacementView.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_PENDING);
+      expect(replacementView.getBigInt64(CH_RETURN, true)).toBe(0n);
+    } finally { store.close(); }
+  });
+
+  it("decodes scattered input and completes a failure for the selected virtual request", async () => {
+    const { store, source, memory } = groupedExecInput();
+    const channel = { ...createChannel(7, memory, 6 * 65536), source };
+    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
+    const onExec = vi.fn(async () => -2);
+    const worker = createWorker({ processes: new Map([[7, { pid: 7, channels: [channel], memory, source }]]),
+      callbacks: { onExec }, kernelMemory, kernelAbiVersion: ABI_VERSION,
+      kernelInstance: { exports: { ...preparedExecExports(kernelMemory), kernel_get_process_exit_signal: () => -1 } } });
+    try {
+      const path = 65536 - 3, array = 2 * 65536 - 2, argument = 3 * 65536 - 2;
+      source.writeBytes(path, new TextEncoder().encode("/bin/next\0"));
+      source.writeBytes(argument, new TextEncoder().encode("alpha\0"));
+      const view = processDataView(source, channel.channelOffset);
+      processDataView(source).setUint32(array, argument, true); processDataView(source).setUint32(array + 4, 0, true);
+      view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true); view.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
+      view.setBigInt64(CH_ARGS, BigInt(path), true); view.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(array), true);
+      worker.handleSyscall(channel);
+      await flushMicrotasksUntil(() => view.getUint32(CH_STATUS, true) === CHANNEL_STATUS_COMPLETE, "virtual exec failure did not complete");
+      expect(onExec).toHaveBeenCalledOnce(); expect(onExec.mock.calls[0][0].argv).toEqual(["alpha"]);
+      expect(view.getUint32(CH_ERRNO, true)).toBe(2); expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
+    } finally { store.close(); }
+  });
+});
 
 describe("opaque prepared exec target launch", () => {
   it.each(["prepare", "interpreter", "size", "read", "admit", "cancel", "commit"])(
@@ -767,7 +920,7 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       processes: new Map([[
         7,
-        { pid: 7, memory, channels: [mainChannel, threadChannel] },
+        { pid: 7, memory, source: memory, channels: [mainChannel, threadChannel] },
       ]]),
     });
 
@@ -840,8 +993,8 @@ describe("exec host-state transition", () => {
       const otherChannel = createChannel(8, otherMemory, 0);
       const worker = createWorker({
         processes: new Map([
-          [7, { channels: [mainChannel, threadChannel], memory }],
-          [8, { channels: [otherChannel], memory: otherMemory }],
+          [7, { channels: [mainChannel, threadChannel], memory, source: memory }],
+          [8, { channels: [otherChannel], memory: otherMemory, source: otherMemory }],
         ]),
         activeChannels: [mainChannel, threadChannel, otherChannel],
         pendingCancels: new Set([threadChannel, otherChannel]),
@@ -910,7 +1063,7 @@ describe("exec host-state transition", () => {
     const newMemory = new WebAssembly.Memory({ initial: 1 });
     const oldChannel = createChannel(7, oldMemory, 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
+      processes: new Map([[7, { channels: [oldChannel], memory: oldMemory, source: oldMemory }]]),
       activeChannels: [oldChannel],
     });
     const pendingAttachment = await issueThreadAttachment(
@@ -920,12 +1073,10 @@ describe("exec host-state transition", () => {
       1,
       2,
     );
-    worker.processes.set(7, { channels: [], memory: newMemory });
+    worker.processes.set(7, { channels: [], memory: newMemory, source: newMemory });
 
-    expectGateFailureCause(
-      () => worker.attachThreadChannel(pendingAttachment, 512),
-      "changed memory generation",
-    );
+    expect(() => worker.attachThreadChannel(pendingAttachment, 512)).toThrow("changed memory generation");
+    expect(worker.isProcessExecutionActive(7)).toBe(true);
     expect(worker.processes.get(7).channels).toEqual([]);
   });
 
@@ -938,7 +1089,7 @@ describe("exec host-state transition", () => {
     const handleProcessTerminated = vi.fn();
     const handleSyscall = vi.fn();
     const worker = createWorker({
-      processes: new Map([[7, { channels: [newChannel], memory: newMemory }]]),
+      processes: new Map([[7, { channels: [newChannel], memory: newMemory, source: newMemory }]]),
       getProcessExitSignal,
       handleProcessTerminated,
       handleSyscall,
@@ -971,7 +1122,7 @@ describe("exec host-state transition", () => {
     const onExit = vi.fn();
     const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: {
         onExec: vi.fn(() => launched),
         onExit,
@@ -1028,7 +1179,7 @@ describe("exec host-state transition", () => {
     const getProcessExitSignal = vi.fn(() => 0);
     const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: { onExec: vi.fn(() => launched) },
       kernelInstance: {
         exports: {
@@ -1068,7 +1219,7 @@ describe("exec host-state transition", () => {
     const kernelSpawn = vi.fn(() => -11);
     const onSpawn = vi.fn(async () => 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: { onSpawn },
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
@@ -1101,7 +1252,7 @@ describe("exec host-state transition", () => {
       .mockReturnValueOnce(-11)
       .mockReturnValue(-2);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: { onSpawn: vi.fn(async () => 0) },
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
@@ -1149,7 +1300,7 @@ describe("exec host-state transition", () => {
     const kernelSpawn = vi.fn(() => -8);
     const onSpawn = vi.fn(async () => 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: { onSpawn },
       kernelInstance: {
         exports: { kernel_spawn_process: kernelSpawn },
@@ -1185,7 +1336,7 @@ describe("exec host-state transition", () => {
     const vectors = [["child", "x"], ["A=B"]];
     const onSpawn = vi.fn(() => new Promise<number>(() => {}));
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: { onSpawn },
       kernelMemory,
       kernelInstance: {
@@ -1238,8 +1389,8 @@ describe("exec host-state transition", () => {
     let worker: any;
     worker = createWorker({
       processes: new Map([
-        [7, { channels: [channel], memory }],
-        [8, { channels: [otherChannel], memory: otherMemory }],
+        [7, { channels: [channel], memory, source: memory }],
+        [8, { channels: [otherChannel], memory: otherMemory, source: otherMemory }],
       ]),
       callbacks: { onSpawn },
       kernelMemory,
@@ -1363,7 +1514,7 @@ describe("exec host-state transition", () => {
     const removeProcess = vi.fn();
     const onSpawn = vi.fn(async () => 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: { onSpawn },
       kernelInstance: {
         exports: {
@@ -1411,7 +1562,7 @@ describe("exec host-state transition", () => {
     const onSpawn = vi.fn(() => spawned);
     const program = resolvedProgram();
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: {
         onSpawn,
       },
@@ -1474,7 +1625,7 @@ describe("exec host-state transition", () => {
     };
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       callbacks: {
         onSpawn: vi.fn(() => spawned),
       },
@@ -1555,7 +1706,7 @@ describe("exec host-state transition", () => {
     const newChannel = createChannel(7, newMemory, 0);
     const kernelHandleChannel = vi.fn(() => 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
+      processes: new Map([[7, { channels: [oldChannel], memory: oldMemory, source: oldMemory }]]),
       activeChannels: [oldChannel],
       usePolling: false,
       relistenBatchSize: 64,
@@ -1572,7 +1723,7 @@ describe("exec host-state transition", () => {
     } as any);
     try {
       worker.listenOnChannel(oldChannel);
-      worker.processes.set(7, { channels: [newChannel], memory: newMemory });
+      worker.processes.set(7, { channels: [newChannel], memory: newMemory, source: newMemory });
       worker.activeChannels = [newChannel];
       wake("ok");
       await waited;
@@ -1600,7 +1751,7 @@ describe("exec host-state transition", () => {
       const newChannel = createChannel(7, newMemory, 0);
       const kernelHandleChannel = vi.fn(() => 0);
       const worker = createWorker({
-        processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
+        processes: new Map([[7, { channels: [oldChannel], memory: oldMemory, source: oldMemory }]]),
         kernelInstance: {
           exports: { kernel_handle_channel: kernelHandleChannel },
         },
@@ -1610,7 +1761,7 @@ describe("exec host-state transition", () => {
       worker.handleBlockingRetry(oldChannel, 999, [0, 0, 0, 0, 0, 0]);
       vi.advanceTimersByTime(5);
 
-      worker.processes.set(7, { channels: [newChannel], memory: newMemory });
+      worker.processes.set(7, { channels: [newChannel], memory: newMemory, source: newMemory });
       worker.handleBlockingRetry(newChannel, 999, [0, 0, 0, 0, 0, 0]);
       expect(worker.pendingPollRetries.has(oldChannel)).toBe(true);
       expect(worker.pendingPollRetries.has(newChannel)).toBe(true);
@@ -1673,12 +1824,12 @@ describe("exec host-state transition", () => {
     bytes[stringPtr + 5000] = 0;
     const worker = createWorker({});
 
-    const parsed = worker.readStringArrayFromProcess(bytes, arrayPtr, 4);
+    const parsed = worker.readStringArrayFromProcess(captureProcessRead(memory), arrayPtr, 4);
     expect(parsed).toEqual({ values: ["a".repeat(5000)] });
 
     bytes.fill("b".charCodeAt(0), stringPtr, stringPtr + 65_537);
     bytes[stringPtr + 65_537] = 0;
-    expect(worker.readStringArrayFromProcess(bytes, arrayPtr, 4)).toEqual({ errno: 7 });
+    expect(worker.readStringArrayFromProcess(captureProcessRead(memory), arrayPtr, 4)).toEqual({ errno: 7 });
   });
 
   it("accepts a pointer array whose terminator follows 1024 entries", () => {
@@ -1695,7 +1846,7 @@ describe("exec host-state transition", () => {
     view.setUint32(arrayPtr + 1024 * 4, 0, true);
     const worker = createWorker({});
 
-    const parsed = worker.readStringArrayFromProcess(bytes, arrayPtr, 4);
+    const parsed = worker.readStringArrayFromProcess(captureProcessRead(memory), arrayPtr, 4);
     expect("values" in parsed && parsed.values).toHaveLength(1024);
   });
 
@@ -1727,7 +1878,7 @@ describe("exec host-state transition", () => {
       const worker = createWorker({});
 
       const exact = worker.readStringArrayFromProcess(
-        bytes,
+        captureProcessRead(memory),
         arrayPtr,
         pointerWidth,
         PROCESS_STARTUP_MAX_ARGV_COUNT,
@@ -1738,7 +1889,7 @@ describe("exec host-state transition", () => {
       setPointer(PROCESS_STARTUP_MAX_ARGV_COUNT, stringPtr);
       expect(
         worker.readStringArrayFromProcess(
-          bytes,
+          captureProcessRead(memory),
           arrayPtr,
           pointerWidth,
           PROCESS_STARTUP_MAX_ARGV_COUNT,
@@ -1779,7 +1930,7 @@ describe("exec host-state transition", () => {
       const worker = createWorker({
         processes: new Map([[
           7,
-          { channels: [channel], memory, ptrWidth: pointerWidth },
+          { channels: [channel], memory, source: memory, ptrWidth: pointerWidth },
         ]]),
         callbacks: { onExec },
       });
@@ -1808,22 +1959,22 @@ describe("exec host-state transition", () => {
 
     bytes.fill("a".charCodeAt(0), pathPtr, pathPtr + 4095);
     bytes[pathPtr + 4095] = 0;
-    expect(worker.readExecPathFromProcess(bytes, pathPtr)).toEqual({
+    expect(worker.readExecPathFromProcess(captureProcessRead(memory), pathPtr)).toEqual({
       value: "a".repeat(4095),
     });
 
     bytes.fill("b".charCodeAt(0), pathPtr, pathPtr + 4096);
     bytes[pathPtr + 4096] = 0;
-    expect(worker.readExecPathFromProcess(bytes, pathPtr)).toEqual({ errno: 36 });
+    expect(worker.readExecPathFromProcess(captureProcessRead(memory), pathPtr)).toEqual({ errno: 36 });
 
     bytes[bytes.byteLength - 1] = "c".charCodeAt(0);
-    expect(worker.readExecPathFromProcess(bytes, bytes.byteLength - 1)).toEqual({ errno: 14 });
-    expect(worker.readExecPathFromProcess(bytes, 0)).toEqual({ errno: 14 });
+    expect(worker.readExecPathFromProcess(captureProcessRead(memory), bytes.byteLength - 1)).toEqual({ errno: 14 });
+    expect(worker.readExecPathFromProcess(captureProcessRead(memory), 0)).toEqual({ errno: 14 });
   });
 
   it("flushes file-backed mappings before commit and forgets them afterward", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
-    const channel = { pid: 7, memory };
+    const channel = { pid: 7, memory, source: memory };
     const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const writes: Array<{ fd: number; length: number; offset: number }> = [];
     const kernelHandleChannel = vi.fn((scratch: number) => {
@@ -1841,7 +1992,7 @@ describe("exec host-state transition", () => {
       return 0;
     });
     const worker = createWorker({
-      processes: new Map([[7, { channels: [channel], memory }]]),
+      processes: new Map([[7, { channels: [channel], memory, source: memory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, { fd: 4, fileOffset: 0x2000, len: 0x3000, writable: true }],
       ])]]),
@@ -1867,7 +2018,7 @@ describe("exec host-state transition", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const worker = createWorker({
-      processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
+      processes: new Map([[7, { channels: [{ pid: 7, memory }], memory, source: memory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, { fd: 4, fileOffset: 0, len: 0x1000, writable: true }],
       ])]]),
@@ -1891,7 +2042,7 @@ describe("exec host-state transition", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     const kernelHandleChannel = vi.fn(() => 0);
     const worker = createWorker({
-      processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
+      processes: new Map([[7, { channels: [{ pid: 7, memory }], memory, source: memory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, { fd: 4, fileOffset: 0, len: 0x1000, writable: false }],
       ])]]),
@@ -1925,7 +2076,7 @@ describe("exec host-state transition", () => {
     let calls = 0;
     const worker = createWorker({
       currentHandlePid: 0,
-      processes: new Map([[7, { channels: [channel], memory: processMemory }]]),
+      processes: new Map([[7, { channels: [channel], memory: processMemory, source: processMemory }]]),
       sharedMappings: new Map([[7, new Map([
         [0x1000, {
           fd: 4,
@@ -1968,7 +2119,7 @@ describe("exec host-state transition", () => {
     const sysv = createKernelSharedMappingStub();
     sysv.seed(7, 0x1000, { segId: 3, size: 4, readOnly: false });
     const worker = createWorker({
-      processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
+      processes: new Map([[7, { channels: [{ pid: 7, memory }], memory, source: memory }]]),
       kernelSharedMappingPids: new Set([7]),
       currentHandlePid: 0,
       kernelMemory,
@@ -2240,13 +2391,14 @@ function pendingExecProcesses(pid = 7): Map<number, unknown> {
   view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
   view.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
   const channel = {
+    source: memory,
     pid,
     memory,
     channelOffset,
     i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,
   };
-  return new Map([[pid, { pid, memory, channels: [channel] }]]);
+  return new Map([[pid, { pid, memory, source: memory, channels: [channel] }]]);
 }
 
 function createWorker(overrides: Record<string, unknown>): any {
@@ -2540,6 +2692,7 @@ async function flushMicrotasksUntil(
 
 function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset: number): any {
   return {
+    source: memory,
     pid,
     memory,
     channelOffset,

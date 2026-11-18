@@ -1,3 +1,5 @@
+import { processDataView, processMemoryByteLength, readProcessBytes, writeProcessBytes,
+  type ProcessMemorySource, type ProcessDataView } from "./process-memory-views";
 import { WASM_PAGE_SIZE } from "./constants";
 import {
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
@@ -84,22 +86,22 @@ interface AbortFailure {
 }
 
 export function writeForkContinuationAnchor(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   anchorAddr: number,
   ptrWidth: 4 | 8,
   moduleBufferAddr: number,
 ): void {
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   if (ptrWidth === 8) view.setBigUint64(anchorAddr, BigInt(moduleBufferAddr), true);
   else view.setUint32(anchorAddr, moduleBufferAddr, true);
 }
 
 export function readForkContinuationAnchor(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   anchorAddr: number,
   ptrWidth: 4 | 8,
 ): number {
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   const value = ptrWidth === 8
     ? Number(view.getBigUint64(anchorAddr, true))
     : view.getUint32(anchorAddr, true);
@@ -114,7 +116,7 @@ export function readForkContinuationAnchor(
     || !Number.isSafeInteger(root)
     || root <= 0
     || root % WASM_PAGE_SIZE !== 0
-    || root + WASM_PAGE_SIZE > memory.buffer.byteLength
+    || root + WASM_PAGE_SIZE > processMemoryByteLength(memory)
   ) {
     throw new Error(`invalid fork continuation anchor ${String(value)}`);
   }
@@ -261,7 +263,7 @@ export class LinkedForkContinuation {
   private replayOwnership: ReplayOwnership | null = null;
 
   constructor(
-    private readonly memory: WebAssembly.Memory,
+    private readonly memory: ProcessMemorySource,
     readonly format: LinkedFrameFormatDescriptor,
     private readonly allocate: ContinuationAllocate,
     private readonly deallocate: ContinuationDeallocate,
@@ -329,7 +331,7 @@ export class LinkedForkContinuation {
       if (
         target <= 0
         || target % this.format.alignment !== 0
-        || targetEnd > this.memory.buffer.byteLength
+        || targetEnd > processMemoryByteLength(this.memory)
       ) {
         throw new Error(`${this.label}: invalid borrowed replay prefix range`);
       }
@@ -341,16 +343,8 @@ export class LinkedForkContinuation {
 
       // Slice first so an accidental future relaxation of the overlap guard
       // cannot turn this into a partially self-overwriting copy.
-      const prefix = new Uint8Array(
-        this.memory.buffer,
-        source,
-        this.format.fixedPrefixSize,
-      ).slice();
-      new Uint8Array(
-        this.memory.buffer,
-        target,
-        this.format.fixedPrefixSize,
-      ).set(prefix);
+      const prefix = readProcessBytes(this.memory, source, this.format.fixedPrefixSize);
+      writeProcessBytes(this.memory, target, prefix);
       return this.asGuestPtr(target);
     } catch (error) {
       // Attachment is transactional. The scratch reservation still belongs to
@@ -376,7 +370,7 @@ export class LinkedForkContinuation {
     // supplies a hard upper bound without trusting a guest-controlled link.
     const maxChunks = Math.max(
       0,
-      Math.floor(this.memory.buffer.byteLength / WASM_PAGE_SIZE) - 1,
+      Math.floor(processMemoryByteLength(this.memory) / WASM_PAGE_SIZE) - 1,
     );
     let chunk = root;
     let previous = 0;
@@ -744,7 +738,7 @@ export class LinkedForkContinuation {
       !Number.isSafeInteger(addr)
       || addr <= 0
       || addr % WASM_PAGE_SIZE !== 0
-      || checkedEnd(addr, capacity) > this.memory.buffer.byteLength
+      || checkedEnd(addr, capacity) > processMemoryByteLength(this.memory)
     ) {
       if (Number.isSafeInteger(addr) && addr > 0) {
         try { this.deallocate(addr, capacity); } catch { /* preserve allocator diagnosis */ }
@@ -780,7 +774,7 @@ export class LinkedForkContinuation {
       !Number.isSafeInteger(addr)
       || addr <= 0
       || addr % WASM_PAGE_SIZE !== 0
-      || checkedEnd(addr, this.format.chunkHeaderSize) > this.memory.buffer.byteLength
+      || checkedEnd(addr, this.format.chunkHeaderSize) > processMemoryByteLength(this.memory)
       || view.getUint32(addr, true) !== CHUNK_MAGIC
       || view.getUint16(addr + 4, true) !== LINKED_FRAME_FORMAT_VERSION
       || view.getUint16(addr + 6, true) !== 0
@@ -794,7 +788,7 @@ export class LinkedForkContinuation {
     if (
       capacity < WASM_PAGE_SIZE
       || capacity % WASM_PAGE_SIZE !== 0
-      || checkedEnd(addr, capacity) > this.memory.buffer.byteLength
+      || checkedEnd(addr, capacity) > processMemoryByteLength(this.memory)
       || used < this.format.chunkHeaderSize
       || used > capacity
     ) {
@@ -1004,8 +998,8 @@ export class LinkedForkContinuation {
     throw error;
   }
 
-  private view(): DataView {
-    return new DataView(this.memory.buffer);
+  private view(): ProcessDataView {
+    return processDataView(this.memory);
   }
 
   private readPtr(addr: number): number {

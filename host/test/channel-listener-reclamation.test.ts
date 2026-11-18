@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { GroupProcessAddressSpace } from "../src/process-address-space";
+import { prepareProcessNativeObservationI32, type ProcessMemorySource } from "../src/process-memory-views";
 import { CH_STATUS } from "../src/generated/abi";
 import {
   CentralizedKernelWorker,
@@ -9,6 +12,7 @@ import {
 type ChannelFixture = {
   pid: number;
   memory: WebAssembly.Memory;
+  source: ProcessMemorySource;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -31,7 +35,8 @@ type ListenerHarness = CentralizedKernelWorker & {
     pid: number,
     expectedMemory?: WebAssembly.Memory,
     expectedChannelOffset?: number,
-  ): void;
+    expectedSource?: ProcessMemorySource,
+  ): Promise<void>;
 };
 
 type WaitObservation = {
@@ -57,6 +62,7 @@ function createChannel(
   channelOffset: number,
 ): ChannelFixture {
   return {
+    source: memory,
     pid,
     memory,
     channelOffset,
@@ -81,7 +87,7 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     } else {
       processes.set(channel.pid, {
         pid: channel.pid,
-        memory: channel.memory,
+        memory: channel.memory, source: channel.source,
         channels: [channel],
       });
     }
@@ -137,7 +143,114 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function groupedChannels() {
+  const store = new MemoryGroupImageStore(7, 32, 32), offset = 128;
+  const task = { group: 7, pid: 100, tid: 100, serial: 1n, generation: 0n };
+  const a = store.prepareImage(task, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
+  const oldLaunch = store.publish(a, task), oldSource = store.imageSource(a);
+  const next = { ...task, serial: 2n, generation: 1n };
+  const b = store.prepareImage(next, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
+  const newLaunch = store.publish(b, next), newSource = store.imageSource(b);
+  const old = { ...createChannel(100, oldLaunch.envelope.memory, offset), source: oldSource };
+  const replacement = { ...createChannel(100, newLaunch.envelope.memory, offset), source: newSource };
+  return { store, a, b, old, replacement, oldLaunch, oldSource, newSource };
+}
+
 describe("retired syscall-channel listener reclamation", () => {
+  it("keeps same-PID same-offset grouped images separate after source revocation", async () => {
+    const { store, a, b, old, replacement, oldSource, newSource } = groupedChannels();
+    const worker = createHarness([old]), waits = observeWaits();
+    try {
+      worker.listenOnChannel(old); worker.retireChannelListener(old);
+      store.revokeImageAccess(a);
+      worker.processes.set(100, { pid: 100, memory: replacement.memory, source: newSource, channels: [replacement] } as any);
+      worker.activeChannels = [replacement]; worker.listenOnChannel(replacement);
+      expect(old.memory).toBe(replacement.memory); expect(waits).toHaveLength(2);
+      expect(store.snapshot().nativeObservers).toBe(2);
+      expect(() => worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset)).toThrow("exact image source");
+      await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, newSource);
+      expect(waits.map(wait => wait.settled)).toEqual([false, false]);
+      const charged = store.snapshot().allocatedPages;
+      const done = worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
+      expect(store.snapshot().nativeObservers).toBe(2);
+      expect(worker.retiredChannelListeners.has(old)).toBe(true);
+      await done;
+      expect(waits.map(wait => wait.settled)).toEqual([true, false]);
+      expect(waits).toHaveLength(2); expect(store.snapshot().nativeObservers).toBe(1);
+      expect(store.snapshot().allocatedPages).toBe(charged);
+      worker.retireChannelListener(replacement); store.revokeImageAccess(b);
+      await worker.settleRetiredChannelListeners(100, replacement.memory, replacement.channelOffset, newSource);
+      expect(store.snapshot().nativeObservers).toBe(0);
+    } finally { store.close(); }
+  });
+
+  it("wakes the captured physical word after a virtual PTE changes", async () => {
+    const { store, old, oldLaunch, oldSource } = groupedChannels();
+    const worker = createHarness([old]);
+    const ptes = new Uint32Array(old.memory.buffer, oldLaunch.expectation.root + 64, 16);
+    let control: { async: true; value: Promise<string> } | undefined;
+    let fresh: Int32Array | undefined;
+    const originalWord = new Int32Array(old.memory.buffer, (ptes[0] & 0xffff0000) + old.channelOffset, 1);
+    try {
+      worker.listenOnChannel(old); worker.retireChannelListener(old);
+      [ptes[0], ptes[1]] = [ptes[1], ptes[0]];
+      fresh = new Int32Array(old.memory.buffer, (ptes[0] & 0xffff0000) + old.channelOffset, 1);
+      const wait = originalWaitAsync(fresh, 0, 0);
+      expect(wait.async).toBe(true);
+      if (!wait.async) throw Error("control waiter was not armed");
+      control = wait;
+      let incorrectlyWoken = false; void wait.value.then(() => { incorrectlyWoken = true; });
+      await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
+      expect(incorrectlyWoken).toBe(false); expect(store.snapshot().nativeObservers).toBe(0);
+    } finally {
+      Atomics.notify(originalWord, 0);
+      if (fresh) Atomics.notify(fresh, 0);
+      if (control) await control.value;
+      await waitForMicrotasks();
+      store.close();
+    }
+  });
+
+  it("keeps a failed wake charged and retries without acknowledging retirement", async () => {
+    const { store, old, oldSource } = groupedChannels(), worker = createHarness([old]);
+    try {
+      worker.listenOnChannel(old); worker.retireChannelListener(old);
+      const notify = vi.spyOn(Atomics, "notify").mockImplementationOnce(() => { throw Error("injected wake failure"); });
+      expect(() => worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource)).toThrow("injected wake failure");
+      expect(worker.retiredChannelListeners.has(old)).toBe(true);
+      expect(store.snapshot().nativeObservers).toBe(1); notify.mockRestore();
+      await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
+      expect(store.snapshot().nativeObservers).toBe(0);
+    } finally { store.close(); }
+  });
+
+  it("does not acknowledge an observer whose continuation could not be registered", async () => {
+    const { store, old, oldSource } = groupedChannels(), worker = createHarness([old]);
+    const wait = vi.spyOn(Atomics, "waitAsync").mockReturnValueOnce({ async: true, value: {} as Promise<"ok"> });
+    worker.listenOnChannel(old); wait.mockRestore(); worker.retireChannelListener(old);
+    let acknowledged = false;
+    void worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource).then(() => { acknowledged = true; });
+    await waitForMicrotasks();
+    expect(acknowledged).toBe(false); expect(worker.retiredChannelListeners.has(old)).toBe(true);
+    expect(store.snapshot().nativeObservers).toBe(1);
+    store.close(); expect(store.snapshot().nativeObservers).toBe(1);
+  });
+
+  it("requires kernel image custody and releases unarmed or not-equal observations exactly once", () => {
+    const { store, oldLaunch, oldSource } = groupedChannels();
+    try {
+      expect(() => prepareProcessNativeObservationI32(oldLaunch.source, 0)).toThrow("metadata");
+      const unarmed = prepareProcessNativeObservationI32(oldSource, 0);
+      expect(store.snapshot().nativeObservers).toBe(1);
+      unarmed.cancelUnarmed(); expect(store.snapshot().nativeObservers).toBe(0);
+      expect(() => unarmed.arm(0)).toThrow();
+      const mismatch = prepareProcessNativeObservationI32(oldSource, 0);
+      expect(mismatch.arm(1)).toEqual({ async: false, value: "not-equal" });
+      expect(mismatch.settled).toBe(true); expect(store.snapshot().nativeObservers).toBe(0);
+      mismatch.wake(); expect(() => mismatch.cancelUnarmed()).toThrow();
+    } finally { store.close(); }
+  });
+
   it("marks without waking, then settles exactly once after the worker-stop boundary", async () => {
     const memory = createMemory();
     const channel = createChannel(41, memory, 2 * 65_536);
@@ -200,7 +313,7 @@ describe("retired syscall-channel listener reclamation", () => {
     const newChannel = createChannel(pid, newMemory, 2 * 65_536);
     worker.processes.set(pid, {
       pid,
-      memory: newMemory,
+      memory: newMemory, source: newMemory,
       channels: [newChannel],
     });
     worker.activeChannels = [newChannel];
