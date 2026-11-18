@@ -12417,9 +12417,6 @@ pub fn kernel_recvmsg(
     pointer_width: u32,
     retry_token: i64,
 ) -> i32 {
-    use wasm_posix_shared::fd_flags::FD_CLOEXEC;
-    use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_CTRUNC};
-
     let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
     let operation = crate::blocked_retry::BlockingRetryOperation::Recvmsg;
@@ -12451,170 +12448,15 @@ pub fn kernel_recvmsg(
             return -($error as i32);
         }};
     }
-    let width = match pointer_width {
-        4 => 4u8,
-        8 => 8u8,
-        _ => bail!(Errno::EINVAL),
-    };
-    let pid = proc.pid as i32;
-    let header = match crate::msghdr::read_msghdr(&mut host, pid, msg_addr as u64, width) {
-        Ok(header) => header,
-        Err(error) => bail!(error),
-    };
-    let iovecs = match crate::msghdr::read_iovecs(
-        &mut host,
-        pid,
-        header.iov_addr,
-        header.iov_count,
-        width,
-    ) {
-        Ok(iovecs) => iovecs,
-        Err(error) => bail!(error),
-    };
-    let capacity = match crate::msghdr::iovec_total(&iovecs) {
-        Ok(capacity) => capacity,
-        Err(error) => bail!(error),
-    };
-    let mut payload = match crate::guest_ptr::zeroed_io_staging(
-        capacity,
-        wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES,
-    ) {
-        Ok(payload) => payload,
-        Err(error) => bail!(error),
-    };
-    // A receive address buffer can be larger than the widest address the
-    // kernel can produce. Reserve only `sockaddr_storage`; validating the
-    // unused tail would conflate the caller's capacity with its use.
-    let addr_capacity = (header.name_len as usize).min(
-        wasm_posix_shared::kernel_scratch_wire::SOCKADDR_STORAGE_BYTES as usize,
-    );
-    let mut addr_staging =
-        match crate::guest_ptr::zeroed_io_staging(addr_capacity, addr_capacity.max(1)) {
-            Ok(staging) => staging,
-            Err(error) => bail!(error),
-        };
-
-    let (mut result, mut received) = match syscalls::sys_recvmsg(
-        proc,
-        &mut host,
-        fd,
-        &mut payload,
-        flags,
-        &mut addr_staging,
-    ) {
-        Ok(received) => (received.return_len as i32, Some(received)),
-        Err(err) => (-(err as i32), None),
-    };
-    if result == -(Errno::EAGAIN as i32) {
-        if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
-            proc,
-            advisory_locks,
-            &mut host,
-            tid,
-            138,
-            fd,
-            None,
-        ) {
-            result = -(error as i32);
-        }
-    }
+    if pointer_width != u32::from(proc.pointer_width) { bail!(Errno::EINVAL); }
+    let received = runtime_core::guest_recvmsg::GuestRecvmsg::receive(proc, &mut host,
+        advisory_locks, tid, fd, msg_addr as u64, flags);
     finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
-
-    // Publish all result metadata even for a zero-byte datagram: a zero-length
-    // message can still carry descriptors and output flags.
-    let mut published_control_len = 0u32;
-    let mut installed_scm_rights = runtime_core::IoBuffer::new();
-    let mut published_name_len: Option<u32> = None;
-    let delivered_a_message = received.is_some();
-    let mut output_msg_flags = received
-        .as_ref()
-        .map_or(0, |received| received.output_flags);
-    if let Some(received) = received.as_mut() {
-        // Scatter the received bytes back across the caller's iovecs. The
-        // receive was bounded by their total, so this cannot overrun; a short
-        // result simply leaves the trailing buffers untouched.
-        let delivered = received.return_len.min(payload.len());
-        if let Err(error) =
-            crate::msghdr::scatter(&mut host, pid, &iovecs, &payload[..delivered])
-        {
-            result = -(error as i32);
-        }
-
-        if header.name_addr != 0 {
-            let addr_bytes = received.addr_len.min(addr_staging.len());
-            if addr_bytes > 0 {
-                if let Err(error) = crate::guest_ptr::write_guest_bytes(
-                    &mut host,
-                    pid,
-                    header.name_addr,
-                    &addr_staging[..addr_bytes],
-                ) {
-                    result = -(error as i32);
-                }
-            }
-            // msg_name PRESENCE, not its capacity, controls whether
-            // msg_namelen is a value-result field. A non-null zero-capacity
-            // pointer still receives the complete length -- that is how a
-            // caller learns its address buffer was too small.
-            published_name_len = Some(received.addr_len as u32);
-        }
-
-        if !received.ancillary_fds.is_empty() {
-            let in_flight = core::mem::take(&mut received.ancillary_fds);
-            if result < 0 {
-                drop(in_flight);
-                unsafe { crate::pipe::global_pipe_table().finish_ancillary_transition(); }
-            } else {
-                let fd_flags = if flags & MSG_CMSG_CLOEXEC != 0 {
-                    FD_CLOEXEC
-                } else {
-                    0
-                };
-                match syscalls::publish_scm_rights(
-                    proc, advisory_locks, &mut host, in_flight,
-                    crate::msghdr::ScmRightsOutput { addr: header.control_addr,
-                        capacity: header.control_len, pointer_width: width, fd_flags },
-                ) {
-                    Ok(publication) => {
-                        published_control_len = publication.control_len;
-                        if publication.truncated { output_msg_flags |= MSG_CTRUNC; }
-                        installed_scm_rights = publication.descriptors;
-                    }
-                    Err(error) => result = -(error as i32),
-                }
-            }
-        }
-    }
-
-    // Publish for a delivered message even when it carried zero bytes: a
-    // zero-length datagram still has descriptors and output flags, and the
-    // caller must be able to tell "no ancillary data" from a stale length it
-    // set before the call.
-    //
-    // But ONLY for a delivered message. On EAGAIN the host parks a retry and
-    // calls again with the same `msghdr`; zeroing `msg_controllen` here would
-    // leave that retry with no control capacity, so a descriptor that fitted
-    // the caller's buffer the first time would arrive truncated the second.
-    // Linux likewise leaves the header untouched on a failed `recvmsg`.
-    if delivered_a_message {
-        if let Err(error) = crate::msghdr::write_msghdr_results(
-            &mut host,
-            pid,
-            msg_addr as u64,
-            width,
-            published_name_len,
-            published_control_len,
-            output_msg_flags,
-        ) {
-            result = -(error as i32);
-        }
-    }
-
-    if result < 0 {
-        syscalls::rollback_scm_rights_fds(proc, advisory_locks, &mut host, installed_scm_rights);
-    }
+    let result = match received.and_then(|received| received.publish(proc, &mut host, advisory_locks)) {
+        Ok(length) => length as i32,
+        Err(error) => -(error as i32),
+    };
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
-
     deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
     result
 }

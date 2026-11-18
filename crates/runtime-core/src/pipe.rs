@@ -1364,6 +1364,15 @@ impl PipeBuffer {
             .is_some_and(|ancillary| ancillary.start < read_end)
     }
 
+    /// Potential descriptor output of the next receive, without cloning or
+    /// removing queued ownership. The entry/GKL must remain synchronous until
+    /// the real receive; this count is not an attachment capability.
+    pub(crate) fn ancillary_count_within(&self, requested: usize) -> usize {
+        if self.ancillary_barrier_within(requested) {
+            self.ancillary_fds.front().map_or(0, |batch| batch.fds.len())
+        } else { 0 }
+    }
+
     /// Rebase the absolute stream sequence only at the practically unreachable
     /// u64 boundary. The ordinary hot path never walks queued records.
     fn ensure_stream_sequence_room(&mut self, additional: usize) {

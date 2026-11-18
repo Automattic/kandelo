@@ -28,6 +28,12 @@ function harness(pointerWidth: 4 | 8 = 4) {
     kernel_get_process_exit_signal: () => -1,
     kernel_dequeue_signal: vi.fn(() => 0),
     kernel_handle_guest_io: vi.fn(() => 0),
+    kernel_handle_channel: vi.fn(() => 0),
+    kernel_is_fd_nonblock: () => 0,
+    kernel_get_socket_timeout_ms: () => -1n,
+    kernel_rootfs_take_compaction_request: () => 0,
+    kernel_blocking_retry_token: () => 701n,
+    kernel_blocking_retry_release: vi.fn(() => 0),
     kernel_memory_group_configure: vi.fn(() => 0),
     kernel_memory_group_create: vi.fn(() => 23),
     kernel_memory_group_seal: vi.fn(() => 0),
@@ -466,6 +472,76 @@ function mappingDispatchHarness(width: 4 | 8 = 4) {
   };
   return { ...h, kw, page, token, registration, channel, store, launch, captured, observedPages, effect, completed, completions, control, acknowledge, dispatch, close };
 }
+
+describe('normal grouped generic output preparation', () => {
+  it('refuses a protected pipe result before allocating kernel descriptors', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      const output = 3 * h.page;
+      const descriptor = h.launch.envelope.descriptor;
+      if (descriptor.kind === 'linear') throw Error('missing grouped descriptor');
+      new Uint32Array(h.launch.envelope.memory.buffer, descriptor.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES)[3] &= ~2;
+      h.implementations.kernel_handle_channel = vi.fn((pointer: number | bigint) => {
+        const view = new DataView(h.memory.buffer, Number(pointer));
+        view.setBigInt64(CH_RETURN, 0n, true); view.setUint32(CH_ERRNO, 0, true); return 0;
+      });
+      h.dispatch(SYSCALLS.Pipe, [BigInt(output), 0n, 0n, 0n, 0n, 0n]); await h.completed;
+      expect(h.implementations.kernel_handle_channel).not.toHaveBeenCalled();
+      expect(h.completions).toEqual([{ value: -1, errno: 14 }]);
+    } finally { await h.close(); }
+  });
+  it.each(['input', 'length'] as const)('reports an unreadable generic %s as EFAULT before kernel effects', async kind => {
+    const h = mappingDispatchHarness();
+    try {
+      const address = 3 * h.page, descriptor = h.launch.envelope.descriptor;
+      if (descriptor.kind === 'linear') throw Error('missing grouped descriptor');
+      processDataView(h.registration.source, address).setUint32(0, 4, true);
+      new Uint32Array(h.launch.envelope.memory.buffer, descriptor.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES)[3] &= ~1;
+      const syscall = kind === 'input' ? SYSCALLS.Bind : SYSCALLS.Getsockopt;
+      const args = kind === 'input' ? [7n, BigInt(address), 16n, 0n, 0n, 0n]
+        : [7n, 1n, 1n, BigInt(2 * h.page), BigInt(address), 0n];
+      h.dispatch(syscall, args); await h.completed;
+      expect(h.implementations.kernel_handle_channel).not.toHaveBeenCalled();
+      expect(h.completions).toEqual([{ value: -1, errno: 14 }]);
+    } finally { await h.close(); }
+  });
+  it('rechecks a frozen receive output before retry and releases its exact kernel binding', async () => {
+    const h = mappingDispatchHarness();
+    try {
+      const output = 3 * h.page;
+      h.worker.testAuthority.configureScratchBoundaryHooksForTest({ handleBlockingRetry: () => {} });
+      h.implementations.kernel_handle_channel = vi.fn((pointer: number | bigint) => {
+        const view = new DataView(h.memory.buffer, Number(pointer));
+        view.setBigInt64(CH_RETURN, -1n, true); view.setUint32(CH_ERRNO, 11, true); return 0;
+      });
+      h.dispatch(SYSCALLS.Recvfrom, [7n, BigInt(output), 4n, 0n, 0n, 0n]);
+      expect(h.completions).toEqual([]); expect(h.kw.blockingRetrySnapshots.get(h.channel).kind).toBe('generic-channel');
+      const descriptor = h.launch.envelope.descriptor;
+      if (descriptor.kind === 'linear') throw Error('missing grouped descriptor');
+      new Uint32Array(h.launch.envelope.memory.buffer, descriptor.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES)[3] &= ~2;
+      h.kw.retrySyscall(h.channel); await h.completed;
+      expect(h.implementations.kernel_handle_channel).toHaveBeenCalledTimes(1);
+      expect(h.completions).toEqual([{ value: -1, errno: 14 }]);
+      expect(h.kw.blockingRetrySnapshots.has(h.channel)).toBe(false);
+      expect(h.implementations.kernel_blocking_retry_release).toHaveBeenCalledExactlyOnceWith(100, 100, 701n);
+    } finally { await h.close(); }
+  });
+  it.each([0, 3])('preserves affinity task-lookup precedence with a protected output (kernel errno %i)', async errno => {
+    const h = mappingDispatchHarness();
+    try {
+      const output = 3 * h.page, descriptor = h.launch.envelope.descriptor;
+      if (descriptor.kind === 'linear') throw Error('missing grouped descriptor');
+      new Uint32Array(h.launch.envelope.memory.buffer, descriptor.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES)[3] &= ~2;
+      h.implementations.kernel_handle_channel = vi.fn((pointer: number | bigint) => {
+        const view = new DataView(h.memory.buffer, Number(pointer));
+        view.setBigInt64(CH_RETURN, errno === 0 ? 4n : -1n, true); view.setUint32(CH_ERRNO, errno, true); return 0;
+      });
+      h.dispatch(SYSCALLS.SchedGetaffinity, [999n, 4n, BigInt(output), 0n, 0n, 0n]); await h.completed;
+      expect(h.implementations.kernel_handle_channel).toHaveBeenCalledTimes(1);
+      expect(h.completions).toEqual([{ value: -1, errno: errno || 14 }]);
+    } finally { await h.close(); }
+  });
+});
 
 describe('normal grouped scalar I/O routing', () => {
   it.each([SYSCALLS.Read, SYSCALLS.Write, SYSCALLS.Pread, SYSCALLS.Pwrite, SYSCALLS.Getrandom])('sends syscall %i through Rust guest-address I/O even for a small buffer', async syscall => {

@@ -3182,6 +3182,7 @@ pub mod test_host {
         pub base: u64,
         pub memory: alloc::vec::Vec<u8>,
         pub write_denied: bool,
+        pub write_fault: Option<core::ops::Range<u64>>,
         pub entropy_calls: usize,
         pub entropy_failure_at: Option<usize>,
         pub entropy_max_window: usize,
@@ -3195,6 +3196,7 @@ pub mod test_host {
                 base,
                 memory: alloc::vec![0u8; len],
                 write_denied: false,
+                write_fault: None,
                 entropy_calls: 0,
                 entropy_failure_at: None,
                 entropy_max_window: 0,
@@ -3228,7 +3230,7 @@ pub mod test_host {
 
     impl HostIO for GuestMemoryHost {
         fn proc_validate_range(&mut self, _pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
-            if self.range(addr, len).is_some() && !(len != 0 && self.write_denied && access == wasm_posix_shared::ProcessMemoryAccess::Write) { 0 } else { -(Errno::EFAULT as i32) }
+            if self.range(addr, len).is_some() && !(len != 0 && access == wasm_posix_shared::ProcessMemoryAccess::Write && (self.write_denied || self.write_fault.as_ref().is_some_and(|r| addr < r.end && r.start < addr.saturating_add(len as u64)))) { 0 } else { -(Errno::EFAULT as i32) }
         }
         fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
             match self.range(addr, dst.len()) {
@@ -3241,7 +3243,7 @@ pub mod test_host {
         }
 
         fn proc_write_bytes(&mut self, _pid: i32, addr: u64, src: &[u8]) -> i32 {
-            if !src.is_empty() && self.write_denied { return -(Errno::EFAULT as i32); }
+            if !src.is_empty() && (self.write_denied || self.write_fault.as_ref().is_some_and(|r| addr < r.end && r.start < addr.saturating_add(src.len() as u64))) { return -(Errno::EFAULT as i32); }
             match self.range(addr, src.len()) {
                 Some(range) => {
                     self.memory[range].copy_from_slice(src);

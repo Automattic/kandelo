@@ -220,8 +220,26 @@ destination before consuming input, and rechecks frozen read retries.
 Read-only sources remain valid for write/writev. Entropy also rechecks only
 its remaining destinations before generating a resumed batch. Actual byte
 transfers revalidate current access; preflight never grants future authority.
-This closes those scalar/vector/entropy paths; the remaining nested output
-and device paths still require their own preparation and acceptance.
+Generic grouped input/output arguments are checked for the corresponding
+access before dispatch; an unreadable captured length is an ordinary EFAULT.
+Frozen retries retain their copied inputs and recheck output rights before
+entering Rust again. A rejected
+retry releases its exact kernel binding and any owned wait state; affinity
+queries retain their task-lookup-before-output-error ordering.
+
+`GuestRecvmsg` in the engine-independent runtime owns copied header/iovec
+metadata and the received result. Before consuming a carrier, it checks every
+payload destination, the actual header result fields and the potential
+name/control prefixes selected by the exact kernel queue. It neither clones
+queued references nor treats unused advertised capacity as writable output.
+Publication occurs after ending the active retry binding, preserving descriptor
+installation/rollback, zero-byte datagrams, peeks and close-on-exec flags.
+Numeric fd reuse cannot redirect a parked receive to a replacement socket.
+DRI/GL output preflight likewise checks guest write authority without a
+payload-sized probe allocation; input-only KMS operations explicitly request
+read access, preserving read-only input buffers. These are internal mechanism contracts; normal
+C/browser execution, remaining kernel-dereferenced paths and full stage4
+acceptance are still required.
 
 The internal image owner can now stage anonymous map, unmap, protection and
 remap PTE changes behind its exact all-replica barrier. Replacement maps use
