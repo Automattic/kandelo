@@ -17,6 +17,7 @@ pub(crate) enum MemoryChange {
     Protect { addr: usize, len: usize, prot: u32 },
     Remap { addr: usize, old_len: usize, new_len: usize, flags: u32 },
     Break { addr: usize },
+    ReserveHost { len: usize },
 }
 
 /// Host work still required before metadata can be committed. These are guest
@@ -186,6 +187,13 @@ impl MemoryManager {
 
     fn apply_change(&mut self, change: MemoryChange) -> Result<MemoryChangeEffect, Errno> {
         let effect: MemoryChangeEffect = match change {
+            MemoryChange::ReserveHost { len } => {
+                let len = aligned_len(len)?;
+                let addr = self.reserve_host_region(len);
+                if addr == mmap::MAP_FAILED { return Err(Errno::ENOMEM); }
+                if let Some(linear) = self.grouped_linear.as_deref_mut() { linear.replace(addr, addr + len, Some(3))?; }
+                Ok(MemoryChangeEffect::Map { addr, len, prot: 3, flags: mmap::MAP_PRIVATE | mmap::MAP_ANONYMOUS })
+            }
             MemoryChange::Map { hint, len, prot, flags } => {
                 let len = aligned_len(len)?;
                 if prot & !7 != 0 || (flags & mmap::MAP_FIXED != 0 && hint % PAGE != 0) { return Err(Errno::EINVAL); }

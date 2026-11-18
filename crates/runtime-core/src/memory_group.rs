@@ -380,6 +380,13 @@ impl MemoryGroups {
             .find_map(|(_, task)| (task.receipt.execution == execution).then_some(task.receipt))
     }
 
+    pub(crate) fn prepared_image_task(&self, execution: GroupExecution) -> Result<GroupAdmission, Errno> {
+        let receipt = self.image_task(execution).ok_or(Errno::ESRCH)?;
+        if self.task(receipt)?.phase != Phase::Prepared { return Err(Errno::EBUSY); }
+        if self.image_group(execution.pid, execution.exec_generation) != Some(receipt.group) { return Err(Errno::ESRCH); }
+        Ok(receipt)
+    }
+
     pub(crate) fn running_image_task(
         &self,
         execution: GroupExecution,

@@ -8,12 +8,12 @@ installBrowserSetImmediatePolyfill();
 
 // Fetch executable bytes inside this disposable kernel realm. The page only
 // supplies a mode, and receives owned output/scalars after exact quiescence.
-self.onmessage = async (event: MessageEvent<{ grouped: boolean; probe?: "mapping" | "private-file" | "fork" }>) => {
+self.onmessage = async (event: MessageEvent<{ grouped: boolean; probe?: "mapping" | "private-file" | "fork" | "pthread" }>) => {
   self.onmessage = null;
   try {
     const grouped = event.data.grouped;
     const probe = event.data.probe ?? "mapping";
-    if (probe !== "mapping" && probe !== "private-file" && probe !== "fork") throw new Error("unknown SDK probe");
+    if (probe !== "mapping" && probe !== "private-file" && probe !== "fork" && probe !== "pthread") throw new Error("unknown SDK probe");
     const read = async (path: string) => {
       const response = await fetch(path);
       if (!response.ok) throw new Error(`fixture fetch ${path}: ${response.status}`);

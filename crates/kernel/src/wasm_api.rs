@@ -4097,6 +4097,27 @@ pub extern "C" fn kernel_group_memory_change_prepare(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_thread_control_prepare(
+    pid: u32, caller_tid: u32, thread_tid: u32, observed_pages: u32,
+    out_ptr: *mut u8, out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let description = match table.prepare_group_thread_control(pid, caller_tid, thread_tid, observed_pages) {
+        Ok(value) => value, Err(error) => return -(error as i32),
+    };
+    match description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) }) {
+        Ok(()) => DESCRIPTION_BYTES as i32,
+        Err(error) => match table.cancel_group_memory_change(pid, caller_tid, description.token) {
+            Ok(()) => -(error as i32), Err(_) => -(Errno::EIO as i32),
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_group_memory_change_validate(
     pid: u32, tid: u32, token_lo: u32, token_hi: u32, out_ptr: *mut u8, out_capacity: u32,
 ) -> i32 {

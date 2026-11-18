@@ -14,6 +14,7 @@ const probes = [
   { name: "mapping", source: "grouped-sdk-mapping.c", markers: ["heap-ok\n", "protection-io-ok\n", "moving-remap-ok\n", "grouped-sdk-mapping PASS"], partial: "ordinary-protection-partial" },
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-partial" },
   { name: "fork", source: "grouped-sdk-fork.c", markers: ["grouped-fork-child PASS", "grouped-sdk-fork PASS"], partial: "", groupedOnly: true },
+  { name: "pthread", source: "grouped-sdk-pthread.c", markers: ["grouped-sdk-pthread PASS tls-init-growth-wait32-wait64-join"], partial: "", groupedOnly: true },
 ];
 const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture>; groupedPath: string }>();
 
@@ -29,18 +30,18 @@ beforeAll(() => {
 }, 180_000);
 afterAll(() => { for (const fixture of fixtures.values()) fixture.ordinary.cleanup(); });
 
-it('runs the same fork C program through the normal ordinary Node host', async () => {
-  const fixture = fixtures.get('fork')!;
+it.each(['fork', 'pthread'])('runs the same %s C program through the normal ordinary Node host', async probe => {
+  const fixture = fixtures.get(probe)!;
   const result = await runCentralizedProgram({ programPath: fixture.ordinary.programPath,
-    argv: ['grouped-sdk-fork', 'ordinary'], timeout: 30_000, maxPages: 2048, useDefaultRootfs: false });
+    argv: [`grouped-sdk-${probe}`, 'ordinary'], timeout: 30_000, maxPages: 2048, useDefaultRootfs: false });
   if (process.env.KANDELO_GROUPED_SDK_EVIDENCE) {
     mkdirSync(process.env.KANDELO_GROUPED_SDK_EVIDENCE, { recursive: true });
-    writeFileSync(join(process.env.KANDELO_GROUPED_SDK_EVIDENCE, 'fork-ordinary-production.json'), JSON.stringify(result, null, 2) + '\n');
+    writeFileSync(join(process.env.KANDELO_GROUPED_SDK_EVIDENCE, `${probe}-ordinary-production.json`), JSON.stringify(result, null, 2) + '\n');
   }
   expect(result.exitCode, JSON.stringify(result)).toBe(0);
   expect(result.stderr).toBe('');
-  expect(result.stdout).toContain('grouped-fork-child PASS');
-  expect(result.stdout).toContain('grouped-sdk-fork PASS');
+  if (probe === 'fork') expect(result.stdout).toContain('grouped-fork-child PASS');
+  expect(result.stdout).toContain(`grouped-sdk-${probe} PASS`);
 }, 90_000);
 
 for (const probe of probes) for (const grouped of [false, true]) {
@@ -78,6 +79,9 @@ for (const probe of probes) for (const grouped of [false, true]) {
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
       if (probe.name === 'fork') {
         expect(result.children).toEqual([expect.objectContaining({ kernelExit: 23, processExit: 23, ready: true, quiescent: true, joined: true })]);
+      }
+      if (probe.name === 'pthread') {
+        expect(result.threads).toEqual(Array.from({ length: 6 }, () => expect.objectContaining({ exited: true, quiescent: true, joined: true })));
       }
     } finally {
       if (deadline) clearTimeout(deadline);

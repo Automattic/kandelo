@@ -36,6 +36,27 @@ function pausedMappingImage(maximumPhysicalPages = 32) {
   };
   return { ...h, barrier, describe, prepare };
 }
+it('removes a proven stopped member from an active barrier and settles its exact ACK observer', async () => {
+  const h = imageWithThread(), charged = h.store.snapshot().allocatedPages;
+  const barrier = h.store.beginImageExecutionPause(h.a);
+  h.acknowledge(h.left);
+  const observation = h.store.waitForMappingProgress(barrier, 'barrier');
+  expect(h.store.snapshot().nativeObservers).toBe(1);
+  expect(h.store.imageExecutionPauseAcknowledged(barrier)).toBe(false);
+  h.store.noteReplicaQuiescent(h.b);
+  expect(Atomics.load(h.right, G.MEMORY_GROUP_REPLICA_ACK / 4)).toBe(0);
+  expect(h.store.imageExecutionPauseAcknowledged(barrier)).toBe(true);
+  expect(h.store.snapshot().allocatedPages).toBe(charged);
+  await observation;
+  expect(h.store.snapshot().nativeObservers).toBe(0);
+  const prepared = h.store.waitForImageExecutionPause(h.a);
+  expect(h.store.resumeImageExecutionPause(barrier)).toBe(true);
+  await prepared;
+  const next = h.store.beginImageExecutionPause(h.a); h.acknowledge(h.left);
+  expect(h.store.imageExecutionPauseAcknowledged(next)).toBe(true);
+  expect(h.store.resumeImageExecutionPause(next)).toBe(true);
+  h.store.close();
+});
 describe('private physical fork preparation', () => {
   const child = () => task({ pid: 102, tid: 102, serial: 3n });
   it('copies live pages into a distinct root and keeps writes isolated in both directions', () => {

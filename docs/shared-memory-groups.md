@@ -281,7 +281,35 @@ retries synthetic-init reaping for an already-published exit. Replica access
 and execution-barrier membership end separately from kernel image access.
 Physical pages remain charged: these fences do not yet establish engine wait
 retirement, safe physical reuse or a lifecycle allocation plateau. Grouped
-pthread replay and broader release gates remain unfinished.
+pthread/control reclamation and broader release gates remain unfinished.
+
+Host-adapter 15 adds on-demand pthread controls. The grouped clone callback
+receives a one-shot Rust TID capability without an ordinary Memory field.
+Rust stages a host-reserved interval for that exact unconstructed thread;
+the host queues it with mappings and fork, freezes the image and commits
+zeroed physical pages with the existing mapping token protocol. A fresh entry
+then initializes the virtual control slot, attaches its channel and publishes
+its execution replica atomically with respect to image barriers. TLS, module
+initialization mode 2 and thread entry use the normal Worker runtime. Threads
+share their process's externref generation and have independent import endpoints.
+Clone completion requires a published replica with its concrete Worker observer;
+attaching a mailbox alone cannot report a successful grouped thread launch.
+
+Control storage is allocated only for admitted threads. Eagerly reserving the
+default 1,024 slots would require 4,245 initial pages for the SDK pthread probe,
+exceeding its unchanged 2,048-page ceiling. That failed attempt was rejected;
+the implementation uses the normal compact process layout and allocates each
+four-page control slot on demand. Replica scratch is separately charged.
+Physical control/PTE storage and stopped-thread records remain retained until
+the wider reclamation work; no sustained slot-reuse or allocation plateau is
+claimed. A known quota refusal is checked before requesting controls; racing
+admissions and later launch failures still need complete control rollback.
+
+An exact stopped replica can leave an active image barrier. Its member is
+removed without fabricating an execution ACK, and its ACK observer is notified
+to settle and revalidate remaining membership. Control storage stays charged
+through actual observer settlement. This prevents a joined thread from holding
+up a sibling's later mapping while its terminal fence is being delivered.
 
 Host-adapter 11 makes process-range preflight direction-aware: the host
 checks every virtual page for guest read or write access without copying a
@@ -369,9 +397,14 @@ globals and private mappings, retained protection, inherited pipe descriptors,
 private child writes and parent wait status 23. The same C source also runs
 through the normal ordinary Node host. Its ordinary read-only-destination
 behavior remains an explicit control. Ordinary browser fork equivalence and
-the broader pthread, cancellation and reclamation gates remain separate.
+the broader cancellation and reclamation gates remain separate. The pthread
+probe runs three concurrent threads and three short-lived successors: TLS and
+errno isolation, constructors once, concurrent allocation/growth, barrier and
+mutex operations, actual native wait32/wait64 timeouts, join return values and
+exact terminal fences. Its same-source ordinary Node control uses the normal
+host. This bounded probe is not kill/exec/crash/destroy or sustained acceptance.
 
-Run the Node case with `cd host && npx vitest run test/grouped-sdk-execution.test.ts`
+Run the Node cases with `cd host && npx vitest run --config vitest.grouped-sdk.config.ts`
 and the Chromium/Firefox/WebKit cases with
 `cd apps/browser-demos && npx playwright test --config playwright.grouped-sdk.config.ts`,
 each through `scripts/dev-shell.sh`. These are internal admission and syscall
