@@ -913,4 +913,38 @@ Normal benchmark-only publication 158 restores both 32/64-bit images and
 passes actual admission for all nine suites on both hosts, while leaving the
 kernel and canonical rootfs identical. No foreign artifact is copied and no
 suite is skipped. Timing collection waits for a separate workspace's CPU-heavy
-job; no timing samples have yet been collected for this image/consumer pair.
+job. Attempt 148b completes the baseline's nine Node suites, but a new tracked
+build overlaps its last seconds. The overlap guard rejects the result; there
+is no accepted paired dataset. Both the original report and failed campaign
+receipt remain retained. Collection now requires complete, prespecified
+alternating baseline/candidate pairs, rejecting an interrupted pair in full
+and preserving completed clean pairs across quiet windows. Three independent
+parent launches per arm and host remain required before aggregation.
+
+### Fresh stock WebKit lifecycle result and remaining capacity question
+
+Run 162 uses stock, silent headless Playwright WebKit 26.6 against normal
+consumer 151. Both fresh sessions pass 120 terminal cycles, each including
+real Foot launch, resize, workspace move, physical keyboard input, exact
+Foot/shell process disappearance, final input, bounded output, memory-boundary
+checks and Stop. The test retains the original cycle assertions and deadlines;
+only run metadata and isolated output/configuration defaults change. There is
+no native sampler, custom browser executable, tracing, source replacement or
+extra observer RPC. Wall time is 8 minutes 43 seconds. A separate workspace's
+compilation runs concurrently, so this is correctness evidence, not isolated
+timing evidence. The earlier intermittent failures remain unresolved; this
+passing pair does not establish their cause or a correction.
+
+Kernel allocated capacity grows from 936 to 1,166 pages in the first session
+and from 936 to 1,171 in the second (14.375 and 14.6875 MiB). The reported
+storage metadata remains 101,580 bytes in both sessions. Wasm capacity cannot
+shrink; these observations do not distinguish live allocations from allocator
+capacity or fragmentation, and do not establish RSS growth. An ordinary-mode
+control with the same lifecycle assertions is running to investigate whether
+this capacity behavior is specific to grouped execution. Stable long-session
+kernel resource use is not yet established.
+
+The normal result receipt is
+`.context/desktop-current-lifecycle-summary-162.json`, with original JSON and
+screenshots in `.context/desktop-current-lifecycle-162/` and the terminal log
+in `.context/desktop-json-evidence-124/desktop-current-lifecycle-162-PASS.log`.
