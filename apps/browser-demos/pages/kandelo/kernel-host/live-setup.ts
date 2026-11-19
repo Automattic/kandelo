@@ -2330,7 +2330,7 @@ async function bootProfile(
       // console, so while the framebuffer canvas holds focus its keys go to
       // /dev/input/event0 too. The framebuffer pane still writes them to the
       // bound program's terminal; a program reads one source or the other.
-      attachDeclaredInputSource(kernel, machine, tick, host, ".kmodeset-canvas", ".kframebuffer-canvas");
+      attachDeclaredInputSource(kernel, machine, tick, host, KMS_DISPLAY_SELECTOR, ".kframebuffer-canvas");
     }
 
     if (profile.framebufferTest) {
@@ -2450,6 +2450,12 @@ function genericPresentationForMachine(
   return genericDemoPresentation("terminal");
 }
 
+// The element a page marks as a machine's screen, which input capture is
+// scoped to: `data-kandelo-display="kms"` on the KMS canvas,
+// `data-kandelo-display="framebuffer"` on the framebuffer surface.
+const KMS_DISPLAY_SELECTOR = '[data-kandelo-display="kms"]';
+const FRAMEBUFFER_DISPLAY_SELECTOR = '[data-kandelo-display="framebuffer"]';
+
 /**
  * Attach a `BrowserInputSource` for an image that declares `evdev-input`.
  *
@@ -2478,13 +2484,13 @@ function attachDeclaredInputSource(
   focusedKeyboardSelector?: string,
 ): void {
   const displaySelector = activityDisplaySelector ?? ( machine.runtime.features.includes("kms")
-    ? ".kmodeset-canvas"
+    ? KMS_DISPLAY_SELECTOR
     : machine.runtime.features.includes("framebuffer")
-    ? ".kframebuffer-surface"
+    ? FRAMEBUFFER_DISPLAY_SELECTOR
     : null);
   // KMS uses a stable virtual-tablet range, independent of display pixels.
   // Consumers cache absinfo at open; changing it on resize breaks input.
-  const kms = displaySelector === ".kmodeset-canvas";
+  const kms = displaySelector === KMS_DISPLAY_SELECTOR;
   const dims = () => kms
     ? { width: ABSOLUTE_POINTER_EXTENT, height: ABSOLUTE_POINTER_EXTENT }
     : {

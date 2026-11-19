@@ -140,6 +140,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     if (!slot) return;
     const display = host.kmsDisplayCanvas(crtcId, { width: MODESET_FB_W, height: MODESET_FB_H });
     display.classList.add("kmodeset-canvas");
+    display.dataset.kandeloDisplay = "kms";
     display.tabIndex = 0;
     const cursor = host.kmsCursorCanvas(crtcId);
     cursor.classList.add("kmodeset-cursor");
