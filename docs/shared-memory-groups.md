@@ -205,6 +205,9 @@ diagnostic tail retains at most 64 KiB of independent bytes; copied state
 reports how many bytes were discarded. Serialized Sway commands capture their
 complete replies separately, including UTF-8 split across callback chunks.
 Diagnostic retention does not truncate command replies.
+The copied diagnostic state also retains the last 512 process events with
+their parent IDs and main-realm receipt times. It uses the ordinary process
+event callback and adds no polling; these records are not retirement proofs.
 
 The fresh partial-image candidate passes the default two-terminal interaction
 and capacity-refusal/recovery checks on Chromium, Firefox and WebKit. Longer

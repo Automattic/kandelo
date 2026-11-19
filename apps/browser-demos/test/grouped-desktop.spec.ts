@@ -88,6 +88,10 @@ test('boots the integrated grouped Sway desktop and a real terminal', async ({ p
     });
     writeFileSync(resolve(out, `${info.project.name}-active.json`), JSON.stringify(active, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
     expect(active.diagnostics).toEqual([]);
+    for (const terminal of active.processes.filter((process: any) => process.comm === 'foot')) {
+      expect(active.processEvents).toContainEqual({ kind: 'spawn', pid: terminal.pid,
+        ppid: terminal.ppid, receivedAt: expect.any(Number) });
+    }
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await expect(page.locator('#status')).toContainText('Stopped.', { timeout: 30000 });
     expect(errors).toEqual([]);

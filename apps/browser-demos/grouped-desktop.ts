@@ -25,6 +25,7 @@ const state = { get stdout() { return output.stdout; }, get stderr() { return ou
   get stderrDiscardedBytes() { return output.stderrDiscardedBytes; }, outputTailBytes: output.tailBytes,
   rootPid: undefined as number | undefined, rootExit: undefined as number | undefined,
   diagnostics: [] as unknown[], trace: [] as unknown[], startupTrace: [] as unknown[], keys: [] as unknown[], input: [] as unknown[],
+  processEvents: [] as { kind: 'spawn' | 'exec' | 'exit'; pid: number; ppid?: number; exitStatus?: number; receivedAt: number }[],
   commands: [] as { args: string[]; code: number; stdout: string }[], ready: false, stopping: false };
 const page = window as typeof window & { groupedDesktop?: unknown };
 const action = (label: string, callback: () => Promise<unknown>, requiresReady = true) => {
@@ -63,6 +64,11 @@ action('Start shared desktop', async () => {
     experimentalMemoryGroup: { maximumPages, maximumProcesses: 24, maximumTasks: 64 },
     onStdout: bytes => output.appendStdout(bytes),
     onStderr: bytes => output.appendStderr(bytes),
+    onProcessEvent: event => {
+      // Keep parent identity for failed launches without polling the kernel.
+      state.processEvents.push({ ...event, receivedAt: performance.now() });
+      if (state.processEvents.length > 512) state.processEvents.shift();
+    },
     onHostDiagnostic: event => { state.diagnostics.push(event); if (!state.stopping) fail(event.message || 'Desktop worker failed'); },
   });
   const [kernelResponse, imageResponse] = await Promise.all([fetch('/__grouped_preview/kernel.wasm'), fetch('/__grouped_preview/image.vfs.zst')]);
