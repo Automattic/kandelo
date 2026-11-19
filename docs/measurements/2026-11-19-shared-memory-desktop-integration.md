@@ -561,3 +561,43 @@ report publication success merely because asynchronous work was accepted.
 Private Worker IPC request notifications also need only the native kernel
 observer, rather than admission into the guest-notification queue. These are
 implementation directions, not shipped behavior or acceptance claims.
+
+
+## Rejected asynchronous completion experiment
+
+Private variant `ab31773ffe` refuses queue contention before publishing a reply
+and retries on a later kernel Worker turn. It also changes private IPC request
+notification to wake only the native kernel observer. The variant passes its
+host build, all 1,534 source checks in 59 files, the unchanged ABI check and all
+six normal desktop/refusal cases. A read-only instrumented WebKit run passes
+120 cycles, final real input and Stop in 4m20s. A preceding normal variant fails
+the actual input/VFS proof after 116 completed cycles at the 480-second test
+limit, with no page errors or main-realm memory violations.
+
+The full SDK checks reject this variant. Node passes 38 of 39 cases; the pthread
+cohort test fails at SDK cycle 29. The failed root PID 296 retains thread 300 as
+logically exited but not quiescent or joined. The group uses 174 of 2,048 pages,
+and the previous successful cohort has retired to one metadata page. Chromium
+also fails pthread churn and pthread cohort cycle 6. After these failures the
+remaining browser run is deliberately interrupted: 26 cases pass, two fail,
+one Firefox case is interrupted and 55 do not run. It is not an 84-case pass.
+
+The retry implementation loses an existing terminal-mailbox guarantee:
+`#finalizeThreadExitWithinKernelEntry` removes a thread's channel before its
+final exit completion. The new retry refuses an unregistered channel on queue
+contention, dropping the reply; its following thread-exit callback also assumes
+publication has already finished. Correct asynchronous publication would need
+explicit custody for detached terminal mailboxes and retirement ordered after
+actual publication. Passing source checks does not prove that lifecycle.
+
+This variant is rejected and is not included in the batch PR. Its exact commit
+is retained on local branch
+`brandonpayton/shared-memory-publication-experiment`, with the full patch,
+logs, diagnostic source and browser results in
+`.context/desktop-publication-evidence-103/`. Node results are in
+`.context/desktop-publication-node-104/`; normal and instrumented desktop
+results are in `.context/desktop-publication-lifecycle-102/` and
+`.context/desktop-publication-accounting-105/`. The next isolated candidate
+keeps only native-observer notification for private IPC requests. It does not
+change completion publication, thread teardown, guest waits or the ABI; it
+still requires fresh SDK and desktop validation before acceptance.
