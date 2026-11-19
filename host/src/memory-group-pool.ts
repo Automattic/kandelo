@@ -1,4 +1,5 @@
 import * as G from './generated/program-extensions.ts';
+import { prepareMemoryGroupQueueUnlock } from './memory-group-notification';
 
 const PAGE=G.MEMORY_GROUP_PAGE_BYTES,CONTROL=G.MEMORY_GROUP_CONTROL/4;
 export interface GroupPageExtent {readonly first:number;readonly pages:number}
@@ -23,6 +24,8 @@ export class MemoryGroupPagePool {
   }
   static initialize(memory:WebAssembly.Memory,maximumPages:number):MemoryGroupPagePool {
     const pool=new MemoryGroupPagePool(memory,maximumPages);
+    // [RUNTIME-WORKAROUND: JSC-GROUP-MUTEX-STORE-STALL] Setup before publication.
+    prepareMemoryGroupQueueUnlock(memory);
     const bytes=new Uint8Array(memory.buffer,0,PAGE);
     if(bytes.some(byte=>byte!==0))throw Error('Group metadata must be fresh; never reset a live pool');
     const words=new Uint32Array(memory.buffer);
