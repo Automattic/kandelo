@@ -3,12 +3,13 @@
 This tracks the desktop-first batch through common runtime/package source
 `9fa8f3997224` and consumer diagnostics at `9244de33d45d`. Current desktop,
 conformance and combined browser-memory checks pass within the scopes below.
-Current paired desktop memory/CPU/input measurements are complete; the glyph
-comparison requires repetition after a host-sleep interruption. All
-nine ordinary-execution benchmark suites on Node and browser are collecting
-three independent alternating pairs per host. Intermittent lifecycle failures,
-kernel capacity growth remain open; the long glyph session overlaps a
-recorded macOS sleep interval.
+Current paired desktop memory/CPU/input and captured-glyph measurements are
+complete for the pinned runtime below. Five of six complete nine-suite
+ordinary-execution benchmark pairs are accepted (three Node, two browser).
+The remaining browser pair is waiting for an uncontended build window. Intermittent lifecycle failures,
+kernel capacity growth and high-resolution WebKit input corruption remain
+open. A separate host-only presentation relay is under investigation; it is
+not part of the batch candidate or its completed validation.
 Earlier checkpoints and failed experiments are retained; this
 does not complete the original PR1–PR9 plan or establish merge acceptance.
 
@@ -19,7 +20,7 @@ does not complete the original PR1–PR9 plan or establish merge acceptance.
 | Conformance 145 | Eight Node/Chromium suite runs pass; 328 classified cases per host, with documented existing expected failures/skips and one Node flake-pass. |
 | Stock untraced WebKit 162 | Two fresh 120-cycle sessions pass final input, boundary checks and Stop; earlier intermittent failures remain unresolved. |
 | Ordinary lifecycle control 164 | Fails a pending query after 116 cycles; kernel inspection responds. This partial control does not establish a common cause. |
-| Current app measurements 165 | All six resource arms pass. Grouping costs memory/startup and reduces measured input CPU/output latency. All glyph controls pass, but host sleep invalidates one arm and the full comparison must be repeated. |
+| Current app measurements 165 | All six resource arms pass. Grouping costs memory/startup and reduces measured input CPU/output latency. A fresh six-arm glyph run 181 passes its controls, tracked-load and host-sleep audits. Captured glyph latency is essentially unchanged (ordinary/grouped 32.375/32.405 ms); this includes observer/readback time, not physical input-to-photon latency. |
 
 The current normal images are ordinary `c939f98060cf` and grouped
 `44e06ab29567`, with kernel `ac950e58a87f`. Later sections retain full hashes,
@@ -1103,3 +1104,61 @@ No further diagnostic build/test runs alongside that coordinator. The two
 completed clean Node pairs remain retained; both interrupted third-pair
 attempts are rejected in full. An optional quiet-window request is pending;
 other workspaces' jobs have not been stopped or changed.
+
+
+## High-resolution input and presentation investigation (189–196)
+
+The current candidate still fails some 3072×1728 WebKit input checks. All
+observed DOM key presses are trusted, balanced and short. Standard Wayland
+client/server debug logs in a separate normal embedding caller show a 22 ms
+protocol key transition stretched to about 422 ms between server publication
+logs and 695 ms between client dispatch logs. Another failed trial reaches
+749 ms at the client. Foot advertises a 600 ms repeat delay and 25 Hz rate.
+These are instrumented diagnostics under concurrent external builds; logging
+changes the workload and does not identify the underlying scheduler or
+transport cause.
+
+Three native samples at physical typing show substantial synchronous
+OffscreenCanvas placeholder presentation work in the KMS canvas owner.
+Removing only the optional cursor overlay still fails input, so that is not
+a fix. Rendering into a detached primary canvas removes those sampled
+placeholder commits and passes three functional diagnostic runs, but leaves
+the browser display blank. That control is not usable-desktop acceptance.
+
+A standalone browser API screen then renders the expected pixels through a
+bounded ImageBitmap relay on Chromium, Firefox and WebKit. An isolated
+host-only prototype keeps rendering and guest memory in their existing
+workers, sends independent device images to a disposable presentation worker,
+and permits one unacknowledged image bundle. Its first version captures both
+full-size planes every vblank: it displays two real Foot terminals and a
+cursor but fails two of three WebKit input checks. That failed source and
+results are retained.
+
+The revised prototype captures only changed planes, using actual accepted
+GPU presentation and cursor updates. It passes typechecking, a normal Vite
+build, unchanged identities for all 86 image assets/kernel/image, and three
+high-resolution WebKit functional runs. Nine fresh sessions across all three
+browsers with the main-realm memory probe are now running. This is a promising
+experiment, not an accepted fix: capture retirement, display-worker teardown,
+error handling, sustained lifecycle, distribution builds, ownership audits,
+resource costs and the required combined gates remain before promotion.
+The revised host worker bundles intentionally differ; no SDK, guest binary,
+image or kernel Wasm source rewriting is involved.
+
+The prototype is isolated in `.scratch/shared-memory-kms-relay-194`, based
+on `c74991f4d478`. It has not entered this PR. Its failed predecessor is
+retained in `.context/desktop-bitmap-relay-194-failed-source.patch` and the
+adjacent new-file archive. Exact diagnostics and native samples are in
+`.context/desktop-first-foot-duplex-input-189`,
+`.context/desktop-first-foot-native-190`,
+`.context/desktop-cursor-plane-native-191` and
+`.context/desktop-detached-scanout-native-192`; their source archives and
+job logs are retained alongside the existing campaign evidence.
+
+The pinned ordinary-runtime benchmark comparison still lacks browser pair 3.
+Attempts interrupted by a new external build are rejected as whole pairs,
+including both later attempts at 14:36 and 14:51 local time; successful CLI
+exit alone is not a clean performance observation. A preliminary Node-only
+summary flags dense-file-lock conflict cost (median about +19.5%, approximately
+4.7 µs per operation). Full aggregation and attribution remain required; no
+ordinary-runtime neutrality claim is made.
