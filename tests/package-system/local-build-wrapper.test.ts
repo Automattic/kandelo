@@ -206,6 +206,7 @@ function successfulSummary(): string {
 function expectedCargoArgs(...selection: string[]): string[] {
   return [
     "run",
+    "--release",
     "-p",
     "xtask",
     "--target",
