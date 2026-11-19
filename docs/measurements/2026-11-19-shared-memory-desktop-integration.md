@@ -3,10 +3,12 @@
 This tracks the desktop-first batch through common runtime/package source
 `9fa8f3997224` and consumer diagnostics at `9244de33d45d`. Current desktop,
 conformance and combined browser-memory checks pass within the scopes below.
-Current paired desktop memory/CPU/input/glyph measurements are complete; all
+Current paired desktop memory/CPU/input measurements are complete; the glyph
+comparison requires repetition after a host-sleep interruption. All
 nine ordinary-execution benchmark suites on Node and browser are collecting
 three independent alternating pairs per host. Intermittent lifecycle failures,
-kernel capacity growth and an unexplained long glyph session remain open.
+kernel capacity growth remain open; the long glyph session overlaps a
+recorded macOS sleep interval.
 Earlier checkpoints and failed experiments are retained; this
 does not complete the original PR1–PR9 plan or establish merge acceptance.
 
@@ -17,7 +19,7 @@ does not complete the original PR1–PR9 plan or establish merge acceptance.
 | Conformance 145 | Eight Node/Chromium suite runs pass; 328 classified cases per host, with documented existing expected failures/skips and one Node flake-pass. |
 | Stock untraced WebKit 162 | Two fresh 120-cycle sessions pass final input, boundary checks and Stop; earlier intermittent failures remain unresolved. |
 | Ordinary lifecycle control 164 | Fails a pending query after 116 cycles; kernel inspection responds. This partial control does not establish a common cause. |
-| Current app measurements 165 | All six resource and six glyph arms pass. Grouping costs memory/startup, reduces measured input CPU/output latency, and has nearly identical captured-glyph latency. |
+| Current app measurements 165 | All six resource arms pass. Grouping costs memory/startup and reduces measured input CPU/output latency. All glyph controls pass, but host sleep invalidates one arm and the full comparison must be repeated. |
 
 The current normal images are ordinary `c939f98060cf` and grouped
 `44e06ab29567`, with kernel `ac950e58a87f`. Later sections retain full hashes,
@@ -101,8 +103,8 @@ remain in `.scratch/`.
 
 - Resolve the intermittent WebKit pressure timeout and recheck sustained use.
 - Complete and assess all-nine-suite before/after benchmarks on Node and browser.
-- Investigate kernel capacity growth and the long glyph session; current app
-  measurements are complete, but stable sustained resource behavior is unproven.
+- Investigate kernel capacity growth and repeat the host-sleep-interrupted glyph
+  comparison; stable sustained resource behavior remains unproven.
 - Keep the initial preview's fixed-size object, graphics-unmap and launch limits
   explicit; general mutable file sharing and the wider original plan remain
   follow-up work. The missing Compose table also leaves dead keys unavailable.
@@ -982,7 +984,9 @@ in `.context/desktop-json-evidence-124/desktop-current-lifecycle-162-PASS.log`.
 ### Current paired desktop resource and input measurements
 
 Guarded run 165 passes all six resource and all six captured-glyph arms,
-with no overlapping tracked build/test job during either phase. Each phase
+with no overlapping tracked build/test job during either phase. A subsequent
+OS power-log audit rejects the glyph comparison because sleep interrupts its
+last grouped arm; the resource phase has no recorded sleep overlap. Each phase
 uses three fresh Chromium 153.0.8010.12 parents per mode, in ordinary/grouped/
 grouped/ordinary/ordinary/grouped order. Consumers 151/154 have the same
 bounded output/event observers, byte-identical kernel and worker JavaScript,
@@ -998,7 +1002,7 @@ the earlier pre-json-c sample for this app comparison; that sample is retained.
 | Start to mapped terminal (ms) | 1,972.4 | 2,613.3 |
 | Browser CPU for 15 physical inputs (seconds) | 1.224 | 1.009 |
 | Enter to verified command output (ms) | 35.125 | 11.120 |
-| Keydown to captured Foot glyph (ms) | 32.320 | 32.350 |
+| Recorded glyph interval (ms; interrupted comparison, not accepted) | 32.320 | 32.350 |
 
 CPU ranges across the three parents are 1.152–1.304 seconds ordinary and
 0.980–1.135 seconds grouped. Per-parent median Enter-to-output values are
@@ -1018,9 +1022,12 @@ and is not physical input-to-photon latency.
 
 All no-input negative controls and deliberate 50 ms dispatch-delay controls
 pass. The final grouped glyph session takes about 110 seconds end to end,
-versus about 12 seconds for the others. The fixture does not locate that
-additional delay; short glyph intervals do not prove uniform overall session
-responsiveness. The complete original result is retained without exclusion.
+versus about 12 seconds for the others. macOS logs a clamshell sleep at 12:52:10 local time, 100 seconds
+before DarkWake, overlapping that session. The fixture does not locate which
+phase was suspended. The original complete data remains retained, but this
+is not an accepted three-parent glyph comparison. A fresh full six-arm run
+172 is queued with a whole-phase host-sleep audit; no favorable subset of
+159 is substituted.
 
 Summary and all sample ranges:
 `.context/desktop-events-measurement-summary-159.json`. Raw results:
@@ -1028,3 +1035,24 @@ Summary and all sample ranges:
 `.context/desktop-events-glyph-159/`. Both guarded phase receipts and terminal
 logs are retained as `.context/desktop-json-evidence-124/desktop-current-*-165-PASS.*`.
 All-nine-suite Node/browser comparisons remain a separate required gate.
+
+### Host power-state audit
+
+A read-only macOS power-log audit 171 covers all 32 examined run windows. Two
+are interrupted by host sleep: the second keyboard-hang diagnostic 142 and
+the final grouped glyph session 159. Diagnostic 142 overlaps clamshell sleep
+at 10:07:05 local time, with FullWake at 10:24:52. The last glyph session
+overlaps sleep at 12:52:10 and subsequent DarkWake, before FullWake at
+13:21:56. These are host interruptions, not evidence of an engine defect.
+The raw failures and passing functional assertions remain retained; the glyph
+comparison is rejected and requires a complete clean rerun.
+
+The same retained log shows no sleep overlap for the examined 133/152 failures,
+156/162 passes, ordinary 164 failure, resource phase 159, or collected Node
+benchmark timing windows. Host sleep therefore does not explain every
+intermittent failure. Three phase-timestamped diagnostic glyph parents in 170
+pass in about 12 seconds each; that recheck does not replace the full comparison.
+Future glyph acceptance and final benchmark aggregation require an independent
+Sleep-through-FullWake audit as well as the existing source/artifact/compute
+overlap checks. Audit evidence is
+`.context/desktop-host-sleep-audit-initial-171.json`.
