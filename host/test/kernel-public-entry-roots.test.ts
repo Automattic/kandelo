@@ -26,6 +26,7 @@ import {
   PROCESS_SNAPSHOT_VSIZE_OFFSET,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { retryKernelEntryResult } from "../src/kernel-entry-retry";
 
 const SCRATCH_OFFSET = 4096;
 const SCRATCH_CAPACITY = 65_536;
@@ -51,6 +52,8 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
     kernel_read_proc_maps: () => 0,
     kernel_set_cwd: () => 0,
     kernel_set_process_credentials: () => 0,
+    kernel_get_parent_pid: () => 0,
+    kernel_reap_exited_child: () => 0,
   };
   const gate = new KernelEntryGate();
   const rawInstance = createKernelScratchTestInstance(
@@ -66,6 +69,8 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
       "kernel_read_proc_maps",
       "kernel_set_cwd",
       "kernel_set_process_credentials",
+      "kernel_get_parent_pid",
+      "kernel_reap_exited_child",
     ],
   );
   const instance = createKernelEntryGatedInstance(rawInstance, gate);
@@ -128,6 +133,29 @@ function processSnapshotBytes(): Uint8Array {
 }
 
 describe("CentralizedKernelWorker public kernel-entry roots", () => {
+  it.each([4, 8] as const)("does not queue a rejected wasm%s host reap before its later-turn retry", async pointerWidth => {
+    const harness = makeRootHarness(pointerWidth), scheduled: Array<() => void> = [];
+    const parent = vi.fn(() => 0), reap = vi.fn(() => 0);
+    harness.implementations.kernel_get_parent_pid = parent;
+    harness.implementations.kernel_reap_exited_child = reap;
+    let result!: Promise<unknown>;
+    harness.implementations.kernel_set_cwd = () => {
+      result = retryKernelEntryResult(() => harness.worker.reapHostOwnedExitedProcess(41),
+        retry => scheduled.push(retry));
+      expect(parent).not.toHaveBeenCalled();
+      return 0;
+    };
+    harness.worker.setCwd(41, "/safe");
+    await Promise.resolve();
+    // Refused result-bearing ingress must retain no callback. Draining the
+    // enclosing entry cannot consume the child's status behind its caller.
+    expect(parent).not.toHaveBeenCalled(); expect(reap).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()!();
+    await expect(result).resolves.toBe("reaped");
+    expect(parent).toHaveBeenCalledExactlyOnceWith(41);
+    expect(reap).toHaveBeenCalledExactlyOnceWith(0, 41);
+  });
   it.each([
     ["wasm32", 4],
     ["wasm64", 8],
