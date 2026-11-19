@@ -29,7 +29,12 @@ sw.onmessage = (e: MessageEvent) => {
   sw.onmessage = null;
   void receiveGroupedWorkerInitialization(e.data,
     () => new Promise(resolve => { sw.onmessage = event => { sw.onmessage = null; resolve(event.data); }; }),
-    message => sw.postMessage(message)).then(async ({ init: initData, grouped }) => {
+    message => sw.postMessage(message)).then(async ({ init: initData, grouped, stopped }) => {
+  if (stopped) {
+    await runWithProcessWorkerQuiescence(sw, { pid: stopped.pid,
+      ...(stopped.tid === stopped.pid ? {} : { tid: stopped.tid }), memoryGroup: stopped }, async () => {}, () => {});
+    return;
+  }
   const data = initData as { type: string };
 
   const port = {
@@ -51,7 +56,7 @@ sw.onmessage = (e: MessageEvent) => {
       (error) =>
         console.error(
           `[worker-entry-browser] worker main error pid=${init.pid}`,
-          error,
+          error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
         ),
     );
   } else if (data.type === "centralized_thread_init") {
@@ -64,7 +69,7 @@ sw.onmessage = (e: MessageEvent) => {
         console.error(
           `[worker-entry-browser] thread worker main error`
             + ` pid=${init.pid} tid=${init.tid}`,
-          error,
+          error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
         ),
     );
   } else {

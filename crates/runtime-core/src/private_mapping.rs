@@ -45,12 +45,16 @@ struct Held {
     ofd_held: bool,
     release: Option<IoBox<Release>>,
     acquired: bool,
+    immutable_shared: bool,
     _metadata: crate::metadata_budget::MetadataReservation<'static>,
 }
 impl Drop for Held {
     fn drop(&mut self) {
         if self.ofd_held && crate::ofd::release_in_flight_ofd(self.ofd) { crate::ofd::note_possibly_orphaned_ofd_locks(); }
         if !self.acquired { return; }
+        if self.immutable_shared {
+            crate::rootfs::release_group_read_lease(match self.kind { Kind::Kernel(handle) => handle, _ => unreachable!() });
+        }
         let mut release = self.release.take().expect("private mapping lost admitted close custody");
         match self.kind {
             Kind::Kernel(handle) if crate::executable_backing::is_executable_handle(handle) => {
@@ -77,6 +81,11 @@ impl Source {
         match self.0.kind { Kind::Kernel(handle) => Some(handle), _ => None }
     }
     pub(crate) fn capture(proc: &Process, fd: i32, host: &mut dyn HostIO) -> Result<(Self, WasmStat), Errno> {
+        Self::capture_for_mapping(proc, fd, host, false)
+    }
+    pub(crate) fn is_immutable_shared(&self) -> bool { self.0.immutable_shared }
+    pub(crate) fn capture_for_mapping(proc: &Process, fd: i32, host: &mut dyn HostIO,
+        immutable_shared: bool) -> Result<(Self, WasmStat), Errno> {
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         if ofd.is_path_only() { return Err(Errno::EBADF); }
@@ -95,7 +104,7 @@ impl Source {
             .and_then(|bytes| bytes.checked_mul(2)).ok_or(Errno::ENOMEM)?;
         let metadata = crate::io_buffer::IO_MEMORY.reserve(metadata)?;
         let release = IoBox::try_new(Release { effects: BackingReleaseEffects::default(), next: None })?;
-        let mut held = Held { kind, ofd: ofd.ofd_id, ofd_held: false, release: Some(release), acquired: false, _metadata: metadata };
+        let mut held = Held { kind, ofd: ofd.ofd_id, ofd_held: false, release: Some(release), acquired: false, immutable_shared: false, _metadata: metadata };
         // Acquire after all close storage exists. IoRc allocation failure drops
         // this exact hold into the admitted release queue.
         crate::ofd::retain_in_flight_ofd(ofd.ofd_id)?;
@@ -105,6 +114,11 @@ impl Source {
             Kind::Host(handle) => crate::ofd::host_handle_fork_ref(handle)?,
         }
         held.acquired = true;
+        if immutable_shared {
+            let Kind::Kernel(handle) = kind else { return Err(Errno::EOPNOTSUPP); };
+            crate::rootfs::acquire_group_read_lease(handle)?;
+            held.immutable_shared = true;
+        }
         Ok((Self(IoRc::try_new(held)?), stat))
     }
 

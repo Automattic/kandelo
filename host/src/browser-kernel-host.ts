@@ -1,3 +1,4 @@
+import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import { deliverProcessGenerationEvent, type ProcessGenerationEvent } from "./process-generation-observation";
 export type { ProcessGenerationEvent } from "./process-generation-observation";
 import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
@@ -100,6 +101,8 @@ const defaultPcmWorkletUrl = new URL(
 );
 
 export interface BrowserKernelOptions {
+  /** Experimental opt-in for compatible trusted memory-group artifacts only. */
+  experimentalMemoryGroup?: TrustedMemoryGroupOptions;
   /**
    * Kandelo exchange: whether the platform may start the image's agent
    * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
@@ -891,6 +894,7 @@ export class BrowserKernel {
           requireExistingRootfsPersistence: opts.requireExistingRootfsPersistence,
           workerEntryUrl,
           config: {
+            experimentalMemoryGroup: this.options.experimentalMemoryGroup === undefined ? undefined : { ...this.options.experimentalMemoryGroup },
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
             kernelMaxPages: this.memoryProfile.kernelMaxPages,

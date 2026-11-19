@@ -4138,6 +4138,51 @@ pub extern "C" fn kernel_group_memory_fork(group: u32, pid: u32, tid: u32,
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_owned_mapping_prepare(pid: u32, tid: u32, observed_pages: u32,
+    packet_ptr: *mut u8, packet_len: u32, out_ptr: *mut u8, out_capacity: u32) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if packet_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if packet_len != 320 || out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let packet = unsafe { core::slice::from_raw_parts_mut(packet_ptr, packet_len as usize) };
+    match table.prepare_group_owned_mapping(pid, tid, observed_pages, packet, &mut WasmHostIO) {
+        Ok(None) => 0,
+        Ok(Some(description)) => {
+            // Exact constants and a Rust-produced record make encoding infallible.
+            // Never erase custody if that internal invariant is broken.
+            description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
+                .expect("valid grouped driver mapping description");
+            DESCRIPTION_BYTES as i32
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_owned_mapping_validate(pid: u32, tid: u32, token: u32, transaction: u64,
+    out_ptr: *mut u8, out_capacity: u32) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.validate_group_owned_mapping(pid, tid, token, transaction) {
+        Ok(description) => description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
+            .map(|()| DESCRIPTION_BYTES as i32).unwrap_or_else(|error| -(error as i32)),
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_owned_mapping_finish(pid: u32, tid: u32, token: u32, transaction: u64, errno: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.finish_group_owned_mapping(pid, tid, token, transaction, errno, &mut WasmHostIO)
+        .unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_group_memory_change_prepare(
     pid: u32, tid: u32, request_ptr: *const u8, request_len: u32,
     out_ptr: *mut u8, out_capacity: u32,

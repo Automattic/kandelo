@@ -1008,6 +1008,7 @@ const OWNED_RESOURCE_BYTES = 320;
 const OWNED_RESOURCE_POLL = 11;
 const OWNED_RESOURCE_MMAP = 4;
 const OWNED_RESOURCE_MMAP_EXACT = 13;
+const OWNED_RESOURCE_UNMAP_EXACT = 14;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
@@ -2299,6 +2300,7 @@ interface PendingGroupMapping extends PendingGroupImageOperation {
   failure: number;
   scheduled: boolean;
   hostControl?: { thread: PendingThreadChannelAttachment; complete: (result: number) => void };
+  ownedMapping?: { dispatch: PlannedBlockingChannelDispatch; packet?: Uint8Array; token?: number; transaction?: bigint };
 }
 interface PendingGroupFork extends PendingGroupImageOperation {
   readonly kind: 'fork';
@@ -15910,6 +15912,13 @@ export class CentralizedKernelWorker {
         retryForbiddenByCallFlags,
         readinessTimeoutMs,
       };
+      if (channel.source instanceof GroupProcessAddressSpace && isOwnedResourceDispatch(plannedDispatch)) {
+        const action = ownedResourceInput(plannedDispatch).getUint32(4, true);
+        if (action === OWNED_RESOURCE_MMAP || action === OWNED_RESOURCE_MMAP_EXACT || action === OWNED_RESOURCE_UNMAP_EXACT) {
+          this.#beginGroupMapping(channel, syscallNr, adjustedArgs, entry, plannedDispatch);
+          return;
+        }
+      }
       let kernelResult: PlannedChannelDispatchResult;
       try {
         kernelResult = this.#executePlannedBlockingChannelDispatch(
@@ -22476,7 +22485,7 @@ export class CentralizedKernelWorker {
   }
 
   #beginGroupMapping(channel: ChannelInfo, syscall: number, args: readonly ChannelScalarValue[],
-    entry: KernelWorkerEntryContext): void {
+    entry: KernelWorkerEntryContext, ownedDispatch?: PlannedBlockingChannelDispatch): void {
     const previous = this.pendingGroupMappings.get(channel);
     if (previous) { this.#advanceGroupMapping(previous, entry); return; }
     const registration = this.processes.get(channel.pid), request = this.activeChannelRequests.get(channel);
@@ -22509,7 +22518,8 @@ export class CentralizedKernelWorker {
     // Host custody is allocated before asking Rust to retain a metadata plan.
     const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall, args: Object.freeze(copied),
       store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
-      suppressCompletion: false, failure: EIO, scheduled: false, done: false, populationCursor: 0 };
+      suppressCompletion: false, failure: EIO, scheduled: false, done: false, populationCursor: 0,
+      ownedMapping: ownedDispatch ? { dispatch: ownedDispatch } : undefined };
     this.pendingGroupImageOperations.set(channel, pending);
     this.pendingGroupMappings.set(channel, pending); this.#advanceGroupMapping(pending, entry);
   }
@@ -22529,6 +22539,24 @@ export class CentralizedKernelWorker {
         if (description.kind !== 'map' || description.length !== PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE
             || description.prot !== 3 || description.populationLength !== 0) this.#memoryGroupProtocolError('Invalid thread control effect');
         return description;
+      }
+      if (pending.ownedMapping) {
+        const owned = pending.ownedMapping;
+        const bytes = owned.dispatch.plannedChannelScratchArgs.find(arg => arg.desc.argIndex === 2)?.inputBytes;
+        if (!bytes || bytes.length !== OWNED_RESOURCE_BYTES) this.#memoryGroupProtocolError('Missing owned mapping input');
+        lease.copyFrom(bytes, 0, 0, bytes.length);
+        const count = this.#invokeEntryScratchExport(entry, lease, 'kernel_group_owned_mapping_prepare', [
+          pending.receipt.pid, pending.receipt.tid, observedPages,
+          lease.exportPointer(0, bytes.length), bytes.length,
+          lease.exportPointer(bytes.length, protocol.description_bytes), protocol.description_bytes,
+        ]);
+        if (count < 0) return this.#checkedMemoryGroupStatus(count);
+        owned.packet = lease.copyOut(0, bytes.length);
+        const packet = new DataView(owned.packet.buffer);
+        owned.token = packet.getUint32(24, true); owned.transaction = packet.getBigUint64(8, true);
+        if (count === 0) return 0;
+        if (count !== protocol.description_bytes) this.#memoryGroupProtocolError('Invalid grouped driver preparation length');
+        return decodeGroupMemoryChangeDescription(lease.copyOut(bytes.length, count), pending.receipt);
       }
       const packet = encodeGroupMemoryChangeRequest(pending.syscall, pending.args, observedPages);
       lease.copyFrom(packet, 0, 0, packet.length);
@@ -22559,10 +22587,15 @@ export class CentralizedKernelWorker {
     if (!description) this.#memoryGroupProtocolError("Mapping has no Rust preparation");
     const { receipt, token } = description, protocol = MEMORY_GROUP_PROTOCOL.mapping;
     const result = this.#requireMainScratchRegion().withLease(lease => {
-      const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_validate", [
-        receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
-        lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
-      ]);
+      const owned = pending.ownedMapping;
+      const count = this.#invokeEntryScratchExport(entry, lease,
+        owned ? 'kernel_group_owned_mapping_validate' : 'kernel_group_memory_change_validate', owned ? [
+          receipt.pid, receipt.tid, owned.token!, owned.transaction!,
+          lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+        ] : [
+          receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
+          lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+        ]);
       if (count < 0) return this.#checkedMemoryGroupStatus(count);
       if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid validated mapping record length");
       let current: GroupMemoryChangeDescription;
@@ -22580,6 +22613,14 @@ export class CentralizedKernelWorker {
     const description = pending.description;
     if (!description) { if (cancel) return 0; this.#memoryGroupProtocolError("Mapping commit has no preparation"); }
     const { receipt, token } = description, exports = this.#kernelInstanceForEntry(entry).exports;
+    if (pending.ownedMapping) {
+      const owned = pending.ownedMapping;
+      const operation = exports.kernel_group_owned_mapping_finish;
+      if (typeof operation !== 'function') this.#memoryGroupProtocolError('Missing grouped driver mapping finish');
+      const status = this.#checkedMemoryGroupStatus(operation(receipt.pid, receipt.tid,
+        owned.token!, owned.transaction!, cancel ? EIO : 0));
+      return cancel && status === -EIO ? 0 : status;
+    }
     const operation = cancel ? exports.kernel_group_memory_change_cancel : exports.kernel_group_memory_change_commit;
     if (typeof operation !== "function") this.#memoryGroupProtocolError("Kernel lacks exact mapping action");
     return this.#checkedMemoryGroupStatus(operation(receipt.pid, receipt.tid,
@@ -22654,6 +22695,13 @@ export class CentralizedKernelWorker {
       }
       const description = this.#prepareGroupMapping(pending, extent, entry);
       if (typeof description === "number") {
+        if (description === 0 && pending.ownedMapping) {
+          pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+          this.pendingGroupImageOperations.delete(pending.channel);
+          pending.store.resumeImageExecutionPause(pending.barrier);
+          entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+          this.#completeGroupOwnedMapping(pending, entry, false); return;
+        }
         pending.cancelling = true; pending.failure = -description; this.#cancelGroupMapping(pending, entry); return;
       }
       pending.description = description;
@@ -22734,7 +22782,38 @@ export class CentralizedKernelWorker {
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     pending.store.resumeImageExecutionPause(pending.barrier);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
-    this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
+    if (pending.ownedMapping) this.#completeGroupOwnedMapping(pending, entry, true);
+    else this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
+  }
+
+  #completeGroupOwnedMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext, recover: boolean): void {
+    const owned = pending.ownedMapping!;
+    const argument = owned.dispatch.plannedChannelScratchArgs.find(arg => arg.desc.argIndex === 2)!;
+    let bytes = owned.packet!;
+    if (recover) {
+      bytes = bytes.slice();
+      const packet = new DataView(bytes.buffer);
+      packet.setUint32(4, 6, true); // READ_LAST is read-only; never repeat construction.
+      packet.setBigUint64(16, 0n, true); packet.setUint32(28, 0, true); packet.setInt32(32, -1, true);
+      bytes.fill(0, 36, 56); bytes.fill(0, 64);
+      const result = this.#executePlannedBlockingChannelDispatch(pending.channel, {
+        ...owned.dispatch,
+        plannedScratchWrites: owned.dispatch.plannedScratchWrites.map(write => write.argIndex === 2 ? { ...write, inputBytes: bytes } : write),
+        plannedChannelScratchArgs: owned.dispatch.plannedChannelScratchArgs.map(arg => arg.desc.argIndex === 2 ? { ...arg, inputBytes: bytes } : arg),
+      }, entry);
+      const output = result.outputWrites.find(write => write.ptr === argument.processPointer)?.bytes;
+      if (result.retVal !== 0 || output?.length !== OWNED_RESOURCE_BYTES) this.#memoryGroupProtocolError('No sealed grouped driver receipt');
+      bytes = output;
+      const sealed = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      if (sealed.getUint32(24, true) !== owned.token || sealed.getBigUint64(8, true) !== owned.transaction
+          || sealed.getUint32(52, true) !== 1 || sealed.getInt32(48, true) !== 0) {
+        this.#memoryGroupProtocolError('Grouped driver receipt contradicted publication');
+      }
+    }
+    this.#dequeueSignalForDelivery(pending.channel, entry);
+    if (this.#finishSignalTermination(pending.channel, entry)) return;
+    this.completeChannel(pending.channel, SYS_IOCTL, [], undefined, 0, 0,
+      [{ ptr: argument.processPointer, bytes }], undefined, entry);
   }
 
   #cancelGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {

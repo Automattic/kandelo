@@ -6,5 +6,5 @@ import base from './vitest.config.ts';
 // image module, but none of the unrelated global program-fixture inventory.
 export default defineConfig({
   ...base,
-  test: { ...base.test, globalSetup: [], include: ['test/grouped-sdk-execution.test.ts'], maxWorkers: 1 },
+  test: { ...base.test, globalSetup: [], include: ['test/grouped-sdk-execution.test.ts', 'test/grouped-session-runtime.test.ts'], maxWorkers: 1 },
 });

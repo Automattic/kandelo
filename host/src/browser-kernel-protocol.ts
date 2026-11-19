@@ -1,3 +1,4 @@
+import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
@@ -218,6 +219,7 @@ export interface InitMessage {
   workerEntryUrl: string;
   bridgePort?: MessagePort;
   config: {
+    experimentalMemoryGroup?: TrustedMemoryGroupOptions;
     maxWorkers: number;
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */

@@ -81,7 +81,7 @@ function memory(value: unknown): { memory: WebAssembly.Memory; bytes: number } {
   }
   return { memory: value as WebAssembly.Memory, bytes: buffer.byteLength };
 }
-function snapshot(value: unknown, owner?: GroupReplicaMemoryExpectation): ProcessMemoryEnvelope {
+function snapshot(value: unknown, owner?: GroupReplicaMemoryExpectation, requiredRun = 1): ProcessMemoryEnvelope {
   const envelope = record(value, ['memory', 'descriptor']);
   const storage = memory(envelope.memory);
   value = envelope.descriptor;
@@ -132,7 +132,7 @@ function snapshot(value: unknown, owner?: GroupReplicaMemoryExpectation): Proces
   const control = new DataView(storage.memory.buffer, replica, G.MEMORY_GROUP_REPLICA_BYTES);
   if (control.getUint32(G.MEMORY_GROUP_REPLICA_MAGIC_OFFSET, true) !== G.MEMORY_GROUP_REPLICA_MAGIC
       || control.getUint32(G.MEMORY_GROUP_REPLICA_ROOT, true) !== root
-      || Atomics.load(new Int32Array(storage.memory.buffer, replica + G.MEMORY_GROUP_REPLICA_RUN, 1), 0) !== 1
+      || Atomics.load(new Int32Array(storage.memory.buffer, replica + G.MEMORY_GROUP_REPLICA_RUN, 1), 0) !== requiredRun
       || control.getBigUint64(G.MEMORY_GROUP_REPLICA_SERIAL, true) !== task.serial
       || control.getBigUint64(G.MEMORY_GROUP_REPLICA_GENERATION, true) !== task.generation
       || control.getUint32(G.MEMORY_GROUP_REPLICA_PID, true) !== task.pid
@@ -143,6 +143,15 @@ function snapshot(value: unknown, owner?: GroupReplicaMemoryExpectation): Proces
   owner.assertLive();
   return Object.freeze({ memory: storage.memory, descriptor: Object.freeze({ kind: G.MEMORY_GROUP_MODULE,
     receipt: task, root, replica, maximumVirtualPages: owner.maximumVirtualPages, scratch, scratchBytes: owner.scratchBytes }) });
+}
+
+/** Validate cancellation during the authenticated launch handshake. This
+ * returns only an identity: no address space or guest execution is admitted.
+ * The receiver still owes its own terminal fence before storage can retire. */
+export function decodeStoppedGroupedWorkerIdentity(value: unknown, owner: GroupReplicaMemoryExpectation): MemoryGroupTaskReceipt {
+  const descriptor = snapshot(value, owner, 0).descriptor;
+  if (descriptor.kind === 'linear') return fault('Stopped grouped launch requires a grouped identity');
+  return descriptor.receipt;
 }
 
 /** Emit plain versioned data with one backing reference. Cloned wrapper

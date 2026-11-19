@@ -680,7 +680,13 @@ pub(crate) fn owned_resource_duplicate(
     }
     Ok(())
 }
+pub(crate) struct GroupUnmapPlan {
+        plan: crate::memory::change::PreparedMemoryChange,
+        retirement: DeviceUnmapPlan,
+        target: Target,
+}
 pub(crate) enum OwnedMappingPlan {
+    GroupUnmap(crate::IoBox<Option<GroupUnmapPlan>>),
     Bo {
         allocation: DeviceMapAllocation,
         hold: DriMappingHold,
@@ -706,6 +712,9 @@ impl OwnedMappingPlan {
         flags: u32,
         bo: u32,
     ) -> Result<Self, Errno> {
+        if proc.memory.group_virtual_extent().is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
         crate::dri::with_registry(|r| r.incref(bo)).ok_or(Errno::ENOMEM)?;
         let hold = DriMappingHold(Some(bo));
         let allocation = DeviceMapAllocation::prepare_with_binding_slots(
@@ -722,26 +731,52 @@ impl OwnedMappingPlan {
     fn with_identity(mut self, identity: Option<crate::memory::ExactMappingIdentity>) -> Self {
         match &mut self {
             Self::Bo { identity: slot, .. } | Self::Commands { identity: slot, .. } => *slot = identity,
+            Self::GroupUnmap(_) => unreachable!(),
         }
         self
     }
     pub(crate) fn identity(&self) -> Option<crate::memory::ExactMappingIdentity> {
-        match self { Self::Bo { identity, .. } | Self::Commands { identity, .. } => *identity }
+        match self { Self::Bo { identity, .. } | Self::Commands { identity, .. } => *identity, Self::GroupUnmap(_) => None }
     }
     pub(crate) fn addr(&self) -> usize {
         match self {
             Self::Bo { allocation, .. } | Self::Commands { allocation, .. } => allocation.addr,
+            Self::GroupUnmap(storage) => match storage.as_ref().unwrap().plan.effect() { crate::memory::change::MemoryChangeEffect::Unmap { addr, .. } => addr, _ => unreachable!() },
         }
+    }
+    pub(crate) fn group_description(&self, proc: &Process,
+        receipt: wasm_posix_shared::memory_group::ReceiptRecord) -> Result<crate::group_memory_change::Description, Errno> {
+        let plan = match self { Self::Commands { allocation, target, .. } => {
+            validate_actor(proc, *target)?; allocation.grouped.as_deref().and_then(Option::as_ref).ok_or(Errno::EOPNOTSUPP)?
+        }, Self::GroupUnmap(storage) => {
+            let unmap = storage.as_ref().unwrap();
+            owned_resource_validate(proc, unmap.target)?; &unmap.plan
+        }, _ => return Err(Errno::EOPNOTSUPP) };
+        proc.memory.validate_memory_change(plan)?;
+        Ok(crate::group_memory_change::Description { token: plan.serial(), receipt, effect: plan.effect(),
+            population_address: 0, population_length: 0, shared_object: 0, shared_length: 0, shared_offset: 0 })
     }
     pub(crate) fn rollback(self, proc: &mut Process) {
         match self {
             Self::Bo { allocation, .. } | Self::Commands { allocation, .. } => {
                 allocation.rollback(proc)
             }
+            Self::GroupUnmap(mut storage) => { proc.memory.cancel_memory_change(storage.take().unwrap().plan).expect("exact grouped driver unmap rollback"); }
         }
     }
     pub(crate) fn commit(self, proc: &mut Process, host: &mut dyn HostIO) -> Result<usize, Errno> {
         match self {
+            Self::GroupUnmap(mut storage) => {
+                let GroupUnmapPlan { plan, retirement, target } = storage.take().unwrap();
+                if let Err(error) = owned_resource_validate(proc, target).and_then(|()| proc.memory.validate_memory_change(&plan)) {
+                    proc.memory.cancel_memory_change(plan).expect("refused grouped driver unmap rollback");
+                    return Err(error);
+                }
+                let addr = match plan.effect() { crate::memory::change::MemoryChangeEffect::Unmap { addr, .. } => addr, _ => unreachable!() };
+                retirement.commit(proc, host);
+                proc.memory.commit_memory_change(plan).expect("validated grouped driver unmap publication");
+                Ok(addr)
+            }
             Self::Bo {
                 allocation,
                 mut hold,
@@ -923,6 +958,30 @@ pub(crate) fn owned_resource_unmap_exact(
     DeviceUnmapPlan::prepare_exact(proc, ranges)?.commit(proc, host);
     proc.memory.retire_exact_mapping_regions(id);
     Ok(())
+}
+
+pub(crate) fn owned_resource_prepare_group_unmap(proc: &mut Process, kind: Kind, source: Option<Kind>,
+    packet: &W::Packet) -> Result<Option<OwnedMappingPlan>, Errno> {
+    if crate::owned_resource::has_pending_mapping(proc) { return Err(Errno::EBUSY); }
+    let Kind::File(target) = kind else { return Err(Errno::EINVAL); };
+    owned_resource_validate(proc, target)?;
+    let source_bo = match source {
+        None => None,
+        Some(Kind::Bo { file, bo, .. }) if file.id == target.id => { owned_resource_validate(proc, file)?; Some(bo) },
+        _ => return Err(Errno::EACCES),
+    };
+    let id = u64::from_le_bytes(packet.body[..8].try_into().unwrap());
+    let ranges = proc.memory.exact_mapping_ranges(id, target.id.0, source_bo)?;
+    if ranges.is_empty() { return Ok(None); }
+    // This preview supports whole command streams. Fragmented exact driver
+    // unmaps need one scattered physical transaction before broader support.
+    if ranges.len() != 1 { return Err(Errno::EOPNOTSUPP); }
+    let (addr, end) = ranges[0];
+    let mut storage = crate::IoBox::try_new(None)?;
+    let retirement = DeviceUnmapPlan::prepare_exact(proc, ranges)?;
+    let plan = proc.memory.prepare_memory_change(crate::memory::change::MemoryChange::Unmap { addr, len: end - addr })?;
+    *storage = Some(GroupUnmapPlan { plan, retirement, target });
+    Ok(Some(OwnedMappingPlan::GroupUnmap(storage)))
 }
 /// Before mapping refs retire, abort any unpublished constructor while its
 /// old VMAs still retain the split-hold backing required by rollback.

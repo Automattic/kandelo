@@ -234,6 +234,8 @@ function signatures(
     kernel_group_memory_thread_control_reuse: { parameters: [i32, i32, i32], result: i64 },
     kernel_group_memory_thread_control_release: { parameters: [i32, i32, i32, i32, i32, i32, i32], result: i32 },
     kernel_group_memory_change_prepare: { parameters: [i32, i32, pointer, i32, pointer, i32], result: i32 },
+    kernel_group_owned_mapping_prepare: { parameters: [i32, i32, i32, pointer, i32, pointer, i32], result: i32 },
+    kernel_group_owned_mapping_validate: { parameters: [i32, i32, i32, i64, pointer, i32], result: i32 },
     kernel_group_memory_change_read: { parameters: [i32, i32, i32, i32, i32, i32, pointer, i32], result: i32 },
     kernel_group_memory_layout_install: { parameters: [pointer, i32], result: i32 },
     kernel_group_memory_exec_prepare: { parameters: [i32, i32, i32, pointer, i32], result: i32 },

@@ -1,7 +1,7 @@
 # Shared-memory process-group preview contract
 
-This is the target contract for an opt-in trusted desktop preview, not a
-statement that the shipping runtime implements it. The
+This records the target contract and the bounded desktop-first implementation
+below. It is not a statement that the complete contract is ready to ship. The
 [baseline record](measurements/2026-11-16-shared-memory-desktop-baseline.md)
 identifies the isolated experiment and the ordinary failure it addresses.
 Neither the successful demo nor those bounded checks replaces integration and
@@ -108,6 +108,52 @@ outside the initial preview. Existing ordinary behavior for those paths stays
 unchanged. PostgreSQL and Apache are later consumers, not prerequisites for the
 desktop milestone.
 
+## Desktop-first opt-in
+
+`BrowserKernel` and `NodeKernelHost` accept an explicit embedder option:
+
+```ts
+experimentalMemoryGroup: {
+  maximumPages: 8192, maximumProcesses: 24, maximumTasks: 64,
+}
+```
+
+Compatible byte launches through `spawn(bytes, argv, options)` use a single
+kernel-owned group in that machine. The option reserves a physical ceiling;
+it does not raise ordinary process or renderer limits. Ordinary artifacts
+keep the ordinary backend. The disposable kernel Worker owns launch, fork,
+pthread, compatible exec and retirement; the embedding receives copied
+output and status. Initial grouped `spawnFromVfs` admission is not yet wired.
+The preview reads the selected executable from its actual image and uses the
+byte-launch API. This is a development preview, not full launch acceptance.
+
+Prepare a separate opt-in image from an ordinary SDK/package-built desktop
+image through the normal SDK and image writer:
+
+```sh
+scripts/dev-shell.sh host/node_modules/.bin/tsx --experimental-wasm-exnref \
+  images/vfs/scripts/prepare-shared-desktop-image.ts \
+  ORDINARY.vfs.zst GROUPED.vfs.zst
+```
+
+The builder resolves deferred programs through the normal package resolver,
+prepares Sway, Swaybar, Swaybg, Swaymsg, Foot, the shell and Coreutils, and
+validates explicit per-path grouped artifact policies. It preserves the input
+and writes an adjacent `.memory-group.json` provenance report. A failed
+preparation retains its report and staging files. Its optional source-provider
+API permits explicitly retained compatible image fixtures; that evidence does
+not establish a fresh package build or a canonical image.
+
+The developer consumer is `apps/browser-demos/grouped-desktop.html`. Its Vite
+config requires `KANDELO_GROUPED_DESKTOP_IMAGE` and a verified frozen asset
+manifest in `KANDELO_GROUPED_DESKTOP_ASSETS`. Run it from that app directory
+with `npx vite --config vite.grouped-desktop.config.ts --port 6209 --strictPort`
+inside the dev shell. It opens a temporary trusted Sway desktop with real
+terminal input, serialized Sway IPC controls and Stop. The isolated Playwright
+config is `playwright.grouped-desktop.config.ts`; select a retained evidence
+directory with `KANDELO_GROUPED_DESKTOP_EVIDENCE`. This fixture is separate
+from the normal gallery and does not change its default launch behavior.
+
 ## Accounting and acceptance
 
 The desktop-first integration currently implements whole fixed-size tmpfs
@@ -117,6 +163,26 @@ Promotion refuses pre-existing legacy mapping holds; ordinary or cross-group
 shared attachment is refused. Descriptor writes and size changes after
 promotion remain unsupported and return an error. This bounded surface does
 not complete the target shared-object contract above or desktop acceptance.
+
+The desktop integration also admits read-only `MAP_SHARED` mappings of
+ephemeral rootfs files under a kernel-held immutable read lease. Their VMA
+keeps `MAP_SHARED`; physical read copies are independently reclaimable.
+Writes, truncation, writable protection and legacy shared attachment are
+refused while the lease exists. Closing the descriptor does not release the
+lease; the final mapping/source reference does. Persistent writable files,
+nonzero mapping offsets and expanding these mappings remain unsupported.
+This is a bounded read-only surface, not general writable regular-file sharing.
+
+Host-adapter 23 adds the exact owned-driver mapping bridge. EGL command
+streams use private process pages through the same all-replica barrier and
+staged physical allocation as other grouped mappings. Their existing driver
+token and transaction retain authority through construction or rollback.
+Whole-stream exact unmapping retires the driver binding before releasing
+physical pages. Fragmented driver unmapping and CPU graphical BO mappings
+remain unsupported. GL submissions read checked virtual addresses and copy
+only the submitted range into the existing command queue; they never treat
+guest pointers as physical offsets into the common Memory. GPU storage and
+presentation copies remain separate costs.
 
 Report distinct quantities: per-process virtual mappings, private/shared and
 proportionally attributed bytes; unique group payload; runtime scratch and
@@ -164,16 +230,15 @@ receipts remain distinct from an exec successor.
 Host-adapter 8 adds protocol-1 fixed metadata records and advertises admission
 capability only. Program ABI 56 remains unchanged. The generated kernel-host
 snapshot includes record layouts and actions; full unsigned generation/receipt
-values have separate status returns. These interfaces do not advertise a ready
-execution/stop backend or expose a guest group-creation syscall. Normal host
-launch and terminal-stop integration remain later stages.
+values have separate status returns. Those admission-only interfaces do not expose a guest group-creation syscall.
+The desktop-first host integration above now connects the explicit backend;
+the complete release gates remain open.
 
 The SDK now provides `wasm32posix-shared-memory` to prepare a separate,
 versioned grouped executable while preserving the ordinary input. The
 translator and standalone C/Worker fixtures exercise translated memory
-operations, permissions and atomics. This artifact preparation does not enable
-grouped launch: the normal launcher still refuses the required group-memory
-import. See [SDK preparation and its limits](sdk-guide.md#experimental-memory-group-translation).
+operations, permissions and atomics. Artifact preparation alone does not enable
+grouped launch: callers must select the explicit host option above. See [SDK preparation and its limits](sdk-guide.md#experimental-memory-group-translation).
 
 The in-progress exec preflight now shares the Rust grouped-artifact reader
 with SDK output validation. Only a current kernel-owned image membership
@@ -692,7 +757,7 @@ each through `scripts/dev-shell.sh`. These are internal admission and syscall
 integration checks, not a public launcher, package/image desktop, fork/pthread,
 reclamation, conformance, browser-memory or performance acceptance result.
 
-These internal components do not expose an embedding launch option. Mapping
+The explicit embedding launch option connects these internal components. Mapping
 publication stays within the admitted virtual capacity; physical group growth
 cannot establish virtual capacity. Complete mapping/heap semantics, lifecycle,
 shared objects and graphics remain required before preview support. See the

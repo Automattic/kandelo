@@ -1,7 +1,8 @@
 import * as G from './generated/program-extensions';
 import { GroupedWorkerRuntime } from './grouped-worker-runtime';
 import { MemoryGroupProtocolFault, memoryGroupU32 } from './memory-group-protocol';
-import type { GroupReplicaMemoryExpectation, ProcessMemoryEnvelope } from './process-memory-descriptor';
+import { decodeStoppedGroupedWorkerIdentity, type GroupReplicaMemoryExpectation, type ProcessMemoryEnvelope } from './process-memory-descriptor';
+import type { MemoryGroupTaskReceipt } from './memory-group-protocol';
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from './worker-protocol';
 import type { WorkerHandle } from './worker-adapter';
 
@@ -95,7 +96,7 @@ export async function receiveGroupedWorkerInitialization(
   first: unknown,
   receiveNext: () => Promise<unknown>,
   post: (message: unknown) => void,
-): Promise<{ init: Init; grouped?: GroupedWorkerRuntime }> {
+): Promise<{ init: Init; grouped?: GroupedWorkerRuntime; stopped?: MemoryGroupTaskReceipt }> {
   const kind = first && typeof first === 'object' ? Object.getOwnPropertyDescriptor(first, 'type') : undefined;
   if (kind?.value !== PREPARE) {
     if (kind?.value === LAUNCH) return fail('Grouped launch arrived without its readiness handshake');
@@ -112,6 +113,16 @@ export async function receiveGroupedWorkerInitialization(
       || (init.type === 'centralized_init' ? expected.receipt.tid !== init.pid : init.tid !== expected.receipt.tid)) {
     return fail('Grouped launch disagrees with its prepared Worker identity');
   }
-  const grouped = new GroupedWorkerRuntime(launch.envelope, { ...expected, assertLive: () => {} });
+  let grouped: GroupedWorkerRuntime;
+  try { grouped = new GroupedWorkerRuntime(launch.envelope, { ...expected, assertLive: () => {} }); }
+  catch (error) {
+    // Stop can win after the parent sends launch but before this realm decodes
+    // it. Keep every identity/layout check; only a genuine RUN=0 launch may
+    // finish without constructing a guest instance or an address space.
+    try {
+      const stopped = decodeStoppedGroupedWorkerIdentity(launch.envelope, { ...expected, assertLive: () => {} });
+      return { init: init as unknown as Init, stopped };
+    } catch { throw error; }
+  }
   return { init: { ...init, memory: grouped.memory } as unknown as Init, grouped };
 }

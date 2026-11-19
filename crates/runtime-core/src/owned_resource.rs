@@ -757,6 +757,8 @@ pub(crate) fn ioctl(
             }
             Err(error) => Err(error),
         },
+        W::UNMAP_EXACT if proc.memory.group_virtual_extent().is_some() =>
+            crate::syscalls::owned_resource_prepare_group_unmap(proc, kind, source, &working).map(|plan| { mapping_plan = plan; }),
         W::UNMAP_EXACT => crate::syscalls::owned_resource_unmap_exact(proc, host, kind, source, &working),
         W::DUP_FD => {
             crate::syscalls::owned_resource_duplicate(proc, kind, &mut working, &mut published_fd)
@@ -790,7 +792,7 @@ pub(crate) fn ioctl(
         }
         _ => Err(Errno::EINVAL),
     };
-    let mapping_pending = matches!(working.action, W::MMAP | W::MMAP_EXACT) && result.is_ok();
+    let mapping_pending = mapping_plan.is_some() && result.is_ok();
     let pending = matches!(result, Err(Errno::EAGAIN))
         && matches!(working.action, W::IOCTL | W::POLL | W::MMAP | W::MMAP_EXACT);
     if pending || mapping_pending {
@@ -1000,6 +1002,25 @@ pub(crate) fn has_pending_mapping(proc: &Process) -> bool {
             .is_some_and(|r| r.awaiting_mapping_finish)
     })
 }
+
+pub(crate) fn grouped_mapping_description(proc: &Process,
+    receipt: wasm_posix_shared::memory_group::ReceiptRecord, token: u32, transaction: u64,
+) -> Result<crate::group_memory_change::Description, Errno> {
+    let index = proc.owned_resources.index(token, proc.pid, proc.exec_generation)?;
+    let pending = proc.owned_resources.resources[index].receipt.as_ref().ok_or(Errno::ENOENT)?;
+    if pending.creator_tid != receipt.tid || pending.request.transaction != transaction {
+        return Err(Errno::ESRCH);
+    }
+    if !pending.awaiting_mapping_finish || pending.complete || pending.running { return Err(Errno::EBUSY); }
+    pending.mapping_plan.as_ref().ok_or(Errno::EIO)?.group_description(proc, receipt)
+}
+
+pub(crate) fn mapping_result(proc: &Process, token: u32, transaction: u64) -> Result<i32, Errno> {
+    let index = proc.owned_resources.index(token, proc.pid, proc.exec_generation)?;
+    let receipt = proc.owned_resources.resources[index].receipt.as_ref().ok_or(Errno::ENOENT)?;
+    if receipt.request.transaction != transaction || !receipt.complete { return Err(Errno::EBUSY); }
+    Ok(receipt.response.result)
+}
 pub(crate) fn finish_mapping(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
@@ -1019,7 +1040,7 @@ pub(crate) fn finish_mapping(
         .receipt
         .as_ref()
         .ok_or(Errno::ENOENT)?;
-    if !matches!(receipt.request.action, W::MMAP | W::MMAP_EXACT)
+    if !matches!(receipt.request.action, W::MMAP | W::MMAP_EXACT | W::UNMAP_EXACT)
         || receipt.request.transaction != transaction
         || receipt.creator_tid != tid
     {

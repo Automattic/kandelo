@@ -594,6 +594,16 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#groupMappingAction::kernel-export-direct-use::operation(receipt.pid, receipt.tid, owned.token!, owned.transaction!, cancel ? EIO : 0)",
+    disposition: "kernel-control", count: 1,
+    why: "The exact live task and its owned-resource token/transaction finish one prepared driver mapping under the image barrier. The final scalar is a construction decision; no kernel pointer or memory reservation crosses this call.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#sweepGroupFileObjects::kernel-export-direct-use::alive(group, Number(id & 0xffffffffn), Number(id >> 32n))",
+    disposition: "kernel-control", count: 1,
+    why: "This read-only query checks the exact kernel group/object identity before the host releases an ownerless file backing. It returns only 0 or 1 and grants no pointer, task or allocation authority.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#isKernelProcessExitPublished::kernel-export-direct-use::readPublished(pid)",
     disposition: "kernel-control",
     count: 1,
@@ -1923,6 +1933,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_pread destination", )',
     disposition: "rust-lent",
     why: "The host_pread Wasm import binds the untouched Rust pointer and capacity formals before invoking any positioned producer.",
+  },
+  {
+    key: "host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, 'host_group_object_read destination')",
+    disposition: "rust-lent", count: 1,
+    why: "The grouped-object read import binds the untouched Rust destination pointer and exact slice capacity before invoking the file reader. The reader fills independent bytes; the import validates its count and copies only that prefix through the authenticated destination.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, "host_overlay_read destination")',
