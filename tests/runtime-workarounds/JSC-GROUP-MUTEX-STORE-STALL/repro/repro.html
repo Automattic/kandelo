@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Atomic mutex store contention</title><pre id="out">Running</pre><script type="module">
+const rows=[];
+async function run(release){return new Promise((resolve,reject)=>{
+ const owner=new Worker('./owner.js');const deadline=setTimeout(()=>{owner.terminate();reject(Error('Worker deadline'));},90000);
+ owner.onmessage=({data})=>{if(data.row)document.querySelector('#out').textContent=release+' round '+data.row.round;if(data.error){clearTimeout(deadline);owner.terminate();reject(Error(data.error));}if(data.done){clearTimeout(deadline);owner.terminate();resolve({release,...data});}};
+ owner.onerror=event=>{clearTimeout(deadline);owner.terminate();reject(Error(event.message));};owner.postMessage({algorithm:'exchange',release});
+});}
+try{for(const release of ['js','wasm'])rows.push(await run(release));
+ const js=rows[0].maxStoreMs,native=rows[1].maxStoreMs;
+ const verdict=js>250&&native<50&&js>native*100?'reproduced':js<=250?'not-reproduced':'inconclusive';
+ window.__reproVerdict={verdict,details:{thresholdMs:250,jsStoreMaxMs:js,nativeStoreMaxMs:native,rounds:32,contenders:8,initialBytes:536870912,rows,limitations:'Measures contended store latency; does not prove the cause of application stalls or a specification timing guarantee.'}};
+}catch(error){window.__reproVerdict={verdict:'inconclusive',details:{error:String(error),rows}};}
+window.__reproVerdict.details=JSON.stringify(window.__reproVerdict.details);
+document.querySelector('#out').textContent=JSON.stringify(window.__reproVerdict,null,2);
+</script>

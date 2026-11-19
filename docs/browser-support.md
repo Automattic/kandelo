@@ -4679,6 +4679,14 @@ coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### JavaScriptCore garbage collection and blocked workers
 
+The opt-in shared-memory desktop also has a bounded kernel-Worker mutex-release
+workaround recorded as
+[`JSC-GROUP-MUTEX-STORE-STALL`](../tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/entry.md).
+A standalone JS/Wasm test reproduces contended JavaScript store delays on
+Playwright WebKit, with Chromium and Firefox controls. That timing observation
+does not establish the cause of every desktop stall; sustained desktop and
+resource acceptance remain separate gates.
+
 This is a suspected JavaScriptCore behavior with a tagged workaround in
 the syscall glue, recorded in the runtime workaround registry as
 [`JSC-BLOCKED-WAIT-GC-STARVATION`](../tests/runtime-workarounds/JSC-BLOCKED-WAIT-GC-STARVATION/entry.md)

@@ -1643,6 +1643,30 @@ const auditAllowances: AuditAllowance[] = [
     why: "The fork transit provider has no imports or linear memory and owns only the process worker's temporary externref table.",
   },
   {
+    key: "host/src/memory-group-notification.ts::queueUnlock::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This closed metadata-store helper imports only the already-admitted group backing in its disposable owning kernel Worker. It allocates no Memory and has no host imports. A private weak-key cache exposes only a closure for the generated queue mutex word; it grants no image or retirement authority and cannot retain a backing after its external owners disappear.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/contender.js::<module>::wasm-instance-authority::new WebAssembly.Instance(data.module,{env:{memory:data.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone reproduction with no Kandelo code: each disposable contender imports only the probe's private byte-zero mutex memory and exposes no platform imports or retirement authority.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/owner.js::<module>::wasm-instance-authority::new WebAssembly.Instance(module,{env:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone reproduction with no Kandelo code: the disposable owner binds only the generated probe module to its own shared memory for a native-store control, with no kernel or process capabilities.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/owner.js::<module>::wasm-memory-authority::new WebAssembly.Memory({initial:8192,maximum:8192,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone reproduction with no Kandelo code: this bounded 512 MiB probe backing belongs only to disposable test Workers, never a running Kandelo machine or persistent UI realm.",
+  },
+  {
     key: "host/src/fork-worker-import-exceptions.ts::buildFatalTrap::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(bytes))",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
