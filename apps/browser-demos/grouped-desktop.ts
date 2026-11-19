@@ -1,5 +1,8 @@
 import { BrowserKernel } from '../../host/src/browser-kernel-host';
 import { BrowserInputSource } from '../../host/src/input/browser-input-source';
+import { ABSOLUTE_POINTER_EXTENT, absolutePointerValue, type InputEvent as KernelInputEvent } from '../../host/src/input/input-source';
+import { pointerButtons } from '../../host/src/input/pointer-buttons';
+import { INPUT_CODES } from '../../host/src/generated/abi';
 
 const style = document.createElement('style');
 style.textContent = 'body{margin:0;background:#16191d;color:#eee;font:14px system-ui}header{padding:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{padding:7px 12px}#status{padding:0 12px 12px;white-space:pre-wrap}.desktop{position:relative;outline:none}.desktop canvas{position:absolute;left:0;top:0}main{overflow:auto}';
@@ -49,8 +52,10 @@ action('Start shared desktop', async () => {
   if (kernel) throw Error('Reload to start a fresh machine');
   delete status.dataset.error;
   status.textContent = 'Loading the desktop…';
+  const maximumPages = Number(new URLSearchParams(location.search).get('groupPages') ?? 8192);
+  if (!Number.isSafeInteger(maximumPages) || maximumPages < 256 || maximumPages > 8192) throw Error('Invalid group page budget');
   kernel = new BrowserKernel({ kernelOwnedFs: true,
-    experimentalMemoryGroup: { maximumPages: 8192, maximumProcesses: 24, maximumTasks: 64 },
+    experimentalMemoryGroup: { maximumPages, maximumProcesses: 24, maximumTasks: 64 },
     onStdout: bytes => { state.stdout += new TextDecoder().decode(bytes); },
     onStderr: bytes => { state.stderr += new TextDecoder().decode(bytes); },
     onHostDiagnostic: event => { state.diagnostics.push(event); if (!state.stopping) fail(event.message || 'Desktop worker failed'); },
@@ -76,19 +81,64 @@ action('Start shared desktop', async () => {
   for (const canvas of [scene, cursor]) { canvas.width = width; canvas.height = height; display.append(canvas); }
   main.append(display); display.addEventListener('pointerdown', () => display.focus());
   const stats = new Int32Array(new SharedArrayBuffer(36));
-  kernel.setInputCanvasDims(width, height); kernel.kmsSetDisplaySize(1, width, height);
+  kernel.kmsSetDisplaySize(1, width, height);
   kernel.kmsAttachCanvas(1, scene.transferControlToOffscreen(), stats.buffer, { mode: 'webgl2-scanout', cursorCanvas: cursor.transferControlToOffscreen() });
   const tracing = query.has('trace');
-  const input = new BrowserInputSource(window, { shouldCapture: event => {
+  const input = new BrowserInputSource(window, { pointer: false, wheel: true, shouldCapture: event => {
     const capture = display.contains(event.target as Node) || document.activeElement === display && event instanceof KeyboardEvent;
     if (tracing && event instanceof KeyboardEvent && state.keys.length < 256) state.keys.push({ type: event.type,
       code: event.code, key: event.key, capture, active: document.activeElement?.className, target: (event.target as Element)?.tagName });
     return capture;
   } });
-  kernel.attachInputSource({ start: dispatch => input.start(event => {
-    if (tracing && state.input.length < 512) state.input.push({ ...event });
-    dispatch(event);
-  }), stop: () => input.stop() }, { width, height });
+  let cleanupPointer = () => {};
+  kernel.attachInputSource({ start: dispatch => {
+    const emit = (event: KernelInputEvent) => {
+      if (tracing && state.input.length < 512) state.input.push({ ...event });
+      dispatch(event);
+    };
+    input.start(emit);
+    const { EV_ABS, EV_SYN, EV_KEY, SYN_REPORT, ABS_X, ABS_Y, BTN_LEFT, BTN_RIGHT, BTN_MIDDLE } = INPUT_CODES;
+    const frame = (records: KernelInputEvent[]) => {
+      for (const record of records) emit(record);
+      emit({ device: 1, ev_type: EV_SYN, code: SYN_REPORT, value: 0 });
+    };
+    let buttons = 0, active = false;
+    const setButtons = (next: number) => {
+      const changed = buttons ^ next;
+      if (!changed) return;
+      const records: KernelInputEvent[] = [];
+      for (const value of [0, 1]) for (const [bit, code] of [[1, BTN_LEFT], [2, BTN_RIGHT], [4, BTN_MIDDLE]]) {
+        if ((changed & bit) && Number(Boolean(next & bit)) === value) records.push({ device: 1, ev_type: EV_KEY, code, value });
+      }
+      frame(records); buttons = next;
+    };
+    const release = () => { setButtons(0); active = false; };
+    const pointer = (event: PointerEvent) => {
+      const inside = display.contains(event.target as Node);
+      if (!inside && !active && !buttons) return;
+      if (event.type === 'pointerdown' && inside) { active = true; display.focus(); }
+      if (inside || active) {
+        const rect = display.getBoundingClientRect();
+        // Use the same fixed absolute-device space as the normal Modeset
+        // surface. BrowserInputSource owns keyboard/wheel, not a competing
+        // relative pointer feed into this absolute evdev device.
+        if (rect.width > 0 && rect.height > 0) frame([
+          { device: 1, ev_type: EV_ABS, code: ABS_X, value: absolutePointerValue((event.clientX - rect.left) * width / rect.width, width) },
+          { device: 1, ev_type: EV_ABS, code: ABS_Y, value: absolutePointerValue((event.clientY - rect.top) * height / rect.height, height) },
+        ]);
+        event.preventDefault();
+      }
+      setButtons(pointerButtons(buttons, event, event.type === 'pointerdown' ? 'down' : event.type === 'pointerup' ? 'up' : 'move', active));
+      if (event.type === 'pointerup') active = buttons !== 0;
+    };
+    for (const type of ['pointermove', 'pointerdown', 'pointerup']) window.addEventListener(type, pointer as EventListener);
+    window.addEventListener('blur', release); window.addEventListener('pointercancel', release);
+    cleanupPointer = () => {
+      release();
+      for (const type of ['pointermove', 'pointerdown', 'pointerup']) window.removeEventListener(type, pointer as EventListener);
+      window.removeEventListener('blur', release); window.removeEventListener('pointercancel', release);
+    };
+  }, stop: () => { cleanupPointer(); input.stop(); } }, { width: ABSOLUTE_POINTER_EXTENT, height: ABSOLUTE_POINTER_EXTENT });
   page.groupedDesktop = { kernel, state, stats, command };
   // The standard byte-launch API explicitly admits a compatible artifact.
   // Its bytes come from this machine's ordinary SDK/package-produced image.
