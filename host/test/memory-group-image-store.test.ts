@@ -59,9 +59,9 @@ describe('full virtual-capacity custody validation', () => {
     } finally { load.mockRestore(); store.close(); }
   });
 });
-function imageWithThread(maximumPhysicalPages = 32) {
+function imageWithThread(maximumPhysicalPages = 32, requested = layout) {
   const store = new MemoryGroupImageStore(7, maximumPhysicalPages), main = task(), thread = task({ tid: 101, serial: 2n });
-  const a = store.prepareImage(main, layout), b = store.prepareThread(thread);
+  const a = store.prepareImage(main, requested), b = store.prepareThread(thread);
   const leader = store.publish(a, main), peer = store.publish(b, thread);
   const control = (launch: typeof leader) => new Int32Array(launch.envelope.memory.buffer,
     launch.expectation.replica, G.MEMORY_GROUP_REPLICA_BYTES / 4);
@@ -70,8 +70,8 @@ function imageWithThread(maximumPhysicalPages = 32) {
   const acknowledge = (words: Int32Array) => Atomics.store(words, G.MEMORY_GROUP_REPLICA_ACK / 4, request(words));
   return { store, a, b, main, thread, leader, peer, control, left, right, request, acknowledge };
 }
-function pausedMappingImage(maximumPhysicalPages = 32) {
-  const h = imageWithThread(maximumPhysicalPages), barrier = h.store.beginImageExecutionPause(h.a);
+function pausedMappingImage(maximumPhysicalPages = 32, requested = layout) {
+  const h = imageWithThread(maximumPhysicalPages, requested), barrier = h.store.beginImageExecutionPause(h.a);
   h.acknowledge(h.left); h.acknowledge(h.right);
   const describe = (patch: Partial<GroupMemoryChangeDescription> = {}): GroupMemoryChangeDescription => ({
     receipt: h.main, token: (1n << 63n) + 7n, kind: 'map', address: 8 * P, length: P,
@@ -266,6 +266,26 @@ it('removes a proven stopped member from an active barrier and settles its exact
   expect(h.store.imageExecutionPauseAcknowledged(next)).toBe(true);
   expect(h.store.resumeImageExecutionPause(next)).toBe(true);
   h.store.close();
+});
+describe('paused full virtual-capacity validation', () => {
+  it.each(['fork', 'mapping'] as const)('preserves every charge when %s sees a corrupt bounds or tail PTE', kind => {
+    for (const corruption of ['physical', 'tail', 'rights'] as const) {
+      const h = pausedMappingImage(64, { ...layout, maximumVirtualPages: 65536 });
+      const memory = h.leader.envelope.memory;
+      const table = new Uint32Array(memory.buffer, h.leader.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 65536);
+      const at = corruption === 'tail' ? 65535 : 1;
+      const saved = table[at], charged = h.store.snapshot().allocatedPages;
+      const physical = corruption === 'physical' ? memory.buffer.byteLength / P : table[0] >>> 16;
+      table[at] = physical * P + (corruption === 'rights' ? 7 : 3);
+      try {
+        expect(() => kind === 'fork'
+          ? h.store.preparePrivateFork(h.barrier, task({ pid: 200, tid: 200, serial: 3n }))
+          : h.store.prepareImageMapping(h.barrier, h.describe())).toThrow(/Invalid private fork PTE|Invalid physical mapping baseline/);
+        expect(h.store.snapshot().allocatedPages).toBe(charged);
+        expect(h.leader.source.readBytes(0, 1)).toEqual(Uint8Array.of(0));
+      } finally { table[at] = saved; h.store.resumeImageExecutionPause(h.barrier); h.store.close(); }
+    }
+  });
 });
 describe('private physical fork preparation', () => {
   const child = () => task({ pid: 102, tid: 102, serial: 3n });

@@ -259,10 +259,15 @@ export class MemoryGroupImageStore {
       const copies = new Map<number, number>(), inheritedShared = new Set<SharedObject>();
       const sharedPages = new Map<number, SharedObject>();
       for (const object of parent.sharedObjects ?? []) for (const page of object.pages) sharedPages.set(page, object);
+      let physicalPages = this.memory.buffer.byteLength / PAGE;
       for (let at = 0; at < maximum; at++) {
         const entry = entries[at], physical = entry >>> 16;
-        if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE
-            || (at >= extent && entry)) fault('Invalid private fork PTE');
+        if (!entry) continue;
+        if ((entry & 0xfffc) || !physical || at >= extent) fault('Invalid private fork PTE');
+        // The paused root is stable, but another image can grow the backing.
+        // Retain only a call-local lower bound, refreshing before acceptance.
+        if (physical >= physicalPages) physicalPages = this.memory.buffer.byteLength / PAGE;
+        if (physical >= physicalPages) fault('Invalid private fork PTE');
         const shared = sharedPages.get(physical);
         if (shared) inheritedShared.add(shared);
         else if (physical && !copies.has(physical)) copies.set(physical, copies.size);
@@ -521,10 +526,15 @@ export class MemoryGroupImageStore {
       const oldExtent = Atomics.load(header, 0);
       if (oldExtent > maximum || header[1] !== maximum) fault('Mapping root capacity changed');
       before.set(new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, maximum)); after.set(before);
+      let physicalPages = this.memory.buffer.byteLength / PAGE;
       for (let at = 0; at < maximum; at++) {
         const entry = before[at], physical = entry >>> 16;
-        if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE
-            || (at >= oldExtent && entry)) fault('Invalid physical mapping baseline');
+        if (!entry) continue;
+        if ((entry & 0xfffc) || !physical || at >= oldExtent) fault('Invalid physical mapping baseline');
+        // Scan the entire admitted capacity without a backing accessor for
+        // each hole. Growth by a peer still requires a fresh physical bound.
+        if (physical >= physicalPages) physicalPages = this.memory.buffer.byteLength / PAGE;
+        if (physical >= physicalPages) fault('Invalid physical mapping baseline');
       }
       const start = input.address / PAGE, count = input.length / PAGE, rights = input.prot & 3;
       let newExtent = oldExtent;
