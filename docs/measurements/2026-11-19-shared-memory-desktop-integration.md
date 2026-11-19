@@ -239,6 +239,8 @@ experimental checkout, all 23 reaper/entry/retry tests and all 39 SDK/public Nod
 cases pass after the reaper correction, including the five forty-cohort cases.
 These experimental SDK results include the uncommitted candidates below; the
 full browser-memory gate at `678eb46` has not yet been rerun on this new head.
+The ABI snapshot check passes at `719a888988c1`; the program contract digest
+remains unchanged and existing programs remain valid.
 
 The mutex investigation now includes a standalone JS/Wasm program containing
 no Kandelo implementation or layout. An owner releases a byte-zero mutex under
@@ -272,7 +274,7 @@ initial-extent and private IPC candidates remain isolated and uncommitted.
 
 A further private diagnostic 65 substitutes equivalent native kernel stores
 for queue, pool and root-mutex releases. It still fails real Sway IPC after
-62 completed cycles. Expanding that substitution is not promoted as a fix.
+113 completed cycles. Expanding that substitution is not promoted as a fix.
 
 All failed source variants, setup errors, actual artifacts, negative controls
 and results remain retained. Current-head conformance, combined browser-memory
