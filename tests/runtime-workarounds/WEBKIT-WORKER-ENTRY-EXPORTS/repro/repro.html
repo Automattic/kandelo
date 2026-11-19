@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>Module Worker entry initialization</title>
+<script type="module">
+async function probe(entry) {
+  const worker = new Worker(entry, { type: 'module' });
+  try {
+    return await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => reject(Error('Worker timed out')), 10000);
+      worker.onerror = event => { clearTimeout(deadline); reject(Error(event.message)); };
+      worker.onmessage = event => {
+        if (event.data === 'ready') worker.postMessage('probe');
+        else if (typeof event.data?.initialized === 'boolean') {
+          clearTimeout(deadline); resolve(event.data.initialized);
+        }
+      };
+      worker.postMessage('init');
+    });
+  } finally { worker.terminate(); }
+}
+try {
+  const control = await probe('./control.js');
+  const initialized = await probe('./entry.js');
+  window.__reproVerdict = { verdict: !control ? 'inconclusive' : initialized ? 'not-reproduced' : 'reproduced',
+    details: 'terminal control initialized=' + control + '; cyclic entry initialized=' + initialized };
+} catch (error) {
+  window.__reproVerdict = { verdict: 'inconclusive', details: String(error) };
+}
+document.body.textContent = JSON.stringify(window.__reproVerdict);
+</script>
