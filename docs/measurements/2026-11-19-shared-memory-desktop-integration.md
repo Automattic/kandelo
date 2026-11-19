@@ -330,7 +330,7 @@ conformance and matched resource/latency measurements remain pending.
 
 ## Current Chromium resource and captured-glyph sample
 
-Runs 86/87 use Chromium 153.0.8010.12, three fresh browser parents per arm,
+Runs 86/87 at runtime `b1cf7270b9` use Chromium 153.0.8010.12, three fresh browser parents per arm,
 in order ordinary/grouped/grouped/ordinary/ordinary/grouped. Both use normal
 public consumers and the same normally built kernel (`ac950e58…`); the ordinary
 control is rebuilt at the current runtime with the normal unprepared partial
@@ -392,3 +392,31 @@ native-release build without the earlier pool/root bootstrap. It fails after
 and shell are absent from the later process snapshot; a newly launched control
 Worker reports readiness timeout. This does not establish failed Ctrl-D or a
 successful all-realm fix. Its errors and source variant remain retained.
+
+
+## Paused full-capacity preparation
+
+Fork and mapping preparation still made one backing-buffer accessor call for
+nearly every PTE while retaining the exact parent/image pause. The same local
+physical-bound validation now covers those loops too. It scans the full admitted
+capacity, skips only zero entries, validates every nonzero entry's rights, tail
+and bounds, and refreshes the lower bound before accepting a page beyond it.
+There is no persistent view/limit cache or changed budget, guest wait, FIFO,
+retirement fence, helper C or SDK artifact contract.
+
+A normally constructed 65,536-PTE image-store probe runs three rounds per path.
+Fork accessor counts fall from 65,560 to 25 and mapping counts from 65,556 to 21.
+Those are instrumented mechanism counts, not application timing, total-memory
+reduction or proof of a WebKit fix. New tests corrupt physical bounds, tail and
+rights in both paths and require unchanged allocation charges.
+
+At runtime `d813d6feb4`, the root host builds, all 258 focused cases in seven
+files pass with no skips, and the ABI check passes with unchanged program digest.
+Equivalent isolated runtime `64f3986a28` also passes all 39 public SDK/Node cases
+and one default untraced WebKit 120-cycle run (3m54s). The normal build uses the
+unchanged SDK image and kernel; no temporary bootstrap or guest-source rewriting
+is present. The normal desktop/refusal matrix, two independent WebKit repeats
+and existing three-browser SDK suite are queued/running at this checkpoint.
+No sustained-reliability or full-gate acceptance follows from that first pass.
+The 86/87 resource sample above is pinned to the preceding runtime; it is not
+silently reused as measurement of this new change.
