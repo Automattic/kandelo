@@ -150,15 +150,44 @@ preparation retains its report and staging files. Its optional source-provider
 API permits explicitly retained compatible image fixtures; that evidence does
 not establish a fresh package build or a canonical image.
 
-The developer consumer is `apps/browser-demos/grouped-desktop.html`. Its Vite
-config requires `KANDELO_GROUPED_DESKTOP_IMAGE` and a verified frozen asset
-manifest in `KANDELO_GROUPED_DESKTOP_ASSETS`. Run it from that app directory
-with `npx vite --config vite.grouped-desktop.config.ts --port 6209 --strictPort`
-inside the dev shell. It opens a temporary trusted Sway desktop with real
-terminal input, serialized Sway IPC controls and Stop. The isolated Playwright
-config is `playwright.grouped-desktop.config.ts`; select a retained evidence
-directory with `KANDELO_GROUPED_DESKTOP_EVIDENCE`. This fixture is separate
-from the normal gallery and does not change its default launch behavior.
+The developer consumer is `apps/browser-demos/grouped-desktop.html`. Prepare
+its development image through the ordinary package, SDK and image paths
+inside the declared dev shell:
+
+```sh
+./run.sh partial shell sway swaybg foot wayland-demo bibata-cursor-theme
+node --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
+  local-binaries/partial/shell-partial.vfs.zst .scratch/shared-desktop.vfs.zst
+export KANDELO_GROUPED_DESKTOP_IMAGE="$PWD/.scratch/shared-desktop.vfs.zst"
+./run.sh browser --partial --config vite.grouped-desktop.config.ts --port 6209 --strictPort
+```
+
+The selected image's lazy files and archives resolve through the normal
+validated package resolver; build output includes those bodies and a hash
+manifest. `KANDELO_GROUPED_DESKTOP_ASSETS` explicitly selects an optional
+verified frozen asset manifest for retained historical fixtures. It is not
+required for a fresh package build. The Vite config uses the normal browser
+app's checked terminal-worker bundling contract.
+
+The page opens a temporary trusted Sway desktop with real terminal input,
+serialized Sway IPC controls and Stop. `groupPages` can select a lower
+physical page budget (256–8192); process and task budgets stay 24 and 64.
+Exhaustion can refuse the Sway IPC client itself with EAGAIN, a Sway fork,
+or a guest exec with ENOMEM. The preview does not reserve a control slot.
+The isolated Playwright config is `playwright.grouped-desktop.config.ts`;
+select a retained evidence directory with `KANDELO_GROUPED_DESKTOP_EVIDENCE`
+and an existing server with `KANDELO_GROUPED_DESKTOP_URL`. Tests exercise
+actual pointer-selected shell PIDs, workspace changes, and terminal recovery
+after a real capacity refusal. This consumer is separate from the normal
+gallery and does not change its default launch behavior.
+
+The fresh partial-image candidate passes the default two-terminal interaction
+check on Chromium, Firefox and WebKit. Capacity refusal and recovery pass on
+Chromium and Firefox; WebKit still intermittently times out on Sway IPC under
+terminal pressure, before an explicit capacity refusal. That is an unresolved
+preview failure. The current image also reports a missing Compose table, so
+dead-key input is not available. These bounded checks are not sustained
+lifecycle, native Safari, conformance or performance acceptance.
 
 ## Accounting and acceptance
 

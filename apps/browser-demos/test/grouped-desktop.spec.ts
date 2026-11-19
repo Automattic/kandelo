@@ -39,6 +39,29 @@ test('boots the integrated grouped Sway desktop and a real terminal', async ({ p
       return processes.filter((process: any) => process.comm === 'foot' && processes.some((child: any) =>
         child.ppid === process.pid && (child.comm === 'sh' || child.comm === 'bash'))).length;
     }), { timeout: 30000 }).toBe(2);
+    const mappedTerminals = () => page.evaluate(async () => {
+      const desktop = (window as any).groupedDesktop, result = await desktop.command('-t', 'get_tree');
+      const processes = await desktop.kernel.enumProcs(), windows: any[] = [];
+      const visit = (node: any) => {
+        if (node.app_id === 'foot' && node.visible) {
+          const shell = processes.find((process: any) => process.ppid === node.pid && (process.comm === 'sh' || process.comm === 'bash'));
+          if (shell) windows.push({ ...node.rect, shellPid: shell.pid, focused: node.focused });
+        }
+        for (const child of [...node.nodes ?? [], ...node.floating_nodes ?? []]) visit(child);
+      };
+      visit(JSON.parse(result.stdout)); return windows.sort((a, b) => a.x - b.x);
+    });
+    await expect.poll(async () => (await mappedTerminals()).length, { timeout: 30000 }).toBe(2);
+    const windows = await mappedTerminals();
+    for (const [index, terminalWindow] of windows.entries()) {
+      await page.locator('.desktop').click({ position: { x: terminalWindow.x + terminalWindow.width / 2, y: terminalWindow.y + 100 } });
+      await expect.poll(async () => (await mappedTerminals()).find((terminal: any) => terminal.focused)?.shellPid, { timeout: 30000 }).toBe(terminalWindow.shellPid);
+      await typePhysicalText(page, `echo $$ > /tmp/grouped-pointer-${index}\n`, { delay: 20 });
+      await expect.poll(() => page.evaluate(async path => {
+        const bytes = await (window as any).groupedDesktop.kernel.readFileFromVfs(path);
+        return bytes ? new TextDecoder().decode(bytes).trim() : null;
+      }, `/tmp/grouped-pointer-${index}`), { timeout: 30000 }).toBe(String(terminalWindow.shellPid));
+    }
     const clickCommand = async (name: string) => {
       const button = page.getByRole('button', { name, exact: true });
       await button.click(); await expect(button).toBeEnabled({ timeout: 30000 });
