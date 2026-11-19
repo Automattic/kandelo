@@ -601,3 +601,95 @@ results are in `.context/desktop-publication-lifecycle-102/` and
 keeps only native-observer notification for private IPC requests. It does not
 change completion publication, thread teardown, guest waits or the ABI; it
 still requires fresh SDK and desktop validation before acceptance.
+
+
+## Accepted narrow IPC change and current checks
+
+Runtime `c702dd9214` (equivalent isolated `f1a634a03f`) keeps only native-observer
+notification for private Worker IPC requests. Completion publication and thread
+retirement use their original ordering. No asynchronous completion-retry code
+from the rejected experiment is included. The change is shared by Node and
+browsers, with no helper C, SDK image, guest program, memory ceiling or ABI change.
+
+The host builds, the ABI check passes with unchanged program digest, all 1,523
+source cases in 58 files pass, and all 39 SDK/public Node cases pass with no
+skips. The SDK browser suite passes all 84 cases (28 per engine), including
+pthread churn and five forty-cohort workloads per engine. All six normal
+three-browser desktop/refusal cases pass. Two independent normal, untraced
+WebKit runs each pass 120 real terminal cycles, final input and Stop in 3.8 and
+3.9 minutes. They use the normal immutable consumer, without a bootstrap or
+metadata substitution. This is bounded evidence; earlier WebKit failures remain
+retained and longer reliability is not established by two passes.
+
+The candidate is available at `http://127.0.0.1:6238/grouped-desktop.html`.
+The matching ordinary control is `http://127.0.0.1:6240/ordinary.html`.
+These results do not replace the required combined browser-memory gate, full
+conformance checks or all-suite Node/browser before/after benchmarks.
+
+
+## Current paired sample 112
+
+The corrected current consumers have byte-identical kernel and process/kernel
+Worker JavaScript. Grouped execution uses the unchanged normal SDK image 7;
+ordinary execution uses the unchanged normal partial image and its declared
+asset resolver. Both include the bounded diagnostic-output consumer. Three
+fresh Chromium parents per arm run in the same alternating order as sample 93;
+all six resource and six separately captured-glyph cases pass in 1m56s. The
+strict reader passes through the dev shell. No owned build, stress or profiling
+job overlaps this sample.
+
+| Measurement | Ordinary | Shared group |
+| --- | ---: | ---: |
+| One visible terminal, browser-family footprint (MiB) | 1,872.4 | 2,021.6 |
+| Two tiled (MiB) | 2,026.9 | 2,157.5 |
+| Two separate workspaces (MiB) | 2,043.2 | 2,197.5 |
+| Two retiled (MiB) | 2,048.9 | 2,194.0 |
+| Immediately after Stop (MiB) | 1,157.3 | 1,343.9 |
+| Browser CPU seconds for fifteen input commands | 1.215 | 1.018 |
+| Enter to verified output median/p95 (ms) | 33.290 / 45.880 | 11.470 / 29.150 |
+| Keydown to captured actual glyph median/p95 (ms) | 32.190 / 32.940 | 32.220 / 32.420 |
+| Start to first mapped terminal median (ms) | 1,943.2 | 2,549.9 |
+
+The grouped sample costs about 149 MiB (8.0%) more with one visible terminal and
+starts about 31% later. There is no total-memory-saving or presentation-speedup
+claim. The glyph endpoint includes video capture, scheduling and readback;
+all six deliberate 50 ms controls exceed 67 ms. It is not physical
+input-to-photon or GPU frame time. Immediate post-Stop footprint does not prove
+guest storage retention or OS reclamation. This is an application sample,
+including image preparation and compilation differences, not the full platform
+benchmark gate. Changes between historical samples are not attributed to the
+IPC change.
+
+Measurement 111 is retained as failed: its ordinary fixture mistakenly uses the
+grouped frozen asset manifest and all three ordinary arms fail the image's
+integrity check while reading Sway. Its three successful grouped arms do not
+form an accepted paired comparison. The corrected ordinary fixture uses the
+normal image-declared resolver with that manifest unset; no assertion, kernel,
+program or deadline changes are made. Sample 112 reruns both arms completely.
+Raw results are `.context/desktop-ipc-resources-112/` and
+`.context/desktop-ipc-glyph-112/`; the strict reader and summary are
+`.context/analyze-desktop-ipc-112.py` and
+`.context/desktop-ipc-measurement-summary-112.json`. Frozen identities are
+`.context/desktop-ipc-normal-identities-112.json`. Logs and source fixtures are
+retained in `.context/desktop-ipc-evidence-108/`.
+
+
+## Sustained mapped-byte growth in both modes
+
+The retained ordinary WebKit run 69 grows Sway's mapped virtual bytes from
+8.375 to 108.375 MiB across 120 terminal cycles. Current grouped repetitions grow
+from 8.375 to 109.875 and 110.125 MiB. These are kernel-reported sums of live mmap
+region lengths, not browser RSS or just a Wasm backing ceiling. The ordinary
+result is historical, so it is not used as a same-run performance comparison.
+The growth in both modes requires investigation before claiming stable resource
+use over longer sessions.
+
+A fresh read-only diagnostic 113 runs the same twelve real terminal cycles on
+both current normal consumers. Both cases pass all input, window, exit and Stop
+checks. Public `readProcMaps` snapshots locate the growth in private anonymous
+writable mappings: ordinary 3.5625 to 13.25 MiB; grouped 4.8125 to 15.1875 MiB.
+The mapped Foot shared-buffer pool total remains 3.25 MiB in each arm. This
+narrows the investigation; it does not establish the allocating caller, a leak
+cause, resident cost or a shared-group-only defect. No guest rewriting or raw
+memory inspection is involved. Results are retained in
+`.context/desktop-mapping-cost-113/`, with source and logs in the evidence archive.
