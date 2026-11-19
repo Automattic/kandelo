@@ -32,6 +32,8 @@ export interface SdkExecutionOptions {
   maximumVirtualPages?: number;
   execTargetBytes?: ArrayBuffer;
   rejectThreadLaunchCount?: number;
+  rejectForkLaunchCount?: number;
+  rejectForkStage?: 'registration' | 'replay';
   uncertainThreadConstructor?: boolean;
   forcedLifecycle?: boolean;
   nativeWaitLifecycle?: boolean;
@@ -112,6 +114,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const threadAllocators = new Map<number, ThreadPageAllocator>();
   const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
+  const rolledBackForks: Record<string, unknown>[] = [];
+  let injectedForkRefusals = 0, forkWorkerConstructionAttempts = 0;
   const failedThreadLaunches: Record<string, unknown>[] = [];
   const failedThreadWorkers: Record<string, unknown>[] = [];
   let retainedThreadLaunches = 0, injectedThreadRefusals = 0, threadConstructionAttempts = 0;
@@ -261,6 +265,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         }, 0);
       };
       const callbacks: CentralizedKernelCallbacks = {
+        onChildLaunchRolledBack: pid => rolledBackForks.push({ ...memoryEvidence(), pid }),
         onGroupedExec: options.execSuccess ? async request => {
           if (!request.groupedExec || !rootHandle || !processWorker || !generation) throw Error('Missing exact exec predecessor');
           const previousImport = importWorker, previousExec = currentExecWorker, previousRoot = rootHandle, probe = execThreadProbe;
@@ -399,7 +404,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
                   await new Promise<void>(resolve => setTimeout(resolve, 0));
                 }
                 imageHandles.delete(pid);
-                lifecycleEvidence.push({ kind: 'shared-child-retired', pid, code, ...memoryEvidence() });
+                lifecycleEvidence.push({ ...memoryEvidence(), kind: 'shared-child-retired', pid, code });
                 anonymousChildRetired(); maybeComplete();
               })();
               processDeactivations.push(retirement); void retirement.catch(reject);
@@ -494,14 +499,32 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             }, reject);
           };
           imageHandles.set(request.childPid, request.childReplica);
+          let refused: Error | undefined;
+          // A test-owned facade routes normal operations to the real kernel.
+          // Its refusal happens after publication, before registration or replay commit;
+          // no production method/prototype or source is replaced.
+          const forkKernel = options.rejectForkLaunchCount ? Object.fromEntries([
+            'publishMemoryGroupReplica', 'observeMemoryGroupReplicaWorker', 'registerMemoryGroupProcess',
+            'processSecureExec', 'getKernelAbiVersion', 'getKernelAbiContractDigest',
+            'startMemoryGroupProcessWorkerWhenRunnable', 'shouldLaunchPendingChild',
+            'requestMemoryGroupReplicaWorkerStop', 'waitForMemoryGroupReplicaQuiescence', 'deactivateMemoryGroupProcess',
+          ].map(name => [name, (...args: any[]) => {
+            if ((options.rejectForkStage === 'replay' ? name === 'shouldLaunchPendingChild' && args[0] === request.childPid
+                : name === 'registerMemoryGroupProcess' && args[0] === request.childReplica)
+                && injectedForkRefusals < options.rejectForkLaunchCount!) {
+              injectedForkRefusals++; refused = Error('fixture grouped fork '+(options.rejectForkStage ?? 'registration')+' refusal'); throw refused;
+            }
+            return Reflect.apply((kernel as any)[name], kernel, args);
+          }])) as unknown as CentralizedKernelWorker : kernel;
           try {
             const parentGeneration = request.parentPid === rootPid ? generation : children.get(request.parentPid)?.generation;
             if (!parentGeneration || !processLayout) throw Error('Missing exact grouped fork parent');
-            await launchGroupedForkWorker({ kernel, request, adapter, externrefs: owner, imports, parentGeneration,
+            await launchGroupedForkWorker({ kernel: forkKernel, request, adapter: { createWorker: init => { forkWorkerConstructionAttempts++; return adapter.createWorker(init); } }, externrefs: owner, imports, parentGeneration,
               programBytes: options.programBytes, channelOffset: processLayout.channelOffset,
               maximumVirtualPages: processLayout.maximumPages, terminationProvesQuiescence: options.joinOnExit,
               isCurrent: child => children.get(child.pid) === child,
               retain: child => { children.set(child.pid, child); if (!childStates.has(child.pid)) childStates.set(child.pid, {}); },
+              discard: child => { if (children.get(child.pid) === child) { children.delete(child.pid); childStates.delete(child.pid); imageHandles.delete(child.pid); } },
               onMessage: (message, child) => {
                 const state = childStates.get(child.pid)!;
                 if (message.type === 'ready') state.ready = message.pid === child.pid;
@@ -513,7 +536,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               onExit: (code, _child) => { if (code !== 0) reject(Error(`Child Worker exit ${code}`)); else maybeComplete(); },
             });
             return [processLayout.channelOffset];
-          } catch (error) { reject(error); throw error; }
+          } catch (error) { if (error !== refused) reject(error); throw error; }
         },
       };
       const kernel = machine?.kernel ?? new CentralizedKernelWorker({ maxWorkers: 4, dataBufferSize: 65536,
@@ -704,7 +727,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       retirement = { before, after: memoryEvidence(), statuses };
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execTermination, execReplacementPublications, processWorkerConstructionAttempts, execLedger, memory: memoryEvidence(),
-      retirement, threadRetirementMemory, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
+      retirement, threadRetirementMemory, rolledBackForks, injectedForkRefusals, forkWorkerConstructionAttempts, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
   } catch (error) {
@@ -714,7 +737,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     }
     if (!kernelFailed) trace.push(...(kernelForDiagnostics?.drainSyscallTrace() ?? []).map(event => event.decoded ?? `syscall ${event.nr}`));
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execTermination, execReplacementPublications, processWorkerConstructionAttempts, memory: memoryEvidence(),
-      lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
+      rolledBackForks, injectedForkRefusals, forkWorkerConstructionAttempts, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
       failureCauses, failureMessage: error instanceof Error ? error.message : String(error),

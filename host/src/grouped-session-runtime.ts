@@ -164,6 +164,7 @@ export class GroupedSessionRuntime {
       isCurrent: owner => this.processes.get(owner.pid)?.owner === owner,
       retain: owner => { child = { ...parent, pid: owner.pid, handle: request.childReplica, owner,
         allocator: this.allocator(parent.layout), retiring: undefined, replacing: false }; this.processes.set(owner.pid, child); },
+      discard: owner => { if (this.processes.get(owner.pid)?.owner === owner) this.processes.delete(owner.pid); },
       onMessage: message => this.message(child, message), onError: error => this.fault(child, error),
       onExit: code => { if (code) this.fault(child, Error(`Grouped child Worker exit ${code}`)); },
     });
