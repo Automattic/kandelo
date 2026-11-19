@@ -1,6 +1,6 @@
 import { waitForHttpPreview } from "../../../lib/init/http-preview-readiness";
 import { WebPreviewConnection } from "./web-preview-connection";
-import { BrowserComputerStore } from "../../../../../web-libs/kandelo-session/src/browser-computer-store";
+import { BrowserComputerStore, hasOpfsRoot } from "../../../../../web-libs/kandelo-session/src/browser-computer-store";
 import type { ComputerLibrarySnapshot, ComputerRetention, StoredComputer } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { DEFAULT_COMPUTER_RETENTION, filesystemProfileId, JOURNALED_OPFS_IMAGE_STORAGE_FORMAT } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { browserComputerIdForStorageName, browserComputerStorageName, browserPersistenceDirectory } from "../../../../../host/src/browser-computer-storage";
@@ -545,6 +545,9 @@ interface LiveProfile {
   /** Resolved product id when the image is one this deployment ships. */
   productId: GalleryProductId | null;
   vfsUrl: string;
+  /** The root image is the stored computer's own `disk.vfs`,
+   *  not a URL: the descriptor mounts `/` from OPFS. */
+  opfsRoot: boolean;
   vfsSource?: VfsProductSource;
   candidateEvidence?: InjectedProtectedCandidateVfsV1;
   candidateVfsPlacement?: ProtectedCandidatePagesVfsPlacement;
@@ -1331,7 +1334,8 @@ function profileForDescriptor(
   // the image FILENAME — that is not a profile anybody asked for, and
   // treating it as one would fail a bare `?vfs=` boot that should have used
   // the image's declared default.
-  const descriptorProfileId = vfsUrl && desc.id === demoIdFromVfsImageUrl(vfsUrl)
+  const opfsRoot = hasOpfsRoot(desc);
+  const descriptorProfileId = opfsRoot || (vfsUrl && desc.id === demoIdFromVfsImageUrl(vfsUrl))
     ? null
     : nonEmptyId(desc.id);
   const requestedProfileId = queryProfileId ?? descriptorProfileId;
@@ -1349,6 +1353,7 @@ function profileForDescriptor(
     productId: null,
     maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     vfsUrl,
+    opfsRoot,
     descriptor: desc,
     framebufferTest: fb === "test",
   };
@@ -1364,7 +1369,7 @@ function profileForDescriptor(
  * more — that asymmetry is what this work removes.
  */
 async function bindVfsProduct(profile: LiveProfile): Promise<LiveProfile> {
-  if (profile.candidateEvidence !== undefined) return profile;
+  if (profile.candidateEvidence !== undefined || profile.opfsRoot) return profile;
   // A descriptor that names no image (an older pasted link that carried only
   // a script) gets the same image a bare page load gets: the roster's first
   // entry. That is the app choosing a DEFAULT MACHINE, which it is allowed to
@@ -1412,6 +1417,7 @@ function profileForCandidateEvidence(
     requestedProfileSource: null,
     productId,
     vfsUrl: evidence.vfs.url,
+    opfsRoot: false,
     vfsSource: undefined,
     descriptor,
     maxVfsByteLength: maxVfsByteLengthForProduct(productId),
@@ -2649,13 +2655,16 @@ async function loadVfsImage(
       off();
     }
   }
-  const vfsUrl = await resolveProfileVfsUrl(profile);
   const label = imageLabel(profile);
   try {
     const stagingDirectory = persistentInstall
       ? await browserPersistenceDirectory(persistentInstall)
       : undefined;
-    const response = await fetch(vfsUrl).then(failOn(label));
+    const computerId = persistentInstall === undefined ? null : browserComputerIdForStorageName(persistentInstall);
+    if (profile.opfsRoot && computerId === null) throw new Error("Only a stored computer can mount its root from OPFS");
+    const response = computerId !== null && profile.opfsRoot
+      ? new Response(await new BrowserComputerStore().diskImage(computerId))
+      : await fetch(await resolveProfileVfsUrl(profile)).then(failOn(label));
     if (persistentInstall) {
       let loadedBytes = 0;
       let totalBytes: number | undefined;
@@ -2706,6 +2715,7 @@ async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
  *  the machine is not known until the image has been read. */
 function imageLabel(profile: LiveProfile): string {
   if (profile.productId !== null) return `${profile.productId} image`;
+  if (profile.opfsRoot) return "computer disk image";
   return profile.vfsUrl
     ? `${demoIdFromVfsImageUrl(profile.vfsUrl)}.vfs.zst`
     : "VFS image";
