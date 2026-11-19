@@ -211,3 +211,70 @@ ownership, audio and reclamation surface. It does not erase the separate
 opt-in grouped-desktop sustained-use failure or validate the uncommitted
 experiments described above. Full output is retained as
 `.context/desktop-current-browser-memory-final-47/output.log.gz`.
+
+## Follow-up: proven corrections and bounded native-store candidate
+
+Three further corrections have independent negative controls and are now separate
+commits in the batch. They do not establish that the WebKit desktop is stable.
+
+- Grouped reply publication creates every source view before any payload or
+  status write. Before the correction, an injected second-view failure leaves
+  a partially changed fragmented reply; afterwards it leaves the reply intact.
+- An exact image stop request closes mapping/fork barrier admission while
+  generation and storage custody remain retained. A queued stopped-image
+  request previously caused the grouped mapping-barrier fatal error. The new
+  tests cover late ingress and cancellation of a barrier already in progress,
+  retaining allocation charges and requiring the real stop fence. This
+  reproduces the failure class, not the exact cause of browser run 56.
+- Host reaping refuses kernel-entry contention before retaining its callback.
+  Both hosts await the existing later-turn retry after exact detachment. The
+  new nested-entry tests on both pointer widths previously showed a reap
+  executing after its caller observed refusal. A public ordinary SDK child
+  workload also reported that contention as a host diagnostic.
+
+At batch runtime `ec59b7f1170f`, the host builds and all 252 focused source tests
+in seven files pass with zero skips. The first private selector failed to load
+its configuration; it ran no tests and is retained separately. In the combined
+experimental checkout, all 23 reaper/entry/retry tests and all 39 SDK/public Node
+cases pass after the reaper correction, including the five forty-cohort cases.
+These experimental SDK results include the uncommitted candidates below; the
+full browser-memory gate at `678eb46` has not yet been rerun on this new head.
+
+The mutex investigation now includes a standalone JS/Wasm program containing
+no Kandelo implementation or layout. An owner releases a byte-zero mutex under
+eight native contenders after warming the caller. The ordinary registry driver
+runs two attempts on each engine: both WebKit 26.6 attempts reproduce the
+contended JavaScript-store delay, while both Chromium 153 and Firefox 155
+attempts do not. The retained last WebKit attempt reaches 4,826 ms for the
+JavaScript store and 0.02 ms for the equivalent native Wasm store. This is a
+latency observation; it supplies neither a specification timing guarantee nor
+the cause of every desktop failure. The initial two Firefox harness launches
+failed before running the probe; the normal CoreFoundation home setup fixes
+that harness failure. No upstream report has been sent.
+
+The private kernel-only native unlock diagnostic 55 completes sixty real Foot
+spawn/resize/workspace/input/PID-file/exit cycles and Stop. Normal candidate 56
+with native unlock in all participating realms passes sixty cycles on Chromium
+and Firefox, but WebKit encounters a mapping-barrier fatal after twelve cycles
+and a later run stalls after forty-one. Removing explicit queue-container
+allocations and reusing bounded independent pin scratch does not by itself
+resolve the failure (run 59 fails after seventeen cycles).
+
+Normal candidate 61 limits the additional native instance to the owning kernel
+Worker. It passes sixty cycles on each of Chromium, Firefox and WebKit, with
+final input, actual process removal, Stop and no browser/memory-boundary errors.
+WebKit also passes the normal 1920x1080 functional test and the real launch-budget
+refusal/recovery test. However, the combined candidate 64 repeats WebKit with
+a 120-cycle target and fails Sway IPC during resize after 34 completed cycles;
+its subsequent functional/capacity commands do not run. The earlier passes
+remain bounded evidence, not a reliability claim. These native-store, fixed
+initial-extent and private IPC candidates remain isolated and uncommitted.
+
+A further private diagnostic 65 substitutes equivalent native kernel stores
+for queue, pool and root-mutex releases. It still fails real Sway IPC after
+62 completed cycles. Expanding that substitution is not promoted as a fix.
+
+All failed source variants, setup errors, actual artifacts, negative controls
+and results remain retained. Current-head conformance, combined browser-memory
+and quiet paired footprint/CPU/input/presentation/resource-cost acceptance are
+still required. The batch remains draft.
