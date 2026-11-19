@@ -85,7 +85,7 @@ export interface GroupMemoryChangeDescription {
 /** Copied channel scalars only; this packet carries no guest/kernel pointer. */
 export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[], observedPages: number): Uint8Array {
   const mapping = P.mapping;
-  if (mapping.version !== 4 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
+  if (mapping.version !== 5 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
       || args.length !== 6 || args.some(value => typeof value !== 'bigint'
       || value < -(1n << 63n) || value > (1n << 63n) - 1n)) {
     throw new MemoryGroupProtocolFault('Invalid grouped mapping request scalars');
@@ -160,9 +160,10 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
   if ((result.sharedObject === 0n ? result.sharedLength !== 0 || result.sharedOffset !== 0 :
         (kind !== 'map' && kind !== 'remap') || result.sharedLength === 0 || result.sharedLength % page !== 0
         || result.sharedOffset % page !== 0 || result.sharedOffset + result.length > result.sharedLength
-        || result.populationLength !== 0
-        || (kind === 'map' && ((result.flags & 3) !== 1 || (result.flags & 0x20) === 0
-          || result.sharedObject !== actualToken || result.sharedOffset !== 0 || result.sharedLength !== result.length)))
+        || (kind !== 'map' && result.populationLength !== 0)
+        || (kind === 'map' && ((result.flags & 3) !== 1
+          || ((result.flags & 0x20) !== 0 && (result.sharedObject !== actualToken || result.populationLength !== 0))
+          || result.sharedOffset !== 0 || result.sharedLength !== result.length)))
       || (kind === 'map' && (result.flags & 1) !== 0 && result.sharedObject === 0n)
       || (result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
       || (kind !== 'break' && badRange(result.address, result.length))

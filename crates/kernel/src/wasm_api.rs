@@ -132,6 +132,8 @@ unsafe extern "C" {
         buf_ptr: *mut u8,
         buf_len: u32,
     ) -> i32;
+    fn host_group_object_read(group: u32, object_lo: u32, object_hi: u32,
+        offset_lo: u32, offset_hi: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
     // Positioned read of the VFS image's own container bytes, so the kernel can
     // parse the image it booted from instead of consuming a tree the host
     // walked for it (`rootfs::load_image`). There is exactly one image per
@@ -582,6 +584,12 @@ impl HostIO for WasmHostIO {
                 capacity,
             )
         };
+        checked_host_transfer_result(result, buf.len())
+    }
+    fn group_object_read(&mut self, group: u32, object: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe { host_group_object_read(group, object as u32, (object >> 32) as u32,
+            offset as u32, (offset >> 32) as u32, buf.as_mut_ptr(), capacity) };
         checked_host_transfer_result(result, buf.len())
     }
 
@@ -4241,6 +4249,12 @@ pub extern "C" fn kernel_group_memory_change_cancel(pid: u32, tid: u32, token_lo
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.cancel_group_memory_change(pid, tid, token).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_object_alive(group: u32, object_lo: u32, object_hi: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    i32::from(crate::tmpfs::group_storage_alive(group, (object_lo as u64) | ((object_hi as u64) << 32)))
 }
 
 #[unsafe(no_mangle)]

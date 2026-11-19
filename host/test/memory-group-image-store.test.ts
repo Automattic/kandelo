@@ -1041,6 +1041,32 @@ it('does not keep a reclaimed private-fork page in its original payload ownershi
   expect(h.store.snapshot().allocatedPages).toBe(1);
 });
 
+describe('descriptor-backed group storage', () => {
+  it('aliases attachments without copying and retains file pages after exact image retirement', () => {
+    const h = pausedMappingImage(64), id = h.describe().token;
+    const first = h.prepare({ flags: 1, length: 2 * P, sharedObject: id, sharedLength: 2 * P,
+      populationAddress: 8 * P, populationLength: 2 * P });
+    h.store.populateImageMapping(first, P + 9, Uint8Array.of(0x71));
+    expect(h.store.commitImageMapping(first, () => true, () => 0)).toBe('committed');
+    const charged = h.store.snapshot().allocatedPages;
+    const alias = h.prepare({ token: id + 1n, flags: 1, address: 10 * P, result: 10 * P,
+      length: 2 * P, sharedObject: id, sharedLength: 2 * P });
+    expect(h.store.commitImageMapping(alias, () => true, () => 0)).toBe('committed');
+    expect(h.store.snapshot().allocatedPages).toBe(charged);
+    expect(h.leader.source.readBytes(11 * P + 9, 1)).toEqual(Uint8Array.of(0x71));
+    h.leader.source.writeBytes(11 * P + 9, Uint8Array.of(0x72));
+    const read = new Uint8Array(1); expect(h.store.readFileObject(id, BigInt(P + 9), read)).toBe(1);
+    expect(read).toEqual(Uint8Array.of(0x72));
+    h.store.resumeImageExecutionPause(h.barrier);
+    h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);
+    expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy');
+    expect(h.store.snapshot()).toMatchObject({ images: 0, sharedObjects: 1, sharedPages: 2, allocatedPages: 3 });
+    h.store.sweepFileObjects(() => true); expect(h.store.snapshot().allocatedPages).toBe(3);
+    h.store.sweepFileObjects(() => false);
+    expect(h.store.snapshot()).toMatchObject({ sharedObjects: 0, sharedPages: 0, allocatedPages: 1 });
+  });
+});
+
 describe('anonymous shared backing custody', () => {
   function shared(pages = 3) {
     const h = pausedMappingImage(64), id = h.describe().token;

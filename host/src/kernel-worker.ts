@@ -8225,6 +8225,8 @@ export class CentralizedKernelWorker {
           || initialPages > admitted.maximumPages) { result = -EINVAL; return undefined; }
       try {
         this.#memoryGroupStores.set(group, new MemoryGroupImageStore(group, admitted.maximumPages, initialPages));
+        this.#kernel.setGroupObjectReader((owner, object, offset, output) =>
+          this.#memoryGroupStores.get(owner)?.readFileObject(object, offset, output) ?? -EIO);
         result = 0;
       } catch (error) { if (error instanceof RangeError) result = -ENOMEM; else throw error; }
       return undefined;
@@ -10726,10 +10728,11 @@ export class CentralizedKernelWorker {
   #releaseGroupImageRetirement(record: GroupImageRetirement): number {
     if (record.released) return 0;
     let result = -EBUSY;
-    this.#runImmediateKernelEntry('release exact stopped image pages', _entry => {
+    this.#runImmediateKernelEntry('release exact stopped image pages', entry => {
       if (record.released) { result = 0; return undefined; }
       const { handle, store } = record.owner!;
       const released = store.tryReleaseStoppedImage(handle);
+      if (released !== 'busy') this.#sweepGroupFileObjects(store.group, store, entry);
       if (released === 'busy') return undefined;
       for (const replica of released.replicas) {
         this.#memoryGroupReplicas.delete(replica); this.#memoryGroupThreadControls.delete(replica);
@@ -22512,6 +22515,7 @@ export class CentralizedKernelWorker {
   }
 
   #prepareGroupMapping(pending: PendingGroupMapping, observedPages: number, entry: KernelWorkerEntryContext): GroupMemoryChangeDescription | number {
+    this.#sweepGroupFileObjects(pending.receipt.group, pending.store, entry);
     const protocol = MEMORY_GROUP_PROTOCOL.mapping;
     return this.#requireMainScratchRegion().withLease(lease => {
       if (pending.hostControl) {
@@ -22536,6 +22540,16 @@ export class CentralizedKernelWorker {
       if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid prepared mapping record length");
       try { return decodeGroupMemoryChangeDescription(lease.copyOut(packet.length, count), pending.receipt); }
       catch (error) { return this.#memoryGroupProtocolError("Invalid prepared mapping record", error); }
+    });
+  }
+
+  #sweepGroupFileObjects(group: number, store: MemoryGroupImageStore, entry: KernelWorkerEntryContext): void {
+    store.sweepFileObjects(id => {
+      const alive = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_object_alive;
+      if (typeof alive !== 'function') this.#memoryGroupProtocolError('Missing grouped file lifetime export');
+      const result = alive(group, Number(id & 0xffffffffn), Number(id >> 32n));
+      if (result !== 0 && result !== 1) this.#memoryGroupProtocolError('Invalid grouped file lifetime result');
+      return result === 1;
     });
   }
 
@@ -22711,6 +22725,7 @@ export class CentralizedKernelWorker {
     // Published PTEs no longer name removed storage. Pins may retain selected
     // pages until a later mapping turn; a busy lock never rolls back commit.
     pending.store.tryReclaimRemovedPages(pending.registration.grouped!.handle);
+    this.#sweepGroupFileObjects(pending.receipt.group, pending.store, entry);
     if (pending.hostControl) {
       this.#completeGroupThreadControl(pending, pending.description.address, pending.description.length, entry);
       return;

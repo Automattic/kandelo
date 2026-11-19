@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 21,
+      "required_host_adapter_version": 22,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2561,6 +2561,7 @@
       "kernel_group_memory_exec_prepare",
       "kernel_group_memory_fork",
       "kernel_group_memory_layout_install",
+      "kernel_group_memory_object_alive",
       "kernel_group_memory_thread_control_prepare",
       "kernel_group_memory_thread_control_release",
       "kernel_group_memory_thread_control_reuse",
@@ -2702,7 +2703,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 21,
+    "version": 22,
     "worker_features": [
       {
         "bit": 2,
@@ -4539,6 +4540,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_group_memory_object_alive",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_group_memory_thread_control_prepare",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -5838,6 +5844,12 @@
       "module": "env",
       "name": "host_gl_update_surface",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_group_object_read",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -8392,7 +8404,7 @@
         "syscall": 0,
         "tailReserved": 60
       },
-      "version": 4
+      "version": 5
     },
     "receipt_bytes": 32,
     "receipt_fields": {
