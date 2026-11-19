@@ -848,3 +848,36 @@ admission 136 also passes. These are prerequisite checks, with no timing samples
 Current conformance and the unchanged four-case browser recheck are running;
 the complete browser-memory gate, quiet paired benchmarks and fresh desktop
 resource/input/presentation measurements remain outstanding.
+
+Conformance run 145 subsequently passes all eight wrappers on the same frozen
+runtime: libc functional/regression, full POSIX and Sortix process on Node and
+Chromium. Each host has 328 classified cases, with six expected failures and
+two predeclared skips. Node also reports one predeclared regression flake-pass;
+Chromium reports that case as a normal pass. There are no unexpected failures,
+build failures or timeouts. The kernel and canonical rootfs hashes remain
+unchanged. Detailed results and suite logs are retained as
+`.context/desktop-json-evidence-124/conformance145-*`.
+
+The unchanged four-case recheck 146 passes both machine switching and audio
+activation on Firefox and WebKit, with zero skips or flaky outcomes. It uses
+normal image assets and the standard silent Playwright fixture; the original
+130 failures remain retained. This recheck is not the complete 18-case gate.
+The full unchanged browser-memory command is running again as 150.
+
+A lower-budget experiment 149 selects the existing `groupPages=4096` option
+(256 MiB), with no producer or guest changes. Five of six functional/refusal
+checks pass, including normal two-terminal use on all three browsers. Chromium
+cannot reopen its sixth terminal after a physical-memory refusal and one
+terminal exit: the Sway command succeeds, but the guest reports another
+`Out of memory` and the terminal count stays five. The cause of that remaining
+headroom/recovery failure is not established. The default remains 8192 pages
+(512 MiB); no lower-budget acceptance or RSS improvement is claimed. The failed
+run, screenshots and report remain retained with the resource evidence.
+
+The desktop consumer now retains a bounded 512-event process history through
+the normal host callback, including parent IDs and main-realm receipt times.
+It adds no polling and grants no retirement authority. Normal build 151 serves
+the same 86 image assets and byte-identical kernel/worker JavaScript as 131.
+All six desktop functional/refusal checks pass, including comparison of the
+copied terminal-parent events with the real process table. This diagnostic
+change is not a correction for the intermittent readiness/input failures.
