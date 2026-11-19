@@ -27,6 +27,12 @@ test('boots the integrated grouped Sway desktop and a real terminal', async ({ p
     writeFileSync(resolve(out, `${info.project.name}-startup.json`), JSON.stringify({ state, errors }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
     expect(state.rootExit, JSON.stringify(state, (_key, value) => typeof value === 'bigint' ? value.toString() : value)).toBeUndefined();
     expect(state.ready, JSON.stringify(state, (_key, value) => typeof value === 'bigint' ? value.toString() : value)).toBe(true);
+    if (info.project.name === 'webkit') {
+      // The group must reach its admitted fixed physical extent before any
+      // participant can retire while another participant allocates.
+      expect(state.processes.find((process: any) => process.comm === 'sway')?.memoryBytes)
+        .toBe(8192 * 65536);
+    }
     await page.locator('.desktop').click({ position: { x: 500, y: 300 } });
     await typePhysicalText(page, 'echo shared > /tmp/grouped-input-proof\n', { delay: 20 });
     await expect.poll(() => page.evaluate(async () => {

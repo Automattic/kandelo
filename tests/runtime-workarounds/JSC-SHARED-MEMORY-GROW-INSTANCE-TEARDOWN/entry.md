@@ -60,6 +60,17 @@ same check that selects JSC's process-memory budget):
   termination, destroy, or a fatal kernel failure
   (`host/src/browser-kernel-worker-entry.ts`).
 
+The opt-in memory-group backend has a wider lifetime: another process in the
+same group can allocate after one participant exits. Its browser launch owner
+therefore provisions the complete admitted physical extent before binding the
+first participant (`host/src/browser-kernel-worker-entry.ts`). The group page
+allocator still charges and zeroes individual payload allocations and never
+raises the admitted maximum. This avoids shared `memory.grow` during participant
+teardown without retaining every retired process Worker until group destruction.
+An 8192-page group has a 512 MiB backing buffer immediately; this is not proof
+of resident usage or a memory saving. Browser memory and resource checks remain
+necessary. This policy has not yet established a fix for desktop IPC stalls.
+
 Workers are never reused. Chromium, Firefox and the Node.js host keep
 terminating thread workers at once.
 
