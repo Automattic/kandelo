@@ -32158,17 +32158,14 @@ export class CentralizedKernelWorker {
   reapHostOwnedExitedProcess(pid: number): HostOwnedProcessReapResult {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let result: HostOwnedProcessReapResult | undefined;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `host-owned process reap pid=${pid}`,
       (entry) => {
         result = reapHostOwnedExitedProcessFromKernel(entry.instance, pid);
         return undefined;
       },
     );
-    if (deferred || result === undefined) {
-      throw new KernelReentrantEntryError(`host-owned process reap pid=${pid}`);
-    }
-    return result;
+    return result!;
   }
 
   // ---------------------------------------------------------------------------

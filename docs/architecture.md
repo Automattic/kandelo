@@ -666,6 +666,12 @@ operation, so an `exec` that reuses the PID cannot receive a stale
 continuation's address-space or thread mutation. Child-launch paths use
 monotonic task IDs or the expected process memory as their equivalent guard.
 
+Host-owned process reaping follows the same immediate-entry rule after exact
+generation detachment. A busy gate refuses before retaining a reap callback;
+both hosts await a later-turn retry before recording job detachment. Rust
+still verifies parent ownership and exited state, so a guest parent's wait
+status remains available to that parent.
+
 A prepared exec rechecks the old worker's exact memory registration and
 still-pending exec syscall channel inside the commit entry. A cooperative
 teardown can complete the channel while the registration still exists.

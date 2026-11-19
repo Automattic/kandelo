@@ -3618,7 +3618,7 @@ async function finishProcessExit(
     // to its exec successor.
     if (!detachResult.mayReapPid) return;
     try {
-      kernelWorker.reapHostOwnedExitedProcess(pid);
+      await retryKernelEntryResult(() => kernelWorker.reapHostOwnedExitedProcess(pid));
     } catch (error) {
       reportHostDiagnostic({
         pid,
