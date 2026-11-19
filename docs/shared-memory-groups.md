@@ -820,3 +820,12 @@ shared objects and graphics remain required before preview support. See the
 | 7 | In-memory shared objects | Coherent descriptor I/O, offsets, resize, transfer and lifetime |
 | 8 | Graphics ownership | Real buffer aliases and upload/presentation/context retirement |
 | 9 | Desktop preview | Canonical image, pressure benefit, sustained stability and measured tradeoff |
+
+### Grouped channel publication preflight
+
+The host prepares independent payload bytes and every source/destination view
+before taking the ordered wait-queue mutex or changing a reply buffer. A view
+allocation failure therefore leaves both payload and channel status unchanged,
+including replies that cross noncontiguous physical pages. Queue validation
+precedes payload and status stores; waking a node does not retire the returning
+native waiter or release its physical pin.

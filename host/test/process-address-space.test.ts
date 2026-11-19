@@ -1,5 +1,5 @@
 import * as G from '../src/generated/program-extensions';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GroupProcessAddressSpace, LinearProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
 import { ProcessAtomicI32, ProcessAtomicU64 } from '../src/process-atomic-word';
 const PAGE = 65536;
@@ -170,6 +170,23 @@ describe('explicit process atomic publication', () => {
     expect(await observer.value).toBe('ok');
     expect(access.atomicLoadI32(20)).toBe(2);
     expect([...access.readBytes(30, 1)]).toEqual([9]);
+  });
+  it('leaves fragmented payload and status untouched if allocating a source slice fails', () => {
+    const { access, words } = fixture(), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    access.fillBytes(PAGE - 2, 4, 0xa5);
+    const failure = new RangeError('source slice allocation refused');
+    const original = Uint8Array.prototype.subarray;
+    let slices = 0;
+    const spy = vi.spyOn(Uint8Array.prototype, 'subarray').mockImplementation(function(this: Uint8Array, ...args) {
+      if (++slices === 2) throw failure;
+      return Reflect.apply(original, this, args);
+    });
+    try { expect(() => access.publishBytes(PAGE - 2, Uint8Array.of(1, 2, 3, 4), 20, 2, 1)).toThrow(failure); }
+    finally { spy.mockRestore(); }
+    expect(slices).toBe(2);
+    expect([...access.readBytes(PAGE - 2, 4)]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+    expect(access.atomicLoadI32(20)).toBe(0);
+    expect(words[q]).toBe(0);
   });
   it('refuses a corrupt queue before writing data or status', () => {
     const { access, words } = fixture(), q = 4112 / 4, node = 8192;
