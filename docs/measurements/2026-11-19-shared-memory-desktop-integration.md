@@ -326,3 +326,69 @@ tracked implementation passes all 10 audit cases in the isolated checkout
 (`25be15b5c9`, identical tracked runtime), without adding an allowance or
 weakening the audit. The combined browser-memory gate,
 conformance and matched resource/latency measurements remain pending.
+
+
+## Current Chromium resource and captured-glyph sample
+
+Runs 86/87 use Chromium 153.0.8010.12, three fresh browser parents per arm,
+in order ordinary/grouped/grouped/ordinary/ordinary/grouped. Both use normal
+public consumers and the same normally built kernel (`ac950e58…`); the ordinary
+control is rebuilt at the current runtime with the normal unprepared partial
+image and resolver. Grouped uses prepared image 7 and its verified lazy closure.
+This comparison includes image preparation and compilation differences; it does
+not isolate the shared backing alone. No owned build, stress, trace or profiler
+job overlaps either measurement. Other workstation activity is not controlled;
+load readings are retained. This is an application sample, not the full platform
+benchmark gate or a statistical confidence claim.
+
+| Measurement | Ordinary | Shared group |
+| --- | ---: | ---: |
+| Browser-family footprint, one visible terminal (MiB) | 1,883.4 | 2,046.9 |
+| Two tiled terminals (MiB) | 2,024.1 | 2,175.8 |
+| Two separate workspaces (MiB) | 2,049.4 | 2,192.5 |
+| Two retiled terminals (MiB) | 2,057.6 | 2,157.5 |
+| Immediately after Stop (MiB) | 1,152.6 | 1,293.5 |
+| Browser CPU seconds for fifteen input commands | 1.073 | 1.005 |
+| Enter to verified shell-output notification, median/p95 (ms) | 31.415 / 44.040 | 11.745 / 30.030 |
+| Keydown to captured actual Foot glyph, median/p95 (ms) | 32.320 / 34.120 | 32.395 / 45.015 |
+| Start to first mapped terminal, median (ms) | 1,882.7 | 2,553.6 |
+
+Footprint uses macOS's shared-adjusted multi-PID total for the owned browser
+family, including GPU/utility processes. It is not a sum of guest buffers.
+Memory and CPU rows are medians of three fresh-parent observations. Input and
+glyph percentiles pool 45 observations from three parents each; they are not
+45 independent browser launches. OS footprint sampling is outside the fifteen
+input commands' CPU interval. Input starts at a trusted Enter event and ends at
+verified file bytes after a VFS notification. It is not presentation latency.
+
+The separate glyph observer calibrates actual empty/a/b pixels in captured
+canvas video, rejects a target match without input, and measures fifteen normal
+keypresses plus one deliberate 50 ms delay control per launch. All six controls
+exceed 67 ms. This endpoint includes video capture, RAF scheduling and readback;
+it is not physical input-to-photon or a GPU frame-time measurement. A blank shell
+prompt and hidden cursor make the calibration deterministic. The earlier run 86
+fails calibration before timing in one ordinary and one grouped parent; all six
+corrected run 87 cases pass. The first resource run 81 fails three ordinary arms
+on a missing favicon; the ordinary fixture is corrected through a normal Vite
+build, retaining the error assertion. Failed results are preserved.
+
+The candidate still costs about 164 MiB (8.7%) more with one visible terminal
+and starts later in this sample. It does not establish a total-memory saving.
+The response sample is shorter, while the captured-glyph median is nearly equal
+and its p95 is higher. Immediate post-Stop footprint is not proof of retained
+guest ownership or OS reclamation. Further allocation-cost investigation and the
+required full before/after benchmark gate remain open.
+
+Raw results, selected OS process identities, OS JSON and screenshots are retained
+under `.context/desktop-current-resources-86/` and
+`.context/desktop-current-glyph-87/`. The strict reader and summary are
+`.context/analyze-desktop-current-86.py` and
+`.context/desktop-current-measurement-summary-86.json`; fixture sources are in
+`.context/desktop-current-measure-sources-86/`.
+
+A separate untraced run 84 tests the already frozen normal all-realm queue-only
+native-release build without the earlier pool/root bootstrap. It fails after
+46 completed cycles while querying the tree after terminal exit. The exited Foot
+and shell are absent from the later process snapshot; a newly launched control
+Worker reports readiness timeout. This does not establish failed Ctrl-D or a
+successful all-realm fix. Its errors and source variant remain retained.
