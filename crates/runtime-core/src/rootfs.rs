@@ -2431,18 +2431,8 @@ pub fn ensure_foreign_mount_parents() -> usize {
 /// real error against the real path, rather than this helper guessing which
 /// errno the caller wanted.
 pub fn mkdir_parents(path: &[u8], mode: u32, uid: u32, gid: u32) -> usize {
-    mkdir_ancestor_chain(path, mode, uid, gid).0
-}
-
-pub fn mkdir_parents_checked(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<usize, Errno> {
-    if fixed_persistence_enabled() && !resizable_persistence_enabled() { return Err(Errno::EROFS); }
-    let (created, result) = mkdir_ancestor_chain(path, mode, uid, gid);
-    result.map(|()| created)
-}
-
-fn mkdir_ancestor_chain(path: &[u8], mode: u32, uid: u32, gid: u32) -> (usize, Result<(), Errno>) {
     let mut created = 0usize;
-    let result = (|| {
+    let _ = (|| -> Result<(), Errno> {
         let mut components = path.split(|&byte| byte == b'/').filter(|component| !component.is_empty()).peekable();
         let mut base = crate::IoBuffer::new();
         while let Some(component) = components.next() {
@@ -2470,7 +2460,7 @@ fn mkdir_ancestor_chain(path: &[u8], mode: u32, uid: u32, gid: u32) -> (usize, R
         }
         Ok(())
     })();
-    (created, result)
+    created
 }
 
 /// Whether `path` lies at or under a registered foreign mount prefix. The match
@@ -3507,17 +3497,18 @@ pub fn archive_size(archive_id: u32) -> Option<u64> {
     ROOTFS.with(|state| state.archives.get(&archive_id).map(|entry| entry.size))
 }
 
-/// Mount points of the kernel's own mounts. Images are not required to ship
-/// them: after loading an image the kernel creates them in the overlay (root
-/// owned, 0755), the way an init system creates its runtime mount points at
-/// boot. They are real directories, so `ls /run/kandelo` shows `exchange`.
-const KERNEL_MOUNT_POINTS: &[&[u8]] = &[crate::exchange::MOUNT_PATH];
-
-/// Create each kernel mount point and its missing ancestors. An existing
+/// Mount the kernel's own exchange filesystem when the image has its agent,
+/// and create its mount point and missing ancestors. Images are not required
+/// to ship the mount point: the kernel creates it in the overlay (root owned,
+/// 0755), the way an init system creates its runtime mount points at boot. It
+/// is a real directory, so `ls /run/kandelo` shows `exchange`. An existing
 /// non-directory on the way is a conflicting image: ENOTDIR, and the load
 /// fails rather than booting with an unreachable mount.
 fn ensure_kernel_mount_points() -> Result<(), Errno> {
-    for mount in KERNEL_MOUNT_POINTS {
+    let agent = lstat(crate::exchange::activation::AGENT_PATH).is_ok_and(|stat| stat.st_mode & S_IFMT != S_IFDIR);
+    crate::exchange::set_mounted(agent);
+    if agent {
+        let mount = crate::exchange::MOUNT_PATH;
         for (index, &byte) in mount.iter().enumerate().skip(1) {
             if byte == b'/' {
                 ensure_directory(&mount[..index])?;
@@ -3533,7 +3524,7 @@ fn ensure_kernel_mount_points() -> Result<(), Errno> {
 /// Files, sockets and symlinks are boot-lifetime state and are not copied.
 /// Composition loads deliberately skip this runtime-only initialization.
 fn seed_runtime_directory_layout() -> Result<(), Errno> {
-    if !crate::tmpfs::is_enabled() {
+    if !crate::tmpfs::is_enabled() || lstat(b"/run").err() == Some(Errno::ENOENT) {
         return Ok(());
     }
     let mut pending = alloc::vec![b"/run".to_vec()];
@@ -11856,15 +11847,21 @@ mod tests {
         image
     }
 
-    /// An image whose root holds the given entries: `true` for a directory,
-    /// `false` for an empty regular file. Declares its (empty) deferred-file
-    /// section, as `load_image` requires.
-    fn image_with_root_entries(entries: &[(&[u8], bool)]) -> alloc::vec::Vec<u8> {
+    /// An image with the exchange agent whose root holds the given entries:
+    /// `true` for a directory, `false` for an empty regular file. Declares its
+    /// (empty) deferred-file section, as `load_image` requires.
+    fn image_with_exchange_agent(entries: &[(&[u8], bool)]) -> alloc::vec::Vec<u8> {
         let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(
             crate::kandelo_image_write::KandeloImageConfig::fixed(128 * 1024),
         )
         .expect("mkfs");
         let root = w.root();
+        let mut parent = root;
+        for name in [&b"usr"[..], b"libexec", b"kandelo"] {
+            parent = w.mkdir(parent, name, 0o755).expect("mkdir");
+        }
+        w.create_file(parent, b"exchange-agent", 0o755, crate::kandelo_image_write::Content::Bytes(b""))
+            .expect("create agent");
         for (name, is_dir) in entries {
             if *is_dir {
                 w.mkdir(root, name, 0o755).expect("mkdir");
@@ -11898,23 +11895,43 @@ mod tests {
         load_image_for_composition(image.len() as u64, image_host(&image)).unwrap();
         assert_eq!(lstat(b"/run").err(), Some(Errno::ENOENT));
         load_image(image.len() as u64, image_host(&image)).unwrap();
-        assert_eq!(lstat(b"/run/kandelo/exchange").unwrap().st_mode & S_IFMT, S_IFDIR);
+        // Without the exchange agent the image asks for no exchange mount.
+        assert_eq!(lstat(b"/run").err(), Some(Errno::ENOENT));
+        assert!(!crate::exchange::is_mounted());
+        assert_eq!(crate::tmpfs::mount_prefix(b"/run/kandelo/exchange/inbox"), Some(&b"/run"[..]));
+        assert!(crate::tmpfs::mounts().all(|(prefix, _, _)| prefix != crate::exchange::MOUNT_PATH));
+    }
+
+    #[test]
+    fn an_image_without_run_or_the_exchange_agent_boots_with_the_runtime_mount() {
+        let _guard = TestGuard::acquire();
+        struct RestoreTmpfs(bool);
+        impl Drop for RestoreTmpfs {
+            fn drop(&mut self) { crate::tmpfs::set_enabled(self.0); }
+        }
+        let _restore = RestoreTmpfs(crate::tmpfs::set_enabled(true));
+        let image = empty_capacity_image(64 * 1024, 32);
+        load_image(image.len() as u64, image_host(&image)).unwrap();
+        assert_eq!(lstat(b"/run").err(), Some(Errno::ENOENT));
+        assert!(!crate::exchange::is_mounted());
     }
 
     #[test]
     fn loading_an_image_creates_the_kernel_mount_points() {
         let _guard = TestGuard::acquire();
-        // An image with no /run at all still gets the exchange mount point,
-        // as an init system creates its runtime mount points at boot.
-        let image = image_with_root_entries(&[]);
+        // An image with the agent and no /run at all still gets the exchange
+        // mount point, as an init system creates its runtime mount points at
+        // boot.
+        let image = image_with_exchange_agent(&[]);
         load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert!(crate::exchange::is_mounted());
         for path in [&b"/run"[..], b"/run/kandelo", b"/run/kandelo/exchange"] {
             let st = lstat(path).unwrap();
             assert_eq!(st.st_mode, S_IFDIR | 0o755, "{}", core::str::from_utf8(path).unwrap());
             assert_eq!((st.st_uid, st.st_gid), (0, 0));
         }
         // An image that already has /run keeps it.
-        let image = image_with_root_entries(&[(b"run", true)]);
+        let image = image_with_exchange_agent(&[(b"run", true)]);
         load_image(image.len() as u64, image_host(&image)).expect("load image");
         assert_eq!(lstat(b"/run/kandelo/exchange").unwrap().st_mode & S_IFMT, S_IFDIR);
     }
@@ -11926,7 +11943,7 @@ mod tests {
         impl Drop for RestoreTmpfs {
             fn drop(&mut self) { crate::tmpfs::set_enabled(self.0); }
         }
-        let image = image_with_root_entries(&[]);
+        let image = image_with_exchange_agent(&[]);
         load_image_for_composition(image.len() as u64, image_host(&image)).unwrap();
         mkdir(b"/run", 0o755, 0, 0).unwrap();
         mkdir(b"/run/image-layout", 0o710, 1234, 5678).unwrap();
@@ -11965,7 +11982,7 @@ mod tests {
         let _guard = TestGuard::acquire();
         // A regular file at /run: nothing can be mounted beneath it, and
         // booting anyway would leave the exchange mount unreachable.
-        let image = image_with_root_entries(&[(b"run", false)]);
+        let image = image_with_exchange_agent(&[(b"run", false)]);
         assert_eq!(
             load_image(image.len() as u64, image_host(&image)),
             Err(Errno::ENOTDIR)
@@ -12750,7 +12767,7 @@ mod tests {
         load_image(image.len() as u64, &mut source).unwrap();
         assert_links();
         enable_resizable_persistence(Box::new(journal.clone()), digest, &mut source).unwrap();
-        assert_eq!(statfs(b"/").unwrap().f_ffree, 24);
+        assert_eq!(statfs(b"/").unwrap().f_ffree, 27);
         let handle = open(b"/original", O_RDWR, 0, 0, 0).unwrap();
         assert_eq!(write(handle, 0, b"after!", &mut source), Ok(6));
         release_handle(handle);
@@ -12769,7 +12786,7 @@ mod tests {
         assert_links();
         let snapshot_digest: [u8; 32] = Sha256::digest(&snapshot).into();
         enable_resizable_persistence(Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new())))), snapshot_digest, &mut snapshot_source).unwrap();
-        assert_eq!(statfs(b"/").unwrap().f_ffree, 24);
+        assert_eq!(statfs(b"/").unwrap().f_ffree, 27);
         assert_eq!(read_file_at(b"/original-alias", 0, &mut bytes, &mut snapshot_source), Ok(6));
         assert_eq!(&bytes, b"after!");
     }
@@ -12790,7 +12807,7 @@ mod tests {
         let storage = Arc::new(Mutex::new(Vec::new()));
         enable_resizable_persistence(Box::new(SharedJournalStorage(storage.clone())), digest, &mut source).unwrap();
         let full = open(b"/full", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
-        assert_eq!(write(full, 0, &[7; 10 * 4096], &mut source), Ok(7 * 4096));
+        assert_eq!(write(full, 0, &[7; 13 * 4096], &mut source), Ok(10 * 4096));
         sync_persistence().unwrap();
         assert_eq!(statfs(b"/").unwrap().f_bfree, 0);
         let durable = storage.lock().clone();
@@ -12995,7 +13012,7 @@ mod tests {
         let sparse = open(b"/sparse", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
         truncate_handle(sparse, (high + 8192) as i64, &mut source).unwrap();
         let filler = open(b"/filler", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
-        assert_eq!(write(filler, 0, &[7; 9 * 4096], &mut source), Ok(6 * 4096));
+        assert_eq!(write(filler, 0, &[7; 12 * 4096], &mut source), Ok(9 * 4096));
         assert_eq!(statfs(b"/").unwrap().f_bfree, 0);
         for handle in [base, sparse] {
             truncate_handle(handle, (high + 1) as i64, &mut source).unwrap();
@@ -13037,27 +13054,27 @@ mod tests {
         let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         enable_resizable_persistence(Box::new(journal.clone()), digest, &mut source).unwrap();
         let handle = open(b"/capacity", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
-        assert_eq!(statfs(b"/").unwrap().f_bfree, 7);
-        assert_eq!(write(handle, 0, &[7; 11 * 4096], &mut source), Ok(7 * 4096));
+        assert_eq!(statfs(b"/").unwrap().f_bfree, 10);
+        assert_eq!(write(handle, 0, &[7; 14 * 4096], &mut source), Ok(10 * 4096));
         assert_eq!(statfs(b"/").unwrap().f_bfree, 0);
-        assert_eq!(lstat(b"/capacity").unwrap().st_size, 7 * 4096);
-        assert_eq!(write(handle, 7 * 4096, b"x", &mut source), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/capacity").unwrap().st_size, 10 * 4096);
+        assert_eq!(write(handle, 10 * 4096, b"x", &mut source), Err(Errno::ENOSPC));
         assert_eq!(write(handle, 4095, b"yz", &mut source), Ok(2));
         assert_eq!(statfs(b"/").unwrap().f_bfree, 0);
         truncate_handle(handle, 0, &mut source).unwrap();
-        assert_eq!(statfs(b"/").unwrap().f_bfree, 7);
+        assert_eq!(statfs(b"/").unwrap().f_bfree, 10);
         assert_eq!(write(handle, 9 * 1024 * 1024 * 1024, b"tail", &mut source), Ok(4));
-        assert_eq!(statfs(b"/").unwrap().f_bfree, 3);
+        assert_eq!(statfs(b"/").unwrap().f_bfree, 6);
         sync_persistence().unwrap();
         release_handle(handle);
         reset();
         load_image(image.len() as u64, &mut source).unwrap();
         enable_resizable_persistence(Box::new(journal), digest, &mut source).unwrap();
-        assert_eq!(statfs(b"/").unwrap().f_bfree, 3);
+        assert_eq!(statfs(b"/").unwrap().f_bfree, 6);
         let handle = open(b"/capacity", O_RDWR, 0, 0, 0).unwrap();
-        assert_eq!(write(handle, 0, &[8; 7 * 4096], &mut source), Ok(3 * 4096));
+        assert_eq!(write(handle, 0, &[8; 10 * 4096], &mut source), Ok(6 * 4096));
         assert_eq!(statfs(b"/").unwrap().f_bfree, 0);
-        assert_eq!(write(handle, 3 * 4096, b"x", &mut source), Err(Errno::ENOSPC));
+        assert_eq!(write(handle, 6 * 4096, b"x", &mut source), Err(Errno::ENOSPC));
         release_handle(handle);
     }
 
@@ -13744,7 +13761,7 @@ mod tests {
         enable_resizable_persistence(Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new())))), digest, &mut source).unwrap();
         let handle = open(b"/chunks", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
         let free = statfs(b"/").unwrap().f_bfree;
-        assert_eq!(free, 119);
+        assert_eq!(free, 122);
         let expected = (free as usize - 1) * 4096;
         let generation = content_generation(handle).unwrap();
         assert_eq!(write(handle, 0, &[7; 128 * 4096], &mut source), Ok(expected));
@@ -13842,7 +13859,7 @@ mod tests {
         enable_resizable_persistence(Box::new(journal.clone()), digest, &mut source).unwrap();
         let before = statfs(b"/").unwrap();
         assert_eq!((before.f_blocks, before.f_bfree, before.f_files, before.f_ffree),
-            (2048, 2038, 35, 29));
+            (2048, 2041, 35, 32));
         set_nosuid(true);
         assert_eq!(statfs(b"/").unwrap().f_flags, wasm_posix_shared::statfs_flags::ST_NOSUID);
         set_nosuid(false);
@@ -13964,7 +13981,7 @@ mod tests {
         ).unwrap();
         assert_eq!(filesystem.growth_ceiling_bytes(), Ok(CAPACITY));
         assert_eq!(filesystem.geometry().total_inodes, 35);
-        assert_eq!(filesystem.statfs().unwrap().f_ffree, 28);
+        assert_eq!(filesystem.statfs().unwrap().f_ffree, 31);
         reset();
         let mut source = image_host(&exported);
         load_image(exported.len() as u64, &mut source).unwrap();
@@ -14638,85 +14655,6 @@ mod tests {
         let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob).unwrap();
         assert_eq!(&buf[..n], b"data");
         assert_eq!(lstat(b"/usr/bin/fresh").unwrap().st_mode & 0o7777, 0o644);
-    }
-
-    /// The host-facing "place this file in the rootfs" path does NOT create the
-    /// directories leading to it, and `mkdir_parents` is what closes that gap.
-    ///
-    /// A plausible assumption is that the browser MITM CA-certificate write
-    /// needs nothing beyond `kernel_rootfs_write_file`. It does: the browser
-    /// entry writes
-    /// `/etc/ssl/certs/ca-certificates.crt` and creates `/etc`, `/etc/ssl` and
-    /// `/etc/ssl/certs` first, because a demo image need not carry them.
-    /// `write_file_at` opens with `O_CREAT`, which is `ENOENT` on a missing
-    /// parent exactly as POSIX requires, so the write half alone loses the
-    /// directory half silently.
-    #[test]
-    fn checked_parent_creation_persists_directories_and_resolves_existing_aliases() {
-        let _guard = TestGuard::acquire();
-        let image = tiny_vfs_described().to_vec();
-        let digest: [u8; 32] = Sha256::digest(&image).into();
-        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
-        let mut source = image_host(&image);
-        load_image(image.len() as u64, &mut source).unwrap();
-        enable_resizable_persistence(Box::new(storage.clone()), digest, &mut source).unwrap();
-        assert_eq!(mkdir_parents_checked(b"/etc/ssl/certs/ca", 0o750, 22, 33), Ok(3));
-        symlink(b"/etc/ssl/certs", b"/cert-alias", 0, 0).unwrap();
-        assert_eq!(mkdir_parents_checked(b"/cert-alias/nested/file", 0o750, 22, 33), Ok(1));
-        write_file_at(b"/etc/ssl/certs/nested/file", 0, b"staged", 0o600, true, &mut source).unwrap();
-        sync_persistence().unwrap();
-        load_image(image.len() as u64, &mut source).unwrap();
-        enable_resizable_persistence(Box::new(storage), digest, &mut source).unwrap();
-        assert_eq!(mkdir_parents_checked(b"/cert-alias/nested/file", 0o755, 0, 0), Ok(0));
-        let metadata = lstat(b"/etc/ssl/certs/nested").unwrap();
-        assert_eq!((metadata.st_uid, metadata.st_gid, metadata.st_mode & 0o7777), (22, 33, 0o750));
-        let mut bytes = [0; 6];
-        assert_eq!(read_file_at(b"/etc/ssl/certs/nested/file", 0, &mut bytes, &mut source), Ok(6));
-        assert_eq!(&bytes, b"staged");
-        load_image(image.len() as u64, &mut source).unwrap();
-        enable_fixed_persistence(Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new())))), digest, &mut source).unwrap();
-        assert_eq!(mkdir_parents_checked(b"/etc/ssl/certs/ca", 0o755, 0, 0), Err(Errno::EROFS));
-        assert!(!is_dir(b"/etc"));
-    }
-
-    #[test]
-    fn checked_parent_creation_preserves_errors_and_partial_prefixes_without_unadmitted_scratch() {
-        let _guard = TestGuard::acquire();
-        let image = tiny_vfs_described().to_vec();
-        let digest: [u8; 32] = Sha256::digest(&image).into();
-        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
-        let mut source = image_host(&image);
-        load_image(image.len() as u64, &mut source).unwrap();
-        enable_resizable_persistence(Box::new(storage.clone()), digest, &mut source).unwrap();
-        let before = io_budget_usage().0;
-        {
-            let _budget = crate::io_buffer::test_budget(before);
-            assert_eq!(mkdir_parents_checked(b"/blocked/file", 0o755, 0, 0), Err(Errno::ENOMEM));
-            assert_eq!(mkdir_parents(b"/blocked/file", 0o755, 0, 0), 0);
-            assert_eq!(mkdir_parents_checked(b"/file", 0o755, 0, 0), Ok(0));
-        }
-        assert_eq!(io_budget_usage().0, before);
-        assert!(!is_dir(b"/blocked"));
-        write_file_at(b"/not-a-directory", 0, b"file", 0o644, true, &mut source).unwrap();
-        assert_eq!(mkdir_parents_checked(b"/not-a-directory/file", 0o755, 0, 0), Err(Errno::ENOTDIR));
-        symlink(b"/loop-b", b"/loop-a", 0, 0).unwrap();
-        symlink(b"/loop-a", b"/loop-b", 0, 0).unwrap();
-        assert_eq!(mkdir_parents_checked(b"/loop-a/file", 0o755, 0, 0), Err(Errno::ELOOP));
-        let available = statfs(b"/").unwrap().f_ffree;
-        for index in 0..available - 1 {
-            let path = alloc::format!("/fill-{index}");
-            let handle = open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
-            release_handle(handle);
-        }
-        assert_eq!(mkdir_parents_checked(b"/one/two/file", 0o755, 0, 0), Err(Errno::ENOSPC));
-        assert!(is_dir(b"/one"));
-        assert!(!is_dir(b"/one/two"));
-        assert_eq!(mkdir_parents(b"/another/two/file", 0o755, 0, 0), 0);
-        sync_persistence().unwrap();
-        load_image(image.len() as u64, &mut source).unwrap();
-        enable_resizable_persistence(Box::new(storage), digest, &mut source).unwrap();
-        assert!(is_dir(b"/one"));
-        assert!(!is_dir(b"/one/two"));
     }
 
     #[test]

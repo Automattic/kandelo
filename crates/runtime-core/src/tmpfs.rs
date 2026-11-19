@@ -146,7 +146,13 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
 
 /// Mount descriptions for procfs, derived from the routing registry.
 pub(crate) fn mounts() -> impl Iterator<Item = (&'static [u8], u64, &'static str)> {
-    SCRATCH_MOUNTS.iter().map(|mount| (mount.prefix, mount.st_dev, mount.fs_type))
+    SCRATCH_MOUNTS.iter().filter(|mount| is_mounted(mount)).map(|mount| (mount.prefix, mount.st_dev, mount.fs_type))
+}
+
+/// Whether `mount` is in the namespace: every scratch mount is, and the
+/// exchange mount while [`crate::exchange::is_mounted`].
+fn is_mounted(mount: &ScratchMount) -> bool {
+    mount.prefix != crate::exchange::MOUNT_PATH || crate::exchange::is_mounted()
 }
 
 const EXCHANGE_LAYOUT: &[LayoutNode] = {
@@ -685,6 +691,9 @@ fn split_components(rel: &[u8]) -> Vec<&[u8]> {
 fn match_mount(path: &[u8]) -> Option<(usize, &[u8])> {
     let mut best: Option<(usize, &[u8])> = None;
     for (idx, mount) in SCRATCH_MOUNTS.iter().enumerate() {
+        if !is_mounted(mount) {
+            continue;
+        }
         let p = mount.prefix;
         let is_match = path == p
             || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/');

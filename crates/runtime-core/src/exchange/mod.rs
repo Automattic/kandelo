@@ -12,7 +12,7 @@ pub mod streams;
 pub mod wire;
 pub mod xattr;
 
-/// Where the exchange filesystem is mounted, on every machine.
+/// Where the exchange filesystem is mounted, on a machine that has it.
 pub const MOUNT_PATH: &[u8] = b"/run/kandelo/exchange";
 
 /// `statfs` `f_type`: ASCII "KXCH". Linux uses ASCII magics the same way
@@ -29,9 +29,39 @@ pub const EXCHANGE_GID: u32 = 120;
 pub const DEFAULT_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 
 use alloc::vec::Vec;
+#[cfg(not(test))]
+use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::Errno;
 
 use device::{ExchangeDevice, Released};
+
+/// Whether the exchange filesystem is mounted. Loading an image mounts it
+/// only when the image has the agent ([`activation::AGENT_PATH`]), the way an
+/// image's fstab names its mounts: a machine without the agent takes no files
+/// in and publishes none out. A kernel with no image keeps it mounted.
+#[cfg(not(test))]
+static MOUNTED: AtomicBool = AtomicBool::new(true);
+
+// Kernel Wasm execution is serialized, but native unit tests run in parallel.
+// Isolate the flag so one test's image cannot unmount another test's exchange.
+#[cfg(test)]
+std::thread_local! {
+    static TEST_MOUNTED: core::cell::Cell<bool> = const { core::cell::Cell::new(true) };
+}
+
+pub fn set_mounted(mounted: bool) {
+    #[cfg(test)]
+    TEST_MOUNTED.with(|flag| flag.set(mounted));
+    #[cfg(not(test))]
+    MOUNTED.store(mounted, Ordering::SeqCst);
+}
+
+pub fn is_mounted() -> bool {
+    #[cfg(test)]
+    return TEST_MOUNTED.with(|flag| flag.get());
+    #[cfg(not(test))]
+    MOUNTED.load(Ordering::SeqCst)
+}
 
 /// Whether a character-device host handle names an exchange description.
 pub fn is_exchange_handle(handle: i64) -> bool {
@@ -120,6 +150,7 @@ pub fn open_events(uid: u32, gid: u32) -> Result<ExchangeDevice, Errno> {
 
 /// Whether a canonical path lies on the exchange mount.
 pub fn owns_path(path: &[u8]) -> bool {
-    path == MOUNT_PATH
-        || (path.len() > MOUNT_PATH.len() && path.starts_with(MOUNT_PATH) && path[MOUNT_PATH.len()] == b'/')
+    is_mounted()
+        && (path == MOUNT_PATH
+            || (path.len() > MOUNT_PATH.len() && path.starts_with(MOUNT_PATH) && path[MOUNT_PATH.len()] == b'/'))
 }
