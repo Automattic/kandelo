@@ -56,7 +56,7 @@ The existing terminal-worker build workaround now has a standalone reproduction
 with no Kandelo code: WebKit 26.6 loses handler initialization after a dynamic
 import imports the Worker entry, while Chromium and Firefox controls preserve
 it. This startup defect is separate from the pressure timeout. See
-[WEBKIT-WORKER-ENTRY-EXPORTS](../../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
+[WebKit terminal Worker entry workaround](../../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
 
 ## Reproduction and retained evidence
 
