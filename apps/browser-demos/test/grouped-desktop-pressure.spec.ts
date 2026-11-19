@@ -11,7 +11,8 @@ test('keeps existing terminals usable after a launch budget refusal', async ({ p
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('pageerror', error => errors.push(error.stack ?? error.message));
   const pages = Number(process.env.KANDELO_GROUPED_DESKTOP_GROUP_PAGES ?? 8192);
-  await page.goto(`/grouped-desktop.html?width=1280&height=720&trace=1&groupPages=${pages}`);
+  const tracing = process.env.KANDELO_GROUPED_DESKTOP_TRACE !== '0';
+  await page.goto(`/grouped-desktop.html?width=1280&height=720&groupPages=${pages}${tracing ? '&trace=1' : ''}`);
   await page.getByRole('button', { name: 'Start shared desktop' }).click();
   const terminals = () => page.evaluate(async () => {
     const processes = await (window as any).groupedDesktop.kernel.enumProcs();
@@ -97,7 +98,7 @@ test('keeps existing terminals usable after a launch budget refusal', async ({ p
       if (!desktop) return null;
       return { ...desktop.state, processes: desktop.state.stopping ? [] : await desktop.kernel.enumProcs().catch(String), stats: Array.from(desktop.stats) };
     }).catch(String);
-    writeFileSync(join(out, `${info.project.name}-pressure.json`), JSON.stringify({ pages, state, samples, errors }, (_key, value) =>
+    writeFileSync(join(out, `${info.project.name}-pressure.json`), JSON.stringify({ pages, tracing, state, samples, errors }, (_key, value) =>
       typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
     await page.screenshot({ path: join(out, `${info.project.name}-pressure.png`) });
   }
