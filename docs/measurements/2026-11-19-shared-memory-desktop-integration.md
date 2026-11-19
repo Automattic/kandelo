@@ -269,8 +269,8 @@ WebKit also passes the normal 1920x1080 functional test and the real launch-budg
 refusal/recovery test. However, the combined candidate 64 repeats WebKit with
 a 120-cycle target and fails Sway IPC during resize after 34 completed cycles;
 its subsequent functional/capacity commands do not run. The earlier passes
-remain bounded evidence, not a reliability claim. These native-store, fixed
-initial-extent and private IPC candidates remain isolated and uncommitted.
+remain bounded evidence, not a reliability claim. At that checkpoint, these native-store, fixed
+initial-extent and private IPC candidates remained isolated and uncommitted.
 
 A further private diagnostic 65 substitutes equivalent native kernel stores
 for queue, pool and root-mutex releases. It still fails real Sway IPC after
@@ -280,3 +280,49 @@ All failed source variants, setup errors, actual artifacts, negative controls
 and results remain retained. Current-head conformance, combined browser-memory
 and quiet paired footprint/CPU/input/presentation/resource-cost acceptance are
 still required. The batch remains draft.
+
+
+## Default-mode candidate and current corrections
+
+The custody lookup, JSC initial extent, private IPC safepoint and kernel-only
+native queue-release candidates are now separate commits in the draft batch.
+They contain no temporary phase timers, bootstrap interception, kernel override,
+C mutex change or guest-source rewriting. The kernel-only native binding imports
+the existing backing and allocates no additional linear memory. Full candidate
+acceptance remains pending.
+
+The custody scans still validate every virtual-capacity PTE and every peer.
+They skip only zero entries and use a call-local physical lower bound, refreshed
+before accepting any page beyond it. New regressions preserve charges on an
+invalid physical index or stable virtual tail and accept live peer growth during
+a scan. An instrumented eight-image, 65,536-PTE-per-image mechanism screen reduces
+backing-accessor calls from 524,313 to 25. Its intercepted timings are not an
+application performance result.
+
+| Current check | Result and limit |
+| --- | --- |
+| Host build and focused source suites at `b1cf7270b9` | 256/256, seven files, zero skips. |
+| ABI and workaround registry at `b1cf7270b9` | Pass; program contract digest unchanged; 25 entries and 66 tag sites consistent. |
+| Public SDK/Node on equivalent candidate 78 | 39/39, two files, zero skips; includes five forty-cohort cases. |
+| Normal desktop and real budget refusal/recovery | All six cases pass across Chromium, Firefox and WebKit. |
+| Candidate 78, default untraced WebKit | One 120-cycle run passes in 4m03s. |
+| Default untraced repetition 80 | Chromium 120/120 and Firefox 120/120 pass; WebKit fails Sway IPC after 96 completed cycles. |
+| Earlier unchanged candidate 64 with tracing off | 120 WebKit cycles pass in 4m37s. Its earlier traced run failed after 34 cycles. |
+| Current ordinary same-kernel control 69 | 120 WebKit cycles pass in 3m06s through the normal unprepared partial image and resolver. |
+
+The default-mode WebKit repetition therefore remains intermittent. Tracing is
+not established as the sole cause, and the custody change is not established as
+a stability fix. Both positive and negative results remain retained. Lifecycle
+run durations include different concurrent work and are not paired performance
+measurements. Evidence is retained in `.context/desktop-custody-all3-80/`,
+`.context/desktop-custody-lifecycle-78/`, `.context/desktop-normal-no-trace-79/`
+and `.context/desktop-normal-ordinary-lifecycle-69/`.
+
+The workspace-wide ownership audit at `b1cf7270b9` reports one unreviewed
+allocation in the retained untracked research file
+`tools/desktop-shared-memory/wait-checks.mjs`. Nine other audit cases pass. This
+run is a failure, not an audit pass. The research file is preserved and the
+tracked implementation passes all 10 audit cases in the isolated checkout
+(`25be15b5c9`, identical tracked runtime), without adding an allowance or
+weakening the audit. The combined browser-memory gate,
+conformance and matched resource/latency measurements remain pending.
