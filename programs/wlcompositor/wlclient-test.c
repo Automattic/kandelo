@@ -32,6 +32,11 @@
  * the red the compositor samples can only come from its own MAP_SHARED
  * mapping of the pool, read at the buffer's offset.
  *
+ * With WLC_CURSOR=1 it names its pointer's cursor instead
+ * (apps/browser-demos/test/sway-cursor-shape.spec.ts): the `pointer` shape
+ * once the pointer has entered, no cursor at the first button, and it exits
+ * when the pointer leaves.
+ *
  * Prints markers the test asserts and exits 0. The compositor exits 0
  * once we disconnect.
  */
@@ -60,6 +65,7 @@
 #include "ext-session-lock-v1-client-protocol.h"
 #include "ext-idle-notify-v1-client-protocol.h"
 #include "hyprland-global-shortcuts-v1-client-protocol.h"
+#include "cursor-shape-v1-client-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 
@@ -85,6 +91,7 @@ struct client {
     struct ext_session_lock_manager_v1 *lock_mgr;
     struct ext_idle_notifier_v1 *idle_notifier;
     struct hyprland_global_shortcuts_manager_v1 *shortcuts_mgr;
+    struct wp_cursor_shape_manager_v1 *cursor_shape_mgr;
 
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -109,6 +116,9 @@ struct client {
     int shortcut_released;
     int locked, lock_finished;
     uint32_t lock_serial;
+    /* WLC_CURSOR: the pointer entered (with the enter's serial) and left. */
+    int ptr_entered, ptr_left;
+    uint32_t ptr_enter_serial;
 };
 
 /* ---- wp_presentation --------------------------------------------------- */
@@ -224,6 +234,9 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
     else if (strcmp(iface, "hyprland_global_shortcuts_manager_v1") == 0)
         c->shortcuts_mgr = wl_registry_bind(
             reg, name, &hyprland_global_shortcuts_manager_v1_interface, 1);
+    else if (strcmp(iface, "wp_cursor_shape_manager_v1") == 0)
+        c->cursor_shape_mgr = wl_registry_bind(
+            reg, name, &wp_cursor_shape_manager_v1_interface, 1);
 }
 
 /* ---- the shell's protocols (WLC_SHELL) --------------------------------- */
@@ -489,9 +502,15 @@ static const struct wl_keyboard_listener keyboard_listener = {
 /* ---- pointer ----------------------------------------------------------- */
 
 static void ptr_enter(void *data, struct wl_pointer *p, uint32_t serial,
-                      struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y) {}
+                      struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y) {
+    struct client *c = data;
+    c->ptr_entered = 1;
+    c->ptr_enter_serial = serial;
+}
 static void ptr_leave(void *data, struct wl_pointer *p, uint32_t serial,
-                      struct wl_surface *surf) {}
+                      struct wl_surface *surf) {
+    ((struct client *)data)->ptr_left = 1;
+}
 static void ptr_motion(void *data, struct wl_pointer *p, uint32_t time,
                        wl_fixed_t x, wl_fixed_t y) {
     printf("GOT_MOTION x=%d y=%d\n", wl_fixed_to_int(x), wl_fixed_to_int(y));
@@ -663,6 +682,36 @@ static int run_shell_protocols(struct client *c, struct wl_display *display,
     return 0;
 }
 
+/* WLC_CURSOR, once the window is mapped: name the `pointer` shape when the
+ * pointer has entered, hide the cursor at the first button, and return when
+ * the pointer leaves. */
+static int run_cursor_shape(struct client *c, struct wl_display *display,
+                            struct wl_pointer *ptr) {
+    struct wp_cursor_shape_device_v1 *device =
+        wp_cursor_shape_manager_v1_get_pointer(c->cursor_shape_mgr, ptr);
+    while (!c->ptr_entered)
+        if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+    wp_cursor_shape_device_v1_set_shape(device, c->ptr_enter_serial,
+                                        WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER);
+    wl_display_roundtrip(display);
+    printf("CURSOR_SHAPE_SET\n");
+    fflush(stdout);
+
+    while (!c->got_button)
+        if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+    wl_pointer_set_cursor(ptr, c->ptr_enter_serial, NULL, 0, 0);
+    wl_display_roundtrip(display);
+    printf("CURSOR_HIDDEN_SET\n");
+    fflush(stdout);
+
+    while (!c->ptr_left)
+        if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
+    wp_cursor_shape_device_v1_destroy(device);
+    printf("CURSOR_SHAPE_OK\n");
+    fflush(stdout);
+    return 0;
+}
+
 int main(void) {
     struct client c;
     memset(&c, 0, sizeof(c));
@@ -819,6 +868,16 @@ int main(void) {
     printf("CLIENT_MAPPED\n");
     printf("CLIENT_READY\n");   /* signal to the test to inject input */
     fflush(stdout);
+
+    if (getenv("WLC_CURSOR")) {
+        if (!c.cursor_shape_mgr) {
+            fprintf(stderr, "missing wp_cursor_shape_manager_v1\n");
+            return 1;
+        }
+        int rc = run_cursor_shape(&c, display, ptr);
+        wl_display_disconnect(display);
+        return rc;
+    }
 
     if (idle) {
         int rc = run_shell_protocols(&c, display, c.lock_mgr);
