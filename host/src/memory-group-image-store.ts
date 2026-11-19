@@ -218,6 +218,11 @@ export class MemoryGroupImageStore {
   imageHasExecutionPause(handle: PreparedGroupReplica): boolean {
     return this.owned(handle).image.pause !== undefined;
   }
+  /** A stop closes old-image operation admission. This is not a Worker stop
+   * fence and grants no permission to release pages or reuse any storage. */
+  imageStopRequested(handle: PreparedGroupReplica): boolean {
+    return this.owned(handle).image.stopping === true;
+  }
   /** Membership preparation waits on the existing image owner, without a
    * native futex observer or a timer masquerading as a retirement fence. */
   waitForImageExecutionPause(handle: PreparedGroupReplica): Promise<void> {
@@ -358,7 +363,7 @@ export class MemoryGroupImageStore {
   beginImageExecutionPause(handle: PreparedGroupReplica): GroupImageExecutionPause {
     const image = this.owned(handle).image;
     if (this.closed || !image.exposed || !image.sourceLive.value || image.pause || image.stopping) {
-      fault('Image cannot begin an execution barrier');
+      fault(`Image cannot begin an execution barrier: pid=${image.receipt.pid} generation=${image.receipt.generation} closed=${this.closed} exposed=${image.exposed} live=${image.sourceLive.value} paused=${!!image.pause} stopping=${!!image.stopping}`);
     }
     const members = Array.from(image.replicas, replica => ({ replica, pause: undefined as GroupExecutionPause | undefined }));
     if (!members.length || this.nextPauseEpoch + members.length - 1 > 0xffffffff) {

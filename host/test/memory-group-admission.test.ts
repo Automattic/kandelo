@@ -1135,6 +1135,44 @@ describe('normal grouped mapping syscall coordination', () => {
       expect(h.launch.source.byteLength).toBe(4 * h.page);
     } finally { await h.close(); }
   });
+  it('refuses mapping ingress after exact image stop without starting a barrier or releasing custody', async () => {
+    const h = mappingDispatchHarness(), fatal = vi.fn();
+    h.kw.callbacks.onKernelFatal = fatal;
+    const charged = h.store.snapshot().allocatedPages;
+    try {
+      h.store.requestImageStop(h.registration.grouped.handle);
+      // A queued notification can outlive stop while Rust generation and the
+      // host registration still retain the old image for exact retirement.
+      expect(() => h.dispatch()).not.toThrow();
+      const pending = h.kw.pendingGroupMappings.get(h.channel);
+      if (pending) await pending.finished;
+      expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
+      expect(h.completions).toEqual([]);
+      expect(h.kw.pendingGroupMappings.size).toBe(0);
+      expect(h.kw.pendingGroupImageOperations.size).toBe(0);
+      expect(fatal).not.toHaveBeenCalled();
+      expect(h.store.snapshot().allocatedPages).toBe(charged);
+      expect(h.store.imageExecutionStopped(h.registration.grouped.handle)).toBe(false);
+    } finally { h.store.close(); }
+  });
+  it('cancels an existing barrier after exact image stop without treating stop as retirement', async () => {
+    const h = mappingDispatchHarness(), fatal = vi.fn();
+    h.kw.callbacks.onKernelFatal = fatal;
+    const charged = h.store.snapshot().allocatedPages;
+    try {
+      const pending = h.dispatch();
+      expect(h.store.imageHasExecutionPause(h.registration.grouped.handle)).toBe(true);
+      h.store.requestImageStop(h.registration.grouped.handle);
+      await pending.finished;
+      expect(h.implementations.kernel_group_memory_change_prepare).not.toHaveBeenCalled();
+      expect(h.completions).toEqual([]);
+      expect(h.kw.pendingGroupMappings.size).toBe(0);
+      expect(h.store.imageHasExecutionPause(h.registration.grouped.handle)).toBe(false);
+      expect(fatal).not.toHaveBeenCalled();
+      expect(h.store.snapshot().allocatedPages).toBe(charged);
+      expect(h.store.imageExecutionStopped(h.registration.grouped.handle)).toBe(false);
+    } finally { await h.close(); }
+  });
   it('refuses an old image before binding or preparing a successor task', async () => {
     const h = mappingDispatchHarness();
     try {
