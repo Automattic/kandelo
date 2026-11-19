@@ -27,6 +27,7 @@ export interface GroupedForkWorkerOptions {
   readonly isCurrent: (ownership: GroupedForkWorkerOwnership) => boolean;
   /** Retain ownership before any Worker constructor can run. */
   readonly retain: (ownership: GroupedForkWorkerOwnership) => void;
+  readonly discard?: (ownership: GroupedForkWorkerOwnership) => void;
   readonly onMessage: (message: any, ownership: GroupedForkWorkerOwnership) => void;
   readonly onError: (error: Error, ownership: GroupedForkWorkerOwnership) => void;
   readonly onExit: (code: number, ownership: GroupedForkWorkerOwnership) => void;
@@ -89,7 +90,7 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
   let ownership: GroupedForkWorkerOwnership | undefined;
   let generation: ForkExternrefGeneration | undefined;
   let endpoint: ForkHostImportOwnerWorker | undefined;
-  let registered = false;
+  let observed = false;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
     // Acquire opaque reference custody before the first asynchronous launch
@@ -99,12 +100,6 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
     const published = await retryKernelEntryResult(() => kernel.publishMemoryGroupReplica(request.childReplica));
     if (typeof published === 'number') throw Error(`Cannot publish grouped fork child: errno ${-published}`);
     const { assertLive: _live, ...expected } = published.expectation;
-    published.source.fillBytes(options.channelOffset, CH_TOTAL_SIZE, 0);
-    await retryKernelEntryResult(() => kernel.registerMemoryGroupProcess(request.childReplica, [options.channelOffset], {
-      ptrWidth: 4, maxAddr: options.maximumVirtualPages * 65536, preserveProcessState: true,
-    }));
-    registered = true;
-    const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(request.childPid));
     let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
     const worker = new DeferredWorkerHandle(() => {
       deadline = setTimeout(() => replay.cancel(new Error('Grouped fork replay deadline')), options.replayTimeoutMs ?? 30000);
@@ -118,10 +113,44 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
     ownership = new GroupedForkWorkerOwnership(request.childPid, expected.receipt, generation, worker, externrefs,
       options.terminationProvesQuiescence);
     const exact = ownership;
+    // Every published child gets its exact deferred-realm observer before
+    // registration or reference setup can fail. Sealing that handle later
+    // proves absence without treating publication as an execution ACK.
+    await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(request.childReplica, worker,
+      { terminationProvesQuiescence: options.terminationProvesQuiescence }));
+    observed = true;
+    options.retain(exact);
     endpoint = imports.createWorker({ pid: request.childPid, generationId: generation.id,
       authorizeSender: () => { if (!options.isCurrent(exact)) throw Error('Stale grouped fork host-import sender'); },
-      onDiagnostic: error => options.onError(error instanceof Error ? error : new Error(String(error)), exact) });
+      onDiagnostic: error => {
+        const committed = replay.currentPhase === 'committed'; replay.cancel(error);
+        if (committed) options.onError(error instanceof Error ? error : new Error(String(error)), exact);
+      } });
     ownership.attachEndpoint(endpoint);
+
+    const releaseReplayObserver = observeForkReplayWorker(replay, worker, request.childPid, () => options.isCurrent(exact));
+    const onMessage = (message: any): void => {
+      try {
+        if (message.type === 'fork_host_import') {
+          if (!endpoint!.dispatch(message.wake)) throw Error('Stale grouped fork host-import wake');
+        } else {
+          if (message.type === 'memory_quiescent') exact.acceptQuiescence(message);
+          if (message.type === 'error' && replay.currentPhase !== 'committed') replay.cancel(Error(String(message.message)));
+          else options.onMessage(message, exact);
+        }
+      } catch (error) { const committed = replay.currentPhase === 'committed'; replay.cancel(error); if (committed) options.onError(error instanceof Error ? error : new Error(String(error)), exact); }
+    };
+    const onError = (error: Error): void => { const committed = replay.currentPhase === 'committed'; replay.cancel(error); if (committed) options.onError(error, exact); };
+    const onExit = (code: number): void => { exact.noteExit(); if (replay.currentPhase === 'committed') options.onExit(code, exact); else if (code) replay.cancel(Error(`Grouped fork Worker exit ${code}`)); };
+    worker.on('message', onMessage); worker.on('error', onError); worker.on('exit', onExit);
+    ownership.attachObserverCleanup(() => {
+      releaseReplayObserver(); worker.off('message', onMessage); worker.off('error', onError); worker.off('exit', onExit);
+    });
+    published.source.fillBytes(options.channelOffset, CH_TOTAL_SIZE, 0);
+    await retryKernelEntryResult(() => kernel.registerMemoryGroupProcess(request.childReplica, [options.channelOffset], {
+      ptrWidth: 4, maxAddr: options.maximumVirtualPages * 65536, preserveProcessState: true,
+    }));
+    const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(request.childPid));
     init = { type: 'centralized_init', pid: request.childPid, programBytes: options.programBytes,
       programModule: options.programModule, channelOffset: options.channelOffset, secureExec, ptrWidth: 4,
       externrefGenerationId: generation.id, forkHostImports: endpoint.init,
@@ -130,26 +159,6 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
       forkChildThreadFnPtr: request.continuation.kind === 'thread' ? request.continuation.fnPtr : undefined,
       forkChildThreadArgPtr: request.continuation.kind === 'thread' ? request.continuation.argPtr : undefined,
       kernelAbiVersion: kernel.getKernelAbiVersion(), kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
-    const releaseReplayObserver = observeForkReplayWorker(replay, worker, request.childPid, () => options.isCurrent(exact));
-    const onMessage = (message: any): void => {
-      try {
-        if (message.type === 'fork_host_import') {
-          if (!endpoint!.dispatch(message.wake)) throw Error('Stale grouped fork host-import wake');
-        } else {
-          if (message.type === 'memory_quiescent') exact.acceptQuiescence(message);
-          options.onMessage(message, exact);
-        }
-      } catch (error) { replay.cancel(error); options.onError(error instanceof Error ? error : new Error(String(error)), exact); }
-    };
-    const onError = (error: Error): void => { replay.cancel(error); options.onError(error, exact); };
-    const onExit = (code: number): void => { exact.noteExit(); options.onExit(code, exact); };
-    worker.on('message', onMessage); worker.on('error', onError); worker.on('exit', onExit);
-    ownership.attachObserverCleanup(() => {
-      releaseReplayObserver(); worker.off('message', onMessage); worker.off('error', onError); worker.off('exit', onExit);
-    });
-    options.retain(exact);
-    await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(request.childReplica, worker,
-      { terminationProvesQuiescence: options.terminationProvesQuiescence }));
     const disposition = await retryKernelEntryResult(() => kernel.startMemoryGroupProcessWorkerWhenRunnable(request.childReplica,
       () => worker.start(), () => replay.cancel(new Error('Grouped fork launch cancelled')),
       error => { replay.cancel(error); return true; }));
@@ -161,10 +170,32 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
     replay.throwIfCancelled(); replay.commit(); return exact;
   } catch (error) {
     replay.cancel(error);
-    if (ownership) { await ownership.contain(); ownership.releaseAfterStop(); }
-    else { endpoint?.close(); if (generation) externrefs.releaseGeneration(generation); }
-    if (registered && !await retryKernelEntryResult(() => kernel.deactivateMemoryGroupProcess(request.childReplica))) {
-      throw new Error('Grouped fork rollback no longer owns its child registration', { cause: error });
+    if (ownership && observed) {
+      const drainDeadline = Date.now() + (options.replayTimeoutMs ?? 30000);
+      while (!await retryKernelEntryResult(() => kernel.requestMemoryGroupReplicaWorkerStop(request.childReplica, ownership!.worker))) {
+        if (Date.now() >= drainDeadline) throw new Error('Failed grouped fork stop drain remains unproven', { cause: error });
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+      const stopped = kernel.waitForMemoryGroupReplicaQuiescence(request.childReplica);
+      let stopDeadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([stopped, new Promise<void>(resolve => {
+          stopDeadline = setTimeout(resolve, options.replayTimeoutMs ?? 30000);
+        })]);
+      } finally { if (stopDeadline) clearTimeout(stopDeadline); }
+      await ownership.contain();
+      // A deadline grants no reuse. Node may instead prove a real join;
+      // unconfirmed browser/construction failures remain charged.
+      if (!ownership.releaseAfterStop()) throw new Error('Failed grouped fork lacks exact stop proof', { cause: error });
+      await stopped;
+      if (!await retryKernelEntryResult(() => kernel.deactivateMemoryGroupProcess(request.childReplica))) {
+        throw new Error('Grouped fork rollback no longer owns its child registration', { cause: error });
+      }
+      options.discard?.(ownership);
+    } else {
+      endpoint?.close();
+      if (ownership) { await ownership.contain(); ownership.releaseAfterStop(); }
+      else if (generation) externrefs.releaseGeneration(generation);
     }
     throw error;
   } finally { if (deadline) clearTimeout(deadline); }

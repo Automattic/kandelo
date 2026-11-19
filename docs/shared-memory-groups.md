@@ -123,7 +123,13 @@ kernel-owned group in that machine. The option reserves a physical ceiling;
 it does not raise ordinary process or renderer limits. Ordinary artifacts
 keep the ordinary backend. The disposable kernel Worker owns launch, fork,
 pthread, compatible exec and retirement; the embedding receives copied
-output and status. Initial grouped `spawnFromVfs` admission is not yet wired.
+output and status. Failed fork setup first seals the exact never-started
+Worker or requests cooperative stop and joins its terminal proof. Published
+image metadata, channel observers and physical pages retire before the
+allocated Process is removed or the parent's failure returns. A stop timeout
+retains uncertain storage; it does not authorize reuse. The regression rejects
+16 setups before registration and after actual replay, verifies no waitable
+child or allocation leak, then performs a successful fork. Initial grouped `spawnFromVfs` admission is not yet wired.
 The preview reads the selected executable from its actual image and uses the
 byte-launch API. This is a development preview, not full launch acceptance.
 

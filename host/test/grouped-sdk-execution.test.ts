@@ -10,7 +10,9 @@ import { runCentralizedProgram } from './centralized-test-helper';
 const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
-const probes = [
+const availableProbes = [
+  { name: "fork-registration-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
+  { name: "fork-replay-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "shared-file", source: "grouped-sdk-shared-file.c", markers: ["grouped-sdk-shared-file PASS"], partial: "", groupedOnly: true },
   { name: "anonymous-shared", source: "grouped-sdk-anonymous-shared.c", markers: ["grouped-sdk-anonymous-shared PASS"], partial: "", groupedOnly: true },
   { name: "exec-signal-commit", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
@@ -31,6 +33,10 @@ const probes = [
   { name: "pthread-rollback", source: "grouped-sdk-pthread-rollback.c", markers: ["grouped-sdk-pthread-rollback PASS"], partial: "", groupedOnly: true },
   { name: "pthread-churn", source: "grouped-sdk-pthread-churn.c", markers: ["grouped-sdk-pthread-churn PASS 256"], partial: "", groupedOnly: true },
 ];
+const selectedProbe = process.env.KANDELO_GROUPED_SDK_PROBE;
+const probes = selectedProbe ? availableProbes.filter(probe => probe.name === selectedProbe) : availableProbes;
+if (!probes.length) throw Error('Unknown selected grouped SDK probe: ' + selectedProbe);
+
 const fixtures = new Map<string, { ordinary: ReturnType<typeof compileSdkFixture>; groupedPath: string; execTargetPath?: string }>();
 
 beforeAll(() => {
@@ -54,7 +60,7 @@ beforeAll(() => {
 }, 180_000);
 afterAll(() => { for (const fixture of fixtures.values()) fixture.ordinary.cleanup(); });
 
-it.each(['fork', 'pthread', 'pthread-churn'])('runs the same %s C program through the normal ordinary Node host', async probe => {
+if (!selectedProbe || ['fork', 'pthread', 'pthread-churn'].includes(selectedProbe)) it.each(['fork', 'pthread', 'pthread-churn'].filter(name => probes.some(probe => probe.name === name)))('runs the same %s C program through the normal ordinary Node host', async probe => {
   const fixture = fixtures.get(probe)!;
   const result = await runCentralizedProgram({ programPath: fixture.ordinary.programPath,
     argv: [`grouped-sdk-${probe}`, 'ordinary'], timeout: 30_000, maxPages: 2048, useDefaultRootfs: false });
@@ -74,7 +80,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
     const { ordinary, groupedPath, execTargetPath } = fixtures.get(probe.name)!;
     const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
       eval: true,
-      workerData: { grouped, trace: true, forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
+      workerData: { grouped, trace: true, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-replay-rollback" ? "replay" : "registration", forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
         anonymousShared: probe.name === 'anonymous-shared', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
@@ -141,6 +147,14 @@ for (const probe of probes) for (const grouped of [false, true]) {
       expect(result.quiescent).toBe(true);
       if (grouped) expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
       for (const marker of probe.markers) expect(result.stdout).toContain(marker);
+      if (probe.name.startsWith('fork-')) {
+      expect(result.forkWorkerConstructionAttempts).toBe(probe.name === 'fork-replay-rollback' ? 17 : 1);
+        expect(result.injectedForkRefusals).toBe(16);
+        const rows = result.rolledBackForks as any[];
+        expect(rows).toHaveLength(16);
+        expect(rows.every(row => row.backing.images === 1 && row.backing.replicas === 1 && row.backing.nativeObservers === 0)).toBe(true);
+        expect(new Set(rows.map(row => row.backing.allocatedPages)).size).toBe(1);
+      }
       // Retain ordinary protection/private-growth limits explicitly. Grouped
       // acceptance requires enforcement and retained file-backed growth.
       if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
@@ -233,7 +247,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
   }, 90_000);
 }
 
-it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'])('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
+if (!selectedProbe || ['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'].includes(selectedProbe)) it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'].filter(name => probes.some(probe => probe.name === name)))('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
   const { ordinary, groupedPath } = fixtures.get(probe)!;
   const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
     eval: true, workerData: { grouped: true, cycles: 40, anonymousShared: probe === "anonymous-shared", forcedLifecycle: probe === "forced-exit", nativeWaitLifecycle: probe === "native-wait-exit", kernelPath: resolveBinary('kernel.wasm'),

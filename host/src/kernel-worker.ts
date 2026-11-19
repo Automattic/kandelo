@@ -2315,6 +2315,7 @@ interface PendingGroupFork extends PendingGroupImageOperation {
   suppressCompletion: boolean;
   failure: number;
   scheduled: boolean;
+  retiringImage?: boolean;
 }
 
 interface BlockingRetryDisposition extends FrozenCancellationPointIdentity {
@@ -8612,7 +8613,15 @@ export class CentralizedKernelWorker {
       if (typeof admitted === "number") { result = admitted; return undefined; }
       const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.start, entry);
       if (status < 0) { result = status; return undefined; }
-      try { result = store.publish(handle, admitted); }
+      try {
+        result = store.publish(handle, admitted);
+        // Publication owns a kernel-realm image source even when subsequent
+        // channel registration fails before a concrete Worker can start.
+        if (receipt.pid === receipt.tid) {
+          const image = store.processRegistration(handle);
+          this.#memoryGroupImageRegistrations.set(handle, { memory: image.memory, source: image.source });
+        }
+      }
       catch (error) {
         this.#quarantineStartedMemoryGroupReplica(store, handle, entry);
         throw error;
@@ -8693,6 +8702,23 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     return sealed;
+  }
+
+  /** Request stop only for the exact observed realm. A sealed deferred handle
+   * proves absence; a constructed realm still owes its own terminal fence. */
+  requestMemoryGroupReplicaWorkerStop(handle: PreparedGroupReplica, worker: WorkerHandle): boolean {
+    let drained = false;
+    this.#runImmediateKernelEntry('stop exact grouped launch Worker', _entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store) throw Error('Grouped launch stop lost its image');
+      if (store.replicaExecutionStopped(handle)) { drained = true; return undefined; }
+      const binding = this.#memoryGroupWorkerBindings.get(handle);
+      if (binding?.worker !== worker) throw Error('Grouped launch stop names another realm');
+      if (DeferredWorkerHandle.sealNeverStarted(worker)) { binding.retire(); drained = true; }
+      else drained = store.requestImageStop(handle);
+      return undefined;
+    });
+    return drained;
   }
 
   cancelUnexposedMemoryGroupReplica(handle: PreparedGroupReplica): number {
@@ -10682,7 +10708,13 @@ export class CentralizedKernelWorker {
         if (!(generation instanceof KernelTaskBindingError && generation.errno === ESRCH)) throw generation;
       } else if (generation === receipt.generation) {
         const state = (this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (pid: number) => number)(receipt.pid);
-        if (state !== PROCESS_STATE_EXITED) return undefined;
+        const failedFork = [...this.pendingGroupForks.values()].some(fork => fork.prepared === handle
+          && fork.cancelling && !fork.launching && fork.allocation?.childOwned
+          && !fork.allocation.transferred && fork.childReceipt?.serial === receipt.serial);
+        // A cancelled replay never transferred a waitable child to its
+        // parent. Its exact stop proof permits rollback without publishing a
+        // fictitious guest exit. Other live images remain refused.
+        if (state !== PROCESS_STATE_EXITED && !failedFork) return undefined;
       }
       const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
       if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact image retirement export');
@@ -22301,7 +22333,7 @@ export class CentralizedKernelWorker {
   }
 
   #advanceGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
-    if (pending.done || pending.launching) return;
+    if (pending.done || pending.launching || pending.retiringImage) return;
     if (!this.#groupMappingCallerCurrent(pending, entry)) { pending.cancelling = true; pending.suppressCompletion = true; }
     if (pending.cancelling) { this.#cancelGroupFork(pending, entry); return; }
     if (this.deferChannelWhileStopped(pending.channel)) return;
@@ -22424,13 +22456,29 @@ export class CentralizedKernelWorker {
   #cancelGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
     // A launched callback owns partial Worker publication until it settles.
     // Parent teardown cannot revoke its child or infer a terminal fence.
-    if (pending.done || pending.launching) return;
+    if (pending.done || pending.launching || pending.retiringImage) return;
     const state = pending.allocation, receipt = pending.childReceipt, handle = pending.prepared;
     try {
       if (receipt) {
         if (handle && this.#memoryGroupReplicas.get(handle) !== pending.store) {
           // Callback already consumed exact unconstructed cancellation.
         } else if (handle && !pending.store.isUnexposed(handle)) {
+          if (pending.store.imageExecutionStopped(handle)) {
+            // Callback rejection has stopped its own realm, but image pages,
+            // listeners and Rust custody must retire before Process removal.
+            // Keep the parent's barrier and failed fork owner until that joins.
+            pending.retiringImage = true;
+            entry.deferProtocolEffect(() => {
+              void (async () => {
+                const status = await retryKernelEntryResult(() => this.retireMemoryGroupImage(handle, () => {}));
+                pending.retiringImage = false;
+                if (status !== 0 && status !== -EBUSY) this.#memoryGroupProtocolError('Cannot retire failed grouped fork image');
+                this.#queueGroupForkTurn(pending);
+              })().catch(error => this.#failKernelInstance(error));
+              return undefined;
+            });
+            return;
+          }
           this.#quarantineStartedMemoryGroupReplica(pending.store, handle, entry, true);
           // Never return published storage, including failed Worker launches.
         } else {

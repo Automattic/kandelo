@@ -9,7 +9,9 @@ import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixtur
 import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
-const probes = [
+const availableProbes = [
+  { name: "fork-registration-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
+  { name: "fork-replay-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "shared-file", source: "grouped-sdk-shared-file.c", markers: ["grouped-sdk-shared-file PASS"], partial: "", groupedOnly: true },
   { name: "anonymous-shared", source: "grouped-sdk-anonymous-shared.c", markers: ["grouped-sdk-anonymous-shared PASS"], partial: "", groupedOnly: true },
   { name: "exec-signal-commit", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
@@ -30,6 +32,10 @@ const probes = [
   { name: "pthread-rollback", source: "grouped-sdk-pthread-rollback.c", markers: ["grouped-sdk-pthread-rollback PASS"], partial: "", groupedOnly: true },
   { name: "pthread-churn", source: "grouped-sdk-pthread-churn.c", markers: ["grouped-sdk-pthread-churn PASS 256"], partial: "", groupedOnly: true },
 ];
+const selectedProbe = process.env.KANDELO_GROUPED_SDK_PROBE;
+const probes = selectedProbe ? availableProbes.filter(probe => probe.name === selectedProbe) : availableProbes;
+if (!probes.length) throw Error('Unknown selected grouped SDK probe: ' + selectedProbe);
+
 const fixtures: ReturnType<typeof compileSdkFixture>[] = [];
 let server: Server | undefined;
 let url: string;
@@ -105,7 +111,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
       worker.onmessage = event => { clearTimeout(deadline); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(deadline); worker.terminate(); reject(new Error(event.message)); };
       worker.postMessage(request);
-    }), { grouped, probe: probe.name, physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
+    }), { grouped, probe: probe.name, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-replay-rollback" ? "replay" : "registration", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
         anonymousShared: probe.name === 'anonymous-shared', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
         execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined,
@@ -159,6 +165,14 @@ for (const probe of probes) for (const grouped of [false, true]) {
     expect(result.quiescent).toBe(true);
     if (grouped) expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
     for (const marker of probe.markers) expect(result.stdout).toContain(marker);
+    if (probe.name.startsWith('fork-')) {
+      expect(result.forkWorkerConstructionAttempts).toBe(probe.name === 'fork-replay-rollback' ? 17 : 1);
+      expect(result.injectedForkRefusals).toBe(16);
+      const rows = result.rolledBackForks as any[];
+      expect(rows).toHaveLength(16);
+      expect(rows.every(row => row.backing.images === 1 && row.backing.replicas === 1 && row.backing.nativeObservers === 0)).toBe(true);
+      expect(new Set(rows.map(row => row.backing.allocatedPages)).size).toBe(1);
+    }
     if (probe.partial) expect(String(result.stdout).includes(probe.partial)).toBe(!grouped);
       if (probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads') {
         expect(result.processWorkerConstructionAttempts).toBe(17);
@@ -245,7 +259,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
   });
 }
 
-for (const probe of ['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared']) test(`forty SDK ${probe} cohorts reuse one backing after exact retirement`, async ({ page, browser }, info) => {
+for (const probe of ['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'].filter(name => probes.some(probe => probe.name === name))) test(`forty SDK ${probe} cohorts reuse one backing after exact retirement`, async ({ page, browser }, info) => {
   test.setTimeout(240_000);
   await page.goto(url);
   const result = await page.evaluate(probe => new Promise<any>((resolve, reject) => {
