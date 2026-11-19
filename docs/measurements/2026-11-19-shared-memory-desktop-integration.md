@@ -1056,3 +1056,50 @@ Future glyph acceptance and final benchmark aggregation require an independent
 Sleep-through-FullWake audit as well as the existing source/artifact/compute
 overlap checks. Audit evidence is
 `.context/desktop-host-sleep-audit-initial-171.json`.
+
+### Current high-resolution and input diagnostics
+
+Run 175 applies the unchanged production functional test to normal consumer
+151 at 3072×1728, without raising memory limits. Chromium and Firefox pass
+real input, two terminals, workspace moves and Stop. WebKit fails the first
+physical-input proof: `echo shared` produces `shhared`. Its DOM trace has the
+expected two balanced H presses/releases for the command, not an extra
+browser keydown. This is not a passing three-engine high-resolution result.
+The same current ordinary artifacts in control 176 pass Firefox but lose
+the second terminal during workspace actions on Chromium and WebKit. Those
+partial controls do not establish the underlying capacity failure's cause.
+
+Diagnostic 177 adds only bounded DOM key timestamps to the original WebKit
+test, keeping the 20 ms press delay and all assertions/deadlines. One of
+three repetitions passes. The other two type extra characters into the
+output path, leaving the expected file absent. All captured presses have
+balanced, trusted down/up events with no browser repeat flag; the longest
+observed holds are about 23 ms. The duplication therefore occurs after the
+observed DOM input. These data do not identify its lower-level cause.
+
+Diagnostic 180 launches a separate fullscreen Foot through ordinary Sway
+commands, with the program's standard `WAYLAND_DEBUG=client` option redirected
+to a tmpfs log. All three input proofs pass. The protocol reports repeat rate
+25 and delay 600 ms. Received client press/release callback intervals reach
+about 220–313 ms even though the largest protocol timestamp interval is
+29–36 ms. This different, logged workload does not reproduce the original
+first-terminal failure or establish a fix. Run 179 is excluded: its trace
+logger could not serialize a BigInt; 180 corrects only that logger.
+
+The original failed traces, screenshots and terminal logs remain in
+`.context/desktop-current-high-resolution-175/`,
+`.context/desktop-current-high-resolution-ordinary-176/`,
+`.context/desktop-high-resolution-input-177/` and
+`.context/desktop-json-evidence-124/`. Diagnostic protocol records and their
+analysis are `.context/desktop-wayland-input-180/` and
+`.context/desktop-wayland-input-summary-180.json`. Existing 1920×1080 functional
+passes and 1280×720 lifecycle results retain their original bounded scope.
+
+Glyph retry 172 passes its six functional checks but overlaps a subsequently
+started diagnostic during its last five seconds; the complete comparison is
+rejected and retained. Collection is now serialized through one coordinator:
+an awake, quiet glyph comparison first, then the remaining benchmark pairs.
+No further diagnostic build/test runs alongside that coordinator. The two
+completed clean Node pairs remain retained; both interrupted third-pair
+attempts are rejected in full. An optional quiet-window request is pending;
+other workspaces' jobs have not been stopped or changed.
