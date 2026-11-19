@@ -86,3 +86,48 @@ remain in `.scratch/`.
   follow-up work. The missing Compose table also leaves dead keys unavailable.
 
 No automatic merge or deployment occurred. PHP-FPM remains unchanged.
+
+## Exit-notification correction
+
+Repeated real terminal resize and exit tests found a separate Chromium failure:
+the shell exited but Foot remained running with its window visible. This
+reproduced three times on the earlier kernel. A matched ordinary Chromium
+control completed twelve cycles. The trace shows one nonblocking child wait
+after the shell exit, followed by Foot waiting in epoll.
+
+The kernel hid grouped child status until exact execution retirement, but
+announced SIGCHLD earlier. A signal-driven `WNOHANG` reaper could consume its
+only notification while no status was observable. Correction `90958b9adf59`
+defers SIGCHLD and automatic reaping through the existing custody predicate.
+Two deterministic native tests fail on the original code and pass with the
+correction, including signal death, the last sibling receipt, quarantine,
+SIG_IGN and SA_NOCLDWAIT. All 3,889 native runtime tests pass afterward.
+
+A normal SDK C program through public `NodeKernelHost` reproduces the early
+notification on the old kernel at the second child (`waitpid` returns zero).
+The corrected kernel completes all 64 child exits in both prepared and
+ordinary modes. The formal SDK/public Node selection then passes all 39
+cases in two files, with zero failures or skips, including the existing forty
+cohorts each of pthread, fork, forced exit, native-wait exit and anonymous
+sharing. The normal kernel package build and ABI snapshot check pass; the
+program contract digest is unchanged.
+
+The corrected normally built kernel has SHA-256
+`ac950e58a87f4df07288f71b5078782f512396c91787108d537740e7f7d2ec92`.
+A causal browser diagnostic changes only that fetched kernel in the frozen
+normal host/image consumer, checks its actual response hash and records the
+original server manifest separately. Chromium and Firefox complete twelve
+real open/resize/workspace/input/exit cycles with this correction. This is a
+kernel-only regression check, not a rebuilt full-candidate release gate.
+Firefox's first diagnostic read a newly created proof file before its write;
+the corrected wait observes the exact expected shell PID bytes. That failed
+run remains retained.
+
+WebKit still times out on Sway IPC during a resize after nine completed
+cycles. Ordinary WebKit execution completes the matched twelve-cycle control.
+The IPC failure remains unresolved and is not evidence of an engine defect.
+The full browser-memory preparation also records guarded source-root metadata
+changes during redis-vfs and composer-docs publication; independent package
+provisioning continues, but that run cannot establish a passing gate. Current
+conformance, complete browser-memory and quiet paired performance acceptance
+remain outstanding.
