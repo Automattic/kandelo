@@ -1,13 +1,17 @@
 //! Kandelo Rust guest fixture (P4): std::thread + std::sync.
 //! Spawns worker threads that increment a shared counter under a Mutex,
 //! joins them, and checks the deterministic total. Exercises
-//! pthread_create->clone, futex-based Mutex, Arc, and thread TLS.
+//! pthread_create->clone, futex-based Mutex, Arc, thread TLS, and
+//! available_parallelism (sysconf(_SC_NPROCESSORS_ONLN)).
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 fn main() {
     const THREADS: usize = 4;
     const PER_THREAD: u64 = 10_000;
+
+    let cpus = thread::available_parallelism().expect("available_parallelism");
+    println!("available_parallelism = {cpus}");
 
     let counter = Arc::new(Mutex::new(0u64));
     let mut handles = Vec::new();

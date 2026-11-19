@@ -215,3 +215,14 @@
              ),
              all(
                  target_env = "sgx",
+--- a/library/std/src/os/unix/io/mod.rs
++++ b/library/std/src/os/unix/io/mod.rs
+@@ -214,7 +214,7 @@
+             cvt(unsafe { libc::__wasilibc_fd_renumber(other.as_raw_fd(), this.as_raw_fd()) }).map(|_| ())
+         }
+         not(any(
+-            target_arch = "wasm32",
++            all(target_arch = "wasm32", not(target_os = "kandelo")),
+             target_os = "hermit",
+             target_os = "trusty",
+             target_os = "motor"

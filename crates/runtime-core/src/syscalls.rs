@@ -12036,7 +12036,7 @@ fn sys_sigsuspend_with_kind(
     let new_mask = mask & !sig_guard;
 
     proc.enter_signal_mask_wait_for(tid, kind, new_mask);
-    if proc.deliverable_for(tid) != 0 {
+    if proc.interrupting_signals_for(tid) != 0 {
         // Signal arrived — return EINTR but keep the temporary mask active so
         // dequeueSignalForDelivery picks the signal that woke sigsuspend. The
         // handler frame restores that current mask; libc then invokes exact
@@ -18002,7 +18002,7 @@ pub fn sys_poll_with_peers(
     }
 
     let tid = current_tid_for_process(proc);
-    if proc.deliverable_for(tid) != 0 && !proc.should_restart_for(tid) {
+    if proc.interrupting_signals_for(tid) != 0 && !proc.should_restart_for(tid) {
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
@@ -20513,7 +20513,7 @@ pub fn sys_ppoll_with_peers(
         use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
         let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
         proc.enter_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Ppoll, m);
-        if proc.deliverable_for(tid) != 0 {
+        if proc.interrupting_signals_for(tid) != 0 {
             return Err(Errno::EINTR);
         }
     }
@@ -20570,7 +20570,7 @@ pub fn sys_pselect6_with_peers(
         use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
         let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
         proc.enter_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Pselect, m);
-        if proc.deliverable_for(tid) != 0 {
+        if proc.interrupting_signals_for(tid) != 0 {
             return Err(Errno::EINTR);
         }
     }
@@ -21558,7 +21558,7 @@ pub fn sys_epoll_pwait_with_peers(
             epoll_evaluate(proc, host, idx, maxevents as usize, true, false, 0, peers).and_then(|out| {
                 if !out.is_empty() || timeout_ms == 0 {
                     Ok((out.len() as i32, out))
-                } else if proc.deliverable_for(tid) != 0 {
+                } else if proc.interrupting_signals_for(tid) != 0 {
                     Err(Errno::EINTR)
                 } else {
                     Err(Errno::EAGAIN)
@@ -23368,7 +23368,7 @@ pub fn sys_select_with_peers(
         return Ok(ready);
     }
     let tid = current_tid_for_process(proc);
-    if proc.deliverable_for(tid) != 0 && !proc.should_restart_for(tid) {
+    if proc.interrupting_signals_for(tid) != 0 && !proc.should_restart_for(tid) {
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
@@ -49779,7 +49779,7 @@ impl HostIO for NetMock {
         sys_epoll_ctl(&mut proc, epfd, 1, read_fd, 0x001, 7).unwrap();
 
         // The reaper's handler must be installed: a default-disposition
-        // SIGCHLD is discarded at raise time and never becomes pending.
+        // SIGCHLD is ignored, so it never interrupts the wait.
         sys_sigaction(&mut proc, SIGCHLD, 42, 0, 0).unwrap();
         let orig_mask = proc.signals.blocked;
         sys_sigprocmask(&mut proc, SIG_BLOCK, crate::signal::sig_bit(SIGCHLD))
@@ -49801,6 +49801,31 @@ impl HostIO for NetMock {
             sys_epoll_pwait(&mut proc, &mut host, epfd, 10, -1, Some(orig_mask));
         assert_eq!(retried, Err(Errno::EINTR));
         assert_ne!(proc.signals.deliverable(), 0);
+    }
+
+    #[test]
+    fn test_epoll_pwait_sigmask_discards_pending_default_ignored_signal() {
+        // libwayland's SIGCHLD source: SIGCHLD stays SIG_DFL and blocked, so
+        // a signalfd reads it. A wait whose mask unblocks it delivers it,
+        // which has no effect, so the wait parks instead of ending in EINTR.
+        use wasm_posix_shared::signal::SIGCHLD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, 0x001, 7).unwrap();
+
+        let orig_mask = proc.signals.blocked;
+        sys_sigprocmask(&mut proc, SIG_BLOCK, crate::signal::sig_bit(SIGCHLD))
+            .unwrap();
+        proc.signals.raise(SIGCHLD);
+        assert!(proc.signals.is_pending(SIGCHLD));
+
+        let parked =
+            sys_epoll_pwait(&mut proc, &mut host, epfd, 10, -1, Some(orig_mask));
+        assert_eq!(parked, Err(Errno::EAGAIN));
+        assert!(!proc.signals.is_pending(SIGCHLD));
     }
 
     #[test]

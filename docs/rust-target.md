@@ -30,6 +30,8 @@ Verified on the kernel (see `programs/rust/*`):
 | time | `std::time::Instant`, `SystemTime` | monotonic + realtime |
 | collections/rand | `HashMap` | getrandom-seeded SipHash |
 | threads | `std::thread`, `Mutex`, `Arc` | pthread→clone, futex, TLS |
+| CPU count | `std::thread::available_parallelism` | `sysconf(_SC_NPROCESSORS_ONLN)`; the kernel reports 1 |
+| fd duplication | `OwnedFd::try_clone`, `StdioExt::set_fd` | `F_DUPFD_CLOEXEC`, `dup2` |
 | networking | `std::net` TCP | loopback + Node external TCP |
 | processes | `std::process::Command` | fork+exec (see below) |
 
@@ -547,7 +549,7 @@ in a private sysroot:
   `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
   makes the patch fail loudly — the signal to refresh the delta.
 - `sdk/rust/std-overlay/` — `kandelo` arms in `library/std` (the unix
-  pal and errno), `library/unwind` and `library/backtrace` (file-copy
+  pal, errno and stdio redirection), `library/unwind` and `library/backtrace` (file-copy
   overlay onto the toolchain's `rust-src`, which is not a submodule).
 - `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
   patch) and the private sysroot (mirror-by-symlink + patched `rust-src`),
