@@ -415,8 +415,50 @@ files pass with no skips, and the ABI check passes with unchanged program digest
 Equivalent isolated runtime `64f3986a28` also passes all 39 public SDK/Node cases
 and one default untraced WebKit 120-cycle run (3m54s). The normal build uses the
 unchanged SDK image and kernel; no temporary bootstrap or guest-source rewriting
-is present. The normal desktop/refusal matrix, two independent WebKit repeats
-and existing three-browser SDK suite are queued/running at this checkpoint.
-No sustained-reliability or full-gate acceptance follows from that first pass.
+is present. The normal desktop/refusal matrix passes all six cases. Of two additional
+independent WebKit 120-cycle repetitions, the first passes and the second fails
+Sway IPC after 112 completed cycles. Both browser-error and memory-boundary
+arrays are empty at that failure. The issue remains intermittent; the lookup
+change is not established as its fix. The existing three-browser SDK suite
+passes all 84 cases (28 per engine) in 6m52s, including five forty-cohort
+workloads per engine and actual fork/exec/mapping/pthread/wait retirement. These
+are focused SDK checks, not the full libc/POSIX conformance or browser-memory
+gate. No sustained-reliability or full-gate acceptance follows from the passes.
 The 86/87 resource sample above is pinned to the preceding runtime; it is not
 silently reused as measurement of this new change.
+
+
+## Exact revised-runtime sample 93
+
+After the paused-loop change, both arms are rebuilt at runtime `d813d6feb4`
+(equivalent isolated `64f3986a28`). The same alternating order, three fresh
+parents per arm, dimensions, fifteen inputs, glyph calibration, delay controls
+and OS collector are retained. All six resource and six glyph cases pass in
+1m53s; no owned build/stress/profile job overlaps. The earlier sample remains
+above rather than being replaced. Differences between samples are not attributed
+to the lookup change.
+
+| Measurement | Ordinary | Shared group |
+| --- | ---: | ---: |
+| One visible terminal, browser-family footprint (MiB) | 1,886.8 | 2,036.6 |
+| Two tiled (MiB) | 2,024.2 | 2,165.4 |
+| Two separate workspaces (MiB) | 2,055.4 | 2,203.8 |
+| Two retiled (MiB) | 2,065.5 | 2,155.0 |
+| Immediately after Stop (MiB) | 1,158.3 | 1,296.5 |
+| Browser CPU seconds for fifteen input commands | 1.086 | 0.973 |
+| Enter to verified output median/p95 (ms) | 29.140 / 57.480 | 11.225 / 22.655 |
+| Keydown to captured actual glyph median/p95 (ms) | 32.400 / 33.900 | 32.435 / 34.145 |
+| Start to first mapped terminal median (ms) | 1,884.9 | 2,499.6 |
+
+The same interpretation limits apply: this is an application sample with image
+and compilation effects, not the full platform benchmark gate. The glyph
+endpoint includes its observer and readback. The current sample still costs
+about 150 MiB (7.9%) more with one visible terminal and starts about 33% later.
+There is no total-memory-saving or presentation-speedup claim. Material cost and
+WebKit long-run reliability remain unresolved before promotion.
+
+Raw results are `.context/desktop-current-resources-93/` and
+`.context/desktop-current-glyph-93/`. The strict reader is
+`.context/analyze-desktop-current-93.py`; the summary and immutable consumer
+identities are `.context/desktop-current-measurement-summary-93.json` and
+`.context/desktop-current-normal-consumer-identities-93.json`.
