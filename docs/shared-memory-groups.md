@@ -200,13 +200,16 @@ select a retained evidence directory with `KANDELO_GROUPED_DESKTOP_EVIDENCE`
 and an existing server with `KANDELO_GROUPED_DESKTOP_URL`. Tests exercise
 actual pointer-selected shell PIDs, workspace changes, and terminal recovery
 after a real capacity refusal. This consumer is separate from the normal
-gallery and does not change its default launch behavior.
+gallery and does not change its default launch behavior. Each stdout/stderr
+diagnostic tail retains at most 64 KiB of independent bytes; copied state
+reports how many bytes were discarded. Serialized Sway commands capture their
+complete replies separately, including UTF-8 split across callback chunks.
+Diagnostic retention does not truncate command replies.
 
 The fresh partial-image candidate passes the default two-terminal interaction
-check on Chromium, Firefox and WebKit. Capacity refusal and recovery pass on
-Chromium and Firefox; WebKit still intermittently times out on Sway IPC under
-terminal pressure, before an explicit capacity refusal. That is an unresolved
-preview failure. The current image also reports a missing Compose table, so
+and capacity-refusal/recovery checks on Chromium, Firefox and WebKit. Longer
+WebKit terminal lifecycles still intermittently time out on Sway IPC. That is
+an unresolved preview failure. The current image also reports a missing Compose table, so
 dead-key input is not available. These bounded checks are not sustained
 lifecycle, native Safari, conformance or performance acceptance.
 
