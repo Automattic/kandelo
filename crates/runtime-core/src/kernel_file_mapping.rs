@@ -124,9 +124,7 @@ pub fn pread(
             }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(buf, offset),
         }),
-        Object::Tmpfs(h) => crate::tmpfs::read(h, offset, dst, &mut |source, source_offset, bytes| {
-            host.exchange_source_read(source, source_offset, bytes)
-        }),
+        Object::Tmpfs(h) => crate::tmpfs::read_with_host(h, offset, dst, host),
         Object::MemFd(index) => with_memfds(|table| {
             let backing = table.get(index).ok_or(Errno::EBADF)?;
             let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;

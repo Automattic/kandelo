@@ -2356,7 +2356,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 21;
+    pub const HOST_ADAPTER_VERSION: u32 = 22;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2533,6 +2533,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_group_memory_exec_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_fork"),
         HostAdapterKernelExport::optional("kernel_group_memory_layout_install"),
+        HostAdapterKernelExport::optional("kernel_group_memory_object_alive"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_release"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_reuse"),

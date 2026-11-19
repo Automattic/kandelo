@@ -1009,6 +1009,7 @@ export class WasmPosixKernel {
   #exchangeSourceProvider:
     | ((source: bigint, offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
+  #groupObjectReader: ((group: number, object: bigint, offset: bigint, dest: Uint8Array) => number) | undefined;
   /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
@@ -1848,6 +1849,10 @@ export class WasmPosixKernel {
   }
 
   /** Install the Kandelo exchange source byte provider. */
+  setGroupObjectReader(reader: (group: number, object: bigint, offset: bigint, dest: Uint8Array) => number): void {
+    this.#groupObjectReader = reader;
+  }
+
   setExchangeSourceProvider(
     provider: ((source: bigint, offset: bigint, dest: Uint8Array) => number) | undefined,
   ): void {
@@ -2689,6 +2694,17 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+        },
+        host_group_object_read: (group: number, objectLo: number, objectHi: number,
+          offsetLo: number, offsetHi: number, ptr: KernelPointer, len: number): number => {
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, 'host_group_object_read destination');
+            const bytes = new IntrinsicUint8Array(destination.capacity);
+            const result = this.#groupObjectReader?.(group, u64FromWords(objectLo, objectHi), u64FromWords(offsetLo, offsetHi), bytes) ?? -5;
+            if (!Number.isSafeInteger(result) || result < -4095 || result > bytes.length) return -5;
+            if (result > 0) this.#writeKernelBytes(destination, subarrayUint8Array(bytes, 0, result));
+            return result;
+          } catch { return -5; }
         },
         host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
           const uri = this.#readComponentFromMemory(uriPtr, uriLen);

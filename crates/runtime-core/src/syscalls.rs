@@ -7330,9 +7330,7 @@ pub fn sys_read(
             if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
-                let n = crate::tmpfs::read(host_handle, current_offset, buf, &mut |source, source_offset, bytes| {
-                    host.exchange_source_read(source, source_offset, bytes)
-                })?;
+                let n = crate::tmpfs::read_with_host(host_handle, current_offset, buf, host)?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -8236,9 +8234,7 @@ pub fn sys_pread(
 
     // In-kernel tmpfs: positioned read from Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        return crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| {
-            host.exchange_source_read(source, source_offset, bytes)
-        });
+        return crate::tmpfs::read_with_host(host_handle, offset, buf, host);
     }
 
     // In-kernel rootfs overlay: positioned read; base-file bytes via the byte source.
@@ -13185,6 +13181,12 @@ fn mmap_region_for_ofd(
         let index = match owned_index {Some(index)=>index,None=>proc.fd_table.get(fd)?.ofd_ref.0};
         // /dev/fb0 and DRI use their ordinary mapping implementation below.
         let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
+        if flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+            && crate::tmpfs::group_storage_committed(ofd.host_handle) {
+            // Compatible grouped aliases use their exact staged owner above
+            // this legacy dispatcher. A mirrored mapping cannot join them.
+            return Err(Errno::EOPNOTSUPP);
+        }
         if ofd.is_path_only() {
             return Err(Errno::EBADF);
         }

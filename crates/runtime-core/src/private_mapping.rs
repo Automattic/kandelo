@@ -73,6 +73,9 @@ impl core::fmt::Debug for Source {
 impl PartialEq for Source { fn eq(&self, other: &Self) -> bool { self.0.identity() == other.0.identity() } }
 impl Eq for Source {}
 impl Source {
+    pub(crate) fn kernel_handle(&self) -> Option<i64> {
+        match self.0.kind { Kind::Kernel(handle) => Some(handle), _ => None }
+    }
     pub(crate) fn capture(proc: &Process, fd: i32, host: &mut dyn HostIO) -> Result<(Self, WasmStat), Errno> {
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;

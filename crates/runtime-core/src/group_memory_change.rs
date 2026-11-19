@@ -70,7 +70,6 @@ fn intent(syscall: u32, args: [u64; 6]) -> Result<MemoryChange, Errno> {
             let prot = u32::try_from(args[2]).map_err(|_| Errno::EINVAL)?;
             let flags = u32::try_from(args[3]).map_err(|_| Errno::EINVAL)?;
             match flags & (mmap::MAP_SHARED | mmap::MAP_PRIVATE) {
-                mmap::MAP_SHARED if flags & mmap::MAP_ANONYMOUS == 0 => return Err(Errno::EOPNOTSUPP),
                 mmap::MAP_SHARED | mmap::MAP_PRIVATE => {},
                 _ => return Err(Errno::EINVAL),
             }
@@ -195,6 +194,13 @@ impl ProcessTable {
             let fd = i32::try_from(args[4] as i64).map_err(|_| Errno::EINVAL)?;
             let (source, stat) = crate::private_mapping::Source::capture(proc, fd, host)?;
             let ofd = proc.ofd_table.get(proc.fd_table.get(fd)?.ofd_ref.0).ok_or(Errno::EBADF)?;
+            if args[3] & mmap::MAP_SHARED as u64 != 0 {
+                if !crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) { return Err(Errno::EOPNOTSUPP); }
+                if args[2] & mmap::PROT_WRITE as u64 != 0
+                    && ofd.status_flags() & wasm_posix_shared::flags::O_ACCMODE != wasm_posix_shared::flags::O_RDWR {
+                    return Err(Errno::EACCES);
+                }
+            }
             let mut name = alloc::vec::Vec::new();
             name.try_reserve_exact(ofd.path.len().checked_add(11).ok_or(Errno::ENOMEM)?).map_err(|_| Errno::ENOMEM)?;
             name.extend_from_slice(&ofd.path);
@@ -819,7 +825,7 @@ mod tests {
         let mut shared = map_args(); shared[3] = mmap::MAP_SHARED as u64;
         let mut file = map_args(); file[3] = mmap::MAP_PRIVATE as u64;
         for (nr, args, expected) in [(Syscall::Mmap as u32, wide, Errno::EINVAL),
-            (Syscall::Mmap as u32, shared, Errno::EOPNOTSUPP),
+            (Syscall::Mmap as u32, shared, Errno::EBADF),
             (Syscall::Mmap as u32, file, Errno::EBADF), (u32::MAX, map_args(), Errno::EINVAL)] {
             assert_eq!(table.prepare_group_memory_change(pid, pid, nr, args, table.get(pid).unwrap().memory.group_virtual_extent().unwrap()), Err(expected));
             assert!(table.get(pid).unwrap().pending_group_memory_change.is_none());
@@ -909,6 +915,44 @@ mod tests {
         }
         assert!(table.get(pid).unwrap().memory.mappings().is_empty());
         assert_eq!(table.get(pid).unwrap().memory.get_brk(), 5 * P);
+    }
+
+    #[test]
+    fn tmpfs_shared_object_promotion_rolls_back_and_reuses_one_kernel_identity() {
+        use crate::syscalls::*;
+        use wasm_posix_shared::flags::{O_CREAT, O_RDWR};
+        let (mut table, pid, admission) = setup(true);
+        let mut host = crate::process::test_host::NoopHost;
+        let proc = table.get_mut(pid).unwrap();
+        let handle = crate::tmpfs::open(b"/tmp/group-shared-native", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        crate::tmpfs::truncate_handle(handle, (2 * P - 17) as i64).unwrap();
+        crate::tmpfs::write(handle, 0, b"initial").unwrap();
+        let index = proc.ofd_table.create(crate::ofd::FileType::Regular, O_RDWR, handle, b"/tmp/group-shared-native".to_vec());
+        let fd = proc.fd_table.alloc(crate::fd::OpenFileDescRef(index), 0).unwrap();
+        let args = [0, (2 * P) as u64, 3, mmap::MAP_SHARED as u64, fd as u64, 0];
+        let first = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_eq!(first.shared_object, first.token);
+        first.record().encode(&mut [0; wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES]).unwrap();
+        assert!(!crate::tmpfs::group_storage_committed(handle));
+        table.cancel_group_memory_change(pid, pid, first.token).unwrap();
+        assert!(!crate::tmpfs::group_storage_alive(admission.record().group, first.token));
+        assert_eq!(crate::tmpfs::write(handle, 0, b"current"), Ok(7));
+        let next = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_ne!(next.shared_object, first.shared_object);
+        assert_eq!(table.commit_group_memory_change(pid, pid, next.token), Err(Errno::EBUSY));
+        let mut bytes = alloc::vec![0; 2 * P];
+        let read = table.read_group_memory_population(pid, pid, next.token, 0, &mut bytes, &mut host).unwrap();
+        assert_eq!(read, 2 * P - 17); assert_eq!(&bytes[..7], b"current");
+        assert_eq!(table.read_group_memory_population(pid, pid, next.token, read as u64, &mut bytes[..17], &mut host), Ok(0));
+        table.commit_group_memory_change(pid, pid, next.token).unwrap();
+        assert!(crate::tmpfs::group_storage_committed(handle));
+        assert_eq!(crate::tmpfs::size(handle), Ok((2 * P - 17) as i64));
+        assert_eq!(crate::tmpfs::write(handle, 0, b"x"), Err(Errno::EOPNOTSUPP));
+        let extent = table.get(pid).unwrap().memory.group_virtual_extent().unwrap();
+        let alias = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, extent).unwrap();
+        assert_eq!(alias.shared_object, next.shared_object); assert_eq!(alias.population_length, 0);
+        table.commit_group_memory_change(pid, pid, alias.token).unwrap();
+        assert!(!table.get(pid).unwrap().memory.has_unsupported_group_shared_mapping(admission.record().group));
     }
     #[test]
     fn failed_metadata_admission_leaves_live_mapping_and_custody_intact() {

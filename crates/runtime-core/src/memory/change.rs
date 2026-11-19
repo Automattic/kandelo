@@ -52,7 +52,14 @@ impl PreparedMemoryChange {
     pub(crate) fn prepare_group_shared(&mut self, group: u32) -> Result<(), Errno> {
         if let MemoryChangeEffect::Map { addr, len, flags, .. } = self.effect {
             if flags & mmap::MAP_SHARED != 0 {
-                if flags & mmap::MAP_ANONYMOUS == 0 || self.proposed.grouped_linear.is_none() { return Err(Errno::EOPNOTSUPP); }
+                if self.proposed.grouped_linear.is_none() { return Err(Errno::EOPNOTSUPP); }
+                if flags & mmap::MAP_ANONYMOUS == 0 {
+                    let mapping = self.proposed.mappings.iter_mut().find(|m| m.addr == addr).ok_or(Errno::EIO)?;
+                    if mapping.file_offset != 0 { return Err(Errno::EOPNOTSUPP); }
+                    let file = mapping.file.as_mut().and_then(alloc::rc::Rc::get_mut).ok_or(Errno::EIO)?;
+                    let handle = file.private_source.as_ref().and_then(|s| s.kernel_handle()).ok_or(Errno::EOPNOTSUPP)?;
+                    file.group_shared = Some(crate::tmpfs::prepare_group_storage(handle, group, self.serial, len)?);
+                } else {
                 let object = super::GroupSharedMapping::new(group, self.serial, len)?;
                 let mut name = alloc::vec::Vec::new();
                 name.try_reserve_exact(19).map_err(|_| Errno::ENOMEM)?;
@@ -60,6 +67,7 @@ impl PreparedMemoryChange {
                 let file = alloc::rc::Rc::try_new(super::MappingFile { dev: 0, ino: self.serial, name,
                     private_source: None, group_shared: Some(object) }).map_err(|_| Errno::ENOMEM)?;
                 if !self.proposed.set_mapping_file(addr, 0, file) { return Err(Errno::EIO); }
+                }
             }
         }
         if let Some((object, length, offset)) = self.shared_backing()? {
@@ -93,10 +101,18 @@ impl PreparedMemoryChange {
         let Some(mapping) = mappings.iter().find(|m| m.addr <= lookup && m.addr + m.len > lookup) else { return Ok(None); };
         let Some(file) = &mapping.file else { return Ok(None); };
         let Some(source) = &file.private_source else { return Ok(None); };
+        if file.group_shared.is_some() && source.kernel_handle().is_some_and(crate::tmpfs::group_storage_committed) { return Ok(None); }
         let offset = mapping.file_offset.checked_add((lookup - mapping.addr) as u64)
             .and_then(|offset| offset.checked_add(advance as u64)).ok_or(Errno::EOVERFLOW)?;
         if offset.checked_add(len as u64).is_none_or(|end| end > i64::MAX as u64) { return Err(Errno::EOVERFLOW); }
         Ok(Some(crate::group_memory_change::Population { address, len, offset, source: source.clone() }))
+    }
+    fn new_group_file(&self) -> Option<i64> {
+        let MemoryChangeEffect::Map { addr, flags, .. } = self.effect else { return None; };
+        if flags & mmap::MAP_SHARED == 0 || flags & mmap::MAP_ANONYMOUS != 0 { return None; }
+        let file = self.proposed.mappings.iter().find(|m| m.addr == addr)?.file.as_ref()?;
+        if file.group_shared.as_ref()?.id() != self.serial { return None; }
+        file.private_source.as_ref()?.kernel_handle()
     }
 }
 
@@ -172,6 +188,9 @@ impl MemoryManager {
     pub(crate) fn commit_memory_change(&mut self, plan: PreparedMemoryChange)
         -> Result<MemoryChangeEffect, (Errno, PreparedMemoryChange)> {
         if let Err(error) = self.validate_memory_change(&plan) { return Err((error, plan)); }
+        if let Some(handle) = plan.new_group_file() {
+            if let Err(error) = crate::tmpfs::commit_group_storage(handle, plan.serial) { return Err((error, plan)); }
+        }
         let effect = plan.effect;
         *self = plan.proposed;
         Ok(effect)
@@ -180,6 +199,7 @@ impl MemoryManager {
     pub(crate) fn cancel_memory_change(&mut self, plan: PreparedMemoryChange)
         -> Result<(), (Errno, PreparedMemoryChange)> {
         if self.pending_change != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
+        if let Some(handle) = plan.new_group_file() { crate::tmpfs::cancel_group_storage(handle, plan.serial); }
         // Cancellation never restores an old snapshot over intervening writes.
         self.pending_change = None;
         Ok(())

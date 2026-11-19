@@ -59,13 +59,17 @@ impl PartialEq for GroupSharedMapping {
 }
 impl Eq for GroupSharedMapping {}
 impl GroupSharedMapping {
-    fn new(group: u32, id: u64, length: usize) -> Result<Self, Errno> {
+    pub(crate) fn new(group: u32, id: u64, length: usize) -> Result<Self, Errno> {
         if group == 0 || id == 0 || length == 0 { return Err(Errno::EINVAL); }
         let bytes = core::mem::size_of::<MappingFile>().checked_add(64)
             .and_then(|n| n.checked_mul(2)).ok_or(Errno::ENOMEM)?;
         let metadata = crate::io_buffer::IO_MEMORY.reserve(bytes)?;
         Ok(Self(crate::io_owner::IoRc::try_new(GroupSharedObject { group, id, length, _metadata: metadata })?))
     }
+    pub(crate) fn group(&self) -> u32 { self.0.group }
+    pub(crate) fn id(&self) -> u64 { self.0.id }
+    pub(crate) fn length(&self) -> usize { self.0.length }
+    pub(crate) fn only_inode_hold(&self) -> bool { self.0.strong_count() == 1 }
 }
 
 /// Rust-owned identity and resource authority for one opt-in device mapping.
@@ -240,9 +244,8 @@ impl MemoryManager {
 
     pub(crate) fn has_unsupported_group_shared_mapping(&self, group: u32) -> bool {
         self.mappings.iter().any(|mapping| mapping.flags & wasm_posix_shared::mmap::MAP_SHARED != 0
-            && (mapping.flags & wasm_posix_shared::mmap::MAP_ANONYMOUS == 0
-                || !mapping.file.as_ref().and_then(|file| file.group_shared.as_ref())
-                    .is_some_and(|object| object.0.group == group)))
+            && !mapping.file.as_ref().and_then(|file| file.group_shared.as_ref())
+                    .is_some_and(|object| object.0.group == group))
     }
 
     pub fn mappings(&self) -> &[MappedRegion] {

@@ -110,6 +110,14 @@ desktop milestone.
 
 ## Accounting and acceptance
 
+The desktop-first integration currently implements whole fixed-size tmpfs
+objects with shared mappings and coherent descriptor reads. The inode and
+mapping owners retain one physical backing through close, unlink and fork.
+Promotion refuses pre-existing legacy mapping holds; ordinary or cross-group
+shared attachment is refused. Descriptor writes and size changes after
+promotion remain unsupported and return an error. This bounded surface does
+not complete the target shared-object contract above or desktop acceptance.
+
 Report distinct quantities: per-process virtual mappings, private/shared and
 proportionally attributed bytes; unique group payload; runtime scratch and
 metadata; retained owners; reusable capacity; allocation extent; declared

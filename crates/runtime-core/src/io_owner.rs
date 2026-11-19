@@ -14,7 +14,6 @@ pub(crate) struct IoRc<Value>(Rc<SharedValue<Value>>);
 
 impl<Value> IoRc<Value> {
     pub(crate) fn identity(&self) -> usize { &self.0.value as *const Value as usize }
-    #[cfg(test)]
     pub(crate) fn strong_count(&self) -> usize { Rc::strong_count(&self.0) }
     #[cfg(test)]
     pub(crate) fn admitted_bytes(&self) -> usize { self.0._reservation.bytes() }

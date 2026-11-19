@@ -251,7 +251,14 @@ enum InodeKind {
     HostBacked { source: u64, size: u64 },
 }
 
+struct GroupStorage {
+    object: crate::memory::GroupSharedMapping,
+    length: usize,
+    committed: bool,
+}
+
 struct Inode {
+    group_storage: Option<GroupStorage>,
     kind: InodeKind,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
@@ -294,6 +301,7 @@ impl Inode {
     fn new(kind: InodeKind, mode: u32, uid: u32, gid: u32, nlink: u32, st_dev: u64, ino: u64) -> Self {
         let (sec, nsec) = now();
         Inode {
+            group_storage: None,
             kind,
             mode,
             uid,
@@ -360,6 +368,7 @@ impl Inode {
             InodeKind::Symlink(target) => target.len() as u64,
             InodeKind::Special(_) => 0,
         };
+        let size = self.group_storage.as_ref().filter(|g| g.committed).map_or(size, |g| g.length as u64);
         WasmStat {
             st_dev: self.st_dev,
             st_ino: self.ino,
@@ -494,8 +503,8 @@ impl TmpfsState {
                 // is something to drain, whatever freed the file.
                 crate::wakeup::push_exchange_pending();
             }
-            if let Some(Some(Inode { kind: InodeKind::Regular(data), st_dev, .. })) = self.inodes.get(idx as usize) {
-                let (st_dev, freed) = (*st_dev, data.len() as u64);
+            if let Some(Some(Inode { kind: InodeKind::Regular(data), st_dev, group_storage, .. })) = self.inodes.get(idx as usize) {
+                let (st_dev, freed) = (*st_dev, group_storage.as_ref().filter(|g| g.committed).map_or(data.len(), |g| g.length) as u64);
                 self.credit(st_dev, freed);
             }
             if let Some(Some(inode)) = self.inodes.get(idx as usize) {
@@ -842,6 +851,7 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 } else if flags & O_DIRECTORY != 0 {
                     return Err(Errno::ENOTDIR);
                 }
+                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY && inode.group_storage.is_some() { return Err(Errno::EOPNOTSUPP); }
                 if flags & O_TRUNC != 0 && !inode.is_dir() && flags & O_ACCMODE != O_RDONLY {
                     let freed = match state.get(existing).map(|node| (&node.kind, node.st_dev)) {
                         Some((InodeKind::Regular(data), st_dev)) => Some((st_dev, data.len() as u64)),
@@ -914,6 +924,91 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
 /// `(source, offset, buf)`. May return EAGAIN while the host fetches them.
 pub type SourceRead<'a> = dyn FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno> + 'a;
 
+/// The descriptor and each VMA retain this inode; physical pages stay with the
+/// admitted host group. The initial desktop surface supports whole, fixed-size
+/// objects. Resize and content writes after promotion fail visibly.
+pub(crate) fn prepare_group_storage(handle: i64, group: u32, id: u64, mapped_len: usize)
+    -> Result<crate::memory::GroupSharedMapping, Errno> {
+    let index = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
+        // Destroy/exec can drop an unpublished plan. No file bytes were moved;
+        // its last mapping capability disappearing revokes that preparation.
+        if inode.group_storage.as_ref().is_some_and(|g| !g.committed && g.object.only_inode_hold()) {
+            inode.group_storage = None;
+        }
+        if let Some(storage) = &inode.group_storage {
+            if storage.object.group() != group { return Err(Errno::EACCES); }
+            if !storage.committed { return Err(Errno::EBUSY); }
+            if mapped_len != storage.object.length() { return Err(Errno::EOPNOTSUPP); }
+            return Ok(storage.object.clone());
+        }
+        let InodeKind::Regular(data) = &inode.kind else { return Err(Errno::EOPNOTSUPP); };
+        // Source::capture owns exactly one pin. Existing mappings must not
+        // become disconnected when this inode's bytes move into the group.
+        if inode.map_pins != 1 { return Err(Errno::EOPNOTSUPP); }
+        let rounded = data.len().checked_add(65535).ok_or(Errno::ENOMEM)? & !65535;
+        if rounded == 0 || rounded != mapped_len { return Err(Errno::EOPNOTSUPP); }
+        let object = crate::memory::GroupSharedMapping::new(group, id, rounded)?;
+        inode.group_storage = Some(GroupStorage { object: object.clone(), length: data.len(), committed: false });
+        Ok(object)
+    })
+}
+
+pub(crate) fn group_storage_committed(handle: i64) -> bool {
+    let Ok(index) = file_handle_to_inode(handle) else { return false; };
+    TMPFS.with(|state| state.get(index).and_then(|inode| inode.group_storage.as_ref()).is_some_and(|g| g.committed))
+}
+
+pub fn group_storage_alive(group: u32, id: u64) -> bool {
+    TMPFS.with(|state| state.inodes.iter().flatten().any(|inode|
+        inode.group_storage.as_ref().is_some_and(|g| g.object.group() == group && g.object.id() == id
+            && (g.committed || !g.object.only_inode_hold()))))
+}
+
+pub(crate) fn commit_group_storage(handle: i64, id: u64) -> Result<(), Errno> {
+    let index = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
+        let storage = inode.group_storage.as_mut().filter(|g| g.object.id() == id).ok_or(Errno::ESRCH)?;
+        if storage.committed { return Err(Errno::EALREADY); }
+        let InodeKind::Regular(data) = &mut inode.kind else { return Err(Errno::EIO); };
+        if data.len() != storage.length { return Err(Errno::EAGAIN); }
+        *data = Vec::new();
+        storage.committed = true;
+        Ok(())
+    })
+}
+
+pub(crate) fn cancel_group_storage(handle: i64, id: u64) {
+    let Ok(index) = file_handle_to_inode(handle) else { return; };
+    TMPFS.with(|state| {
+        if let Some(inode) = state.get_mut(index) {
+            if inode.group_storage.as_ref().is_some_and(|g| g.object.id() == id && !g.committed) {
+                inode.group_storage = None;
+            }
+        }
+    });
+}
+
+pub(crate) fn read_with_host(handle: i64, offset: i64, output: &mut [u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+    if offset < 0 { return Err(Errno::EINVAL); }
+    let index = file_handle_to_inode(handle)?;
+    let direct = TMPFS.with(|state| {
+        let inode = state.get(index).ok_or(Errno::EBADF)?;
+        Ok(inode.group_storage.as_ref().filter(|g| g.committed).map(|g| (g.object.clone(), g.length)))
+    })?;
+    if let Some((object, length)) = direct {
+        let offset = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let count = output.len().min(length.saturating_sub(offset));
+        if count == 0 { return Ok(0); }
+        let count_read = host.group_object_read(object.group(), object.id(), offset as u64, &mut output[..count])?;
+        if count_read != count { return Err(Errno::EIO); }
+        return Ok(count_read);
+    }
+    read(handle, offset, output, &mut |source, at, bytes| host.exchange_source_read(source, at, bytes))
+}
+
 /// A byte source for callers that have no host: a host-backed file reads as
 /// an I/O error rather than as empty or stale bytes.
 pub fn no_source(_: u64, _: u64, _: &mut [u8]) -> Result<usize, Errno> {
@@ -927,6 +1022,7 @@ pub fn read(handle: i64, offset: i64, buf: &mut [u8], source_read: &mut SourceRe
     }
     let host_backed = TMPFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
+        if inode.group_storage.as_ref().is_some_and(|g| g.committed) { return Err(Errno::EOPNOTSUPP); }
         match &inode.kind {
             InodeKind::Regular(data) => {
                 let start = offset as usize;
@@ -1151,6 +1247,7 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     TMPFS.with(|state| {
         let (st_dev, growth) = {
             let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            if inode.group_storage.is_some() { return Err(Errno::EOPNOTSUPP); }
             let end = (offset as usize).checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             let current = match &inode.kind {
                 InodeKind::Regular(data) => data.len(),
@@ -1238,7 +1335,7 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
     TMPFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
-            InodeKind::Regular(data) => Ok(data.len() as i64),
+            InodeKind::Regular(data) => Ok(inode.group_storage.as_ref().filter(|g| g.committed).map_or(data.len(), |g| g.length) as i64),
             InodeKind::HostBacked { size, .. } => i64::try_from(*size).map_err(|_| Errno::EOVERFLOW),
             _ => Err(Errno::EISDIR),
         }
@@ -1283,6 +1380,9 @@ fn truncate_handle_inner(handle: i64, length: i64) -> Result<(), Errno> {
         let (st_dev, old_len) = {
             let inode = state.get(idx).ok_or(Errno::EBADF)?;
             inode.check_mutable()?;
+            if let Some(group) = &inode.group_storage {
+                return if group.committed && new_len == group.length { Ok(()) } else { Err(Errno::EOPNOTSUPP) };
+            }
             match &inode.kind {
                 InodeKind::Regular(data) => (inode.st_dev, data.len()),
                 _ => (inode.st_dev, new_len),
