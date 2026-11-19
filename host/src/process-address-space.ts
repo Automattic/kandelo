@@ -309,13 +309,17 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
     const { physical, word } = this.atomicWord(signalAddress, WRITE);
     checkNotifyCount(count);
     const copy = snapshot(source);
-    // Allocate every destination view before publishing bytes or status.
+    // Allocate both sides of every copy before locking or publishing. Even a
+    // source subarray allocates a view and can fail after an earlier store.
     const destinations = spans.map(span => new Uint8Array(binding.memory.buffer, span.physical, span.length));
+    let offset = 0;
+    const sources = destinations.map(destination => {
+      const source = copy.subarray(offset, offset + destination.length);
+      offset += destination.length;
+      return source;
+    });
     return publishMemoryGroupNotification(binding.memory, physical, count, () => {
-      let at = 0;
-      for (const destination of destinations) {
-        destination.set(copy.subarray(at, at + destination.length)); at += destination.length;
-      }
+      for (let index = 0; index < destinations.length; index++) destinations[index].set(sources[index]);
       Atomics.store(word, 0, signalValue);
     });
   }
