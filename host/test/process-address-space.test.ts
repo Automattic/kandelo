@@ -134,6 +134,20 @@ describe('explicit process atomic publication', () => {
     expect(() => access.publishBytes(30, new Uint8Array(4), 1, 2, 1)).toThrow(ProcessAddressFault);
     expect([...access.readBytes(30, 4)]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
   });
+  it('wakes only the native kernel observer while guest Q is busy', async () => {
+    const { access, words, memory, retire } = fixture(), q = G.MEMORY_GROUP_WAIT_HEADER / 4, node = G.MEMORY_GROUP_WAIT_NODES;
+    words[q + 1] = node; words[q + 2] = node; words[q + 4] = 1;
+    words[node / 4] = 1; words[node / 4 + 2] = 4 * PAGE + 20;
+    const observer = Atomics.waitAsync(new Int32Array(memory.buffer, 4 * PAGE + 20, 1), 0, 0, 1000);
+    expect(observer.async).toBe(true);
+    const wait = vi.spyOn(Atomics, 'wait').mockImplementation(() => { throw Error('IPC request must not take guest Q'); });
+    Atomics.store(words, q, 1);
+    try { expect(access.notifyKernelObserverI32(20, 1)).toBe(1); expect(wait).not.toHaveBeenCalled(); }
+    finally { Atomics.store(words, q, 0); wait.mockRestore(); }
+    expect(await observer.value).toBe('ok'); expect(words[node / 4]).toBe(1); expect(words[q + 1]).toBe(node);
+    expect(() => access.notifyKernelObserverI32(20, -1)).toThrow(ProcessAddressFault);
+    retire(); expect(() => access.notifyKernelObserverI32(20, 1)).toThrow(ProcessAddressFault);
+  });
   it('publishes the return body before waking the exact ordered node, retaining waiter custody', async () => {
     const { memory, access, words } = fixture(), q = G.MEMORY_GROUP_WAIT_HEADER / 4, first = G.MEMORY_GROUP_WAIT_NODES;
     const stride = G.MEMORY_GROUP_WAIT_NODE_BYTES;
