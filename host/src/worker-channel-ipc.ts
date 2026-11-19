@@ -26,7 +26,7 @@ export class WorkerChannelIPC {
     const statusAddress = this.offset + CH_STATUS;
     if (this.source instanceof GroupProcessAddressSpace) {
       this.source.atomicStoreI32(statusAddress, CHANNEL_STATUS_PENDING);
-      this.source.notifyI32(statusAddress, 1);
+      this.source.notifyKernelObserverI32(statusAddress, 1);
       waitForGroupedChannelCompletion(this.groupedWait32!, statusAddress);
     } else {
       const words = new Int32Array(this.source.buffer);

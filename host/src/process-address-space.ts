@@ -304,6 +304,12 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
     const { binding, physical } = this.atomicWord(address, READ);
     return publishMemoryGroupNotification(binding.memory, physical, count, () => {});
   }
+  /** Internal Worker IPC request wake. This word is observed natively by
+   * the kernel; the caller has not entered its guest completion wait yet. */
+  notifyKernelObserverI32(address: number, count: number): number {
+    checkNotifyCount(count);
+    return Atomics.notify(this.atomicWord(address, READ).word, 0, count);
+  }
   publishBytes(address: number, source: Uint8Array, signalAddress: number, signalValue: number, count: number): number {
     const { binding, spans } = this.plan(address, source.byteLength, WRITE);
     const { physical, word } = this.atomicWord(signalAddress, WRITE);

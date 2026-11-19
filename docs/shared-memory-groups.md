@@ -849,3 +849,9 @@ allocation failure therefore leaves both payload and channel status unchanged,
 including replies that cross noncontiguous physical pages. Queue validation
 precedes payload and status stores; waking a node does not retire the returning
 native waiter or release its physical pin.
+
+
+Private Worker IPC requests wake the kernel's native observer directly. Replies
+and guest atomic notifications continue to use the versioned group wait queue.
+Every notification validates the current source and virtual word; no translated
+pointer or guest view is retained across calls.
