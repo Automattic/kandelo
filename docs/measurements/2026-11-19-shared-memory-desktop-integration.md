@@ -939,10 +939,24 @@ Kernel allocated capacity grows from 936 to 1,166 pages in the first session
 and from 936 to 1,171 in the second (14.375 and 14.6875 MiB). The reported
 storage metadata remains 101,580 bytes in both sessions. Wasm capacity cannot
 shrink; these observations do not distinguish live allocations from allocator
-capacity or fragmentation, and do not establish RSS growth. An ordinary-mode
-control with the same lifecycle assertions is running to investigate whether
-this capacity behavior is specific to grouped execution. Stable long-session
+capacity or fragmentation, and do not establish RSS growth. Stable long-session
 kernel resource use is not yet established.
+
+Ordinary control 164 completes 116 cycles, then fails its 30-second resize
+observation deadline. The second resize command succeeds, but the following
+`get_tree` request does not complete; there is no completed query or swaymsg
+exit result after that resize. Kernel process/map/counter inspection still
+responds, with empty diagnostics and memory-boundary failures. Its kernel
+capacity grows from 1,538 to 1,859 pages (20.0625 MiB) at the failure snapshot.
+This is a failed, partial control, not equal-length resource acceptance or
+proof that the ordinary and grouped stalls have the same cause. No native
+sample is collected: a live-job check finds the run already terminal and
+refuses further process inspection. The original failure remains retained.
+The observations show that increased kernel allocated capacity also occurs
+with grouping disabled; live allocation ownership and the reason for that
+capacity growth remain to be established. Partial snapshots are recorded in
+`.context/desktop-lifecycle-capacity-comparison-166.json`, with the failed
+control under `.context/desktop-ordinary-lifecycle-164/`.
 
 The normal result receipt is
 `.context/desktop-current-lifecycle-summary-162.json`, with original JSON and
