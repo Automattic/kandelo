@@ -395,3 +395,22 @@ test("guest-written image tools register, execute as maker, update and disappear
   expect(removed.exitCode).toBe(0);
   await expect.poll(registered).not.toContain("native_probe");
 });
+
+test("an image tool with a command list runs its program as maker with no shell", async ({ page }) => {
+  await open(page);
+  expect(await call(page, "run_command", { script: "mkdir -p /home/maker/mcp", waitMs: 10000 })).toMatchObject({ ok: true, exitCode: 0 });
+  const tool = (name: string, command: string[]) => call(page, "write_file", {
+    path: `/home/maker/mcp/${name}.json`,
+    content: JSON.stringify({ description: "Run a program with no shell", inputSchema: { type: "object", properties: { value: { type: "string" } } }, command }),
+    overwrite: true,
+  });
+  expect((await tool("native_argv_id", ["/usr/bin/id", "-u"])).ok).toBe(true);
+  expect((await tool("native_argv_echo", ["/bin/echo", "{value}"])).ok).toBe(true);
+  const registered = () => page.evaluate(async () => (await (document as any).modelContext.getTools()).map((tool: any) => tool.name));
+  await expect.poll(registered).toEqual(expect.arrayContaining(["native_argv_id", "native_argv_echo"]));
+  expect(await callNamed(page, "native_argv_id", {})).toMatchObject({ ok: true, stdout: "1000\n", exitCode: 0 });
+  expect(await callNamed(page, "native_argv_echo", { value: "$(id -u); exit 3" })).toMatchObject({ ok: true, stdout: "$(id -u); exit 3\n", exitCode: 0 });
+  expect(await callNamed(page, "native_argv_echo", {})).toMatchObject({ ok: true, stdout: "\n", exitCode: 0 });
+  expect((await call(page, "run_command", { script: "rm /home/maker/mcp/native_argv_id.json /home/maker/mcp/native_argv_echo.json", waitMs: 10000 })).exitCode).toBe(0);
+  await expect.poll(registered).not.toContain("native_argv_echo");
+});

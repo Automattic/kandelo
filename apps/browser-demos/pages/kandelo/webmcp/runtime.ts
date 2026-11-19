@@ -1,5 +1,5 @@
 import { resetPreviewProgress } from "../panes/preview-progress";
-import type { KernelHost, KernelOwnedJobRead } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { KernelHost, KernelOwnedJobOptions, KernelOwnedJobRead } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { guestPath, ToolError } from "./contract";
 import { shellQuote } from "./vfs-tools";
 
@@ -219,10 +219,8 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
   if (args.script.includes("\0")) throw new ToolError("INVALID_ARGUMENT", "Script must not contain NUL");
   const account = await sessionAccount(host, session);
   assertCurrent(host, session);
-  await releaseFinishedJobs(host, session);
-  assertCurrent(host, session);
   const { uid, gid, env } = session.identity;
-  await host.startOwnedJob(id, account.shell, [account.shell.slice(account.shell.lastIndexOf("/") + 1), "-c", args.script], {
+  await startSessionJob(host, id, account.shell, [account.shell.slice(account.shell.lastIndexOf("/") + 1), "-c", args.script], {
     cwd: args.cwd ?? account.home,
     env: jobEnv(env, account.home, args.env ?? {}),
     uid,
@@ -230,6 +228,24 @@ export async function startGuestJob(host: KernelHost, id: string, args: { script
     timeoutMs: args.timeoutMs ?? 30000,
     ...(args.stdin && { stdin: args.stdin }),
   });
+}
+
+/** Start `argv` with no shell as a job of the agent's account, at its home; `argv[0]` is the program's path. */
+export async function startGuestProgram(host: KernelHost, id: string, argv: string[], timeoutMs: number) {
+  const session = requireSession(host);
+  if (argv.some(item => item.includes("\0"))) throw new ToolError("INVALID_ARGUMENT", "Arguments must not contain NUL");
+  const account = await sessionAccount(host, session);
+  assertCurrent(host, session);
+  const { uid, gid, env } = session.identity;
+  await startSessionJob(host, id, argv[0], argv, { cwd: account.home, env: jobEnv(env, account.home, {}), uid, gid, timeoutMs });
+}
+
+/** Start `program` as a job this session owns and releases; `options` choose its account, directory and environment. */
+export async function startSessionJob(host: KernelHost, id: string, program: string, argv: string[], options: KernelOwnedJobOptions) {
+  const session = requireSession(host);
+  await releaseFinishedJobs(host, session);
+  assertCurrent(host, session);
+  await host.startOwnedJob(id, program, argv, options);
   session.jobs.push(id);
   assertCurrent(host, session);
 }
@@ -265,19 +281,28 @@ export type GuestScriptResult = {
   truncated: boolean;
 };
 
-/**
- * Run `script` as an owned job and collect its last 256 KiB of output.
- * Resolves once every member of the family has terminated, or once the job's
- * own timeout has passed without that observation. Finished records are
- * released; a job that still needs cleanup stays tracked by the session.
- */
-export async function runGuestScript(
+/** Run `script` through the agent's login shell and collect its last 256 KiB of output, as {@link runGuestJob} does. */
+export function runGuestScript(
   host: KernelHost,
   script: string,
   options: { timeoutMs: number; signal?: AbortSignal; stdin?: Uint8Array },
 ): Promise<GuestScriptResult> {
+  return runGuestJob(host, id => startGuestJob(host, id, { script, timeoutMs: options.timeoutMs, stdin: options.stdin }), options);
+}
+
+/**
+ * Start a job with `start` and collect its last 256 KiB of output.
+ * Resolves once every member of the family has terminated, or once the job's
+ * own timeout has passed without that observation. Finished records are
+ * released; a job that still needs cleanup stays tracked by the session.
+ */
+export async function runGuestJob(
+  host: KernelHost,
+  start: (id: string) => Promise<void>,
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<GuestScriptResult> {
   const id = `job-${crypto.randomUUID()}`;
-  await startGuestJob(host, id, { script, timeoutMs: options.timeoutMs, stdin: options.stdin });
+  await start(id);
   const deadline = performance.now() + options.timeoutMs + 5000;
   const chunks: JobChunks = [];
   let cursor: number | undefined;
