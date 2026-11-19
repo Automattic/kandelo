@@ -131,3 +131,83 @@ changes during redis-vfs and composer-docs publication; independent package
 provisioning continues, but that run cannot establish a passing gate. Current
 conformance, complete browser-memory and quiet paired performance acceptance
 remain outstanding.
+
+## Sustained WebKit diagnostics after the exit correction
+
+At batch head `678eb46d2115`, an ordinary WebKit control completed sixty
+identical terminal open/resize/workspace/input/exit cycles with no guest or
+memory-boundary errors. Its longest Sway command took 151.44 ms. Grouped
+execution continues to exhibit intermittent multi-second progress gaps and
+actual Sway IPC timeouts. These are functional diagnostics under concurrent
+validation load, not an accepted performance comparison.
+
+Passive DOM and outgoing Worker observations retain every input frame in the
+observed failing runs. No dropped-key, VFS naming or shell-PID defect is
+established. A separate live main-realm probe returns promptly while guest
+progress is stalled. Native sampling sometimes coincides with recovery but
+has not isolated a cause. Generic planned Rust dispatch profiling reports a
+maximum of 3 ms in a run with long stalls; it does not cover every grouped
+IO, mapping or host-completion path. Per-process gaps include blocked/idle
+time and must not be described as CPU time.
+
+Three uncommitted experiments remain isolated from the batch PR:
+
+| Candidate | Evidence and remaining limit |
+| --- | --- |
+| Construct admitted backing extent before attaching WebKit participants | The old consumer fails the exact 512 MiB backing assertion. The candidate passes it, but sustained terminal use still fails after nine cycles with a grouped Worker readiness timeout. This addresses the separately registered shared-memory growth/VM-teardown hazard; it is not a proven IPC fix. Resource acceptance is pending. |
+| Bound the new private grouped IPC wait using the existing heap-safepoint policy | Host build and eighteen channel/heap cases pass on retry. The initial long resolver-build fixture deadline failure is retained. Real WebKit desktop IPC still fails. Source Wasm atomic waits retain their original timeout and FIFO. |
+| Preflight all source views before fragmented reply publication and remove temporary containers from valid queue-lock paths | Failure injection on the old code leaves two payload bytes changed before the second view allocation throws. The candidate passes all 223 focused address-space/image/pool/admission cases and host build. A rebuilt normal consumer still fails real WebKit IPC. This is a concrete partial-publication correction, not a demonstrated stall fix. |
+
+The first full browser-memory attempt ended with guarded redis-vfs and
+composer-docs source-root metadata publication refusals. The guard was not
+weakened. The retry at clean `678eb46d2115` completes all 330 canonical
+preparation nodes, all 1,508 source/ownership cases and the three teardown
+pretests; complete browser-memory acceptance remains pending. No candidate
+above has been promoted on that incomplete gate.
+
+Retained workspace evidence includes `desktop-ordinary-webkit-long-control-26`,
+`desktop-sysprof-34`, `desktop-lock-timing-38`, the pre-fix publication failure,
+and candidate patches before diagnostic instrumentation. Temporary timing
+measured intervals up to 28 seconds between queue-lock acquisition and return
+from unlock/notify. A second run locates 6.8–13.9-second delays in the
+unlock/notify sequence, after payload publication and ordered waiter wake
+finish promptly. This interval includes notification after the mutex is
+stored unlocked; it does not prove that the mutex stays held throughout.
+Separate store/notify attribution is in progress. No outside-runtime defect
+is established and guest wait semantics are unchanged.
+
+Further phase timing isolates the unlock store itself: diagnostic 41 records
+0.99, 8.32 and 1.14 seconds between `Atomics.store(lock, 0)` and the next
+clock read, while the following notify returns promptly. Changing native
+queue contenders to read a held mutex before retrying exchange does not fix
+the desktop: the normally rebuilt SDK image 43 still records a 20.7-second
+unlock-store interval and fails IPC after one completed cycle. Its changed
+helper digest and unchanged ordinary program digests are retained.
+
+A smaller real-helper test uses eight contending Wasm Workers for thirty-two
+rounds each with the old and revised C mutexes. Both complete, and both have
+a maximum host unlock-store interval of 0.02 ms. Simple write contention is
+therefore not established as the desktop cause. The read-first C change was
+reverted; its patch, normal image, provenance and failing run remain retained.
+A subsequent native-sampling attempt refuses ambiguous process attribution
+while the full browser-memory WebKit consumer is live; no foreign process is
+sampled. The full gate has passed all six Chromium and six Firefox browser
+cases, including repeated constrained machine switches. WebKit remains active.
+
+## Current-head browser-memory gate
+
+`desktop-current-browser-memory-1119-015504-d274` completed successfully in
+49 minutes 48 seconds at clean `678eb46d2115`. The normal canonical build
+completed all 330 nodes. The source/ownership suite passed 1,508 cases in
+57 files with no skips; three teardown pretests and seven Node/Bun
+reclamation cases passed. All eighteen required browser cases passed across
+Chromium, Firefox and WebKit with no skips. The constrained same-page
+machine-switch workloads took 6.7, 11.9 and 7.1 minutes respectively.
+The final script reports `Browser memory regression gate passed`.
+
+A nonfatal Firefox staging-directory cleanup EACCES is retained in the full
+log. This gate validates the pushed candidate's general machine switching,
+ownership, audio and reclamation surface. It does not erase the separate
+opt-in grouped-desktop sustained-use failure or validate the uncommitted
+experiments described above. Full output is retained as
+`.context/desktop-current-browser-memory-final-47/output.log.gz`.
