@@ -133,6 +133,11 @@ package builds (rootfs, shell, coreutils-docs, and others) execute
 the caller provisions the locked tree. A tree that already matches, such as
 one CI installed, is left untouched.
 
+The setup runner compiles the native `xtask` orchestrator with Cargo's
+release profile, matching build planning and the other `run.sh` entry points.
+Program, SDK and kernel build profiles continue to come from their declared
+build steps. Cache validation and package selection use the same engine.
+
 `./run.sh setup` builds this same graph. `./run.sh local-build` runs `xtask
 bootstrap packages`, the SDK prerequisites and the same engine step setup's
 `xtask bootstrap` runs, and both take their selection from one function
