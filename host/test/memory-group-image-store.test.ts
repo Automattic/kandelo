@@ -11,6 +11,54 @@ const layout = { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 
 function task(patch: Partial<MemoryGroupTaskReceipt> = {}): MemoryGroupTaskReceipt {
   return { group: 7, pid: 100, tid: 100, serial: (1n << 55n) + 1n, generation: (1n << 54n) + 3n, ...patch };
 }
+describe('full virtual-capacity custody validation', () => {
+  const large = { ...layout, maximumVirtualPages: 65536 };
+  it.each(['physical-bounds', 'virtual-tail'] as const)('retains all custody on invalid %s PTEs', kind => {
+    const store = new MemoryGroupImageStore(7, 64), receipt = task();
+    const handle = store.prepareImage(receipt, large), launch = store.publish(handle, receipt);
+    const memory = launch.envelope.memory;
+    const table = new Uint32Array(memory.buffer, launch.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, large.maximumVirtualPages);
+    const at = kind === 'physical-bounds' ? 1 : large.maximumVirtualPages - 1;
+    const saved = Atomics.load(table, at), charged = store.snapshot().allocatedPages;
+    try {
+      const physical = kind === 'physical-bounds' ? memory.buffer.byteLength / P : Atomics.load(table, 0) >>> 16;
+      Atomics.store(table, at, physical * P + 3);
+      store.noteReplicaQuiescent(handle); store.revokeImageAccess(handle);
+      expect(() => store.tryReleaseStoppedImage(handle)).toThrow(/invalid page custody/);
+      expect(store.snapshot().allocatedPages).toBe(charged);
+    } finally { Atomics.store(table, at, saved); store.close(); }
+  });
+  it('revalidates physical bounds when a live peer grows during a retirement scan', () => {
+    const store = new MemoryGroupImageStore(7, 64), victimReceipt = task();
+    const peerReceipt = task({ pid: 200, tid: 200, serial: 2n });
+    const victim = store.prepareImage(victimReceipt, large), victimLaunch = store.publish(victim, victimReceipt);
+    const peer = store.prepareImage(peerReceipt, large), peerLaunch = store.publish(peer, peerReceipt);
+    const memory = victimLaunch.envelope.memory, originalBytes = memory.buffer.byteLength;
+    const peerTableOffset = peerLaunch.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES;
+    const originalLoad = Atomics.load;
+    let grew = false;
+    store.noteReplicaQuiescent(victim); store.revokeImageAccess(victim);
+    const load = vi.spyOn(Atomics, 'load').mockImplementation((array: any, index: number): any => {
+      if (!grew && array instanceof Uint32Array && array.byteOffset === peerTableOffset && index === 0) {
+        grew = true;
+        // Model native peer growth after the scanner captured its initial
+        // buffer bound, while the retiring image still owns all its pages.
+        const allocation = (store as any).pool.allocateContiguous(1);
+        expect(allocation).toBeDefined(); expect(memory.buffer.byteLength).toBeGreaterThan(originalBytes);
+        const table = new Uint32Array(memory.buffer, peerTableOffset, large.maximumVirtualPages);
+        Atomics.store(table, 2, allocation.first * P + 3);
+        Atomics.store(new Uint32Array(memory.buffer, peerLaunch.expectation.root, 1), 0, 3);
+      }
+      return originalLoad(array, index);
+    });
+    try {
+      const result = store.tryReleaseStoppedImage(victim);
+      expect(result).not.toBe('busy'); expect(grew).toBe(true);
+      expect(store.snapshot().images).toBe(1);
+      expect(peerLaunch.source.readBytes(2 * P, 1)).toEqual(Uint8Array.of(0));
+    } finally { load.mockRestore(); store.close(); }
+  });
+});
 function imageWithThread(maximumPhysicalPages = 32) {
   const store = new MemoryGroupImageStore(7, maximumPhysicalPages), main = task(), thread = task({ tid: 101, serial: 2n });
   const a = store.prepareImage(main, layout), b = store.prepareThread(thread);

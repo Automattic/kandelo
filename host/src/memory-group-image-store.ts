@@ -957,10 +957,16 @@ export class MemoryGroupImageStore {
       const current = new Set(pages(image.controls));
       for (const replica of this.replicas.values()) if (replica.image === image) for (const page of pages(replica.scratch)) current.add(page);
       const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
+      let physicalPages = table.buffer.byteLength / PAGE;
       for (let at = 0; at < table.length; at++) {
         const entry = Atomics.load(table, at), page = entry >>> 16;
-        if ((entry & 0xfffc) || (entry && !page) || page >= this.memory.buffer.byteLength / PAGE) fault('Invalid reclaim PTE');
-        if (page) current.add(page);
+        if (!entry) continue;
+        if ((entry & 0xfffc) || !page) fault('Invalid reclaim PTE');
+        // Shared growth is monotonic. Keep only a local lower bound and
+        // refresh before accepting a page added by a concurrent participant.
+        if (page >= physicalPages) physicalPages = this.memory.buffer.byteLength / PAGE;
+        if (page >= physicalPages) fault('Invalid reclaim PTE');
+        current.add(page);
       }
       const pinned = memoryGroupPinnedPages(this.memory, image.root);
       if (pinned === 'busy') return 'busy';
@@ -1116,12 +1122,18 @@ export class MemoryGroupImageStore {
     const table = new Uint32Array(this.memory.buffer, image.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, image.layout.maximumVirtualPages);
     const extent = Atomics.load(new Uint32Array(this.memory.buffer, image.root, 1), 0);
     if (extent > image.layout.maximumVirtualPages) fault('Retiring image has invalid extent');
+    let physicalPages = table.buffer.byteLength / PAGE;
     for (let at = 0; at < table.length; at++) {
       const entry = Atomics.load(table, at), physical = entry >>> 16;
-      if ((entry & 0xfffc) || (entry && !physical) || physical >= this.memory.buffer.byteLength / PAGE || (stable && at >= extent && entry)) {
+      if (!entry) continue;
+      if ((entry & 0xfffc) || !physical || (stable && at >= extent)) {
         fault('Retiring image has invalid page custody');
       }
-      if (physical) owned.add(physical);
+      // Do not cache a view or limit across calls. A mutable peer can grow
+      // while scanned, so an entry beyond this snapshot requires a fresh bound.
+      if (physical >= physicalPages) physicalPages = this.memory.buffer.byteLength / PAGE;
+      if (physical >= physicalPages) fault('Retiring image has invalid page custody');
+      owned.add(physical);
     }
     for (let retired = image.retainedMappingPages; retired; retired = retired.next) for (const page of retired.pages) owned.add(page);
     for (const object of image.sharedObjects ?? []) for (const page of object.pages) owned.add(page);
