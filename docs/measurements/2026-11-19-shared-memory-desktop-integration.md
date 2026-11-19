@@ -3,14 +3,31 @@
 This tracks the desktop-first batch through common runtime/package source
 `9fa8f3997224` and consumer diagnostics at `9244de33d45d`. Current desktop,
 conformance and combined browser-memory checks pass within the scopes below.
-Intermittent lifecycle failures and fresh performance/resource acceptance
-remain open. Earlier checkpoints and failed experiments are retained; this
+Current paired desktop memory/CPU/input/glyph measurements are complete; all
+nine ordinary-execution benchmark suites on Node and browser are collecting
+three independent alternating pairs per host. Intermittent lifecycle failures,
+kernel capacity growth and an unexplained long glyph session remain open.
+Earlier checkpoints and failed experiments are retained; this
 does not complete the original PR1–PR9 plan or establish merge acceptance.
+
+| Current evidence | Result |
+|---|---|
+| Normal SDK/package/image desktop | All six functional/refusal cases pass across Chromium, Firefox and WebKit. |
+| Complete browser-memory gate 150 | 1,523 source checks, three Node, seven Bun and all 18 browser cases pass, with no skips/flaky browser outcomes. |
+| Conformance 145 | Eight Node/Chromium suite runs pass; 328 classified cases per host, with documented existing expected failures/skips and one Node flake-pass. |
+| Stock untraced WebKit 162 | Two fresh 120-cycle sessions pass final input, boundary checks and Stop; earlier intermittent failures remain unresolved. |
+| Ordinary lifecycle control 164 | Fails a pending query after 116 cycles; kernel inspection responds. This partial control does not establish a common cause. |
+| Current app measurements 165 | All six resource and six glyph arms pass. Grouping costs memory/startup, reduces measured input CPU/output latency, and has nearly identical captured-glyph latency. |
+
+The current normal images are ordinary `c939f98060cf` and grouped
+`44e06ab29567`, with kernel `ac950e58a87f`. Later sections retain full hashes,
+methods, original failures and receipts. The initial results immediately
+below are historical, not current acceptance evidence.
 
 The initial checkpoint used `709edf2ac4`, after the failed-fork rollback fix
 at `dd8ec71725`.
 
-## Inputs and normal production path
+## Initial inputs and normal production path (historical)
 
 - Program ABI 56, host adapter 23, group format 4.
 - Normal SourceOnly kernel key: `2e7a7fc08572fd94ef0456e78cad5811e2a5fdc5965106e65d0b9f0ea4be1934`.
@@ -26,7 +43,7 @@ at `dd8ec71725`.
 - Preview budgets stayed 8192 physical pages, 24 processes and 64 tasks.
   Ordinary per-process and renderer budgets were not raised.
 
-## Results
+## Initial results (historical)
 
 | Check | Result and limit |
 | --- | --- |
@@ -83,10 +100,9 @@ remain in `.scratch/`.
 ## Remaining acceptance
 
 - Resolve the intermittent WebKit pressure timeout and recheck sustained use.
-- Complete the combined browser-memory gate and applicable conformance checks.
-- Measure current ordinary/grouped OS footprint, CPU, input and presentation
-  latency, and sustained lifecycle behavior with comparable, uninstrumented
-  inputs. Historical prototype numbers and the diagnostic sample do not do this.
+- Complete and assess all-nine-suite before/after benchmarks on Node and browser.
+- Investigate kernel capacity growth and the long glyph session; current app
+  measurements are complete, but stable sustained resource behavior is unproven.
 - Keep the initial preview's fixed-size object, graphics-unmap and launch limits
   explicit; general mutable file sharing and the wider original plan remain
   follow-up work. The missing Compose table also leaves dead keys unavailable.
