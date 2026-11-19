@@ -500,3 +500,64 @@ Evidence is retained under `.context/desktop-output-functional-96/`,
 The last contains raw check logs, fixture sources and Worker identities.
 Full combined browser-memory/conformance, platform benchmarks and WebKit
 long-run acceptance still remain before promotion.
+
+
+## Kernel notification-lock observation
+
+Private diagnostic 98 samples group metadata inside the owning kernel Worker
+on immutable normal consumer 96. It retains only copied scalar console data;
+no guest memory reaches the page. The bootstrap observes allocation bits and
+replica request/ack/run words without taking locks or writing metadata. These
+are nontransactional samples, not custody or reclamation proofs, and this is
+not a performance or reliability acceptance run.
+
+That run fails the actual physical-input/VFS proof after 72 completed cycles.
+It collects 269 samples: allocated pages range from 230 to 3,836, the final
+observation is 2,848, and the high-water mark reaches 4,211 of 8,192 admitted
+pages. Both observed pool-lock values are zero in every sample. The final
+replicas have no active pause request and their root locks are clear. A
+41,505 ms gap between kernel timer callbacks coincides with the failure.
+This does not establish page-budget exhaustion or a retained-pause cause.
+
+Private diagnostic 99 adds duration observation around existing kernel Worker
+JavaScript atomic calls, preserving their arguments and results. It fails after
+94 completed cycles with a real grouped Worker readiness timeout. The largest
+single call is `Atomics.wait` on the group notification lock at byte 4,112:
+21,952 ms, alongside earlier 2,063 ms and 471 ms waits. The corresponding kernel
+timer gap is 22,036 ms. No measured JavaScript store, compare/exchange, exchange
+or notify call exceeds 20 ms. The allocation high-water mark remains 4,731 of
+8,192 pages. This is evidence of a long synchronous host lock wait at
+`publishMemoryGroupNotification`, not proof of another JavaScript store stall
+or a particular engine defect. The blocked kernel turn can also delay readiness
+message processing and deadline callbacks. It does not explain every retained
+failure by itself.
+
+Raw observations are retained in `.context/desktop-accounting-98/` and
+`.context/desktop-atomic-spans-99/`; logs and diagnostic sources are retained in
+`.context/desktop-output-evidence-98/`. Neither bootstrap is shipped in the PR.
+The production notification publication path still blocks on this lock. Its
+kernel-event-loop behavior requires correction with publication, waiter ordering
+and exact image/channel lifetime preserved. Increasing readiness or test
+deadlines is not the correction.
+
+
+Private control 100 changes only the owning kernel Worker's JavaScript wait on
+that lock to a 10 ms bound. Source-Wasm wait timeouts, FIFO positions and all
+application deadlines remain unchanged. It still fails the real input/VFS proof
+after 43 completed cycles. Individual measured atomic calls stay below 20 ms,
+but the kernel timer still has a 22,335 ms gap. A bounded wait inside the same
+synchronous retry loop is therefore not a liveness fix. It is not promoted.
+An initial wrong-checkout invocation fails before loading the configuration;
+that setup failure and the corrected actual failure are retained separately.
+Evidence is `.context/desktop-private-lock-bound-100-retry/` plus the log/source
+archive above. The queue retry loop remains a concrete event-loop risk; these
+observations do not establish that it explains all failures.
+
+A suitable correction must refuse queue contention before any completion byte
+or status is published, retain the exact prepared completion, and retry on a
+later kernel Worker turn. The existing Rust direct-publication import already
+supports refusal followed by the normal queued completion path; it must not
+report publication success merely because asynchronous work was accepted.
+Private Worker IPC request notifications also need only the native kernel
+observer, rather than admission into the guest-notification queue. These are
+implementation directions, not shipped behavior or acceptance claims.
