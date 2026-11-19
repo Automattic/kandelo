@@ -819,14 +819,16 @@ host. This bounded probe is not kill/exec/crash/destroy or sustained acceptance.
 Run the Node cases with `cd host && npx vitest run --config vitest.grouped-sdk.config.ts`
 and the Chromium/Firefox/WebKit cases with
 `cd apps/browser-demos && npx playwright test --config playwright.grouped-sdk.config.ts`,
-each through `scripts/dev-shell.sh`. These are internal admission and syscall
-integration checks, not a public launcher, package/image desktop, fork/pthread,
-reclamation, conformance, browser-memory or performance acceptance result.
+each through `scripts/dev-shell.sh`. These exercise admission, syscalls and exact fork/pthread retirement. The
+embedding launcher and SDK/package/image desktop consumer are described above.
+The probes do not establish full conformance, the combined browser-memory gate,
+performance acceptance or sustained desktop reliability.
 
-The explicit embedding launch option connects these internal components. Mapping
+The explicit embedding launch option connects these components. Mapping
 publication stays within the admitted virtual capacity; physical group growth
-cannot establish virtual capacity. Complete mapping/heap semantics, lifecycle,
-shared objects and graphics remain required before preview support. See the
+cannot establish virtual capacity. Current launch, mapping, lifecycle,
+in-memory object and graphics support is bounded by the preview contract above;
+the acceptance checks still apply to their combined behavior. See the
 [address-space architecture](architecture.md#experimental-process-address-spaces).
 
 | Stage | Change | Acceptance focus |
