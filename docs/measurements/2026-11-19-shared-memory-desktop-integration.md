@@ -962,3 +962,53 @@ The normal result receipt is
 `.context/desktop-current-lifecycle-summary-162.json`, with original JSON and
 screenshots in `.context/desktop-current-lifecycle-162/` and the terminal log
 in `.context/desktop-json-evidence-124/desktop-current-lifecycle-162-PASS.log`.
+
+### Current paired desktop resource and input measurements
+
+Guarded run 165 passes all six resource and all six captured-glyph arms,
+with no overlapping tracked build/test job during either phase. Each phase
+uses three fresh Chromium 153.0.8010.12 parents per mode, in ordinary/grouped/
+grouped/ordinary/ordinary/grouped order. Consumers 151/154 have the same
+bounded output/event observers, byte-identical kernel and worker JavaScript,
+and their own normally resolved images. These current measurements replace
+the earlier pre-json-c sample for this app comparison; that sample is retained.
+
+| Metric (sample median) | Ordinary | Grouped |
+|---|---:|---:|
+| Browser physical footprint, one terminal (MiB) | 1,903.0 | 2,009.1 |
+| Browser physical footprint, two tiled terminals (MiB) | 2,015.1 | 2,145.7 |
+| Browser physical footprint, separate workspaces (MiB) | 2,033.7 | 2,170.0 |
+| Browser physical footprint, retiled (MiB) | 2,056.1 | 2,155.8 |
+| Start to mapped terminal (ms) | 1,972.4 | 2,613.3 |
+| Browser CPU for 15 physical inputs (seconds) | 1.224 | 1.009 |
+| Enter to verified command output (ms) | 35.125 | 11.120 |
+| Keydown to captured Foot glyph (ms) | 32.320 | 32.350 |
+
+CPU ranges across the three parents are 1.152–1.304 seconds ordinary and
+0.980–1.135 seconds grouped. Per-parent median Enter-to-output values are
+36.080/33.945/33.200 ms ordinary and 11.120/10.950/12.060 ms grouped;
+per-parent glyph medians are 32.300/32.320/32.330 and
+32.390/32.310/32.430 ms. Each mode has 45 normal input and 45 normal glyph
+observations nested within three independent browser launches, not 45
+independent launches. No confidence interval or platform-wide claim follows.
+
+Footprint is macOS's multi-PID, shared-region-adjusted browser-family total,
+not summed RSS; its inspection is outside the CPU interval. Immediate
+post-Stop totals are 1,158.6 and 1,338.1 MiB, not proof of physical reclamation
+or steady post-teardown memory. Grouping uses more memory and starts more
+slowly in this sample. Lower input CPU and earlier command output do not
+establish faster presentation: glyph capture includes observer/readback costs
+and is not physical input-to-photon latency.
+
+All no-input negative controls and deliberate 50 ms dispatch-delay controls
+pass. The final grouped glyph session takes about 110 seconds end to end,
+versus about 12 seconds for the others. The fixture does not locate that
+additional delay; short glyph intervals do not prove uniform overall session
+responsiveness. The complete original result is retained without exclusion.
+
+Summary and all sample ranges:
+`.context/desktop-events-measurement-summary-159.json`. Raw results:
+`.context/desktop-events-resources-159/` and
+`.context/desktop-events-glyph-159/`. Both guarded phase receipts and terminal
+logs are retained as `.context/desktop-json-evidence-124/desktop-current-*-165-PASS.*`.
+All-nine-suite Node/browser comparisons remain a separate required gate.
