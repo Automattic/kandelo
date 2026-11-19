@@ -222,6 +222,46 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     }
   });
 
+  // A producer that reads only the archive's central directory knows its
+  // length but not its digest. The length alone bounds the fetch.
+  it("reads a member of an archive registered with its length and no digest", async () => {
+    const probeBytes = new Uint8Array(readFileSync(mountProbe));
+    const payload = new TextEncoder().encode("lazy-node-data");
+    const dataArchive = zipSync({ "etc/lazy-runtime-data": payload });
+    const temp = mkdtempSync(join(tmpdir(), "kandelo-lazy-rootfs-"));
+    const dataArchivePath = join(temp, "data.zip");
+    writeFileSync(dataArchivePath, dataArchive);
+
+    const fs = KandeloImageFs.create();
+    fs.registerLazyArchive({
+      url: pathToFileURL(dataArchivePath).href,
+      entries: parseZipCentralDirectory(dataArchive),
+      mountPrefix: "/",
+      integrity: { bytes: dataArchive.byteLength },
+    });
+
+    let stdout = "";
+    const host = new NodeKernelHost({
+      rootfsImage: await fs.saveImage(),
+      onStdout: (_pid, bytes) => {
+        stdout += new TextDecoder().decode(bytes);
+      },
+    });
+
+    try {
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel!))));
+      expect(await host.spawn(arrayBuffer(probeBytes), [
+        "mount_probe_test",
+        "rootfs",
+        "/etc/lazy-runtime-data",
+      ])).toBe(0);
+      expect(stdout).toContain(`ROOTFS size=${payload.byteLength} read=${payload.byteLength}`);
+    } finally {
+      await host.destroy().catch(() => {});
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   // Host-side reads and writes of `/` must route THROUGH the kernel's rootfs
   // (the authority), not the base image bytes the host holds. The decisive proof is cross-authority:
   // a file the host writes must be visible to a live guest, and read back

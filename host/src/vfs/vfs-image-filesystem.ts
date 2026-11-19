@@ -204,7 +204,7 @@ export interface VfsImageFilesystem {
     entries: readonly unknown[];
     mountPrefix: string;
     symlinkTargets?: Map<string, string>;
-    integrity?: { sha256: string; bytes: number };
+    integrity?: { sha256?: string; bytes: number };
   }): number;
   /** A positional form of {@link registerLazyArchive}. Optional; no image-builder caller uses it. */
   registerLazyArchiveFromEntries?(
