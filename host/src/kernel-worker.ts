@@ -26340,8 +26340,9 @@ export class CentralizedKernelWorker {
    * Route a child's exit to its parent's host-owned waits.
    *
    * The kernel announces the exit itself (SIGCHLD, or the SA_NOCLDWAIT /
-   * SIG_IGN auto-reap) when it records it, before any wait is decided
-   * (`wait_child::announce_exit`), so the host never generates exit SIGCHLD.
+   * SIG_IGN auto-reap) once its status is observable, before any wait is
+   * decided (`wait_child::announce_exit`). Grouped execution custody defers
+   * both the status and announcement; the host never generates exit SIGCHLD.
    * What remains here is transitional: until every wait is kernel-owned
    * (step 5 of docs/plans/2026-09-27-guest-waits-into-rust.md), a parent
    * thread parked in a host-owned wait (poll, select, accept, a blocking

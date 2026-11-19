@@ -261,8 +261,8 @@ pub enum ExitNotice {
     /// The parent asked not to keep zombies (SA_NOCLDWAIT, or SIGCHLD set to
     /// SIG_IGN): reap the child; no SIGCHLD is generated.
     AutoReap,
-    /// The child is an unpublished `posix_spawn` child: hidden from its parent
-    /// until publication, so announce it later.
+    /// The child is hidden by spawn publication or exact grouped execution
+    /// custody. Keep its notice pending until the exit can be observed.
     Defer,
 }
 
@@ -283,10 +283,12 @@ pub fn parent_discards_zombies(parent: &crate::process::Process) -> bool {
 /// The kernel runs this before re-deciding any parked wait, so a parent's
 /// `waitpid` never returns an exit whose SIGCHLD has not been generated --
 /// its handler runs as `waitpid` returns.
+/// Grouped execution custody must also have ended: sending the only SIGCHLD
+/// while WNOHANG still reports no status strands signal-driven child reapers.
 pub fn announce_exit(table: &mut ProcessTable, child: u32) -> ExitNotice {
     let (ppid, uid, code, status) = match table.get(child) {
         Some(proc) if proc.state == crate::process::ProcessState::Exited => {
-            if proc.spawn_publication_pending {
+            if proc.spawn_publication_pending || table.memory_group_removal_pending(child) {
                 return ExitNotice::Defer;
             }
             let (code, status) = match proc.wait_event {
@@ -475,6 +477,81 @@ mod tests {
         assert_eq!(info.si_code, wasm_posix_shared::wait::CLD_EXITED);
         assert_eq!(info.si_value_bits, 7, "si_status rides in the value slot");
         assert!(table.get(child).is_some(), "a caught SIGCHLD keeps the zombie");
+    }
+
+    fn admit_grouped_child(
+        table: &mut ProcessTable,
+        child: u32,
+    ) -> crate::memory_group::GroupAdmission {
+        table.memory_groups().configure(8192, 4).unwrap();
+        let group = table.memory_groups().create(crate::memory_group::MemoryGroupLimits {
+            maximum_pages: 1024, maximum_processes: 2, maximum_tasks: 4,
+        }).unwrap();
+        let main = table.prepare_process_memory_group(group, child).unwrap();
+        table.memory_groups().start(main).unwrap();
+        main
+    }
+
+    #[test]
+    fn grouped_exit_notice_waits_for_every_exact_execution_stop() {
+        use wasm_posix_shared::memory_group::TaskAction;
+        for signal_exit in [false, true] {
+            let (mut table, parent, child) = family();
+            catch_sigchld(table.get_mut(parent).unwrap(), 0, crate::signal::SignalHandler::Handler(9));
+            let main = admit_grouped_child(&mut table, child);
+            let tid = table.create_thread(child, child, 0x8000, 0, 0).unwrap();
+            let thread = table.memory_group_task(child, tid).unwrap().unwrap();
+            table.memory_groups().start(thread).unwrap();
+            if signal_exit {
+                assert!(table.get_mut(child).unwrap().record_signal_exit(9));
+            } else {
+                assert!(table.get_mut(child).unwrap().record_normal_exit(7));
+            }
+            let wait = ChildWait::wait4(-1, 0, WNOHANG, 0).unwrap();
+            let task = GuestTask::wasm32(parent, parent);
+            assert_eq!(wait.poll(&mut table, task), Ok(None));
+            assert_eq!(announce_exit(&mut table, child), ExitNotice::Defer,
+                "a SIGCHLD-driven WNOHANG reaper must not run before the exit is observable");
+            assert_eq!(table.get(parent).unwrap().pending_for(parent) & crate::signal::sig_bit(SIGCHLD), 0);
+            table.memory_group_task_action(main.record(), TaskAction::BeginRetirement).unwrap();
+            table.memory_group_task_action(main.record(), TaskAction::RetireQuiescent).unwrap();
+            assert_eq!(announce_exit(&mut table, child), ExitNotice::Defer,
+                "the main execution stopping does not prove its sibling stopped");
+            table.memory_group_task_action(thread.record(), TaskAction::BeginRetirement).unwrap();
+            table.memory_group_task_action(thread.record(), TaskAction::Quarantine).unwrap();
+            assert_eq!(announce_exit(&mut table, child), ExitNotice::Defer,
+                "quarantined execution still owns custody");
+            assert_eq!(wait.poll(&mut table, task), Ok(None));
+            table.memory_group_task_action(thread.record(), TaskAction::RetireQuiescent).unwrap();
+            assert!(!table.memory_group_removal_pending(child));
+            assert_eq!(announce_exit(&mut table, child), ExitNotice::Done);
+            let info = table.get_mut(parent).unwrap().consume_signal_for(parent, SIGCHLD).expect("stopped child must notify its parent");
+            assert_eq!(info.sender_pid, child);
+            let (pid, event) = wait.poll(&mut table, task).unwrap().expect("the notified child must be waitable");
+            assert_eq!(pid, child);
+            assert_eq!(event.si_status, if signal_exit { 9 } else { 7 });
+        }
+    }
+
+    #[test]
+    fn grouped_exit_auto_reap_waits_for_exact_execution_stop() {
+        use wasm_posix_shared::memory_group::TaskAction;
+        for (handler, flags) in [
+            (crate::signal::SignalHandler::Ignore, 0),
+            (crate::signal::SignalHandler::Handler(9), wasm_posix_shared::signal::SA_NOCLDWAIT),
+        ] {
+            let (mut table, parent, child) = family();
+            catch_sigchld(table.get_mut(parent).unwrap(), flags, handler);
+            let main = admit_grouped_child(&mut table, child);
+            assert!(table.get_mut(child).unwrap().record_normal_exit(0));
+            assert_eq!(announce_exit(&mut table, child), ExitNotice::Defer,
+                "an auto-reap must not remove a process whose Worker still owns memory");
+            assert_eq!(table.get(parent).unwrap().pending_for(parent) & crate::signal::sig_bit(SIGCHLD), 0);
+            table.memory_group_task_action(main.record(), TaskAction::BeginRetirement).unwrap();
+            table.memory_group_task_action(main.record(), TaskAction::RetireQuiescent).unwrap();
+            assert_eq!(announce_exit(&mut table, child), ExitNotice::AutoReap);
+            assert!(table.remove_process(child).is_some());
+        }
     }
 
     #[test]
