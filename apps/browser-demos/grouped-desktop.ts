@@ -3,6 +3,7 @@ import { BrowserInputSource } from '../../host/src/input/browser-input-source';
 import { ABSOLUTE_POINTER_EXTENT, absolutePointerValue, type InputEvent as KernelInputEvent } from '../../host/src/input/input-source';
 import { pointerButtons } from '../../host/src/input/pointer-buttons';
 import { INPUT_CODES } from '../../host/src/generated/abi';
+import { DesktopOutputCapture } from './grouped-desktop-output';
 
 const style = document.createElement('style');
 style.textContent = 'body{margin:0;background:#16191d;color:#eee;font:14px system-ui}header{padding:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{padding:7px 12px}#status{padding:0 12px 12px;white-space:pre-wrap}.desktop{position:relative;outline:none}.desktop canvas{position:absolute;left:0;top:0}main{overflow:auto}';
@@ -18,7 +19,11 @@ let ready = false;
 const env = ['LIBSEAT_BACKEND=noop', 'WLR_RENDERER=gles2', 'XDG_RUNTIME_DIR=/tmp', 'PATH=/usr/bin:/bin',
   'HOME=/home/user', 'SHELL=/bin/sh', 'SWAYSOCK=/tmp/sway-ipc.sock', 'XDG_CONFIG_HOME=/usr/share/kandelo',
   'FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf'];
-const state = { stdout: '', stderr: '', rootPid: undefined as number | undefined, rootExit: undefined as number | undefined,
+const output = new DesktopOutputCapture();
+const state = { get stdout() { return output.stdout; }, get stderr() { return output.stderr; },
+  get stdoutDiscardedBytes() { return output.stdoutDiscardedBytes; },
+  get stderrDiscardedBytes() { return output.stderrDiscardedBytes; }, outputTailBytes: output.tailBytes,
+  rootPid: undefined as number | undefined, rootExit: undefined as number | undefined,
   diagnostics: [] as unknown[], trace: [] as unknown[], startupTrace: [] as unknown[], keys: [] as unknown[], input: [] as unknown[],
   commands: [] as { args: string[]; code: number; stdout: string }[], ready: false, stopping: false };
 const page = window as typeof window & { groupedDesktop?: unknown };
@@ -38,9 +43,9 @@ const command = (...args: string[]) => {
   if (!kernel || state.stopping) throw Error('Desktop is unavailable');
   controlProgram ??= await kernel.readFileFromVfs('/usr/bin/swaymsg') ?? undefined;
   if (!controlProgram) throw Error('Swaymsg is missing from the image');
-  const outputStart = state.stdout.length;
-  const code = await kernel.spawn(Uint8Array.from(controlProgram).buffer, ['swaymsg', '-r', ...args], { env, cwd: '/tmp', uid: 1000, gid: 1000 });
-  const result = { args, code, stdout: state.stdout.slice(outputStart) };
+  const { code, stdout } = await output.capture(() => kernel!.spawn(Uint8Array.from(controlProgram!).buffer,
+    ['swaymsg', '-r', ...args], { env, cwd: '/tmp', uid: 1000, gid: 1000 }));
+  const result = { args, code, stdout };
   state.commands.push(result); if (state.commands.length > 32) state.commands.shift();
   if (code !== 0) throw Error(`Sway command exited ${code}\n${state.stderr}`);
   main.querySelector<HTMLElement>('.desktop')?.focus(); return result;
@@ -56,8 +61,8 @@ action('Start shared desktop', async () => {
   if (!Number.isSafeInteger(maximumPages) || maximumPages < 256 || maximumPages > 8192) throw Error('Invalid group page budget');
   kernel = new BrowserKernel({ kernelOwnedFs: true,
     experimentalMemoryGroup: { maximumPages, maximumProcesses: 24, maximumTasks: 64 },
-    onStdout: bytes => { state.stdout += new TextDecoder().decode(bytes); },
-    onStderr: bytes => { state.stderr += new TextDecoder().decode(bytes); },
+    onStdout: bytes => output.appendStdout(bytes),
+    onStderr: bytes => output.appendStderr(bytes),
     onHostDiagnostic: event => { state.diagnostics.push(event); if (!state.stopping) fail(event.message || 'Desktop worker failed'); },
   });
   const [kernelResponse, imageResponse] = await Promise.all([fetch('/__grouped_preview/kernel.wasm'), fetch('/__grouped_preview/image.vfs.zst')]);
