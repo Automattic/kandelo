@@ -462,3 +462,41 @@ Raw results are `.context/desktop-current-resources-93/` and
 `.context/analyze-desktop-current-93.py`; the summary and immutable consumer
 identities are `.context/desktop-current-measurement-summary-93.json` and
 `.context/desktop-current-normal-consumer-identities-93.json`.
+
+
+## Bounded consumer output
+
+The desktop consumer retained every stdout/stderr byte and sliced each Sway IPC
+reply from that global history. The earlier successful 120-cycle run retained
+16,383,430 stdout bytes; the 112-cycle failure retained 15,339,105. This is a
+consumer retention defect, independently of the unresolved runtime stall.
+
+Runtime `e2318a392e` stores independent 65,536-byte diagnostic tails for each
+stream and reports discarded bytes. Each serialized command separately captures
+its complete reply, preserving UTF-8 across callback chunks and releasing the
+capture after success or failure. It does not truncate replies or synthesize
+compositor output. Five new cases verify oversized replies, split UTF-8, input
+ownership, ring wrap, concurrent rejection and failure recovery.
+
+All 1,522 source/memory checks in 58 files pass with no skips, including the
+ownership audit. This is the source portion, not the full browser-memory gate.
+All six normal desktop/refusal cases pass in Chromium, Firefox and WebKit.
+Two additional WebKit 120-cycle runs have mixed results: one fails the tree
+query after Ctrl-D at 85 completed cycles, and the other passes 120 cycles,
+final real input and Stop. The failed run retains exactly 65,536 stdout bytes
+and reports 11,690,128 discarded bytes, with no page errors or main-realm
+memory-boundary failures. Bounded history is working; it is not the sole cause
+or an established fix for the WebKit stall.
+
+Both normal consumers are rebuilt: grouped `6234/grouped-desktop.html` and
+ordinary `6235/ordinary.html`. Their page responses are verified HTTP 200.
+The kernel/process Worker JavaScript is byte-identical to run 89, and the
+normal kernel and SDK image remain unchanged. The resource sample 93 is pinned
+to the earlier consumer and is not claimed as a measurement of this UI change.
+No new SDK, guest-source substitution or kernel diagnostic bootstrap is shipped.
+
+Evidence is retained under `.context/desktop-output-functional-96/`,
+`.context/desktop-output-lifecycle-96/` and `.context/desktop-output-evidence-98/`.
+The last contains raw check logs, fixture sources and Worker identities.
+Full combined browser-memory/conformance, platform benchmarks and WebKit
+long-run acceptance still remain before promotion.
