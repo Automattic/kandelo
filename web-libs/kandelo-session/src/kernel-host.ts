@@ -365,6 +365,7 @@ export interface KernelLike {
   prepareAudio?(): Promise<void>;
   resumeAudio?(): Promise<void>;
   suspendAudio?(): Promise<void>;
+  setAudioMuted?(muted: boolean): void;
   getAudioState?(): MachineAudioState;
   onAudioStateChange?(cb: (state: MachineAudioState) => void): () => void;
   /**
@@ -1134,6 +1135,9 @@ export interface KernelHost {
   prepareAudio(): Promise<void>;
   resumeAudio(): Promise<void>;
   suspendAudio(): Promise<void>;
+  /** Silence the sink without suspending it: a guest writing to /dev/dsp
+   *  keeps running, which it does not while the sink is suspended. */
+  setAudioMuted(muted: boolean): void;
   getAudioState(): MachineAudioState;
   subscribeAudioState(cb: (state: MachineAudioState) => void): () => void;
   /** Latched: has any guest in this machine opened the audio device? */
@@ -1512,6 +1516,7 @@ export class LiveKernelHost implements KernelHost {
   private offLazyDownloads: (() => void) | null = null;
   private offAudioState: (() => void) | null = null;
   private offAudioActivity: (() => void) | null = null;
+  private audioMuted = false;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -1619,6 +1624,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
+    kernel.setAudioMuted?.(this.audioMuted);
     this.exchange.attach(kernel.exchange);
     if (kernel.framebuffers) {
       this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
@@ -3022,6 +3028,11 @@ export class LiveKernelHost implements KernelHost {
 
   async suspendAudio(): Promise<void> {
     await this.kernel?.suspendAudio?.();
+  }
+
+  setAudioMuted(muted: boolean): void {
+    this.audioMuted = muted;
+    this.kernel?.setAudioMuted?.(muted);
   }
 
   getAudioState(): MachineAudioState {

@@ -129,6 +129,10 @@ function browserAudioGlobals() {
     outputLatency: 0.02,
     renderQuantumSize: 128,
     destination: {},
+    gain: { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() },
+    createGain: vi.fn(function (this: typeof context) {
+      return this.gain;
+    }),
     audioWorklet: { addModule },
     onstatechange: null as (() => void) | null,
     resume: vi.fn(async function (this: typeof context) {
@@ -2200,7 +2204,10 @@ describe("BrowserKernel", () => {
       { type: "attach", port: pcmPort }, [pcmPort],
     );
     expect(kernel.getAudioActivity()).toBe(true);
-    expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
+    expect(audio.node.connect).toHaveBeenCalledWith(audio.context.gain);
+    expect(audio.context.gain.connect).toHaveBeenCalledWith(audio.context.destination);
+    kernel.setAudioMuted(true);
+    expect(audio.context.gain.gain.value).toBe(0);
   });
 
   it("settles browser PCM before terminating the worker and leaves the shared context open", async () => {

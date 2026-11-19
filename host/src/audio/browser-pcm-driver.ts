@@ -70,6 +70,9 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   private readonly listeners = new Set<(state: PcmOutputState) => void>();
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  /** Between the worklet and the destination: its gain is 0 while muted. */
+  private gain: GainNode | null = null;
+  private muted = false;
   private transport: PcmTransportDescriptor | null = null;
   private remotePrepared = false;
   private state: PcmOutputState = "unprepared";
@@ -219,6 +222,16 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     }
   }
 
+  /**
+   * Silence the output without stopping it. The worklet keeps consuming PCM
+   * at the device rate, so a guest writing to /dev/dsp never waits on a muted
+   * sink, unlike a suspended one.
+   */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (this.gain) this.gain.gain.value = muted ? 0 : 1;
+  }
+
   suspend(): Promise<void> {
     if (this.closing !== null || this.state === "closed") {
       return Promise.reject(new Error("PCM output is closed"));
@@ -351,6 +364,8 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       node.disconnect();
       node.port.close();
     }
+    this.gain?.disconnect();
+    this.gain = null;
     if (context) {
       if (context.onstatechange === this.contextStateHandler) {
         context.onstatechange = null;
@@ -489,7 +504,11 @@ export class BrowserPcmDriver implements PcmOutputDriver {
         try { console.error(`[BrowserPcmDriver] ${message}`); } catch {}
       };
       if (remotePort) node.port.postMessage({ type: "attach", port: remotePort }, [remotePort]);
-      node.connect(context.destination);
+      const gain = context.createGain();
+      gain.gain.value = this.muted ? 0 : 1;
+      this.gain = gain;
+      node.connect(gain);
+      gain.connect(context.destination);
       this.syncContextState();
     } catch (error) {
       this.markFatalError();
@@ -507,6 +526,8 @@ export class BrowserPcmDriver implements PcmOutputDriver {
         node.disconnect();
         node.port.close();
       }
+      this.gain?.disconnect();
+      this.gain = null;
       this.node = null;
       this.context = null;
       this.transport = null;

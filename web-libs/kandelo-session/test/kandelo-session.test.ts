@@ -1069,6 +1069,17 @@ describe("LiveKernelHost: VFS reads go through the kernel worker", () => {
 });
 
 describe("LiveKernelHost: machine PCM lifecycle", () => {
+  it("forwards the mute and applies it to a kernel attached later", () => {
+    const first = vi.fn();
+    const host = new LiveKernelHost({ kernel: { setAudioMuted: first } as never });
+    host.setAudioMuted(true);
+    expect(first).toHaveBeenCalledWith(true);
+
+    const second = vi.fn();
+    host.attachKernel({ setAudioMuted: second } as never);
+    expect(second).toHaveBeenCalledWith(true);
+  });
+
   it("forwards explicit activation and state changes independently of framebuffer", async () => {
     let state: import("../src/kernel-host").MachineAudioState = "suspended";
     let emit: ((next: import("../src/kernel-host").MachineAudioState) => void) | null = null;

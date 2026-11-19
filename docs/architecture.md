@@ -5941,6 +5941,13 @@ tail and releases ownership; no descriptor remains to receive `EIO`. A
 suspended or interrupted `AudioContext` does not set that flag; it stops the
 consumer clock and applies normal queue backpressure until resume.
 
+Muting is not suspension. `KernelHost.setAudioMuted` sets the gain of a
+`GainNode` between the worklet and the destination to 0 or 1. The worklet
+keeps consuming at the device rate, so a guest that writes to `/dev/dsp` keeps
+running while muted, but stops at a full queue while the context is suspended.
+The mute belongs to the host, survives a kernel replacement, and does nothing
+on Node, whose sink is never audible.
+
 The AudioWorklet/shared-ring transport builds on the exploration in PR #698,
 while deliberately omitting that experiment's ALSA state machine and
 `/dev/snd` ABI. OSS command details are documented in

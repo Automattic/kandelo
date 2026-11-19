@@ -453,6 +453,7 @@ export class BrowserKernel {
   private pcmDriver: BrowserPcmDriver | null = null;
   private audioActivity = false;
   private audioClosing = false;
+  private audioMuted = false;
   private audioActivityListeners = new Set<(active: boolean) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
@@ -1607,12 +1608,7 @@ export class BrowserKernel {
     if (this.audioClosing) throw new Error("PCM output is closed");
     const port = this.pcmPort;
     if (!port) throw new Error("PCM transport is not available");
-    const driver = this.pcmDriver ??= new BrowserPcmDriver({
-      workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
-      onFatalError: () => {
-        if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
-      },
-    });
+    const driver = this.pcmDriver ??= this.createPcmDriver();
     await driver.prepareRemote(port);
   }
 
@@ -1622,12 +1618,7 @@ export class BrowserKernel {
       if (this.audioClosing) throw new Error("PCM output is closed");
       const port = this.pcmPort;
       if (!port) throw new Error("PCM transport is not available");
-      const driver = this.pcmDriver ??= new BrowserPcmDriver({
-        workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
-        onFatalError: () => {
-          if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
-        },
-      });
+      const driver = this.pcmDriver ??= this.createPcmDriver();
       driver.prepareContext();
       if (!this.getAudioActivity()) return driver.resume();
       const preparation = driver.prepareRemote(port);
@@ -1641,6 +1632,22 @@ export class BrowserKernel {
     await this.pcmDriver?.suspend();
   }
 
+  setAudioMuted(muted: boolean): void {
+    this.audioMuted = muted;
+    this.pcmDriver?.setMuted(muted);
+  }
+
+  private createPcmDriver(): BrowserPcmDriver {
+    const driver = new BrowserPcmDriver({
+      workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+      onFatalError: () => {
+        if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
+      },
+    });
+    driver.setMuted(this.audioMuted);
+    return driver;
+  }
+
   getAudioState(): PcmOutputState {
     return this.pcmDriver?.getState() ??
       (this.pcmPort ? "unprepared" : "unavailable");
@@ -1648,12 +1655,7 @@ export class BrowserKernel {
 
   onAudioStateChange(listener: (state: PcmOutputState) => void): () => void {
     if (!this.pcmDriver && this.pcmPort && !this.audioClosing) {
-      this.pcmDriver = new BrowserPcmDriver({
-        workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
-        onFatalError: () => {
-          if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
-        },
-      });
+      this.pcmDriver = this.createPcmDriver();
     }
     if (!this.pcmDriver) {
       listener("unavailable");
