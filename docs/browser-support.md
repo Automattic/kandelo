@@ -102,7 +102,7 @@ stripped entry. Playwright WebKit 26.6 re-evaluates a module Worker entry when
 its dynamic dependency imports a helper back from that entry, replacing an
 initialized message handler with fresh state. A standalone reproduction and
 Chromium/Firefox controls are recorded in
-[WEBKIT-WORKER-ENTRY-EXPORTS](../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
+[WebKit terminal Worker entry workaround](../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
 Native Safari has not been checked for this reproduction.
 
 ### Key Design Decisions
