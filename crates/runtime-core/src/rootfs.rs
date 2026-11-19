@@ -237,6 +237,7 @@ struct Inode {
     /// purpose: the last *descriptor* close is the moment POSIX releases the
     /// description's locks, and a live mapping must not postpone that.
     map_pins: u32,
+    group_read_leases: u32,
     /// Bumped by every content mutation (see [`content_generation`]).
     content_gen: u64,
     synced_content_gen: u64,
@@ -268,6 +269,7 @@ impl Inode {
             nlink,
             open_count: 0,
             map_pins: 0,
+            group_read_leases: 0,
             content_gen: 0,
             synced_content_gen: 0,
             ino,
@@ -4561,6 +4563,9 @@ fn open_unmarked(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Resu
                     return Err(Errno::EEXIST);
                 }
                 let inode = state.get(existing).ok_or(Errno::ENOENT)?;
+                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY && inode.group_read_leases != 0 {
+                    return Err(Errno::EOPNOTSUPP);
+                }
                 if matches!(inode.kind, InodeKind::Symlink(_)) {
                     // The caller resolves symlinks before open; a symlink reaching
                     // here means O_NOFOLLOW on the final component.
@@ -5253,6 +5258,7 @@ where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
+    reject_group_read_lease_write(idx)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
@@ -5650,6 +5656,7 @@ where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
+    reject_group_read_lease_write(idx)?;
     if let Ok(new_size) = u64::try_from(length) {
         // Growing a file under `/var/log` spends the same cap a write does,
         // but a truncate has no short form: all of it fits or none of it.
@@ -6512,6 +6519,38 @@ pub fn release_handle(handle: i64) -> bool {
 /// POSIX: `mmap` adds a reference to the file that a later `close` of the
 /// descriptor does not remove, so the inode must outlive every descriptor and
 /// every name while a mapping of it exists.
+pub(crate) fn acquire_group_read_lease(handle: i64) -> Result<(), Errno> {
+    let index = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
+        // Existing writable/shared replicas have no common backing. Refuse
+        // admission rather than silently detach their bytes. Persistent
+        // writable files remain outside this preview's supported surface.
+        if fixed_persistence_enabled() || inode.persistent_size.is_some()
+            || !matches!(inode.kind, InodeKind::BaseRegular { .. } | InodeKind::Regular(_) | InodeKind::LazyMember { .. })
+            || inode.group_read_leases == 0 && inode.map_pins != 1 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        inode.group_read_leases = inode.group_read_leases.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    })
+}
+pub(crate) fn release_group_read_lease(handle: i64) {
+    let index = file_handle_to_inode(handle).expect("rootfs read lease handle");
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(index).expect("pinned rootfs read lease inode");
+        inode.group_read_leases = inode.group_read_leases.checked_sub(1).expect("rootfs read lease balance");
+    });
+}
+pub(crate) fn has_group_read_lease(handle: i64) -> bool {
+    file_handle_to_inode(handle).ok().is_some_and(|index|
+        ROOTFS.with(|state| state.get(index).is_some_and(|inode| inode.group_read_leases != 0)))
+}
+fn reject_group_read_lease_write(index: u32) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        if state.get(index).ok_or(Errno::EBADF)?.group_read_leases != 0 { Err(Errno::EOPNOTSUPP) } else { Ok(()) }
+    })
+}
 pub fn pin_mapping(handle: i64) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     ROOTFS.with(|state| {
@@ -9536,6 +9575,80 @@ mod tests {
             set_enabled(false);
             TEST_LOCK.store(false, Ordering::Release);
         }
+    }
+
+    #[test]
+    fn rootfs_shared_reads_hold_an_immutable_lease_until_the_final_mapping_retires() {
+        use wasm_posix_shared::flags::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC};
+        use wasm_posix_shared::{Syscall, mmap};
+        use crate::{process_table::ProcessTable, memory_group::MemoryGroupLimits};
+        const P: usize = 65536;
+        let _guard = TestGuard::acquire();
+        let mut table = ProcessTable::new();
+        table.memory_groups().configure(128, 1).unwrap();
+        let group = table.memory_groups().create(MemoryGroupLimits {
+            maximum_pages: 64, maximum_processes: 4, maximum_tasks: 8 }).unwrap();
+        let pid = table.create_process().unwrap();
+        table.get_mut(pid).unwrap().memory.install_group_linear_layout(crate::memory::linear::InitialLayout {
+            initial_pages: 4, maximum_pages: 64, brk_base: 3 * P, mmap_base: 4 * P,
+            brk_limit: 64 * P, control_start: 0, control_end: 3 * P }).unwrap();
+        let admission = table.prepare_process_memory_group(group, pid).unwrap();
+        table.memory_groups().start(admission).unwrap();
+        let path = b"/group-read-lease";
+        let handle = crate::rootfs::open(path, O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        crate::rootfs::write(handle, 0, b"hello", |_, _| Err(Errno::EIO)).unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        let index = proc.ofd_table.create(crate::ofd::FileType::Regular, O_RDONLY, handle, path.to_vec());
+        let fd = proc.fd_table.alloc(crate::fd::OpenFileDescRef(index), 0).unwrap();
+        let args = [0, 5, 1, mmap::MAP_SHARED as u64, fd as u64, 0];
+        let first = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert!(crate::rootfs::has_group_read_lease(handle));
+        assert_eq!(crate::rootfs::write(handle, 0, b"changed", |_, _| Err(Errno::EIO)), Err(Errno::EOPNOTSUPP));
+        assert_eq!(crate::rootfs::open(path, O_RDWR | O_TRUNC, 0, 0, 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(crate::rootfs::truncate_handle(handle, 0, |_, _| Err(Errno::EIO)), Err(Errno::EOPNOTSUPP));
+        table.cancel_group_memory_change(pid, pid, first.token).unwrap();
+        assert!(!crate::rootfs::has_group_read_lease(handle));
+        let next = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_eq!(next.shared_object, 0);
+        let mut bytes = alloc::vec![0; P];
+        let mut host = crate::process::test_host::NoopHost;
+        assert_eq!(table.read_group_memory_population(pid, pid, next.token, 0, &mut bytes, &mut host), Ok(5));
+        assert_eq!(&bytes[..5], b"hello");
+        assert_eq!(table.read_group_memory_population(pid, pid, next.token, 5, &mut bytes[..P - 5], &mut host), Ok(0));
+        table.commit_group_memory_change(pid, pid, next.token).unwrap();
+        assert_ne!(table.get(pid).unwrap().memory.mappings()[0].flags & mmap::MAP_SHARED, 0);
+        let extent = table.get(pid).unwrap().memory.group_virtual_extent().unwrap();
+        assert_eq!(table.prepare_group_memory_change(pid, pid, Syscall::Mprotect as u32,
+            [next.result(), P as u64, 3, 0, 0, 0], extent), Err(Errno::EACCES));
+        let child = table.fork_group_memory_process(next.receipt, extent).unwrap();
+        let unmap = table.prepare_group_memory_change(pid, pid, Syscall::Munmap as u32,
+            [next.result(), P as u64, 0, 0, 0, 0], extent).unwrap();
+        table.commit_group_memory_change(pid, pid, unmap.token).unwrap();
+        assert!(crate::rootfs::has_group_read_lease(handle));
+        drop(table);
+        assert!(child > pid);
+        assert!(!crate::rootfs::has_group_read_lease(handle));
+        assert_eq!(crate::rootfs::write(handle, 0, b"new", |_, _| Err(Errno::EIO)), Ok(3));
+        crate::private_mapping::drain_releases(&mut host).unwrap();
+    }
+    #[test]
+    fn grouped_read_lease_admits_lazy_members_without_bypassing_transport_errors() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        declare_archive(4, 20).unwrap();
+        set_archive_source(4, b"archive-fixture", b"").unwrap();
+        insert_lazy_file(b"/lazy-read-lease", 4, b"member", 5, 0o644, 0, 0, 2, b"", b"", b"").unwrap();
+        let handle = open(b"/lazy-read-lease", O_RDONLY, 0, 0, 0).unwrap();
+        pin_mapping(handle).unwrap();
+        acquire_group_read_lease(handle).unwrap();
+        assert_eq!(write(handle, 0, b"x", |_, _| panic!("a refused write must not fetch")), Err(Errno::EOPNOTSUPP));
+        assert_eq!(read(handle, 0, &mut [0; 5], |_, _| Err(Errno::EIO)), Err(Errno::EIO));
+        assert!(has_group_read_lease(handle));
+        release_group_read_lease(handle);
+        assert!(unpin_mapping(handle));
+        let truncated = open(b"/lazy-read-lease", O_RDWR | O_TRUNC, 0, 0, 0).unwrap();
+        assert_eq!(size(truncated), Ok(0));
+        release_handle(truncated); release_handle(handle);
     }
 
     struct ReservationObservedStorage {

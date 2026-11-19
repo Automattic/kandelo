@@ -3714,7 +3714,15 @@ export class WasmPosixKernel {
           } catch (caught) { rethrowNativeGlFault(caught);
             return -22; // EINVAL
           }
-          if (!b.cmdbufView) {
+          const source = this.#resolveProcessAddressSpace(pid);
+          if (!source) return -5;
+          let groupedCommands: Uint8Array | undefined;
+          if (!(source instanceof IntrinsicWasmMemory)) {
+            // A virtual address is never a physical offset into the group's
+            // Memory. Detach only this submitted range for the existing queue.
+            try { groupedCommands = source.readBytes(b.cmdbufAddr + submission.offset, submission.length); }
+            catch (caught) { rethrowNativeGlFault(caught); return -14; }
+          } else if (!b.cmdbufView) {
             const memory = this.callbacks.getProcessMemory?.(pid);
             if (!memory) return -5; // EIO
             try {
@@ -3737,7 +3745,7 @@ export class WasmPosixKernel {
             }
           }
           let frame: SubmitFrame;
-          try { frame = new SubmitFrame(b.cmdbufView,submission.offset,submission.length); }
+          try { frame = new SubmitFrame(groupedCommands ?? b.cmdbufView!,groupedCommands ? 0 : submission.offset,submission.length); }
           catch (caught) { rethrowNativeGlFault(caught); return -12; } // ENOMEM: no submission has been admitted.
           const validation = frame.validate(validateCommandBuffer);
           if (validation < 0) { frame.discard(); return validation; }

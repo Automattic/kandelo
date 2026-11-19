@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryGroupImageStore } from '../src/memory-group-image-store';
 import { GroupedWorkerRuntime, GROUPED_WORKER_EXTENSIONS } from '../src/grouped-worker-runtime';
 import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, receiveGroupedWorkerInitialization, waitForGroupedWorkerReady } from '../src/grouped-worker-initialization';
-import { centralizedThreadWorkerMain } from '../src/worker-main';
+import { centralizedWorkerMain, centralizedThreadWorkerMain } from '../src/worker-main';
 import { MockWorkerHandle } from '../src/worker-adapter';
 import { runWithProcessWorkerQuiescence } from '../src/worker-quiescence';
 import { describeWasmArtifactPolicyFailures } from '../src/constants';
@@ -64,6 +64,35 @@ describe('normal grouped Worker initialization', () => {
     await expect(receiveGroupedWorkerInitialization(createGroupedWorkerLaunch(f.init, f.launch.envelope), receive, post)).rejects.toThrow('without its readiness');
     expect(receive).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled(); f.store.close();
   });
+  it.each([false, true])('acknowledges an exact pre-execution stop without guest storage (pthread=%s)', async thread => {
+    const f = fixture();
+    const task = { ...f.expected.receipt, tid: 101, serial: f.expected.receipt.serial + 1n };
+    const launch = thread ? f.store.publish(f.store.prepareThread(task), task) : f.launch;
+    const { assertLive: _live, ...expected } = launch.expectation;
+    const init = thread ? { ...f.init, type: 'centralized_thread_init', tid: 101 } : f.init;
+    const message = createGroupedWorkerLaunch(init as any, launch.envelope);
+    Atomics.store(new Int32Array(launch.envelope.memory.buffer,
+      expected.replica + G.MEMORY_GROUP_REPLICA_RUN, 1), 0, 0);
+    const received = await receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(expected), async () => message, () => {});
+    expect(received.stopped).toEqual(expected.receipt);
+    expect(received.grouped).toBeUndefined(); expect(received.init).not.toHaveProperty('memory');
+    const events: unknown[] = [];
+    await runWithProcessWorkerQuiescence({ postMessage: message => events.push(message), close: () => events.push('closed') },
+      { pid: expected.receipt.pid, ...(thread ? { tid: 101 } : {}), memoryGroup: received.stopped }, async () => {}, () => {});
+    expect(events).toEqual([{ type: 'memory_quiescent', pid: 100, ...(thread ? { tid: 101 } : {}), memoryGroup: expected.receipt }, 'closed']);
+    f.store.close();
+  });
+  it.each(['serial', 'generation', 'pid', 'root', 'run'])('refuses a stopped launch with mismatched %s', async field => {
+    const f = fixture(), message = createGroupedWorkerLaunch(f.init, f.launch.envelope);
+    const view = new DataView(f.launch.envelope.memory.buffer, f.expected.replica, G.MEMORY_GROUP_REPLICA_BYTES);
+    view.setUint32(G.MEMORY_GROUP_REPLICA_RUN, field === 'run' ? 2 : 0, true);
+    if (field === 'serial') view.setBigUint64(G.MEMORY_GROUP_REPLICA_SERIAL, f.expected.receipt.serial + 1n, true);
+    if (field === 'generation') view.setBigUint64(G.MEMORY_GROUP_REPLICA_GENERATION, f.expected.receipt.generation + 1n, true);
+    if (field === 'pid') view.setUint32(G.MEMORY_GROUP_REPLICA_PID, 101, true);
+    if (field === 'root') view.setUint32(G.MEMORY_GROUP_REPLICA_ROOT, f.expected.root + P, true);
+    await expect(receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected), async () => message, () => {})).rejects.toThrow();
+    f.store.close();
+  });
   it('rejects expectation getters before receiving or acknowledging anything', async () => {
     const get = vi.fn(), receive = vi.fn(), post = vi.fn();
     const value = { type: 'kandelo.memory-group.worker-prepare.v3', get expected() { get(); return {}; } };
@@ -124,5 +153,20 @@ describe('normal grouped Worker initialization', () => {
       expect(() => runtime.source.readBytes(0, 1)).toThrow(); events.push(message);
     }, close: () => events.push('close') }, { pid: 100, memoryGroup: f.expected.receipt }, async () => runtime.detach(), () => {});
     expect(events).toEqual([{ type: 'memory_quiescent', pid: 100, memoryGroup: f.expected.receipt }, 'close']); f.store.close();
+  });
+  it.each([false, true])('handles stop winning during a retirement-marker read (stop=%s)', async stopped => {
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation);
+    const failure = Error('marker storage revoked');
+    vi.spyOn(runtime.source, 'readBytes').mockImplementation(() => {
+      if (stopped) Atomics.store(new Int32Array(runtime.memory.buffer,
+        f.expected.replica + G.MEMORY_GROUP_REPLICA_RUN, 1), 0, 0);
+      throw failure;
+    });
+    const post = vi.fn();
+    const running = centralizedWorkerMain({ postMessage: post } as any,
+      { ...f.init, memory: runtime.memory } as any, runtime);
+    if (stopped) { await running; expect(post).not.toHaveBeenCalled(); }
+    else await expect(running).rejects.toBe(failure);
+    runtime.detach(); f.store.close();
   });
 });

@@ -34,6 +34,7 @@ pub enum MemoryChangeEffect {
 /// One-shot Rust custody. The two snapshots have admitted I/O metadata credit;
 /// neither publishing nor cancellation needs another allocation. A failed
 /// validation returns this owner so its actual manager can still cancel it.
+#[must_use = "a prepared memory change must be committed or cancelled by its manager"]
 pub(crate) struct PreparedMemoryChange {
     serial: u64,
     baseline: MemoryManager,
@@ -57,6 +58,15 @@ impl PreparedMemoryChange {
                     let mapping = self.proposed.mappings.iter_mut().find(|m| m.addr == addr).ok_or(Errno::EIO)?;
                     if mapping.file_offset != 0 { return Err(Errno::EOPNOTSUPP); }
                     let file = mapping.file.as_mut().and_then(alloc::rc::Rc::get_mut).ok_or(Errno::EIO)?;
+                    if file.private_source.as_ref().is_some_and(|source| source.is_immutable_shared()) {
+                        // Immutable file leases preserve shared-read semantics
+                        // with independently reclaimable physical read copies.
+                        // Keep MAP_SHARED in the VMA; only host allocation is
+                        // private. No writable alias can exist during this lease.
+                        self.effect = MemoryChangeEffect::Map { addr, len, flags: (flags & !mmap::MAP_SHARED) | mmap::MAP_PRIVATE,
+                            prot: mapping.prot };
+                        return Ok(());
+                    }
                     let handle = file.private_source.as_ref().and_then(|s| s.kernel_handle()).ok_or(Errno::EOPNOTSUPP)?;
                     file.group_shared = Some(crate::tmpfs::prepare_group_storage(handle, group, self.serial, len)?);
                 } else {
@@ -156,7 +166,7 @@ fn append_protection_fragment(regions: &mut IoBuffer<MappedRegion>, next: Mapped
 impl MemoryManager {
     pub(crate) fn has_pending_memory_change(&self) -> bool { self.pending_change.is_some() }
     pub(crate) fn owns_memory_change(&self, plan: &PreparedMemoryChange) -> bool {
-        self.pending_change == Some(plan.serial)
+        self.pending_change.map(core::num::NonZeroU64::get) == Some(plan.serial)
     }
 
     pub(crate) fn prepare_memory_change(&mut self, change: MemoryChange) -> Result<PreparedMemoryChange, Errno> {
@@ -175,12 +185,12 @@ impl MemoryManager {
         }
         let serial = next_change(&LAST_CHANGE)?;
         // No fallible step follows acquiring live transaction custody.
-        self.pending_change = Some(serial);
+        self.pending_change = core::num::NonZeroU64::new(serial);
         Ok(PreparedMemoryChange { serial, baseline, proposed, effect })
     }
 
     pub(crate) fn validate_memory_change(&self, plan: &PreparedMemoryChange) -> Result<(), Errno> {
-        if self.pending_change != Some(plan.serial) { return Err(Errno::ESRCH); }
+        if self.pending_change.map(core::num::NonZeroU64::get) != Some(plan.serial) { return Err(Errno::ESRCH); }
         if !self.same_metadata(&plan.baseline) { return Err(Errno::EAGAIN); }
         Ok(())
     }
@@ -198,7 +208,7 @@ impl MemoryManager {
 
     pub(crate) fn cancel_memory_change(&mut self, plan: PreparedMemoryChange)
         -> Result<(), (Errno, PreparedMemoryChange)> {
-        if self.pending_change != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
+        if self.pending_change.map(core::num::NonZeroU64::get) != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
         if let Some(handle) = plan.new_group_file() { crate::tmpfs::cancel_group_storage(handle, plan.serial); }
         // Cancellation never restores an old snapshot over intervening writes.
         self.pending_change = None;
@@ -276,6 +286,11 @@ impl MemoryManager {
                 let len = if len == 0 { 0 } else { aligned_len(len)? };
                 let end = interval(addr, len)?;
                 if self.overlaps_host_reserved_region(addr, len) { return Err(Errno::EINVAL); }
+                if prot & mmap::PROT_WRITE != 0 && self.mappings.iter().any(|mapping|
+                    mapping.addr < end && mapping.addr + mapping.len > addr
+                    && mapping.file.as_ref().and_then(|file| file.private_source.as_ref()).is_some_and(|source| source.is_immutable_shared())) {
+                    return Err(Errno::EACCES);
+                }
                 self.protect_mapped_range(addr, end, prot)?;
                 Ok(MemoryChangeEffect::Protect { addr, len, prot })
             }
@@ -293,6 +308,10 @@ impl MemoryManager {
                 if flags & !1 != 0 { return Err(Errno::EINVAL); }
                 let old_len = aligned_len(old_len)?;
                 let new_len = aligned_len(new_len)?;
+                if new_len > old_len && self.mappings.iter().any(|mapping| mapping.addr <= addr && mapping.addr + mapping.len > addr
+                    && mapping.file.as_ref().and_then(|file| file.private_source.as_ref()).is_some_and(|source| source.is_immutable_shared())) {
+                    return Err(Errno::EOPNOTSUPP);
+                }
                 let end = interval(addr, old_len)?;
                 if self.overlaps_host_reserved_region(addr, old_len) { return Err(Errno::EINVAL); }
                 let original = self.mappings.iter().find(|m| m.addr <= addr && m.addr.checked_add(m.len).is_some_and(|e| e >= end))

@@ -118,10 +118,19 @@ Node/browser performance acceptance.
 The Node/browser process entries share a memory-free prepare/ready exchange
 before one backing is transported on the authenticated parent channel. They
 validate the versioned artifact, reject an implicit Wasm start, and bind replica
-controls before initialization. Public grouped launch remains unavailable.
-Dynamic mapping transactions, complete worker/wait retirement, shared-object
-semantics, graphics and preview acceptance are still under development; these
-internal paths do not establish their support. See
+controls before initialization. Both public hosts now accept the explicit
+`experimentalMemoryGroup` byte-launch option; ordinary artifacts retain their
+ordinary backend. Cancellation before decoding validates only the exact stopped
+identity and publishes the receiving realm's own terminal fence without
+constructing a guest instance. A stop racing a retirement-marker read cannot
+authorize a read from revoked grouped storage.
+
+The desktop-first implementation also admits whole fixed-size tmpfs shared
+objects and immutable read leases on ephemeral rootfs files. Exact owned EGL
+command streams use staged private process pages; GL reads checked virtual
+bytes before the existing queue copies the submitted range. General object
+resize/offset semantics, fragmented driver unmapping, CPU BO mappings and
+full preview acceptance remain unfinished. See
 [shared-memory groups](shared-memory-groups.md).
 
 ## Three Layers
@@ -2495,8 +2504,9 @@ separate from POSIX process groups. It reserves process/image/task capacity,
 inherits membership through fork, and retains exact execution receipts until
 the host proves retirement. Prepared construction can roll back; live,
 stopping or quarantined Workers prevent process removal. Old exec-image
-custody remains distinct from its successor. Host-adapter 8 exposes admission
-metadata only: the normal launcher does not yet run grouped programs. See
+custody remains distinct from its successor. Host-adapter 23 includes the owned
+driver mapping bridge. The public Node/browser byte-launch API selects the
+compatible backend only with the explicit embedder option. See
 [shared-memory groups](shared-memory-groups.md) for the trust boundary,
 unsupported operations and remaining execution/lifecycle gates.
 
@@ -3055,6 +3065,18 @@ host callback or concurrent writer can be rolled back.
 The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`), computes the low control slab, and calls `kernel_set_brk_base(pid, control_end)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` returns the first guest-managed byte after host control memory, so musl's malloc places the heap above the data, shadow-stack, and host control regions.
 
 The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don't export `__heap_base`. Programs built with our SDK always export it, so the fallback is rarely used in normal operation. `fork` correctly inherits the parent's brk, mmap base, max address, reserved prefix, and mappings via the kernel's process-state serialization; `exec` resets them (POSIX-correct) and the host installs the new program's computed layout.
+
+### Prepared address-space metadata
+
+`memory::change` owns one-shot staged `mmap`, `munmap`, `mprotect`, `mremap`
+and `brk` metadata. Preparation retains baseline and proposed metadata under
+admitted I/O credit. Commit validates the exact manager, baseline, file
+references and offsets, then moves the proposal without another allocation.
+Cancellation drops its snapshots and never restores old metadata over newer
+state. The grouped coordinator stages backing and supported device effects
+behind the all-replica barrier before publication. Ordinary operations leave
+this staging owner empty. The idle manager holds one optional nonzero 64-bit
+transaction number; snapshots allocate only during preparation.
 
 ## Filesystem
 

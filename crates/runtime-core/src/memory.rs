@@ -158,7 +158,7 @@ pub struct MemoryManager {
     /// Opt-in virtual image/heap intervals; ordinary processes pay one pointer.
     grouped_linear: Option<crate::IoBox<linear::GroupLinearMemory>>,
     /// Exact staged-change owner; ordinary operations leave this empty.
-    pending_change: Option<u64>,
+    pending_change: Option<core::num::NonZeroU64>,
     /// List of active mappings, kept sorted by address.
     mappings: IoBuffer<MappedRegion>,
     last_exact_mapping_id: u64,
@@ -244,6 +244,7 @@ impl MemoryManager {
 
     pub(crate) fn has_unsupported_group_shared_mapping(&self, group: u32) -> bool {
         self.mappings.iter().any(|mapping| mapping.flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+            && !mapping.file.as_ref().and_then(|file| file.private_source.as_ref()).is_some_and(|source| source.is_immutable_shared())
             && !mapping.file.as_ref().and_then(|file| file.group_shared.as_ref())
                     .is_some_and(|object| object.0.group == group))
     }

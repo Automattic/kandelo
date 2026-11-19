@@ -35,8 +35,13 @@ if (parentPort) {
     // ordinary message, so its listener is gone before guest execution. The
     // public entry also accepts workerData from existing direct callers.
     const first = await receiveNodeWorkerInit(port, workerData);
-    const { init: initData, grouped } = await receiveGroupedWorkerInitialization(first,
+    const { init: initData, grouped, stopped } = await receiveGroupedWorkerInitialization(first,
       () => new Promise(resolve => port.once('message', resolve)), message => port.postMessage(message));
+    if (stopped) {
+      await runWithProcessWorkerQuiescence(port, { pid: stopped.pid,
+        ...(stopped.tid === stopped.pid ? {} : { tid: stopped.tid }), memoryGroup: stopped }, async () => {}, () => {});
+      return;
+    }
     const data = initData as { type: string };
     if (data.type === "centralized_init") {
       const init = initData as CentralizedWorkerInitMessage;

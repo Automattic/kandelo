@@ -217,6 +217,7 @@ host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
 host/test/grouped-fork-launch.test.ts	source-only
 host/test/grouped-sdk-execution.test.ts	prepared-product
+host/test/grouped-session-runtime.test.ts	prepared-product
 host/test/grouped-thread-launch.test.ts	source-only
 host/test/grouped-worker-initialization.test.ts	source-only
 host/test/gtk3-smoke.test.ts	prepared-product

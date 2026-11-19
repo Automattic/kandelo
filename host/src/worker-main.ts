@@ -4379,52 +4379,58 @@ export async function centralizedWorkerMain(
       } satisfies WorkerToHostMessage);
     }
   } catch (err) {
-    processHostImportRuntime?.clear();
-    if (grouped?.stopRequested) return;
-    if (isExitedWorkerRetirement(grouped?.source ?? initData.memory, initData.channelOffset)) {
-      // A deferred-signal JS import may throw EINTR before re-entering Wasm.
-      // Rust has already recorded exit: publish only the wrapper's fence.
-      clearWorkerRetirementMarker(grouped?.source ?? initData.memory, initData.channelOffset);
-      return;
-    }
-    if (isExecRetirementTrap(err, grouped?.source ?? initData.memory, initData.channelOffset)) {
-      clearWorkerRetirementMarker(grouped?.source ?? initData.memory, initData.channelOffset);
+    try {
+      processHostImportRuntime?.clear();
+      if (grouped?.stopRequested) return;
+      if (isExitedWorkerRetirement(grouped?.source ?? initData.memory, initData.channelOffset)) {
+        // A deferred-signal JS import may throw EINTR before re-entering Wasm.
+        // Rust has already recorded exit: publish only the wrapper's fence.
+        clearWorkerRetirementMarker(grouped?.source ?? initData.memory, initData.channelOffset);
+        return;
+      }
+      if (isExecRetirementTrap(err, grouped?.source ?? initData.memory, initData.channelOffset)) {
+        clearWorkerRetirementMarker(grouped?.source ?? initData.memory, initData.channelOffset);
+        port.postMessage({
+          type: "exec_retired",
+          pid: initData.pid,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
+      if (kernelExitStatus !== null && isWasmUnreachableTrap(err)) {
+        // Rust already committed exit. Guest cleanup can no longer use its
+        // channel; the disposable realm releases its remaining local state.
+        port.postMessage({
+          type: "exit",
+          pid: initData.pid,
+          status: kernelExitStatus,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
+      let errMsg: string;
+      if (err instanceof Error) {
+        errMsg = `${err.message}\n${err.stack}`;
+      } else if (
+        (WebAssembly as any).Exception &&
+        err instanceof (WebAssembly as any).Exception
+      ) {
+        // WebAssembly.Exception isn't an Error subclass in V8, so String(err)
+        // produces the useless "[object WebAssembly.Exception]". Surface
+        // anything we can read off it for build-time debugging.
+        const wex = err as { message?: string; stack?: string };
+        errMsg = `WebAssembly.Exception: ${wex.message ?? "<no message>"}\n${wex.stack ?? "<no stack>"}`;
+      } else {
+        errMsg = String(err);
+      }
       port.postMessage({
-        type: "exec_retired",
+        type: "error",
         pid: initData.pid,
+        message: `Kernel worker failed: ${errMsg}`,
       } satisfies WorkerToHostMessage);
-      return;
+    } catch (retirementError) {
+      // A sibling may request stop between the first RUN check and a marker
+      // read. Revoked grouped storage cannot be read for ordinary markers.
+      if (!grouped?.stopRequested) throw retirementError;
     }
-    if (kernelExitStatus !== null && isWasmUnreachableTrap(err)) {
-      // Rust already committed exit. Guest cleanup can no longer use its
-      // channel; the disposable realm releases its remaining local state.
-      port.postMessage({
-        type: "exit",
-        pid: initData.pid,
-        status: kernelExitStatus,
-      } satisfies WorkerToHostMessage);
-      return;
-    }
-    let errMsg: string;
-    if (err instanceof Error) {
-      errMsg = `${err.message}\n${err.stack}`;
-    } else if (
-      (WebAssembly as any).Exception &&
-      err instanceof (WebAssembly as any).Exception
-    ) {
-      // WebAssembly.Exception isn't an Error subclass in V8, so String(err)
-      // produces the useless "[object WebAssembly.Exception]". Surface
-      // anything we can read off it for build-time debugging.
-      const wex = err as { message?: string; stack?: string };
-      errMsg = `WebAssembly.Exception: ${wex.message ?? "<no message>"}\n${wex.stack ?? "<no stack>"}`;
-    } else {
-      errMsg = String(err);
-    }
-    port.postMessage({
-      type: "error",
-      pid: initData.pid,
-      message: `Kernel worker failed: ${errMsg}`,
-    } satisfies WorkerToHostMessage);
   }
 }
 
@@ -6064,54 +6070,60 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
-    if (grouped?.stopRequested) {
-      threadExternrefTokens?.clear();
-      threadHostImportRuntime?.clear();
-      return;
-    }
-    if (isExitedWorkerRetirement(memory, channelOffset)) {
-      clearWorkerRetirementMarker(memory, channelOffset);
-      return;
-    }
-    if (isExecRetirementTrap(err, memory, channelOffset)) {
-      clearWorkerRetirementMarker(memory, channelOffset);
-      port.postMessage({
-        type: "exec_retired",
-        pid,
-        tid,
-      } satisfies WorkerToHostMessage);
-      return;
-    }
-    if (kernelThreadExitStatus !== null && isWasmUnreachableTrap(err)) {
-      // The process can outlive this pthread. Release host-side replication
-      // locks, but do not run guest deallocators on its closed syscall channel.
+    try {
+      if (grouped?.stopRequested) {
+        threadExternrefTokens?.clear();
+        threadHostImportRuntime?.clear();
+        return;
+      }
+      if (isExitedWorkerRetirement(memory, channelOffset)) {
+        clearWorkerRetirementMarker(memory, channelOffset);
+        return;
+      }
+      if (isExecRetirementTrap(err, memory, channelOffset)) {
+        clearWorkerRetirementMarker(memory, channelOffset);
+        port.postMessage({
+          type: "exec_retired",
+          pid,
+          tid,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
+      if (kernelThreadExitStatus !== null && isWasmUnreachableTrap(err)) {
+        // The process can outlive this pthread. Release host-side replication
+        // locks, but do not run guest deallocators on its closed syscall channel.
+        threadTableReplication?.abortActiveMutations();
+        releasePthreadForkLock();
+        threadExternrefTokens?.clear();
+        threadHostImportRuntime?.clear();
+        port.postMessage({
+          type: "thread_exit",
+          pid,
+          tid,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
       threadTableReplication?.abortActiveMutations();
       releasePthreadForkLock();
+      try {
+        threadProcessContinuation?.clear();
+      } catch {
+        // Preserve the original worker failure after making transaction roots
+        // unreachable as far as the coordinator can.
+      }
       threadExternrefTokens?.clear();
       threadHostImportRuntime?.clear();
+      const message =
+        err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
       port.postMessage({
-        type: "thread_exit",
+        type: "error",
         pid,
-        tid,
+        message: `Thread worker failed: ${message}`,
       } satisfies WorkerToHostMessage);
-      return;
+    } catch (retirementError) {
+      if (!grouped?.stopRequested) throw retirementError;
+      threadExternrefTokens?.clear();
+      threadHostImportRuntime?.clear();
     }
-    threadTableReplication?.abortActiveMutations();
-    releasePthreadForkLock();
-    try {
-      threadProcessContinuation?.clear();
-    } catch {
-      // Preserve the original worker failure after making transaction roots
-      // unreachable as far as the coordinator can.
-    }
-    threadExternrefTokens?.clear();
-    threadHostImportRuntime?.clear();
-    const message =
-      err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
-    port.postMessage({
-      type: "error",
-      pid,
-      message: `Thread worker failed: ${message}`,
-    } satisfies WorkerToHostMessage);
   }
 }

@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 22,
+      "required_host_adapter_version": 23,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2554,6 +2554,9 @@
       "kernel_group_memory_change_cancel",
       "kernel_group_memory_change_commit",
       "kernel_group_memory_change_prepare",
+      "kernel_group_owned_mapping_prepare",
+      "kernel_group_owned_mapping_validate",
+      "kernel_group_owned_mapping_finish",
       "kernel_group_memory_change_read",
       "kernel_group_memory_change_validate",
       "kernel_group_memory_exec_action",
@@ -2703,7 +2706,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 22,
+    "version": 23,
     "worker_features": [
       {
         "bit": 2,
@@ -4557,6 +4560,21 @@
       "kind": "func",
       "name": "kernel_group_memory_thread_control_reuse",
       "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_owned_mapping_finish",
+      "signature": "(i32,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_owned_mapping_prepare",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_owned_mapping_validate",
+      "signature": "(i32,i32,i32,i64,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

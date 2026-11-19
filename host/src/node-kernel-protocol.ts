@@ -1,3 +1,4 @@
+import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
@@ -139,6 +140,7 @@ export interface InitMessage {
   remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   config: {
+    experimentalMemoryGroup?: TrustedMemoryGroupOptions;
     maxWorkers: number;
     maxPages?: number;
     kernelMaxPages?: number;

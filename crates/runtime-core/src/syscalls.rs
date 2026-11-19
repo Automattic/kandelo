@@ -13182,7 +13182,8 @@ fn mmap_region_for_ofd(
         // /dev/fb0 and DRI use their ordinary mapping implementation below.
         let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
         if flags & wasm_posix_shared::mmap::MAP_SHARED != 0
-            && crate::tmpfs::group_storage_committed(ofd.host_handle) {
+            && (crate::tmpfs::group_storage_committed(ofd.host_handle)
+                || crate::rootfs::has_group_read_lease(ofd.host_handle)) {
             // Compatible grouped aliases use their exact staged owner above
             // this legacy dispatcher. A mirrored mapping cannot join them.
             return Err(Errno::EOPNOTSUPP);
@@ -13443,6 +13444,7 @@ pub(crate) struct DeviceMapAllocation {
     len: usize,
     previous: Option<crate::IoBuffer<crate::memory::MappedRegion>>,
     retirement: Option<DeviceUnmapPlan>,
+    grouped: Option<crate::IoBox<Option<crate::memory::change::PreparedMemoryChange>>>,
 }
 
 impl DeviceMapAllocation {
@@ -13517,6 +13519,18 @@ impl DeviceMapAllocation {
             proc.dri_bindings.try_reserve(additional_bindings)?;
             (None, None)
         };
+        if proc.memory.group_virtual_extent().is_some() {
+            let mut storage = crate::IoBox::try_new(None)?;
+            // Command streams belong to this image. Their driver ownership
+            // does not make their bytes a cross-process shared object.
+            let plan = proc.memory.prepare_memory_change(crate::memory::change::MemoryChange::Map {
+                hint: addr, len, prot, flags: (flags & !wasm_posix_shared::mmap::MAP_SHARED)
+                    | wasm_posix_shared::mmap::MAP_PRIVATE | MAP_ANONYMOUS,
+            })?;
+            let crate::memory::change::MemoryChangeEffect::Map { addr: mapped, .. } = plan.effect() else { unreachable!() };
+            *storage = Some(plan);
+            return Ok(Ok(Self { addr: mapped, len, previous, retirement, grouped: Some(storage) }));
+        }
         let mapped = match proc.memory.try_mmap_anonymous(addr, len, prot, flags | MAP_ANONYMOUS) {
             Ok(mapped) => mapped,
             Err(refusal) => return Ok(Err(refusal)),
@@ -13526,11 +13540,14 @@ impl DeviceMapAllocation {
             len,
             previous,
             retirement,
+            grouped: None,
         }))
     }
 
     fn rollback(self, proc: &mut Process) {
-        if let Some(previous) = self.previous {
+        if let Some(mut storage) = self.grouped {
+            proc.memory.cancel_memory_change(storage.take().expect("grouped device plan")).expect("exact grouped device rollback");
+        } else if let Some(previous) = self.previous {
             proc.memory.restore_mapping_snapshot(previous);
         } else {
             proc.memory.munmap(self.addr, self.len).expect("admitted device-map rollback must retain metadata capacity");
@@ -13539,6 +13556,9 @@ impl DeviceMapAllocation {
     }
 
     fn commit(self, proc: &mut Process, host: &mut dyn HostIO, host_replaced_bindings: bool) {
+        if let Some(mut storage) = self.grouped {
+            proc.memory.commit_memory_change(storage.take().expect("grouped device plan")).expect("validated grouped device publication");
+        }
         if let Some(retirement) = self.retirement {
             retirement.commit_with_host(proc, host, host_replaced_bindings);
         }

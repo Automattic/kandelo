@@ -183,6 +183,8 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_memory_group_task_action",
   "kernel_memory_group_task_receipt",
   "kernel_group_memory_change_prepare",
+  "kernel_group_owned_mapping_prepare",
+  "kernel_group_owned_mapping_validate",
   "kernel_group_memory_thread_control_prepare",
   "kernel_group_memory_change_read",
   "kernel_group_memory_layout_install",
@@ -300,6 +302,10 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_0;
     case "kernel_group_memory_change_prepare":
       return REQUIRED_POINTER_2_4;
+    case "kernel_group_owned_mapping_prepare":
+      return REQUIRED_POINTER_3_5;
+    case "kernel_group_owned_mapping_validate":
+      return REQUIRED_POINTER_4;
     case "kernel_group_memory_change_validate":
     case "kernel_group_memory_thread_control_prepare":
       return REQUIRED_POINTER_4;
@@ -446,6 +452,8 @@ function isKernelScratchExportName(
     case "kernel_group_memory_layout_install":
     case "kernel_group_memory_change_prepare":
     case "kernel_group_memory_change_validate":
+    case "kernel_group_owned_mapping_prepare":
+    case "kernel_group_owned_mapping_validate":
     case "kernel_group_memory_thread_control_prepare":
     case "kernel_group_memory_change_read":
     case "kernel_memory_group_snapshot":

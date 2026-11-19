@@ -92,6 +92,43 @@ fn intent(syscall: u32, args: [u64; 6]) -> Result<MemoryChange, Errno> {
 }
 
 impl ProcessTable {
+    /// The same exact all-replica barrier used by mmap must precede driver
+    /// construction. Its packet still belongs to the normal owned-resource
+    /// receipt; this bridge supplies physical pages, never new DRM authority.
+    pub fn prepare_group_owned_mapping(&mut self, pid: u32, tid: u32, observed_pages: u32,
+        packet: &mut [u8], host: &mut dyn crate::process::HostIO,
+    ) -> Result<Option<Description>, Errno> {
+        use wasm_posix_shared::dri_owned as W;
+        if packet.len() != core::mem::size_of::<W::Packet>() { return Err(Errno::EINVAL); }
+        let action = u32::from_le_bytes(packet[4..8].try_into().unwrap());
+        if !matches!(action, W::MMAP | W::MMAP_EXACT | W::UNMAP_EXACT) { return Err(Errno::EINVAL); }
+        let receipt = self.running_group_memory_caller(pid, tid)?;
+        let (proc, locks) = self.task_and_advisory_locks(pid, tid).ok_or(Errno::ESRCH)?;
+        if proc.pending_group_memory_change.is_some() || crate::owned_resource::has_pending_mapping(proc) {
+            return Err(Errno::EBUSY);
+        }
+        proc.memory.observe_group_virtual_growth(observed_pages)?;
+        crate::owned_resource::ioctl(proc, locks, host, -1, packet)?;
+        if u32::from_le_bytes(packet[52..56].try_into().unwrap()) != W::PENDING { return Ok(None); }
+        let token = u32::from_le_bytes(packet[24..28].try_into().unwrap());
+        let transaction = u64::from_le_bytes(packet[8..16].try_into().unwrap());
+        crate::owned_resource::grouped_mapping_description(proc, receipt, token, transaction).map(Some)
+    }
+
+    pub fn validate_group_owned_mapping(&self, pid: u32, tid: u32, token: u32, transaction: u64,
+    ) -> Result<Description, Errno> {
+        let receipt = self.running_group_memory_caller(pid, tid)?;
+        crate::owned_resource::grouped_mapping_description(self.get(pid).ok_or(Errno::ESRCH)?, receipt, token, transaction)
+    }
+
+    pub fn finish_group_owned_mapping(&mut self, pid: u32, tid: u32, token: u32, transaction: u64,
+        errno: u32, host: &mut dyn crate::process::HostIO,
+    ) -> Result<i32, Errno> {
+        if errno == 0 { self.validate_group_owned_mapping(pid, tid, token, transaction)?; }
+        self.finish_owned_mapping(host, pid, tid, token, transaction, errno)?;
+        crate::owned_resource::mapping_result(self.get(pid).ok_or(Errno::ESRCH)?, token, transaction)
+    }
+
     pub fn install_group_memory_layout(&mut self, record: wasm_posix_shared::group_memory_layout::Record) -> Result<(), Errno> {
         use wasm_posix_shared::group_memory_layout::{FRESH, INHERITED};
         let receipt = self.admitted_group_memory_caller(record.receipt.pid, record.receipt.tid)?;
@@ -170,7 +207,7 @@ impl ProcessTable {
     /// Rust selects the result address and retains both snapshots. Raw host
     /// addresses cannot mint task/image identity or consume another plan.
     #[cfg(test)]
-    fn prepare_group_memory_change(&mut self, pid: u32, tid: u32, syscall: u32,
+    pub(crate) fn prepare_group_memory_change(&mut self, pid: u32, tid: u32, syscall: u32,
         args: [u64; 6], observed_pages: u32) -> Result<Description, Errno> {
         self.prepare_group_memory_change_with_io(pid, tid, syscall, args, observed_pages, &mut crate::process::test_host::NoopHost)
     }
@@ -192,10 +229,15 @@ impl ProcessTable {
         let file = if syscall == Syscall::Mmap as u32 && args[3] & mmap::MAP_ANONYMOUS as u64 == 0 {
             let offset = args[5].checked_mul(4096).filter(|value| *value <= i64::MAX as u64).ok_or(Errno::EINVAL)?;
             let fd = i32::try_from(args[4] as i64).map_err(|_| Errno::EINVAL)?;
-            let (source, stat) = crate::private_mapping::Source::capture(proc, fd, host)?;
             let ofd = proc.ofd_table.get(proc.fd_table.get(fd)?.ofd_ref.0).ok_or(Errno::EBADF)?;
+            let immutable_shared = args[3] & mmap::MAP_SHARED as u64 != 0 && crate::rootfs::is_rootfs_file_handle(ofd.host_handle);
+            if immutable_shared && args[2] & mmap::PROT_WRITE as u64 != 0 { return Err(Errno::EOPNOTSUPP); }
+            let (source, stat) = crate::private_mapping::Source::capture_for_mapping(proc, fd, host, immutable_shared)?;
             if args[3] & mmap::MAP_SHARED as u64 != 0 {
-                if !crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) { return Err(Errno::EOPNOTSUPP); }
+                if !immutable_shared && !crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) { return Err(Errno::EOPNOTSUPP); }
+                if immutable_shared && offset.checked_add(args[1]).is_none_or(|end| end > (stat.st_size.saturating_add(65535) & !65535)) {
+                    return Err(Errno::EOPNOTSUPP);
+                }
                 if args[2] & mmap::PROT_WRITE as u64 != 0
                     && ofd.status_flags() & wasm_posix_shared::flags::O_ACCMODE != wasm_posix_shared::flags::O_RDWR {
                     return Err(Errno::EACCES);
