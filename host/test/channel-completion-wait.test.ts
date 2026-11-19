@@ -14,7 +14,7 @@ import {
   CHANNEL_STATUS_PENDING,
 } from "../src/generated/abi";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it('keeps native channel publication, completion and reset on the original word', () => {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
@@ -36,7 +36,17 @@ describe("translated worker channel completion", () => {
   it("rechecks spurious wakes using the same virtual byte address and bound replica", () => {
     const wait = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(2).mockReturnValueOnce(1);
     waitForGroupedChannelCompletion(wait, 65532);
-    expect(wait.mock.calls).toEqual(Array(3).fill([65532, CHANNEL_STATUS_PENDING, -1n]));
+    expect(wait.mock.calls).toEqual([
+      [65532, CHANNEL_STATUS_PENDING, 100_000_000n],
+      [65532, CHANNEL_STATUS_PENDING, 100_000_000n],
+      [65532, CHANNEL_STATUS_PENDING, -1n],
+    ]);
+  });
+  it("keeps the private request pending through repeated JSC heap safepoints", () => {
+    vi.stubGlobal('navigator', { userAgent: 'Version/26.6 Safari/605.1.15' });
+    const wait = vi.fn().mockReturnValueOnce(2).mockReturnValueOnce(2).mockReturnValueOnce(1);
+    waitForGroupedChannelCompletion(wait, 65532);
+    expect(wait.mock.calls).toEqual(Array(3).fill([65532, CHANNEL_STATUS_PENDING, 100_000_000n]));
   });
   it("preserves a native stop trap without retrying", () => {
     const stopped = new WebAssembly.RuntimeError('native replica stopped');
