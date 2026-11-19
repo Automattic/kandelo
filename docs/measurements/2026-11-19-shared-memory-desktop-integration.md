@@ -1,8 +1,14 @@
 # Fresh shared-memory desktop integration checkpoint
 
-This records the desktop-first candidate at `709edf2ac4`, after the failed-fork
-rollback fix at `dd8ec71725`. It does not complete the original PR1–PR9 plan or
-establish merge, conformance, browser-memory, or performance acceptance.
+This tracks the desktop-first batch through common runtime/package source
+`9fa8f3997224` and consumer diagnostics at `9244de33d45d`. Current desktop,
+conformance and combined browser-memory checks pass within the scopes below.
+Intermittent lifecycle failures and fresh performance/resource acceptance
+remain open. Earlier checkpoints and failed experiments are retained; this
+does not complete the original PR1–PR9 plan or establish merge acceptance.
+
+The initial checkpoint used `709edf2ac4`, after the failed-fork rollback fix
+at `dd8ec71725`.
 
 ## Inputs and normal production path
 
@@ -881,3 +887,30 @@ the same 86 image assets and byte-identical kernel/worker JavaScript as 131.
 All six desktop functional/refusal checks pass, including comparison of the
 copied terminal-parent events with the real process table. This diagnostic
 change is not a correction for the intermittent readiness/input failures.
+
+The complete browser-memory rerun 150 subsequently passes all 1,523 source
+checks, three Node and seven Bun teardown checks, and all 18 browser cases
+with zero skips or flaky outcomes. The normal command verifies the browser
+report before printing its passing sentinel. Its cleanup removes 333 staging
+files and also records an EACCES warning for a test-profile Documents directory;
+that warning remains retained. Gate receipts and logs are under
+`.context/desktop-current-acceptance-for-timing.json` and the retained evidence
+directory. The kernel and canonical rootfs still match conformance run 145.
+
+Diagnostic 152 passes one 120-cycle session, then reproduces a Sway IPC failure
+after 83 completed cycles. Its eight-second sampling trigger misses the
+three-second IPC deadline. Diagnostic 156 captures earlier: both 120-cycle
+sessions pass, with one 1.48-second command delay sampled. That two-second
+native sample mostly covers progress after the delay; it contains a single
+`Atomics.waitAsync` sample and no blocking JavaScript `Atomics.wait` frame.
+It establishes neither a notification-lock cause nor an engine defect. The
+recorded 3.2 GiB WebContent footprint is unpaired and instrumented, not a
+desktop memory comparison. These passes do not erase the earlier failures.
+
+Canonical publication omits the standalone database benchmark images. The
+post-gate artifact check 157 therefore refuses two missing browser fixtures.
+Normal benchmark-only publication 158 restores both 32/64-bit images and
+passes actual admission for all nine suites on both hosts, while leaving the
+kernel and canonical rootfs identical. No foreign artifact is copied and no
+suite is skipped. Timing collection waits for a separate workspace's CPU-heavy
+job; no timing samples have yet been collected for this image/consumer pair.
