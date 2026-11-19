@@ -185,6 +185,16 @@ serialized Sway IPC controls and Stop. `groupPages` can select a lower
 physical page budget (256–8192); process and task budgets stay 24 and 64.
 Exhaustion can refuse the Sway IPC client itself with EAGAIN, a Sway fork,
 or a guest exec with ENOMEM. The preview does not reserve a control slot.
+On JavaScriptCore the group provisions its complete admitted backing extent
+before launching participants. This avoids concurrent shared-memory growth
+and participant-instance teardown, a confirmed engine boundary. An 8192-page
+group therefore exposes a 512 MiB backing buffer from startup; this is capacity,
+not mapped guest usage or measured resident memory. The declared maximum and
+allocation budget do not increase. Other browser engines grow the backing as
+needed. Constructor refusal remains visible. This policy does not establish
+that the intermittent IPC timeout is resolved; sustained and resource-cost
+validation remain required.
+
 The isolated Playwright config is `playwright.grouped-desktop.config.ts`;
 select a retained evidence directory with `KANDELO_GROUPED_DESKTOP_EVIDENCE`
 and an existing server with `KANDELO_GROUPED_DESKTOP_URL`. Tests exercise

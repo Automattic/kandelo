@@ -53,9 +53,12 @@ export class GroupedSessionRuntime {
   constructor(private readonly kernel: CentralizedKernelWorker, private readonly adapter: WorkerAdapter,
     private readonly options: TrustedMemoryGroupOptions, private readonly joins: boolean,
     private readonly onExit: (pid: number, status: number, generation: number) => void,
-    private readonly report: (pid: number, error: Error) => void) {
+    private readonly report: (pid: number, error: Error) => void,
+    private readonly initialBackingPages = 1) {
     if (![options.maximumPages, options.maximumProcesses, options.maximumTasks].every(value => Number.isSafeInteger(value) && value > 0)
-        || options.maximumPages < 2 || options.maximumPages > G.MEMORY_GROUP_MAXIMUM_PAGES) throw Error('Invalid trusted memory-group budgets');
+        || options.maximumPages < 2 || options.maximumPages > G.MEMORY_GROUP_MAXIMUM_PAGES
+        || !Number.isSafeInteger(initialBackingPages) || initialBackingPages < 1
+        || initialBackingPages > options.maximumPages) throw Error('Invalid trusted memory-group budgets');
   }
 
   accepts(module: WebAssembly.Module): boolean {
@@ -72,7 +75,7 @@ export class GroupedSessionRuntime {
       this.number(this.kernel.configureMemoryGroups(this.options.maximumPages, 1), 'configure memory group');
       const id = this.number(this.kernel.createMemoryGroup(this.options.maximumPages,
         this.options.maximumProcesses, this.options.maximumTasks), 'create memory group');
-      this.number(this.kernel.createMemoryGroupBacking(id), 'create memory group backing');
+      this.number(this.kernel.createMemoryGroupBacking(id, this.initialBackingPages), 'create memory group backing');
       return id;
     });
   }

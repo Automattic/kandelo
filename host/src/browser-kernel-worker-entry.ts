@@ -1301,10 +1301,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
   await kernelWorker.init(msg.kernelWasmBytes);
+  // [RUNTIME-WORKAROUND: JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN]
+  // Group participants retire independently while peers keep allocating. On
+  // JSC provision the admitted extent before any instance binds, so later
+  // allocation never grows shared storage during another VM's teardown.
+  // The ceiling stays unchanged; allocated payload pages remain budgeted.
   groupedSession = msg.config.experimentalMemoryGroup === undefined ? undefined : new GroupedSessionRuntime(
     kernelWorker, workerAdapter, msg.config.experimentalMemoryGroup, false,
     (pid, status, generation) => { post({ type: 'exit', pid, status, generation }); ownedJobs.detached(pid); },
-    (pid, error) => post({ type: 'host_diagnostic', pid, source: 'grouped runtime', message: error.message }));
+    (pid, error) => post({ type: 'host_diagnostic', pid, source: 'grouped runtime', message: error.message }),
+    isJavaScriptCoreUserAgent(navigator.userAgent) ? msg.config.experimentalMemoryGroup.maximumPages : 1);
   finalizeRootfsTransport?.();
 
   // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
