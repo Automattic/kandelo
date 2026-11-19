@@ -746,3 +746,65 @@ submodule; it does not reach the host/browser memory regressions. The submodule
 is now initialized normally. This is retained as a failed gate, with no skip or
 readiness waiver. Raw request results are `.context/desktop-map-steady-118/`;
 the standalone and guest allocation logs are retained with the resource evidence.
+
+### Fresh normal desktop after the json-c correction
+
+Normal partial-shell build 129 passes, followed by the default image-declared
+resolver and formal SDK preparation of all seven desktop participants (131).
+No frozen asset override or research guest rewriting is involved. The ordinary
+image is 707,437 bytes, SHA-256
+`c939f98060cfe5e8d76d24bf1e42142f4965337523f48335844a028137ab5477`;
+the grouped image is 7,439,347 bytes, SHA-256
+`44e06ab29567f1960c9d616eabdc0bafd8ad538a8364f060d0b395818a4bfbe5`.
+Both consumers serve the unchanged `ac950e58…` kernel and byte-identical worker
+JavaScript. The installed libc and startup object also match the previous
+candidate checkout byte for byte.
+
+All four normal, untraced Chromium query cases (132) pass, each with 500
+requests, final physical terminal input, VFS verification, memory-boundary
+checks and Stop. These anonymous writable mapping totals replace the earlier
+unbounded request-dependent growth:
+
+| Patched desktop | Initial (MiB) | After 100 requests (MiB) | After 500 requests (MiB) |
+|---|---:|---:|---:|
+| Ordinary, `get_tree` | 3.4375 | 3.5000 | 3.5000 |
+| Grouped, `get_tree` | 4.6875 | 4.7500 | 4.7500 |
+| Ordinary, `get_version` | 3.4375 | 3.4375 | 3.4375 |
+| Grouped, `get_version` | 5.0625 | 4.6875 | 4.6875 |
+
+The grouped version case starts with 60 descriptors and settles to 57 after
+its first request; the other descriptor counts remain 58 ordinary and 57
+grouped. The tree cases add only one 64 KiB mapping, versus approximately
+28 MiB in the earlier 500-query cases. This is a bounded application mapping
+result, not browser RSS, physical reclamation or sustained terminal-lifecycle
+acceptance. The canonical build and part of the separate desktop matrix run
+concurrently; no timing or CPU result is inferred. Raw results and the strict
+summary are `.context/desktop-json-steady-132/` and
+`.context/desktop-json-steady-summary-132.json`. HTTP and artifact identities
+are `.context/desktop-json-normal-identities-131.json`.
+
+The fresh desktop matrix 133 passes all six functional/refusal cases across
+Chromium, Firefox and WebKit. Its first normal, untraced WebKit repetition also
+passes all 120 real terminal cycles, final input, boundary checks and Stop.
+Sway's anonymous mappings increase only from 4.6875 to 4.7500 MiB; shared file
+mappings remain 3.4375 MiB and guards remain 0.1250 MiB.
+
+The second repetition fails after 95 completed cycles with a grouped-runtime
+diagnostic for PID 2509: `Grouped Worker readiness timed out`. This is the
+10-second memory-free readiness handshake, before the prepared Worker receives
+its process backing. The failed child is absent from the final live process
+snapshot; the base Sway/Foot processes remain enumerable. The cause is not
+established. The successful first repetition does not turn the pair into a
+passing sustained-lifecycle gate. No timeout or assertion has been changed.
+A separate private native sampling diagnostic targets an exclusively attributed,
+byte-verified copy of the same Playwright WebKit runtime, only if an actual
+command remains pending for 2.25 seconds. It does not rewrite guest or host
+source, and is not performance or normal lifecycle acceptance evidence.
+
+The raw lifecycle fixture inherits `concurrentCanonicalBuild: false` from its
+older template; that flag is incorrect for 133 (and its diagnostic derivative
+140). The stated scope and recorded job intervals show that canonical gate 130
+runs concurrently. Treat the flag as invalid metadata, preserve the original
+records and infer no isolated timing result. The failure log and Playwright
+report are retained in `.context/desktop-json-evidence-124/`, alongside the raw
+`.context/desktop-json-lifecycle-133/` results.
