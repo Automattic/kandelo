@@ -96,6 +96,15 @@ Service Worker ──MessagePort──> Kernel Worker       │
 | Service Worker | `apps/browser-demos/public/service-worker.js` | Intercepts HTTP for nginx/WordPress demos |
 | Connection pump | `host/src/browser-kernel-worker-entry.ts` | Bridges HTTP requests to kernel TCP pipes |
 
+Worker bundles must keep their entry modules terminal: inline dynamic imports,
+remove unused generated entry exports, and reject a chunk that imports a
+stripped entry. Playwright WebKit 26.6 re-evaluates a module Worker entry when
+its dynamic dependency imports a helper back from that entry, replacing an
+initialized message handler with fresh state. A standalone reproduction and
+Chromium/Firefox controls are recorded in
+[WEBKIT-WORKER-ENTRY-EXPORTS](../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
+Native Safari has not been checked for this reproduction.
+
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged. The immediate queue yields after
