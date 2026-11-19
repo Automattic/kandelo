@@ -30,10 +30,10 @@ export async function assertPersistentImageBootMetadata(
     throw new Error("persistent image boot configuration changed after composition");
   }
   const sessionBytes = await kernel.readFileRangeFromVfs(EXPERIMENTAL_TERMINAL_SESSION_PATH, 0, MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES + 1);
-  if (sessionBytes === null || sessionBytes.byteLength > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
+  if (sessionBytes !== null && sessionBytes.byteLength > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
     throw new Error("persistent image terminal session changed after composition");
   }
-  const session = parseExperimentalTerminalSession(
+  const session = sessionBytes === null ? null : parseExperimentalTerminalSession(
     new TextDecoder("utf-8", { fatal: true }).decode(sessionBytes),
   );
   if (JSON.stringify(session) !== JSON.stringify(composition.terminalSession)) {

@@ -1702,8 +1702,14 @@ export class LiveKernelHost implements KernelHost {
     this.refreshTerminalAvailability();
   }
 
-  /** Configure initial and post-exit programs for every logical PTY. */
-  setTerminalSessionPolicy(policy: TerminalSessionPolicy): void {
+  /** Configure initial and post-exit programs for every logical PTY, or none. */
+  setTerminalSessionPolicy(policy: TerminalSessionPolicy | null): void {
+    if (policy === null) {
+      this.shell = undefined;
+      this.terminalSessions = undefined;
+      this.refreshTerminalAvailability();
+      return;
+    }
     validateTerminalSessionPolicy(policy);
     this.terminalSessions = {
       initial: cloneTerminalProgram(policy.initial),

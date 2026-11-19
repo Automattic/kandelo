@@ -2131,12 +2131,12 @@ async function bootProfile(
         disposeLocalWebBridge();
       } });
     setWebMcpSession(host, agentIdentity());
-    const terminalPolicy = experimentalTerminalSessionPolicy(terminalSession);
+    const terminalPolicy = terminalSession === null ? null : experimentalTerminalSessionPolicy(terminalSession);
     const runScriptId = requestedDescriptor.boot.parameters?.runScript;
     const scriptInput = typeof runScriptId === "string"
       ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)
       : undefined;
-    if (!profile.framebufferTest && scriptInput !== undefined) {
+    if (terminalSession !== null && terminalPolicy !== null && !profile.framebufferTest && scriptInput !== undefined) {
       // A per-program environment replaces the kernel default, so keep the
       // normal login environment alongside the one-shot Bash startup hook.
       terminalPolicy.initial.env = [

@@ -185,7 +185,7 @@ export interface ComposeImageResult {
   imageConfig: KandeloDemoConfig;
   /** The profile actually selected (requested, or the image's default). */
   profileId: string;
-  terminalSession: ExperimentalTerminalSession;
+  terminalSession: ExperimentalTerminalSession | null;
   /**
    * The dinit readiness closure of the machine's init target (empty when the
    * machine declares no dinit target). Computed here because it is read off
@@ -352,9 +352,11 @@ export async function composeKandeloImage(
     }
     ensureDemoHomes(buildFs);
   }
-  assertImageTerminalProgram(buildFs, terminalSession.initial);
-  if (terminalSession.afterExit !== undefined) {
-    assertImageTerminalProgram(buildFs, terminalSession.afterExit);
+  if (terminalSession !== null) {
+    assertImageTerminalProgram(buildFs, terminalSession.initial);
+    if (terminalSession.afterExit !== undefined) {
+      assertImageTerminalProgram(buildFs, terminalSession.afterExit);
+    }
   }
   // ── The machine, read from the image it lives in ────────────────────────
   //
@@ -523,16 +525,12 @@ function dinitServiceClosure(
 
 function readImageExperimentalTerminalSession(
   fs: KandeloImageFs,
-): ExperimentalTerminalSession {
+): ExperimentalTerminalSession | null {
   let stat;
   try {
     stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
   } catch (err) {
-    if (isMissingVfsPath(err)) {
-      throw new Error(
-        `VFS image is missing ${EXPERIMENTAL_TERMINAL_SESSION_PATH}`,
-      );
-    }
+    if (isMissingVfsPath(err)) return null;
     throw err;
   }
   if ((stat.mode & 0xf000) !== 0x8000) {

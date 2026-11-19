@@ -3780,8 +3780,9 @@ An image selects its terminal program with the strict experimental file
 This file completely replaces `/etc/kandelo/shell.json`; the browser neither
 reads the old path nor supplies a fallback shell. The experimental name is an
 intentional warning that this image-facing session-supervision contract is not
-stable. A missing, malformed, oversized, or unsupported declaration fails
-loudly.
+stable. A malformed, oversized, or unsupported declaration fails loudly. An
+image without the file has no terminal: the machine boots, the terminal
+surface stays unavailable, and no program starts on a terminal.
 
 The loader parses the declaration from the fully staged VFS image, rejects
 unknown fields, bounds the document, paths, arguments, and guest IDs, requires

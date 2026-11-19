@@ -1947,6 +1947,17 @@ describe("LiveKernelHost: supervised terminal sessions", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("has no terminal once the policy is cleared", async () => {
+    const harness = terminalSessionHarness();
+    expect(harness.host.getSurfaceAvailability().terminal).toBe(true);
+
+    harness.host.setTerminalSessionPolicy(null);
+
+    expect(harness.host.getSurfaceAvailability().terminal).toBe(false);
+    await expect(harness.host.attachPty("/dev/pts/0")).rejects.toThrow("no terminal program configured");
+    expect(harness.spawns).toEqual([]);
+  });
+
   it("ends the logical terminal when afterExit is omitted", async () => {
     vi.useFakeTimers();
     const harness = terminalSessionHarness({
