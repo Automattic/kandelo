@@ -27,6 +27,9 @@ BUILD_DIR="$WORK_DIR/build"
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/json-c -fdebug-prefix-map=$WORK_DIR=/usr/src/json-c -fmacro-prefix-map=$WORK_DIR=/usr/src/json-c"
 
 kandelo_package_stage_primary_source json-c "$SRC_DIR" "$WORK_DIR"
+for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
+    kandelo_package_git_apply_patch "$SRC_DIR" "$patch_file"
+done
 
 echo "==> Configuring json-c $JSONC_VERSION..."
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" \

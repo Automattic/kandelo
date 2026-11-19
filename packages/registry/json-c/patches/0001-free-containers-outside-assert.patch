@@ -1,0 +1,25 @@
+# Free container objects even when assertions are disabled.
+#
+# json-c 0.19 performs the final container deletion inside assert(). Release
+# builds define NDEBUG, so json_object_put() leaves containers and their owned
+# tables, keys and serialization buffers allocated. This also reproduces in a
+# native release build without Kandelo (200 JSON objects retained after 100
+# nested-object releases; zero with this change).
+#
+# Keep the existing invariant check, but evaluate the freeing call regardless
+# of NDEBUG. Drop this patch when the packaged release includes the correction.
+# @suggest-upstream
+diff --git a/json_object.c b/json_object.c
+--- a/json_object.c
++++ b/json_object.c
+@@ -439,7 +439,9 @@
+ 			// so we need to actually free it now
+ 			assert(jso->_ref_count == 0);
+ 			jso->_ref_count++;   // We're the exclusive owner of jso, non-atomic add is ok.
+-			assert(_json_object_put_maybe_free(jso, 1) == 0);
++			int result = _json_object_put_maybe_free(jso, 1);
++			assert(result == 0);
++			(void)result;
+ 			jso = parent;
+ 			// iteration will be reset at the top of the loop
+ 		}

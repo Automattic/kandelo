@@ -693,3 +693,56 @@ narrows the investigation; it does not establish the allocating caller, a leak
 cause, resident cost or a shared-group-only defect. No guest rewriting or raw
 memory inspection is involved. Results are retained in
 `.context/desktop-mapping-cost-113/`, with source and logs in the evidence archive.
+
+### Request-only isolation and json-c release deletion
+
+Diagnostics 114–118 separate Sway tree queries, version queries and resizing
+from terminal creation. Fresh Chromium consumers perform 500 successful
+untraced requests each, followed by real terminal input, VFS verification and
+Stop. Anonymous writable mappings grow as follows:
+
+| 500 requests | Ordinary, initial → final (MiB) | Grouped, initial → final (MiB) |
+|---|---:|---:|
+| `get_tree` | 3.5625 → 31.4375 | 4.8125 → 32.9375 |
+| `get_version` | 3.5625 → 3.9375 | 4.8125 → 5.1875 |
+
+Descriptor counts stay at 58 ordinary and 57 grouped. A separate bounded trace
+117b observes Sway accepting and closing IPC connections, anonymous allocations
+and some unmaps. The earlier full trace tail 116 is too late to explain the
+allocation calls. The fork-only marker probes 114/115 fail and do not establish
+a fork-only cost. These are mapping and correctness diagnostics, not resident
+memory measurements or performance samples.
+
+The json-c 0.19 source performs the final container deletion inside `assert()`
+in its iterative `json_object_put()`. The normal package uses `-DNDEBUG`, so
+that freeing call disappears. Native experiment 123 uses the actual upstream
+release source and counts `json_object.c` allocations without running Kandelo:
+after 100 root objects containing nonempty arrays are released, 200 objects
+remain allocated. Moving the call outside the assertion retains zero. The
+committed native regression check also passes against the package patch (124).
+The package applies that correction through its normal recipe, declares the
+patch as a cache input and advances its output revision to 2. The assertion
+still checks the freeing call's result in assertion-enabled builds.
+
+Earlier guest JSON allocation probes 120c/121/122/125/126 are retained but
+their live-allocation counts are invalid: nested malloc calls from wrapped
+calloc/realloc can register a pointer twice, leaving false live entries and
+eventually filling the diagnostic table. They are not acceptance evidence.
+The plain malloc/free control is unaffected by that duplication and has stable
+196,608 mapped bytes through 1,000 repetitions. Corrected counter probe 128
+updates an existing pointer's record instead of duplicating it. The independent
+native regression does not use the nested allocation wrappers. Corrected probe
+128 passes its negative control and candidate checks: the original library
+retains 11,100 allocations / 599,080 requested bytes after 20 rounds; the
+patched library retains zero after 1,000 rounds of the same 50-object JSON
+workload. The patched process maps plateau at 262,144 bytes in that probe;
+this is not a browser RSS or full-desktop result. Desktop benefit
+still requires rebuilding Sway and the image through the resolver and SDK,
+then repeating the request and lifecycle checks.
+
+The current combined browser-memory attempt 119 fails during canonical product
+preparation because this experimental checkout lacks the pinned Rust libc
+submodule; it does not reach the host/browser memory regressions. The submodule
+is now initialized normally. This is retained as a failed gate, with no skip or
+readiness waiver. Raw request results are `.context/desktop-map-steady-118/`;
+the standalone and guest allocation logs are retained with the resource evidence.
