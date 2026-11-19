@@ -11,6 +11,7 @@ import { compileSdkFixture } from './support/compile-sdk-fixture';
 it.each([
   ['readonly-file', true], ['shared-file', true], ['fork', true], ['pthread', true],
   ['fork', false], ['pthread', false],
+  ['sigchld-wnohang', true], ['sigchld-wnohang', false],
 ] as const)('runs public trusted launch %s (compatible=%s)', async (name, compatible) => {
   const fixture = compileSdkFixture(new URL(`./fixtures/grouped-sdk-${name}.c`, import.meta.url), [], { forkInstrument: true });
   let host: NodeKernelHost | undefined;

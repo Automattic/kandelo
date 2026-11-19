@@ -135,6 +135,15 @@ child or allocation leak, then performs a successful fork. Initial grouped `spaw
 The preview reads the selected executable from its actual image and uses the
 byte-launch API. This is a development preview, not full launch acceptance.
 
+Grouped child exit notification follows the same execution-stop boundary as
+wait status. The kernel keeps SIGCHLD and automatic reaping pending while any
+exact execution receipt still owns custody, including quarantined siblings.
+A parent awakened by SIGCHLD can therefore observe the child's exit through
+`waitpid(..., WNOHANG)`; it cannot consume its only notification before that
+status is available. The public Node regression repeats this signal-driven
+reaping pattern for 64 exits with live pthreads, in both prepared and ordinary
+program modes.
+
 Prepare a separate opt-in image from an ordinary SDK/package-built desktop
 image through the normal SDK and image writer:
 
