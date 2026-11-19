@@ -394,6 +394,13 @@ exact transaction custody and intervening changes before publication. Normal
 grouped memory-call dispatch now joins these owners for the implemented
 anonymous map/unmap/protect/remap/brk path; this remains an internal integration.
 
+An exact image stop request closes admission to new mapping and fork barriers,
+even while its Rust generation and host registration remain retained for
+retirement. Pending operations cancel their own prepared state and suppress
+completion on the stopped caller's channel. The stop request itself proves
+neither Worker quiescence nor waiter retirement, and releases no storage.
+Unexpected barrier-state faults still quarantine their exact owners.
+
 The internal backend also implements anonymous `MAP_SHARED | MAP_ANONYMOUS`.
 Rust mints a group-scoped backing identity from the exact mapping transaction
 and retains a budgeted capability in the live MM. VMA fragments and forked

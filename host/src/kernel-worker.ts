@@ -22303,7 +22303,12 @@ export class CentralizedKernelWorker {
     const { channel, registration, request } = pending;
     if (this.processes.get(channel.pid) !== registration || channel.source !== registration.source
         || channel.memory !== registration.memory || !this.isRegisteredChannel(channel)
-        || this.activeChannelRequests.get(channel) !== request || this.hostReaped.has(channel.pid)
+        || this.activeChannelRequests.get(channel) !== request || this.hostReaped.has(channel.pid)) return false;
+    // Stop may precede Rust's final generation/registration retirement. A
+    // queued request retains custody, but cannot start or retain a mapping
+    // or fork barrier after this exact image closes execution admission.
+    const group = registration.grouped!;
+    if (group.store.imageStopRequested(group.handle)
         || this.loadChannelStatus(channel) !== CH_PENDING) return false;
     const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
     if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH) return false;
@@ -22716,7 +22721,12 @@ export class CentralizedKernelWorker {
     }
     if (!pending.barrier) {
       try { pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle); }
-      catch (error) { this.#memoryGroupProtocolError("Cannot establish grouped mapping barrier", error); }
+      catch (error) {
+        const owners = Array.from(this.pendingGroupImageOperations.values())
+          .filter(other => other.registration === pending.registration)
+          .map(other => `${other.kind}:${other.receipt.tid}:done=${other.done}:barrier=${!!other.barrier}`);
+        this.#memoryGroupProtocolError(`Cannot establish grouped mapping barrier pid=${pending.receipt.pid} tid=${pending.receipt.tid} syscall=${pending.syscall} owners=[${owners.join(';')}]`, error);
+      }
     }
     if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier)) {
       this.#scheduleGroupMapping(pending, "barrier", entry); return;
