@@ -808,3 +808,43 @@ runs concurrently. Treat the flag as invalid metadata, preserve the original
 records and infer no isolated timing result. The failure log and Playwright
 report are retained in `.context/desktop-json-evidence-124/`, alongside the raw
 `.context/desktop-json-lifecycle-133/` results.
+
+### Combined gate and follow-up diagnostics
+
+The provisioned combined browser-memory run 130 finishes with a failing gate.
+All 1,523 source cases, three Node teardown cases and seven Bun teardown cases
+pass. The browser phase has 14 passes and four failures:
+
+| Engine and case | Observed failure |
+|---|---|
+| Firefox, machine switching | The WordPress launch after DOS/tmux retains its progress card. The trace also reports failed PCM shutdown and kernel-realm containment; the cause is not established. |
+| Firefox, audio activation | Audio becomes active, but the Enable click remains in its visibility/enabled/stability wait for about 150 seconds despite its two-second deadline. No running transition is observed; the cause is not established. |
+| WebKit, machine switching | The required external Quake archive HEAD request fails before guest boot. |
+| WebKit, audio activation | The external Doom WAD request returns HTTP 502, preventing boot. |
+
+The original logs, screenshots, traces and compact failure receipt are retained
+in `.context/desktop-json-evidence-124/`. The audio driver, gesture test and
+persistent-page fixture match `develop`; this does not rule out a regression in
+another layer. No deadlines, required checks or containment assertions change.
+
+Diagnostic 142 completes one 120-cycle WebKit session, then fails during physical
+keyboard input after 114 cycles in its second session. Its native sample covers
+an earlier transient command delay and does not establish the input failure's
+cause. Diagnostic 143 completes two fresh 120-cycle sessions, final input and
+Stop. These diagnostics use extra public process observations and exclusively
+attributed native sampling of an unmodified WebKit copy. Their passes do not
+erase the uninstrumented readiness failure or establish normal sustained-use
+acceptance. Raw records remain in `.context/desktop-readiness-ledger-142/` and
+`.context/desktop-readiness-input-143/`.
+
+The `concurrentValidationJobs` list in 143 is overbroad: jobs 130 and 135 ended
+before 143 started. Preserve the raw list, use the actual job intervals, and
+infer no performance result from these diagnostics.
+
+Normal candidate preparation 144 passes all 24 steps, including the ten
+benchmark fixture compilations, normal 32/64-bit MariaDB image publication and
+actual artifact admission for all nine suites on Node and browser. Baseline
+admission 136 also passes. These are prerequisite checks, with no timing samples.
+Current conformance and the unchanged four-case browser recheck are running;
+the complete browser-memory gate, quiet paired benchmarks and fresh desktop
+resource/input/presentation measurements remain outstanding.
