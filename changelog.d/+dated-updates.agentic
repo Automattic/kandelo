@@ -1,0 +1,5 @@
+**Review a changelog draft each week.** Contributors add short news entries
+with their changes and can nominate major capabilities as highlights. Weekly
+automation collects those entries into a draft PR against `develop`. After
+review and promotion to stable `main`, the update publishes as a dated
+GitHub Release.
