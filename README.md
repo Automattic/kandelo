@@ -53,6 +53,10 @@ carries only it: `./run.sh partial shell <package>`, then
 `./run.sh browser --partial`. See
 [Partial images](docs/package-management.md#partial-images).
 
+The experimental `delo` page at <http://127.0.0.1:5401/pages/delo/> makes
+and opens computers from one command line (see
+[Browser support](docs/browser-support.md#the-delo-landing-page)).
+
 The development server supplies the browser isolation settings Kandelo needs.
 For custom hosting, see [Browser Support](docs/browser-support.md#directory-scoped-production-hosting).
 
