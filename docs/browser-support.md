@@ -5122,3 +5122,5 @@ containment visible in host diagnostics; terminating a Worker alone is not
 reported as a successful acknowledgement. See the
 [desktop integration evidence](measurements/2026-11-19-shared-memory-desktop-integration.md)
 for the bounded validation and remaining gates.
+
+The opt-in grouped bitmap display waits for its disposable Worker to acknowledge initialization before capturing frames. This avoids an unreduced Firefox startup deserialization failure; [the suspected runtime entry](../tests/runtime-workarounds/FIREFOX-BITMAP-PORT-STARTUP/entry.md) records the negative standalone controls and remaining attribution limit. Missing readiness remains a visible failure.
