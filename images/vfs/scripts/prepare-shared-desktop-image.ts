@@ -7,14 +7,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveLazyAssetPath } from '../../../host/src/binary-resolver';
 import { KandeloImageFs } from '../lib/kandelo-image-fs';
 import { saveImage, writeVfsBinary, type VfsWasmArtifactPolicy } from './vfs-image-helpers';
+import { parseKandeloDemoConfig, validateKandeloDemoConfig, type KandeloDemoConfig } from '../../../web-libs/kandelo-session/src/demo-config';
+import { SHARED_DESKTOP_PROGRAMS, SHARED_DESKTOP_LOGIN_PROGRAMS } from './shared-desktop-contract';
+export { SHARED_DESKTOP_PROGRAMS, SHARED_DESKTOP_LOGIN_PROGRAMS } from './shared-desktop-contract';
 
-export const SHARED_DESKTOP_PROGRAMS = [
-  '/usr/bin/sway', '/usr/bin/swaybar', '/usr/bin/swaybg', '/usr/bin/swaymsg', '/usr/bin/swaynag',
-  '/usr/bin/foot', '/bin/sh', '/bin/coreutils',
-] as const;
-// The normal app enters through the image's login session before starting Sway.
-// These are participants in the same trusted closure, not substitute launchers.
-export const SHARED_DESKTOP_LOGIN_PROGRAMS = ['/bin/login', '/usr/sbin/syslogd'] as const;
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 type LazyProgram = ReturnType<KandeloImageFs['lazyEntries']>['files'][number];
 
@@ -34,12 +30,28 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
   const fs = KandeloImageFs.create();
   const original = readFileSync(input);
   const sdk = fileURLToPath(new URL('../../../sdk/bin/wasm32posix-shared-memory', import.meta.url));
-  const manifest: { input: string; inputSha256: string; programs: unknown[]; output?: unknown } = {
+  const manifest: { input: string; inputSha256: string; programs: unknown[]; profiles?: unknown; output?: unknown } = {
     input, inputSha256: hash(original), programs: [],
   };
   let succeeded = false;
   try {
     fs.loadImage(original);
+    const demoPath = '/etc/kandelo/demo.json';
+    const demo = parseKandeloDemoConfig(new TextDecoder().decode(fs.readFile(demoPath)));
+    const sway = demo?.profiles?.sway;
+    if (!demo || !sway) throw Error('Trusted desktop preview requires an image-owned Sway profile');
+    // The prepared closure supports this desktop. Ordinary profiles still in
+    // the source image must not advertise incompatible applications here.
+    const preview: KandeloDemoConfig = { ...demo, image: { title: 'Trusted desktop preview' }, defaultProfile: 'sway', profiles: {
+      sway: { ...sway, identity: sway.identity === undefined ? undefined : { ...sway.identity, title: 'Sway and Foot preview',
+        summary: 'Temporary desktop preview with Sway and Foot. Other applications are not supported.' },
+        guide: { ...sway.guide, title: 'Sway and Foot preview',
+          summary: 'Temporary preview for compatible, trusted programs. Sway and Foot are the supported applications. '
+            + (sway.guide?.summary ?? '') } },
+    } };
+    validateKandeloDemoConfig(preview);
+    fs.writeFile(demoPath, new TextEncoder().encode(JSON.stringify(preview, null, 2) + '\n'));
+    manifest.profiles = { supported: ['sway'], excluded: Object.keys(demo.profiles ?? {}).filter(id => id !== 'sway') };
     const policies: VfsWasmArtifactPolicy[] = [];
     const programs = [...SHARED_DESKTOP_PROGRAMS,
       ...(options.includeLoginSession ? SHARED_DESKTOP_LOGIN_PROGRAMS : [])];

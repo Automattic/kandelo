@@ -177,10 +177,47 @@ combined change. The published developer preview still uses byte launch.
 The app's programmatic `createLiveHost` also carries this trusted embedder
 option to its normal kernel boot. It rejects managed or persistent machines.
 Grouped KMS attachment selects the disposable bitmap display relay through the
-existing display API. Local app wiring uses the explicit build-time
-`VITE_KANDELO_TRUSTED_MEMORY_GROUP=1` choice; image metadata and boot links cannot
+existing display API. The normal browser commands accept an explicit
+`--trusted-desktop-preview` build choice; image metadata and boot links cannot
 enable it. This integration is under validation and is not enabled in ordinary
 app builds.
+
+For a local development preview, build a partial shell and launch the normal app:
+
+```sh
+./run.sh partial shell sway swaybg foot wayland-demo bibata-cursor-theme sysklogd
+./run.sh browser --partial --trusted-desktop-preview
+```
+
+The command prepares a separate image through the normal SDK and defaults to
+its Sway profile at the server's root URL. The image advertises Sway and Foot
+only; other ordinary image profiles are excluded. The input image stays intact.
+This is a temporary trusted preview, with no managed or persistent computers.
+WebKit's longer lifecycle failures remain under investigation; passing a short
+desktop interaction check does not establish sustained support.
+
+`./run.sh build-browser --trusted-desktop-preview --out DIR` uses the canonical
+browser preparation and authenticated lazy-asset group, then emits the separate
+prepared image and a public hash report with the app. The public report omits
+build-machine paths; the full SDK report stays under
+`local-binaries/trusted-desktop-preview/`. A missing participant or mismatched
+preparation report refuses the build. Full combined release checks remain
+required before promotion.
+
+To run the maintained full desktop interaction and renderer-restart check, set
+`PREVIEW_URL` to the running app's directory URL (including its trailing slash),
+then run:
+
+```sh
+scripts/dev-shell.sh env KANDELO_TEST_SWAY_PREVIEW_URL="$PREVIEW_URL" \
+  apps/browser-demos/node_modules/.bin/playwright test \
+  --config apps/browser-demos/playwright.trusted-desktop.config.ts
+```
+
+This tests the build's default image without a `?vfs` override on Chromium,
+Firefox and WebKit. It retains the normal Sway clock, input, workspace, tiling,
+exit and CPU-renderer restart checks and rejects browser errors. It is separate
+from sustained lifecycle and resource acceptance.
 
 Grouped child exit notification follows the same execution-stop boundary as
 wait status. The kernel keeps SIGCHLD and automatic reaping pending while any
@@ -215,6 +252,8 @@ replace the login session with a host launcher. The ordinary input stays intact.
 When using a partial shell for this mode, include `sysklogd` in the selection
 alongside Sway, Swaybg, Foot, Wayland desktop data and the cursor theme. The
 preparer requires every participant; it refuses an incomplete input image.
+The prepared image has its own Sway-only demo metadata and default profile;
+unprepared applications from the ordinary source are not advertised as supported.
 
 The developer consumer is `apps/browser-demos/grouped-desktop.html`. Prepare
 its development image through the ordinary package, SDK and image paths

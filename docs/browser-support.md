@@ -5143,6 +5143,16 @@ do not establish a net memory saving, and their results do not validate the new
 snapshot path's memory or performance. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
 for the workload, response endpoints, limitations and remaining acceptance.
 
+The normal browser app can explicitly opt into this temporary Sway/Foot preview
+with `./run.sh browser --trusted-desktop-preview` or
+`./run.sh build-browser --trusted-desktop-preview`. Development builds may use
+`browser --partial --trusted-desktop-preview` after selecting the required
+desktop packages. These commands prepare a separate compatible image, retain
+the normal login path and default to its image-owned Sway profile. They exclude
+unprepared profiles from that image's activity metadata. Ordinary app builds
+keep their existing memory backend. See [desktop opt-in](shared-memory-groups.md#desktop-first-opt-in)
+for package selection, compatibility limits and remaining acceptance.
+
 Shutdown stops frame admission synchronously, waits for any pending capture,
 and closes late images. It sends an ordered retirement request naming the last
 published sequence. The display consumes earlier frames, clears both visible

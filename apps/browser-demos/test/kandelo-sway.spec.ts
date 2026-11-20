@@ -362,7 +362,11 @@ async function exitSway(page: Page, out: Output, marker: string) {
 test("Kandelo sway tiles foot terminals above its native workspace bar with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(420_000);
 
-  await gotoMachine(page, "sway");
+  const startupErrors: string[] = [];
+  page.on("pageerror", error => startupErrors.push(error.stack ?? error.message));
+  const previewUrl = process.env.KANDELO_TEST_SWAY_PREVIEW_URL;
+  if (previewUrl === undefined) await gotoMachine(page, "sway");
+  else await page.goto(previewUrl, { waitUntil: "domcontentloaded" });
 
   await openSurface(page, "Internals");
   await expect
@@ -484,6 +488,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
     hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
   })).toHaveCount(0, { timeout: 90_000 });
   expect(await displayOwner(page)).toBe(0);
+  expect(startupErrors).toEqual([]);
 });
 
 
