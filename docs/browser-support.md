@@ -5028,6 +5028,40 @@ Firefox versions before removing the workaround.
 
 ### Opt-in grouped desktop display transport
 
+The developer preview is a separate opt-in build. From the repository root,
+prepare the normal canonical products, install the normal structural decoder,
+then derive a compatible desktop image through the SDK:
+
+```bash
+scripts/dev-shell.sh bash -c '
+  set -euo pipefail
+  ./run.sh build-browser --out "$PWD/.scratch/kandelo-browser"
+  bash scripts/build-fork-instrument-tool.sh
+  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+  ordinary="$(bash scripts/resolve-binary.sh programs/wasm32/shell.vfs.zst)"
+  mkdir -p .scratch/shared-desktop-images
+  export KANDELO_GROUPED_DESKTOP_IMAGE="$PWD/.scratch/shared-desktop-images/grouped.vfs.zst"
+  node --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
+    "$ordinary" "$KANDELO_GROUPED_DESKTOP_IMAGE"
+  apps/browser-demos/node_modules/.bin/vite build \
+    --config apps/browser-demos/vite.grouped-desktop.config.ts \
+    --outDir "$PWD/.scratch/shared-desktop-preview"
+  apps/browser-demos/node_modules/.bin/vite preview \
+    --config apps/browser-demos/vite.grouped-desktop.config.ts \
+    --outDir "$PWD/.scratch/shared-desktop-preview" \
+    --host 127.0.0.1 --port 6209 --strictPort
+'
+```
+
+Use an unused port, then open `/grouped-desktop.html` and select **Start shared
+desktop**. Stop releases that temporary machine; another Start creates a fresh
+filesystem. The separately built full app still uses ordinary execution. This
+preview does not enable persistent writable sharing or arbitrary graphical
+clients. Initial preparation can be a long build; use the repository's
+[`agent-job` workflow](agent-guidance/validation.md#waiting-on-long-builds-and-suites)
+when running it unattended.
+
 Grouped byte launches on Node and browser publish completion only after exact
 execution-image retirement and the existing Rust-owned root reap. Rust checks
 that an exited record belongs to the host parent (`ppid=0`); a guest parent's
@@ -5038,7 +5072,12 @@ record when verifying root reclamation.
 
 The experimental `grouped-desktop.html` page consumes its freshly fetched boot
 image with `BrowserKernel.initFromOwnedImage`, transferring the decoded bytes
-to the kernel Worker rather than preserving a main-thread restart copy. It selects
+to the kernel Worker rather than preserving a main-thread restart copy. Stop
+aborts a pending image fetch, awaits machine destruction and outstanding session
+operations, drops the closed host and enables Start for a fresh temporary
+machine. Repeated starts use the same loaded page; they do not reload or import
+another entry module. Controls and late callbacks remain bound to their owning
+session. It selects
 `BrowserKernel.kmsAttachBitmapRelay` for its Sway/Foot display. This is a browser
 device transport: the kernel Worker renders to detached canvases, and a separate
 disposable display Worker owns the visible `bitmaprenderer` canvases. Independent
