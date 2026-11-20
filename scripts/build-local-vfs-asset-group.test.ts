@@ -295,6 +295,58 @@ test("derives the closure size from the product images instead of a fixed count"
   }
 });
 
+test("adds an extra lazy member no product image references, once", async () => {
+  const fixture = await createFixture({ unreferencedBody: "foo.bin" });
+  try {
+    await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+      buildLocalVfsAssetGroup({
+        assetGroupDirectory: fixture.outputDirectory,
+        extraLazyMembers: [
+          "programs/wasm32/foo.bin",
+          "programs/wasm32/lazy/file-000.bin",
+        ],
+        productMapPath: fixture.productMapPath,
+        sourceRoot,
+      }),
+    );
+    const manifest = validateVfsAssetGroupManifest(
+      JSON.parse(
+        readFileSync(join(fixture.outputDirectory, "manifest.json"), "utf8"),
+      ),
+    );
+    assert.equal(manifest.assets.length, 81);
+    assert.deepEqual(
+      readFileSync(
+        join(fixture.outputDirectory, "assets/programs/wasm32/foo.bin"),
+      ),
+      fixture.members.get("programs/wasm32/foo.bin"),
+    );
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("rejects an extra lazy member the SourceOnly projection lacks", async () => {
+  const fixture = await createFixture();
+  try {
+    await assert.rejects(
+      withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+        buildLocalVfsAssetGroup({
+          assetGroupDirectory: fixture.outputDirectory,
+          extraLazyMembers: ["programs/wasm32/foo.bin"],
+          productMapPath: fixture.productMapPath,
+          sourceRoot,
+        }),
+      ),
+      /lacks/,
+    );
+    assert.equal(existsSync(fixture.outputDirectory), false);
+    assert.equal(existsSync(fixture.productMapPath), false);
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test("resolves product image URL imports to the image the grouped build ships", async () => {
   // A grouped build copies product images only into the asset group. A page
   // that boots from an imported image URL (gallery launches pass it as `vfs=`)
@@ -841,6 +893,7 @@ async function createFixture(
     collidingImageMember?: boolean;
     extraReference?: { reference: string; sizeDelta: number };
     lazyFileCount?: number;
+    unreferencedBody?: string;
     vimBody?: Buffer;
   } = {},
 ): Promise<Fixture> {
@@ -860,6 +913,9 @@ async function createFixture(
   }
   assetBodies.set("vim.zip", options.vimBody ?? Buffer.from("vim archive\n"));
   assetBodies.set("nethack.zip", Buffer.from("nethack archive\n"));
+  if (options.unreferencedBody !== undefined) {
+    assetBodies.set(options.unreferencedBody, Buffer.from("unreferenced\n"));
+  }
 
   const images = new Map<string, Buffer>();
   for (const [id, _load, sourceName] of PRODUCTS) {
