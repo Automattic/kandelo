@@ -1,0 +1,32 @@
+kind = "program"
+name = "fuzzel-docs"
+version = "1.15.0"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
+
+# Upstream manual pages for the `fuzzel` package (fuzzel, fuzzel.ini).
+# The source, SHA-256 and version are the `fuzzel` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://codeberg.org/dnkl/fuzzel/releases/download/1.15.0/fuzzel-1.15.0.tar.gz"
+sha256 = "11bee600e19ee1638db592e41980445673224716fbedbd0213b25153325f4182"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://codeberg.org/dnkl/fuzzel/src/tag/1.15.0/LICENSE"
+
+[build]
+script_path = "packages/registry/fuzzel-docs/build-fuzzel-docs.sh"
+
+[[outputs]]
+name = "fuzzel-docs"
+wasm = "fuzzel-docs.zip"
+fork_instrumentation = "disabled"

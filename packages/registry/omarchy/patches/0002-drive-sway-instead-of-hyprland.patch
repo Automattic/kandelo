@@ -1,0 +1,84 @@
+From: mho22 <yannick@capsules.codes>
+Subject: [PATCH] Drive sway instead of Hyprland and uwsm
+
+The lock, logout and theme scripts call hyprctl, uwsm and pidwait.
+Kandelo's desktop is sway, it has no systemd user session for uwsm to
+stop, and busybox has no pidwait applet. Each call becomes its swaymsg
+equivalent, logout ends the sway session, and the lock waits for ttfx
+with a pgrep loop.
+
+diff --git a/bin/omarchy-hyprland-monitor-focused b/bin/omarchy-hyprland-monitor-focused
+index 9dd2a26..01b9b36 100755
+--- a/bin/omarchy-hyprland-monitor-focused
++++ b/bin/omarchy-hyprland-monitor-focused
+@@ -1,5 +1,5 @@
+ #!/bin/bash
+ 
+-# omarchy:summary=Print the name of the currently focused Hyprland monitor.
++# omarchy:summary=Print the name of the currently focused sway output.
+ 
+-hyprctl monitors -j | jq -r '.[] | select(.focused == true).name'
++swaymsg -t get_outputs | jq -r '.[] | select(.focused == true).name'
+diff --git a/bin/omarchy-hyprland-window-close-all b/bin/omarchy-hyprland-window-close-all
+index db0d9ae..2ddf593 100755
+--- a/bin/omarchy-hyprland-window-close-all
++++ b/bin/omarchy-hyprland-window-close-all
+@@ -2,11 +2,7 @@
+ 
+ # omarchy:summary=Close all open windows
+ 
+-hyprctl clients -j | \
+-  jq -r ".[].address" | \
+-  while read -r addr; do
+-    hyprctl dispatch "hl.dsp.window.close({ window = \"address:$addr\" })" >/dev/null
+-  done
++swaymsg '[all] kill' >/dev/null
+ 
+ # Move to first workspace
+-hyprctl dispatch 'hl.dsp.focus({ workspace = "1" })' >/dev/null 2>&1 || hyprctl dispatch workspace 1
++swaymsg workspace number 1 >/dev/null
+diff --git a/bin/omarchy-restart-hyprctl b/bin/omarchy-restart-hyprctl
+index e6e2c31..f2767f5 100755
+--- a/bin/omarchy-restart-hyprctl
++++ b/bin/omarchy-restart-hyprctl
+@@ -1,5 +1,5 @@
+ #!/bin/bash
+ 
+-# omarchy:summary=Reload hyprland configuration (used by the Omarchy theme switching).
++# omarchy:summary=Reload sway configuration (used by the Omarchy theme switching).
+ 
+-hyprctl reload >/dev/null
++swaymsg reload >/dev/null
+diff --git a/bin/omarchy-system-lock b/bin/omarchy-system-lock
+index 53e4ca5..ea487a1 100755
+--- a/bin/omarchy-system-lock
++++ b/bin/omarchy-system-lock
+@@ -8,7 +8,7 @@
+ omarchy-shell lock lock >/dev/null
+ 
+ # Set keyboard layout to default (first layout)
+-hyprctl switchxkblayout all 0 > /dev/null 2>&1
++swaymsg input type:keyboard xkb_switch_layout 0 > /dev/null 2>&1
+ 
+ # Ensure 1password is locked. Use timeout because `1password --lock` can
+ # otherwise leave a full Electron helper tree running after each lock.
+@@ -22,5 +22,5 @@ fi
+ # Avoid running screensaver when locked
+ pkill -x ttfx 2>/dev/null || true
+ # ttfx handles SIGTERM asynchronously, so keep its terminal alive until it exits.
+-timeout 1s pidwait -x ttfx 2>/dev/null || true
++timeout 1s bash -c 'while pgrep -x ttfx >/dev/null; do sleep 0.05; done' 2>/dev/null || true
+ pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null || true
+diff --git a/bin/omarchy-system-logout b/bin/omarchy-system-logout
+index cb0fd66..dbcb8b8 100755
+--- a/bin/omarchy-system-logout
++++ b/bin/omarchy-system-logout
+@@ -4,7 +4,7 @@
+ # omarchy:examples=omarchy logout | omarchy system logout
+ # omarchy:aliases=omarchy logout
+ 
+-nohup bash -c "sleep 2 && uwsm stop" >/dev/null 2>&1 &
++nohup bash -c "sleep 2 && swaymsg exit" >/dev/null 2>&1 &
+ 
+ omarchy-osd -i logout -m "Logging out" -d 5000
+ 

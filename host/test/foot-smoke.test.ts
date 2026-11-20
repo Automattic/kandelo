@@ -1,5 +1,5 @@
 /**
- * Upstream foot 1.17.2, using its ordinary shared-memory pools, runs
+ * Upstream foot 1.28.0, using its ordinary shared-memory pools, runs
  * as the session client
  * of cage, the wlroots kiosk compositor, on the ported font stack.
  *

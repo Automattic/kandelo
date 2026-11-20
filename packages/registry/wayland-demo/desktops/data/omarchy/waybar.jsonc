@@ -1,0 +1,51 @@
+// Omarchy's top bar, drawn by Waybar in place of the Quickshell bar. The
+// layout, glyphs and clicks follow Omarchy's config/omarchy/shell.json and
+// shell/plugins/bar. A widget Omarchy shows stays out while Kandelo has no
+// state for it: the tray, agents, bluetooth, network, audio, display and
+// power widgets, the weather and the update badge. Waybar has no popup
+// panel, so the clock's calendar (a month with ISO week numbers) is its
+// tooltip; a right click switches to the alternate format, as in Omarchy.
+{
+  "layer": "top",
+  "position": "top",
+  "height": 26,
+  "spacing": 0,
+  "modules-left": ["custom/omarchy", "sway/workspaces"],
+  "modules-center": ["clock"],
+  "modules-right": [],
+  "custom/omarchy": {
+    "format": "<span font='omarchy'></span>",
+    "tooltip": false,
+    "on-click": "omarchy-shell shell toggle omarchy.menu '{\"menu\":\"root\"}'",
+    "on-click-right": "/usr/bin/foot --config=/usr/share/kandelo/omarchy/foot.ini /bin/bash -i"
+  },
+  "sway/workspaces": {
+    "all-outputs": true,
+    "format": "{icon}",
+    "format-icons": {
+      "focused": "󱓻",
+      "10": "0"
+    },
+    "persistent-workspaces": {
+      "1": [],
+      "2": [],
+      "3": [],
+      "4": [],
+      "5": []
+    }
+  },
+  "clock": {
+    "format": "{:%A %H:%M}",
+    "format-alt": "{:%e %B W%V %Y}",
+    "format-alt-click": "click-right",
+    "tooltip-format": "<tt>{calendar}</tt>",
+    "calendar": {
+      "mode": "month",
+      "weeks-pos": "left",
+      "format": {
+        "weeks": "<span alpha='50%'>{:%V}</span>",
+        "today": "<b><u>{}</u></b>"
+      }
+    }
+  }
+}

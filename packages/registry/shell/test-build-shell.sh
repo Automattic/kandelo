@@ -141,7 +141,9 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --rootfs|--ca-bundle|--bash|--fbdoom|--modeset|--demo-config|\
         --demo-profile-overlay|--dependency-contract|--wldesktop|\
-        --omarchydesktop|--omarchy-theme-hook|--desktop-data|\
+        --omarchydesktop|--omarchy-theme-hook|--desktop-data|--omarchy|\
+        --eager-budget|\
+        --jetbrains-mono-nerd-font|\
         --libinput-quirks|--xkeyboard-config|--espeak-ng-data)
             [ -f "${2:-}" ] || { echo "missing input for $1" >&2; exit 85; }
             shift 2
@@ -182,6 +184,8 @@ make_fixture() {
     done
     printf 'speech data\n' >"$root/dependencies/espeak-ng/espeak-ng-data.zip"
     printf 'CA bundle\n' >"$root/dependencies/ca-certificates/ca-certificates.zip"
+    printf 'omarchy\n' >"$root/dependencies/omarchy/omarchy.zip"
+    printf 'font\n' >"$root/dependencies/jetbrains-mono-nerd-font/jetbrains-mono-nerd-font.zip"
 }
 
 run_fixture() {

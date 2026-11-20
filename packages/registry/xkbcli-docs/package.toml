@@ -1,0 +1,28 @@
+kind = "program"
+name = "xkbcli-docs"
+version = "1.13.2"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `xkbcli` package (xkbcli, xkbcli
+# compile-keymap).
+# The source, SHA-256 and version are the `xkbcli` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.13.2.tar.gz"
+sha256 = "acc4d5f7c3cbba5f9f8d08d8bdbeede84ecede46792f47929aa9321873385528"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/xkbcommon/libxkbcommon/blob/xkbcommon-1.13.2/LICENSE"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/xkbcli-docs/build-xkbcli-docs.sh"
+
+[[outputs]]
+name = "xkbcli-docs"
+wasm = "xkbcli-docs.zip"
+fork_instrumentation = "disabled"

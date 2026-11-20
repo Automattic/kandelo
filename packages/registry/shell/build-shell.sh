@@ -160,6 +160,18 @@ if selected espeak-ng; then
     require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DIR/espeak-ng-data.zip"
     SELECTED_INPUTS+=(--espeak-ng-data "$ESPEAK_NG_DIR/espeak-ng-data.zip")
 fi
+# Omarchy's scripts, menu and themes, mounted at /usr/share/omarchy.
+if selected omarchy; then
+    OMARCHY="$WASM_POSIX_DEP_OMARCHY_DIR/omarchy.zip"
+    require_regular_file "omarchy dependency output" "$OMARCHY"
+    SELECTED_INPUTS+=(--omarchy "$OMARCHY")
+fi
+# The font Omarchy draws its text and icons with, at /usr/share/fonts.
+if selected jetbrains-mono-nerd-font; then
+    JETBRAINS_MONO_NERD_FONT="$WASM_POSIX_DEP_JETBRAINS_MONO_NERD_FONT_DIR/jetbrains-mono-nerd-font.zip"
+    require_regular_file "jetbrains-mono-nerd-font dependency output" "$JETBRAINS_MONO_NERD_FONT"
+    SELECTED_INPUTS+=(--jetbrains-mono-nerd-font "$JETBRAINS_MONO_NERD_FONT")
+fi
 if [ -n "$SELECTION_FILE" ]; then
     SELECTED_INPUTS+=(--selection "$SELECTION_FILE")
 fi

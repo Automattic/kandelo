@@ -134,6 +134,7 @@ describe("opaque prepared exec target launch", () => {
         ownerPid: 7, pid: 7, callerTid: 7,
         diagnosticPath: "/bin/script", argv: ["script"], envp: [],
         expectedAbi: ABI_VERSION,
+        expectedAbiContractDigest: null,
         prepareInitialTarget: () => { attempt("prepare"); return 31; },
         prepareInterpreterTarget: () => { attempt("interpreter"); return 32; },
         compileModule: bytes => WebAssembly.compile(bytes),
@@ -225,6 +226,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["script", "argument"],
       envp: ["A=B"],
       expectedAbi: ABI_VERSION,
+      expectedAbiContractDigest: null,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       prepareInitialTarget: () => 31,
       prepareInterpreterTarget: (path) => {
@@ -276,6 +278,7 @@ describe("opaque prepared exec target launch", () => {
     function admissionLaunch(
       targets: Map<number, Uint8Array>,
       admit: (target: number) => ExecTargetAdmission,
+      expectedAbiContractDigest: Uint8Array | null = null,
     ) {
       const cancelled: number[] = [];
       const compiled: number[] = [];
@@ -306,6 +309,7 @@ describe("opaque prepared exec target launch", () => {
         argv: ["program"],
         envp: [],
         expectedAbi: ABI_VERSION,
+        expectedAbiContractDigest,
         compileModule: async (bytes: ArrayBuffer) => {
           compiled.push(bytes.byteLength);
           return WebAssembly.compile(bytes);
@@ -339,6 +343,21 @@ describe("opaque prepared exec target launch", () => {
         () => ({ kind: "program" }),
       );
       await expect(launch).rejects.toMatchObject({ errno: 8 });
+      expect(cancelled).toEqual([41]);
+      expect(compiled).toEqual([]);
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("refuses a target stamped for another ABI contract before commit, with ENOEXEC", async () => {
+      const { launch, cancelled, compiled, callback } = admissionLaunch(
+        new Map([[41, preparedExecFixture]]),
+        () => ({ kind: "program" }),
+        new Uint8Array(32),
+      );
+      await expect(launch).rejects.toMatchObject({
+        errno: 8,
+        message: expect.stringContaining("ABI contract digest mismatch"),
+      });
       expect(cancelled).toEqual([41]);
       expect(compiled).toEqual([]);
       expect(callback).not.toHaveBeenCalled();
@@ -405,6 +424,7 @@ describe("opaque prepared exec target launch", () => {
         argv: ["script"],
         envp: [],
         expectedAbi: ABI_VERSION,
+        expectedAbiContractDigest: null,
         compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
         prepareInitialTarget: () => contend("prepare initial", () => 41),
         prepareInterpreterTarget: () => contend("prepare interpreter", () => 42),
@@ -467,6 +487,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [] as string[],
       expectedAbi: ABI_VERSION,
+      expectedAbiContractDigest: null,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       prepareInitialTarget: () => nextTarget++,
       prepareInterpreterTarget: () => {
@@ -532,6 +553,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      expectedAbiContractDigest: null,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       prepareInitialTarget: () => target,
       prepareInterpreterTarget: () => {
@@ -599,6 +621,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      expectedAbiContractDigest: null,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       prepareInitialTarget: () => 51,
       prepareInterpreterTarget: () => {
@@ -667,6 +690,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      expectedAbiContractDigest: null,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       prepareInitialTarget: () => 52,
       prepareInterpreterTarget: () => {
@@ -717,6 +741,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      expectedAbiContractDigest: null,
       compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       prepareInitialTarget: () => 53,
       prepareInterpreterTarget: () => {
@@ -1280,6 +1305,7 @@ describe("exec host-state transition", () => {
           }),
         },
       },
+      kernelAbiVersion: ABI_VERSION,
     });
 
     writeChannelSyscall(

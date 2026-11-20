@@ -1,0 +1,13 @@
+# Kandelo's musl exports errno as __errno_location(). Add its target to the
+# errno crate's musl link-name branch without changing target identity.
+# Upstream portability patch for errno 0.3.14; no errno semantics are changed.
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -95,6 +95,7 @@
+             target_os = "redox",
+             target_os = "dragonfly",
+             target_os = "emscripten",
++            target_os = "kandelo",
+         ),
+         link_name = "__errno_location"
+     )]

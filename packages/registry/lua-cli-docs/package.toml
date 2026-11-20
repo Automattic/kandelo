@@ -1,0 +1,27 @@
+kind = "program"
+name = "lua-cli-docs"
+version = "5.2.4"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual page for the `lua-cli` package (lua).
+# The source, SHA-256 and version are the `lua-cli` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://www.lua.org/ftp/lua-5.2.4.tar.gz"
+sha256 = "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://www.lua.org/license.html"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/lua-cli-docs/build-lua-cli-docs.sh"
+
+[[outputs]]
+name = "lua-cli-docs"
+wasm = "lua-cli-docs.zip"
+fork_instrumentation = "disabled"
