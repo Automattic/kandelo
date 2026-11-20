@@ -1,8 +1,8 @@
 # Shared-memory desktop: current validation and resource cost
 
-This checkpoint covers runtime `c9178e6526`, its browser import correction
-`4bd526d429`, and the existing owned-image initialization API used by the
-experimental desktop consumer. It supersedes the current-status summary in the
+This checkpoint distinguishes the current grouped-root lifecycle correction
+from the preceding `c9178e6526` runtime, browser import correction `4bd526d429`
+and owned-image consumer `a9e54e9ec2`. It supersedes the current-status summary in the
 [November 19 investigation](2026-11-19-shared-memory-desktop-integration.md),
 which retains earlier measurements and failed experiments. The batch remains a
 draft targeting `develop`; neither the original PR1–PR9 plan nor merge
@@ -24,7 +24,78 @@ PostgreSQL and Apache remain follow-ons. Shared objects are whole, fixed-size
 and offset zero; mutable/offset mappings and fragmented graphics unmapping
 are not completed by this preview. Compose/dead-key input remains unavailable.
 
-## Current build and correctness evidence
+## Current grouped-root lifecycle correction
+
+Grouped launches previously left exited host-root records in Rust after their
+execution images had retired. Ordinary launches already called the existing
+host-root reaper; the grouped owner omitted it. A four-root control finds
+ordinary records absent and grouped records in zombie state with parent zero.
+The live-process API hides these records and therefore cannot prove removal.
+
+The shared Node/browser owner now calls that existing reaper after exact
+retirement and before publishing exit. Rust atomically checks exited state
+and host-parent ownership. Guest-owned children retain their wait status.
+Destroy owns any deferred final publication after the execution image leaves
+the live map. No ABI, kernel, guest program, memory limit or PHP-FPM change is
+needed for this correction.
+
+The original unmodified desktop run 320 fails after 819 completed cycles,
+with I/O admission peaking at 132,119,822 credits against a 132,120,576 limit.
+Namespace admission remains flat and no shared-mapping failure is reported.
+A separate 2,000-launch Swaymsg control reproduces accumulating I/O credits
+without a compositor, socket, PTY or graphics device. Diagnostic Sway run
+315c also fails at 819 cycles but emits no allocator-wrapper diagnostic; it
+does not establish a libdrm allocation failure. These failed runs are retained.
+
+The corrected candidate passes:
+
+- Nineteen Node checks, including normal child waits, repeated public grouped
+  roots and destroy during a deferred reap. The C fork fixture verifies its
+  child's exact exit status of 23.
+- Two thousand normal compatible Swaymsg byte launches. Every actual stdout
+  PID has no remaining `/proc/PID/stat` record. Post-warmup I/O admission is
+  exactly 8,944 credits at every checkpoint.
+- The normal full canonical browser build, its SDK-prepared full-shell image
+  and all six untraced 3K browser cases across Chromium, Firefox and WebKit.
+  These include black-desktop negative controls, real terminal input, workspace
+  moves, actual root-record removal and Stop. The image has 353 asset routes;
+  its seven ordinary/prepared executable hash pairs match the prior canonical
+  image. Its container is 7,924,676 bytes, SHA-256
+  `3a45708f179e5715cc73ffe51d4b6e40717d09afb68813bd3f7b94801e17da39`.
+- All 1,200 original 3072×1728 terminal lifecycle cycles in one Chromium
+  machine, at the unchanged 512 MiB group limit and 30-second operation
+  deadlines. Every cycle opens Foot, moves it, verifies physically typed shell
+  output against the filesystem, closes it and checks removal. All 14,419
+  completed host roots checked are absent. Final input, composition, Stop,
+  diagnostics and memory-boundary assertions pass without reload or forced GC.
+- The ABI check: existing program digest unchanged, version and snapshot
+  consistent.
+
+| Extended corrected run | Initial | Final / observed tail |
+|---|---:|---:|
+| Kernel linear-memory extent, pages | 1,575 | 1,605 |
+| I/O admission, credits | 2,381,630 | 2,381,548; checkpoints 200–1,200 range 2,381,436–2,386,370 |
+| Completed terminal cycles | 0 | 1,200 |
+| Completed host roots checked absent | 0 | 14,419 |
+
+Kernel extent grows by 30 pages, about 1.9 MiB. Unique proof files remain in
+the workload. Admission credits and linear-memory extent are not whole-browser
+physical footprint. Concurrent canonical preparation and memory validation
+also make this a functional/resource-accounting run, not a CPU or latency
+comparison or a total-browser plateau proof.
+
+Runs 323d/324c/327/328/329/330/334/335 retain the source patch, normal build
+receipts, image provenance, full results and screenshots under workspace
+`.context/desktop-root-reap-*`. The fix is validated from `369e61cb9b` plus the
+recorded patch; the batch imports those four runtime/test/registry files byte
+for byte. Fresh full browser-memory run 331 and six-wrapper conformance run
+333 remain pending. Historical memory run 278 is not relabelled as validation
+of this correction. Fresh application/resource and all-nine performance
+measurements remain required before promotion.
+
+## Previous build and correctness evidence
+
+The following results precede the grouped-root correction above.
 
 - The full normal browser build succeeds, including 144 browser and 46 Node
   TypeScript roots and all 330 normal prepared products. Its initial TS5097
@@ -187,9 +258,9 @@ establish a common cause. Separate normal-SDK libdrm screen 310 passes
 That screen excludes DRM submission, Wayland and GPU presentation; it does
 not clear the desktop failure. All original failed runs remain retained.
 
-## Full conformance and remaining acceptance
+## Previous full conformance and remaining acceptance
 
-Full current-runtime run 298 completes all six unchanged wrappers. The
+Full pre-correction run 298 completes all six unchanged wrappers. The
 Node and Chromium libc and POSIX wrappers exit zero. Node libc reports
 306 passes, 17 expected failures and one flake-pass; Chromium libc reports
 307 passes and 17 expected failures. Each POSIX run reports 174 passes,
@@ -214,12 +285,45 @@ and produces no timing samples. Separate diagnostic preparation 312 passes
 all 24 normal SDK/resolver steps and both-host artifact admission; preparing
 compatible inputs grants no correctness or performance acceptance.
 
-All nine before/after benchmark suites on both hosts remain required. The fetched
+Separate diagnostic run 316b subsequently completes all nine enabled suites
+on Node and Chromium, with three independent normal CLI parents per arm/host
+and alternating order. Each side uses its own normal SDK, kernel and
+ABI-matched artifacts. All twelve launches exit zero with matching metric
+inventories, no tracked compute overlap and no Sleep/FullWake event across
+the timing phase. Retained preview process identities and CPU usage are
+checked; this does not establish a completely idle operating system or a
+confidence interval.
+
+This measures `a9e54e9ec2`, before the root correction. It is explicitly
+diagnostic, not promotion evidence: the failed conformance and sustained
+desktop receipts remain bound to the result. Material observed costs include:
+
+| Host / metric | Develop median | Pre-correction median | Change |
+|---|---:|---:|---:|
+| Node hello start, ms | 332.79 | 353.79 | +6.31% |
+| Node exec, ms | 406.03 | 435.72 | +7.31% |
+| Node stdin, MiB/s | 864.90 | 786.06 | −9.12% |
+| Node dense-file lock conflict, µs/op | 23.81 | 27.55 | +15.71% |
+| Browser spawn, ms | 36.93 | 39.80 | +7.77% |
+| Browser large first spawn, ms | 27.95 | 30.68 | +9.77% |
+| Browser dense-file lock conflict, µs/op | 24.63 | 26.58 | +7.92% |
+| Browser dense-file lock replacement, µs/op | 24.47 | 27.75 | +13.40% |
+| Browser InnoDB bootstrap, ms | 959.22 | 1051.88 | +9.66% |
+| Browser InnoDB create query, ms | 19.14 | 22.88 | +19.54% |
+
+Other metrics improve; these rows do not establish global performance
+neutrality or causation. The create-query samples overlap and vary by a few
+milliseconds. Complete comparisons, all samples and provenance remain in
+`.context/desktop-diagnostic-all-nine-316b`. Profiling and a fresh corrected
+candidate comparison are still required; the root fix does not itself prove
+these ordinary-path costs resolved.
+
+A fresh all-nine comparison on both hosts remains required. The fetched
 `develop` destination is `bcc8b0c79523912872275f116965ed0fcf835b19`; it differs
 from recorded baseline `715243ed0aa1a8564a0dd8ad4bcef331ac3ca18a` only by one
 CI evidence-classification row. Each side must still use its own normal SDK,
-kernel and ABI-matched artifacts. Historical targeted conformance and five
-of six old benchmark pairs do not validate the latest combined runtime.
+kernel and ABI-matched artifacts. Historical targeted conformance and the
+pre-correction diagnostic do not validate the latest combined runtime.
 
 Repeated whole-machine footprint behavior and the remaining material costs
 need investigation. Earlier intermittent input/IPC failures remain recorded;
