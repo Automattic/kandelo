@@ -251,6 +251,17 @@ impl MemFdBacking {
         self.content_gen = self.content_gen.wrapping_add(1);
     }
 
+    /// Positional read: up to `dst.len()` bytes at `offset`, 0 at EOF.
+    pub fn read_at(&self, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+        let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        if start >= self.data.len() {
+            return Ok(0);
+        }
+        let count = dst.len().min(self.data.len() - start);
+        dst[..count].copy_from_slice(&self.data[start..start + count]);
+        Ok(count)
+    }
+
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, Errno> {
         if bytes.is_empty() { return Ok(0); }
         let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;

@@ -12,10 +12,14 @@
  *
  * Identity is the exact bytes: a SHA-256 digest plus the byte length, never a
  * path. A file rewritten in place hashes differently at its next exec, so it
- * can never run a module compiled from older contents. The cache only
- * replaces the compile step; callers keep running every admission check
- * (ABI marker, artifact policy, exec permission, fork-instrumentation
- * validation) on the bytes of each launch, hit or miss.
+ * can never run a module compiled from older contents. The same digest is the
+ * fork module template id, so the kernel worker hands it to each process and
+ * thread worker instead of letting every worker hash the bytes again. The
+ * cache only replaces the compile step and the digest; callers keep running
+ * every admission check (ABI marker, artifact policy, exec permission,
+ * fork-instrumentation validation) once on the bytes of each new image, hit
+ * or miss. A fork child loads no new image: it runs its parent's admitted
+ * bytes.
  *
  * Lifetime. The cache holds no module alive by itself beyond the bounded
  * retention window below. Each entry is a `WeakRef`: the strong references
@@ -100,6 +104,7 @@ interface ContentIdentity {
   /** `<byte length>:<sha-256 hex>` of the exact bytes. */
   readonly id: string;
   readonly byteLength: number;
+  readonly digest: ArrayBuffer;
 }
 
 interface WeakEntry {
@@ -228,6 +233,16 @@ export class WasmModuleCache {
     });
   }
 
+  /**
+   * The SHA-256 digest of exactly `bytes`, the identity the cache keys on.
+   * It is also the bytes' fork module template id. Each call returns a fresh
+   * copy, so no caller can alter the cached identity.
+   */
+  async programDigest(bytes: ArrayBuffer): Promise<Uint8Array> {
+    const identity = await this.#identify(bytes);
+    return new Uint8Array(identity.digest.slice(0));
+  }
+
   stats(): WasmModuleCacheStats {
     let liveEntries = 0;
     for (const [key, entry] of this.#entries) {
@@ -263,6 +278,7 @@ export class WasmModuleCache {
     const identity: ContentIdentity = {
       id: `${byteLength}:${toHex(digest)}`,
       byteLength,
+      digest,
     };
     this.#identities.set(bytes, identity);
     return identity;

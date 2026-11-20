@@ -964,7 +964,7 @@ kernel, image writer, images, and package artifacts through `run.sh`.
 | freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Freeciv game session activity hosts on port 5556, and players join the session host. Audio and multicast discovery are disabled; see [Freeciv](../packages/registry/freeciv/README.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
-| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
+| omarchy | sway + dbus-daemon + Omarchy 4.0.6's files (fuzzel, mako, swaylock, swayidle, swaybg) | dinit | Omarchy look-alike — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, renders the theme and the key bindings from Omarchy's files, and starts sway; windows are opened from Omarchy's menus and the key bindings. The programs are lazy files of the shell image, fetched when the machine first runs them, and Omarchy's files are a lazy archive at `/usr/share/omarchy`. The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -1307,160 +1307,128 @@ eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
 ### Omarchy desktop demo
 
-The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`)
-is the tiling desktop above plus the shell that makes it a desktop: a
-wallpaper, a status bar, a launcher, notifications, an on-screen display,
-a lock screen, and themes. Omarchy is not a program but a set of files
-layered over Hyprland, and Omarchy v4 folds its shell — what used to be
-swaybg, Waybar, Walker, mako, SwayOSD, hyprlock and hypridle — into one
-Quickshell QML process. This machine does the same: it is the same
-`wlcompositor` binary with its own
-`/usr/share/kandelo/omarchy/wlcompositor.conf`, `.desktop` entries under
-`/usr/share/kandelo/applications`, the shell's QML under
-`/usr/share/kandelo/quickshell`, and six themes under
-`/usr/share/kandelo/themes`. All of it is image data: the `wayland-demo`
-package builds it into `kandelo-desktop-data.zip`, which the shell image
-registers as a verified lazy archive under `/usr/share/kandelo`. Its first
-file read downloads the archive; later reads reuse it. The image declares
-one command,
-`/usr/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
-and the compositor, waits for both sockets and the compositor's Hyprland
-IPC socket, then starts **Quickshell 0.3.1** on the image's `shell.qml`.
-Nothing is staged by the page.
+The Omarchy look-alike machine (`?vfs=<shell image>&profile=omarchy`) runs
+Omarchy v4's own files on upstream sway. Omarchy is not a program but a
+set of scripts, menus, themes and key bindings layered over Hyprland, and
+Omarchy v4 draws its shell — menu, launcher, notifications, lock screen —
+in one Quickshell process. This machine keeps Omarchy's files and changes
+the two things under them: the compositor is sway 1.12, not Hyprland, and
+the shell's calls are answered by separate programs, as Omarchy did
+before v4: fuzzel draws the menu and the app launcher, mako shows
+notifications, swaylock locks, swayidle watches for idle, and swaybg draws
+the background.
 
-The desktop comes up bare: wallpaper and bar, no windows. As in Omarchy,
-the diamond at the bar's far left opens the Omarchy menu on click, so the
-launcher is reachable without a keyboard shortcut. The desktop draws no
-cursor of its own, so the browser's pointer stays visible over it
-(`hostPointer`). Every client is one the user opens, through the binds
-below or the launcher. The demo stays alive on the compositor's own
-process rather than on a foreground terminal.
+Omarchy's files come from the `omarchy` package: Omarchy 4.0.6's
+`bin/`, `default/` and `themes/` trees, cut to the files this machine
+reaches (`packages/registry/omarchy/allowlist`) and adapted by the
+package's patches, each of which names the boundary it adapts to. The
+shell image registers the archive as a verified lazy archive at
+`/usr/share/omarchy`, Omarchy's `OMARCHY_PATH`. Each theme's backgrounds,
+PNG and JPG, are separate lazy files at
+`/usr/share/backgrounds/omarchy/<theme>/`, and the archive's
+`themes/<theme>/backgrounds/` entries are links to them. `omarchy-theme-set`
+copies a theme with `cp -r`, which copies the links, so the machine
+downloads a background only when swaybg or swaylock draws it. swaybg and
+swaylock read PNG and JPEG through gdk-pixbuf, whose JPEG loader links
+libjpeg-turbo. The session's own files —
+the sway configuration (`/usr/share/kandelo/omarchy/sway.conf`), foot's
+configuration, the `.desktop` entries the launcher lists, fonts and the
+D-Bus configuration — are the `wayland-demo` package's desktop data
+archive under `/usr/share/kandelo`. Each archive downloads on its first
+read; the terminal-only boot downloads neither.
 
-The shell reaches the compositor three ways, each a protocol real Hyprland
-serves: **hyprland-global-shortcuts-v1**, so a `bind = ALT, G,
-global, quickshell:launcher` line in the compositor's config fires the
-shortcut the shell registered under that name (the shell never sees the
-key, only the press and release); the **Hyprland IPC** socket pair at
-`/tmp/hypr/wlcompositor/` — `j/`-prefixed JSON queries and the
-`event>>data` stream — for workspaces, the focused window, `dispatch exec`
-and `dispatch theme`; and **ext-session-lock-v1** and
-**ext-idle-notify-v1** for the lock screen and the idle monitor. The
-QML engine renders through the scenegraph's software adaptation
-(`QT_QUICK_BACKEND=software`, which `omarchydesktop` exports to the whole
-desktop), and every window of the shell is a wlr-layer-shell surface.
+The image declares one command, `/usr/bin/omarchydesktop`. It
+starts a `dbus-daemon` session bus, then:
 
-- **The wallpaper.** A background-layer surface painting the theme's
-  gradient, with the keybind hints, over the compositor's own wallpaper
-  (`Wallpaper.qml`). It is swaybg's place: a client, not the compositor,
-  owns what the desktop shows behind the windows.
-- **The bar.** A top-layer surface anchored across the top with an
-  exclusive zone, so the windows tile *under* it rather than behind it
-  (`Bar.qml`). The Omarchy diamond, five workspaces (the focused one in
-  the accent colour, occupied ones in the foreground colour), the clock,
-  and the focused window's title. Workspaces and the title come from the
-  `Hyprland` singleton of Quickshell's Hyprland module, which reads
-  `j/monitors`, `j/workspaces` and `j/clients` from the request socket and
-  follows `workspacev2`, `openwindow`, `activewindowv2` and the rest on
-  the event socket — exactly as it would under Hyprland.
-- **Notifications.** The shell's `NotificationServer` owns
-  `org.freedesktop.Notifications` on the `dbus-daemon` session bus
-  (`Notifications.qml`), through QtDBus linked against the registry's
-  `libdbus`. A theme switch reaches `notify-send` through the config's
-  `notify =` hook — a real `org.freedesktop.Notifications.Notify` call
-  over the bus, which the shell renders as a card in the top-right corner
-  that expires after five seconds or on click. The bus address
-  (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
-  environment, so `notify-send` also works from any terminal.
-- **The launcher.** `Alt+G` opens the launcher (`Launcher.qml`), an
-  overlay-layer surface that takes the keyboard exclusively — so what you
-  type filters its list instead of reaching the terminal underneath. Type
-  to narrow, `Up`/`Down` to move, `Enter` to launch (`dispatch exec` over
-  the Hyprland IPC: the compositor spawns it and it tiles in), `Esc` to
-  dismiss. Entries are the `.desktop` files under
-  `/usr/share/kandelo/applications`, read by Quickshell's `DesktopEntries`
-  from `XDG_DATA_DIRS`. The registry offers real software from the shell
-  image alongside the demo clients: Vim, NetHack and Nano run unmodified
-  inside foot (their binaries lazy-fetch from the image's archives on
-  first launch), as does the terminal `Alt+Return` opens. foot rather
-  than `wlterm`: `wlterm` advertises `TERM=vt100` but does not implement
-  the VT100 line-drawing character set, so curses borders come out as
-  letters. foot is stock upstream foot 1.17.2, a Wayland client of its own
-  on the ported font stack — freetype/fontconfig/fcft rasterizing the
-  image's Inconsolata through `/usr/share/kandelo/fonts/fonts.conf`
-  (`FONTCONFIG_FILE`) — not a `wlterm` wrapper (see
+1. On the first boot, it sets Omarchy's Tokyo Night theme the way
+   Omarchy's installer does (`OMARCHY_THEME_HEADLESS=1 omarchy-theme-set
+   "Tokyo Night"`), which renders the theme's templates — sway colors,
+   fuzzel, mako, swaylock — into `~/.local/state/omarchy/current/theme`.
+2. On every boot, it runs `omarchy-sway-bindings`, which loads Omarchy's
+   Lua binding declarations (`default/hypr/bindings/*.lua`) and prints
+   them as sway binds into `~/.local/state/omarchy/sway/bindings.conf`.
+   A binding is skipped, with one line naming why in
+   `~/.local/state/omarchy/sway/bindings.skipped`, when it has no
+   description, no sway key or command, needs a program the image does
+   not ship, or calls a shell target nothing answers.
+3. It starts sway on the session configuration, which includes the
+   theme's `sway.conf` and the bindings file and starts mako, swaybg,
+   swayidle and `kclipd`. sway also warms the Theme and Background
+   pickers' caches (`omarchy-theme-switcher --preload`,
+   `omarchy-theme-bg-cache`), the step `omarchy-theme-set` runs after
+   every theme switch but skips when it runs headless on the first boot.
+
+Once sway is up, the launcher prints sway's own IPC events to the
+machine's terminal, one `SWAY` line each: windows that open, close or
+take focus (with their app id, process, tile and the window count on the
+workspace), workspace changes, the binds sway runs, and bar color
+updates. The browser spec reads the desktop from these lines.
+
+The desktop comes up bare: background and bar, no windows. The bar is
+sway's own swaybar in the theme's colors. sway draws its own cursor, so
+the browser hides its pointer over the desktop; a click captures the
+pointer and Escape releases it.
+
+- **Key bindings.** Omarchy's bindings are bound on Super, as Omarchy
+  binds them. A browser keeps some Super chords for itself, so the
+  session mirrors the essential ones on Ctrl: `Ctrl+Space` opens the
+  Omarchy menu, `Ctrl+Alt+Space` the app launcher, `Ctrl+Shift+Space` the
+  theme menu and `Ctrl+Escape` the System menu; `Ctrl+Return` opens a
+  terminal, `Ctrl+K` a clock and `Ctrl+P` a paint canvas; `Ctrl+W` closes
+  the focused window; `Ctrl+1..9` switches workspace. A bound Ctrl chord
+  never reaches the client (a terminal loses `Ctrl+W` word-erase).
+  `Super+K` lists the bound keys: `omarchy-menu-keybindings` reads sway's
+  configuration and every file it includes.
+- **The menu and the launcher.** fuzzel draws Omarchy's menu
+  (`default/omarchy/omarchy-menu.jsonc`) one level at a time, and its app
+  launcher lists the `.desktop` entries under
+  `/usr/share/kandelo/applications`: Terminal, Vim, Nano and NetHack in
+  foot, the clock and paint demos, ScummVM, and the six LÖVE games.
+  Vim, NetHack and Nano lazy-fetch from the image's
+  archives on first launch. foot is stock upstream foot 1.28.0 on the
+  ported font stack (see
   [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
-  The Theme Gallery entry is a Qt client: a `QRasterWindow` from the
-  `qtgallery` package, painting one card per installed theme — each a
-  miniature desktop rendered from that theme's own `theme.conf` palette —
-  through QtGui's raster engine and the wayland QPA plugin onto `wl_shm`,
-  antialiased where the wpkdraw clients are not. Clicking a card (or
-  arrows + Enter) writes `dispatch theme <name>` to the compositor's
-  kwlctl socket, and the whole desktop restyles. It reads the same
-  `/usr/share/kandelo/fonts/fonts.conf`, which aliases `sans-serif`
-  alongside `monospace` to the image's Inconsolata for it. `Esc` or `Q`
-  closes it.
-- **The menu.** `Alt+M` opens the Omarchy menu — the same
-  launcher at its root level (Apps, Theme). `Enter` descends; the Theme
-  submenu lists the installed themes and `Enter` switches live. `Esc` in a
-  submenu goes back to the root; `Esc` at the root dismisses.
-- **The on-screen display.** A short-lived pill above the bottom edge
-  (`Osd.qml`) names what just changed — the theme, on a switch. SwayOSD's
-  volume, brightness and caps-lock triggers have no source on this
-  machine: the kernel exposes no mixer or backlight, and the compositor
-  reports no lock-key state.
-- **The lock screen.** `Alt+X` locks the session (`LockScreen.qml`)
-  through ext-session-lock: the compositor blanks the output, renders only
-  the lock surface (the clock, the user, a password field), gives it the
-  keyboard, and sends `locked` once a blanked frame has flipped. The
-  password goes to `login -c maker`, the image's own credential check
-  against `/etc/shadow` (the demo user's password is the one the login
-  machine documents); on success the shell sends `unlock_and_destroy` and
-  the desktop returns, otherwise the field clears and the session stays
-  locked. If the shell dies while locked, the compositor keeps the session
-  locked, as the protocol requires. An `IdleMonitor` on ext-idle-notify
-  locks the session after ten minutes without input — hypridle's job.
-  hyprlock authenticates through PAM; there is no PAM here, and `login -c`
-  is the same `crypt(3)` check the image's login program runs.
-- **Themes.** `Alt+Shift+Y` cycles Tokyo Night, Catppuccin, Gruvbox,
-  Nord, Everforest and Rosé Pine. One palette file drives the whole
-  desktop at once: the compositor's window borders, gaps and wallpaper,
-  and everything the shell draws. The compositor emits `theme>><name>` on
-  its event socket, the shell re-reads that theme's `theme.conf`
-  (`Theme.qml`), and its wallpaper, bar, launcher, cards and lock screen
-  take the new palette; the `notify =` hook runs `notify-send`, so the
-  switch also shows as a notification. The themes paint gradient
-  wallpapers; their real Omarchy backgrounds are a short-term follow-up
-  (see the wallpaper note in the Wayland section above).
-- **The rest of the keybinds:** `Alt+Return` opens a terminal, `Alt+C` a
-  clock and `Alt+P` a paint canvas; `Alt+Shift+Q` closes the focused window.
-  `Alt+1..9` switches workspace and `Alt+Shift+1..9` moves the focused window
-  there. `Alt+J/K` cycles focus; `Alt+Shift+H/J/K/L` swaps neighbours left,
-  down, up and right. Ctrl remains application input. Tiled windows receive
-  xdg-shell's `tiled_*` states, so clients such as SDL and ScummVM use their
-  actual tile size rather than retaining a floating window size.
-- **Copy and paste inside the desktop.** The compositor keeps a real
-  Wayland clipboard, so text copied in one window pastes in another.
-  Omarchy's universal-clipboard binds are in the image: `Super+C` copies,
-  `Super+V` pastes, `Super+X` cuts and `Super+A` selects all. Each sends
-  the focused window the application's own shortcut — `Ctrl+C`/`Ctrl+V`,
-  or `Ctrl+Shift+C`/`Ctrl+Shift+V` for a window tagged `terminal` (foot,
-  by its app id, through the same window rule Omarchy uses). On macOS
-  these are `Cmd+C`/`Cmd+V`/`Cmd+X`/`Cmd+A`: Cmd reaches the desktop as
-  Super, and the page keeps those four keys from the browser. Only `V` is
-  also bound on `Ctrl`, so `Ctrl+V` pastes on Windows and Linux too. That
-  costs a terminal its literal-next key (`^V`); `Ctrl+C` is deliberately
-  not bound, so it still sends SIGINT. The chords Linux and Windows users
-  expect are bound too: `Shift+Insert` pastes and `Ctrl+Insert` copies,
-  routed by the same terminal tag. In foot, select text with the mouse,
-  then `Cmd+C`, `Ctrl+Shift+C` or `Ctrl+Insert`, and paste with `Cmd+V`,
-  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert`. Today foot is the only client on this desktop that reads the
-  clipboard; the Quickshell shell and the Qt gallery take no pasted
-  text.
+- **Themes.** The theme menu lists Omarchy's themes. A choice runs
+  `omarchy-theme-set`, which renders the theme's templates, links its
+  background, restarts swaybg on it, reloads sway (the bar and window
+  borders take the new colors) and tells mako to reload its colors.
+- **Loading notification.** A menu entry that runs an action, such as
+  Theme, shows mako's "Loading <entry>…" notification until its picker
+  opens or the action ends. Each process start costs tens of
+  milliseconds here, and the theme picker starts hundreds of processes
+  before it shows when its caches are cold.
+- **Notifications.** mako owns `org.freedesktop.Notifications` on the
+  session bus. Omarchy's `omarchy-notification-send` calls `busctl`,
+  which here is basu's `basuctl` (`/usr/bin/busctl`), the same
+  command line on basu's sd-bus. `DBUS_SESSION_BUS_ADDRESS` is in every
+  desktop process's environment, so notifications also work from a
+  terminal.
+- **The lock screen.** The System menu's Lock entry, and swayidle after
+  300 seconds without input (the lock timeout in Omarchy's
+  `config/omarchy/shell.json`), run swaylock in the theme's colors.
+  swaylock is set-user-ID root so it can read `/etc/shadow`, and checks
+  the password with `crypt(3)`; there is no PAM here. Omarchy's
+  stay-awake indicator (`omarchy-toggle-idle`) keeps swayidle from
+  locking, and the first boot sets it, so the idle lock is off until the
+  menu's Stay Awake toggle turns it on. The demo user's password is
+  public and the browser tab is the boundary, so an idle lock would only
+  interrupt the visitor.
+- **Copy and paste inside the desktop.** sway keeps a real Wayland
+  clipboard, so text copied in one window pastes in another. Omarchy's
+  universal clipboard sends a terminal `Ctrl+Shift+C`/`Ctrl+Shift+V`
+  from `Super+C`/`Super+V` through Hyprland's `sendshortcut`, which sway
+  has no command for. foot's own key bindings take those chords instead
+  (`/usr/share/kandelo/foot/foot.ini`): copy with `Super+C` (`Cmd+C` on
+  macOS), `Ctrl+Shift+C` or `Ctrl+Insert`; paste with `Super+V`,
+  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert` (the clipboard, not
+  PRIMARY). `Ctrl+V` costs the terminal its literal-next key; `Ctrl+C`
+  stays SIGINT. Other clients keep their own chords.
 - **Paste from your own clipboard.** Text copied anywhere on your
   computer pastes into the desktop with the same chord: `Cmd+V` on macOS,
-  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert` elsewhere. The page lets the browser's own paste happen, hands
-  the text to the machine (through `/dev/kandelo/clipboard` to `kclipd`,
-  which makes it the desktop's selection), and only then delivers the
+  `Ctrl+V`, `Ctrl+Shift+V` or `Shift+Insert` elsewhere. The page lets the
+  browser's own paste happen, hands the text to the machine (through
+  `/dev/kandelo/clipboard` to `kclipd`, which makes it the desktop's
+  selection through `ext_data_control_v1`), and only then delivers the
   chord, so the focused window pastes the new text; keys typed meanwhile
   wait behind it. Line endings are converted to LF. The browser never
   asks for clipboard permission, because the text comes from the paste
@@ -1479,57 +1447,46 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   selection (reported by `kclipd`); if nothing is copied in that time —
   `Ctrl+C` in a terminal is SIGINT, not copy — your clipboard keeps what
   it had. Only copies made with one of these chords reach your clipboard:
-  a copy made from a menu with the mouse stays inside the desktop, and so
-  the earlier catch remains for it (copying X on the host, Y from a menu
-  in the desktop, then X on the host again pastes Y). Chrome may reserve
-  `Ctrl+Shift+C` for its developer tools when they are open; use
-  `Ctrl+Insert` then. The write uses a `ClipboardItem` whose text is a
-  promise, created during the keydown, because the text arrives after the
-  gesture; browsers without `ClipboardItem` fall back to `writeText` once
-  the text arrives, which a browser may refuse outside the gesture (the
-  Internals log says so). Automated tests cover Chromium; other engines
-  are verified by hand.
+  a copy made from a menu with the mouse stays inside the desktop. Chrome
+  may reserve `Ctrl+Shift+C` for its developer tools when they are open;
+  use `Ctrl+Insert` then. The write uses a `ClipboardItem` whose text is
+  a promise, created during the keydown, because the text arrives after
+  the gesture; browsers without `ClipboardItem` fall back to `writeText`
+  once the text arrives, which a browser may refuse outside the gesture
+  (the Internals log says so). Automated tests cover Chromium; other
+  engines are verified by hand.
 
 polkit-gnome has no counterpart here: the machine runs no polkit, so
 there is no authentication agent to replace.
 
-#### What is not real yet (deferred work)
+#### What is not Omarchy
 
-The Omarchy machine is an honest imitation in two places, and the gaps
-visitors notice come from them. They are recorded here as near-term
-follow-ups, not as the end state.
+The machine runs Omarchy's files, but not all of them, and not on
+Hyprland. These are the boundaries a visitor notices.
 
-- **The compositor is Kandelo's `wlcompositor`, not Hyprland.** It
-  implements the subset of Hyprland the desktop needs — dwindle tiling,
-  workspaces, a config-driven bind table, a hyprctl-shaped IPC socket
-  that Quickshell's Hyprland module talks to, and the global-shortcut,
-  session-lock and idle-notify protocols the shell needs — and every
-  behaviour it lacks
-  is behaviour real Hyprland has (popups and tooltips, window swapping
-  beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
-  port real Hyprland.** It needs platform work first: Hyprland renders
-  only with OpenGL ES 3 through its `aquamarine` backend, and Kandelo's
-  GLES bridge is ES 2.0 with no fence or explicit sync. (aquamarine also
-  expects an EDID blob from the kernel's connector, which the connector
-  now reports.) The device side is in
-  place: the kernel reports KMS properties and the primary plane, `/sys`
-  describes the card and the input devices, and upstream libseat and
-  libudev-zero use them. Kandelo's EGL imports dmabufs as EGLImages, and
-  upstream wlroots renders with its GLES2 renderer under cage in the
-  browser's `cage` machine (see "Wayland kiosk compositor" in
-  `docs/architecture.md`). cage hosts one application, not a desktop.
-  The dependency graph, each platform gap and a build order are in
-  `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
-- **The shell is this repository's QML, not Omarchy's.** Omarchy v4's
-  Quickshell configuration is written against real Hyprland and against
-  services this machine does not run (PipeWire, UPower, NetworkManager,
-  Bluetooth, the system tray). The shell in
-  `packages/registry/wayland-demo/desktops/data/quickshell/` plays the
-  same roles — wallpaper, bar, launcher and menu, notifications, OSD,
-  lock screen, idle monitor — on the same protocols and the same
-  Quickshell modules, but it is Kandelo's own configuration. **Deferred:**
-  run Omarchy's shell files themselves, once the Hyprland port and the
-  services they read exist.
+- **The compositor is sway, not Hyprland.** Hyprland renders only with
+  OpenGL ES 3 through its `aquamarine` backend, and Kandelo's GLES bridge
+  is ES 2.0; the dependency graph, each platform gap and a build order
+  are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`. Omarchy's
+  Hyprland dispatchers are mapped to sway commands where sway has one;
+  some are approximations (`swapwindow` becomes `move <direction>`,
+  `cyclenext` becomes `focus next`), and the bindings whose dispatcher
+  has no sway command — the universal clipboard, pseudo-tiling, groups
+  and others — are skipped and listed in `bindings.skipped`.
+- **The shell is not Omarchy's Quickshell.** fuzzel, mako, swaylock,
+  swayidle and swaybg answer the calls Omarchy's scripts make to its
+  shell (`bin/omarchy-shell`, from the package's patches). The menu has
+  no icons and no previews: the theme and background pickers are plain
+  lists. The on-screen display (`omarchy-osd`) shows nothing. Shell
+  targets with no answer — the emoji picker, the clipboard manager and
+  others — are not bound.
+- **Only part of Omarchy ships.** The archive holds the scripts the
+  menu, the lock, the logout, the theme switch, the key bindings and the
+  notifications reach. The menu hides an entry whose Omarchy `when`
+  condition fails, as Omarchy does; most of those conditions check for a
+  program the image does not ship. The screensaver is not shipped.
+- **The first theme menu is slow.** The first open renders every
+  theme's list once; later opens reuse it.
 
 Smaller gaps, each a follow-up:
 
@@ -1541,18 +1498,11 @@ Smaller gaps, each a follow-up:
   Also missing: the clipboard manager Omarchy opens on `Super+Ctrl+V`,
   drag-and-drop, the primary (middle-click) selection, and text formats
   other than plain text.
-- **No `xdg_popup`**, so tooltips and menus are refused:
-  `xdg_surface.get_popup` is a protocol error for the requesting client
-  (its positioner is a real object, so the refusal never takes the
-  compositor down). Popup support is a follow-up.
 - **Super needs fullscreen keyboard lock.** Omarchy binds everything on
-  Super; browsers keep Cmd/Win (Cmd+W closes the tab), so every bind is
-  mirrored on Ctrl, which shadows terminal keys such as Ctrl+W. Chromium's
-  Keyboard Lock API would let a fullscreen pane receive the real Super
-  bindings; Safari and Firefox lack it.
-- **`wlterm` advertises `TERM=vt100` without the VT100 line-drawing
-  set**, so curses borders print as letters in it (the desktop's
-  terminal entries use foot, which has it).
+  Super; browsers keep Cmd/Win (Cmd+W closes the tab), so the essential
+  binds are mirrored on Ctrl, which shadows terminal keys such as Ctrl+W.
+  Chromium's Keyboard Lock API would let a fullscreen pane receive the
+  real Super bindings; Safari and Firefox lack it.
 - **xkb data is fetched on first use**: the shell image registers the
   `xkeyboard-config` package's rules at `/usr/share/X11/xkb` as a verified
   lazy archive, so the first keymap compiled from names (a compositor's,
@@ -1561,9 +1511,13 @@ Smaller gaps, each a follow-up:
 - **NetHack's curses interface does not redraw at its intro prompt after
   a resize** (upstream behaviour; the resize itself reaches it — `Ctrl+R`
   redraws).
-- **Theme wallpapers are gradients** (see the Wayland section).
 
 #### Quickshell QML limits
+
+The Omarchy machine ran a Quickshell shell before it moved to sway. The
+Quickshell port stays in the registry, and this section records what
+bounds it in the browser; the measurements below were taken on that
+former shell.
 
 One host cost bounds Quickshell in the browser: compiled wasm code.
 `quickshell.wasm` is 82 MB (82,203,777 bytes: a MinSizeRel build with the
@@ -1632,8 +1586,8 @@ Measured with the shell in
 `packages/registry/wayland-demo/desktops/data/quickshell/` — wallpaper,
 a bar with five workspaces, the window title and a numeric clock, the
 launcher and menu, notification cards, the OSD and the lock screen —
-through the full gate list of `kandelo-omarchy.spec.ts`, which also
-runs qtgallery and three foot terminals beside the shell. The figures
+through the full gate list `kandelo-omarchy.spec.ts` had then, which also
+ran qtgallery and three foot terminals beside the shell. The figures
 are the peak resident size of the page's content process, sampled every
 5 s on macOS:
 

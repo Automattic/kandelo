@@ -1,0 +1,29 @@
+kind = "program"
+
+# basu's `basuctl`: systemd's busctl, extracted with sd-bus. Upstream's
+# busctl.c linked against the basu library package's libbasu.a, so
+# scripts call D-Bus methods with typed arguments (Omarchy's
+# notification scripts send Notify with a{sv} hints, which dbus-send
+# cannot express). The source archive is staged only for busctl.c and
+# basu's private headers.
+name = "basuctl"
+version = "0.2.1"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["basu@0.2.1"]
+
+[source]
+provider = "archive"
+url = "https://git.sr.ht/~emersion/basu/archive/v0.2.1.tar.gz"
+sha256 = "43b327073d1ac7bc6cbc0d3dfff729348fc970dfff0551ad40e366332e990204"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://git.sr.ht/~emersion/basu/tree/v0.2.1/item/LICENSE.LGPL2.1"
+
+[build]
+script_path = "packages/registry/basuctl/build-basuctl.sh"
+
+[[outputs]]
+name = "basuctl"
+wasm = "basuctl.wasm"

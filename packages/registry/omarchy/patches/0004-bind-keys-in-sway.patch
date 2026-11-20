@@ -1,0 +1,751 @@
+From: mho22 <yannick@capsules.codes>
+Subject: [PATCH] Bind Omarchy's keys in sway
+
+Omarchy 4 declares its key bindings in Hyprland Lua: the files in
+default/hypr/bindings call o.bind from default/hypr/helpers.lua, and
+hl.bind registers each binding with Hyprland. Kandelo ships sway,
+which reads bindsym and bindcode lines.
+
+omarchy-sway-bindings runs those files unchanged under a stub hl
+table and prints one sway binding per Omarchy binding, after a comment
+line that holds its description. A Hyprland dispatcher with a sway
+command becomes that command. An exec binding is kept when its
+programs are installed and, for omarchy-shell and omarchy-menu, when
+--check says the call has an answer. Every other binding is skipped
+with one line on stderr that names the reason.
+
+omarchy-menu-keybindings reads sway's config and the files it
+includes instead of hyprctl binds, takes each description from the
+comment above its binding, and runs the selection with swaymsg.
+
+diff --git a/bin/omarchy-menu-keybindings b/bin/omarchy-menu-keybindings
+index 4269a83..bd2320f 100755
+--- a/bin/omarchy-menu-keybindings
++++ b/bin/omarchy-menu-keybindings
+@@ -1,15 +1,8 @@
+ #!/bin/bash
+ 
+-# omarchy:summary=Display Hyprland keybindings defined in your configuration using an interactive search menu.
++# omarchy:summary=Display sway keybindings defined in your configuration using an interactive search menu.
+ 
+-# Hyprland's Lua config provider currently reports Lua binds as dispatcher
+-# __lua in `hyprctl binds`. Keep a lightweight source-derived cache so the
+-# menu can still show and dispatch those bindings.
+-declare -A LUA_BIND_KEY_MAP
+-declare -A LUA_BIND_DISPATCHER_MAP
+-declare -A LUA_BIND_ARG_MAP
+-
+-# Hyprland reports XKB keycodes for code: bindings. Resolve them to symbols
++# sway's bindcode lines name XKB keycodes. Resolve them to symbols
+ # via the compiled keymap, with a small fallback for common keys so the menu
+ # remains readable if xkbcli cannot resolve a symbol.
+ parse_keycodes() {
+@@ -37,10 +30,6 @@ parse_keycodes() {
+         symbol = sym_by_name[name]
+         if (code != "" && symbol != "" && symbol != "NoSymbol") keycode_symbol[code] = toupper(symbol)
+       }
+-
+-      mouse_symbol["272"] = "LEFT MOUSE BUTTON"
+-      mouse_symbol["273"] = "RIGHT MOUSE BUTTON"
+-      mouse_symbol["274"] = "MIDDLE MOUSE BUTTON"
+     }
+     {
+       if (match($0, /code:([0-9]+)/, match_parts)) {
+@@ -48,11 +37,6 @@ parse_keycodes() {
+         symbol = keycode_symbol[code]
+         if (symbol == "") symbol = "code:" code
+         sub("code:" code, symbol)
+-      } else if (match($0, /mouse:([0-9]+)/, match_parts)) {
+-        code = match_parts[1]
+-        symbol = mouse_symbol[code]
+-        if (symbol == "") symbol = "mouse:" code
+-        sub("mouse:" code, symbol)
+       }
+ 
+       print
+@@ -60,268 +44,69 @@ parse_keycodes() {
+   '
+ }
+ 
+-# Supplement `hyprctl binds` for Lua-only binds that Hyprland currently
+-# reports as dispatcher __lua and without their original key for code: binds.
+-build_lua_bind_cache() {
+-  local modmask description key dispatcher arg cache_key
+-
+-  omarchy-cmd-present lua || return 0
+-
+-  while IFS=$'\t' read -r modmask description key dispatcher arg; do
+-    [[ -z $modmask || -z $description || -z $key ]] && continue
+-
+-    LUA_BIND_KEY_MAP["$modmask,$description"]="$key"
+-    cache_key="$modmask,$description,$key"
+-    LUA_BIND_DISPATCHER_MAP["$cache_key"]="$dispatcher"
+-    LUA_BIND_ARG_MAP["$cache_key"]="$arg"
+-  done < <(
+-    lua <<'LUA'
+-local modifiers = { SHIFT = 1, CTRL = 4, CONTROL = 4, ALT = 8, SUPER = 64 }
+-
+-local function split_keys(keys)
+-  local modmask = 0
+-  local key = ""
+-
+-  for part in string.gmatch(tostring(keys or ""), "[^+]+") do
+-    local value = part:gsub("^%s+", ""):gsub("%s+$", "")
+-    local modifier = modifiers[string.upper(value)]
+-
+-    if modifier then
+-      modmask = modmask + modifier
+-    else
+-      key = value
+-    end
+-  end
+-
+-  return modmask, key
+-end
+-
+-local function lua_literal(value)
+-  local value_type = type(value)
+-
+-  if value_type == "string" then
+-    return string.format("%q", value)
+-  elseif value_type == "number" or value_type == "boolean" then
+-    return tostring(value)
+-  elseif value_type == "table" then
+-    local parts = {}
+-    local keys = {}
+-    local array_length = #value
+-
+-    for index = 1, array_length do
+-      parts[#parts + 1] = lua_literal(value[index])
+-    end
+-
+-    for key in pairs(value) do
+-      if not (type(key) == "number" and key >= 1 and key <= array_length and math.floor(key) == key) then
+-        keys[#keys + 1] = key
+-      end
+-    end
+-
+-    table.sort(keys, function(left, right)
+-      return tostring(left) < tostring(right)
+-    end)
+-
+-    for _, key in ipairs(keys) do
+-      local key_prefix
+-      if type(key) == "string" and key:match("^[%a_][%w_]*$") then
+-        key_prefix = key .. " = "
+-      else
+-        key_prefix = "[" .. lua_literal(key) .. "] = "
+-      end
+-
+-      parts[#parts + 1] = key_prefix .. lua_literal(value[key])
+-    end
+-
+-    return "{ " .. table.concat(parts, ", ") .. " }"
+-  elseif value_type == "nil" then
+-    return "nil"
+-  else
+-    return "nil"
+-  end
+-end
+-
+-local function call_expression(path, ...)
+-  local args = {}
+-
+-  for index = 1, select("#", ...) do
+-    args[index] = lua_literal(select(index, ...))
+-  end
+-
+-  return path .. "(" .. table.concat(args, ", ") .. ")"
+-end
+-
+-local function dispatcher(kind, arg, expr)
+-  return {
+-    __omarchy_dispatcher = true,
+-    kind = kind or "",
+-    arg = arg or "",
+-    expr = expr or "",
+-  }
+-end
+-
+-local function dsp_proxy(path)
+-  return setmetatable({ path = path }, {
+-    __index = function(self, key)
+-      return dsp_proxy(self.path .. "." .. tostring(key))
+-    end,
+-    __call = function(self, ...)
+-      local first_arg = ...
+-      local expr = call_expression(self.path, ...)
+-
+-      if self.path == "hl.dsp.exec_cmd" and type(first_arg) == "string" then
+-        return dispatcher("exec", first_arg, expr)
+-      end
+-
+-      return dispatcher("lua", expr, expr)
+-    end,
+-  })
+-end
+-
+-local noop
+-noop = setmetatable({}, {
+-  __index = function()
+-    return noop
+-  end,
+-  __call = function()
+-    return noop
+-  end,
+-})
+-
+-hl = setmetatable({
+-  dsp = dsp_proxy("hl.dsp"),
+-  bind = function(keys, bind_dispatcher, opts)
+-    opts = opts or {}
+-
+-    if opts.description and opts.description ~= "" then
+-      local modmask, key = split_keys(keys)
+-      local kind = ""
+-      local arg = ""
+-
+-      if type(bind_dispatcher) == "table" and bind_dispatcher.__omarchy_dispatcher then
+-        kind = bind_dispatcher.kind or ""
+-        arg = bind_dispatcher.arg or bind_dispatcher.expr or ""
+-      elseif type(bind_dispatcher) == "string" and bind_dispatcher ~= "" then
+-        kind = "exec"
+-        arg = bind_dispatcher
+-      end
+-
+-      print(table.concat({ tostring(modmask), opts.description, key, kind, arg }, "\t"))
+-    end
+-
+-    return noop
+-  end,
+-  get_config = function()
+-    return nil
+-  end,
+-}, {
+-  __index = function()
+-    return noop
+-  end,
+-})
+-
+-local config = os.getenv("HOME") .. "/.config/hypr/hyprland.lua"
+-local file = io.open(config, "r")
+-
+-if file then
+-  file:close()
+-  local ok, err = pcall(dofile, config)
+-  if not ok and os.getenv("DEBUG") == "1" then
+-    io.stderr:write("[DEBUG] lua bind scan failed: " .. tostring(err) .. "\n")
+-  end
+-end
+-LUA
+-  )
+-}
++# sway reports only its main config file, so read the files it includes too.
++sway_config() {
++  local config line path
+ 
+-modmask_to_text() {
+-  case "$1" in
+-    0)  printf '' ;;
+-    1)  printf 'SHIFT' ;;
+-    4)  printf 'CTRL' ;;
+-    5)  printf 'SHIFT CTRL' ;;
+-    8)  printf 'ALT' ;;
+-    9)  printf 'SHIFT ALT' ;;
+-    12) printf 'CTRL ALT' ;;
+-    13) printf 'SHIFT CTRL ALT' ;;
+-    64) printf 'SUPER' ;;
+-    65) printf 'SUPER SHIFT' ;;
+-    68) printf 'SUPER CTRL' ;;
+-    69) printf 'SUPER SHIFT CTRL' ;;
+-    72) printf 'SUPER ALT' ;;
+-    73) printf 'SUPER SHIFT ALT' ;;
+-    76) printf 'SUPER CTRL ALT' ;;
+-    77) printf 'SUPER SHIFT CTRL ALT' ;;
+-    *)  printf '%s' "$1" ;;
+-  esac
++  config=$(swaymsg -t get_config | jq -r '.config') || return 1
++  printf '%s\n' "$config"
++
++  while read -r line; do
++    for path in ${line/#\~/$HOME}; do
++      [[ -f $path ]] && cat "$path"
++    done
++  done < <(sed -nE 's/^[[:space:]]*include[[:space:]]+//p' <<<"$config")
+ }
+ 
+-# Fetch dynamic keybindings from Hyprland.
++# Read sway's bindsym and bindcode lines.
+ #
+-# Also do some pre-processing:
+-# - Fill missing Lua code:... keys and __lua dispatch metadata from the Lua source cache
+-# - Remove standard Omarchy bin path prefix
+-# - Map numeric modifier key mask to a textual rendition
++# - Take the description from the comment line above the binding, the way
++#   omarchy-sway-bindings writes it
++# - Map sway modifier names to Omarchy's textual rendition
++# - Hide the Copilot key, which just duplicates an existing binding
+ # - Output comma-separated values that the parser can understand
+ dynamic_bindings() {
+-  local modmask key keycode description dispatcher arg modifiers cache_key
+-
+-  # Parse the plain `hyprctl binds` output rather than `hyprctl -j binds`:
+-  # Hyprland 0.56.0 emits invalid JSON for binds (misaligned fields in
+-  # bindsRequest), and older versions broke on quotes in bind args.
+-  hyprctl binds | awk '
+-    function emit() {
+-      if (!seen) return
+-      seen = 0
+-      printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n", f["modmask"], f["key"], f["keycode"], f["description"], f["dispatcher"], f["arg"]
++  sway_config | awk '
++    BEGIN {
++      split("Mod4=SUPER Shift=SHIFT Control=CTRL Ctrl=CTRL Mod1=ALT Alt=ALT", pairs, " ")
++      for (i in pairs) {
++        split(pairs[i], pair, "=")
++        modifier[pair[1]] = pair[2]
++      }
++      split("SUPER SHIFT CTRL ALT", order, " ")
++      split("comma=COMMA period=PERIOD minus=MINUS equal=EQUAL slash=SLASH", pairs, " ")
++      for (i in pairs) {
++        split(pairs[i], pair, "=")
++        key_name[pair[1]] = pair[2]
++      }
+     }
+-    /^bind/ { emit(); seen = 1; delete f; next }
+-    seen && match($0, /^\t[a-z]+: /) { f[substr($0, 2, RLENGTH - 3)] = substr($0, RLENGTH + 1) }
+-    END { emit() }
+-  ' |
+-    while IFS=$'\x1f' read -r modmask key keycode description dispatcher arg; do
+-      # Lua binds report their full display key ("SUPER + code:20"); the
+-      # modifiers are already carried separately in modmask.
+-      key="${key##* + }"
+-
+-      if [[ -z $key && $keycode != "0" ]]; then
+-        key="code:$keycode"
+-      fi
+-
+-      if [[ -z $key && -n $description ]]; then
+-        key="${LUA_BIND_KEY_MAP["$modmask,$description"]}"
+-      fi
+-
+-      if [[ $dispatcher == "__lua" && -n $description && -n $key ]]; then
+-        cache_key="$modmask,$description,$key"
+-        dispatcher="${LUA_BIND_DISPATCHER_MAP["$cache_key"]}"
+-        arg="${LUA_BIND_ARG_MAP["$cache_key"]}"
+-      fi
+-
+-      [[ -z $description && $dispatcher == "__lua" ]] && continue
+-
+-      # The Copilot key just duplicates an existing binding, so keep it hidden
+-      [[ $key == "code:201" ]] && continue
+-
+-      case "$key" in
+-        comma) key="COMMA" ;;
+-        period) key="PERIOD" ;;
+-        minus) key="MINUS" ;;
+-        equal) key="EQUAL" ;;
+-        slash) key="SLASH" ;;
+-      esac
+-
+-      modifiers=$(modmask_to_text "$modmask")
+-      arg="${arg//~\/.local\/share\/omarchy\/bin\//}"
+-
+-      printf '%s,%s,%s,%s,%s\n' "$modifiers" "$key" "$description" "$dispatcher" "$arg"
+-    done
+-}
++    /^[ \t]*#/ { description = $0; sub(/^[ \t]*#[ \t]*/, "", description); next }
++    $1 == "bindsym" || $1 == "bindcode" {
++      field = 2
++      while ($field ~ /^--/) field++
++
++      count = split($field, parts, "+")
++      delete held
++      for (i = 1; i < count; i++) held[parts[i] in modifier ? modifier[parts[i]] : parts[i]] = 1
++      modifiers = ""
++      for (i = 1; i <= 4; i++) if (order[i] in held) modifiers = modifiers (modifiers == "" ? "" : " ") order[i]
++
++      key = parts[count]
++      if ($1 == "bindcode") key = "code:" key
++      if (key in key_name) key = key_name[key]
++
++      dispatcher = "sway"
++      command = ""
++      for (i = field + 1; i <= NF; i++) command = command (command == "" ? "" : " ") $i
++      if (command ~ /^exec /) {
++        dispatcher = "exec"
++        sub(/^exec /, "", command)
++      }
+ 
+-# Hardcoded bindings, like the copy-url extension and such
+-static_bindings() {
+-  echo "SHIFT ALT,L,Copy URL from Web App,sendshortcut,SHIFT ALT,L,"
+-  echo "SHIFT ALT,D,Download Video from Web App,sendshortcut,SHIFT ALT,D,"
++      if (key != "code:201") printf "%s,%s,%s,%s,%s\n", modifiers, key, description, dispatcher, command
++    }
++    { description = "" }
++  '
+ }
+ 
+ # Parse and format keybindings
+@@ -439,28 +224,23 @@ prioritize_entries() {
+ output_binding_records_uncached() {
+   local dynamic
+ 
+-  build_lua_bind_cache
+   dynamic=$(dynamic_bindings)
+ 
+-  {
+-    [[ -n $dynamic ]] && printf '%s\n' "$dynamic"
+-    static_bindings
+-  } |
++  [[ -n $dynamic ]] && printf '%s\n' "$dynamic" |
+     sort -u |
+     parse_keycodes |
+     parse_binding_records |
+     prioritize_entries
+ 
+-  # Fail when Hyprland reported no binds so the fallout of a broken hyprctl
++  # Fail when sway reported no binds so the fallout of a broken swaymsg
+   # is never cached.
+   [[ -n $dynamic ]]
+ }
+ 
+ keybindings_cache_key() {
+   {
+-    printf 'v11\n'
+-    hyprctl devices 2>/dev/null | grep -F 'active keymap:'
+-    hyprctl binds 2>/dev/null
++    printf 'v11-sway\n'
++    sway_config 2>/dev/null
+   } | sha256sum | awk '{ print $1 }'
+ }
+ 
+@@ -501,82 +281,16 @@ output_keybindings() {
+   output_binding_records | cut -f1
+ }
+ 
+-trim() {
+-  local value="$1"
+-
+-  value="${value#"${value%%[![:space:]]*}"}"
+-  value="${value%"${value##*[![:space:]]}"}"
+-
+-  printf '%s\n' "$value"
+-}
+-
+-lua_string() {
+-  jq -Rnr --arg value "$1" '$value | @json'
+-}
+-
+-dispatch_lua_expression() {
+-  local expression="$1"
+-  local output status
+-
+-  output=$(hyprctl dispatch "$expression" 2>&1)
+-  status=$?
+-
+-  if (( status == 0 )) && [[ -z $output || $output == "ok" ]]; then
+-    [[ -n $output ]] && printf '%s\n' "$output"
+-    return 0
+-  fi
+-
+-  return 1
+-}
+-
+-dispatch_exec_binding() {
+-  local command="$1"
+-
+-  dispatch_lua_expression "hl.dsp.exec_cmd($(lua_string "$command"))" || hyprctl dispatch exec "$command"
+-}
+-
+-dispatch_sendshortcut_binding() {
+-  local arg="$1"
+-  local mods key window rest
+-
+-  IFS=, read -r mods key window rest <<<"$arg"
+-  mods=$(trim "$mods")
+-  key=$(trim "$key")
+-  window=$(trim "$window")
+-
+-  [[ -z $window ]] && window="activewindow"
+-
+-  if [[ -n $key ]] && dispatch_lua_expression "hl.dsp.send_key_state({ mods = $(lua_string "$mods"), key = $(lua_string "$key"), state = \"down\", window = $(lua_string "$window") })"; then
+-    sleep 0.05
+-    dispatch_lua_expression "hl.dsp.send_key_state({ mods = $(lua_string "$mods"), key = $(lua_string "$key"), state = \"up\", window = $(lua_string "$window") })"
+-    return
+-  fi
+-
+-  hyprctl dispatch sendshortcut "$arg"
+-}
+-
+ dispatch_binding() {
+   local dispatcher="$1"
+   local arg="$2"
+ 
++  [[ -n $arg ]] || return 1
++
+   case "$dispatcher" in
+-    exec)
+-      [[ -n $arg ]] && dispatch_exec_binding "$arg"
+-      ;;
+-    sendshortcut)
+-      [[ -n $arg ]] && dispatch_sendshortcut_binding "$arg"
+-      ;;
+-    lua)
+-      [[ -n $arg ]] && hyprctl dispatch "$arg"
+-      ;;
+-    "") return 1 ;;
+-    *)
+-      if [[ -n $arg ]]; then
+-        hyprctl dispatch "$dispatcher" "$arg"
+-      else
+-        hyprctl dispatch "$dispatcher"
+-      fi
+-      ;;
++    exec) swaymsg -- "exec $arg" ;;
++    sway) swaymsg -- "$arg" ;;
++    *) return 1 ;;
+   esac
+ }
+ 
+diff --git a/bin/omarchy-sway-bindings b/bin/omarchy-sway-bindings
+new file mode 100755
+index 0000000..a04ff1f
+--- /dev/null
++++ b/bin/omarchy-sway-bindings
+@@ -0,0 +1,235 @@
++#!/usr/bin/env lua
++
++-- omarchy:summary=Print Omarchy's key bindings as sway bind lines, each after a description comment
++
++local omarchy_path = os.getenv("OMARCHY_PATH")
++if omarchy_path == nil or omarchy_path == "" then
++  omarchy_path = "/usr/share/omarchy"
++end
++package.path = omarchy_path .. "/?.lua;" .. package.path
++
++local MODIFIERS = { SUPER = "Mod4", ALT = "Mod1", CTRL = "Control", SHIFT = "Shift" }
++local WHEEL = { mouse_down = "button5", mouse_up = "button4" }
++local DIRECTIONS = { l = "left", r = "right", u = "up", d = "down" }
++local SEPARATORS = { ["||"] = true, ["&&"] = true, [";"] = true, ["|"] = true }
++local CHECKED = { ["omarchy-shell"] = true, ["omarchy-menu"] = true }
++
++-- A dispatcher sway has no command for returns nil, and its binding is skipped.
++local function dispatchers(known)
++  return setmetatable(known, {
++    __index = function()
++      return function() end
++    end,
++  })
++end
++
++local function workspace(name)
++  if name == "e+1" then
++    return { sway = "workspace next_on_output" }
++  elseif name == "e-1" then
++    return { sway = "workspace prev_on_output" }
++  elseif name == "previous" then
++    return { sway = "workspace back_and_forth" }
++  elseif name:match("^%d+$") then
++    return { sway = "workspace number " .. name }
++  end
++end
++
++local function resize(axis, amount)
++  local verb = amount > 0 and "grow" or "shrink"
++  return { sway = string.format("resize %s %s %d px", verb, axis, math.abs(amount)) }
++end
++
++local dsp = dispatchers({
++  exec_cmd = function(command)
++    return { exec = command }
++  end,
++  layout = function(name)
++    if name == "togglesplit" then
++      return { sway = "layout toggle split" }
++    end
++  end,
++  focus = function(args)
++    if args.direction then
++      return { sway = "focus " .. DIRECTIONS[args.direction] }
++    elseif args.workspace then
++      return workspace(args.workspace)
++    end
++  end,
++})
++
++dsp.window = dispatchers({
++  close = function()
++    return { sway = "kill" }
++  end,
++  float = function(args)
++    if args.action == "toggle" then
++      return { sway = "floating toggle" }
++    end
++  end,
++  fullscreen = function(args)
++    if args.mode == "fullscreen" then
++      return { sway = "fullscreen toggle" }
++    end
++  end,
++  move = function(args)
++    if args.workspace == "special:scratchpad" then
++      return { sway = "move scratchpad" }
++    end
++    if not (args.workspace and args.workspace:match("^%d+$")) then
++      return nil
++    end
++
++    local move = "move container to workspace number " .. args.workspace
++    if args.follow == false then
++      return { sway = move }
++    end
++    return { sway = move .. "; workspace number " .. args.workspace }
++  end,
++  swap = function(args)
++    return { sway = "move " .. DIRECTIONS[args.direction] }
++  end,
++  cycle_next = function(args)
++    if args and args.next == false then
++      return { sway = "focus prev" }
++    end
++    return { sway = "focus next" }
++  end,
++  resize = function(args)
++    if not args then
++      return nil
++    end
++    if args.x ~= 0 then
++      return resize("width", args.x)
++    end
++    return resize("height", args.y)
++  end,
++})
++
++dsp.workspace = dispatchers({
++  toggle_special = function(name)
++    if name == "scratchpad" then
++      return { sway = "scratchpad show" }
++    end
++  end,
++  move = function(args)
++    local direction = DIRECTIONS[args.monitor]
++    if direction then
++      return { sway = "move workspace to output " .. direction }
++    end
++  end,
++})
++
++dsp.group = dispatchers({})
++
++local function sway_keys(keys)
++  local bind = "bindsym"
++  local parts = {}
++
++  for part in keys:gmatch("[^+]+") do
++    part = part:match("^%s*(.-)%s*$")
++    local code = part:match("^code:(%d+)$")
++
++    if MODIFIERS[part] then
++      table.insert(parts, MODIFIERS[part])
++    elseif code then
++      bind = "bindcode"
++      table.insert(parts, code)
++    elseif WHEEL[part] then
++      bind = "bindsym --whole-window"
++      table.insert(parts, WHEEL[part])
++    elseif part:find(":", 1, true) then
++      return nil
++    else
++      table.insert(parts, part)
++    end
++  end
++
++  return bind, table.concat(parts, "+")
++end
++
++local function missing_program(command)
++  local expect_program = true
++
++  for word in command:gmatch("%S+") do
++    if SEPARATORS[word] then
++      expect_program = true
++    elseif expect_program then
++      if o.cmd_missing(word) then
++        return word
++      end
++      expect_program = false
++    end
++  end
++end
++
++local bound = {}
++
++local function skip(keys, description, reason)
++  io.stderr:write(string.format("omarchy-sway-bindings: skipped %s (%s): %s\n", keys, description or "", reason))
++end
++
++local function bind(keys, dispatcher, options)
++  local opts = options or {}
++  local description = opts.description
++
++  if not description then
++    return skip(keys, description, "no description")
++  end
++
++  local kind, combo = sway_keys(keys)
++  if not kind then
++    return skip(keys, description, "no sway key")
++  end
++
++  if type(dispatcher) == "table" and dispatcher.exec then
++    local program = missing_program(dispatcher.exec)
++    if program then
++      return skip(keys, description, program .. " is not installed")
++    end
++    local first, arguments = dispatcher.exec:match("^(%S+)(.*)$")
++    if CHECKED[first] and not o.shell_succeeds(first .. " --check" .. arguments) then
++      return skip(keys, description, "nothing answers " .. dispatcher.exec)
++    end
++    dispatcher = { sway = "exec " .. dispatcher.exec }
++  end
++
++  if type(dispatcher) ~= "table" or not dispatcher.sway then
++    return skip(keys, description, "no sway command")
++  end
++
++  local flags = ""
++  if opts.locked then
++    flags = flags .. " --locked"
++  end
++  if opts.release then
++    flags = flags .. " --release"
++  end
++  if not opts.repeating then
++    flags = flags .. " --no-repeat"
++  end
++
++  local line = kind .. flags .. " " .. combo
++  if bound[line] then
++    return skip(keys, description, "already bound to " .. bound[line])
++  end
++  bound[line] = description
++
++  print("# " .. description)
++  print(line .. " " .. dispatcher.sway)
++end
++
++hl = setmetatable({
++  dsp = dsp,
++  bind = function(keys, dispatcher, options)
++    bind(keys, dispatcher, options)
++    return { unbind = function() end }
++  end,
++}, {
++  __index = function()
++    return function() end
++  end,
++})
++
++require("default.hypr.helpers")
++require("default.hypr.bindings")

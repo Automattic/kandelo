@@ -22,6 +22,11 @@ interface SessionFile {
   mode: number;
 }
 
+interface SessionLink {
+  path: string;
+  target: string;
+}
+
 function sessionArtifacts(compositor: Compositor) {
   return {
     program: resolveBinary(`programs/${compositor}/${compositor}.wasm`),
@@ -50,11 +55,12 @@ function unpackZip(fs: VfsImageFilesystem, root: string, zipPath: string): void 
 }
 
 /** A machine root for a wlroots session: /tmp for the Wayland socket, the
- *  keymap rules and libinput quirks the compositor's libraries read, and
- *  `files`. */
+ *  keymap rules and libinput quirks the compositor's libraries read,
+ *  `files`, and `links` to them. */
 export function sessionRootfs(
   compositor: Compositor,
   files: SessionFile[],
+  links: SessionLink[] = [],
 ): Promise<Uint8Array> {
   const { xkb, quirks } = sessionArtifacts(compositor);
   const fs = KandeloImageFs.create();
@@ -62,6 +68,10 @@ export function sessionRootfs(
   for (const file of files) {
     ensureDirRecursive(fs, file.path.slice(0, file.path.lastIndexOf("/")));
     writeVfsBinary(fs, file.path, file.bytes, file.mode);
+  }
+  for (const link of links) {
+    ensureDirRecursive(fs, link.path.slice(0, link.path.lastIndexOf("/")));
+    fs.symlink(link.target, link.path);
   }
   unpackZip(fs, "/usr/share/X11/xkb", xkb!);
   unpackZip(fs, "/usr/share/libinput", quirks!);

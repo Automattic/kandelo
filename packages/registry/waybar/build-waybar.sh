@@ -70,6 +70,9 @@ PIXMAN_PREFIX="${WASM_POSIX_DEP_PIXMAN_DIR:?WASM_POSIX_DEP_PIXMAN_DIR not set}"
 FONTCONFIG_PREFIX="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
 FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set}"
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set}"
+# gdk-pixbuf's jpeg loader is compiled in, so every link that names
+# libgdk_pixbuf-2.0.a needs libjpeg.
+LIBJPEG_PREFIX="${WASM_POSIX_DEP_LIBJPEG_TURBO_DIR:?WASM_POSIX_DEP_LIBJPEG_TURBO_DIR not set}"
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set}"
 # libxml2 converts encodings through GNU libiconv, so every link that
 # names libxml2.a (fontconfig parses its configuration with it) needs it.
@@ -324,6 +327,7 @@ wasm32posix-c++ "${OBJS[@]}" "${PROTO_OBJS[@]}" \
     "$FREETYPE_PREFIX/lib/libfreetype.a" \
     "$LIBXML2_PREFIX/lib/libxml2.a" \
     "$LIBICONV_PREFIX/lib/libiconv.a" \
+    "$LIBJPEG_PREFIX/lib/libjpeg.a" \
     "$LIBPNG_PREFIX/lib/libpng.a" \
     "$ZLIB_PREFIX/lib/libz.a" \
     "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \

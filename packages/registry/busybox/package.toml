@@ -1,0 +1,26 @@
+kind = "program"
+
+# BusyBox, built with only the tools Kandelo does not otherwise ship:
+# the process tools pgrep, pkill, pidof, killall and setsid, and flock.
+# coreutils, grep, sed and findutils stay the GNU programs, so
+# fragment.config turns everything else off, the ash shell included.
+name = "busybox"
+version = "1.37.0"
+kernel_abi = 55
+depends_on = []
+
+[source]
+url = "https://busybox.net/downloads/busybox-1.37.0.tar.bz2"
+sha256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://git.busybox.net/busybox/tree/LICENSE?h=1_37_0"
+
+[build]
+script_path = "packages/registry/busybox/build-busybox.sh"
+
+[[outputs]]
+name = "busybox"
+wasm = "busybox.wasm"

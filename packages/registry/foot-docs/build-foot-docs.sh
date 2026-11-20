@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 source "$REPO_ROOT/scripts/install-package-man-pages.sh"
 kandelo_man_pages_stage_source "$HERE"
 SRC="$KANDELO_MAN_PAGES_SOURCE"
-DATE="$(kandelo_man_pages_release_date "$WASM_POSIX_DEP_VERSION" 1.17.2=2024-04-17)"
+DATE="$(kandelo_man_pages_release_date "$WASM_POSIX_DEP_VERSION" 1.28.0=2026-09-02)"
 
 # The pages state these defaults; fail if foot stops being built with them.
 FOOT_BUILD="$REPO_ROOT/packages/registry/foot/build-foot.sh"

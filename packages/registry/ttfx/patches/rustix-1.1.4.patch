@@ -1,0 +1,25 @@
+# Kandelo's musl declares ioctl(int, int, ...). Add its target to rustix's
+# musl opcode-type branch without changing target identity.
+# Upstream portability patch for rustix 1.1.4; no ioctl semantics are changed.
+--- a/src/ioctl/mod.rs
++++ b/src/ioctl/mod.rs
+@@ -301,11 +301,14 @@
+ type _Opcode = c::c_ulong;
+ 
+ // Musl uses `c_int`.
+-#[cfg(all(
+-    not(linux_raw),
+-    target_os = "linux",
+-    not(target_env = "gnu"),
+-    not(target_env = "uclibc")
++#[cfg(any(
++    all(
++        not(linux_raw),
++        target_os = "linux",
++        not(target_env = "gnu"),
++        not(target_env = "uclibc")
++    ),
++    target_os = "kandelo"
+ ))]
+ type _Opcode = c::c_int;
+ 

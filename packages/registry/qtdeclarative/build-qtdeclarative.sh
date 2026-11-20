@@ -6,7 +6,7 @@
 # GL command stream replays onto WebGL2, which only the browser host
 # has, and a renderer one host cannot run would break dual-host parity.
 # The software adaptation rasterises on the CPU into the same wl_shm
-# pools qtgallery paints through. Consumers select it with
+# pools QtGui's wayland plugin paints through. Consumers select it with
 # QT_QUICK_BACKEND=software.
 #
 # qml-type-loader-thread is off, taking Qt's supported synchronous

@@ -91,6 +91,10 @@ name = "basu"
 class = "platform"
 
 [[packages]]
+name = "basuctl"
+class = "user-software"
+
+[[packages]]
 name = "bc"
 class = "user-software"
 
@@ -245,6 +249,10 @@ class = "platform"
 [[packages]]
 name = "wasm-fork-instrument-docs"
 class = "browser-product"
+
+[[packages]]
+name = "busybox"
+class = "user-software"
 
 [[packages]]
 name = "bzip2"
@@ -431,6 +439,10 @@ name = "freetype"
 class = "platform"
 
 [[packages]]
+name = "fuzzel"
+class = "user-software"
+
+[[packages]]
 name = "fribidi"
 class = "platform"
 
@@ -525,6 +537,10 @@ class = "platform"
 [[packages]]
 name = "icu"
 class = "platform"
+
+[[packages]]
+name = "jetbrains-mono-nerd-font"
+class = "user-software"
 
 [[packages]]
 name = "jq"
@@ -651,6 +667,10 @@ name = "libinput"
 class = "platform"
 
 [[packages]]
+name = "libjpeg-turbo"
+class = "platform"
+
+[[packages]]
 name = "libmad"
 class = "platform"
 
@@ -705,6 +725,10 @@ class = "platform"
 [[packages]]
 name = "libxkbregistry"
 class = "platform"
+
+[[packages]]
+name = "xkbcli"
+class = "user-software"
 
 [[packages]]
 name = "libxml2"
@@ -867,6 +891,10 @@ name = "npm-docs"
 class = "browser-product"
 
 [[packages]]
+name = "omarchy"
+class = "user-software"
+
+[[packages]]
 name = "openssl"
 class = "platform"
 
@@ -917,14 +945,6 @@ class = "platform"
 [[packages]]
 name = "qtdeclarative"
 class = "platform"
-
-[[packages]]
-name = "qtgallery"
-class = "user-software"
-
-[[packages]]
-name = "qtgallery-docs"
-class = "browser-product"
 
 [[packages]]
 name = "qtshadertools"
@@ -1107,6 +1127,14 @@ name = "swaybg-docs"
 class = "browser-product"
 
 [[packages]]
+name = "swayidle"
+class = "user-software"
+
+[[packages]]
+name = "swaylock"
+class = "user-software"
+
+[[packages]]
 name = "sdl2-mixer-playwave"
 class = "user-software"
 
@@ -1181,6 +1209,10 @@ class = "user-software"
 [[packages]]
 name = "tar-docs"
 class = "browser-product"
+
+[[packages]]
+name = "ttfx"
+class = "user-software"
 
 [[packages]]
 name = "tmux"
@@ -1305,6 +1337,10 @@ class = "browser-product"
 [[packages]]
 name = "lua"
 class = "platform"
+
+[[packages]]
+name = "lua-cli"
+class = "user-software"
 
 [[products]]
 id = "platform-rootfs"

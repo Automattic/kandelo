@@ -6,15 +6,17 @@ kind = "library"
 # Image loading (libgdk_pixbuf-2.0.a). Ported for GTK3 (plan
 # docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4,
 # PR24). 2.36.12 is the last autotools release (2.38 moved to meson).
-# Scope: png loader only, compiled in statically
-# (--with-included-loaders=png --disable-modules); no jpeg/tiff, no
-# dynamic loader modules.
+# Scope: png and jpeg loaders, compiled in statically
+# (--with-included-loaders=png,jpeg --disable-modules); the jpeg loader
+# links libjpeg-turbo, so swaybg and swaylock draw JPEG backgrounds. No
+# tiff, no dynamic loader modules.
 name = "gdk-pixbuf"
 version = "2.36.12"
 kernel_abi = 17
 depends_on = [
   "glib@2.84.4",
   "libpng@1.6.43",
+  "libjpeg-turbo@3.1.3",
   "libffi@0.1.0",
   "zlib@1.3.1",
 ]
