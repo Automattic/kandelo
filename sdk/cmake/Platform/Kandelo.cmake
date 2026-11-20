@@ -9,3 +9,7 @@ set(UNIX 1)
 set(CMAKE_EXECUTABLE_SUFFIX ".wasm")
 set(CMAKE_STATIC_LIBRARY_PREFIX "lib")
 set(CMAKE_STATIC_LIBRARY_SUFFIX ".a")
+# ENABLE_EXPORTS: an executable exports its symbols, and the libc functions
+# it links, to the dlopen(3) modules it loads.
+set(CMAKE_EXE_EXPORTS_C_FLAG "-Wl,--export-dynamic")
+set(CMAKE_EXE_EXPORTS_CXX_FLAG "-Wl,--export-dynamic")

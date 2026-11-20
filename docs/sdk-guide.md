@@ -243,10 +243,10 @@ normal static archive resolution.
 ### With dynamic loading (dlopen)
 
 ```bash
-# Build main program with dlopen support
-wasm32posix-cc -ldl main.c -o main.wasm
+# Build the main program; -rdynamic exports its symbols to the modules it loads
+wasm32posix-cc -rdynamic main.c -o main.wasm
 
-# Build shared library
+# Build a shared library (a side module)
 wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 ```
 
@@ -254,63 +254,63 @@ Use `wasm64posix-cc` for both commands to build a memory64 executable and
 side module. Do not mix wasm32 and wasm64 artifacts in one process: memory and
 table imports, pointer globals, and GOT entries are width-specific.
 
-Executables that expose their own symbols to loaded modules or resolve them
-through `dlopen(NULL, ...)` / `dlsym(RTLD_DEFAULT, ...)` must also link with
-`-Wl,--export-dynamic`. Symbols intended for lookup must have default
-visibility, either through `__attribute__((visibility("default")))` on the
-public API or a scoped `-fvisibility=default` build flag. `RTLD_NEXT` lookup is
-not currently supported.
+`dlopen`, `dlsym`, `dlclose` and `dlerror` are in libc, as on other musl
+systems: a program that calls them gets Kandelo's loader with or without
+`-ldl`. `RTLD_NEXT` lookup is not currently supported.
 
 #### Plugin modules and the programs that load them
 
 A side module carries no libc: every symbol it does not define, libc's
 included, resolves against the program that loads it, and `dlopen()` fails
-with a `dlerror()` naming the first symbol nothing provides. So a program
-that loads plugins must
+with a `dlerror()` naming the first symbol nothing provides. A program
+that loads plugins links with `-rdynamic` (or `-Wl,--export-dynamic`,
+`-Wl,-E`), as on any Unix, to export what they call. The build systems'
+switches produce it: CMake's `ENABLE_EXPORTS`, Meson's
+`export_dynamic: true` and Libtool's `-export-dynamic`.
 
-- link `-ldl`. `-ldl` is what links Kandelo's loader; the `dlopen` that
-  `libc.a` defines is musl's static stub, which fails with "Dynamic
-  loading not supported". A probe that finds `dlopen` in libc without
-  `-ldl` finds that stub: Meson's `dependency('dl')` and `cc.has_function`,
-  and Autoconf's `AC_SEARCH_LIBS([dlopen], [dl])` and
-  `AC_CHECK_FUNC([dlopen])`, report it as present. Ask for the library
-  itself instead (`cc.find_library('dl')`, `AC_CHECK_LIB([dl], [dlopen])`;
-  CMake's `CMAKE_DL_LIBS` is `dl` inside Kandelo).
-- export the API its plugins call. Link with `-Wl,--export-dynamic`
-  (`-Wl,-E`), and declare that API with default visibility: Clang gives
-  WebAssembly symbols hidden visibility unless told otherwise, and
-  `--export-dynamic` exports only default-visibility symbols. `-rdynamic`
-  is ignored (see [Flags silently ignored](#flags-silently-ignored)). The
-  build systems' own switches produce `-Wl,--export-dynamic` inside
-  Kandelo: CMake's `ENABLE_EXPORTS`, Meson's `export_dynamic: true` and
-  Libtool's `-export-dynamic`.
-- export each libc function its plugins call, with `-Wl,--export=<symbol>`
-  (which also links it). `libc.a` is built with hidden visibility, so
-  `--export-dynamic` exports none of libc. `-Wl,--export-all` exports
-  every symbol the program links, libc's included, which is what
-  `-rdynamic` does on an ELF system, but it also keeps every function of
-  each linked object, the SDK glue's `fork` among them. The program then
-  imports the fork entry and must be fork-instrumented before it runs
-  (see [Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)),
-  and it grows (a small test program went from 46 KB to 201 KB). PHP and
-  ScummVM link with `-Wl,--export-all` and a list of `-u` symbols
-  (`packages/registry/php/build-php.sh`,
-  `packages/registry/scummvm/build-scummvm.sh`).
+How the SDK makes that work:
+
+- **The loader comes with dlopen.** The SDK links its loader
+  (`libc/glue/dlopen.c`) into every executable as a lazy member after the
+  caller's inputs and ahead of `libc.a`. A program that calls `dlopen`,
+  `dlsym`, `dlclose` or `dlerror` gets it instead of musl's static stubs
+  ("Dynamic loading not supported"); a program that never calls them gets
+  none of it, and `-ldl` changes nothing. Configure probes therefore see
+  working functions in libc: Meson's `dependency('dl')` is built in, and
+  Autoconf's `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
+- **Symbols have Unix visibility.** Clang gives WebAssembly symbols hidden
+  visibility unless told otherwise, which left `--export-dynamic`, which
+  exports default-visibility symbols, nothing to export. The SDK compiles
+  with `-fvisibility=default` (a caller's own `-fvisibility` still wins),
+  and musl's `libc.a` is built the same way, with musl's internals hidden
+  by musl's own annotations. An executable's code is the same either way;
+  only the export set under `--export-dynamic` changes. Side modules link
+  with `-Bsymbolic`, so a module still binds its own definitions locally,
+  as before.
+- **Exporting does not make the program fork-capable.** The SDK's glue
+  (the syscall channel, the `fork` entry, compiler builtins) is compiled
+  hidden, so `--export-dynamic` neither exports it nor keeps `fork`, and
+  with it the kernel's fork import, in a program that never calls `fork`.
+  The loader's four public functions are default, so a plugin can call
+  `dlopen` too. `-Wl,--export-all` is different: it exports and keeps
+  every symbol of every linked object, the glue's `fork` included, so the
+  program must then be fork-instrumented.
+
+What `-rdynamic` exports is what the program links. A plugin that calls a
+libc function the program never uses fails to load, because a static
+program contains only the libc members it references; link and export it
+with `-Wl,--export=<symbol>`. Calling `fork` from a plugin likewise needs a
+program that links `fork` and is fork-instrumented.
 
 Libtool, CMake and Meson build plugin modules natively inside Kandelo:
 see [GNU build tools](#gnu-build-tools) and
 [CMake inside Kandelo](#cmake-inside-kandelo).
 `host/test/guest-plugins.test.ts` builds a program and a plugin that calls
-back into it with each of them, and runs it. `host/test/sdk-plugin-modules.test.ts`
-builds the same program and plugin with the build machine's `cc` and checks
-the boundaries above: a plugin that calls `printf` loads only once the
-program exports it, a program linked without `-ldl` gets the stub, and
-`--export-all` makes the program fork-capable. Cross builds with the build
-machine's Meson and CMake do not use these package changes: there, Meson's
-`export_dynamic: true` still passes `-Wl,-export-dynamic`, but the SDK's
-CMake platform (`sdk/cmake/Platform/Kandelo.cmake`) gives `ENABLE_EXPORTS`
-no flag, so a cross-built CMake plugin host adds `-Wl,--export-dynamic`
-itself.
+back into it and into libc with each of them, and runs it.
+`host/test/sdk-plugin-modules.test.ts` checks the SDK contract above with
+the build machine's `cc`: `-rdynamic` without `-ldl`, the export set, no
+fork import, no loader in a program that never calls `dlopen`, and a plugin
+that needs a libc function the program does not link.
 
 ## What the SDK Does
 
@@ -326,6 +326,8 @@ itself.
 -mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
                                    # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
+-fvisibility=default               # Unix symbol visibility (see "Plugin
+                                   # modules"); the caller's -fvisibility wins
 -fwasm-exceptions                  # Compiles with C++ input only (see
                                    # "C++ exceptions")
 --sysroot=<path>                   # musl sysroot
@@ -601,11 +603,12 @@ live in `crates/kandelo-cc/src/flags.rs`, shared by both SDK builds.
 When linking an executable (not compile-only), the SDK adds:
 - `libc/glue/channel_syscall.c` — syscall dispatcher
 - `libc/glue/compiler_rt.c` — soft-float and 64-bit builtins
-- `libc/glue/dlopen.c` — the dynamic loader, with `-ldl`
 - `libc/glue/cxxrt_entry.cpp` — the C++ runtime's entries (see "C++
   exceptions"), when the link includes libc++abi: the C++ driver adds it, or
   the caller names `-lc++abi` or `libc++abi.a`
 - `sysroot/lib/crt1.o` — C runtime startup
+- `libc/glue/dlopen.c` — the dynamic loader, a lazy member a program gets
+  when it calls `dlopen`, `dlsym`, `dlclose` or `dlerror`
 - `libc/glue/cxxrt.c` — a minimal C++ runtime (`operator new`/`delete`,
   `__cxa_pure_virtual`) for C++ code linked without libc++ and libc++abi,
   as a lazy member (`--start-lib`) after the caller's inputs and the C++
@@ -699,7 +702,7 @@ These flags are common in build systems but irrelevant for Wasm:
 - `-lpthread` (pthread symbols are provided by musl's `libc.a`)
 - `-fPIE`, `-pie` (no position-independent executables in Wasm)
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
-- `-rdynamic`, `-Wl,-Bsymbolic`
+- `-Wl,-Bsymbolic` (side modules always bind their own symbols locally)
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
 - `-Wl,--start-group`, `-Wl,--end-group` (wasm-ld rejects them; like ELF lld it
   resolves archive members regardless of command-line order)
@@ -758,12 +761,10 @@ and the kernel implements them; the limits that remain (`mremap` refuses to
 grow a `MAP_PRIVATE` file mapping, and `madvise` refuses advice it cannot carry out) are listed
 in [POSIX status](posix-status.md).
 
-Dynamic loading is an important exception to link-only detection. Musl carries
-weak `dlopen`/`dlsym` stubs that link but only report that dynamic loading is
-unsupported. `config.site` therefore directs `AC_SEARCH_LIBS` checks for the
-dlfcn API to `-ldl`; the SDK compiler wrapper interprets that library request
-by linking Kandelo's functional Wasm dynamic-loading glue. A configure result
-of `none required` for those searches would select the nonfunctional stubs.
+Dynamic loading needs no preset. Musl's `libc.a` carries weak `dlopen`/`dlsym`
+stubs that only report that dynamic loading is unsupported, but the SDK links
+its loader ahead of them into any program that calls the dlfcn functions, so a
+configure result of `none required` selects working functions.
 
 ### Example: building dash
 
@@ -1225,7 +1226,7 @@ package patch): `configure` reports the dynamic linker as `Kandelo dlopen
 `-shared`) becomes an unversioned side module, `NAME.so`, with no soname,
 run path or libc of its own, and every other installed library is a `.a`
 archive whatever `LT_INIT` asks for. A program's `-export-dynamic` becomes
-`-Wl,--export-dynamic`, so its plugins can call it (see
+`-Wl,--export-dynamic`, so its plugins can call it and the libc it links (see
 [Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
 Because shared libraries are enabled, Libtool compiles each library
 source twice, PIC and non-PIC, as on any platform with shared libraries;
@@ -1304,7 +1305,8 @@ can link against a `MODULE` library. A package patch lets CMake admit
 `TARGET_SUPPORTS_MODULE_LIBS`, while `TARGET_SUPPORTS_SHARED_LIBS` stays
 false. `ENABLE_EXPORTS` on an executable links it with
 `-Wl,--export-dynamic` so its modules can call it, and `CMAKE_DL_LIBS` is
-`dl` (see [Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
+empty: `dlopen` is in libc (see
+[Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
 `find_library()` finds `.a` files only.
 
 **C++ exceptions** need no flag: the SDK enables them for every C++

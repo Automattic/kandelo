@@ -27,6 +27,16 @@ pub fn compile_flags(arch: WasmArch) -> Vec<String> {
             "-mllvm",
             "-wasm-use-legacy-eh=false",
             "-fno-trapping-math",
+            // Unix symbol visibility. Clang gives WebAssembly symbols hidden
+            // visibility unless told otherwise, so -rdynamic and
+            // -Wl,--export-dynamic, which export default-visibility symbols,
+            // exported nothing a plugin could call. An executable's code is
+            // the same either way: only its export set under
+            // --export-dynamic changes. A caller's own -fvisibility, later
+            // on the command line, still wins. The SDK's glue opts back out
+            // (glue_compile_base); side modules bind their own symbols with
+            // -Bsymbolic (shared_link_flags).
+            "-fvisibility=default",
         ]
         .map(String::from),
     );
@@ -564,6 +574,12 @@ pub fn shared_link_flags() -> Vec<String> {
         "-Wl,--shared-memory",
         "-Wl,--export-all",
         "-Wl,--allow-undefined",
+        // A side module binds its own definitions locally, as it did when
+        // its symbols were hidden by default: with default visibility (see
+        // compile_flags) wasm-ld would otherwise route the module's own data
+        // and function addresses through GOT imports the loader fills.
+        // Kandelo does not support interposing a module's own symbols.
+        "-Wl,-Bsymbolic",
     ]
     .map(String::from)
     .to_vec()
@@ -586,7 +602,6 @@ const IGNORED_EXACT: &[&str] = &[
     // regardless of command-line order. Meson emits them.
     "-Wl,--start-group",
     "-Wl,--end-group",
-    "-rdynamic",
     "-Wl,-Bsymbolic",
     "-Wl,-z,noexecstack",
     "-Wl,-z,text",
@@ -639,6 +654,14 @@ pub fn filter_args(args: &[String], arch: WasmArch) -> FilterResult {
         if IGNORED_EXACT.contains(&arg.as_str())
             || IGNORED_PREFIXES.iter().any(|p| arg.starts_with(p))
         {
+            i += 1;
+            continue;
+        }
+        // -rdynamic: export the executable's symbols to the modules it
+        // loads. wasm-ld spells that --export-dynamic; it exports
+        // default-visibility symbols, which compile_flags makes the default.
+        if arg == "-rdynamic" {
+            filtered.push("-Wl,--export-dynamic".into());
             i += 1;
             continue;
         }

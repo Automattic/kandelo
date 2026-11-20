@@ -31,12 +31,11 @@ libraries work. `patches/0001-kandelo-platform.patch` names the machine
   can link against a `MODULE` library. `find_library()` finds only `.a`
   files.
 - `ENABLE_EXPORTS` on an executable adds `-Wl,--export-dynamic`
-  (`CMAKE_EXE_EXPORTS_<LANG>_FLAG`), which exports its default-visibility
-  symbols to the modules it loads. WebAssembly symbols are hidden unless
-  declared otherwise, and libc's are hidden (see "Plugin modules" in
-  `docs/sdk-guide.md`).
-- `CMAKE_DL_LIBS` is `dl`: `-ldl` links Kandelo's `dlopen` loader, and
-  the `dlopen` in `libc.a` is musl's static stub.
+  (`CMAKE_EXE_EXPORTS_<LANG>_FLAG`), which exports its symbols, and the
+  libc functions it links, to the modules it loads (see "Plugin modules"
+  in `docs/sdk-guide.md`).
+- `CMAKE_DL_LIBS` is empty: `dlopen` is in libc. The SDK links its loader
+  into any program that calls it.
 - `UNIX` is set and the usual Unix search prefixes (`/usr/local`, `/usr`)
   apply.
 - Executables have no suffix, as the guest `cc` writes them.
