@@ -1066,8 +1066,9 @@ impl ProcessTable {
         unsafe { crate::pipe::global_pipe_table() }.cancel_fifo_opens_for_process(pid, |_| {});
         // A trapped process or failed launch may never execute close().
         // Retire the same kernel references as close, before discarding OFDs.
-        crate::syscalls::rollback_owned_mapping_plans(&mut proc);
+        let prepared_effect = crate::syscalls::rollback_owned_mapping_plans(&mut proc);
         let mut dri_effects = crate::syscalls::collect_dri_mapping_releases(core::mem::take(&mut proc.dri_bindings));
+        dri_effects.extend(prepared_effect);
         dri_effects.extend(crate::syscalls::collect_process_gl_image_release_effects(&mut proc));
         dri_effects.extend(crate::syscalls::collect_owned_resource_removal_effects(&mut proc));
         let dri_ofds: Vec<_> = proc.ofd_table.iter()

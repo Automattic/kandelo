@@ -712,7 +712,11 @@ impl OwnedMappingPlan {
         flags: u32,
         bo: u32,
     ) -> Result<Self, Errno> {
-        if proc.memory.group_virtual_extent().is_some() {
+        if proc.memory.group_virtual_extent().is_some() && flags & wasm_posix_shared::mmap::MAP_SHARED == 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        if proc.memory.group_virtual_extent().is_none()
+            && !crate::dri::with_registry(|r| r.ordinary_storage_allowed(bo)) {
             return Err(Errno::EOPNOTSUPP);
         }
         crate::dri::with_registry(|r| r.incref(bo)).ok_or(Errno::ENOMEM)?;
@@ -751,10 +755,20 @@ impl OwnedMappingPlan {
         }, Self::GroupUnmap(storage) => {
             let unmap = storage.as_ref().unwrap();
             owned_resource_validate(proc, unmap.target)?; &unmap.plan
-        }, _ => return Err(Errno::EOPNOTSUPP) };
+        }, Self::Bo { allocation, .. } => {
+            allocation.grouped.as_deref().and_then(Option::as_ref).ok_or(Errno::EOPNOTSUPP)?
+        } };
         proc.memory.validate_memory_change(plan)?;
+        let (shared_object, shared_length, shared_offset) = plan.shared_record()?;
         Ok(crate::group_memory_change::Description { token: plan.serial(), receipt, effect: plan.effect(),
-            population_address: 0, population_length: 0, shared_object: 0, shared_length: 0, shared_offset: 0 })
+            population_address: 0, population_length: 0, shared_object, shared_length, shared_offset })
+    }
+    pub(crate) fn prepare_group_backing(&mut self, group: u32) -> Result<(), Errno> {
+        if let Self::Bo { allocation, bo, .. } = self {
+            allocation.grouped.as_deref_mut().and_then(Option::as_mut)
+                .ok_or(Errno::EOPNOTSUPP)?.prepare_group_bo(group, *bo)?;
+        }
+        Ok(())
     }
     pub(crate) fn rollback(self, proc: &mut Process) {
         match self {
@@ -787,10 +801,18 @@ impl OwnedMappingPlan {
                 let mapped = allocation.addr;
                 // Bind admission is atomic. Rejection leaves old native views
                 // intact, so even MAP_FIXED can restore its staged VMA table.
-                if host.gbm_bo_bind(proc.pid as i32, bo, mapped, len, 0) < 0 {
+                let accepted = if let Some(plan) = allocation.grouped.as_deref().and_then(Option::as_ref) {
+                    let (object, _, _) = plan.shared_backing()?.ok_or(Errno::EIO)?;
+                    host.gbm_bo_bind_group(proc.pid as i32, bo, mapped, len, 0,
+                        object.group(), object.id(), object.length())
+                } else {
+                    host.gbm_bo_bind(proc.pid as i32, bo, mapped, len, 0)
+                };
+                if accepted < 0 {
                     allocation.rollback(proc);
                     return Err(Errno::ENOMEM);
                 }
+                if allocation.grouped.is_none() { crate::dri::with_registry(|r| r.mark_ordinary_storage(bo)); }
                 allocation.commit(proc, host, true);
                 if let Some(identity) = identity { proc.memory.publish_exact_mapping(mapped, identity); }
                 proc.dri_bindings.push(crate::process::DriBoBinding {
@@ -832,6 +854,95 @@ impl OwnedMappingPlan {
                 Ok(addr)
             }
         }
+    }
+}
+
+/// A descriptor-selected BO hold for the generic grouped mmap transaction.
+/// No raw guest address or host callback can select the object identity.
+pub(crate) struct GroupBoMap {
+    hold: DriMappingHold,
+    bo: u32,
+    len: usize,
+}
+impl GroupBoMap {
+    pub(crate) fn from_fd(proc: &mut Process, fd: i32, offset: u64, len: usize, prot: u32, flags: u32)
+        -> Result<Option<Self>, Errno> {
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd)?.ofd_ref.0).ok_or(Errno::EBADF)?;
+        let bo = if let Some(prime) = ofd.prime_bo() {
+            if offset != 0 { return Err(Errno::EINVAL); }
+            if prot & wasm_posix_shared::mmap::PROT_WRITE != 0 && ofd.status_flags() & O_ACCMODE != O_RDWR {
+                return Err(Errno::EACCES);
+            }
+            prime.bo_id
+        } else if let Some(dri) = ofd.dri() {
+            if offset == 0 || offset & 4095 != 0 { return Err(Errno::EINVAL); }
+            let bo = u32::try_from(offset >> 12).map_err(|_| Errno::EINVAL)?;
+            if !dri_fd_has_bo_handle(dri, bo) { return Err(Errno::EACCES); }
+            bo
+        } else { return Ok(None); };
+        if ofd.is_path_only() { return Err(Errno::EBADF); }
+        if flags & wasm_posix_shared::mmap::MAP_SHARED == 0 { return Err(Errno::EOPNOTSUPP); }
+        let valid = crate::dri::with_registry(|r| r.get(bo).is_some_and(|b|
+            b.tier == crate::dri::BoTier::CpuShared && b.size.checked_add(65535).is_some_and(|size| len as u64 <= (size & !65535))));
+        if !valid { return Err(Errno::EINVAL); }
+        proc.dri_bindings.try_reserve(1)?;
+        crate::dri::with_registry(|r| r.incref(bo)).ok_or(Errno::ENOMEM)?;
+        Ok(Some(Self { hold: DriMappingHold(Some(bo)), bo, len }))
+    }
+    pub(crate) fn prepare(&self, plan: &mut crate::memory::change::PreparedMemoryChange, group: u32) -> Result<(), Errno> {
+        plan.prepare_group_bo(group, self.bo)
+    }
+    pub(crate) fn bind(&self, pid: u32, plan: &crate::memory::change::PreparedMemoryChange, host: &mut dyn HostIO) -> Result<(), Errno> {
+        let crate::memory::change::MemoryChangeEffect::Map { addr, .. } = plan.effect() else { return Err(Errno::EIO); };
+        let (object, _, _) = plan.shared_backing()?.ok_or(Errno::EIO)?;
+        if host.gbm_bo_bind_group(pid as i32, self.bo, addr, self.len, 0, object.group(), object.id(), object.length()) < 0 {
+            return Err(Errno::ENOMEM);
+        }
+        Ok(())
+    }
+    pub(crate) fn retire(mut self) -> Option<DriReleaseEffect> {
+        let bo = self.hold.0.take()?;
+        (crate::dri::with_registry(|r| r.decref(bo)) == Some(0)).then_some(DriReleaseEffect::DestroyBo(bo))
+    }
+    pub(crate) fn publish(mut self, proc: &mut Process, addr: usize) {
+        proc.dri_bindings.push(crate::process::DriBoBinding { addr, len: self.len, bo_id: self.bo, bo_offset: 0 });
+        self.hold.0 = None;
+    }
+}
+
+pub(crate) fn group_dri_bindings_supported(proc: &Process, group: u32) -> bool {
+    crate::dri::with_registry(|r| proc.dri_bindings.iter().all(|b|
+        r.group_storage(b.bo_id).is_some_and(|s| s.group() == group)))
+}
+
+pub(crate) fn validate_group_device_change(proc: &Process, change: crate::memory::change::MemoryChange) -> Result<(), Errno> {
+    if let crate::memory::change::MemoryChange::Remap { addr, old_len, new_len, .. } = change {
+        if addr & 65535 == 0 && old_len != 0 && new_len != 0 {
+            let old = old_len.checked_add(65535).ok_or(Errno::EINVAL)? & !65535;
+            let new = new_len.checked_add(65535).ok_or(Errno::EINVAL)? & !65535;
+            if new > old && range_has_device_mapping(proc, addr, old) { return Err(Errno::EFAULT); }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_group_device_retirement(proc: &Process, effect: crate::memory::change::MemoryChangeEffect,
+    additional_binding: bool)
+    -> Result<Option<DeviceUnmapPlan>, Errno> {
+    use crate::memory::change::MemoryChangeEffect as E;
+    let range = match effect {
+        E::Unmap { addr, len } => Some((addr, len)),
+        E::Map { addr, len, flags, .. } if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 => Some((addr, len)),
+        E::Remap { old_addr, old_len, new_addr, new_len, .. } if range_has_device_mapping(proc, old_addr, old_len) => {
+            if old_addr != new_addr || new_len > old_len { return Err(Errno::EFAULT); }
+            if new_len < old_len { Some((old_addr + new_len, old_len - new_len)) } else { None }
+        }
+        _ => None,
+    };
+    match range {
+        Some((addr, len)) if range_has_device_mapping(proc, addr, len) =>
+            DeviceUnmapPlan::prepare_with_binding_slots(proc, addr, len, usize::from(additional_binding)).map(Some),
+        _ => Ok(None),
     }
 }
 pub(crate) fn owned_resource_prepare_mmap(
@@ -985,7 +1096,8 @@ pub(crate) fn owned_resource_prepare_group_unmap(proc: &mut Process, kind: Kind,
 }
 /// Before mapping refs retire, abort any unpublished constructor while its
 /// old VMAs still retain the split-hold backing required by rollback.
-pub(crate) fn rollback_owned_mapping_plans(proc: &mut Process) {
+pub(crate) fn rollback_owned_mapping_plans(proc: &mut Process) -> Option<DriReleaseEffect> {
+    let effect = crate::group_memory_change::retire_device_preparation(proc);
     for index in 0..proc.owned_resources.resources.len() {
         let plan = proc.owned_resources.resources[index]
             .receipt
@@ -998,6 +1110,7 @@ pub(crate) fn rollback_owned_mapping_plans(proc: &mut Process) {
             plan.rollback(proc);
         }
     }
+    effect
 }
 
 pub(crate) fn drain_owned_resources(
@@ -1005,7 +1118,7 @@ pub(crate) fn drain_owned_resources(
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
 ) {
-    rollback_owned_mapping_plans(proc);
+    if let Some(effect) = rollback_owned_mapping_plans(proc) { apply_dri_release_effect(proc.pid as i32, effect, host); }
     let state = core::mem::take(&mut proc.owned_resources);
     // Image destruction discards C bookkeeping, not the namespace inherited
     // by a fork child. Drop storage pins; ordinary last OFD close owns GEM

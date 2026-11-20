@@ -1011,6 +1011,7 @@ export class WasmPosixKernel {
     | ((source: bigint, offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
   #groupObjectReader: ((group: number, object: bigint, offset: bigint, dest: Uint8Array) => number) | undefined;
+  #groupObjectWriter: ((group: number, object: bigint, offset: bigint, input: Uint8Array) => number) | undefined;
   /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
@@ -1858,6 +1859,14 @@ export class WasmPosixKernel {
   /** Install the Kandelo exchange source byte provider. */
   setGroupObjectReader(reader: (group: number, object: bigint, offset: bigint, dest: Uint8Array) => number): void {
     this.#groupObjectReader = reader;
+    this.bos.setGroupObjectIO({
+      read: (backing, offset, output) => this.#groupObjectReader?.(backing.group, backing.object, BigInt(offset), output) ?? -5,
+      write: (backing, offset, input) => this.#groupObjectWriter?.(backing.group, backing.object, BigInt(offset), input) ?? -5,
+    });
+  }
+
+  setGroupObjectWriter(writer: (group: number, object: bigint, offset: bigint, input: Uint8Array) => number): void {
+    this.#groupObjectWriter = writer;
   }
 
   setExchangeSourceProvider(
@@ -3397,6 +3406,19 @@ export class WasmPosixKernel {
             // is fatal, not a refused mapping.
             if (error instanceof GbmMappingFault || isKernelExportFailure(error)) throw error;
             return -75; // EOVERFLOW
+          }
+        },
+        host_gbm_bo_bind_group: (pid: number, bo: number, addr: KernelPointer, len: KernelPointer,
+          boOffset: bigint, group: number, object: bigint, objectLength: KernelPointer): number => {
+          try {
+            if (typeof boOffset !== "bigint" || boOffset < 0n || boOffset > BigInt(Number.MAX_SAFE_INTEGER)) return -75;
+            const span = this.#checkedKernelSpan(addr, len, Number.MAX_SAFE_INTEGER, "group BO virtual mapping");
+            const length = this.#checkedKernelIndex(objectLength, "group BO object length");
+            return this.bos.bindGroup(pid, bo, span.offset, span.length, Number(boOffset),
+              Math.ceil(span.length / WASM_PAGE_SIZE) * WASM_PAGE_SIZE, {group, object: BigInt.asUintN(64, object), length});
+          } catch (error) {
+            if (error instanceof GbmMappingFault || isKernelExportFailure(error)) throw error;
+            return -75;
           }
         },
         host_gbm_bo_unbind: (

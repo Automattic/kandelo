@@ -474,6 +474,14 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// Register scalar alias metadata for direct grouped storage. The host
+    /// reads/writes the admitted object, never `addr` in a raw Wasm Memory.
+    #[allow(unused_variables)]
+    fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
+        bo_offset: u64, group: u32, object: u64, object_len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     /// Unbind a prior `gbm_bo_bind` — called from munmap /
     /// process-exit before the wasm pages are returned to the
     /// anonymous pool.

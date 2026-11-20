@@ -31,6 +31,21 @@ program ABI 56 and its digest remain unchanged. The regenerated snapshot records
 the new export and optional manifest entry. This does not establish full-app or
 lifecycle acceptance.
 
+## Grouped CPU graphical buffer bindings
+
+Host-adapter 24 requires `host_gbm_bo_bind_group(pid, bo, address, length,
+boOffset, group, object, objectLength)`. Rust passes the exact kernel-owned
+BO/group object identity with scalar virtual mapping metadata. The host
+accesses the admitted object through its worker-local group store, rather
+than treating virtual addresses as offsets into a raw process Memory.
+Mapping-description protocol 5 keeps its 136-byte layout and permits bounded
+non-anonymous prefixes to name their full descriptor backing. Anonymous
+creation still requires an exact whole-object extent. The ordinary
+`host_gbm_bo_bind` interface remains unchanged. Program ABI 56,
+its supported digest and executable format4 remain unchanged; kernel and
+host must rebuild together. This interface does not establish final browser
+memory, resource or desktop acceptance.
+
 ## Supported persistent-program baseline
 
 Kernel-host adapter version 21 extends internal grouped mapping descriptions

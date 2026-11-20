@@ -10,6 +10,7 @@ import { compileSdkFixture } from './support/compile-sdk-fixture';
 // Exercise the public host option, not the separate internal-admission fixture.
 const publicLaunchCases = [
   ['readonly-file', true], ['shared-file', true], ['fork', true], ['pthread', true],
+  ['dri-mapping-fork', true], ['dri-mapping-fork', false], ['dri-direct', true],
   ['fork', false], ['pthread', false],
   ['sigchld-wnohang', true], ['sigchld-wnohang', false],
 ] as const;
@@ -18,7 +19,7 @@ it.each([
     (['bytes', 'vfs'] as const).map(mode => [mode, name, compatible] as const)),
   ['vfs', 'executable-identity', true], ['vfs', 'executable-identity', false],
 ] as const)('runs public trusted %s launch %s (compatible=%s)', async (mode, name, compatible) => {
-  const fixture = compileSdkFixture(new URL(`./fixtures/grouped-sdk-${name}.c`, import.meta.url), [], { forkInstrument: true });
+  const fixture = compileSdkFixture(new URL(`./fixtures/${name === 'dri-mapping-fork' ? 'dri-mapping-fork.c' : `grouped-sdk-${name}.c`}`, import.meta.url), [], { forkInstrument: true });
   let host: NodeKernelHost | undefined;
   try {
     let path = fixture.programPath;
@@ -53,7 +54,8 @@ it.each([
           env: ['PATH=/bin'], stdin: new Uint8Array(), onStarted: pid => { rootPid = pid; },
         });
     expect({ status, stderr, diagnostics }).toEqual({ status: 0, stderr: '', diagnostics: [] });
-    expect(stdout).toContain(`grouped-sdk-${name} PASS`);
+    expect(stdout).toContain(name === 'dri-mapping-fork'
+      ? 'OK fixed PRIME replacement preserves alias storage across fork' : `grouped-sdk-${name} PASS`);
     if (compatible) {
       expect(rootPid).toBeDefined();
       // enumProcs intentionally hides zombies and cannot prove reclamation.
@@ -130,3 +132,21 @@ it('rolls back repeated initial grouped image allocation refusals before a Worke
     expect({ stderr, diagnostics }).toEqual({ stderr: '', diagnostics: [] });
   } finally { await host?.destroy(); fixture.cleanup(); }
 }, 90000);
+
+
+it('records the ordinary direct-DRM-alias negative control without claiming coherent aliases', async () => {
+  const fixture = compileSdkFixture(new URL('./fixtures/grouped-sdk-dri-direct.c', import.meta.url), [], {forkInstrument: true});
+  let host: NodeKernelHost | undefined;
+  try {
+    const fs = KandeloImageFs.create(); const image = await fs.saveImage(); fs.reset();
+    let stderr = ''; const diagnostics: unknown[] = [];
+    host = new NodeKernelHost({rootfsImage: image, kernelMaxPages: 1024, maxPages: 2048,
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+      onHostDiagnostic: event => diagnostics.push(event)});
+    await host.init(Uint8Array.from(readFileSync(resolveBinary('kernel.wasm'))).buffer);
+    expect(await host.spawn(Uint8Array.from(readFileSync(fixture.programPath)).buffer, ['dri-direct'],
+      {env: ['PATH=/bin'], stdin: new Uint8Array()})).toBe(23);
+    expect(stderr).toBe('DIRECT-ALIAS-UNAVAILABLE\n');
+    expect(diagnostics).toEqual([]);
+  } finally { await host?.destroy(); fixture.cleanup(); }
+}, 90_000);

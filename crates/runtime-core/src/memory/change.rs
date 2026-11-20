@@ -40,6 +40,7 @@ pub(crate) struct PreparedMemoryChange {
     baseline: MemoryManager,
     proposed: MemoryManager,
     effect: MemoryChangeEffect,
+    device_bo: Option<u32>,
 }
 impl core::fmt::Debug for PreparedMemoryChange {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -50,7 +51,38 @@ impl core::fmt::Debug for PreparedMemoryChange {
 impl PreparedMemoryChange {
     pub(crate) fn effect(&self) -> MemoryChangeEffect { self.effect }
     pub(crate) fn serial(&self) -> u64 { self.serial }
+    pub(crate) fn prepare_group_bo(&mut self, group: u32, bo: u32) -> Result<(), Errno> {
+        let MemoryChangeEffect::Map { addr, len, prot, flags } = self.effect else { return Err(Errno::EINVAL); };
+        if self.proposed.grouped_linear.is_none() { return Err(Errno::EOPNOTSUPP); }
+        let mut name = alloc::vec::Vec::new();
+        name.try_reserve_exact(14).map_err(|_| Errno::ENOMEM)?;
+        name.extend_from_slice(b"/dev/dri/card0");
+        let mut file = alloc::rc::Rc::try_new(super::MappingFile { dev: 0, ino: bo as u64, name,
+            private_source: None, group_shared: None }).map_err(|_| Errno::ENOMEM)?;
+        let object = crate::dri::with_registry(|r| r.prepare_group_storage(bo, group, self.serial))?;
+        if len > object.length() {
+            crate::dri::with_registry(|r| r.cancel_group_storage(bo, self.serial));
+            return Err(Errno::EINVAL);
+        }
+        alloc::rc::Rc::get_mut(&mut file).expect("new BO mapping label").group_shared = Some(object);
+        if !self.proposed.set_mapping_file(addr, 0, file) {
+            crate::dri::with_registry(|r| r.cancel_group_storage(bo, self.serial));
+            return Err(Errno::EIO);
+        }
+        // Device storage is shared; MAP_ANONYMOUS was only the internal
+        // address allocator's input and must not describe the published VMA.
+        let flags = (flags & !(mmap::MAP_PRIVATE | mmap::MAP_ANONYMOUS)) | mmap::MAP_SHARED;
+        self.proposed.mappings.iter_mut().find(|m| m.addr == addr).unwrap().flags = flags;
+        self.effect = MemoryChangeEffect::Map { addr, len, prot, flags };
+        self.device_bo = Some(bo);
+        Ok(())
+    }
     pub(crate) fn prepare_group_shared(&mut self, group: u32) -> Result<(), Errno> {
+        if self.device_bo.is_some() {
+            return if self.shared_backing()?.is_some_and(|(object, _, _)| object.group() == group) {
+                Ok(())
+            } else { Err(Errno::EACCES) };
+        }
         if let MemoryChangeEffect::Map { addr, len, flags, .. } = self.effect {
             if flags & mmap::MAP_SHARED != 0 {
                 if self.proposed.grouped_linear.is_none() { return Err(Errno::EOPNOTSUPP); }
@@ -186,7 +218,7 @@ impl MemoryManager {
         let serial = next_change(&LAST_CHANGE)?;
         // No fallible step follows acquiring live transaction custody.
         self.pending_change = core::num::NonZeroU64::new(serial);
-        Ok(PreparedMemoryChange { serial, baseline, proposed, effect })
+        Ok(PreparedMemoryChange { serial, baseline, proposed, effect, device_bo: None })
     }
 
     pub(crate) fn validate_memory_change(&self, plan: &PreparedMemoryChange) -> Result<(), Errno> {
@@ -201,6 +233,10 @@ impl MemoryManager {
         if let Some(handle) = plan.new_group_file() {
             if let Err(error) = crate::tmpfs::commit_group_storage(handle, plan.serial) { return Err((error, plan)); }
         }
+        if let Some(bo) = plan.device_bo {
+            let id = plan.shared_record().expect("prepared device backing").0;
+            if let Err(error) = crate::dri::with_registry(|r| r.commit_group_storage(bo, id)) { return Err((error, plan)); }
+        }
         let effect = plan.effect;
         *self = plan.proposed;
         Ok(effect)
@@ -210,6 +246,7 @@ impl MemoryManager {
         -> Result<(), (Errno, PreparedMemoryChange)> {
         if self.pending_change.map(core::num::NonZeroU64::get) != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
         if let Some(handle) = plan.new_group_file() { crate::tmpfs::cancel_group_storage(handle, plan.serial); }
+        if let Some(bo) = plan.device_bo { crate::dri::with_registry(|r| r.cancel_group_storage(bo, plan.serial)); }
         // Cancellation never restores an old snapshot over intervening writes.
         self.pending_change = None;
         Ok(())

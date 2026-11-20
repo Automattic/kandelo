@@ -8258,6 +8258,8 @@ export class CentralizedKernelWorker {
         this.#memoryGroupStores.set(group, new MemoryGroupImageStore(group, admitted.maximumPages, initialPages));
         this.#kernel.setGroupObjectReader((owner, object, offset, output) =>
           this.#memoryGroupStores.get(owner)?.readFileObject(object, offset, output) ?? -EIO);
+        this.#kernel.setGroupObjectWriter((owner, object, offset, input) =>
+          this.#memoryGroupStores.get(owner)?.writeFileObject(object, offset, input) ?? -EIO);
         result = 0;
       } catch (error) { if (error instanceof RangeError) result = -ENOMEM; else throw error; }
       return undefined;

@@ -51,6 +51,8 @@ pub(crate) struct Pending {
     population_position: usize,
     population_eof: bool,
     control_thread: Option<crate::memory_group::GroupAdmission>,
+    device: Option<crate::syscalls::GroupBoMap>,
+    retirement: Option<crate::syscalls::DeviceUnmapPlan>,
 }
 pub(crate) struct Population {
     pub address: usize,
@@ -112,6 +114,10 @@ impl ProcessTable {
         if u32::from_le_bytes(packet[52..56].try_into().unwrap()) != W::PENDING { return Ok(None); }
         let token = u32::from_le_bytes(packet[24..28].try_into().unwrap());
         let transaction = u64::from_le_bytes(packet[8..16].try_into().unwrap());
+        if let Err(error) = crate::owned_resource::prepare_grouped_mapping_backing(proc, receipt, token, transaction) {
+            crate::owned_resource::refuse_grouped_mapping_backing(proc, locks, host, tid, token, transaction, error)?;
+            return Err(error);
+        }
         crate::owned_resource::grouped_mapping_description(proc, receipt, token, transaction).map(Some)
     }
 
@@ -183,7 +189,7 @@ impl ProcessTable {
         }
         // Only exact kernel-owned direct backings may survive as aliases.
         // Device and legacy descriptor effects still need their own owner.
-        if proc.fb_binding.is_some() || !proc.dri_bindings.is_empty()
+        if proc.fb_binding.is_some() || !crate::syscalls::group_dri_bindings_supported(proc, receipt.group)
             || !proc.shm_mappings.is_empty() || proc.memory.has_unsupported_group_shared_mapping(receipt.group) {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -221,12 +227,18 @@ impl ProcessTable {
         }
         // Device and legacy shared-memory cleanup is not implied by a plan.
         // Direct anonymous objects already participate in exact image custody.
-        if proc.fb_binding.is_some() || !proc.dri_bindings.is_empty()
+        if proc.fb_binding.is_some() || !crate::syscalls::group_dri_bindings_supported(proc, receipt.group)
             || !proc.shm_mappings.is_empty() || proc.memory.has_unsupported_group_shared_mapping(receipt.group) {
             return Err(Errno::EOPNOTSUPP);
         }
         let operation = intent(syscall, args)?;
-        let file = if syscall == Syscall::Mmap as u32 && args[3] & mmap::MAP_ANONYMOUS as u64 == 0 {
+        crate::syscalls::validate_group_device_change(proc, operation)?;
+        let device = if syscall == Syscall::Mmap as u32 && args[3] & mmap::MAP_ANONYMOUS as u64 == 0 {
+            let offset = args[5].checked_mul(4096).filter(|value| *value <= i64::MAX as u64).ok_or(Errno::EINVAL)?;
+            let fd = i32::try_from(args[4] as i64).map_err(|_| Errno::EINVAL)?;
+            crate::syscalls::GroupBoMap::from_fd(proc, fd, offset, pointer(args[1])?, args[2] as u32, args[3] as u32)?
+        } else { None };
+        let file = if device.is_none() && syscall == Syscall::Mmap as u32 && args[3] & mmap::MAP_ANONYMOUS as u64 == 0 {
             let offset = args[5].checked_mul(4096).filter(|value| *value <= i64::MAX as u64).ok_or(Errno::EINVAL)?;
             let fd = i32::try_from(args[4] as i64).map_err(|_| Errno::EINVAL)?;
             let ofd = proc.ofd_table.get(proc.fd_table.get(fd)?.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -260,7 +272,9 @@ impl ProcessTable {
         // metadata snapshots. No allocation can fail after the live serial.
         let mut storage = crate::IoBox::try_new(None::<Pending>)?;
         let mut plan = proc.memory.prepare_memory_change_with_file(operation, file)?;
-        if let Err(error) = plan.prepare_group_shared(receipt.group) {
+        let backing = match &device { Some(device) => device.prepare(&mut plan, receipt.group),
+            None => plan.prepare_group_shared(receipt.group) };
+        if let Err(error) = backing {
             proc.memory.cancel_memory_change(plan).expect("fresh shared mapping plan cancellation"); return Err(error);
         }
         let (shared_object, shared_length, shared_offset) = match plan.shared_record() {
@@ -274,7 +288,12 @@ impl ProcessTable {
         let description = Description { token: plan.serial(), receipt, effect: plan.effect(),
             population_address: population.as_ref().map_or(0, |p| p.address),
             population_length: population.as_ref().map_or(0, |p| p.len), shared_object, shared_length, shared_offset };
-        *storage = Some(Pending { description, plan, population, population_position: 0, population_eof: false, control_thread: None });
+        let retirement = match crate::syscalls::prepare_group_device_retirement(proc, plan.effect(), device.is_some()) {
+            Ok(plan) => plan,
+            Err(error) => { proc.memory.cancel_memory_change(plan).expect("refused device retirement cancellation"); return Err(error); }
+        };
+        *storage = Some(Pending { description, plan, population, population_position: 0, population_eof: false, control_thread: None,
+            device, retirement });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
     }
@@ -300,7 +319,7 @@ impl ProcessTable {
             len: wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize * 65536, owner: thread.record(),
         })?;
         let description = Description { token: plan.serial(), receipt, effect: plan.effect(), population_address: 0, population_length: 0, shared_object: 0, shared_length: 0, shared_offset: 0 };
-        *storage = Some(Pending { description, plan, population: None, population_position: 0, population_eof: false, control_thread: Some(thread) });
+        *storage = Some(Pending { description, plan, population: None, population_position: 0, population_eof: false, control_thread: Some(thread), device: None, retirement: None });
         proc.pending_group_memory_change = Some(storage);
         Ok(description)
     }
@@ -346,21 +365,36 @@ impl ProcessTable {
         Ok(pending.description)
     }
 
-    pub fn commit_group_memory_change(&mut self, pid: u32, tid: u32, token: u64) -> Result<Description, Errno> {
+    #[cfg(test)]
+    pub(crate) fn commit_group_memory_change(&mut self, pid: u32, tid: u32, token: u64) -> Result<Description, Errno> {
+        self.commit_group_memory_change_with_io(pid, tid, token, &mut crate::process::test_host::NoopHost)
+    }
+
+    pub fn commit_group_memory_change_with_io(&mut self, pid: u32, tid: u32, token: u64,
+        host: &mut dyn crate::process::HostIO) -> Result<Description, Errno> {
         self.validate_group_memory_change(pid, tid, token)?;
         let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
         let pending = proc.pending_group_memory_change.as_deref().and_then(Option::as_ref).ok_or(Errno::ESRCH)?;
         if pending.population.as_ref().is_some_and(|p| pending.population_position < p.len && !pending.population_eof) {
             return Err(Errno::EBUSY);
         }
+        if let Some(device) = &pending.device { device.bind(pid, &pending.plan, host)?; }
         let mut storage = proc.pending_group_memory_change.take().ok_or(Errno::ESRCH)?;
-        let pending = storage.take().expect("published group mapping owner");
+        let mut pending = storage.take().expect("published group mapping owner");
+        let device_effects = pending.device.is_some() || pending.retirement.is_some();
+        if let Some(retirement) = pending.retirement.take() {
+            retirement.commit_with_host(proc, host, pending.device.is_some());
+        }
         match proc.memory.commit_memory_change(pending.plan) {
-            Ok(_) => Ok(pending.description),
+            Ok(_) => {
+                if let Some(device) = pending.device { device.publish(proc, pending.description.result() as usize); }
+                Ok(pending.description)
+            },
             Err((error, plan)) => {
+                assert!(!device_effects, "validated device publication failed after native effects: {error:?}");
                 *storage = Some(Pending { plan, description: pending.description, population: pending.population,
                     population_position: pending.population_position, population_eof: pending.population_eof,
-                    control_thread: pending.control_thread });
+                    control_thread: pending.control_thread, device: pending.device, retirement: pending.retirement });
                 proc.pending_group_memory_change = Some(storage);
                 Err(error)
             }
@@ -369,7 +403,13 @@ impl ProcessTable {
 
     /// Cleanup remains possible after stop/thread exit/exec. A stale owner
     /// drops only its staging and never restores an old image's metadata.
-    pub fn cancel_group_memory_change(&mut self, pid: u32, tid: u32, token: u64) -> Result<(), Errno> {
+    #[cfg(test)]
+    pub(crate) fn cancel_group_memory_change(&mut self, pid: u32, tid: u32, token: u64) -> Result<(), Errno> {
+        self.cancel_group_memory_change_with_io(pid, tid, token, &mut crate::process::test_host::NoopHost)
+    }
+
+    pub fn cancel_group_memory_change_with_io(&mut self, pid: u32, tid: u32, token: u64,
+        host: &mut dyn crate::process::HostIO) -> Result<(), Errno> {
         let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
         let pending = proc.pending_group_memory_change.as_deref().and_then(Option::as_ref).ok_or(Errno::ESRCH)?;
         if pending.description.token != token || pending.description.receipt.tid != tid {
@@ -380,14 +420,22 @@ impl ProcessTable {
         if !proc.memory.owns_memory_change(&pending.plan) {
             // Exec may already have installed a different MemoryManager. Its
             // pending serial, if any, belongs to that successor exclusively.
+            if let Some(device) = pending.device {
+                if let Some(effect) = device.retire() { crate::syscalls::apply_dri_release_effect(pid as i32, effect, host); }
+            }
             return Ok(());
         }
         match proc.memory.cancel_memory_change(pending.plan) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(device) = pending.device {
+                    if let Some(effect) = device.retire() { crate::syscalls::apply_dri_release_effect(pid as i32, effect, host); }
+                }
+                Ok(())
+            },
             Err((error, plan)) => {
                 *storage = Some(Pending { plan, description: pending.description, population: pending.population,
                     population_position: pending.population_position, population_eof: pending.population_eof,
-                    control_thread: pending.control_thread });
+                    control_thread: pending.control_thread, device: pending.device, retirement: pending.retirement });
                 proc.pending_group_memory_change = Some(storage);
                 Err(error)
             }
@@ -408,6 +456,16 @@ impl ProcessTable {
         pending.population_eof = count == 0;
         Ok(count)
     }
+}
+
+/// Lifecycle cleanup drops provisional native pins before the live mapping
+/// and OFD walks. Keep the exact MM token for the host's later physical cancel;
+/// neither a stopped process nor a retired fd may leave a last BO hold whose
+/// plain Rust Drop cannot deliver its native destruction notification.
+pub(crate) fn retire_device_preparation(proc: &mut crate::process::Process) -> Option<crate::syscalls::DriReleaseEffect> {
+    let pending = proc.pending_group_memory_change.as_deref_mut()?.as_mut()?;
+    drop(pending.retirement.take());
+    pending.device.take()?.retire()
 }
 
 #[cfg(test)]

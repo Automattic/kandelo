@@ -13590,14 +13590,14 @@ impl DeviceUnmapRanges {
         match self { Self::One(range) => range, Self::Exact(ranges) => ranges }
     }
 }
-struct DeviceUnmapPlan {
+pub(crate) struct DeviceUnmapPlan {
     ranges: DeviceUnmapRanges,
     fragments: crate::IoBuffer<crate::process::DriBoBinding>,
     split_holds: Vec<crate::dri::BoId>,
 }
 
 impl DeviceUnmapPlan {
-    fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
+    pub(crate) fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
         Self::prepare_with_binding_slots(proc, addr, len, 0)
     }
 
@@ -13688,11 +13688,11 @@ impl DeviceUnmapPlan {
         Ok(Self { ranges, fragments, split_holds })
     }
 
-    fn commit(self, proc: &mut Process, host: &mut dyn HostIO) {
+    pub(crate) fn commit(self, proc: &mut Process, host: &mut dyn HostIO) {
         self.commit_with_host(proc, host, false);
     }
 
-    fn commit_with_host(
+    pub(crate) fn commit_with_host(
         mut self,
         proc: &mut Process,
         host: &mut dyn HostIO,
@@ -25853,6 +25853,7 @@ mod tests {
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
         /// the DRI mmap path can be asserted against.
         gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
+        gbm_bo_group_bind_calls: Vec<(i32, u32, usize, usize, u64, u32, u64, usize)>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_unbind` call.
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
@@ -26052,6 +26053,7 @@ mod tests {
                 handle_statfs: std::collections::HashMap::new(),
                 fsync_calls: Vec::new(),
                 gbm_bo_bind_calls: Vec::new(),
+                gbm_bo_group_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 gl_unbind_sessions: Vec::new(),
@@ -26963,6 +26965,11 @@ mod tests {
         fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
             let _ = bo_offset;
             self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
+            self.gbm_bo_bind_rc
+        }
+        fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
+            offset: u64, group: u32, object: u64, object_len: usize) -> i32 {
+            self.gbm_bo_group_bind_calls.push((pid, bo_id, addr, len, offset, group, object, object_len));
             self.gbm_bo_bind_rc
         }
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
@@ -52605,7 +52612,7 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let page = 0x10000;
         let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS);
-        let file = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec() });
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec(), group_shared: None, private_source: None });
         assert!(proc.memory.set_mapping_file(addr, 0, file));
         assert_eq!(sys_mremap(&mut proc, &mut host, addr, 2 * page, 3 * page, 1, 0), Err(Errno::EFAULT));
         assert_eq!(proc.memory.mappings()[0].len, 2 * page);
@@ -52656,7 +52663,7 @@ impl HostIO for RelSymlinkMock {
         let shared = proc.memory.mmap_anonymous(3 * page, page, rw, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED);
         let file = proc.memory.mmap_anonymous(4 * page, page, rw, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED);
         assert_eq!((private, shared, file), (page, 3 * page, 4 * page));
-        let name = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec() });
+        let name = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec(), group_shared: None, private_source: None });
         assert!(proc.memory.set_mapping_file(file, 0, name));
 
         // A private file mapping cannot be reread: refused, nothing changes.

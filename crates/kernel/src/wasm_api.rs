@@ -338,6 +338,8 @@ unsafe extern "C" {
     // see `HostIO::gbm_bo_destroy` and `syscalls::apply_dri_release_effect`.
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32) -> i32;
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32;
+    fn host_gbm_bo_bind_group(pid: i32, bo_id: u32, addr: usize, len: usize,
+        bo_offset: u64, group: u32, object: u64, object_len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
     fn host_gl_unbind(pid: i32, session_id: u32) -> i32;
@@ -1175,6 +1177,11 @@ impl HostIO for WasmHostIO {
 
     fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
         unsafe { host_gbm_bo_bind(pid, bo_id, addr, len, bo_offset) }
+    }
+
+    fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
+        bo_offset: u64, group: u32, object: u64, object_len: usize) -> i32 {
+        unsafe { host_gbm_bo_bind_group(pid, bo_id, addr, len, bo_offset, group, object, object_len) }
     }
 
     fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
@@ -4133,8 +4140,26 @@ pub extern "C" fn kernel_group_memory_fork(group: u32, pid: u32, tid: u32,
         generation: generation_lo as u64 | ((generation_hi as u64) << 32) };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.fork_group_memory_process(receipt, observed_pages)
-        .map(|child| child as i32).unwrap_or_else(|error| -(error as i32))
+    let child = match table.fork_group_memory_process(receipt, observed_pages) {
+        Ok(child) => child,
+        Err(error) => return -(error as i32),
+    };
+    let mut host = WasmHostIO;
+    let accepted = table.get(child).unwrap().dri_bindings.iter().all(|binding| {
+        let backing = crate::dri::with_registry(|r| r.group_storage_description(binding.bo_id));
+        backing.is_some_and(|(owner, object, length)| owner == group
+            && host.gbm_bo_bind_group(child as i32, binding.bo_id, binding.addr, binding.len,
+                binding.bo_offset, owner, object, length) >= 0)
+    });
+    if !accepted {
+        match lifecycle::run(table, &mut host, LifecycleRequest::Remove { pid: child, reap: false }) {
+            Ok(LifecycleCompletion::Removed(result)) => finish_removed_process(result),
+            Ok(_) => unreachable!("grouped fork binding rollback completion"),
+            Err(error) => panic!("grouped fork binding rollback failed for child {child}: {error:?}"),
+        }
+        return -(Errno::ENOMEM as i32);
+    }
+    child as i32
 }
 
 #[unsafe(no_mangle)]
@@ -4203,7 +4228,7 @@ pub extern "C" fn kernel_group_memory_change_prepare(
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) };
     match description.record().encode(out) {
         Ok(()) => DESCRIPTION_BYTES as i32,
-        Err(error) => match table.cancel_group_memory_change(pid, tid, description.token) {
+        Err(error) => match table.cancel_group_memory_change_with_io(pid, tid, description.token, &mut WasmHostIO) {
             Ok(()) => -(error as i32), Err(_) => -(Errno::EIO as i32),
         },
     }
@@ -4244,7 +4269,7 @@ pub extern "C" fn kernel_group_memory_thread_control_prepare(
     };
     match description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) }) {
         Ok(()) => DESCRIPTION_BYTES as i32,
-        Err(error) => match table.cancel_group_memory_change(pid, caller_tid, description.token) {
+        Err(error) => match table.cancel_group_memory_change_with_io(pid, caller_tid, description.token, &mut WasmHostIO) {
             Ok(()) => -(error as i32), Err(_) => -(Errno::EIO as i32),
         },
     }
@@ -4285,7 +4310,8 @@ pub extern "C" fn kernel_group_memory_change_commit(pid: u32, tid: u32, token_lo
     let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.commit_group_memory_change(pid, tid, token).map(|_| 0).unwrap_or_else(|error| -(error as i32))
+    table.commit_group_memory_change_with_io(pid, tid, token, &mut WasmHostIO)
+        .map(|_| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
@@ -4293,13 +4319,15 @@ pub extern "C" fn kernel_group_memory_change_cancel(pid: u32, tid: u32, token_lo
     let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.cancel_group_memory_change(pid, tid, token).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+    table.cancel_group_memory_change_with_io(pid, tid, token, &mut WasmHostIO).map(|()| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_group_memory_object_alive(group: u32, object_lo: u32, object_hi: u32) -> i32 {
     let _gkl = GklGuard::acquire();
-    i32::from(crate::tmpfs::group_storage_alive(group, (object_lo as u64) | ((object_hi as u64) << 32)))
+    let object = (object_lo as u64) | ((object_hi as u64) << 32);
+    i32::from(crate::tmpfs::group_storage_alive(group, object)
+        || crate::dri::with_registry(|r| r.group_storage_alive(group, object)))
 }
 
 #[unsafe(no_mangle)]

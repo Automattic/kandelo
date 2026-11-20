@@ -1227,3 +1227,40 @@ describe('anonymous shared backing custody', () => {
     h.store.resumeImageExecutionPause(h.barrier); h.store.close();
   });
 });
+
+
+it('admits full descriptor storage for a prefix map and directly publishes bounded device writes', () => {
+  const h = pausedMappingImage(64), id = h.describe().token;
+  const first = h.prepare({flags: 1, length: P, sharedObject: id, sharedLength: 3 * P});
+  expect(h.store.commitImageMapping(first, () => true, () => 0)).toBe('committed');
+  const charged = h.store.snapshot().allocatedPages;
+  expect(h.store.snapshot()).toMatchObject({sharedObjects: 1, sharedPages: 3});
+  expect(h.store.writeFileObject(id, BigInt(P - 1), Uint8Array.of(41, 43))).toBe(2);
+  expect(h.leader.source.readBytes(9 * P - 1, 1)).toEqual(Uint8Array.of(41));
+  const alias = h.prepare({token: id + 1n, flags: 1, address: 10 * P, result: 10 * P,
+    length: 3 * P, sharedObject: id, sharedLength: 3 * P});
+  expect(h.store.commitImageMapping(alias, () => true, () => 0)).toBe('committed');
+  expect(h.store.snapshot().allocatedPages).toBe(charged);
+  expect(h.leader.source.readBytes(11 * P - 1, 2)).toEqual(Uint8Array.of(41, 43));
+  h.leader.source.writeBytes(11 * P + 3, Uint8Array.of(59));
+  const copied = new Uint8Array(1); expect(h.store.readFileObject(id, BigInt(P + 3), copied)).toBe(1);
+  expect(copied).toEqual(Uint8Array.of(59));
+  expect(h.store.writeFileObject(id, BigInt(3 * P), Uint8Array.of(99))).toBe(-5);
+  expect(h.store.writeFileObject(id, -1n, Uint8Array.of(99))).toBe(-5);
+  expect(h.store.writeFileObject(id + 999n, 0n, Uint8Array.of(99))).toBe(-5);
+  h.store.resumeImageExecutionPause(h.barrier);
+  h.store.noteReplicaQuiescent(h.a); h.store.noteReplicaQuiescent(h.b); h.store.revokeImageAccess(h.a);
+  expect(h.store.tryReleaseStoppedImage(h.a)).not.toBe('busy');
+  h.store.sweepFileObjects(() => true); expect(h.store.snapshot().sharedPages).toBe(3);
+  h.store.sweepFileObjects(() => false); expect(h.store.snapshot().sharedPages).toBe(0);
+});
+
+
+it('refuses an oversized descriptor object as physical admission exhaustion without mutation', () => {
+  const h = pausedMappingImage(64), before = h.store.snapshot(), id = h.describe().token;
+  expect(h.store.prepareImageMapping(h.barrier, h.describe({flags: 1, length: P,
+    sharedObject: id, sharedLength: 65 * P}))).toBe('exhausted');
+  expect(h.store.snapshot()).toEqual(before);
+  const mapping = h.prepare({flags: 1, sharedObject: id, sharedLength: P});
+  expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+});

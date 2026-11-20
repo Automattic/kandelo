@@ -163,7 +163,7 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
         || (kind !== 'map' && result.populationLength !== 0)
         || (kind === 'map' && ((result.flags & 3) !== 1
           || ((result.flags & 0x20) !== 0 && (result.sharedObject !== actualToken || result.populationLength !== 0))
-          || result.sharedOffset !== 0 || result.sharedLength !== result.length)))
+          || result.sharedOffset !== 0 || ((result.flags & 0x20) !== 0 && result.sharedLength !== result.length))))
       || (kind === 'map' && (result.flags & 1) !== 0 && result.sharedObject === 0n)
       || (result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
       || (kind !== 'break' && badRange(result.address, result.length))

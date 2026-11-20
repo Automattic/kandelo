@@ -1015,12 +1015,28 @@ pub(crate) fn grouped_mapping_description(proc: &Process,
     pending.mapping_plan.as_ref().ok_or(Errno::EIO)?.group_description(proc, receipt)
 }
 
+pub(crate) fn prepare_grouped_mapping_backing(proc: &mut Process,
+    receipt: wasm_posix_shared::memory_group::ReceiptRecord, token: u32, transaction: u64,
+) -> Result<(), Errno> {
+    let index = proc.owned_resources.index(token, proc.pid, proc.exec_generation)?;
+    let pending = proc.owned_resources.resources[index].receipt.as_mut().ok_or(Errno::ENOENT)?;
+    if pending.creator_tid != receipt.tid || pending.request.transaction != transaction { return Err(Errno::ESRCH); }
+    if !pending.awaiting_mapping_finish || pending.complete || pending.running { return Err(Errno::EBUSY); }
+    pending.mapping_plan.as_mut().ok_or(Errno::EIO)?.prepare_group_backing(receipt.group)
+}
+
 pub(crate) fn mapping_result(proc: &Process, token: u32, transaction: u64) -> Result<i32, Errno> {
     let index = proc.owned_resources.index(token, proc.pid, proc.exec_generation)?;
     let receipt = proc.owned_resources.resources[index].receipt.as_ref().ok_or(Errno::ENOENT)?;
     if receipt.request.transaction != transaction || !receipt.complete { return Err(Errno::EBUSY); }
     Ok(receipt.response.result)
 }
+pub(crate) fn refuse_grouped_mapping_backing(proc: &mut Process, locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO, tid: u32, token: u32, transaction: u64, error: Errno,
+) -> Result<(), Errno> {
+    finish_mapping_impl(proc, locks, host, tid, token, transaction, error as u32)
+}
+
 pub(crate) fn finish_mapping(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
@@ -1033,6 +1049,12 @@ pub(crate) fn finish_mapping(
     if errno != 0 && errno != Errno::ENOMEM as u32 && errno != Errno::EIO as u32 {
         return Err(Errno::EINVAL);
     }
+    finish_mapping_impl(proc, locks, host, tid, token, transaction, errno)
+}
+
+fn finish_mapping_impl(proc: &mut Process, locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO, tid: u32, token: u32, transaction: u64, errno: u32,
+) -> Result<(), Errno> {
     let index = proc
         .owned_resources
         .index(token, proc.pid, proc.exec_generation)?;
