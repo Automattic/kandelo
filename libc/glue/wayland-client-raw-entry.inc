@@ -50,8 +50,11 @@ WL_EXPORT int wl_display_dispatch_queue(struct wl_display *display,
 			  struct wl_event_queue *queue);
 WL_EXPORT int wl_display_dispatch_queue_pending(struct wl_display *display,
 				  struct wl_event_queue *queue);
+WL_EXPORT int wl_display_dispatch_queue_pending_single(struct wl_display *display,
+					 struct wl_event_queue *queue);
 WL_EXPORT int wl_display_dispatch(struct wl_display *display);
 WL_EXPORT int wl_display_dispatch_pending(struct wl_display *display);
+WL_EXPORT int wl_display_dispatch_pending_single(struct wl_display *display);
 WL_EXPORT int wl_display_get_error(struct wl_display *display);
 WL_EXPORT uint32_t wl_display_get_protocol_error(struct wl_display *display,
 			      const struct wl_interface **interface,
@@ -352,6 +355,18 @@ WL_EXPORT int wl_display_dispatch_queue_pending(struct wl_display *display,
     pthread_cleanup_pop(0);if(!completed){return -1;}
     return result;
 }
+WL_EXPORT int wl_display_dispatch_queue_pending_single(struct wl_display *display,
+					 struct wl_event_queue *queue) {
+    if(!wpk_wl_native_pointer_admitted(display)){return -1;}
+    if(queue&&!wpk_wl_native_pointer_admitted(queue)){return -1;}
+    struct wpk_wl_raw_entry entry;wpk_wl_raw_entry_begin(&entry,display);
+    int result;
+    int completed;pthread_cleanup_push(wpk_wl_raw_entry_abandon,&entry);
+    result=_wpk_raw_native_wl_display_dispatch_queue_pending_single(display,queue);
+    completed=wpk_wl_raw_entry_end(&entry,NULL,WPK_RAW_NONE);
+    pthread_cleanup_pop(0);if(!completed){return -1;}
+    return result;
+}
 WL_EXPORT int wl_display_dispatch(struct wl_display *display) {
     if(!wpk_wl_native_pointer_admitted(display)){return -1;}
     struct wpk_wl_raw_entry entry;wpk_wl_raw_entry_begin(&entry,display);
@@ -368,6 +383,16 @@ WL_EXPORT int wl_display_dispatch_pending(struct wl_display *display) {
     int result;
     int completed;pthread_cleanup_push(wpk_wl_raw_entry_abandon,&entry);
     result=_wpk_raw_native_wl_display_dispatch_pending(display);
+    completed=wpk_wl_raw_entry_end(&entry,NULL,WPK_RAW_NONE);
+    pthread_cleanup_pop(0);if(!completed){return -1;}
+    return result;
+}
+WL_EXPORT int wl_display_dispatch_pending_single(struct wl_display *display) {
+    if(!wpk_wl_native_pointer_admitted(display)){return -1;}
+    struct wpk_wl_raw_entry entry;wpk_wl_raw_entry_begin(&entry,display);
+    int result;
+    int completed;pthread_cleanup_push(wpk_wl_raw_entry_abandon,&entry);
+    result=_wpk_raw_native_wl_display_dispatch_pending_single(display);
     completed=wpk_wl_raw_entry_end(&entry,NULL,WPK_RAW_NONE);
     pthread_cleanup_pop(0);if(!completed){return -1;}
     return result;

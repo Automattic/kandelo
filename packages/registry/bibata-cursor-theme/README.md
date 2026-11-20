@@ -47,7 +47,7 @@ the declared dev shell:
 scripts/dev-shell.sh python3 packages/registry/bibata-cursor-theme/pack-theme.py \
   /path/to/verified/Bibata-Modern-Ice /path/to/new/theme.zip
 scripts/dev-shell.sh bash packages/registry/bibata-cursor-theme/tests/check-theme-loaders.sh \
-  /path/to/wlroots-0.20.2 /path/to/wayland-1.24.0 \
+  /path/to/wlroots-0.20.2 /path/to/wayland-1.26.0 \
   /path/to/theme.zip /path/to/fresh/control-directory
 ```
 

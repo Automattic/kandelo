@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build libwayland (libwayland-client.a + libwayland-server.a) for
-# wasm32-posix-kernel, pinned to wayland 1.24.0.
+# wasm32-posix-kernel, pinned to wayland 1.26.0.
 #
 # We bypass upstream's meson build: it runs host-side feature probes that
 # misreport against the wasm sysroot (e.g. it would detect macOS-only
@@ -10,7 +10,7 @@
 # (src/config.h) and the generated protocol glue.
 #
 # The version MUST stay coherent with the host wayland-scanner (flake.nix,
-# 1.24.0) so the wire opcodes/interfaces match. See
+# 1.26.0) so the wire opcodes/interfaces match. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §3.
 #
 # libwayland's only libffi use is wl_closure_invoke; on wasm32 every
@@ -22,7 +22,7 @@
 # builds the deps first and sets:
 #
 #     WASM_POSIX_DEP_OUT_DIR                     # install prefix (lib/ + include/)
-#     WASM_POSIX_DEP_VERSION                     # upstream version (1.24.0)
+#     WASM_POSIX_DEP_VERSION                     # upstream version (1.26.0)
 #     WASM_POSIX_DEP_SOURCE_URL                  # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256               # expected sha256
 #     WASM_POSIX_DEP_LIBFFI_DIR                  # libffi shim prefix (ffi.h)
@@ -275,7 +275,7 @@ done
 # are the platform-neutral EGLNativeWindowType contract (our shim
 # libwayland-egl.a — built in scripts/build-programs.sh — implements the
 # wl_egl_window_* symbols); wayland-cursor.h matches libwayland-cursor.a
-# above. All vendored verbatim from this same wayland 1.24.0 source tree.
+# above. All vendored verbatim from this same wayland 1.26.0 source tree.
 for h in wayland-egl.h wayland-egl-core.h wayland-egl-backend.h; do
     cp "$SRC_DIR/egl/$h" "$INSTALL_DIR/include/$h"
 done

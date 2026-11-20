@@ -9121,7 +9121,9 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 For programs that use `fork()` or fork-like helpers, the in-tree
 `wasm-fork-instrument` tool (see
 [fork-instrumentation.md](fork-instrumentation.md)) runs after linking and
-after any `wasm-opt` pass, and then runs `wasm-opt -O2` over its own output.
+after any `wasm-opt` pass, and then runs `wasm-opt -Os` over its own output,
+skipping Binaryen's `constraint-analysis` pass (see
+[Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass)).
 Build scripts call
 `scripts/run-wasm-fork-instrument.sh`, which builds the tool on demand if the
 prebuilt `tools/bin/wasm-fork-instrument` is absent. The tool auto-discovers

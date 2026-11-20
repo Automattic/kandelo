@@ -75,7 +75,7 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 
 **fork() support**: If the program uses `fork()` or fork-like behavior, run
 `wasm-fork-instrument` after linking and after any `wasm-opt` pass of your
-own. The tool runs `wasm-opt -O2` over its output itself. Fork-like behavior includes `vfork()`, `_Fork()`, shell
+own. The tool runs `wasm-opt -Os` over its output itself, skipping Binaryen's `constraint-analysis` pass (see [Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass)). Fork-like behavior includes `vfork()`, `_Fork()`, shell
 pipelines, command substitution, `system()`, `popen()`, and helper processes
 implemented through fork.
 ```bash
@@ -152,9 +152,9 @@ Write that package's version file by hand, or clear `CMAKE_SIZEOF_VOID_P`
 before `write_basic_package_version_file`. CMake's helper bakes the pointer
 width of the machine that built the tool into a bitness check, and a wasm32
 consumer then rejects the package it just found — reported as
-`version: 6.10.2 (64bit)` under "configuration files were considered but not
-accepted". A test project written in `LANGUAGES NONE` has no pointer width and
-will not reproduce it; set `CMAKE_SIZEOF_VOID_P` to 4 so it does.
+`version: <Qt version> (64bit)` under "configuration files were considered
+but not accepted". A test project written in `LANGUAGES NONE` has no pointer
+width and will not reproduce it; set `CMAKE_SIZEOF_VOID_P` to 4 so it does.
 
 **OS detection in headers**: `CMAKE_SYSTEM_NAME=Linux` settles the build
 system only. Source that branches on preprocessor macros still sees a

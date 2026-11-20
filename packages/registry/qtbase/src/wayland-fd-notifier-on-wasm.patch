@@ -15,10 +15,11 @@ that thread reads, freezing input. waitForFrameSync() would spin its
 timeout without a dispatcher thread, but only the wayland-egl and Vulkan
 integrations call it and this port renders through wl_shm.
 
-diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platforms/wayland/qwaylanddisplay.cpp
---- a/src/plugins/platforms/wayland/qwaylanddisplay.cpp	2026-09-02 14:40:42
-+++ b/src/plugins/platforms/wayland/qwaylanddisplay.cpp	2026-09-02 15:02:20
-@@ -59,6 +59,7 @@
+diff --git a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platforms/wayland/qwaylanddisplay.cpp
+index a9760ef..d79bab1 100644
+--- a/src/plugins/platforms/wayland/qwaylanddisplay.cpp
++++ b/src/plugins/platforms/wayland/qwaylanddisplay.cpp
+@@ -61,6 +61,7 @@
  #include <QtWaylandClient/private/qwayland-pointer-warp-v1.h>
  
  #include <QtCore/private/qcore_unix_p.h>
@@ -26,7 +27,7 @@ diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platf
  
  #include <QtCore/QAbstractEventDispatcher>
  #include <QtGui/qpa/qwindowsysteminterface.h>
-@@ -349,12 +350,6 @@
+@@ -360,12 +361,6 @@ void QWaylandDisplay::setupConnection()
  
  QWaylandDisplay::~QWaylandDisplay(void)
  {
@@ -39,7 +40,7 @@ diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platf
      if (mSyncCallback)
          wl_callback_destroy(mSyncCallback);
  
-@@ -418,10 +413,8 @@
+@@ -435,10 +430,8 @@ void QWaylandDisplay::ensureScreen()
  void QWaylandDisplay::reconnect()
  {
      qCWarning(lcQpaWayland) << "Attempting wayland reconnect";
@@ -52,7 +53,7 @@ diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platf
  
      qDeleteAll(mWaitingScreens);
      mWaitingScreens.clear();
-@@ -522,27 +515,48 @@
+@@ -553,27 +546,48 @@ void QWaylandDisplay::reconnect()
  
  void QWaylandDisplay::flushRequests()
  {
@@ -115,17 +116,18 @@ diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platf
  }
  
  void QWaylandDisplay::checkWaylandError()
-diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay_p.h b/src/plugins/platforms/wayland/qwaylanddisplay_p.h
---- a/src/plugins/platforms/wayland/qwaylanddisplay_p.h	2026-09-02 14:40:42
-+++ b/src/plugins/platforms/wayland/qwaylanddisplay_p.h	2026-09-02 15:02:20
-@@ -304,9 +304,8 @@
-         void *data = nullptr;
+diff --git a/src/plugins/platforms/wayland/qwaylanddisplay_p.h b/src/plugins/platforms/wayland/qwaylanddisplay_p.h
+index 21248a1..45c631f 100644
+--- a/src/plugins/platforms/wayland/qwaylanddisplay_p.h
++++ b/src/plugins/platforms/wayland/qwaylanddisplay_p.h
+@@ -318,9 +318,8 @@ private:
      };
      struct wl_display *mDisplay = nullptr;
+     std::unique_ptr<QtWayland::wl_fixes> mFixes;
 -    std::unique_ptr<EventThread> m_eventThread;
 +    QSocketNotifier *m_readNotifier = nullptr;
      wl_event_queue *m_frameEventQueue = nullptr;
--    QScopedPointer<EventThread> m_frameEventQueueThread;
+-    std::unique_ptr<EventThread> m_frameEventQueueThread;
      QList<QWaylandScreen *> mWaitingScreens;
      QList<QWaylandScreen *> mScreens;
      QPlatformPlaceholderScreen *mPlaceholderScreen = nullptr;

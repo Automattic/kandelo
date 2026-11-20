@@ -7,10 +7,10 @@
 # `lld` tool's driver dispatch table to the wasm driver only, and restricts
 # the installed symlink to `wasm-ld`.
 #
-# Upstream: llvm-project, tag llvmorg-21.1.7 (LLVM 21.1.7).
---- a/lld/CMakeLists.txt	2025-12-01 07:58:50
-+++ b/lld/CMakeLists.txt	2026-08-27 13:49:18
-@@ -188,24 +188,10 @@
+# Upstream: llvm-project, tag llvmorg-23.1.3 (LLVM 23.1.3).
+--- a/lld/CMakeLists.txt
++++ b/lld/CMakeLists.txt
+@@ -196,24 +196,10 @@
    )
  
  add_subdirectory(Common)
@@ -37,8 +37,8 @@
  add_custom_target(lld-headers)
  set_target_properties(lld-headers PROPERTIES FOLDER "Misc")
  if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
---- a/lld/tools/lld/CMakeLists.txt	2025-12-01 07:58:50
-+++ b/lld/tools/lld/CMakeLists.txt	2026-08-27 13:49:18
+--- a/lld/tools/lld/CMakeLists.txt
++++ b/lld/tools/lld/CMakeLists.txt
 @@ -27,16 +27,12 @@
  lld_target_link_libraries(lld
    PRIVATE
@@ -57,8 +57,8 @@
  endif()
  
  foreach(link ${LLD_SYMLINKS_TO_CREATE})
---- a/lld/tools/lld/lld.cpp	2025-12-01 07:58:50
-+++ b/lld/tools/lld/lld.cpp	2026-08-27 13:49:18
+--- a/lld/tools/lld/lld.cpp
++++ b/lld/tools/lld/lld.cpp
 @@ -66,11 +66,9 @@
    return v;
  }

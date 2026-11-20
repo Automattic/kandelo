@@ -4,13 +4,20 @@
 // these, including a __cxa_thread_atexit that did nothing, so thread_local
 // destructors silently never ran.
 //
+// thread_local destructors must run both when a thread exits and, for the
+// main thread, at exit. The final verdict is printed from an atexit handler
+// registered before the main thread's thread_local is constructed, so that
+// thread_local's destructor is sequenced before the handler.
+//
 // Expected output on PASS:
 //   PASS cxx runtime
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <new>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 
 struct Base {
     virtual int f() = 0;
@@ -51,6 +58,32 @@ struct TlsProbe {
 // Destroyed at thread exit through __cxa_thread_atexit.
 static thread_local TlsProbe tls_probe;
 
+// Destroyed at exit, after main returns, through __cxa_thread_atexit.
+// Clang initializes every thread_local in this file on a thread's first
+// access to any of them, so the workers get copies too; count only main's.
+static std::atomic<int> main_tls_destroyed{0};
+struct MainTlsProbe {
+    int touched = 0;
+    ~MainTlsProbe() {
+        if (touched) main_tls_destroyed++;
+    }
+};
+static thread_local MainTlsProbe main_tls_probe;
+
+// main's own result; the atexit verdict reports only when main passed.
+static int main_failures = -1;
+
+static void report_at_exit() {
+    if (main_failures != 0) return;
+    if (main_tls_destroyed.load() != 1) {
+        std::printf("FAIL main-thread thread_local destructor: ran %d times before exit handlers\n",
+                    main_tls_destroyed.load());
+        std::fflush(stdout);
+        _exit(1);
+    }
+    std::puts("PASS cxx runtime");
+}
+
 static void* worker(void*) {
     pthread_barrier_wait(&start_together);
     if (shared_instance().ready.load() != 1) saw_unready++;
@@ -60,6 +93,12 @@ static void* worker(void*) {
 
 int main() {
     int failures = 0;
+    // Register before main_tls_probe exists, so its destructor runs first.
+    if (std::atexit(report_at_exit) != 0) {
+        std::puts("FAIL atexit registration");
+        return 1;
+    }
+    main_tls_probe.touched = 1;
     int* p = new int(3);
     if (*p != 3) failures++;
     delete p;
@@ -87,7 +126,7 @@ int main() {
         std::printf("FAIL thread_local destructors: ran %d of %d\n", tls_destroyed.load(), kThreads);
         failures++;
     }
+    main_failures = failures;
     if (failures) return 1;
-    std::puts("PASS cxx runtime");
     return 0;
 }

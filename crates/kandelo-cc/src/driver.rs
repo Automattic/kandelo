@@ -317,7 +317,8 @@ pub fn working_directory_from_clang_trace(
 
     // The provisional argv always adds absolute glue C sources, so an
     // executable link, including an object-only user link, emits cc1 jobs.
-    // Pinned LLVM 21 constructs this exact slot by pushing -resource-dir, its
+    // Clang's driver (Clang::ConstructJob in clang/lib/Driver/ToolChains/
+    // Clang.cpp) constructs this exact slot by pushing -resource-dir, its
     // value, and then Args.AddLastArg(OPT_working_directory), before
     // preprocessing and -Xclang arguments. This is the effective driver cwd
     // even when a config file or CCC_OVERRIDE_OPTIONS supplied it.
@@ -915,6 +916,31 @@ pub const FORK_ENTRY_IMPORT: (&str, &str) = ("kernel", "kernel_fork");
 
 const KEEP_TARGET_FEATURES: &str = "--keep-section=target_features";
 
+/// [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] Binaryen 133
+/// runs its new `constraint-analysis` pass at -O3, -O4, -Os and -Oz, and the
+/// pass aborts on code LLVM 23 emits (FFmpeg's `ff_spatial_dwt`). The fix,
+/// WebAssembly/binaryen#9258, is in no release yet. The pass also had a run
+/// of wrong-code fixes before 133, and it measured no worthwhile size or
+/// speed win on Kandelo's programs, so Kandelo skips it. Re-enabling it is
+/// a separate, re-measured decision: see
+/// tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md and
+/// "Revisit Binaryen's constraint-analysis pass" in
+/// docs/future-improvements.md. fork-instrument's post-instrumentation
+/// wasm-opt carries the same flag (crates/fork-instrument/src/cli/optimize.rs).
+///
+/// wasm-opt accepts `--skip-pass` with a pass name it does not know, so the
+/// flag is harmless with a Binaryen that lacks the pass and at levels that
+/// do not schedule it.
+pub const SKIP_CONSTRAINT_ANALYSIS: &str = "--skip-pass=constraint-analysis";
+
+/// The post-link wasm-opt job the driver runs for a module that does not
+/// fork: clang's scheduled job, plus `SKIP_CONSTRAINT_ANALYSIS`.
+pub fn post_link_wasm_opt_job(job: &[String]) -> Vec<String> {
+    let mut job = job.to_vec();
+    job.push(SKIP_CONSTRAINT_ANALYSIS.into());
+    job
+}
+
 fn without_one(args: &[String], value: &str) -> Vec<String> {
     let mut out = args.to_vec();
     if let Some(index) = out.iter().position(|a| a == value) {
@@ -956,7 +982,8 @@ fn comparable_linker(jobs: &[Vec<String>], linker: &[String]) -> Vec<String> {
 /// make those facts describe the wrong functions, so the module must reach
 /// the instrumenter as wasm-ld wrote it. The instrumenter runs wasm-opt
 /// itself after instrumenting. Any other module needs no facts: it loses the
-/// section and gets exactly the optimization clang would have run.
+/// section and gets the optimization clang scheduled, with one Binaryen pass
+/// skipped (`SKIP_CONSTRAINT_ANALYSIS`).
 pub fn is_fork_capable(module: &[u8]) -> Result<bool> {
     imports_function(module, FORK_ENTRY_IMPORT.0, FORK_ENTRY_IMPORT.1)
 }
@@ -1060,6 +1087,8 @@ pub fn run_compiler_driver(
         }
     }
     if let Some(job) = wasm_opt.first() {
+        // [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] skip the pass.
+        let job = post_link_wasm_opt_job(job);
         let exit_code = run_passthrough(&job[0], &job[1..]);
         if exit_code != 0 {
             return Ok(exit_code);

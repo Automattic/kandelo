@@ -12,12 +12,14 @@ wasm-ld brackets the data stack with __stack_low and __stack_high
 whenever they are referenced. The stack grows down, so __stack_high
 is the logical base, as in the Q_OS_WASM branch this mirrors.
 
+diff --git a/src/qml/memory/qv4stacklimits.cpp b/src/qml/memory/qv4stacklimits.cpp
+index 4f3c219..6083448 100644
 --- a/src/qml/memory/qv4stacklimits.cpp
 +++ b/src/qml/memory/qv4stacklimits.cpp
-@@ -96,7 +96,19 @@ static qsizetype getMainStackSizeFromRlimit()
+@@ -97,7 +97,19 @@ static qsizetype getMainStackSizeFromRlimit()
  }
  #endif
-
+ 
 -#if defined(Q_OS_INTEGRITY)
 +#if defined(__wasm__) && !defined(Q_OS_WASM)
 +
@@ -32,6 +34,6 @@ is the logical base, as in the Q_OS_WASM branch this mirrors.
 +}
 +
 +#elif defined(Q_OS_INTEGRITY)
-
+ 
  StackProperties stackProperties()
  {

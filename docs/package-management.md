@@ -729,7 +729,7 @@ files = ["share/runtime-data.bin"]                   # other runtime data
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.
 - `dev-shell` requires the all-zero SHA sentinel. It is currently used only by
-  `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
+  `libcxx`, whose identity binds the exact LLVM 23.1.3 compiler and Nix source
   paths supplied by the repository dev shell.
 
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
@@ -798,7 +798,7 @@ files = ["share/runtime-data.bin"]                   # other runtime data
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.
 - `dev-shell` requires the all-zero SHA sentinel. It is currently used only by
-  `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
+  `libcxx`, whose identity binds the exact LLVM 23.1.3 compiler and Nix source
   paths supplied by the repository dev shell.
 
 The checked-in local-supported authority must spell the provider explicitly.
@@ -1372,7 +1372,7 @@ unchanged.
 Repository identities therefore follow declared bytes across Git checkouts and
 ignore project refs and informational commits. The `libcxx` dev-shell identity
 binds the locked `flake.nix` and `flake.lock` bytes through declared build
-inputs. It also length-binds the exact LLVM 21.1.7 version, canonical compiler
+inputs. It also length-binds the exact LLVM 23.1.3 version, canonical compiler
 prefix, complete bounded `clang --version` output, and canonical
 libcxx/libcxxabi/libunwind Nix source roots. Missing, mismatched, symlinked,
 non-store, non-UTF-8, oversized, or failing compiler/source inputs fail before
@@ -2121,7 +2121,7 @@ target terminfo privately from the declared `ncurses-source` dependency on both
 architectures; it does not substitute libc or a host library for curses.
 
 ```toml
-depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@21.1.7"]
+depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@23.1.3"]
 ```
 
 The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,
@@ -2217,13 +2217,14 @@ Real issues encountered during D.1–D.5 and how to avoid them.
 ### 5. Optimization-level workarounds
 
 A few cross-compiles use a lower `-O` level for specific files
-because of a suspected LLVM 21 wasm32 codegen bug at higher levels.
-None of these has a standalone reduction yet, so the compiler bug
-is unverified; the per-file rules stay until one exists or the
-fault is found elsewhere. The migration pattern doesn't change
-this — these are pre-existing issues that surface independent of
-the cache — but consumers must keep the per-file workaround in
-place when porting their build script:
+because of suspected LLVM wasm32 codegen bugs at higher levels,
+observed on LLVM 21. They have not yet been re-tested on Kandelo's
+pinned LLVM 23.1.3. None of these has a standalone reduction yet,
+so the compiler bug is unverified; the per-file rules stay until
+one exists or the fault is found elsewhere. The migration pattern
+doesn't change this — these are pre-existing issues that surface
+independent of the cache — but consumers must keep the per-file
+workaround in place when porting their build script:
 
 - **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
   builds at `-O2`). At `-O2`, aggregate initialization of structs
@@ -2235,11 +2236,12 @@ place when porting their build script:
   [`LLVM-WASM32-O2-ERLANG-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM32-O2-ERLANG-MISCOMPILE/entry.md)
   and the `packages/registry/erlang/build-erlang.sh` comments.
 - **Redis `tls.c`** — the build notes record LLVM 21.1.8 crashing
-  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above.
-  That crash claim is unverified and has no registry entry: the
-  Redis build has TLS turned off, and stubbing `tls.c` out is a
-  configuration choice that follows from that, not a workaround
-  tied to a measured compiler defect. Re-enabling TLS would first
+  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above,
+  and it has not been re-tested on LLVM 23.1.3. That crash claim
+  is unverified and has no registry entry: the Redis build has TLS
+  turned off, and stubbing `tls.c` out is a configuration choice
+  that follows from that, not a workaround tied to a measured
+  compiler defect. Re-enabling TLS would first
   need the crash reproduced; if it holds, a per-target Makefile
   rule could compile just `tls.c` at `-O0`.
 
@@ -2890,13 +2892,11 @@ The Harper recipe sets its dependency's documented `CONST_RANDOM_SEED` build
 option to the verified upstream source hash, so independent builds retain
 the same compiled constants. Runtime OS entropy is unaffected.
 
-Its `tree-sitter-gitcommit-0.5.0.patch` skips LLVM's costly irreducibility
-analysis only for that grammar's reducible generated state machines. The
-complete grammar still compiles through the SDK and normal instrumentation.
-The standalone reproduction and retirement conditions are recorded in
-[the compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
-This compiler option is unsuitable as a general SDK default: other programs
-can have irreducible control flow and need the analysis.
+Under LLVM 21, Harper's Git commit grammar needed a patch that skipped LLVM's
+costly irreducibility analysis. LLVM 23 fixed the analysis and removed the
+option, so the grammar now compiles through the normal pass; the evidence is
+kept in
+[the retired compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
 
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
@@ -2904,8 +2904,9 @@ can have irreducible control flow and need the analysis.
 | `vim` | `patches/0001-clamp-expired-input-check.patch`: clamp an expired calculated input timeout to zero before the first availability check. | Upstream `inchar_loop()` subtracts elapsed time from a zero/finite timeout, then passes a negative result to a helper that means "wait indefinitely". Slow or preempted execution stalls startup and insert-mode redraw until another key arrives. Clock and POSIX select behavior are correct; this is an upstream timing defect. | Send upstream; drop the patch when the pinned release includes the correction. |
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |
-| `glib` | `src/wasm-credentials.patch`: declare Linux `ucred` credentials for wasm32. `src/giomodule-no-dbus-builtins.patch`: guard the D-Bus built-in GIO modules behind a build flag. | `gcredentialsprivate.h` has a fixed list of platforms; the kernel provides `SO_PEERCRED`. The second follows from the hand-rolled build, which leaves out the D-Bus-backed GIO sources those registrations point at. | The first needs a generic upstream path for a non-Linux `SO_PEERCRED` platform. The second goes away with an upstream meson build. |
+| `glib` | `src/wasm-credentials.patch`: declare Linux `ucred` credentials for wasm32. `src/giomodule-no-dbus-builtins.patch`: guard the D-Bus built-in GIO modules behind a build flag. `src/gtype-unused-parent-class.patch`: mark the `parent_class` static that `G_DEFINE_TYPE` and its relatives (in `gtype.h`) and `G_DEFINE_DYNAMIC_TYPE_EXTENDED` (in `gtypemodule.h`) generate `G_GNUC_UNUSED`. | `gcredentialsprivate.h` has a fixed list of platforms; the kernel provides `SO_PEERCRED`. The second follows from the hand-rolled build, which leaves out the D-Bus-backed GIO sources those registrations point at. For the third, Clang 23's `-Wunused-but-set-global` fires on that static in every type that never chains up, which breaks consumers built with `-Werror=unused-but-set-variable` such as pango; it backports GLib commits `1567250294e9` (2.90.0) and `e1e24568cb56` (main). | The first needs a generic upstream path for a non-Linux `SO_PEERCRED` platform. The second goes away with an upstream meson build. Drop the third when the pinned GLib release contains both commits. |
 | `libinput` | `patches/0003-meson-build-libinput-as-a-library.patch`: build the library with `library()` instead of `shared_library()`. | Upstream hard-codes a shared library, which ignores `default_library=static`; Kandelo links statically. | Upstreamable: honour `default_library`. |
+| `gtk3` | `src/gtklabel-queue-resize-widget.patch`: pass the `GtkWidget` pointer, not the `GtkLabel` one, to `gtk_widget_queue_resize()` in `gtk_label_style_updated()`. | Upstream type defect. Clang 23 makes `-Wincompatible-pointer-types` an error by default, so `gtklabel.c` stopped compiling. Backport of GTK commit `a3e82f20a1a1` (3.24.36). | Drop when the pinned GTK 3 release is 3.24.36 or later. |
 | `glibmm`, `fmt` | `glibmm/src/libcxx-contenttype-string.patch`, `fmt/src/include-cstdlib.patch`. | Upstream defects against current libc++ (a removed `char_traits<unsigned char>`, a missing `<cstdlib>` include). | Drop when the pinned upstream versions carry the fixes. |
 | `librsvg`, `rsvg-convert` | `librsvg/patches/system-deps-7.0.8.patch`: evaluate `cfg(...)`-keyed dependencies from the `CARGO_CFG_*` values Cargo gives build scripts. `librsvg/patches/parking_lot_core-0.9.12.patch`: build `libc::timespec` by field assignment. | Both crates assume a target known to the Rust ecosystem. `system-deps` parses an unknown target name as a `target-lexicon` triple and panics on `kandelo`; `parking_lot_core` uses a struct literal, which `libc`'s private time64 padding on 32-bit musl forbids (as on any 32-bit musl target with `RUST_LIBC_UNSTABLE_MUSL_V1_2_3`). | Upstream both fixes (system-deps, parking_lot); then drop the patches. A second Rust package would want a shared SDK location for crate patches. |
 

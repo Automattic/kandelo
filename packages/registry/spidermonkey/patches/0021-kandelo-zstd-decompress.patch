@@ -1,6 +1,8 @@
+Add native zstd decompression for node-compat.
+
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -56,6 +56,7 @@
+@@ -53,6 +53,7 @@
  #include <utility>
  #include <vector>
  #include <zlib.h>

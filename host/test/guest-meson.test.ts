@@ -64,7 +64,7 @@ describe.skipIf(!available)("Meson and Ninja inside Kandelo (Node host, build im
     // the guest compiler, and runs its sanity-check program there.
     const setup = read("setup.log");
     expect(setup).toMatch(/^Build type: native build$/m);
-    expect(setup).toMatch(/^C compiler for the host machine: cc \(clang 21\.1\.7/m);
+    expect(setup).toMatch(/^C compiler for the host machine: cc \(clang 23\.1\.3/m);
     expect(setup).toMatch(/^Host machine cpu family: wasm32$/m);
     expect(setup).toMatch(/^Has header "unistd\.h" : YES/m);
     expect(setup).toMatch(/^Checking for function "getopt" : YES/m);

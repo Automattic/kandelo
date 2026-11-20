@@ -1,9 +1,21 @@
+Report crashes and assertion failures, then trap, on wasm32.
+
+Mozilla's release MOZ_CRASH writes to a bad address to crash, which on wasm
+is just a store into linear memory. On non-Emscripten wasm32, write a marker
+to stderr and execute a wasm trap instead, and report the MOZ_CRASH reason
+and failed assertion text as DEBUG builds do, so a crash in Kandelo is
+visible rather than silent.
+
+ESR 153 rebase: MOZ_CRASH and MOZ_Crash now strip relative path components
+(MOZ_StripRelativeComponents), and the MOZ_REPORT_ASSERTION_FAILURE
+condition gained FUZZING; the wasm32 conditions are added to the new forms.
+
 --- a/mfbt/Assertions.h
 +++ b/mfbt/Assertions.h
-@@ -235,6 +235,20 @@
-
+@@ -248,6 +248,20 @@
+ 
  #  define MOZ_REALLY_CRASH(line) __builtin_trap()
-
+ 
 +#elif defined(__wasm32__) && !defined(__EMSCRIPTEN__)
 +
 +static inline void MOZ_WasmCrashWrite(const char* aMsg, size_t aLen) {
@@ -19,21 +31,21 @@
 +    } while (false)
 +
  #else
-
+ 
  /*
-@@ -329,7 +343,8 @@
+@@ -342,7 +356,8 @@
   * in release builds, and it's hard to print to stderr safely when memory might
   * have been corrupted.
   */
 -#if !(defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING))
 +#if !(defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)) && \
 +    !(defined(__wasm32__) && !defined(__EMSCRIPTEN__))
- #  define MOZ_CRASH(...)                                                      \
-     do {                                                                      \
-       MOZ_FUZZING_HANDLE_CRASH_EVENT4("MOZ_CRASH", __FILE__, __LINE__, NULL); \
-@@ -374,7 +389,8 @@
- static MOZ_ALWAYS_INLINE_EVEN_DEBUG MOZ_COLD MOZ_NORETURN void MOZ_Crash(
+ #  define MOZ_CRASH(...)                                                       \
+     do {                                                                       \
+       MOZ_FUZZING_HANDLE_CRASH_EVENT4(                                         \
+@@ -395,7 +410,8 @@
      const char* aFilename, int aLine, const char* aReason) {
+   aFilename = MOZ_StripRelativeComponents(aFilename);
    MOZ_FUZZING_HANDLE_CRASH_EVENT4("MOZ_CRASH", aFilename, aLine, aReason);
 -#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)
 +#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING) || \
@@ -41,12 +53,12 @@
    MOZ_ReportCrash(aReason, aFilename, aLine);
  #endif
    MOZ_CRASH_ANNOTATE(aReason);
-@@ -498,7 +514,8 @@
+@@ -519,7 +535,8 @@
  #  define MOZ_VALIDATE_ASSERT_CONDITION_TYPE(x)
  #endif
-
--#if defined(DEBUG) || defined(MOZ_ASAN)
-+#if defined(DEBUG) || defined(MOZ_ASAN) || \
+ 
+-#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)
++#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING) || \
 +    (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
  #  define MOZ_REPORT_ASSERTION_FAILURE(...) \
      MOZ_ReportAssertionFailure(__VA_ARGS__)

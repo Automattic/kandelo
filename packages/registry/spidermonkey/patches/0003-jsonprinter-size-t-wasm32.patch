@@ -1,19 +1,23 @@
-diff --git a/js/src/vm/JSONPrinter.cpp b/js/src/vm/JSONPrinter.cpp
+Give JSONPrinter a size_t overload on wasm32.
+
+On wasm32 size_t is `unsigned long`, distinct from both uint32_t and
+uint64_t, exactly as on Darwin/OpenBSD/WASI. Without the overload, calls with
+size_t arguments are ambiguous.
+
 --- a/js/src/vm/JSONPrinter.cpp
 +++ b/js/src/vm/JSONPrinter.cpp
-@@ -200,7 +200,7 @@ void JSONPrinter::property(const char* name, uint64_t value) {
+@@ -197,7 +197,7 @@
    out_.printf("%" PRIu64, value);
  }
-
+ 
 -#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__)
 +#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__) || defined(__wasm32__)
  void JSONPrinter::property(const char* name, size_t value) {
    propertyName(name);
    out_.printf("%zu", value);
-diff --git a/js/src/vm/JSONPrinter.h b/js/src/vm/JSONPrinter.h
 --- a/js/src/vm/JSONPrinter.h
 +++ b/js/src/vm/JSONPrinter.h
-@@ -53,7 +53,7 @@ class JSONPrinter {
+@@ -51,7 +51,7 @@
    void property(const char* name, uint32_t value);
    void property(const char* name, int64_t value);
    void property(const char* name, uint64_t value);

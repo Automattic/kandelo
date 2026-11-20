@@ -65,8 +65,10 @@ if [ "$WASM_ARCH" = "wasm64" ]; then
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
     SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
     WASM_TARGET="wasm64-unknown-unknown"
-    # LLVM 21 wasm64 backend has -O2 miscompilation bugs (sign-extension of i32 to i64
-    # in table lookups). Use -O1 until the LLVM wasm64 backend matures.
+    # [RUNTIME-WORKAROUND: LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE]
+    # Suspected, observed with LLVM 21 and not re-tested on LLVM 23: the
+    # wasm64 backend miscompiled sign extension of i32 to i64 in table
+    # lookups at -O2. Keep -O1 until a standalone reproduction decides it.
     : "${MARIADB_OPT_LEVEL:=-O1}"
 else
     CROSS_BUILD_DIR="$CROSS_BUILD_BASE"

@@ -245,7 +245,8 @@ CTS result. Normal package/kernel provisioning must finish before execution.
 The native libc device-double suite checks image ownership and command
 encoding under UndefinedBehaviorSanitizer. AddressSanitizer is optional via
 `KANDELO_GRAPHICS_SANITIZERS=address,undefined`; its LLVM 21 runtime
-deadlocked before main on macOS 27 during this investigation. It executes the
+deadlocked before main on macOS 27 during this investigation, and the
+LLVM 23 runtime has not been re-checked. It executes the
 actual EGL/GLES library sources with recorded device calls; it provides no
 pixel-rendering evidence. To compare a source revision:
 

@@ -212,6 +212,12 @@ function buildMainProgram(source: string, name: string, forceExports: string[] =
     "-Wl,--max-memory=1073741824",
     "-Wl,-z,stack-size=8388608",
     "-Wl,--allow-undefined",
+    // This fixture links with clang directly, with its own fixed
+    // --global-base and table layout, so it does not get the SDK driver's
+    // link flags. LLD 22 made --stack-first the default; keep Kandelo's
+    // stack-after-data layout as the SDK driver does for LLD >= 22
+    // (crates/kandelo-cc/src/driver.rs). The dev shell's LLD is 23.
+    "-Wl,--no-stack-first",
     "-Wl,--global-base=1114112",
     "-Wl,--table-base=3",
     "-Wl,--export-table",

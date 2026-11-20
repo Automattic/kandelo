@@ -36,9 +36,26 @@ kandelo_llvm_command_guide_man_pages() {
 
     rm -rf "$out" "$out.doctrees"
     log="$out.sphinx.log"
+    # Upstream defect in LLVM 23's docs configuration, not a Kandelo gap:
+    # conf.py skips the Markdown parser (myst_parser) for man builds,
+    # but the root document became index.md, and Sphinx refuses to
+    # build without a loadable root ("unable to load the master
+    # document"). A plain `sphinx-build -b man -t builder-man` over
+    # llvm-project-23.1.3/llvm/docs without myst_parser fails the same
+    # way. The man builder writes only conf.py's man_pages list, so
+    # rooting the build at one of those reStructuredText pages changes
+    # no page. Only a Markdown-rooted tree gets the override.
+    local root_override=()
+    if [ ! -f "$src/llvm/docs/index.rst" ] && [ -f "$src/llvm/docs/index.md" ]; then
+        root_override=(-D master_doc=CommandGuide/llvm-ar)
+    fi
+    # LLVM 23 moved the configuration conf.py imports into utils/docs;
+    # LLVM's own Sphinx targets append it to PYTHONPATH the same way.
+    PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$src/utils/docs" \
     SOURCE_DATE_EPOCH="$(kandelo_man_pages_date_epoch "$date")" \
         sphinx-build -b man -d "$out.doctrees" -q -t builder-man \
             -D version="$major" -D release="$release" \
+            "${root_override[@]+"${root_override[@]}"}" \
             "$src/llvm/docs" "$out" > "$log" 2>&1 || {
         tail -40 "$log" >&2
         return 1

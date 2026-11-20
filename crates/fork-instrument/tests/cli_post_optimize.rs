@@ -170,9 +170,13 @@ fn the_default_level_is_os() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+    let arguments = fs::read_to_string(arguments).unwrap();
+    assert_eq!(arguments.lines().nth(1), Some("-Os"));
+    // [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] -Os schedules
+    // Binaryen 133's constraint-analysis pass; the CLI skips it.
     assert_eq!(
-        fs::read_to_string(arguments).unwrap().lines().nth(1),
-        Some("-Os")
+        arguments.lines().nth(2),
+        Some("--skip-pass=constraint-analysis")
     );
 }
 

@@ -21,7 +21,8 @@ function compileFixture(
   const raw = join(directory, "raw.wasm");
   const output = join(directory, "output.wasm");
   writeFileSync(wat, source);
-  execFileSync("wat2wasm", ["--enable-all", wat, "-o", raw]);
+  // wabt 1.0.41's --enable-all includes --enable-compact-imports, which V8 rejects.
+  execFileSync("wat2wasm", ["--enable-threads", "--enable-memory64", wat, "-o", raw]);
   execFileSync(tool, [raw, ...options, "-o", output]);
   return readFileSync(output);
 }

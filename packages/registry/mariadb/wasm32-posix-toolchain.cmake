@@ -85,22 +85,18 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 # CMAKE_C_COMPILER at a wrapper is a real port, not a substitution. That port
 # has not been scheduled.
 #
-# MEASURED DRIFT against the SDK at 2026-09-20 (re-checked 2026-10-06), all
-# three absent here:
-#
-#   -Wl,--no-stack-first            (cc.ts:474-477) Conditional: LLD 22 made
-#       --stack-first the default, and LLD 21 neither defaults to it nor
-#       accepts the negation. The SDK emits it only when lldMajor >= 22.
-#       Built with LLD 22, these files silently get the opposite shadow-stack
-#       placement from every other package.
+# MEASURED DRIFT against the SDK at 2026-09-20 (re-checked 2026-10-06), both
+# absent here. A third, -Wl,--no-stack-first, was re-mirrored deliberately
+# with the LLVM 23 toolchain (see the link flags below).
 #
 #   -D__unix__=1 -D__unix=1         (flags.ts:14-15) Kandelo is a Unix/POSIX
 #       userspace and says so through the conventional macros, which is how
 #       upstream feature selection stays truthful.
 #
 #   -mllvm -wasm-use-legacy-eh=false  (flags.ts:27) THE CONSEQUENTIAL ONE.
-#       LLVM 21 defaults -wasm-use-legacy-eh to TRUE, so omitting the flag is
-#       not neutral: it selects legacy `try`/`catch` lowering. The SDK passes
+#       LLVM 21 defaults -wasm-use-legacy-eh to TRUE (LLVM 23.1.3 still does,
+#       re-checked 2026-11-17), so omitting the flag is not neutral: it
+#       selects legacy `try`/`catch` lowering. The SDK passes
 #       =false explicitly to get modern `try_table`/`catch_ref` (flags.ts:20-26
 #       records the 2026-05-14 disassembly check that established this). So
 #       MariaDB is still compiled on legacy EH while every package built
@@ -149,6 +145,10 @@ set(WASM32_LINK_FLAGS
   "-Wl,--max-memory=1073741824"
   "-Wl,--allow-undefined-file=${_KANDELO_HOST_IMPORTS}"
   "-Wl,--global-base=1114112"
+  # LLD 22 made --stack-first the default, which puts the shadow stack at
+  # address 0 below the data. Keep the stack-after-data layout every other
+  # program gets from the SDK driver (crates/kandelo-cc/src/driver.rs).
+  "-Wl,--no-stack-first"
   "-Wl,--table-base=3"
   "-Wl,--export-table"
   "-Wl,--growable-table"

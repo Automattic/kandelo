@@ -58,6 +58,7 @@ host/test/clock-id-validation.test.ts	prepared-product
 host/test/clone-tid-authority.test.ts	source-only
 host/test/closed-lazy-assets.test.ts	source-only
 host/test/compiled-worker-entry.test.ts	prepared-product
+host/test/compiler-builtins-guest.test.ts	prepared-product
 host/test/composer-file.test.ts	source-only
 host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
@@ -799,11 +800,13 @@ tests/package-system/partial-shell-selection.test.ts	prepared-product
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
 tests/package-system/qtbase-package.test.ts	source-only
+tests/package-system/qtdeclarative-package.test.ts	source-only
 tests/package-system/resolve-binary.test.ts	prepared-product
 tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
 tests/package-system/rust-package-workspace.test.ts	source-only
 tests/package-system/scummvm-play-download.test.ts	source-only
+tests/package-system/sdk-sysroot-content.test.ts	source-only
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product
 tests/package-system/source-only-vite-assets.test.ts	prepared-product

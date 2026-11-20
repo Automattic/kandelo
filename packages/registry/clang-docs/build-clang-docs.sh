@@ -20,7 +20,7 @@ source "$REPO_ROOT/scripts/install-package-man-pages.sh"
 source "$REPO_ROOT/scripts/llvm-command-guide-man-pages.sh"
 kandelo_man_pages_stage_source "$HERE"
 VERSION="$WASM_POSIX_DEP_VERSION"
-DATE="$(kandelo_man_pages_release_date "$VERSION" 21.1.7=2025-12-02)"
+DATE="$(kandelo_man_pages_release_date "$VERSION" 23.1.3=2026-10-06)"
 
 OUT="$KANDELO_PACKAGE_WORK_DIR/sphinx-man"
 kandelo_llvm_command_guide_man_pages "$KANDELO_MAN_PAGES_SOURCE" "$OUT" "$VERSION" "$DATE"
