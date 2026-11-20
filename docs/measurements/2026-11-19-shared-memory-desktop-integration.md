@@ -1233,3 +1233,55 @@ live with no host diagnostics. The two other Chromium repetitions passed.
 This mixed outcome remains a failure, and the isolated 18/18 results are not a
 reliability claim. The earlier default desktop URL remains unchanged while the
 input path is investigated with scalar DOM/transport observations.
+
+### Applied startup state and later lifecycle failures
+
+Scalar observations of the failed initial command showed all trusted browser
+keys delivered to the kernel. Sway read the input device, but its seat focused
+the workspace rather than Foot. Its visible IPC node preceded application of
+the terminal's normal decorations. The preview now waits for those current
+decorations before reporting readiness. This is a readiness check for the
+shipped preset, not an input rewrite or a general client-frame fence. The
+stock 200 ms Sway transaction timeout is unchanged.
+
+The isolated readiness candidate preserved all 86 normal artifacts and both
+runtime Worker JavaScript files byte for byte. Its original untraced public
+matrix passed 18/18 cases at 3072×1728, and the separately served built preview
+passed another 18/18 at 1280×720, with three repeats in Chromium, Firefox and
+WebKit. These cases retain actual composition, physical typing, pointer,
+workspace, process and Stop checks, including black/gray calibration controls.
+
+The sustained result is mixed. One untraced WebKit parent completed all 120
+spawn/resize/workspace/input/exit cycles and final Stop in 7.4 minutes. Another
+failed the physical shell PID proof after 19 successful cycles; its screenshot
+shows repeated `c` characters corrupting the typed command. This remains an
+unresolved reliability failure. Passing repetitions do not clear it.
+
+The resize investigation also found that IPC dimensions are pending layout,
+not proof that Foot has committed its new buffer. A later commit of the first
+requested size can replace a second request issued too early. Diagnostic
+lifecycle checks now also observe a normally attached, committed and
+compositor-released Foot buffer before issuing the next resize. Two 12-cycle
+WebKit pilots passed with smaller 490×252 and larger 590×378 buffer receipts.
+They use ordinary per-client `WAYLAND_DEBUG` output in guest tmpfs and bounded
+host observations; they are neither untraced sustained acceptance nor
+performance measurements. Earlier resize and input failures are retained.
+
+The minimal readiness change was then built from an isolated source checkout
+through the default resolver. Host and consumer types passed, all 86 artifacts
+and both runtime Worker files remained identical, and the original untraced
+3072×1728 browser matrix passed 18/18 cases. In the expanded diagnostic lifecycle
+run, the first parent later completed 83 cycles before an IPC response timed
+out. Its bounded trace records a 6.18-second protocol-effect interval during
+grouped fork completion with no dropped observations. That locates a pause;
+it does not establish the slow operation or an outside-runtime cause. The
+second parent and the surrounding release gates remain separate evidence.
+
+The current browser-memory gate is still preparing the full supported package
+graph at runtime commit `78260c8413`. This page-only readiness change does not
+alter its kernel, SDK or host runtime inputs. Fresh conformance, canonical app,
+resource and all-nine-suite Node/browser comparisons remain required. The
+new display realm's cost remains unmeasured. Retained evidence includes
+`.context/desktop-startup-244`, `.context/desktop-preview-247`, and
+`.context/desktop-lifecycle-frame-248`; the original failed matrices and
+interrupted or saturated diagnostics remain separate records.

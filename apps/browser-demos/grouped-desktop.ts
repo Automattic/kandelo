@@ -166,7 +166,11 @@ action('Start shared desktop', async () => {
       child.ppid === process.pid && (child.comm === 'sh' || child.comm === 'bash')));
     if (Atomics.load(stats, 5) > 0 && terminal) {
       const result = await command('-t', 'get_tree');
+      // IPC exposes pending layout before Sway applies the initial scene.
+      // This image uses normal decorations; their current state distinguishes
+      // an applied terminal from a node that cannot receive the first click.
       const hasTerminal = (node: any): boolean => node.app_id === 'foot' && node.pid === terminal.pid && node.visible
+        && node.border === 'normal' && node.current_border_width > 0 && node.deco_rect?.height > 0
         || [...(node.nodes ?? []), ...(node.floating_nodes ?? [])].some(hasTerminal);
       if (hasTerminal(JSON.parse(result.stdout))) {
         ready = state.ready = true; display.focus(); status.textContent = 'Click the desktop to type. Use the buttons to open terminals or move between workspaces.'; return;
