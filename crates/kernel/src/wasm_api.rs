@@ -217,6 +217,11 @@ unsafe extern "C" {
     fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
     fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
+    /// Write the user and system CPU time the host measured for task `tid`
+    /// of `pid` (all of its tasks when `tid` is 0) as two little-endian u64
+    /// nanosecond counts at `out_ptr`. Returns 0, or -ESRCH when the host has
+    /// no record of the task. See `runtime_core::cpu_time`.
+    fn host_task_cpu_time(pid: u32, tid: u32, out_ptr: *mut u64) -> i32;
     fn host_ftruncate(handle: i64, length: i64) -> i32;
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
@@ -850,6 +855,11 @@ impl HostIO for WasmHostIO {
         Ok((sec, nsec))
     }
 
+    fn host_task_cpu_time(&mut self, pid: u32, tid: u32) -> Option<crate::cpu_time::CpuTime> {
+        let mut out = [0u64; 2];
+        let result = unsafe { host_task_cpu_time(pid, tid, out.as_mut_ptr()) };
+        (result == 0).then_some(crate::cpu_time::CpuTime { user_ns: out[0], system_ns: out[1] })
+    }
 
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno> {
         let result = unsafe { host_ftruncate(handle, length) };
@@ -11549,9 +11559,18 @@ pub fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 {
 /// Writes a WasmTimespec struct to ts_ptr.
 /// Returns 0 on success, or negative errno on error.
 pub fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
+    let cpu_reading = crate::cpu_time::decode_cpu_clock(clock_id).map(|clock| {
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        crate::cpu_time::clock_gettime(table, &mut WasmHostIO, table.current_pid(), table.current_tid(), clock)
+    });
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_clock_gettime(proc, &mut host, clock_id) {
+    let reading = match cpu_reading {
+        Some(reading) => reading,
+        None => syscalls::sys_clock_gettime(proc, &mut host, clock_id),
+    };
+    let result = match reading {
         Ok(ts) => {
             let ts_bytes = unsafe {
                 slice::from_raw_parts(
@@ -11572,9 +11591,18 @@ pub fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
 
 /// Get clock resolution. Returns 0 or negative errno. Writes WasmTimespec to ts_ptr.
 pub fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
+    let cpu_resolution = crate::cpu_time::decode_cpu_clock(clock_id).map(|clock| {
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        crate::cpu_time::clock_getres(table, table.current_pid(), table.current_tid(), clock)
+    });
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_clock_getres(proc, clock_id) {
+    let resolution = match cpu_resolution {
+        Some(resolution) => resolution,
+        None => syscalls::sys_clock_getres(proc, clock_id),
+    };
+    let result = match resolution {
         Ok(ts) => {
             if !ts_ptr.is_null() {
                 let ts_bytes = unsafe {
@@ -14956,11 +14984,11 @@ pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> 
     }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let result = match syscalls::sys_getrusage(proc, who, buf) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_getrusage(proc, &mut host, who, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
@@ -16128,9 +16156,21 @@ fn decide_child_wait(
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
         wait.poll(table, task)?
     };
-    let Some((child, event)) = selected else {
+    let Some((child, mut event)) = selected else {
         return Ok(None);
     };
+    // The child's CPU time, with its own waited-for descendants', as Linux's
+    // wait4 reports it; a wait that consumes the exit charges it to the
+    // parent's RUSAGE_CHILDREN (runtime_core::cpu_time).
+    let usage = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if wait.reaps(&event) {
+            crate::cpu_time::charge_waited_child(table, task.pid, child, host)
+        } else {
+            table.get(child).map(|child| crate::cpu_time::wait_usage(child, host)).unwrap_or_default()
+        }
+    };
+    event.rusage = usage.rusage();
     let value = wait.report(host, task, child, &event);
     if wait.reaps(&event) {
         let reaped = reap_process_and_cleanup(child);
