@@ -73,8 +73,8 @@ action('Start shared desktop', async () => {
   });
   const [kernelResponse, imageResponse] = await Promise.all([fetch('/__grouped_preview/kernel.wasm'), fetch('/__grouped_preview/image.vfs.zst')]);
   if (!kernelResponse.ok || !imageResponse.ok) throw Error('Desktop artifacts are unavailable');
-  await kernel.initFromImage({ kernelWasm: await kernelResponse.arrayBuffer(),
-    vfsImage: new Uint8Array(await imageResponse.arrayBuffer()), lazyUrlBase: location.origin + '/', lazyAssetDirectory: location.origin + '/' });
+  await kernel.initFromOwnedImage({ kernelWasm: await kernelResponse.arrayBuffer(),
+    vfsImage: await imageResponse.arrayBuffer(), lazyUrlBase: location.origin + '/', lazyAssetDirectory: location.origin + '/' });
   if (new URLSearchParams(location.search).has('trace')) kernel.subscribeSyscalls(event => {
     if (state.startupTrace.length < 1024) state.startupTrace.push(event);
     state.trace.push(event); if (state.trace.length > 2048) state.trace.shift();

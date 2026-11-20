@@ -5028,7 +5028,9 @@ Firefox versions before removing the workaround.
 
 ### Opt-in grouped desktop display transport
 
-The experimental `grouped-desktop.html` page selects
+The experimental `grouped-desktop.html` page consumes its freshly fetched boot
+image with `BrowserKernel.initFromOwnedImage`, transferring the decoded bytes
+to the kernel Worker rather than preserving a main-thread restart copy. It selects
 `BrowserKernel.kmsAttachBitmapRelay` for its Sway/Foot display. This is a browser
 device transport: the kernel Worker renders to detached canvases, and a separate
 disposable display Worker owns the visible `bitmaprenderer` canvases. Independent
@@ -5049,8 +5051,11 @@ again. This opt-in transport does not establish compatibility with mixed
 unprepared graphical clients. It creates an additional Worker and native device
 surfaces. A two-plane 3072×1728 bundle contains up to 40.5 MiB of pixel data;
 that is a payload bound, not a measurement of native graphics memory or total
-browser footprint. Current resource and presentation measurements remain
-required before preview promotion.
+browser footprint. A three-parent-per-arm Chromium comparison still measures
+about 105 MiB more whole-browser physical footprint for the shared desktop
+with two terminals on separate workspaces. The preview does not establish a
+net memory saving. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
+for the workload, response endpoints, limitations and remaining acceptance.
 
 Shutdown stops frame admission synchronously, waits for any pending capture,
 and closes late images. It sends an ordered retirement request naming the last
