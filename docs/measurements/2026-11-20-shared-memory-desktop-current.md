@@ -163,10 +163,58 @@ The original samples, process inventories and main-page heap counters are
 retained in `.context/desktop-owned-trend-297`. Broader sustained resource
 acceptance remains open.
 
-## Remaining acceptance
+## Extended desktop stress
 
-Current full Node/Chromium libc, POSIX and Sortix conformance and all nine
-before/after benchmark suites on both hosts remain required. The fetched
+Run 306 fails after 820 completed terminal cycles in one 3072×1728 shared
+desktop, with no machine restart, page reload or forced collection. Each
+cycle starts Foot, moves it to another workspace, verifies a physically typed
+shell command against the guest filesystem, closes it and verifies process
+removal. The next cycle logs a libdrm atomic-property error, a failed page
+flip and an unsuccessful Sway IPC connection. Sway still appears running;
+host diagnostics are empty. This is a failed sustained-desktop gate.
+
+At failure, the shared physical extent is 196.7 MiB, below the unchanged
+512 MiB limit. Kernel memory has risen from 1,575 to 2,887 pages
+(180.4 MiB); the last completed checkpoint has eight live processes.
+Neither these counters nor wlroots' `errno` message identifies the allocation
+that failed. libdrm can return a negative error without setting `errno`, so
+the exact return and arguments need capture before attributing the failure.
+
+Ordinary control 311 fails in its first cycle with Wayland broken pipes and
+terminal loss. It does not reach the shared failure's workload length or
+establish a common cause. Separate normal-SDK libdrm screen 310 passes
+50,000 allocation/free rounds, 1,000 grouped forks and 1,000 ordinary forks.
+That screen excludes DRM submission, Wayland and GPU presentation; it does
+not clear the desktop failure. All original failed runs remain retained.
+
+## Full conformance and remaining acceptance
+
+Full current-runtime run 298 completes all six unchanged wrappers. The
+Node and Chromium libc and POSIX wrappers exit zero. Node libc reports
+306 passes, 17 expected failures and one flake-pass; Chromium libc reports
+307 passes and 17 expected failures. Each POSIX run reports 174 passes,
+three expected failures and two skips.
+
+| Full Sortix run | Pass | Unexpected fail | Timeout | Expected fail | Skip |
+|---|---:|---|---|---:|---:|
+| Current Node | 5,070 | `tcgetwinsize` | `poll`, `select` | 15 | 50 |
+| Current Chromium | 5,072 | `tcgetwinsize` | None | 15 | 50 |
+| Pinned-develop Node control 309 | 5,071 | `tcgetwinsize` | `poll` | 15 | 50 |
+
+All three discover 5,138 tests. The shared `tcgetwinsize` failure reports
+missing SIGWINCH and is also present in the historical baseline. Separate
+baseline/current three-case controls pass poll/select and fail that same
+SIGWINCH check. These controls do not clear the full-run timeouts; the
+candidate's additional select timeout remains unresolved. No test
+expectation, selection or deadline was relaxed. Current run 298 verifies
+unchanged tracked inputs and kernel/rootfs artifacts before and after.
+
+The original all-nine timing pipeline stops at the failed conformance gate
+and produces no timing samples. Separate diagnostic preparation 312 passes
+all 24 normal SDK/resolver steps and both-host artifact admission; preparing
+compatible inputs grants no correctness or performance acceptance.
+
+All nine before/after benchmark suites on both hosts remain required. The fetched
 `develop` destination is `bcc8b0c79523912872275f116965ed0fcf835b19`; it differs
 from recorded baseline `715243ed0aa1a8564a0dd8ad4bcef331ac3ca18a` only by one
 CI evidence-classification row. Each side must still use its own normal SDK,
