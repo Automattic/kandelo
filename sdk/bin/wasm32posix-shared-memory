@@ -22,6 +22,10 @@ if [ "$input" = "$output" ] || { [ -e "$output" ] && [ "$input" -ef "$output" ];
     exit 2
 fi
 source "$repo/scripts/wasm-artifact-guards.sh"
+# A cache-warm checkout may have programs without an installed native decoder.
+# Ensure the current decoder before ABI inspection; the generic WABT fallback
+# cannot inspect every feature accepted by the SDK's executable validator.
+bash "$repo/scripts/run-wasm-fork-instrument.sh" --artifact-identity "$input" >/dev/null
 current="$(wasm_current_abi_version "$repo")"
 actual="$(wasm_extract_abi_version "$input")"
 if [ "$actual" != "$current" ]; then
