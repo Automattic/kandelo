@@ -85,22 +85,14 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 # CMAKE_C_COMPILER at a wrapper is a real port, not a substitution. That port
 # has not been scheduled.
 #
-# MEASURED DRIFT against the SDK at 2026-09-20 (re-checked 2026-10-06), both
-# absent here. A third, -Wl,--no-stack-first, was re-mirrored deliberately
-# with the LLVM 23 toolchain (see the link flags below).
+# MEASURED DRIFT against the SDK at 2026-09-20 (re-checked 2026-10-06): one
+# flag is still absent here. Two more were re-mirrored deliberately with the
+# LLVM 23 toolchain: -Wl,--no-stack-first (see the link flags below) and
+# -mllvm -wasm-use-legacy-eh=false (see the compiler flags below).
 #
 #   -D__unix__=1 -D__unix=1         (flags.ts:14-15) Kandelo is a Unix/POSIX
 #       userspace and says so through the conventional macros, which is how
 #       upstream feature selection stays truthful.
-#
-#   -mllvm -wasm-use-legacy-eh=false  (flags.ts:27) THE CONSEQUENTIAL ONE.
-#       LLVM 21 defaults -wasm-use-legacy-eh to TRUE (LLVM 23.1.3 still does,
-#       re-checked 2026-11-17), so omitting the flag is not neutral: it
-#       selects legacy `try`/`catch` lowering. The SDK passes
-#       =false explicitly to get modern `try_table`/`catch_ref` (flags.ts:20-26
-#       records the 2026-05-14 disassembly check that established this). So
-#       MariaDB is still compiled on legacy EH while every package built
-#       through the SDK moved to try_table/catch_ref.
 #
 # Do not "catch up" by hand-adding flags here -- hand-copying is what produced
 # this drift. A missing flag is an SDK change; re-mirror deliberately, or do
@@ -113,6 +105,13 @@ set(WASM32_FLAGS
   "-mbulk-memory"
   "-mexception-handling"
   "-mllvm" "-wasm-enable-sjlj"
+  # The SDK's modern Wasm EH lowering (try_table/throw_ref). LLVM 21 and
+  # 23.1.3 default to legacy try/catch, and libc++/libc++abi are built with
+  # the modern form, so leaving this out linked both forms into one module,
+  # which browser engines reject ("module uses a mix of legacy and new
+  # exception handling instructions"): the mariadb client's setjmp/longjmp
+  # handling was legacy while the libc++ it links was modern.
+  "-mllvm" "-wasm-use-legacy-eh=false"
   "-fno-trapping-math"
   "--sysroot=${WASM_POSIX_SYSROOT}"
 )
