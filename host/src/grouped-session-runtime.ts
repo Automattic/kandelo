@@ -46,6 +46,7 @@ export class GroupedSessionRuntime {
   private readonly processes = new Map<number, Process>();
   private readonly threads = new Map<number, GroupedThreadWorkerOwnership>();
   private readonly threadRetirements = new Map<number, Promise<void>>();
+  private readonly exitPublications = new Set<Promise<void>>();
   private readonly externrefs = new ForkExternrefProcessOwner();
   private readonly imports = new ForkHostImportOwnerRuntime(this.externrefs);
   private group?: Promise<number>;
@@ -91,6 +92,21 @@ export class GroupedSessionRuntime {
   private message(process: Process, message: any): void {
     if (!this.current(process)) return;
     if (message.type === 'error') this.fault(process, Error(message.message));
+  }
+
+  private publishRetiredExit(pid: number, status: number, generation: number): Promise<void> {
+    // A host-owned root has no guest parent to consume its zombie. Reap only
+    // after exact image retirement; Rust leaves guest-owned wait status intact.
+    const completion = retry(() => this.kernel.reapHostOwnedExitedProcess(pid))
+      .then(() => { this.onExit(pid, status, generation); });
+    // The execution image is already gone from the live map. A busy entry
+    // can defer its reap, so destroy must still own this final publication.
+    this.exitPublications.add(completion);
+    void completion.then(
+      () => { this.exitPublications.delete(completion); },
+      () => { this.exitPublications.delete(completion); },
+    );
+    return completion;
   }
 
   async launch(pid: number, bytes: ArrayBuffer, module: WebAssembly.Module, argv: string[], env: string[],
@@ -224,7 +240,11 @@ export class GroupedSessionRuntime {
           module: request.targetModule, layout, allocator: this.allocator(layout) });
       },
       onRetired: () => {},
-      onTerminated: signal => { this.processes.delete(previous.pid); this.onExit(previous.pid, 128 + signal, previous.owner.generation.id); },
+      onTerminated: signal => {
+        this.processes.delete(previous.pid);
+        void this.publishRetiredExit(previous.pid, 128 + signal, previous.owner.generation.id)
+          .catch(error => this.report(previous.pid, error instanceof Error ? error : Error(String(error))));
+      },
       onMessage: (message, owner) => { const current = this.processes.get(owner.pid); if (current?.owner === owner) this.message(current, message); },
       onError: (error, owner) => { const current = this.processes.get(owner.pid); if (current?.owner === owner) this.fault(current, error); },
       onExit: (code, owner) => { const current = this.processes.get(owner.pid); if (code && current?.owner === owner) this.fault(current, Error(`Grouped exec Worker exit ${code}`)); },
@@ -252,7 +272,7 @@ export class GroupedSessionRuntime {
       }
       for (const thread of members) { this.threads.delete(thread.tid); this.threadRetirements.delete(thread.tid); }
       if (this.processes.get(pid) === process) this.processes.delete(pid);
-      this.onExit(pid, status, process.owner.generation.id);
+      await this.publishRetiredExit(pid, status, process.owner.generation.id);
     })();
     void process.retiring.catch(error => this.report(pid, error));
     return true;
@@ -268,5 +288,6 @@ export class GroupedSessionRuntime {
       }
       await process.retiring;
     }
+    await Promise.all(this.exitPublications);
   }
 }

@@ -5028,6 +5028,14 @@ Firefox versions before removing the workaround.
 
 ### Opt-in grouped desktop display transport
 
+Grouped byte launches on Node and browser publish completion only after exact
+execution-image retirement and the existing Rust-owned root reap. Rust checks
+that an exited record belongs to the host parent (`ppid=0`); a guest parent's
+child remains available to its normal wait calls. Destroy also awaits a root
+reap deferred by a busy kernel entry, even after its execution image leaves the
+live map. The live process list omits zombies; use the actual `/proc/PID/stat`
+record when verifying root reclamation.
+
 The experimental `grouped-desktop.html` page consumes its freshly fetched boot
 image with `BrowserKernel.initFromOwnedImage`, transferring the decoded bytes
 to the kernel Worker rather than preserving a main-thread restart copy. It selects
