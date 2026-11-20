@@ -1646,7 +1646,7 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/memory-group-notification.ts::queueUnlock::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory } })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
-    why: "This closed metadata-store helper imports only the already-admitted group backing in its disposable owning kernel Worker. It allocates no Memory and has no host imports. A private weak-key cache exposes only a closure for the generated queue mutex word; it grants no image or retirement authority and cannot retain a backing after its external owners disappear.",
+    why: "This closed metadata-store helper imports only the already-admitted group backing in its disposable owning kernel or process Worker, before guest execution. It allocates no Memory and has no host imports. A private weak-key cache exposes only a closure for the generated queue mutex word; it grants no image or retirement authority and cannot retain a backing after its external owners disappear.",
   },
   {
     key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/contender.js::<module>::wasm-instance-authority::new WebAssembly.Instance(data.module,{env:{memory:data.memory}})",

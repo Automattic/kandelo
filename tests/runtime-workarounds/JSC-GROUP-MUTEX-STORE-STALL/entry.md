@@ -48,20 +48,36 @@ not establish the cause of every application failure or sustained reliability.
 ## Candidate workaround and ownership
 
 The owning Node/browser kernel Worker binds a tiny native store module before
-group publication and selects its cached call before taking the queue mutex.
-The current candidate limits the binding to the owning kernel Worker. The
-all-realm combination also failed its resize check after twenty cycles; it is
-retained separately.
+group publication. Admitted process Workers bind the same helper before guest
+initialization, including pthread replicas and fork/exec replacements. Each
+realm selects its cached call before taking the queue mutex. Process Workers
+also publish loader-lock notifications through this queue; preparing only the
+kernel realm leaves those releases on the JavaScript fallback.
+
+The earlier all-realm combination failed its resize check after twenty cycles
+and remains retained. Subsequent investigation found that the fixture issued
+its second resize before Foot had completed the first. With actual buffer
+attach/commit/compositor-release completion observed through normal guest
+Wayland logging, a new participant-helper candidate completed two fresh WebKit
+sessions of 120 cycles each. This is functional evidence under a diagnostic
+guest workload, not proof that every application stall has the same cause.
+The current owning-kernel-only diagnostic baseline has also completed two
+120-cycle sessions without reproducing the multi-second pause.
+The combined candidate passes 39 Node SDK/public-launch cases, 84 browser
+SDK cases, 169 ownership/relay checks, the original 18-case three-browser
+desktop matrix, and the ABI/baseline check. Fresh full browser-memory,
+conformance, sustained untraced and resource/performance gates remain required.
 The call stores zero to the same generated metadata word with the same
 sequentially consistent semantics. It adds no wait, timeout, notification,
 linear-memory allocation, participant, retirement fence or page-reuse authority.
 The backing stays in its disposable Worker; a weak-key cache cannot keep it
 alive after external owners disappear.
 
-Cost: one compiled tiny module per owning kernel realm, one instance per
+Cost: one compiled tiny module per owning kernel/process realm, one instance per
 backing/realm, one Wasm call per queue release, and bounded independent queue
 inspection scratch. Full combined memory, Node/browser and application
 resource/performance gates are required before promotion. This remains an
 unaccepted candidate and is not a broad performance improvement.
 
-Sites: `host/src/memory-group-notification.ts`, `host/src/memory-group-pool.ts`.
+Sites: `host/src/memory-group-notification.ts`, `host/src/memory-group-pool.ts`,
+`host/src/grouped-worker-runtime.ts`.
