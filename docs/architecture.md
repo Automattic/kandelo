@@ -694,14 +694,15 @@ the trusted host fills it, while retaining the same boundary synchronization,
 alias ordering and snapshot comparisons. Other mapping backends retain the
 safe initialized-slice implementation.
 
-For file mappings, the Wasm backend first compares the live process range
-against the existing initialized Rust snapshot through the synchronous
-`host_proc_compare_bytes` import. The host validates both complete ranges,
+For file mappings, the Wasm backend compares the live process range, one
+64 KiB window at a time, against what the mapping last observed, assembled
+from its overlay pages and the file's own pages (see the kernel-owned file
+model below), through the synchronous `host_proc_compare_bytes` import. The host validates both complete ranges,
 rechecks the exact kernel Memory and generation after process lookup, and
 keeps all read-only native authority inside that call. Exactly zero means
 equal, one means different, and two means the optional comparator is
 unavailable; unavailability never establishes equality. Shared-file
-publication retains an equal snapshot without allocating a new full range;
+publication allocates nothing for an equal window;
 changed bytes and unavailable comparisons use bounded page reads, advancing
 the baseline only for completed merges. Callers requiring an independent
 owned process snapshot retain their separately checked full-copy path.
@@ -2512,7 +2513,11 @@ child admissions precede process-memory writes. Failed preparation publishes
 no child mappings; a later write refusal restores previously written ranges
 before the transaction releases its temporary custody. These two owners must
 stay distinct: a child that fits its retained allowance must not be refused
-solely because rollback bytes compete for the same live credit.
+solely because rollback bytes compete for the same live credit. A
+kernel-owned file mapping stages neither: the commit seeds the child's range
+from the file a page at a time, and a refused commit restores that range from
+the parent's bytes at the same address, which the child's memory was copied
+from. A child whose inheritance fails never runs.
 
 Who keeps a mapping coherent follows who owns its bytes. The host keeps
 anonymous regions and files on host-mounted directories
@@ -2532,37 +2537,52 @@ not just a dirty-page flag. Successful short-write prefixes retire immediately;
 retry writes only the remaining dirty runs, preserving later descriptor writes
 to other bytes. Generation reconciliation refreshes clean bytes without losing
 pending stores and discards stores invalidated by truncation. A mapping's
-comparison snapshot advances as its changed bytes enter the shared backing,
+observation advances as its changed bytes enter the shared backing,
 even when subsequent writeback fails, so retry cannot replay an already
 accepted prefix over a newer descriptor write. Dirty-byte tracking nodes use
 fallible shared I/O admission before cache mutation.
 
+A kernel-owned file mapping keeps no copy of what its process last observed.
+The file itself is the shared part of every mapping's observation; a mapping
+holds only an overlay of the 4 KiB pages the file changed under it since its
+process was last refreshed (`SharedMapping::overlay`). Before a publication
+changes a file page, every other mapping that still observes that page
+through the file receives the old page in its overlay. Descriptor I/O does
+the same through the storage hooks `kernel_file_mapping::prepare_overwrite`
+and `prepare_truncate`, which rootfs, tmpfs and memfd call before they change
+a file's bytes. A page that a truncation discards is marked unknown instead
+of copied: nothing is published from it, and the refresh writes the file
+over it. A refresh writes only the overlay pages, where they differ from the
+file, and releases them. A mapping's resident cost is therefore the pages
+changed under it and not yet refreshed, not its length. A Wayland client's
+buffer pool, mapped by the client and the compositor, costs nothing while
+idle; a published frame costs the compositor one overlay copy of the
+changed pages until its own completion refreshes it, which is the same
+kernel call when the compositor's completion pulled the frame. A content
+generation that moves without an announced change is a fatal kernel fault
+rather than a silent republication of old bytes.
+
 Unreleased storage-memory work also admits file-cache page payloads and
-cache nodes through that shared budget, reclaims only clean pages on
-admission pressure, and prepares replacement pages before publishing a
-refresh. If publication cannot admit its next page while a kernel-owned
-write-through backing retains dirty pages, it first persists that already
-accepted prefix, releases the resulting clean cache, and retries the same
-immutable source page once against its advanced comparison snapshot. This
-avoids needing a whole mapping of dirty cache in addition to its retained
-snapshots. Ordinary publication adds no per-page flush. A failed pressure
-writeback retains dirty custody and records the writeback loss; the
-unaccepted tail still returns its original admission failure. A retry
-cannot replay an accepted prefix over a later descriptor write. Failure invalidation walks resident cache entries without
+cache nodes through that shared budget and reclaims only clean pages on
+admission pressure. A kernel-owned write-through backing persists and
+releases each page as publication merges it, so publication never holds more
+than one dirty page. A failed writeback retains dirty custody of the
+unaccepted bytes and records the writeback loss; the pages not yet merged
+stay unpublished in the process. A retry cannot replay an accepted prefix
+over a later descriptor write. Failure invalidation walks resident cache entries without
 allocating a logical-page cohort. File publication reads process memory
 through fixed page scratch and streams changed runs, retaining accepted
 progress if a later page read fails. The optional native comparison borrows
 the retained snapshot to recognize an unchanged range. A differing range
 still uses page scratch: requiring a second mapping-sized live copy can
 refuse publication even though the mapping itself was already admitted. These changes are not in checkpoint
-1.13. The subsequent chunk admits retained mapping snapshots,
-anonymous backing bytes, fork rollback/replacement payloads and mapping
-registry nodes. File mapping preparation runs before VM allocation in the
-Rust dispatcher; host registration consumes the prepared snapshot/nodes.
-Middle-unmap splits reserve their right-hand snapshot/node before VM
-mutation and commit without allocation, using the current comparison bytes.
-Remap prepares authoritative bytes before VM mutation and retains the old
-tracker until the new process write succeeds. No new host import or kernel
+1.13. The subsequent chunk admits anonymous backing bytes, fork
+rollback payloads and mapping registry nodes. File mapping preparation runs
+before VM allocation in the Rust dispatcher; host registration consumes the
+prepared nodes and seeds the process from the file a page at a time.
+Middle-unmap splits reserve their right-hand node before VM mutation and
+commit without allocation, moving the right-hand overlay pages whole.
+Remap retains the old tracker until the new range is seeded from the file. No new host import or kernel
 export is needed. The snapshot/preflight prefix passes an actual guest's
 8 GiB sparse-window/oversized-map refusal and strict recovery case under a
 64 MiB kernel ceiling on Node and all three browser engines.
@@ -3744,8 +3764,8 @@ the same admission limit; production uses the streamed reachable-metadata mode.
 Journal cache slots and clean/dirty payloads, retained metadata-cache ownership,
 encoded/replayed transaction frames and prepared-publication vectors now share
 an I/O admission pool with ordinary and archive verified-read tables, chunks
-and streaming verification buffers. The pool also owns retained mapping
-baselines and inherited child state, not only disposable cache. Both hosts
+and streaming verification buffers. The pool also owns mapping overlay pages
+and inherited child state, not only disposable cache. Both hosts
 configure the smaller of 128 MiB and one eighth of the existing kernel ceiling
 (128 MiB on desktop, 96 MiB on constrained). This changes admission capacity;
 it neither preallocates those bytes nor enlarges a Wasm memory maximum. A fixed
