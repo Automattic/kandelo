@@ -1,3 +1,4 @@
+import { prepareMemoryGroupQueueUnlock } from './memory-group-notification';
 import * as G from './generated/program-extensions';
 import { MemoryGroupImportGuard } from './memory-group-import-guard';
 import { MemoryGroupProtocolFault } from './memory-group-protocol';
@@ -129,6 +130,10 @@ export class GroupedWorkerRuntime {
     const wait = e.__vm_worker_wait32 as (address: number, expected: number, timeout: bigint, root: number, replica: number) => number;
     this.guard.bindCheckpoint(() => checkpoint(d.root, d.replica));
     this.wait = (address, expected, timeout) => wait(address, expected, timeout, d.root, d.replica);
+    // [RUNTIME-WORKAROUND: JSC-GROUP-MUTEX-STORE-STALL] Suspected release
+    // latency also affects process-Worker notifications of loader locks. Bind
+    // before guest execution, in this already admitted disposable owner realm.
+    prepareMemoryGroupQueueUnlock(this.memory);
     this.bound = true;
     (e.__vm_initialize as (mode: number) => void)(mode);
   }

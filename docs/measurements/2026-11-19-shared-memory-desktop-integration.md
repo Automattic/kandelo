@@ -1302,3 +1302,34 @@ to later destroy. The broader ownership, current browser-memory, conformance
 and performance gates remain required for the combined runtime. Evidence is
 retained in `.context/desktop-relay-delivery-262` and
 `.context/desktop-relay-scope-negative-260`.
+
+## Queue release in admitted process Workers
+
+The opt-in runtime now prepares the existing native queue-release helper in
+admitted process Workers before guest initialization, including pthread, fork
+and exec replacements. Kernel-only preparation left process-side loader-lock
+notifications using the JavaScript fallback. This imports their existing
+backing without allocating linear memory, changing wait/notify semantics or
+granting image-reuse authority. The standalone latency disparity and the
+application cause remain distinguished in the suspected workaround entry.
+
+The combined source passes 39 normal Node SDK/public-launch cases, all 84
+browser SDK cases, 169 ownership/relay cases, the original untraced 3K desktop
+matrix (18/18), and the ABI/baseline gate. These use the current normal version
+3/layout 3 artifacts; kernel, image and lazy bytes remain unchanged. Two WebKit
+and two Chromium diagnostic parents each complete 120 resize/input/exit cycles,
+and all nine untraced capacity/recovery cases pass. Firefox exposed another
+initial-client-buffer sequencing defect in the diagnostic fixture: a late
+tiled commit preceded its first resize. Two corrected 12-cycle pilots pass;
+expanded Firefox and separate untraced input-lifecycle runs are still active.
+Earlier failed runs remain retained.
+
+The previous full memory command finishes normal package preparation, then
+fails its source stage: 1,541 pass and two fail. One failure is the fatal relay
+ordering now fixed above; the other is an untracked old research fixture's
+synthetic memory, outside this shipping tree. The fixture is preserved. The
+full unchanged gate will run against the isolated production checkout. No
+Node/Bun or browser switching result is claimed from that failed command.
+The helper's additional per-realm module/instance cost and the display
+worker/native-surface cost remain unmeasured. Current conformance, canonical
+app, resource and all-nine-suite comparisons remain required.

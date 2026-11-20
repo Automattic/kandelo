@@ -2,7 +2,7 @@ id = "JSC-GROUP-MUTEX-STORE-STALL"
 kind = "bug"
 status = "suspected"
 runtimes = ["webkit"]
-summary = "Suspected: contended JavaScript mutex release shows multi-second latency; native store used for kernel queue release"
+summary = "Suspected: contended JavaScript mutex release shows multi-second latency; native store used for owning Worker queue release"
 reports = "human-only"
 
 # This judges the isolated latency disparity. The cause of the remaining

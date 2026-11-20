@@ -12,7 +12,7 @@ const queueUnlocks = new WeakMap<WebAssembly.Memory, () => void>();
 // Independent scalar scratch only; no group view or authority is cached here.
 const pinnedPageScratch = new WeakMap<WebAssembly.Memory, Uint32Array>();
 
-/** Internal disposable owning-kernel-Worker setup only. This imports the already-owned
+/** Internal disposable owning kernel/process Worker setup only. This imports the already-owned
  * group backing; it allocates no linear memory and grants no image authority.
  * Weak keys do not keep a retired backing alive through its bound native call.
  */
