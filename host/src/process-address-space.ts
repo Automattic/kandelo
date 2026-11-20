@@ -1,4 +1,4 @@
-import * as G from './generated/program-extensions.ts';
+import * as G from './generated/program-extensions';
 import { publishMemoryGroupNotification } from './memory-group-notification';
 
 const PAGE = G.MEMORY_GROUP_PAGE_BYTES;
