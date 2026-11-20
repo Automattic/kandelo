@@ -28393,3 +28393,43 @@ guest pixel per CSS pixel; its HiDPI tradeoff is documented in
 [browser support](../browser-support.md). The separate graphics campaign plan
 remains on branch `brandonpayton/graphics-campaign-plan`; this bounded
 delivery does not activate B2–B6/C1–C3.
+
+
+### GLES operation table 18: BGRA8 upload rows
+
+`OP_TEX_SUB_IMAGE_2D_BGRA8` (`0x020D`) has the same 36-byte header and
+bounded TLV tail as `OP_TEX_SUB_IMAGE_2D`. Its header requires format `RGBA`
+(`0x1908`), type `UNSIGNED_BYTE` (`0x1401`), and a data length divisible by
+four; its source pixels are BGRA8. Row packing and `UNPACK_ALIGNMENT` retain
+the existing rules. The bridge validates the complete record, copies the
+bounded pixel payload into independent non-shared bytes, and exchanges red
+and blue in that owned copy before the native RGBA upload. It does not
+retain or mutate the command buffer or guest memory.
+
+The C encoder uses this opcode for valid `GL_BGRA_EXT` source pixels after
+its existing format and destination checks. Other uploads keep the existing
+opcode and bytes. Native storage and queries still use RGBA metadata. This
+avoids a scalar color conversion through the shared-memory translator for
+every pixel. It is a platform upload path, shared by ordinary and grouped
+programs, rather than a Sway-specific exception.
+
+The independently negotiated `OP_VERSION` advances from 17 to 18 in Rust,
+C and TypeScript. The existing `GLIO_INIT` negotiation rejects a newer table
+on an older kernel with `ENOSYS`; versions 1–17 retain their existing tags,
+layouts and meanings. No ioctl layout or base program ABI changes. The
+protocol mirror, validation and supported-program baseline checks remain
+required. Experimental upload timings alone do not establish desktop input
+reliability, application performance or release acceptance.
+
+
+The ABI-56 snapshot records the table its existing graphics records require,
+`BASELINE_OP_VERSION = 17`, rather than the newest additive table the runtime
+accepts. The program surface and supported baseline stay unchanged. A separate
+validation repair sorts the kernel-host optional export list without changing
+its members or policies. The existing program records' sizes, tags, fields and
+meanings remain checked; this does not
+permit changing an old operation under a new maximum version. The generator
+previously substituted the current maximum into those frozen records, which
+would have invalidated unchanged programs for an additive table update.
+Older-table admission, the exact supported-program check and old executable
+controls are required alongside the new encoder/decoder checks.

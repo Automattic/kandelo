@@ -93,7 +93,7 @@ action('Start shared desktop', async () => {
   main.append(display); display.addEventListener('pointerdown', () => display.focus());
   const stats = new Int32Array(new SharedArrayBuffer(36));
   kernel.kmsSetDisplaySize(1, width, height);
-  kernel.kmsAttachCanvas(1, scene.transferControlToOffscreen(), stats.buffer, { mode: 'webgl2-scanout', cursorCanvas: cursor.transferControlToOffscreen() });
+  kernel.kmsAttachBitmapRelay(1, scene.transferControlToOffscreen(), stats.buffer, { mode: 'webgl2-scanout', cursorCanvas: cursor.transferControlToOffscreen() });
   const tracing = query.has('trace');
   const input = new BrowserInputSource(window, { pointer: false, wheel: true, shouldCapture: event => {
     const capture = display.contains(event.target as Node) || document.activeElement === display && event instanceof KeyboardEvent;

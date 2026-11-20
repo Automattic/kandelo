@@ -2526,9 +2526,6 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_group_memory_change_cancel"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_commit"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
-        HostAdapterKernelExport::optional("kernel_group_owned_mapping_prepare"),
-        HostAdapterKernelExport::optional("kernel_group_owned_mapping_validate"),
-        HostAdapterKernelExport::optional("kernel_group_owned_mapping_finish"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_read"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_validate"),
         HostAdapterKernelExport::optional("kernel_group_memory_exec_action"),
@@ -2540,6 +2537,9 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_release"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_reuse"),
+        HostAdapterKernelExport::optional("kernel_group_owned_mapping_finish"),
+        HostAdapterKernelExport::optional("kernel_group_owned_mapping_prepare"),
+        HostAdapterKernelExport::optional("kernel_group_owned_mapping_validate"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
         HostAdapterKernelExport::required("kernel_handle_guest_io"),
@@ -4169,7 +4169,12 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 17;
+    pub const OP_VERSION: u32 = 18;
+    /// Operation table bound into the supported ABI-56 program snapshot.
+    /// This is the existing table those binaries requested, not the maximum
+    /// additive table accepted by the current runtime. Keep its layouts and
+    /// meanings unchanged as OP_VERSION advances through GLIO_INIT negotiation.
+    pub const BASELINE_OP_VERSION: u32 = 17;
     /// One owned TLV replaces public-name staging for bounded client draws.
     /// Keep this record in the program digest even during the unpublished epoch.
     pub mod inline_client_draw {
@@ -4296,6 +4301,8 @@ pub mod gl {
     pub const OP_BIND_TEXTURE: u16 = 0x0202;
     pub const OP_TEX_IMAGE_2D: u16 = 0x0203;
     pub const OP_TEX_SUB_IMAGE_2D: u16 = 0x0204;
+    /// Version 18: same 36-byte RGBA/UNSIGNED_BYTE header; BGRA8 source pixels.
+    pub const OP_TEX_SUB_IMAGE_2D_BGRA8: u16 = 0x020D;
     pub const OP_TEX_PARAMETERI: u16 = 0x0205;
     pub const OP_ACTIVE_TEXTURE: u16 = 0x0206;
     pub const OP_GENERATE_MIPMAP: u16 = 0x0207;

@@ -46,6 +46,26 @@ error path. The desktop preview does not raise the renderer or memory limits
 to conceal duplicated storage. Browser-engine reservation costs constrain
 capacity even when resident memory is low.
 
+## Executable identities and prototype labels
+
+The normal SDK currently emits the required memory namespace
+`kandelo.memory-group.v3`, custom section `kandelo.memory-group`, and executable
+metadata `version: 3`, `layout: 3`. Its additional metadata requires
+`threadAttach: 2`, `cooperativeStop: 3`, `executionBarrier: 1` and
+`orderedWaitQueue: 2`. These identities come from
+`crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
+readers must validate them, rather than infer compatibility from a report title.
+Program ABI 56, host adapter 23, kernel group protocol 1 and mapping-description
+protocol 4 are separately versioned contracts.
+
+The historical research candidate was called **format4**. That label is not the
+normal SDK's executable version or memory namespace. The integrated implementation
+re-expresses the prototype's pointer translation and lifecycle behavior through
+the supported SDK and kernel contracts. Matching a prototype label does not
+prove semantic parity: actual memory-operation, pthread/wait, fork/exec/exit and
+desktop tests provide that evidence. No artifact is restamped or admitted merely
+to match the historical name.
+
 ## Executables and process lifecycle
 
 The normal SDK prepares versioned compatible executables. The runtime checks
@@ -436,7 +456,7 @@ graphical-object support.
 Host-adapter 21 extends mapping-description protocol v4 to 136 bytes with the
 kernel object ID, initial byte length and mapping byte offset. Non-shared
 effects carry zeroes. This protocol version is separate from executable
-format4, whose PTE layout is unchanged. A fresh anonymous object's ID equals
+metadata (currently version 3/layout 3), whose PTE layout is unchanged. A fresh anonymous object's ID equals
 its creation token; a remap carries the inherited ID under its new exact
 token. The host validates the whole record again before publication.
 

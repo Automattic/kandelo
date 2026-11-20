@@ -28,6 +28,7 @@ const include = [
   "test/memory-group-import-guard.test.ts",
   "test/grouped-worker-initialization.test.ts",
   "test/grouped-desktop-output.test.ts",
+  "test/kms-bitmap-relay.test.ts",
   "test/channel-completion-wait.test.ts",
   "test/dylink-fork-archive.test.ts",
   "test/fork-module-state.test.ts",

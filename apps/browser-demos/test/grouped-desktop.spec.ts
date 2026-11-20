@@ -2,18 +2,43 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, test } from '../playwright-test';
 import { typePhysicalText } from './support/physical-typing';
+import { DesktopCompositionError, waitForDesktopComposition } from './support/desktop-composition';
+
+test('rejects a black desktop despite a visible page header', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 480 });
+  await page.setContent('<style>body{margin:0}header{height:48px;background:white}canvas{display:block}</style><header>Visible controls</header><canvas id="composition-control" width="400" height="300"></canvas>');
+  await page.locator('canvas').evaluate((canvas: HTMLCanvasElement) => {
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
+  });
+  let failure: unknown;
+  try { await waitForDesktopComposition(page, '#composition-control', 700); }
+  catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(DesktopCompositionError);
+  const samples = (failure as DesktopCompositionError).samples;
+  expect(samples.length).toBeGreaterThan(0);
+  expect(samples.every(sample => sample.nonBlackFraction === 0)).toBe(true);
+  await page.locator('canvas').evaluate((canvas: HTMLCanvasElement) => {
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#242424'; context.fillRect(0, 0, canvas.width, canvas.height);
+  });
+  expect((await waitForDesktopComposition(page, '#composition-control')).slice(-3)
+    .every(sample => sample.nonBlackFraction === 1)).toBe(true);
+});
 
 test('boots the integrated grouped Sway desktop and a real terminal', async ({ page }, info) => {
   const out = process.env.KANDELO_GROUPED_DESKTOP_EVIDENCE;
   if (!out) throw Error('Select retained grouped desktop evidence directory');
   mkdirSync(out, { recursive: true });
+  const evidenceStem = `${info.project.name}-repeat${info.repeatEachIndex}`;
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   const width = Number(process.env.KANDELO_GROUPED_DESKTOP_WIDTH ?? 1920);
   const height = Number(process.env.KANDELO_GROUPED_DESKTOP_HEIGHT ?? 1080);
   await page.setViewportSize({ width, height: height + 120 });
-  await page.goto(`/grouped-desktop.html?width=${width}&height=${height}&trace=1`);
+  const trace = process.env.KANDELO_GROUPED_DESKTOP_TRACE === '0' ? '' : '&trace=1';
+  await page.goto(`/grouped-desktop.html?width=${width}&height=${height}${trace}`);
   await page.getByRole('button', { name: 'Start shared desktop' }).click();
   try {
     await page.waitForFunction(() => {
@@ -24,7 +49,7 @@ test('boots the integrated grouped Sway desktop and a real terminal', async ({ p
       const desktop = (window as any).groupedDesktop;
       return desktop ? { ...desktop.state, stats: Array.from(desktop.stats), processes: await desktop.kernel.enumProcs() } : { ready: false, bootStatus: document.querySelector('#status')?.textContent };
     });
-    writeFileSync(resolve(out, `${info.project.name}-startup.json`), JSON.stringify({ state, errors }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
+    writeFileSync(resolve(out, `${evidenceStem}-startup.json`), JSON.stringify({ state, errors }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
     expect(state.rootExit, JSON.stringify(state, (_key, value) => typeof value === 'bigint' ? value.toString() : value)).toBeUndefined();
     expect(state.ready, JSON.stringify(state, (_key, value) => typeof value === 'bigint' ? value.toString() : value)).toBe(true);
     if (info.project.name === 'webkit') {
@@ -81,12 +106,14 @@ test('boots the integrated grouped Sway desktop and a real terminal', async ({ p
         expect(JSON.parse(result.stdout).find((entry: any) => entry.focused)?.num).toBe(workspace);
       }
     }
-    await page.screenshot({ path: resolve(out, `${info.project.name}-desktop.png`) });
+    const composition = await waitForDesktopComposition(page, '.desktop');
+    writeFileSync(resolve(out, `${evidenceStem}-composition.json`), JSON.stringify(composition, null, 2) + '\n');
+    await page.screenshot({ path: resolve(out, `${evidenceStem}-desktop.png`) });
     const active = await page.evaluate(async () => {
       const desktop = (window as any).groupedDesktop;
       return { ...desktop.state, stats: Array.from(desktop.stats), processes: await desktop.kernel.enumProcs() };
     });
-    writeFileSync(resolve(out, `${info.project.name}-active.json`), JSON.stringify(active, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
+    writeFileSync(resolve(out, `${evidenceStem}-active.json`), JSON.stringify(active, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
     expect(active.diagnostics).toEqual([]);
     for (const terminal of active.processes.filter((process: any) => process.comm === 'foot')) {
       expect(active.processEvents).toContainEqual({ kind: 'spawn', pid: terminal.pid,
@@ -107,8 +134,8 @@ test('boots the integrated grouped Sway desktop and a real terminal', async ({ p
       return { ...desktop.state, stats: Array.from(desktop.stats), processes: desktop.state.ready ? await desktop.kernel.enumProcs() : [],
         activeElement: document.activeElement?.className, hasFocus: document.hasFocus(), queries };
     }).catch(error => ({ error: String(error) }));
-    writeFileSync(resolve(out, `${info.project.name}-final.json`), JSON.stringify(final, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
-    await page.screenshot({ path: resolve(out, `${info.project.name}-last.png`) }).catch(() => {});
-    writeFileSync(resolve(out, `${info.project.name}-errors.json`), JSON.stringify(errors, null, 2) + '\n');
+    writeFileSync(resolve(out, `${evidenceStem}-final.json`), JSON.stringify(final, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2) + '\n');
+    await page.screenshot({ path: resolve(out, `${evidenceStem}-last.png`) }).catch(() => {});
+    writeFileSync(resolve(out, `${evidenceStem}-errors.json`), JSON.stringify(errors, null, 2) + '\n');
   }
 });

@@ -32,7 +32,9 @@ at `dd8ec71725`.
 
 ## Initial inputs and normal production path (historical)
 
-- Program ABI 56, host adapter 23, group format 4.
+- Program ABI 56, host adapter 23; normal SDK executable version 3/layout 3.
+  Historical notes called the research candidate format4; that is not the
+  supported memory namespace or executable version.
 - Normal SourceOnly kernel key: `2e7a7fc08572fd94ef0456e78cad5811e2a5fdc5965106e65d0b9f0ea4be1934`.
 - `./run.sh partial shell sway swaybg foot wayland-demo bibata-cursor-theme`
   built the package closure and image successfully. Ordinary image SHA-256:
@@ -1162,3 +1164,72 @@ exit alone is not a clean performance observation. A preliminary Node-only
 summary flags dense-file-lock conflict cost (median about +19.5%, approximately
 4.7 µs per operation). Full aggregation and attribution remain required; no
 ordinary-runtime neutrality claim is made.
+
+
+## BGRA upload and display retirement iteration (November 19)
+
+The normal SDK-linked upload screen exposed a cost the earlier standalone
+pixel-loop screen did not represent. In one diagnostic WebKit parent at
+3072×1728, grouped BGRA texture uploads took 210.84 ms versus 14.1 ms for RGBA.
+A new additive GLES operation-table version 18 carries bounded BGRA8 bytes to
+the adapter, which swaps red/blue inside its existing owned pixel copy before
+native RGBA upload. In the fresh normal-artifact screen, grouped WebKit BGRA
+was 11.54 ms and RGBA 12.7 ms. All six ordinary/grouped browser programs passed
+12 independent pixel checks each. These are diagnostic per-upload timings,
+not application CPU, frame latency or a controlled performance acceptance run.
+
+The new normally built kernel is
+`c8720e84e8b5cf53616db823b3ff1d85baf5f9e2737f023bcb59e460fa4b0ed1`;
+the grouped partial image is
+`e12023980d8704f39ba22a1ab2f4bc6c5f049570b6a05ec32a70c639faa4f881`.
+The ordinary partial image is
+`04104d6f43a6e47ae200ac84348fd424e021c5b215e5b6191865314294afcd9b`.
+Both use the normal `partial shell sway swaybg foot wayland-demo
+bibata-cursor-theme` path; grouped preparation uses the normal SDK for seven
+participants. The canonical full application has not been rebuilt for this
+iteration.
+
+| Check | Observed result |
+| --- | --- |
+| ABI/supported program baseline | Passed; program digest unchanged. The generator binds frozen version-17 records to their original table, independent of the supported maximum 18. Kernel-host optional export lists changed ordering only, with the same names/policies. |
+| Rust workspace excluding xtask | 4,775 passed; no failures or ignored cases. |
+| Full xtask | 907 unit and 11 integration tests passed. Two internally selected child-test controls are retained separately in its log. |
+| Native graphics | All 508 selected cases passed, including unchanged independent wide BGRA/RGBA pixel oracles. |
+| Source graphics | 2,378 cases in 93 files passed, zero skips, after supplying exact process-memory ownership in two existing fixtures. The previous guard failures reproduced on the pinned baseline; production ownership refusal was preserved. |
+| Old GL17 desktop/current host | 18/18 public cases passed, three repeats in each browser at 1280×720. |
+| New normal desktop, direct display | 16/18 passed at 3072×1728. All nine initial physical typing proofs passed. One Firefox composition deadline and one later WebKit IPC timeout remain recorded failures. |
+| Isolated display transport screen | 18/18 passed at 3072×1728 in all three browsers with the same kernel/image/86 artifacts and process-worker JS. |
+| Awaited display retirement | 20 ownership/retirement cases and host types passed; another 18/18 original desktop cases passed with capture settlement and exact display retirement acknowledgement. |
+
+The failed direct-display WebKit query spans a 39.65-second interval with no
+kernel trace events from any process. Later queries recover. The display was
+off; no system sleep overlaps that query, so sleep alone is not an explanation.
+This does not establish a browser-engine defect or an IPC root cause.
+The Firefox final screenshot shows the desktop, but does not waive its original
+three-consecutive-capture deadline. Both failures remain acceptance evidence.
+
+The display transport is now being integrated into the normal opt-in desktop
+page. Root-source rebuild, untraced longer lifecycle, browser-memory and fresh
+ordinary/grouped resource and all-nine-suite performance gates are still
+required. Earlier passing integration and benchmark results belong to their
+pinned artifacts and do not establish these new artifacts' release readiness.
+The extra display Worker/native surfaces have not yet been measured as a paired
+resource cost. No claim of lower total browser memory is made.
+
+Retained evidence includes `.context/desktop-bgra-220`,
+`.context/post-desktop-gates-222`, `.context/desktop-legacy-gl-221`,
+`.context/desktop-retirement-relay-225`,
+`.context/desktop-relay-retirement-225-unit.log`, and the immutable source/artifact
+identities alongside those runs. Earlier failed pixel-helper, noinline,
+copy/consume-display and input diagnostics remain retained in `.context/`.
+
+
+The first normal-worktree build of that transport (226), using the default
+resolver and the same 86 artifact hashes, passed host types/build and 20 relay
+tests. Its untraced 3072×1728 public matrix passed 17/18 cases. All Firefox and
+WebKit repeats passed; one Chromium initial physical command produced no bytes
+or proof file, while the shell, visible desktop, and input devices remained
+live with no host diagnostics. The two other Chromium repetitions passed.
+This mixed outcome remains a failure, and the isolated 18/18 results are not a
+reliability claim. The earlier default desktop URL remains unchanged while the
+input path is investigated with scalar DOM/transport observations.
