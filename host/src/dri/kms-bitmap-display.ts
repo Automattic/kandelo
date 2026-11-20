@@ -52,4 +52,7 @@ export function attachKmsBitmapDisplay(canvases: OffscreenCanvas[], port: Messag
   };
   port.onmessageerror = () => { throw new Error('Invalid KMS bitmap display message'); };
   port.start();
+  // [RUNTIME-WORKAROUND: FIREFOX-BITMAP-PORT-STARTUP] The producer waits
+  // until both native contexts and the receiving port are initialized.
+  port.postMessage({ type: 'ready' });
 }

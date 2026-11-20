@@ -3,6 +3,7 @@
  * Retirement waits for native capture settlement and an ordered display fence. */
 export class KmsBitmapRelay {
   private retiring = false;
+  private ready = false;
   private closed = false;
   private active = 0;
   private next = 0;
@@ -13,6 +14,7 @@ export class KmsBitmapRelay {
   private retirement: Promise<void> | undefined;
   private resolveRetirement: (() => void) | undefined;
   private rejectRetirement: ((error: Error) => void) | undefined;
+  private initializationTimer: ReturnType<typeof setTimeout> | undefined;
   private retirementTimer: ReturnType<typeof setTimeout> | undefined;
   private retireSent = false;
   private failure: Error | undefined;
@@ -24,7 +26,10 @@ export class KmsBitmapRelay {
     port.onmessage = event => {
       if (this.closed) return;
       const value = event.data;
-      if (value?.type === 'ack' && this.active !== 0 && value.sequence === this.active
+      if (value?.type === 'ready' && !this.ready) {
+        this.ready = true;
+        clearTimeout(this.initializationTimer);
+      } else if (value?.type === 'ack' && this.active !== 0 && value.sequence === this.active
           && value.sequence === this.published) {
         this.active = 0;
       } else if (value?.type === 'retired' && this.retiring && this.retireSent
@@ -35,11 +40,17 @@ export class KmsBitmapRelay {
       }
     };
     port.onmessageerror = () => this.stop(new Error('Invalid KMS bitmap presentation message'));
+    this.initializationTimer = setTimeout(() => {
+      this.stop(new Error('KMS bitmap display did not become ready; device realm containment required'));
+    }, this.retirementTimeoutMs);
     port.start();
   }
   changed(plane: 0 | 1): void { if (!this.retiring) this.versions[plane]++; }
   present(canvas: OffscreenCanvas, cursor?: OffscreenCanvas): void {
-    if (this.retiring || this.active) return;
+    // [RUNTIME-WORKAROUND: FIREFOX-BITMAP-PORT-STARTUP] Suspected native
+    // deserialization failure when images precede receiver initialization.
+    // Keep dirty versions until the disposable display owns its contexts.
+    if (!this.ready || this.retiring || this.active) return;
     const planes = (cursor ? [0, 1] : [0]).filter(plane => this.versions[plane] !== this.sentVersions[plane]);
     if (!planes.length) return;
     const versions = planes.map(plane => this.versions[plane]);
@@ -93,6 +104,7 @@ export class KmsBitmapRelay {
   private finish(): void {
     if (this.closed) return;
     this.closed = true;
+    clearTimeout(this.initializationTimer);
     clearTimeout(this.retirementTimer);
     this.port.onmessage = null;
     this.port.onmessageerror = null;
@@ -105,6 +117,7 @@ export class KmsBitmapRelay {
   close(): Promise<void> {
     if (this.retirement) return this.retirement;
     this.retiring = true;
+    clearTimeout(this.initializationTimer);
     this.retirement = new Promise<void>((resolve, reject) => {
       this.resolveRetirement = resolve;
       this.rejectRetirement = reject;

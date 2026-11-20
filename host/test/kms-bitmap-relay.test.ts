@@ -8,7 +8,7 @@ function deferred<T>() {
     const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
     return { promise, resolve, reject };
 }
-function setup(useDefaultCapture = false) {
+function setup(useDefaultCapture = false, ready = true) {
     const packets: any[] = [];
     const waiters: ((value: any) => void)[] = [];
     const port = { onmessage: null as ((event: any) => void) | null, onmessageerror: null as (() => void) | null,
@@ -28,6 +28,7 @@ function setup(useDefaultCapture = false) {
     const canvas = { width: 3072, height: 1728 } as OffscreenCanvas;
     const cursor = { width: 3072, height: 1728 } as OffscreenCanvas;
     const receive = (value: any) => port.onmessage?.({ data: value });
+    if (ready) receive({ type: 'ready' });
     const next = () => packets.length ? Promise.resolve(packets.shift()) : new Promise<any>(resolve => waiters.push(resolve));
     async function close() {
         const done = relay.close();
@@ -44,6 +45,51 @@ function bitmap() { return { width: 3072, height: 1728, close: vi.fn() } as unkn
 beforeEach(() => vi.useFakeTimers());
 afterEach(async () => { const done = cleanups.map(close => close()); await vi.runAllTimersAsync(); await Promise.all(done); cleanups = []; vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('bounded KMS bitmap device ownership and retirement', () => {
+    it('retains dirty planes without native capture until the display is ready', async () => {
+        const s = setup(false, false);
+        const create = vi.fn().mockResolvedValue(bitmap());
+        vi.stubGlobal('createImageBitmap', create);
+        s.relay.present(s.canvas, s.cursor);
+        s.relay.changed(0);
+        expect(create).not.toHaveBeenCalled();
+        expect(s.port.postMessage).not.toHaveBeenCalled();
+        s.receive({ type: 'ready' });
+        s.relay.present(s.canvas, s.cursor);
+        expect((await s.next()).planes).toEqual([0, 1]);
+        s.ack(1);
+        await s.close();
+    });
+    it('fences a display closed before initialization without capturing it', async () => {
+        const s = setup(false, false);
+        const create = vi.fn(); vi.stubGlobal('createImageBitmap', create);
+        const done = s.relay.close();
+        const retire = await s.next();
+        expect(retire).toEqual({type: 'retire', sequence: 0});
+        s.receive({type: 'ready'});
+        s.relay.present(s.canvas);
+        expect(create).not.toHaveBeenCalled();
+        s.receive({type: 'retired', sequence: 0});
+        await done;
+        expect(s.fail).not.toHaveBeenCalled();
+    });
+    it('reports a missing initialization receipt and retains retirement failure', async () => {
+        const s = setup(false, false);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(await s.error.promise).toBeInstanceOf(Error);
+        const rejected = expect(s.relay.close()).rejects.toThrow('did not become ready');
+        expect(await s.next()).toEqual({type: 'retire', sequence: 0});
+        s.receive({type: 'ready'});
+        s.receive({type: 'retired', sequence: 0});
+        await rejected;
+    });
+    it('refuses duplicate initialization without publishing any frame', async () => {
+        const s = setup();
+        s.receive({type: 'ready'});
+        const rejected = expect(s.relay.close()).rejects.toThrow('acknowledgement');
+        expect(await s.next()).toEqual({type: 'retire', sequence: 0});
+        s.receive({type: 'retired', sequence: 0});
+        await rejected;
+    });
     it('retains producer pixels when an unchanged frame is presented again', async () => {
         const s = setup(true);
         const source = Object.assign(s.canvas, { pixels: [36, 36, 36], transferToImageBitmap: () => {
@@ -282,6 +328,8 @@ describe('display consumption and exact retirement', () => {
         const canvases = contexts.map(context => ({ width: 1280, height: 720, getContext: () => context }));
         const port = { onmessage: null as ((event: any) => void) | null, onmessageerror: null as (() => void) | null, start: vi.fn(), close: vi.fn(), postMessage: vi.fn() };
         attachKmsBitmapDisplay(canvases as unknown as OffscreenCanvas[], port as unknown as MessagePort);
+        expect(port.postMessage).toHaveBeenCalledExactlyOnceWith({type: 'ready'});
+        port.postMessage.mockClear();
         return { contexts, canvases, port, send: (data: any) => port.onmessage?.({ data }) };
     }
     it('consumes both planes before acknowledgement, clears both before retirement', () => {

@@ -1,0 +1,6 @@
+id = "FIREFOX-BITMAP-PORT-STARTUP"
+kind = "bug"
+status = "suspected"
+runtimes = ["firefox"]
+summary = "Suspected ImageBitmap deserialization failure before the display Worker is initialized"
+reports = "human-only"
