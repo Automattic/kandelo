@@ -3357,6 +3357,10 @@ fn render_ts_module() -> String {
         "export const HOST_ADAPTER_VERSION = {} as const;\n",
         shared::abi::HOST_ADAPTER_VERSION
     ));
+    out.push_str("export const MEMORY_GROUP_PROTOCOL = ");
+    out.push_str(&memory_group_contract().to_string());
+    out.push_str(" as const;");
+    out.push('\n');
     out.push_str(&format!(
         "export const ENTROPY_READ_PENDING = {} as const;\n",
         shared::abi::ENTROPY_READ_PENDING
@@ -4436,6 +4440,7 @@ fn declared_snapshot_sections() -> Sections {
     s.add(FrozenBaselineRecord, "program_legacy_requests", program_legacy_requests());
     // Argument kinds of the host's process-metadata export.
     s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
+    s.add(KernelHost, "memory_group_contract", memory_group_contract());
     // The process table the kernel hands the host (ps, the inspector).
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
@@ -7053,6 +7058,26 @@ fn ioctl_request_families() -> Value {
         })
         .collect();
     Value::Array(families)
+}
+
+fn memory_group_contract() -> Value {
+    use shared::memory_group as group;
+    let fields = |entries: &[(&str, usize)]| {
+        entries
+            .iter()
+            .map(|(name, offset)| ((*name).to_string(), json!(*offset)))
+            .collect::<BTreeMap<_, _>>()
+    };
+    json!({
+        "version":group::PROTOCOL_VERSION,
+        "capability_admission":group::CAPABILITY_ADMISSION,
+        "receipt_bytes":group::RECEIPT_BYTES,
+        "snapshot_bytes":group::SNAPSHOT_BYTES,
+        "receipt_fields":fields(group::RECEIPT_FIELDS),
+        "snapshot_fields":fields(group::SNAPSHOT_FIELDS),
+        "task_actions":group::TASK_ACTIONS.iter().map(|(name,action)|
+            ((*name).to_string(),json!(*action as u32))).collect::<BTreeMap<_,_>>(),
+    })
 }
 
 fn host_adapter() -> Value {

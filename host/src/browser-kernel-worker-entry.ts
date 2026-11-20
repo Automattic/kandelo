@@ -159,7 +159,10 @@ import {
   ExactProcessGenerationDetachLedger,
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
-import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
+import {
+  ProcessMemoryCreatorGate,
+  isProcessMemoryCreatorAdmissionClosed,
+} from "./process-memory-creator-gate";
 import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import type {
   HostDiagnostic,
@@ -899,12 +902,17 @@ async function createFreshProcessMemory(
       maximumPages: layout.maximumPages,
     });
   } catch (e) {
-    console.error(
-      "[kernel-worker] process memory allocation failed",
-      JSON.stringify(
-        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
-      ),
-    );
+    // Only the closed owner's private cancellation is expected teardown.
+    // Constructor/transport failures, including copied error text, stay loud.
+    if (!isProcessMemoryCreatorAdmissionClosed(e)) {
+      console.error(
+        "[kernel-worker] process memory allocation failed",
+        JSON.stringify({
+          ...processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
+          error: formatError(e),
+        }),
+      );
+    }
     throw e;
   }
   try {

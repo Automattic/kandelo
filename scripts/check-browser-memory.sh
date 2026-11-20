@@ -47,13 +47,14 @@ trap 'rm -f -- "$report"' EXIT
         test/machine-audio-gesture.spec.ts \
         test/kandelo-memory-switch.spec.ts \
         test/worker-exit-trap.spec.ts \
+        test/process-address-space.spec.ts \
         --project=chromium --project=firefox --project=webkit --workers=1 \
         --reporter=list,json
 )
 node --input-type=module - "$report" <<'NODE'
 import { readFileSync } from "node:fs";
 const { stats } = JSON.parse(readFileSync(process.argv[2], "utf8"));
-if (stats.expected < 18 || stats.skipped !== 0 || stats.flaky !== 0 || stats.unexpected !== 0) {
+if (stats.expected < 21 || stats.skipped !== 0 || stats.flaky !== 0 || stats.unexpected !== 0) {
     throw new Error(`Incomplete browser memory evidence: ${JSON.stringify(stats)}`);
 }
 NODE
