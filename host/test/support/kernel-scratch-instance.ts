@@ -227,6 +227,18 @@ function signatures(
       parameters: [i32, pointer, i32],
       result: i32,
     },
+    kernel_memory_group_snapshot: {
+      parameters: [i32,pointer,i32],
+      result:i32,
+    },
+    kernel_memory_group_task_receipt: {
+      parameters: [i32,i32,pointer,i32],
+      result:i32,
+    },
+    kernel_memory_group_task_action: {
+      parameters: [pointer,i32,i32],
+      result:i32,
+    },
     kernel_get_process_state: {
       parameters: [i32],
       result: i32,

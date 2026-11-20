@@ -3,6 +3,8 @@ import { ProcessMemoryAllocator } from "../src/process-memory";
 import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserProcessMemoryFactory } from "../src/browser-process-memory-factory";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 
 class AllocationWorker {
   static instances: AllocationWorker[] = [];
@@ -32,6 +34,31 @@ afterEach(() => {
 });
 
 describe("browser process memory allocation realm", () => {
+  it("preserves owner cancellation for a creator that reaches allocation after disposal", async () => {
+    setup();
+    const gate = new ProcessMemoryCreatorGate();
+    const factory = new BrowserProcessMemoryFactory();
+    const allocator = new ProcessMemoryAllocator({ maxMemories: 4, maxTotalBytes: 8 * 65536,
+      createMemoryAsync: descriptor => factory.allocate(descriptor) });
+    const prepared = Promise.withResolvers<void>();
+    const pending = gate.run("exec preparation", async () => {
+      await prepared.promise;
+      return allocator.acquireWhenAvailable(request);
+    });
+    const outcome = pending.catch(error => error);
+    const swept = vi.fn();
+    const destroyed = gate.closeAndRunAfterDrain(swept);
+    const cancellation = gate.closedAdmissionCancellation("pending memory construction");
+    factory.dispose(cancellation);
+    expect(swept).not.toHaveBeenCalled();
+    prepared.resolve();
+    expect(await outcome).toBe(cancellation);
+    await destroyed;
+    expect(swept).toHaveBeenCalledOnce();
+    expect(allocator.getRetirementStats()).toMatchObject({ liveMemories: 0, chargedMemories: 0, chargedBytes: 0 });
+    expect(AllocationWorker.instances).toHaveLength(0);
+  });
+
   it("keeps termination failure visible during an admitted cancellation", async () => {
     setup();
     const gate = new ProcessMemoryCreatorGate();
@@ -287,5 +314,56 @@ describe("browser process memory allocation realm", () => {
     await expect(factory.allocate(request)).rejects.toThrow(/cannot clone request/);
     expect(AllocationWorker.instances[0].terminate).toHaveBeenCalledOnce();
     factory.dispose();
+  });
+});
+
+// Exercise the production allocation catch without starting a whole kernel
+// realm. Only the allocator rejection and diagnostic context are supplied;
+// cancellation identity comes from the real closed creator gate.
+function rejectedAllocation(error: unknown): () => Promise<unknown> {
+  const path = new URL("../src/browser-kernel-worker-entry.ts", import.meta.url);
+  const source = ts.createSourceFile(path.pathname, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "createFreshProcessMemory");
+  if (!declaration) throw new Error("missing production process allocation function");
+  const code = ts.transpileModule(declaration.getText(source), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  const invoke = new Function("processMemoryAllocator", "extractHeapBase", "computeProcessMemoryLayout",
+    "maxPages", "defaultThreadSlots", "processMemoryAllocationDiagnostics", "isProcessMemoryCreatorAdmissionClosed", "formatError",
+    code + "\nreturn createFreshProcessMemory;")(
+      { acquireWhenAvailable: () => Promise.reject(error) },
+      () => 65536, () => ({ initialPages: 1, maximumPages: 4 }), 4, 1,
+      () => ({ operation: "controlled allocation" }), isProcessMemoryCreatorAdmissionClosed,
+      (reason: unknown) => reason instanceof Error ? reason.message : String(reason),
+    );
+  return () => invoke(100, new ArrayBuffer(0), 4, 4);
+}
+
+describe("browser process allocation diagnostics", () => {
+  it("does not report a privately canceled allocation as a construction failure", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    await gate.closeAndWait();
+    const cancellation = gate.closedAdmissionCancellation("pending memory construction");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(rejectedAllocation(cancellation)()).rejects.toBe(cancellation);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it.each(["genuine failure", "copied cancellation text", "undefined rejection"])("retains %s diagnostics after admission closes", async kind => {
+    const gate = new ProcessMemoryCreatorGate();
+    await gate.closeAndWait();
+    const cancellation = gate.closedAdmissionCancellation("pending memory construction");
+    const error = kind === "undefined rejection" ? undefined
+      : new Error(kind === "copied cancellation text" ? cancellation.message : "constructor refused storage");
+    expect(isProcessMemoryCreatorAdmissionClosed(error)).toBe(false);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(rejectedAllocation(error)()).rejects.toBe(error);
+    expect(log).toHaveBeenCalledOnce();
+    expect(log.mock.calls[0][0]).toBe("[kernel-worker] process memory allocation failed");
+    expect(JSON.parse(log.mock.calls[0][1] as string)).toEqual({
+      operation: "controlled allocation",
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
 });
