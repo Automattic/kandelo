@@ -1,9 +1,10 @@
 import type { KernelHost, VfsChangeEvent, VfsDirent } from "../kernel-host";
 import type { ModelContext } from "./model-context";
 import { imageTool, registerTool } from "./registry";
-import { announceGuestScript, runGuestScript, type GuestScriptResult } from "./runtime";
+import { announceGuestScript, runGuestJob, runGuestScript, startGuestProgram, type GuestScriptResult } from "./runtime";
 import {
   VFS_TOOLS_DIRS,
+  commandArgv,
   parseVfsTool,
   substituteCommand,
   vfsToolName,
@@ -134,6 +135,11 @@ export async function runVfsTool(
   terminal: string | null,
   signal?: AbortSignal,
 ): Promise<GuestScriptResult> {
+  if (Array.isArray(tool.command)) {
+    const argv = commandArgv(tool.command, args);
+    announceGuestScript(host, terminal, argv.join(" "));
+    return runGuestJob(host, id => startGuestProgram(host, id, argv, VFS_TOOL_TIMEOUT_MS), { timeoutMs: VFS_TOOL_TIMEOUT_MS, signal });
+  }
   const script = substituteCommand(tool.command, args);
   announceGuestScript(host, terminal, script);
   return runGuestScript(host, script, { timeoutMs: VFS_TOOL_TIMEOUT_MS, signal });

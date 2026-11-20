@@ -1164,6 +1164,7 @@ describe("KandeloImageFs", () => {
       url: "https://example.invalid/more.zip",
       mountPrefix: "/opt/more",
       entries: [zipEntry({ fileName: "f", uncompressedSize: 1 })],
+      integrity: { bytes: 4096 },
     })).toBe(2);
   });
 
@@ -1176,6 +1177,7 @@ describe("KandeloImageFs", () => {
       url: "https://example.invalid/evil.zip",
       mountPrefix: "/opt/tools",
       entries: [zipEntry({ fileName: "../../etc/passwd", uncompressedSize: 1 })],
+      integrity: { bytes: 4096 },
     })).toThrow();
     expect(() => fs.lstat("/etc/passwd")).toThrow();
   });
@@ -1192,6 +1194,7 @@ describe("KandeloImageFs", () => {
         zipEntry({ fileName: "good", uncompressedSize: 1 }),
         zipEntry({ fileName: "bad\u0000name", uncompressedSize: 1 }),
       ],
+      integrity: { bytes: 4096 },
     })).toThrow();
     expect(() => fs.lstat("/opt/partial/good")).toThrow();
   });
@@ -1254,6 +1257,7 @@ describe("KandeloImageFs", () => {
       url: "https://example.invalid/tools.zip",
       mountPrefix: "/opt/tools",
       entries: [zipEntry({ fileName: "tool", uncompressedSize: 99 })],
+      integrity: { bytes: 4096 },
     });
 
     // A URL-backed single: both halves say yes.

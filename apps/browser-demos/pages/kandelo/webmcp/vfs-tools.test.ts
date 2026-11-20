@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseVfsTool, shellQuote, substituteCommand, validateToolSchema, vfsToolName } from "./vfs-tools.ts";
+import { commandArgv, parseVfsTool, shellQuote, substituteCommand, validateToolSchema, vfsToolName } from "./vfs-tools.ts";
 
 const definition = (inputSchema: unknown) =>
   JSON.stringify({ description: "x", inputSchema, command: "true" });
@@ -50,9 +50,41 @@ test("rejects malformed tool definitions", () => {
     /"command"/,
   );
   assert.throws(
-    () => parseVfsTool("/home/maker/mcp/bad.json", JSON.stringify({ description: "x", inputSchema: { type: "object" }, command: ["true"] })),
+    () => parseVfsTool("/home/maker/mcp/bad.json", JSON.stringify({ description: "x", inputSchema: { type: "object" }, command: 1 })),
     /"command"/,
   );
+});
+
+const listTool = (command: unknown) => JSON.stringify({
+  description: "x",
+  inputSchema: { type: "object", properties: { bar: { type: "string" }, baz: { type: "integer" } } },
+  command,
+});
+
+test("parses a command list", () => {
+  assert.deepEqual(parseVfsTool("/etc/mcp/foo.json", listTool(["/usr/bin/foo", "{bar}", "--baz={baz}"])).command, ["/usr/bin/foo", "{bar}", "--baz={baz}"]);
+});
+
+test("a command list starts with an absolute program path and uses only declared, unquoted placeholders", () => {
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool([])), /must hold strings/);
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool(["/usr/bin/foo", 1])), /must hold strings/);
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool(["/usr/bin/foo", "a\0b"])), /must hold strings/);
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool(["foo"])), /absolute path/);
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool(["/usr/bin/{bar}"])), /absolute path/);
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool(["/usr/bin/foo", "{qux}"])), /\{qux\}, which inputSchema does not declare/);
+  assert.throws(() => parseVfsTool("/etc/mcp/foo.json", listTool(["/usr/bin/foo", "{bar:q}"])), /needs no quoting/);
+});
+
+test("a command list fills each placeholder inside its own item, with no shell", () => {
+  assert.deepEqual(
+    commandArgv(["/usr/bin/foo", "{bar}", "--baz={baz}"], { bar: "qux; rm -rf / $(quux)", baz: 3 }),
+    ["/usr/bin/foo", "qux; rm -rf / $(quux)", "--baz=3"],
+  );
+});
+
+test("a command list leaves out each item whose argument is missing", () => {
+  assert.deepEqual(commandArgv(["/usr/bin/foo", "{bar}", "--baz={baz}"], { bar: "qux" }), ["/usr/bin/foo", "qux"]);
+  assert.deepEqual(commandArgv(["/usr/bin/foo", "{constructor}", "{toString}"], {}), ["/usr/bin/foo"]);
 });
 
 test("accepts every schema keyword the shared validator enforces", () => {

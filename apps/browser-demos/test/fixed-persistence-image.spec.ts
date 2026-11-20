@@ -279,6 +279,24 @@ test("experimental computer keeps exact payload bytes and rejects damaged images
   }
 });
 
+test("experimental computer keeps an image with no terminal session", async ({ page, baseURL }) => {
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const terminalSession = await page.evaluate(async (url) => {
+    const { loadFixedPersistenceImageHandle, saveFixedPersistenceImageStream } = await import(url);
+    const name = `image-${crypto.randomUUID()}`;
+    const identity = "source A, profile A";
+    const composition = {
+      imageConfig: { version: 1 as const, image: { title: "foo" } },
+      profileId: "",
+      terminalSession: null,
+      requiredServices: [],
+    };
+    await saveFixedPersistenceImageStream(name, identity, { chunks: [new Uint8Array([1, 2, 3, 4])], payloadLength: 4, integrityPolicy: "crc32c" }, undefined, composition);
+    return (await loadFixedPersistenceImageHandle(name, identity))?.composition.terminalSession;
+  }, new URL(`/@fs/${modulePath}`, baseURL).href);
+  expect(terminalSession).toBeNull();
+});
+
 
 
 test("experimental computer refuses URL scripts and invalid names", async ({ page, baseURL }) => {

@@ -9,6 +9,7 @@ import { randomComputerName } from "./computer-name";
 export const TEMPORARY_COMPUTER_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const MAX_COMPUTER_METADATA_BYTES = 128 * 1024;
 const MAX_COMPUTERS = 256;
+const DISK_IMAGE_FILE = "disk.vfs";
 
 function missing(error: unknown): boolean {
   return error instanceof DOMException && error.name === "NotFoundError";
@@ -19,7 +20,11 @@ async function deletionPending(directory: FileSystemDirectoryHandle): Promise<bo
   catch (error) { if (missing(error)) return true; throw error; }
 }
 
-async function writeFile(directory: FileSystemDirectoryHandle, name: string, text: string): Promise<void> {
+export function hasOpfsRoot(descriptor: BootDescriptor): boolean {
+  return descriptor.mounts.some(mount => mount.path === "/" && mount.source === "opfs");
+}
+
+async function writeFile(directory: FileSystemDirectoryHandle, name: string, text: string | Uint8Array<ArrayBuffer>): Promise<void> {
   const writer = await (await directory.getFileHandle(name, { create: true })).createWritable();
   try {
     await writer.write(text);
@@ -104,8 +109,9 @@ export class BrowserComputerStore {
     return this.locked(() => this.listUnlocked());
   }
 
-  create(descriptor: BootDescriptor, retention: ComputerRetention = DEFAULT_COMPUTER_RETENTION, profileId: string | null = descriptor.id, title?: string): Promise<StoredComputer> {
+  create(descriptor: BootDescriptor, retention: ComputerRetention = DEFAULT_COMPUTER_RETENTION, profileId: string | null = descriptor.id, title?: string, diskImage?: Uint8Array<ArrayBuffer>): Promise<StoredComputer> {
     validateBootDescriptor(descriptor);
+    if (hasOpfsRoot(descriptor) !== (diskImage !== undefined)) throw new Error("A computer has a disk image exactly when its descriptor mounts its root from OPFS");
     if (profileId !== null && (typeof profileId !== "string" || !profileId || profileId.length > 128)) throw new Error("Invalid computer profile ID");
     if (descriptor.boot.inputs?.length || descriptor.boot.parameters?.runScript !== undefined) {
       throw new Error("Disk-backed computers do not yet accept boot-link inputs or scripts");
@@ -127,6 +133,7 @@ export class BrowserComputerStore {
       await directory.getDirectoryHandle("retained", { create: true });
       await directory.getDirectoryHandle("provisioning", { create: true });
       await this.writeUnlocked(record);
+      if (diskImage !== undefined) await writeFile(directory, DISK_IMAGE_FILE, diskImage);
       await directory.removeEntry("creating");
       return record;
     });
@@ -165,8 +172,34 @@ export class BrowserComputerStore {
 
   async markFilesystemInitialized(id: string): Promise<void> {
     const directory = await browserComputerDirectory(id, false);
-    try { await directory.removeEntry("provisioning"); }
-    catch (error) { if (!missing(error)) throw error; }
+    for (const name of ["provisioning", DISK_IMAGE_FILE]) {
+      try { await directory.removeEntry(name); }
+      catch (error) { if (!missing(error)) throw error; }
+    }
+  }
+
+  async diskImage(id: string): Promise<File> {
+    const directory = await browserComputerDirectory(id, false);
+    try { return await (await directory.getFileHandle(DISK_IMAGE_FILE)).getFile(); }
+    catch (error) { if (missing(error)) throw new Error(`Computer ${id} has no disk image to initialize its filesystem from`); throw error; }
+  }
+
+  /** Replace the disk of a computer whose root is mounted from OPFS: its next
+   *  boot initializes a new filesystem from `diskImage`, and every file of
+   *  the current filesystem is deleted. */
+  replaceDisk(id: string, diskImage: Uint8Array<ArrayBuffer>): Promise<void> {
+    return this.locked(async () => {
+      const record = await this.readUnlocked(id);
+      if (!hasOpfsRoot(record.descriptor)) throw new Error(`Computer ${id} does not mount its root from OPFS`);
+      const lease = await acquireBrowserPersistenceComputerLease(browserComputerStorageName(id));
+      try {
+        const directory = await browserComputerDirectory(id, false);
+        await writeFile(directory, DISK_IMAGE_FILE, diskImage);
+        await directory.getDirectoryHandle("provisioning", { create: true });
+        try { await directory.removeEntry("filesystem", { recursive: true }); }
+        catch (error) { if (!missing(error)) throw error; }
+      } finally { await lease(); }
+    });
   }
 
   /**
@@ -225,6 +258,7 @@ export class BrowserComputerStore {
               let emptyCreation = true;
               for await (const [name, entry] of directory.entries()) {
                 if (name === "creating") continue;
+                if (name === DISK_IMAGE_FILE && entry.kind === "file") continue;
                 if ((name !== "retained" && name !== "provisioning") || entry.kind !== "directory") {
                   emptyCreation = false;
                   break;

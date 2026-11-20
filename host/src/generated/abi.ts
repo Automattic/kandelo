@@ -808,7 +808,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 7 as const;
+export const HOST_ADAPTER_VERSION = 8 as const;
 export const ENTROPY_READ_PENDING = -2147483648 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;

@@ -6178,68 +6178,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Create the missing ancestor directories of `path` in the kernel-owned
-   * rootfs, so a following {@link rootfsWriteFile} can create `path` itself.
-   * `path`'s final component is never created.
-   *
-   * The host needs this because it places genuine per-session runtime data into
-   * `/` — the browser's TLS-MITM CA certificate at
-   * `/etc/ssl/certs/ca-certificates.crt` — and cannot assume the boot image
-   * carries the directories leading to it. `kernel_rootfs_write_file` opens
-   * with `O_CREAT`, which is `ENOENT` on a missing parent exactly as POSIX
-   * requires, so the directory half is a separate, explicit act rather than an
-   * implicit `mkdir -p` bolted onto every `write_vfs_file`.
-   *
-   * Returns the number of directories created. Throws `KernelScratchError`
-   * (POSIX errno) if the kernel predates the export, or
-   * `KernelReentrantEntryError` if a kernel entry is already active.
-   */
-  rootfsMkdirParents(path: string, mode = 0o755): number {
-    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    const encodedPath = new TextEncoder().encode(path);
-    const pathLen = encodedPath.byteLength;
-    if (pathLen > POSIX_PATH_MAX_BYTES) {
-      throw new KernelScratchError("rootfs mkdir path too long", ENAMETOOLONG);
-    }
-    let created = 0;
-    let failErrno = 0;
-    this.#runImmediateKernelEntry("kernel rootfs mkdir parents", (entry) => {
-      if (
-        typeof entry.instance.exports.kernel_rootfs_mkdir_parents !== "function"
-      ) {
-        failErrno = ENOSYS;
-        return undefined;
-      }
-      const region = this.#requireMainScratchRegion();
-      if (pathLen > region.capacity) {
-        failErrno = ENAMETOOLONG;
-        return undefined;
-      }
-      const mkdirMode = mode & 0o7777;
-      const result = region.withLease((lease) => {
-        lease.copyFrom(encodedPath, 0, 0, pathLen);
-        const pathPtr = lease.exportPointer(0, pathLen);
-        return this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_rootfs_mkdir_parents",
-          [pathPtr, pathLen, mkdirMode],
-        );
-      });
-      if (!Number.isSafeInteger(result) || result < 0) {
-        failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
-      } else {
-        created = result;
-      }
-      return undefined;
-    });
-    if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs mkdir failed", failErrno);
-    }
-    return created;
-  }
-
-  /**
    * Remove the non-directory rootfs entry at `path` through the kernel, for a
    * host that staged it there (the browser's `unlinkFileFromVfs`). Returns
    * false when nothing was at `path`; any other failure throws

@@ -511,7 +511,9 @@ function parseComposition(value: unknown, name: string): StoredComposition {
   try {
     const imageConfig = parseKandeloDemoConfig(encodeManifestValue(name, record.imageConfig));
     if (imageConfig === null) throw new Error("invalid demo config");
-    const terminalSession = parseExperimentalTerminalSession(encodeManifestValue(name, record.terminalSession));
+    const terminalSession = record.terminalSession === null
+      ? null
+      : parseExperimentalTerminalSession(encodeManifestValue(name, record.terminalSession));
     return {
       imageConfig,
       profileId: record.profileId,

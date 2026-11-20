@@ -299,6 +299,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   return (
     <div
       className="kframebuffer-surface"
+      data-kandelo-display="framebuffer"
       ref={stageRef}
       data-drag-active={exchangeDrop.dragActive ? "true" : "false"}
       {...exchangeDrop.handlers}

@@ -1,9 +1,12 @@
 // Tool definitions live in two directories: /etc/mcp ships with the image and
 // /home/maker/mcp belongs to the maker; on a name clash the maker's file wins.
 // One JSON file per tool, named after the tool: `{ description, inputSchema,
-// command }`. The command runs as an owned job of the agent's account; it may
-// carry `{param}` placeholders filled from the call arguments, or `{param:q}`
-// to substitute the value as one shell-quoted word.
+// command }`. The command runs as an owned job of the agent's account. A
+// string is a shell script; it may carry `{param}` placeholders filled from
+// the call arguments, or `{param:q}` to substitute the value as one
+// shell-quoted word. A list is an argv that runs with no shell: its first
+// item is the program's absolute path, each `{param}` is filled inside its
+// own item, and an item whose argument is missing is left out.
 
 import type { Schema } from "./contract";
 
@@ -13,11 +16,12 @@ export interface VfsTool {
   name: string;
   description: string;
   inputSchema: Schema;
-  command: string;
+  command: string | string[];
 }
 
 const TOOL_NAME = /^[a-z][a-z0-9_-]*$/;
 const PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)(:q)?\}/g;
+const ARGUMENT = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 // Exactly the keywords `validate` in contract.ts enforces. A keyword it
 // would ignore is refused here, so a tool never registers a promise its
@@ -48,10 +52,29 @@ export function parseVfsTool(file: string, text: string): VfsTool {
   if (!isRecord(inputSchema)) throw new Error(`${file} needs an "inputSchema" object`);
   if (inputSchema.type !== "object") throw new Error(`${file} inputSchema must have "type": "object"`);
   validateToolSchema(inputSchema, `${file} inputSchema`);
+  if (Array.isArray(command)) {
+    validateCommandList(command, inputSchema, file);
+    return { name, description, inputSchema: inputSchema as Schema, command };
+  }
   if (typeof command !== "string" || command.length === 0) {
-    throw new Error(`${file} needs a non-empty "command" string`);
+    throw new Error(`${file} needs a non-empty "command" string or list`);
   }
   return { name, description, inputSchema: inputSchema as Schema, command };
+}
+
+function validateCommandList(command: unknown[], inputSchema: Record<string, unknown>, file: string): asserts command is string[] {
+  if (command.length === 0 || !command.every((item): item is string => typeof item === "string" && !item.includes("\0"))) {
+    throw new Error(`${file} "command" list must hold strings: the program's absolute path, then its arguments`);
+  }
+  const [program] = command;
+  if (!program.startsWith("/") || program.includes("{")) throw new Error(`${file} "command" list must start with the program's absolute path`);
+  const declared = Object.keys(isRecord(inputSchema.properties) ? inputSchema.properties : {});
+  for (const item of command) {
+    for (const [match, key, quoted] of item.matchAll(PLACEHOLDER)) {
+      if (quoted) throw new Error(`${file} "command" list uses ${match}; an argument reaches no shell, so it needs no quoting`);
+      if (!declared.includes(key)) throw new Error(`${file} "command" list uses ${match}, which inputSchema does not declare`);
+    }
+  }
 }
 
 /** Accept only what `validate` enforces; name the first keyword or value it would not. */
@@ -99,6 +122,14 @@ export function substituteCommand(command: string, args: Record<string, unknown>
     const value = args[key];
     const text = typeof value === "string" ? value : JSON.stringify(value);
     return quoted ? shellQuote(text) : text;
+  });
+}
+
+/** The argv of a command list: each `{param}` filled inside its own item, and each item whose argument is missing left out. */
+export function commandArgv(command: readonly string[], args: Record<string, unknown>): string[] {
+  return command.flatMap((item) => {
+    if ([...item.matchAll(ARGUMENT)].some(([, key]) => !Object.hasOwn(args, key) || args[key] === undefined)) return [];
+    return [item.replace(ARGUMENT, (_, key: string) => typeof args[key] === "string" ? args[key] : JSON.stringify(args[key]))];
   });
 }
 

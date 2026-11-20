@@ -1,6 +1,6 @@
 import { waitForHttpPreview } from "../../../lib/init/http-preview-readiness";
 import { WebPreviewConnection } from "./web-preview-connection";
-import { BrowserComputerStore } from "../../../../../web-libs/kandelo-session/src/browser-computer-store";
+import { BrowserComputerStore, hasOpfsRoot } from "../../../../../web-libs/kandelo-session/src/browser-computer-store";
 import type { ComputerLibrarySnapshot, ComputerRetention, StoredComputer } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { DEFAULT_COMPUTER_RETENTION, filesystemProfileId, JOURNALED_OPFS_IMAGE_STORAGE_FORMAT } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { browserComputerIdForStorageName, browserComputerStorageName, browserPersistenceDirectory } from "../../../../../host/src/browser-computer-storage";
@@ -545,6 +545,9 @@ interface LiveProfile {
   /** Resolved product id when the image is one this deployment ships. */
   productId: GalleryProductId | null;
   vfsUrl: string;
+  /** The root image is the stored computer's own `disk.vfs`,
+   *  not a URL: the descriptor mounts `/` from OPFS. */
+  opfsRoot: boolean;
   vfsSource?: VfsProductSource;
   candidateEvidence?: InjectedProtectedCandidateVfsV1;
   candidateVfsPlacement?: ProtectedCandidatePagesVfsPlacement;
@@ -1331,7 +1334,8 @@ function profileForDescriptor(
   // the image FILENAME — that is not a profile anybody asked for, and
   // treating it as one would fail a bare `?vfs=` boot that should have used
   // the image's declared default.
-  const descriptorProfileId = vfsUrl && desc.id === demoIdFromVfsImageUrl(vfsUrl)
+  const opfsRoot = hasOpfsRoot(desc);
+  const descriptorProfileId = opfsRoot || (vfsUrl && desc.id === demoIdFromVfsImageUrl(vfsUrl))
     ? null
     : nonEmptyId(desc.id);
   const requestedProfileId = queryProfileId ?? descriptorProfileId;
@@ -1349,6 +1353,7 @@ function profileForDescriptor(
     productId: null,
     maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     vfsUrl,
+    opfsRoot,
     descriptor: desc,
     framebufferTest: fb === "test",
   };
@@ -1364,7 +1369,7 @@ function profileForDescriptor(
  * more — that asymmetry is what this work removes.
  */
 async function bindVfsProduct(profile: LiveProfile): Promise<LiveProfile> {
-  if (profile.candidateEvidence !== undefined) return profile;
+  if (profile.candidateEvidence !== undefined || profile.opfsRoot) return profile;
   // A descriptor that names no image (an older pasted link that carried only
   // a script) gets the same image a bare page load gets: the roster's first
   // entry. That is the app choosing a DEFAULT MACHINE, which it is allowed to
@@ -1412,6 +1417,7 @@ function profileForCandidateEvidence(
     requestedProfileSource: null,
     productId,
     vfsUrl: evidence.vfs.url,
+    opfsRoot: false,
     vfsSource: undefined,
     descriptor,
     maxVfsByteLength: maxVfsByteLengthForProduct(productId),
@@ -2131,12 +2137,12 @@ async function bootProfile(
         disposeLocalWebBridge();
       } });
     setWebMcpSession(host, agentIdentity());
-    const terminalPolicy = experimentalTerminalSessionPolicy(terminalSession);
+    const terminalPolicy = terminalSession === null ? null : experimentalTerminalSessionPolicy(terminalSession);
     const runScriptId = requestedDescriptor.boot.parameters?.runScript;
     const scriptInput = typeof runScriptId === "string"
       ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)
       : undefined;
-    if (!profile.framebufferTest && scriptInput !== undefined) {
+    if (terminalSession !== null && terminalPolicy !== null && !profile.framebufferTest && scriptInput !== undefined) {
       // A per-program environment replaces the kernel default, so keep the
       // normal login environment alongside the one-shot Bash startup hook.
       terminalPolicy.initial.env = [
@@ -2324,7 +2330,7 @@ async function bootProfile(
       // console, so while the framebuffer canvas holds focus its keys go to
       // /dev/input/event0 too. The framebuffer pane still writes them to the
       // bound program's terminal; a program reads one source or the other.
-      attachDeclaredInputSource(kernel, machine, tick, host, ".kmodeset-canvas", ".kframebuffer-canvas");
+      attachDeclaredInputSource(kernel, machine, tick, host, KMS_DISPLAY_SELECTOR, ".kframebuffer-canvas");
     }
 
     if (profile.framebufferTest) {
@@ -2444,6 +2450,12 @@ function genericPresentationForMachine(
   return genericDemoPresentation("terminal");
 }
 
+// The element a page marks as a machine's screen, which input capture is
+// scoped to: `data-kandelo-display="kms"` on the KMS canvas,
+// `data-kandelo-display="framebuffer"` on the framebuffer surface.
+const KMS_DISPLAY_SELECTOR = '[data-kandelo-display="kms"]';
+const FRAMEBUFFER_DISPLAY_SELECTOR = '[data-kandelo-display="framebuffer"]';
+
 /**
  * Attach a `BrowserInputSource` for an image that declares `evdev-input`.
  *
@@ -2472,13 +2484,13 @@ function attachDeclaredInputSource(
   focusedKeyboardSelector?: string,
 ): void {
   const displaySelector = activityDisplaySelector ?? ( machine.runtime.features.includes("kms")
-    ? ".kmodeset-canvas"
+    ? KMS_DISPLAY_SELECTOR
     : machine.runtime.features.includes("framebuffer")
-    ? ".kframebuffer-surface"
+    ? FRAMEBUFFER_DISPLAY_SELECTOR
     : null);
   // KMS uses a stable virtual-tablet range, independent of display pixels.
   // Consumers cache absinfo at open; changing it on resize breaks input.
-  const kms = displaySelector === ".kmodeset-canvas";
+  const kms = displaySelector === KMS_DISPLAY_SELECTOR;
   const dims = () => kms
     ? { width: ABSOLUTE_POINTER_EXTENT, height: ABSOLUTE_POINTER_EXTENT }
     : {
@@ -2649,13 +2661,16 @@ async function loadVfsImage(
       off();
     }
   }
-  const vfsUrl = await resolveProfileVfsUrl(profile);
   const label = imageLabel(profile);
   try {
     const stagingDirectory = persistentInstall
       ? await browserPersistenceDirectory(persistentInstall)
       : undefined;
-    const response = await fetch(vfsUrl).then(failOn(label));
+    const computerId = persistentInstall === undefined ? null : browserComputerIdForStorageName(persistentInstall);
+    if (profile.opfsRoot && computerId === null) throw new Error("Only a stored computer can mount its root from OPFS");
+    const response = computerId !== null && profile.opfsRoot
+      ? new Response(await new BrowserComputerStore().diskImage(computerId))
+      : await fetch(await resolveProfileVfsUrl(profile)).then(failOn(label));
     if (persistentInstall) {
       let loadedBytes = 0;
       let totalBytes: number | undefined;
@@ -2706,6 +2721,7 @@ async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
  *  the machine is not known until the image has been read. */
 function imageLabel(profile: LiveProfile): string {
   if (profile.productId !== null) return `${profile.productId} image`;
+  if (profile.opfsRoot) return "computer disk image";
   return profile.vfsUrl
     ? `${demoIdFromVfsImageUrl(profile.vfsUrl)}.vfs.zst`
     : "VFS image";

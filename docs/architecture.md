@@ -4579,16 +4579,15 @@ count and SHA-256 before boot.
 
 The host stages and reads kernel-owned files only through kernel exports
 (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
-`kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
-`kernel_rootfs_mkdir_parents`). Writes, unlink and the browser's TLS root
-certificate use these methods. Worker inspection uses
+`kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`). Writes, unlink and
+the browser's TLS root certificate use these methods. Worker inspection uses
 the namespace methods below, including foreign mounts and cross-mount links.
 
 For resizable persistent browsers, host-managed TLS provisioning runs after
 journal selection, recovery and any boot-time compaction, but before the worker
-reports readiness. Missing certificate directories and replacement certificate
-bytes therefore use the ordinary Rust journaled namespace and data paths,
-rather than leaving an ephemeral regular inode in a persistent tree. The
+reports readiness. Replacement certificate bytes therefore use the ordinary
+Rust journaled namespace and data paths, rather than leaving an ephemeral
+regular inode in a persistent tree. The
 managed certificate name is unlinked before replacement; this also handles
 read-only or digest-bound deferred base certificates without fetching their
 obsolete contents or weakening immutable-source checks. Sibling files remain
@@ -4599,9 +4598,7 @@ Only a native `ENOMEM` or `ENOSPC` followed by a successful persistence sync may
 continue boot with a public host diagnostic that guest HTTPS may fail. A failed
 sync, including a poisoned writer after an OPFS quota/flush failure, rejects
 initialization. An errno alone cannot distinguish those cases. Other errors
-remain fatal. The checked ancestor-creation helper preserves actual errors and
-partial prefixes, allows resizable journals and still rejects fixed-overwrite
-namespace mutation. These changes retain the ABI 55 export signatures.
+remain fatal.
 
 Host directory and lazy-resource inspection copy native snapshots under the
 shared host transport budget. Expected admission `ENOMEM` is captured inside
@@ -4891,7 +4888,9 @@ worker, which hands them to the kernel; the main thread holds no filesystem.
 Once the kernel exists and before any guest process launches, browser
 networking writes its generated per-session MITM root to
 `/etc/ssl/certs/ca-certificates.crt` through the kernel
-(`kernel_rootfs_mkdir_parents` + `kernel_rootfs_write_file`); the image-owned
+(`kernel_rootfs_write_file`). It does so only when the image already has
+`/etc/ssl/certs`, the directory a package with a TLS client installs; an image
+without it gets no certificate and no directory. The image-owned
 OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain
 unchanged. POSIX shared memory (`/dev/shm`) is tmpfs, so the browser host
 allocates no shared-memory buffer for it.
@@ -5660,9 +5659,11 @@ to do with. It is independent of drag and drop; the design is
 ```
 
 - **The filesystem** is a kernel tmpfs mount at `/run/kandelo/exchange`
-  (`crates/runtime-core/src/exchange/`), present on every machine that boots
-  from a kernel rootfs image: the kernel creates the mount point when it loads
-  the image. `statfs` reports `f_type` `0x4B584348` ("KXCH") and the real
+  (`crates/runtime-core/src/exchange/`), present on a machine whose kernel
+  rootfs image has the agent, `/usr/libexec/kandelo/exchange-agent`: the
+  kernel mounts it and creates the mount point when it loads such an image.
+  An image without the agent takes no files in and publishes none, so it
+  gets no mount, no mount point, and `/proc/mounts` does not list it. `statfs` reports `f_type` `0x4B584348` ("KXCH") and the real
   quota. The fixed layout is `events` and `work/clone` (character devices,
   `root:exchange`, 0440), `inbox/` and `outbox/` (0770) and `work/` (0750),
   with the `exchange` group GID 120. The legacy raw host-root Node mode (no
@@ -5939,6 +5940,13 @@ implicit close has orphaned a tail, reconciliation discards that unplayable
 tail and releases ownership; no descriptor remains to receive `EIO`. A
 suspended or interrupted `AudioContext` does not set that flag; it stops the
 consumer clock and applies normal queue backpressure until resume.
+
+Muting is not suspension. `KernelHost.setAudioMuted` sets the gain of a
+`GainNode` between the worklet and the destination to 0 or 1. The worklet
+keeps consuming at the device rate, so a guest that writes to `/dev/dsp` keeps
+running while muted, but stops at a full queue while the context is suspended.
+The mute belongs to the host, survives a kernel replacement, and does nothing
+on Node, whose sink is never audible.
 
 The AudioWorklet/shared-ring transport builds on the exploration in PR #698,
 while deliberately omitting that experiment's ALSA state machine and

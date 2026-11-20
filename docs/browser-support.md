@@ -2546,6 +2546,7 @@ kandelo/computers/<UUID>/
   computer.json          # versioned name, storage format, descriptor, retention, timestamps
   retained/             # empty retention marker, removed to begin deletion
   provisioning/         # removed before the initialized filesystem runs guests
+  disk.vfs              # the disk image of a computer whose descriptor mounts / from OPFS
   filesystem/           # immutable base, journal, generations, control files
   scratch/              # disposable deferred-download spools
 ```
@@ -2562,6 +2563,21 @@ Replacement journals retain that computer's namespace.
 The explicit experimental-name interface continues to use its own existing
 directory; those experiments are not imported into Library. Directories provide
 organization, not browser-origin security isolation.
+
+A descriptor may mount `/` with `source: "opfs"` instead of an image URL.
+`BrowserComputerStore.create` then requires the disk image bytes and writes
+them to `disk.vfs` in the new computer's directory; a descriptor with any
+other root refuses disk image bytes. The first boot stages that file exactly
+as it stages a downloaded image, into `filesystem/`, and marking the
+filesystem initialized deletes `provisioning/` and then `disk.vfs`, so the
+computer keeps one copy of its disk. A missing `disk.vfs` fails the first
+boot with its reason. `BrowserComputerStore.replaceDisk` writes a new
+`disk.vfs`, creates `provisioning/` again, and deletes `filesystem/`, so the
+next boot initializes a new filesystem from the new image and every file of
+the old one is gone. It refuses while the computer runs in another tab. Such
+a descriptor names no boot profile through its `id`; the computer's
+`profileId`, or the image's default, selects it. Only a stored computer can
+mount `/` from OPFS.
 
 **Temporary** computers are also OPFS-backed: their filesystem capacity need
 not fit in memory. They survive reload and become eligible for deletion after
@@ -3780,8 +3796,9 @@ An image selects its terminal program with the strict experimental file
 This file completely replaces `/etc/kandelo/shell.json`; the browser neither
 reads the old path nor supplies a fallback shell. The experimental name is an
 intentional warning that this image-facing session-supervision contract is not
-stable. A missing, malformed, oversized, or unsupported declaration fails
-loudly.
+stable. A malformed, oversized, or unsupported declaration fails loudly. An
+image without the file has no terminal: the machine boots, the terminal
+surface stays unavailable, and no program starts on a terminal.
 
 The loader parses the declaration from the fully staged VFS image, rejects
 unknown fields, bounds the document, paths, arguments, and guest IDs, requires

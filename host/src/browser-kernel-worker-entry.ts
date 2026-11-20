@@ -75,6 +75,7 @@ import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import {
   BROWSER_MITM_CA_BUNDLE_PATH,
+  BROWSER_MITM_CA_DIRECTORY,
   withBrowserMitmCaEnv,
 } from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
@@ -1285,17 +1286,26 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
   // after `init` because the kernel owns `/`, and before any guest process is
-  // launched, which is what the trust requires. The directory chain is created
-  // explicitly because a demo image need not carry `/etc/ssl/certs`, and the
-  // write opens with `O_CREAT`, which needs the parent to exist.
+  // launched, which is what the trust requires. Only an image that carries
+  // the certificate directory gets the bundle: that directory is what a
+  // package with a TLS client installs, and an image without one has nothing
+  // to trust it, so the host adds no file or directory of its own to it.
   //
   // A failure is reported, not swallowed: every outbound HTTPS connection this
   // session is terminated by the MITM, so a guest that does not trust the CA
   // would otherwise fail later with a confusing certificate error.
-  const installBrowserCa = () => {
-    if (!rootImage.has()) return;
+  const hasCertificateDirectory = () => {
     try {
-      kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
+      const mode = kernelWorker.rootfsStatMode(BROWSER_MITM_CA_DIRECTORY);
+      return (mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR;
+    } catch (error) {
+      if (error instanceof KernelScratchError && (error.errno === ERRNO.ENOENT || error.errno === ERRNO.ENOTDIR)) return false;
+      throw error;
+    }
+  };
+  const installBrowserCa = () => {
+    if (!rootImage.has() || !hasCertificateDirectory()) return;
+    try {
       if (msg.experimentalResizablePersistenceName !== undefined) {
         kernelWorker.rootfsUnlinkFile(BROWSER_MITM_CA_BUNDLE_PATH);
       }

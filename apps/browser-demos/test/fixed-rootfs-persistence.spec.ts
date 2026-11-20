@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type BrowserContext, type Page } from "../playwright-test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
+import { BROWSER_MITM_CA_BUNDLE_PATH } from "../../../host/src/networking/browser-mitm-ca-env";
 import type { OpfsImageIntegrity } from "../../../host/src/vfs/opfs-image-reader";
 
 const testDirectory = fileURLToPath(new URL(".", import.meta.url));
@@ -3387,6 +3388,7 @@ for (const keepOpen of [false, true]) {
     test.setTimeout(180_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
+    filesystem.ensureDirRecursive(BROWSER_MITM_CA_BUNDLE_PATH);
     filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
     filesystem.writeFile("/large", new Uint8Array(32 * 1024 * 1024), 0o644);
     const image = await filesystem.saveImage();

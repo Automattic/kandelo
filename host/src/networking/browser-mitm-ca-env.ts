@@ -3,7 +3,8 @@
  *
  * In the browser host every external HTTPS connection is terminated by the
  * TLS-MITM (see `TlsNetworkBackend`), which installs a per-session CA at
- * {@link BROWSER_MITM_CA_BUNDLE_PATH}. Standalone `curl` trusts it because its
+ * {@link BROWSER_MITM_CA_BUNDLE_PATH} in an image that carries
+ * {@link BROWSER_MITM_CA_DIRECTORY}. Standalone `curl` trusts it because its
  * libcurl falls through to `SSL_CERT_FILE` (which the demo image points at that
  * path). git's remote helper (`git-remote-http`) and some other libcurl guests
  * do NOT fall through — they use libcurl's compiled-in default CAfile — so
@@ -15,7 +16,8 @@
  * still boots on the Node host, which does real end-to-end TLS and must keep its
  * own real-root CA path rather than a browser MITM bundle.
  */
-export const BROWSER_MITM_CA_BUNDLE_PATH = "/etc/ssl/certs/ca-certificates.crt";
+export const BROWSER_MITM_CA_DIRECTORY = "/etc/ssl/certs";
+export const BROWSER_MITM_CA_BUNDLE_PATH = `${BROWSER_MITM_CA_DIRECTORY}/ca-certificates.crt`;
 
 const BROWSER_MITM_CA_ENV = [
   `GIT_SSL_CAINFO=${BROWSER_MITM_CA_BUNDLE_PATH}`,

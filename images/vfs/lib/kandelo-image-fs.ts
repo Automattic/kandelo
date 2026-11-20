@@ -1031,7 +1031,7 @@ export class KandeloImageFs {
     entries: ZipEntry[];
     mountPrefix: string;
     symlinkTargets?: Map<string, string>;
-    integrity?: { sha256: string; bytes: number };
+    integrity: { sha256?: string; bytes: number };
   }): number {
     this.refreshArchiveIds();
     const planned = planLazyArchiveEntries(
@@ -1069,14 +1069,14 @@ export class KandeloImageFs {
     const descriptor = encoder.encode(JSON.stringify({
       mountPrefix: normalizeLazyArchiveMountPrefix(args.mountPrefix),
     }));
-    const archiveBytes = args.integrity?.bytes ?? 0;
+    const archiveBytes = args.integrity.bytes;
     // Raw bytes, not the hex the builders carry: a digest is a value, and the
     // module is not in the business of parsing one. Decoding here also means a
     // malformed hex string fails at the producer that wrote it rather than
     // arriving as a plausible-looking wrong digest.
-    const archiveDigest = args.integrity
-      ? sha256HexToBytes(args.integrity.sha256)
-      : undefined;
+    const archiveDigest = args.integrity.sha256 === undefined
+      ? undefined
+      : sha256HexToBytes(args.integrity.sha256);
 
     // Directories first, so a member never arrives before its parent.
     //

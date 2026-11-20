@@ -192,6 +192,78 @@ test("provisioning state prevents accidental recreation and abandoned creation i
   expect(result).toEqual({ before: false, after: true, abandonedRemoved: true, unregisteredRefused: true });
 });
 
+test("a computer that mounts its root from OPFS keeps its disk image until its filesystem is initialized", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async urls => {
+    const { BrowserComputerStore } = await import(urls.store);
+    const { browserComputerDirectory, browserComputerStorageName } = await import(urls.storage);
+    const { acquireBrowserPersistenceComputerLease } = await import(urls.lease);
+    const store = new BrowserComputerStore();
+    const base = { version: 1, id: "foo", title: "Foo", base: "kandelo:shell@local",
+      runtime: { arch: "wasm32", kernel: "kernel@local", features: [] }, packages: [],
+      boot: { argv: ["sh"], cwd: "/", env: {} } };
+    const disk = { ...base, mounts: [{ path: "/", source: "opfs", readonly: false }] };
+    const image = { ...base, mounts: [] };
+    const refusals: string[] = [];
+    const refused = async (attempt: () => Promise<unknown>) => {
+      try { await attempt(); refusals.push("accepted"); }
+      catch (error) { refusals.push(error instanceof Error ? error.message : String(error)); }
+    };
+    const entries = async (id: string) => {
+      const names: string[] = [];
+      for await (const name of (await browserComputerDirectory(id, false)).keys()) names.push(name);
+      return names.sort();
+    };
+    await refused(() => store.create(disk));
+    await refused(() => store.create(image, undefined, undefined, undefined, new Uint8Array([1])));
+    const computer = await store.create(disk, "saved", null, undefined, new Uint8Array([1, 2]));
+    const created = new Uint8Array(await (await store.diskImage(computer.id)).arrayBuffer());
+    const directory = await browserComputerDirectory(computer.id, false);
+    await directory.getDirectoryHandle("filesystem", { create: true });
+    await store.markFilesystemInitialized(computer.id);
+    const initialized = await entries(computer.id);
+    await refused(() => store.diskImage(computer.id));
+    await store.replaceDisk(computer.id, new Uint8Array([3]));
+    const replaced = await entries(computer.id);
+    const replacement = new Uint8Array(await (await store.diskImage(computer.id)).arrayBuffer());
+    const reprovisioned = !(await store.filesystemInitialized(computer.id));
+    const lease = await acquireBrowserPersistenceComputerLease(browserComputerStorageName(computer.id));
+    await refused(() => store.replaceDisk(computer.id, new Uint8Array([4])));
+    await lease();
+    const plain = await store.create(image);
+    await refused(() => store.replaceDisk(plain.id, new Uint8Array([4])));
+    const interruptedId = crypto.randomUUID();
+    const interrupted = await browserComputerDirectory(interruptedId);
+    for (const name of ["creating", "disk.vfs"]) {
+      const writer = await (await interrupted.getFileHandle(name, { create: true })).createWritable();
+      await writer.write("1"); await writer.close();
+    }
+    await interrupted.getDirectoryHandle("provisioning", { create: true });
+    await store.cleanup();
+    let abandonedRemoved = false;
+    try { await browserComputerDirectory(interruptedId, false); } catch { abandonedRemoved = true; }
+    await store.remove(computer.id);
+    await store.remove(plain.id);
+    return { refusals: refusals.map(message => message.replace(/[0-9a-f-]{36}/, "<id>")), created: [...created], initialized,
+      replaced, replacement: [...replacement], reprovisioned, abandonedRemoved };
+  }, urls);
+  expect(result).toEqual({
+    refusals: [
+      "A computer has a disk image exactly when its descriptor mounts its root from OPFS",
+      "A computer has a disk image exactly when its descriptor mounts its root from OPFS",
+      "Computer <id> has no disk image to initialize its filesystem from",
+      expect.stringContaining("already running in another tab"),
+      "Computer <id> does not mount its root from OPFS",
+    ],
+    created: [1, 2],
+    initialized: ["computer.json", "filesystem", "retained"],
+    replaced: ["computer.json", "disk.vfs", "provisioning", "retained"],
+    replacement: [3],
+    reprovisioned: true,
+    abandonedRemoved: true,
+  });
+});
+
 test("storage format identification is explicit and unsupported formats are preserved", async ({ page }) => {
   await page.goto("/trap-signal-test.html");
   await page.evaluate(async urls => {

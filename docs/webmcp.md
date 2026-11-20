@@ -178,6 +178,27 @@ contains a single quote, which is exactly what `{pattern:q}` handles.
 An unrecognised name is left in place, so `{param}` with no matching argument
 reaches the shell literally.
 
+`command` may instead be a list: an argv that runs with no shell. The first
+item is the program's absolute path, and the program receives the whole list
+as its argv. The job keeps the agent's account, home directory and
+environment, the timeout and the result fields of a string command, and the
+terminal announces the argv joined by spaces.
+
+```json
+{
+  "description": "Print the agent's user and groups",
+  "inputSchema": { "type": "object", "properties": { "flag": { "type": "string" } } },
+  "command": ["/usr/bin/id", "{flag}"]
+}
+```
+
+In a list, `{param}` is filled inside its own item, so a value never splits
+into several arguments or reaches a shell, and `{param:q}` is refused because
+nothing needs quoting. Every placeholder must name a property of
+`inputSchema`, and the program path may hold none. An argument the call
+leaves out deletes every item that holds its placeholder: `{}` runs
+`/usr/bin/id`, and `{"flag": "-u"}` runs `/usr/bin/id -u`.
+
 An image-declared tool goes through the same registration as a built-in one, so
 it gets the same argument validation against its own `inputSchema` and the same
 `{ok:true,...}` / `{ok:false,error:{code,message}}` result envelope.

@@ -2482,7 +2482,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 7,
+      "required_host_adapter_version": 8,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2671,7 +2671,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 7,
+    "version": 8,
     "worker_features": [
       {
         "bit": 2,
@@ -4970,11 +4970,6 @@
       "kind": "func",
       "name": "kernel_rootfs_metadata_used_bytes",
       "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_rootfs_mkdir_parents",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

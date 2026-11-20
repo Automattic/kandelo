@@ -197,7 +197,6 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_read_proc_maps",
   "kernel_recv",
   "kernel_rootfs_export_container_read",
-  "kernel_rootfs_mkdir_parents",
   "kernel_rootfs_read_file",
   "kernel_rootfs_set_foreign_mount_roots",
   "kernel_rootfs_stat_mode",
@@ -293,7 +292,6 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_handle_guest_io":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
-    case "kernel_rootfs_mkdir_parents":
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
@@ -460,7 +458,6 @@ function isKernelScratchExportName(
     case "kernel_read_proc_maps":
     case "kernel_recv":
     case "kernel_rootfs_export_container_read":
-    case "kernel_rootfs_mkdir_parents":
     case "kernel_rootfs_read_file":
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":

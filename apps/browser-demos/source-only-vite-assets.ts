@@ -188,6 +188,30 @@ function isSupportedUrlGlobOptions(node: unknown): boolean {
     && options.get("import") === "default";
 }
 
+/**
+ * The one byte range a `Range` header asks of a `size`-byte asset, or `null`
+ * to send the whole asset: no header, a header with several ranges, or one
+ * this server does not parse. `"unsatisfiable"` answers 416.
+ */
+export function sourceOnlyByteRange(
+  header: string | undefined,
+  size: number,
+): { start: number; end: number } | "unsatisfiable" | null {
+  const match = header === undefined ? null : /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (match === null) return null;
+  const [, first, last] = match;
+  if (first === "" && last === "") return null;
+  if (first === "") {
+    const length = Number(last);
+    if (length === 0 || size === 0) return "unsatisfiable";
+    return { start: Math.max(0, size - length), end: size - 1 };
+  }
+  const start = Number(first);
+  if (last !== "" && Number(last) < start) return null;
+  if (start >= size) return "unsatisfiable";
+  return { start, end: last === "" ? size - 1 : Math.min(Number(last), size - 1) };
+}
+
 function contentType(relPath: string): string {
   if (relPath.endsWith(".wasm")) return "application/wasm";
   if (relPath.endsWith(".json")) return "application/json";
@@ -529,10 +553,31 @@ export function createSourceOnlyViteAssets(
               response.end("Method not allowed");
               return;
             }
-            response.statusCode = 200;
+            const etag = `\"${asset.sha256}\"`;
+            const ifRange = request.headers["if-range"];
+            const range = ifRange === undefined || ifRange === etag
+              ? sourceOnlyByteRange(request.headers.range, asset.size)
+              : null;
+            response.setHeader("Accept-Ranges", "bytes");
+            response.setHeader("ETag", etag);
+            if (range === "unsatisfiable") {
+              response.statusCode = 416;
+              response.setHeader("Content-Range", `bytes */${asset.size}`);
+              response.end();
+              return;
+            }
+            response.statusCode = range === null ? 200 : 206;
             response.setHeader("Content-Type", contentType(asset.relPath));
-            response.setHeader("Content-Length", asset.size);
-            response.setHeader("ETag", `\"${asset.sha256}\"`);
+            response.setHeader(
+              "Content-Length",
+              range === null ? asset.size : range.end - range.start + 1,
+            );
+            if (range !== null) {
+              response.setHeader(
+                "Content-Range",
+                `bytes ${range.start}-${range.end}/${asset.size}`,
+              );
+            }
             response.setHeader(
               "Cache-Control",
               "public, max-age=31536000, immutable",
@@ -541,7 +586,7 @@ export function createSourceOnlyViteAssets(
               response.end();
               return;
             }
-            const stream = createReadStream(asset.snapshotPath);
+            const stream = createReadStream(asset.snapshotPath, range ?? {});
             stream.on("error", (error) => response.destroy(error));
             stream.pipe(response);
           });

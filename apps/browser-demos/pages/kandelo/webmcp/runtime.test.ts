@@ -10,8 +10,10 @@ import {
   readGuestFile,
   readGuestJob,
   runGuestScript,
+  runGuestJob,
   setWebMcpSession,
   startGuestJob,
+  startGuestProgram,
   writeGuestFile,
   type WebMcpIdentity,
 } from "./runtime.ts";
@@ -221,6 +223,33 @@ test("a login shell the image does not hold falls back to /bin/sh at the account
   assert.equal(calls.jobs[0]?.[1], "/bin/sh");
   assert.deepEqual(calls.jobs[0]?.[2], ["sh", "-c", "true"]);
   assert.equal((calls.jobs[0]?.[3] as { cwd: string }).cwd, "/home/maker");
+});
+
+test("a program runs its argv with no shell as the agent, at home, with the baseline environment", async () => {
+  const { host, calls } = attached();
+  await startGuestProgram(host, "job-1", ["/usr/bin/id", "-u"], 1000);
+  assert.deepEqual(calls.jobs, [[
+    "job-1",
+    "/usr/bin/id",
+    ["/usr/bin/id", "-u"],
+    { cwd: "/home/maker", env: ["PATH=/bin", "TERM=xterm", "HOME=/home/maker"], uid: 1000, gid: 1000, timeoutMs: 1000 },
+  ]]);
+});
+
+test("a program refuses a NUL in its arguments", async () => {
+  const { host, calls } = attached();
+  await assert.rejects(
+    startGuestProgram(host, "job-1", ["/usr/bin/echo", "a\0b"], 1000),
+    (error: ToolError) => error.code === "INVALID_ARGUMENT",
+  );
+  assert.deepEqual(calls.jobs, []);
+});
+
+test("a job run by its own start collects its output and releases it", async () => {
+  const { host, calls } = attached({ readOwnedJob: async () => ({ ...completed, chunks: [{ stream: "stdout", bytes: encoder.encode("0\n") }] }) });
+  const result = await runGuestJob(host, id => startGuestProgram(host, id, ["/usr/bin/id", "-u"], 1000), { timeoutMs: 1000 });
+  assert.equal(result.stdout, "0\n");
+  assert.deepEqual(calls.jobReleases, [calls.jobs[0]![0]]);
 });
 
 test("a job refuses a NUL in its script or environment", async () => {

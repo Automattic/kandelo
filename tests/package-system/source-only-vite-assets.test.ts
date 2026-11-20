@@ -18,6 +18,7 @@ import {
   createSourceOnlyViteAssets,
   rewriteBinaryMirrorUrlGlobs,
   SOURCE_ONLY_VITE_RETAINED_MAX_BYTES,
+  sourceOnlyByteRange,
 } from "../../apps/browser-demos/source-only-vite-assets";
 import type {
   SourceOnlyBinarySnapshot,
@@ -95,6 +96,30 @@ function emittedBytes(plugin: Plugin, id: string): Buffer {
   if (source === undefined) throw new Error("test asset was not emitted");
   return Buffer.from(source);
 }
+
+describe("SourceOnly byte ranges", () => {
+  it("reads one closed, open or suffix range, clamped to the asset", () => {
+    expect(sourceOnlyByteRange("bytes=2-5", 10)).toEqual({ start: 2, end: 5 });
+    expect(sourceOnlyByteRange("bytes=2-", 10)).toEqual({ start: 2, end: 9 });
+    expect(sourceOnlyByteRange("bytes=-4", 10)).toEqual({ start: 6, end: 9 });
+    expect(sourceOnlyByteRange("bytes=-40", 10)).toEqual({ start: 0, end: 9 });
+    expect(sourceOnlyByteRange("bytes=8-40", 10)).toEqual({ start: 8, end: 9 });
+  });
+
+  it("sends the whole asset for no header, several ranges or a malformed one", () => {
+    expect(sourceOnlyByteRange(undefined, 10)).toBeNull();
+    expect(sourceOnlyByteRange("bytes=0-1,4-5", 10)).toBeNull();
+    expect(sourceOnlyByteRange("bytes=5-2", 10)).toBeNull();
+    expect(sourceOnlyByteRange("bytes=-", 10)).toBeNull();
+    expect(sourceOnlyByteRange("items=0-1", 10)).toBeNull();
+  });
+
+  it("refuses a range past the end, an empty suffix and any range of an empty asset", () => {
+    expect(sourceOnlyByteRange("bytes=10-", 10)).toBe("unsatisfiable");
+    expect(sourceOnlyByteRange("bytes=-0", 10)).toBe("unsatisfiable");
+    expect(sourceOnlyByteRange("bytes=0-0", 0)).toBe("unsatisfiable");
+  });
+});
 
 describe("SourceOnly Vite asset snapshots", () => {
   it("captures the authored batch from one pinned session and stores immutable files", () => {

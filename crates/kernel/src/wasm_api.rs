@@ -2810,34 +2810,6 @@ pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(
     i32::try_from(crate::rootfs::set_foreign_mount_roots(buf)).unwrap_or(i32::MAX)
 }
 
-/// Create the missing ancestor directories of the path bytes
-/// `path_ptr..path_len`, so that path itself becomes creatable. The final
-/// component is never created — it is the file the caller is about to write.
-///
-/// Host-facing because a host that must place genuine per-session runtime data
-/// into the kernel-owned `/` cannot assume the image carries the directories
-/// leading to it. The browser's TLS-MITM CA certificate is the live case: it
-/// lands at `/etc/ssl/certs/ca-certificates.crt`, can never be baked into an
-/// image, and a demo image need not carry `/etc/ssl/certs`.
-///
-/// This is deliberately NOT folded into `kernel_rootfs_write_file`. That export
-/// opens with `O_CREAT`, which returns `ENOENT` on a missing parent exactly as
-/// POSIX requires, and giving it implicit `mkdir -p` would silently change the
-/// live `write_vfs_file` contract for every existing caller.
-///
-/// Returns the number of directories created (>=0). It cannot fail: a component
-/// that is an existing non-directory stops the walk, and the caller's own
-/// operation then reports the real error against the real path. See
-/// `rootfs::mkdir_parents`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rootfs_mkdir_parents(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
-    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
-    match crate::rootfs::mkdir_parents_checked(path, mode & 0o7777, 0, 0) {
-        Ok(created) => i32::try_from(created).unwrap_or(i32::MAX),
-        Err(error) => -(error as i32),
-    }
-}
-
 /// Publish the wall-clock time the rootfs overlay stamps onto metadata
 /// mutations and onto base entries that carry no time of their own. The host
 /// calls this once at boot before loading the image (so such entries are not

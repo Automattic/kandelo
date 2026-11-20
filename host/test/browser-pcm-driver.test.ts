@@ -25,6 +25,10 @@ function browserAudioMocks() {
     outputLatency: 0.02,
     renderQuantumSize: 128,
     destination: {},
+    gain: { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() },
+    createGain: vi.fn(function (this: typeof context) {
+      return this.gain;
+    }),
     audioWorklet: { addModule },
     onstatechange: null as (() => void) | null,
     addEventListener: vi.fn(
@@ -96,6 +100,24 @@ function browserAudioMocks() {
 }
 
 describe("BrowserPcmDriver", () => {
+  it("mutes through a gain between the worklet and the destination, before and after preparation", async () => {
+    const mocks = browserAudioMocks();
+    const driver = new BrowserPcmDriver({
+      workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext,
+      createNode: mocks.createNode,
+    });
+    driver.setMuted(true);
+    await driver.prepare(createPcmTransport());
+    expect(mocks.node.connect).toHaveBeenCalledWith(mocks.context.gain);
+    expect(mocks.context.gain.connect).toHaveBeenCalledWith(mocks.context.destination);
+    expect(mocks.context.gain.gain.value).toBe(0);
+    driver.setMuted(false);
+    expect(mocks.context.gain.gain.value).toBe(1);
+    await driver.close();
+    expect(mocks.context.gain.disconnect).toHaveBeenCalledOnce();
+  });
+
   it("forwards a remote transport without a memory wrapper and propagates sink failure", async () => {
     const mocks = browserAudioMocks();
     const onFatalError = vi.fn();

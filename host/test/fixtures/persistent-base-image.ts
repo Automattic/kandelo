@@ -37,9 +37,9 @@ export async function persistentBaseFixture(directory: string, policy: "crc32c" 
   filesystem.writeFile("/state", new TextEncoder().encode("original"), 0o640);
   filesystem.writeFile("/large", content, 0o600);
   filesystem.symlink("/state", "/link");
+  filesystem.ensureDirRecursive(BROWSER_MITM_CA_BUNDLE_PATH);
   if (bootstrapSource !== undefined) {
     const old = new TextEncoder().encode("old image-owned certificate");
-    filesystem.ensureDirRecursive(BROWSER_MITM_CA_BUNDLE_PATH);
     if (bootstrapSource === "resident") filesystem.writeFile(BROWSER_MITM_CA_BUNDLE_PATH, old, 0o444);
     else filesystem.registerLazyFile(BROWSER_MITM_CA_BUNDLE_PATH, PERSISTENT_BOOTSTRAP_CERTIFICATE_URL,
       old.length, 0o444, createHash("sha256").update(old).digest("hex"));
@@ -72,6 +72,7 @@ export async function persistentReplacementBaseFixture(directory: string, policy
 export async function persistentNearlyFullBaseFixture(directory: string, policy: "crc32c" | "sha256") {
   const filesystem = KandeloImageFs.createPositioned(new Uint8Array(readFileSync(imageModule)));
   filesystem.setImageCapacity(1024 * 1024);
+  filesystem.ensureDirRecursive(BROWSER_MITM_CA_BUNDLE_PATH);
   filesystem.writeFile("/full", new Uint8Array(), 0o600);
   const free = filesystem.checkHeadroom(0, 0).freeBytes;
   if (free <= 12 * 4096 || free >= 1034 * 4096) throw new Error("full-disk fixture requires single-indirect geometry");

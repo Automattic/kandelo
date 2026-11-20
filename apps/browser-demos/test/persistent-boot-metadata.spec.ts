@@ -76,3 +76,31 @@ for (const path of ["/etc/kandelo/demo.json", "/etc/kandelo/experimental-termina
     expect(result.pagesAfter - result.pagesBefore).toBeLessThanOrEqual(32);
   });
 }
+
+test("persistent boot validation compares a missing terminal session too", async ({ page, baseURL }) => {
+  const config = { version: 1, image: { title: "foo" } };
+  const session = { kind: "kandelo-experimental-terminal-session", version: 1,
+    initial: { path: "/bin/bar", argv: ["bar"], uid: 0, gid: 0 } };
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const failures = await page.evaluate(async ({ checkpointModule, config, session }) => {
+    const { assertPersistentImageBootMetadata } = await import(checkpointModule);
+    const image = (files: Record<string, unknown>) => ({
+      readFileRangeFromVfs: async (path: string, offset: number, length: number) =>
+        path in files ? new TextEncoder().encode(JSON.stringify(files[path])).subarray(offset, offset + length) : null,
+    });
+    const composition = (terminalSession: unknown) => ({ imageConfig: config, profileId: "", terminalSession, requiredServices: [] });
+    const failure = async (files: Record<string, unknown>, terminalSession: unknown) => {
+      try { await assertPersistentImageBootMetadata(image(files), composition(terminalSession)); return ""; }
+      catch (error) { return String(error); }
+    };
+    return [
+      await failure({ "/etc/kandelo/demo.json": config }, null),
+      await failure({ "/etc/kandelo/demo.json": config, "/etc/kandelo/experimental-terminal-session.json": session }, null),
+      await failure({ "/etc/kandelo/demo.json": config }, session),
+    ];
+  }, { config, session,
+    checkpointModule: new URL(`/@fs/${resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/persistent-image-boot-metadata.ts")}`, baseURL).href });
+  expect(failures[0]).toBe("");
+  expect(failures[1]).toContain("terminal session changed after composition");
+  expect(failures[2]).toContain("terminal session changed after composition");
+});
