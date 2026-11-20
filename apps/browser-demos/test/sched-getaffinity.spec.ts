@@ -1,6 +1,7 @@
 import { expect, test } from "../playwright-test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const programPath = resolve(
@@ -8,7 +9,7 @@ const programPath = resolve(
   "../../../local-binaries/programs/wasm32/sched-getaffinity.wasm",
 );
 
-test("sched_getaffinity preserves raw and libc semantics in Chromium", async ({
+test("sched_getaffinity, sysconf and nproc report the host's processors in Chromium", async ({
   page,
   baseURL,
   browserName,
@@ -49,27 +50,54 @@ test("sched_getaffinity preserves raw and libc semantics in Chromium", async ({
       contentType: "application/wasm",
     });
   });
+  const coreutilsUrl = new URL(
+    "/__test-fixtures__/coreutils.wasm",
+    baseURL,
+  ).href;
+  await page.route(coreutilsUrl, async (route) => {
+    await route.fulfill({
+      path: resolveBinary("programs/wasm32/coreutils.wasm"),
+      contentType: "application/wasm",
+    });
+  });
 
   await page.goto(new URL("/pages/test-runner/", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
-  const result = await page.evaluate(
-    async ({ programUrl }) => {
-      const response = await fetch(programUrl);
-      if (!response.ok) {
-        throw new Error(`program fetch failed: ${response.status}`);
-      }
-      return (window as any).__runTest(
-        await response.arrayBuffer(),
-        ["sched-getaffinity"],
-        15_000,
-      );
-    },
-    { programUrl },
+  // The kernel worker reads the same navigator.hardwareConcurrency; the
+  // kernel caps it at the 32 CPUs its four-byte affinity mask can name.
+  const hardwareConcurrency = await page.evaluate(
+    () => navigator.hardwareConcurrency,
   );
+  expect(hardwareConcurrency).toBeGreaterThanOrEqual(1);
+  const processors = Math.min(hardwareConcurrency, 32);
 
-  expect(result.exitCode, result.stderr).toBe(0);
-  expect(result.stdout).toBe("sched-getaffinity-ok raw=4 cpus=1\n");
+  const run = (url: string, argv: string[]) =>
+    page.evaluate(
+      async ({ url, argv }) => {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`program fetch failed: ${response.status}`);
+        }
+        return (window as any).__runTest(
+          await response.arrayBuffer(),
+          argv,
+          15_000,
+        );
+      },
+      { url, argv },
+    );
+
+  const result = await run(programUrl, ["sched-getaffinity", String(processors)]);
   expect(result.stderr).toBe("");
+  expect(result.stdout).toBe(`sched-getaffinity-ok raw=4 cpus=${processors}\n`);
+  expect(result.exitCode).toBe(0);
+
+  for (const argv of [["nproc"], ["nproc", "--all"]]) {
+    const nproc = await run(coreutilsUrl, argv);
+    expect(nproc.stderr).toBe("");
+    expect(nproc.stdout).toBe(`${processors}\n`);
+    expect(nproc.exitCode).toBe(0);
+  }
   expect(runtimeErrors).toEqual([]);
 });
