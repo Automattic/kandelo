@@ -129,7 +129,8 @@ void (async () => {
           ? { maximumPages: 8192, maximumProcesses: 24, maximumTasks: 64 } : undefined,
         computerId: qs.get(COMPUTER_QUERY_PARAM),
         profile: bootQuery.profileId,
-        vfsUrl: bootQuery.vfsImageUrl,
+        vfsUrl: bootQuery.vfsImageUrl ?? (sharedMemoryPreview
+          ? import.meta.env.VITE_KANDELO_TRUSTED_DESKTOP_IMAGE_URL ?? null : null),
         fb: fbDemo === "test" ? "test" : "none",
         inputs: linkDescriptor?.boot.inputs ?? null,
         parameters: linkDescriptor?.boot.parameters ?? null,

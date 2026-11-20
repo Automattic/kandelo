@@ -1263,10 +1263,11 @@ when explicitly configured with `experimentalMemoryGroup`; an ordinary launch
 refuses the required `kandelo.memory-group.v3.memory` import. Path launch keeps
 the kernel's retained executable descriptor and credentials. Compatible
 `posix_spawn` children of grouped parents use the same checked admission.
-The SDK/package/image desktop consumer still uses byte launch; shared-mode
-launch in the full Kandelo app remains unavailable. This is an experimental
-path, with further lifecycle and browser-memory validation required before
-promotion. Ordinary programs, including PHP-FPM, keep their existing build
+The normal browser app has an explicit `--trusted-desktop-preview` development
+and production build choice for a temporary Sway/Foot image prepared through
+the SDK. See [the desktop launch contract](shared-memory-groups.md). This is an
+experimental path; further lifecycle and browser-memory validation remains
+required before promotion. Ordinary programs, including PHP-FPM, keep their existing build
 and launch behavior.
 
 The command uses this checkout's normal SDK program version, ABI stamp and fork
