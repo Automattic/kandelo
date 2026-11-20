@@ -1,5 +1,9 @@
 # Fresh shared-memory desktop integration checkpoint
 
+This file retains earlier investigation checkpoints. See the
+[November 20 current validation and resource cost](2026-11-20-shared-memory-desktop-current.md)
+for the latest build, browser-memory, canonical-image and measurement status.
+
 This tracks the desktop-first batch through common runtime/package source
 `9fa8f3997224` and consumer diagnostics at `9244de33d45d`. Current desktop,
 conformance and combined browser-memory checks pass within the scopes below.
