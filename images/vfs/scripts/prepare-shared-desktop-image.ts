@@ -9,13 +9,18 @@ import { KandeloImageFs } from '../lib/kandelo-image-fs';
 import { saveImage, writeVfsBinary, type VfsWasmArtifactPolicy } from './vfs-image-helpers';
 
 export const SHARED_DESKTOP_PROGRAMS = [
-  '/usr/bin/sway', '/usr/bin/swaybar', '/usr/bin/swaybg', '/usr/bin/swaymsg',
+  '/usr/bin/sway', '/usr/bin/swaybar', '/usr/bin/swaybg', '/usr/bin/swaymsg', '/usr/bin/swaynag',
   '/usr/bin/foot', '/bin/sh', '/bin/coreutils',
 ] as const;
+// The normal app enters through the image's login session before starting Sway.
+// These are participants in the same trusted closure, not substitute launchers.
+export const SHARED_DESKTOP_LOGIN_PROGRAMS = ['/bin/login', '/usr/sbin/syslogd'] as const;
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 type LazyProgram = ReturnType<KandeloImageFs['lazyEntries']>['files'][number];
 
 export async function prepareSharedDesktopImage(input: string, output: string, options: {
+  /** Also prepare the normal image-owned login/syslog boot chain. */
+  includeLoginSession?: boolean;
   /** Explicit source provider for retained image/package fixtures. Default:
    * the normal resolver's validated package closure. Never fetch arbitrary URLs. */
   readDeferredProgram?: (entry: LazyProgram) => Uint8Array;
@@ -36,13 +41,16 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
   try {
     fs.loadImage(original);
     const policies: VfsWasmArtifactPolicy[] = [];
-    for (const requested of SHARED_DESKTOP_PROGRAMS) {
+    const programs = [...SHARED_DESKTOP_PROGRAMS,
+      ...(options.includeLoginSession ? SHARED_DESKTOP_LOGIN_PROGRAMS : [])];
+    for (const requested of programs) {
       let path: string = requested;
       for (let count = 0; (fs.lstat(path).mode & 0o170000) === 0o120000; count++) {
         if (count > 16) throw Error('Executable symlink loop: ' + requested);
         path = posix.resolve(posix.dirname(path), fs.readlink(path));
       }
       const lazy = fs.lazyEntries().files.find(entry => entry.path === path);
+      const identity = fs.lstat(path);
       let bytes: Uint8Array;
       if (lazy) {
         if (lazy.archiveId !== 0) throw Error('Executable in a lazy archive is unsupported: ' + path);
@@ -57,9 +65,14 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
       const report = execFileSync(sdk, [source, '-o', prepared], { encoding: 'utf8' });
       const translated = readFileSync(prepared);
       writeVfsBinary(fs, path, translated);
+      // Replacing a lazy or set-ID executable must preserve its installed
+      // credentials. Runtime exec still applies the ordinary credential policy.
+      fs.chown(path, identity.uid, identity.gid);
+      fs.chmod(path, identity.mode & 0o7777);
       policies.push({ path, forkInstrumentation: 'auto', memoryGroup: 'trusted-v1' });
       manifest.programs.push({ requested, path, ordinarySha256: hash(bytes), groupedSha256: hash(translated),
-        sourceUri: lazy?.uri, translation: JSON.parse(report) });
+        sourceUri: lazy?.uri, mode: identity.mode, uid: identity.uid, gid: identity.gid,
+        translation: JSON.parse(report) });
       console.log('Prepared ' + path);
     }
     const bytes = await saveImage(fs, output, { metadata: { ...fs.getImageMetadata(), version: 1,
@@ -78,6 +91,8 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [input, output, ...extra] = process.argv.slice(2);
-  if (!input || !output || extra.length) throw Error('Usage: prepare-shared-desktop-image.ts ORDINARY.vfs.zst GROUPED.vfs.zst');
-  await prepareSharedDesktopImage(input, output);
+  if (!input || !output || extra.length > 1 || extra.length === 1 && extra[0] !== '--login-session') {
+    throw Error('Usage: prepare-shared-desktop-image.ts ORDINARY.vfs.zst GROUPED.vfs.zst [--login-session]');
+  }
+  await prepareSharedDesktopImage(input, output, { includeLoginSession: extra.length === 1 });
 }

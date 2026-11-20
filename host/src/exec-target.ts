@@ -277,6 +277,9 @@ export interface PreparedExecLaunchOptions {
   /** Only the shared launcher sees the retained token. Backend preparation
    * returns an opaque context, never commit/target authority to callbacks. */
   readonly prepareBackend?: (target: number, bytes: ArrayBuffer) => PreparedExecBackend;
+  /** Initial launch only: Rust independently validates the exact target under
+   * its explicitly selected group. This grants no allocation or commit. */
+  readonly supportedProgramExtensions?: ReadonlySet<string>;
 }
 
 export type CompileWasmModule = (
@@ -382,7 +385,7 @@ export async function launchPreparedExecTarget(
     const refusal = admission.kind === "refused"
       ? admission.reason
       : describeWasmArtifactPolicyFailures(targetBytes, {
-          supportedProgramExtensions: backend?.supportedProgramExtensions,
+          supportedProgramExtensions: backend?.supportedProgramExtensions ?? options.supportedProgramExtensions,
         }).join("; ");
     if (refusal !== "") {
       throw new PreparedExecTargetError(

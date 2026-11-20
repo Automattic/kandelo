@@ -5128,16 +5128,19 @@ not establish client-buffer completion for later window resizes, and does not
 change Sway's transaction timeout or the platform's input behavior.
 
 At most one bundle of up to two changed planes is captured or awaiting an exact
-sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capturing
-consumes the source canvas; only actual subsequent device writes mark it dirty
-again. This opt-in transport does not establish compatibility with mixed
+sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capture
+snapshots the producer canvas without consuming its retained pixels. A later
+swap or commit can present the same cached image without a redraw; consuming
+that image made subsequent presentations black. Native bitmap transport remains
+bounded, and the producer keeps its own surface until normal device retirement.
+This opt-in transport does not establish compatibility with mixed
 unprepared graphical clients. It creates an additional Worker and native device
 surfaces. A two-plane 3072×1728 bundle contains up to 40.5 MiB of pixel data;
 that is a payload bound, not a measurement of native graphics memory or total
-browser footprint. A three-parent-per-arm Chromium comparison still measures
-about 105 MiB more whole-browser physical footprint for the shared desktop
-with two terminals on separate workspaces. The preview does not establish a
-net memory saving. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
+browser footprint. The retained producer surface adds a resource cost that
+must be remeasured after this correction. Earlier ordinary/grouped comparisons
+do not establish a net memory saving, and their results do not validate the new
+snapshot path's memory or performance. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
 for the workload, response endpoints, limitations and remaining acceptance.
 
 Shutdown stops frame admission synchronously, waits for any pending capture,

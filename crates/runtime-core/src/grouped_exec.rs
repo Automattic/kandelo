@@ -371,6 +371,10 @@ mod tests {
             self.target_for(bytes, self.pid)
         }
         pub(super) fn target_for(&mut self, bytes: &[u8], caller_tid: u32) -> u32 {
+            let generation = self.table.get(self.pid).unwrap().exec_generation;
+            self.target_owned(bytes, PreparedExecOwner::Process { pid: self.pid, caller_tid, generation })
+        }
+        fn target_owned(&mut self, bytes: &[u8], owner: PreparedExecOwner) -> u32 {
             let pid = self.pid;
             let (proc, locks) = self.table.process_and_advisory_locks(pid).unwrap();
             let fd = sys_open(
@@ -385,11 +389,6 @@ mod tests {
                 sys_write(proc, &mut NoopHost, fd, bytes).unwrap(),
                 bytes.len()
             );
-            let owner = PreparedExecOwner::Process {
-                pid,
-                caller_tid,
-                generation: proc.exec_generation,
-            };
             let token = exec_target::prepare(
                 proc,
                 locks,
@@ -461,6 +460,76 @@ mod tests {
         bytes.extend(section);
         bytes
     }
+    #[test]
+    fn explicit_initial_group_validation_reserves_nothing_and_admits_only_a_fresh_root() {
+        let mut f = Fixture::new();
+        f.table.memory_groups().configure(2048, 1).unwrap();
+        let group = f.table.memory_groups().create(MemoryGroupLimits {
+            maximum_pages: 2048, maximum_processes: 2, maximum_tasks: 8,
+        }).unwrap();
+        let raw_group = group.as_raw();
+        let token = f.target(&grouped(3));
+        assert!(matches!(f.admission(token), Ok(Admission::Refused(_))));
+        assert!(matches!(f.table.admit_initial_group_exec_target(raw_group, f.pid, token, ABI_VERSION), Ok(Admission::Program)));
+        assert_eq!(f.table.process_memory_group(f.pid), Ok(None));
+        let snapshot = f.table.memory_groups().snapshot(group).unwrap();
+        assert_eq!((snapshot.processes, snapshot.images, snapshot.tasks), (0, 0, 0));
+        assert!(f.table.admit_initial_group_exec_target(raw_group + 1, f.pid, token, ABI_VERSION).is_err());
+        {
+            let (proc, locks) = f.table.process_and_advisory_locks(f.pid).unwrap();
+            exec_target::commit_initial(proc, locks, &mut NoopHost, f.pid, token).unwrap();
+        }
+        // The receipt belongs to the committed generation, not inspection's
+        // generation zero. No host-selected PID or receipt is introduced.
+        let receipt = f.table.prepare_process_memory_group(group, f.pid).unwrap();
+        assert_eq!(receipt.record().generation, 1);
+        assert!(f.table.admit_initial_group_exec_target(raw_group, f.pid, token, ABI_VERSION).is_err());
+    }
+
+    #[test]
+    fn initial_spawn_validation_requires_the_pending_childs_exact_parent_group() {
+        let mut f = Fixture::new();
+        f.table.memory_groups().configure(2048, 2).unwrap();
+        let limits = MemoryGroupLimits { maximum_pages: 1024, maximum_processes: 4, maximum_tasks: 8 };
+        let group = f.table.memory_groups().create(limits).unwrap();
+        let other = f.table.memory_groups().create(limits).unwrap();
+        let parent = f.pid;
+        let admission = f.table.prepare_process_memory_group(group, parent).unwrap();
+        f.table.memory_groups().start(admission).unwrap();
+        let child = f.table.spawn_child_for_caller(parent, parent, &[], &[], &[],
+            &crate::spawn::SpawnAttrs::empty(), &mut NoopHost).unwrap();
+        f.pid = child;
+        let token = f.target_owned(&grouped(3), PreparedExecOwner::Spawn {
+            parent_pid: parent, child_pid: child, launch: 0,
+        });
+        assert!(matches!(f.table.admit_initial_group_exec_target(other.as_raw(), child, token, ABI_VERSION), Err(Errno::EPERM)));
+        assert!(matches!(f.table.admit_initial_group_exec_target(group.as_raw(), child, token, ABI_VERSION), Ok(Admission::Program)));
+        assert_eq!(f.table.process_memory_group(child), Ok(None));
+        let snapshot = f.table.memory_groups().snapshot(group).unwrap();
+        assert_eq!((snapshot.processes, snapshot.images, snapshot.tasks), (1, 1, 1));
+        f.table.get_mut(child).unwrap().spawn_publication_pending = false;
+        assert!(matches!(f.table.admit_initial_group_exec_target(group.as_raw(), child, token, ABI_VERSION), Err(Errno::EPERM)));
+    }
+
+    #[test]
+    fn initial_group_validation_preserves_ordinary_and_script_policy_and_refuses_bad_artifacts() {
+        for (bytes, kind) in [
+            (include_bytes!("../../../abi/program-fixtures/v56/echo.wasm").to_vec(), 0),
+            (b"#!/bin/interpreter -e\n".to_vec(), 1),
+            (grouped(2), 2),
+        ] {
+            let mut f = Fixture::new();
+            f.table.memory_groups().configure(2048, 1).unwrap();
+            let group = f.table.memory_groups().create(MemoryGroupLimits {
+                maximum_pages: 2048, maximum_processes: 2, maximum_tasks: 8,
+            }).unwrap();
+            let token = f.target(&bytes);
+            let admitted = f.table.admit_initial_group_exec_target(group.as_raw(), f.pid, token, ABI_VERSION).unwrap();
+            assert!(matches!((kind, admitted), (0, Admission::Program) | (1, Admission::Script(_)) | (2, Admission::Refused(_))));
+            assert_eq!(f.table.process_memory_group(f.pid), Ok(None));
+        }
+    }
+
     #[test]
     fn only_current_group_members_admit_a_grouped_retained_executable() {
         let mut f = Fixture::new();

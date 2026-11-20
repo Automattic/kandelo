@@ -19,7 +19,7 @@ export class KmsBitmapRelay {
 
   constructor(private readonly port: MessagePort, private readonly fail: (error: Error) => void,
     private readonly captureImage: (source: OffscreenCanvas) => ImageBitmap | Promise<ImageBitmap>
-      = source => source.transferToImageBitmap(),
+      = source => createImageBitmap(source),
     private readonly retirementTimeoutMs = 3000) {
     port.onmessage = event => {
       if (this.closed) return;
@@ -53,8 +53,8 @@ export class KmsBitmapRelay {
     this.captureInFlight = this.capture(sources, planes, versions, this.active);
   }
   private async capture(sources: OffscreenCanvas[], planes: number[], versions: number[], sequence: number): Promise<void> {
-    // Consume rather than snapshot the detached canvas. Only real device writes
-    // mark it dirty again; capturing a consumed, unchanged canvas would blank it.
+    // Snapshot the producer's retained canvas. Consuming it would invalidate
+    // renderer caches and partial redraws that still own its previous pixels.
     // allSettled also releases a successful sibling after another capture fails.
     const results = await Promise.allSettled(sources.map(source => {
       try { return this.captureImage(source); } catch (error) { return Promise.reject(error); }

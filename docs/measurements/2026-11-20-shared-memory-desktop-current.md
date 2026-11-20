@@ -8,6 +8,70 @@ which retains earlier measurements and failed experiments. The batch remains a
 draft targeting `develop`; neither the original PR1–PR9 plan nor merge
 acceptance is complete.
 
+## Bitmap handoff correction
+
+The user's screen recording confirms visible scene blanking at 1280×720 while
+the page controls and cursor remain visible. Control 425 reproduces 91 black
+captures out of 100 on the published preview, with the machine still ready and
+no reported errors. This is a user-visible presentation failure, not visual
+acceptance merely because a later screenshot is nonblack.
+
+The relay consumed the producer canvas with `transferToImageBitmap`, while the
+renderer retained/cached that canvas and could present it again without a full
+redraw. The correction snapshots it with `createImageBitmap`, preserving those
+producer pixels. The unchanged single-bundle acknowledgement and retirement
+fences still bound transport ownership. This is a Kandelo ownership correction;
+no external runtime defect is claimed.
+
+Matched 427 uses a clean export of batch head `2b94115f30` and changes only that
+capture policy. Both arms pin all 353 artifact routes, including kernel and
+image, to identical bytes. The local VFS-launch/startup candidate is excluded.
+The reproduction changes viewport height, scroll position and pointer position
+at device scale factor two, and examines all 100 consecutive captures rather
+than waiting only for eventual recovery.
+
+| Black captures / 100, same workload | Consuming capture | Snapshot capture |
+|---|---:|---:|
+| Chromium 153.0.8010.12 | 91 | 0 |
+| Brave 157.0.8103.79 | 92 | 0 |
+
+Repeat 429 passes another 100 captures each on Chromium, Brave, Firefox and
+WebKit: 400 captures, zero black, with no reported errors. The new producer-pixel
+regression fails on the old code (its second frame is black), then all 22 bitmap
+ownership/retirement unit cases pass with the correction. These are bounded
+presentation checks, not memory/performance or full preview acceptance.
+
+The snapshot retains the producer surface. Resource comparison 438 uses three
+fresh Chromium parents per arm in order old/new/new/old/old/new, the same
+1920×1080 desktop, 15 physical shell commands, complete process CPU accounting,
+OS physical-footprint samples and strict Stop checks. All six pass, with no
+tracked compute overlap or host sleep during measurement. The old arm remains
+visibly faulty; these numbers measure the capture replacement's resource cost.
+
+| Median across three parents, Chromium 153 | Consuming capture | Snapshot capture |
+|---|---:|---:|
+| Two terminals retiled, owned-browser footprint | 2057.5 MiB | 2051.0 MiB |
+| Footprint after Stop | 1206.6 MiB | 1308.1 MiB |
+| CPU seconds for 15 commands | 0.951 | 0.947 |
+| Trusted Enter to verified file output, median of parent medians | 11.445 ms | 12.155 ms |
+
+The stopped median is 101.5 MiB higher; the samples are variable and do not
+identify the retained allocation or prove a leak. This material cost remains
+open. Active footprint and CPU medians do not establish a saving. Input timing
+ends at verified guest file output, not presentation. Sustained lifecycle,
+captured-pixel latency and the full browser-memory gate remain pending for the
+fix. Raw samples, process inventories, overlap and sleep audits are retained in
+`.context/desktop-bitmap-resources-438` and included in the portable JSON.
+
+The original 3K desktop, restart, cancellation and negative-control cases plus
+the new sustained DPR2 presentation test pass across all three engines: 15
+tests in run 433. The old 3K failures and failed
+experiments remain retained; this does not retroactively clear them. An isolated
+local test bundle contains this fix while the new VFS/startup changes remain
+uncommitted. Raw comparison, screenshots and receipts are retained in
+`.context/desktop-bitmap-handoff-427`; the user recording and sampled frames
+are retained separately in `.context/desktop-flicker-user-423`.
+
 ## Supported preview
 
 Trusted compatible programs opt into the existing kernel-owned group through

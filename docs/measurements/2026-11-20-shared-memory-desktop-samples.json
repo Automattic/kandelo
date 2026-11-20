@@ -4225,5 +4225,142 @@
     "bitmapApiControl": "401 standalone3K scene/cursor twoWorker2DandWebGL control passes240captures, noKandelo/Wasm, no black. Not engine fault evidence.",
     "compositionCorrection": "399 helper is screenshot/PNG based, not video. One black screenshot before helper and14normal; cause unresolved. Glyph388 is separate video measurement.",
     "initialVfsControl": "404b ordinaryPASS/groupedFAIL ENOEXEC unsupported required extension kandelo.memory-group.v3.memory. No policy/permission relaxation."
+  },
+  "bitmapHandoffCorrection": {
+    "sourceHead": "2b94115f30d3973dbbf919e51f7b838250f81b3c",
+    "capturePatchSha256": "5cf22ec8139b94253c4375d2f3f3eae19263a5dde08ce311b4491fc3089df53e",
+    "comparison": [
+      {
+        "arm": "before",
+        "engine": "brave-dpr2",
+        "browser": "157.0.8103.79",
+        "captures": 100,
+        "black": 92,
+        "errors": []
+      },
+      {
+        "arm": "before",
+        "engine": "chromium-dpr2",
+        "browser": "153.0.8010.12",
+        "captures": 100,
+        "black": 91,
+        "errors": []
+      },
+      {
+        "arm": "after",
+        "engine": "brave-dpr2",
+        "browser": "157.0.8103.79",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "arm": "after",
+        "engine": "chromium-dpr2",
+        "browser": "153.0.8010.12",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      }
+    ],
+    "repeatAllEngines": [
+      {
+        "engine": "webkit-dpr2",
+        "browser": "26.6",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "engine": "brave-dpr2",
+        "browser": "157.0.8103.79",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "engine": "chromium-dpr2",
+        "browser": "153.0.8010.12",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "engine": "firefox-dpr2",
+        "browser": "155.0",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      }
+    ],
+    "identicalArtifactRoutes": 353,
+    "limits": "No performance or browser-memory acceptance; snapshot retains producer pixels and costs need measurement. No upstream runtime defect claim."
+  },
+  "bitmapCaptureResourceComparison438": {
+    "scope": "Matched clean2b consuming-transfer versus snapshot capture only. Chromium153; three fresh parents per arm. Not ordinary comparison, performance acceptance or sustained lifecycle.",
+    "samples": [
+      {
+        "index": 0,
+        "arm": "prior",
+        "activeMiB": 2058.2167205810547,
+        "stoppedMiB": 1243.4336624145508,
+        "cpuSeconds": 1.0150540000000001,
+        "inputMedianMs": 12.585000038146973
+      },
+      {
+        "index": 1,
+        "arm": "candidate",
+        "activeMiB": 2050.997833251953,
+        "stoppedMiB": 1308.1210021972656,
+        "cpuSeconds": 0.9891269999999993,
+        "inputMedianMs": 12.175000071525574
+      },
+      {
+        "index": 2,
+        "arm": "candidate",
+        "activeMiB": 2070.7164001464844,
+        "stoppedMiB": 1309.6208877563477,
+        "cpuSeconds": 0.9400949999999998,
+        "inputMedianMs": 12.15500009059906
+      },
+      {
+        "index": 3,
+        "arm": "prior",
+        "activeMiB": 2008.3572311401367,
+        "stoppedMiB": 1206.5740814208984,
+        "cpuSeconds": 0.9505859999999999,
+        "inputMedianMs": 11.444999933242798
+      },
+      {
+        "index": 4,
+        "arm": "prior",
+        "activeMiB": 2057.466651916504,
+        "stoppedMiB": 1203.0585021972656,
+        "cpuSeconds": 0.9335540000000006,
+        "inputMedianMs": 10.884999990463257
+      },
+      {
+        "index": 5,
+        "arm": "candidate",
+        "activeMiB": 2026.841651916504,
+        "stoppedMiB": 1226.9022979736328,
+        "cpuSeconds": 0.9470219999999996,
+        "inputMedianMs": 11.259999990463257
+      }
+    ],
+    "medians": {
+      "prior": {
+        "activeMiB": 2057.466651916504,
+        "stoppedMiB": 1206.5740814208984,
+        "cpuSeconds": 0.9505859999999999,
+        "inputMedianMs": 11.444999933242798
+      },
+      "candidate": {
+        "activeMiB": 2050.997833251953,
+        "stoppedMiB": 1308.1210021972656,
+        "cpuSeconds": 0.9470219999999996,
+        "inputMedianMs": 12.15500009059906
+      }
+    }
   }
 }

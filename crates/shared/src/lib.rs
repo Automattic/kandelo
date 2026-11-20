@@ -2547,6 +2547,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
         HostAdapterKernelExport::required("kernel_initial_exec_commit"),
+        HostAdapterKernelExport::optional("kernel_initial_group_exec_target_admit"),
         HostAdapterKernelExport::required("kernel_install_host_stdin_pipe"),
         HostAdapterKernelExport::required("kernel_ipc_shm_lookup_mapping_for_task"),
         HostAdapterKernelExport::required("kernel_ipc_shm_record_mapping_for_process"),
