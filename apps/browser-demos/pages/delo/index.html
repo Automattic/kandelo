@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>delo</title>
+  <link rel="icon" type="image/png" href="../kandelo/assets/favicon.png">
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <main class="delo">
+    <div class="delo-frame">
+      <a class="delo-logo" href="https://kandelo.dev/" target="_blank" rel="noopener" aria-label="Kandelo">
+        <img src="../kandelo/assets/kandelo-mark.png" alt="">
+      </a>
+      <div class="delo-stage" hidden>
+        <form class="delo-shell" id="delo-form">
+          <input
+            class="delo-input"
+            id="delo-input"
+            type="text"
+            role="combobox"
+            aria-label="delo command"
+            aria-controls="delo-menu"
+            aria-expanded="false"
+            aria-autocomplete="list"
+            placeholder="delo run"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            autofocus
+          >
+        </form>
+        <div class="delo-menu" hidden>
+          <ul class="delo-menu-list" id="delo-menu" role="listbox" aria-label="delo completions"></ul>
+        </div>
+        <div class="delo-below">
+          <output class="delo-output" id="delo-output" for="delo-input" aria-live="polite"></output>
+          <ul class="delo-computers" id="delo-computers" aria-label="computers" hidden></ul>
+        </div>
+      </div>
+      <section class="delo-view" id="delo-view" hidden></section>
+    </div>
+  </main>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>

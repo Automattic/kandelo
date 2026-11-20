@@ -2577,7 +2577,7 @@ next boot initializes a new filesystem from the new image and every file of
 the old one is gone. It refuses while the computer runs in another tab. Such
 a descriptor names no boot profile through its `id`; the computer's
 `profileId`, or the image's default, selects it. Only a stored computer can
-mount `/` from OPFS.
+mount `/` from OPFS. The `delo` page creates these computers.
 
 **Temporary** computers are also OPFS-backed: their filesystem capacity need
 not fit in memory. They survive reload and become eligible for deletion after
@@ -3145,7 +3145,12 @@ resolves it under the lazy-asset directory the page passes
 - In a production deployment that directory is the authenticated asset
   group. `scripts/build-local-vfs-asset-group.ts` opens each shipped image,
   lists its lazy entries, and stages exactly those bodies, checked by size
-  and SHA-256.
+  and SHA-256. `./run.sh build-browser` also stages the lazy files and lazy
+  archives that the delo registry
+  (`apps/browser-demos/pages/delo/src/registry.json`) names under the binaries
+  root, because delo composes its images in the browser and no shipped
+  image references them. A `delo write --from <path> --lazy` of a path the
+  registry does not name resolves on the dev server only.
 - On the Vite dev server it is the `@kandelo-lazy/` route
   (`apps/browser-demos/vite/dev-lazy-assets.ts`). The route passes the
   member path to the same binary resolver the Node host uses for lazy
@@ -3316,6 +3321,744 @@ const { exit } = await kernel.boot({
   argv: ["/bin/sh", "-l"],
 });
 ```
+
+### The `delo` landing page
+
+`/pages/delo/` is a white page with one input and the list of computers
+on this device. It understands one command, `delo`, with twelve verbs. A
+verb without its argument opens the dropdown of everything that verb can
+take, and a change verb without its computer opens the dropdown of every
+computer that change applies to:
+
+```
+delo run @mho22/raytracer                 open a registered image
+delo run https://foo.example/bar.vfs      boot an image from its URL on a new computer
+delo run brave-cookie-otter               open a computer stored on this device
+delo init                                 create a draft computer
+delo add bash brave-cookie-otter          add a binary or a pipeline to a computer
+delo remove bash brave-cookie-otter       remove a binary from a computer
+delo write /etc/motd brave-cookie-otter   write a file into the pipeline of a computer
+delo remove /etc/motd brave-cookie-otter  remove a file from the pipeline of a computer
+delo enable theme brave-cookie-otter      enable an option on a computer
+delo disable theme brave-cookie-otter     disable an option on a computer
+delo save brave-cookie-otter              save a draft computer
+delo destroy brave-cookie-otter           delete a draft or a saved computer
+delo config brave-cookie-otter            open the settings and the files of a computer
+```
+
+Below the input, the output shows the lines of the last command, one at a
+time. Every 2 seconds it scrolls to the next line, smoothly, or at once
+when the system asks for reduced motion, and it stops on the last line.
+The pointer on the output pauses it; a scroll by hand stops it. Its scroll
+bar is hidden.
+
+The list shows every computer the app's computer library stores
+(`BrowserComputerStore`). Each row shows the title of the image the
+computer started from, or, for a computer Delo made, its configuration,
+then its state at the right: `draft` or `saved`. A draft is either a
+configuration that never ran, which lives only in the page, or a stored
+computer with the store's `temporary` retention, which the store deletes
+24 hours after its last open. A store that cannot be read shows its
+error in the list. `delo save <name>` saves a draft computer, the
+same change as the library's Keep button. `delo run <name>` opens a stored
+computer on the delo computer page, `/pages/delo/computer/?computer=<id>`.
+`delo destroy <name>` asks `confirm you want to destroy <name> ? (Y/N)`.
+The next Y key discards the draft, or deletes the stored computer with
+`BrowserComputerStore.remove`, its disk and its `delo.json` included; N or
+Escape keeps it. The page reads the answer from the key, so the letter
+never appears in the input, and every other key waits for an answer.
+Computer titles that
+contain whitespace do not fit the one-word grammar, so no verb can name
+them.
+
+`delo config <name>` replaces the input and the list with the settings
+view of that computer, a page made for the mouse rather than the
+keyboard. Its settings section edits the title and the description. The
+title goes to the computer library with `BrowserComputerStore.update`, so
+the app shows the new name too; it follows the same rules as a `delo init`
+name: 1–120 characters in kebab-case (lowercase letters and digits,
+joined by single hyphens, such as `brave-cookie-otter`) that no other
+computer has, compared without case. Delo shows and finds a computer
+the Kandelo app named, such as `Lively Hazelnut Turtle`, by its title in
+kebab-case, `lively-hazelnut-turtle` (`deloComputerName`); it writes
+nothing back, so the Kandelo app keeps its title until a rename. The description, at most 500 characters, is pending until
+the next `delo run` writes it into the computer's `/etc/delo/config.json`;
+a computer with no delo record on this device has none, so the view edits
+only its title. Its overview section shows the state, the
+first process, and the creation and last-opened dates. The panes follow
+in this order: settings, pipeline, files, binaries, options. The
+pipeline pane edits the name and the description of the computer's own
+pipeline; a name the registry rules refuse shows why and is not saved.
+Below them it shows the facts `delo list` shows for a registry pipeline,
+and the registered pipelines copied into it. A change to a stored
+computer's pipeline is pending until the next `delo run`;
+the files pane shows the files of the computer's disk, described below;
+the binaries pane lists the binaries the computer installs, and each row
+opens to the facts `delo list` shows; the options pane lists the options
+turned on in the same rows. All but settings, the pipeline's name and description, and
+files are read-only: the delo verbs stay the only way to change what a
+computer has. The settings and pipeline panes have Save and Cancel below
+them; Save is off until a field changes. Nothing is written while the
+visitor types: Save checks both names, shows a refused name in its pane,
+and otherwise writes every change of both panes and closes the view
+(`foo renamed to bar.` or `foo saved.`). Cancel, the close button, Back
+and Escape write nothing, and show `foo not saved.` when a field held a
+change. The files pane keeps its own rule, below. Opening the view adds a history
+entry, so the view's back button and the browser's Back both return to
+the input. Escape returns to the input too, from this view and from the
+`delo list` view, except while the files pane's replace question waits:
+Escape is then its N answer. In the rows of `delo list` and of these panes, the up
+and down arrows move between rows and, in an open row, through each of
+its sections and each tool it adds, and stop at the first and the last;
+the right arrow opens a row, and the
+left arrow closes it, goes from a section back to its row, or, on a
+closed row, goes to the sidebar. A row or section the arrows reach out
+of view scrolls just into view. In the rows, focus shows as a greyer
+background, never as an outline; in the sidebar, focus has no style, so
+the shown pane's tab marks where the arrows act. In the
+sidebar of every view, the up and down arrows switch panes and the right
+arrow goes back into the shown pane. `delo config` opens with the focus on
+the settings tab, and `delo list` on the tab of the shown list, first
+pipelines, so the arrows switch panes at once; a click or the right
+arrow reaches the title or the rows. `apps/browser-demos/pages/delo/src/config.ts` builds the view, and
+`deloNameProblem` in `apps/browser-demos/pages/delo/src/name.ts` owns the name
+rules.
+
+The files pane of `delo config <name>` shows the files of a stored
+computer Delo made, or of a stored computer that boots an image,
+registered or not, one folder at a time, in the rows of `delo list`. A
+draft has no disk yet, and delo cannot read the disk of a computer it did
+not make that boots no image; the pane says so instead. The disk opens the
+first time the pane shows. The pane header shows the open folder; the
+view header shows what the disk is doing, left of the close button. A computer that
+boots an image opens read only: its root is the image, not a disk of its
+own that `replaceDisk` can replace, so the pane has no Upload and shows
+`read-only` left of Download.
+A folder row opens the folder and shows an arrow; `../` shows an arrow
+that points left. Any other row has no arrow and opens to its path, type,
+size, mode, and owner and group, named from the disk's own `/etc/passwd`
+and `/etc/group`. The right arrow key opens a folder row's folder, with
+the focus on its first entry, or another row's details; on `../` it does
+nothing. The left arrow key closes the details, or goes up to the parent
+folder, with the focus on the folder it left, and from `/` goes to the
+sidebar. The up and down arrow keys move between the rows and through
+the sections of open details; the left arrow key goes from a section back
+to its row. Enter opens a row as a click does and moves the focus as the
+arrow keys do. Below the panel, while the pane shows, Download saves what is shown: the open file
+row's file, or the open folder as a zip when no file row is open, the whole
+disk at `/`. An open symlink, lazy file or special file has no bytes, so
+Download refuses it with a message. In a zip, each of them is an empty file
+named after it with `.symlink`, `.lazy` or `.special` added.
+Upload, below the panel too, picks files for the open folder. A browser
+file picker opens either files or folders, never both, so folders arrive by
+drop: files and folders dropped on the file list go to the open folder, each
+folder with everything in it. An empty folder has no file to carry it, so
+it is not created. Uploading over an existing path asks
+`replace <paths> ? (Y/N)`. Delo
+acts as root: uploads are files 644 and folders 755 owned by uid 0.
+
+No program runs while the pane reads the disk. A computer that never
+booted still has the disk Delo built. A computer that booted keeps its
+files as a saved image plus a journal, and only a kernel replays that
+journal: the pane starts a kernel with no process, as Kandelo's checkpoint
+does, exports the filesystem, and closes the kernel. The pane header shows
+each step. A worker holds the exported disk until the settings close, and
+the pane holds the computer's persistence lease, so the computer does not
+open in another tab meanwhile, and the pane refuses a computer that is
+already open. Closing the settings saves the disk with
+`BrowserComputerStore.replaceDisk`, the same call `delo run` uses to
+write a pending configuration, only when an upload changed it. Two Kandelo gaps shape this design and
+are recorded in `apps/browser-demos/pages/delo/kandelo-problems.md`:
+Kandelo does not export a way to open a saved computer's files, and the
+kernel host cannot create a folder or set an owner, so an upload saves the
+whole disk again. `apps/browser-demos/pages/delo/src/files-pane.ts` builds the
+pane, `files-client.ts` opens and saves the disk, and `files.ts`
+reads and changes it.
+
+`delo init [name]` creates a draft: the config of a computer that does not
+exist yet. The draft is highlighted at the top of the list with the label
+`draft`, what it runs, its binaries, and its options. Without a name it
+gets a random computer name: the three words of Kandelo's
+`randomComputerName` in kebab-case, such as `lively-hazelnut-turtle`,
+from `deloRandomName` in `apps/browser-demos/pages/delo/src/name.ts`. A draft lives only in the page, so a reload
+discards it, and one draft exists at a time. `add`, `remove`, `write`,
+`enable` and `disable` change the configuration of the computer they
+name: the draft,
+or a stored computer Delo made. The computer name is always required.
+
+A computer has exactly one pipeline, its own, with the keys of a registry
+pipeline (`name`, `description`, `use`, `enable`, `provide`, `need`,
+`device`, `files`) and no `type`. `delo init foo` names it `foo-pipeline`,
+lowercased, with each character a registry name refuses turned into `-`,
+and gives it an empty description. Its name follows the rules of a
+registry entry name and names no registry entry, so the pipeline can
+become a registry pipeline. `add <binary>` puts the binary in the pipeline's `use` and installs
+it with its missing dependencies; the first installed binary with the
+`init` contract becomes the first process. `add` on a binary that is
+already installed as a dependency installs nothing and puts it in `use`,
+so it stays when what pulled it in goes. `add <pipeline>` copies the
+registered pipeline into the computer's pipeline: its `use`, `enable`,
+`provide`, `need` and `device` join the computer's, and its `files` follow
+the computer's files. The registered pipeline is then no longer a unit of
+the computer: `remove <pipeline>` is refused, and its binaries are removed
+one by one. A pipeline that writes a path the computer's pipeline or one
+of its binaries already writes is refused, with the paths named, unless
+both write text there: the pipeline's text is added to that file. Text with
+a mode on a path a binary writes is refused, because the file keeps its
+mode. A pipeline that turns options on is
+added only after `add <pipeline> and its options ? (Y/N)`: the
+pipeline needs them, so N adds nothing and prints `<pipeline> not
+added.` The question names no option; a visitor who doubts answers N
+and reads the pipeline in `delo list`. Adding a pipeline prints one
+line, `<pipeline> is copied into the pipeline of <computer>`; `delo
+config` shows the binaries, options and files it brought. The options are the `option` entries of the
+registry: `share`, `theme`, `network`, `upload`, `download`,
+`internals` and `mcp`. An option is a tool of the delo computer page, not a file on
+the disk. `enable` puts the option in the pipeline's `enable` and installs
+its missing dependencies; it never chooses the first process.
+
+A computer installs exactly the binaries its pipeline uses, the binaries
+its options use, and every dependency of those. `remove` and `disable`
+remove every other binary in the same step and print each one. `remove`
+refuses a binary that an installed binary or an enabled option depends
+on, and names what to remove or disable first. It also refuses a binary
+whose file the pipeline adds to, such as `base-files` while a copy of
+`maker-account` appends to its `/etc/passwd`. `delo run <draft>` writes the
+draft's disk, stores it as a new draft computer with the draft name as
+its title, writes the computer's `delo.json`, discards the draft, and
+opens it on the delo computer page. `createDeloDraft` in
+`apps/browser-demos/pages/delo/src/draft.ts` creates a draft, and the plans in
+`apps/browser-demos/pages/delo/src/packages.ts` own the change rules.
+
+`delo write <path> <computer> [--key value]` writes one file into the
+computer's pipeline. The flags are the keys of a file object (see
+`files` below): `--type`, `--content`, `--from`,
+`--lazy`, `--mode` and `--owner`; the path is its `to`. `--lazy` takes no
+value.
+A value with spaces goes in double quotes, where `\"`, `\\` and `\n`
+stand for a quote, a backslash and a new line; a value that starts with
+`--` needs quotes too. A new path without a source and without another
+type is an empty file: a `delo write /etc/motd foo` tool call writes an
+empty `/etc/motd`. Typed in the input, a line without a source opens an
+editor, once the pipeline can hold a file at that path. Its sidebar has
+one pane per option of the file's type: `type`, then `content`, `from`,
+`lazy` and `mode` for a file, `from`, `lazy`, `mode` and
+`owner` for a directory, and `from` for a symlink. The panes start from
+the file the pipeline writes at the path, unless the line changes its
+type, then from the line's flags. Save writes exactly the file the panes
+show, and leaves out an empty option; Cancel, the close button or Escape
+writes nothing (`/etc/motd not written.`).
+`apps/browser-demos/pages/delo/src/editor.ts` builds the view. A relative path is refused with the absolute path it
+would name: `delo write motd foo` answers `motd is not an absolute
+path. Did you mean /motd?`. On a path the
+pipeline already writes, only the given flags change, so
+`delo write /etc/motd foo --mode 600` keeps its content when a tool
+call runs it; a tool call with no flag is refused. Another `--type`, or a source the file has not, replaces
+the file, after
+`confirm you want to replace <path> on <computer> ? (Y/N)`: on Y, the
+file is exactly the flags of the line, so `mode` goes back to its default
+unless the line gives it again. `delo write` downloads nothing. The
+registry parser checks the result, so a file a registry entry could not
+hold is refused with the parser's message. Text on a path a binary on
+the computer writes as text goes at the end of that file, and the result names
+the binary: `<binary> writes <path>: the content goes at the end of it.`
+A mode there is refused, because the file keeps its mode, and so is any
+file that is not text, or text on a directory, a symlink or a file the
+binary reads from a source, such as a program. A path where the
+pipeline has more than one file is refused until `delo remove` deletes
+them. `delo remove <path> <computer>` deletes every file the pipeline has
+at that path. A written file belongs to the computer, not to a registered
+pipeline, so a computer with one has no share link (see `share` below).
+`apps/browser-demos/pages/delo/src/write.ts` owns the flags.
+
+Tab after the computer offers the flags. On a new path, the dropdown lists
+`--type`, `--content` and `--from`, the flags that choose the file's kind.
+Once the line gives a type or a source, it lists the other keys that kind
+takes: `--type directory` offers `--from` (an archive), `--mode` and
+`--owner`. On a path the pipeline already writes, it lists the keys of the
+file's kind; a flag of another kind still replaces the file when typed.
+Each row says what the key gives the file. Tab never completes a value:
+while the line ends in `--type` and its value, the line under the input
+says `file · directory · symlink`.
+
+`delo.json`, in the directory of each computer Delo made on the host
+(`kandelo/computers/<id>/delo.json`), holds the truth about what Delo
+built; Kandelo never reads it. It holds `disk`, the `description` that
+`delo config` edits and the configuration (`pipeline`, `firstProcess`,
+and `added`, the registered pipelines copied into it) the disk was last
+written from, `written`, the record of what Delo wrote on that disk
+(each step and the paths it wrote), and `pending`, the config that `add`,
+`remove`, `write`, `enable`, `disable` and a new description changed
+since, or null. A
+change to a stored computer writes only `pending`, so its disk does not
+change, and a change back to the disk's config clears it. Every disk
+build writes `disk` and `written` to `/etc/delo/config.json`, a copy that
+guest programs and people can read: a disk without its `delo.json` still
+says how it was made. Delo never reads it back: the copy goes one way, from
+`delo.json` to the disk, so nothing that runs in the computer can change
+its options, its pipeline, the tools it trusts or the paths the next
+build deletes. A lost `delo.json` is not rebuilt. `delo.json` holds at
+most 4 MiB. The list labels a computer with a pending configuration
+`pending`. `delo run <computer>` writes a pending configuration onto the
+computer's disk before it opens the computer, then makes it the new
+`disk`: it takes the computer's persistence lease, reads the disk (a
+computer that booted has its journal replayed by a kernel with no
+process, as the files pane does), writes the configuration onto it, and saves it
+with `BrowserComputerStore.replaceDisk`. A computer open in another tab is
+refused. A computer with no delo record on this device still boots and
+can be destroyed, but `add`, `remove`, `write`, `enable` and `disable`
+refuse it: `<name> has no delo record on this device, so delo cannot
+<verb> it`. Every write is
+version 0; another version is refused in the computer's row.
+`apps/browser-demos/pages/delo/src/computer-record.ts` owns the file.
+
+`buildDeloImage` in `apps/browser-demos/pages/delo/src/computer-image-client.ts`
+writes a computer's disk in a disposable worker with the image writer
+(`KandeloImageFs`), onto the computer's current disk or onto an empty
+one; no kernel runs. The disk holds every file of every installed binary
+and of the computer's pipeline (files, directories, symlinks, extracted
+zip archives, trees copied from images),
+`/etc/delo/config.json` with the computer's description, its configuration
+and the record of what Delo wrote, so the computer carries its own recipe, `/etc/kandelo/demo.json` with the computer name as
+the image title, and, when the configuration has a first process,
+`/etc/kandelo/experimental-terminal-session.json` that starts the first
+executable file of that binary as root. A first process that provides
+`shell` starts as a login shell (its `argv[0]` is `-<name>`), so it reads
+`/etc/profile`, and `base-files` writes an `/etc/profile` that runs every
+`/etc/profile.d/*.sh` script. When the disk gets dinit's boot service,
+`/etc/dinit.d/boot`, from a binary or the pipeline, `demo.json` declares
+`/sbin/dinit --system -p /run/dinitctl` as the command the machine starts
+at boot, as root. Two packages that write one path fail the write, and
+so does a package that writes one of the files Delo writes itself.
+
+The disk is written in steps. A step is every file whose `to` is one path,
+with the package each file comes from. `written` in `delo.json` records
+each step and the paths it wrote, archive members included; the build
+receives it with the disk and returns the new one. Writing onto
+an existing disk skips an unchanged step, so an edit a program made to
+that step's file stays; writes a new step; deletes the files and symlinks
+of a removed step; and deletes then writes a changed step. Every path no
+step wrote is the computer's data and stays. Text added to a file
+changes the file of another step, so a step that adds to a file and the
+step that wrote it are rewritten together. A new step that writes a path already on the disk
+is refused by name, and the pending configuration stays pending. The
+image writer has no way to remove a directory, so a removed step leaves
+its directories; `written` keeps them, so a later step can create
+them again (`kandelo-problems.md`). No file has a digest, so a file is
+the same step after its source changes, and a disk keeps the old bytes
+until that step changes. A lazy file is written as its address and the
+size from a `HEAD` request's `Content-Length`; a compressed answer or an
+answer without a length fails the build. A lazy archive is written as its
+member list and its length, both read from its central directory with range
+requests; the length bounds the kernel's download. No bytes are checked
+against a digest. The image declares this build's
+kernel ABI and, for a new disk, the custom image capacity (512 MiB). The
+computer's descriptor (`deloComputerDescriptor`) mounts `/` from OPFS, so
+the app initializes the filesystem from that image (see the browser
+storage layout above). A draft with no first process builds and boots
+without a terminal. `apps/browser-demos/pages/delo/src/binaries.ts` names
+each local registry file once per binaries mirror, because Vite serves a
+binary only when a source file names its exact path.
+
+Tab completes the line one word at a time, the way a shell does: `de`
+becomes `delo `, `delo` offers the twelve verbs, `delo run` offers the
+draft, every stored computer, then every registered image, `delo add` offers every registered package, and `delo add <package>`
+offers every computer Delo can change that does not have it yet. `delo
+write` offers the paths the computers' pipelines write, and a path that no
+written path extends goes on to every computer. A word that one candidate
+starts with completes in place; a word several candidates share extends to
+their common part. Candidates appear in a dropdown under the input, each
+with its type, its host, and its description. The arrow keys move through
+it, Enter or Tab puts the highlighted candidate on the line, and Escape
+closes it. Choosing a name from the `delo run` dropdown puts
+`delo run <name>` on the line, so a second Enter runs it. Enter on a line
+that stops before its last word opens the same dropdown: `delo` alone
+offers the twelve verbs with what each does, and `delo run` offers what it
+can run. The dropdown never offers an image URL; instead, while the line
+is `delo run` with at most one word after it, the line under the input
+reads `tab lists computers and images · enter on an image URL boots it`
+in place of `tab completes · enter runs`.
+`completeDeloLine` in `apps/browser-demos/pages/delo/src/completion.ts` owns
+the rules.
+
+While the input is shown, a click on the page that lands on nothing
+interactive (a link, a button, a field, a list row) and selects no text
+puts the cursor back in the input.
+
+The delo computer page, `/pages/delo/computer/`, boots the computer its URL
+names through the app's own boot (`createLiveHost`), so the image, the VFS,
+the stored computer, and the kernel follow the same path as in the app.
+Everything the page shows is Delo's: it imports no app component. It shows
+the boot progress and any boot error. A boot that fails before the
+machine starts, such as an image fetch that fails, reaches the page only
+as the error status and two error lines in dmesg (which machine failed,
+then why), so the page shows those two lines, for example
+`Failed to boot Raytracer · fetch failed for raytracer.vfs.zst: 502 Bad Gateway`.
+When the kernel holds no process
+besides its synthetic init (pid 1), it shows `nothing is running`.
+`apps/browser-demos/pages/delo/src/computer/main.ts` owns the page.
+
+The toolbar is a floating Kandelo button that unfolds into a bar with three
+groups: devices, options, and the Kandelo links. Folding the bar closes the
+open panel.
+
+The Kandelo icon, "Save and go back to delo", halts a running computer
+before it leaves the page: the kernel's graceful destroy writes its cache to
+the disk, so a write no program synced is there at the next `delo run`. A
+halt that fails keeps the page and shows its error. Any other way out of a
+running computer, such as closing the tab, a reload or the browser's Back
+button, first shows the browser's own leave dialog, whose text no page
+sets; leaving there loses every write no program synced, as Kandelo
+documents for browser termination. The browser shows that dialog only
+after the visitor has clicked or typed in the page.
+
+The devices group lists the surfaces the computer has, and a click on one
+shows it. A computer Delo made lists them from the properties of the
+binaries and the pipeline on its disk: Terminal (the terminal on
+`/dev/pts/0`) for a package that fills `shell`, Framebuffer (`/dev/fb0` on a canvas, with
+keyboard and pointer-lock mouse input) for one that opens `fb0`, Display
+(the KMS scanout of the first CRTC, with absolute and relative pointer
+input) for one that opens `card0`, and Web (the web preview in a frame) for
+one that fills `web`. A registered image has no packages in the registry,
+so it lists the surfaces its own `demo.json` prefers
+(`presentation.runningPrimary`). Until the user clicks a device, the page
+shows the first listed device in the order Display, Web, Framebuffer,
+Terminal that the host reports available, or the first in that order
+while none is. The page shows the Terminal by default only when it is the
+sole device. The terminal attaches at boot, shown or not, so its login
+shell starts what the computer runs. `devices.ts` owns the rules.
+
+The options group shows the tool of each option enabled in the computer's
+`delo.json`. A registered image has none, and neither has a computer
+whose `delo.json` is lost, so it has no option tool. Each tool except
+`theme` opens a panel above the bar, one at a time:
+
+- `share`: the computer's share link, copied to the clipboard. The link is
+  the delo landing page with `?draft=<code>`, the computer's name, the name
+  and description of its own pipeline, the registered pipelines copied
+  into it, the binaries it uses, its
+  options and its first process as base64url JSON (at most 4096
+  characters). Opening it creates a draft through the same plans as `add`
+  and `enable`, then keeps exactly the shared binaries and options, and
+  removes the parameter from the address. A link that turns options on
+  first asks `trust this link and its options ? (Y/N)`: Y opens the draft with everything in it, N prints
+  `share link not opened.` and opens nothing. A computer whose pipeline those
+  names do not rebuild cannot be shared. When a
+  computer already has the shared name `foo`, compared without case, the
+  draft takes the first free name of `foo-shared`, `foo-shared-2`,
+  `foo-shared-3`, and so on, within 120 characters. Nothing boots until
+  `delo run`. The link carries names, never files. The format is version
+  3. A pipeline name the registry rules refuse is refused with
+  the link. `share.ts` owns the format.
+- `theme`: switches the page between WordPress light and WordPress dark and
+  stores the choice in this browser under `delo.theme`, apart from the app's
+  `kandelo.theme`. Without the `theme` option, the page uses WordPress
+  light.
+- `network`: creates a network session and shows its link, or joins one
+  from a link another computer shared, through the platform's session
+  controller (`lib/network-session.ts`). The person who joins pastes the
+  link into the network panel of their own computer.
+- `upload`: a file picker that offers the files to the computer through
+  Kandelo exchange. It depends on the `kandelo-exchange` binary, whose
+  agent runs as root and saves the files to `/root/Downloads`. The panel
+  shows each batch's status.
+- `download`: the files the computer publishes with `kandelo-publish`, each
+  with Save and Dismiss. It depends on `kandelo-exchange` too.
+- `internals`: the kernel's process table (`KernelHost.enumProcs`), read
+  again on every process event.
+- `mcp`: has no tool. It accepts every WebMCP tool of the computer without
+  asking, as described below. No agent tool turns it on.
+
+In Chrome with `document.modelContext` (see `docs/webmcp.md`), the page
+registers WebMCP tools for the devices it lists while the computer runs,
+and unregisters them when it stops:
+
+- Terminal: `device_terminal_read` returns the text the terminal shows, one line
+  per row; `device_terminal_type {text}` types into it.
+- Framebuffer: `device_framebuffer_screenshot` returns a base64 PNG of `/dev/fb0`
+  at its own resolution, and `NOT_READY` while no process draws on it.
+  `device_pointer_move {dx, dy}` moves the mouse by pixels, right and down, and
+  `device_pointer_click {button}` clicks where the process has its cursor:
+  `/dev/input/mice` takes only relative motion, so the process keeps the
+  cursor position and a screenshot shows it.
+- Display: `device_display_screenshot` returns a base64 PNG of the scanout and its
+  size; `device_pointer_move {x, y}` and `device_pointer_click {x, y, button}` take
+  scanout pixels from the top left.
+- Framebuffer or Display: `device_keyboard_press {keys, holdMs}` presses DOM key
+  codes (`KeyA`, `Enter`, `ArrowUp`) together, holds them `holdMs` (default
+  100), and releases them. A computer with both gives this tool and the
+  pointer tools to the Display.
+- Web: `device_web_open {path}` shows a guest path in the web frame; `device_web_read`
+  returns the guest path, title, load state and visible text of the page
+  the frame shows, which the service worker serves from the page's origin.
+
+A tool calls the open surface of its device: keys are browser key events on
+that surface's canvas and text goes through the terminal's input, the same
+paths the user's keys take. A call opens a surface that is not open yet and
+never changes the device the page shows. Results use Kandelo's WebMCP
+envelope. A tool that sends input to the computer, `device_terminal_type`,
+`device_keyboard_press`, `device_pointer_move`, `device_pointer_click` and
+`device_web_open`, waits for the visitor's acceptance on its first call in
+the page session; a tool that only reads does not.
+`computer/webmcp.ts` owns the tools.
+
+The page also registers, for its whole life, `delo_page`, which does what
+the link back to delo does: a running computer halts, which writes its
+disk, then the delo page opens and registers its `delo_` tools again. The
+options the computer's record enables add tools on the same session, link
+or switch as their own tool in the toolbar:
+
+- `network`: `option_network_read` returns the session's phase, the delo
+  session link another computer joins with, this computer's address and the
+  members; `option_network_create` creates a session and
+  `option_network_join {link}` joins one, each returning once the running
+  computer is in it or with the session's error; `option_network_leave`
+  leaves it. Two agents on two computers play `doom-multiplayer` this way.
+- `internals`: `option_internals_read` returns the process table.
+- `share`: `option_share_read` returns the share link.
+- `sound`: `option_sound_set {on}` turns the sound on or off. The browser
+  plays it only after the visitor's first click or key press.
+
+`upload`, `download`, `theme` and `mcp` have no tool. `delo_page`,
+`option_network_create`, `option_network_join`, `option_network_leave` and
+`option_sound_set` wait for the visitor's acceptance like the input tools.
+`computer/page-tools.ts` owns these tools.
+
+The acceptance is a dialog on the computer page, `An agent calls <tool>`,
+with what the call would run. Accept runs the call and
+every later call of that tool until the page closes or reloads; Refuse and
+Escape refuse this call only, and the agent gets `PERMISSION_DENIED`.
+Dialogs come one at a time. A computer with the `mcp` option shows no
+dialog. `computer/acceptance.ts` owns the dialog.
+
+A binary or a pipeline declares tools in `/etc/mcp`, one JSON file per
+tool, in the format of Kandelo's image-declared tools (see
+`docs/webmcp.md`) with a `command` list only: the program's absolute path,
+then its arguments. A binary names its
+files `/etc/mcp/binary_<name>.json` and a pipeline
+`/etc/mcp/pipeline_<name>.json`; `parseDeloRegistry` refuses an entry that
+writes a tool file under the other prefix or none, and so does `delo
+write`. The folder stays flat,
+because Kandelo reads `/etc/mcp` without subfolders. The check covers the paths
+an entry names (`to`); a file inside an extracted
+archive or a copied image tree is not checked. The page registers each
+file while the computer runs, and follows the folder, so writing,
+replacing or deleting a file registers or unregisters its tool. A file
+that does not parse is logged and skipped; Delo refuses a string
+`command`, because a tool runs with no shell.
+
+The page trusts a tool file by its path and its exact text
+(`computer/trust.ts`):
+
+- **Official:** a registry binary or pipeline writes that path with that
+  text as inline `content`. The tool takes the file name, such as
+  `binary_foo`, and its own description and schema.
+- **Trusted:** the computer's own pipeline in `delo.json` writes that path
+  with that text as inline `content`, through `delo write`. Only the
+  visitor changes that record. The tool registers as
+  `unofficial_<file name>` with its own description and schema, and runs
+  without asking.
+- **Untrusted:** every other file: one a program in the computer wrote, one
+  that changed on the disk, one whose text came from a URL or an archive.
+  The tool registers as `unofficial_<file name>`, and until the visitor
+  accepts it, the agent sees only Delo's text: `Unofficial tool from
+  <path> on the delo computer <name>. Calling it asks the user to accept
+  it.` Its schema loses every `description` and `enum`. A property name
+  that is not 1–32 characters of `[a-z][a-z0-9_]*` hides the whole schema:
+  the tool takes no arguments, so the agent's first call only asks for
+  acceptance and returns `NOT_READY`. The first call opens the acceptance dialog with the file,
+  the file's description and schema, and the command.
+  Accept registers the tool again under the same name with its own text,
+  until the file changes or the page closes.
+
+The `unofficial_` prefix keeps every file out of the names of official and
+device tools, including names that only look alike. The prefix exists only
+on the delo computer page; Kandelo's own page registers every file in
+`/etc/mcp` under its file name (see
+`apps/browser-demos/pages/delo/kandelo-problems.md`).
+
+A pipeline tool can run a program the pipeline writes itself. `redis-board`
+writes `/usr/local/bin/redis-board`, a PHP script that calls the board's
+`/api`, and three tools that run it: `pipeline_redis-board-ideas`,
+`pipeline_redis-board-add {title}` and `pipeline_redis-board-vote {id}`.
+Each returns the board's JSON, and exits 1 when the board refuses the
+request.
+
+`parseDeloRegistry` parses every tool file an entry writes the way the
+page does, so a malformed tool file fails when the registry loads. `delo
+list` ends each binary and pipeline with "tools it adds": one row per tool
+file the entry writes, which opens to the tool's description, its inputs
+and its command. `delo_list` returns the same tools under `tools`. A tool
+file inside an extracted archive or a copied image tree is not known
+before the computer runs, so neither shows it.
+
+```json
+{
+  "description": "Print the user and groups the tool runs as",
+  "inputSchema": { "type": "object", "properties": { "flag": { "type": "string" } } },
+  "command": ["/usr/bin/id", "{flag}"]
+}
+```
+
+Placeholders follow Kandelo's list rules. The program runs with the uid
+and gid of the computer's first process, the oldest live process after
+the kernel's init, read at each call: root on a computer without `login`,
+and the account that logs in once `login` starts its shell. The gid comes
+from that account's line in `/etc/passwd`, so the program has no
+supplementary groups. A computer without `/etc/passwd` runs its tools as
+root, uid 0 and gid 0. It runs in `/` with `PATH` and `HOME` set, for at
+most 30 seconds, and the result is `stdout`, `stderr`, `exitCode`,
+`status`, `terminationObserved` and `truncated`, keeping the last 256 KiB
+of output. `computer/tool-files.ts` owns these tools.
+
+The delo page itself registers one tool for each verb an agent runs, once
+it has read the computers on this device: `delo_init {name}`,
+`delo_add {name, computer}`, `delo_remove {name, computer}`,
+`delo_write {computer, file}`,
+`delo_enable {name, computer}`, `delo_disable {name, computer}`,
+`delo_run {name}`, `delo_save {computer}` and `delo_destroy {computer}`.
+Each tool runs the command a visitor types, so the page shows the same
+lines, and returns those lines with the computers the page lists.
+`delo_destroy`, `delo_add` of a pipeline that turns options on, and
+`delo_write` when it replaces a file of another kind, show the Y/N
+question and return once the visitor answers; every other tool returns
+`NOT_READY` while the question waits. No tool turns on `mcp`:
+`delo_enable mcp` and `delo_add` of a pipeline that enables it return
+`PERMISSION_DENIED`, and the visitor types them instead. `delo_write`
+takes a file object: each key but `to` is a flag of `delo write`, and a
+key set to `true` is a flag alone. `delo_run` returns before the page leaves for the
+computer, whose page registers the `device_`, `option_`, `binary_`,
+`pipeline_` and `unofficial_` tools and `delo_page`.
+`delo_list {tab}` returns the entries the list view shows, and
+`delo_config {computer, name, description, pipelineName,
+pipelineDescription, folder}` returns the settings view's facts and saves a new
+name, description, own pipeline name or own pipeline description when
+given. The own pipeline name follows the rules of the pipeline pane, and a
+stored computer's pipeline change waits for its next `delo run`. With an
+absolute `folder`, it also returns the entries of that folder on the
+stored computer's disk as the files pane lists them: name, path, kind,
+mode, owner, size, whether it is lazy, and a symlink's target. Uploads and
+downloads have no tool. The tools exist only on the delo page. `webmcp.ts`
+owns them.
+
+`delo run <@scope/name>` looks the name up in the tracked registry
+`apps/browser-demos/pages/delo/src/registry.json`. For an image it navigates to
+the delo computer page, `/pages/delo/computer/?vfs=<image>&profile=<id>`,
+the same pair a visitor could type by hand. The registry names the image and the profile, nothing
+more; what the machine is comes from that image's own
+`/etc/kandelo/demo.json`, exactly as for any `?vfs=` URL. An app is a
+standalone deployment that ships its own Kandelo runtime, so its ABI never
+has to match this one's. Delo does not run it: `delo list apps` links to
+its URL, and `delo run <app>` prints that it opens from there. `delo run <url>` takes the http or https URL of an image that the
+registry does not name, and navigates to `/pages/delo/computer/?vfs=<url>`
+with no profile, so the image's own `/etc/kandelo/demo.json` picks its
+default machine. The computer page creates a stored computer that boots
+that image, as for any `?vfs=` URL. The image's host must answer the
+page's fetch, exactly as for a registered image. A name
+that is not a computer, that names no registered image or app and that
+is not an image URL, a binary or pipeline name, or a line the grammar does
+not accept is printed under the input as an error.
+
+The registry is a separate, tracked list for the same reason the gallery
+roster is: an image must not be able to claim a name just by existing. Its
+shape is `{ "schema": 1, "entries": [...] }`. Every entry has a `name`, a
+`type`, and a non-empty `description`, and names are unique across types:
+
+- `image`: `name` is a lowercase `@scope/name`, `vfs` is an absolute
+  http(s) URL with no fragment, and `profile` is a profile id the image
+  declares.
+- `app`: `name` is a lowercase `@scope/name`, and `url` is an absolute
+  http(s) URL with no fragment.
+- `binary`: programs and the files their own install ships. `name` is a
+  lowercase identifier. A binary starts nothing by itself: a computer starts
+  dinit when its disk has `/etc/dinit.d/boot`, and its login shell runs the
+  scripts in `/etc/profile.d`.
+- `pipeline`: a recipe for a working computer, as a Dockerfile is for an
+  image: the binaries it uses, the options it turns on, and its service
+  files, site configuration and accounts. `name` is a lowercase identifier
+  and says what the pipeline does, such as `doom-multiplayer`, so that no
+  binary and pipeline share a name.
+- `option`: a tool of the delo computer page. `name` is a lowercase
+  identifier.
+
+Binaries, pipelines and options share their keys, and each entry takes
+only the keys it needs; a missing list is empty:
+
+```json
+{
+  "name": "doom-multiplayer",
+  "type": "pipeline",
+  "description": "Doom over a network session.",
+  "use": ["fbdoom", "bash"],
+  "enable": ["network"],
+  "files": [
+    { "to": "/usr/local/bin/doom-host", "mode": "755",
+      "content": "#!/bin/sh\nexec /usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes \"${1:-2}\"\n" }
+  ]
+}
+```
+
+- `use` names the registered binaries installed with the entry. A
+  pipeline never uses another pipeline.
+- `need` names contracts that some installed binary or pipeline must
+  provide.
+- `provide` (binaries and pipelines) names the contracts the entry
+  provides: `init`, it can be the first process; `shell`, it reads and
+  runs command lines; `web`, it serves the web preview.
+- `device` (binaries and pipelines) names the kernel devices it opens:
+  `fb0` for `/dev/fb0`, `card0` for `/dev/dri/card0`.
+- `files` (binaries and pipelines) lists what the entry writes to the
+  disk, in order. A binary needs at least one file. Each file names its
+  absolute path, `to`, and its `type`: `file` (the default, never
+  stored), `directory` or `symlink`.
+  - A regular file has exactly one source:
+    - `content`: the text of the file. A binary's file that is already
+      in the computer is refused. A pipeline's text on a path a binary or
+      an earlier file of the pipeline wrote goes at the end of that file,
+      so several pipelines copied into one computer share a file, such as
+      `/etc/dinit.d/boot`, which `dinit` ships. Such a file keeps its
+      mode, and a `mode` on the added text fails the build. On a path
+      nothing wrote, the text creates the file.
+    - `from`: a path under the binaries root, or an https URL, copied to
+      the path. `lazy: true` writes only the file's address and size: the
+      machine downloads the bytes when a program first reads the file. A
+      `from` of `<image>:<path>`, a Kandelo VFS image under the binaries
+      root and a path inside it, copies that tree to the computer with the
+      image's modes and owners. A file has no `sha256` and no `size`: the
+      build finds the size of a lazy file itself.
+  - A `directory` without a source is empty, owned by `owner`
+    (`"uid:gid"`, default root). With a `from`, named as for a regular
+    file, it is a zip archive unpacked under it. A lazy archive writes its
+    member list.
+  - A `symlink`'s `from` is the absolute path it points to. `bash` writes
+    `/usr/bin/bash` and three symlinks to it: `/bin/bash`, `/bin/sh` and
+    `/usr/bin/sh`.
+
+  `mode` (default `644`, `755` for a directory) decides what is
+  executable. No file runs a command at build time,
+  because the disk is built with no kernel running.
+- `enable` (pipelines only) names the options the pipeline turns on.
+  Adding the pipeline copies them into the computer's pipeline, so
+  `delo disable` turns each one off like any other option.
+
+An entry has no key for what a computer starts: its files say it. A
+pipeline that runs services writes their dinit service files and appends
+them to `/etc/dinit.d/boot`. A file in `/etc/profile.d/` runs in the
+terminal's login shell, so a program it starts reads the terminal's
+keyboard.
+
+Every `use` must name a registered binary, every option a pipeline
+enables must be a registered option, and every need must be a contract
+some registered binary or pipeline provides. The plans in
+`apps/browser-demos/pages/delo/src/packages.ts` decide what a change installs
+or removes and which warnings it prints; a need nothing provides is a
+warning, never an error.
+
+`parseDeloRegistry` in `apps/browser-demos/pages/delo/src/registry.ts` rejects
+anything else loudly, and `parseDeloCommand` in `command.ts` owns the
+command grammar. Booting a registered image is subject to every ordinary
+boundary: the image host must serve it with CORS headers, and an image built
+against another kernel ABI fails the boot with the ABI mismatch it has.
 
 ### Script-carrying share links
 

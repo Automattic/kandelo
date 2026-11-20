@@ -1,0 +1,411 @@
+:root[data-delo-theme="wordpress-light"] {
+  --delo-bg: #ffffff;
+  --delo-surface: #ffffff;
+  --delo-surface-hover: #f0f0f0;
+  --delo-text: #1e1e1e;
+  --delo-muted: #757575;
+  --delo-border: #dcdcde;
+  --delo-accent: #3858e9;
+  --delo-error: #cc1818;
+  --delo-selection: rgba(56, 88, 233, 0.24);
+  --delo-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 20px rgba(0, 0, 0, 0.1);
+  --delo-terminal-bg: #ffffff;
+  --delo-terminal-text: #1e1e1e;
+}
+
+:root[data-delo-theme="wordpress-dark"] {
+  --delo-bg: #000000;
+  --delo-surface: #1e1e1e;
+  --delo-surface-hover: #2f2f2f;
+  --delo-text: #ffffff;
+  --delo-muted: #cccccc;
+  --delo-border: #2f2f2f;
+  --delo-accent: #3858e9;
+  --delo-error: #f86368;
+  --delo-selection: rgba(56, 88, 233, 0.34);
+  --delo-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.5);
+  --delo-terminal-bg: #000000;
+  --delo-terminal-text: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--delo-bg);
+  color: var(--delo-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+.delo-computer-page {
+  position: relative;
+  height: 100%;
+}
+
+.delo-status {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 12px 16px;
+  color: var(--delo-muted);
+  font: 12px/1.5 "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+
+.delo-status.is-error {
+  color: var(--delo-error);
+}
+
+.delo-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.delo-terminal {
+  padding: 8px;
+  background: var(--delo-terminal-bg);
+}
+
+.delo-framebuffer,
+.delo-kms {
+  background: #000000;
+  object-fit: contain;
+}
+
+.delo-framebuffer:focus,
+.delo-kms canvas:focus {
+  outline: none;
+}
+
+.delo-kms {
+  position: relative;
+}
+
+.delo-kms-canvas,
+.delo-kms-cursor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.delo-kms-cursor {
+  pointer-events: none;
+}
+
+.delo-web iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.delo-web-message {
+  margin: 0;
+  padding: 16px;
+  color: var(--delo-muted);
+  font: 12px/1.5 "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+
+.delo-surface[hidden],
+.delo-web [hidden],
+.delo-panel [hidden],
+.delo-panel[hidden],
+.delo-fab[hidden],
+.delo-toolbar[hidden],
+.delo-tool[hidden] {
+  display: none;
+}
+
+.delo-fab,
+.delo-toolbar,
+.delo-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10;
+  background: var(--delo-surface);
+}
+
+.delo-fab,
+.delo-toolbar {
+  border: none;
+  border-radius: 9px;
+  box-shadow: var(--delo-shadow);
+}
+
+.delo-panel {
+  border: 1px solid var(--delo-border);
+  box-shadow: var(--delo-shadow);
+}
+
+.delo-fab {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.delo-toolbar {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 6px;
+}
+
+.delo-toolbar-section {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.delo-toolbar-section:not(:has(> :not([hidden]))) {
+  display: none;
+}
+
+.delo-toolbar-section:has(> :not([hidden])) ~ .delo-toolbar-section::before {
+  content: "";
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--delo-border);
+}
+
+.delo-tool {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--delo-text);
+  cursor: pointer;
+}
+
+.delo-tool:hover {
+  background: var(--delo-surface-hover);
+}
+
+.delo-tool:focus-visible,
+.delo-fab:focus-visible {
+  outline: 2px solid var(--delo-accent);
+  outline-offset: 2px;
+}
+
+.delo-tool[aria-pressed="true"] {
+  color: var(--delo-accent);
+}
+
+.delo-tool.has-badge {
+  position: relative;
+}
+
+.delo-tool.has-badge::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--delo-accent);
+}
+
+.delo-tool svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.delo-tool svg.delo-filled,
+.delo-tool .delo-filled-path {
+  fill: currentColor;
+  stroke: none;
+}
+
+.delo-fab img,
+.delo-tool-mark img {
+  width: 18px;
+  height: 18px;
+}
+
+.delo-panel {
+  bottom: 76px;
+  width: min(560px, calc(100vw - 40px));
+  max-height: 50vh;
+  overflow: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font: 12px/1.5 "JetBrains Mono", "SF Mono", Menlo, monospace;
+  display: grid;
+  gap: 8px;
+}
+
+.delo-processes {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.delo-processes th {
+  color: var(--delo-muted);
+  font-weight: normal;
+  text-align: left;
+}
+
+.delo-processes th,
+.delo-processes td {
+  padding: 2px 12px 2px 0;
+  white-space: nowrap;
+}
+
+.delo-processes td:last-child {
+  width: 100%;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.delo-panel-error {
+  color: var(--delo-error);
+}
+
+.delo-panel p {
+  margin: 0;
+}
+
+.delo-field {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--delo-border);
+  border-radius: 4px;
+  background: var(--delo-bg);
+  color: var(--delo-text);
+  font: inherit;
+}
+
+.delo-action {
+  justify-self: start;
+  padding: 6px 12px;
+  border: 1px solid var(--delo-border);
+  border-radius: 4px;
+  background: var(--delo-surface);
+  color: var(--delo-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.delo-action:hover:not(:disabled) {
+  background: var(--delo-surface-hover);
+}
+
+.delo-action:disabled {
+  color: var(--delo-muted);
+  cursor: default;
+}
+
+.delo-accept {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 16px;
+  border: 1px solid var(--delo-border);
+  border-radius: 8px;
+  background: var(--delo-surface);
+  color: var(--delo-text);
+  box-shadow: var(--delo-shadow);
+  font: 12px/1.5 "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+
+.delo-accept::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.delo-accept-title {
+  margin: 0 0 12px;
+  font: inherit;
+  font-weight: 600;
+}
+
+.delo-accept-rows {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0 0 16px;
+}
+
+.delo-accept-rows dt {
+  color: var(--delo-muted);
+}
+
+.delo-accept-rows dd {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.delo-accept-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.delo-network-offline,
+.delo-network-online,
+.delo-network-join {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.delo-network-join,
+.delo-network-link {
+  flex: 1 1 240px;
+}
+
+.delo-network-invitation {
+  flex: 1;
+}
+
+.delo-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.delo-batch,
+.delo-output {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.delo-batch > :first-child,
+.delo-output > :first-child {
+  flex: 1;
+  word-break: break-all;
+}
+
+.delo-batch-status,
+.delo-panel-empty,
+.delo-share-status,
+.delo-network-status {
+  color: var(--delo-muted);
+}
+
+.delo-batch.is-failed .delo-batch-status,
+.delo-network-status.is-error {
+  color: var(--delo-error);
+}

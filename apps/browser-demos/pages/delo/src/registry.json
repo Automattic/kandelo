@@ -1,0 +1,3085 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "name": "@mho22/raytracer",
+      "type": "image",
+      "description": "A ray tracer that renders a 3D scene.",
+      "vfs": "https://responsive-cloud.space.fast/raytracer.vfs",
+      "profile": "raytracer"
+    },
+    {
+      "name": "@storytold/photocraft",
+      "type": "image",
+      "description": "A photo editor written from scratch in Rust, with layers, masks, brushes and PSD files.",
+      "vfs": "https://photocraft.space.fast/photocraft.vfs.zst",
+      "profile": "photocraft"
+    },
+    {
+      "name": "@storytold/vectorcraft",
+      "type": "image",
+      "description": "A vector graphics editor written in Rust.",
+      "vfs": "https://vectorcraft.space.fast/vectorcraft.vfs.zst",
+      "profile": "vectorcraft"
+    },
+    {
+      "name": "@storytold/wordcraft",
+      "type": "image",
+      "description": "A word processor written in Rust.",
+      "vfs": "https://wordcraft.space.fast/wordcraft.vfs.zst",
+      "profile": "wordcraft"
+    },
+    {
+      "name": "@storytold/gridcraft",
+      "type": "image",
+      "description": "A spreadsheet written in Rust.",
+      "vfs": "https://gridcraft.space.fast/gridcraft.vfs.zst",
+      "profile": "gridcraft"
+    },
+    {
+      "name": "@mho22/raytracer-spacefast",
+      "type": "app",
+      "description": "The ray tracer on its own Kandelo deployment.",
+      "url": "https://responsive-cloud.space.fast/kandelo/?vfs=/raytracer.vfs"
+    },
+    {
+      "name": "base-files",
+      "type": "binary",
+      "description": "The account files: the root user, the nobody user that services drop to, their groups and root's home directory.",
+      "provide": [
+        "root-account"
+      ],
+      "files": [
+        {
+          "to": "/etc/passwd",
+          "content": "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/nonexistent:/sbin/nologin\n"
+        },
+        {
+          "to": "/etc/group",
+          "content": "root:x:0:\nnobody:x:65534:\n"
+        },
+        {
+          "to": "/etc/shadow",
+          "content": "root:*:0:0:99999:7:::\n",
+          "mode": "600"
+        },
+        {
+          "to": "/root/.profile",
+          "content": "export PATH=/usr/local/bin:/usr/bin:/bin\n"
+        },
+        {
+          "to": "/etc/profile",
+          "content": "for script in /etc/profile.d/*.sh; do\n  [ -r \"$script\" ] && . \"$script\"\ndone\nunset script\n"
+        }
+      ]
+    },
+    {
+      "name": "bash",
+      "type": "binary",
+      "description": "The GNU Bourne-Again shell. Reads command lines and runs programs; also answers as /bin/sh.",
+      "provide": [
+        "init",
+        "shell"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/bash",
+          "from": "programs/wasm32/bash.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/bash",
+          "type": "symlink",
+          "from": "/usr/bin/bash"
+        },
+        {
+          "to": "/bin/sh",
+          "type": "symlink",
+          "from": "/usr/bin/bash"
+        },
+        {
+          "to": "/usr/bin/sh",
+          "type": "symlink",
+          "from": "/usr/bin/bash"
+        }
+      ]
+    },
+    {
+      "name": "dash",
+      "type": "binary",
+      "description": "A small shell with only the POSIX features.",
+      "provide": [
+        "init",
+        "shell"
+      ],
+      "files": [
+        {
+          "to": "/bin/dash",
+          "from": "programs/wasm32/dash.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/bin/dash",
+          "type": "symlink",
+          "from": "/bin/dash"
+        }
+      ]
+    },
+    {
+      "name": "dinit",
+      "type": "binary",
+      "description": "A service manager: dinit starts the services in /etc/dinit.d and restarts them when they fail, dinitctl controls them, and dinitcheck checks their files. A computer with dinit starts it at boot. Run: dinitctl -p /run/dinitctl list",
+      "files": [
+        {
+          "to": "/sbin/dinit",
+          "from": "programs/wasm32/dinit/dinit.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/sbin/dinitctl",
+          "from": "programs/wasm32/dinit/dinitctl.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/sbin/dinitcheck",
+          "from": "programs/wasm32/dinit/dinitcheck.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "type = internal\n"
+        },
+        {
+          "to": "/run",
+          "type": "directory"
+        },
+        {
+          "to": "/var/log",
+          "type": "directory"
+        }
+      ]
+    },
+    {
+      "name": "coreutils",
+      "type": "binary",
+      "description": "The GNU core utilities: ls, cp, mv, cat, mkdir, rm and about a hundred more commands.",
+      "files": [
+        {
+          "to": "/usr/bin/coreutils",
+          "from": "programs/wasm32/coreutils.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/coreutils",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/[",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/[",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/arch",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/arch",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/b2sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/b2sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/base32",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/base32",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/base64",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/base64",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/basename",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/basename",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/basenc",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/basenc",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/cat",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/cat",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/chcon",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/chcon",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/chgrp",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/chgrp",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/chmod",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/chmod",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/chown",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/chown",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/chroot",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/chroot",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/cksum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/cksum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/comm",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/comm",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/cp",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/cp",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/csplit",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/csplit",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/cut",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/cut",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/date",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/date",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/dd",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/dd",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/df",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/df",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/dir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/dir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/dircolors",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/dircolors",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/dirname",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/dirname",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/du",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/du",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/echo",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/echo",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/env",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/env",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/expand",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/expand",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/expr",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/expr",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/factor",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/factor",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/false",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/false",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/fmt",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/fmt",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/fold",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/fold",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/groups",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/groups",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/head",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/head",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/hostid",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/hostid",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/id",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/id",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/install",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/install",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/join",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/join",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/link",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/link",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/ln",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/ln",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/logname",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/logname",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/ls",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/ls",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/md5sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/md5sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/mkdir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/mkdir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/mkfifo",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/mkfifo",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/mknod",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/mknod",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/mktemp",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/mktemp",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/mv",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/mv",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/nice",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/nice",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/nl",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/nl",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/nohup",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/nohup",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/nproc",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/nproc",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/numfmt",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/numfmt",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/od",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/od",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/paste",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/paste",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/pathchk",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/pathchk",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/pr",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/pr",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/printenv",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/printenv",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/printf",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/printf",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/ptx",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/ptx",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/pwd",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/pwd",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/readlink",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/readlink",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/realpath",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/realpath",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/rm",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/rm",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/rmdir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/rmdir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/runcon",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/runcon",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/seq",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/seq",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sha1sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sha1sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sha224sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sha224sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sha256sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sha256sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sha384sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sha384sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sha512sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sha512sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/shred",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/shred",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/shuf",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/shuf",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sleep",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sleep",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sort",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sort",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/split",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/split",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/stat",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/stat",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/stty",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/stty",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sum",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/sync",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/sync",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/tac",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/tac",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/tail",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/tail",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/tee",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/tee",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/test",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/test",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/timeout",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/timeout",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/touch",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/touch",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/tr",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/tr",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/true",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/true",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/truncate",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/truncate",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/tsort",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/tsort",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/tty",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/tty",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/uname",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/uname",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/unexpand",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/unexpand",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/uniq",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/uniq",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/unlink",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/unlink",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/vdir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/vdir",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/wc",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/wc",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/whoami",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/whoami",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/usr/bin/yes",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        },
+        {
+          "to": "/bin/yes",
+          "type": "symlink",
+          "from": "/usr/bin/coreutils"
+        }
+      ]
+    },
+    {
+      "name": "login",
+      "type": "binary",
+      "description": "Asks for a user name and password, then starts that user's shell. Add maker-account for an account to log in with.",
+      "provide": [
+        "init"
+      ],
+      "need": [
+        "shell",
+        "user"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/login",
+          "from": "programs/wasm32/login.wasm",
+          "mode": "4755"
+        }
+      ]
+    },
+    {
+      "name": "maker-account",
+      "type": "pipeline",
+      "description": "Adds the account maker, password kandelo, and its home directory /home/maker.",
+      "use": [
+        "base-files"
+      ],
+      "provide": [
+        "user"
+      ],
+      "files": [
+        {
+          "to": "/etc/passwd",
+          "content": "maker:x:1000:1000:maker:/home/maker:/bin/sh\n"
+        },
+        {
+          "to": "/etc/group",
+          "content": "maker:x:1000:\n"
+        },
+        {
+          "to": "/etc/shadow",
+          "content": "maker:$6$kandelo$DKNPruix37YeUx9j4kJIGJ2NvXdqzxDr5b1D3xJZzbwFsNYuep8j3AtxB7OaTD6HWnz/adonyTamRx4XQwJ06/:0:0:99999:7:::\n"
+        },
+        {
+          "to": "/home/maker",
+          "type": "directory",
+          "owner": "1000:1000"
+        }
+      ]
+    },
+    {
+      "name": "ncurses",
+      "type": "binary",
+      "description": "The terminfo database that full-screen programs read to draw on a terminal, and the ncurses tools: clear, reset, tput.",
+      "files": [
+        {
+          "to": "/usr/bin/clear",
+          "from": "programs/wasm32/ncurses/clear.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/clear",
+          "type": "symlink",
+          "from": "/usr/bin/clear"
+        },
+        {
+          "to": "/usr/bin/reset",
+          "from": "programs/wasm32/ncurses/reset.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/reset",
+          "type": "symlink",
+          "from": "/usr/bin/reset"
+        },
+        {
+          "to": "/usr/bin/tset",
+          "from": "programs/wasm32/ncurses/tset.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/tset",
+          "type": "symlink",
+          "from": "/usr/bin/tset"
+        },
+        {
+          "to": "/usr/bin/tput",
+          "from": "programs/wasm32/ncurses/tput.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/tput",
+          "type": "symlink",
+          "from": "/usr/bin/tput"
+        },
+        {
+          "to": "/usr/bin/tabs",
+          "from": "programs/wasm32/ncurses/tabs.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/tabs",
+          "type": "symlink",
+          "from": "/usr/bin/tabs"
+        },
+        {
+          "to": "/usr/bin/tic",
+          "from": "programs/wasm32/ncurses/tic.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/tic",
+          "type": "symlink",
+          "from": "/usr/bin/tic"
+        },
+        {
+          "to": "/usr/bin/infocmp",
+          "from": "programs/wasm32/ncurses/infocmp.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/infocmp",
+          "type": "symlink",
+          "from": "/usr/bin/infocmp"
+        },
+        {
+          "to": "/usr/bin/toe",
+          "from": "programs/wasm32/ncurses/toe.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/toe",
+          "type": "symlink",
+          "from": "/usr/bin/toe"
+        },
+        {
+          "to": "/usr/bin/captoinfo",
+          "from": "programs/wasm32/ncurses/captoinfo.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/captoinfo",
+          "type": "symlink",
+          "from": "/usr/bin/captoinfo"
+        },
+        {
+          "to": "/usr/bin/infotocap",
+          "from": "programs/wasm32/ncurses/infotocap.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/infotocap",
+          "type": "symlink",
+          "from": "/usr/bin/infotocap"
+        },
+        {
+          "to": "/usr",
+          "type": "directory",
+          "from": "programs/wasm32/ncurses/terminfo.zip"
+        }
+      ]
+    },
+    {
+      "name": "less",
+      "type": "binary",
+      "description": "Shows a file one screen at a time, with search and scrolling.",
+      "use": [
+        "ncurses"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/less",
+          "from": "programs/wasm32/less.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "nano",
+      "type": "binary",
+      "description": "A small, simple text editor for the terminal.",
+      "use": [
+        "ncurses"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/nano",
+          "from": "programs/wasm32/nano.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "grep",
+      "type": "binary",
+      "description": "Prints the lines of a file that match a pattern.",
+      "files": [
+        {
+          "to": "/usr/bin/grep",
+          "from": "programs/wasm32/grep.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/grep",
+          "type": "symlink",
+          "from": "/usr/bin/grep"
+        },
+        {
+          "to": "/usr/bin/egrep",
+          "type": "symlink",
+          "from": "/usr/bin/grep"
+        },
+        {
+          "to": "/bin/egrep",
+          "type": "symlink",
+          "from": "/usr/bin/grep"
+        },
+        {
+          "to": "/usr/bin/fgrep",
+          "type": "symlink",
+          "from": "/usr/bin/grep"
+        },
+        {
+          "to": "/bin/fgrep",
+          "type": "symlink",
+          "from": "/usr/bin/grep"
+        }
+      ]
+    },
+    {
+      "name": "sed",
+      "type": "binary",
+      "description": "A stream editor: changes text line by line with a script.",
+      "files": [
+        {
+          "to": "/usr/bin/sed",
+          "from": "programs/wasm32/sed.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/sed",
+          "type": "symlink",
+          "from": "/usr/bin/sed"
+        }
+      ]
+    },
+    {
+      "name": "unzip",
+      "type": "binary",
+      "description": "Lists, tests and extracts the files of a ZIP archive.",
+      "files": [
+        {
+          "to": "/usr/bin/unzip",
+          "from": "programs/wasm32/unzip.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/unzip",
+          "type": "symlink",
+          "from": "/usr/bin/unzip"
+        },
+        {
+          "to": "/usr/bin/zipinfo",
+          "type": "symlink",
+          "from": "/usr/bin/unzip"
+        },
+        {
+          "to": "/bin/zipinfo",
+          "type": "symlink",
+          "from": "/usr/bin/unzip"
+        },
+        {
+          "to": "/usr/bin/funzip",
+          "type": "symlink",
+          "from": "/usr/bin/unzip"
+        },
+        {
+          "to": "/bin/funzip",
+          "type": "symlink",
+          "from": "/usr/bin/unzip"
+        }
+      ]
+    },
+    {
+      "name": "lha",
+      "type": "binary",
+      "description": "Extracts LHA and LZH archives.",
+      "files": [
+        {
+          "to": "/usr/bin/lha",
+          "from": "programs/wasm32/lha.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/lha",
+          "type": "symlink",
+          "from": "/usr/bin/lha"
+        }
+      ]
+    },
+    {
+      "name": "findutils",
+      "type": "binary",
+      "description": "The GNU find utilities: find searches a directory tree, xargs builds command lines from its input.",
+      "files": [
+        {
+          "to": "/usr/bin/find",
+          "from": "programs/wasm32/findutils/find.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/find",
+          "type": "symlink",
+          "from": "/usr/bin/find"
+        },
+        {
+          "to": "/usr/bin/xargs",
+          "from": "programs/wasm32/findutils/xargs.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/bin/xargs",
+          "type": "symlink",
+          "from": "/usr/bin/xargs"
+        }
+      ]
+    },
+    {
+      "name": "fbdoom",
+      "type": "binary",
+      "description": "The Doom engine on the framebuffer. It needs a game file: the doom pipeline adds the free shareware episode.",
+      "device": [
+        "fb0"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/fbdoom",
+          "from": "programs/wasm32/fbdoom/fbdoom.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "doom",
+      "type": "pipeline",
+      "description": "Doom with the free shareware episode, which downloads when the game first reads it. The game starts when the computer starts.",
+      "use": [
+        "fbdoom",
+        "bash",
+        "base-files"
+      ],
+      "files": [
+        {
+          "to": "/usr/share/doom/doom1.wad",
+          "from": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
+          "lazy": true
+        },
+        {
+          "to": "/etc/profile.d/doom.sh",
+          "content": "fbdoom -iwad /usr/share/doom/doom1.wad\n"
+        }
+      ]
+    },
+    {
+      "name": "doom-multiplayer",
+      "type": "pipeline",
+      "description": "Doom over a network session, with the free shareware episode. Create a session in the network panel and share its link. Run doom-host on one computer, and doom-join with the host's address on each other one.",
+      "use": [
+        "fbdoom",
+        "bash"
+      ],
+      "enable": [
+        "network"
+      ],
+      "files": [
+        {
+          "to": "/usr/share/doom/doom1.wad",
+          "from": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
+          "lazy": true
+        },
+        {
+          "to": "/usr/local/bin/doom-host",
+          "content": "#!/bin/sh\nexec /usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes \"${1:-2}\"\n",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/local/bin/doom-join",
+          "content": "#!/bin/sh\nexec /usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -connect \"$1\"\n",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "tyrquake",
+      "type": "binary",
+      "description": "The TyrQuake engine on the framebuffer. It needs the game data: the quake pipeline adds the free shareware episode.",
+      "device": [
+        "fb0"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/quake",
+          "from": "programs/wasm32/tyrquake/quake.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "quake",
+      "type": "pipeline",
+      "description": "Quake with the free shareware episode. The first start extracts the game data. Run: quake",
+      "use": [
+        "tyrquake",
+        "coreutils",
+        "findutils",
+        "unzip",
+        "lha"
+      ],
+      "need": [
+        "shell"
+      ],
+      "files": [
+        {
+          "to": "/usr/local/bin/quake",
+          "content": "#!/bin/sh\nset -e\nBASE=/usr/share/quake\nif [ ! -f \"$BASE/id1/pak0.pak\" ]; then\n    /usr/local/bin/quake-data shareware \"$BASE/quake106.zip\" \"$BASE\"\nfi\nexec /usr/bin/quake -basedir \"$BASE\" \"$@\"\n",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/local/bin/quake-data",
+          "from": "programs/wasm32/tyrquake/quake-data",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/quake/quake106.zip",
+          "from": "https://cdn.jsdelivr.net/gh/Jason2Brownlee/QuakeOfficialArchive@30c29bd5907fd999b0bb8e52c941ef770b4d3ba8/bin/quake106.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "modeset",
+      "type": "binary",
+      "description": "Draws a test pattern on the KMS display through /dev/dri/card0. Run: modeset",
+      "device": [
+        "card0"
+      ],
+      "files": [
+        {
+          "to": "/usr/local/bin/modeset",
+          "from": "programs/wasm32/modeset.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "sdl2",
+      "type": "binary",
+      "description": "A GLSL shader playground on the KMS display: an editor beside the rendered shader. F1 and F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S saves, Escape quits. Run: sdl2",
+      "device": [
+        "card0"
+      ],
+      "files": [
+        {
+          "to": "/usr/local/bin/sdl2",
+          "from": "programs/wasm32/sdl2.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "shader-playground",
+      "type": "pipeline",
+      "description": "The sdl2 shader playground with its presets: three image shaders and five sound shaders, which Ctrl+L cycles. Run: sdl2",
+      "use": [
+        "sdl2"
+      ],
+      "files": [
+        {
+          "to": "/usr/share/shaders/image/audio_bars.frag",
+          "content": "// Preset: a 128-bar FFT visualizer driven by the chip synth.\n// The host wraps this body with the GLSL ES 1.0 Shadertoy template from\n// programs/sdl2/renderer.c, which declares the uniforms used below\n// (iResolution, iTime, iAudio). iAudio is a 128x1 GL_LUMINANCE texture\n// holding the live magnitude spectrum (see programs/sdl2/audio.c):\n// texture2D(iAudio, vec2(x, 0.0)).r is the level at normalized\n// frequency x in [0, 1].\n//\n// Load this in the playground (or let it boot as the right-pane preset)\n// and the bars must visibly react to the synth — bass on the left,\n// highs on the right. A flat bar row means the audio ring is silent\n// (e.g. muted via Ctrl+M, or a headless GL context with no audio pull).\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 uv = fragCoord / iResolution.xy;\n\n  // Sample the spectrum at this column. A small smoothing offset reads\n  // two neighboring frequencies so the LINEAR-filtered texture gives\n  // continuous bar heights rather than 128 hard steps.\n  float level = texture2D(iAudio, vec2(uv.x, 0.0)).r;\n\n  // Bar: lit below the level line, dark above. A bright cap near the\n  // top of each bar reads as a peak meter.\n  float bar = step(uv.y, level);\n  float cap = smoothstep(level - 0.02, level, uv.y)\n            * step(uv.y, level + 0.02);\n\n  // Hue sweeps blue->magenta across the spectrum; brightness rises with\n  // the bar level so loud bands glow.\n  vec3 lowCol  = vec3(0.10, 0.45, 1.00);\n  vec3 highCol = vec3(1.00, 0.25, 0.65);\n  vec3 barCol  = mix(lowCol, highCol, uv.x) * (0.35 + 0.65 * level);\n\n  vec3 bg = vec3(0.03, 0.03, 0.06);\n  vec3 col = mix(bg, barCol, bar);\n  col += cap * vec3(1.0);  // white peak cap\n\n  fragColor = vec4(col, 1.0);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/image/plasma.frag",
+          "content": "// Default Shadertoy-style image shader: a plasma over the right pane.\n// The host wraps this body with the GLSL ES 1.0 Shadertoy template\n// from programs/sdl2/main.c (FRAG_PREFIX / FRAG_SUFFIX), so this file\n// only contains the `mainImage(out vec4 fragColor, in vec2 fragCoord)`\n// entry point that the wrapper calls.\n//\n// Kept in sync with the built-in PLASMA_SRC fallback in\n// programs/sdl2/main.c — if you edit one, edit both. The duplication\n// is so the binary still renders when no VFS shader is staged (e.g.\n// host/test/sdl2.test.ts under NodeKernelHost).\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n  vec2 uv = fragCoord / iResolution.xy;\n  float r = 0.5 + 0.5 * sin(iTime + uv.x * 6.2831);\n  float g = 0.5 + 0.5 * sin(iTime * 1.3 + uv.y * 6.2831);\n  float b = 0.5 + 0.5 * sin(iTime * 0.7 + (uv.x + uv.y) * 6.2831);\n  fragColor = vec4(r, g, b, 1.0);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/image/tunnelwisp.frag",
+          "content": "// CC0: Trailing the Twinkling Tunnelwisp\n//  A bit of Saturday coding (also Norway's Constitution Day).\n//  Some artifacts remain, but it's good enough for my standards.\n//\n//  Music by Pestis created for Cassini's Cosmic Conclusion\n//   https://demozoo.org/productions/367582/\n//\n//  Original (CC0) Shadertoy: https://www.shadertoy.com/view/WfcGWj\n//\n// Ported verbatim to GLSL ES 1.00 (our playground is WebGL1, the original\n// is WebGL2/ES 3.00). The ONLY changes are dialect-level and do not alter\n// the image: locals are zero-initialized, the golfed comma-operator\n// for-loop is expanded into an equivalent explicit loop (identical math,\n// identical order), and tanh() — absent in ES 1.00 — is provided by the\n// tanh4() helper below. Everything else is the original code.\n\n// Distance field for gyroid, adapted from Paul Karlik's \"Gyroid Travel\"\n// in KodeLife. Tweaked slightly for this effect.\nfloat g(vec4 p, float s) {\n  // p.x=-abs(p.x);  // Makes it nicer (IMO) but costs bytes!\n  return abs(dot(sin(p *= s), cos(p.zxwy)) - 1.) / s;\n}\n\n// tanh is a GLSL ES 3.00 builtin; emulate it for ES 1.00. Input is clamped\n// so exp() can't overflow to Inf (which would yield NaN); tanh saturates\n// well before |x|=15 so the clamp is invisible in the output.\nvec4 tanh4(vec4 x) {\n  x = clamp(x, -15., 15.);\n  vec4 e = exp(2. * x);\n  return (e - 1.) / (e + 1.);\n}\n\nvoid mainImage(out vec4 O, vec2 C) {\n  float i = 0., d = 0., z = 0., s = 0., T = iTime;\n  vec4 o = vec4(0.), q = vec4(0.), p = vec4(0.), U = vec4(2, 1, 0, 3);\n  vec2 r = iResolution.xy;\n\n  // Step through the scene, up to 78 steps. (Original used a single golfed\n  // for-loop with all of the following packed into its comma-separated\n  // increment clause; expanded here for ES 1.00 — same computation.)\n  for (int n = 0; n < 78; n++) {\n    // Accumulate glow — brighter and sharper if not mirrored (above axis).\n    o += (s > 0. ? 1. : .1) * p.w * p / max(s > 0. ? d : d * d * d, 5E-4);\n\n    // Advance along the ray by current distance estimate (+ epsilon).\n    // The epsilon makes the cave walls somewhat translucent.\n    z += d + 5E-4;\n    // Compute ray direction, scaled by distance.\n    q = vec4(normalize(vec3(C - .5 * r, r.y)) * z, .2);\n    // Traverse through the cave.\n    q.z += T / 3E1;\n    // Save sign before mirroring.\n    s = q.y + .1;\n    // Creates the water reflection effect.\n    q.y = abs(s);\n    p = q;\n    p.y -= .11;\n    // Twist cave walls based on depth — the rotation matrix\n    //   mat2(cos(a), sin(a), -sin(a), cos(a)) is approximated with\n    //   mat2(cos(a + vec4(0,11,33,0))).\n    p.xy *= mat2(cos(11. * U.zywz - 2. * p.z));\n    p.y -= .2;\n    // Combine gyroid fields at two scales for more detail.\n    d = abs(g(p, 8.) - g(p, 24.)) / 4.;\n    // Base glow color varies with distance from center.\n    p = 1. + cos(.7 * U + 5. * q.z);\n  }\n\n  // Add pulsing glow for the \"tunnelwisp\".\n  o += (1.4 + sin(T) * sin(1.7 * T) * sin(2.3 * T))\n       * 1E3 * U / length(q.xy);\n\n  // Apply tanh for soft tone mapping.\n  O = tanh4(o / 1E5);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/sound/chord.frag",
+          "content": "// Sound preset: a major-triad arpeggio.\n// Steps through the notes of a C-major chord (C–E–G–C) four times a\n// second, each note a plucked sine with a short decay envelope. Shows\n// distinct FFT peaks marching up the spectrum in the iAudio visualizer.\n// See programs/sdl2/sound_shader.c for the mainSound contract.\n//\n// Note: GLSL ES 1.00 fragment shaders don't allow dynamically-indexed\n// local arrays, so the ratio is picked with an if-chain rather than\n// array lookup.\n\nfloat ratio_for(float step) {\n  // Equal-temperament ratios for C, E, G, and the octave C.\n  if (step < 0.5) return 1.0;       // C\n  if (step < 1.5) return 1.2599;    // major third (E)\n  if (step < 2.5) return 1.4983;    // perfect fifth (G)\n  return 2.0;                       // octave C\n}\n\nvec2 mainSound(in float time) {\n  float base = 261.63;                            // C4\n  float step = floor(fract(time * 0.25) * 4.0);   // 0..3 over 4 s\n  float freq = base * ratio_for(step);\n\n  float note = fract(time * 4.0);   // 0..1 within each 1/4 s step\n  float env = exp(-5.0 * note);\n  float v = 0.4 * env * sin(6.2831853 * freq * time);\n  return vec2(v, v);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/sound/fm_bell.frag",
+          "content": "// Sound preset: an FM bell that retriggers once per second.\n// Two-operator frequency modulation — a sine carrier whose phase is\n// modulated by a higher-frequency sine. The modulation index and the\n// amplitude both decay across each one-second note (via fract(time)),\n// giving the bright-attack / mellow-tail timbre of a struck bell.\n// See programs/sdl2/sound_shader.c for the mainSound contract.\n\nvec2 mainSound(in float time) {\n  float note = fract(time);                 // 0..1 within each second\n  float carrier = 440.0;\n  float modulator = 880.0;\n  float index = 5.0 * exp(-3.0 * note);     // FM brightness decays\n  float env   = exp(-3.5 * note);           // amplitude decays\n  float phase = 6.2831853 * carrier * time\n              + index * sin(6.2831853 * modulator * time);\n  float v = 0.4 * env * sin(phase);\n  return vec2(v, v);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/sound/noise_sweep.frag",
+          "content": "// Sound preset: white noise under a slow amplitude sweep.\n// A cheap hash turns the per-sample time index into pseudo-random noise;\n// a slow LFO sweeps the level so the FFT visualizer shows a broadband\n// wash rising and falling. Good for confirming iAudio reacts across the\n// whole spectrum (vs the single bins a sine lights up).\n// See programs/sdl2/sound_shader.c for the mainSound contract.\n\nfloat hash(float n) { return fract(sin(n) * 43758.5453123); }\n\nvec2 mainSound(in float time) {\n  // ~quantize to a noise rate so adjacent samples decorrelate.\n  float n = hash(floor(time * 12000.0)) * 2.0 - 1.0;\n  float sweep = 0.5 + 0.5 * sin(6.2831853 * 0.2 * time);\n  float v = 0.3 * n * sweep;\n  return vec2(v, v);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/sound/sine.frag",
+          "content": "// Sound preset: a pure 220 Hz sine tone.\n// A \"sound shader\" supplies `vec2 mainSound(in float time)` returning the\n// (left, right) amplitude in [-1, 1] at `time` seconds. The host wraps\n// this body with the GLSL ES 1.0 sound template from\n// programs/sdl2/sound_shader.c, renders it to an FBO, reads it back, and\n// plays the decoded PCM through ALSA. The image shader's iAudio uniform\n// then visualizes this output's FFT — edit the sound, watch the picture.\n//\n// Kept in sync with BUILTIN_SOUND_SRC in programs/sdl2/main.c.\n\nvec2 mainSound(in float time) {\n  float v = 0.3 * sin(6.2831853 * 220.0 * time);\n  return vec2(v, v);\n}\n"
+        },
+        {
+          "to": "/usr/share/shaders/sound/tunnelwisp.frag",
+          "content": "// CC0: Trailing the Twinkling Tunnelwisp\n//  A bit of Saturday coding (also Norway's Constitution Day).\n//  Some artifacts remain, but it's good enough for my standards.\n//\n//  Music by Pestis created for Cassini's Cosmic Conclusion\n//   https://demozoo.org/productions/367582/\n//\n//  Original (CC0) Shadertoy: https://www.shadertoy.com/view/WfcGWj\n//\n// Ported verbatim to GLSL ES 1.00. Dialect-level changes only — the\n// synthesis math is unchanged:\n//   - Shadertoy's signature is mainSound(int samp, float time); the int\n//     sample index is unused here, and our host template calls\n//     mainSound(time), so the parameter is dropped.\n//   - Locals are zero-initialized (ES 1.00 has no implicit zero-init).\n//   - The golfed `for(c=3.;c<4.1;n+=c*=1.02)` inner loop is expanded into\n//     an explicit constant-bound loop producing the identical sequence.\n//\n// NOTE: this composition evolves over minutes, but our sound-shader buffer\n// is fixed (~2.73 s) and loops, so only the opening plays, repeating. The\n// image is continuously iTime-animated and is unaffected.\n\nvec2 mainSound(in float t) {\n  // Accumulator for the final sound output.\n  vec2 r = vec2(0.);\n\n  // a controls the overall progression; b is its fractional part.\n  for (float i = 1.; i < 4.; i++)\n  for (float j = 1.; j < 5.; j++) {\n    float a = t * j / 32. + i / 3., b = fract(a);\n\n    // n is the base frequency vector (slight stereo offset); m accumulates\n    // harmonics.\n    vec2 m = vec2(0.), n = vec2(t, t + 3.) + t / j;\n\n    // Sum sine harmonics with a gradually increasing frequency multiplier\n    // and 1/c amplitude falloff. (Original: for(c=3.;c<4.1;n+=c*=1.02).)\n    float c = 3.;\n    for (int k = 0; k < 16; k++) {\n      if (c >= 4.1) break;\n      m += sin(n * c) / c;\n      c *= 1.02;\n      n += c;\n    }\n\n    // Only contribute sound during the first part of the composition.\n    if (a < 9.)\n      r += sin(\n             m\n             + 4. * sin(t / j / 47.)\n               * sin(exp2(mod(a - b, 3.) / 6. + 8.5) * t * j * i + i + j)\n           )\n           * exp2(-b * 12. - 1. / b + 6. - (i + j) / 3.);\n  }\n\n  return r;\n}\n"
+        }
+      ]
+    },
+    {
+      "name": "scummvm",
+      "type": "binary",
+      "description": "ScummVM, with its themes and engines: runs classic adventure games from their original data files. The engines download when a game first needs them. Run: scummvm",
+      "device": [
+        "card0"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/scummvm",
+          "from": "programs/wasm32/scummvm/scummvm.wasm",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/scummvm/scummremastered.zip",
+          "from": "programs/wasm32/scummvm/share/scummvm/scummremastered.zip",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/scummvm/scummmodern.zip",
+          "from": "programs/wasm32/scummvm/share/scummvm/scummmodern.zip",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/scummvm/scummclassic.zip",
+          "from": "programs/wasm32/scummvm/share/scummvm/scummclassic.zip",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/scummvm/gui-icons.dat",
+          "from": "programs/wasm32/scummvm/share/scummvm/gui-icons.dat",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/scummvm/fonts.dat",
+          "from": "programs/wasm32/scummvm/share/scummvm/fonts.dat",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libscumm.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libscumm.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libsky.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libsky.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libdrascula.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libdrascula.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libdreamweb.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libdreamweb.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libqueen.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libqueen.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libgot.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libgot.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libgriffon.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libgriffon.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/liblure.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/liblure.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libadl.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libadl.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libparallaction.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libparallaction.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libcge.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libcge.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libcge2.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libcge2.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libsludge.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libsludge.so",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/scummvm/libwage.so",
+          "from": "programs/wasm32/scummvm/lib/scummvm/libwage.so",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "scummvm-kms",
+      "type": "pipeline",
+      "description": "ScummVM from the terminal: a start script that keeps its settings in ~/scummvm.ini, plays sound through /dev/dsp, and draws on the KMS display when no Wayland desktop runs. Run: scummvm",
+      "use": [
+        "scummvm"
+      ],
+      "need": [
+        "shell"
+      ],
+      "files": [
+        {
+          "to": "/usr/local/bin/scummvm",
+          "content": "#!/bin/sh\nINI=\"$HOME/scummvm.ini\"\nif [ ! -f \"$INI\" ]; then\n    printf '[scummvm]\\ngui_scale=100\\n' > \"$INI\"\nfi\nexport SDL_AUDIODRIVER=dsp\nif [ -z \"${XDG_RUNTIME_DIR:-}\" ] || [ ! -S \"$XDG_RUNTIME_DIR/${WAYLAND_DISPLAY:-wayland-0}\" ]; then\n    export SDL_VIDEODRIVER=kmsdrm\n    export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1\nfi\nexec /usr/bin/scummvm --config=\"$INI\" \"$@\"\n",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "love",
+      "type": "binary",
+      "description": "The LÖVE 2D game engine on the KMS display. The engine downloads when it first starts. Run: love <game directory>",
+      "device": [
+        "card0"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/love",
+          "from": "programs/wasm32/love/love.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "love-games",
+      "type": "pipeline",
+      "description": "LÖVE games: Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. The games download when they first start. Run: love /usr/share/love/examples/pong",
+      "use": [
+        "love"
+      ],
+      "files": [
+        {
+          "to": "/usr",
+          "type": "directory",
+          "from": "programs/wasm32/love/share/love-examples.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "freeciv",
+      "type": "binary",
+      "description": "Freeciv on the KMS display, with its networked server. Freeciv refuses root: log in as maker. The game downloads when it first starts. Run: freeciv-play",
+      "use": [
+        "coreutils",
+        "login"
+      ],
+      "need": [
+        "shell"
+      ],
+      "device": [
+        "card0"
+      ],
+      "files": [
+        {
+          "to": "/usr",
+          "type": "directory",
+          "from": "programs/wasm32/freeciv-browser-bundle/freeciv.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "xkeyboard-config",
+      "type": "binary",
+      "description": "The keyboard layouts, rules and symbols libxkbcommon reads from /usr/share/X11/xkb. A Wayland compositor or client compiles its keymap from them. They download when a program first reads them.",
+      "files": [
+        {
+          "to": "/usr/share/X11/xkb",
+          "type": "directory",
+          "from": "programs/wasm32/wayland-demo/xkeyboard-config.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "libinput-quirks",
+      "type": "binary",
+      "description": "libinput's device quirks in /usr/share/libinput, which a compositor reads when it opens an input device.",
+      "files": [
+        {
+          "to": "/usr/share/libinput",
+          "type": "directory",
+          "from": "programs/wasm32/wayland-demo/libinput-quirks.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "wlcompositor",
+      "type": "binary",
+      "description": "Kandelo's tiling Wayland compositor on the KMS display. It takes its configuration from $WLC_CONFIG and its layout from $WLC_LAYOUT, and serves the Hyprland IPC socket. Run: wlcompositor",
+      "use": [
+        "xkeyboard-config",
+        "libinput-quirks"
+      ],
+      "device": [
+        "card0"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/wlcompositor",
+          "from": "programs/wasm32/wayland-demo/wlcompositor.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "quickshell",
+      "type": "binary",
+      "description": "Quickshell, a desktop shell written in QML: it draws bars, launchers and lock screens as Wayland clients. Run: quickshell -p <shell.qml>",
+      "files": [
+        {
+          "to": "/usr/bin/quickshell",
+          "from": "programs/wasm32/quickshell.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "dbus",
+      "type": "binary",
+      "description": "The D-Bus message bus daemon, with dbus-send and dbus-monitor. Run: dbus-daemon --session",
+      "files": [
+        {
+          "to": "/usr/bin/dbus-daemon",
+          "from": "programs/wasm32/dbus/dbus-daemon.wasm",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/bin/dbus-send",
+          "from": "programs/wasm32/dbus/dbus-send.wasm",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/bin/dbus-monitor",
+          "from": "programs/wasm32/dbus/dbus-monitor.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "foot",
+      "type": "binary",
+      "description": "foot, a Wayland terminal emulator. Run it inside a Wayland desktop: foot",
+      "files": [
+        {
+          "to": "/usr/bin/foot",
+          "from": "programs/wasm32/foot.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "kclipd",
+      "type": "binary",
+      "description": "The host clipboard agent, which turns text pasted from the host into the Wayland desktop's selection, and notify-send, which posts a desktop notification over D-Bus. Run them inside a Wayland desktop.",
+      "files": [
+        {
+          "to": "/usr/bin/kclipd",
+          "from": "programs/wasm32/wayland-demo/kclipd.wasm",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/bin/notify-send",
+          "from": "programs/wasm32/wayland-demo/notify-send.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "wlclock",
+      "type": "binary",
+      "description": "A clock window for a Wayland desktop. Run: wlclock",
+      "files": [
+        {
+          "to": "/usr/bin/wlclock",
+          "from": "programs/wasm32/wayland-demo/wlclock.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "wlpaint",
+      "type": "binary",
+      "description": "A paint program for a Wayland desktop. Run: wlpaint",
+      "files": [
+        {
+          "to": "/usr/bin/wlpaint",
+          "from": "programs/wasm32/wayland-demo/wlpaint.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "qtgallery",
+      "type": "binary",
+      "description": "The Qt widget gallery, a Qt Quick client for a Wayland desktop. Run: qtgallery",
+      "files": [
+        {
+          "to": "/usr/bin/qtgallery",
+          "from": "programs/wasm32/qtgallery.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "omarchy",
+      "type": "pipeline",
+      "description": "An Omarchy-style desktop on the Display: the tiling compositor, one Quickshell process for wallpaper, bar, launcher (Alt+G), menu (Alt+M) and lock screen (Alt+X), and foot as its terminal (Alt+Return). Alt+C opens the clock and Alt+P opens Paint. Run: omarchydesktop",
+      "use": [
+        "wlcompositor",
+        "quickshell",
+        "dbus",
+        "foot",
+        "kclipd",
+        "wlclock",
+        "wlpaint",
+        "bash",
+        "coreutils"
+      ],
+      "need": [
+        "root-account"
+      ],
+      "files": [
+        {
+          "to": "/usr/bin/omarchydesktop",
+          "from": "programs/wasm32/wayland-demo/omarchydesktop",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/share/kandelo",
+          "type": "directory",
+          "from": "programs/wasm32/wayland-demo/kandelo-desktop-data.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "node",
+      "type": "binary",
+      "description": "Node.js on SpiderMonkey, with npm and npx. Run: node",
+      "need": [
+        "shell"
+      ],
+      "files": [
+        {
+          "to": "/usr",
+          "type": "directory",
+          "from": "programs/wasm32/node.zip"
+        }
+      ]
+    },
+    {
+      "name": "nginx",
+      "type": "binary",
+      "description": "An HTTP server. The web-static pipeline runs it.",
+      "files": [
+        {
+          "to": "/usr/sbin/nginx",
+          "from": "programs/wasm32/nginx.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/etc/nginx/fastcgi_params",
+          "content": "fastcgi_param  QUERY_STRING       $query_string;\nfastcgi_param  REQUEST_METHOD     $request_method;\nfastcgi_param  CONTENT_TYPE       $content_type;\nfastcgi_param  CONTENT_LENGTH     $content_length;\nfastcgi_param  SCRIPT_NAME        $fastcgi_script_name;\nfastcgi_param  REQUEST_URI        $request_uri;\nfastcgi_param  DOCUMENT_URI       $document_uri;\nfastcgi_param  DOCUMENT_ROOT      $document_root;\nfastcgi_param  SERVER_PROTOCOL    $server_protocol;\nfastcgi_param  REQUEST_SCHEME     $scheme;\nfastcgi_param  GATEWAY_INTERFACE  CGI/1.1;\nfastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;\nfastcgi_param  REMOTE_ADDR        $remote_addr;\nfastcgi_param  REMOTE_PORT        $remote_port;\nfastcgi_param  SERVER_ADDR        $server_addr;\nfastcgi_param  SERVER_PORT        $server_port;\nfastcgi_param  SERVER_NAME        $server_name;\nfastcgi_param  REDIRECT_STATUS    200;\n"
+        }
+      ]
+    },
+    {
+      "name": "web-static",
+      "type": "pipeline",
+      "description": "Serves /srv/www/html with nginx on port 8080, shown on the Web device.",
+      "use": [
+        "base-files",
+        "dinit",
+        "nginx"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/etc/nginx/nginx.conf",
+          "content": "user nobody;\ndaemon off;\nmaster_process on;\nworker_processes 2;\nerror_log stderr info;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections 64;\n    use poll;\n}\n\nhttp {\n    access_log /dev/stderr;\n    client_body_temp_path /tmp/nginx_client_temp;\n    proxy_temp_path /tmp/nginx_proxy_temp;\n    fastcgi_temp_path /tmp/nginx_fastcgi_temp;\n\n    types {\n        text/html                             html htm;\n        text/css                              css;\n        text/javascript                       js;\n        application/json                      json;\n        image/png                             png;\n        image/jpeg                            jpg jpeg;\n        image/gif                             gif;\n        image/svg+xml                         svg;\n        application/octet-stream              bin;\n    }\n    default_type application/octet-stream;\n\n    server {\n        listen 8080;\n        server_name localhost;\n        root /srv/www/html;\n        include /etc/nginx/default.d/*.conf;\n    }\n}\n"
+        },
+        {
+          "to": "/srv/www/html/index.html",
+          "content": "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <title>nginx on Delo</title>\n</head>\n<body>\n  <h1>nginx serves this page</h1>\n  <p>Edit /srv/www/html/index.html and reload.</p>\n</body>\n</html>\n"
+        },
+        {
+          "to": "/etc/dinit.d/nginx",
+          "content": "type = process\ncommand = /usr/sbin/nginx -p /etc/nginx -c nginx.conf\nrestart = true\nrestart-delay = 2\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = nginx\n"
+        }
+      ]
+    },
+    {
+      "name": "redis",
+      "type": "binary",
+      "description": "The Redis key-value store: redis-server and redis-cli. The kv-store pipeline starts the server.",
+      "files": [
+        {
+          "to": "/usr/local/bin/redis-server",
+          "from": "programs/wasm32/redis/redis-server.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/local/bin/redis-cli",
+          "from": "programs/wasm32/redis/redis-cli.wasm",
+          "mode": "755"
+        }
+      ]
+    },
+    {
+      "name": "kv-store",
+      "type": "pipeline",
+      "description": "Starts Redis at boot on port 6379, with its data in /var/lib/redis. Run: redis-cli",
+      "use": [
+        "dinit",
+        "redis"
+      ],
+      "files": [
+        {
+          "to": "/var/lib/redis",
+          "type": "directory"
+        },
+        {
+          "to": "/etc/dinit.d/redis",
+          "content": "type = process\ncommand = /usr/local/bin/redis-server --port 6379 --bind 0.0.0.0 --protected-mode no --save \"\" --appendonly no --io-threads 1 --dir /var/lib/redis\nrestart = true\nrestart-delay = 2\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = redis\n"
+        }
+      ]
+    },
+    {
+      "name": "php",
+      "type": "binary",
+      "description": "The PHP command-line interpreter, with the phar extension. Run: php",
+      "files": [
+        {
+          "to": "/usr/local/bin/php",
+          "from": "programs/wasm32/php/php.wasm",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/lib/php/phar.so",
+          "from": "programs/wasm32/php/phar.so",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "redis-board",
+      "type": "pipeline",
+      "description": "A voting board: PHP serves a live board on port 8080, backed by Redis. Explore Redis opens phpCacheAdmin.",
+      "use": [
+        "dinit",
+        "redis",
+        "php"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/var/lib/redis",
+          "type": "directory"
+        },
+        {
+          "to": "/etc/dinit.d/redis",
+          "content": "type = process\ncommand = /usr/local/bin/redis-server --port 6379 --bind 0.0.0.0 --protected-mode no --save \"\" --appendonly no --io-threads 1 --dir /var/lib/redis\nrestart = true\nrestart-delay = 2\n"
+        },
+        {
+          "to": "/srv/www/redis-board",
+          "from": "programs/wasm32/redis-vfs.vfs.zst:/srv/www/redis-board"
+        },
+        {
+          "to": "/usr/share/licenses/phpcacheadmin",
+          "from": "programs/wasm32/redis-vfs.vfs.zst:/usr/share/licenses/phpcacheadmin"
+        },
+        {
+          "to": "/etc/dinit.d/redis-board",
+          "content": "type = process\ncommand = /usr/local/bin/php -n -d extension=/usr/lib/php/phar.so -d session.save_path=/tmp -S 0.0.0.0:8080 -t /srv/www/redis-board /srv/www/redis-board/router.php\ndepends-on = redis\nlogfile = /var/log/redis-board.log\nrestart = false\n"
+        },
+        {
+          "to": "/usr/local/bin/redis-board",
+          "content": "#!/usr/local/bin/php -n\n<?php\n$action = $argv[1] ?? '';\n$value = $argv[2] ?? '';\n$body = match ($action) {\n    'ideas' => null,\n    'add' => ['action' => 'add', 'title' => $value],\n    'vote' => ['action' => 'vote', 'id' => $value],\n    default => false,\n};\nif ($body === false) {\n    fwrite(STDERR, \"usage: redis-board ideas | add <title> | vote <id>\\n\");\n    exit(2);\n}\n$http = ['ignore_errors' => true];\nif ($body !== null) $http += ['method' => 'POST', 'header' => \"Content-Type: application/json\\r\\n\", 'content' => json_encode($body)];\n$response = @file_get_contents('http://127.0.0.1:8080/api', false, stream_context_create(['http' => $http]));\nif ($response === false) {\n    fwrite(STDERR, \"redis-board: the board on port 8080 does not answer\\n\");\n    exit(1);\n}\necho $response, \"\\n\";\nexit(preg_match('~^HTTP/\\S+ 200 ~', $http_response_header[0] ?? '') === 1 ? 0 : 1);\n",
+          "mode": "755"
+        },
+        {
+          "to": "/etc/mcp/pipeline_redis-board-ideas.json",
+          "content": "{\"description\": \"List the ideas on the voting board, most votes first.\", \"inputSchema\": {\"type\": \"object\", \"properties\": {}}, \"command\": [\"/usr/local/bin/redis-board\", \"ideas\"]}\n"
+        },
+        {
+          "to": "/etc/mcp/pipeline_redis-board-add.json",
+          "content": "{\"description\": \"Add an idea to the voting board, then list the ideas.\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"title\": {\"type\": \"string\", \"description\": \"The idea, up to 160 bytes\", \"maxLength\": 160}}, \"required\": [\"title\"]}, \"command\": [\"/usr/local/bin/redis-board\", \"add\", \"{title}\"]}\n"
+        },
+        {
+          "to": "/etc/mcp/pipeline_redis-board-vote.json",
+          "content": "{\"description\": \"Vote for an idea on the voting board, then list the ideas.\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\", \"description\": \"The idea's id, as the list shows it\"}}, \"required\": [\"id\"]}, \"command\": [\"/usr/local/bin/redis-board\", \"vote\", \"{id}\"]}\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = redis\nwaits-for = redis-board\n"
+        }
+      ]
+    },
+    {
+      "name": "php-fpm",
+      "type": "binary",
+      "description": "The PHP FastCGI process manager. The php-fastcgi pipeline configures and starts it.",
+      "files": [
+        {
+          "to": "/usr/sbin/php-fpm",
+          "from": "programs/wasm32/php/php-fpm.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "adminer",
+      "type": "pipeline",
+      "description": "Adminer, a database manager: nginx passes every request to PHP-FPM, which opens a SQLite database it seeds on first load.",
+      "use": [
+        "base-files",
+        "dinit",
+        "nginx",
+        "php-fpm"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/etc/nginx/nginx.conf",
+          "content": "user nobody;\ndaemon off;\nmaster_process on;\nworker_processes 2;\nerror_log stderr info;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections 64;\n    use poll;\n}\n\nhttp {\n    access_log /dev/stderr;\n    client_body_temp_path /tmp/nginx_client_temp;\n    proxy_temp_path /tmp/nginx_proxy_temp;\n    fastcgi_temp_path /tmp/nginx_fastcgi_temp;\n\n    types {\n        text/html                             html htm;\n        text/css                              css;\n        text/javascript                       js;\n        application/json                      json;\n        image/png                             png;\n        image/jpeg                            jpg jpeg;\n        image/gif                             gif;\n        image/svg+xml                         svg;\n        application/octet-stream              bin;\n    }\n    default_type application/octet-stream;\n\n    server {\n        listen 8080;\n        server_name localhost;\n        root /srv/www/html;\n        include /etc/nginx/default.d/*.conf;\n    }\n}\n"
+        },
+        {
+          "to": "/etc/php-fpm.conf",
+          "content": "[global]\ndaemonize = no\nerror_log = /dev/stderr\nlog_level = notice\n\n[www]\nuser = nobody\ngroup = nobody\nlisten = 127.0.0.1:9000\npm = static\npm.max_children = ${KANDELO_PREFORK_SERVICE_PROCESSES:-1}\nclear_env = no\nslowlog = /dev/null\nrequest_slowlog_trace_depth = 0\n"
+        },
+        {
+          "to": "/etc/php.ini",
+          "content": "[opcache]\nopcache.enable=1\n; Terminal commands run as maker; FPM owns the server cache.\nopcache.enable_cli=0\nopcache.file_cache=/var/cache/opcache\nopcache.file_cache_only=1\nopcache.validate_timestamps=1\nopcache.revalidate_freq=0\n"
+        },
+        {
+          "to": "/var/cache/opcache",
+          "type": "directory",
+          "owner": "65534:65534"
+        },
+        {
+          "to": "/etc/dinit.d/php-fpm",
+          "content": "type = process\ncommand = /usr/sbin/php-fpm --nodaemonize --fpm-config /etc/php-fpm.conf -c /etc/php.ini\nlogfile = /var/log/php-fpm.log\nrestart = false\n"
+        },
+        {
+          "to": "/srv/www/html",
+          "from": "programs/wasm32/nginx-php-vfs.vfs.zst:/srv/www/html"
+        },
+        {
+          "to": "/srv/www/fpm-router.php",
+          "from": "programs/wasm32/nginx-php-vfs.vfs.zst:/srv/www/fpm-router.php"
+        },
+        {
+          "to": "/var/lib/php-demo",
+          "from": "programs/wasm32/nginx-php-vfs.vfs.zst:/var/lib/php-demo"
+        },
+        {
+          "to": "/etc/nginx/default.d/adminer.conf",
+          "content": "location / {\n    fastcgi_pass 127.0.0.1:9000;\n    fastcgi_index fpm-router.php;\n    include /etc/nginx/fastcgi_params;\n    fastcgi_param SCRIPT_FILENAME /srv/www/fpm-router.php;\n    fastcgi_param SCRIPT_NAME $document_uri;\n}\n"
+        },
+        {
+          "to": "/etc/dinit.d/nginx",
+          "content": "type = process\ncommand = /usr/sbin/nginx -p /etc/nginx -c nginx.conf\nrestart = true\nrestart-delay = 2\ndepends-on = php-fpm\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = php-fpm\nwaits-for = nginx\n"
+        }
+      ]
+    },
+    {
+      "name": "mariadb",
+      "type": "binary",
+      "description": "The MariaDB server mariadbd and the mariadb client. The sql-database pipeline starts the server.",
+      "files": [
+        {
+          "to": "/usr/sbin/mariadbd",
+          "from": "programs/wasm32/mariadb/mariadbd.wasm",
+          "mode": "755",
+          "lazy": true
+        },
+        {
+          "to": "/usr/bin/mariadb",
+          "from": "programs/wasm32/mariadb/mariadb.wasm",
+          "mode": "755",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "sql-database",
+      "type": "pipeline",
+      "description": "Starts MariaDB at boot as mysql, with its system tables and an empty wordpress database in /var/lib/mysql. It serves port 3306 and /run/mysqld/mysql.sock. Run: mariadb",
+      "use": [
+        "base-files",
+        "bash",
+        "coreutils",
+        "dinit",
+        "mariadb"
+      ],
+      "files": [
+        {
+          "to": "/etc/passwd",
+          "content": "mysql:x:101:101:mysql:/var/lib/mysql:/sbin/nologin\n"
+        },
+        {
+          "to": "/etc/group",
+          "content": "mysql:x:101:\n"
+        },
+        {
+          "to": "/var/lib/mysql",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/mysql/aria_log.00000001",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/aria_log.00000001"
+        },
+        {
+          "to": "/var/lib/mysql/aria_log_control",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/aria_log_control"
+        },
+        {
+          "to": "/var/lib/mysql/ib_logfile0",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/ib_logfile0"
+        },
+        {
+          "to": "/var/lib/mysql/ibdata1",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/ibdata1"
+        },
+        {
+          "to": "/var/lib/mysql/multi-master.info",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/multi-master.info"
+        },
+        {
+          "to": "/var/lib/mysql/mysql",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/mysql"
+        },
+        {
+          "to": "/var/lib/mysql/test",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/test"
+        },
+        {
+          "to": "/var/tmp/mysql",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/run/mysqld",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/log/mysql",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/mysql/wordpress",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/mysql/wordpress/db.opt",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/wordpress/db.opt"
+        },
+        {
+          "to": "/usr/libexec/kandelo/mariadb-ready",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/usr/libexec/kandelo/mariadb-ready"
+        },
+        {
+          "to": "/etc/dinit.d/mariadb",
+          "content": "type = process\ncommand = /usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/var/lib/mysql --tmpdir=/var/tmp/mysql --default-storage-engine=Aria --aria-log-file-size=16777216 --aria-pagecache-buffer-size=1048576 --innodb-log-file-size=16777216 --innodb-log-buffer-size=1048576 --innodb-buffer-pool-size=8388608 --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --bind-address=0.0.0.0 --port=3306 --socket=/run/mysqld/mysql.sock --max-connections=10 --log-error=/var/log/mysql/error.log\nlogfile = /var/log/mariadb.log\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/mariadb-ready",
+          "content": "type = scripted\ncommand = /bin/sh /usr/libexec/kandelo/mariadb-ready\ndepends-on = mariadb\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = mariadb-ready\n"
+        }
+      ]
+    },
+    {
+      "name": "wordpress-sqlite",
+      "type": "pipeline",
+      "description": "WordPress on SQLite: nginx serves the static files and passes PHP to PHP-FPM. The first visit installs the site.",
+      "use": [
+        "base-files",
+        "bash",
+        "dinit",
+        "nginx",
+        "php-fpm"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/etc/nginx/nginx.conf",
+          "content": "user nobody;\ndaemon off;\nmaster_process on;\nworker_processes 2;\nerror_log stderr info;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections 64;\n    use poll;\n}\n\nhttp {\n    access_log /dev/stderr;\n    client_body_temp_path /tmp/nginx_client_temp;\n    proxy_temp_path /tmp/nginx_proxy_temp;\n    fastcgi_temp_path /tmp/nginx_fastcgi_temp;\n\n    types {\n        text/html                             html htm;\n        text/css                              css;\n        text/javascript                       js;\n        application/json                      json;\n        image/png                             png;\n        image/jpeg                            jpg jpeg;\n        image/gif                             gif;\n        image/svg+xml                         svg;\n        application/octet-stream              bin;\n    }\n    default_type application/octet-stream;\n\n    server {\n        listen 8080;\n        server_name localhost;\n        root /srv/www/html;\n        include /etc/nginx/default.d/*.conf;\n    }\n}\n"
+        },
+        {
+          "to": "/etc/php-fpm.conf",
+          "content": "[global]\ndaemonize = no\nerror_log = /dev/stderr\nlog_level = notice\n\n[www]\nuser = nobody\ngroup = nobody\nlisten = 127.0.0.1:9000\npm = static\npm.max_children = ${KANDELO_PREFORK_SERVICE_PROCESSES:-1}\nclear_env = no\nslowlog = /dev/null\nrequest_slowlog_trace_depth = 0\n"
+        },
+        {
+          "to": "/etc/php.ini",
+          "content": "[opcache]\nopcache.enable=1\n; Terminal commands run as maker; FPM owns the server cache.\nopcache.enable_cli=0\nopcache.file_cache=/var/cache/opcache\nopcache.file_cache_only=1\nopcache.validate_timestamps=1\nopcache.revalidate_freq=0\nopcache.blacklist_filename=/etc/php-opcache-blacklist.txt\n"
+        },
+        {
+          "to": "/var/cache/opcache",
+          "type": "directory",
+          "owner": "65534:65534"
+        },
+        {
+          "to": "/srv/www/html/index.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/index.php"
+        },
+        {
+          "to": "/srv/www/html/license.txt",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/license.txt"
+        },
+        {
+          "to": "/srv/www/html/readme.html",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/readme.html"
+        },
+        {
+          "to": "/srv/www/html/wp-activate.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-activate.php"
+        },
+        {
+          "to": "/srv/www/html/wp-admin",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-admin"
+        },
+        {
+          "to": "/srv/www/html/wp-blog-header.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-blog-header.php"
+        },
+        {
+          "to": "/srv/www/html/wp-comments-post.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-comments-post.php"
+        },
+        {
+          "to": "/srv/www/html/wp-config-sample.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-config-sample.php"
+        },
+        {
+          "to": "/srv/www/html/wp-config.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-config.php"
+        },
+        {
+          "to": "/srv/www/html/wp-cron.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-cron.php"
+        },
+        {
+          "to": "/srv/www/html/wp-includes",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-includes"
+        },
+        {
+          "to": "/srv/www/html/wp-links-opml.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-links-opml.php"
+        },
+        {
+          "to": "/srv/www/html/wp-load.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-load.php"
+        },
+        {
+          "to": "/srv/www/html/wp-login.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-login.php"
+        },
+        {
+          "to": "/srv/www/html/wp-mail.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-mail.php"
+        },
+        {
+          "to": "/srv/www/html/wp-settings.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-settings.php"
+        },
+        {
+          "to": "/srv/www/html/wp-signup.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-signup.php"
+        },
+        {
+          "to": "/srv/www/html/wp-trackback.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-trackback.php"
+        },
+        {
+          "to": "/srv/www/html/xmlrpc.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/xmlrpc.php"
+        },
+        {
+          "to": "/srv/www/html/wp-content/index.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/index.php"
+        },
+        {
+          "to": "/srv/www/html/wp-content/mu-plugins",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/mu-plugins"
+        },
+        {
+          "to": "/srv/www/html/wp-content/plugins",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/plugins"
+        },
+        {
+          "to": "/srv/www/html/wp-content/themes",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/themes"
+        },
+        {
+          "to": "/srv/www/html/wp-content/uploads",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/uploads"
+        },
+        {
+          "to": "/srv/www/wordpress-family-router.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/wordpress-family-router.php"
+        },
+        {
+          "to": "/etc/kandelo/wordpress-secrets.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/etc/kandelo/wordpress-secrets.php"
+        },
+        {
+          "to": "/usr/sbin/kandelo-wordpress-secrets",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/usr/sbin/kandelo-wordpress-secrets"
+        },
+        {
+          "to": "/etc/php-opcache-blacklist.txt",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/etc/php-opcache-blacklist.txt"
+        },
+        {
+          "to": "/etc/nginx/default.d/wordpress.conf",
+          "content": "location /wp-includes/css/ { }\nlocation /wp-includes/js/ { }\nlocation /wp-includes/fonts/ { }\nlocation /wp-includes/images/ { }\nlocation /wp-admin/css/ { }\nlocation /wp-admin/js/ { }\nlocation /wp-admin/images/ { }\nlocation /wp-content/ {\n    try_files $uri @fpm;\n}\n\nlocation @fpm {\n    fastcgi_pass 127.0.0.1:9000;\n    fastcgi_param SCRIPT_FILENAME /srv/www/wordpress-family-router.php;\n    fastcgi_param DOCUMENT_ROOT $document_root;\n    fastcgi_param DOCUMENT_URI $document_uri;\n    fastcgi_param QUERY_STRING $query_string;\n    fastcgi_param REQUEST_METHOD $request_method;\n    fastcgi_param CONTENT_TYPE $content_type;\n    fastcgi_param CONTENT_LENGTH $content_length;\n    fastcgi_param REQUEST_URI $request_uri;\n    fastcgi_param SERVER_PROTOCOL $server_protocol;\n    fastcgi_param SERVER_PORT $server_port;\n    fastcgi_param SERVER_NAME $server_name;\n    fastcgi_param HTTP_HOST $http_host;\n    fastcgi_param REDIRECT_STATUS 200;\n}\n\nlocation / {\n    fastcgi_pass 127.0.0.1:9000;\n    fastcgi_param SCRIPT_FILENAME /srv/www/wordpress-family-router.php;\n    fastcgi_param DOCUMENT_ROOT $document_root;\n    fastcgi_param DOCUMENT_URI $document_uri;\n    fastcgi_param QUERY_STRING $query_string;\n    fastcgi_param REQUEST_METHOD $request_method;\n    fastcgi_param CONTENT_TYPE $content_type;\n    fastcgi_param CONTENT_LENGTH $content_length;\n    fastcgi_param REQUEST_URI $request_uri;\n    fastcgi_param SERVER_PROTOCOL $server_protocol;\n    fastcgi_param SERVER_PORT $server_port;\n    fastcgi_param SERVER_NAME $server_name;\n    fastcgi_param HTTP_HOST $http_host;\n    fastcgi_param REDIRECT_STATUS 200;\n}\n"
+        },
+        {
+          "to": "/etc/dinit.d/wordpress-secrets",
+          "content": "type = scripted\ncommand = /bin/bash /usr/sbin/kandelo-wordpress-secrets\nlogfile = /var/log/wordpress-secrets.log\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/php-fpm",
+          "content": "type = process\ncommand = /usr/sbin/php-fpm --nodaemonize --fpm-config /etc/php-fpm.conf -c /etc/php.ini\nlogfile = /var/log/php-fpm.log\nrestart = false\ndepends-on = wordpress-secrets\n"
+        },
+        {
+          "to": "/etc/dinit.d/nginx",
+          "content": "type = process\ncommand = /usr/sbin/nginx -p /etc/nginx -c nginx.conf\nrestart = true\nrestart-delay = 2\ndepends-on = php-fpm\n"
+        },
+        {
+          "to": "/etc/kandelo/wordpress-backend",
+          "content": "sqlite\n"
+        },
+        {
+          "to": "/srv/www/html/wp-content/db.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/etc/wordpress/sqlite-db.php"
+        },
+        {
+          "to": "/var/lib/wordpress/sqlite",
+          "type": "directory",
+          "owner": "65534:65534",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/wordpress/sqlite/.htaccess",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/wordpress-sites/sqlite/wp-content/database/.htaccess"
+        },
+        {
+          "to": "/var/lib/wordpress/sqlite/index.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/wordpress-sites/sqlite/wp-content/database/index.php"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = php-fpm\nwaits-for = nginx\n"
+        }
+      ]
+    },
+    {
+      "name": "wordpress-mariadb",
+      "type": "pipeline",
+      "description": "WordPress on MariaDB: nginx serves the static files and passes PHP to PHP-FPM. The first visit installs the site. PHP connects to the wordpress database through /run/mysqld/mysql.sock.",
+      "use": [
+        "base-files",
+        "bash",
+        "coreutils",
+        "dinit",
+        "nginx",
+        "php-fpm",
+        "mariadb"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/etc/passwd",
+          "content": "mysql:x:101:101:mysql:/var/lib/mysql:/sbin/nologin\n"
+        },
+        {
+          "to": "/etc/group",
+          "content": "mysql:x:101:\n"
+        },
+        {
+          "to": "/var/lib/mysql",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/mysql/aria_log.00000001",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/aria_log.00000001"
+        },
+        {
+          "to": "/var/lib/mysql/aria_log_control",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/aria_log_control"
+        },
+        {
+          "to": "/var/lib/mysql/ib_logfile0",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/ib_logfile0"
+        },
+        {
+          "to": "/var/lib/mysql/ibdata1",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/ibdata1"
+        },
+        {
+          "to": "/var/lib/mysql/multi-master.info",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/multi-master.info"
+        },
+        {
+          "to": "/var/lib/mysql/mysql",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/mysql"
+        },
+        {
+          "to": "/var/lib/mysql/test",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/test"
+        },
+        {
+          "to": "/var/tmp/mysql",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/run/mysqld",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/log/mysql",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/mysql/wordpress",
+          "type": "directory",
+          "owner": "101:101",
+          "mode": "775"
+        },
+        {
+          "to": "/var/lib/mysql/wordpress/db.opt",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/var/lib/mysql/wordpress/db.opt"
+        },
+        {
+          "to": "/usr/libexec/kandelo/mariadb-ready",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/usr/libexec/kandelo/mariadb-ready"
+        },
+        {
+          "to": "/etc/dinit.d/mariadb",
+          "content": "type = process\ncommand = /usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/var/lib/mysql --tmpdir=/var/tmp/mysql --default-storage-engine=Aria --aria-log-file-size=16777216 --aria-pagecache-buffer-size=1048576 --innodb-log-file-size=16777216 --innodb-log-buffer-size=1048576 --innodb-buffer-pool-size=8388608 --skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 --bind-address=0.0.0.0 --port=3306 --socket=/run/mysqld/mysql.sock --max-connections=10 --log-error=/var/log/mysql/error.log\nlogfile = /var/log/mariadb.log\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/mariadb-ready",
+          "content": "type = scripted\ncommand = /bin/sh /usr/libexec/kandelo/mariadb-ready\ndepends-on = mariadb\nrestart = false\n"
+        },
+        {
+          "to": "/etc/nginx/nginx.conf",
+          "content": "user nobody;\ndaemon off;\nmaster_process on;\nworker_processes 2;\nerror_log stderr info;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections 64;\n    use poll;\n}\n\nhttp {\n    access_log /dev/stderr;\n    client_body_temp_path /tmp/nginx_client_temp;\n    proxy_temp_path /tmp/nginx_proxy_temp;\n    fastcgi_temp_path /tmp/nginx_fastcgi_temp;\n\n    types {\n        text/html                             html htm;\n        text/css                              css;\n        text/javascript                       js;\n        application/json                      json;\n        image/png                             png;\n        image/jpeg                            jpg jpeg;\n        image/gif                             gif;\n        image/svg+xml                         svg;\n        application/octet-stream              bin;\n    }\n    default_type application/octet-stream;\n\n    server {\n        listen 8080;\n        server_name localhost;\n        root /srv/www/html;\n        include /etc/nginx/default.d/*.conf;\n    }\n}\n"
+        },
+        {
+          "to": "/etc/php-fpm.conf",
+          "content": "[global]\ndaemonize = no\nerror_log = /dev/stderr\nlog_level = notice\n\n[www]\nuser = nobody\ngroup = nobody\nlisten = 127.0.0.1:9000\npm = static\npm.max_children = ${KANDELO_PREFORK_SERVICE_PROCESSES:-1}\nclear_env = no\nslowlog = /dev/null\nrequest_slowlog_trace_depth = 0\n"
+        },
+        {
+          "to": "/etc/php.ini",
+          "content": "[opcache]\nopcache.enable=1\n; Terminal commands run as maker; FPM owns the server cache.\nopcache.enable_cli=0\nopcache.file_cache=/var/cache/opcache\nopcache.file_cache_only=1\nopcache.validate_timestamps=1\nopcache.revalidate_freq=0\nopcache.blacklist_filename=/etc/php-opcache-blacklist.txt\nmysqli.default_socket=/run/mysqld/mysql.sock\nmysqli.allow_persistent=1\nmysqli.max_persistent=-1\npdo_mysql.default_socket=/run/mysqld/mysql.sock\n"
+        },
+        {
+          "to": "/var/cache/opcache",
+          "type": "directory",
+          "owner": "65534:65534"
+        },
+        {
+          "to": "/srv/www/html/index.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/index.php"
+        },
+        {
+          "to": "/srv/www/html/license.txt",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/license.txt"
+        },
+        {
+          "to": "/srv/www/html/readme.html",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/readme.html"
+        },
+        {
+          "to": "/srv/www/html/wp-activate.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-activate.php"
+        },
+        {
+          "to": "/srv/www/html/wp-admin",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-admin"
+        },
+        {
+          "to": "/srv/www/html/wp-blog-header.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-blog-header.php"
+        },
+        {
+          "to": "/srv/www/html/wp-comments-post.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-comments-post.php"
+        },
+        {
+          "to": "/srv/www/html/wp-config-sample.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-config-sample.php"
+        },
+        {
+          "to": "/srv/www/html/wp-config.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-config.php"
+        },
+        {
+          "to": "/srv/www/html/wp-cron.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-cron.php"
+        },
+        {
+          "to": "/srv/www/html/wp-includes",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-includes"
+        },
+        {
+          "to": "/srv/www/html/wp-links-opml.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-links-opml.php"
+        },
+        {
+          "to": "/srv/www/html/wp-load.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-load.php"
+        },
+        {
+          "to": "/srv/www/html/wp-login.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-login.php"
+        },
+        {
+          "to": "/srv/www/html/wp-mail.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-mail.php"
+        },
+        {
+          "to": "/srv/www/html/wp-settings.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-settings.php"
+        },
+        {
+          "to": "/srv/www/html/wp-signup.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-signup.php"
+        },
+        {
+          "to": "/srv/www/html/wp-trackback.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-trackback.php"
+        },
+        {
+          "to": "/srv/www/html/xmlrpc.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/xmlrpc.php"
+        },
+        {
+          "to": "/srv/www/html/wp-content/index.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/index.php"
+        },
+        {
+          "to": "/srv/www/html/wp-content/mu-plugins",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/mu-plugins"
+        },
+        {
+          "to": "/srv/www/html/wp-content/plugins",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/plugins"
+        },
+        {
+          "to": "/srv/www/html/wp-content/themes",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/themes"
+        },
+        {
+          "to": "/srv/www/html/wp-content/uploads",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/html/wp-content/uploads"
+        },
+        {
+          "to": "/srv/www/wordpress-family-router.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/srv/www/wordpress-family-router.php"
+        },
+        {
+          "to": "/etc/kandelo/wordpress-secrets.php",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/etc/kandelo/wordpress-secrets.php"
+        },
+        {
+          "to": "/usr/sbin/kandelo-wordpress-secrets",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/usr/sbin/kandelo-wordpress-secrets"
+        },
+        {
+          "to": "/etc/php-opcache-blacklist.txt",
+          "from": "programs/wasm32/wordpress-family-vfs.vfs.zst:/etc/php-opcache-blacklist.txt"
+        },
+        {
+          "to": "/etc/nginx/default.d/wordpress.conf",
+          "content": "location /wp-includes/css/ { }\nlocation /wp-includes/js/ { }\nlocation /wp-includes/fonts/ { }\nlocation /wp-includes/images/ { }\nlocation /wp-admin/css/ { }\nlocation /wp-admin/js/ { }\nlocation /wp-admin/images/ { }\nlocation /wp-content/ {\n    try_files $uri @fpm;\n}\n\nlocation @fpm {\n    fastcgi_pass 127.0.0.1:9000;\n    fastcgi_param SCRIPT_FILENAME /srv/www/wordpress-family-router.php;\n    fastcgi_param DOCUMENT_ROOT $document_root;\n    fastcgi_param DOCUMENT_URI $document_uri;\n    fastcgi_param QUERY_STRING $query_string;\n    fastcgi_param REQUEST_METHOD $request_method;\n    fastcgi_param CONTENT_TYPE $content_type;\n    fastcgi_param CONTENT_LENGTH $content_length;\n    fastcgi_param REQUEST_URI $request_uri;\n    fastcgi_param SERVER_PROTOCOL $server_protocol;\n    fastcgi_param SERVER_PORT $server_port;\n    fastcgi_param SERVER_NAME $server_name;\n    fastcgi_param HTTP_HOST $http_host;\n    fastcgi_param REDIRECT_STATUS 200;\n}\n\nlocation / {\n    fastcgi_pass 127.0.0.1:9000;\n    fastcgi_param SCRIPT_FILENAME /srv/www/wordpress-family-router.php;\n    fastcgi_param DOCUMENT_ROOT $document_root;\n    fastcgi_param DOCUMENT_URI $document_uri;\n    fastcgi_param QUERY_STRING $query_string;\n    fastcgi_param REQUEST_METHOD $request_method;\n    fastcgi_param CONTENT_TYPE $content_type;\n    fastcgi_param CONTENT_LENGTH $content_length;\n    fastcgi_param REQUEST_URI $request_uri;\n    fastcgi_param SERVER_PROTOCOL $server_protocol;\n    fastcgi_param SERVER_PORT $server_port;\n    fastcgi_param SERVER_NAME $server_name;\n    fastcgi_param HTTP_HOST $http_host;\n    fastcgi_param REDIRECT_STATUS 200;\n}\n"
+        },
+        {
+          "to": "/etc/dinit.d/wordpress-secrets",
+          "content": "type = scripted\ncommand = /bin/bash /usr/sbin/kandelo-wordpress-secrets\nlogfile = /var/log/wordpress-secrets.log\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/php-fpm",
+          "content": "type = process\ncommand = /usr/sbin/php-fpm --nodaemonize --fpm-config /etc/php-fpm.conf -c /etc/php.ini\nlogfile = /var/log/php-fpm.log\nrestart = false\ndepends-on = wordpress-secrets\n"
+        },
+        {
+          "to": "/etc/dinit.d/nginx",
+          "content": "type = process\ncommand = /usr/sbin/nginx -p /etc/nginx -c nginx.conf\nrestart = true\nrestart-delay = 2\ndepends-on = php-fpm\ndepends-on = mariadb-ready\n"
+        },
+        {
+          "to": "/etc/kandelo/wordpress-backend",
+          "content": "mariadb\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = mariadb-ready\nwaits-for = php-fpm\nwaits-for = nginx\n"
+        }
+      ]
+    },
+    {
+      "name": "python",
+      "type": "binary",
+      "description": "The Python 3.13 interpreter and its standard library. Run: python3",
+      "files": [
+        {
+          "to": "/usr",
+          "type": "directory",
+          "from": "programs/wasm32/python-browser-bundle/python.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "notes",
+      "type": "pipeline",
+      "description": "A notes app: nginx serves the page and passes /api/ to a Python JSON API over SQLite.",
+      "use": [
+        "base-files",
+        "dinit",
+        "nginx",
+        "python"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/etc/nginx/nginx.conf",
+          "content": "user nobody;\ndaemon off;\nmaster_process on;\nworker_processes 2;\nerror_log stderr info;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections 64;\n    use poll;\n}\n\nhttp {\n    access_log /dev/stderr;\n    client_body_temp_path /tmp/nginx_client_temp;\n    proxy_temp_path /tmp/nginx_proxy_temp;\n    fastcgi_temp_path /tmp/nginx_fastcgi_temp;\n\n    types {\n        text/html                             html htm;\n        text/css                              css;\n        text/javascript                       js;\n        application/json                      json;\n        image/png                             png;\n        image/jpeg                            jpg jpeg;\n        image/gif                             gif;\n        image/svg+xml                         svg;\n        application/octet-stream              bin;\n    }\n    default_type application/octet-stream;\n\n    server {\n        listen 8080;\n        server_name localhost;\n        root /srv/www/html;\n        include /etc/nginx/default.d/*.conf;\n    }\n}\n"
+        },
+        {
+          "to": "/srv/www/notes/app.py",
+          "content": "#!/usr/bin/env python3\n\"\"\"A small real Notes JSON API, served by Python behind nginx on Kandelo.\n\nStandard library only: wsgiref (HTTP/WSGI), sqlite3 (storage), json,\nsocketserver (threading). No third-party packages.\n\nnginx reverse-proxies /api/ to this server on 127.0.0.1:8000.\n\"\"\"\nimport json\nimport os\nimport re\nimport sqlite3\nfrom contextlib import closing\nfrom socketserver import ThreadingMixIn\nfrom wsgiref.simple_server import WSGIServer, make_server\n\nDB_PATH = os.environ.get(\"NOTES_DB\", \"/var/lib/notes/notes.db\")\nHOST = os.environ.get(\"NOTES_HOST\", \"127.0.0.1\")\nPORT = int(os.environ.get(\"NOTES_PORT\", \"8000\"))\n\n_HERE = os.path.dirname(os.path.abspath(__file__))\n_NOTE_ID_RE = re.compile(r\"^/api/notes/(\\d+)$\")\n\n\nclass ThreadingWSGIServer(ThreadingMixIn, WSGIServer):\n    \"\"\"Serve each request on its own thread so concurrent fetches from the\n    demo page do not serialize.\"\"\"\n    daemon_threads = True\n\n\ndef _connect():\n    # A fresh connection per request keeps SQLite access thread-safe under\n    # ThreadingWSGIServer without sharing one connection across threads.\n    conn = sqlite3.connect(DB_PATH)\n    conn.row_factory = sqlite3.Row\n    return conn\n\n\ndef ensure_schema():\n    \"\"\"Create the table if needed and seed sample rows once when empty.\"\"\"\n    os.makedirs(os.path.dirname(DB_PATH) or \".\", exist_ok=True)\n    with open(os.path.join(_HERE, \"schema.sql\"), encoding=\"utf-8\") as fh:\n        schema_sql = fh.read()\n    with closing(_connect()) as conn, conn:\n        conn.executescript(schema_sql)\n        (count,) = conn.execute(\"SELECT COUNT(*) FROM notes\").fetchone()\n        if count == 0:\n            with open(os.path.join(_HERE, \"seed.sql\"), encoding=\"utf-8\") as fh:\n                conn.executescript(fh.read())\n\n\ndef _note(row):\n    return {\n        \"id\": row[\"id\"],\n        \"title\": row[\"title\"],\n        \"body\": row[\"body\"],\n        \"created_at\": row[\"created_at\"],\n    }\n\n\ndef _json(start_response, status, payload):\n    body = json.dumps(payload).encode(\"utf-8\")\n    start_response(status, [\n        (\"Content-Type\", \"application/json\"),\n        (\"Content-Length\", str(len(body))),\n    ])\n    return [body]\n\n\ndef _read_json(environ):\n    try:\n        length = int(environ.get(\"CONTENT_LENGTH\") or 0)\n    except ValueError:\n        length = 0\n    raw = environ[\"wsgi.input\"].read(length) if length else b\"\"\n    return json.loads(raw.decode(\"utf-8\")) if raw else {}\n\n\ndef app(environ, start_response):\n    method = environ[\"REQUEST_METHOD\"]\n    path = environ.get(\"PATH_INFO\", \"\")\n    try:\n        if path == \"/api/health\":\n            if method != \"GET\":\n                return _json(start_response, \"405 Method Not Allowed\",\n                             {\"error\": \"method not allowed\"})\n            return _json(start_response, \"200 OK\", {\"status\": \"ok\"})\n\n        if path == \"/api/notes\":\n            if method == \"GET\":\n                with closing(_connect()) as conn, conn:\n                    rows = conn.execute(\n                        \"SELECT id, title, body, created_at FROM notes ORDER BY id\"\n                    ).fetchall()\n                return _json(start_response, \"200 OK\", [_note(r) for r in rows])\n            if method == \"POST\":\n                data = _read_json(environ)\n                title = (data.get(\"title\") or \"\").strip()\n                if not title:\n                    return _json(start_response, \"400 Bad Request\",\n                                 {\"error\": \"title is required\"})\n                body = data.get(\"body\") or \"\"\n                with closing(_connect()) as conn, conn:\n                    cur = conn.execute(\n                        \"INSERT INTO notes (title, body) VALUES (?, ?)\",\n                        (title, body),\n                    )\n                    row = conn.execute(\n                        \"SELECT id, title, body, created_at FROM notes WHERE id = ?\",\n                        (cur.lastrowid,),\n                    ).fetchone()\n                return _json(start_response, \"201 Created\", _note(row))\n            return _json(start_response, \"405 Method Not Allowed\",\n                         {\"error\": \"method not allowed\"})\n\n        match = _NOTE_ID_RE.match(path)\n        if match:\n            note_id = int(match.group(1))\n            if method == \"GET\":\n                with closing(_connect()) as conn, conn:\n                    row = conn.execute(\n                        \"SELECT id, title, body, created_at FROM notes WHERE id = ?\",\n                        (note_id,),\n                    ).fetchone()\n                if row is None:\n                    return _json(start_response, \"404 Not Found\",\n                                 {\"error\": \"note not found\"})\n                return _json(start_response, \"200 OK\", _note(row))\n            if method == \"PUT\":\n                data = _read_json(environ)\n                title = (data.get(\"title\") or \"\").strip()\n                if not title:\n                    return _json(start_response, \"400 Bad Request\",\n                                 {\"error\": \"title is required\"})\n                body = data.get(\"body\") or \"\"\n                with closing(_connect()) as conn, conn:\n                    cur = conn.execute(\n                        \"UPDATE notes SET title = ?, body = ? WHERE id = ?\",\n                        (title, body, note_id),\n                    )\n                    if cur.rowcount == 0:\n                        return _json(start_response, \"404 Not Found\",\n                                     {\"error\": \"note not found\"})\n                    row = conn.execute(\n                        \"SELECT id, title, body, created_at FROM notes WHERE id = ?\",\n                        (note_id,),\n                    ).fetchone()\n                return _json(start_response, \"200 OK\", _note(row))\n            if method == \"DELETE\":\n                with closing(_connect()) as conn, conn:\n                    cur = conn.execute(\"DELETE FROM notes WHERE id = ?\", (note_id,))\n                if cur.rowcount == 0:\n                    return _json(start_response, \"404 Not Found\",\n                                 {\"error\": \"note not found\"})\n                start_response(\"204 No Content\", [(\"Content-Length\", \"0\")])\n                return [b\"\"]\n            return _json(start_response, \"405 Method Not Allowed\",\n                         {\"error\": \"method not allowed\"})\n\n        return _json(start_response, \"404 Not Found\", {\"error\": \"not found\"})\n    except json.JSONDecodeError:\n        return _json(start_response, \"400 Bad Request\", {\"error\": \"invalid JSON\"})\n    except Exception:  # noqa: BLE001 - never leak a stack trace to the client\n        return _json(start_response, \"500 Internal Server Error\",\n                     {\"error\": \"internal error\"})\n\n\ndef main():\n    ensure_schema()\n    with make_server(HOST, PORT, app, server_class=ThreadingWSGIServer) as httpd:\n        print(f\"notes-app listening on http://{HOST}:{PORT}\", flush=True)\n        httpd.serve_forever()\n\n\nif __name__ == \"__main__\":\n    main()\n"
+        },
+        {
+          "to": "/srv/www/notes/schema.sql",
+          "content": "-- Notes table. Idempotent so the app can ensure it on every boot.\nCREATE TABLE IF NOT EXISTS notes (\n    id         INTEGER PRIMARY KEY AUTOINCREMENT,\n    title      TEXT NOT NULL,\n    body       TEXT NOT NULL DEFAULT '',\n    created_at TEXT NOT NULL DEFAULT (datetime('now'))\n);\n"
+        },
+        {
+          "to": "/srv/www/notes/seed.sql",
+          "content": "-- Sample rows inserted once, on first boot, when the table is empty.\nINSERT INTO notes (title, body) VALUES\n    ('Welcome to Kandelo',\n     'This note is served by Python (wsgiref) behind nginx, all in WebAssembly.'),\n    ('Try the API',\n     'GET /api/notes, POST {\"title\",\"body\"} to create, DELETE /api/notes/{id}.');\n"
+        },
+        {
+          "to": "/srv/www/notes/static/index.html",
+          "content": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>Kandelo — Python Notes API</title>\n  <style>\n    body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }\n    code { background: #f0f0f3; padding: 0.1rem 0.3rem; border-radius: 3px; }\n    pre { background: #1e1e2e; color: #e6e6f0; padding: 1rem; border-radius: 6px; overflow-x: auto; }\n    button { font: inherit; padding: 0.4rem 0.8rem; cursor: pointer; }\n    li { margin: 0.25rem 0; }\n  </style>\n</head>\n<body>\n  <h1>Python Notes API on Kandelo</h1>\n  <p>\n    This page is served by <strong>nginx</strong>. The\n    <code>/api/</code> routes below are reverse-proxied to a\n    standard-library <strong>Python <code>wsgiref</code></strong> app\n    backed by <strong>SQLite</strong> — all running in WebAssembly.\n  </p>\n  <ul>\n    <li><code>GET /api/health</code> — liveness</li>\n    <li><code>GET /api/notes</code> — list notes</li>\n    <li><code>POST /api/notes</code> — create <code>{title, body}</code></li>\n    <li><code>GET|PUT|DELETE /api/notes/{id}</code></li>\n  </ul>\n  <p>\n    <button id=\"load\">GET /api/notes</button>\n    <button id=\"add\">POST a note</button>\n  </p>\n  <pre id=\"out\">Click a button to call the live API…</pre>\n  <script>\n    const out = document.getElementById(\"out\");\n    const show = (v) => { out.textContent = JSON.stringify(v, null, 2); };\n    const fail = (e) => { out.textContent = \"Error: \" + e; };\n    document.getElementById(\"load\").onclick = () =>\n      fetch(\"/api/notes\").then((r) => r.json()).then(show).catch(fail);\n    document.getElementById(\"add\").onclick = () =>\n      fetch(\"/api/notes\", {\n        method: \"POST\",\n        headers: { \"Content-Type\": \"application/json\" },\n        body: JSON.stringify({ title: \"From the browser\", body: \"Created at \" + new Date().toISOString() }),\n      }).then((r) => r.json()).then(show).catch(fail);\n  </script>\n</body>\n</html>\n"
+        },
+        {
+          "to": "/var/lib/notes",
+          "type": "directory"
+        },
+        {
+          "to": "/etc/nginx/default.d/notes.conf",
+          "content": "location / {\n    root /srv/www/notes/static;\n}\n\nlocation /api/ {\n    proxy_pass http://127.0.0.1:8000;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-For $remote_addr;\n}\n"
+        },
+        {
+          "to": "/etc/dinit.d/notes.env",
+          "content": "PYTHONHOME=/usr\nPYTHONDONTWRITEBYTECODE=1\n"
+        },
+        {
+          "to": "/etc/dinit.d/notes",
+          "content": "type = process\ncommand = /usr/bin/python3 /srv/www/notes/app.py\nenv-file = /etc/dinit.d/notes.env\nlogfile = /var/log/notes.log\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/nginx",
+          "content": "type = process\ncommand = /usr/sbin/nginx -p /etc/nginx -c nginx.conf\nrestart = true\nrestart-delay = 2\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = nginx\nwaits-for = notes\n"
+        }
+      ]
+    },
+    {
+      "name": "ruby",
+      "type": "binary",
+      "description": "The Ruby interpreter and its standard library, with SQLite built in. Run: ruby, irb",
+      "files": [
+        {
+          "to": "/usr",
+          "type": "directory",
+          "from": "programs/wasm32/ruby.zip",
+          "lazy": true
+        }
+      ]
+    },
+    {
+      "name": "ruby-todo",
+      "type": "pipeline",
+      "description": "A todo list: a Roda app on Ruby serves port 8080, backed by SQLite.",
+      "use": [
+        "dinit",
+        "ruby"
+      ],
+      "provide": [
+        "web"
+      ],
+      "files": [
+        {
+          "to": "/var/lib/todo",
+          "from": "programs/wasm32/ruby-todo-vfs.vfs.zst:/var/lib/todo"
+        },
+        {
+          "to": "/etc/dinit.d/ruby-todo.env",
+          "content": "TODO_DB=/tmp/todo.sqlite3\n"
+        },
+        {
+          "to": "/etc/dinit.d/ruby-todo",
+          "content": "type = process\ncommand = /usr/bin/ruby /var/lib/todo/server.rb\nworking-dir = /var/lib/todo\nenv-file = /etc/dinit.d/ruby-todo.env\nlogfile = /var/log/ruby-todo.log\nrestart = false\n"
+        },
+        {
+          "to": "/etc/dinit.d/boot",
+          "content": "waits-for = ruby-todo\n"
+        }
+      ]
+    },
+    {
+      "name": "kandelo-exchange",
+      "type": "binary",
+      "description": "Kandelo exchange: the agent that takes files sent to the computer and saves them to ~/Downloads, and kandelo-publish, which offers a file to the browser.",
+      "use": [
+        "base-files"
+      ],
+      "files": [
+        {
+          "to": "/usr/libexec/kandelo/exchange-agent",
+          "from": "programs/wasm32/kandelo-exchange/kxchgd.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/libexec/kandelo/exchange-save",
+          "from": "programs/wasm32/kandelo-exchange/exchange-save.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/bin/kandelo-exchange",
+          "from": "programs/wasm32/kandelo-exchange/kandelo-exchange.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/bin/kandelo-publish",
+          "from": "programs/wasm32/kandelo-exchange/kandelo-publish.wasm",
+          "mode": "755"
+        },
+        {
+          "to": "/usr/share/kandelo/exchange-handlers.d/99-save.handler",
+          "content": "# The catch-all: save whatever no other rule takes to ~/Downloads.\n# Disable it with an empty /etc/kandelo/exchange-handlers.d/99-save.handler\n# (`kandelo-exchange handler mask 99-save`).\nkind any\nrun /usr/libexec/kandelo/exchange-save\n"
+        },
+        {
+          "to": "/etc/kandelo/exchange.conf",
+          "content": "# Kandelo exchange: the account the agent switches to. A delo computer\n# has only root, so the agent and its handlers run as root.\nuser root\n"
+        }
+      ]
+    },
+    {
+      "name": "share",
+      "type": "option",
+      "description": "share the computer's configuration as a link"
+    },
+    {
+      "name": "theme",
+      "type": "option",
+      "description": "switch the theme of the computer page"
+    },
+    {
+      "name": "sound",
+      "type": "option",
+      "description": "play the sound of the computer"
+    },
+    {
+      "name": "network",
+      "type": "option",
+      "description": "join a network session"
+    },
+    {
+      "name": "upload",
+      "type": "option",
+      "description": "send files to the computer",
+      "use": [
+        "kandelo-exchange"
+      ]
+    },
+    {
+      "name": "download",
+      "type": "option",
+      "description": "save files from the computer",
+      "use": [
+        "kandelo-exchange"
+      ]
+    },
+    {
+      "name": "internals",
+      "type": "option",
+      "description": "show the processes of the computer"
+    },
+    {
+      "name": "mcp",
+      "type": "option",
+      "description": "accept every WebMCP tool without asking"
+    }
+  ]
+}

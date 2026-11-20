@@ -46,6 +46,10 @@ import {
 } from "./check-pages-vfs-product-registry.mjs";
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
 import { imageLazyReferences } from "./vfs-image-lazy-references.ts";
+import {
+  deloLazyStorePaths,
+  parseDeloRegistry,
+} from "../apps/browser-demos/pages/delo/src/registry.ts";
 
 const MAX_CAPTURE_BYTES = 512 * 1024 * 1024;
 
@@ -55,6 +59,12 @@ export interface BuildLocalVfsAssetGroupOptions {
   sourceRoot: string;
   /** Lower the per-capture memory budget; never raises the 512 MiB ceiling. */
   maxCaptureBytes?: number;
+  /**
+   * Paths under the binaries root that the deployment serves although no
+   * product image references them: the lazy bodies of images a page composes
+   * in the browser (the delo registry).
+   */
+  extraLazyMembers?: readonly string[];
 }
 
 interface ProductProjection {
@@ -193,6 +203,22 @@ export async function buildLocalVfsAssetGroup(
           sha256: body.kind === "archive" ? body.sha256 : undefined,
         });
       }
+    }
+    // WHY: a page that composes images in the browser records the same
+    // canonical addresses, but no product image reveals them. Nothing
+    // declares their size, so the SourceOnly body is the identity.
+    for (const member of options.extraLazyMembers ?? []) {
+      const reference = `binaries/${member}`;
+      const path = normalizeImageOwnedLazyReference(reference);
+      if (expectedAssets.has(path)) continue;
+      const sourceMember = path.slice("assets/".length);
+      const snapshot = requireSnapshots(
+        session.snapshots([sourceMember], maxCaptureBytes),
+        [sourceMember],
+      )[0]!;
+      addExpectedAsset(expectedAssets, reference, {
+        bytes: snapshot.bytes.byteLength,
+      });
     }
     const assetMembers = [...expectedAssets.values()].map(
       ({ sourceMember }) => sourceMember,
@@ -768,6 +794,14 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   await buildLocalVfsAssetGroup({
     assetGroupDirectory,
+    extraLazyMembers: deloLazyStorePaths(
+      parseDeloRegistry(
+        readFileSync(
+          join(sourceRoot, "apps/browser-demos/pages/delo/src/registry.json"),
+          "utf8",
+        ),
+      ),
+    ),
     productMapPath,
     sourceRoot,
   });

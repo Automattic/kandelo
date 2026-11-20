@@ -1,0 +1,848 @@
+:root {
+  --delo-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --delo-font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --delo-bg: #fcfcfc;
+  --delo-surface: #ffffff;
+  --delo-dot: rgba(24, 24, 27, 0.16);
+  --delo-text: #18181b;
+  --delo-label: #3f3f46;
+  --delo-value: #71717a;
+  --delo-muted: #a1a1aa;
+  --delo-border-outer: rgba(24, 24, 27, 0.08);
+  --delo-border-inner: rgba(24, 24, 27, 0.12);
+  --delo-border-focus: rgba(24, 24, 27, 0.32);
+  --delo-active: rgba(24, 24, 27, 0.05);
+  --delo-error: #c2410c;
+  --delo-view-header: 33px;
+  --delo-draft: #dc2626;
+  --delo-saved: #16a34a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--delo-bg);
+  color: var(--delo-text);
+  font-family: var(--delo-font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle, var(--delo-dot) 1px, transparent 1.5px);
+  background-size: 18px 18px;
+  background-position: center;
+  -webkit-mask-image: radial-gradient(ellipse 70% 64% at 50% 50%, transparent 28%, #000 100%);
+  mask-image: radial-gradient(ellipse 70% 64% at 50% 50%, transparent 28%, #000 100%);
+}
+
+.delo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.delo-frame {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+}
+
+.delo-stage {
+  position: relative;
+}
+
+.delo-logo {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 20px);
+  display: block;
+  transform: translateY(-50%);
+  filter: grayscale(1);
+  opacity: 0.8;
+  transition: filter 800ms ease, opacity 800ms ease;
+}
+
+.delo-frame:has(.delo-view:not([hidden])) .delo-logo {
+  top: calc(50% + var(--delo-view-header) / 2);
+}
+
+.delo-logo:hover,
+.delo-logo:focus-visible {
+  filter: none;
+  opacity: 1;
+}
+
+.delo-logo img {
+  display: block;
+  height: 32px;
+}
+
+@media (max-width: 760px) {
+  .delo-logo {
+    top: auto;
+    right: auto;
+    bottom: calc(100% + 32px);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .delo-frame:has(.delo-view:not([hidden])) {
+    padding-top: 48px;
+  }
+
+  .delo-frame:has(.delo-view:not([hidden])) .delo-logo {
+    top: 0;
+    bottom: auto;
+  }
+}
+
+.delo-shell {
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--delo-border-outer);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.delo-input {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  border: 1px solid var(--delo-border-inner);
+  border-radius: 4px;
+  background: var(--delo-surface);
+  color: var(--delo-text);
+  font-family: var(--delo-font-mono);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+
+.delo-input::placeholder {
+  color: var(--delo-muted);
+}
+
+.delo-input:focus {
+  border-color: var(--delo-border-focus);
+}
+
+.delo-below {
+  position: absolute;
+  top: calc(100% + 16px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.delo-output {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 1.5em;
+  padding: 0 19px;
+  overflow-y: auto;
+  font-family: var(--delo-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  scrollbar-width: none;
+}
+
+.delo-output::-webkit-scrollbar {
+  display: none;
+}
+
+.delo-line {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  min-width: 0;
+}
+
+.delo-label {
+  flex-shrink: 0;
+  color: var(--delo-label);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.delo-text {
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--delo-muted);
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.delo-text::-webkit-scrollbar {
+  display: none;
+}
+
+.delo-line.is-error .delo-label,
+.delo-computer.is-error .delo-label {
+  color: var(--delo-error);
+}
+
+.delo-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 1;
+}
+
+.delo-menu[hidden] {
+  display: none;
+}
+
+.delo-menu:not([hidden]) ~ .delo-below {
+  visibility: hidden;
+}
+
+.delo-menu-list {
+  max-height: calc(8 * 32px + 10px);
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  scroll-padding: 4px;
+  list-style: none;
+  border: 1px solid var(--delo-border-inner);
+  border-radius: 8px;
+  background: var(--delo-surface);
+  scrollbar-width: none;
+}
+
+.delo-menu-list::-webkit-scrollbar {
+  display: none;
+}
+
+.delo-option {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  min-width: 0;
+  padding: 7px 15px;
+  border-radius: 4px;
+  font-family: var(--delo-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.delo-option.is-active,
+.delo-list-row:hover,
+.delo-list-row:focus-visible {
+  background: var(--delo-active);
+}
+
+.delo-option-name {
+  flex-shrink: 0;
+  color: var(--delo-text);
+}
+
+.delo-option-detail {
+  min-width: 0;
+  max-width: 40ch;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--delo-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delo-computers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--delo-border-outer);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.delo-computers[hidden] {
+  display: none;
+}
+
+.delo-computer {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  min-width: 0;
+  padding: 7px 15px;
+  border-radius: 4px;
+  font-family: var(--delo-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.delo-computer.is-highlighted {
+  border: 1px solid var(--delo-border-inner);
+  background: var(--delo-surface);
+}
+
+.delo-computer-name {
+  flex-shrink: 0;
+  color: var(--delo-text);
+}
+
+.delo-computer .delo-text {
+  flex: 1;
+}
+
+.delo-computer .delo-text.is-kind {
+  flex: none;
+}
+
+.delo-view {
+  position: relative;
+  margin-top: var(--delo-view-header);
+  font-family: var(--delo-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.delo-view[hidden] {
+  display: none;
+}
+
+.delo-view-shell {
+  padding: 6px;
+  border: 1px solid var(--delo-border-outer);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.delo-view-actions {
+  display: grid;
+  padding: 12px 19px 0;
+}
+
+.delo-view-action-group {
+  display: flex;
+  grid-area: 1 / 1;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.delo-view-panel {
+  display: flex;
+  height: 480px;
+  border: 1px solid var(--delo-border-inner);
+  border-radius: 4px;
+  background: var(--delo-surface);
+}
+
+.delo-view-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 10px 8px;
+  border-right: 1px solid var(--delo-border-outer);
+}
+
+.delo-view-panel:not(.is-collapsed) .delo-view-sidebar {
+  min-width: 152px;
+}
+
+.delo-view-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--delo-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+
+.delo-view-tab:hover {
+  color: var(--delo-text);
+}
+
+.delo-view-tab[aria-current="page"] {
+  background: var(--delo-active);
+  color: var(--delo-text);
+}
+
+.delo-view-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.delo-view-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.delo-view-toggle {
+  margin-top: auto;
+}
+
+.delo-view-panel.is-collapsed .delo-view-tab-label {
+  display: none;
+}
+
+.delo-view-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding-top: 16px;
+}
+
+.delo-view-pane-header {
+  padding: 0 19px;
+}
+
+.delo-view-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 19px 16px;
+  scroll-padding-bottom: 6px;
+  scrollbar-width: none;
+}
+
+.delo-view-pane::-webkit-scrollbar {
+  display: none;
+}
+
+.delo-view-pane[hidden] {
+  display: none;
+}
+
+@media (max-width: 480px) {
+  .delo-view-panel {
+    flex-direction: column;
+  }
+
+  .delo-view-panel:not(.is-collapsed) .delo-view-sidebar {
+    min-width: 0;
+  }
+
+  .delo-view-sidebar {
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid var(--delo-border-outer);
+  }
+
+  .delo-view-toggle,
+  .delo-view-tab-label {
+    display: none;
+  }
+}
+
+.delo-view-header,
+.delo-view-pane-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.delo-view-header {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  right: 0;
+  padding: 0 19px;
+}
+
+.delo-view-pane-header .delo-label {
+  margin-left: auto;
+}
+
+.delo-label.is-draft {
+  color: var(--delo-draft);
+}
+
+.delo-label.is-saved {
+  color: var(--delo-saved);
+}
+
+.delo-view-close {
+  margin-left: auto;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--delo-muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.delo-view-close:hover,
+.delo-view-close:focus-visible {
+  color: var(--delo-text);
+}
+
+.delo-view-status {
+  margin-left: auto;
+  color: var(--delo-muted);
+  font-size: 12px;
+}
+
+.delo-view-status.is-error {
+  color: var(--delo-error);
+}
+
+.delo-view-status:not([hidden]) + .delo-view-close {
+  margin-left: 0;
+}
+
+.delo-view-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.delo-view-heading {
+  margin: 0;
+  color: var(--delo-label);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.delo-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.delo-view-key {
+  color: var(--delo-muted);
+}
+
+.delo-config-input,
+.delo-list-search {
+  padding: 7px 10px;
+  border: 1px solid var(--delo-border-inner);
+  border-radius: 4px;
+  background: var(--delo-surface);
+  color: var(--delo-text);
+  font: inherit;
+  outline: none;
+  resize: vertical;
+}
+
+.delo-config-input:focus,
+.delo-list-search:focus {
+  border-color: var(--delo-border-focus);
+}
+
+.delo-editor-text {
+  flex: 1;
+  min-height: 0;
+  font-family: var(--delo-font-mono);
+  resize: none;
+}
+
+.delo-editor-option {
+  align-items: flex-start;
+}
+
+.delo-editor-wide {
+  align-self: stretch;
+}
+
+.delo-editor-check {
+  accent-color: var(--delo-label);
+}
+
+.delo-editor-menu {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--delo-muted) 50%), linear-gradient(135deg, var(--delo-muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) center, calc(100% - 10px) center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.delo-config-problem {
+  margin: -8px 0 0;
+  color: var(--delo-error);
+}
+
+.delo-config-problem:empty {
+  display: none;
+}
+
+.delo-config-status {
+  color: var(--delo-muted);
+}
+
+.delo-view-note {
+  margin: 0;
+  color: var(--delo-muted);
+}
+
+.delo-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.delo-list-search {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+}
+
+.delo-list-search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.delo-list-entry {
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.delo-list-entry:has(> .delo-list-row[aria-expanded="true"]) {
+  margin: 4px 0;
+  border-color: var(--delo-border-inner);
+}
+
+.delo-list-entry:has(> .delo-list-row[aria-expanded="true"]):first-child {
+  margin-top: 0;
+}
+
+.delo-list-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.delo-list-row:focus-visible {
+  outline: none;
+}
+
+.delo-list-name {
+  flex-shrink: 0;
+  color: var(--delo-text);
+}
+
+.delo-list-row .delo-view-icon {
+  margin-left: auto;
+  color: var(--delo-muted);
+  transition: transform 150ms ease;
+}
+
+.delo-list-row[aria-expanded="true"] {
+  border-radius: 3px 3px 0 0;
+}
+
+.delo-list-row[aria-expanded="true"] .delo-view-icon {
+  transform: rotate(90deg);
+}
+
+.delo-list-details {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-height: 240px;
+  padding: 4px 9px 12px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.delo-list-details::-webkit-scrollbar {
+  display: none;
+}
+
+.delo-list-details[hidden] {
+  display: none;
+}
+
+.delo-list-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.delo-list-section:focus {
+  outline: none;
+}
+
+.delo-list-section:focus > .delo-list-box {
+  background: var(--delo-active);
+}
+
+.delo-list-label {
+  margin: 0;
+  color: var(--delo-muted);
+  font-size: 11px;
+  font-weight: normal;
+}
+
+.delo-list-box {
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--delo-bg);
+  color: var(--delo-value);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.delo-list-box::-webkit-scrollbar {
+  display: none;
+}
+
+.delo-list-box.is-prose {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.delo-list-link {
+  color: inherit;
+}
+
+.delo-list-tool {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.delo-list-tool:focus-visible {
+  outline: none;
+  background: var(--delo-active);
+}
+
+.delo-list-tool .delo-view-icon {
+  margin-left: auto;
+  color: var(--delo-muted);
+  transition: transform 150ms ease;
+}
+
+.delo-list-tool[aria-expanded="true"] .delo-view-icon {
+  transform: rotate(90deg);
+}
+
+.delo-list-tool-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 8px 12px;
+  color: var(--delo-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.delo-list-tool-details[hidden] {
+  display: none;
+}
+
+.delo-list-tool-description {
+  margin: 0;
+  color: var(--delo-value);
+}
+
+.delo-list-tool-command {
+  font-family: var(--delo-font-mono);
+}
+
+.delo-files-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--delo-value);
+  font-family: var(--delo-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delo-files-action {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--delo-border-inner);
+  border-radius: 4px;
+  background: var(--delo-surface);
+  color: var(--delo-text);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.delo-files-action:hover:not(:disabled),
+.delo-files-action:focus-visible {
+  border-color: var(--delo-border-focus);
+  outline: none;
+}
+
+.delo-files-action:disabled {
+  color: var(--delo-muted);
+  cursor: default;
+}
+
+.delo-files-read-only {
+  padding: 4px 0;
+  color: var(--delo-muted);
+}
+
+.delo-files-pane.is-dropping {
+  outline: 1px dashed var(--delo-border-focus);
+  outline-offset: -4px;
+}
+
+.delo-files-message:empty {
+  display: none;
+}
+
+.delo-files-message.is-error {
+  color: var(--delo-error);
+}
