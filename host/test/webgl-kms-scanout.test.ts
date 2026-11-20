@@ -272,7 +272,10 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
 // No new production authority or access to guest/kernel memory is exposed.
 function selectedKernel() {
   const r = renderer(), memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-  const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: {}, memory,
+  const processMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  let processLive = true;
+  const kernel = createWasmPosixKernelTestHarness({ io: {} as any,
+    callbacks: { getProcessMemory: pid => processLive && pid === 8 ? processMemory : undefined }, memory,
     pointerWidth: 4, instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096) });
   kernel.gl.createGpuBo(42, r.gl, 2, 2);
   const muxer = Reflect.get(kernel, "glMuxerFor").call(kernel, r.gl) as GlMuxer;
@@ -282,7 +285,7 @@ function selectedKernel() {
   muxer.switchTo(owner);
   const selected = new Map(r.state);
   const selections = () => r.calls.filter(call => call[0] === "select vertex array").length;
-  return { ...r, kernel, memory, muxer, owner, selected, selections };
+  return { ...r, kernel, memory, muxer, owner, selected, selections, retireProcessMemory: () => { processLive = false; } };
 }
 
 it("preserves the selected GL owner across successful live GPU cursor samples", () => {
@@ -1248,4 +1251,13 @@ it("counts a sibling view's refresh from its canonical image as a write of the v
   expect(r.calls.filter(call => call[0] === "copyTexSubImage2D")).toHaveLength(1);
   expect(storageWrites(view.native).count).toBeGreaterThan(before);
   expect(r.state).toEqual(r.initial);
+});
+
+
+it("refuses a graphics submit after the exact process memory is retired", () => {
+  const r = selectedDrawable();
+  r.retireProcessMemory();
+  const before = r.calls.length;
+  expect(r.submit()).toBe(-5);
+  expect(r.calls).toHaveLength(before);
 });

@@ -44,6 +44,8 @@ export const OP_DELETE_TEXTURES             = 0x0201;
 export const OP_BIND_TEXTURE                = 0x0202;
 export const OP_TEX_IMAGE_2D                = 0x0203;
 export const OP_TEX_SUB_IMAGE_2D            = 0x0204;
+/** Version 18: same RGBA/UNSIGNED_BYTE metadata, BGRA8 source pixels. */
+export const OP_TEX_SUB_IMAGE_2D_BGRA8       = 0x020D;
 export const OP_TEX_PARAMETERI              = 0x0205;
 export const OP_ACTIVE_TEXTURE              = 0x0206;
 export const OP_GENERATE_MIPMAP             = 0x0207;
@@ -137,7 +139,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 17;
+export const OP_VERSION = 18;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;

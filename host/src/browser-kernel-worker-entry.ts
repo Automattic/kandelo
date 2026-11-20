@@ -4497,6 +4497,11 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  // Stop admitting frames immediately, but drain process owners in parallel.
+  // Observe rejection now and report it only after all other cleanup runs.
+  const bitmapRetirement = kernelWorker.closeKmsBitmapRelays().then(
+    () => null, error => ({ error }),
+  );
   await groupedSession?.destroy();
   groupedSession = undefined;
   await liveOverlayCompactor?.stop();
@@ -4665,6 +4670,11 @@ async function performDestroy() {
   } catch (error) {
     storageCleanupFailure = { error: storageCleanupFailure === null ? error
       : new AggregateError([storageCleanupFailure.error, error], "kernel storage cleanup failed") };
+  }
+  const bitmapFailure = await bitmapRetirement;
+  if (bitmapFailure !== null) {
+    storageCleanupFailure = { error: storageCleanupFailure === null ? bitmapFailure.error
+      : new AggregateError([storageCleanupFailure.error, bitmapFailure.error], "kernel device/storage cleanup failed") };
   }
   if (storageCleanupFailure !== null) throw storageCleanupFailure.error;
   initReady = false;

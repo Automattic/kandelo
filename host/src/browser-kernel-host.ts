@@ -1,3 +1,4 @@
+import bitmapDisplayWorkerUrl from "./dri/kms-bitmap-display-worker.ts?worker&url";
 import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import { deliverProcessGenerationEvent, type ProcessGenerationEvent } from "./process-generation-observation";
 export type { ProcessGenerationEvent } from "./process-generation-observation";
@@ -1539,6 +1540,34 @@ export class BrowserKernel {
    * Pass `stats` to receive blit + page-flip telemetry (see
    * `attachKmsStats` for the slot layout).
    */
+  private kmsBitmapWorkers = new Map<number, Worker>();
+
+  /** Opt-in browser presentation relay. Both attached canvases move into a
+   * disposable display Worker. The kernel renders into independent detached
+   * canvases and sends bounded device ImageBitmaps directly to that realm. */
+  kmsAttachBitmapRelay(crtcId: number, canvas: OffscreenCanvas, stats?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas }): void {
+    if (!this.initialized || this.shuttingDown) throw new Error('Kernel is unavailable');
+    if (this.kmsBitmapWorkers.has(crtcId)) throw new Error('KMS bitmap display already attached');
+    const canvases = opts?.cursorCanvas ? [canvas, opts.cursorCanvas] : [canvas];
+    if (canvases.some(c => c.width < 1 || c.width > 3840 || c.height < 1 || c.height > 2160)) {
+      throw new Error('KMS bitmap display exceeds its device extent');
+    }
+    const channel = new MessageChannel();
+    const display = new Worker(bitmapDisplayWorkerUrl, { type: 'module' });
+    const sources = canvases.map(c => new OffscreenCanvas(c.width, c.height));
+    display.onerror = error => this.options.onHostDiagnostic?.({pid: 0,
+      source: 'kms-bitmap-display', message: error.message});
+    try {
+      display.postMessage({canvases, port: channel.port1}, [...canvases, channel.port1]);
+      this.sendToKernel({type: 'kms_attach_canvas', crtcId, canvas: sources[0], stats,
+        opts: {mode: opts?.mode, cursorCanvas: sources[1], bitmapPort: channel.port2}}, [...sources, channel.port2]);
+      this.kmsBitmapWorkers.set(crtcId, display);
+    } catch (error) {
+      channel.port1.close(); channel.port2.close(); display.terminate(); throw error;
+    }
+  }
+
   kmsAttachCanvas(
     crtcId: number,
     canvas: OffscreenCanvas,
@@ -2028,10 +2057,16 @@ export class BrowserKernel {
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     this.audioClosing = true;
+    // These realms own only device images, never guest address spaces.
+    // Retire after kernel graceful shutdown below, before returning to callers.
     // Remove input-source DOM listeners regardless of worker state.
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;
-    if (!this.workerStarted) return;
+    if (!this.workerStarted) {
+      for (const display of this.kmsBitmapWorkers.values()) display.terminate();
+      this.kmsBitmapWorkers.clear();
+      return;
+    }
     this.shuttingDown = true;
     const rejectedPersistentInitialization =
       this.rejectedPersistentInitializationWorker === this.kernelWorkerHandle;
@@ -2054,6 +2089,8 @@ export class BrowserKernel {
         this.persistenceShutdownFailure = outcome.result.persistenceSyncFailure ?? null;
       }
     }
+    for (const display of this.kmsBitmapWorkers.values()) display.terminate();
+    this.kmsBitmapWorkers.clear();
     this.initialized = false;
     await this.pcmDriver?.close().catch(error => {
       const audioFailure = `PCM output shutdown failed: ${formatHostErrorDiagnostic(error)}`;

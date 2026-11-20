@@ -14,7 +14,7 @@
 #include <stdint.h>
 #include "drm_owned.h"
 
-#define WPK_GL_OP_VERSION 17u
+#define WPK_GL_OP_VERSION 18u
 #define WPK_GL_INLINE_DRAW_HEADER_BYTES 16u
 #define WPK_GL_INLINE_DRAW_ATTRIBUTE_BYTES 20u
 #define WPK_GL_INLINE_DRAW_MAX_BYTES 65535u
@@ -80,6 +80,8 @@
 #define OP_BIND_TEXTURE                0x0202u
 #define OP_TEX_IMAGE_2D                0x0203u
 #define OP_TEX_SUB_IMAGE_2D            0x0204u
+/* Same 36-byte RGBA/UNSIGNED_BYTE header, with BGRA8 pixel bytes. */
+#define OP_TEX_SUB_IMAGE_2D_BGRA8       0x020Du
 #define OP_TEX_PARAMETERI              0x0205u
 #define OP_ACTIVE_TEXTURE              0x0206u
 #define OP_GENERATE_MIPMAP             0x0207u

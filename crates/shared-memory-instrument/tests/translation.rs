@@ -305,7 +305,7 @@ fn translated_c_preserves_real_memory_operations_in_a_worker() {
         .join("tests/fixtures/node-runner.mjs")
         .canonicalize()
         .unwrap();
-    let output=Command::new("node").args(["--input-type=module","-e",r#"import {Worker} from 'node:worker_threads';const w=new Worker(process.argv[1],{workerData:process.argv[2],execArgv:[]});const timer=setTimeout(()=>{w.terminate();process.exitCode=1;console.error('mechanism worker timed out');},20000);w.on('message',r=>{clearTimeout(timer);console.log(JSON.stringify(r));});w.on('error',e=>{clearTimeout(timer);console.error(e);process.exitCode=1;});"#]).arg(worker).arg(output).output().unwrap();
+    let output=Command::new("node").args(["--input-type=module","-e",r#"import {Worker} from 'node:worker_threads';const w=new Worker(process.argv[1],{workerData:process.argv[2],execArgv:["--import","tsx"]});const timer=setTimeout(()=>{w.terminate();process.exitCode=1;console.error('mechanism worker timed out');},20000);w.on('message',r=>{clearTimeout(timer);console.log(JSON.stringify(r));});w.on('error',e=>{clearTimeout(timer);console.error(e);process.exitCode=1;});"#]).arg(worker).arg(output).output().unwrap();
     assert!(
         output.status.success(),
         "{}",

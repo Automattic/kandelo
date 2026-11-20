@@ -2,7 +2,7 @@ import {Worker,parentPort,workerData} from 'node:worker_threads';
 import {readFile} from 'node:fs/promises';
 import {check} from './runner.mjs';
 function spawnPeer(request) {
-  const worker=new Worker(new URL('./pool-peer-node.mjs',import.meta.url),{workerData:request,execArgv:[]});
+  const worker=new Worker(new URL('./pool-peer-node.mjs',import.meta.url),{workerData:request,execArgv:['--import','tsx']});
   let readyResolve,readyReject,doneResolve,doneReject;
   const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   const done=new Promise((resolve,reject)=>{doneResolve=resolve;doneReject=reject;});

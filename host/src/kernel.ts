@@ -915,6 +915,7 @@ export interface KernelCallbacks {
   markKmsCanvasGlOwned?: (crtcId: number) => void;
   /** A canvas-backed GL frame has actually been presented on this CRTC. */
   onKmsGlPresented?: (crtcId: number) => void;
+  onKmsCanvasUpdated?: (crtcId: number) => void;
   /**
    * Inverse of `markKmsCanvasGlOwned`: the GL session that claimed the
    * canvas is gone (context destroyed or renderD128 session terminated),
@@ -1434,17 +1435,22 @@ export class WasmPosixKernel {
     if (!gamma) {
       // The stage ended: show the retained frame as the session presented
       // it (the cursor is back on its overlay), then free the stage.
-      if (stage?.usable(gl) && stage.hasFrame) this.withGraphicsState(gl, () => stage.present(null, null));
+      if (stage?.usable(gl) && stage.hasFrame) {
+        this.withGraphicsState(gl, () => stage.present(null, null));
+        this.callbacks.onKmsCanvasUpdated?.(crtcId);
+      }
       this.#releaseColorStage(crtcId);
       return;
     }
     if (stage?.usable(gl) && stage.hasFrame) {
       this.withGraphicsState(gl, () => stage.present(gamma, cursor));
+      this.callbacks.onKmsCanvasUpdated?.(crtcId);
       return;
     }
     // The stage has just begun: the canvas still shows the session's last
     // frame as it presented it.
     this.#presentThroughStage(crtcId, gl, null, 0, 0, canvas.width, canvas.height, false, false);
+    this.callbacks.onKmsCanvasUpdated?.(crtcId);
   }
 
   /** The WebGL2 context each CRTC's frames last reached the canvas
@@ -1507,6 +1513,7 @@ export class WasmPosixKernel {
    * buffer is never recorded. */
   #recordDirectPresentation(crtcId: number, fb: HostScanout, canvas: OffscreenCanvas, storage: GpuScanoutStorage,
       stage: string | null, commits: number | undefined): void {
+    this.callbacks.onKmsCanvasUpdated?.(crtcId);
     const gl = storage.gl;
     if (gl.isContextLost() || gl.getContextAttributes?.()?.preserveDrawingBuffer !== true) return;
     this.#directPresentations.set(crtcId, { canvas, storage, bo: fb.bo_id, fbId: fb.fb_id, commits, stage,

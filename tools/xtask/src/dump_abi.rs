@@ -5029,10 +5029,11 @@ fn dri_cleanup_status() -> Value {
 
 fn gl_image_container_receipts() -> Value {
     use shared::gl;
-    // The unpublished epoch/op-table alone cannot distinguish older hosts that
-    // reject these opt-in sizes. Bind the reply agreement into the program digest.
+    // Bind the existing ABI-56 table and exact reply agreement, not the
+    // current maximum negotiated table. Additive GLIO_INIT versions must not
+    // invalidate these unchanged, already-built programs.
     json!({
-        "op_version": gl::OP_VERSION,
+        "op_version": gl::BASELINE_OP_VERSION,
         "byte_order": "little-endian",
         "word_type": "u32",
         "reply_magic": gl::QUERY_REPLY_MAGIC,
@@ -5066,11 +5067,11 @@ fn gl_image_container_receipts() -> Value {
 }
 
 fn gl_inline_client_draw() -> Value {
-    use shared::gl::{OP_DRAW_CLIENT_ARRAYS, OP_VERSION, inline_client_draw as wire};
+    use shared::gl::{BASELINE_OP_VERSION, OP_DRAW_CLIENT_ARRAYS, inline_client_draw as wire};
     // The payload is read by the host, but emitted by already-built programs.
     // An unchanged unpublished epoch must not admit a different record digest.
     json!({
-        "op_version": OP_VERSION,
+        "op_version": BASELINE_OP_VERSION,
         "opcode": OP_DRAW_CLIENT_ARRAYS,
         "byte_order": "little-endian",
         "header_bytes": wire::HEADER_BYTES,

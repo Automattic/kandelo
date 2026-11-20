@@ -5021,3 +5021,36 @@ Translated indexed sampler lookups and guest array parameters use scalar
 sampler parameters to avoid that shape. Chromium and WebKit link both
 standalone forms. The reproduction is retained for checking released
 Firefox versions before removing the workaround.
+
+
+### Opt-in grouped desktop display transport
+
+The experimental `grouped-desktop.html` page selects
+`BrowserKernel.kmsAttachBitmapRelay` for its Sway/Foot display. This is a browser
+device transport: the kernel Worker renders to detached canvases, and a separate
+disposable display Worker owns the visible `bitmaprenderer` canvases. Independent
+`ImageBitmap` objects cross a private port; guest memories, their backing buffers
+and views do not enter the display Worker or browser main. Ordinary
+`kmsAttachCanvas` consumers and Node retain their existing presentation path.
+
+At most one bundle of up to two changed planes is captured or awaiting an exact
+sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capturing
+consumes the source canvas; only actual subsequent device writes mark it dirty
+again. This opt-in transport does not establish compatibility with mixed
+unprepared graphical clients. It creates an additional Worker and native device
+surfaces. A two-plane 3072×1728 bundle contains up to 40.5 MiB of pixel data;
+that is a payload bound, not a measurement of native graphics memory or total
+browser footprint. Current resource and presentation measurements remain
+required before preview promotion.
+
+Shutdown stops frame admission synchronously, waits for any pending capture,
+and closes late images. It sends an ordered retirement request naming the last
+published sequence. The display consumes earlier frames, clears both visible
+surfaces, and acknowledges that exact sequence before the kernel destroy reply
+allows the parent to terminate the display realm. Repeated close calls share
+one completion. Replaced relays retain their retirement promises until observed.
+A missing acknowledgement after three seconds rejects retirement and keeps
+containment visible in host diagnostics; terminating a Worker alone is not
+reported as a successful acknowledgement. See the
+[desktop integration evidence](measurements/2026-11-19-shared-memory-desktop-integration.md)
+for the bounded validation and remaining gates.
