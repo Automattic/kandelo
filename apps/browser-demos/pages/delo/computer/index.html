@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en" data-delo-theme="wordpress-light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>delo</title>
+  <link rel="icon" type="image/png" href="../../kandelo/assets/favicon.png">
+  <link rel="stylesheet" href="../src/computer/styles.css">
+</head>
+<body>
+  <main class="delo-computer-page">
+    <output class="delo-status" id="delo-status" aria-live="polite"></output>
+    <div class="delo-surface delo-terminal" id="delo-terminal" hidden></div>
+    <canvas class="delo-surface delo-framebuffer" id="delo-framebuffer" data-kandelo-display="framebuffer" tabindex="0" aria-label="Framebuffer" hidden></canvas>
+    <div class="delo-surface delo-kms" id="delo-kms" hidden></div>
+    <div class="delo-surface delo-web" id="delo-web" hidden>
+      <iframe title="Web" hidden></iframe>
+      <p class="delo-web-message"></p>
+    </div>
+  </main>
+
+  <section class="delo-panel" id="delo-share" aria-label="Share" hidden>
+    <input class="delo-field" type="text" readonly aria-label="Share link">
+    <p class="delo-share-status" role="status"></p>
+  </section>
+  <section class="delo-panel" id="delo-network" aria-label="Network" hidden>
+    <p class="delo-network-status" role="status"></p>
+    <div class="delo-network-offline">
+      <button type="button" class="delo-action delo-network-create">Create a session</button>
+      <form class="delo-network-join">
+        <input class="delo-field delo-network-invitation" type="url" placeholder="session link" aria-label="Session link" required>
+        <button type="submit" class="delo-action">Join</button>
+      </form>
+    </div>
+    <div class="delo-network-online" hidden>
+      <input class="delo-field delo-network-link" type="text" readonly aria-label="Session link to share">
+      <button type="button" class="delo-action delo-network-copy">Copy</button>
+      <button type="button" class="delo-action delo-network-leave">Leave</button>
+    </div>
+  </section>
+  <section class="delo-panel" id="delo-upload" aria-label="Upload" hidden>
+    <input type="file" multiple hidden>
+    <button type="button" class="delo-action">Choose files</button>
+    <ul class="delo-list" hidden></ul>
+  </section>
+  <section class="delo-panel" id="delo-download" aria-label="Download" hidden>
+    <p class="delo-panel-empty">nothing to download</p>
+    <ul class="delo-list"></ul>
+  </section>
+  <section class="delo-panel" id="delo-internals" aria-label="Internals" hidden>
+    <table class="delo-processes">
+      <thead><tr><th>pid</th><th>ppid</th><th>user</th><th>state</th><th>command</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="delo-panel-error" role="alert" hidden></p>
+  </section>
+
+  <dialog class="delo-accept" id="delo-accept" aria-labelledby="delo-accept-title">
+    <h2 class="delo-accept-title" id="delo-accept-title">An agent calls <code class="delo-accept-tool"></code></h2>
+    <dl class="delo-accept-rows"></dl>
+    <div class="delo-accept-actions">
+      <button type="button" class="delo-action delo-accept-yes">Accept</button>
+      <button type="button" class="delo-action delo-accept-no">Refuse</button>
+    </div>
+  </dialog>
+
+  <button type="button" class="delo-fab" id="delo-fab" aria-label="Open the delo toolbar" aria-controls="delo-toolbar" aria-expanded="false">
+    <img src="../../kandelo/assets/kandelo-mark.png" alt="">
+  </button>
+  <div class="delo-toolbar" id="delo-toolbar" role="toolbar" aria-label="delo toolbar" hidden>
+    <div class="delo-toolbar-section" aria-label="devices" role="group">
+      <button type="button" class="delo-tool" id="delo-device-terminal" aria-label="Terminal" title="Terminal" aria-controls="delo-terminal" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5"></path><path d="M8 11.5h5"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-device-framebuffer" aria-label="Framebuffer" title="Framebuffer" aria-controls="delo-framebuffer" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="8.5" rx="1"></rect><path d="M6 13.5h4"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-device-kms" aria-label="Display" title="Display" aria-controls="delo-kms" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="8.5" rx="1"></rect><path d="M5 9l2-2.5 1.5 1.5L11 5.5"></path><path d="M6 13.5h4"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-device-web" aria-label="Web" title="Web" aria-controls="delo-web" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M2.5 8h11"></path><path d="M8 2.5c1.8 1.6 2.5 3.4 2.5 5.5S9.8 11.9 8 13.5C6.2 11.9 5.5 10.1 5.5 8S6.2 4.1 8 2.5Z"></path></svg>
+      </button>
+    </div>
+    <div class="delo-toolbar-section" aria-label="options" role="group">
+      <button type="button" class="delo-tool" id="delo-option-share" aria-label="Share" title="Share" aria-controls="delo-share" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.5"></path><path d="M5 5.5 8 2.5l3 3"></path><path d="M3.5 9v3.5h9V9"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-option-theme" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11Z" class="delo-filled-path"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-option-sound" aria-label="Sound" title="Sound" aria-pressed="false" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.5L8.5 3v10L5 10H2.5Z"></path><path d="M11 5.5a3.5 3.5 0 0 1 0 5"></path><path d="M12.8 3.5a6 6 0 0 1 0 9"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-option-network" aria-label="Network" title="Network" aria-controls="delo-network" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3.5" r="1.5"></circle><circle cx="3.5" cy="12" r="1.5"></circle><circle cx="12.5" cy="12" r="1.5"></circle><path d="M7.3 4.8 4.2 10.7"></path><path d="m8.7 4.8 3.1 5.9"></path><path d="M5 12h6"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-option-upload" aria-label="Upload" title="Upload" aria-controls="delo-upload" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 11V3"></path><path d="M5 6l3-3 3 3"></path><path d="M3 13h10"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-option-download" aria-label="Download" title="Download" aria-controls="delo-download" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v8"></path><path d="M5 8l3 3 3-3"></path><path d="M3 13h10"></path></svg>
+      </button>
+      <button type="button" class="delo-tool" id="delo-option-internals" aria-label="Internals" title="Internals" aria-controls="delo-internals" hidden>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10"></path><path d="M3 8h10"></path><path d="M3 11.5h6"></path></svg>
+      </button>
+    </div>
+    <div class="delo-toolbar-section" aria-label="Kandelo" role="group">
+      <a class="delo-tool" href="https://github.com/Automattic/kandelo" target="_blank" rel="noopener noreferrer" aria-label="View Kandelo on GitHub" title="View Kandelo on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="delo-filled"><path d="M8 1.5a6.5 6.5 0 0 0-2.06 12.67c.33.06.45-.14.45-.32v-1.27c-1.83.4-2.22-.78-2.22-.78-.3-.76-.73-.96-.73-.96-.6-.41.05-.4.05-.4.66.05 1.01.68 1.01.68.59 1.01 1.54.72 1.92.55.06-.43.23-.72.42-.89-1.46-.17-3-.73-3-3.21 0-.71.25-1.29.68-1.75-.07-.17-.3-.83.06-1.72 0 0 .55-.18 1.79.67A6.2 6.2 0 0 1 8 4.75c.55 0 1.1.07 1.62.22 1.24-.85 1.79-.67 1.79-.67.36.89.13 1.55.06 1.72.42.46.68 1.04.68 1.75 0 2.49-1.54 3.04-3 3.2.24.21.44.61.44 1.23v1.65c0 .18.12.38.45.32A6.5 6.5 0 0 0 8 1.5Z"></path></svg>
+      </a>
+      <a class="delo-tool delo-tool-mark" id="delo-back" href="../" aria-label="Save and go back to delo" title="Save and go back to delo">
+        <img src="../../kandelo/assets/kandelo-mark.png" alt="">
+      </a>
+      <button type="button" class="delo-tool" id="delo-fold" aria-label="Fold the delo toolbar" title="Fold">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10 8 6l4 4"></path></svg>
+      </button>
+    </div>
+  </div>
+  <script type="module" src="../src/computer/main.ts"></script>
+</body>
+</html>

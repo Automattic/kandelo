@@ -997,6 +997,8 @@ const defaultDemoInputs = {
   main: path.resolve(__dirname, "index.html"),
   kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
   network: path.resolve(__dirname, "pages/network/index.html"),
+  delo: path.resolve(__dirname, "pages/delo/index.html"),
+  "delo-computer": path.resolve(__dirname, "pages/delo/computer/index.html"),
 };
 
 const demoInputs = {
