@@ -82,6 +82,69 @@ pub mod extension_requests {
     pub const KMSG_CAPACITY_BYTES: usize = 128 * 1024;
 }
 
+/// Process-shared pthread requests that ABI-56 programs issue.
+///
+/// WHY a separate record: the ABI-56 libc overlay
+/// (`libc/musl-overlay/src/thread/wasm32posix/pthread_*.c`) issues these
+/// numbers for `PTHREAD_PROCESS_SHARED` mutexes, condition variables and
+/// barriers, so every ABI-56 program that uses one binds to them. They
+/// predate the program digest's syscall table and are absent from it. Adding
+/// them to the digested `syscalls` section would change the frozen ABI-56
+/// digest and refuse every existing program, so `xtask dump-abi` records them
+/// in the `program_legacy_requests` section, under the "frozen baseline
+/// record" surface: checked, but outside the digest. Their numbers and
+/// argument meanings must not change while ABI-56 programs are supported.
+/// See docs/abi-versioning.md, "Frozen baseline records", and
+/// docs/plans/2026-11-15-process-shared-synchronization-design.md.
+pub mod legacy_pshared {
+    pub const MUTEX_INIT: u32 = 400;
+    pub const MUTEX_LOCK: u32 = 401;
+    pub const MUTEX_TRYLOCK: u32 = 402;
+    pub const MUTEX_UNLOCK: u32 = 403;
+    pub const MUTEX_DESTROY: u32 = 404;
+    pub const COND_INIT: u32 = 405;
+    pub const COND_WAIT_BEGIN: u32 = 406;
+    pub const COND_WAIT_CHECK: u32 = 407;
+    pub const COND_SIGNAL: u32 = 408;
+    pub const COND_BROADCAST: u32 = 409;
+    pub const COND_DESTROY: u32 = 410;
+    pub const BARRIER_INIT: u32 = 411;
+    pub const BARRIER_WAIT: u32 = 412;
+    pub const BARRIER_DESTROY: u32 = 413;
+    pub const COND_WAIT_ABORT: u32 = 414;
+
+    /// One recorded request: number, the overlay's `SYS_PSHARED_*` name, its
+    /// arguments in channel order, and its result convention.
+    pub struct Request {
+        pub number: u32,
+        pub name: &'static str,
+        pub args: &'static [&'static str],
+        pub result: &'static str,
+    }
+
+    const ID_OR_ERRNO: &str = "new nonzero object id, or -errno";
+    const ZERO_OR_ERRNO: &str = "0, or -errno";
+
+    /// Every request, in number order.
+    pub const REQUESTS: &[Request] = &[
+        Request { number: MUTEX_INIT, name: "SYS_PSHARED_MUTEX_INIT", args: &["mutex_type"], result: ID_OR_ERRNO },
+        Request { number: MUTEX_LOCK, name: "SYS_PSHARED_MUTEX_LOCK", args: &["mutex_id"], result: ZERO_OR_ERRNO },
+        Request { number: MUTEX_TRYLOCK, name: "SYS_PSHARED_MUTEX_TRYLOCK", args: &["mutex_id"], result: ZERO_OR_ERRNO },
+        Request { number: MUTEX_UNLOCK, name: "SYS_PSHARED_MUTEX_UNLOCK", args: &["mutex_id"], result: ZERO_OR_ERRNO },
+        Request { number: MUTEX_DESTROY, name: "SYS_PSHARED_MUTEX_DESTROY", args: &["mutex_id"], result: ZERO_OR_ERRNO },
+        Request { number: COND_INIT, name: "SYS_PSHARED_COND_INIT", args: &[], result: ID_OR_ERRNO },
+        Request { number: COND_WAIT_BEGIN, name: "SYS_PSHARED_COND_WAIT_BEGIN", args: &["cond_id", "mutex_id"], result: ZERO_OR_ERRNO },
+        Request { number: COND_WAIT_CHECK, name: "SYS_PSHARED_COND_WAIT_CHECK", args: &["cond_id", "mutex_id"], result: ZERO_OR_ERRNO },
+        Request { number: COND_SIGNAL, name: "SYS_PSHARED_COND_SIGNAL", args: &["cond_id"], result: ZERO_OR_ERRNO },
+        Request { number: COND_BROADCAST, name: "SYS_PSHARED_COND_BROADCAST", args: &["cond_id"], result: ZERO_OR_ERRNO },
+        Request { number: COND_DESTROY, name: "SYS_PSHARED_COND_DESTROY", args: &["cond_id"], result: ZERO_OR_ERRNO },
+        Request { number: BARRIER_INIT, name: "SYS_PSHARED_BARRIER_INIT", args: &["count"], result: ID_OR_ERRNO },
+        Request { number: BARRIER_WAIT, name: "SYS_PSHARED_BARRIER_WAIT", args: &["barrier_id"], result: "PTHREAD_BARRIER_SERIAL_THREAD (-1) for one waiter per round, 0 for the others, or -errno" },
+        Request { number: BARRIER_DESTROY, name: "SYS_PSHARED_BARRIER_DESTROY", args: &["barrier_id"], result: ZERO_OR_ERRNO },
+        Request { number: COND_WAIT_ABORT, name: "SYS_PSHARED_COND_WAIT_ABORT", args: &["cond_id"], result: "0" },
+    ];
+}
+
 pub mod platform_limits {
     pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
     pub const PATH_MAX_BYTES: usize = 4096;

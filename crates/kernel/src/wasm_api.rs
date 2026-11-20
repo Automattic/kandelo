@@ -8519,12 +8519,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // ───── PTHREAD_PROCESS_SHARED primitives ─────
         // See crates/kernel/src/pshared.rs. Blocking ops return EAGAIN so
         // the host retry loop re-invokes them.
-        400 => {
+        wasm_posix_shared::legacy_pshared::MUTEX_INIT => {
             // SYS_PSHARED_MUTEX_INIT: (mtype)
             let t = unsafe { crate::pshared::global_pshared_table() };
             t.mutex_init(a1 as u32) as i32
         }
-        401 => {
+        wasm_posix_shared::legacy_pshared::MUTEX_LOCK => {
             // SYS_PSHARED_MUTEX_LOCK: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -8533,7 +8533,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        402 => {
+        wasm_posix_shared::legacy_pshared::MUTEX_TRYLOCK => {
             // SYS_PSHARED_MUTEX_TRYLOCK: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -8542,7 +8542,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        403 => {
+        wasm_posix_shared::legacy_pshared::MUTEX_UNLOCK => {
             // SYS_PSHARED_MUTEX_UNLOCK: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -8551,7 +8551,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        404 => {
+        wasm_posix_shared::legacy_pshared::MUTEX_DESTROY => {
             // SYS_PSHARED_MUTEX_DESTROY: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.mutex_destroy(a1 as u32) {
@@ -8559,12 +8559,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        405 => {
+        wasm_posix_shared::legacy_pshared::COND_INIT => {
             // SYS_PSHARED_COND_INIT: ()
             let t = unsafe { crate::pshared::global_pshared_table() };
             t.cond_init() as i32
         }
-        406 => {
+        wasm_posix_shared::legacy_pshared::COND_WAIT_BEGIN => {
             // SYS_PSHARED_COND_WAIT_BEGIN: (cond_id, mutex_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -8573,7 +8573,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        407 => {
+        wasm_posix_shared::legacy_pshared::COND_WAIT_CHECK => {
             // SYS_PSHARED_COND_WAIT_CHECK: (cond_id, mutex_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -8582,7 +8582,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        408 => {
+        wasm_posix_shared::legacy_pshared::COND_SIGNAL => {
             // SYS_PSHARED_COND_SIGNAL: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.cond_signal(a1 as u32) {
@@ -8590,7 +8590,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        409 => {
+        wasm_posix_shared::legacy_pshared::COND_BROADCAST => {
             // SYS_PSHARED_COND_BROADCAST: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.cond_broadcast(a1 as u32) {
@@ -8598,7 +8598,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        410 => {
+        wasm_posix_shared::legacy_pshared::COND_DESTROY => {
             // SYS_PSHARED_COND_DESTROY: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.cond_destroy(a1 as u32) {
@@ -8606,7 +8606,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        411 => {
+        wasm_posix_shared::legacy_pshared::BARRIER_INIT => {
             // SYS_PSHARED_BARRIER_INIT: (count)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.barrier_init(a1 as u32) {
@@ -8614,7 +8614,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        412 => {
+        wasm_posix_shared::legacy_pshared::BARRIER_WAIT => {
             // SYS_PSHARED_BARRIER_WAIT: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
@@ -8623,7 +8623,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        413 => {
+        wasm_posix_shared::legacy_pshared::BARRIER_DESTROY => {
             // SYS_PSHARED_BARRIER_DESTROY: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.barrier_destroy(a1 as u32) {
@@ -8631,7 +8631,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Err(e) => -(e as i32),
             }
         }
-        414 => {
+        wasm_posix_shared::legacy_pshared::COND_WAIT_ABORT => {
             // SYS_PSHARED_COND_WAIT_ABORT: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
