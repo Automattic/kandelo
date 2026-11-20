@@ -5442,9 +5442,6 @@ export class CentralizedKernelWorker {
     if (this.#kernelFatalError !== null) return;
     this.#kernelEntryGate.fail(error);
     this.#kernelFatalError = error;
-    void this.closeKmsBitmapRelays().catch(error => {
-      this.callbacks.onHostDiagnostic?.({pid: 0, source: "kms-bitmap-retirement", message: String(error)});
-    });
     this.#httpAdmission.close(error);
     for (const refuse of this.#httpRequests) refuse(error);
     this.#initialized = false;
@@ -5469,6 +5466,12 @@ export class CentralizedKernelWorker {
     this.#scheduleMicrotaskListenerRoot(
       "kernel fatal observer",
       () => {
+        // Retirement can post device messages and await capture/display
+        // fences. Start it only after the failing entry's authority ended;
+        // destroy still observes the same retirement ledger and promise.
+        void this.closeKmsBitmapRelays().catch(error => {
+          this.callbacks.onHostDiagnostic?.({pid: 0, source: "kms-bitmap-retirement", message: String(error)});
+        });
         try {
           this.callbacks.onKernelFatal?.(error);
         } catch (callbackError) {

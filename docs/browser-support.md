@@ -5091,6 +5091,10 @@ published sequence. The display consumes earlier frames, clears both visible
 surfaces, and acknowledges that exact sequence before the kernel destroy reply
 allows the parent to terminate the display realm. Repeated close calls share
 one completion. Replaced relays retain their retirement promises until observed.
+A fatal kernel error latches dispatch off synchronously, then starts relay
+retirement from the detached fatal-observer microtask after kernel entry
+authority has ended. Destroy awaits the same retirement ledger and preserves
+failed fences.
 A missing acknowledgement after three seconds rejects retirement and keeps
 containment visible in host diagnostics; terminating a Worker alone is not
 reported as a successful acknowledgement. See the

@@ -1285,3 +1285,20 @@ new display realm's cost remains unmeasured. Retained evidence includes
 `.context/desktop-startup-244`, `.context/desktop-preview-247`, and
 `.context/desktop-lifecycle-frame-248`; the original failed matrices and
 interrupted or saturated diagnostics remain separate records.
+
+## Fatal display retirement ordering
+
+The scoped kernel-call audit found that fatal-error cleanup could begin async
+display retirement while entry authority was still live. Retirement now starts
+in the existing detached fatal-observer microtask. The fatal dispatch latch
+remains synchronous, and destroy observes the same pending or failed fences.
+This is a cleanup correction; it does not explain the sustained input failure.
+
+Host types and the focused scoped-call audit plus all 21 relay/display tests
+pass (22 selected cases; nine unrelated audit cases were not selected). The
+new regression fails against the prior runtime because retirement begins
+immediately there; it also checks that a failed retirement remains visible
+to later destroy. The broader ownership, current browser-memory, conformance
+and performance gates remain required for the combined runtime. Evidence is
+retained in `.context/desktop-relay-delivery-262` and
+`.context/desktop-relay-scope-negative-260`.

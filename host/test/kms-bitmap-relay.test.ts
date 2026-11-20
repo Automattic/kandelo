@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KmsBitmapRelay } from '../src/dri/kms-bitmap-relay';
 import { attachKmsBitmapDisplay } from '../src/dri/kms-bitmap-display';
+import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
 function deferred<T>() {
     let resolve!: (value: T) => void;
     let reject!: (error: unknown) => void;
@@ -41,6 +42,35 @@ function bitmap() { return { width: 3072, height: 1728, close: vi.fn() } as unkn
 beforeEach(() => vi.useFakeTimers());
 afterEach(async () => { const done = cleanups.map(close => close()); await vi.runAllTimersAsync(); await Promise.all(done); cleanups = []; vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('bounded KMS bitmap device ownership and retirement', () => {
+    it('starts fatal retirement after entry unwind and retains its failed fence for destroy', async () => {
+        const pending = deferred<void>();
+        const observed = deferred<void>();
+        const close = vi.fn(() => pending.promise);
+        const fatal = vi.fn(() => { expect(close).toHaveBeenCalledOnce(); observed.resolve(); });
+        const diagnostic = vi.fn();
+        const worker = createCentralizedKernelWorkerTestDouble({ callbacks: {
+            onKernelFatal: fatal, onHostDiagnostic: diagnostic,
+        } });
+        // Test-owned device; no guest memory or real display is needed to
+        // prove the ordering of the fatal latch, retirement, and observer.
+        (worker as unknown as { kmsBitmapRelays: Map<number, { close: typeof close }> })
+            .kmsBitmapRelays.set(1, { close });
+        worker.failPersistenceWriter(new Error('injected kernel failure'));
+        expect(close).not.toHaveBeenCalled();
+        expect(fatal).not.toHaveBeenCalled();
+        vi.runAllTicks();
+        await observed.promise;
+        expect(close).toHaveBeenCalledOnce();
+        expect(fatal).toHaveBeenCalledOnce();
+        const destroyFence = worker.closeKmsBitmapRelays();
+        const rejected = expect(destroyFence).rejects.toThrow('KMS bitmap retirement failed');
+        pending.reject(new Error('injected display retirement failure'));
+        await rejected;
+        expect(diagnostic).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+            source: 'kms-bitmap-retirement', message: expect.stringContaining('KMS bitmap retirement failed'),
+        }));
+        await expect(worker.closeKmsBitmapRelays()).rejects.toThrow('KMS bitmap retirement failed');
+    });
     it('requires exact ack and captures only a changed plane after publication', async () => {
         const s = setup();
         const images = [bitmap(), bitmap(), bitmap()];
