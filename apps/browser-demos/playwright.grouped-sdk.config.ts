@@ -3,7 +3,7 @@ import { browserStorageHome } from "./playwright-storage";
 
 export default defineConfig({
   testDir: "./test",
-  testMatch: "grouped-sdk-execution.spec.ts",
+  testMatch: ["grouped-sdk-execution.spec.ts", "grouped-root-launch.spec.ts"],
   workers: 1,
   reporter: "list",
   outputDir: "../../.scratch/grouped-sdk-execution-playwright",

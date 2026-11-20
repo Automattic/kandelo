@@ -5554,6 +5554,21 @@ pub extern "C" fn kernel_exec_target_admit(
     out_ptr: usize,
     out_len: usize,
 ) -> i32 {
+    exec_target_admission_output(owner_pid, token, expected_abi, out_ptr, out_len, None)
+}
+
+/// Optional host capability: inspect a fresh root's exact retained executable
+/// for an explicitly configured group, without reserving an execution image.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_initial_group_exec_target_admit(
+    owner_pid: u32, token: u32, expected_abi: u32, out_ptr: usize, out_len: usize, group: u32,
+) -> i32 {
+    exec_target_admission_output(owner_pid, token, expected_abi, out_ptr, out_len, Some(group))
+}
+
+fn exec_target_admission_output(
+    owner_pid: u32, token: u32, expected_abi: u32, out_ptr: usize, out_len: usize, group: Option<u32>,
+) -> i32 {
     if out_len == 0
         || out_len > i32::MAX as usize
         || out_ptr == 0
@@ -5563,7 +5578,11 @@ pub extern "C" fn kernel_exec_target_admit(
     }
     let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let admission = match table.admit_exec_target(owner_pid, token, expected_abi) {
+    let result = match group {
+        Some(group) => table.admit_initial_group_exec_target(group, owner_pid, token, expected_abi),
+        None => table.admit_exec_target(owner_pid, token, expected_abi),
+    };
+    let admission = match result {
         Ok(admission) => admission,
         Err(error) => return -(error as i32),
     };

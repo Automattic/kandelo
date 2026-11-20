@@ -8,11 +8,16 @@ import { KandeloImageFs } from '../../images/vfs/lib/kandelo-image-fs';
 import { compileSdkFixture } from './support/compile-sdk-fixture';
 
 // Exercise the public host option, not the separate internal-admission fixture.
-it.each([
+const publicLaunchCases = [
   ['readonly-file', true], ['shared-file', true], ['fork', true], ['pthread', true],
   ['fork', false], ['pthread', false],
   ['sigchld-wnohang', true], ['sigchld-wnohang', false],
-] as const)('runs public trusted launch %s (compatible=%s)', async (name, compatible) => {
+] as const;
+it.each([
+  ...publicLaunchCases.flatMap(([name, compatible]) =>
+    (['bytes', 'vfs'] as const).map(mode => [mode, name, compatible] as const)),
+  ['vfs', 'executable-identity', true], ['vfs', 'executable-identity', false],
+] as const)('runs public trusted %s launch %s (compatible=%s)', async (mode, name, compatible) => {
   const fixture = compileSdkFixture(new URL(`./fixtures/grouped-sdk-${name}.c`, import.meta.url), [], { forkInstrument: true });
   let host: NodeKernelHost | undefined;
   try {
@@ -24,6 +29,8 @@ it.each([
     }
     const image = KandeloImageFs.create();
     image.mkdir('/tmp', 0o1777);
+    image.mkdir('/bin', 0o755);
+    image.writeFile('/bin/probe', new Uint8Array(readFileSync(path)), 0o755);
     const rootfsImage = await image.saveImage(); image.reset();
     let stdout = '', stderr = '';
     const diagnostics: unknown[] = [];
@@ -35,10 +42,16 @@ it.each([
     });
     await host.init(Uint8Array.from(readFileSync(resolveBinary('kernel.wasm'))).buffer);
     let rootPid: number | undefined;
-    const status = await host.spawn(Uint8Array.from(readFileSync(path)).buffer,
-      [`grouped-sdk-${name}`, compatible ? 'grouped' : 'ordinary'], {
-        env: ['PATH=/bin'], stdin: new Uint8Array(), onStarted: pid => { rootPid = pid; },
-      });
+    const argv = [`grouped-sdk-${name}`, name === 'executable-identity' ? '/bin/probe' : compatible ? 'grouped' : 'ordinary'];
+    const status = mode === 'vfs'
+      ? await (async () => {
+          const child = await host!.spawnFromVfs('/bin/probe', argv, { env: ['PATH=/bin'], stdin: new Uint8Array() });
+          rootPid = child.pid;
+          return child.exit;
+        })()
+      : await host.spawn(Uint8Array.from(readFileSync(path)).buffer, argv, {
+          env: ['PATH=/bin'], stdin: new Uint8Array(), onStarted: pid => { rootPid = pid; },
+        });
     expect({ status, stderr, diagnostics }).toEqual({ status: 0, stderr: '', diagnostics: [] });
     expect(stdout).toContain(`grouped-sdk-${name} PASS`);
     if (compatible) {
@@ -84,3 +97,36 @@ it('reclaims repeated grouped host roots while preserving their child waits', as
     expect({ stderr, diagnostics }).toEqual({ stderr: '', diagnostics: [] });
   } finally { await host?.destroy(); fixture.cleanup(); }
 }, 90_000);
+
+it('rolls back repeated initial grouped image allocation refusals before a Worker exists', async () => {
+  const fixture = compileSdkFixture(new URL('./fixtures/grouped-sdk-fork.c', import.meta.url), [], { forkInstrument: true });
+  let host: NodeKernelHost | undefined;
+  try {
+    const grouped = fixture.programPath + '.grouped.wasm';
+    execFileSync(fileURLToPath(new URL('../../sdk/bin/wasm32posix-shared-memory', import.meta.url)),
+      [fixture.programPath, '-o', grouped], { stdio: 'pipe' });
+    const image = KandeloImageFs.create();
+    image.mkdir('/tmp', 0o1777); image.mkdir('/bin', 0o755);
+    image.writeFile('/bin/grouped', new Uint8Array(readFileSync(grouped)), 0o755);
+    image.writeFile('/bin/ordinary', new Uint8Array(readFileSync(fixture.programPath)), 0o755);
+    const rootfsImage = await image.saveImage(); image.reset();
+    let stdout = '', stderr = '';
+    const diagnostics: unknown[] = [];
+    host = new NodeKernelHost({ rootfsImage, maxPages: 2048, kernelMaxPages: 1024,
+      experimentalMemoryGroup: { maximumPages: 2, maximumProcesses: 1, maximumTasks: 1 },
+      onStdout: (_pid, bytes) => { stdout += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+      onHostDiagnostic: event => diagnostics.push(event),
+    });
+    await host.init();
+    for (let attempt = 0; attempt < 16; attempt++) {
+      await expect(host.spawnFromVfs('/bin/grouped', ['grouped', 'grouped'], { stdin: new Uint8Array() }))
+        .rejects.toThrow(/Grouped root image: errno 12/);
+      expect((await host.enumProcs()).filter(process => process.pid !== 1)).toEqual([]);
+    }
+    const child = await host.spawnFromVfs('/bin/ordinary', ['ordinary', 'ordinary'], { stdin: new Uint8Array() });
+    expect(await child.exit).toBe(0);
+    expect(stdout).toContain('grouped-sdk-fork PASS');
+    expect({ stderr, diagnostics }).toEqual({ stderr: '', diagnostics: [] });
+  } finally { await host?.destroy(); fixture.cleanup(); }
+}, 90000);

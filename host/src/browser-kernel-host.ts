@@ -1574,6 +1574,13 @@ export class BrowserKernel {
     stats?: SharedArrayBuffer,
     opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void {
+    // Grouped graphics must keep presentation in a disposable device realm.
+    // The ordinary app uses this API too, so choosing a group backend must
+    // carry its ownership policy through the existing KMS surface.
+    if (this.options.experimentalMemoryGroup !== undefined) {
+      this.kmsAttachBitmapRelay(crtcId, canvas, stats, opts);
+      return;
+    }
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
       opts?.cursorCanvas ? [canvas, opts.cursorCanvas] : [canvas],

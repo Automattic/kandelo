@@ -1587,7 +1587,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
           await retryKernelEntryResult(() => kernelWorker.installHostStdinPipe(pid));
           if (msg.stdin) kernelWorker.setStdinData(pid, msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin));
         }
-        await groupedSession.launch(pid, programBytes, programModule, argv, launchEnv, pages, defaultThreadSlots, secureExec);
+        await groupedSession.launch(pid, programBytes, programModule, argv, launchEnv, pages, defaultThreadSlots, secureExec, committedSecureExec !== undefined);
         respond(msg.requestId, pid); return 0;
       }
       const ptrWidth = detectPtrWidth(programBytes);
@@ -1730,7 +1730,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         onCommitFailure: () => {},
         startAfterCommit: () => startProgram(request.targetBytes, request.targetModule, request.argv,
           kernelWorker.takeCommittedExecSecureExec(pid)),
-      }));
+      }), await groupedSession?.initialPathGroup());
       if (result < 0) throw new PreparedExecTargetError("initial program commit failed", -result);
     } else {
       await startProgram(suppliedProgram!.bytes, suppliedProgram!.module, msg.argv);
@@ -3288,7 +3288,7 @@ async function handlePosixSpawn(
 
   const { programBytes, programModule, argv } = program;
   if (groupedSession?.accepts(programModule)) {
-    await groupedSession.launch(childPid, programBytes, programModule, argv, envp, maxPages, defaultThreadSlots, secureExec);
+    await groupedSession.launch(childPid, programBytes, programModule, argv, envp, maxPages, defaultThreadSlots, secureExec, true);
     return 0;
   }
   const ptrWidth = detectPtrWidth(programBytes);

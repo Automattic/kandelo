@@ -8,7 +8,7 @@ function deferred<T>() {
     const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
     return { promise, resolve, reject };
 }
-function setup() {
+function setup(useDefaultCapture = false) {
     const packets: any[] = [];
     const waiters: ((value: any) => void)[] = [];
     const port = { onmessage: null as ((event: any) => void) | null, onmessageerror: null as (() => void) | null,
@@ -20,7 +20,9 @@ function setup() {
         }) };
     const error = deferred<Error>();
     const fail = vi.fn((value: Error) => error.resolve(value));
-    const relay = new KmsBitmapRelay(port as unknown as MessagePort, fail, source => createImageBitmap(source));
+    const relay = useDefaultCapture
+        ? new KmsBitmapRelay(port as unknown as MessagePort, fail)
+        : new KmsBitmapRelay(port as unknown as MessagePort, fail, source => createImageBitmap(source));
     relay.changed(0);
     relay.changed(1);
     const canvas = { width: 3072, height: 1728 } as OffscreenCanvas;
@@ -42,6 +44,29 @@ function bitmap() { return { width: 3072, height: 1728, close: vi.fn() } as unkn
 beforeEach(() => vi.useFakeTimers());
 afterEach(async () => { const done = cleanups.map(close => close()); await vi.runAllTimersAsync(); await Promise.all(done); cleanups = []; vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('bounded KMS bitmap device ownership and retirement', () => {
+    it('retains producer pixels when an unchanged frame is presented again', async () => {
+        const s = setup(true);
+        const source = Object.assign(s.canvas, { pixels: [36, 36, 36], transferToImageBitmap: () => {
+            const image = Object.assign(bitmap(), { pixels: [...source.pixels] });
+            source.pixels.fill(0);
+            return image;
+        } });
+        vi.stubGlobal('createImageBitmap', vi.fn(() => Object.assign(bitmap(), { pixels: [...source.pixels] })));
+        s.relay.present(source);
+        const first = await s.next();
+        expect(first.frames[0].pixels).toEqual([36, 36, 36]);
+        s.ack(first.sequence);
+        // A swap/commit can present a cached frame without redrawing the
+        // retained producer canvas. Device capture must preserve those pixels.
+        s.relay.changed(0);
+        s.relay.present(source);
+        const second = await s.next();
+        expect(second.frames[0].pixels).toEqual([36, 36, 36]);
+        expect(source.pixels).toEqual([36, 36, 36]);
+        s.ack(second.sequence);
+        await s.close();
+    });
+
     it('starts fatal retirement after entry unwind and retains its failed fence for destroy', async () => {
         const pending = deferred<void>();
         const observed = deferred<void>();

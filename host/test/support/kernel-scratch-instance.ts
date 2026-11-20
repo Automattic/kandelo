@@ -84,6 +84,10 @@ function signatures(
       parameters: [i32, i32, i32, pointer, pointer],
       result: i32,
     },
+    kernel_initial_group_exec_target_admit: {
+      parameters: [i32, i32, i32, pointer, pointer, i32],
+      result: i32,
+    },
     kernel_exec_target_cancel: {
       parameters: [i32, i32],
       result: i32,

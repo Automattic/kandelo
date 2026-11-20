@@ -165,6 +165,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_exchange_stream_read",
   "kernel_exchange_stream_start",
   "kernel_exec_target_admit",
+  "kernel_initial_group_exec_target_admit",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_get_cwd",
@@ -397,6 +398,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_exec_target_prepare":
     case "kernel_spawn_exec_target_prepare_handle":
     case "kernel_exec_target_admit":
+    case "kernel_initial_group_exec_target_admit":
     case "kernel_process_metadata_read":
     case "kernel_setsockopt":
     case "kernel_socketpair":
@@ -481,6 +483,7 @@ function isKernelScratchExportName(
     case "kernel_exchange_stream_read":
     case "kernel_exchange_stream_start":
     case "kernel_exec_target_admit":
+    case "kernel_initial_group_exec_target_admit":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_get_cwd":

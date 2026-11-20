@@ -16,6 +16,21 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Optional initial grouped path validation
+
+`kernel_initial_group_exec_target_admit(pid, target, expectedAbi, out, capacity,
+group)` adds an optional kernel-host capability using the existing bounded
+admission reply. It validates a fresh root or pending spawn child's exact
+retained token and configured group, without reserving an image or changing
+membership. A spawn child must name its real parent in that parent's group.
+Initial/spawn commit and subsequent execution admission retain their existing
+semantics. Opted-in path launch refuses a kernel without this capability.
+
+This is an additive optional export: existing signatures, required capabilities,
+program ABI 56 and its digest remain unchanged. The regenerated snapshot records
+the new export and optional manifest entry. This does not establish full-app or
+lifecycle acceptance.
+
 ## Supported persistent-program baseline
 
 Kernel-host adapter version 21 extends internal grouped mapping descriptions

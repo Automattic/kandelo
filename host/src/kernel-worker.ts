@@ -3294,6 +3294,7 @@ export class CentralizedKernelWorker {
   #memoryGroupWorkerBindings = new WeakMap<PreparedGroupReplica, { worker: WorkerHandle; retire: () => void }>();
   #groupImageRetirements = new WeakMap<PreparedGroupReplica, GroupImageRetirement>();
   #groupProcessExits = new WeakMap<PreparedGroupReplica, GroupProcessExit>();
+  #unstartedGroupLaunchRetirements = new WeakSet<PreparedGroupReplica>();
   #memoryGroupImageRegistrations = new WeakMap<PreparedGroupReplica, {
     readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace }>();
   #pendingGroupClones = new Set<CloneRollbackState>();
@@ -8606,6 +8607,13 @@ export class CentralizedKernelWorker {
     return signal;
   }
 
+  /** An attempted constructor/transport cannot be rolled back as unexposed.
+   * Retain storage and fail this disposable kernel, rather than reporting a
+   * reusable process slot or waiting forever for an unreachable stop fence. */
+  containMemoryGroupLaunchFailure(cause: unknown): never {
+    return this.#memoryGroupProtocolError('Grouped process launch failed; storage retained', cause);
+  }
+
   /** Postcommit failure cannot restore the old image or prove page reuse. */
   containMemoryGroupExecFailure(cause: unknown): never {
     return this.#memoryGroupProtocolError('Committed grouped exec failed; storage retained', cause);
@@ -8716,6 +8724,33 @@ export class CentralizedKernelWorker {
       if (stale) retire();
       return undefined;
     });
+  }
+
+  /** Cancel a published initial image only with its exact, never-started
+   * Deferred Worker. The caller still owns removal of the failed Process.
+   * Execution custody, channels and host references all retire before pages. */
+  async retireMemoryGroupUnstartedProcess(handle: PreparedGroupReplica, worker: WorkerHandle,
+    retireHostReferences: () => void | Promise<void>): Promise<boolean> {
+    let sealed = false;
+    this.#runImmediateKernelEntry('retire exact unstarted grouped launch', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), binding = this.#memoryGroupWorkerBindings.get(handle);
+      if (!store || binding?.worker !== worker) return undefined;
+      const receipt = store.receipt(handle), registration = this.processes.get(receipt.pid);
+      if (receipt.pid !== receipt.tid || registration && registration.grouped?.handle !== handle
+          || this.#processExecGenerationWithinKernelEntry(receipt.pid, entry) !== receipt.generation
+          || !DeferredWorkerHandle.sealNeverStarted(worker)) return undefined;
+      this.#unstartedGroupLaunchRetirements.add(handle);
+      sealed = true; binding.retire();
+      return undefined;
+    });
+    if (!sealed) return false;
+    await this.waitForMemoryGroupReplicaQuiescence(handle);
+    for (;;) {
+      const result = await retryKernelEntryResult(() => this.retireMemoryGroupImage(handle, retireHostReferences));
+      if (result === 0) return true;
+      if (result !== -EBUSY) this.#memoryGroupProtocolError('Cannot retire exact unstarted image');
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
   }
 
   /** Only the very same observed private Deferred handle can seal absence.
@@ -10741,7 +10776,7 @@ export class CentralizedKernelWorker {
         // A cancelled replay never transferred a waitable child to its
         // parent. Its exact stop proof permits rollback without publishing a
         // fictitious guest exit. Other live images remain refused.
-        if (state !== PROCESS_STATE_EXITED && !failedFork) return undefined;
+        if (state !== PROCESS_STATE_EXITED && !failedFork && !this.#unstartedGroupLaunchRetirements.has(handle)) return undefined;
       }
       const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
       if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact image retirement export');
@@ -10799,6 +10834,7 @@ export class CentralizedKernelWorker {
         this.#memoryGroupReplicas.delete(replica); this.#memoryGroupThreadControls.delete(replica);
       }
       this.#memoryGroupImageRegistrations.delete(handle);
+      this.#unstartedGroupLaunchRetirements.delete(handle);
       record.owner = undefined; record.released = true; result = 0;
       return undefined;
     });
@@ -11209,6 +11245,7 @@ export class CentralizedKernelWorker {
     ownerPid: number,
     target: number,
     expectedAbi: number,
+    initialGroup?: number,
   ): ExecTargetAdmission {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const region = this.#requireMainScratchRegion();
@@ -11223,12 +11260,15 @@ export class CentralizedKernelWorker {
         this.currentHandlePid = ownerPid;
         try {
           region.withLease((lease) => {
-            result = this.#invokeEntryScratchExport(entry, lease, "kernel_exec_target_admit", [
-              ownerPid,
-              target,
-              expectedAbi,
-              lease.exportPointer(0, region.capacity),
-              region.capacity,
+            const name = initialGroup === undefined ? "kernel_exec_target_admit" : "kernel_initial_group_exec_target_admit";
+            if (typeof entry.instance.exports[name] !== "function") {
+              result = -ERRNO.EOPNOTSUPP;
+              return;
+            }
+            result = this.#invokeEntryScratchExport(entry, lease, name, [
+              ownerPid, target, expectedAbi,
+              lease.exportPointer(0, region.capacity), region.capacity,
+              ...(initialGroup === undefined ? [] : [initialGroup]),
             ]);
             if (result > 0) {
               const length = this.#checkedScratchProducerByteLength(
@@ -24499,15 +24539,27 @@ export class CentralizedKernelWorker {
     );
   }
 
+  #execTargetKernelForGroup(initialGroup?: number): PreparedExecKernel {
+    return initialGroup === undefined ? this as PreparedExecKernel : {
+      execTargetSize: (owner, target) => this.execTargetSize(owner, target),
+      execTargetRead: (owner, target, offset, bytes) => this.execTargetRead(owner, target, offset, bytes),
+      execTargetCancel: (owner, target) => this.execTargetCancel(owner, target),
+      execTargetAdmit: (owner, target, abi) => this.execTargetAdmit(owner, target, abi, initialGroup),
+      deferredFetchSettled: () => this.deferredFetchSettled(),
+    };
+  }
+
   async launchInitialPath(
     pid: number,
     path: string,
     argv: string[],
     envp: string[],
     callback: ExecLaunchCallback,
+    initialGroup?: number,
   ): Promise<number> {
     return launchPreparedExecTarget({
-      kernel: this as PreparedExecKernel,
+      kernel: this.#execTargetKernelForGroup(initialGroup),
+      supportedProgramExtensions: initialGroup === undefined ? undefined : GROUPED_WORKER_EXTENSIONS,
       ownerPid: pid,
       pid,
       callerTid: pid,
@@ -24535,9 +24587,11 @@ export class CentralizedKernelWorker {
   ): Promise<number> {
     const callback = this.callbacks.onSpawn;
     if (!callback) return -ENOSYS;
+    const group = this.processes.get(parentPid)?.grouped?.receipt.group;
     try {
       return await launchPreparedExecTarget({
-        kernel: this as PreparedExecKernel,
+        kernel: this.#execTargetKernelForGroup(group),
+        supportedProgramExtensions: group === undefined ? undefined : GROUPED_WORKER_EXTENSIONS,
         ownerPid: childPid,
         pid: childPid,
         callerTid: childPid,

@@ -965,6 +965,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_group_owned_mapping_finish",
   "kernel_group_owned_mapping_prepare",
   "kernel_group_owned_mapping_validate",
+  "kernel_initial_group_exec_target_admit",
   "kernel_memory_group_capabilities",
   "kernel_memory_group_configure",
   "kernel_memory_group_create",

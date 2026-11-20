@@ -697,6 +697,42 @@ impl ProcessTable {
         &mut self.memory_groups
     }
 
+    /// Validation only for an explicitly selected host group. Initial commit
+    /// advances generation, so reserve the execution receipt afterward instead
+    /// of minting a stale generation-zero task during artifact inspection.
+    pub fn admit_initial_group_exec_target(
+        &self, group: u32, pid: u32, token: u32, expected_abi: u32,
+    ) -> Result<crate::exec_target::Admission, Errno> {
+        let group = self.memory_groups.resolve_group(group)?;
+        self.validate_task(pid, pid)?;
+        let proc = self.get(pid).ok_or(Errno::ESRCH)?;
+        if proc.exec_generation != 0 || proc.exe.is_some() || proc.main_channel_addr != 0
+            || !proc.threads.is_empty()
+            || self.process_memory_group(pid)?.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        match proc.prepared_exec_targets.get(token)?.owner() {
+            crate::exec_target::PreparedExecOwner::Process { .. } => {
+                if proc.spawn_publication_pending { return Err(Errno::EBUSY); }
+                proc.prepared_exec_targets.get(token)?.owner()
+                    .validate_process(pid, pid, proc.exec_generation)?;
+            }
+            crate::exec_target::PreparedExecOwner::Spawn { parent_pid, .. } => {
+                if !proc.spawn_publication_pending || proc.ppid != parent_pid
+                    || self.process_memory_group(parent_pid)? != Some(group) {
+                    return Err(Errno::EPERM);
+                }
+                proc.prepared_exec_targets.get(token)?.owner()
+                    .validate_spawn(parent_pid, pid, proc.exec_generation)?;
+            }
+        }
+        // Opting into support must not move ordinary programs to the backend.
+        match crate::exec_target::admit(proc, pid, token, expected_abi)? {
+            crate::exec_target::Admission::Refused(_) => crate::exec_target::admit_grouped(proc, pid, token, expected_abi),
+            admission => Ok(admission),
+        }
+    }
+
     pub fn prepare_process_memory_group(
         &mut self,
         group: crate::memory_group::MemoryGroupId,

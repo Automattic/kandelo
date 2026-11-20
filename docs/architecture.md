@@ -119,8 +119,13 @@ The Node/browser process entries share a memory-free prepare/ready exchange
 before one backing is transported on the authenticated parent channel. They
 validate the versioned artifact, reject an implicit Wasm start, and bind replica
 controls before initialization. Both public hosts now accept the explicit
-`experimentalMemoryGroup` byte-launch option; ordinary artifacts retain their
-ordinary backend. Cancellation before decoding validates only the exact stopped
+`experimentalMemoryGroup` launch option for bytes or installed VFS paths;
+ordinary artifacts retain their ordinary backend. Initial path validation uses
+an optional kernel capability bound to a configured group and the exact retained
+target. Commit owns the executable descriptor and advances generation before
+execution admission reserves its receipt. Grouped-parent `posix_spawn` also
+validates the pending child and parent group; it preserves the committed
+executable identity. The full app has not yet wired shared-mode configuration. Cancellation before decoding validates only the exact stopped
 identity and publishes the receiving realm's own terminal fence without
 constructing a guest instance. A stop racing a retirement-marker read cannot
 authorize a read from revoked grouped storage.

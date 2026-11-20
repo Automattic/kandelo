@@ -141,7 +141,7 @@ experimentalMemoryGroup: {
 ```
 
 Compatible byte launches through `spawn(bytes, argv, options)` use a single
-kernel-owned group in that machine. The option reserves a physical ceiling;
+kernel-owned group in that machine. The option configures a physical ceiling;
 it does not raise ordinary process or renderer limits. Ordinary artifacts
 keep the ordinary backend. The disposable kernel Worker owns launch, fork,
 pthread, compatible exec and retirement; the embedding receives copied
@@ -151,9 +151,36 @@ image metadata, channel observers and physical pages retire before the
 allocated Process is removed or the parent's failure returns. A stop timeout
 retains uncertain storage; it does not authorize reuse. The regression rejects
 16 setups before registration and after actual replay, verifies no waitable
-child or allocation leak, then performs a successful fork. Initial grouped `spawnFromVfs` admission is not yet wired.
-The preview reads the selected executable from its actual image and uses the
-byte-launch API. This is a development preview, not full launch acceptance.
+child or allocation leak, then performs a successful fork.
+
+Both embedding hosts also support initial grouped `spawnFromVfs` and compatible
+`posix_spawn` children of grouped parents. An optional kernel capability checks
+the exact retained target against a configured group before initial commit.
+It reserves no task/image at inspection: commit advances the generation, then
+launch reserves that committed generation before publishing a Worker. A pending
+spawn child additionally proves its exact parent and that parent's group.
+A missing capability refuses the opted-in path; ordinary launch without the
+option keeps its existing checks. Committed path and spawn executables retain
+their descriptor, inode and credentials instead of attaching an anonymous copy.
+Group backing allocation remains lazy until a compatible executable launches.
+
+Real SDK Node/browser regressions exercise path launch, fork, pthreads,
+permission refusal, absence of opt-in and executable identity in spawned
+children. Dedicated kernel-Worker regressions additionally inject 16 initial
+registration refusals before and after registration, then prove budget and
+physical-image restoration before a successful fork. An uncertain constructor
+failure stays fatal and charged; stopped and concurrently destroyed initial
+launches retire through their exact receipts. These pass on Node and all three
+browser engines. Full browser-memory and app acceptance remain pending for the
+combined change. The published developer preview still uses byte launch.
+
+The app's programmatic `createLiveHost` also carries this trusted embedder
+option to its normal kernel boot. It rejects managed or persistent machines.
+Grouped KMS attachment selects the disposable bitmap display relay through the
+existing display API. Local app wiring uses the explicit build-time
+`VITE_KANDELO_TRUSTED_MEMORY_GROUP=1` choice; image metadata and boot links cannot
+enable it. This integration is under validation and is not enabled in ordinary
+app builds.
 
 Grouped child exit notification follows the same execution-stop boundary as
 wait status. The kernel keeps SIGCHLD and automatic reaping pending while any
@@ -174,12 +201,17 @@ scripts/dev-shell.sh host/node_modules/.bin/tsx --experimental-wasm-exnref \
 ```
 
 The builder resolves deferred programs through the normal package resolver,
-prepares Sway, Swaybar, Swaybg, Swaymsg, Foot, the shell and Coreutils, and
+prepares Sway, Swaybar, Swaybg, Swaymsg, Swaynag, Foot, the shell and Coreutils, and
 validates explicit per-path grouped artifact policies. It preserves the input
 and writes an adjacent `.memory-group.json` provenance report. A failed
 preparation retains its report and staging files. Its optional source-provider
 API permits explicitly retained compatible image fixtures; that evidence does
 not establish a fresh package build or a canonical image.
+
+For the normal app's image-owned login chain, append `--login-session`. This
+also prepares `/bin/login` and `/usr/sbin/syslogd` and preserves each replaced
+executable's mode and ownership. It does not change the image's init script or
+replace the login session with a host launcher. The ordinary input stays intact.
 
 The developer consumer is `apps/browser-demos/grouped-desktop.html`. Prepare
 its development image through the ordinary package, SDK and image paths
