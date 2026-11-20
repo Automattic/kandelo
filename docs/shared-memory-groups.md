@@ -304,10 +304,19 @@ their parent IDs and main-realm receipt times. It uses the ordinary process
 event callback and adds no polling; these records are not retirement proofs.
 
 The fresh partial-image candidate passes the default two-terminal interaction
-and capacity-refusal/recovery checks on Chromium, Firefox and WebKit. Longer
-WebKit terminal lifecycles still intermittently time out on Sway IPC. That is
-an unresolved preview failure. The current image also reports a missing Compose table, so
-dead-key input is not available. These bounded checks are not sustained
+and capacity-refusal/recovery checks on Chromium, Firefox and WebKit. In a
+longer run of the frozen developer preview, Chromium completed 1,200 terminal
+lifecycles, including physical input and process removal, but kernel capacity
+grew from 1,575 to 2,234 Wasm pages (about 41 MiB). This is not a flat memory
+plateau or an OS footprint measurement. Firefox completed 451 cycles before a
+typed shell command failed its 30-second file-content check, despite Sway
+reporting the terminal focused. WebKit runs failed after 286 and 191 completed
+cycles at IPC and new-window readiness checks. The causes remain unresolved;
+these failures do not establish browser-engine defects. The runs used the
+developer bundle before the display-ready handshake and shared the machine
+with builds, so they do not establish sustained acceptance of the final app
+or a performance comparison. The current image also reports a missing Compose
+table, so dead-key input is not available. The bounded checks are not sustained
 lifecycle, native Safari, conformance or performance acceptance.
 
 ## Accounting and acceptance
