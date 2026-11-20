@@ -327,8 +327,10 @@ impl Parks {
 
     fn finish_with(&mut self, wakeup: Wakeup, value: i32, flags: u32, remainder: Option<Remainder>) {
         if let Some(Resume::Retry(op)) = self.resume.remove(&wakeup.id) {
-            self.released_retry_bindings
-                .push((wakeup.pid, wakeup.tid, op.token()));
+            if op.pins_descriptor() {
+                self.released_retry_bindings
+                    .push((wakeup.pid, wakeup.tid, op.token()));
+            }
         }
         self.queue.release_channel(wakeup.channel);
         self.completions.push_back(Completion {
@@ -582,7 +584,11 @@ impl Parks {
             }
             match table.get(sleeper.pid) {
                 Some(proc) if proc.is_live_explicit_tid(sleeper.tid) => {
-                    if signal_targets_task(proc, sleeper.tid) {
+                    let interruptible = match self.resume.get(&sleeper.id) {
+                        Some(Resume::Retry(op)) => op.signal_interrupts(),
+                        _ => true,
+                    };
+                    if interruptible && signal_targets_task(proc, sleeper.tid) {
                         interrupt.push(sleeper.id);
                     }
                 }
@@ -599,7 +605,11 @@ impl Parks {
                 let resume = self.resume.get(&wakeup.id).copied();
                 let flags = resume.map(|r| r.interrupted_flags()).unwrap_or(0);
                 let remainder = resume.and_then(|r| r.interrupted_remainder());
-                self.finish_with(wakeup, -(Errno::EINTR as i32), flags, remainder);
+                let value = match resume {
+                    Some(Resume::Retry(op)) => op.interrupted_value(),
+                    _ => -(Errno::EINTR as i32),
+                };
+                self.finish_with(wakeup, value, flags, remainder);
             }
         }
     }

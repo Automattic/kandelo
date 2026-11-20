@@ -8516,127 +8516,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
         }
 
-        // ───── PTHREAD_PROCESS_SHARED primitives ─────
-        // See crates/kernel/src/pshared.rs. Blocking ops return EAGAIN so
-        // the host retry loop re-invokes them.
-        wasm_posix_shared::legacy_pshared::MUTEX_INIT => {
-            // SYS_PSHARED_MUTEX_INIT: (mtype)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            t.mutex_init(a1 as u32) as i32
-        }
-        wasm_posix_shared::legacy_pshared::MUTEX_LOCK => {
-            // SYS_PSHARED_MUTEX_LOCK: (id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match t.mutex_lock(a1 as u32, pid) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::MUTEX_TRYLOCK => {
-            // SYS_PSHARED_MUTEX_TRYLOCK: (id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match t.mutex_trylock(a1 as u32, pid) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::MUTEX_UNLOCK => {
-            // SYS_PSHARED_MUTEX_UNLOCK: (id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match t.mutex_unlock(a1 as u32, pid) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::MUTEX_DESTROY => {
-            // SYS_PSHARED_MUTEX_DESTROY: (id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            match t.mutex_destroy(a1 as u32) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::COND_INIT => {
-            // SYS_PSHARED_COND_INIT: ()
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            t.cond_init() as i32
-        }
-        wasm_posix_shared::legacy_pshared::COND_WAIT_BEGIN => {
-            // SYS_PSHARED_COND_WAIT_BEGIN: (cond_id, mutex_id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match t.cond_wait_begin(a1 as u32, a2 as u32, pid) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::COND_WAIT_CHECK => {
-            // SYS_PSHARED_COND_WAIT_CHECK: (cond_id, mutex_id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match t.cond_wait_check(a1 as u32, a2 as u32, pid) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::COND_SIGNAL => {
-            // SYS_PSHARED_COND_SIGNAL: (cond_id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            match t.cond_signal(a1 as u32) {
-                Ok(_pid) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::COND_BROADCAST => {
-            // SYS_PSHARED_COND_BROADCAST: (cond_id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            match t.cond_broadcast(a1 as u32) {
-                Ok(_n) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::COND_DESTROY => {
-            // SYS_PSHARED_COND_DESTROY: (cond_id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            match t.cond_destroy(a1 as u32) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::BARRIER_INIT => {
-            // SYS_PSHARED_BARRIER_INIT: (count)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            match t.barrier_init(a1 as u32) {
-                Ok(id) => id as i32,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::BARRIER_WAIT => {
-            // SYS_PSHARED_BARRIER_WAIT: (id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match t.barrier_wait(a1 as u32, pid) {
-                Ok(v) => v,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::BARRIER_DESTROY => {
-            // SYS_PSHARED_BARRIER_DESTROY: (id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            match t.barrier_destroy(a1 as u32) {
-                Ok(()) => 0,
-                Err(e) => -(e as i32),
-            }
-        }
-        wasm_posix_shared::legacy_pshared::COND_WAIT_ABORT => {
-            // SYS_PSHARED_COND_WAIT_ABORT: (cond_id)
-            let t = unsafe { crate::pshared::global_pshared_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            t.cond_wait_abort(a1 as u32, pid);
-            0
+        // ───── PTHREAD_PROCESS_SHARED objects of ABI-56 programs ─────
+        // Recorded in abi/snapshot.json (`program_legacy_requests`). A call
+        // that must block parks in the kernel (`wait_retry::RetryOp::Pshared`).
+        wasm_posix_shared::legacy_pshared::MUTEX_INIT
+            ..=wasm_posix_shared::legacy_pshared::COND_WAIT_ABORT => {
+            channel_legacy_pshared(nr, a1 as u32, a2 as u32)
         }
         syscall_numbers::SYS_THREAD_CANCEL => {
             // SYS_THREAD_CANCEL: (target_tid). Host-owned wait state is woken
@@ -16058,6 +15943,108 @@ fn channel_futex(uaddr: u64, op: u32, val: u32, timeout: u64, uaddr2: u64, val3:
         narrow(uaddr2),
         val3,
     ))
+}
+
+/// One legacy process-shared request (`wasm_posix_shared::legacy_pshared`)
+/// from the calling task. See `crate::pshared` for the semantics.
+///
+/// A blocking request that cannot complete parks the caller and is
+/// re-executed whenever its object changes; an operation that may unblock
+/// others notes their objects' wake sources, and the settle that follows
+/// this kernel entry re-executes the parked calls.
+fn channel_legacy_pshared(nr: u32, a1: u32, a2: u32) -> i32 {
+    use wasm_posix_shared::legacy_pshared as req;
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let who = crate::pshared::Owner { pid: task.pid, tid: task.tid };
+    let table = unsafe { crate::pshared::global_pshared_table() };
+    let wake = |ids: &[u32]| {
+        crate::wait_park::with(|parks| {
+            for &id in ids {
+                parks.note_source_ready(crate::wait_queue::WakeSource::PShared { id });
+            }
+        });
+    };
+    let id_or_errno = |r: Result<u32, Errno>| match r {
+        Ok(id) => id as i32,
+        Err(e) => -(e as i32),
+    };
+    let unit = |r: Result<(), Errno>| match r {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    };
+    let result = match nr {
+        req::MUTEX_INIT => id_or_errno(table.mutex_init(a1)),
+        req::MUTEX_TRYLOCK => unit(table.mutex_trylock(a1, who)),
+        req::MUTEX_UNLOCK => match table.mutex_unlock(a1, who) {
+            Ok(wakes) => {
+                wake(&wakes);
+                0
+            }
+            Err(e) => -(e as i32),
+        },
+        req::MUTEX_DESTROY => unit(table.mutex_destroy(a1)),
+        req::COND_INIT => id_or_errno(table.cond_init()),
+        req::COND_WAIT_BEGIN => match table.cond_wait_begin(a1, a2, who) {
+            Ok(wakes) => {
+                wake(&wakes);
+                0
+            }
+            Err(e) => -(e as i32),
+        },
+        req::COND_SIGNAL => match table.cond_signal(a1) {
+            Ok(_) => {
+                wake(&[a1]);
+                0
+            }
+            Err(e) => -(e as i32),
+        },
+        req::COND_BROADCAST => match table.cond_broadcast(a1) {
+            Ok(_) => {
+                wake(&[a1]);
+                0
+            }
+            Err(e) => -(e as i32),
+        },
+        req::COND_DESTROY => unit(table.cond_destroy(a1)),
+        req::BARRIER_INIT => id_or_errno(table.barrier_init(a1)),
+        req::BARRIER_DESTROY => unit(table.barrier_destroy(a1)),
+        req::COND_WAIT_ABORT => {
+            table.cond_wait_abort(a1, who);
+            0
+        }
+        req::MUTEX_LOCK | req::COND_WAIT_CHECK | req::BARRIER_WAIT => {
+            let mutex = if nr == req::COND_WAIT_CHECK { a2 } else { 0 };
+            let (outcome, wakes) =
+                crate::wait_retry::attempt_pshared(nr, a1, mutex, task.pid, task.tid);
+            wake(&wakes);
+            let outcome = match outcome {
+                Err(Errno::EAGAIN) => {
+                    let op = crate::wait_retry::RetryOp::Pshared { request: nr, id: a1, mutex };
+                    crate::wait_park::with(|parks| {
+                        parks.park(
+                            task.pid,
+                            task.tid,
+                            // The same kind of wait as the futex a
+                            // process-private object would use.
+                            crate::wait_queue::WaitKind::Futex,
+                            alloc::vec![op.source()],
+                            None,
+                            crate::wait_park::Resume::Retry(op),
+                        )
+                    })
+                    .map(syscalls::ParkOutcome::Parked)
+                }
+                Ok(value) => Ok(syscalls::ParkOutcome::Done(value)),
+                Err(e) => Err(e),
+            };
+            report_park(outcome)
+        }
+        _ => -(Errno::ENOSYS as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
 }
 
 /// The calling task, as the waiting syscalls name it.

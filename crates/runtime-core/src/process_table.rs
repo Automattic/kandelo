@@ -1124,8 +1124,9 @@ impl ProcessTable {
         crate::socket::tcp_cleanup_process(pid);
         crate::socket::tcp6_cleanup_process(pid);
 
-        // Release any PTHREAD_PROCESS_SHARED primitives owned by this pid
-        // so peers aren't wedged on mutexes or waiter queues.
+        // Drop this process's PTHREAD_PROCESS_SHARED condition and barrier
+        // waits. Mutexes its threads hold stay held, as POSIX's default
+        // PTHREAD_MUTEX_STALLED requires (crate::pshared).
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 

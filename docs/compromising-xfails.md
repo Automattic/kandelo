@@ -70,7 +70,7 @@ This entry is retained below as **optional future hardening work**, not as an XF
 ### 3. `PTHREAD_PROCESS_SHARED` and anonymous shared mappings (PARTIAL)
 
 **Status:** Pthread sync primitives (mutex, cond, barrier) with
-`PTHREAD_PROCESS_SHARED` are implemented in `crates/kernel/src/pshared.rs`.
+`PTHREAD_PROCESS_SHARED` are implemented in `crates/runtime-core/src/pshared.rs`.
 Anonymous `MAP_SHARED` mappings now publish changed byte runs to authoritative
 host backing and import peer changes when a process crosses a syscall boundary.
 That is sufficient for Sortix's `pthread_condattr_setpshared` test, whose state
