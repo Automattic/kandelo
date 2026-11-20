@@ -5069,6 +5069,12 @@ disposable display Worker owns the visible `bitmaprenderer` canvases. Independen
 and views do not enter the display Worker or browser main. Ordinary
 `kmsAttachCanvas` consumers and Node retain their existing presentation path.
 
+The page reports startup readiness after its image's normal window decorations
+have reached Sway's current scene state. A visible IPC node can describe pending
+layout before the first click can target that terminal. This preset check does
+not establish client-buffer completion for later window resizes, and does not
+change Sway's transaction timeout or the platform's input behavior.
+
 At most one bundle of up to two changed planes is captured or awaiting an exact
 sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capturing
 consumes the source canvas; only actual subsequent device writes mark it dirty
