@@ -55,8 +55,8 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 23, kernel group protocol 1 and mapping-description
-protocol 4 are separately versioned contracts.
+Program ABI 56, host adapter 24, kernel group protocol 1 and mapping-description
+protocol 5 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
 normal SDK's executable version or memory namespace. The integrated implementation
@@ -212,6 +212,9 @@ For the normal app's image-owned login chain, append `--login-session`. This
 also prepares `/bin/login` and `/usr/sbin/syslogd` and preserves each replaced
 executable's mode and ownership. It does not change the image's init script or
 replace the login session with a host launcher. The ordinary input stays intact.
+When using a partial shell for this mode, include `sysklogd` in the selection
+alongside Sway, Swaybg, Foot, Wayland desktop data and the cursor theme. The
+preparer requires every participant; it refuses an incomplete input image.
 
 The developer consumer is `apps/browser-demos/grouped-desktop.html`. Prepare
 its development image through the ordinary package, SDK and image paths
@@ -292,8 +295,18 @@ streams use private process pages through the same all-replica barrier and
 staged physical allocation as other grouped mappings. Their existing driver
 token and transaction retain authority through construction or rollback.
 Whole-stream exact unmapping retires the driver binding before releasing
-physical pages. Fragmented driver unmapping and CPU graphical BO mappings
-remain unsupported. GL submissions read checked virtual addresses and copy
+physical pages. Fragmented command-stream unmapping remains unsupported.
+Host-adapter 24 additionally binds CPU graphical BOs to kernel-owned direct
+group objects. Their fixed-size, page-padded backing is retained by the BO
+through GEM/PRIME, framebuffer/cursor and VMA ownership. Bounded prefix maps,
+aliases, fork inheritance, fragmented unmap/fixed replacement and shrinking
+remap preserve object offsets. Expansion remains refused with `EFAULT`.
+Ordinary mirrored and cross-group CPU mappings cannot join that backing.
+Host device reads refresh independent bounded staging; device writes update
+the same group object. No raw guest virtual pointer becomes a physical
+Memory offset, and staging never writes itself back over guest changes.
+This implementation still requires final desktop and lifecycle acceptance.
+GL submissions read checked virtual addresses and copy
 only the submitted range into the existing command queue; they never treat
 guest pointers as physical offsets into the common Memory. GPU storage and
 presentation copies remain separate costs.

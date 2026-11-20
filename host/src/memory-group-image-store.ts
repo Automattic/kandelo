@@ -501,7 +501,8 @@ export class MemoryGroupImageStore {
           || input.sharedOffset < 0 || input.sharedOffset % PAGE !== 0 || input.sharedOffset + input.length > input.sharedLength
           || (input.kind !== 'map' && input.populationLength !== 0)) fault('Invalid shared backing bounds');
       if (input.kind === 'map') {
-        if (input.sharedOffset !== 0 || input.sharedLength !== input.length || (input.flags & 3) !== 1
+        if (input.sharedOffset !== 0 || ((input.flags & 0x20) !== 0 && input.sharedLength !== input.length)
+            || (input.flags & 3) !== 1
             || (shared ? !shared.fileBacked || !!(input.flags & 0x20) || input.populationLength !== 0
               : input.sharedObject !== input.token || (!!(input.flags & 0x20) && input.populationLength !== 0))) {
           fault('Shared map must create or attach its exact kernel backing');
@@ -512,6 +513,10 @@ export class MemoryGroupImageStore {
     } else if (input.sharedLength !== 0 || input.sharedOffset !== 0 || (input.kind === 'map' && (input.flags & 1))) {
       fault('Mapping omitted its shared backing identity');
     }
+    // A valid descriptor object can exceed this group's physical budget even
+    // when its requested prefix fits the virtual space. That is admission
+    // exhaustion, not a malformed kernel record or a fatal protocol fault.
+    if (input.sharedObject !== 0n && input.sharedLength > this.maximumPhysicalPages * PAGE) return 'exhausted';
     const description = Object.freeze({ ...input, receipt: Object.freeze({ ...input.receipt }) });
     // Independent undo/staging storage is bounded by this image's admitted
     // virtual capacity and discarded after commit/cancel. No snapshots of bytes.
@@ -577,8 +582,14 @@ export class MemoryGroupImageStore {
       let removed = 0, freshCount = 0;
       for (let at = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) removed++;
       for (let at = 0; at < maximum; at++) if ((after[at] >>> 16) === 0xffff) freshCount++;
-      if (freshCount >= this.maximumPhysicalPages) return 'exhausted';
-      const allocated = new Uint32Array(freshCount);
+      // A descriptor object may be larger than its first bounded prefix
+      // mapping. Admit all of its storage once; later aliases share these
+      // same pages, including bytes not yet mapped by any participant.
+      const objectTail = input.kind === 'map' && input.sharedObject !== 0n && !shared
+        ? input.sharedLength / PAGE - count : 0;
+      const allocationCount = freshCount + objectTail;
+      if (allocationCount >= this.maximumPhysicalPages) return 'exhausted';
+      const allocated = new Uint32Array(allocationCount);
       const retained: RetainedMappingPages = { pages: new Uint32Array(removed) };
       for (let at = 0, out = 0; at < maximum; at++) if ((before[at] >>> 16) && (before[at] >>> 16) !== (after[at] >>> 16)) retained.pages[out++] = before[at] >>> 16;
       const introducedShared: SharedObject | undefined = input.kind === 'map' && input.sharedObject !== 0n && !shared
@@ -741,6 +752,20 @@ export class MemoryGroupImageStore {
     while (copied < output.length) {
       const within = at % PAGE, count = Math.min(PAGE - within, output.length - copied);
       output.set(new Uint8Array(this.memory.buffer, object.pages[Math.floor(at / PAGE)] * PAGE + within, count), copied);
+      copied += count; at += count;
+    }
+    return copied;
+  }
+
+  writeFileObject(id: bigint, offset: bigint, input: Uint8Array): number {
+    const object = this.sharedObjects.get(id);
+    if (!object?.fileBacked || offset < 0n || offset > BigInt(object.pages.length * PAGE)
+        || BigInt(input.length) + offset > BigInt(object.pages.length * PAGE)) return -5;
+    let copied = 0, at = Number(offset);
+    while (copied < input.length) {
+      const within = at % PAGE, count = Math.min(PAGE - within, input.length - copied);
+      new Uint8Array(this.memory.buffer, object.pages[Math.floor(at / PAGE)] * PAGE + within, count)
+        .set(input.subarray(copied, copied + count));
       copied += count; at += count;
     }
     return copied;

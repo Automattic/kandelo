@@ -17,8 +17,8 @@ test.beforeAll(async () => {
     try {
         image.mkdir('/tmp', 0o1777);
         image.mkdir('/bin', 0o755);
-        for (const name of ['fork', 'pthread', 'executable-identity']) {
-            const fixture = compileSdkFixture(new URL(`../../../host/test/fixtures/grouped-sdk-${name}.c`, import.meta.url), [], { forkInstrument: true });
+        for (const name of ['fork', 'pthread', 'executable-identity', 'dri-mapping-fork', 'dri-direct']) {
+            const fixture = compileSdkFixture(new URL(`../../../host/test/fixtures/${name === 'dri-mapping-fork' ? 'dri-mapping-fork.c' : `grouped-sdk-${name}.c`}`, import.meta.url), [], { forkInstrument: true });
             fixtures.push(fixture);
             const grouped = fixture.programPath + '.grouped.wasm';
             execFileSync(join(root, 'sdk/bin/wasm32posix-shared-memory'), [fixture.programPath, '-o', grouped], { stdio: 'pipe' });
@@ -162,6 +162,53 @@ test('rolls back initial grouped allocation refusals and preserves ordinary exec
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('grouped-sdk-fork PASS');
     expect(result.stderr).toBe('');
+    expect(result.diagnostics).toEqual([]);
+    expect(pageErrors).toEqual([]);
+});
+
+
+test('runs public browser DRM fork and direct-alias controls through normal VFS launch', async ({page}, info) => {
+    test.setTimeout(120000);
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await page.goto(`/@fs${out}/index.html`);
+    const result = await page.evaluate(async ({root, out}) => {
+        const {BrowserKernel} = await import(`/@fs${root}/host/src/browser-kernel-host.ts`);
+        let stdout = '', stderr = ''; const diagnostics: unknown[] = [], rows: any[] = [];
+        const host = new BrowserKernel({maxWorkers: 16, maxMemoryPages: 2048, kernelMaxPages: 1024,
+            experimentalMemoryGroup: {maximumPages: 2048, maximumProcesses: 8, maximumTasks: 16},
+            onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
+            onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
+            onHostDiagnostic: (event: unknown) => diagnostics.push(event)});
+        try {
+            const base = `/@fs${out}/`;
+            const [kernel, image] = await Promise.all(['kernel.wasm', 'rootfs.vfs']
+                .map(path => fetch(base + path).then(response => response.arrayBuffer())));
+            await host.initFromOwnedImage({kernelWasm: kernel, vfsImage: image});
+            for (const probe of ['dri-mapping-fork', 'dri-direct']) for (const arm of ['ordinary', 'grouped']) {
+                const path = `/bin/${probe}-${arm}`, beforeOut = stdout.length, beforeErr = stderr.length;
+                const child = await host.spawnFromVfs(path, [path], {stdin: new Uint8Array(), env: ['PATH=/bin']});
+                const code = await child.exit;
+                const row = {probe, arm, code, stdout: stdout.slice(beforeOut), stderr: stderr.slice(beforeErr)};
+                rows.push(row);
+                const expected = probe === 'dri-direct' && arm === 'ordinary' ? 23 : 0;
+                if (code !== expected) throw Error(JSON.stringify({rows, diagnostics}));
+                if (arm === 'grouped' && await host.readFileFromVfs(`/proc/${child.pid}/stat`) !== null)
+                    throw Error('Grouped DRM root retained after exit');
+            }
+            return {rows, diagnostics};
+        } finally {await host.destroy();}
+    }, {root, out});
+    writeFileSync(info.outputPath('result.json'), JSON.stringify({engine: info.project.name, inputs, result, pageErrors}, null, 2) + '\n');
+    expect(result.rows.map(row => [row.probe, row.arm, row.code])).toEqual([
+        ['dri-mapping-fork', 'ordinary', 0], ['dri-mapping-fork', 'grouped', 0],
+        ['dri-direct', 'ordinary', 23], ['dri-direct', 'grouped', 0],
+    ]);
+    for (const row of result.rows) {
+        expect(row.stderr).toBe(row.code === 23 ? 'DIRECT-ALIAS-UNAVAILABLE\n' : '');
+        if (row.probe === 'dri-mapping-fork') expect(row.stdout).toContain('OK fixed PRIME replacement preserves alias storage across fork');
+        else if (row.arm === 'grouped') expect(row.stdout).toContain('grouped-sdk-dri-direct PASS');
+    }
     expect(result.diagnostics).toEqual([]);
     expect(pageErrors).toEqual([]);
 });

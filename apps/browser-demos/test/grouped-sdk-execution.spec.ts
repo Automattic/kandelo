@@ -10,6 +10,10 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
 const availableProbes = [
+  // This internal fixture implements grouped fork; the paired ordinary fork
+  // runs through the real BrowserKernel in grouped-vfs-launch.spec.ts.
+  { name: "dri-mapping-fork", source: "dri-mapping-fork.c", markers: ["OK inherited DRI mapping survives descriptor and writer retirement", "OK fixed PRIME replacement preserves alias storage across fork"], partial: "", groupedOnly: true },
+  { name: "dri-direct", source: "grouped-sdk-dri-direct.c", markers: ["grouped-sdk-dri-direct PASS"], partial: "", groupedOnly: true },
   { name: "fork-registration-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "fork-replay-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "shared-file", source: "grouped-sdk-shared-file.c", markers: ["grouped-sdk-shared-file PASS"], partial: "", groupedOnly: true },

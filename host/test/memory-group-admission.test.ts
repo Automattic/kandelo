@@ -497,6 +497,18 @@ describe('grouped mapping metadata transport', () => {
       expect(() => decodeGroupMemoryChangeDescription(copy, receipt)).toThrow(/effect/);
     }
   });
+  it('decodes bounded descriptor prefixes without accepting smaller anonymous shared objects', () => {
+    const receipt = { group: 23, pid: 100, tid: 100, serial: SERIAL, generation: GENERATION };
+    const bytes = new Uint8Array(P.mapping.description_bytes), view = new DataView(bytes.buffer), f = P.mapping.description_fields;
+    bytes.set(encodeMemoryGroupReceipt(receipt)); view.setBigUint64(f.token, 0xfffffffffffffffdn, true);
+    view.setUint32(f.kind, 1, true); view.setUint32(f.prot, 3, true); view.setUint32(f.flags, 1, true);
+    view.setBigUint64(f.address, 4n * 65536n, true); view.setBigUint64(f.result, 4n * 65536n, true);
+    view.setBigUint64(f.length, 65536n, true); view.setBigUint64(f.sharedLength, 3n * 65536n, true);
+    view.setBigUint64(f.sharedObject, 0xfffffffffffffffdn, true);
+    expect(decodeGroupMemoryChangeDescription(bytes, receipt)).toMatchObject({length: 65536, sharedLength: 3 * 65536, sharedOffset: 0});
+    view.setUint32(f.flags, 0x21, true);
+    expect(() => decodeGroupMemoryChangeDescription(bytes, receipt)).toThrow(/effect/);
+  });
   it('preserves an inherited shared object offset independently of its new remap token', () => {
     const receipt = { group: 23, pid: 100, tid: 100, serial: SERIAL, generation: GENERATION };
     const bytes = new Uint8Array(P.mapping.description_bytes), view = new DataView(bytes.buffer), f = P.mapping.description_fields;

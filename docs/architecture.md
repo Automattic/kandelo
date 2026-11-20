@@ -2515,7 +2515,10 @@ separate from POSIX process groups. It reserves process/image/task capacity,
 inherits membership through fork, and retains exact execution receipts until
 the host proves retirement. Prepared construction can roll back; live,
 stopping or quarantined Workers prevent process removal. Old exec-image
-custody remains distinct from its successor. Host-adapter 23 includes the owned
+custody remains distinct from its successor. Host-adapter 24 additionally
+carries exact BO/group object identities for direct CPU graphical mappings;
+device staging is independent and cannot publish stale copies into their
+canonical group storage. Host-adapter 23 includes the owned
 driver mapping bridge. The public Node/browser byte-launch API selects the
 compatible backend only with the explicit embedder option. See
 [shared-memory groups](shared-memory-groups.md) for the trust boundary,

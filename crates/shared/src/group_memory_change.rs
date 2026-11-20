@@ -60,7 +60,8 @@ impl Description {
                         && self.population_length == self.length))
                 && (self.kind != 1 || (self.flags & 3 == crate::mmap::MAP_SHARED
                     && (self.flags & crate::mmap::MAP_ANONYMOUS == 0 || self.shared_object == self.token)
-                    && self.shared_offset == 0 && self.shared_length == self.length))
+                    && self.shared_offset == 0
+                    && (self.flags & crate::mmap::MAP_ANONYMOUS == 0 || self.shared_length == self.length)))
         };
         if out.len() != DESCRIPTION_BYTES || self.token == 0 || !(1..=5).contains(&self.kind)
             || self.prot & !7 != 0 || !valid_shared { return Err(Errno::EINVAL); }
@@ -141,6 +142,14 @@ mod tests {
         file.encode(&mut bytes).unwrap();
         Description { token: 23, population_address: 0, population_length: 0, ..file }.encode(&mut bytes).unwrap();
         assert_eq!(Description { token: 23, ..file }.encode(&mut bytes), Err(Errno::EINVAL));
+        let prefix = Description { length: 65536, flags: crate::mmap::MAP_SHARED,
+            population_address: 0, population_length: 0, ..value };
+        prefix.encode(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes[56..64].try_into().unwrap()), 65536);
+        assert_eq!(u64::from_le_bytes(bytes[120..128].try_into().unwrap()), 131072);
+        let before = bytes;
+        assert_eq!(Description { flags: value.flags, ..prefix }.encode(&mut bytes), Err(Errno::EINVAL));
+        assert_eq!(bytes, before);
     }
 
 }
