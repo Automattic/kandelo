@@ -1,10 +1,11 @@
-/* A plugin module that calls libc directly. libc's symbols are hidden, so
- * a program linked with --export-dynamic does not export printf, and this
- * module cannot be loaded unless the program exports printf itself
- * (-Wl,--export=printf). */
-#include <stdio.h>
+/* A plugin module that calls a libc function its host program never links
+ * (strverscmp). A Kandelo plugin takes libc from the program, so the
+ * program must link and export that function too, for example with
+ * -Wl,--export=strverscmp; --export-dynamic exports only what the program
+ * links. */
+#define _GNU_SOURCE
+#include <string.h>
 
 int plugin_run(int x) {
-    printf("plugin-libc: %d\n", x);
-    return x + 1;
+    return strverscmp("a2", "a10") < 0 ? x + 1 : -1;
 }

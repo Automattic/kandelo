@@ -1,20 +1,14 @@
 /* A program that loads a plugin module with dlopen(3). The plugin calls
- * back into this program (host_log, host_callback, host_scale), so the
- * program exports them: it links with its build system's export switch
- * (-Wl,--export-dynamic), which exports default-visibility symbols, and
- * WebAssembly symbols are hidden unless declared otherwise. */
+ * back into this program (host_callback, host_scale) and into libc
+ * (printf), so the program links with its build system's export switch
+ * (CMake ENABLE_EXPORTS, Meson export_dynamic, Libtool -export-dynamic),
+ * as on any Unix. */
 #include <dlfcn.h>
 #include <stdio.h>
 
-#define HOST_API __attribute__((visibility("default")))
+int host_scale = 3;
 
-HOST_API int host_scale = 3;
-
-HOST_API int host_callback(int x) { return x * host_scale; }
-
-HOST_API void host_log(const char *label, int value) {
-    printf("%s%d\n", label, value);
-}
+int host_callback(int x) { return x * host_scale; }
 
 int main(int argc, char **argv) {
     if (argc != 2) {

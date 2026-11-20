@@ -15,6 +15,13 @@
  *   5. dlsym() calls __wasm_dlsym() host import to look up symbols
  *   6. For functions: returns the table index (== C function pointer)
  *   7. For data: returns the relocated memory address
+ *
+ * The SDK links this file into every executable as a lazy member ahead of
+ * libc.a, so a program that calls any of these functions gets them, with or
+ * without -ldl, instead of musl's static stubs, and a program that never
+ * calls them gets none of this file. The SDK compiles its glue with hidden
+ * visibility; these four are the public interface, so they are default and
+ * a program linked with -rdynamic exports them to the modules it loads.
  */
 
 #include <stddef.h>
@@ -33,6 +40,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define KANDELO_DL_PUBLIC __attribute__((visibility("default")))
 
 /* Host imports — implemented in worker-main.ts */
 extern int __wasm_dlopen_main(void);
@@ -64,7 +73,7 @@ static void set_dl_error(const char *msg) {
     dl_error_set = 1;
 }
 
-void *dlopen(const char *path, int flags) {
+KANDELO_DL_PUBLIC void *dlopen(const char *path, int flags) {
     if (!path) {
         /* An empty host request returns an opaque handle for the main
          * program's global symbol scope. */
@@ -190,7 +199,7 @@ void *dlopen(const char *path, int flags) {
     return (void *)(long)handle;
 }
 
-void *dlsym(void *handle, const char *name) {
+KANDELO_DL_PUBLIC void *dlsym(void *handle, const char *name) {
     if (!name) {
         set_dl_error("invalid arguments to dlsym");
         return NULL;
@@ -216,7 +225,7 @@ void *dlsym(void *handle, const char *name) {
     return (void *)(long)result;
 }
 
-int dlclose(void *handle) {
+KANDELO_DL_PUBLIC int dlclose(void *handle) {
     if (!handle) return 0;
     int h = (int)(long)handle;
     int ret = __wasm_dlclose(h);
@@ -229,7 +238,7 @@ int dlclose(void *handle) {
     return ret;
 }
 
-char *dlerror(void) {
+KANDELO_DL_PUBLIC char *dlerror(void) {
     if (!dl_error_set) return NULL;
     dl_error_set = 0;
     return dl_error_buf;

@@ -53,10 +53,9 @@ Two patches:
   shared library"; use `static_library()`, or
   `meson setup -Ddefault_library=static`. `shared_module()` builds a side
   module, `lib<name>.so`, that `dlopen()` loads, and `export_dynamic: true`
-  on the executable (`-Wl,-export-dynamic`) exports its default-visibility
-  symbols to it; WebAssembly symbols are hidden unless declared otherwise,
-  and libc's are hidden. Find the loader with `cc.find_library('dl')`:
-  `dependency('dl')` finds musl's static stub in `libc.a`. See "Plugin
+  on the executable (`-Wl,-export-dynamic`) exports its symbols, and the
+  libc functions it links, to it. `dependency('dl')` is built in: the SDK
+  links its loader into any program that calls `dlopen`. See "Plugin
   modules" in `docs/sdk-guide.md`.
 - Kandelo reports one online processor, so by default Ninja (and
   `meson compile`) runs two jobs at a time and `meson test` one test at a

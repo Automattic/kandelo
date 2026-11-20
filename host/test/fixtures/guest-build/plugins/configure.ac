@@ -6,6 +6,6 @@ AM_INIT_AUTOMAKE([foreign -Wall])
 AC_PROG_CC
 AM_PROG_AR
 LT_INIT([dlopen])
-AC_CHECK_LIB([dl], [dlopen])
+AC_SEARCH_LIBS([dlopen], [dl])
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

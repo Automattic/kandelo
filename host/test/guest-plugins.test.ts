@@ -65,7 +65,9 @@ describe.skipIf(!available)("Plugin modules inside Kandelo (Node host, build ima
     const configureLog = r.read("configure.log");
     expect(configureLog).toMatch(/checking dynamic linker characteristics\.\.\. Kandelo dlopen \(modules only\)/);
     expect(configureLog).toMatch(/checking whether to build shared libraries\.\.\. yes/);
-    expect(configureLog).toMatch(/checking for dlopen in -ldl\.\.\. yes/);
+    // libc provides dlopen, as on any Unix: the SDK links its loader into a
+    // program that calls it, so the probe needs no -ldl.
+    expect(configureLog).toMatch(/checking for library containing dlopen\.\.\. none required/);
     expect(r.read("run.out")).toBe(pluginOutput);
     // The module is a shared side module; the ordinary library is static.
     expect(r.exists(".libs/greet.so")).toBe(true);

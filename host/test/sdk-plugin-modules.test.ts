@@ -2,15 +2,17 @@
  * Plugin modules built with the build machine's SDK.
  *
  * A program loads a plugin side module with dlopen(3); the plugin calls back
- * into the program. The same program and plugin build natively inside
- * Kandelo with Libtool, CMake and Meson in guest-plugins.test.ts. These
- * cases also pin the boundaries docs/sdk-guide.md describes under "Plugin
- * modules": libc's symbols are hidden, -ldl links the loader, and
- * --export-all makes a program fork-capable.
+ * into the program and into libc. The same program and plugin build natively
+ * inside Kandelo with Libtool, CMake and Meson in guest-plugins.test.ts.
+ * These cases pin the SDK contract docs/sdk-guide.md describes under
+ * "Plugin modules": a program that calls dlopen gets the loader without
+ * -ldl, -rdynamic exports the program's symbols and the libc functions it
+ * links, exporting does not make the program fork-capable, and a program
+ * that never calls dlopen is unaffected.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,13 +27,14 @@ const REPO_ROOT = join(__dirname, "../..");
 const FIXTURE = join(__dirname, "fixtures/guest-build/plugins");
 const CC = join(REPO_ROOT, "sdk/bin/wasm32posix-cc");
 const BUILD_DIR = makeHostScratchTempRoot("sdk-plugin-modules-");
+const pluginOutput = "plugin: host_scale=3\nplugin_run(7) = 22\n";
 
 const hasSysroot = existsSync(join(REPO_ROOT, "sysroot", "lib", "libc.a"));
 const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 
-function buildHost(name: string, flags: string[]): string {
+function link(name: string, source: string, flags: string[]): string {
   const program = join(BUILD_DIR, `${name}.wasm`);
-  execFileSync(CC, ["-O2", join(FIXTURE, "host.c"), ...flags, "-o", program], { stdio: "pipe" });
+  execFileSync(CC, ["-O2", source, ...flags, "-o", program], { stdio: "pipe" });
   return program;
 }
 
@@ -39,6 +42,16 @@ function buildPlugin(source: string): string {
   const module = join(BUILD_DIR, source.replace(/\.c$/, ".so"));
   execFileSync(CC, ["-shared", "-fPIC", "-O2", join(FIXTURE, source), "-o", module], { stdio: "pipe" });
   return module;
+}
+
+function imports(program: string): string[] {
+  return WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(program)))
+    .map((i) => `${i.module}.${i.name}`);
+}
+
+function exports(program: string): string[] {
+  return WebAssembly.Module.exports(new WebAssembly.Module(readFileSync(program)))
+    .map((e) => e.name);
 }
 
 function run(program: string, module: string) {
@@ -51,53 +64,69 @@ function run(program: string, module: string) {
 }
 
 describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin modules", () => {
+  const hostSource = join(FIXTURE, "host.c");
   let plugin = "";
-  let pluginLibc = "";
   let host = "";
   beforeAll(() => {
     mkdirSync(BUILD_DIR, { recursive: true });
     plugin = buildPlugin("plugin.c");
-    pluginLibc = buildPlugin("plugin-libc.c");
-    host = buildHost("host", ["-ldl", "-Wl,--export-dynamic"]);
+    // As on Unix: -rdynamic, and no -ldl.
+    host = link("host", hostSource, ["-rdynamic"]);
   }, 120_000);
 
-  it("loads a plugin that calls the program's exported API", { timeout: 60_000 }, async () => {
+  it("a program linked with -rdynamic and no -ldl loads a plugin that calls it and libc", { timeout: 60_000 }, async () => {
     const result = await run(host, plugin);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toBe("plugin: host_scale=3\nplugin_run(7) = 22\n");
+    expect(result.stdout).toBe(pluginOutput);
     expect(result.exitCode).toBe(0);
   });
 
-  // libc's symbols are hidden, so --export-dynamic does not export printf.
-  it("refuses a plugin that calls a libc function the program does not export", { timeout: 60_000 }, async () => {
-    const result = await run(host, pluginLibc);
-    expect(result.stderr).toMatch(/^dlopen: .*"printf"/);
-    expect(result.exitCode).toBe(1);
-  });
-
-  it("loads that plugin once the program exports printf", { timeout: 60_000 }, async () => {
-    const exportsPrintf = buildHost("host-printf", ["-ldl", "-Wl,--export-dynamic", "-Wl,--export=printf"]);
-    const result = await run(exportsPrintf, pluginLibc);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toBe("plugin-libc: 7\nplugin_run(7) = 8\n");
+  it("-Wl,--export-dynamic exports the same symbols as -rdynamic", { timeout: 60_000 }, async () => {
+    const exportDynamic = link("host-export-dynamic", hostSource, ["-Wl,--export-dynamic"]);
+    expect(exports(exportDynamic).sort()).toEqual(exports(host).sort());
+    const result = await run(exportDynamic, plugin);
+    expect(result.stdout).toBe(pluginOutput);
     expect(result.exitCode).toBe(0);
   });
 
-  // libc.a's dlopen is musl's static stub; -ldl links Kandelo's loader.
-  it("without -ldl, dlopen is musl's static stub", { timeout: 60_000 }, async () => {
-    const result = await run(buildHost("host-no-ldl", ["-Wl,--export-dynamic"]), plugin);
-    expect(result.stderr).toBe("dlopen: Dynamic loading not supported\n");
-    expect(result.exitCode).toBe(1);
+  it("exports the program's symbols and the libc it links, but not the platform glue", { timeout: 60_000 }, () => {
+    const names = exports(host);
+    for (const name of ["host_callback", "host_scale", "printf", "dlopen", "dlsym"]) {
+      expect(names, name).toContain(name);
+    }
+    // The glue's fork entry and syscall channel stay private, so exporting
+    // does not keep fork, or the kernel's fork import, in this program.
+    for (const name of ["fork", "_Fork", "vfork", "__syscall3"]) {
+      expect(names, name).not.toContain(name);
+    }
+    expect(imports(host)).not.toContain("kernel.kernel_fork");
+    expect(imports(host)).toContain("env.__wasm_dlopen_prepare");
   });
 
-  // --export-all exports libc too, but keeps every function of each linked
-  // object, the SDK glue's fork among them: the program imports the fork
-  // entry and must be fork-instrumented before it can run.
-  it("--export-all makes the program fork-capable", () => {
-    const program = buildHost("host-export-all", ["-ldl", "-Wl,--export-all"]);
-    const imports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(program)));
-    expect(imports.some((i) => i.module === "kernel" && i.name === "kernel_fork")).toBe(true);
-    const plain = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(host)));
-    expect(plain.some((i) => i.module === "kernel" && i.name === "kernel_fork")).toBe(false);
-  }, 60_000);
+  it("a program that never calls dlopen gets none of the loader, with or without -ldl", { timeout: 120_000 }, () => {
+    const source = join(BUILD_DIR, "hello.c");
+    writeFileSync(source, '#include <stdio.h>\nint main(void) { puts("hello"); return 0; }\n');
+    // (-ldl still keeps the host's default thread-slot declaration, as a
+    // hint that the program may load modules, so the bytes can differ.)
+    for (const flags of [[], ["-ldl"]]) {
+      const program = link(`hello${flags.join("")}`, source, flags);
+      expect(imports(program).some((i) => i.startsWith("env.__wasm_dlopen")), `${flags}`).toBe(false);
+      expect(exports(program), `${flags}`).not.toContain("dlopen");
+    }
+  });
+
+  // A plugin takes libc from the program, so a libc function the program
+  // never links is not there to export.
+  it("a plugin calling libc the program does not link loads once the program exports it", { timeout: 60_000 }, async () => {
+    const pluginLibc = buildPlugin("plugin-libc.c");
+    const refused = await run(host, pluginLibc);
+    expect(refused.stderr).toMatch(/^dlopen: .*strverscmp/);
+    expect(refused.exitCode).toBe(1);
+
+    const exporting = link("host-strverscmp", hostSource, ["-rdynamic", "-Wl,--export=strverscmp"]);
+    const loaded = await run(exporting, pluginLibc);
+    expect(loaded.stderr).toBe("");
+    expect(loaded.stdout).toBe("plugin_run(7) = 8\n");
+    expect(loaded.exitCode).toBe(0);
+  });
 });
