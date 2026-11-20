@@ -1312,10 +1312,13 @@ that falls back to static, `ctest` and `cpack`, in the build image.
 ## Experimental memory-group translation
 
 `wasm32posix-shared-memory ordinary.wasm -o grouped.wasm` prepares a separate
-memory32 executable for a trusted sharing group. This is an artifact-preparation
-component; the normal launcher does not yet implement grouped execution and
-refuses its required `kandelo.memory-group.v3.memory` import. Ordinary programs,
-including PHP-FPM, keep their existing build and launch behavior.
+memory32 executable for a trusted sharing group. The Node and browser embedding
+launchers accept compatible prepared bytes when explicitly configured with
+`experimentalMemoryGroup`; an ordinary launch refuses the required
+`kandelo.memory-group.v3.memory` import. The SDK/package/image desktop consumer
+uses that opt-in path. Initial grouped `spawnFromVfs` and shared-mode launch in
+the full Kandelo app remain unavailable. Ordinary programs, including PHP-FPM,
+keep their existing build and launch behavior.
 
 The command uses this checkout's normal SDK program version, ABI stamp and fork
 instrumenter, then compiles the checked translation helpers and runs
@@ -1337,8 +1340,11 @@ replace the C memory-operation tests or prove arbitrary helper code correct.
 cooperative stop 3, execution barrier 1, ordered wait queue 2, source/helper hashes, and the original
 logical page limits. Physical memory is group storage; host consumers must use
 explicit virtual-memory operations rather than treat its buffer as guest memory.
-The baseline uses outlined checked accesses. Research optimization variants are
-retained separately; none is silently enabled by this tool.
+The translator uses outlined checked accesses. Wrappers share an operation,
+alignment and lane while receiving each instruction's original constant offset
+as a private i64 argument. The checked helper still validates the complete
+effective address and permissions; this changes no public artifact interface.
+Other research optimization variants remain separate.
 
 Bulk copies validate both complete virtual ranges before writing. Contiguous
 physical spans use an ordinary Wasm copy. Fragmented ranges can exceed the
@@ -1375,7 +1381,8 @@ and the returning helper owns node recycling. The exported `__vm_checkpoint`
 also permits process-Worker import adapters to check an admitted root/replica
 before a host call and in its return/failure path. That check must execute the
 native Wasm helper; throwing a JavaScript RuntimeError is catchable by guest
-exception handlers. The process import adapters belong to later runtime work.
+exception handlers. The integrated Node/browser process import adapters bind
+this check to the admitted execution generation before and after host calls.
 Notifications wake translated guest wait nodes and native kernel listeners on
 the physical status word. Native listeners do not consume the guest wake quota
 or contribute to its return count. Host publication writes the body and status
@@ -1385,14 +1392,16 @@ exact root/replica binding for JavaScript-generated IPC. It translates and
 checks the address, then uses the same queue and pause/stop checkpoints as a
 source Wasm wait. A worker must bind this entry to its admitted replica; native
 JavaScript waits on physical payload words cannot substitute for guest waits.
-The runtime integration must bind those entries to exact kernel-authorized
-replicas before exposing grouped launch. That host/lifecycle work belongs to
-later PRs and is not implemented by this SDK extraction.
+The integrated runtime binds those entries to exact kernel-authorized replicas.
+Its grouped fork, exec, pthread, exit and destruction paths own their execution
+and wait retirement fences. The translator's mechanism tests alone do not prove
+that lifecycle contract; normal SDK/runtime tests exercise it separately.
 
-Dynamic physical growth after peer Worker termination remains experimental:
-repeated WebKit tests close the page, while growth before peer termination passes
-the same comparison. Orderly close acknowledgments have not removed the failure.
-Standalone raw-Wasm reductions currently pass, so no external-runtime cause is
-established. This is not ready for normal grouped launch or a sustained desktop
-preview. Complete lifecycle integration, backing ownership and the full release
-gates remain required. See [the shared-group contract](shared-memory-groups.md).
+Historical dynamic physical-growth experiments after peer Worker termination
+fail on WebKit. The current JavaScriptCore backend provisions the complete
+admitted group extent before launching participants; it does not raise the
+group's capacity or allocation budget. Other browser engines grow as needed.
+The developer desktop is usable within its bounded contract, but the combined
+release gates, total-browser resource costs and remaining object/graphics
+semantics are not complete. See [the shared-group contract](shared-memory-groups.md)
+and [current validation and limits](measurements/2026-11-20-shared-memory-desktop-current.md).

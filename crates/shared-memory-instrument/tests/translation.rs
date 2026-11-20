@@ -78,6 +78,47 @@ fn helpers(directory: &Path) -> Vec<u8> {
 }
 
 #[test]
+fn outlined_offsets_share_code_without_changing_effective_addresses() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helpers(directory.path());
+    let source = input(r#"
+        (func(export "load0")(param i32)(result i32) local.get 0 i32.load)
+        (func(export "load4")(param i32)(result i32) local.get 0 i32.load offset=4)
+        (func(export "loadMax")(param i32)(result i32) local.get 0 i32.load offset=4294967295)
+        (func(export "store0")(param i32 i32) local.get 0 local.get 1 i32.store)
+        (func(export "store4")(param i32 i32) local.get 0 local.get 1 i32.store offset=4)
+        (func(export "loadSplit")(param i32)(result i32) local.get 0 i32.load offset=65534 align=1)
+        (func(export "storeSplit")(param i32 i32) local.get 0 local.get 1 i32.store offset=65534 align=1)
+        (func(export "atomicStore64")(param i32 i32) local.get 0 local.get 1 i32.atomic.store offset=64)
+        (func(export "atomicStore128")(param i32 i32) local.get 0 local.get 1 i32.atomic.store offset=128)
+        (func(export "atomicAdd64")(param i32 i32)(result i32) local.get 0 local.get 1 i32.atomic.rmw.add offset=64)
+        (func(export "atomicAdd128")(param i32 i32)(result i32) local.get 0 local.get 1 i32.atomic.rmw.add offset=128)
+        (func(export "storeWide8")(param i32 i64) local.get 0 local.get 1 i64.store offset=8)
+        (func(export "storeWide16")(param i32 i64) local.get 0 local.get 1 i64.store offset=16)
+        (func(export "loadWide8")(param i32)(result i64) local.get 0 i64.load offset=8)
+        (func(export "loadWide16")(param i32)(result i64) local.get 0 i64.load offset=16)
+    "#);
+    let (bytes, report) = translate(&source, &helper, &digest()).unwrap();
+    // Alignment and operation remain significant; only constant offsets share.
+    assert_eq!(report["accessWrappers"], 8);
+    let output = directory.path().join("offsets.wasm");
+    fs::write(&output, &bytes).unwrap();
+    let worker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/offsets-node.mjs").canonicalize().unwrap();
+    let result = Command::new("node").args(["--input-type=module", "-e", r#"
+        import {Worker} from 'node:worker_threads';
+        const worker=new Worker(process.argv[1],{workerData:process.argv[2],execArgv:['--import','tsx']});
+        const timer=setTimeout(()=>{worker.terminate();process.exitCode=1;},20000);
+        worker.on('message',result=>{clearTimeout(timer);console.log(JSON.stringify(result));});
+        worker.on('error',error=>{clearTimeout(timer);console.error(error);process.exitCode=1;});
+    "#]).arg(worker).arg(output).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let result: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(result["passed"], true);
+    assert_eq!(result["checks"].as_array().unwrap().len(), 10);
+}
+
+#[test]
 fn bounded_copy_matches_snapshot_oracle_for_all_small_alias_mappings() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))

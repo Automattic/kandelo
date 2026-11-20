@@ -286,7 +286,9 @@ struct AccessWrapper {
 }
 fn operation_key(op: O<'_>) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    reencode::RoundtripReencoder
+    // The effective offset is an internal i64 argument, rather than a new
+    // function body for every field offset in a large linked program.
+    ZeroOffset
         .instruction(op)
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .encode(&mut bytes);
@@ -396,6 +398,7 @@ impl Rewrite<'_> {
             ts.ty().function(
                 std::iter::once(V::I32)
                     .chain(w.access.values.iter().copied())
+                    .chain(std::iter::once(V::I64))
                     .collect::<Vec<_>>(),
                 w.access.result,
             );
@@ -420,12 +423,13 @@ impl Rewrite<'_> {
     fn access_wrapper(&self, wrapper: &AccessWrapper) -> enc::Function {
         let a = &wrapper.access;
         let mut f = enc::Function::new([(2, V::I32)]);
-        let base = 1 + a.values.len() as u32;
+        let offset = 1 + a.values.len() as u32;
+        let base = offset + 1;
         f.instruction(&I::LocalGet(0));
         if a.write && !a.atomic {
             f.instruction(&I::LocalTee(base));
         }
-        f.instruction(&I::I64Const(a.memarg.offset as i64));
+        f.instruction(&I::LocalGet(offset));
         f.instruction(&I::I32Const(1 << a.memarg.max_align));
         if a.atomic {
             f.instruction(&I::I32Const(a.rights as i32));
@@ -468,7 +472,7 @@ impl Rewrite<'_> {
         }
         if a.write && !a.atomic {
             f.instruction(&I::LocalGet(base));
-            f.instruction(&I::I64Const(a.memarg.offset as i64));
+            f.instruction(&I::LocalGet(offset));
             f.instruction(&I::I32Const(1 << a.memarg.max_align));
             f.instruction(&I::GlobalGet(self.root()));
             f.instruction(&I::GlobalGet(self.scratch()));
@@ -820,6 +824,9 @@ impl Reencode for Rewrite<'_> {
                 let a = a.map_err(E::UserError)?;
                 *self.counts.entry(a.name.into()).or_default() += 1;
                 let key = operation_key(op).map_err(E::UserError)?;
+                // Preserve the full unsigned effective-address addition in the
+                // existing helper. Casting changes only the i64 bit pattern.
+                f.instruction(&I::I64Const(a.memarg.offset as i64));
                 f.instruction(&I::Call(self.init() + 1 + self.wrapper_indices[&key]));
                 continue;
             }

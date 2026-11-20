@@ -1269,6 +1269,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "crates/shared-memory-instrument/tests/fixtures/offsets-node.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone translator offset oracle owns at most128pages of independent test memory in a disposable Node Worker. No Rust kernel or persistent browser/audio realm receives its storage; only copied check names leave the Worker.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/offsets-node.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(await readFile(workerData),{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The independent offset/split/atomic/overflow oracle instantiates only its translated fixture in its own bounded Worker-local test memory. Instance exports and views remain in that disposable Worker; no kernel memory participates.",
+  },
+  {
     key: "host/src/dri/byte-snapshot.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "Captures only the native buffer getter for authenticating the original mapped process Memory and the independent device baseline; no Memory or buffer is captured at module scope.",

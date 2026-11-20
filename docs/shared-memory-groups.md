@@ -6,7 +6,7 @@ below. It is not a statement that the complete contract is ready to ship. The
 identifies the isolated experiment and the ordinary failure it addresses.
 Neither the successful demo nor those bounded checks replaces integration and
 release validation.
-The [fresh integration checkpoint](measurements/2026-11-19-shared-memory-desktop-integration.md)
+The [current integration checkpoint](measurements/2026-11-20-shared-memory-desktop-current.md)
 records the current normal package/image path and its remaining failures.
 
 ## Purpose and trust
