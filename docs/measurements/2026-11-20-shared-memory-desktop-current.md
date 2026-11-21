@@ -1173,3 +1173,26 @@ legs complete, and its Chromium browser leg passes; the other browser legs
 remain pending. The sustained run and fair resource/performance/conformance
 gates remain open. Evidence from 744/746/747 and their failed controls is
 retained in `.context/shared-desktop-current-753/`.
+
+
+The capacity check now waits for Bash's rendered prompt under the actual
+focused Sway title before Ctrl+D and the final command. Process creation alone
+did not establish input readiness. It preserves all twelve-process/shell,
+one-removed PID, new-replacement PID, display-release and initialized-table
+cleanup assertions. Run 755 passes all three engines with zero skips, flaky
+or unexpected results. The normal app/kernel remain unchanged.
+
+The preceding readiness diagnostics are retained: 751 incorrectly assumed the
+rightmost tile was focused, while Sway had followed the pointer after Internals
+closed. Diagnostic 754 tried an absolute-position click while pointer capture
+was active; Chromium refused its focus assertion and Firefox hit the original
+seven-minute test deadline. The corrected keyboard check observes the actual
+focused prompt and does not change pointer capture. Known-prompt, inactive-title,
+blank-pixel and changed-glyph controls pass. This does not establish captured
+pointer behavior, sustained capacity or a performance benefit.
+
+The public `playwright.trusted-desktop.config.ts` also accepts the explicit
+Sway profile/VFS query of the normal partial image, rather than rejecting the
+documented profile URL. Run 758 passes its three selected capacity cases and
+strict types on all three engines. The other Sway cases were not selected by
+that invocation and are not newly claimed here.
