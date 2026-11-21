@@ -61,8 +61,9 @@ MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
 if [ "$HOST_OS" = "Darwin" ] && [ -z "$MACOS_SDK_DIR" ]; then
     # Take the macOS SDK the dev shell declares for this build (`macosSdk` in
     # flake.nix). SpiderMonkey's configure refuses any macOS SDK older than
-    # 15.5, and this nixpkgs pins the shell's default Darwin SDK at 14.4, so
-    # the flake declares a 15.5 one for SpiderMonkey alone.
+    # 26.5 (`mac_sdk_min_version()` in build/moz.configure/toolchain.configure
+    # for ESR 153), and this nixpkgs pins the shell's default Darwin SDK at
+    # 14.4, so the flake declares a newer one for SpiderMonkey alone.
     #
     # This used to prefer /Applications/Xcode.app instead, which is the only
     # place in the package tree that left the Nix world. That made the build
@@ -98,6 +99,23 @@ for required_tool in python3 rustc cargo cbindgen node curl make; do
         echo "ERROR: required host tool '$required_tool' not found in PATH." >&2
         exit 1
     fi
+done
+
+# Mozilla's configure looks for rustc, cargo, rustdoc, rustfmt and cbindgen in
+# $CARGO_HOME/bin (default ~/.cargo/bin) BEFORE $PATH, and unwraps a rustup
+# proxy found there to the user's default toolchain. On a machine with rustup
+# installed that silently swaps the dev shell's pinned toolchain
+# (rust-toolchain.toml) for whatever rustup defaults to. Name each tool
+# explicitly so configure uses the ones this build resolved on PATH. The mach
+# phase below also runs with a work-dir CARGO_HOME, so that search directory is
+# not the user's ~/.cargo/bin either.
+for rust_tool in rustc:RUSTC cargo:CARGO rustdoc:RUSTDOC rustfmt:RUSTFMT cbindgen:CBINDGEN; do
+    rust_tool_path="$(command -v "${rust_tool%%:*}" || true)"
+    if [ -z "$rust_tool_path" ]; then
+        echo "ERROR: required host tool '${rust_tool%%:*}' not found in PATH." >&2
+        exit 1
+    fi
+    export "${rust_tool##*:}=$rust_tool_path"
 done
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -202,13 +220,15 @@ mkdir -p "$BIN_DIR" "$DOWNLOAD_DIR" "$SRC_PARENT"
 
 PATCH_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCH_DIR" ]; then
+    # -F0: every patch must apply without fuzz (patches/README.md). A fuzzy
+    # match can land a hunk on the wrong lines once the source drifts.
     for patch_file in "$PATCH_DIR"/*.patch; do
         [ -f "$patch_file" ] || continue
         patch_name="$(basename "$patch_file")"
-        if patch -p1 -N --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
+        if patch -p1 -N -F0 --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
             echo "==> Applying $patch_name..."
-            patch -p1 -N -d "$SRC_DIR" < "$patch_file"
-        elif patch -p1 -R --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
+            patch -p1 -N -F0 -d "$SRC_DIR" < "$patch_file"
+        elif patch -p1 -R -F0 --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
             # Reverse-applies cleanly: this patch is already present in the
             # source tree (e.g. a re-run against a previously patched
             # checkout). Nothing to do.
@@ -217,7 +237,7 @@ if [ -d "$PATCH_DIR" ]; then
             # Neither a forward nor a reverse dry-run succeeded: the patch
             # does not cleanly apply to this source tree at all. Silently
             # continuing here would ship a build missing a platform fix
-            # (e.g. 0015/0016/0017) with no signal that it was dropped.
+            # (e.g. 0015/0016/0018) with no signal that it was dropped.
             echo "ERROR: patch $patch_name does not apply to $SRC_DIR (source may have drifted from what the patch expects). Update the patch or the pinned source version." >&2
             exit 1
         fi
@@ -294,7 +314,6 @@ ac_add_options --with-intl-api
 ac_add_options --enable-icu4x
 ac_add_options --disable-shared-js
 ac_add_options --enable-shared-memory
-ac_add_options --enable-explicit-resource-management
 ac_add_options --disable-clang-plugin
 ac_add_options --disable-tests
 ac_add_options --disable-debug-symbols
@@ -403,8 +422,27 @@ if [ -n "$JSRUST_FINGERPRINT" ] && ! grep -q 'target-feature=+atomics' "$JSRUST_
     rm -rf "$RUST_RELEASE_DIR/.fingerprint"/jsrust-*
 fi
 
+# Give mach's configure and build a private, empty Cargo home, as the other
+# Rust recipes do (scripts/package-rust-build-env.sh). Configure's
+# rust_search_path (build/moz.configure/toolchain.configure) searches
+# $CARGO_HOME/bin and appends it to the build PATH, so the default would put
+# the user's ~/.cargo/bin (rustup proxies) into the build, and Cargo would read
+# $CARGO_HOME/config.toml from ~/.cargo as an undeclared input. The Rust crates
+# come from the source tree's vendored third_party/rust, so the build needs no
+# registry in this Cargo home.
+#
+# Boundary: Cargo also reads .cargo/config.toml from every ancestor of its
+# working directory, independent of CARGO_HOME. A work directory under $HOME,
+# such as the resolver's default cache, still sees ~/.cargo/config.toml that
+# way, as it does for the other Rust recipes.
+#
+# This is scoped to mach: the xtask resolver calls above and
+# install_local_binary below are repository host Cargo invocations and keep
+# the caller's Cargo home.
+MACH_CARGO_HOME="$WORK_DIR/mach-cargo-home"
+mkdir -p "$MACH_CARGO_HOME"
 echo "==> Building SpiderMonkey JS shell for wasm32..."
-(cd "$SRC_DIR" && ./mach --no-interactive build)
+(cd "$SRC_DIR" && CARGO_HOME="$MACH_CARGO_HOME" ./mach --no-interactive build)
 
 JS_BIN=""
 for candidate in "$OBJ_DIR/dist/bin/js" "$OBJ_DIR/dist/bin/js.wasm"; do

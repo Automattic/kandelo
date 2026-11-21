@@ -778,7 +778,7 @@ const process = (() => {
         version: 'v22.0.0', // Compatibility target
         versions: {
             node: '22.0.0',
-            spidermonkey: '140.11.0esr',
+            spidermonkey: '153.7.0esr',
             modules: '131',
             v8: '0.0.0',  // Not V8
             uv: '0.0.0',  // Not libuv

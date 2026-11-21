@@ -1,6 +1,23 @@
+Add synchronous require() of ES modules through the shell module registry.
+
+__kandeloNodeNative.__kandeloRequireModule(path) loads, links and evaluates
+an ES module through the same registry as import and import(), and returns
+its namespace. A pending top-level await throws ERR_REQUIRE_ASYNC_MODULE; a
+cyclic require of an evaluating module returns the live partial namespace.
+Node rejects that cycle with ERR_REQUIRE_CYCLE_MODULE instead; the
+difference is a known gap recorded in docs/posix-status.md.
+
+ESR 153 rebase: the shell loader now implements HostLoadImportedModule.
+ModuleLink requires LoadRequestedModules to have loaded the static import
+graph first, and rejects modules in the new `New` status. A fresh (`New`) or
+`Unlinked` module is therefore loaded and linked with LoadRequestedModules
+plus the loader's LoadResolved/LoadRejected callbacks, as loadAndExecute
+does. loadAndParse also no longer accepts a null module request, so this
+builds an evaluation-phase JavaScript request the way loadRootModule does.
+
 --- a/js/src/shell/ModuleLoader.cpp
 +++ b/js/src/shell/ModuleLoader.cpp
-@@ -12,12 +12,14 @@
+@@ -9,6 +9,7 @@
  #include "jsapi.h"
  #include "NamespaceImports.h"
  
@@ -8,19 +25,18 @@
  #include "builtin/TestingUtility.h"  // js::CreateScriptPrivate
  #include "js/CallAndConstruct.h"     // JS_CallFunctionValue, JS::IsCallable
  #include "js/Conversions.h"
- #include "js/GlobalObject.h"  // JS::CurrentGlobalOrNull
+@@ -16,6 +17,7 @@
  #include "js/MapAndSet.h"
  #include "js/Modules.h"
+ #include "js/Prefs.h"
 +#include "js/Promise.h"  // JS::GetPromiseState, JS::GetPromiseResult
  #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_GetProperty
  #include "js/SourceText.h"
  #include "js/StableStringChars.h"
-@@ -242,8 +244,119 @@
- void ModuleLoader::clearModules(JSContext* cx) {
-   Handle<GlobalObject*> global = cx->global();
+@@ -246,6 +248,144 @@
    global->setReservedSlot(GlobalAppSlotModuleRegistry, UndefinedValue());
-+}
-+
+ }
+ 
 +// Kandelo: return the ES module namespace of |module| in |rval|.
 +static bool KandeloReturnModuleNamespace(JSContext* cx, HandleObject module,
 +                                         MutableHandleValue rval) {
@@ -60,8 +76,8 @@
 +    JS_SetPendingException(cx, exn);
 +  }
 +  return false;
- }
- 
++}
++
 +// Kandelo: synchronous require() of an ES module. Node's require() CJS-wraps
 +// its target (a classic-script goal), which cannot host top-level import/export
 +// declarations. This drives the SAME module load path that import and dynamic
@@ -72,7 +88,22 @@
 +// synchronous evaluation rejection is rethrown to the caller.
 +bool ModuleLoader::requireModuleNamespace(JSContext* cx, HandleString path,
 +                                          MutableHandleValue rval) {
-+  RootedObject module(cx, loadAndParse(cx, path, nullptr));
++  // loadAndParse needs a module request to pick the module type; require() of
++  // an ES module always asks for an evaluation-phase JavaScript module, the
++  // same request loadRootModule builds for the shell's root module.
++  Rooted<JSAtom*> specifier(cx, AtomizeString(cx, path));
++  if (!specifier) {
++    return false;
++  }
++  RootedObject moduleRequest(
++      cx, ModuleRequestObject::create(cx, specifier,
++                                      JS::ModuleType::JavaScriptOrWasm,
++                                      ImportPhase::Evaluation));
++  if (!moduleRequest) {
++    return false;
++  }
++
++  RootedObject module(cx, loadAndParse(cx, path, moduleRequest));
 +  if (!module) {
 +    return false;
 +  }
@@ -85,16 +116,28 @@
 +  // ES Evaluate() requires status linked / evaluating-async / evaluated;
 +  // calling JS::ModuleEvaluate on an `evaluating` module throws
 +  // "module record has unexpected status: Evaluating". Return the partial live
-+  // namespace instead (Node circular require(esm) semantics). Not-yet-run
-+  // exports read as TDZ ReferenceError and fill in live as evaluation proceeds.
++  // namespace instead. Node throws ERR_REQUIRE_CYCLE_MODULE here; the
++  // difference is a known gap (docs/posix-status.md). Not-yet-run exports
++  // read as TDZ ReferenceError and fill in live as evaluation proceeds.
 +  if (status == js::ModuleStatus::Evaluating) {
 +    return KandeloReturnModuleNamespace(cx, module, rval);
 +  }
 +
-+  // Link only a fresh (unlinked) module. A module already linked by a prior
-+  // import, or evaluating-async / evaluated, must not be re-linked.
-+  if (status == js::ModuleStatus::Unlinked) {
-+    if (!JS::ModuleLink(cx, module)) {
++  // Load and link only a module that is not linked yet: `new` (freshly
++  // parsed, its requested modules not loaded) or `unlinked` (loaded but not
++  // linked). ModuleLink requires LoadRequestedModules to have loaded the whole
++  // static import graph first, so this follows loadAndExecute: the shell's
++  // load hook finishes static imports synchronously, LoadResolved links the
++  // module, and LoadRejected leaves the load error pending. A module already
++  // linked by a prior import, or evaluating-async / evaluated, must not be
++  // reloaded or re-linked.
++  if (status == js::ModuleStatus::New || status == js::ModuleStatus::Unlinked) {
++    RootedValue hostDefined(cx, ObjectValue(*module));
++    if (!JS::LoadRequestedModules(cx, module, hostDefined, LoadResolved,
++                                  LoadRejected)) {
++      return false;
++    }
++    if (JS_IsExceptionPending(cx)) {
 +      return false;
 +    }
 +  }
@@ -137,7 +180,7 @@
                                    MutableHandleValue rval) {
 --- a/js/src/shell/ModuleLoader.h
 +++ b/js/src/shell/ModuleLoader.h
-@@ -25,6 +25,15 @@
+@@ -23,6 +23,15 @@
    // Testing hook to clear all loaded modules.
    void clearModules(JSContext* cx);
  
@@ -151,11 +194,11 @@
 +                              MutableHandleValue rval);
 +
   private:
-   static JSObject* ResolveImportedModule(JSContext* cx,
-                                          HandleValue referencingPrivate,
+   static bool LoadImportedModule(JSContext* cx, JS::Handle<JSScript*> referrer,
+                                  HandleObject moduleRequest,
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -1426,6 +1426,26 @@
+@@ -1416,6 +1416,26 @@
    return true;
  }
  
@@ -182,7 +225,7 @@
  static bool DefineKandeloNodeNative(JSContext* cx) {
    RootedObject native(cx, JS_NewPlainObject(cx));
    if (!native) {
-@@ -1433,6 +1453,7 @@
+@@ -1423,6 +1443,7 @@
    }
    const JSFunctionSpec funcs[] = {
        JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),

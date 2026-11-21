@@ -1,7 +1,13 @@
-diff --git a/js/src/gc/GCInternals.h b/js/src/gc/GCInternals.h
+Heap-allocate AutoRunParallelTask's GC task on wasm32.
+
+AutoRunParallelTask is a stack object that is also a GCParallelTask handed to
+a helper thread. In Kandelo worker threads the stack-allocated multiple
+inheritance task layout was corrupted; on wasm32 keep the RAII wrapper on the
+stack but allocate the task itself on the heap.
+
 --- a/js/src/gc/GCInternals.h
 +++ b/js/src/gc/GCInternals.h
-@@ -19,6 +19,7 @@
+@@ -18,6 +18,7 @@
  #include "gc/GC.h"
  #include "gc/GCContext.h"
  #include "gc/GCMarker.h"
@@ -9,11 +15,10 @@ diff --git a/js/src/gc/GCInternals.h b/js/src/gc/GCInternals.h
  #include "vm/GeckoProfiler.h"
  #include "vm/HelperThreads.h"
  #include "vm/JSContext.h"
-@@ -167,32 +168,75 @@ class AutoUpdateLiveCompartments {
+@@ -114,16 +115,58 @@
    ~AutoUpdateLiveCompartments();
  };
--
-+
+ 
 -class MOZ_RAII AutoRunParallelTask : public GCParallelTask {
 +class MOZ_RAII AutoRunParallelTask
 +#if !(defined(__wasm32__) && !defined(__EMSCRIPTEN__))
@@ -22,7 +27,6 @@ diff --git a/js/src/gc/GCInternals.h b/js/src/gc/GCInternals.h
 +{
    // This class takes a pointer to a member function of GCRuntime.
    using TaskFunc = JS_MEMBER_FN_PTR_TYPE(GCRuntime, void);
--
 +
 +#if defined(__wasm32__) && !defined(__EMSCRIPTEN__)
 +  class Task : public GCParallelTask {
@@ -43,7 +47,7 @@ diff --git a/js/src/gc/GCInternals.h b/js/src/gc/GCInternals.h
 +      JS_CALL_MEMBER_FN_PTR(gc, func_);
 +    }
 +  };
-+
+ 
 +  UniquePtr<Task> task_;
 +  GCRuntime* gc_;
 +  AutoLockHelperThreadState& lock_;
@@ -52,8 +56,7 @@ diff --git a/js/src/gc/GCInternals.h b/js/src/gc/GCInternals.h
    TaskFunc func_;
    AutoLockHelperThreadState& lock_;
 +#endif
--
-+
+ 
   public:
    AutoRunParallelTask(GCRuntime* gc, TaskFunc func, gcstats::PhaseKind phase,
                        GCUse use, AutoLockHelperThreadState& lock)
@@ -72,25 +75,11 @@ diff --git a/js/src/gc/GCInternals.h b/js/src/gc/GCInternals.h
        : GCParallelTask(gc, phase, use), func_(func), lock_(lock) {
      gc->startTask(*this, lock_);
    }
--
-+
-   ~AutoRunParallelTask() { gc->joinTask(*this, lock_); }
--
-+
-   void run(AutoLockHelperThreadState& lock) override {
-     AutoUnlockHelperThreadState unlock(lock);
--
-+
-     // The hazard analysis can't tell what the call to func_ will do but it's
-     // not allowed to GC.
-     JS::AutoSuppressGCAnalysis nogc;
--
-+
+@@ -140,6 +183,7 @@
      // Call pointer to member function on |gc|.
      JS_CALL_MEMBER_FN_PTR(gc, func_);
    }
 +#endif
  };
--
-+
+ 
  #ifdef JS_GC_ZEAL

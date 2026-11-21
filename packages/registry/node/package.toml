@@ -2,7 +2,7 @@ kind = "program"
 name = "node"
 version = "0.1.0"
 kernel_abi = 7
-depends_on = ["spidermonkey@140.11.0esr"]
+depends_on = ["spidermonkey@153.7.0esr"]
 
 [source]
 url = "https://github.com/brandonpayton/kandelo"

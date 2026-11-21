@@ -1,9 +1,16 @@
-diff --git a/config/external/icu/data/icu_data.S b/config/external/icu/data/icu_data.S
-index 767bb543fae2..a8a37478ba40 100644
+Use the wasm object-format section syntax for the ICU data blob on wasm32.
+
+icu_data.S embeds the ICU data with .incbin. Wasm objects need the WASI form:
+`.section .rodata,"",@` and an explicit .size for the data symbol.
+
+ESR 153 rebase: icu_data.S is now a template fed through icu_data_hash.py,
+which prepends the ICU_DATA_HASH define, and gained an `.ascii ICU_DATA_HASH`
+line; only the two __wasi__ conditions change.
+
 --- a/config/external/icu/data/icu_data.S
 +++ b/config/external/icu/data/icu_data.S
-@@ -15,14 +15,14 @@
- #if defined(__APPLE__)
+@@ -18,7 +18,7 @@
+ #elif defined(__APPLE__)
  .data
  .const
 -#elif defined(__wasi__)
@@ -11,7 +18,7 @@ index 767bb543fae2..a8a37478ba40 100644
  .section .rodata,"",@
  #else
  .section .rodata
- #endif
+@@ -27,6 +27,6 @@
  .balign 16
  ICU_DATA_SYMBOL:
  .incbin ICU_DATA_FILE
