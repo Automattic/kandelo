@@ -5143,15 +5143,17 @@ do not establish a net memory saving, and their results do not validate the new
 snapshot path's memory or performance. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
 for the workload, response endpoints, limitations and remaining acceptance.
 
-The normal browser app can explicitly opt into this temporary Sway/Foot preview
-with `./run.sh browser --trusted-desktop-preview` or
-`./run.sh build-browser --trusted-desktop-preview`. Development builds may use
-`browser --partial --trusted-desktop-preview` after selecting the required
-desktop packages. These commands prepare a separate compatible image, retain
-the normal login path and default to its image-owned Sway profile. They exclude
-unprepared profiles from that image's activity metadata. Ordinary app builds
-keep their existing memory backend. See [desktop opt-in](shared-memory-groups.md#desktop-first-opt-in)
-for package selection, compatibility limits and remaining acceptance.
+The normal browser app explicitly enables this temporary trusted desktop with
+`browser --partial --trusted-desktop-preview`. Build the normal partial shell
+with the `shared-desktop-programs` SDK package and its ordinary application/data
+packages first. Each prepared program remains a separate lazy archive. The
+launch validates the existing partial image, retains the normal login path and
+defaults to Cage/Foot; Sway/Foot is also offered. It creates no second image.
+Ordinary canonical images keep their ordinary executable paths and memory
+backend. `build-browser --trusted-desktop-preview` also requires this prepared
+partial image after its canonical browser preparation. See
+[normal partial-shell preview](shared-memory-groups.md#normal-partial-shell-preview)
+for the exact command, compatibility limits and remaining acceptance.
 The normal trusted preview has a 512 MiB shared backing ceiling without an
 additional small process/task quota. Embedders may supply explicit count quotas;
 kernel metadata, backing allocation and host Workers remain finite resources.

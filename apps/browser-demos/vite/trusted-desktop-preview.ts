@@ -1,3 +1,4 @@
+import { KandeloImageFs } from '../../../images/vfs/lib/kandelo-image-fs';
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -8,7 +9,7 @@ import {
 } from "../../../images/vfs/scripts/shared-desktop-contract";
 
 /** An explicit embedder build choice, never a capability enabled by a URL. */
-export function trustedDesktopPreview(base: string, imagePath?: string): Plugin | null {
+export function trustedDesktopPreview(base: string, imagePath?: string, imageModuleBytes?: Uint8Array): Plugin | null {
   if (imagePath === undefined) return null;
   if (!isAbsolute(imagePath)) throw Error("Trusted desktop preview image must be an absolute path");
   const stat = lstatSync(imagePath);
@@ -20,7 +21,23 @@ export function trustedDesktopPreview(base: string, imagePath?: string): Plugin 
   // A rebuilt preview must never reuse a service worker's old image response.
   const imageName = `trusted-desktop-preview/desktop-${sha256}.vfs.zst`;
   const provenanceName = `trusted-desktop-preview/provenance-${sha256}.json`;
-  const report = JSON.parse(readFileSync(imagePath + ".memory-group.json", "utf8"));
+  // The config bundler rebases module-relative paths. Its caller supplies
+  // the normal resolver's exact image-reader bytes instead of a guessed path.
+  const reader = KandeloImageFs.create(imageModuleBytes);
+  let metadata: Record<string, any> | null;
+  try { reader.loadImage(image); metadata = reader.getImageMetadata(); }
+  finally { reader.reset(); }
+  const packaged = metadata?.trustedMemoryGroup;
+  const report = packaged === undefined
+    ? JSON.parse(readFileSync(imagePath + ".memory-group.json", "utf8"))
+    : (() => {
+      if (packaged.schema !== 1 || packaged.package !== "shared-desktop-programs"
+          || !metadata?.partialSelection?.packages?.includes("shared-desktop-programs")) {
+        throw Error("Trusted desktop preview requires an explicitly selected SDK package");
+      }
+      return { output: { sha256, bytes: image.length }, programs: packaged.programs,
+        desktop: { profile: "cage", freeciv: true, scummvm: true } };
+    })();
   if (report.output?.sha256 !== sha256 || report.output?.bytes !== image.length
       || !Array.isArray(report.programs)) {
     throw Error("Trusted desktop preview image differs from its SDK preparation report");
@@ -28,7 +45,7 @@ export function trustedDesktopPreview(base: string, imagePath?: string): Plugin 
   const participants = new Set(report.programs.map((program: { requested?: string }) => program.requested));
   const profile = report.desktop?.profile ?? 'sway';
   const freeciv = report.desktop?.freeciv ?? false;
-  for (const program of [...sharedDesktopPrograms(profile, freeciv), ...SHARED_DESKTOP_LOGIN_PROGRAMS]) {
+  for (const program of [...sharedDesktopPrograms(profile, freeciv, report.desktop?.scummvm ?? false), ...SHARED_DESKTOP_LOGIN_PROGRAMS]) {
     if (!participants.has(program)) throw Error("Trusted desktop preview is missing participant " + program);
   }
   // Build-machine paths belong in the private SDK report, not the public site.

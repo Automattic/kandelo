@@ -1,5 +1,9 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
+  "images/vfs/scripts/shared-desktop-package.ts",
+  "images/vfs/scripts/shared-desktop-package-contract.ts",
+  "images/vfs/scripts/trusted-desktop-program.ts",
+  "packages/registry/shared-desktop-programs/programs.json",
   "images/vfs/scripts/shell-rust-sdk-manifest.ts",
   "images/vfs/scripts/rust-sdk-manifest.py",
   "sdk/guest-rust/src/sdk-components.json",

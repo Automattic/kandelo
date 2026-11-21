@@ -1026,3 +1026,60 @@ need investigation. Earlier intermittent input/IPC failures remain recorded;
 a successful bounded current run does not prove every historical cause fixed.
 The full original launch/shared-object/graphics requirements remain follow-up
 work. No merge, deployment or draft promotion is automatic.
+
+
+### Normal package-backed lazy preview (2026-11-21)
+
+The `shared-desktop-programs` package now produces eighteen individually lazy
+SDK archives. A normal partial shell explicitly activates them; the launch
+command validates that image instead of producing a separate eager image.
+The resulting partial image is 119,429 bytes (SHA-256
+`4b3bb368563d1dbd1e5b9b6aee92fc7351030256961ae7c7a7994eda7b832411`).
+All eighteen executable paths remain deferred and share actual inodes with
+their package paths, including preserved root-owned mode 4755 for login.
+All thirteen prepared executable hashes shared with the preceding Cage/game
+preview match exactly. Image size alone is not total boot traffic or browser
+resident memory; lazy program/data fetches, compiled code and runtime backing
+still require measurement.
+
+Normal partial and SDK/package builds pass (678/679). Strict types pass
+(669/670/680). The image module's native suite passes 71 cases (672); real-Wasm
+hard-link/lazy-serialization validation passes (674). The image/filesystem and
+ordinary shell-composition regressions pass 109 cases (677), with one existing
+opt-in 32 GiB sparse-fixture case skipped. This does not replace the canonical
+production build or full browser-memory gate.
+
+Against the normal app, Chromium/Firefox/WebKit each pass cold on-demand
+program loading and physical Foot input/initialized graphical cleanup (684).
+Their request records show Cage/Foot/Bash SDK archives, with no Freeciv or
+ScummVM program fetch. The six maintained Freeciv/Foot checks pass (685), as do
+three Sway twelve-terminal/initialized cleanup checks using the same normal
+partial image's Sway profile (686). Three ScummVM launcher checks pass (687);
+ScummVM gameplay remains unproven. Earlier ScummVM process/color diagnostics
+captured terminal startup and are not game-scene evidence.
+
+Retained preparation failures: 671 named a nonexistent recipe input; 673 used
+an import whose resolution depended on the build directory; 675 hit the host
+Unix-socket path limit in the optional tsx CLI control channel. The recipe now
+uses the declared loader entry directly. In 676 the SDK package completed,
+but the partial selection omitted the ordinary application packages. The
+normal command now names them explicitly and missing selections fail clearly.
+Server 681 rebased the image-reader path through the Vite config bundle;
+683 supplies the normal resolver's explicit module bytes. None of these
+failures is a claimed browser-engine defect. The existing previews remain
+available. The full memory gate, sustained failures and unmatched resource
+pilots above remain outstanding; there is no net memory or latency claim.
+
+
+The maintained six-case Cage suite now includes the cold demand-load assertions
+and passes all three engines (689). The public Node host also passes all four
+normal partial-image checks (690), including explicit grouped Bash launch,
+normal lazy archive reads, fork/exec pipelines through Coreutils/grep/sed and
+non-null public group accounting. Full app typechecking passes (691: 144
+browser roots and 46 Node-test roots); targeted test/image/plugin types pass
+with their Vite declarations (692). An earlier ad hoc typecheck omitted those
+declarations (688); it is retained as a failed check invocation, not a product
+failure. These results still do not establish a canonical build, full memory
+gate, sustained lifecycle or matched performance acceptance.
+
+The current package/image change also passes the normal ABI version check against `origin/develop` (job `lazy-abi-693-1121-014616-e4e4`). The image-builder hard-link export is additive; program ABI 56 and host-adapter 23 remain unchanged. Full canonical and browser-memory acceptance remains pending.

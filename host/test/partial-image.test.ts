@@ -1,7 +1,8 @@
+import { readTrustedDesktopProgram } from '../../images/vfs/scripts/trusted-desktop-program';
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { findRepoRoot, tryResolveBinary } from "../src/binary-resolver";
+import { findRepoRoot, tryResolveBinary, resolveLazyAssetPath } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { normalizeImageOwnedLazyReference } from "../src/vfs/vfs-asset-group-reference";
@@ -51,6 +52,7 @@ function fortranSmokeProbe(): string {
 
 /** A program each package installs, to prove it runs from the image. */
 const PROBES: Record<string, string> = {
+  "shared-desktop-programs": "printf sdk-lazy | sha256sum; printf 'grouped-path-ok\\n' | grep grouped | sed 's/grouped-path/sdk-path/'",
   tmux: "tmux -V",
   less: "less --version | head -n 1",
   fbdoom: "test -x /usr/bin/fbdoom && test -x /usr/bin/doom-launch && echo fbdoom-wrapper-ok",
@@ -133,7 +135,11 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     let stderr = "";
     const lazy: string[] = [];
     const host = new NodeKernelHost({
-      maxWorkers: 4,
+      // Test the explicit opt-in with its selected prepared image. Production
+      // hosts never infer this capability from image metadata.
+      maxWorkers: manifest!.packages.includes("shared-desktop-programs") ? 8 : 4,
+      ...(manifest!.packages.includes("shared-desktop-programs")
+        ? { experimentalMemoryGroup: { maximumPages: 8192 } } : {}),
       rootfsImage: imageBytes(),
       onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
       onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
@@ -156,7 +162,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
         }
         expect(lazy.some((event) => event.includes("flang.zip"))).toBe(false);
       }
-      const bash = fs.readFile("/bin/bash");
+      const entry = fs.lazyEntries().files.find(file => file.path === "/bin/bash"
+        || file.ino === BigInt(fs.stat("/bin/bash").ino));
+      const bash = entry ? readTrustedDesktopProgram(entry, fs.lazyEntries().archives,
+        uri => new Uint8Array(readFileSync(resolveLazyAssetPath(uri)))) : fs.readFile("/bin/bash");
       const exitCode = await host.spawn(arrayBuffer(bash), ["bash", "-c", script], {
         env: ["PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/maker", "TERM=xterm", "TMPDIR=/tmp"],
         cwd: "/home/maker",
@@ -169,6 +178,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.selection.includes("flang-browser-bundle")) {
         expect(stdout).toMatch(/^fortran-spike-ok 42$/m);
         expect(lazy.some((event) => event.includes("flang.zip"))).toBe(true);
+      }
+      if (manifest!.packages.includes("shared-desktop-programs")) {
+        expect(stdout).toContain("sdk-path-ok");
+        expect(await host.getMemoryGroupUsage()).not.toBeNull();
       }
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);

@@ -1,6 +1,6 @@
 import { test } from "./support/persistent-page";
 import { CageSession } from "./support/trusted-cage";
-import type { Page, TestInfo } from "../playwright-test";
+import { expect, type Page, type TestInfo } from "../playwright-test";
 
 // Explicit opt-in config only; ordinary browser discovery excludes *.check.ts.
 async function check(page: Page, info: TestInfo, run: (session: CageSession) => Promise<void>) {
@@ -23,7 +23,13 @@ async function check(page: Page, info: TestInfo, run: (session: CageSession) => 
 }
 
 test("trusted Cage accepts physical Foot input and retires its graphical processes", async ({ page }, info) => {
-  await check(page, info, session => session.typeProofAndExitFoot());
+  await check(page, info, async session => {
+    await session.typeProofAndExitFoot();
+    const names = session.preparedProgramRequests.map(url => new URL(url).pathname.split("/").at(-1));
+    expect(names).toContain("bash.zip"); expect(names).toContain("cage.zip"); expect(names).toContain("foot.zip");
+    expect(names).not.toContain("freeciv-client.zip"); expect(names).not.toContain("freeciv-server.zip");
+    expect(names).not.toContain("scummvm-static.zip");
+  });
 });
 
 test("trusted Cage runs a packaged Freeciv local game after quit and relaunch", async ({ page }, info) => {

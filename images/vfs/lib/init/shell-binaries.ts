@@ -455,6 +455,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "game-play", dependency: "game-import", resolverPath: "programs/game-import/game-play", vfsPath: "/usr/bin/game-play", symlinks: [], mode: 0o755 },
   { id: "game-import", dependency: "game-import", resolverPath: "programs/game-import/game-import", vfsPath: "/usr/libexec/kandelo/game-import", symlinks: [], mode: 0o755 },
   { id: "game-import-py", dependency: "game-import", resolverPath: "programs/game-import/game-import.py", vfsPath: "/usr/libexec/kandelo/game-import.py", symlinks: [], mode: 0o644 },
+  { id: "shared-desktop-manifest", dependency: "shared-desktop-programs", resolverPath: "programs/shared-desktop-programs/programs.json", vfsPath: "/usr/share/kandelo/shared-desktop/programs.json", symlinks: [] },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/bin/scummvm is the
   // image's launch wrapper, which execs this engine.
@@ -494,6 +495,14 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/share/scummvm/fonts.dat", symlinks: [],
     mode: 0o644,
   },
+  // Explicit static variant; separate paths let both package forms coexist.
+  { id: "scummvm-static", resolverPath: "programs/scummvm-static/scummvm-static.wasm", vfsPath: "/usr/libexec/scummvm-static", symlinks: [] },
+  ...["scummremastered.zip", "scummmodern.zip", "scummclassic.zip", "gui-icons.dat", "fonts.dat"].map(file => ({
+    id: `scummvm-static-data-${file}`, dependency: "scummvm-static",
+    resolverPath: `programs/scummvm-static/share/scummvm-static/${file}`,
+    vfsPath: `/usr/share/scummvm-static/${file}`, symlinks: [],
+  })),
+
   // ScummVM's engine plugins (the package's lib/scummvm runtime files).
   // ScummVM dlopen()s only the engine a game needs, so each is its own lazy
   // file: a machine downloads the engines of the games it plays.
