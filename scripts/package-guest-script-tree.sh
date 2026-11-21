@@ -49,8 +49,14 @@ kandelo_package_guest_script_tree() {
     echo "==> Configuring $pkg for /usr ($configure)..."
     (cd "$src" && $configure --prefix=/usr "$@") | tail -20
     echo "==> Building $pkg..."
-    make -C "$src" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" | tail -20
-    make -C "$src" install DESTDIR="$stage" | tail -5
+    # A patch to an Autoconf/Automake input (libtool's m4/libtool.m4) makes
+    # make regenerate aclocal.m4, configure and Makefile.in. The release's
+    # Makefiles name the exact Automake that generated them (aclocal-1.18),
+    # which need not be the dev shell's, so regenerate with the dev shell's
+    # declared aclocal and automake instead.
+    local -a regen=(ACLOCAL=aclocal AUTOMAKE=automake)
+    make -C "$src" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" "${regen[@]}" | tail -20
+    make -C "$src" install DESTDIR="$stage" "${regen[@]}" | tail -5
 
     [ -d "$stage/usr" ] || { echo "ERROR: $pkg installed nothing under /usr" >&2; return 1; }
     rm -rf "$stage/usr/share/man" "$stage/usr/share/info" "$stage/usr/share/emacs"
