@@ -11,6 +11,13 @@
 # parity. The software adaptation rasterises on the CPU into the same
 # wl_shm pools qtgallery paints through, on both hosts. qml-network is off
 # because qtbase carries no QtNetwork.
+#
+# A program that links Qt6Qml must declare the mprotect fiction with
+# prot_none = "accept-unenforced" (see quickshell): V4's
+# OSAllocator::decommit makes released JS heap pages PROT_NONE and calls
+# CRASH() when the truthful -lkandelo-mprotect refuses. Qt6Qml's link
+# interface carries that library, so such a program links without the
+# declaration and crashes at its first heap decommit instead.
 kind = "library"
 
 name = "qtdeclarative"

@@ -21,6 +21,11 @@
 #
 # Plugins precede the modules they extend, and every library follows its
 # users: a static link resolves in one pass.
+#
+# -lkandelo-mprotect follows Qt6Core, which calls mprotect(PROT_READ |
+# PROT_WRITE) and lists the library in its CMake link interface and
+# libQt6Core.prl. A hand-written link names it like Qt6Core's other private
+# dependencies.
 
 set -euo pipefail
 
@@ -78,6 +83,7 @@ wasm32posix-c++ \
     "$QTBASE/lib/libQt6Gui.a" \
     "$QTBASE/lib/libQt6DBus.a" \
     "$QTBASE/lib/libQt6Core.a" \
+    -lkandelo-mprotect \
     "$QTBASE/lib/libQt6BundledPcre2.a" \
     "$LIBDBUS/lib/libdbus-1.a" \
     "$FONTCONFIG/lib/libfontconfig.a" \

@@ -740,6 +740,7 @@ packages/registry/ffmpeg/test/ffmpeg-process-runtime.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-tier1.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-tier2-bbb.test.ts	prepared-product
 packages/registry/ffmpeg/test/fixtures-manifest.test.ts	source-only
+packages/registry/file/test/magic-database.test.ts	prepared-product
 packages/registry/freeciv/test/runtime.test.ts	prepared-product
 packages/registry/git/test/git.test.ts	prepared-product
 packages/registry/grep/test/grep.test.ts	prepared-product
