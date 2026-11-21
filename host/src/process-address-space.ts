@@ -1,5 +1,5 @@
 import * as G from './generated/program-extensions';
-import { publishMemoryGroupNotification } from './memory-group-notification';
+import { publishMemoryGroupNotification, tryPublishMemoryGroupNotification } from './memory-group-notification';
 
 const PAGE = G.MEMORY_GROUP_PAGE_BYTES;
 const READ = 1, WRITE = 2;
@@ -310,7 +310,24 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
     checkNotifyCount(count);
     return Atomics.notify(this.atomicWord(address, READ).word, 0, count);
   }
+  /** An opaque, image-pinned observation of this group's metadata mutex.
+   * Retirement wakes/joins the actual engine wait before releasing its pin. */
+  prepareNotificationQueueObservation(): NativeI32Observation {
+    const { binding } = this.current(), address = G.MEMORY_GROUP_WAIT_HEADER;
+    if (!binding.retainNativeObservation) throw new ProcessAddressFault('metadata');
+    const release = binding.retainNativeObservation(address);
+    try { return new NativeI32Observation(new Int32Array(binding.memory.buffer, address, 1), release); }
+    catch (cause) { release(); throw cause; }
+  }
   publishBytes(address: number, source: Uint8Array, signalAddress: number, signalValue: number, count: number): number {
+    return this.publishRange(address, source, signalAddress, signalValue, count, false);
+  }
+  tryPublishBytes(address: number, source: Uint8Array, signalAddress: number, signalValue: number, count: number): number | 'busy' {
+    return this.publishRange(address, source, signalAddress, signalValue, count, true);
+  }
+  private publishRange(address: number, source: Uint8Array, signalAddress: number, signalValue: number, count: number, nonblocking: false): number;
+  private publishRange(address: number, source: Uint8Array, signalAddress: number, signalValue: number, count: number, nonblocking: true): number | 'busy';
+  private publishRange(address: number, source: Uint8Array, signalAddress: number, signalValue: number, count: number, nonblocking: boolean): number | 'busy' {
     const { binding, spans } = this.plan(address, source.byteLength, WRITE);
     const { physical, word } = this.atomicWord(signalAddress, WRITE);
     checkNotifyCount(count);
@@ -324,9 +341,11 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
       offset += destination.length;
       return source;
     });
-    return publishMemoryGroupNotification(binding.memory, physical, count, () => {
+    const publish = () => {
       for (let index = 0; index < destinations.length; index++) destinations[index].set(sources[index]);
       Atomics.store(word, 0, signalValue);
-    });
+    };
+    return nonblocking ? tryPublishMemoryGroupNotification(binding.memory, physical, count, publish)
+      : publishMemoryGroupNotification(binding.memory, physical, count, publish);
   }
 }

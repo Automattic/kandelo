@@ -1988,6 +1988,9 @@ interface PreparedChannelCompletion {
   materialized: boolean;
   /** Normal completions relisten themselves; raw callers opt in explicitly. */
   relistenRequested: boolean;
+  /** Rust already exited; only the exact old transport may unwind, without
+   * dispatching another syscall or granting any storage-retirement proof. */
+  exitHandshake?: boolean;
   /**
    * Exact clone state needed only if a stopped process's deferred Worker
    * constructor fails before this parked success can be published.
@@ -3471,7 +3474,7 @@ export class CentralizedKernelWorker {
    * first Worker launch must pass through resume preflight before executing.
    */
   private pendingResumePids = new Set<number>();
-  /** Completed syscalls whose result publication is withheld until SIGCONT. */
+  /** Materialized completions held for SIGCONT or a contended group queue. */
   private parkedChannelCompletions = new Map<
     ChannelInfo,
     ParkedChannelCompletion
@@ -14515,7 +14518,7 @@ export class CentralizedKernelWorker {
     view.setUint32(CH_SIG_HANDLER, 0, true);
     view.setUint32(CH_SIG_SI_CODE, EXIT_RETIRE_SIGNAL_CODE, true);
     // No Rust entry or syscall marshalling belongs to an exited Process.
-    this.completeChannelRaw(channel, -1, EINTR_ERRNO, entry);
+    this.completeChannelRaw(channel, -1, EINTR_ERRNO, entry, false, false, true);
     // JS-side deferred-signal imports can make one more request before the
     // glue observes SIGKILL. Keep serving only this exact retired transport.
     if (entry) {
@@ -14550,7 +14553,7 @@ export class CentralizedKernelWorker {
     // outlive it. Retire this exact host match before the terminal handshake;
     // its result must never be overwritten or re-armed by that old park.
     channel.kernelWaitGeneration = undefined;
-    this.completeChannelRaw(channel, 0, 0, entry);
+    this.completeChannelRaw(channel, 0, 0, entry, false, false, true);
     if (syscallNr === SYS_EXIT_GROUP) {
       // musl follows a returning EXIT_GROUP with the non-returning SYS_EXIT
       // import. Re-arm once so worker-main can complete that request and trap
@@ -17205,19 +17208,24 @@ export class CentralizedKernelWorker {
       );
     }
 
-    channel.handling = false;
     if (channel.source instanceof GroupProcessAddressSpace) {
       const bytes = new Uint8Array(CH_ERRNO + 4 - CH_RETURN);
       const result = new DataView(bytes.buffer);
       result.setBigInt64(0, KernelEntryIntrinsicBigInt(prepared.retVal), true);
       result.setUint32(CH_ERRNO - CH_RETURN, prepared.errVal, true);
-      this.resumePreparedSignals?.delete(channel);
       this.#noteGuestMayRun(channel.source);
-      channel.source.publishBytes(channel.channelOffset + CH_RETURN, bytes,
+      const published = channel.source.tryPublishBytes(channel.channelOffset + CH_RETURN, bytes,
         channel.channelOffset + CH_STATUS, CH_COMPLETE, 1);
+      if (published === 'busy') {
+        this.deferGroupedChannelCompletion(channel, prepared);
+        return;
+      }
+      this.resumePreparedSignals?.delete(channel);
+      channel.handling = false;
       if (prepared.relistenRequested && this.isRegisteredChannel(channel)) this.relistenChannel(channel);
       return;
     }
+    channel.handling = false;
     const buffer = kernelEntryMemoryBuffer(channel.source);
     const processView = new KernelEntryIntrinsicDataView(
       buffer,
@@ -17255,6 +17263,81 @@ export class CentralizedKernelWorker {
     );
     if (prepared.relistenRequested && this.isRegisteredChannel(channel)) {
       this.relistenChannel(channel);
+    }
+  }
+
+  /** Retain one already-materialized result while Q belongs to a participant.
+   * No kernel scratch survives this boundary. The exact native observation is
+   * charged to the image/channel until its engine promise really settles. */
+  private deferGroupedChannelCompletion(channel: ChannelInfo, prepared: PreparedChannelCompletion): void {
+    if (!(channel.source instanceof GroupProcessAddressSpace)) throw new MemoryGroupProtocolFault('Grouped publication source changed');
+    const parkedCompletions = this.parkedChannelCompletions;
+    const existing = parkedCompletions.get(channel);
+    if (existing) {
+      if (existing.prepared !== prepared) throw new MemoryGroupProtocolFault('Conflicting queued channel completion');
+      existing.relistenRequested ||= prepared.relistenRequested;
+      return;
+    }
+    const parked: ParkedChannelCompletion = { prepared, relistenRequested: prepared.relistenRequested };
+    parkedCompletions.set(channel, parked);
+    channel.handling = true;
+    const observation = channel.source.prepareNotificationQueueObservation();
+    const observations = this.pendingChannelNativeObservations.get(channel) ?? new Set<NativeI32Observation>();
+    this.pendingChannelNativeObservations.set(channel, observations); observations.add(observation);
+    this.beginChannelListenerWait(channel);
+    let waitResult;
+    try {
+      // This is an internal progress wait, not a guest timeout or retirement
+      // proof. A finite engine wait handles a missed/competing Q notification.
+      waitResult = observation.arm(1, 10);
+    } catch (cause) {
+      this.#failKernelInstance(kernelEntryEffectFailure(`completion queue observer pid=${channel.pid} failed`, cause));
+      return;
+    }
+    let retiredWhenSettled = false;
+    const settle = () => {
+      if (!observation.settled) throw new MemoryGroupProtocolFault('Completion queue wait has not actually settled');
+      observations.delete(observation);
+      if (!observations.size) this.pendingChannelNativeObservations.delete(channel);
+      const finalListener = this.finishChannelListenerWait(channel);
+      retiredWhenSettled = this.retiredChannelListeners.has(channel);
+      if (retiredWhenSettled) {
+        if (parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
+        if (finalListener) this.acknowledgeRetiredChannelListener(channel);
+      }
+    };
+    const retry = () => {
+      if (retiredWhenSettled || parkedCompletions.get(channel) !== parked) return;
+      this.#runOrDeferKernelEntry(`completion queue publication pid=${channel.pid}`, entry => {
+        if (parkedCompletions.get(channel) !== parked) return undefined;
+        // A dead Process can retain its exact host registration during orderly
+        // teardown. A settled Q wait grants no authority to wake that image.
+        if (this.#kernelFatalError !== null || !this.isRegisteredChannel(channel)
+            || (!prepared.exitHandshake
+              && (!this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
+                || !this.#isProcessExecutionActiveWithinKernelEntry(channel.pid, entry)))) {
+          if (parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
+          return undefined;
+        }
+        entry.deferProtocolEffect(() => {
+          if (parkedCompletions.get(channel) !== parked) return;
+          parkedCompletions.delete(channel);
+          if (!this.isRegisteredChannel(channel) || this.#kernelFatalError !== null) return;
+          prepared.relistenRequested ||= parked.relistenRequested;
+          // STOP may have arrived while Q was busy. Keep the materialized
+          // result parked until normal SIGCONT preflight permits publication.
+          this.publishOrParkChannelCompletion(channel, prepared);
+        });
+        return undefined;
+      }, parked);
+    };
+    if (waitResult.async) {
+      this.#continueWaitAsyncListenerRoot(waitResult.value,
+        `completion queue continuation pid=${channel.pid}`, retry, settle);
+    } else {
+      settle();
+      // Q changed before the engine wait armed. Yield instead of recursing.
+      this.#scheduleImmediateListenerRoot(`completion queue retry pid=${channel.pid}`, retry);
     }
   }
 
@@ -17854,9 +17937,10 @@ export class CentralizedKernelWorker {
             const woken =
               this.#killAllBlockedForTeardownWithinKernelEntry(entry, terminal);
             entry.deferProtocolEffect(() => {
-              // WHY: destroy must not start its bounded drain until all
-              // channel publications registered by this teardown scope have
-              // completed. Promise resolution itself retains no entry token.
+              // WHY: register every wake before destroy starts its bounded
+              // drain. A busy grouped queue can still retain a completion;
+              // only the actual Worker/wait fences prove retirement.
+              // Promise resolution itself retains no entry token.
               resolve(woken);
               return undefined;
             });
@@ -18419,6 +18503,7 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
     relistenRequested = false,
     refreshImportedBos = false,
+    exitHandshake = false,
   ): void {
     this.#releaseBlockingRetrySnapshot(channel, entry);
     this.#finishChannelRequest(channel);
@@ -18436,6 +18521,7 @@ export class CentralizedKernelWorker {
       errVal,
       materialized: false,
       relistenRequested,
+      exitHandshake,
     };
     this.materializePreparedChannelCompletion(channel, prepared, entry);
     // Kernel-decided waits already copied their outputs. Finish shared-map

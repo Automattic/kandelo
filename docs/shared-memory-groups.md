@@ -579,6 +579,19 @@ receiving storage. Byte access, continuation metadata and channel publication
 use virtual addresses explicitly; native execution retains its native path.
 Image-access revocation neither stops replicas nor releases their physical
 pages. Exact native observer pins survive revocation until engine settlement.
+Grouped syscall completion tries the ordered notification queue without
+blocking the kernel Worker on a participant's queue mutex. When that queue is
+busy, the host retains the already materialized result and observes the exact
+physical queue word asynchronously. A bounded internal wait permits retry if
+an unlock notification is missed; it changes no guest timeout and proves no
+retirement. Retry checks the exact channel and live kernel Process in a fresh
+kernel entry, then publishes after that entry releases its authority. STOP
+keeps the result parked for normal SIGCONT preflight. Teardown retains the
+observer pin until the actual engine wait settles; a requested wake alone
+never authorizes reuse.
+An already exited Process may still finish its exact EXIT or terminal-marker
+transport handshake. That narrow completion never redispatches into the dead
+Process and remains distinct from an ordinary late result, which is discarded.
 
 The mapping coordinator's internal image barrier freezes replica membership
 and requests a distinct epoch from every live execution replica. A partial

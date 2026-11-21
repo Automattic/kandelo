@@ -260,6 +260,26 @@ export function publishMemoryGroupNotification(
   count: number,
   publish: () => void,
 ): number {
+  return publishNotification(memory, address, count, publish, false);
+}
+
+/** Kernel ingress must remain available while a participant holds Q. A busy
+ * attempt performs no stores or notifications; the owner retains publication. */
+export function tryPublishMemoryGroupNotification(
+  memory: WebAssembly.Memory,
+  address: number,
+  count: number,
+  publish: () => void,
+): number | 'busy' {
+  return publishNotification(memory, address, count, publish, true);
+}
+
+function publishNotification(memory: WebAssembly.Memory, address: number, count: number,
+  publish: () => void, nonblocking: false): number;
+function publishNotification(memory: WebAssembly.Memory, address: number, count: number,
+  publish: () => void, nonblocking: true): number | 'busy';
+function publishNotification(memory: WebAssembly.Memory, address: number, count: number,
+  publish: () => void, nonblocking: boolean): number | 'busy' {
   if (!Number.isSafeInteger(address) || address < 0 || address % 4
       || address + 4 > memory.buffer.byteLength
       || !Number.isSafeInteger(count) || count < 0 || count > 0xffffffff) {
@@ -268,7 +288,11 @@ export function publishMemoryGroupNotification(
   const words = new Int32Array(memory.buffer);
   // [RUNTIME-WORKAROUND: JSC-GROUP-MUTEX-STORE-STALL] Select the prepared call before Q.
   const unlock = queueUnlocks.get(memory);
-  while (Atomics.compareExchange(words, Q, 0, 1) !== 0) Atomics.wait(words, Q, 1);
+  if (nonblocking) {
+    if (Atomics.compareExchange(words, Q, 0, 1) !== 0) return 'busy';
+  } else {
+    while (Atomics.compareExchange(words, Q, 0, 1) !== 0) Atomics.wait(words, Q, 1);
+  }
   let woken = 0;
   try {
     // Validate the entire linked list before any publication, including nodes

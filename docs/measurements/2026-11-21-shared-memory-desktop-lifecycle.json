@@ -373,5 +373,83 @@
     "rawReportSha256": "267d6e0e559e55b70ec3f45b0f5d37c7db1347cd9b42f9006ac69b7c4553a0b1",
     "trackedPatchSha256": "3877f8e46187240647c993d8770123da03ba72519e3401b24c4c76a192d9c76a",
     "scope": "Test and evidence changes only. No new runtime/ABI/SDK/package behavior; earlier runtime gates retain their recorded scopes. Not1200cycle WebKit or quiet resource acceptance."
+  },
+  "kernelQueuePublication": {
+    "recordedAt": "2026-11-21T18:38:26.129388+00:00",
+    "baselineRuntime": "c85334be07250433dfa26f40c4aa3fe1685605d3",
+    "baselineFrontend": "e296c91dd1a1e5d05372d9a804c20f1641e8c8ac",
+    "scope": "Host-only nonblocking grouped syscall-completion publication. Compatible normal SDK/image reused for isolated Vite desktop checks. Original failures remain retained. This is not fresh production packaging, full browser-memory, conformance or performance acceptance.",
+    "observation": {
+      "completedCyclesBeforeFailure": 137,
+      "maximumKernelHeartbeatGapMs": 6505.98000000004,
+      "profileChunk": 27,
+      "profileGzipSha256": "e60c5d66158128932b4a68203416677da3f8009daa010b23a591913ab39c9b21",
+      "samples": 5394,
+      "zeroTimestampSamples": 4618,
+      "nativeWaitSamples": 3895,
+      "uniqueNativeWaitStacks": 1,
+      "stack": [
+        "Atomics.wait",
+        "publishMemoryGroupNotification queue acquisition",
+        "GroupProcessAddressSpace.publishBytes",
+        "publishPreparedChannelCompletion"
+      ],
+      "clockLimit": "Most timestamps, including marker frames, are zero. Numerical profiler-to-worker phase mapping is invalid; the chunk wall interval only coarsely overlaps the heartbeat gap. Parked samples do not measure CPU utilization or durations.",
+      "causeLimit": "Shows a Kandelo synchronous blocking path. Does not establish an engine defect or explain every retained WebKit input/startup failure."
+    },
+    "change": "Try the ordered notification queue without blocking the kernel; retain materialized output, observe the exact physical queue word asynchronously, recheck exact channel/process liveness in a fresh entry and publish after scope revocation. Preserve STOP/SIGCONT, exact observer settlement and the narrow transport exit handshake.",
+    "controlledRegression": {
+      "originalBlockingPublication": "Two cases fail before nonblocking publication; another ordinary channel must complete while Q is held.",
+      "firstAsyncCandidateExitHandshake": "Three cases fail before explicitly retaining EXIT/EXIT_GROUP/terminal-marker handshakes after Rust exit; ordinary late results remain suppressed.",
+      "focusedNode": {
+        "passed": 41,
+        "skipped": 0
+      },
+      "focusedActualBun": {
+        "version": "1.3.3",
+        "passed": 41,
+        "skipped": 0,
+        "workerRuntimeReceiptSha256": "addad55871a946b6688103ec764f1dbf0dd344447bc14f42e286f9b91812a850"
+      },
+      "hostSourceMemory": {
+        "files": 60,
+        "passed": 1586,
+        "failed": 0,
+        "skipped": 0,
+        "reportSha256": "a42af60718730b170864bdaa2d39035265b469158319d779e64e3ac222addfed"
+      },
+      "types": "Host strict types, host build and strict selected test types pass. One erased fixture-interface property was corrected after the full source run; runtime and test bodies were unchanged."
+    },
+    "maintainedDesktop": {
+      "stats": {
+        "startTime": "2026-11-21T18:34:29.593Z",
+        "duration": 164095.32200000001,
+        "expected": 6,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "projects": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "checks": [
+        "Twelve terminals, closing and reopening capacity",
+        "3072x1728 workspace/tiling cycles, whole-file physical input and real Sway exit"
+      ],
+      "candidatePatchSha256": "521f8b9311ce6c563f6bbc5a4d5a3453b1b71afaa452f47cb0aa59e00d8137cf",
+      "reportSha256": "2bc4be01ee854797ce40b6e9fa42b1315f34be2d371df2c6850e89c4d5c6608e"
+    },
+    "pending": [
+      "600-cycle WebKit physical-input/lifecycle screen is running; no outcome yet.",
+      "Normal production/full browser-memory and required ABI/conformance checks on the integrated candidate.",
+      "Quiet matched resource/latency measurements, all destination benchmark suites and material-cost decision."
+    ],
+    "limits": [
+      "Runs overlap builds and do not establish quiet performance or net memory savings.",
+      "No SDK/program ABI or memory limits changed.",
+      "Native Safari untested."
+    ]
   }
 }

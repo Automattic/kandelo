@@ -85,6 +85,55 @@ describe('explicit process address spaces', () => {
 });
 
 describe('explicit process atomic publication', () => {
+  it('refuses a busy publication without changing payload, status or ordered waiters', () => {
+    const { memory, access, words, pte } = fixture();
+    const q = G.MEMORY_GROUP_WAIT_HEADER / 4, node = G.MEMORY_GROUP_WAIT_NODES;
+    words[q + 1] = node; words[q + 2] = node; words[q + 4] = 1;
+    words[node / 4] = 1; words[node / 4 + 2] = 4 * PAGE + 20;
+    access.fillBytes(PAGE - 2, 4, 0xa5);
+    const before = new Uint8Array(memory.buffer).slice();
+    const wait = vi.spyOn(Atomics, 'wait').mockImplementation(() => { throw Error('Busy publication must yield'); });
+    Atomics.store(words,q,1); before[q * 4] = 1;
+    try {
+      expect(access.tryPublishBytes(PAGE - 2, Uint8Array.of(1,2,3,4),20,2,1)).toBe('busy');
+      expect(new Uint8Array(memory.buffer).every((value,index)=>value===before[index])).toBe(true);
+      words[pte + 1] = 6 * PAGE | 1;
+      expect(() => access.tryPublishBytes(PAGE - 2, new Uint8Array(4),20,2,1)).toThrow(ProcessAddressFault);
+      expect([...access.readBytes(PAGE - 2,4)]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+      words[pte + 1] = 6 * PAGE | 3;
+      Atomics.store(words,q,0);
+      expect(access.tryPublishBytes(PAGE - 2,Uint8Array.of(1,2,3,4),20,2,1)).toBe(1);
+      expect([...access.readBytes(PAGE - 2,4)]).toEqual([1,2,3,4]);
+      expect(access.atomicLoadI32(20)).toBe(2);
+      expect(words[node / 4]).toBe(G.MEMORY_GROUP_WAIT_NOTIFIED);
+      expect(words[q + 1]).toBe(0); expect(words[q + 2]).toBe(0);
+      expect(words[q + 4]).toBe(1);
+      expect(wait).not.toHaveBeenCalled();
+    } finally { Atomics.store(words,q,0); wait.mockRestore(); }
+  });
+
+  it('pins the physical queue observation through revocation and actual settlement', async () => {
+    const { memory, root } = fixture(), release = vi.fn();
+    const pin = vi.fn(() => release);
+    let live = true;
+    const access = new GroupProcessAddressSpace({memory,root,maximumPages:32,
+      assertLive:()=>{if(!live)throw new ProcessAddressFault('retired');},retainNativeObservation:pin});
+    const q = G.MEMORY_GROUP_WAIT_HEADER / 4, words = new Int32Array(memory.buffer);
+    Atomics.store(words,q,1);
+    const observer=access.prepareNotificationQueueObservation();
+    expect(pin).toHaveBeenCalledExactlyOnceWith(G.MEMORY_GROUP_WAIT_HEADER);
+    const armed=observer.arm(1,1000);
+    expect(armed.async).toBe(true);
+    live=false;
+    expect(()=>access.prepareNotificationQueueObservation()).toThrow(ProcessAddressFault);
+    observer.wake();
+    expect(observer.settled).toBe(false); expect(release).not.toHaveBeenCalled();
+    expect(await armed.value).toBe('ok');
+    expect(observer.settled).toBe(true); expect(release).toHaveBeenCalledOnce();
+    expect(Atomics.load(words,q)).toBe(1);
+    expect(()=>fixture().access.prepareNotificationQueueObservation()).toThrow(ProcessAddressFault);
+  });
+
   it('preserves unsigned 64-bit atomic values through mapped aliases and revokes handles', () => {
     const { access, words, pte } = fixture();
     const original = new ProcessAtomicU64(access, 24), alias = new ProcessAtomicU64(access, 2 * PAGE + 24);
