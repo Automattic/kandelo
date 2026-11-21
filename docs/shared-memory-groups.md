@@ -260,9 +260,9 @@ exit and CPU-renderer restart checks and rejects browser errors. It is separate
 from sustained lifecycle and resource acceptance.
 The same config checks twelve actual Foot processes and their shell children,
 physical Ctrl+D exit, replacement by a new terminal PID and guest-driven Sway
-exit. Its final zero-terminal cleanup oracle needs an initialized process
-snapshot before that cleanup claim can be restored; see the current measurement
-record. Twelve is a regression workload, not a capacity
+exit. The final zero-terminal check requires init PID 1 in the same process
+snapshot, so a transient loading table cannot satisfy cleanup. This bounded
+check passes on all three engines; see the current measurement record. Twelve is a regression workload, not a capacity
 promise or a configured maximum.
 
 Grouped child exit notification follows the same execution-stop boundary as
@@ -335,8 +335,23 @@ then translates only that executable through the formal SDK. Other assets
 remain lazy. The adjacent report binds the selected desktop, participants and
 output image; the embedder rejects a missing required participant or changed
 image. Cage/Foot physical typing, exact shell-PID file output and initialized
-process-table exit checks pass on Chromium, Firefox and WebKit. Freeciv game
-operation and Cage-versus-Sway resource/performance results remain unproven.
+process-table exit checks pass on Chromium, Firefox and WebKit. The maintained
+Cage check also exercises Freeciv's menu Quit, a new-PID relaunch, a real local
+server and rendered world, physical end-turn input, in-game Quit with both
+client and server retirement, then physical shell input and graphical exit.
+Run it against an image prepared with `--freeciv`:
+
+```sh
+KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6381/ \
+  apps/browser-demos/node_modules/.bin/playwright test \
+  --config apps/browser-demos/playwright.trusted-cage.config.ts
+```
+
+The check uses a fixed 1280×840 viewport and unit display scale, validates the
+rendered Foot prompt before typing and records phase/error evidence before
+bounded failure screenshots. Absolute pointer tests release pointer capture;
+this does not validate relative pointer input. Sustained game operation,
+whole-machine memory reclamation and Cage-versus-Sway performance remain unproven.
 This is an experimental partial-image path; canonical and full release gates
 remain required.
 

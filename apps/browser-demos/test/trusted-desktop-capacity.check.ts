@@ -47,8 +47,8 @@ test('trusted desktop keeps twelve terminals usable and reuses closed capacity',
         const feet = snapshot.filter(row => /^(?:\/\S*\/)?foot(?:\s|$)/.test(row.command));
         const shells = snapshot.filter(row => feet.some(foot => foot.pid === row.ppid)
           && /^(?:-?(?:\/\S*\/)?(?:bash|sh))(?:\s|$)/.test(row.command));
-        return { feet: feet.length, shells: shells.length };
-      }, { timeout: 90_000 }).toEqual({ feet: count, shells: count });
+        return { initialized: snapshot.some(row => row.pid === 1), feet: feet.length, shells: shells.length };
+      }, { timeout: 90_000 }).toEqual({ initialized: true, feet: count, shells: count });
       const pids = snapshot.filter(row => /^(?:\/\S*\/)?foot(?:\s|$)/.test(row.command)).map(row => row.pid);
       samples.push({ count, pids, processes: snapshot });
       if (count > 0) await surface(page, false);
