@@ -1,0 +1,27 @@
+# Upstream missing-include defect: memory.cpp uses std::nothrow without <new>
+#
+# MEM_Init allocates guest RAM with `new(std::nothrow) Bit8u[...]`.
+# std::nothrow is declared in <new>, but memory.cpp never includes it and
+# relied on another standard header pulling it in transitively. libc++ 23
+# removed that transitive include, so the build stopped with
+#
+#   src/hardware/memory.cpp:610:22: error: no member named 'nothrow' in
+#   namespace 'std'
+#
+# Include the header the code uses. This is a portability fix with
+# nothing specific to Kandelo or wasm; any C++ standard library that does
+# not leak <new> through <string.h> or the project headers hits it. This
+# is the only std::nothrow use in the 1.0-preview8 source tree.
+#
+# Upstream: dosbox-pure 1.0-preview8; main still lacks the include.
+# Upstream status: upstreamable, not yet proposed upstream.
+--- a/src/hardware/memory.cpp
++++ b/src/hardware/memory.cpp
+@@ -25,6 +25,7 @@
+ #include "regs.h"
+ 
+ #include <string.h>
++#include <new>
+ 
+ #define PAGES_IN_BLOCK	((1024*1024)/MEM_PAGE_SIZE)
+ #ifndef C_DBP_LIBRETRO

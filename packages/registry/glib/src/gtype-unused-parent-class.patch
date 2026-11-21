@@ -1,0 +1,49 @@
+# Upstream fix backport: mark the G_DEFINE_TYPE parent_class static unused
+#
+# G_DEFINE_TYPE and its relatives (through
+# _G_DEFINE_TYPE_EXTENDED_BEGIN_PRE in gtype.h) and
+# G_DEFINE_DYNAMIC_TYPE_EXTENDED (in gtypemodule.h) emit
+# `static gpointer type_name##_parent_class`, which the generated class
+# init assigns. A type that never chains up never reads it. Clang 23 added
+# -Wunused-but-set-global, which fires on that variable; consumers that
+# promote the unused-but-set group to an error, such as pango with
+# -Werror=unused-but-set-variable, stopped building:
+#
+#   pango-fontset.c:36:1: error: variable 'pango_fontset_parent_class' set
+#   but not used [-Werror,-Wunused-but-set-global]
+#
+# Consumers cannot fix this on their side because the variable comes from
+# GLib's installed headers. GLib annotates both statics G_GNUC_UNUSED, as
+# it already does for the adjacent get_instance_private helper. This
+# backports exactly those two one-line upstream changes to 2.84.4; there
+# is nothing Kandelo-specific in them.
+#
+# Upstream: glib 2.84.4. Fixed upstream by
+#   1567250294e9666747ee63f5c6364bbceadd300b (gtype.h; MR !5345, issue
+#   #4038; first released in GLib 2.90.0) and
+#   e1e24568cb56cd665b7f7fa175ac5b21d065a15b (gtypemodule.h; MR !5399;
+#   on main, not yet in a release tag).
+# Upstream status: merged upstream; drop when glib moves to a release
+# that contains both commits.
+--- a/gobject/gtype.h
++++ b/gobject/gtype.h
+@@ -2289,7 +2289,7 @@
+ static void     type_name##_init              (TypeName        *self); \
+ static void     type_name##_class_init        (TypeName##Class *klass); \
+ static GType    type_name##_get_type_once     (void); \
+-static gpointer type_name##_parent_class = NULL; \
++G_GNUC_UNUSED static gpointer type_name##_parent_class = NULL; \
+ static gint     TypeName##_private_offset; \
+ \
+ _G_DEFINE_TYPE_EXTENDED_CLASS_INIT(TypeName, type_name) \
+--- a/gobject/gtypemodule.h
++++ b/gobject/gtypemodule.h
+@@ -176,7 +176,7 @@
+ static void     type_name##_init              (TypeName        *self); \
+ static void     type_name##_class_init        (TypeName##Class *klass); \
+ static void     type_name##_class_finalize    (TypeName##Class *klass); \
+-static gpointer type_name##_parent_class = NULL; \
++G_GNUC_UNUSED static gpointer type_name##_parent_class = NULL; \
+ static GType    type_name##_type_id = 0; \
+ static gint     TypeName##_private_offset; \
+ \
