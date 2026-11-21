@@ -7,8 +7,8 @@ use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::flags::{
     DEFAULT_MAIN_THREAD_STACK_SIZE, MAX_EXECUTABLE_MEMORY_SIZE, MAX_RESPONSE_FILE_EXPANSIONS,
     ResponseFileContents, THREAD_SLOT_NONE, THREAD_SLOT_USE_HOST_DEFAULT, compile_flags,
-    compiles_cxx, filter_args, infer_thread_slot_declaration, link_flags, main_thread_stack_size,
-    needs_linking, parse_args, shared_link_flags, default_visibility_flags,
+    compiles_cxx, default_visibility_flags, filter_args, infer_thread_slot_declaration, link_flags,
+    main_thread_stack_size, needs_linking, parse_args, shared_link_flags,
 };
 use std::collections::HashMap;
 
@@ -341,7 +341,11 @@ fn only_executable_code_gets_default_visibility() {
     // Code that may become a side module keeps Clang's hidden default, so
     // wasm-ld does not turn its own inline and template definitions into
     // imports.
-    for pic in [&["-fPIC", "-c", "m.c"][..], &["-fpic", "-c", "m.c"], &["-shared", "m.c"]] {
+    for pic in [
+        &["-fPIC", "-c", "m.c"][..],
+        &["-fpic", "-c", "m.c"],
+        &["-shared", "m.c"],
+    ] {
         assert!(default_visibility_flags(&parse(pic)).is_empty(), "{pic:?}");
     }
     assert!(!shared_link_flags().iter().any(|f| f == "-Wl,-Bsymbolic"));

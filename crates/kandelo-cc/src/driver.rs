@@ -7,11 +7,10 @@ use crate::arch::{Language, WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
-    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, default_visibility_flags,
-    filter_args,
-    host_imports_allowance, infer_thread_slot_declaration, join, link_flags,
-    main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
-    shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
+    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags,
+    default_visibility_flags, filter_args, host_imports_allowance, infer_thread_slot_declaration,
+    join, link_flags, main_thread_stack_size, needs_linking, parse_args, read_text_file,
+    requests_cfi, shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
 use crate::toolchain::{Toolchain, read_abi_contract_digest, resolve_lld_major};
@@ -367,12 +366,17 @@ pub struct Glue {
     /// order: the syscall channel and compiler-rt builtins, and the C++
     /// runtime entry (`cxxrt_entry.cpp`) when the link includes libc++abi.
     pub leading: Vec<String>,
+    /// Linked lazily after the leading glue, ahead of crt1.o and the
+    /// caller's inputs: the dlopen loader (`dlopen.c`). A program gets it
+    /// when it calls dlopen, dlsym, dlclose or dlerror, with or without
+    /// -ldl, and gets none of it otherwise. It must come before the caller's
+    /// inputs: a caller's own `-lc` (librsvg's pkg-config file adds one)
+    /// would otherwise offer musl's static stubs first, and the linker
+    /// extracts the first lazy definition of a symbol it sees.
+    pub loader: Vec<String>,
     /// Linked lazily after the caller's inputs and the C++ libraries, ahead
-    /// of libc.a: a member is used only when the program needs what it
-    /// defines and nothing earlier defines it. These are the minimal C++
-    /// runtime fallback (`cxxrt.c`) and the dlopen loader (`dlopen.c`),
-    /// which a program gets when it calls dlopen, dlsym, dlclose or dlerror,
-    /// with or without -ldl, in place of the static stubs in musl's libc.a.
+    /// of libc.a: the minimal C++ runtime fallback (`cxxrt.c`), used only
+    /// for what libc++ and libc++abi did not define.
     pub fallback: Vec<String>,
 }
 
@@ -388,7 +392,8 @@ pub fn glue_sources(toolchain: &Toolchain, cxx_runtime: bool) -> Glue {
     let path = |name: &&str| join(&toolchain.glue_dir, name);
     Glue {
         leading: leading.iter().map(path).collect(),
-        fallback: ["cxxrt.c", "dlopen.c"].iter().map(path).collect(),
+        loader: ["dlopen.c"].iter().map(path).collect(),
+        fallback: ["cxxrt.c"].iter().map(path).collect(),
     }
 }
 
@@ -658,6 +663,13 @@ fn build_clang_args_internal(
                 None => glue_sources(toolchain, links_cxx_runtime(language, &filtered)),
             };
             args.extend(glue.leading);
+            // The dlopen loader is lazy like libc's own members, and ahead
+            // of everything that could name libc.a (see Glue::loader).
+            if !glue.loader.is_empty() {
+                args.push("-Wl,--start-lib".into());
+                args.extend(glue.loader);
+                args.push("-Wl,--end-lib".into());
+            }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
             args.extend(parsed.forwarded_args.iter().cloned());
@@ -673,9 +685,6 @@ fn build_clang_args_internal(
             // supplies only what they did not: libc++'s operator new, which
             // throws std::bad_alloc, is weak like the fallback's, so a
             // fallback object linked earlier would win and abort instead.
-            // The dlopen loader is lazy like libc's own members: a program
-            // that never calls dlopen gets none of it, and one that does
-            // gets it ahead of libc.a's static stubs.
             if !glue.fallback.is_empty() {
                 args.push("-Wl,--start-lib".into());
                 args.extend(glue.fallback);
@@ -790,6 +799,7 @@ pub fn compile_executable_glue(
     let (cxx_sources, c_sources): (Vec<String>, Vec<String>) = sources
         .leading
         .iter()
+        .chain(&sources.loader)
         .chain(&sources.fallback)
         .cloned()
         .partition(|source| is_cxx_glue(source));
@@ -838,6 +848,7 @@ pub fn compile_executable_glue(
     };
     let objects = Glue {
         leading: sources.leading.iter().map(object).collect(),
+        loader: sources.loader.iter().map(object).collect(),
         fallback: sources.fallback.iter().map(object).collect(),
     };
     Ok(Some((objects, dir)))

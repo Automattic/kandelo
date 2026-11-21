@@ -571,9 +571,8 @@ pub fn link_flags(
 /// copies, as it always has. PIC code linked into an executable is
 /// therefore not exported unless it declares default visibility.
 pub fn default_visibility_flags(parsed: &ParsedArgs) -> Vec<String> {
-    let position_independent = parsed.pic
-        || parsed.shared
-        || parsed.forwarded_args.iter().any(|arg| arg == "-fpic");
+    let position_independent =
+        parsed.pic || parsed.shared || parsed.forwarded_args.iter().any(|arg| arg == "-fpic");
     if position_independent {
         Vec::new()
     } else {

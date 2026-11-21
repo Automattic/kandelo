@@ -90,6 +90,17 @@ describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin module
     expect(result.exitCode).toBe(0);
   });
 
+  // A link that names libc itself (librsvg's pkg-config file adds -lc) must
+  // still get the loader, not musl's "Dynamic loading not supported" stubs.
+  it("a program linked with its own -lc still gets the loader", { timeout: 60_000 }, async () => {
+    const withLibc = link("host-lc", hostSource, ["-rdynamic", "-lc"]);
+    expect(imports(withLibc)).toContain("env.__wasm_dlopen_prepare");
+    const result = await run(withLibc, plugin);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe(pluginOutput);
+    expect(result.exitCode).toBe(0);
+  });
+
   it("exports the program's symbols and the libc it links, but not the platform glue", { timeout: 60_000 }, () => {
     const names = exports(host);
     for (const name of ["host_callback", "host_scale", "printf", "dlopen", "dlsym"]) {
