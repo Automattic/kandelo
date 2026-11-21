@@ -5,6 +5,7 @@ import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine"
 import { setInternalsOpen } from "./support/dock";
 import { workspaceButtonPixels } from "./support/sway-workspace-pixels";
 import { typePhysicalText } from "./support/physical-typing";
+import { waitForSwayFootPrompt } from "./support/sway-foot-prompt";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
@@ -408,6 +409,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
       return still;
     }, { timeout: 60_000, intervals: [0] })
     .toBe(true);
+  await waitForSwayFootPrompt(page, canvas, 1);
   await typePhysicalText(page, "echo sway-gles2-ok\n", { delay: 40 });
   await expect
     .poll(async () => (await prompt()).equals(idle), { timeout: 60_000, intervals: [500, 1_000] })
@@ -435,6 +437,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await page.keyboard.press("Alt+Enter");
   await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),
     { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  await waitForSwayFootPrompt(page, canvas, 1);
   await typePhysicalText(page, "swaymsg -r -t get_workspaces > /tmp/sway-workspace-two\n", { delay: 40 });
   await workspaceEvidence(page, "sway-workspace-two", "2");
   await page.keyboard.press("Alt+Shift+Q");
@@ -484,9 +487,19 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await exitSway(page, out, "sway-pixman-exit");
   await openSurface(page, "Internals");
   await page.getByRole("tab", { name: "Procs", exact: true }).click();
-  await expect(page.locator(".ktable tbody tr > td:last-child").filter({
-    hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
-  })).toHaveCount(0, { timeout: 90_000 });
+  await expect.poll(async () => {
+    const rows = await page.locator(".ktable tbody tr").evaluateAll(elements => elements.flatMap(row => {
+      const cells = row.querySelectorAll("td");
+      return cells.length === 5 ? [{
+        pid: Number(cells[0].textContent?.match(/\d+/)?.[0]),
+        command: cells[4].textContent ?? "",
+      }] : [];
+    }));
+    // The process owner briefly renders Loading; only an initialized
+    // snapshot can prove every graphical process actually retired.
+    return { initialized: rows.some(row => row.pid === 1),
+      graphical: rows.filter(row => /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/.test(row.command)).length };
+  }, { timeout: 90_000 }).toEqual({ initialized: true, graphical: 0 });
   expect(await displayOwner(page)).toBe(0);
   expect(startupErrors).toEqual([]);
 });
