@@ -16,6 +16,7 @@ import {
   MemoryGroupProtocolFault, type MemoryGroupSnapshot, type MemoryGroupTaskReceipt,
 } from "./memory-group-protocol";
 import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
+import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
 import { MemoryGroupImageStore, type GroupImageLayout, type GroupReplicaLaunch,
   type PreparedGroupReplica, type GroupImageExecutionPause, type PreparedGroupMapping } from "./memory-group-image-store";
 import { MEMORY_GROUP_MAXIMUM_PAGES } from "./generated/program-extensions";
@@ -8242,8 +8243,7 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** Provision only the capacity Rust already reserved. Still no grouped
-   * executable launch is exposed through the ordinary Node/browser proxies. */
+  /** Provision only the capacity Rust already reserved. */
   createMemoryGroupBacking(group: number, initialPages = 1): number {
     if (!memoryGroupU32(group, initialPages) || initialPages < 1) return -EINVAL;
     let result = -ERRNO.EOPNOTSUPP;
@@ -8882,6 +8882,24 @@ export class CentralizedKernelWorker {
 
   inspectMemoryGroupBacking(group: number): ReturnType<MemoryGroupImageStore["snapshot"]> | undefined {
     return this.#memoryGroupStores.get(group)?.snapshot();
+  }
+
+  /** Copy both ledgers under one kernel entry. Inspection grants no authority
+   * to admit a participant or reuse pages and never constructs backing. */
+  inspectMemoryGroupUsage(group: number): MemoryGroupUsage | number {
+    if (!memoryGroupU32(group)) return -EINVAL;
+    let result: MemoryGroupUsage | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry('inspect memory-group usage', entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const admission = this.#inspectMemoryGroupWithinKernelEntry(group, entry);
+      if (typeof admission === 'number') { result = admission; return undefined; }
+      const backing = this.#memoryGroupStores.get(group)?.trySnapshot() ?? null;
+      // WHY: select public scalar fields before any RPC can reach a persistent
+      // browser realm. A future internal snapshot field must not export a view.
+      result = backing === 'busy' ? -EAGAIN : validateMemoryGroupUsage({ admission, backing })!;
+      return undefined;
+    });
+    return result;
   }
 
   #exactMemoryGroupReceiptWithinKernelEntry(receipt: MemoryGroupTaskReceipt,

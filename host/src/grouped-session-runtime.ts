@@ -2,6 +2,7 @@ import { CentralizedKernelWorker, type CentralizedKernelCallbacks } from './kern
 import { computeProcessMemoryLayout } from './process-memory';
 import { extractHeapBase } from './constants';
 import * as G from './generated/program-extensions';
+import { ERRNO } from './generated/abi';
 import { ThreadPageAllocator } from './thread-allocator';
 import { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
@@ -13,6 +14,7 @@ import { GroupedForkWorkerOwnership, launchGroupedForkWorker } from './grouped-f
 import { GroupedThreadWorkerOwnership, launchGroupedThreadWorker } from './grouped-thread-launch';
 import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, waitForGroupedWorkerReady } from './grouped-worker-initialization';
 import { retryKernelEntryResult as retry } from './kernel-entry-retry';
+import type { MemoryGroupUsage } from './memory-group-usage';
 import type { CentralizedWorkerInitMessage } from './worker-protocol';
 
 /** Explicit embedder-only opt-in. Compatible artifacts select the backend;
@@ -77,6 +79,17 @@ export class GroupedSessionRuntime {
 
   accepts(module: WebAssembly.Module): boolean {
     return WebAssembly.Module.customSections(module, G.MEMORY_GROUP_SECTION).length > 0;
+  }
+  async usage(): Promise<MemoryGroupUsage | null> {
+    // Do not turn a read into admission or a shared-memory reservation.
+    if (!this.group) return null;
+    const group = await this.group;
+    return retry(() => {
+      const result = this.kernel.inspectMemoryGroupUsage(group);
+      if (result === -ERRNO.EAGAIN) throw Error('inspect memory-group usage: allocator busy (EAGAIN); retry later');
+      if (typeof result === 'number') throw Error(`inspect memory-group usage: errno ${-result}`);
+      return result;
+    });
   }
   has(pid: number): boolean { return this.processes.has(pid); }
   private current(process: Process): boolean { return this.processes.get(process.pid) === process && !process.replacing && !process.retiring; }

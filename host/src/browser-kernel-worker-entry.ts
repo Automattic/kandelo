@@ -5017,6 +5017,13 @@ sw.onmessage = (e: MessageEvent) => {
       }
       break;
     }
+    case "get_memory_group_usage": {
+      void (groupedSession?.usage() ?? Promise.resolve(null)).then(
+        usage => respond(msg.requestId, usage),
+        error => respondError(msg.requestId, formatError(error)),
+      );
+      break;
+    }
     case "get_storage_metadata_memory_usage": {
       try {
         respond(msg.requestId, kernelWorker.rootfsTransportMetadataBudget().snapshot());

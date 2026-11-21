@@ -1,3 +1,4 @@
+import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
 import bitmapDisplayWorkerUrl from "./dri/kms-bitmap-display-worker.ts?worker&url";
 import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import { deliverProcessGenerationEvent, type ProcessGenerationEvent } from "./process-generation-observation";
@@ -1152,6 +1153,17 @@ export class BrowserKernel {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  /** Read independent admission/backing counters for this machine's opted-in
+   * group. Null means no group has been created; this never reserves memory.
+   * Physical extent is capacity, not resident memory or per-process usage.
+   * Rejects with EAGAIN if the guest allocator is busy; callers may retry. */
+  async getMemoryGroupUsage(): Promise<MemoryGroupUsage | null> {
+    const requestId = this.nextRequestId++;
+    return validateMemoryGroupUsage(await this.request(requestId, {
+      type: "get_memory_group_usage", requestId,
+    }));
   }
 
   async getStorageMetadataMemoryUsage(): Promise<StorageMemoryUsage> {

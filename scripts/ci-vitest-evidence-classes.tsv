@@ -336,6 +336,7 @@ host/test/memory-group-admission.test.ts	source-only
 host/test/memory-group-image-store.test.ts	source-only
 host/test/memory-group-import-guard.test.ts	source-only
 host/test/memory-group-pool.test.ts	source-only
+host/test/memory-group-usage.test.ts	source-only
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
 host/test/mkdir-existing-directory.test.ts	prepared-product

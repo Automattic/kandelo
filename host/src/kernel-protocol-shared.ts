@@ -50,6 +50,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read scalar group accounting without creating a group or exposing memory. */
+export interface GetMemoryGroupUsageRequestMessage {
+  type: "get_memory_group_usage";
+  requestId: number;
+}
+
 export interface GetStorageMetadataMemoryUsageRequestMessage {
   type: "get_storage_metadata_memory_usage";
   requestId: number;

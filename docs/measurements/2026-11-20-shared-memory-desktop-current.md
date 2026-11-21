@@ -38,10 +38,21 @@ resources. See [the option contract](../shared-memory-groups.md#desktop-first-op
 | Normal app: clock/input/workspaces/tiling, exit and CPU-renderer restart | Passed on Chromium, Firefox and WebKit |
 | Normal app: twelve actual Foots and shell children, physical close, new-PID reopen, guest Sway exit and cleanup | Passed on all three engines |
 | Public SDK: 26 simultaneously live children followed by 66 simultaneously live pthreads, 512 MiB backing | Passed on Node and all three browser engines |
-| Full Node SDK selection | 62 passed, no skips |
-| Public browser VFS launch/identity/refusal/DRM selection | 15 passed, no skips |
+| Full Node SDK selection, including copied usage inspection | 63 passed, no skips |
+| Public browser VFS launch/identity/refusal/DRM/inspection selection | 18 passed, no skips |
 | Browser SDK and exact retirement selection | 105 passed, no skips |
 | Host build/declarations, browser types and ABI check against develop | Passed |
+| Source memory/ownership selection plus inspection and entry-context audit | 1,601 passed across 61 files, no skips |
+
+The optional Node/browser `getMemoryGroupUsage()` diagnostic returns copied
+kernel admission and backing counters without creating a group or exposing
+guest memory. A real SDK-built C program maps the same two-page object twice;
+both hosts count two unique shared pages and observe complete task/image/object
+retirement. Known scalar fields are selected before leaving the kernel Worker
+and validated again at the SDK proxy. The contention regressions hold the real
+allocator lock, require an immediate `EAGAIN`, keep kernel admission readable
+and recover the same counters after unlock. No automatic polling is added.
+See [the diagnostic contract and units](../shared-memory-groups.md#desktop-first-opt-in).
 
 The live-child SDK probe first failed in both grouped Node launch modes at its
 128 MiB fixture budget with `ENOMEM`; ordinary execution passed. A controlled
@@ -56,17 +67,34 @@ The full ordinary Node Open POSIX run completed 174 passes, three expected
 failures and two standard skips, with no failures or timeouts. Libc completed
 305 passes, 17 expected failures, one listed flaky pass and a `raise-race`
 timeout at the unchanged 30-second limit; it is not a passing suite. Isolating
-that case timed out again. A pinned develop baseline is being prepared to
-classify it. The current normal-app lifecycle probe stopped after eleven
-completed iterations on an empty cached file preview; a fresh-read control is
-pending. The longer Firefox/WebKit input and IPC failures also remain open.
+that case timed out again. The fresh pinned develop baseline passes that same
+test and wrapper at the unchanged limit; its outer job fails only a status
+guard after the runner generates two untracked build files, with tracked
+sources unchanged. A fixed pairwise comparison is pending, so the candidate
+timeouts cannot be dismissed as pre-existing.
+
+An initial normal-app lifecycle probe stopped after eleven completed iterations
+on an empty cached file preview. A fresh-read control then passed 30 Firefox
+iterations; this does not establish the earlier failure's cause. The subsequent
+1,200-cycle-per-engine normal-app run fails Chromium after 1,108 completed
+cycles: one recorded DOM Alt+Enter sequence is followed by two new Foots and
+shells, leaving three where the exact process-table assertion requires two.
+The Enter down/up interval is about 1.25 ms with `repeat=false`; actual kernel
+delivery and compositor repeat timing remain unmeasured. Page errors and
+memory-boundary violations are empty. Firefox and WebKit remain in progress.
+The earlier Firefox/WebKit input and IPC failures also remain open.
 These short checks establish neither sustained reliability nor an OS memory,
 CPU or presentation-latency benefit. The full combined browser-memory gate,
 canonical build and matched resource measurements remain required.
 
 Raw sources, failed and passing reports, screenshots and provenance are retained
 under `.context/shared-desktop-followup-545/`; lifecycle probe 555 retains its
-separate job evidence. No runtime source was rewritten for these checks.
+separate job evidence. Inspection evidence is in
+`.context/shared-desktop-inspection-561/`; the new Chromium failure is retained
+in `.context/shared-desktop-input-572/`. No runtime source was rewritten for
+these checks. The full browser-memory gate was interrupted during a duplicate
+guest Clang build, before its runtime phases. It must run after the retained
+canonical producer publishes that artifact; it is not a passing memory gate.
 
 ## Bitmap handoff correction
 

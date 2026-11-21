@@ -21,6 +21,7 @@ const include = [
   "test/signal-accept-livelock.test.ts",
   "test/startup-metadata-capacity.test.ts",
   "test/memory-group-admission.test.ts",
+  "test/memory-group-usage.test.ts",
   "test/process-address-space.test.ts",
   "test/process-memory-views.test.ts",
   "test/process-memory-descriptor.test.ts",

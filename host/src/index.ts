@@ -1,3 +1,5 @@
+export type { MemoryGroupUsage, MemoryGroupBackingUsage } from './memory-group-usage';
+export type { MemoryGroupSnapshot } from './memory-group-protocol';
 export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";
 export { CentralizedKernelWorker } from "./kernel-worker";
