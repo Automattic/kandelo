@@ -202,6 +202,10 @@ impl<T> SharedBackingTable<T> {
         None
     }
 
+    pub(crate) fn mapping_pin_count(&self, idx: usize) -> Option<u32> {
+        self.entries.get(idx).and_then(Option::as_ref).map(|entry| entry.pins)
+    }
+
     /// Whether some OFD still owns the value, as opposed to only a mapping.
     pub fn is_owned(&self, idx: usize) -> bool {
         self.entries
@@ -230,6 +234,7 @@ impl<T> SharedBackingTable<T> {
 #[derive(Debug)]
 pub struct MemFdBacking {
     pub data: crate::IoBuffer<u8>,
+    group_storage: Option<MemFdGroupStorage>,
     pub offset: i64,
     /// Advanced by every mutation of `data` (write, pwrite, ftruncate, a
     /// shared-mapping writeback). The shared-mapping layer compares it to
@@ -237,12 +242,86 @@ pub struct MemFdBacking {
     pub content_gen: u64,
 }
 
+#[derive(Debug)]
+struct MemFdGroupStorage {
+    object: crate::memory::GroupSharedMapping,
+    length: usize,
+    committed: bool,
+}
+
 impl MemFdBacking {
     pub fn new() -> Self {
         Self {
             data: crate::IoBuffer::new(),
+            group_storage: None,
             offset: 0,
             content_gen: 0,
+        }
+    }
+
+    /// Once promoted, descriptor metadata and reads name the same object as
+    /// every VMA. The empty kernel byte buffer is no longer file contents.
+    pub fn len(&self) -> usize {
+        self.group_storage.as_ref().filter(|g| g.committed).map_or(self.data.len(), |g| g.length)
+    }
+
+    pub fn read_at(&self, offset: usize, output: &mut [u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+        let count = output.len().min(self.len().saturating_sub(offset));
+        if count == 0 { return Ok(0); }
+        if let Some(storage) = self.group_storage.as_ref().filter(|g| g.committed) {
+            let read = host.group_object_read(storage.object.group(), storage.object.id(), offset as u64, &mut output[..count])?;
+            return if read == count { Ok(read) } else { Err(Errno::EIO) };
+        }
+        output[..count].copy_from_slice(&self.data[offset..offset + count]);
+        Ok(count)
+    }
+
+    fn discard_abandoned_group_storage(&mut self) {
+        if self.group_storage.as_ref().is_some_and(|g| !g.committed && g.object.only_inode_hold()) {
+            self.group_storage = None;
+        }
+    }
+
+    pub(crate) fn prepare_group_storage(&mut self, group: u32, id: u64, mapped_len: usize, pins: u32)
+        -> Result<crate::memory::GroupSharedMapping, Errno> {
+        self.discard_abandoned_group_storage();
+        if let Some(storage) = &self.group_storage {
+            if storage.object.group() != group { return Err(Errno::EACCES); }
+            if !storage.committed { return Err(Errno::EBUSY); }
+            if mapped_len != storage.object.length() { return Err(Errno::EOPNOTSUPP); }
+            return Ok(storage.object.clone());
+        }
+        // The current capture owns one pin. A pre-existing ordinary/private
+        // mapping must not become disconnected when bytes move to the group.
+        if pins != 1 { return Err(Errno::EOPNOTSUPP); }
+        let rounded = self.data.len().checked_add(65535).ok_or(Errno::ENOMEM)? & !65535;
+        if rounded == 0 || rounded != mapped_len { return Err(Errno::EOPNOTSUPP); }
+        let object = crate::memory::GroupSharedMapping::new(group, id, rounded)?;
+        self.group_storage = Some(MemFdGroupStorage { object: object.clone(), length: self.data.len(), committed: false });
+        Ok(object)
+    }
+
+    pub(crate) fn group_storage_committed(&self) -> bool {
+        self.group_storage.as_ref().is_some_and(|g| g.committed)
+    }
+
+    pub(crate) fn group_storage_alive(&self, group: u32, id: u64) -> bool {
+        self.group_storage.as_ref().is_some_and(|g| g.object.group() == group && g.object.id() == id
+            && (g.committed || !g.object.only_inode_hold()))
+    }
+
+    pub(crate) fn commit_group_storage(&mut self, id: u64) -> Result<(), Errno> {
+        let storage = self.group_storage.as_mut().filter(|g| g.object.id() == id).ok_or(Errno::ESRCH)?;
+        if storage.committed { return Err(Errno::EALREADY); }
+        if self.data.len() != storage.length { return Err(Errno::EAGAIN); }
+        self.data = crate::IoBuffer::new();
+        storage.committed = true;
+        Ok(())
+    }
+
+    pub(crate) fn cancel_group_storage(&mut self, id: u64) {
+        if self.group_storage.as_ref().is_some_and(|g| g.object.id() == id && !g.committed) {
+            self.group_storage = None;
         }
     }
 
@@ -253,6 +332,8 @@ impl MemFdBacking {
 
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, Errno> {
         if bytes.is_empty() { return Ok(0); }
+        self.discard_abandoned_group_storage();
+        if self.group_storage.is_some() { return Err(Errno::EOPNOTSUPP); }
         let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;
         if end > self.data.len() {
             self.data.try_reserve(end - self.data.len())?;
@@ -264,6 +345,10 @@ impl MemFdBacking {
     }
 
     pub fn resize(&mut self, length: usize) -> Result<(), Errno> {
+        self.discard_abandoned_group_storage();
+        if let Some(storage) = &self.group_storage {
+            return if storage.committed && storage.length == length { Ok(()) } else { Err(Errno::EOPNOTSUPP) };
+        }
         if length > self.data.len() { self.data.try_reserve(length - self.data.len())?; }
         if length == 0 { self.data = crate::IoBuffer::new(); }
         else { self.data.resize(length, 0); }

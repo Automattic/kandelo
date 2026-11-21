@@ -104,6 +104,55 @@ pub fn identity_key(handle: i64) -> Option<String> {
     is_kernel_mapping_handle(handle).then(|| alloc::format!("kernel:{handle}"))
 }
 
+/// File types eligible for direct in-memory group storage. Persistent rootfs
+/// files retain their separate immutable-read lease policy.
+pub(crate) fn supports_group_storage(handle: i64) -> bool {
+    matches!(decode(handle), Ok(Object::Tmpfs(_) | Object::MemFd(_)))
+}
+
+pub(crate) fn prepare_group_storage(handle: i64, group: u32, id: u64, mapped_len: usize)
+    -> Result<crate::memory::GroupSharedMapping, Errno> {
+    match decode(handle)? {
+        Object::Tmpfs(handle) => crate::tmpfs::prepare_group_storage(handle, group, id, mapped_len),
+        Object::MemFd(index) => with_memfds(|table| {
+            let pins = table.mapping_pin_count(index).ok_or(Errno::EBADF)?;
+            table.get_mut(index).ok_or(Errno::EBADF)?.prepare_group_storage(group, id, mapped_len, pins)
+        }),
+        _ => Err(Errno::EOPNOTSUPP),
+    }
+}
+
+pub(crate) fn group_storage_committed(handle: i64) -> bool {
+    match decode(handle) {
+        Ok(Object::Tmpfs(handle)) => crate::tmpfs::group_storage_committed(handle),
+        Ok(Object::MemFd(index)) => with_memfds(|table| table.get(index).is_some_and(|backing| backing.group_storage_committed())),
+        _ => false,
+    }
+}
+
+pub fn group_storage_alive(group: u32, id: u64) -> bool {
+    crate::tmpfs::group_storage_alive(group, id)
+        || with_memfds(|table| table.iter_mut().any(|(_, backing)| backing.group_storage_alive(group, id)))
+}
+
+pub(crate) fn commit_group_storage(handle: i64, id: u64) -> Result<(), Errno> {
+    match decode(handle)? {
+        Object::Tmpfs(handle) => crate::tmpfs::commit_group_storage(handle, id),
+        Object::MemFd(index) => with_memfds(|table| table.get_mut(index).ok_or(Errno::EBADF)?.commit_group_storage(id)),
+        _ => Err(Errno::EOPNOTSUPP),
+    }
+}
+
+pub(crate) fn cancel_group_storage(handle: i64, id: u64) {
+    match decode(handle) {
+        Ok(Object::Tmpfs(handle)) => crate::tmpfs::cancel_group_storage(handle, id),
+        Ok(Object::MemFd(index)) => with_memfds(|table| {
+            if let Some(backing) = table.get_mut(index) { backing.cancel_group_storage(id); }
+        }),
+        _ => (),
+    }
+}
+
 /// Positional read.
 pub fn pread(
     handle: i64,
@@ -127,13 +176,7 @@ pub fn pread(
         Object::Tmpfs(h) => crate::tmpfs::read_with_host(h, offset, dst, host),
         Object::MemFd(index) => with_memfds(|table| {
             let backing = table.get(index).ok_or(Errno::EBADF)?;
-            let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
-            if start >= backing.data.len() {
-                return Ok(0);
-            }
-            let count = dst.len().min(backing.data.len() - start);
-            dst[..count].copy_from_slice(&backing.data[start..start + count]);
-            Ok(count)
+            backing.read_at(usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?, dst, host)
         }),
     }
 }
@@ -191,7 +234,7 @@ pub fn size_and_mode(handle: i64) -> Result<(u64, u32), Errno> {
         Object::MemFd(index) => with_memfds(|table| {
             let backing = table.get(index).ok_or(Errno::EBADF)?;
             Ok((
-                backing.data.len() as u64,
+                backing.len() as u64,
                 wasm_posix_shared::mode::S_IFREG | 0o600,
             ))
         }),

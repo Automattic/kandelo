@@ -100,7 +100,7 @@ impl PreparedMemoryChange {
                         return Ok(());
                     }
                     let handle = file.private_source.as_ref().and_then(|s| s.kernel_handle()).ok_or(Errno::EOPNOTSUPP)?;
-                    file.group_shared = Some(crate::tmpfs::prepare_group_storage(handle, group, self.serial, len)?);
+                    file.group_shared = Some(crate::kernel_file_mapping::prepare_group_storage(handle, group, self.serial, len)?);
                 } else {
                 let object = super::GroupSharedMapping::new(group, self.serial, len)?;
                 let mut name = alloc::vec::Vec::new();
@@ -143,7 +143,7 @@ impl PreparedMemoryChange {
         let Some(mapping) = mappings.iter().find(|m| m.addr <= lookup && m.addr + m.len > lookup) else { return Ok(None); };
         let Some(file) = &mapping.file else { return Ok(None); };
         let Some(source) = &file.private_source else { return Ok(None); };
-        if file.group_shared.is_some() && source.kernel_handle().is_some_and(crate::tmpfs::group_storage_committed) { return Ok(None); }
+        if file.group_shared.is_some() && source.kernel_handle().is_some_and(crate::kernel_file_mapping::group_storage_committed) { return Ok(None); }
         let offset = mapping.file_offset.checked_add((lookup - mapping.addr) as u64)
             .and_then(|offset| offset.checked_add(advance as u64)).ok_or(Errno::EOVERFLOW)?;
         if offset.checked_add(len as u64).is_none_or(|end| end > i64::MAX as u64) { return Err(Errno::EOVERFLOW); }
@@ -231,7 +231,7 @@ impl MemoryManager {
         -> Result<MemoryChangeEffect, (Errno, PreparedMemoryChange)> {
         if let Err(error) = self.validate_memory_change(&plan) { return Err((error, plan)); }
         if let Some(handle) = plan.new_group_file() {
-            if let Err(error) = crate::tmpfs::commit_group_storage(handle, plan.serial) { return Err((error, plan)); }
+            if let Err(error) = crate::kernel_file_mapping::commit_group_storage(handle, plan.serial) { return Err((error, plan)); }
         }
         if let Some(bo) = plan.device_bo {
             let id = plan.shared_record().expect("prepared device backing").0;
@@ -245,7 +245,7 @@ impl MemoryManager {
     pub(crate) fn cancel_memory_change(&mut self, plan: PreparedMemoryChange)
         -> Result<(), (Errno, PreparedMemoryChange)> {
         if self.pending_change.map(core::num::NonZeroU64::get) != Some(plan.serial) { return Err((Errno::ESRCH, plan)); }
-        if let Some(handle) = plan.new_group_file() { crate::tmpfs::cancel_group_storage(handle, plan.serial); }
+        if let Some(handle) = plan.new_group_file() { crate::kernel_file_mapping::cancel_group_storage(handle, plan.serial); }
         if let Some(bo) = plan.device_bo { crate::dri::with_registry(|r| r.cancel_group_storage(bo, plan.serial)); }
         // Cancellation never restores an old snapshot over intervening writes.
         self.pending_change = None;

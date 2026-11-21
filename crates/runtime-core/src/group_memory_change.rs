@@ -246,7 +246,7 @@ impl ProcessTable {
             if immutable_shared && args[2] & mmap::PROT_WRITE as u64 != 0 { return Err(Errno::EOPNOTSUPP); }
             let (source, stat) = crate::private_mapping::Source::capture_for_mapping(proc, fd, host, immutable_shared)?;
             if args[3] & mmap::MAP_SHARED as u64 != 0 {
-                if !immutable_shared && !crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) { return Err(Errno::EOPNOTSUPP); }
+                if !immutable_shared && !source.kernel_handle().is_some_and(crate::kernel_file_mapping::supports_group_storage) { return Err(Errno::EOPNOTSUPP); }
                 if immutable_shared && offset.checked_add(args[1]).is_none_or(|end| end > (stat.st_size.saturating_add(65535) & !65535)) {
                     return Err(Errno::EOPNOTSUPP);
                 }
@@ -1054,6 +1054,103 @@ mod tests {
         table.commit_group_memory_change(pid, pid, alias.token).unwrap();
         assert!(!table.get(pid).unwrap().memory.has_unsupported_group_shared_mapping(admission.record().group));
     }
+    #[test]
+    fn memfd_shared_object_cancels_population_and_retains_exact_backing_after_close() {
+        use crate::syscalls::*;
+        let (mut table, pid, admission) = setup(true);
+        let mut host = crate::process::test_host::NoopHost;
+        let proc = table.get_mut(pid).unwrap();
+        let fd = sys_memfd_create(proc, b"group-shared", 0).unwrap();
+        sys_ftruncate(proc, &mut host, fd, (2 * P - 17) as i64).unwrap();
+        sys_pwrite(proc, &mut host, fd, b"initial", 0).unwrap();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let handle = crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle).unwrap();
+        let args = [0, (2 * P) as u64, 3, mmap::MAP_SHARED as u64, fd as u64, 0];
+        let first = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_eq!(first.shared_object, first.token);
+        assert!(!crate::kernel_file_mapping::group_storage_committed(handle));
+        assert_eq!(sys_pwrite(table.get_mut(pid).unwrap(), &mut host, fd, b"x", 0), Err(Errno::EOPNOTSUPP));
+        table.cancel_group_memory_change(pid, pid, first.token).unwrap();
+        assert!(!crate::kernel_file_mapping::group_storage_alive(admission.record().group, first.shared_object));
+        assert_eq!(sys_pwrite(table.get_mut(pid).unwrap(), &mut host, fd, b"current", 0), Ok(7));
+        let next = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_ne!(next.shared_object, first.shared_object);
+        assert_eq!(table.commit_group_memory_change(pid, pid, next.token), Err(Errno::EBUSY));
+        let mut bytes = alloc::vec![0; 2 * P];
+        let read = table.read_group_memory_population(pid, pid, next.token, 0, &mut bytes, &mut host).unwrap();
+        assert_eq!(read, 2 * P - 17); assert_eq!(&bytes[..7], b"current");
+        assert_eq!(table.read_group_memory_population(pid, pid, next.token, read as u64, &mut bytes[..17], &mut host), Ok(0));
+        table.commit_group_memory_change(pid, pid, next.token).unwrap();
+        assert!(crate::kernel_file_mapping::group_storage_committed(handle));
+        let proc = table.get_mut(pid).unwrap();
+        assert_eq!(sys_fstat(proc, &mut host, fd).unwrap().st_size, (2 * P - 17) as u64);
+        assert_eq!(sys_lseek(proc, &mut host, fd, 0, wasm_posix_shared::seek::SEEK_END), Ok((2 * P - 17) as i64));
+        assert_eq!(sys_ftruncate(proc, &mut host, fd, (2 * P - 17) as i64), Ok(()));
+        assert_eq!(sys_ftruncate(proc, &mut host, fd, (3 * P) as i64), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_pwrite(proc, &mut host, fd, b"x", 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_pread(proc, &mut host, fd, &mut bytes[..7], 0), Err(Errno::EOPNOTSUPP), "NoopHost must not return stale kernel bytes");
+        let extent = proc.memory.group_virtual_extent().unwrap();
+        let alias = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, extent).unwrap();
+        assert_eq!(alias.shared_object, next.shared_object); assert_eq!(alias.population_length, 0);
+        table.commit_group_memory_change(pid, pid, alias.token).unwrap();
+        assert_eq!(crate::kernel_file_mapping::prepare_group_storage(handle, admission.record().group + 1, 999, 2 * P), Err(Errno::EACCES));
+        sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+        assert!(crate::kernel_file_mapping::group_storage_alive(admission.record().group, next.shared_object));
+        for d in [next, alias] {
+            let extent = table.get(pid).unwrap().memory.group_virtual_extent().unwrap();
+            let unmap = table.prepare_group_memory_change(pid, pid, Syscall::Munmap as u32,
+                [d.result(), (2 * P) as u64, 0, 0, 0, 0], extent).unwrap();
+            table.commit_group_memory_change(pid, pid, unmap.token).unwrap();
+        }
+        assert!(!crate::kernel_file_mapping::group_storage_alive(admission.record().group, next.shared_object));
+        assert!(crate::kernel_file_mapping::content_generation(handle).is_none());
+    }
+
+    #[test]
+    fn abandoned_group_file_preparation_does_not_leave_descriptor_mutation_frozen() {
+        use crate::syscalls::*;
+        for memfd in [false, true] {
+            let (mut table, pid, _) = setup(true);
+            let mut host = crate::process::test_host::NoopHost;
+            let proc = table.get_mut(pid).unwrap();
+            let fd = if memfd { sys_memfd_create(proc, b"abandoned", 0).unwrap() }
+                else {
+                    let flags = wasm_posix_shared::flags::O_CREAT | wasm_posix_shared::flags::O_RDWR;
+                    let handle = crate::tmpfs::open(b"/tmp/group-abandoned", flags, 0o600, 0, 0).unwrap();
+                    let index = proc.ofd_table.create(crate::ofd::FileType::Regular, flags, handle, b"/tmp/group-abandoned".to_vec());
+                    proc.fd_table.alloc(crate::fd::OpenFileDescRef(index), 0).unwrap()
+                };
+            sys_ftruncate(proc, &mut host, fd, P as i64).unwrap();
+            let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+            let handle = crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle).unwrap();
+            crate::kernel_file_mapping::pin(handle).unwrap();
+            let object = crate::kernel_file_mapping::prepare_group_storage(handle, 1, 9999, P).unwrap();
+            assert_eq!(sys_pwrite(proc, &mut host, fd, b"x", 0), Err(Errno::EOPNOTSUPP));
+            drop(object); crate::kernel_file_mapping::unpin(handle);
+            assert!(!crate::kernel_file_mapping::group_storage_alive(1, 9999));
+            assert_eq!(sys_pwrite(proc, &mut host, fd, b"ok", 0), Ok(2));
+            assert_eq!(sys_ftruncate(proc, &mut host, fd, 1), Ok(()));
+            sys_close(proc, &mut host, fd).unwrap();
+        }
+    }
+
+    #[test]
+    fn memfd_promotion_refuses_preexisting_mapping_pin_without_moving_bytes() {
+        let index = crate::descriptor_backing::with_memfds(|table| {
+            let mut backing = crate::descriptor_backing::MemFdBacking::new();
+            backing.write_at(0, b"initial").unwrap();
+            table.alloc(backing)
+        });
+        let handle = crate::kernel_file_mapping::mapping_handle_for(crate::ofd::FileType::MemFd, -(index as i64 + 1)).unwrap();
+        crate::kernel_file_mapping::pin(handle).unwrap();
+        crate::kernel_file_mapping::pin(handle).unwrap();
+        assert_eq!(crate::kernel_file_mapping::prepare_group_storage(handle, 1, 99, P), Err(Errno::EOPNOTSUPP));
+        assert!(!crate::kernel_file_mapping::group_storage_alive(1, 99));
+        assert_eq!(crate::kernel_file_mapping::size_and_mode(handle).unwrap().0, 7);
+        crate::kernel_file_mapping::unpin(handle); crate::kernel_file_mapping::unpin(handle);
+        assert!(crate::descriptor_backing::release_for_ofd(crate::ofd::FileType::MemFd, -(index as i64 + 1)));
+    }
+
     #[test]
     fn failed_metadata_admission_leaves_live_mapping_and_custody_intact() {
         let (mut table, pid, _) = setup(true);
