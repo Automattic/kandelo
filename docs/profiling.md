@@ -466,7 +466,8 @@ Build requirements: `cmake` and the `wasm32posix-cc` / `wasm64posix-cc` SDK
 supplied through the declared development shell. The build is a two-phase
 cross-compilation (host build for code generators, then wasm cross-compile).
 The wasm64 build uses `-O1` instead of `-O2` because of a suspected, unverified
-LLVM 21 wasm64 backend miscompilation in table-lookup sign-extension (no
+LLVM wasm64 backend miscompilation in table-lookup sign-extension, observed
+on LLVM 21 and not yet re-tested on the pinned LLVM 23.1.3 (no
 standalone reduction yet; see the registry entry
 [`LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE/entry.md)).
 A missing declared tool is a
