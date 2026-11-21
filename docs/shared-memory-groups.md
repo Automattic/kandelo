@@ -260,7 +260,9 @@ exit and CPU-renderer restart checks and rejects browser errors. It is separate
 from sustained lifecycle and resource acceptance.
 The same config checks twelve actual Foot processes and their shell children,
 physical Ctrl+D exit, replacement by a new terminal PID and guest-driven Sway
-exit with terminal cleanup. Twelve is a regression workload, not a capacity
+exit. Its final zero-terminal cleanup oracle needs an initialized process
+snapshot before that cleanup claim can be restored; see the current measurement
+record. Twelve is a regression workload, not a capacity
 promise or a configured maximum.
 
 Grouped child exit notification follows the same execution-stop boundary as
@@ -298,6 +300,45 @@ alongside Sway, Swaybg, Foot, Wayland desktop data and the cursor theme. The
 preparer requires every participant; it refuses an incomplete input image.
 The prepared image has its own Sway-only demo metadata and default profile;
 unprepared applications from the ordinary source are not advertised as supported.
+
+### Experimental Cage session
+
+The image preparer also accepts `--desktop cage`, selecting the image-owned
+Cage profile and launching Foot as its kiosk application. Add `--freeciv` to
+prepare the packaged Freeciv client and server in the same group. For example,
+inside the declared development environment:
+
+```sh
+./run.sh partial shell sway swaybg cage cage-docs foot wayland-demo bibata-cursor-theme sysklogd freeciv-browser-bundle freeciv-docs
+node --experimental-wasm-exnref --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
+  local-binaries/partial/shell-partial.vfs.zst .scratch/cage-freeciv.vfs.zst \
+  --desktop cage --login-session --freeciv
+export KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE="$PWD/.scratch/cage-freeciv.vfs.zst"
+./run.sh browser --partial --port 6381 --strictPort
+```
+
+The root URL opens the selected Cage session. Run `freeciv` from Foot; exiting
+Foot ends Cage. This explicit prepared-image environment option enables the
+normal app's trusted backend. Omit the separate `--trusted-desktop-preview`
+launcher flag here, because that flag prepares the default Sway image.
+
+The current opt-in group is machine-wide: boot/login, Cage, Foot, shell commands
+and compatible game descendants share one kernel-owned group. Separate
+machines retain separate groups. Preparing a compatible artifact is a build
+requirement, not an application certification gate. Experimental applications
+can be tried before claiming support or merge acceptance. An ordinary,
+unprepared executable cannot silently join this memory ABI.
+
+For executables inside lazy ZIP packages, preparation checks the image's
+archive digest and size and the exact member name, size and declared digest,
+then translates only that executable through the formal SDK. Other assets
+remain lazy. The adjacent report binds the selected desktop, participants and
+output image; the embedder rejects a missing required participant or changed
+image. Cage/Foot physical typing, exact shell-PID file output and initialized
+process-table exit checks pass on Chromium, Firefox and WebKit. Freeciv game
+operation and Cage-versus-Sway resource/performance results remain unproven.
+This is an experimental partial-image path; canonical and full release gates
+remain required.
 
 The developer consumer is `apps/browser-demos/grouped-desktop.html`. Prepare
 its development image through the ordinary package, SDK and image paths

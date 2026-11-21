@@ -574,6 +574,7 @@ host/test/timerfd-wake-latency.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
+host/test/trusted-desktop-program.test.ts	source-only
 host/test/unix-dgram-cross-process.test.ts	prepared-product
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/utf8proc-smoke.test.ts	prepared-product

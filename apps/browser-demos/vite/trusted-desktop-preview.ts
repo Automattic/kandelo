@@ -4,7 +4,7 @@ import { isAbsolute } from "node:path";
 import type { Plugin } from "vite";
 import {
   SHARED_DESKTOP_LOGIN_PROGRAMS,
-  SHARED_DESKTOP_PROGRAMS,
+  sharedDesktopPrograms,
 } from "../../../images/vfs/scripts/shared-desktop-contract";
 
 /** An explicit embedder build choice, never a capability enabled by a URL. */
@@ -26,7 +26,9 @@ export function trustedDesktopPreview(base: string, imagePath?: string): Plugin 
     throw Error("Trusted desktop preview image differs from its SDK preparation report");
   }
   const participants = new Set(report.programs.map((program: { requested?: string }) => program.requested));
-  for (const program of [...SHARED_DESKTOP_PROGRAMS, ...SHARED_DESKTOP_LOGIN_PROGRAMS]) {
+  const profile = report.desktop?.profile ?? 'sway';
+  const freeciv = report.desktop?.freeciv ?? false;
+  for (const program of [...sharedDesktopPrograms(profile, freeciv), ...SHARED_DESKTOP_LOGIN_PROGRAMS]) {
     if (!participants.has(program)) throw Error("Trusted desktop preview is missing participant " + program);
   }
   // Build-machine paths belong in the private SDK report, not the public site.
