@@ -1410,3 +1410,75 @@ memory/CPU/input/presentation measurements, the target-branch benchmark
 comparison and sustained all-engine completion remain open. The resource
 screens introduce no SDK, ABI, kernel, package or PHP-FPM changes into
 this batch.
+
+## Built endurance and normal high-resolution checks, November 21
+
+The unchanged built app now completes all 1,200 physical-input and terminal
+lifecycle cycles on Chromium and a fresh Firefox parent. Chromium's run takes
+48.2 minutes; Firefox's takes about 64 minutes. Both retain the original
+counts, whole-file proofs and deadlines, then exit Sway through the guest and
+observe initialized PID 1 with zero Foot processes. Firefox's periodic common
+extent stays at 2,521 pages (157.5625 MiB), compared with Chromium's 2,578 pages
+(161.125 MiB). After graphics exit, Firefox reports 325 allocated pages
+(20.3125 MiB), two remaining login/syslog images and zero shared objects,
+references, pending wait drains, quarantine and native observers. The machine
+remains alive; these counters do not measure RSS or machine collection.
+
+The original three-engine run remains failed: Firefox stopped after 781
+completed cycles when host disk exhaustion prevented a phase-record write,
+and WebKit stopped after 892 cycles with repeated characters corrupting an
+`echo` command. The fresh Firefox success does not erase that original run.
+WebKit's next diagnostic fails after 233 cycles with three terminals instead
+of two, despite one trusted Enter down/up pair forwarded about 1.1 ms apart.
+
+An independent normal-SDK evdev recorder then passes a three-cycle built
+WebKit smoke check and fails the longer diagnostic after 301 completed
+cycles. Its screenshot shows repeated `c` characters changing the redirected
+pathname, so the expected file retains the preceding cycle's contents. The
+recorder reports zero drops and retains a bounded final event window. Browser
+key holds in that window remain below 21 ms and guest event down/up pairs
+below 30 ms, but one key release
+reaches the independent reader 18.318 seconds after its event timestamp.
+The retained copied syscall trace has an adjacent-call gap of 18.336 seconds;
+older rows were overwritten in its bounded ring. This narrows the problem to
+a service or scheduling stall, without proving a particular handler's CPU
+cost, compositor branch or browser-engine defect. A separate three-cycle
+startup control observes 19 fork Workers with preparation-to-replay spans
+below 115 ms; those normal paths do not explain the failure tail and do not
+justify weakening replay or retirement fences.
+
+The current normal app also repeats the original high-resolution scenario.
+Each grouped engine completes six workspace/tile cycles at native 3072×1728,
+twelve fresh whole-content physical-command proofs, and actual Sway exit
+with zero terminals. Moving each window between full and half width exercises
+the real graphical buffer resize path. The comparison retains its failed
+ordinary controls separately:
+
+| Engine | Grouped high-resolution workload | Ordinary control |
+| --- | --- | --- |
+| Chromium | Pass | Process table stays at one Foot/shell while waiting for two |
+| Firefox | Pass | Screenshot readback reaches its 5-second fixture deadline; capacity remains unproved |
+| WebKit | Pass | Process table stays at one Foot/shell while waiting for two |
+
+These runs overlap builds and are not quiet performance or whole-browser RAM
+comparisons. All engines retain actual image/kernel response SHA checks
+through a test-owned HTTP observer that forwards bodies unchanged. Earlier
+fixture failures remain retained: canonical persistent contexts, the public
+kernel scanout statistics and the HTTP observer replace unsuitable context,
+placeholder-canvas and disposable-worker body observations. No runtime or
+image source is rewritten.
+
+The checked-in normal-app regression now preserves both terminal PIDs through
+six high-resolution workspace cycles, twelve exact file proofs and real
+cleanup. Its six selected cases, including the existing twelve-terminal
+capacity/reuse cases, pass on Chromium, Firefox and WebKit against the same
+normal built app, with zero skips, flaky or unexpected cases. The normal own
+host build and strict test types pass. This commit changes tests and evidence;
+the runtime remains c853 and the built frontend remains e296. No new SDK,
+ABI, kernel, package or PHP-FPM behavior is introduced.
+
+[Derived lifecycle samples](2026-11-21-shared-memory-desktop-lifecycle.json)
+retain numerical scope and report/artifact hashes. Sustained WebKit behavior,
+quiet matched resource/interaction measurements, the destination benchmark
+comparison and the material-cost decision remain open. Neither resource
+experiment is promoted and no net-memory or performance benefit is claimed.

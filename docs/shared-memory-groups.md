@@ -265,6 +265,18 @@ creation as input readiness. It passes all three engines. Earlier Firefox exit
 and diagnostic focus failures remain in the current measurement record. Twelve is a regression workload, not a capacity
 promise or a configured maximum.
 
+The same config also checks two terminals on a native 3072×1728 scanout.
+Six workspace moves and retiles resize the actual Foot buffers between full
+and half width, including the hidden window. Both terminal PIDs must survive,
+and each workspace must produce fresh exact file contents through physical
+keyboard input before the next move. The check observes the kernel-reported
+scanout mode, rendered focused prompts and guest-driven Sway exit with zero
+Foot processes. It does not treat placeholder canvas dimensions as the guest
+mode or claim that changing the browser viewport switches a live monitor mode.
+These maintained checks pass on all three engines; the separate long WebKit
+failures and resource limits remain in the
+[current measurement record](measurements/2026-11-20-shared-memory-desktop-current.md).
+
 Grouped child exit notification follows the same execution-stop boundary as
 wait status. The kernel keeps SIGCHLD and automatic reaping pending while any
 exact execution receipt still owns custody, including quarantined siblings.
