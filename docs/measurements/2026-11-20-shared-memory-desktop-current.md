@@ -17,7 +17,8 @@ participants. `./run.sh browser --partial --trusted-desktop-preview` uses the
 server's root URL. The validated partial shell contains Sway, Swaybg, Foot,
 Wayland desktop data, the Bibata cursor theme and sysklogd. Ordinary app builds
 keep their existing backend. The canonical production build remains pending;
-the serial retry has progressed beyond Rust to the guest Clang toolchain.
+the serial retry has completed Rust, guest Clang and CMake and is preparing the
+remaining packages, currently FFmpeg.
 
 An explicit 24-process/64-task developer fixture reproduces the user's refusal
 at nine terminals: 23 live non-init processes, about 25 tasks and 299 MiB of
@@ -70,31 +71,72 @@ timeout at the unchanged 30-second limit; it is not a passing suite. Isolating
 that case timed out again. The fresh pinned develop baseline passes that same
 test and wrapper at the unchanged limit; its outer job fails only a status
 guard after the runner generates two untracked build files, with tracked
-sources unchanged. A fixed pairwise comparison is pending, so the candidate
-timeouts cannot be dismissed as pre-existing.
+sources unchanged. A subsequent fixed develop/candidate/candidate/develop
+comparison passes all four runs at the unchanged 30-second limit, with source
+guards unchanged. The candidate therefore has mixed results; the earlier
+timeouts cannot be dismissed as pre-existing or erased by these passes.
 
 An initial normal-app lifecycle probe stopped after eleven completed iterations
 on an empty cached file preview. A fresh-read control then passed 30 Firefox
 iterations; this does not establish the earlier failure's cause. The subsequent
-1,200-cycle-per-engine normal-app run fails Chromium after 1,108 completed
-cycles: one recorded DOM Alt+Enter sequence is followed by two new Foots and
-shells, leaving three where the exact process-table assertion requires two.
-The Enter down/up interval is about 1.25 ms with `repeat=false`; actual kernel
-delivery and compositor repeat timing remain unmeasured. Page errors and
-memory-boundary violations are empty. Firefox and WebKit remain in progress.
-The earlier Firefox/WebKit input and IPC failures also remain open.
-These short checks establish neither sustained reliability nor an OS memory,
-CPU or presentation-latency benefit. The full combined browser-memory gate,
-canonical build and matched resource measurements remain required.
+1,200-cycle-per-engine normal-app run fails all three engines:
+
+| Engine | Completed cycles | Failure |
+|---|---:|---|
+| Chromium | 1,108 | One recorded DOM Alt+Enter sequence is followed by two new Foots/shells; exact count requires one new pair |
+| Firefox | 495 | The same extra-Foot/shell count failure |
+| WebKit | 32 | Thirty fresh reads of the expected shell proof file remain empty |
+
+Chromium's Enter down/up interval is about 1.25 ms and Firefox's 9.34 ms,
+with `repeat=false`. Actual kernel delivery and compositor repeat timing were
+not measured in that run. Page errors and memory-boundary violations are empty
+on all three engines. The extra-terminal failures remain unresolved.
+
+A separate SDK-built evdev observer records kernel-injection timestamps and its
+own read timestamps through an independent open file description. It runs in a
+derived diagnostic image through the normal app, leaving Sway's input stream
+intact. Fixed-size ring parsing rejects stale, overwritten and incomplete data;
+short ordinary/grouped controls pass. A fixed WebKit comparison then fails the
+grouped arm after 35 completed cycles while the ordinary arm completes 120.
+The grouped screenshot shows `e` in the original terminal and `cho ...` followed
+by `command not found` in the new terminal. DOM and evdev records contain the
+full intended command without repeat or dropped-event markers. This identifies
+a test-readiness gap: process existence does not establish compositor focus and
+visible shell readiness. It does not prove Sway's event-read timing, explain the
+extra-terminal failures or establish a browser-engine defect.
+
+A subsequent fixture waits for the focused new terminal's actually rendered
+Bash prompt before typing. Pixel controls refuse a blank area, an inactive
+window and changed glyphs. Ten physical open/type/PID-file/close cycles pass on
+each WebKit arm, with no page or memory-boundary errors. The unchanged count,
+file-content and cleanup oracles remain; earlier failures are retained. A new
+normal bare-root WebKit sustained run is in progress without the evdev observer
+or derived diagnostic image. Short controls are not sustained acceptance.
+
+The normal-app captured-glyph latency method now passes on both ordinary and
+grouped Chromium: actual `a`/`b` glyph calibration, three no-input captures,
+fifteen trusted key trials and a deliberately delayed 50 ms positive control.
+Its initial setup failure is retained. With a rendered-prompt check and a
+retained pre-Enter screenshot, both arms now reach capture; no runtime change
+was made. Captures include canvas readback and
+measure browser keydown to observed glyph, not physical input-to-photon, native
+presentation or GPU frame time. These pilots ran under concurrent builds and
+stress tests and are not an accepted performance comparison.
+
+The full combined browser-memory gate, canonical build, sustained lifecycle and
+matched memory/CPU/input/presentation measurements remain required. Earlier
+Firefox/WebKit input and IPC failures remain retained. The full memory gate was
+interrupted during duplicate guest Clang preparation, before runtime phases;
+it must run after the retained canonical producer publishes its artifacts.
 
 Raw sources, failed and passing reports, screenshots and provenance are retained
-under `.context/shared-desktop-followup-545/`; lifecycle probe 555 retains its
-separate job evidence. Inspection evidence is in
-`.context/shared-desktop-inspection-561/`; the new Chromium failure is retained
-in `.context/shared-desktop-input-572/`. No runtime source was rewritten for
-these checks. The full browser-memory gate was interrupted during a duplicate
-guest Clang build, before its runtime phases. It must run after the retained
-canonical producer publishes that artifact; it is not a passing memory gate.
+under `.context/shared-desktop-followup-545/`,
+`.context/shared-desktop-inspection-561/`, `.context/shared-desktop-input-572/`,
+`.context/shared-desktop-input-578/`, `.context/shared-desktop-input-588/` and
+`.context/shared-desktop-readiness-592/`. No runtime source was rewritten for
+these checks. The evdev observer's initial blocking-read failure is retained;
+its normal nonblocking poll/read consumer does not resolve the documented
+blocking evdev-read gap.
 
 ## Bitmap handoff correction
 
