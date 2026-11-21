@@ -1146,3 +1146,30 @@ candidate. Canonical 697 is evidence for the preceding packaging revision,
 not a current full-memory pass. Earlier sustained failures, grouped/browser
 conformance gaps and fair memory/CPU/input/presentation measurements remain
 open. No new performance or net-memory claim is made.
+
+
+### Maintained game checks and current capacity rerun (2026-11-21)
+
+The maintained `playwright.trusted-scummvm.config.ts` now selects the actual
+God of Thunder game check separately from the Cage/Freeciv inventory.
+Run 746 passes all three engines (three expected, zero skipped, flaky or
+unexpected) against the unchanged normal app and kernel from the fixed-memfd
+candidate. It covers menus, world rendering, physical movement, a no-input
+movement control, native Quit status 0, physical Foot input and Cage cleanup.
+The targeted strict type check passes after declaring the fixture's existing
+metadata field; the original declaration/configuration failures are retained.
+No runtime, package, ABI or PHP-FPM configuration changed in this test addition.
+
+Run 747 passes all six maintained Cage/Foot/Freeciv cases. Its Sway capacity
+rerun passes Chromium and WebKit; Firefox creates twelve terminals, closes
+one and creates a new PID, but times out waiting for the final Sway exit.
+The retained screenshot shows the command reaching Bash as `waymsg exit`.
+That is not a clean capacity-suite pass. Prompt/focus readiness is under
+investigation; later diagnostic fixture changes do not erase this failure.
+
+The complete browser-memory gate is still running on the clean runtime
+candidate. Its canonical preparation, source/ownership and Node/Bun teardown
+legs complete, and its Chromium browser leg passes; the other browser legs
+remain pending. The sustained run and fair resource/performance/conformance
+gates remain open. Evidence from 744/746/747 and their failed controls is
+retained in `.context/shared-desktop-current-753/`.
