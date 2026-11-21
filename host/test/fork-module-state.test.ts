@@ -55,6 +55,7 @@ import {
   WPK_FORK_IMPORTED_TABLES_SECTION,
   WPK_FORK_IMPORTED_TABLES_VERSION,
 } from "../src/generated/abi";
+import { GROUP_HEADER_BYTES, ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE_SIZE = 65_536;
 
@@ -702,7 +703,7 @@ describe("fork tail replay manifest", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -727,7 +728,7 @@ describe("fork tail replay manifest", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -962,7 +963,7 @@ describe("fork activation-continuation manifest", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     const owner = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       8,
       owner.allocate,
       owner.deallocate,
@@ -986,8 +987,8 @@ describe("module-state root-prefix ownership", () => {
     (ptrWidth) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       const moduleBuffer = 256;
-      writeForkModuleStateRoot(memory, moduleBuffer, ptrWidth, PAGE_SIZE);
-      expect(readForkModuleStateRoot(memory, moduleBuffer, ptrWidth)).toBe(PAGE_SIZE);
+      writeForkModuleStateRoot(new ProcessAddressSpace(memory, null), moduleBuffer, ptrWidth, PAGE_SIZE);
+      expect(readForkModuleStateRoot(new ProcessAddressSpace(memory, null), moduleBuffer, ptrWidth)).toBe(PAGE_SIZE);
 
       const view = new DataView(memory.buffer);
       const slot = moduleBuffer + ptrWidth;
@@ -997,14 +998,14 @@ describe("module-state root-prefix ownership", () => {
           : BigInt(view.getUint32(slot, true)),
       ).toBe(BigInt(PAGE_SIZE));
 
-      writeForkModuleStateRoot(memory, moduleBuffer, ptrWidth, 0);
-      expect(readForkModuleStateRoot(memory, moduleBuffer, ptrWidth)).toBe(0);
+      writeForkModuleStateRoot(new ProcessAddressSpace(memory, null), moduleBuffer, ptrWidth, 0);
+      expect(readForkModuleStateRoot(new ProcessAddressSpace(memory, null), moduleBuffer, ptrWidth)).toBe(0);
     },
   );
 
   it("rejects roots that cannot own page-aligned arena mappings", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
-    expect(() => writeForkModuleStateRoot(memory, 128, 4, 1234))
+    expect(() => writeForkModuleStateRoot(new ProcessAddressSpace(memory, null), 128, 4, 1234))
       .toThrow("arena root must be page-aligned");
   });
 });
@@ -1016,7 +1017,7 @@ describe("ForkModuleStateArena", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 4 });
       const parentAllocator = allocator(parentMemory);
       const parent = new ForkModuleStateArena(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         ptrWidth,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -1059,7 +1060,7 @@ describe("ForkModuleStateArena", () => {
       expect(parentAllocator.allocations.length).toBeGreaterThan(1);
 
       const moduleBuffer = 512;
-      writeForkModuleStateRoot(parentMemory, moduleBuffer, ptrWidth, root);
+      writeForkModuleStateRoot(new ProcessAddressSpace(parentMemory, null), moduleBuffer, ptrWidth, root);
       const childMemory = cloneMemory(parentMemory);
 
       const parentRecords = parent.records();
@@ -1092,13 +1093,13 @@ describe("ForkModuleStateArena", () => {
 
       const childReleases: Array<{ addr: number; size: number }> = [];
       const child = new ForkModuleStateArena(
-        childMemory,
+        new ProcessAddressSpace(childMemory, null),
         ptrWidth,
         () => { throw new Error("attached arena must not allocate"); },
         (addr, size) => childReleases.push({ addr, size }),
         `child-wasm${ptrWidth * 8}`,
       );
-      child.attach(readForkModuleStateRoot(childMemory, moduleBuffer, ptrWidth));
+      child.attach(readForkModuleStateRoot(new ProcessAddressSpace(childMemory, null), moduleBuffer, ptrWidth));
       expect(child.records()).toEqual(parentRecords);
       const childGlobalPayload = child.findRecord(
         ForkModuleStateRecordKind.MutableGlobal,
@@ -1161,7 +1162,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1186,7 +1187,7 @@ describe("ForkModuleStateArena", () => {
     arena.release();
 
     const second = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1209,7 +1210,7 @@ describe("ForkModuleStateArena", () => {
       const memory = new WebAssembly.Memory({ initial: 3 });
       const arenaAllocator = allocator(memory);
       const arena = new ForkModuleStateArena(
-        memory,
+        new ProcessAddressSpace(memory, null),
         ptrWidth,
         arenaAllocator.allocate,
         arenaAllocator.deallocate,
@@ -1244,7 +1245,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1269,7 +1270,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 4 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1286,7 +1287,7 @@ describe("ForkModuleStateArena", () => {
     new DataView(memory.buffer).setUint32(tablePayload + 4, 2, true);
     const releases: Array<{ addr: number; size: number }> = [];
     const child = new ForkModuleStateArena(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       4,
       () => { throw new Error("attachment must not allocate"); },
       (addr, size) => releases.push({ addr, size }),
@@ -1302,7 +1303,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const parent = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1312,7 +1313,7 @@ describe("ForkModuleStateArena", () => {
     parent.appendModule({ activationId: 0, templateId: templateId(4) });
     const childReleases: Array<{ addr: number; size: number }> = [];
     const unsealedChild = new ForkModuleStateArena(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       4,
       () => { throw new Error("attachment must not allocate"); },
       (addr, size) => childReleases.push({ addr, size }),
@@ -1325,7 +1326,7 @@ describe("ForkModuleStateArena", () => {
     // Record kind is at root + wasm32 chunk header + 6.
     new DataView(memory.buffer).setUint16(root + 40 + 6, 0xffff, true);
     const malformedChild = new ForkModuleStateArena(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       4,
       () => { throw new Error("attachment must not allocate"); },
       (addr, size) => childReleases.push({ addr, size }),
@@ -1341,7 +1342,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 4 });
     const arenaAllocator = allocator(memory);
     const parent = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1363,7 +1364,7 @@ describe("ForkModuleStateArena", () => {
 
     const releases: Array<{ addr: number; size: number }> = [];
     const child = new ForkModuleStateArena(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       4,
       () => { throw new Error("attachment must not allocate"); },
       (addr, size) => releases.push({ addr, size }),
@@ -1379,7 +1380,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       () => { throw new Error("synthetic munmap failure"); },
@@ -1397,7 +1398,7 @@ describe("ForkModuleStateArena", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -1416,5 +1417,49 @@ describe("ForkModuleStateArena", () => {
     expect(arenaAllocator.releases).toEqual(
       [...arenaAllocator.allocations].reverse(),
     );
+  });
+
+  it("writes and reads through the page tables of a fork child", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 1024, shared: true });
+    const groupBase = 4 * PAGE_SIZE;
+    const parent = new ProcessAddressSpace(
+      memory,
+      { table: groupBase + GROUP_HEADER_BYTES, group: groupBase },
+    );
+    const space = parent.fork([{ page: 2, count: 1 }]);
+    const root = 20 * PAGE_SIZE;
+    let next = root;
+    const allocate = (size: number): number => {
+      const addr = next;
+      next += size;
+      return addr;
+    };
+    // The second chunk covers pages 21 and 22. Copying page 22 first puts
+    // the two pages in separate physical runs, in reverse order.
+    space.write(22 * PAGE_SIZE, new Uint8Array(1));
+    const arena = new ForkModuleStateArena(space, 4, allocate, () => {}, "shared");
+    const payload = new Uint8Array(70_000).fill(0x91);
+    arena.begin();
+    arena.appendModule({ activationId: 0, templateId: templateId(9) });
+    arena.appendRecord({
+      kind: ForkModuleStateRecordKind.ReferenceRecipe,
+      activationId: 0,
+      ownerId: 1,
+      payload,
+    });
+    arena.seal();
+
+    expect(space.readableRun(21 * PAGE_SIZE, 2 * PAGE_SIZE)).toBe(-1);
+    expect(arena.records()[1]!.payload).toEqual(payload);
+    expect(arena.recordViews()[1]!.payload).toEqual(payload);
+    const attached = new ForkModuleStateArena(space, 4, allocate, () => {}, "attached");
+    attached.attach(root);
+    expect(attached.records().map((record) => record.kind)).toEqual([
+      ForkModuleStateRecordKind.Module,
+      ForkModuleStateRecordKind.ReferenceRecipe,
+    ]);
+    expect(
+      new Uint8Array(memory.buffer, root, 3 * PAGE_SIZE).every((byte) => byte === 0),
+    ).toBe(true);
   });
 });

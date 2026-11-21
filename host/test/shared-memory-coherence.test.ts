@@ -16,6 +16,7 @@ import {
 } from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import { WasmPosixKernel } from "../src/kernel";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import {
   createKernelSharedMappingStub,
   SYSV_MIRROR_EXPORT_NAMES,
@@ -92,6 +93,7 @@ function anonymousHarness() {
   const channel = (pid: number, memory: WebAssembly.Memory) => ({
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channelOffset: 0,
     i32View: new Int32Array(memory.buffer, 0, 1),
     consecutiveSyscalls: 0,
@@ -106,9 +108,9 @@ function anonymousHarness() {
       [peerPid, new Map([[mapAddr, mapping()]])],
     ]),
     processes: new Map([
-      [parentPid, { pid: parentPid, memory: parentMemory, channels: [parentChannel] }],
-      [peerPid, { pid: peerPid, memory: peerMemory, channels: [peerChannel] }],
-      [childPid, { pid: childPid, memory: childMemory, channels: [childChannel] }],
+      [parentPid, { pid: parentPid, memory: parentMemory, addressSpace: parentChannel.addressSpace, channels: [parentChannel] }],
+      [peerPid, { pid: peerPid, memory: peerMemory, addressSpace: peerChannel.addressSpace, channels: [peerChannel] }],
+      [childPid, { pid: childPid, memory: childMemory, addressSpace: childChannel.addressSpace, channels: [childChannel] }],
     ]),
   });
   installKernelWorkerTestScratch(
@@ -373,7 +375,8 @@ function sysvHarness(options: SysvMirrorStubOptions = {}) {
   const sysv = createKernelSharedMappingStub(options);
   const processes = new Map(pids.map((pid) => {
     const memory = memories.get(pid)!;
-    return [pid, { pid, memory, channels: [{ pid, memory, channelOffset: 0 }] }];
+    const addressSpace = new ProcessAddressSpace(memory, null);
+    return [pid, { pid, memory, addressSpace, channels: [{ pid, memory, addressSpace, channelOffset: 0 }] }];
   }));
   const kw = Object.assign(createCentralizedKernelWorkerTestDouble(), {
     currentHandlePid: 0,
@@ -643,6 +646,7 @@ describe("kernel-owned shared-mapping boundary failures", () => {
       const sibling = {
         pid: channel.pid,
         memory: channel.memory,
+        addressSpace: channel.addressSpace,
         channelOffset: siblingOffset,
         i32View: new Int32Array(channel.memory.buffer, siblingOffset, 1),
       };

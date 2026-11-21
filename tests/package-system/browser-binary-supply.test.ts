@@ -153,6 +153,7 @@ note = 'literal #string'
     expect(virtualModuleDemands().map((demand) => demand.binary).sort()).toEqual([
       "kandelo_image_module32.wasm",
       "kandelo_image_module_positioned32.wasm",
+      "kandelo_memory_instrument32.wasm",
       "kernel.wasm",
       "programs/wasm32/rootfs.vfs.zst",
     ]);

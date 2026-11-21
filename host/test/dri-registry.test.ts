@@ -96,6 +96,47 @@ describe("BO publication copies", () => {
     expect([...new Uint8Array(memA.buffer).slice(17, 19)]).toEqual([91, 73]);
   });
 
+  it("reads and writes a mapping at the Memory offset its placement gives", () => {
+    const memory = newMemory();
+    memory.grow(3);
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: 32, w: 4, h: 2, stride: 16 });
+    registry.create({ pid: 100, bo_id: 2, size: 16, w: 2, h: 2, stride: 8 });
+    registry.pixelView(1)!.fill(7);
+    registry.bind(100, 1, 0, 32);
+    registry.bind(100, 2, 65536, 16);
+    const placed: number[][] = [];
+    const place = (addr: number, len: number) => { placed.push([addr, len]); return addr + 131072; };
+    expect(registry.primedRanges(100)).toEqual([]);
+    expect(registry.primeBindFromSab(100, 1, memory, 0, place)).toBe(true);
+    expect(registry.primeProcessMappings(100, memory, place)).toBe(true);
+    expect(placed).toEqual([[0, 32], [65536, 16]]);
+    expect(registry.primedRanges(100)).toEqual([{ addr: 0, len: 32 }, { addr: 65536, len: 16 }]);
+    expect(readPattern(memory, 131072, 32)).toEqual(new Uint8Array(32).fill(7));
+    expect(readPattern(memory, 0, 32)).toEqual(new Uint8Array(32));
+
+    new Uint8Array(memory.buffer)[5] = 91;
+    new Uint8Array(memory.buffer)[131072 + 6] = 73;
+    new Uint8Array(memory.buffer)[196608 + 3] = 55;
+    registry.syncToSab(1);
+    registry.syncToSab(2);
+    expect([...registry.pixelView(1)!.slice(5, 7)]).toEqual([7, 73]);
+    expect(registry.pixelView(2)![3]).toBe(55);
+
+    expect(registry.publishDevicePixels(1, new Uint8Array(32).fill(9))).toBe(true);
+    expect(readPattern(memory, 131072, 32)).toEqual(new Uint8Array(32).fill(9));
+    registry.pixelView(1)![8] = 4;
+    registry.syncImportsForPid(100, memory);
+    expect(new Uint8Array(memory.buffer)[131072 + 8]).toBe(4);
+    expect(new Uint8Array(memory.buffer)[5]).toBe(91);
+
+    registry.unbind(100, 1, 0, 16);
+    expect(registry.primedRanges(100)).toEqual([{ addr: 16, len: 16 }, { addr: 65536, len: 16 }]);
+    new Uint8Array(memory.buffer)[131072 + 20] = 66;
+    registry.syncToSab(1);
+    expect(registry.pixelView(1)![20]).toBe(66);
+  });
+
   it("leaves stores beyond a limited publication pending for the next full scan", () => {
     const memory = newMemory();
     const registry = new GbmBoRegistry({ getProcessMemory: () => memory });

@@ -42,7 +42,7 @@ function actualMainLaunchControl(host: Host, ptrWidth: 4 | 8, vfork: boolean, mo
   const observations = new ProcessGenerationObservations(event => events.push(event)); observations.enable();
   const parent = {memory, memoryLease: parentLease, ptrWidth, programBytes: new ArrayBuffer(0), programModule: {},
     channelOffset: PAGE, argv: [], externrefGeneration: {id: 1},
-    layout: {channelOffset: PAGE, maximumPages: 4, maxAddr: 4 * PAGE, mmapBase: 3 * PAGE},
+    layout: {channelOffset: PAGE, maximumPages: 4, maxAddr: 4 * PAGE, mmapBase: 3 * PAGE, pageTable: null},
     threadAllocator: {allocateHostControl: () => ({slotStartPage: 2, channelOffset: 2 * PAGE, tlsOffset: 0}), free: vi.fn()},
   };
   const processes = new Map<number, any>([[PARENT, parent]]);
@@ -91,8 +91,9 @@ function actualMainLaunchControl(host: Host, ptrWidth: 4 | 8, vfork: boolean, mo
     },
     retryKernelEntryResult: async (operation: () => unknown) => operation(), waitForProcessTeardowns: async () => {},
     CH_TOTAL_SIZE, FORK_SAVE_BUFFER_SIZE, WASM_PAGE_SIZE: PAGE, PAGE_SIZE: PAGE, PAGES_PER_THREAD: 1, PROCESS_FORK_MODE_VFORK: 1, SIGSEGV: 11,
+    memoryInstrumenter: undefined,
     kernelWorker: {
-      shouldLaunchPendingChild: () => true, registerProcess() {}, inheritProcessSharedMappings() {}, reserveHostRegionAt() {},
+      shouldLaunchPendingChild: () => true, registerProcess() {}, getProcessAddressSpace: () => undefined, inheritProcessSharedMappings() {}, reserveHostRegionAt() {},
       processSecureExec: () => false, getKernelAbiVersion: () => 56, getKernelAbiContractDigest: () => "source-control",
       finalizePendingChildTermination: () => 0, killBlockedProcessForTeardown: async () => {},
       notifyHostProcessCrashed() {}, reapHostOwnedExitedProcess() {},

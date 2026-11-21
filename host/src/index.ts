@@ -78,11 +78,11 @@ export type { ThreadAllocation, ThreadPageAllocatorOptions } from "./thread-allo
 export {
   computeProcessMemoryLayout,
   createProcessMemory,
-  growMemoryToCover,
   importedMemoryMinimumPages,
   PROCESS_MMAP_BASE,
 } from "./process-memory";
 export type { ForkAddressSpaceCopy, ProcessMemoryLayout } from "./process-memory";
+export type { ForkMemory } from "./process-address-space";
 export { WasiShim, WasiExit } from "./wasi-shim";
 export { isWasiModule, wasiModuleImportsMemory, wasiModuleDefinesMemory } from "./wasi-detect";
 export { NodeKernelHost } from "./node-kernel-host";

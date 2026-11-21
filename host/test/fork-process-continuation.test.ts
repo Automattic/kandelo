@@ -13,6 +13,7 @@ import {
 } from "../src/fork-module-state";
 import { ForkProcessContinuationCoordinator } from "../src/fork-process-continuation";
 import { FORK_REPLAY_EVENT_SEGMENT_CAPACITY } from "../src/fork-replay-events";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE_SIZE = 65_536;
 
@@ -157,16 +158,16 @@ function makeCoordinator(
   arena: ForkModuleStateArena;
   continuations: Map<number, LinkedForkContinuation>;
 } {
-  const registry = new ForkActivationRegistry(memory, externrefs(), `${label}: registry`);
+  const registry = new ForkActivationRegistry(new ProcessAddressSpace(memory, null), externrefs(), `${label}: registry`);
   const coordinator = new ForkProcessContinuationCoordinator(
-    memory,
+    new ProcessAddressSpace(memory, null),
     registry,
     label,
   );
   const continuations = new Map<number, LinkedForkContinuation>();
   for (const activationId of [0, 4, 9]) {
     const continuation = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       linkedFormat(),
       owner.allocate,
       owner.deallocate,
@@ -199,7 +200,7 @@ function makeCoordinator(
     coordinator,
     continuations,
     arena: new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       owner.allocate,
       owner.deallocate,

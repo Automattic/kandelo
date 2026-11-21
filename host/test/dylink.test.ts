@@ -28,6 +28,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { tryResolveBinary } from "../src/binary-resolver";
 import { LINKED_FRAME_FORMAT_SECTION } from "../src/fork-continuation";
 import { ABI_VERSION } from "../src/generated/abi";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
@@ -35,9 +36,15 @@ import {
   createForkUnwindTag,
   FORK_UNWIND_TAG_IMPORT_NAME,
 } from "../src/fork-unwind-transport";
+import {
+  GROUP_HEADER_BYTES,
+  PAGE_TABLE_BYTES,
+  ProcessAddressSpace,
+} from "../src/process-address-space";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const forkInstrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
+const memoryInstrumenter = tryResolveBinary("kandelo_memory_instrument32.wasm");
 
 function hasCompiler(compiler = "wasm32posix-cc"): boolean {
   try {
@@ -2416,6 +2423,55 @@ describe("dylink replay layout and rollback", () => {
     });
     expect(replayed.tableBase).toBe(3);
     expect(child.table.length).toBe(options.table.length);
+  });
+});
+
+describe("side modules in a process with page tables", () => {
+  const PAGE = 65536;
+  const wasmBytes = () => buildDylinkWat(`
+    (module
+      (import "env" "memory" (memory 1 100 shared))
+      (import "env" "__memory_base" (global $memory_base i32))
+      (func $init (export "__wasm_init_memory")
+        global.get $memory_base
+        i32.const 93
+        i32.store)
+      (func (export "read_value") (result i32)
+        global.get $memory_base
+        i32.load)
+      (start $init))
+  `, "page-table-side-module", undefined, 0, 4);
+  const mappedOptions = (): LoadSharedLibraryOptions => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 100, shared: true });
+    const group = 4 * PAGE;
+    const addressSpace = new ProcessAddressSpace(memory, { table: group + GROUP_HEADER_BYTES, group });
+    const words = new Int32Array(memory.buffer);
+    const table = addressSpace.location!.table / 4;
+    words[table + 1] = 2 * PAGE;
+    words[table + PAGE_TABLE_BYTES / 4 + 1] = 2 * PAGE;
+    words[PAGE / 4] = 77;
+    return { ...createSideForkLoadOptions(), memory, addressSpace, heapPointer: { value: PAGE } };
+  };
+
+  it.skipIf(memoryInstrumenter === null)("runs the memory initializer through the page tables", () => {
+    const options = mappedOptions();
+    options.memoryInstrumenter = new WebAssembly.Module(readFileSync(memoryInstrumenter!));
+
+    const library = loadSharedLibrarySync("libpage-table.so", wasmBytes(), options);
+
+    const words = new Int32Array(options.memory.buffer);
+    expect(library.memoryBase).toBe(PAGE);
+    expect((library.exports.read_value as () => number)()).toBe(93);
+    expect(words[3 * PAGE / 4]).toBe(93);
+    expect(words[PAGE / 4]).toBe(77);
+  });
+
+  it("refuses the module without the memory instrumenter", () => {
+    const options = mappedOptions();
+
+    expect(() => loadSharedLibrarySync("libpage-table.so", wasmBytes(), options))
+      .toThrow(/cannot load a side module without the memory instrumenter/);
+    expect(new Int32Array(options.memory.buffer)[PAGE / 4]).toBe(77);
   });
 });
 

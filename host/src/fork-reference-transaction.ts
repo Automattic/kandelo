@@ -37,6 +37,8 @@ import { ForkStaticRootCatalog } from "./fork-static-root-catalog";
 import {
   WPK_FORK_REFERENCE_TRANSACTION_OWNER,
 } from "./generated/abi";
+import type { ProcessAddressSpace } from "./process-address-space";
+import { processDataView } from "./process-data-view";
 
 /**
  * The owner id is local to the ReferenceRecipe record kind. One process fork
@@ -238,7 +240,7 @@ export class ForkReferenceTransaction {
   constructor(
     readonly functions: ForkFunctionCatalog,
     private readonly externrefs: ForkExternrefRecipeProvider,
-    private readonly memory?: WebAssembly.Memory,
+    private readonly space?: ProcessAddressSpace,
     private readonly allocateScratch?: ForkReferenceScratchAllocate,
     private readonly deallocateScratch?: ForkReferenceScratchDeallocate,
     private readonly label = "fork reference transaction",
@@ -878,7 +880,7 @@ export class ForkReferenceTransaction {
         !Number.isSafeInteger(addr)
         || addr <= 0
         || addr % 16 !== 0
-        || addr > this.requireMemory().buffer.byteLength - chunkSize
+        || addr > this.requireSpace().memory.buffer.byteLength - chunkSize
       ) {
         if (Number.isSafeInteger(addr) && addr > 0) {
           try {
@@ -902,7 +904,7 @@ export class ForkReferenceTransaction {
     const previousUsed = chunk.used;
     const addr = chunk.addr + previousUsed;
     chunk.used += alignedSize;
-    new Uint8Array(this.requireMemory().buffer, addr, alignedSize).fill(0);
+    this.requireSpace().zero(addr, alignedSize);
     this.scratchReservations.push({
       addr,
       requestedSize,
@@ -928,11 +930,7 @@ export class ForkReferenceTransaction {
         `${this.label} scratch release is not the most recent reservation`,
       );
     }
-    new Uint8Array(
-      this.requireMemory().buffer,
-      reservation.addr,
-      reservation.alignedSize,
-    ).fill(0);
+    this.requireSpace().zero(reservation.addr, reservation.alignedSize);
     reservation.chunk.used = reservation.previousUsed;
 
     const tail = this.scratchChunks[this.scratchChunks.length - 1];
@@ -1790,9 +1788,7 @@ export class ForkReferenceTransaction {
     context: string,
   ): Uint8Array {
     const { offset, length } = this.memoryRange(pointer, byteLength, context);
-    return new Uint8Array(
-      new Uint8Array(this.requireMemory().buffer, offset, length),
-    );
+    return this.requireSpace().read(offset, length);
   }
 
   private writeBytes(
@@ -1801,7 +1797,7 @@ export class ForkReferenceTransaction {
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, bytes.byteLength, context);
-    new Uint8Array(this.requireMemory().buffer, offset, bytes.byteLength).set(bytes);
+    this.requireSpace().write(offset, bytes);
   }
 
   private readRecipeIds(
@@ -1830,7 +1826,7 @@ export class ForkReferenceTransaction {
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, ids.length * 4, context);
-    const view = new DataView(this.requireMemory().buffer);
+    const view = processDataView(this.requireSpace());
     ids.forEach((id, index) => {
       assertRecipeId(id);
       view.setUint32(offset + index * 4, id, true);
@@ -1851,18 +1847,18 @@ export class ForkReferenceTransaction {
     ) {
       throw new RangeError(`${context} has an invalid guest pointer`);
     }
-    const memoryLength = this.requireMemory().buffer.byteLength;
+    const memoryLength = this.requireSpace().memory.buffer.byteLength;
     if (offset > memoryLength || byteLength > memoryLength - offset) {
       throw new RangeError(`${context} exceeds WebAssembly memory`);
     }
     return { offset, length: byteLength };
   }
 
-  private requireMemory(): WebAssembly.Memory {
-    if (!this.memory) {
+  private requireSpace(): ProcessAddressSpace {
+    if (!this.space) {
       throw new Error("fork reference transaction has no staging memory");
     }
-    return this.memory;
+    return this.space;
   }
 
   private assertU32(value: number, context: string): void {
@@ -2035,7 +2031,7 @@ export class ForkReferenceTransaction {
     // An exception or host callback may have aborted between reserve/release.
     // Zero every transaction-owned byte before returning its mappings.
     for (const chunk of this.scratchChunks) {
-      new Uint8Array(this.requireMemory().buffer, chunk.addr, chunk.size).fill(0);
+      this.requireSpace().zero(chunk.addr, chunk.size);
     }
     this.scratchReservations.length = 0;
     const chunks = this.scratchChunks.splice(0).reverse();

@@ -51,6 +51,7 @@ import { checkedHostFileOffset } from "./file-offset";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { isHostAppendContractError } from "./append-contract";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
+import { ProcessAddressSpace, type PageTableLocation } from "./process-address-space";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry, GbmMappingFault } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
@@ -846,6 +847,13 @@ export interface KernelCallbacks {
    * process is gone" and turns the GL call into a silent no-op.
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /**
+   * Resolve where `pid`'s page table lives inside its Memory, for a program
+   * rewritten by `wasm-memory-instrument`. The `host_proc_*` imports translate
+   * guest addresses through it. Omitted or `null`, the process Memory is the
+   * identity mapping.
+   */
+  getProcessPageTable?: (pid: number) => PageTableLocation | null;
   /**
    * The mutation epoch of `pid`'s memory while the process is provably
    * quiescent (every thread parked in a syscall, no vfork child borrowing
@@ -3695,7 +3703,7 @@ export class WasmPosixKernel {
             try {
               b.cmdbufView = new IntrinsicUint8Array(
                 wasmMemoryBuffer(memory),
-                b.cmdbufAddr,
+                b.cmdbufOffset,
                 b.cmdbufLen,
               );
               this.callbacks.onProcessMemoryTarget?.(
@@ -4176,11 +4184,7 @@ export class WasmPosixKernel {
               "host_proc_write_bytes process destination",
               true,
             );
-            intrinsicApply(
-              intrinsicUint8ArraySet,
-              new IntrinsicUint8Array(wasmMemoryBuffer(procMem)),
-              [src, destination.pointer],
-            );
+            this.#processAddressSpace(pid, procMem).write(destination.pointer, src);
             return 0;
           } catch (caught) { rethrowNativeGlFault(caught);
             return -14;
@@ -4194,7 +4198,8 @@ export class WasmPosixKernel {
           // Guest code may run once the task wakes: an epoch event.
           this.callbacks.onProcessMemoryChanged?.(pid);
           try {
-            const base = checkedWasmImportMemoryRange(procMem, channel, CH_ERRNO + 4, 8, "host_publish_wait_completion channel", true).pointer;
+            const address = checkedWasmImportMemoryRange(procMem, channel, CH_ERRNO + 4, 8, "host_publish_wait_completion channel", true).pointer;
+            const base = this.#processAddressSpace(pid, procMem).writable(address);
             const buffer = wasmMemoryBuffer(procMem), view = new IntrinsicDataView(buffer);
             intrinsicApply(intrinsicDataViewSetBigInt64, view, [base + CH_RETURN, ret, true]);
             intrinsicApply(intrinsicDataViewSetUint32, view, [base + CH_ERRNO, errno, true]);
@@ -4262,11 +4267,11 @@ export class WasmPosixKernel {
               "host_proc_read_bytes process source",
               true,
             );
-            const processView = new IntrinsicUint8Array(
-              wasmMemoryBuffer(procMem),
-              source.pointer,
-              source.length,
-            );
+            const space = this.#processAddressSpace(pid, procMem);
+            const physical = space.readableRun(source.pointer, source.length);
+            const processView = physical < 0
+              ? space.read(source.pointer, source.length)
+              : new IntrinsicUint8Array(wasmMemoryBuffer(procMem), physical, source.length);
             // WHY: this import consumes the authenticated Rust destination
             // synchronously. Copy straight into that allocation; a second
             // independent snapshot would duplicate every shared-mapping read.
@@ -4446,6 +4451,10 @@ export class WasmPosixKernel {
     );
   }
 
+  #processAddressSpace(pid: number, memory: WebAssembly.Memory): ProcessAddressSpace {
+    return new ProcessAddressSpace(memory, this.callbacks.getProcessPageTable?.(pid) ?? null);
+  }
+
   /** Compare a Rust-lent initialized snapshot without copying either side.
    * Exact 0/1 is equal/different; 2 requests a separately checked owned read.
    * Invalid ranges return EFAULT. All native authority stays synchronous. */
@@ -4471,6 +4480,10 @@ export class WasmPosixKernel {
         processMemory, addr, length, 8,
         "host_proc_compare_bytes process source", true,
       );
+      // A split range has no single process pointer to compare natively.
+      const physical = this.#processAddressSpace(pid, processMemory)
+        .readableRun(process.pointer, process.length);
+      if (physical < 0) return 2;
       // A provider may grow or replace memory. Revalidate this same borrow
       // after it returns, retaining the exact lent capacity and owner.
       if (memory !== this.#memory || generation !== this.#memoryGeneration)
@@ -4495,7 +4508,7 @@ export class WasmPosixKernel {
       });
       const exports = intrinsicApply(intrinsicWasmInstanceExports, instance, []) as WebAssembly.Exports;
       const result = intrinsicApply(exports.compare as Function, undefined, [
-        intrinsicBigInt(liveSnapshot.pointer), intrinsicBigInt(process.pointer), process.length,
+        intrinsicBigInt(liveSnapshot.pointer), intrinsicBigInt(physical), process.length,
       ]);
       return result === 0 || result === 1 ? result : -5;
     } catch {

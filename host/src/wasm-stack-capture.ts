@@ -2,6 +2,7 @@
 import * as wire from "./generated/program-extensions";
 import { checkedWasmGuestPointerOffset, type WasmGuestPointer } from "./wasm-guest-pointer";
 import { WasmDebugInfo } from "./wasm-debug-info";
+import type { ProcessAddressSpace } from "./process-address-space";
 
 const encoder = new TextEncoder();
 const MAX_STACK_CHARACTERS = 64 * 1024;
@@ -56,7 +57,7 @@ export function captureWasmStackText(): string {
 
 /** All state, metadata, memory access and capture remain in this worker. */
 export function createStackCaptureImport(
-  memory: WebAssembly.Memory,
+  space: ProcessAddressSpace,
   ptrWidth: 4 | 8,
   programBytes: ArrayBuffer | (() => ArrayBuffer),
   singleGuestModule: () => boolean,
@@ -69,7 +70,7 @@ export function createStackCaptureImport(
     let offset: number;
     try {
       offset = checkedWasmGuestPointerOffset(pointer, ptrWidth, "stack capture");
-      if (offset > memory.buffer.byteLength || capacity > memory.buffer.byteLength - offset) return wire.STACK_INVALID_ADDRESS;
+      if (offset > space.memory.buffer.byteLength || capacity > space.memory.buffer.byteLength - offset) return wire.STACK_INVALID_ADDRESS;
     } catch { return wire.STACK_INVALID_ADDRESS; }
     let frames: ReturnType<typeof parseWasmStack>;
     let known: boolean;
@@ -122,7 +123,7 @@ export function createStackCaptureImport(
     view.setUint32(wire.STACK_LENGTH_OFFSET, used, true);
     // Re-read after synchronous formatting: a host callback can grow memory.
     // No view of guest storage is retained, transferred or used across await.
-    new Uint8Array(memory.buffer, offset, used).set(packet.subarray(0, used));
+    space.write(offset, packet.subarray(0, used));
     return used;
   };
 }

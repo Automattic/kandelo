@@ -5,6 +5,7 @@ import {
 } from "../../src/fork-continuation";
 import { ForkModuleStateArena } from "../../src/fork-module-state";
 import { SingleActivationForkRuntime } from "../fork-instrument-runtime-harness";
+import { ProcessAddressSpace } from "../../src/process-address-space";
 
 const {
   module,
@@ -25,14 +26,14 @@ const {
 };
 
 const continuation = new LinkedForkContinuation(
-  memory,
+  new ProcessAddressSpace(memory, null),
   linkedFormat,
   () => { throw new Error("borrowed child must not allocate continuation state"); },
   () => { throw new Error("borrowed child must not release continuation state"); },
   "borrow-child-worker-e2e",
 );
 const newArena = () => new ForkModuleStateArena(
-  memory,
+  new ProcessAddressSpace(memory, null),
   linkedFormat.ptrWidth,
   () => { throw new Error("borrowed child must not allocate module state"); },
   () => { throw new Error("borrowed child must not release module state"); },

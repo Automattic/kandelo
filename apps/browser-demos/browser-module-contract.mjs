@@ -29,6 +29,11 @@ export const browserRootfsModuleSpecifier = "@rootfs-vfs";
  */
 export const browserImageModule32ModuleSpecifier = "@kandelo-image-module32-wasm";
 export const browserPositionedImageModule32ModuleSpecifier = "@kandelo-image-module-positioned32-wasm";
+/**
+ * The wasm32 build of `crates/memory-instrument`. `BrowserKernel` fetches it
+ * in `forkMemory: "share"` mode to rewrite a side module at `dlopen`.
+ */
+export const browserMemoryInstrument32ModuleSpecifier = "@kandelo-memory-instrument32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
 export const browserPartialImageModuleSpecifier = "virtual:kandelo-partial-image";
@@ -44,6 +49,7 @@ export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",
   [browserImageModule32ModuleSpecifier]: "kandelo-image-module32-wasm",
   [browserPositionedImageModule32ModuleSpecifier]: "kandelo-image-module-positioned32-wasm",
+  [browserMemoryInstrument32ModuleSpecifier]: "kandelo-memory-instrument32-wasm",
   [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

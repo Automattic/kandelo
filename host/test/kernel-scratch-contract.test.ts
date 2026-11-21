@@ -526,11 +526,11 @@ const ownershipSeeds: OwnershipSeed[] = [
   },
   {
     declaration:
-      "host/src/fork-continuation.ts::LinkedForkContinuation.$param:memory",
+      "host/src/process-address-space.ts::ProcessAddressSpace.$param:memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
-    why: "Fork continuation frames live in process memory.",
+    why: "An address space translates guest addresses inside its own process memory.",
   },
   {
     declaration: "host/src/dylink.ts::LoadSharedLibraryOptions.memory",
@@ -538,14 +538,6 @@ const ownershipSeeds: OwnershipSeed[] = [
     owner: "process-memory",
     form: "memory",
     why: "Dynamic linking writes into the requesting process memory.",
-  },
-  {
-    declaration:
-      "host/src/thread-allocator.ts::ThreadPageAllocator.allocate.$param:memory",
-    target: "value",
-    owner: "process-memory",
-    form: "memory",
-    why: "Thread control pages are allocations inside process memory.",
   },
   {
     declaration: "host/src/framebuffer/registry.ts::FbBinding.hostBuffer",
@@ -829,11 +821,11 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#pickKernelSignalTargetTid::kernel-export-direct-use::pickSignalTarget(pid, signum)",
   ),
-  // A pid and the guest-memory offset of its main channel in, a status out:
+  // A pid and the guest address of its main channel in, a status out:
   // the address is guest memory the kernel reads later through
   // host_proc_read_bytes, never a kernel-memory pointer.
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(stableChannelOffsets[0]!))",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(channelAddress))",
   ),
   // Kernel-owned waits (wait_park): no arguments, a relative deadline in
   // nanoseconds (or -1) out.
@@ -1268,6 +1260,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "The dedicated worker captures the intrinsic Memory buffer getter before callbacks can mutate built-ins; this exact prototype access retains no Memory instance or backing buffer.",
   },
   {
+    key: "host/src/process-address-space.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-control",
+    why: "The process address space captures the intrinsic Memory buffer getter before host hooks run, so guest-address translation cannot be redirected to a fake buffer; no Memory instance is captured here.",
+  },
+  {
     key: "host/src/kernel.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-control",
     why: "The kernel wrapper captures the intrinsic Memory buffer getter before any host hook runs so later range checks cannot be redirected to a fake buffer; no Memory instance is captured here.",
@@ -1420,6 +1417,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This is the small Rust metadata module, not a kernel. The sole supplied import is freshly created private worker memory, with no filesystem, OPFS, process or device capabilities. Worker retirement owns the entire instance after success, refusal, cancellation or parser allocation failure.",
+  },
+  {
+    key: "host/src/memory-instrument.ts::instrumentSideModule::wasm-instance-authority::new WebAssembly.Instance(instrumenter)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This is the Rust side-module rewriter, not a kernel. It imports nothing and owns private nonshared memory. The process Worker copies the side-module bytes in and the rewritten bytes out; the instance receives neither kernel nor guest linear memory and is unreachable after the call returns.",
   },
   {
     key: 'images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.instantiatePositioned::wasm-instance-authority::new WebAssembly.Instance(module, { env })',

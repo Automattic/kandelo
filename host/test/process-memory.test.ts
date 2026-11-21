@@ -10,6 +10,7 @@ import {
   createProcessMemory,
 } from "../src/process-memory";
 import { WASM_PAGE_SIZE, DEFAULT_MAX_PAGES, CH_TOTAL_SIZE, PAGES_PER_THREAD } from "../src/constants";
+import { GROUP_HEADER_BYTES } from "../src/process-address-space";
 
 function uleb128(n: number): number[] {
   const bytes: number[] = [];
@@ -106,6 +107,21 @@ describe("process memory layout", () => {
     expect(layout.brkBase).toBe(layout.controlEnd);
     expect(layout.mmapBase).toBe(layout.brkBase);
     expect(layout.brkLimit).toBe(layout.maxAddr);
+  });
+
+  it("ends the control slab with the group header of a memory-instrumented program", () => {
+    const heapBase = 0x00120000;
+    const plain = computeProcessMemoryLayout({ ptrWidth: 4, heapBase });
+    const layout = computeProcessMemoryLayout({ ptrWidth: 4, heapBase, pageTable: 0x00100000 });
+
+    expect(plain.pageTable).toBeNull();
+    expect(layout.pageTable).toEqual({
+      table: 0x00100000,
+      group: layout.threadArenaEndPage * WASM_PAGE_SIZE,
+    });
+    expect(layout.brkBase).toBe(plain.brkBase + GROUP_HEADER_BYTES);
+    expect(layout.controlEnd).toBe(layout.brkBase);
+    expect(layout.initialPages * WASM_PAGE_SIZE).toBeGreaterThanOrEqual(layout.brkBase);
   });
 
   it("fails fast when maxPages cannot fit an explicitly preallocated thread slab", () => {

@@ -13,6 +13,7 @@ import {
   browserImageModule32ModuleSpecifier,
   browserPositionedImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
+  browserMemoryInstrument32ModuleSpecifier,
   browserRootfsModuleSpecifier,
 } from "../apps/browser-demos/browser-module-contract.mjs";
 
@@ -23,6 +24,7 @@ import {
 const BROWSER_WASM_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
   [browserImageModule32ModuleSpecifier, "kandelo_image_module32.wasm"],
   [browserPositionedImageModule32ModuleSpecifier, "kandelo_image_module_positioned32.wasm"],
+  [browserMemoryInstrument32ModuleSpecifier, "kandelo_memory_instrument32.wasm"],
 ];
 
 export function browserAssetImportsForPolicy(

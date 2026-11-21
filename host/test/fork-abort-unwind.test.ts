@@ -11,6 +11,7 @@ import {
 } from "../src/fork-continuation";
 import { ForkModuleStateArena } from "../src/fork-module-state";
 import { SingleActivationForkRuntime } from "./fork-instrument-runtime-harness";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 describe("instrumented ABORT_UNWINDING", () => {
   it("reconstructs committed inner frames and permits a later successful fork", () => {
@@ -65,7 +66,7 @@ describe("instrumented ABORT_UNWINDING", () => {
       let nextArenaAddress = 5 * 65_536;
       const released: Array<{ addr: number; size: number }> = [];
       const continuation = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         readLinkedFrameFormat(module),
         (size) => {
           if (failGrowth && nextAddress !== 65_536) {
@@ -84,7 +85,7 @@ describe("instrumented ABORT_UNWINDING", () => {
         memory,
         continuation,
         newArena: () => new ForkModuleStateArena(
-          memory,
+          new ProcessAddressSpace(memory, null),
           4,
           (size) => {
             const address = nextArenaAddress;
@@ -258,7 +259,7 @@ describe("instrumented ABORT_UNWINDING", () => {
         && view.getUint32(base + scratchPayloadOffset, true) === sentinel;
 
       const continuation = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         readLinkedFrameFormat(module),
         (size) => {
           allocationSizes.push(size);
@@ -278,7 +279,7 @@ describe("instrumented ABORT_UNWINDING", () => {
         memory,
         continuation,
         newArena: () => new ForkModuleStateArena(
-          memory,
+          new ProcessAddressSpace(memory, null),
           4,
           (size) => {
             const address = nextArenaAddress;

@@ -148,6 +148,13 @@ describe("ProcessMemoryAllocator", () => {
     expect(() => owner.retainAlias()).toThrow(
       "Cannot retain process memory after forced termination",
     );
+    const forkChild = owner.retainAddressSpace();
+    expect(forkChild.memory).toBe(owner.memory);
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveAliases: 2,
+    });
+    forkChild.release();
 
     owner.release();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));

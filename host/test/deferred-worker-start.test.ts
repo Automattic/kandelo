@@ -785,7 +785,7 @@ function actualCloneRetirementControl(
   const memoryLease = allocator.acquire({ ptrWidth, initialPages: 4, maximumPages: 4 });
   const memory = memoryLease.memory;
   const slots = new Set<number>(), events: ProcessGenerationEventData[] = [];
-  const info = { memory, memoryLease, workerQuiescence: createWorkerQuiescence(), programBytes: new ArrayBuffer(0), ptrWidth, channelOffset: 0,
+  const info = { memory, memoryLease, workerQuiescence: createWorkerQuiescence(), programBytes: new ArrayBuffer(0), ptrWidth, channelOffset: 0, layout: { channelOffset: 131072 },
     externrefGeneration: { id: 1 }, memoryRetirementSafe: true,
     threadAllocator: {
       allocate() { slots.add(1); return { basePage: 1, slotStartPage: 1, channelOffset: 65536, tlsOffset: 0, tlsAllocAddr: 0 }; },
@@ -809,6 +809,7 @@ function actualCloneRetirementControl(
     kernelWorker: {
       isExecHandoffActive: () => false, isProcessExecutionActive: () => true,
       attachThreadChannel() {}, getKernelAbiVersion: () => 56, getKernelAbiContractDigest: () => "source-control",
+      getProcessAddressSpace: () => undefined,
       startProcessWorkerWhenRunnable(_pid: number, _memory: WebAssembly.Memory, launch: () => void, stop: () => void) {
         start = launch; cancel = stop;
         if (disposition === "started-stale" || disposition === "termination-failure" || disposition === "started") { launch(); return disposition === "started" ? "started" : "stale"; }
@@ -829,6 +830,7 @@ function actualCloneRetirementControl(
     delay: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
     THREADED_WORKER_TERMINATION_SETTLE_MS: 250,
     exitedThreadWorkersOutliveThreads: false,
+    memoryInstrumenter: undefined,
   };
   const actual = new Function(...Object.keys(deps), code + "\nreturn {clone:handleClone,batch:terminateThreadWorkers};")(...Object.values(deps));
   const clone = actual.clone;
@@ -938,6 +940,7 @@ for (const host of ["node", "browser"] as const) for (const ptrWidth of [4, 8] a
       release(); await ack;
       await r.admitted.termination; await exited;
       expect(r.createWorker).toHaveBeenCalledOnce();
+      expect(r.createWorker.mock.calls[0][0]).toMatchObject({ processChannelOffset: 0, processChannelAddress: 131072 });
       expect(r.admitted.workerAbsence?.proven ?? false).toBe(false);
       expect(r.admitted.workerQuiescence.settled).toBe(true);
       expect(r.slots.size).toBe(0);

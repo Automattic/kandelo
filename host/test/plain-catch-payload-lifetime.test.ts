@@ -13,6 +13,7 @@ import {
   readForkModuleStateRoot,
 } from "../src/fork-module-state";
 import { SingleActivationForkRuntime } from "./fork-instrument-runtime-harness";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const FIRST_PAYLOAD = 0x1234;
 const SECOND_PAYLOAD = 0x5678;
@@ -70,7 +71,7 @@ describe("plain-catch payload lifetime", () => {
       let secondCaptureKeptReleasedMemory = false;
       let normalForkCalls = 0;
       const continuation = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         readLinkedFrameFormat(module),
         () => 65_536,
         () => {},
@@ -83,7 +84,7 @@ describe("plain-catch payload lifetime", () => {
         memory,
         continuation,
         newArena: () => new ForkModuleStateArena(
-          memory,
+          new ProcessAddressSpace(memory, null),
           4,
           (size) => {
             const address = nextArenaAddress;
@@ -229,7 +230,7 @@ describe("plain-catch payload lifetime", () => {
       let normalForkCalls = 0;
       let recursiveCaptureKeptLowMemory = false;
       const continuation = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         readLinkedFrameFormat(module),
         () => 65_536,
         () => {},
@@ -241,7 +242,7 @@ describe("plain-catch payload lifetime", () => {
         memory,
         continuation,
         newArena: () => new ForkModuleStateArena(
-          memory,
+          new ProcessAddressSpace(memory, null),
           4,
           () => 2 * 65_536,
           () => {},
@@ -361,7 +362,7 @@ describe("plain-catch payload lifetime", () => {
         let moduleBuffer = 0;
         let nextParentArenaAddress = 2 * 65_536;
         const parentContinuation = new LinkedForkContinuation(
-          parentMemory,
+          new ProcessAddressSpace(parentMemory, null),
           readLinkedFrameFormat(module),
           () => 65_536,
           () => {},
@@ -373,7 +374,7 @@ describe("plain-catch payload lifetime", () => {
           memory: parentMemory,
           continuation: parentContinuation,
           newArena: () => new ForkModuleStateArena(
-            parentMemory,
+            new ProcessAddressSpace(parentMemory, null),
             4,
             (size) => {
               const address = nextParentArenaAddress;
@@ -415,7 +416,7 @@ describe("plain-catch payload lifetime", () => {
           );
 
           const childContinuation = new LinkedForkContinuation(
-            childMemory,
+            new ProcessAddressSpace(childMemory, null),
             readLinkedFrameFormat(module),
             () => {
               throw new Error("fresh child replay must not allocate a continuation");
@@ -454,7 +455,7 @@ describe("plain-catch payload lifetime", () => {
           childRuntime.register(childInstance, { bootstrap: false });
           childRuntime.setCopiedProcessLaunchRoot(moduleBuffer);
           const copiedArena = new ForkModuleStateArena(
-            childMemory,
+            new ProcessAddressSpace(childMemory, null),
             4,
             () => {
               throw new Error(
@@ -465,7 +466,7 @@ describe("plain-catch payload lifetime", () => {
             "mixed-catch-child module state",
           );
           copiedArena.attach(
-            readForkModuleStateRoot(childMemory, moduleBuffer, 4),
+            readForkModuleStateRoot(new ProcessAddressSpace(childMemory, null), moduleBuffer, 4),
           );
           childRuntime.coordinator.attachChild(copiedArena);
           const childRun = childInstance.exports.run as (takePlain: number) => number;

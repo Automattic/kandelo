@@ -36,6 +36,7 @@ import {
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 import { createKernelSharedMappingStub } from "./support/kernel-shared-mapping-stub";
@@ -1673,12 +1674,12 @@ describe("exec host-state transition", () => {
     bytes[stringPtr + 5000] = 0;
     const worker = createWorker({});
 
-    const parsed = worker.readStringArrayFromProcess(bytes, arrayPtr, 4);
+    const parsed = worker.readStringArrayFromProcess(new ProcessAddressSpace(memory, null), arrayPtr, 4);
     expect(parsed).toEqual({ values: ["a".repeat(5000)] });
 
     bytes.fill("b".charCodeAt(0), stringPtr, stringPtr + 65_537);
     bytes[stringPtr + 65_537] = 0;
-    expect(worker.readStringArrayFromProcess(bytes, arrayPtr, 4)).toEqual({ errno: 7 });
+    expect(worker.readStringArrayFromProcess(new ProcessAddressSpace(memory, null), arrayPtr, 4)).toEqual({ errno: 7 });
   });
 
   it("accepts a pointer array whose terminator follows 1024 entries", () => {
@@ -1695,7 +1696,7 @@ describe("exec host-state transition", () => {
     view.setUint32(arrayPtr + 1024 * 4, 0, true);
     const worker = createWorker({});
 
-    const parsed = worker.readStringArrayFromProcess(bytes, arrayPtr, 4);
+    const parsed = worker.readStringArrayFromProcess(new ProcessAddressSpace(memory, null), arrayPtr, 4);
     expect("values" in parsed && parsed.values).toHaveLength(1024);
   });
 
@@ -1727,7 +1728,7 @@ describe("exec host-state transition", () => {
       const worker = createWorker({});
 
       const exact = worker.readStringArrayFromProcess(
-        bytes,
+        new ProcessAddressSpace(memory, null),
         arrayPtr,
         pointerWidth,
         PROCESS_STARTUP_MAX_ARGV_COUNT,
@@ -1738,7 +1739,7 @@ describe("exec host-state transition", () => {
       setPointer(PROCESS_STARTUP_MAX_ARGV_COUNT, stringPtr);
       expect(
         worker.readStringArrayFromProcess(
-          bytes,
+          new ProcessAddressSpace(memory, null),
           arrayPtr,
           pointerWidth,
           PROCESS_STARTUP_MAX_ARGV_COUNT,
@@ -1808,22 +1809,22 @@ describe("exec host-state transition", () => {
 
     bytes.fill("a".charCodeAt(0), pathPtr, pathPtr + 4095);
     bytes[pathPtr + 4095] = 0;
-    expect(worker.readExecPathFromProcess(bytes, pathPtr)).toEqual({
+    expect(worker.readExecPathFromProcess(new ProcessAddressSpace(memory, null), pathPtr)).toEqual({
       value: "a".repeat(4095),
     });
 
     bytes.fill("b".charCodeAt(0), pathPtr, pathPtr + 4096);
     bytes[pathPtr + 4096] = 0;
-    expect(worker.readExecPathFromProcess(bytes, pathPtr)).toEqual({ errno: 36 });
+    expect(worker.readExecPathFromProcess(new ProcessAddressSpace(memory, null), pathPtr)).toEqual({ errno: 36 });
 
     bytes[bytes.byteLength - 1] = "c".charCodeAt(0);
-    expect(worker.readExecPathFromProcess(bytes, bytes.byteLength - 1)).toEqual({ errno: 14 });
-    expect(worker.readExecPathFromProcess(bytes, 0)).toEqual({ errno: 14 });
+    expect(worker.readExecPathFromProcess(new ProcessAddressSpace(memory, null), bytes.byteLength - 1)).toEqual({ errno: 14 });
+    expect(worker.readExecPathFromProcess(new ProcessAddressSpace(memory, null), 0)).toEqual({ errno: 14 });
   });
 
   it("flushes file-backed mappings before commit and forgets them afterward", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
-    const channel = { pid: 7, memory };
+    const channel = { pid: 7, memory, addressSpace: new ProcessAddressSpace(memory, null) };
     const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const writes: Array<{ fd: number; length: number; offset: number }> = [];
     const kernelHandleChannel = vi.fn((scratch: number) => {
@@ -2242,6 +2243,7 @@ function pendingExecProcesses(pid = 7): Map<number, unknown> {
   const channel = {
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channelOffset,
     i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,
@@ -2542,6 +2544,7 @@ function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset: n
   return {
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channelOffset,
     i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,

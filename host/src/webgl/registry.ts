@@ -75,6 +75,10 @@ export type GlBindingInput = {
   /** Wasm-process address where the cmdbuf was mmap'd (set by the
    *  kernel's `host_gl_bind` call). */
   cmdbufAddr: number;
+  /** Offset of the cmdbuf within the process's wasm Memory. The kernel
+   *  worker sets it when the mapping has its pages; `cmdbufAddr` until
+   *  then. */
+  cmdbufOffset?: number;
   /** Cmdbuf length in bytes (always `shared::gl::CMDBUF_LEN` = 1 MiB
    *  in v1). */
   cmdbufLen: number;
@@ -112,7 +116,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
    * (private-client-draw.ts); created on first use, deleted with the
    * context. Never a guest name. */
   clientArrayStream: WebGLBuffer | null;
-  /** Lazy view of `[cmdbufAddr, cmdbufAddr+cmdbufLen)` of the process's
+  cmdbufOffset: number;
+  /** Lazy view of `[cmdbufOffset, cmdbufOffset+cmdbufLen)` of the process's
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
   cmdbufView: Uint8Array | null;
@@ -322,6 +327,7 @@ export class GlContextRegistry {
       surface: createSurfaceResources(b.pid), drawSurface: null, readSurface: null,
       objects: createGlObjectGroup(),
       pid: b.pid, cmdbufAddr: b.cmdbufAddr, cmdbufLen: b.cmdbufLen,
+      cmdbufOffset: b.cmdbufOffset ?? b.cmdbufAddr,
       sessionId,
       displayFileId: b.displayFileId ?? null,
       currentDrawable: null,
@@ -375,7 +381,7 @@ export class GlContextRegistry {
     try {
       if (!record) {
         const replacement = this.newBinding({pid:b.pid,sessionId:b.sessionId,cmdbufAddr:b.cmdbufAddr,
-          cmdbufLen:b.cmdbufLen},b.canvas);
+          cmdbufOffset:b.cmdbufOffset,cmdbufLen:b.cmdbufLen},b.canvas);
         record = {binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
           references:0,retired:false,records:this.executionRecords,
           contexts:this.executions,gpuBos:this.gpuBos};

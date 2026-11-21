@@ -82,7 +82,10 @@ import { assertDeclaredEnvImports } from "./env-imports";
 import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
+  channelStopOffset,
 } from "./process-memory";
+import { ProcessAddressSpace } from "./process-address-space";
+import { processDataView } from "./process-data-view";
 import {
   ContinuationAllocationError,
   invokeForkContinuationBegin,
@@ -442,7 +445,7 @@ function encodeStartupMetadata(
 }
 
 function buildKernelImports(
-  memory: WebAssembly.Memory,
+  addressSpace: ProcessAddressSpace,
   channelOffset: number,
   ptrWidth: 4 | 8,
   argv: string[] | undefined,
@@ -450,6 +453,7 @@ function buildKernelImports(
   secureExec: boolean,
   onKernelExit?: (status: number) => void,
 ): KernelImports {
+  const memory = addressSpace.memory;
   const metadata = encodeStartupMetadata(argv ?? [], envVars ?? [], ptrWidth);
   // The legacy clone payload remains a fixed wasm32 pair in CH_DATA.
   const n = (value: number | bigint): number =>
@@ -493,7 +497,7 @@ function buildKernelImports(
     }
     // The encoded source is an immutable launch snapshot, and this direct
     // import has no await or callback between the range proof and full copy.
-    new Uint8Array(memory.buffer, range.offset, range.length).set(encoded);
+    addressSpace.write(range.offset, encoded);
     return encoded.byteLength;
   };
 
@@ -653,7 +657,7 @@ export function buildKernelImportsForTest(
   secureExec: boolean = false,
 ): Record<string, WebAssembly.ExportValue> {
   return buildKernelImports(
-    memory,
+    new ProcessAddressSpace(memory, null),
     channelOffset,
     ptrWidth,
     argv,
@@ -700,6 +704,7 @@ export interface DlopenSupport {
 
 interface ProcessDylinkActivationOwnerOptions {
   readonly memory: WebAssembly.Memory;
+  readonly addressSpace: ProcessAddressSpace;
   readonly ptrWidth: 4 | 8;
   readonly channelOffset: number;
   readonly forkUnwindTag: WebAssembly.Tag | undefined;
@@ -811,7 +816,7 @@ function createProcessDylinkActivationOwner(
       let importedStateRegistered = false;
       let importsWrapped = false;
       const continuation = new LinkedForkContinuation(
-        options.memory,
+        options.addressSpace,
         readLinkedFrameFormat(request.module),
         (size) =>
           continuationMmap(
@@ -1138,7 +1143,7 @@ function checkedWasmMemoryRange(
  */
 /** @internal Exported so the pointer-width host import contract can be tested directly. */
 export function buildDlopenImports(
-  memory: WebAssembly.Memory,
+  addressSpace: ProcessAddressSpace,
   channelOffset: number,
   archiveControlAddr: number,
   getTable: () => WebAssembly.Table | undefined,
@@ -1160,6 +1165,7 @@ export function buildDlopenImports(
   memoryOwnership: "copied" | "borrowed" = "copied",
   forkSideModuleContract?: ForkSideModuleContract,
   stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
+  memoryInstrumenter?: WebAssembly.Module,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1170,6 +1176,7 @@ export function buildDlopenImports(
       `invalid dynamic-loader Worker identity ${String(workerIdentity)}`,
     );
   }
+  const memory = addressSpace.memory;
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
   let instantiatingModules = 0;
@@ -1190,7 +1197,7 @@ export function buildDlopenImports(
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
-        [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
+        [STACK_IMPORT]: createStackCaptureImport(addressSpace, ptrWidth, stackProgramBytes,
           () => loadedLibraries.size === 0 && instantiatingModules === 0),
       },
     }),
@@ -1696,7 +1703,7 @@ export function buildDlopenImports(
     let openResult: { result: number; errno: number } | undefined;
     let pathFailure: unknown;
     try {
-      new Uint8Array(memory.buffer, pathAddr, pathBytes.length).set(pathBytes);
+      addressSpace.write(pathAddr, pathBytes);
       openResult = invokeChannelSyscall(ABI_SYSCALLS.Openat, [
         -100,
         pathAddr,
@@ -1766,9 +1773,7 @@ export function buildDlopenImports(
             `dlopen dependency ${path} exceeds ${maxBytes} bytes`,
           );
         }
-        chunks.push(
-          new Uint8Array(new Uint8Array(memory.buffer, chunkAddr, read.result)),
-        );
+        chunks.push(addressSpace.read(chunkAddr, read.result));
       }
     } catch (error) {
       failure = error;
@@ -1894,6 +1899,8 @@ export function buildDlopenImports(
 
     linker = new DynamicLinker({
       memory,
+      addressSpace,
+      memoryInstrumenter,
       table,
       stackPointer: sp,
       allocateMemory,
@@ -1931,7 +1938,7 @@ export function buildDlopenImports(
   };
 
   const forkArchive = new DylinkForkArchive(
-    memory,
+    addressSpace,
     ptrWidth,
     readArchiveHead,
     writeArchiveHead,
@@ -2012,16 +2019,6 @@ export function buildDlopenImports(
       ptrWidth,
       "__wasm_dlopen_prepare name",
     );
-    const bytes = new Uint8Array(
-      memory.buffer,
-      bytesRange.offset,
-      bytesRange.length,
-    );
-    const nameBytes = new Uint8Array(
-      memory.buffer,
-      nameRange.offset,
-      nameRange.length,
-    );
     // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // The copy also guards against memory grow/detach, so it stays even if the engine is fixed.
     // WHY: compilation may grow/detach memory, and Firefox/Chrome reject
@@ -2032,8 +2029,8 @@ export function buildDlopenImports(
       // lowering supplies an empty name range for that exact form.
       name: nameRange.length === 0 && bytesRange.length !== 0
         ? `dlopen:${bytesRange.offset}:${bytesRange.length}`
-        : decoder.decode(new Uint8Array(nameBytes)),
-      bytes: new Uint8Array(bytes),
+        : decoder.decode(addressSpace.read(nameRange.offset, nameRange.length)),
+      bytes: addressSpace.read(bytesRange.offset, bytesRange.length),
     };
   };
 
@@ -2128,7 +2125,7 @@ export function buildDlopenImports(
           "__wasm_dlopen_next handle",
         );
         const { entry, handle } = linker.advanceDlopenSync(transaction);
-        new DataView(memory.buffer).setInt32(handleRange.offset, handle, true);
+        processDataView(addressSpace).setInt32(handleRange.offset, handle, true);
         if (entry > 0) {
           // Publish the exact provisional activation/stage before libc can
           // enter it. A fork from that table call can therefore reconstruct
@@ -2220,24 +2217,14 @@ export function buildDlopenImports(
           return getLinker().dlopenMain();
         }
 
-        const bytes = new Uint8Array(
-          memory.buffer,
-          bytesRange.offset,
-          bytesRange.length,
-        );
         // Copy bytes since memory.buffer may detach during Wasm instantiation
-        const bytesCopy = new Uint8Array(bytes);
+        const bytesCopy = addressSpace.read(bytesRange.offset, bytesRange.length);
         // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
         // TextDecoder.decode() rejects views backed by SharedArrayBuffer
         // in Firefox (and recent Chrome), so copy the name bytes through
         // a non-shared Uint8Array before decoding. Same shape as
         // bytesCopy above.
-        const nameBytesView = new Uint8Array(
-          memory.buffer,
-          nameRange.offset,
-          nameRange.length,
-        );
-        const nameBytesCopy = new Uint8Array(nameBytesView);
+        const nameBytesCopy = addressSpace.read(nameRange.offset, nameRange.length);
         const name = decoder.decode(nameBytesCopy);
         const lk = getLinker();
         const handle = lk.dlopenSync(
@@ -2278,12 +2265,7 @@ export function buildDlopenImports(
           ptrWidth,
           "__wasm_dlsym name",
         );
-        const nameBytesView = new Uint8Array(
-          memory.buffer,
-          nameRange.offset,
-          nameRange.length,
-        );
-        const nameBytesCopy = new Uint8Array(nameBytesView);
+        const nameBytesCopy = addressSpace.read(nameRange.offset, nameRange.length);
         const name = decoder.decode(nameBytesCopy);
         const result = getLinker().dlsym(handle, name);
         notifyCommit(undefined);
@@ -2332,9 +2314,7 @@ export function buildDlopenImports(
         ptrWidth,
         "__wasm_dlerror buffer",
       );
-      new Uint8Array(memory.buffer, range.offset, range.length).set(
-        encoded.subarray(0, range.length),
-      );
+      addressSpace.write(range.offset, encoded.subarray(0, range.length));
       return range.length;
     },
   };
@@ -3046,6 +3026,10 @@ export async function centralizedWorkerMain(
   let kernelExitStatus: number | null = null;
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
+    const channelAddress = initData.channelAddress ?? channelOffset;
+    const addressSpace = new ProcessAddressSpace(memory, initData.pageTable
+      ? { ...initData.pageTable, stop: channelStopOffset(channelOffset) }
+      : null);
     // WHY: the kernel keeps its own copy of the program bytes, and a running
     // process never reads them again. Detaching frees them at once: an idle
     // process worker waits in Atomics.wait and rarely collects garbage.
@@ -3157,7 +3141,7 @@ export async function centralizedWorkerMain(
     const processCppExceptionTag = createCppExceptionTag(ptrWidth);
     const processForkUnwindTag = createForkUnwindTag();
     const kernelImports = buildKernelImports(
-      memory,
+      addressSpace,
       channelOffset,
       ptrWidth,
       initData.argv || [],
@@ -3271,7 +3255,7 @@ export async function centralizedWorkerMain(
       }
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
       const forkContinuation = new LinkedForkContinuation(
-        memory,
+        addressSpace,
         linkedFrameFormat,
         (size) => continuationMmap(memory, channelOffset, size, `pid=${pid}`),
         (addr, size) =>
@@ -3288,7 +3272,7 @@ export async function centralizedWorkerMain(
       const borrowedOwnArenaMappings = new Set<number>();
       const newModuleStateArena = (): ForkModuleStateArena =>
         new ForkModuleStateArena(
-          memory,
+          addressSpace,
           ptrWidth,
           (size) => {
             const address = continuationMmap(
@@ -3356,7 +3340,7 @@ export async function centralizedWorkerMain(
       // mappings like any process's.
       let borrowedReplayAttached = false;
       const activationRegistry = new ForkActivationRegistry(
-        memory,
+        addressSpace,
         externrefRecipes,
         `pid=${pid}: fork activations`,
         (size) => borrowedWorkspace && !borrowedReplayAttached
@@ -3394,7 +3378,7 @@ export async function centralizedWorkerMain(
       const referenceReplay = (): ProcessReferenceReplayImports =>
         earlyChildReferences ?? activationRegistry.currentReferences();
       const processContinuation = new ForkProcessContinuationCoordinator(
-        memory,
+        addressSpace,
         activationRegistry,
         `pid=${pid}: process continuation`,
       );
@@ -3410,7 +3394,9 @@ export async function centralizedWorkerMain(
       const tableReplicationImports: ForkActivationTableReplication = {
         generationAddress: new WebAssembly.Global(
           { value: "i64", mutable: false },
-          BigInt(tableGenerationAddress),
+          BigInt(borrowedForkChild
+            ? tableGenerationAddress
+            : channelAddress - FORK_BUF_SIZE - tableGenerationOffset),
         ),
         reconcile: (): bigint => processTableReplication?.reconcile() ?? 0n,
         beginMutation: (): bigint =>
@@ -3544,7 +3530,7 @@ export async function centralizedWorkerMain(
           );
         }
         const moduleStateRoot = readForkModuleStateRoot(
-          memory,
+          addressSpace,
           inheritedLaunchRoot,
           ptrWidth,
         );
@@ -3743,6 +3729,7 @@ export async function centralizedWorkerMain(
       const dylinkForkActivationOwner = hasDylinkForkRole
         ? createProcessDylinkActivationOwner({
             memory,
+            addressSpace,
             ptrWidth,
             channelOffset,
             forkUnwindTag: processForkUnwindTag,
@@ -3774,7 +3761,7 @@ export async function centralizedWorkerMain(
 
       // Build import object and instantiate
       const dlopenSupport = buildDlopenImports(
-        memory,
+        addressSpace,
         channelOffset,
         dlopenArchiveControlAddr,
         () =>
@@ -3800,6 +3787,7 @@ export async function centralizedWorkerMain(
         forkMemoryOwnership,
         readForkSideModuleContract(module),
         programBytes,
+        initData.memoryInstrumenter,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3878,7 +3866,7 @@ export async function centralizedWorkerMain(
             read: (recipeId) => activationRegistry.readEarlyGcTransit(recipeId),
             abort: () => activationRegistry.abortEarlyGcTransit(),
           },
-          memory,
+          space: addressSpace,
           allocateScratch: (size) => borrowedWorkspace
             ? borrowedWorkspace.allocateScratch(size)
             : continuationMmap(
@@ -3967,7 +3955,7 @@ export async function centralizedWorkerMain(
         module,
         memory,
         kernelImports,
-        channelOffset,
+        channelAddress,
         dlopenSupport.imports,
         ptrWidth,
         processLongjmpTag,
@@ -4026,6 +4014,14 @@ export async function centralizedWorkerMain(
         throw error;
       }
       processInstance = instance;
+      if (initData.pageTable !== undefined) {
+        (instance.exports.__memory_table_base as WebAssembly.Global).value =
+          initData.pageTable.table;
+        (instance.exports.__memory_group_base as WebAssembly.Global).value =
+          initData.pageTable.group;
+        (instance.exports.__memory_stop_base as WebAssembly.Global).value =
+          channelStopOffset(channelOffset);
+      }
       mainImportedStatePreparation?.complete(instance);
       mainExceptionProvider = forkExceptionProviderFromInstance(0, instance);
       const mainTypedReferenceProvider = forkGcCodecProviderFromInstance(
@@ -4083,8 +4079,8 @@ export async function centralizedWorkerMain(
         setupChannelBase(
           instance,
           module,
-          memory,
-          channelOffset,
+          addressSpace,
+          channelAddress,
           programBytes as ArrayBuffer,
           ptrWidth,
         );
@@ -4161,8 +4157,8 @@ export async function centralizedWorkerMain(
         setupChannelBase(
           instance,
           module,
-          memory,
-          channelOffset,
+          addressSpace,
+          channelAddress,
           programBytes as ArrayBuffer,
           ptrWidth,
         );
@@ -4334,7 +4330,7 @@ export async function centralizedWorkerMain(
 
       let processInstance: WebAssembly.Instance | null = null;
       const dlopenSupport = buildDlopenImports(
-        memory,
+        addressSpace,
         channelOffset,
         dlopenArchiveControlAddr,
         () =>
@@ -4356,6 +4352,7 @@ export async function centralizedWorkerMain(
         undefined,
         readForkSideModuleContract(module),
         programBytes,
+        initData.memoryInstrumenter,
       );
       const importObject = buildImportObject(
         module,
@@ -4386,7 +4383,7 @@ export async function centralizedWorkerMain(
       setupChannelBase(
         instance,
         module,
-        memory,
+        addressSpace,
         channelOffset,
         programBytes as ArrayBuffer,
         ptrWidth,
@@ -4694,7 +4691,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
 function setupChannelBase(
   instance: WebAssembly.Instance,
   module: WebAssembly.Module,
-  memory: WebAssembly.Memory,
+  addressSpace: ProcessAddressSpace,
   channelOffset: number,
   programBytes?: ArrayBuffer,
   ptrWidth: 4 | 8 = 4,
@@ -4715,7 +4712,7 @@ function setupChannelBase(
 
   // Legacy TLS-based approach: write channelOffset into the TLS slot.
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
-  const view = new DataView(memory.buffer);
+  const view = processDataView(addressSpace);
   const tlsAddr = tlsBase ? Number(tlsBase.value) : 0;
 
   if (tlsAddr > 0) {
@@ -5298,6 +5295,10 @@ export async function centralizedThreadWorkerMain(
   // WHY: synchronize the received memory before this isolate binds any view
   // or Wasm instance to a possibly stale fixed-length view of its backing.
   synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
+  const channelAddress = initData.channelAddress ?? channelOffset;
+  const addressSpace = new ProcessAddressSpace(memory, initData.pageTable
+    ? { ...initData.pageTable, stop: channelStopOffset(channelOffset) }
+    : null);
 
   let threadInstance: WebAssembly.Instance | undefined;
   let threadProcessContinuation: ForkProcessContinuationCoordinator | null =
@@ -5421,7 +5422,7 @@ export async function centralizedThreadWorkerMain(
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
     const threadForkContinuation = hasForkInstrumentation
       ? new LinkedForkContinuation(
-          memory,
+          addressSpace,
           readLinkedFrameFormat(module),
           (size) =>
             continuationMmap(
@@ -5446,7 +5447,7 @@ export async function centralizedThreadWorkerMain(
       : null;
     const newThreadModuleStateArena = (): ForkModuleStateArena =>
       new ForkModuleStateArena(
-        memory,
+        addressSpace,
         ptrWidth,
         (size) =>
           continuationMmap(
@@ -5467,7 +5468,7 @@ export async function centralizedThreadWorkerMain(
       );
     const threadActivationRegistry = hasForkInstrumentation
       ? new ForkActivationRegistry(
-          memory,
+          addressSpace,
           new ForkExternrefTokenRecipeProvider(
             threadExternrefTokens!,
             (value) =>
@@ -5500,7 +5501,7 @@ export async function centralizedThreadWorkerMain(
       : null;
     threadProcessContinuation = threadActivationRegistry
       ? new ForkProcessContinuationCoordinator(
-          memory,
+          addressSpace,
           threadActivationRegistry,
           `pid=${pid} tid=${tid}: process continuation`,
         )
@@ -5586,7 +5587,10 @@ export async function centralizedThreadWorkerMain(
     const threadTableReplicationImports: ForkActivationTableReplication = {
       generationAddress: new WebAssembly.Global(
         { value: "i64", mutable: false },
-        BigInt(processGenerationAddress),
+        BigInt(
+          (initData.processChannelAddress ?? processChannelOffset)
+            - FORK_BUF_SIZE - processGenerationOffset,
+        ),
       ),
       reconcile: (): bigint => threadTableReplication?.reconcile() ?? 0n,
       beginMutation: (): bigint =>
@@ -5630,7 +5634,7 @@ export async function centralizedThreadWorkerMain(
     };
 
     const kernelImports = buildKernelImports(
-      memory,
+      addressSpace,
       channelOffset,
       ptrWidth,
       undefined,
@@ -5737,6 +5741,7 @@ export async function centralizedThreadWorkerMain(
       threadExceptionBroker
         ? createProcessDylinkActivationOwner({
             memory,
+            addressSpace,
             ptrWidth,
             channelOffset,
             forkUnwindTag: threadForkUnwindTag,
@@ -5761,7 +5766,7 @@ export async function centralizedThreadWorkerMain(
           })
         : undefined;
     const threadDlopenSupport = buildDlopenImports(
-      memory,
+      addressSpace,
       channelOffset,
       processArchiveControlAddr,
       () =>
@@ -5787,6 +5792,7 @@ export async function centralizedThreadWorkerMain(
       undefined,
       readForkSideModuleContract(module),
       () => programBytes ?? patchWasmForThread(initData.programBytes),
+      initData.memoryInstrumenter,
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -5844,7 +5850,7 @@ export async function centralizedThreadWorkerMain(
       module,
       memory,
       kernelImports,
-      channelOffset,
+      channelAddress,
       threadDlopenSupport.imports,
       ptrWidth,
       threadLongjmpTag,
@@ -5879,6 +5885,14 @@ export async function centralizedThreadWorkerMain(
     const instance = new WebAssembly.Instance(module, threadInstanceImports);
     noteProcessMemoryInstance(instance);
     threadInstance = instance;
+    if (initData.pageTable !== undefined) {
+      (instance.exports.__memory_table_base as WebAssembly.Global).value =
+        initData.pageTable.table;
+      (instance.exports.__memory_group_base as WebAssembly.Global).value =
+        initData.pageTable.group;
+      (instance.exports.__memory_stop_base as WebAssembly.Global).value =
+        channelStopOffset(channelOffset);
+    }
     threadMainImportedState?.complete(instance);
     if (
       hasForkInstrumentation &&
@@ -5979,8 +5993,8 @@ export async function centralizedThreadWorkerMain(
     setupChannelBase(
       instance,
       module,
-      memory,
-      channelOffset,
+      addressSpace,
+      channelAddress,
       initData.programBytes,
       ptrWidth,
     );

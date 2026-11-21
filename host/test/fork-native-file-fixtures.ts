@@ -10,6 +10,7 @@ import {
 } from "../src/fork-continuation";
 import { ForkModuleStateArena } from "../src/fork-module-state";
 import { SingleActivationForkRuntime } from "./fork-instrument-runtime-harness";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 function compileFixture(
   tool: string,
@@ -85,7 +86,7 @@ function assertProductionReplay(tool: string, directory: string): void {
   let nextFrame = 65_536;
   let nextArena = 5 * 65_536;
   const continuation = new LinkedForkContinuation(
-    memory,
+    new ProcessAddressSpace(memory, null),
     readLinkedFrameFormat(module),
     (size) => {
       const address = nextFrame;
@@ -101,7 +102,7 @@ function assertProductionReplay(tool: string, directory: string): void {
     memory,
     continuation,
     newArena: () => new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       (size) => {
         const address = nextArena;

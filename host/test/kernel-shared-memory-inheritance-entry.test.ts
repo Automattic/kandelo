@@ -5,6 +5,10 @@ import {
   type CentralizedKernelWorker,
 } from "../src/kernel-worker";
 import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
+import {
+  GROUP_HEADER_BYTES,
+  ProcessAddressSpace,
+} from "../src/process-address-space";
 import type { PlatformIO } from "../src/types";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import {
@@ -26,6 +30,7 @@ const KERNEL_EXPORT_NAMES = [
 interface TestProcessRegistration {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  readonly addressSpace: ProcessAddressSpace;
   readonly channels: readonly unknown[];
   readonly ptrWidth: 4 | 8;
   readonly explicitMaxAddr: boolean;
@@ -102,6 +107,7 @@ function processRegistration(
   return {
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channels: [],
     ptrWidth: 4,
     explicitMaxAddr: true,
@@ -561,6 +567,52 @@ describe("shared-memory inheritance entry authority", () => {
     expect(harness.state.sharedMappings.get(childPid)?.size).toBe(1);
     expect(harness.sysv.count(childPid)).toBe(2);
     expect(new Uint8Array(childMemory.buffer)[anonymousAddr]).toBe(0x31);
+  });
+
+  it("writes inherited bytes through the page tables of a child that shares its parent's Memory", () => {
+    const parentPid = 71;
+    const childPid = 72;
+    const mapAddr = 0x1000;
+    const size = 16;
+    const backingKey = "anon:share";
+    const page = 65536;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 64, shared: true });
+    const groupBase = 4 * page;
+    const parentSpace = new ProcessAddressSpace(memory, {
+      table: groupBase + GROUP_HEADER_BYTES,
+      group: groupBase,
+    });
+    const childSpace = parentSpace.fork([]);
+    const harness = makeHarness();
+    const backing: TestAnonymousBacking = {
+      key: backingKey,
+      bytes: new Uint8Array(size).fill(0x31),
+      refCount: 1,
+      version: 0,
+    };
+    harness.state.processes.set(childPid, {
+      ...processRegistration(childPid, memory),
+      addressSpace: childSpace,
+    });
+    harness.state.anonymousSharedBackings.set(backingKey, backing);
+    harness.state.sharedMappings.set(parentPid, new Map([
+      [mapAddr, {
+        fd: -1,
+        fileOffset: 0,
+        len: size,
+        writable: true,
+        backingKind: "anonymous",
+        backingKey,
+        snapshot: new Uint8Array(size),
+        seenVersion: 0,
+      }],
+    ]));
+
+    harness.worker.inheritProcessSharedMappings(parentPid, childPid);
+
+    expect([...childSpace.read(mapAddr, size)]).toEqual(new Array(size).fill(0x31));
+    expect([...parentSpace.read(mapAddr, size)]).toEqual(new Array(size).fill(0));
+    expect(childSpace.readable(mapAddr)).not.toBe(mapAddr);
   });
 
   it("restores bytes and prior refcounts if host publication fails mid-retain", () => {

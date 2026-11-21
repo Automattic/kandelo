@@ -47,6 +47,7 @@ import {
   type ForkExternrefRecipeProvider,
   type ForkTypedReferenceReplayOwner,
 } from "../src/fork-reference-transaction";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 function recordsFor(
   graph: ForkReferenceRecipeGraph,
@@ -166,7 +167,7 @@ function providerOptions(
     declarations,
     externrefs: provider,
     transit,
-    memory,
+    space: new ProcessAddressSpace(memory, null),
     allocateScratch: scratch.allocate,
     deallocateScratch: scratch.deallocate,
     label: "test early references",
@@ -533,7 +534,7 @@ describe("early child reference provider", () => {
     const transaction = new ForkReferenceTransaction(
       new ForkFunctionCatalog(),
       refs.provider,
-      options.memory,
+      options.space,
       options.allocateScratch,
       options.deallocateScratch,
       "adopted transaction",
@@ -763,7 +764,7 @@ describe("early child reference provider", () => {
           expect(provider.routeException(recipeId, 2)).toBe(7);
           expect(provider.exceptionCacheIndex(recipeId)).toBe(1);
           const scratch = provider.reserveScratch(16);
-          new Uint8Array(options.memory.buffer, scratch, 16).fill(0xcc);
+          new Uint8Array(options.space.memory.buffer, scratch, 16).fill(0xcc);
           expect(provider.loadException(
             recipeId,
             2,
@@ -774,12 +775,12 @@ describe("early child reference provider", () => {
             scratch + 4,
             1,
           )).toBe(1);
-          expect([...new Uint8Array(options.memory.buffer, scratch, 2)])
+          expect([...new Uint8Array(options.space.memory.buffer, scratch, 2)])
             .toEqual([0xaa, 0xbb]);
-          expect(new DataView(options.memory.buffer).getUint32(scratch + 4, true))
+          expect(new DataView(options.space.memory.buffer).getUint32(scratch + 4, true))
             .toBe(1);
           provider.releaseScratch(scratch, 16);
-          expect(new Uint8Array(options.memory.buffer, scratch, 16)
+          expect(new Uint8Array(options.space.memory.buffer, scratch, 16)
             .every((byte) => byte === 0)).toBe(true);
         },
         clear: () => {},
@@ -991,10 +992,10 @@ describe("early child reference provider", () => {
       abort: () => { activationAborts++; },
     });
     const scratch = provider.reserveScratch(32);
-    new Uint8Array(options.memory.buffer, scratch, 32).fill(0x5a);
+    new Uint8Array(options.space.memory.buffer, scratch, 32).fill(0x5a);
     provider.abort();
 
-    expect(new Uint8Array(options.memory.buffer, scratch, 32)
+    expect(new Uint8Array(options.space.memory.buffer, scratch, 32)
       .every((byte) => byte === 0)).toBe(true);
     expect(options.scratch.deallocated).toEqual([
       { addr: 65_536, size: 65_536 },

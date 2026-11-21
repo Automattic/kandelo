@@ -73,6 +73,7 @@ import {
   WASM_EPOLL_EVENT_EVENTS_OFFSET,
   WASM_EPOLL_EVENT_PAD_OFFSET,
 } from "../src/generated/abi";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const EFAULT = 14;
 const EIO = 5;
@@ -127,6 +128,7 @@ const NETWORK_IFREQ_HANDLERS = [
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  addressSpace: ProcessAddressSpace;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -248,6 +250,7 @@ function makeScratchHarness(
   const channel: TestChannel = {
     pid,
     memory: processMemory,
+    addressSpace: new ProcessAddressSpace(processMemory, null),
     channelOffset,
     i32View: new Int32Array(
       processMemory.buffer,

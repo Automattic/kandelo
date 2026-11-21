@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { ThreadPageAllocator } from "../src/thread-allocator";
 import { WASM_PAGE_SIZE, PAGES_PER_THREAD, CH_TOTAL_SIZE } from "../src/constants";
+import { GROUP_HEADER_BYTES, ProcessAddressSpace } from "../src/process-address-space";
+import { channelStopOffset } from "../src/process-memory";
 
 const MAX_PAGES = 256;
 const FIRST_THREAD_SLOT_PAGE = 24;
@@ -13,8 +15,11 @@ function makeAllocator(): ThreadPageAllocator {
   });
 }
 
-function makeMemory(initial = FIRST_THREAD_SLOT_PAGE): WebAssembly.Memory {
-  return new WebAssembly.Memory({ initial, maximum: MAX_PAGES, shared: true });
+function makeMemory(initial = FIRST_THREAD_SLOT_PAGE): ProcessAddressSpace {
+  return new ProcessAddressSpace(
+    new WebAssembly.Memory({ initial, maximum: MAX_PAGES, shared: true }),
+    null,
+  );
 }
 
 describe("ThreadPageAllocator", () => {
@@ -59,16 +64,16 @@ describe("ThreadPageAllocator", () => {
 
     // Write non-zero data where the allocation will go
     const offset = (FIRST_THREAD_SLOT_PAGE + 2) * WASM_PAGE_SIZE;
-    new Uint8Array(mem.buffer, offset, 16).fill(0xff);
+    new Uint8Array(mem.memory.buffer, offset, 16).fill(0xff);
 
     const t = alloc.allocate(mem);
 
     // Channel region should be zeroed
-    const channelBytes = new Uint8Array(mem.buffer, t.channelOffset, CH_TOTAL_SIZE);
+    const channelBytes = new Uint8Array(mem.memory.buffer, t.channelOffset, CH_TOTAL_SIZE);
     expect(channelBytes.every(b => b === 0)).toBe(true);
 
     // TLS region should be zeroed
-    const tlsBytes = new Uint8Array(mem.buffer, t.tlsOffset, WASM_PAGE_SIZE);
+    const tlsBytes = new Uint8Array(mem.memory.buffer, t.tlsOffset, WASM_PAGE_SIZE);
     expect(tlsBytes.every(b => b === 0)).toBe(true);
   });
 
@@ -78,16 +83,16 @@ describe("ThreadPageAllocator", () => {
     const t1 = alloc.allocate(mem);
 
     // Write data into allocated region
-    new Uint8Array(mem.buffer, t1.channelOffset, 16).fill(0xab);
-    new Uint8Array(mem.buffer, t1.tlsOffset, 16).fill(0xcd);
+    new Uint8Array(mem.memory.buffer, t1.channelOffset, 16).fill(0xab);
+    new Uint8Array(mem.memory.buffer, t1.tlsOffset, 16).fill(0xcd);
 
     alloc.free(t1.slotStartPage);
     const t2 = alloc.allocate(mem);
 
     // Reused allocation should be zeroed
-    const channelBytes = new Uint8Array(mem.buffer, t2.channelOffset, CH_TOTAL_SIZE);
+    const channelBytes = new Uint8Array(mem.memory.buffer, t2.channelOffset, CH_TOTAL_SIZE);
     expect(channelBytes.every(b => b === 0)).toBe(true);
-    const tlsBytes = new Uint8Array(mem.buffer, t2.tlsOffset, WASM_PAGE_SIZE);
+    const tlsBytes = new Uint8Array(mem.memory.buffer, t2.tlsOffset, WASM_PAGE_SIZE);
     expect(tlsBytes.every(b => b === 0)).toBe(true);
   });
 
@@ -118,8 +123,8 @@ describe("ThreadPageAllocator", () => {
 
     const t = alloc.allocate(mem);
 
-    expect(mem.buffer.byteLength).toBe((t.slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE);
-    expect(mem.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
+    expect(mem.memory.buffer.byteLength).toBe((t.slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE);
+    expect(mem.memory.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
   });
 
   it("throws when the thread control arena is exhausted", () => {
@@ -154,7 +159,7 @@ describe("ThreadPageAllocator", () => {
     expect(t1.slotStartPage).toBe(128);
     expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
     expect(reservations).toBe(2);
-    expect(mem.buffer.byteLength).toBe((t2.slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE);
+    expect(mem.memory.buffer.byteLength).toBe((t2.slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE);
     expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
   });
 
@@ -229,5 +234,60 @@ describe("ThreadPageAllocator", () => {
     expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
     alloc.free(pthread.slotStartPage);
     expect(alloc.allocate(mem).slotStartPage).toBe(pthread.slotStartPage);
+  });
+
+  it("lists the slots in use, pthread and host control", () => {
+    const alloc = makeAllocator();
+    const mem = makeMemory();
+    const first = alloc.allocate(mem);
+    const control = alloc.allocateHostControl(mem);
+    const second = alloc.allocate(mem);
+
+    alloc.free(first.slotStartPage);
+
+    expect(alloc.liveSlotStartPages()).toEqual([control.slotStartPage, second.slotStartPage]);
+  });
+
+  it("gives a fork child that shares the memory its own physical slot", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: MAX_PAGES, shared: true });
+    const groupBase = 4 * WASM_PAGE_SIZE;
+    const parent = new ProcessAddressSpace(memory, {
+      table: groupBase + GROUP_HEADER_BYTES,
+      group: groupBase,
+    });
+    const first = makeAllocator().allocate(parent);
+    new Uint8Array(memory.buffer, first.channelOffset, 16).fill(0xab);
+    const child = parent.fork([{ page: 2, count: 1 }]);
+
+    const second = makeAllocator().allocate(child);
+
+    expect(first.channelOffset).toBe(first.channelAddress);
+    expect(second.channelAddress).toBe(first.channelAddress);
+    expect(second.tlsOffset).toBe(first.tlsOffset);
+    expect(second.channelOffset).not.toBe(first.channelOffset);
+    expect(child.writable(second.channelAddress)).toBe(second.channelOffset);
+    expect(child.readable(second.tlsOffset)).toBe(second.channelOffset - 2 * WASM_PAGE_SIZE);
+    expect(second.forkSaveOffset).toBe(second.channelOffset - WASM_PAGE_SIZE);
+    expect(new Uint8Array(memory.buffer, second.channelOffset, 16).every((b) => b === 0)).toBe(true);
+    expect(new Uint8Array(memory.buffer, first.channelOffset, 16).every((b) => b === 0xab)).toBe(true);
+    expect(parent.writable(first.channelAddress)).toBe(first.channelOffset);
+  });
+
+  it("zeroes the stop words that a fork child inherits with a slot", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: MAX_PAGES, shared: true });
+    const groupBase = 4 * WASM_PAGE_SIZE;
+    const parent = new ProcessAddressSpace(memory, {
+      table: groupBase + GROUP_HEADER_BYTES,
+      group: groupBase,
+    });
+    const first = makeAllocator().allocate(parent);
+    new Int32Array(memory.buffer).fill(7, channelStopOffset(first.channelOffset) / 4);
+    const child = parent.fork([{ page: first.slotStartPage, count: PAGES_PER_THREAD }]);
+
+    const second = makeAllocator().allocate(child);
+
+    const stopWords = new Int32Array(memory.buffer, channelStopOffset(second.channelOffset), 2);
+    expect(second.channelOffset).not.toBe(first.channelOffset);
+    expect([...stopWords]).toEqual([0, 0]);
   });
 });

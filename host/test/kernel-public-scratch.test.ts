@@ -7,11 +7,15 @@ import {
   SELECT_FD_SETSIZE,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WPK_DRM_MODE_MODEINFO,
+  CH_RETURN,
+  CH_STATUS,
+  CHANNEL_STATUS_COMPLETE,
 } from "../src/generated/abi";
 import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
+import { GROUP_HEADER_BYTES, ProcessAddressSpace } from "../src/process-address-space";
 import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
 import {markRendererReset,rendererLost} from "../src/webgl/renderer-loss";
 import {NativeGlFault} from "../src/webgl/native-recovery";
@@ -1348,6 +1352,36 @@ describe("Rust-owned host import ranges", () => {
     expect(imports.env.host_proc_read_bytes(7, 0n, 0, 4)).toBe(-14);
     expect(new Uint8Array(processMemory.buffer, 0, 4))
       .toEqual(new Uint8Array([9, 8, 7, 6]));
+  });
+
+  it("publishes a wait completion on the physical pages of a guest channel address", () => {
+    const PAGE = 65536;
+    const processMemory = new WebAssembly.Memory({ initial: 16, maximum: 64, shared: true });
+    const parent = new ProcessAddressSpace(processMemory, {
+      table: 4 * PAGE + GROUP_HEADER_BYTES,
+      group: 4 * PAGE,
+    });
+    const child = parent.fork([{ page: 2, count: 1 }]);
+    const { kernel, memory } = kernelHarness({});
+    Object.assign(kernel, {
+      callbacks: {
+        getProcessMemory: () => processMemory,
+        getProcessPageTable: () => child.location,
+      },
+    });
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+
+    expect(imports.env.host_publish_wait_completion(7, BigInt(2 * PAGE), 5n, 0)).toBe(0);
+
+    const physical = child.readable(2 * PAGE);
+    const view = new DataView(processMemory.buffer);
+    expect(physical).not.toBe(2 * PAGE);
+    expect(view.getBigInt64(physical + CH_RETURN, true)).toBe(5n);
+    expect(view.getInt32(physical + CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(view.getBigInt64(2 * PAGE + CH_RETURN, true)).toBe(0n);
+    expect(view.getInt32(2 * PAGE + CH_STATUS, true)).toBe(0);
   });
 
   it("enforces exact process-memory transfer boundaries", () => {

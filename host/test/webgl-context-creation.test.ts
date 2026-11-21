@@ -342,6 +342,24 @@ describe("context creation acknowledgement", () => {
     expect(rendered.at(-1)).toEqual([1, 0, 0, 1]);
   });
 
+  it("reads a command buffer at the Memory offset of its placement", () => {
+    const { kernel, imports, create, memory } = harness();
+    const cleared: number[] = [];
+    const gl = new Proxy({
+      isContextLost: () => false, getExtension: () => null, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
+      getError: () => 0, clear: (mask: number) => cleared.push(mask),
+    }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
+    kernel.gl.attachCanvas(7, { width: 16, height: 16, getContext: () => gl } as unknown as OffscreenCanvas);
+    imports.host_gl_bind(7, 128, 64, 11, 1n);
+    kernel.gl.get(7, 11)!.cmdbufOffset = 65536;
+    expect(create(7, 21, 11)).toBe(0);
+    const words = new DataView(memory.buffer, 65536, 8);
+    words.setUint16(0, 1, true); words.setUint16(2, 4, true); // clear
+    words.setUint32(4, 0x4000, true);
+    expect(imports.host_gl_submit(7, 0, 8, 11)).toBe(0);
+    expect(cleared).toEqual([0x4000]);
+  });
+
   it("does not claim a KMS canvas on failure and claims it on retry", () => {
     let available = false;
     const claims: number[] = [];
