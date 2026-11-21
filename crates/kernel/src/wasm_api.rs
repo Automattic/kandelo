@@ -4002,6 +4002,212 @@ pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
     }
 }
 
+/// Memory-group admission metadata is an independent kernel-host capability.
+/// These exports do not advertise a ready execution/stop backend. Fixed output
+/// records belong to kernel scratch leases, never guest address-space pointers.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_protocol_version() -> u32 {
+    wasm_posix_shared::memory_group::PROTOCOL_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_capabilities() -> u32 {
+    wasm_posix_shared::memory_group::CAPABILITY_ADMISSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_configure(maximum_pages: u32, maximum_groups: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table
+        .memory_groups()
+        .configure(maximum_pages, maximum_groups)
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_create(pages: u32, processes: u32, tasks: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table
+        .memory_groups()
+        .create(runtime_core::memory_group::MemoryGroupLimits {
+            maximum_pages: pages,
+            maximum_processes: processes,
+            maximum_tasks: tasks,
+        })
+        .map(|id| id.as_raw() as i32)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_seal(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups
+        .resolve_group(group)
+        .and_then(|id| groups.seal(id))
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_remove(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups
+        .resolve_group(group)
+        .and_then(|id| groups.remove_empty(id))
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_snapshot(
+    group: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::{SNAPSHOT_BYTES, SNAPSHOT_FIELDS};
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity as usize != SNAPSHOT_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    let snapshot = match groups
+        .resolve_group(group)
+        .and_then(|id| groups.snapshot(id))
+    {
+        Ok(snapshot) => snapshot,
+        Err(e) => return -(e as i32),
+    };
+    let values = [
+        snapshot.id.as_raw(),
+        snapshot.limits.maximum_pages,
+        snapshot.limits.maximum_processes,
+        snapshot.limits.maximum_tasks,
+        u32::from(snapshot.accepting),
+        snapshot.processes,
+        snapshot.tasks,
+        snapshot.quarantined_tasks,
+        snapshot.backings,
+        snapshot.images,
+    ];
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, SNAPSHOT_BYTES) };
+    for ((_, offset), value) in SNAPSHOT_FIELDS.iter().zip(values) {
+        out[*offset..*offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    SNAPSHOT_BYTES as i32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_prepare_process(
+    group: u32,
+    pid: u32,
+    generation_lo: u32,
+    generation_hi: u32,
+) -> i32 {
+    let generation = (u64::from(generation_hi) << 32) | u64::from(generation_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.exec_generation(pid) {
+        Ok(current) if current == generation => {}
+        Ok(_) => return -(Errno::EAGAIN as i32),
+        Err(e) => return -(e as i32),
+    }
+    let group = match table.memory_groups().resolve_group(group) {
+        Ok(group) => group,
+        Err(e) => return -(e as i32),
+    };
+    table
+        .prepare_process_memory_group(group, pid)
+        .map(|_| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_task_receipt(
+    pid: u32,
+    tid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::RECEIPT_BYTES;
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity as usize != RECEIPT_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let receipt = match table.memory_group_task(pid, tid) {
+        Ok(Some(receipt)) => receipt,
+        Ok(None) => return -(Errno::ENOENT as i32),
+        Err(e) => return -(e as i32),
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, RECEIPT_BYTES) };
+    receipt
+        .record()
+        .encode(out)
+        .map(|()| RECEIPT_BYTES as i32)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_task_action(
+    receipt_ptr: *const u8,
+    receipt_len: u32,
+    action: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::{RECEIPT_BYTES, ReceiptRecord, TaskAction};
+    if receipt_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if receipt_len as usize != RECEIPT_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let action = match TaskAction::try_from(action) {
+        Ok(action) => action,
+        Err(e) => return -(e as i32),
+    };
+    let record = match ReceiptRecord::decode(unsafe {
+        core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES)
+    }) {
+        Ok(record) => record,
+        Err(e) => return -(e as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table
+        .memory_group_task_action(record, action)
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_retire_image(
+    pid: u32,
+    generation_lo: u32,
+    generation_hi: u32,
+) -> i32 {
+    let generation = (u64::from(generation_hi) << 32) | u64::from(generation_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table
+        .memory_groups()
+        .retire_image(pid, generation)
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
 /// Copy the exact unsigned image generation into an owned host scratch lease.
 /// Keep status separate from all 64 generation bits; negative i64 sentinels
 /// would alias valid generations after the high bit becomes set.
