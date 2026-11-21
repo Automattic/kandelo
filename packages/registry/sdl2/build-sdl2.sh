@@ -87,6 +87,10 @@ patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0008-prepare-kms-drawable-before-
 # The selected preferred mode is not the saved state of a disabled display.
 # Keep genuine restore errors loud; this generic correction is D-60.
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0009-kmsdrm-restore-disabled-crtc.patch"
+# SDL's dynamic API looks for a replacement SDL shared library, which
+# Kandelo does not build; its dlopen call linked the dynamic loader into
+# every SDL program (patch header).
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0010-kandelo-disable-dynamic-api.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe
@@ -153,8 +157,14 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 # SDL_LoadObject itself is real (--enable-loadso, backed by dlopen):
 # programs such as ScummVM load their own plugins through it. The SDK
 # links its dynamic loader into any program that calls dlopen, with or
-# without -ldl, and SDL's dynamic API (SDL_DYNAMIC_API) calls it, so every
-# SDL program gets the loader; ffplay grew by about 22 KB.
+# without -ldl. The dynamic API is off (patch 0010), so a program gets the
+# loader only when it calls SDL_LoadObject.
+#
+# --disable-video-vulkan: Kandelo has no Vulkan driver or loader. With
+# Vulkan on, the KMSDRM and Wayland backends each carry a
+# SDL_Vulkan_LoadLibrary that opens libvulkan through SDL_LoadObject, which
+# linked the dynamic loader into every SDL video program.
+# SDL_Vulkan_LoadLibrary now reports that Vulkan is not configured.
 (
     cd "$BUILD_DIR"
     LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
@@ -194,6 +204,7 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
         --disable-video-dummy \
         --disable-video-opengl \
         --enable-video-opengl-es2 \
+        --disable-video-vulkan \
         --enable-events \
         --enable-input-events \
         --enable-render \

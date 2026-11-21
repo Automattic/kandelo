@@ -38,6 +38,19 @@ describe.skipIf(!hasBash)("bash shell", () => {
     expect(result.stdout.trim()).toBe("hello world");
   });
 
+  // Kandelo's bash is built without loadable builtins (build-bash.sh), so
+  // `enable -f` says dynamic loading is not available instead of trying.
+  it("reports that loadable builtins are not available", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: ["bash", "-c", "enable -f /tmp/nosuch.so nosuch"],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("dynamic loading not available");
+  });
+
   it("supports [[ ... ]] extended test", async () => {
     const result = await runCentralizedProgram({
       programPath: bashBinary,

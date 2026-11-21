@@ -317,21 +317,34 @@ switches produce it: CMake's `ENABLE_EXPORTS`, Meson's
 How the SDK makes that work:
 
 - **The loader comes with dlopen.** The SDK links its loader
-  (`libc/glue/dlopen.c`) into every executable as a lazy member after the
-  caller's inputs and ahead of `libc.a`. A program that calls `dlopen`,
-  `dlsym`, `dlclose` or `dlerror` gets it instead of musl's static stubs
-  ("Dynamic loading not supported"); a program that never calls them gets
-  none of it, and `-ldl` changes nothing. Configure probes therefore see
-  working functions in libc: Meson's `dependency('dl')` is built in, and
-  Autoconf's `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
-  A program that references `dlopen` only in passing gets the loader too:
-  SDL's dynamic API does, so every SDL program does; so do GLib's GModule,
-  Qt, MariaDB, Vim and several Rust programs. The loader's imports are
-  among the host imports every program may use
+  (`libc/glue/dlopen.c`) into every executable as a lazy member ahead of
+  the caller's inputs, so it is offered before any `libc.a`, including one
+  the caller names itself (librsvg's pkg-config file adds `-lc`). A
+  program that calls `dlopen`, `dlsym`, `dlclose` or `dlerror` gets it
+  instead of musl's static stubs ("Dynamic loading not supported"); a
+  program that never calls them gets none of it, and `-ldl` changes
+  nothing. Configure probes therefore see working functions in libc:
+  Meson's `dependency('dl')` is built in, and Autoconf's
+  `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
+  The loader's imports are among the host imports every program may use
   (`libc/glue/kandelo-host-imports.txt`). A fork-capable program that
-  imports them is instrumented as a dynamic-linking program (fork
-  capability bit 0x02, plus a dlopen contract); ffplay grew by 22 KB
-  (0.09%).
+  imports any of them is instrumented as a dynamic-linking program (fork
+  capability bit 0x02, plus a dlopen contract), which costs code size.
+  With clang 21.1.7 the growth was 0.1% for Vim, 1.1% for notify-send and
+  13% for waybar. In bash, 5.9 KB of it was the loader's code and 4.6 KB
+  the instrumentation; in a large program like waybar it is mostly
+  instrumentation. A package whose program reaches
+  `dlopen` only through a feature Kandelo does not have builds without
+  that feature: bash without loadable builtins, SDL without its dynamic
+  API (which looks for a replacement SDL shared library) and SDL2 without
+  Vulkan (which opens libvulkan). Programs that do load modules keep the
+  loader: waybar's CFFI modules, GLib's GModule, Qt plugins, MariaDB
+  plugins, CPython's extension-module import, Vim.
+- **`-rdynamic` exports.** Unix build systems add `-rdynamic` for the same
+  reason, so a program's modules can call it; bash's configure and
+  NetHack's Linux hints do. It now exports every default-visibility symbol
+  the program links, and each export is kept and instrumented (bash had
+  3,700). A package that loads no modules drops it.
 - **Executable code has Unix visibility.** Clang gives WebAssembly symbols
   hidden visibility unless told otherwise, which left `--export-dynamic`,
   which exports default-visibility symbols, nothing to export. The SDK
