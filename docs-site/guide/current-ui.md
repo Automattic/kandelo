@@ -85,6 +85,16 @@ configuration, and these shell commands do not install PHP-FPM.
 
 ## Move files into and out of Kandelo
 
+Open **More → Help** for a short introduction to Kandelo, getting started,
+file transfers, and keeping your work. Help is also available from the
+initial setup screen if a computer cannot start.
+
+Use **More → Export files…** on a running computer to download its filesystem
+files or a selected folder as a ZIP. Choose **Added and changed files** to
+compare with its reference image, or **All files** to include unchanged files.
+See [file transfers](./moving-files.md)
+for included files, browser save behavior, and export limits.
+
 Drop files or folders onto a running computer, or use **Send files**. The
 fallback handler saves them to `~/Downloads/` inside Kandelo.
 
