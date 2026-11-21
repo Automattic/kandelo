@@ -2,6 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 import { runWithProcessWorkerQuiescence } from "./worker-quiescence";
+import { receiveGroupedWorkerInitialization } from "./grouped-worker-initialization";
 import { isNodeWorkerInitByMessage } from "./node-worker-initialization";
 
 /** @internal Exported so one-shot process-init ownership can be tested. */
@@ -33,14 +34,21 @@ if (parentPort) {
     // WHY: default process init carries Shared WebAssembly.Memory through one
     // ordinary message, so its listener is gone before guest execution. The
     // public entry also accepts workerData from existing direct callers.
-    const initData = await receiveNodeWorkerInit(port, workerData);
+    const first = await receiveNodeWorkerInit(port, workerData);
+    const { init: initData, grouped, stopped } = await receiveGroupedWorkerInitialization(first,
+      () => new Promise(resolve => port.once('message', resolve)), message => port.postMessage(message));
+    if (stopped) {
+      await runWithProcessWorkerQuiescence(port, { pid: stopped.pid,
+        ...(stopped.tid === stopped.pid ? {} : { tid: stopped.tid }), memoryGroup: stopped }, async () => {}, () => {});
+      return;
+    }
     const data = initData as { type: string };
     if (data.type === "centralized_init") {
       const init = initData as CentralizedWorkerInitMessage;
       await runWithProcessWorkerQuiescence(
         port,
-        { pid: init.pid },
-        () => centralizedWorkerMain(port, init),
+        { pid: init.pid, ...(grouped ? { memoryGroup: grouped.descriptor.receipt } : {}) },
+        async () => { try { await centralizedWorkerMain(port, init, grouped); } finally { grouped?.detach(); } },
         (error) =>
           console.error(`[worker-entry] worker main error: ${error}`),
       );
@@ -48,8 +56,8 @@ if (parentPort) {
       const init = initData as CentralizedThreadInitMessage;
       await runWithProcessWorkerQuiescence(
         port,
-        { pid: init.pid, tid: init.tid },
-        () => centralizedThreadWorkerMain(port, init),
+        { pid: init.pid, tid: init.tid, ...(grouped ? { memoryGroup: grouped.descriptor.receipt } : {}) },
+        async () => { try { await centralizedThreadWorkerMain(port, init, grouped); } finally { grouped?.detach(); } },
         (error) =>
           console.error(`[worker-entry] thread worker main error: ${error}`),
       );

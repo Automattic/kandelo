@@ -6,6 +6,8 @@
  * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
  */
 
+import { GroupProcessAddressSpace } from "./process-address-space";
+import type { ProcessMemorySource } from "./process-memory-views";
 import { describeProgramExtensionFailures } from "./program-extensions";
 import {
   checkSideModuleForkContract,
@@ -792,8 +794,9 @@ export interface DylinkForkReconcileOptions {
 export interface LoadSharedLibraryOptions {
   programExtensionImports?: WebAssembly.Imports;
   withModuleInstantiation?: <T>(operation: () => T) => T;
-  /** The shared Wasm.Memory used by the process */
-  memory: WebAssembly.Memory;
+  /** Process storage for metadata and main-symbol operations. Side-module
+   * instantiation currently requires genuine ordinary linear memory. */
+  memory: ProcessMemorySource;
   /** The process's indirect function table */
   table: WebAssembly.Table;
   /** Stack pointer global (shared across all modules) */
@@ -1165,11 +1168,17 @@ export interface DylinkInitializationStep {
   readonly invoke: () => void;
 }
 
-/**
- * Core shared library loading logic — instantiates a pre-parsed Wasm
- * side module into the process address space. Used by both async and sync
- * entry points.
+/** Keep metadata/main-symbol operations available without handing a physical
+ * group backing to an ordinary side module. Reject before dependency I/O.
  */
+function requireNativeDylinkMemory(options: LoadSharedLibraryOptions, name: string): WebAssembly.Memory {
+  if (options.memory instanceof GroupProcessAddressSpace) {
+    throw new Error(`${name}: grouped side modules are not supported; use a compatible static grouped build`);
+  }
+  return options.memory;
+}
+
+/** Core shared library instantiation, shared by async and sync entry points. */
 function* instantiateSharedLibrarySteps(
   name: string,
   wasmBytes: Uint8Array,
@@ -1184,6 +1193,7 @@ function* instantiateSharedLibrarySteps(
   LoadedSharedLibrary,
   DylinkForkLibraryState | undefined
 > {
+  const memory = requireNativeDylinkMemory(options, name);
   validateLongjmpConfiguration(options);
   const ptrWidth = options.ptrWidth ?? 4;
   const pointerGlobalType = ptrWidth === 8 ? "i64" : "i32";
@@ -1196,7 +1206,7 @@ function* instantiateSharedLibrarySteps(
   registerWasmModuleReflection(sourceModule, wasmBytes);
   const borrowsMemory = replay?.memoryOwnership === "borrowed";
   if (borrowsMemory) {
-    if (!(options.memory.buffer instanceof SharedArrayBuffer)) {
+    if (!(memory.buffer instanceof SharedArrayBuffer)) {
       throw new Error(`${name}: borrowed replay requires Shared Memory`);
     }
     if (replay?.initializationStage !== undefined) {
@@ -1555,7 +1565,7 @@ function* instantiateSharedLibrarySteps(
         for (const allocation of archivedAllocations) {
           if (
             allocation.mappingAddress
-              > options.memory.buffer.byteLength - allocation.mappingSize
+              > memory.buffer.byteLength - allocation.mappingSize
           ) {
             throw new RangeError(
               `${name}: archived process mapping escapes copied linear memory`,
@@ -1570,9 +1580,9 @@ function* instantiateSharedLibrarySteps(
       } else if (options.allocateMemory) {
         memoryBase = allocate(metadata.memorySize, memAlign);
         const end = memoryBase + metadata.memorySize;
-        if (end > options.memory.buffer.byteLength) {
+        if (end > memory.buffer.byteLength) {
           throw new Error(
-            `${name}: allocator returned 0x${memoryBase.toString(16)} but memory only covers 0x${options.memory.buffer.byteLength.toString(16)}`,
+            `${name}: allocator returned 0x${memoryBase.toString(16)} but memory only covers 0x${memory.buffer.byteLength.toString(16)}`,
           );
         }
       } else {
@@ -1586,16 +1596,16 @@ function* instantiateSharedLibrarySteps(
         // non-POSIX embedders. Process workers pass allocateMemory so side-module
         // data is tracked by the guest allocator instead of a host-only pointer.
         const neededPages = Math.ceil(options.heapPointer.value / 65536);
-        const currentPages = options.memory.buffer.byteLength / 65536;
+        const currentPages = memory.buffer.byteLength / 65536;
         if (neededPages > currentPages) {
-          growMemory(options.memory, neededPages - currentPages, ptrWidth);
+          growMemory(memory, neededPages - currentPages, ptrWidth);
         }
       }
 
       if (!replay) {
         // Skip zero-init in replay: child memory already holds parent's
         // post-startup data via fork memcpy.
-        new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+        new Uint8Array(memory.buffer, memoryBase, metadata.memorySize).fill(0);
       }
     } else if ((replay?.allocations?.length ?? 0) !== 0) {
       throw new Error(`${name}: zero-memory side module owns archived mappings`);
@@ -1840,7 +1850,7 @@ function* instantiateSharedLibrarySteps(
         get(_target, prop: string) {
           let value: WebAssembly.ImportValue | WebAssembly.Tag | undefined;
           switch (prop) {
-            case "memory": value = options.memory; break;
+            case "memory": value = memory; break;
             case "__indirect_function_table": value = options.table; break;
             case "__memory_base": value = memoryBaseGlobal; break;
             case "__table_base": value = tableBaseGlobal; break;
@@ -2106,7 +2116,7 @@ function* instantiateSharedLibrarySteps(
             `escapes module reservation 0x${memoryBase.toString(16)}..0x${moduleMemoryEnd.toString(16)}`,
         );
       }
-      if (tlsEnd > options.memory.buffer.byteLength) {
+      if (tlsEnd > memory.buffer.byteLength) {
         throw new Error(
           `${name}: TLS range 0x${tlsBase.toString(16)}..0x${tlsEnd.toString(16)} exceeds memory`,
         );
@@ -2436,6 +2446,7 @@ export async function loadSharedLibrary(
   options: LoadSharedLibraryOptions,
   globalVisibility = true,
 ): Promise<LoadedSharedLibrary> {
+  requireNativeDylinkMemory(options, name);
   validateLongjmpConfiguration(options);
   const existing = options.loadedLibraries.get(name);
   if (existing) {
@@ -2504,6 +2515,7 @@ function* loadSharedLibrarySyncSteps(
   LoadedSharedLibrary,
   DylinkForkLibraryState | undefined
 > {
+  requireNativeDylinkMemory(options, name);
   validateLongjmpConfiguration(options);
   const existing = options.loadedLibraries.get(name);
   if (existing) {

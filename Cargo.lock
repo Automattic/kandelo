@@ -939,6 +939,7 @@ dependencies = [
  "spin",
  "wasm-artifact",
  "wasm-posix-shared",
+ "wat",
 ]
 
 [[package]]
@@ -1070,6 +1071,22 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shared-memory-instrument"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wasm-artifact",
+ "wasm-encoder 0.247.0",
+ "wasm-posix-program-abi",
+ "wasmparser 0.247.0",
+ "wat",
 ]
 
 [[package]]
@@ -1390,6 +1407,8 @@ dependencies = [
 name = "wasm-artifact"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "wasm-posix-program-abi",
  "wasmparser 0.247.0",
  "wat",

@@ -71,7 +71,7 @@ impl EntropyRead {
     pub fn from_entries(proc: &Process, host: &mut dyn HostIO, tid: u32,
         entries: IoBuffer<NativeIovec>) -> Result<Self, Errno> {
         for entry in &*entries {
-            if entry.len != 0 && host.proc_validate_range(proc.pid as i32, entry.base, entry.len) < 0 {
+            if entry.len != 0 && host.proc_validate_range(proc.pid as i32, entry.base, entry.len, wasm_posix_shared::ProcessMemoryAccess::Write) < 0 {
                 return Err(Errno::EFAULT);
             }
         }
@@ -91,6 +91,17 @@ impl EntropyRead {
         if self.delivered == self.total { return self.delivered as i32; }
         if interrupted || proc.deliverable_for(self.tid) != 0 {
             return self.finish(Errno::EINTR);
+        }
+        // A resumed operation may see new protections or holes. Validate only
+        // the remaining destinations before consuming the next entropy window.
+        for (index, entry) in self.entries[self.entry..].iter().enumerate() {
+            let skipped = if index == 0 { self.offset } else { 0 };
+            let length = entry.len - skipped;
+            if length == 0 { continue; }
+            let Some(address) = entry.base.checked_add(skipped as u64) else { return self.finish(Errno::EFAULT); };
+            if host.proc_validate_range(proc.pid as i32, address, length, wasm_posix_shared::ProcessMemoryAccess::Write) < 0 {
+                return self.finish(Errno::EFAULT);
+            }
         }
         let capacity = ENTROPY_WINDOW_BYTES.min(self.total - self.delivered);
         let mut window = match crate::guest_ptr::zeroed_io_staging(capacity, ENTROPY_WINDOW_BYTES) {
@@ -260,6 +271,20 @@ mod tests {
         assert_eq!(read.step(&proc, &mut host, false), -(Errno::ENOMEM as i32));
         assert_eq!(host.entropy_calls, 0);
         assert!(host.memory.iter().all(|&byte| byte == 0xa5));
+    }
+
+    #[test]
+    fn protected_entropy_destinations_refuse_before_generation_including_resume() {
+        let proc = Process::new(100); let mut host = GuestMemoryHost::new(4096, 8);
+        host.write_denied = true;
+        assert_eq!(EntropyRead::prepare(&proc, &mut host, 100, SYS_GETRANDOM, -1, 4097, 4).err(), Some(Errno::EFAULT));
+        assert_eq!(host.entropy_calls, 0);
+        let (proc, mut host, mut read) = fixture(2 * 1048576);
+        assert_eq!(read.step(&proc, &mut host, false), ENTROPY_READ_PENDING);
+        let calls = host.entropy_calls; host.write_denied = true;
+        assert_eq!(read.step(&proc, &mut host, false), 1048576);
+        assert_eq!(host.entropy_calls, calls);
+        assert!(host.peek(4097 + 1048576, 1048576).iter().all(|&byte| byte == 0xa5));
     }
 
     #[test]

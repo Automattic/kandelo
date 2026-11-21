@@ -1253,3 +1253,113 @@ download at configure time.
 configures, builds, tests and packages a C and C++ project with a static
 library, a pkg-config module, configure checks that run, a `SHARED` library
 that falls back to static, `ctest` and `cpack`, in the build image.
+
+## Experimental memory-group translation
+
+`wasm32posix-shared-memory ordinary.wasm -o grouped.wasm` prepares a separate
+memory32 executable for a trusted sharing group. The Node and browser embedding
+launchers accept compatible prepared bytes or installed `spawnFromVfs` paths
+when explicitly configured with `experimentalMemoryGroup`; an ordinary launch
+refuses the required `kandelo.memory-group.v3.memory` import. Path launch keeps
+the kernel's retained executable descriptor and credentials. Compatible
+`posix_spawn` children of grouped parents use the same checked admission.
+The normal browser app has an explicit `--trusted-desktop-preview` development
+and production build choice for a temporary normal partial shell. The
+`shared-desktop-programs` package prepares compatible programs through the SDK,
+each in its own lazy archive. Explicit partial selection activates those
+variants at ordinary guest paths; canonical ordinary paths stay unchanged.
+See [the desktop launch contract](shared-memory-groups.md#normal-partial-shell-preview). This is an
+experimental path; further lifecycle and browser-memory validation remains
+required before promotion. Ordinary programs, including PHP-FPM, keep their existing build
+and launch behavior.
+
+`NodeKernelHost.getMemoryGroupUsage()` and `BrowserKernel.getMemoryGroupUsage()`
+provide copied admission and backing accounting without creating a group or
+exposing memory. Shared pages are counted once across aliases; backing extent
+is capacity, not measured RAM. See [inspection units and lifetime semantics](shared-memory-groups.md#desktop-first-opt-in).
+
+The command uses this checkout's normal SDK program version, ABI stamp and fork
+instrumenter, then compiles the checked translation helpers and runs
+`crates/shared-memory-instrument`. It retains the ordinary input, refuses stale
+stamps, side modules and already translated input, and validates the emitted
+Wasm. The versioned memory import changes no function, global or table indices;
+fork descriptor identities stay intact. This extension does not change the
+frozen program ABI 56 or permit an ordinary host to substitute `env.memory`.
+
+Before translation, the tool checks exact constant-returning markers in the
+compiled helpers against every Rust layout declaration. Missing, stale or
+malformed markers require a helper rebuild and leave existing output intact.
+Every internal helper also needs its exact parameter/result signature, even
+when the particular input program does not exercise that helper.
+This checks compiled layout agreement without running helper code; it does not
+replace the C memory-operation tests or prove arbitrary helper code correct.
+
+`kandelo.memory-group` records artifact version 3, layout 3, thread attachment 2,
+cooperative stop 3, execution barrier 1, ordered wait queue 2, source/helper hashes, and the original
+logical page limits. Physical memory is group storage; host consumers must use
+explicit virtual-memory operations rather than treat its buffer as guest memory.
+The translator uses outlined checked accesses. Wrappers share an operation,
+alignment and lane while receiving each instruction's original constant offset
+as a private i64 argument. The checked helper still validates the complete
+effective address and permissions; this changes no public artifact interface.
+Other research optimization variants remain separate.
+
+Bulk copies validate both complete virtual ranges before writing. Contiguous
+physical spans use an ordinary Wasm copy. Fragmented ranges can exceed the
+per-replica scratch capacity: a page bitmap proves when chunked moves are safe,
+while physical alias cycles use a bounded graph walk that preserves source
+bytes and repeated destination mappings. If virtual aliases make the visited
+bitmap too large, a compact bitmap can track their distinct physical pages.
+The walk uses only the existing scratch allocation and scalar locals; scratch
+capacity is not a copy-size limit. Very irregular unaligned alias graphs can
+still be expensive when neither bitmap fits. Application performance of that
+fallback remains unmeasured. Its stop checks do not acknowledge a mapping
+barrier while physical cursors remain live.
+
+Passive data initialization also accepts fragmented ranges larger than scratch.
+It validates the whole destination and source before page-sized writes, using
+the native data segment to check bounds and dropped state. Active segments are
+dropped before the original start function runs; attaching a replica replays
+neither active data nor start.
+
+The mechanism fixture covers compiled C scalar, split-page, SIMD, atomic, bulk,
+growth, alias, initialization and stop behavior in disposable Workers. The
+physical pool uses one bitmap for host allocation and translated C growth,
+zeroes reused pages before publication and preserves state on allocation refusal.
+The matching physical-pool primitive and its standalone tests are included to
+check host/C bitmap interoperability. Synthetic grow/retire cycles plateau,
+including concurrent C Workers and host allocation. The pool primitive does not establish complete process retirement.
+
+Version 3 adds an exact per-replica control block, a separate `__vm_replica`
+global and source-function/loop checkpoints. A reversible execution barrier
+does not authorize reclamation: a native waiter can acknowledge that barrier
+while its physical target and wait node remain pinned. Pause preserves the
+original native timeout and notification order; stop targets the exact replica,
+and the returning helper owns node recycling. The exported `__vm_checkpoint`
+also permits process-Worker import adapters to check an admitted root/replica
+before a host call and in its return/failure path. That check must execute the
+native Wasm helper; throwing a JavaScript RuntimeError is catchable by guest
+exception handlers. The integrated Node/browser process import adapters bind
+this check to the admitted execution generation before and after host calls.
+Notifications wake translated guest wait nodes and native kernel listeners on
+the physical status word. Native listeners do not consume the guest wake quota
+or contribute to its return count. Host publication writes the body and status
+before either wake; native listeners are notified after the queue unlocks.
+The internal `__vm_worker_wait32` entry accepts a virtual byte address and an
+exact root/replica binding for JavaScript-generated IPC. It translates and
+checks the address, then uses the same queue and pause/stop checkpoints as a
+source Wasm wait. A worker must bind this entry to its admitted replica; native
+JavaScript waits on physical payload words cannot substitute for guest waits.
+The integrated runtime binds those entries to exact kernel-authorized replicas.
+Its grouped fork, exec, pthread, exit and destruction paths own their execution
+and wait retirement fences. The translator's mechanism tests alone do not prove
+that lifecycle contract; normal SDK/runtime tests exercise it separately.
+
+Historical dynamic physical-growth experiments after peer Worker termination
+fail on WebKit. The current JavaScriptCore backend provisions the complete
+admitted group extent before launching participants; it does not raise the
+group's capacity or allocation budget. Other browser engines grow as needed.
+The developer desktop is usable within its bounded contract, but the combined
+release gates, total-browser resource costs and remaining object/graphics
+semantics are not complete. See [the shared-group contract](shared-memory-groups.md)
+and [current validation and limits](measurements/2026-11-20-shared-memory-desktop-current.md).

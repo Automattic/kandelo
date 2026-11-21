@@ -1010,6 +1010,18 @@ describe("module-state root-prefix ownership", () => {
 });
 
 describe("ForkModuleStateArena", () => {
+  it("initializes chunk padding in the allocation without writing low process bytes", () => {
+    const memory = new WebAssembly.Memory({ initial: 3 });
+    const bytes = new Uint8Array(memory.buffer);
+    bytes.fill(0x5a, 36, 40); bytes.fill(0xcc, PAGE_SIZE, PAGE_SIZE + 40);
+    const arena = new ForkModuleStateArena(memory, 4, () => PAGE_SIZE, () => {}, "reused-header");
+    arena.begin();
+    expect({ padding: [...bytes.subarray(PAGE_SIZE + 36, PAGE_SIZE + 40)], low: [...bytes.subarray(36, 40)] })
+      .toEqual({ padding: [0, 0, 0, 0], low: [0x5a, 0x5a, 0x5a, 0x5a] });
+    arena.appendModule({ activationId: 0, templateId: templateId(1) });
+    expect(() => arena.seal()).not.toThrow();
+    arena.release();
+  });
   it.each([4, 8] as const)(
     "streams, validates, clones, and releases typed wasm%s state",
     (ptrWidth) => {

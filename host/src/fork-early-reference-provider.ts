@@ -1,3 +1,4 @@
+import { processMemoryByteLength, fillProcessBytes, writeProcessBytes, checkProcessWriteRange, type ProcessMemorySource } from "./process-memory-views";
 import {
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_ANYREF,
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF,
@@ -117,7 +118,7 @@ export interface ForkEarlyChildReferenceProviderOptions {
   readonly declarations: readonly ForkEarlyReferenceActivationDeclaration[];
   readonly externrefs: ForkExternrefRecipeProvider;
   readonly transit: ForkEarlyReferenceTransit;
-  readonly memory: WebAssembly.Memory;
+  readonly memory: ProcessMemorySource;
   readonly allocateScratch: ForkReferenceScratchAllocate;
   readonly deallocateScratch: ForkReferenceScratchDeallocate;
   readonly label?: string;
@@ -373,7 +374,7 @@ export class ForkEarlyChildReferenceProvider
   private readonly label: string;
   private readonly externrefs: ForkExternrefRecipeProvider;
   private readonly transit: ForkEarlyReferenceTransit;
-  private readonly memory: WebAssembly.Memory;
+  private readonly memory: ProcessMemorySource;
   private readonly allocateScratch: ForkReferenceScratchAllocate;
   private readonly deallocateScratch: ForkReferenceScratchDeallocate;
 
@@ -880,6 +881,10 @@ export class ForkEarlyChildReferenceProvider
         + "the generated codec",
       );
     }
+    const scalarRange = this.memoryRange(scalarDestination, scalars.byteLength, "early exception scalar destination");
+    const refsRange = this.memoryRange(referenceIdsDestination, entry.node.payloads.length * 4, "early exception reference destination");
+    checkProcessWriteRange(this.memory, scalarRange.offset, scalarRange.length);
+    checkProcessWriteRange(this.memory, refsRange.offset, refsRange.length);
     this.writeBytes(
       scalarDestination,
       scalars,
@@ -905,7 +910,7 @@ export class ForkEarlyChildReferenceProvider
         !Number.isSafeInteger(addr)
         || addr <= 0
         || addr % 16 !== 0
-        || addr > this.memory.buffer.byteLength - chunkSize
+        || addr > processMemoryByteLength(this.memory) - chunkSize
       ) {
         if (Number.isSafeInteger(addr) && addr > 0) {
           try {
@@ -923,8 +928,8 @@ export class ForkEarlyChildReferenceProvider
     }
     const previousUsed = chunk.used;
     const addr = chunk.addr + previousUsed;
+    fillProcessBytes(this.memory, addr, alignedSize, 0);
     chunk.used += alignedSize;
-    new Uint8Array(this.memory.buffer, addr, alignedSize).fill(0);
     this.scratchReservations.push({
       addr,
       requestedSize,
@@ -950,11 +955,12 @@ export class ForkEarlyChildReferenceProvider
         `${this.label}: scratch release is not the most recent reservation`,
       );
     }
-    new Uint8Array(
-      this.memory.buffer,
-      reservation.addr,
-      reservation.alignedSize,
-    ).fill(0);
+    try {
+      fillProcessBytes(this.memory, reservation.addr, reservation.alignedSize, 0);
+    } catch (error) {
+      this.scratchReservations.push(reservation);
+      throw error;
+    }
     reservation.chunk.used = reservation.previousUsed;
     const tail = this.scratchChunks[this.scratchChunks.length - 1];
     if (
@@ -1460,7 +1466,7 @@ export class ForkEarlyChildReferenceProvider
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, bytes.byteLength, context);
-    new Uint8Array(this.memory.buffer, offset, bytes.byteLength).set(bytes);
+    writeProcessBytes(this.memory, offset, bytes);
   }
 
   private writeRecipeIds(
@@ -1469,11 +1475,12 @@ export class ForkEarlyChildReferenceProvider
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, ids.length * 4, context);
-    const view = new DataView(this.memory.buffer);
+    const staged = new Uint8Array(ids.length * 4), view = new DataView(staged.buffer);
     ids.forEach((id, index) => {
       assertRecipeId(id, this.nodes.length);
-      view.setUint32(offset + index * 4, id, true);
+      view.setUint32(index * 4, id, true);
     });
+    writeProcessBytes(this.memory, offset, staged);
   }
 
   private memoryRange(
@@ -1490,7 +1497,7 @@ export class ForkEarlyChildReferenceProvider
     ) {
       throw new RangeError(`${this.label}: ${context} has an invalid guest pointer`);
     }
-    const memoryLength = this.memory.buffer.byteLength;
+    const memoryLength = processMemoryByteLength(this.memory);
     if (offset > memoryLength || byteLength > memoryLength - offset) {
       throw new RangeError(`${this.label}: ${context} exceeds WebAssembly memory`);
     }
@@ -1540,7 +1547,7 @@ export class ForkEarlyChildReferenceProvider
     const failures: unknown[] = [];
     for (const chunk of chunks) {
       try {
-        new Uint8Array(this.memory.buffer, chunk.addr, chunk.size).fill(0);
+        fillProcessBytes(this.memory, chunk.addr, chunk.size, 0);
         this.deallocateScratch(chunk.addr, chunk.size);
       } catch (error) {
         failures.push(error);

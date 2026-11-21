@@ -16,6 +16,18 @@ pub fn describe_failures(facts: &ArtifactFacts, supported: &[&str]) -> Vec<Strin
         {
             continue;
         }
+        let group = wasm_posix_program_abi::program_extensions::memory_group_v3::MODULE;
+        if import.module == group && supported.contains(&group) {
+            if import.name != wasm_posix_program_abi::program_extensions::memory_group_v3::IMPORT
+                || import.kind != DescriptorKind::Memory
+                || facts.memory_pointer_widths.as_slice() != [4]
+            {
+                failures.push(format!(
+                    "incompatible grouped memory import {}.{}", import.module, import.name
+                ));
+            }
+            continue;
+        }
         let identity = format!("{}.{}", import.module, import.name);
         let Some(expected_name) = extension_import(&import.module)
             .filter(|_| supported.contains(&import.module.as_str()))

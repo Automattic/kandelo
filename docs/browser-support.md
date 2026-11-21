@@ -60,6 +60,15 @@ Service Worker ──MessagePort──> Kernel Worker       │
 | Service Worker | `apps/browser-demos/public/service-worker.js` | Intercepts HTTP for nginx/WordPress demos |
 | Connection pump | `host/src/browser-kernel-worker-entry.ts` | Bridges HTTP requests to kernel TCP pipes |
 
+Worker bundles must keep their entry modules terminal: inline dynamic imports,
+remove unused generated entry exports, and reject a chunk that imports a
+stripped entry. Playwright WebKit 26.6 re-evaluates a module Worker entry when
+its dynamic dependency imports a helper back from that entry, replacing an
+initialized message handler with fresh state. A standalone reproduction and
+Chromium/Firefox controls are recorded in
+[WebKit terminal Worker entry workaround](../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
+Native Safari has not been checked for this reproduction.
+
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged. The immediate queue yields after
@@ -3162,6 +3171,15 @@ on fetch, so where the deployment serves a body from is transport, not
 trust. Adding a package to an image needs only the image recipe and the
 package's entry in the supported set.
 
+The production service worker caches complete native responses under the
+deployment's `vfs-groups/` directory for later reuse. If storing a completed
+response fails, including CacheStorage quota exhaustion, it logs a warning
+and returns the original network response with its Content-Length intact.
+Network and body-read failures still reject; failed, truncated and partial
+responses do not become cached successes. The kernel still verifies the
+image-declared size and digest. A completed download does not promise that
+the browser retained a cache entry or that the asset will work offline.
+
 Binaries the browser app imports directly (`@binaries/...`) are the other
 consumer. The Node CLI's literal `optionalBinary` built-ins are consumers
 too, including each alternative entry point. Each must be an output of a package in
@@ -4634,6 +4652,17 @@ coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### JavaScriptCore garbage collection and blocked workers
 
+The opt-in shared-memory desktop also has a bounded owning-Worker mutex-release
+workaround recorded as
+[`JSC-GROUP-MUTEX-STORE-STALL`](../tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/entry.md).
+A standalone JS/Wasm test reproduces contended JavaScript store delays on
+Playwright WebKit, with Chromium and Firefox controls. That timing observation
+does not establish the cause of every desktop stall; sustained desktop and
+resource acceptance remain separate gates. The helper is bound before guest
+execution in admitted disposable process Workers as well as the owning kernel
+Worker. It imports their existing backing and allocates no linear memory; its
+additional per-realm module/instance cost still needs application measurement.
+
 This is a suspected JavaScriptCore behavior with a tagged workaround in
 the syscall glue, recorded in the runtime workaround registry as
 [`JSC-BLOCKED-WAIT-GC-STARVATION`](../tests/runtime-workarounds/JSC-BLOCKED-WAIT-GC-STARVATION/entry.md)
@@ -5004,3 +5033,121 @@ Translated indexed sampler lookups and guest array parameters use scalar
 sampler parameters to avoid that shape. Chromium and WebKit link both
 standalone forms. The reproduction is retained for checking released
 Firefox versions before removing the workaround.
+
+
+### Opt-in grouped desktop display transport
+
+The developer preview is a separate opt-in build. From the repository root,
+prepare the normal canonical products, install the normal structural decoder,
+then derive a compatible desktop image through the SDK:
+
+```bash
+scripts/dev-shell.sh bash -c '
+  set -euo pipefail
+  ./run.sh build-browser --out "$PWD/.scratch/kandelo-browser"
+  bash scripts/build-fork-instrument-tool.sh
+  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+  ordinary="$(bash scripts/resolve-binary.sh programs/wasm32/shell.vfs.zst)"
+  mkdir -p .scratch/shared-desktop-images
+  export KANDELO_GROUPED_DESKTOP_IMAGE="$PWD/.scratch/shared-desktop-images/grouped.vfs.zst"
+  node --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
+    "$ordinary" "$KANDELO_GROUPED_DESKTOP_IMAGE"
+  apps/browser-demos/node_modules/.bin/vite build \
+    --config apps/browser-demos/vite.grouped-desktop.config.ts \
+    --outDir "$PWD/.scratch/shared-desktop-preview"
+  apps/browser-demos/node_modules/.bin/vite preview \
+    --config apps/browser-demos/vite.grouped-desktop.config.ts \
+    --outDir "$PWD/.scratch/shared-desktop-preview" \
+    --host 127.0.0.1 --port 6209 --strictPort
+'
+```
+
+Use an unused port, then open `/grouped-desktop.html` and select **Start shared
+desktop**. Stop releases that temporary machine; another Start creates a fresh
+filesystem. The separately built full app still uses ordinary execution. This
+preview does not enable persistent writable sharing or arbitrary graphical
+clients. Initial preparation can be a long build; use the repository's
+[`agent-job` workflow](agent-guidance/validation.md#waiting-on-long-builds-and-suites)
+when running it unattended.
+
+Grouped byte launches on Node and browser publish completion only after exact
+execution-image retirement and the existing Rust-owned root reap. Rust checks
+that an exited record belongs to the host parent (`ppid=0`); a guest parent's
+child remains available to its normal wait calls. Destroy also awaits a root
+reap deferred by a busy kernel entry, even after its execution image leaves the
+live map. The live process list omits zombies; use the actual `/proc/PID/stat`
+record when verifying root reclamation.
+
+The experimental `grouped-desktop.html` page consumes its freshly fetched boot
+image with `BrowserKernel.initFromOwnedImage`, transferring the decoded bytes
+to the kernel Worker rather than preserving a main-thread restart copy. Stop
+aborts a pending image fetch, awaits machine destruction and outstanding session
+operations, drops the closed host and enables Start for a fresh temporary
+machine. Repeated starts use the same loaded page; they do not reload or import
+another entry module. Controls and late callbacks remain bound to their owning
+session. It selects
+`BrowserKernel.kmsAttachBitmapRelay` for its Sway/Foot display. This is a browser
+device transport: the kernel Worker renders to detached canvases, and a separate
+disposable display Worker owns the visible `bitmaprenderer` canvases. Independent
+`ImageBitmap` objects cross a private port; guest memories, their backing buffers
+and views do not enter the display Worker or browser main. Ordinary
+`kmsAttachCanvas` consumers and Node retain their existing presentation path.
+
+The page reports startup readiness after its image's normal window decorations
+have reached Sway's current scene state. A visible IPC node can describe pending
+layout before the first click can target that terminal. This preset check does
+not establish client-buffer completion for later window resizes, and does not
+change Sway's transaction timeout or the platform's input behavior.
+
+At most one bundle of up to two changed planes is captured or awaiting an exact
+sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capture
+snapshots the producer canvas without consuming its retained pixels. A later
+swap or commit can present the same cached image without a redraw; consuming
+that image made subsequent presentations black. Native bitmap transport remains
+bounded, and the producer keeps its own surface until normal device retirement.
+This opt-in transport does not establish compatibility with mixed
+unprepared graphical clients. It creates an additional Worker and native device
+surfaces. A two-plane 3072×1728 bundle contains up to 40.5 MiB of pixel data;
+that is a payload bound, not a measurement of native graphics memory or total
+browser footprint. The retained producer surface adds a resource cost that
+must be remeasured after this correction. Earlier ordinary/grouped comparisons
+do not establish a net memory saving, and their results do not validate the new
+snapshot path's memory or performance. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
+for the workload, response endpoints, limitations and remaining acceptance.
+
+The normal browser app explicitly enables this temporary trusted desktop with
+`browser --partial --trusted-desktop-preview`. Build the normal partial shell
+with the `shared-desktop-programs` SDK package and its ordinary application/data
+packages first. Each prepared program remains a separate lazy archive. The
+launch validates the existing partial image, retains the normal login path and
+defaults to Cage/Foot; Sway/Foot is also offered. It creates no second image.
+Ordinary canonical images keep their ordinary executable paths and memory
+backend. `build-browser --trusted-desktop-preview` also requires this prepared
+partial image after its canonical browser preparation. The build validates the
+full authored SDK participant inventory; the image-owned demo metadata selects
+the desktop profile. The app does not manufacture a package-specific machine
+description during packaging. See
+[normal partial-shell preview](shared-memory-groups.md#normal-partial-shell-preview)
+for the exact command, compatibility limits and remaining acceptance.
+The normal trusted preview has a 512 MiB shared backing ceiling without an
+additional small process/task quota. Embedders may supply explicit count quotas;
+kernel metadata, backing allocation and host Workers remain finite resources.
+
+Shutdown stops frame admission synchronously, waits for any pending capture,
+and closes late images. It sends an ordered retirement request naming the last
+published sequence. The display consumes earlier frames, clears both visible
+surfaces, and acknowledges that exact sequence before the kernel destroy reply
+allows the parent to terminate the display realm. Repeated close calls share
+one completion. Replaced relays retain their retirement promises until observed.
+A fatal kernel error latches dispatch off synchronously, then starts relay
+retirement from the detached fatal-observer microtask after kernel entry
+authority has ended. Destroy awaits the same retirement ledger and preserves
+failed fences.
+A missing acknowledgement after three seconds rejects retirement and keeps
+containment visible in host diagnostics; terminating a Worker alone is not
+reported as a successful acknowledgement. See the
+[desktop integration evidence](measurements/2026-11-19-shared-memory-desktop-integration.md)
+for the bounded validation and remaining gates.
+
+The opt-in grouped bitmap display waits for its disposable Worker to acknowledge initialization before capturing frames. This avoids an unreduced Firefox startup deserialization failure; [the suspected runtime entry](../tests/runtime-workarounds/FIREFOX-BITMAP-PORT-STARTUP/entry.md) records the negative standalone controls and remaining attribution limit. Missing readiness remains a visible failure.

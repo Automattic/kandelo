@@ -29,16 +29,19 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
-kandelo_package_load_source_metadata "$SCRIPT_DIR"
+RECIPE_DIR="${SCUMMVM_RECIPE_DIR:-$SCRIPT_DIR}"
+STATIC_ENGINES="${SCUMMVM_STATIC_ENGINES:-0}"
+case "$STATIC_ENGINES" in 0|1) ;; *) echo "Invalid static engine selection" >&2; exit 2 ;; esac
+kandelo_package_load_source_metadata "$RECIPE_DIR"
 # shellcheck source=/dev/null
 # WHY: two resolves of this recipe can run at once in one checkout (two
 # test files missing the cache together). Each keeps its source and build
 # tree under its own resolver work root so neither deletes the other's.
 # A standalone run keeps them beside this script.
-kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+kandelo_package_prepare_build_roots "$RECIPE_DIR" wasm32
 # Per-run scratch (tarball, install DESTDIR, sdl2-config shim): inside the
 # resolver work root when there is one, else a unique TMPDIR directory.
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
@@ -213,11 +216,22 @@ chmod +x "$SDL_SHIM_PREFIX/bin/sdl2-config"
 #   the first link and forced in with -u (see "Exporting plugin imports").
 SCUMMVM_ENGINES=scumm,scumm-7-8,sky,drascula,dreamweb,queen,got,griffon,lure,adl,parallaction,cge,cge2,sludge,wage
 
-echo "==> Configuring ScummVM (engine plugins, GLES2, SDL2 backend)..."
+PLUGIN_OPTIONS=(--enable-plugins --default-dynamic)
+PLUGIN_CXXFLAGS=-DUNCACHED_PLUGINS
+DATA_DIRECTORY=scummvm
+PROGRAM_OUTPUT=scummvm.wasm
+if [ "$STATIC_ENGINES" = 1 ]; then
+    # Upstream defaults to static engines; it has no --disable-plugins flag.
+    PLUGIN_OPTIONS=()
+    PLUGIN_CXXFLAGS=
+    DATA_DIRECTORY=scummvm-static
+    PROGRAM_OUTPUT=scummvm-static.wasm
+fi
+echo "==> Configuring ScummVM (static engines=$STATIC_ENGINES, GLES2, SDL2 backend)..."
 (
     cd "$SRC_DIR"
     CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
-    CXXFLAGS="-O2 -DKANDELO -DUNCACHED_PLUGINS $REPRO_FLAGS" \
+    CXXFLAGS="-O2 -DKANDELO $PLUGIN_CXXFLAGS $REPRO_FLAGS" \
     LDFLAGS="-L$SDL2_PREFIX/lib -L$LIBDRM_PREFIX/lib -L$LIBWAYLAND_PREFIX/lib -L$LIBFFI_PREFIX/lib -L$LIBXKBCOMMON_PREFIX/lib -L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib -L$FREETYPE_PREFIX/lib -L$LIBCXX_PREFIX/lib -L$SYSROOT/lib $SDL_DEP_LIBS" \
     MAD_CFLAGS="-I$LIBMAD_PREFIX/include" \
     MAD_LIBS="-L$LIBMAD_PREFIX/lib" \
@@ -229,13 +243,12 @@ echo "==> Configuring ScummVM (engine plugins, GLES2, SDL2 backend)..."
         --with-sdl-prefix="$SDL_SHIM_PREFIX" \
         --disable-all-engines \
         --enable-engine="$SCUMMVM_ENGINES" \
-        --enable-plugins \
-        --default-dynamic \
+        "${PLUGIN_OPTIONS[@]}" \
         --opengl-mode=gles2 \
         --enable-release \
         --enable-verbose-build \
         --prefix=/usr \
-        --datadir=/usr/share/scummvm \
+        --datadir="/usr/share/$DATA_DIRECTORY" \
         --with-zlib-prefix="$ZLIB_PREFIX" \
         --with-png-prefix="$LIBPNG_PREFIX" \
         --disable-mt32emu \
@@ -255,13 +268,21 @@ echo "==> Configuring ScummVM (engine plugins, GLES2, SDL2 backend)..."
         --disable-eventrecorder
 )
 grep -q '^#define USE_MAD' "$SRC_DIR/config.h"
+if [ "$STATIC_ENGINES" = 1 ] && grep -q '^#define DYNAMIC_MODULES' "$SRC_DIR/config.h"; then
+    echo "ERROR: static ScummVM unexpectedly configured dynamic modules" >&2
+    exit 1
+fi
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 scummvm_make() {
-    make -C "$SRC_DIR" -j"$JOBS" \
-        PLUGIN_LDFLAGS=-shared \
-        PRE_OBJS_FLAGS="-Wl,--export-all $EXTRA_EXPORTS -Wl,-whole-archive" \
-        "$@"
+    if [ "$STATIC_ENGINES" = 1 ]; then
+        make -C "$SRC_DIR" -j"$JOBS" "$@"
+    else
+        make -C "$SRC_DIR" -j"$JOBS" \
+            PLUGIN_LDFLAGS=-shared \
+            PRE_OBJS_FLAGS="-Wl,--export-all $EXTRA_EXPORTS -Wl,-whole-archive" \
+            "$@"
+    fi
 }
 
 echo "==> Compiling ScummVM..."
@@ -287,6 +308,7 @@ program_exports() {
     wasm-objdump -x -j Export "$SRC_DIR/scummvm" \
         | sed -n 's/.*-> "\([^"]*\)"$/\1/p' | sort -u
 }
+if [ "$STATIC_ENGINES" = 0 ]; then
 MISSING="$(comm -23 <(plugin_env_imports) <(program_exports))"
 if [ -n "$MISSING" ]; then
     echo "==> Exporting plugin imports the program does not define: $(echo $MISSING)"
@@ -300,9 +322,11 @@ if [ -n "$MISSING" ]; then
     fi
 fi
 
+fi
+
 echo "==> Installing ScummVM data files..."
 scummvm_make install DESTDIR="$DEST_DIR"
-mkdir -p "$INSTALL_DIR/share/scummvm"
+mkdir -p "$INSTALL_DIR/share/$DATA_DIRECTORY"
 # Only the [[runtime_files]] the manifest declares. `make install` also
 # produces translation, CJK-font, ImGui-font, Macintosh-font, shader, help
 # and achievement data (~103 MB) that the SCUMM launcher never reads.
@@ -312,13 +336,14 @@ for data_file in \
     scummclassic.zip \
     gui-icons.dat \
     fonts.dat; do
-    cp "$DEST_DIR/usr/share/scummvm/$data_file" "$INSTALL_DIR/share/scummvm/$data_file"
+    cp "$DEST_DIR/usr/share/$DATA_DIRECTORY/$data_file" "$INSTALL_DIR/share/$DATA_DIRECTORY/$data_file"
 done
 
 echo "==> Fork-instrumenting scummvm.wasm and its engine plugins..."
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
     "$SRC_DIR/scummvm" \
-    -o "$INSTALL_DIR/scummvm.wasm"
+    -o "$INSTALL_DIR/$PROGRAM_OUTPUT"
+if [ "$STATIC_ENGINES" = 0 ]; then
 mkdir -p "$INSTALL_DIR/lib/scummvm"
 for so in "$SRC_DIR"/plugins/*.so; do
     "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
@@ -326,10 +351,14 @@ for so in "$SRC_DIR"/plugins/*.so; do
         -o "$INSTALL_DIR/lib/scummvm/$(basename "$so")"
 done
 
-test -f "$INSTALL_DIR/scummvm.wasm"
-test -f "$INSTALL_DIR/share/scummvm/scummclassic.zip"
+fi
+
+test -f "$INSTALL_DIR/$PROGRAM_OUTPUT"
+test -f "$INSTALL_DIR/share/$DATA_DIRECTORY/scummclassic.zip"
+if [ "$STATIC_ENGINES" = 0 ]; then
 for engine in scumm sky drascula dreamweb queen got griffon lure adl \
     parallaction cge cge2 sludge wage; do
     test -f "$INSTALL_DIR/lib/scummvm/lib$engine.so"
 done
+fi
 echo "==> ScummVM $SCUMMVM_VERSION package complete"

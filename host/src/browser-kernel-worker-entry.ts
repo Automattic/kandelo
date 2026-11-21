@@ -1,3 +1,4 @@
+import { GroupedSessionRuntime } from './grouped-session-runtime';
 import { ProcessGenerationObservations } from "./process-generation-observation";
 import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
@@ -159,7 +160,10 @@ import {
   ExactProcessGenerationDetachLedger,
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
-import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
+import {
+  ProcessMemoryCreatorGate,
+  isProcessMemoryCreatorAdmissionClosed,
+} from "./process-memory-creator-gate";
 import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import type {
   HostDiagnostic,
@@ -193,6 +197,7 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
+let groupedSession: GroupedSessionRuntime | undefined;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
 let liveOverlayCompactor: LiveOverlayCompactor | null = null;
@@ -655,7 +660,7 @@ const activeBridgeRequests = new Set<number>();
 
 const ownedJobs = new OwnedJobs(pid => {
   // A committed child can still be awaiting its Worker; let launch settle first.
-  if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
+  if (processes.has(pid) || groupedSession?.has(pid)) kernelWorker.signalProcess(pid, 9);
 }, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => {
   terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
 });
@@ -899,12 +904,17 @@ async function createFreshProcessMemory(
       maximumPages: layout.maximumPages,
     });
   } catch (e) {
-    console.error(
-      "[kernel-worker] process memory allocation failed",
-      JSON.stringify(
-        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
-      ),
-    );
+    // Only the closed owner's private cancellation is expected teardown.
+    // Constructor/transport failures, including copied error text, stay loud.
+    if (!isProcessMemoryCreatorAdmissionClosed(e)) {
+      console.error(
+        "[kernel-worker] process memory allocation failed",
+        JSON.stringify({
+          ...processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
+          error: formatError(e),
+        }),
+      );
+    }
     throw e;
   }
   try {
@@ -1061,6 +1071,84 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   workerAdapter = new BrowserWorkerAdapter(msg.workerEntryUrl);
 
   // Create CentralizedKernelWorker
+  const prepareExecLaunch = async (request: PreparedExecLaunchRequest) => {
+        const creatorAdmission = processMemoryCreators.acquire(
+          "an exec process Worker",
+        );
+        try {
+          const { pid } = request;
+          const execGeneration = processes.get(pid);
+          const previousWorker = execGeneration?.worker;
+          const result = await (groupedSession?.has(pid) ? groupedSession.exec(request) : handleExec(request));
+          if (
+            typeof result === "number"
+            && result < 0
+            && execGeneration
+            && processes.get(pid) === execGeneration
+            && vforkLifetimes.isActiveBorrower(execGeneration)
+          ) {
+            vforkLifetimes.noteFailedExec(execGeneration, -result);
+          }
+          if (typeof result === "number") {
+            creatorAdmission.release();
+            return result;
+          }
+
+          let planState: "ready" | "settled" = "ready";
+          return {
+            onCommitFailure: async (commitResult?: number) => {
+              if (planState !== "ready") return;
+              planState = "settled";
+              try {
+                await result.onCommitFailure(commitResult);
+              } finally {
+                creatorAdmission.release();
+              }
+            },
+            startAfterCommit: async () => {
+              if (planState !== "ready") {
+                throw new Error("exec replacement plan already settled");
+              }
+              planState = "settled";
+              try {
+                const startResult = await result.startAfterCommit();
+                // Fire after handleExec updates the kernel Process.argv. If this is
+                // sent before registerProcess(..., { argv }), Kandelo's Procs tab
+                // refreshes against stale cmdline data and only corrects on remount.
+                // Fatal post-commit handoffs return 0 too, but install no new worker.
+                const installedWorker = processes.get(pid)?.worker;
+                if (
+                  startResult === 0
+                  && installedWorker
+                  && installedWorker !== previousWorker
+                ) {
+                  const executionState =
+                    await retryKernelEntryResultForGeneration(
+                      () =>
+                        processes.get(pid)?.worker === installedWorker
+                        && !kernelWorker.isExecHandoffActive(pid),
+                      () => kernelWorker.isProcessExecutionActive(pid),
+                    );
+                  if (
+                    executionState.status === "current"
+                    && executionState.value
+                  ) {
+                    post({ type: "proc_event", kind: "exec", pid });
+                  }
+                }
+                if (startResult === 0 && groupedSession?.has(pid)) post({ type: "proc_event", kind: "exec", pid });
+                return startResult;
+              } finally {
+                creatorAdmission.release();
+              }
+            },
+          } satisfies PreparedExecLaunchPlan;
+        } catch (error) {
+          creatorAdmission.release();
+          throw error;
+        }
+  };
+
   kernelWorker = new CentralizedKernelWorker(
     {
       maxWorkers: msg.config.maxWorkers,
@@ -1124,82 +1212,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
               () => launch(),
             ));
       },
-      onExec: async (request) => {
-        const creatorAdmission = processMemoryCreators.acquire(
-          "an exec process Worker",
-        );
-        try {
-          const { pid } = request;
-          const execGeneration = processes.get(pid);
-          const previousWorker = execGeneration?.worker;
-          const result = await handleExec(request);
-          if (
-            typeof result === "number"
-            && result < 0
-            && execGeneration
-            && processes.get(pid) === execGeneration
-            && vforkLifetimes.isActiveBorrower(execGeneration)
-          ) {
-            vforkLifetimes.noteFailedExec(execGeneration, -result);
-          }
-          if (typeof result === "number") {
-            creatorAdmission.release();
-            return result;
-          }
-
-          let planState: "ready" | "settled" = "ready";
-          return {
-            onCommitFailure: (commitResult?: number) => {
-              if (planState !== "ready") return;
-              planState = "settled";
-              try {
-                result.onCommitFailure(commitResult);
-              } finally {
-                creatorAdmission.release();
-              }
-            },
-            startAfterCommit: async () => {
-              if (planState !== "ready") {
-                throw new Error("exec replacement plan already settled");
-              }
-              planState = "settled";
-              try {
-                const startResult = await result.startAfterCommit();
-                // Fire after handleExec updates the kernel Process.argv. If this is
-                // sent before registerProcess(..., { argv }), Kandelo's Procs tab
-                // refreshes against stale cmdline data and only corrects on remount.
-                // Fatal post-commit handoffs return 0 too, but install no new worker.
-                const installedWorker = processes.get(pid)?.worker;
-                if (
-                  startResult === 0
-                  && installedWorker
-                  && installedWorker !== previousWorker
-                ) {
-                  const executionState =
-                    await retryKernelEntryResultForGeneration(
-                      () =>
-                        processes.get(pid)?.worker === installedWorker
-                        && !kernelWorker.isExecHandoffActive(pid),
-                      () => kernelWorker.isProcessExecutionActive(pid),
-                    );
-                  if (
-                    executionState.status === "current"
-                    && executionState.value
-                  ) {
-                    post({ type: "proc_event", kind: "exec", pid });
-                  }
-                }
-                return startResult;
-              } finally {
-                creatorAdmission.release();
-              }
-            },
-          } satisfies PreparedExecLaunchPlan;
-        } catch (error) {
-          creatorAdmission.release();
-          throw error;
-        }
-      },
+      onExec: prepareExecLaunch,
+      onGroupedExec: prepareExecLaunch,
+      onGroupedFork: request => processMemoryCreators.run('a grouped fork Worker', () => {
+        ownedJobs.inherit(request.parentPid, request.childPid);
+        post({ type: 'proc_event', kind: 'spawn', pid: request.childPid, ppid: request.parentPid });
+        return groupedSession!.fork(request);
+      }),
+      onGroupedClone: request => processMemoryCreators.run('a grouped pthread Worker', () => groupedSession!.clone(request)),
       onSpawn: (parentPid, childPid, program, envp) => {
         ownedJobs.inherit(parentPid, childPid);
         return processMemoryCreators.run(
@@ -1218,7 +1238,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         "a pthread Worker",
         () => handleClone(attachment),
       ),
-      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
+      onThreadExit: (pid, tid, channelOffset) => groupedSession?.threadExit(pid, tid) || handleThreadExit(pid, channelOffset),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
   );
@@ -1281,6 +1301,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
   await kernelWorker.init(msg.kernelWasmBytes);
+  // [RUNTIME-WORKAROUND: JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN]
+  // Group participants retire independently while peers keep allocating. On
+  // JSC provision the admitted extent before any instance binds, so later
+  // allocation never grows shared storage during another VM's teardown.
+  // The ceiling stays unchanged; allocated payload pages remain budgeted.
+  groupedSession = msg.config.experimentalMemoryGroup === undefined ? undefined : new GroupedSessionRuntime(
+    kernelWorker, workerAdapter, msg.config.experimentalMemoryGroup, false,
+    (pid, status, generation) => { post({ type: 'exit', pid, status, generation }); ownedJobs.detached(pid); },
+    (pid, error) => post({ type: 'host_diagnostic', pid, source: 'grouped runtime', message: error.message }),
+    isJavaScriptCoreUserAgent(navigator.userAgent) ? msg.config.experimentalMemoryGroup.maximumPages : 1);
   finalizeRootfsTransport?.();
 
   // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
@@ -1548,6 +1578,18 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     ): Promise<number> => {
       const path = msg.programPath ?? msg.argv[0];
       const pages = msg.maxPages ?? maxPages;
+      if (groupedSession?.accepts(programModule)) {
+        const secureExec = committedSecureExec ?? await retryKernelEntryResult(() => kernelWorker.processSecureExec(pid));
+        if (msg.pty) {
+          const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid)); ptyByPid.set(pid, ptyIdx);
+          if (msg.ptyCols != null && msg.ptyRows != null) kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
+        } else {
+          await retryKernelEntryResult(() => kernelWorker.installHostStdinPipe(pid));
+          if (msg.stdin) kernelWorker.setStdinData(pid, msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin));
+        }
+        await groupedSession.launch(pid, programBytes, programModule, argv, launchEnv, pages, defaultThreadSlots, secureExec, committedSecureExec !== undefined);
+        respond(msg.requestId, pid); return 0;
+      }
       const ptrWidth = detectPtrWidth(programBytes);
       const {
         memory,
@@ -1688,7 +1730,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         onCommitFailure: () => {},
         startAfterCommit: () => startProgram(request.targetBytes, request.targetModule, request.argv,
           kernelWorker.takeCommittedExecSecureExec(pid)),
-      }));
+      }), await groupedSession?.initialPathGroup());
       if (result < 0) throw new PreparedExecTargetError("initial program commit failed", -result);
     } else {
       await startProgram(suppliedProgram!.bytes, suppliedProgram!.module, msg.argv);
@@ -3245,6 +3287,10 @@ async function handlePosixSpawn(
   post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
   const { programBytes, programModule, argv } = program;
+  if (groupedSession?.accepts(programModule)) {
+    await groupedSession.launch(childPid, programBytes, programModule, argv, envp, maxPages, defaultThreadSlots, secureExec, true);
+    return 0;
+  }
   const ptrWidth = detectPtrWidth(programBytes);
   let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
   try {
@@ -3736,6 +3782,7 @@ function handleExit(
   vforkReason: VforkExactCompletionReason =
     signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
 ): void {
+  if (groupedSession?.exit(pid, exitStatus)) return;
   void finishProcessExit(
     pid,
     exitStatus,
@@ -3853,7 +3900,7 @@ async function finishProcessExit(
 
     if (!detachResult.mayReapPid) return;
     try {
-      kernelWorker.reapHostOwnedExitedProcess(pid);
+      await retryKernelEntryResult(() => kernelWorker.reapHostOwnedExitedProcess(pid));
     } catch (error) {
       reportHostDiagnostic({
         pid,
@@ -4206,6 +4253,10 @@ async function handleExportRootfsImageToFile(
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
+  if (groupedSession?.has(pid)) {
+    await retryKernelEntryResult(() => kernelWorker.signalProcess(pid, 9));
+    respond(msg.requestId, true); return;
+  }
   const info = processes.get(pid);
   if (info) vmInterruptTimers.clear(pid, info);
 
@@ -4446,6 +4497,13 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  // Stop admitting frames immediately, but drain process owners in parallel.
+  // Observe rejection now and report it only after all other cleanup runs.
+  const bitmapRetirement = kernelWorker.closeKmsBitmapRelays().then(
+    () => null, error => ({ error }),
+  );
+  await groupedSession?.destroy();
+  groupedSession = undefined;
   await liveOverlayCompactor?.stop();
   liveOverlayCompactor = null;
   await storageCloseLedger.beginRetirement();
@@ -4612,6 +4670,11 @@ async function performDestroy() {
   } catch (error) {
     storageCleanupFailure = { error: storageCleanupFailure === null ? error
       : new AggregateError([storageCleanupFailure.error, error], "kernel storage cleanup failed") };
+  }
+  const bitmapFailure = await bitmapRetirement;
+  if (bitmapFailure !== null) {
+    storageCleanupFailure = { error: storageCleanupFailure === null ? bitmapFailure.error
+      : new AggregateError([storageCleanupFailure.error, bitmapFailure.error], "kernel device/storage cleanup failed") };
   }
   if (storageCleanupFailure !== null) throw storageCleanupFailure.error;
   initReady = false;
@@ -4952,6 +5015,13 @@ sw.onmessage = (e: MessageEvent) => {
       } catch (err) {
         respondError(msg.requestId, (err as Error)?.message ?? String(err));
       }
+      break;
+    }
+    case "get_memory_group_usage": {
+      void (groupedSession?.usage() ?? Promise.resolve(null)).then(
+        usage => respond(msg.requestId, usage),
+        error => respondError(msg.requestId, formatError(error)),
+      );
       break;
     }
     case "get_storage_metadata_memory_usage": {

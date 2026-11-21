@@ -5,6 +5,8 @@ import {
   RESERVED_MODULE_PREFIX,
   STACK_IMPORT,
   STACK_MODULE,
+  MEMORY_GROUP_MODULE,
+  MEMORY_GROUP_IMPORT,
 } from "./generated/program-extensions";
 
 interface Import { readonly module: string; readonly name: string; readonly kind: string }
@@ -33,6 +35,13 @@ export function describeProgramExtensionFailures(
 ): string[] {
   const failures: string[] = [];
   for (const entry of imports) {
+    if (entry.module === MEMORY_GROUP_MODULE && supported.has(MEMORY_GROUP_MODULE)) {
+      if (entry.name !== MEMORY_GROUP_IMPORT || entry.kind !== "memory"
+          || memoryPointerWidths.length !== 1 || memoryPointerWidths[0] !== 4) {
+        failures.push(`incompatible grouped memory import ${entry.module}.${entry.name}`);
+      }
+      continue;
+    }
     if (!entry.module.startsWith(RESERVED_MODULE_PREFIX) && !EXTENSION_IMPORT_NAMES.has(entry.name)) continue;
     const identity = `${entry.module}.${entry.name}`;
     const expectedName = EXTENSION_IMPORTS.get(entry.module);

@@ -3357,6 +3357,12 @@ fn render_ts_module() -> String {
         "export const HOST_ADAPTER_VERSION = {} as const;\n",
         shared::abi::HOST_ADAPTER_VERSION
     ));
+    out.push_str(&format!("export const PROCESS_MEMORY_ACCESS_READ = {} as const;\nexport const PROCESS_MEMORY_ACCESS_WRITE = {} as const;\n",
+        shared::ProcessMemoryAccess::Read as u32, shared::ProcessMemoryAccess::Write as u32));
+    out.push_str("export const MEMORY_GROUP_PROTOCOL = ");
+    out.push_str(&memory_group_contract().to_string());
+    out.push_str(" as const;");
+    out.push('\n');
     out.push_str(&format!(
         "export const ENTROPY_READ_PENDING = {} as const;\n",
         shared::abi::ENTROPY_READ_PENDING
@@ -4436,6 +4442,7 @@ fn declared_snapshot_sections() -> Sections {
     s.add(FrozenBaselineRecord, "program_legacy_requests", program_legacy_requests());
     // Argument kinds of the host's process-metadata export.
     s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
+    s.add(KernelHost, "memory_group_contract", memory_group_contract());
     // The process table the kernel hands the host (ps, the inspector).
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
@@ -5022,10 +5029,11 @@ fn dri_cleanup_status() -> Value {
 
 fn gl_image_container_receipts() -> Value {
     use shared::gl;
-    // The unpublished epoch/op-table alone cannot distinguish older hosts that
-    // reject these opt-in sizes. Bind the reply agreement into the program digest.
+    // Bind the existing ABI-56 table and exact reply agreement, not the
+    // current maximum negotiated table. Additive GLIO_INIT versions must not
+    // invalidate these unchanged, already-built programs.
     json!({
-        "op_version": gl::OP_VERSION,
+        "op_version": gl::BASELINE_OP_VERSION,
         "byte_order": "little-endian",
         "word_type": "u32",
         "reply_magic": gl::QUERY_REPLY_MAGIC,
@@ -5059,11 +5067,11 @@ fn gl_image_container_receipts() -> Value {
 }
 
 fn gl_inline_client_draw() -> Value {
-    use shared::gl::{OP_DRAW_CLIENT_ARRAYS, OP_VERSION, inline_client_draw as wire};
+    use shared::gl::{BASELINE_OP_VERSION, OP_DRAW_CLIENT_ARRAYS, inline_client_draw as wire};
     // The payload is read by the host, but emitted by already-built programs.
     // An unchanged unpublished epoch must not admit a different record digest.
     json!({
-        "op_version": OP_VERSION,
+        "op_version": BASELINE_OP_VERSION,
         "opcode": OP_DRAW_CLIENT_ARRAYS,
         "byte_order": "little-endian",
         "header_bytes": wire::HEADER_BYTES,
@@ -7055,6 +7063,51 @@ fn ioctl_request_families() -> Value {
     Value::Array(families)
 }
 
+fn memory_group_contract() -> Value {
+    use shared::memory_group as group;
+    let fields = |entries: &[(&str, usize)]| {
+        entries
+            .iter()
+            .map(|(name, offset)| ((*name).to_string(), json!(*offset)))
+            .collect::<BTreeMap<_, _>>()
+    };
+    json!({
+        "version":group::PROTOCOL_VERSION,
+        "capability_admission":group::CAPABILITY_ADMISSION,
+        "exec_preparation": {
+            "version": shared::group_exec::VERSION,
+            "capability": shared::group_exec::CAPABILITY,
+            "bytes": shared::group_exec::PREPARATION_BYTES,
+            "fields": fields(shared::group_exec::PREPARATION_FIELDS),
+            "actions": shared::group_exec::ACTIONS.iter().map(|(name, action)|
+                ((*name).to_string(), json!(*action))).collect::<BTreeMap<_,_>>(),
+        },
+        "layout": {
+            "version": shared::group_memory_layout::VERSION,
+            "capability": shared::group_memory_layout::CAPABILITY,
+            "bytes": shared::group_memory_layout::BYTES,
+            "fields": fields(shared::group_memory_layout::FIELDS),
+            "modes": { "fresh": shared::group_memory_layout::FRESH, "inherited": shared::group_memory_layout::INHERITED },
+        },
+        "receipt_bytes":group::RECEIPT_BYTES,
+        "snapshot_bytes":group::SNAPSHOT_BYTES,
+        "receipt_fields":fields(group::RECEIPT_FIELDS),
+        "snapshot_fields":fields(group::SNAPSHOT_FIELDS),
+        "task_actions":group::TASK_ACTIONS.iter().map(|(name,action)|
+            ((*name).to_string(),json!(*action as u32))).collect::<BTreeMap<_,_>>(),
+        "mapping": {
+            "version": shared::group_memory_change::VERSION,
+            "capability": shared::group_memory_change::CAPABILITY,
+            "request_bytes": shared::group_memory_change::REQUEST_BYTES,
+            "description_bytes": shared::group_memory_change::DESCRIPTION_BYTES,
+            "request_fields": fields(shared::group_memory_change::REQUEST_FIELDS),
+            "description_fields": fields(shared::group_memory_change::DESCRIPTION_FIELDS),
+            "kinds": shared::group_memory_change::KINDS.iter().map(|(name,kind)|
+                ((*name).to_string(),json!(*kind))).collect::<BTreeMap<_,_>>(),
+        },
+    })
+}
+
 fn host_adapter() -> Value {
     let manifest = shared::abi::HOST_ADAPTER_MANIFEST;
 
@@ -7112,6 +7165,7 @@ fn host_adapter() -> Value {
 
     let mut m: JsonMap = BTreeMap::new();
     m.insert("version".into(), json!(shared::abi::HOST_ADAPTER_VERSION));
+    m.insert("process_memory_access".into(), json!({ "read": shared::ProcessMemoryAccess::Read as u32, "write": shared::ProcessMemoryAccess::Write as u32 }));
     m.insert(
         "manifest".into(),
         Value::Object(manifest_json.into_iter().collect()),

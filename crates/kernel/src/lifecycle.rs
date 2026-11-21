@@ -7,7 +7,10 @@
 //! lifecycle transition is ever left pending on host work.
 // The exports that construct every request live in `wasm_api`, which only
 // builds for Wasm; host-target unit tests exercise a subset.
-#![cfg_attr(not(any(target_arch = "wasm32", target_arch = "wasm64")), allow(dead_code))]
+#![cfg_attr(
+    not(any(target_arch = "wasm32", target_arch = "wasm64")),
+    allow(dead_code)
+)]
 use crate::process::{HostIO, ProcessState};
 use crate::process_table::{ProcessTable, ProcessRemovalState};
 use crate::syscalls;
@@ -79,6 +82,11 @@ fn check(table: &ProcessTable, request: Request) -> Result<(), Errno> {
     if proc.prepared_exec_targets.has_retiring() {
         return Err(Errno::EBUSY);
     }
+    if matches!(request, Request::Remove { .. } | Request::ReapInit { .. })
+        && table.memory_group_removal_pending(request.pid())
+    {
+        return Err(Errno::EBUSY);
+    }
     match request {
         Request::SpawnExec { parent, .. } => {
             if table.get(parent).is_none() || proc.ppid != parent {
@@ -124,8 +132,7 @@ pub(crate) fn run(
     check(table, request)?;
     Ok(match request {
         Request::Exec { pid, tid, target } => {
-            let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-            crate::exec_target::commit_process(proc, locks, host, pid, tid, target)?;
+            table.commit_exec_target(host, pid, tid, target)?;
             Completion::Exec
         }
         Request::SpawnExec {
@@ -198,6 +205,7 @@ pub(crate) fn thread_exit(
     if proc.get_thread(tid).is_none() {
         return Err(Errno::ESRCH);
     }
+    let generation = proc.exec_generation;
     let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
     let ctid = syscalls::cleanup_exiting_thread_with_state(proc, locks, host, tid)?.ctid_ptr;
     if clear_child_tid
@@ -207,12 +215,88 @@ pub(crate) fn thread_exit(
     {
         crate::wait_park::with(|parks| parks.futex_wake(pid, ctid as u64, 1, u32::MAX));
     }
+    table
+        .memory_groups()
+        .note_thread_exit(runtime_core::memory_group::GroupExecution {
+            pid,
+            tid,
+            exec_generation: generation,
+        })?;
     Ok(ctid)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grouped_thread_exit_keeps_admission_until_exact_worker_fence() {
+        let (table, mut host, pid, _, _guard) = fixture();
+        let limits = runtime_core::memory_group::MemoryGroupLimits {
+            maximum_pages: 1024,
+            maximum_processes: 4,
+            maximum_tasks: 8,
+        };
+        let group = match table.memory_groups().create(limits) {
+            Err(Errno::ENOTSUP) => {
+                table.memory_groups().configure(8192, 64).unwrap();
+                table.memory_groups().create(limits).unwrap()
+            }
+            result => result.unwrap(),
+        };
+        let main = table.prepare_process_memory_group(group, pid).unwrap();
+        table.memory_groups().start(main).unwrap();
+        let tid = table.create_thread(pid, pid, 0x8000, 0, 0x3000).unwrap();
+        let receipt = table.memory_group_task(pid, tid).unwrap().unwrap();
+        table.memory_groups().start(receipt).unwrap();
+        assert_eq!(thread_exit(table, &mut host, pid, tid, true), Ok(0x3000));
+        assert!(table.get(pid).unwrap().get_thread(tid).is_none());
+        assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 2);
+        assert_eq!(
+            table
+                .memory_groups()
+                .retire_image(pid, main.execution().exec_generation),
+            Err(Errno::EBUSY)
+        );
+        assert!(table.remove_process_with_io(pid, &mut host).is_none());
+        table.memory_groups().retire_quiescent(receipt).unwrap();
+        assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 1);
+        table.memory_groups().begin_retirement(main).unwrap();
+        table.memory_groups().retire_quiescent(main).unwrap();
+        assert!(table.remove_process_with_io(pid, &mut host).is_some());
+        table.memory_groups().seal(group).unwrap();
+        table.memory_groups().remove_empty(group).unwrap();
+    }
+
+    #[test]
+    fn never_constructed_group_thread_rolls_back_through_normal_thread_cleanup() {
+        let (table, mut host, pid, _, _guard) = fixture();
+        let limits = runtime_core::memory_group::MemoryGroupLimits {
+            maximum_pages: 1024,
+            maximum_processes: 4,
+            maximum_tasks: 8,
+        };
+        let group = match table.memory_groups().create(limits) {
+            Err(Errno::ENOTSUP) => {
+                table.memory_groups().configure(8192, 64).unwrap();
+                table.memory_groups().create(limits).unwrap()
+            }
+            result => result.unwrap(),
+        };
+        let main = table.prepare_process_memory_group(group, pid).unwrap();
+        table.memory_groups().start(main).unwrap();
+        let tid = table.create_thread(pid, pid, 0x8000, 0, 0x3000).unwrap();
+        let receipt = table.memory_group_task(pid, tid).unwrap().unwrap();
+        assert_eq!(thread_exit(table, &mut host, pid, tid, false), Ok(0x3000));
+        assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 1);
+        assert_eq!(table.memory_groups().start(receipt), Err(Errno::ESRCH));
+        assert!(host.writes.is_empty());
+        table.memory_groups().begin_retirement(main).unwrap();
+        table.memory_groups().retire_quiescent(main).unwrap();
+        assert!(table.remove_process_with_io(pid, &mut host).is_some());
+        table.memory_groups().seal(group).unwrap();
+        table.memory_groups().remove_empty(group).unwrap();
+    }
     use crate::{
         exec_target::{PreparedExecOwner, PreparedExecTarget},
         fd::OpenFileDescRef,
@@ -797,5 +881,4 @@ mod tests {
             "uncertain error never authorizes raw-fd retry"
         );
     }
-
 }

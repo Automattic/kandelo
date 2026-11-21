@@ -1,3 +1,4 @@
+import type { MemoryGroupTaskReceipt } from "./memory-group-protocol";
 import type {
   ForkHostImportWorkerInit,
 } from "./fork-host-import-runtime";
@@ -218,6 +219,8 @@ export interface WorkerMemoryQuiescentMessage {
   type: "memory_quiescent";
   pid: number;
   tid?: number;
+  /** Exact grouped admission; ordinary fences omit it. */
+  memoryGroup?: MemoryGroupTaskReceipt;
 }
 
 /** Internal acknowledgement that an exec-discarded process Worker unwound. */

@@ -237,7 +237,7 @@ pub fn ioctl(proc: &mut Process, host: &mut dyn HostIO, file: SyncFile, request:
                 info.status = status;
                 let pid = proc.pid as i32;
                 let pointer = crate::syscalls::probe_dri_process_pointer(host, pid,
-                    info.sync_fence_info, bytes.len())?;
+                    info.sync_fence_info, bytes.len(), wasm_posix_shared::ProcessMemoryAccess::Write)?;
                 crate::syscalls::write_dri_bytes(host, pid, pointer, &bytes)?;
             }
             info.name = file.name();

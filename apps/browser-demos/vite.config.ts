@@ -1,4 +1,4 @@
-import { assertTerminalWorkerEntries } from "./vite/worker-entry-exports";
+import { dropWorkerEntryExports } from "./vite/worker-entry-exports";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
@@ -48,6 +48,7 @@ import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedResolverFiles, devLazyAssets } from "./vite/dev-lazy-assets";
 import { devPartialImage } from "./vite/dev-partial-image";
+import { trustedDesktopPreview } from "./vite/trusted-desktop-preview";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -444,51 +445,6 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
     },
     configureServer(server) {
       access.attachServer(server);
-    },
-  };
-}
-
-/**
- * Vite plugin (worker build only): strip the dead `export { … }` that rolldown
- * synthesizes on worker entry chunks.
- *
- * A worker entry is a terminal module — nothing imports it — so the export is
- * dead. But its presence makes WebKit/Safari evaluate the module worker TWICE:
- * the second (uninitialized) evaluation reinstalls `self.onmessage` bound to a
- * fresh module state whose `initReady` is false, which shadows the first
- * evaluation's handler and silently parks the kernel's lazy-VFS registration
- * messages — deadlocking `kernel.init()` so the shell never boots. Chromium and
- * Firefox evaluate the module once and are unaffected. Dropping the export
- * makes the worker a plain single-evaluation module on every engine.
- *
- * The "proper" lever for this is `preserveEntrySignatures: false`, but as of
- * 2026-07-02 (Vite 8 / rolldown 1.0.3) setting it under `worker.rollupOptions`
- * had zero effect here (byte-identical output): rolldown-vite does not thread
- * that option into the worker build. So we strip the artifact at `renderChunk`
- * instead — a build-time output transform, not a runtime workaround. Revisit
- * once rolldown-vite honors `preserveEntrySignatures` for worker builds (or
- * stops emitting the dead export), and this plugin can be dropped for the
- * option.
- */
-function dropWorkerEntryExports(): Plugin {
-  const strippedEntryFacades = new Set<string>();
-  return {
-    name: "drop-worker-entry-exports",
-    enforce: "post",
-    renderChunk(code, chunk) {
-      if (!chunk.isEntry) return null;
-      const stripped = code.replace(/\bexport\s*\{[^}]*\}\s*;?\s*$/, "");
-      if (stripped === code) return null;
-      if (chunk.facadeModuleId === null) {
-        this.error(
-          `stripped worker entry ${chunk.fileName} lacks a stable facade identity`,
-        );
-      }
-      strippedEntryFacades.add(chunk.facadeModuleId);
-      return { code: stripped, map: null };
-    },
-    generateBundle(_options, bundle) {
-      assertTerminalWorkerEntries(strippedEntryFacades, bundle, message => this.error(message));
     },
   };
 }
@@ -1058,6 +1014,12 @@ export default defineConfig(() => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      trustedDesktopPreview(base, process.env.KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE,
+        process.env.KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE === undefined ? undefined : (() => {
+          const file = tryResolveBinary("kandelo_image_module32.wasm");
+          if (!file) throw Error("Trusted partial preview needs the normal image-reader module; run ./run.sh setup");
+          return new Uint8Array(fs.readFileSync(file));
+        })()),
       vfsProductsPlugin(base),
       devPartialImage({ partialDir: path.resolve(repoRoot, "local-binaries/partial") }),
       react(),

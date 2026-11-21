@@ -1,3 +1,4 @@
+import type { ProcessMemoryLayout } from "./process-memory";
 import { describeWasmArtifactPolicyFailures } from "./constants";
 import {
   CH_DATA_SIZE,
@@ -218,6 +219,21 @@ export async function readPreparedExecTarget(
   }
 }
 
+/** Copied layout only. KernelWorker's private association supplies authority;
+ * a matching object shape cannot select or attach a memory backend. */
+export interface GroupedExecReservation {
+  readonly kind: "memory-group-exec";
+  readonly layout: Readonly<ProcessMemoryLayout>;
+}
+
+export interface PreparedExecBackend {
+  readonly reservation: GroupedExecReservation;
+  readonly supportedProgramExtensions: ReadonlySet<string>;
+  readonly rollback: (outcome: "uncommitted" | "rejected" | "uncertain") => void | Promise<void>;
+  /** Synchronous publication before startAfterCommit, without yielding. */
+  readonly committed: () => void;
+}
+
 export interface PreparedExecLaunchRequest {
   readonly pid: number;
   diagnosticPath: string;
@@ -225,12 +241,13 @@ export interface PreparedExecLaunchRequest {
   readonly envp: string[];
   readonly targetBytes: ArrayBuffer;
   readonly targetModule: WebAssembly.Module;
+  readonly groupedExec?: GroupedExecReservation;
 }
 
 /** Host work that becomes legal only after the shared launcher commits. */
 export interface PreparedExecLaunchPlan {
   /** Release replacement resources when the kernel rejects the commit. */
-  readonly onCommitFailure: (result?: number) => void;
+  readonly onCommitFailure: (result?: number) => void | Promise<void>;
   /** Retire the old image and start the replacement without another commit. */
   readonly startAfterCommit: () => Promise<number>;
 }
@@ -257,6 +274,12 @@ export interface PreparedExecLaunchOptions {
   ) => number;
   /** Compile, or reuse the module already compiled for, exactly these bytes. */
   readonly compileModule: CompileWasmModule;
+  /** Only the shared launcher sees the retained token. Backend preparation
+   * returns an opaque context, never commit/target authority to callbacks. */
+  readonly prepareBackend?: (target: number, bytes: ArrayBuffer) => PreparedExecBackend;
+  /** Initial launch only: Rust independently validates the exact target under
+   * its explicitly selected group. This grants no allocation or commit. */
+  readonly supportedProgramExtensions?: ReadonlySet<string>;
 }
 
 export type CompileWasmModule = (
@@ -302,6 +325,13 @@ export async function launchPreparedExecTarget(
   // waited out on a later turn rather than reported as an exec failure.
   let target = preparedTargetToken(await retryKernelEntryResult(options.prepareInitialTarget));
   let targetLive = true;
+  let backend: PreparedExecBackend | undefined;
+  let backendSettled = false;
+  const rollbackBackend = async (outcome: "uncommitted" | "rejected" | "uncertain"): Promise<void> => {
+    if (!backend || backendSettled) return;
+    backendSettled = true;
+    await backend.rollback(outcome);
+  };
   let launchArgv = [...options.argv];
   let finalDiagnosticPath = options.diagnosticPath;
   try {
@@ -347,11 +377,16 @@ export async function launchPreparedExecTarget(
       }
     }
     const targetBytes = exactArrayBuffer(bytes);
+    if (admission.kind !== "refused" && options.prepareBackend) {
+      backend = await retryKernelEntryResult(() => options.prepareBackend!(target, targetBytes));
+    }
     // The kernel judged these exact bytes; the host adds only the fork
     // contract, which the kernel cannot judge until the fork work lands.
     const refusal = admission.kind === "refused"
       ? admission.reason
-      : describeWasmArtifactPolicyFailures(targetBytes).join("; ");
+      : describeWasmArtifactPolicyFailures(targetBytes, {
+          supportedProgramExtensions: backend?.supportedProgramExtensions ?? options.supportedProgramExtensions,
+        }).join("; ");
     if (refusal !== "") {
       throw new PreparedExecTargetError(
         `prepared exec target is not runnable: ${refusal}`,
@@ -381,9 +416,11 @@ export async function launchPreparedExecTarget(
       envp: [...options.envp],
       targetBytes,
       targetModule,
+      ...(backend ? { groupedExec: backend.reservation } : {}),
     };
     const decision = await callback(request);
     if (typeof decision === "number") {
+      await rollbackBackend("uncommitted");
       targetLive = false;
       await retryKernelEntryResult(() => options.kernel.execTargetCancel(options.ownerPid, target));
       return decision < 0 ? decision : -EIO;
@@ -419,16 +456,23 @@ export async function launchPreparedExecTarget(
           await new Promise<void>(resolve => setTimeout(resolve, 0));
           continue;
         }
-        decision.onCommitFailure();
+        try { await rollbackBackend(targetLive ? "uncommitted" : "uncertain"); }
+        finally { await decision.onCommitFailure(); }
         throw cause;
       }
     }
     if (commitResult < 0) {
-      decision.onCommitFailure(commitResult);
+      try { await rollbackBackend("rejected"); }
+      finally { await decision.onCommitFailure(commitResult); }
       return commitResult;
     }
+    // This stays on the commit stack: no await may expose a committed image
+    // before its host owner starts the exact replacement transition.
+    backendSettled = true;
+    backend?.committed();
     return await decision.startAfterCommit();
   } catch (cause) {
+    await rollbackBackend("uncommitted");
     if (targetLive) {
       targetLive = false;
       const error = targetError(cause, "prepared exec launch failed");

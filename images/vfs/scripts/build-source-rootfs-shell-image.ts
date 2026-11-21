@@ -1,3 +1,5 @@
+import { activateSharedDesktopPackage, assertSharedDesktopPackageActivation, sharedDesktopPackageDemo } from './shared-desktop-package';
+import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_IMAGE_PACKAGES, SHARED_DESKTOP_PARTIAL_COMMAND } from './shared-desktop-package-contract';
 /** Compose the canonical browser shell from resolver-owned package outputs. */
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -514,10 +516,11 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{
  * which the engine does not ignore (SDL turns it into a normal quit), and
  * waits for it, so the shell prompt returns only once the display is free.
  */
-const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
+function scummvmLaunchScript(program: "scummvm" | "scummvm-static"): string {
+  return `#!/bin/sh
 set -e
 GAMES=/var/games/scummvm
-INI="\${HOME:-/home/maker}/scummvm.ini"
+INI="\${HOME:-/home/maker}/${program}.ini"
 if [ ! -f "$INI" ]; then
     printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
 fi
@@ -529,11 +532,13 @@ fi
 set +e
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/libexec/scummvm --config="$INI" "$@" <&3 3<&- &
+    /usr/libexec/${program} --config="$INI" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /run/user/1000/scummvm-launch.pid "$@"
+supervise /run/user/1000/${program}-launch.pid "$@"
 `;
+}
+const SCUMMVM_LAUNCH_SCRIPT = scummvmLaunchScript("scummvm");
 
 /**
  * The freeware games the ScummVM machine can fetch: one tracked data file,
@@ -724,7 +729,8 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * Every step announces itself as a `scummvm-play: ` line and the download
  * as a `#### N%` line: the dock shows both while the display is dark.
  */
-export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
+function scummvmPlayScript(program: "scummvm" | "scummvm-static"): string {
+  return `#!/bin/sh
 set -e
 CATALOG=${SCUMMVM_PLAY_CATALOG}
 GAMES=/var/games/scummvm
@@ -863,17 +869,19 @@ if [ ! -f "$DIR/.targets" ]; then
     fi
     rm -f "$ZIP"
     say "Adding it to ScummVM..."
-    /usr/bin/scummvm --add --recursive -p "$DIR" \\
+    /usr/bin/${program} --add --recursive -p "$DIR" \\
         | sed -n 's/^  Target: *//p' > "$DIR/.targets.partial"
     mv "$DIR/.targets.partial" "$DIR/.targets"
 fi
 if [ "$(grep -c . "$DIR/.targets" || true)" = 1 ]; then
     say "Starting $TITLE..."
-    exec /usr/bin/scummvm "$(cat "$DIR/.targets")"
+    exec /usr/bin/${program} "$(cat "$DIR/.targets")"
 fi
 say "Opening the ScummVM launcher; $TITLE is in its game list"
-exec /usr/bin/scummvm
+exec /usr/bin/${program}
 `;
+}
+export const SCUMMVM_PLAY_SCRIPT = scummvmPlayScript("scummvm");
 
 export function composeSourceRootfsDemoConfig(
   basePath: string,
@@ -1741,9 +1749,15 @@ export async function buildSourceRootfsShellImage(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
   );
+  const useSharedDesktop = selection.kind === "partial" && includes(SHARED_DESKTOP_PACKAGE);
+  if (useSharedDesktop) {
+    const missing = SHARED_DESKTOP_IMAGE_PACKAGES.filter(pkg => !includes(pkg));
+    if (missing.length) throw Error('Shared SDK artifacts need their ordinary image packages: ' + missing.join(', ') + '. Build: ' + SHARED_DESKTOP_PARTIAL_COMMAND);
+  }
   const demoSelection = selectDemoConfig(composedDemo, selection);
-  const demo = demoSelection.bytes;
-  const includedProfiles = new Set(demoSelection.included);
+  const previewConfig = useSharedDesktop ? sharedDesktopPackageDemo(parseKandeloDemoConfig(new TextDecoder().decode(demoSelection.bytes))!) : null;
+  const demo = previewConfig ? new TextEncoder().encode(JSON.stringify(previewConfig, null, 2) + "\n") : demoSelection.bytes;
+  const includedProfiles = new Set(previewConfig ? Object.keys(previewConfig.profiles) : demoSelection.included);
   const scummvmCatalog = loadScummvmFreewareCatalog();
   // Read first so a malformed budget fails before any composition work.
   const eagerBudget = readImageEagerBudget(inputs.eagerBudgetPath);
@@ -1875,17 +1889,18 @@ export async function buildSourceRootfsShellImage(
   // wrapper, scummvm-play and its catalog are eager. Game data is either the
   // user's own upload or a freeware game scummvm-play fetches; both land in
   // /var/games/scummvm; the image account owns that mutable game directory.
-  if (includes("scummvm")) {
+  for (const program of ["scummvm", "scummvm-static"] as const) {
+    if (!includes(program)) continue;
     writeVfsBinary(
       fs,
-      "/usr/bin/scummvm",
-      new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
+      `/usr/bin/${program}`,
+      new TextEncoder().encode(scummvmLaunchScript(program)),
       0o755,
     );
     writeVfsBinary(
       fs,
-      SCUMMVM_PLAY_COMMAND,
-      new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
+      `/usr/bin/${program}-play`,
+      new TextEncoder().encode(scummvmPlayScript(program)),
       0o755,
     );
     ensureDirRecursive(fs, "/usr/share/scummvm-play");
@@ -1963,7 +1978,7 @@ export async function buildSourceRootfsShellImage(
     ["/var/games/quake", "tyrquake"],
     ["/var/games/quake/id1", "tyrquake"],
     ["/var/games/doom", "fbdoom"],
-    ["/var/games/scummvm", "scummvm"],
+    ["/var/games/scummvm", includes("scummvm") ? "scummvm" : "scummvm-static"],
   ] as const) {
     if (!includes(owner)) continue;
     fs.chown(path, 1000, 1000);
@@ -1982,6 +1997,9 @@ export async function buildSourceRootfsShellImage(
   // same layout contract as saveImage before publishing deferred archives.
   assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
+  // Normal composition and source-preservation checks above run first. Only
+  // this explicit partial package may replace the validated executable closure.
+  const sharedDesktop = useSharedDesktop ? activateSharedDesktopPackage(fs, inputs.resolveArtifact) : null;
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
   // WHY: every visitor downloads and decompresses the eager content before
@@ -2005,6 +2023,7 @@ export async function buildSourceRootfsShellImage(
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
       shellComposition: PACKAGE_ROOTFS_SHELL_COMPOSITION,
+      ...(sharedDesktop ? { trustedMemoryGroup: sharedDesktop } : {}),
       // Only a partial shell says so: canonical metadata stays unchanged.
       ...(selection.kind === "partial"
         ? {
@@ -2046,7 +2065,8 @@ export async function buildSourceRootfsShellImage(
   // wrote them. Loading them back is what authenticates their seals.
   const outputFs = KandeloImageFs.create();
   outputFs.loadImage(image);
-  requireMaterializedBashIdentity(outputFs, sourceBash, bash);
+  if (sharedDesktop) assertSharedDesktopPackageActivation(outputFs, sharedDesktop);
+  else requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(
     composedLazyState,
     outputFs,

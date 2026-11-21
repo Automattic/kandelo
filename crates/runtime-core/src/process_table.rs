@@ -80,6 +80,8 @@ pub struct ProcessTable {
     pub processes: PreparedMap<u32, Process>,
     /// Sole machine-wide authority for POSIX, OFD, and flock advisory locks.
     advisory_locks: AdvisoryLockManager,
+    /// Kernel authority for opt-in backing groups, separate from POSIX pgids.
+    memory_groups: crate::memory_group::MemoryGroups,
     current_pid: u32,
     /// Next machine-wide process or thread identity to consider.
     ///
@@ -689,10 +691,155 @@ fn serialize_fork_state_with_allocator(
 }
 
 impl ProcessTable {
+    /// Group configuration/lifecycle is host-driven; guest POSIX pgids do not
+    /// grant admission. The ledger itself cannot mint a ProcessTable task.
+    pub fn memory_groups(&mut self) -> &mut crate::memory_group::MemoryGroups {
+        &mut self.memory_groups
+    }
+
+    /// Validation only for an explicitly selected host group. Initial commit
+    /// advances generation, so reserve the execution receipt afterward instead
+    /// of minting a stale generation-zero task during artifact inspection.
+    pub fn admit_initial_group_exec_target(
+        &self, group: u32, pid: u32, token: u32, expected_abi: u32,
+    ) -> Result<crate::exec_target::Admission, Errno> {
+        let group = self.memory_groups.resolve_group(group)?;
+        self.validate_task(pid, pid)?;
+        let proc = self.get(pid).ok_or(Errno::ESRCH)?;
+        if proc.exec_generation != 0 || proc.exe.is_some() || proc.main_channel_addr != 0
+            || !proc.threads.is_empty()
+            || self.process_memory_group(pid)?.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        match proc.prepared_exec_targets.get(token)?.owner() {
+            crate::exec_target::PreparedExecOwner::Process { .. } => {
+                if proc.spawn_publication_pending { return Err(Errno::EBUSY); }
+                proc.prepared_exec_targets.get(token)?.owner()
+                    .validate_process(pid, pid, proc.exec_generation)?;
+            }
+            crate::exec_target::PreparedExecOwner::Spawn { parent_pid, .. } => {
+                if !proc.spawn_publication_pending || proc.ppid != parent_pid
+                    || self.process_memory_group(parent_pid)? != Some(group) {
+                    return Err(Errno::EPERM);
+                }
+                proc.prepared_exec_targets.get(token)?.owner()
+                    .validate_spawn(parent_pid, pid, proc.exec_generation)?;
+            }
+        }
+        // Opting into support must not move ordinary programs to the backend.
+        match crate::exec_target::admit(proc, pid, token, expected_abi)? {
+            crate::exec_target::Admission::Refused(_) => crate::exec_target::admit_grouped(proc, pid, token, expected_abi),
+            admission => Ok(admission),
+        }
+    }
+
+    pub fn prepare_process_memory_group(
+        &mut self,
+        group: crate::memory_group::MemoryGroupId,
+        pid: u32,
+    ) -> Result<crate::memory_group::GroupAdmission, Errno> {
+        self.validate_task(pid, pid)?;
+        let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
+        if process.pointer_width != 4 || process.vfork_child {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        if !process.threads.is_empty() {
+            return Err(Errno::EBUSY);
+        }
+        self.memory_groups
+            .prepare_image(group, pid, process.exec_generation)
+    }
+
+    /// Current image membership; old-generation receipts remain independently
+    /// owned by the group ledger after an exec advances this generation.
+    pub fn process_memory_group(
+        &self,
+        pid: u32,
+    ) -> Result<Option<crate::memory_group::MemoryGroupId>, Errno> {
+        let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
+        Ok(self.memory_groups.image_group(pid, process.exec_generation))
+    }
+
+    pub fn memory_group_removal_pending(&self, pid: u32) -> bool {
+        self.get(pid).is_some_and(|proc| proc.pending_grouped_exec.is_some())
+            || !self.memory_groups.can_remove_process(pid)
+    }
+
+    /// Thread creation reserves membership itself; host registration only
+    /// reads the receipt for the already validated exact task.
+    pub fn memory_group_task(
+        &self,
+        pid: u32,
+        tid: u32,
+    ) -> Result<Option<crate::memory_group::GroupAdmission>, Errno> {
+        self.validate_task(pid, tid)?;
+        let generation = self
+            .processes
+            .get(&pid)
+            .ok_or(Errno::ESRCH)?
+            .exec_generation;
+        Ok(self
+            .memory_groups
+            .image_task(crate::memory_group::GroupExecution {
+                pid,
+                tid,
+                exec_generation: generation,
+            }))
+    }
+
+    pub(crate) fn memory_group_running_admission(
+        &self,
+        admission: crate::memory_group::GroupAdmission,
+    ) -> Result<(), Errno> {
+        let current = self.memory_groups.running_image_task(admission.execution())?;
+        if current != admission { return Err(Errno::ESRCH); }
+        Ok(())
+    }
+
+    pub(crate) fn memory_groups_validate_exec(&self, receipt: crate::memory_group::GroupAdmission) -> Result<(), Errno> {
+        self.memory_groups.validate_exec_image(receipt)
+    }
+
+    pub(crate) fn memory_group_prepared_admission(&self, execution: crate::memory_group::GroupExecution)
+        -> Result<crate::memory_group::GroupAdmission, Errno> {
+        self.memory_groups.prepared_image_task(execution)
+    }
+
+    /// Starting a Worker needs the current live task. Retirement intentionally
+    /// resolves older receipts without consulting the replacement image.
+    pub fn memory_group_task_action(
+        &mut self,
+        record: wasm_posix_shared::memory_group::ReceiptRecord,
+        action: wasm_posix_shared::memory_group::TaskAction,
+    ) -> Result<(), Errno> {
+        let receipt = self.memory_groups.resolve_receipt(record)?;
+        if action == wasm_posix_shared::memory_group::TaskAction::Start {
+            self.validate_task(record.pid, record.tid)?;
+            if self
+                .processes
+                .get(&record.pid)
+                .ok_or(Errno::ESRCH)?
+                .exec_generation
+                != record.generation
+            {
+                return Err(Errno::EAGAIN);
+            }
+        }
+        self.memory_groups.apply_task_action(receipt, action)?;
+        if action == wasm_posix_shared::memory_group::TaskAction::RetireQuiescent {
+            // Exited grouped children remain waitable but unobservable until
+            // every exact execution admission has stopped. Revisit parked
+            // waits after the stop receipt, even with no later guest syscall.
+            crate::wait_park::note_children_changed();
+        }
+        Ok(())
+    }
+
     const fn new_inner() -> Self {
         ProcessTable {
             processes: PreparedMap::new(),
             advisory_locks: AdvisoryLockManager::new(),
+            memory_groups: crate::memory_group::MemoryGroups::new(),
             current_pid: 0,
             next_task_id: FIRST_TASK_ID,
             current_tid: 0,
@@ -899,6 +1046,13 @@ impl ProcessTable {
             // the uncertain executable close resolves; IDs are not custody.
             return None;
         }
+        if self.memory_group_removal_pending(pid) {
+            return None;
+        }
+        // Kernel-only fork/launch rollback can discard an unconstructed image.
+        // Running, stopping or quarantined Workers must first supply their
+        // exact receipts. Do this before removing the Process or any OFDs.
+        self.memory_groups.rollback_removed_process(pid).ok()?;
         let mut removed = self.processes.remove_entry(&pid)?;
         let mut proc = removed.value_mut();
         crate::wait_park::retire_process(pid);
@@ -912,8 +1066,9 @@ impl ProcessTable {
         unsafe { crate::pipe::global_pipe_table() }.cancel_fifo_opens_for_process(pid, |_| {});
         // A trapped process or failed launch may never execute close().
         // Retire the same kernel references as close, before discarding OFDs.
-        crate::syscalls::rollback_owned_mapping_plans(&mut proc);
+        let prepared_effect = crate::syscalls::rollback_owned_mapping_plans(&mut proc);
         let mut dri_effects = crate::syscalls::collect_dri_mapping_releases(core::mem::take(&mut proc.dri_bindings));
+        dri_effects.extend(prepared_effect);
         dri_effects.extend(crate::syscalls::collect_process_gl_image_release_effects(&mut proc));
         dri_effects.extend(crate::syscalls::collect_owned_resource_removal_effects(&mut proc));
         let dri_ofds: Vec<_> = proc.ofd_table.iter()
@@ -1610,7 +1765,7 @@ impl ProcessTable {
         caller_tid: u32,
         mode: wasm_posix_shared::fork_contract::Mode,
     ) -> Result<u32, Errno> {
-        let (serialized_parent, caller_blocked, mut dri_mappings) = {
+        let (serialized_parent, caller_blocked, mut dri_mappings, memory_group) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
             if parent.prepared_exec_targets.has_retiring() {
                 return Err(Errno::EBUSY);
@@ -1624,6 +1779,20 @@ impl ProcessTable {
             }
             if !parent.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
+            }
+            let memory_group = self
+                .memory_groups
+                .image_group(parent_pid, parent.exec_generation);
+            if memory_group.is_some() {
+                if mode == wasm_posix_shared::fork_contract::Mode::Vfork {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                self.memory_groups
+                    .running_image_task(crate::memory_group::GroupExecution {
+                        pid: parent_pid,
+                        tid: caller_tid,
+                        exec_generation: parent.exec_generation,
+                    })?;
             }
             // WHY only vfork: a vfork child borrows its parked parent's
             // address space, and a second borrower of the same memory would
@@ -1639,6 +1808,7 @@ impl ProcessTable {
                 serialize_fork_state_with_growing_buffer(parent)?,
                 parent.blocked_for(caller_tid),
                 mappings,
+                memory_group,
             )
         };
 
@@ -1680,6 +1850,9 @@ impl ProcessTable {
         child.memory.inherit_exact_mapping_ids(
             &self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.memory,
         );
+        child.memory.inherit_group_linear_memory(
+            &self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.memory,
+        )?;
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
         // leader's mask.
@@ -1692,7 +1865,19 @@ impl ProcessTable {
             self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?, &mut child)?;
         child.fork_pipe_replay = build_fork_pipe_replay(&child)?;
         let mut entry = slot.finish(child_pid, child)?;
-        bump_inherited_resource_refcounts(parent_pid, entry.value())?;
+        let generation = entry.value().exec_generation;
+        if let Some(group) = memory_group {
+            self.memory_groups
+                .prepare_image(group, child_pid, generation)?;
+        }
+        if let Err(error) = bump_inherited_resource_refcounts(parent_pid, entry.value()) {
+            if memory_group.is_some() {
+                self.memory_groups
+                    .rollback_unconstructed_image(child_pid, generation)
+                    .expect("unpublished fork image must roll back exactly");
+            }
+            return Err(error);
+        }
         entry.value_mut().owned_resources = owned.commit();
         entry.value_mut().dri_bindings = dri_mappings.take();
 
@@ -2009,7 +2194,7 @@ impl ProcessTable {
         tls_ptr: usize,
         ctid_ptr: usize,
     ) -> Result<u32, Errno> {
-        let inherited_blocked = {
+        let (inherited_blocked, group_parent) = {
             let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
             if matches!(process.state, ProcessState::Exited | ProcessState::Limbo) {
                 return Err(Errno::ESRCH);
@@ -2017,11 +2202,29 @@ impl ProcessTable {
             if !process.is_live_explicit_tid(caller_tid) {
                 return Err(Errno::ESRCH);
             }
-            process.blocked_for(caller_tid)
+            let group_parent = if self
+                .memory_groups
+                .image_group(pid, process.exec_generation)
+                .is_some()
+            {
+                Some(self.memory_groups.running_image_task(
+                    crate::memory_group::GroupExecution {
+                        pid,
+                        tid: caller_tid,
+                        exec_generation: process.exec_generation,
+                    },
+                )?)
+            } else {
+                None
+            };
+            (process.blocked_for(caller_tid), group_parent)
         };
         self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?.prepare_thread()?;
         let task_id = self.allocate_task_id()?;
         let tid = task_id.as_raw();
+        if let Some(parent) = group_parent {
+            self.memory_groups.prepare_thread(parent, tid)?;
+        }
         crate::image_build_determinism::thread_created(pid, tid);
         let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
         let thread_info = process.add_allocated_thread(task_id, ctid_ptr, stack_ptr, tls_ptr);
@@ -2144,6 +2347,17 @@ impl ProcessTable {
             .get(&pid)
             .filter(|proc| !proc.spawn_publication_pending && proc.state != ProcessState::Limbo)
             .map(|proc| proc.ppid)
+    }
+
+    /// Whether the host has already acknowledged this process's exit.
+    /// Keep this authority with the zombie rather than accumulating host PID
+    /// tombstones after the last execution image and transport have retired.
+    pub fn process_exit_published(&self, pid: u32) -> Result<bool, Errno> {
+        let process = self.processes.get(&pid).ok_or(Errno::ESRCH)?;
+        if process.state == ProcessState::Limbo {
+            return Err(Errno::ESRCH);
+        }
+        Ok(process.exit_published)
     }
 
     /// Publish one pending spawn child to its exact parent.
@@ -2285,6 +2499,9 @@ impl ProcessTable {
                 continue;
             };
             if event.event_mask & event_mask == 0 {
+                continue;
+            }
+            if event.event_mask == EVENT_EXITED && !self.memory_groups.can_remove_process(child_pid) {
                 continue;
             }
             selected = Some((child_pid, event));
@@ -6394,6 +6611,23 @@ mod orphan_tests {
 
         assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
         assert!(again.reaped.is_empty() && again.signaled.is_empty());
+    }
+
+    #[test]
+    fn exit_publication_query_follows_the_zombie_without_retaining_reaped_pids() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        assert_eq!(table.process_exit_published(child), Ok(false));
+        assert_eq!(table.process_exit_published(u32::MAX), Err(Errno::ESRCH));
+        exit(&mut table, child);
+        assert_eq!(table.process_exit_published(child), Ok(false));
+        publish(&mut table, child);
+        assert_eq!(table.process_exit_published(child), Ok(true));
+        publish(&mut table, child);
+        assert_eq!(table.process_exit_published(child), Ok(true));
+        table.reap_process_with_io(child, &mut NoopHost).unwrap();
+        assert_eq!(table.process_exit_published(child), Err(Errno::ESRCH));
     }
 
     #[test]

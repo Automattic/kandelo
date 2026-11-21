@@ -12,6 +12,7 @@
       "kernel_exports",
       "kernel_imports",
       "kms_cursor_transport",
+      "memory_group_contract",
       "pcm_transport_abi",
       "process_metadata_contract",
       "process_snapshot_wire",
@@ -2482,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 7,
+      "required_host_adapter_version": 24,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2549,6 +2550,36 @@
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_epoll_wait_retry_state",
+      "kernel_group_memory_break",
+      "kernel_group_memory_change_cancel",
+      "kernel_group_memory_change_commit",
+      "kernel_group_memory_change_prepare",
+      "kernel_group_memory_change_read",
+      "kernel_group_memory_change_validate",
+      "kernel_group_memory_exec_action",
+      "kernel_group_memory_exec_layout",
+      "kernel_group_memory_exec_prepare",
+      "kernel_group_memory_fork",
+      "kernel_group_memory_layout_install",
+      "kernel_group_memory_object_alive",
+      "kernel_group_memory_thread_control_prepare",
+      "kernel_group_memory_thread_control_release",
+      "kernel_group_memory_thread_control_reuse",
+      "kernel_group_owned_mapping_finish",
+      "kernel_group_owned_mapping_prepare",
+      "kernel_group_owned_mapping_validate",
+      "kernel_initial_group_exec_target_admit",
+      "kernel_memory_group_capabilities",
+      "kernel_memory_group_configure",
+      "kernel_memory_group_create",
+      "kernel_memory_group_prepare_process",
+      "kernel_memory_group_protocol_version",
+      "kernel_memory_group_remove",
+      "kernel_memory_group_retire_image",
+      "kernel_memory_group_seal",
+      "kernel_memory_group_snapshot",
+      "kernel_memory_group_task_action",
+      "kernel_memory_group_task_receipt",
       "kernel_owned_mapping_finish",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
@@ -2557,6 +2588,10 @@
       "kernel_wait_park_followup"
     ],
     "optional_kernel_features": 0,
+    "process_memory_access": {
+      "read": 1,
+      "write": 2
+    },
     "required_kernel_exports": [
       "__abi_version",
       "kernel_alloc_scratch",
@@ -2603,6 +2638,7 @@
       "kernel_get_fd_path",
       "kernel_get_parent_pid",
       "kernel_get_process_exec_generation",
+      "kernel_get_process_exit_published",
       "kernel_get_process_exit_signal",
       "kernel_get_process_state",
       "kernel_get_socket_timeout_ms",
@@ -2671,7 +2707,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 7,
+    "version": 24,
     "worker_features": [
       {
         "bit": 2,
@@ -4393,6 +4429,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_process_exit_published",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_process_exit_signal",
       "signature": "(i32) -> (i32)"
     },
@@ -4448,6 +4489,96 @@
     },
     {
       "kind": "func",
+      "name": "kernel_group_memory_break",
+      "signature": "(i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_change_cancel",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_change_commit",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_change_prepare",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_change_read",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_change_validate",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_exec_action",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_exec_layout",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_exec_prepare",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_fork",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_layout_install",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_object_alive",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_thread_control_prepare",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_thread_control_release",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_memory_thread_control_reuse",
+      "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_owned_mapping_finish",
+      "signature": "(i32,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_owned_mapping_prepare",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_owned_mapping_validate",
+      "signature": "(i32,i32,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_handle_channel",
       "signature": "(i32,i32,i32,i64) -> (i32)"
     },
@@ -4480,6 +4611,11 @@
       "kind": "func",
       "name": "kernel_initial_exec_commit",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_initial_group_exec_target_admit",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4620,6 +4756,61 @@
       "kind": "func",
       "name": "kernel_mark_process_signaled",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_capabilities",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_configure",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_create",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_prepare_process",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_protocol_version",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_remove",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_retire_image",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_seal",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_snapshot",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_task_action",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_memory_group_task_receipt",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -5555,6 +5746,12 @@
     {
       "kind": "func",
       "module": "env",
+      "name": "host_gbm_bo_bind_group",
+      "signature": "(i32,i32,i32,i32,i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
       "name": "host_gbm_bo_create",
       "signature": "(i32,i32,i64,i32,i32,i32) -> (i32)"
     },
@@ -5677,6 +5874,12 @@
       "module": "env",
       "name": "host_gl_update_surface",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_group_object_read",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -5946,7 +6149,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_proc_validate_range",
-      "signature": "(i32,i64,i32) -> (i32)"
+      "signature": "(i32,i64,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -6066,7 +6269,7 @@
       "kind": "memory",
       "maximum_pages": 16384,
       "memory64": false,
-      "minimum_pages": 21,
+      "minimum_pages": 22,
       "module": "env",
       "name": "memory",
       "shared": true
@@ -8155,6 +8358,114 @@
       ],
       "size": 16
     }
+  },
+  "memory_group_contract": {
+    "capability_admission": 1,
+    "exec_preparation": {
+      "actions": {
+        "cancel": 2,
+        "finishCancellation": 3,
+        "validate": 1
+      },
+      "bytes": 40,
+      "capability": 8,
+      "fields": {
+        "initialPages": 32,
+        "maximumPages": 36,
+        "receipt": 0
+      },
+      "version": 1
+    },
+    "layout": {
+      "bytes": 96,
+      "capability": 4,
+      "fields": {
+        "brkBase": 40,
+        "brkLimit": 56,
+        "channel": 80,
+        "controlBase": 64,
+        "controlEnd": 72,
+        "initialPages": 32,
+        "maximumPages": 36,
+        "mmapBase": 48,
+        "mode": 88,
+        "receipt": 0,
+        "reserved": 92
+      },
+      "modes": {
+        "fresh": 0,
+        "inherited": 1
+      },
+      "version": 1
+    },
+    "mapping": {
+      "capability": 2,
+      "description_bytes": 136,
+      "description_fields": {
+        "address": 48,
+        "flags": 88,
+        "kind": 40,
+        "length": 56,
+        "oldAddress": 64,
+        "oldLength": 72,
+        "populationAddress": 96,
+        "populationLength": 104,
+        "prot": 44,
+        "receipt": 0,
+        "reserved": 92,
+        "result": 80,
+        "sharedLength": 120,
+        "sharedObject": 112,
+        "sharedOffset": 128,
+        "token": 32
+      },
+      "kinds": {
+        "break": 5,
+        "map": 1,
+        "protect": 3,
+        "remap": 4,
+        "unmap": 2
+      },
+      "request_bytes": 64,
+      "request_fields": {
+        "args": 8,
+        "observedPages": 56,
+        "reserved": 4,
+        "syscall": 0,
+        "tailReserved": 60
+      },
+      "version": 5
+    },
+    "receipt_bytes": 32,
+    "receipt_fields": {
+      "generation": 24,
+      "group": 0,
+      "pid": 4,
+      "reserved": 12,
+      "serial": 16,
+      "tid": 8
+    },
+    "snapshot_bytes": 40,
+    "snapshot_fields": {
+      "accepting": 16,
+      "backings": 32,
+      "group": 0,
+      "images": 36,
+      "maximumPages": 4,
+      "maximumProcesses": 8,
+      "maximumTasks": 12,
+      "processes": 20,
+      "quarantinedTasks": 28,
+      "tasks": 24
+    },
+    "task_actions": {
+      "beginRetirement": 2,
+      "cancelUnconstructed": 5,
+      "quarantine": 4,
+      "retireQuiescent": 3,
+      "start": 1
+    },
+    "version": 1
   },
   "oss_source_abi": {
     "capabilities": {

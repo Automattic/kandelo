@@ -991,6 +991,14 @@ name = "scummvm"
 class = "user-software"
 
 [[packages]]
+name = "shared-desktop-programs"
+class = "browser-product"
+
+[[packages]]
+name = "scummvm-static"
+class = "user-software"
+
+[[packages]]
 name = "scummvm-docs"
 class = "browser-product"
 

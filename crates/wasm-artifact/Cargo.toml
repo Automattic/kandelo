@@ -10,7 +10,12 @@ publish = false
 name = "wasm_artifact"
 crate-type = ["rlib"]
 
+[features]
+grouped-memory = ["dep:serde", "dep:serde_json"]
+
 [dependencies]
+serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
+serde_json = { version = "1", default-features = false, features = ["alloc"], optional = true }
 # The ABI epoch and the WPK_FORK_* section names, used to recognize (not
 # judge) fork-instrumentation surface. `no_std`, dependency-free.
 wasm-posix-program-abi = { path = "../program-abi" }

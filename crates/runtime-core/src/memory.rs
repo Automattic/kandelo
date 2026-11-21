@@ -1,4 +1,6 @@
 extern crate alloc;
+pub(crate) mod change;
+pub(crate) mod linear;
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::collections::BTreeSet;
@@ -29,6 +31,45 @@ pub struct MappingFile {
     /// Pathname column, already in Linux's spelling for unlinked objects
     /// (for example `/memfd:name (deleted)`).
     pub name: Vec<u8>,
+    /// Exact optional source for grouped private remap growth. Ordinary file
+    /// labels carry no source capability. Fragments share its one backing hold.
+    pub(crate) private_source: Option<crate::private_mapping::Source>,
+    /// Optional kernel-owned direct backing, shared by VMA fragments/forks.
+    pub(crate) group_shared: Option<GroupSharedMapping>,
+}
+
+/// A direct in-memory backing created by an exact grouped mapping transaction.
+/// Its identity and bounds are kernel authority; host physical offsets never
+/// enter this record. Clones share the admitted metadata and object lifetime.
+#[derive(Debug, Clone)]
+pub(crate) struct GroupSharedMapping(crate::io_owner::IoArc<GroupSharedObject>);
+struct GroupSharedObject {
+    group: u32,
+    id: u64,
+    length: usize,
+    _metadata: crate::metadata_budget::MetadataReservation<'static>,
+}
+impl core::fmt::Debug for GroupSharedObject {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GroupSharedObject").field("group", &self.group).field("id", &self.id).field("length", &self.length).finish()
+    }
+}
+impl PartialEq for GroupSharedMapping {
+    fn eq(&self, other: &Self) -> bool { self.0.identity() == other.0.identity() }
+}
+impl Eq for GroupSharedMapping {}
+impl GroupSharedMapping {
+    pub(crate) fn new(group: u32, id: u64, length: usize) -> Result<Self, Errno> {
+        if group == 0 || id == 0 || length == 0 { return Err(Errno::EINVAL); }
+        let bytes = core::mem::size_of::<MappingFile>().checked_add(64)
+            .and_then(|n| n.checked_mul(2)).ok_or(Errno::ENOMEM)?;
+        let metadata = crate::io_buffer::IO_MEMORY.reserve(bytes)?;
+        Ok(Self(crate::io_owner::IoArc::try_new(GroupSharedObject { group, id, length, _metadata: metadata })?))
+    }
+    pub(crate) fn group(&self) -> u32 { self.0.group }
+    pub(crate) fn id(&self) -> u64 { self.0.id }
+    pub(crate) fn length(&self) -> usize { self.0.length }
+    pub(crate) fn only_inode_hold(&self) -> bool { self.0.strong_count() == 1 }
 }
 
 /// Rust-owned identity and resource authority for one opt-in device mapping.
@@ -114,6 +155,10 @@ pub struct MemoryLayoutMetadata {
 
 /// Kernel memory manager for mmap/munmap/brk.
 pub struct MemoryManager {
+    /// Opt-in virtual image/heap intervals; ordinary processes pay one pointer.
+    grouped_linear: Option<crate::IoBox<linear::GroupLinearMemory>>,
+    /// Exact staged-change owner; ordinary operations leave this empty.
+    pending_change: Option<core::num::NonZeroU64>,
     /// List of active mappings, kept sorted by address.
     mappings: IoBuffer<MappedRegion>,
     last_exact_mapping_id: u64,
@@ -172,6 +217,8 @@ impl MemoryManager {
 
     pub fn new() -> Self {
         MemoryManager {
+            grouped_linear: None,
+            pending_change: None,
             mappings: IoBuffer::new(),
             reserved_regions: IoBuffer::new(),
             last_exact_mapping_id: 0,
@@ -193,6 +240,13 @@ impl MemoryManager {
         self.mappings
             .iter()
             .any(|m| m.flags & wasm_posix_shared::mmap::MAP_SHARED != 0)
+    }
+
+    pub(crate) fn has_unsupported_group_shared_mapping(&self, group: u32) -> bool {
+        self.mappings.iter().any(|mapping| mapping.flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+            && !mapping.file.as_ref().and_then(|file| file.private_source.as_ref()).is_some_and(|source| source.is_immutable_shared())
+            && !mapping.file.as_ref().and_then(|file| file.group_shared.as_ref())
+                    .is_some_and(|object| object.0.group == group))
     }
 
     pub fn mappings(&self) -> &[MappedRegion] {

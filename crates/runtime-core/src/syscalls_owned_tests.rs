@@ -2050,3 +2050,199 @@ fn exact_mapping_metadata_does_not_change_fork21_serialized_bytes() {
     assert_eq!(child.memory.mappings()[0].exact_mapping.unwrap().id, id);
     assert!(child.memory.reserve_exact_mapping_id().unwrap() > burned);
 }
+
+#[test]
+fn grouped_owned_command_mapping_and_exact_unmap_are_staged_and_cancellable() {
+    use crate::{memory::linear::InitialLayout, memory_group::MemoryGroupLimits, process_table::ProcessTable};
+    use wasm_posix_shared::mmap::*;
+    let mut table = ProcessTable::new();
+    table.memory_groups().configure(128, 1).unwrap();
+    let group = table.memory_groups().create(MemoryGroupLimits { maximum_pages: 64, maximum_processes: 4, maximum_tasks: 8 }).unwrap();
+    let pid = table.create_process().unwrap();
+    let p = table.get_mut(pid).unwrap();
+    p.memory.install_group_linear_layout(InitialLayout { initial_pages: 4, maximum_pages: 64,
+        brk_base: 3 * 65536, mmap_base: 4 * 65536, brk_limit: 64 * 65536, control_start: 0, control_end: 3 * 65536 }).unwrap();
+    let admission = table.prepare_process_memory_group(group, pid).unwrap();
+    table.memory_groups().start(admission).unwrap();
+    let mut host = MockHostIO::new();
+    let p = table.get_mut(pid).unwrap();
+    let fd = sys_open(p, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    glio_init_objects_test(p, &mut host, fd, gl::OP_VERSION).unwrap();
+    let index = p.fd_table.get(fd).unwrap().ofd_ref.0;
+    let token = acquire(p, &mut host, fd, 1);
+    let mut map = W::Packet { action: W::MMAP_EXACT, token, transaction: 1, length: 40, ..Default::default() };
+    map.body[8..16].copy_from_slice(&(gl::CMDBUF_LEN as u64).to_le_bytes());
+    map.body[24..28].copy_from_slice(&(PROT_READ | PROT_WRITE).to_le_bytes());
+    map.body[28..32].copy_from_slice(&MAP_SHARED.to_le_bytes());
+    let mut bytes = [0u8; 320];
+    unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), map); }
+    let first = table.prepare_group_owned_mapping(pid, pid, 4, &mut bytes, &mut host).unwrap().unwrap();
+    assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+    assert!(dri_state(table.get(pid).unwrap(), index).unwrap().gl.as_ref().unwrap().cmdbuf.is_none());
+    assert_eq!(table.finish_group_owned_mapping(pid, pid + 99, token, 1, 0, &mut host), Err(Errno::ESRCH));
+    assert_eq!(table.finish_group_owned_mapping(pid, pid, token, 1, Errno::ENOMEM as u32, &mut host), Ok(-(Errno::ENOMEM as i32)));
+    assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+    map.transaction = 2; map.acknowledge = 1;
+    unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), map); }
+    let next = table.prepare_group_owned_mapping(pid, pid, 4, &mut bytes, &mut host).unwrap().unwrap();
+    assert_ne!(first.token, next.token);
+    let response: W::Packet = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast()) };
+    let identity = exact_mapping_id(&response);
+    assert_eq!(table.finish_group_owned_mapping(pid, pid, token, 2, 0, &mut host), Ok(0));
+    assert_eq!(table.get(pid).unwrap().memory.mappings().len(), 1);
+    assert_eq!(dri_state(table.get(pid).unwrap(), index).unwrap().gl.as_ref().unwrap().cmdbuf.unwrap().addr, next.result() as usize);
+    let unmap = exact_unmap_packet(token, 0, 3, identity);
+    unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), unmap); }
+    let extent = table.get(pid).unwrap().memory.group_virtual_extent().unwrap();
+    let removal = table.prepare_group_owned_mapping(pid, pid, extent, &mut bytes, &mut host).unwrap().unwrap();
+    assert!(matches!(removal.effect, crate::group_memory_change::Effect::Unmap { .. }));
+    assert_eq!(table.get(pid).unwrap().memory.mappings().len(), 1);
+    assert_eq!(table.finish_group_owned_mapping(pid, pid, token, 3, 0, &mut host), Ok(0));
+    assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+    assert!(dri_state(table.get(pid).unwrap(), index).unwrap().gl.as_ref().unwrap().cmdbuf.is_none());
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+}
+
+
+fn grouped_cpu_setup() -> (crate::process_table::ProcessTable, u32, u32, i32, u32, MockHostIO) {
+    use crate::{memory::linear::InitialLayout, memory_group::MemoryGroupLimits, process_table::ProcessTable};
+    let mut table = ProcessTable::new();
+    table.memory_groups().configure(128, 1).unwrap();
+    let group = table.memory_groups().create(MemoryGroupLimits { maximum_pages: 64, maximum_processes: 4, maximum_tasks: 8 }).unwrap();
+    let pid = table.create_process().unwrap();
+    table.get_mut(pid).unwrap().memory.install_group_linear_layout(InitialLayout { initial_pages: 4, maximum_pages: 64,
+        brk_base: 3 * 65536, mmap_base: 4 * 65536, brk_limit: 64 * 65536, control_start: 0, control_end: 3 * 65536 }).unwrap();
+    let admission = table.prepare_process_memory_group(group, pid).unwrap();
+    table.memory_groups().start(admission).unwrap();
+    let mut host = MockHostIO::new();
+    let proc = table.get_mut(pid).unwrap();
+    let fd = sys_open(proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let handle = raw_create(proc, &mut host, fd);
+    let bo = *dri_state(proc, proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().gem.borrow().handles.get(&handle).unwrap();
+    (table, pid, group.as_raw(), fd, bo, host)
+}
+
+#[test]
+fn grouped_cpu_mmap_uses_one_object_across_alias_fork_close_and_fixed_retirement() {
+    use wasm_posix_shared::mmap::*;
+    let (mut table, pid, group, fd, bo, mut host) = grouped_cpu_setup();
+    let args = [0, 65536, 3, MAP_SHARED as u64, fd as u64, bo as u64];
+    let first = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+    assert_eq!((first.population_length, first.shared_length, first.shared_offset), (0, 65536, 0));
+    assert_ne!(first.shared_object, 0);
+    assert!(table.get(pid).unwrap().dri_bindings.is_empty());
+    host.gbm_bo_bind_rc = -(Errno::ENOMEM as i32);
+    assert_eq!(table.commit_group_memory_change_with_io(pid, pid, first.token, &mut host), Err(Errno::ENOMEM));
+    assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+    table.cancel_group_memory_change(pid, pid, first.token).unwrap();
+    host.gbm_bo_bind_rc = 0;
+    let next = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+    assert_ne!(next.shared_object, first.shared_object);
+    table.commit_group_memory_change_with_io(pid, pid, next.token, &mut host).unwrap();
+    let alias = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 5, &mut host).unwrap();
+    assert_eq!(alias.shared_object, next.shared_object);
+    table.commit_group_memory_change_with_io(pid, pid, alias.token, &mut host).unwrap();
+    assert!(host.gbm_bo_bind_calls.is_empty());
+    assert_eq!(host.gbm_bo_group_bind_calls.last().unwrap().5, group);
+    let receipt = table.memory_group_task(pid, pid).unwrap().unwrap().record();
+    let child = table.fork_group_memory_process(receipt, 6).unwrap();
+    assert_eq!(table.get(child).unwrap().dri_bindings.len(), 2);
+    sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+    let fixed = [next.result(), 65536, 3, (MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS) as u64, u64::MAX, 0];
+    let replacement = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, fixed, 6, &mut host).unwrap();
+    table.commit_group_memory_change_with_io(pid, pid, replacement.token, &mut host).unwrap();
+    assert_eq!(table.get(pid).unwrap().dri_bindings.len(), 1);
+    assert_eq!(host.gbm_bo_unbind_calls.last(), Some(&(pid as i32, bo, next.result() as usize, 65536)));
+    assert_eq!(table.get(child).unwrap().dri_bindings.len(), 2);
+    sys_exit(table.get_mut(child).unwrap(), &mut host, 0);
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+    assert!(!crate::dri::with_registry(|r| r.group_storage_alive(group, next.shared_object)));
+}
+
+#[test]
+fn grouped_cpu_owned_mapping_retains_exact_unmap_identity_and_shared_object() {
+    use wasm_posix_shared::mmap::*;
+    let (mut table, pid, _, fd, bo, mut host) = grouped_cpu_setup();
+    let token = acquire(table.get_mut(pid).unwrap(), &mut host, fd, 1);
+    let mut map = W::Packet { action: W::MMAP_EXACT, token, transaction: 1, length: 40, ..Default::default() };
+    map.body[8..16].copy_from_slice(&65536u64.to_le_bytes());
+    map.body[16..24].copy_from_slice(&((bo as u64) << 12).to_le_bytes());
+    map.body[24..28].copy_from_slice(&(PROT_READ | PROT_WRITE).to_le_bytes());
+    map.body[28..32].copy_from_slice(&MAP_SHARED.to_le_bytes());
+    let mut bytes = [0; 320];
+    unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), map); }
+    let first = table.prepare_group_owned_mapping(pid, pid, 4, &mut bytes, &mut host).unwrap().unwrap();
+    assert_ne!(first.shared_object, 0);
+    let response: W::Packet = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast()) };
+    let identity = exact_mapping_id(&response);
+    assert_eq!(table.finish_group_owned_mapping(pid, pid, token, 1, 0, &mut host), Ok(0));
+    let unmap = exact_unmap_packet(token, 0, 2, identity);
+    unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), unmap); }
+    let removal = table.prepare_group_owned_mapping(pid, pid, 5, &mut bytes, &mut host).unwrap().unwrap();
+    assert!(matches!(removal.effect, crate::group_memory_change::Effect::Unmap { .. }));
+    assert_eq!(table.finish_group_owned_mapping(pid, pid, token, 2, 0, &mut host), Ok(0));
+    assert!(table.get(pid).unwrap().dri_bindings.is_empty());
+    assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+}
+
+
+#[test]
+fn grouped_cpu_fixed_bo_mapping_reserves_its_slot_in_the_replacement_table() {
+    use wasm_posix_shared::mmap::*;
+    let (mut table, pid, _, fd, bo, mut host) = grouped_cpu_setup();
+    let args = [0, 65536, 3, MAP_SHARED as u64, fd as u64, bo as u64];
+    let first = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+    table.commit_group_memory_change_with_io(pid, pid, first.token, &mut host).unwrap();
+    let second = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 5, &mut host).unwrap();
+    table.commit_group_memory_change_with_io(pid, pid, second.token, &mut host).unwrap();
+    let fixed = [first.result(), 65536, 3, (MAP_SHARED | MAP_FIXED) as u64, fd as u64, bo as u64];
+    let next = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, fixed, 6, &mut host).unwrap();
+    table.commit_group_memory_change_with_io(pid, pid, next.token, &mut host).unwrap();
+    assert_eq!(table.get(pid).unwrap().dri_bindings.len(), 2);
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+}
+
+#[test]
+fn grouped_cpu_cancel_after_descriptor_close_destroys_the_last_native_storage_once() {
+    use wasm_posix_shared::mmap::*;
+    let (mut table, pid, _, fd, bo, mut host) = grouped_cpu_setup();
+    let args = [0, 65536, 3, MAP_SHARED as u64, fd as u64, bo as u64];
+    let plan = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+    sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+    assert!(host.gbm_bo_destroy_calls.is_empty());
+    table.cancel_group_memory_change_with_io(pid, pid, plan.token, &mut host).unwrap();
+    assert_eq!(host.gbm_bo_destroy_calls, [(pid as i32, bo)]);
+    assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+    assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+}
+
+#[test]
+fn grouped_cpu_exit_during_unpublished_mapping_releases_pending_native_custody() {
+    use wasm_posix_shared::mmap::*;
+    let (mut table, pid, _, fd, bo, mut host) = grouped_cpu_setup();
+    let args = [0, 65536, 3, MAP_SHARED as u64, fd as u64, bo as u64];
+    let plan = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+    sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap();
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+    assert_eq!(host.gbm_bo_destroy_calls, [(pid as i32, bo)]);
+    assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+    table.cancel_group_memory_change_with_io(pid, pid, plan.token, &mut host).unwrap();
+    assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+}
+
+
+#[test]
+fn grouped_cpu_prefix_maps_encode_the_full_descriptor_object_without_population() {
+    use wasm_posix_shared::mmap::*;
+    let (mut table, pid, _, fd, bo, mut host) = grouped_cpu_setup();
+    crate::dri::with_registry(|r| r.get_mut(bo).unwrap().size = 3 * 65536);
+    let args = [0, 65536, 3, MAP_SHARED as u64, fd as u64, bo as u64];
+    let plan = table.prepare_group_memory_change_with_io(pid, pid, Syscall::Mmap as u32, args, 4, &mut host).unwrap();
+    assert_eq!((plan.population_length, plan.shared_length), (0, 3 * 65536));
+    let mut bytes = [0; wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES];
+    plan.record().encode(&mut bytes).unwrap();
+    table.cancel_group_memory_change_with_io(pid, pid, plan.token, &mut host).unwrap();
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+}

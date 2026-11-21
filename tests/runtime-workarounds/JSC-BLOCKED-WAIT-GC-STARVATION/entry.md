@@ -48,6 +48,14 @@ keeps waiting on the same request. The syscall's result, blocking and errno
 semantics do not change. V8 and SpiderMonkey get a negative bound on the
 first timeout and wait without a timeout from then on.
 
+The opt-in grouped runtime's JavaScript-generated private channel waits use
+that same initial 100 ms bound and heap-safepoint import after timeout
+(`host/src/channel-completion-wait.ts`). The logical IPC request stays pending;
+this does not slice a source Wasm atomic wait or change its native timeout/FIFO.
+The ordinary JavaScript channel helper remains unchanged. This closes a
+policy omission in the new grouped IPC path; desktop stress validation is
+still required and no outside-engine cause is established by that change.
+
 Cost: one wakeup per blocked thread per 100 ms on JSC; a new required
 process import, so an ABI bump (51) and a rebuild of every program; the
 glue's wait loop is more complex. The import's declaration in

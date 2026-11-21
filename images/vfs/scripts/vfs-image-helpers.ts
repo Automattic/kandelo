@@ -18,6 +18,7 @@ import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { assertKandeloFilesystemLayout } from "./filesystem-layout";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
+import { GROUPED_WORKER_EXTENSIONS } from "../../../host/src/grouped-worker-runtime";
 import {
   ABI_VERSION,
   KANDELO_REFERENCE_EPOCH_SECONDS,
@@ -142,6 +143,8 @@ export interface VfsImageHeadroom {
 export interface VfsWasmArtifactPolicy {
   path: string;
   forkInstrumentation: "auto" | "disabled";
+  /** Explicit compatible trusted-group executable, never inferred from bytes. */
+  memoryGroup?: "trusted-v1";
 }
 
 export interface ExactVfsImageAbi {
@@ -356,13 +359,13 @@ function declaredWasmArtifactPolicies(
     }
     const keys = Object.keys(declaration).sort();
     if (
-      keys.length !== 2 ||
-      keys[0] !== "forkInstrumentation" ||
-      keys[1] !== "path"
+      !((keys.length === 2 && keys[0] === "forkInstrumentation" && keys[1] === "path")
+        || (keys.length === 3 && keys[0] === "forkInstrumentation" && keys[1] === "memoryGroup" && keys[2] === "path"
+          && declaration.memoryGroup === "trusted-v1"))
     ) {
       throw new Error(
         `VFS Wasm artifact policy ${index + 1} must contain exactly ` +
-          "forkInstrumentation and path",
+          "forkInstrumentation and path, with an optional memoryGroup=trusted-v1",
       );
     }
     const { path, forkInstrumentation } = declaration;
@@ -428,13 +431,14 @@ function assertNoStaleWasmArtifacts(
     try {
       const reasons = describeWasmArtifactPolicyFailures(
         artifactBytes.buffer,
-        policy?.forkInstrumentation === "disabled"
-          ? {
+        {
+          ...(policy?.memoryGroup === "trusted-v1" ? { supportedProgramExtensions: GROUPED_WORKER_EXTENSIONS } : {}),
+          ...(policy?.forkInstrumentation === "disabled" ? {
               expectedAbi: kernelAbi,
               requireForkInstrumentation: false,
               forbidForkInstrumentation: true,
-            }
-          : { expectedAbi: kernelAbi },
+            } : { expectedAbi: kernelAbi }),
+        },
       );
       if (reasons.length > 0) {
         failures.push(`${path}: ${reasons.join("; ")}`);

@@ -22,9 +22,12 @@
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
 #   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]
 #                                 Build the deployable static browser app
+#                                 --trusted-desktop-preview uses the prepared partial desktop
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh browser --partial    ...serving only what is built, starting from
 #                                 the partial image (no full local-build)
+#   ./run.sh browser --partial --trusted-desktop-preview
+#                                 Launch the package-backed trusted partial desktop
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
 #
@@ -2770,6 +2773,13 @@ cmd_partial() {
         partial "$@"
 }
 
+prepare_trusted_desktop_preview() {
+    step "Checking the opt-in partial shell SDK artifacts"
+    bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        bash "$REPO_ROOT/scripts/prepare-trusted-desktop-preview.sh" "$1" || return $?
+    export KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE="$REPO_ROOT/local-binaries/partial/shell-partial.vfs.zst"
+}
+
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
@@ -2868,12 +2878,14 @@ cmd_prepare_browser() {
 cmd_build_browser() {
     local base="/"
     local out="$REPO_ROOT/apps/browser-demos/dist"
+    local trusted_preview=false
     local cors_proxy="${VITE_CORS_PROXY_URL-}"
     local signalling_url="${VITE_KANDELO_SIGNALLING_URL-}"
     local cors_proxy_set="${VITE_CORS_PROXY_URL+1}"
     local signalling_url_set="${VITE_KANDELO_SIGNALLING_URL+1}"
     while [ $# -gt 0 ]; do
         case "$1" in
+            --trusted-desktop-preview) trusted_preview=true; shift ;;
             --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
                     base="$2"; shift 2 ;;
             --base=*) base="${1#--base=}"; shift ;;
@@ -2891,7 +2903,7 @@ cmd_build_browser() {
                                [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; }
                                signalling_url_set=1 ;;
             *)
-                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL] [--trusted-desktop-preview]"
                 exit 2
                 ;;
         esac
@@ -2907,6 +2919,10 @@ cmd_build_browser() {
 
     cmd_prepare_browser
 
+    if [ "$trusted_preview" = true ]; then
+        prepare_trusted_desktop_preview canonical
+    fi
+
     # The private product map names local paths and must never be published,
     # so it and the group it authenticates live under local-binaries/, never
     # under the output directory.
@@ -2914,6 +2930,9 @@ cmd_build_browser() {
     # Deployment configuration must cross the isolated shell explicitly.
     # Leave an unset URL absent so Vite can still load it from .env files.
     local deployment_env=(env)
+    if [ "$trusted_preview" = true ]; then
+        deployment_env+=("KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE=$KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE")
+    fi
     if [ -n "$cors_proxy_set" ]; then
         deployment_env+=("VITE_CORS_PROXY_URL=$cors_proxy")
     fi
@@ -2963,12 +2982,19 @@ cmd_build_browser() {
 
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
+    local partial=false trusted_preview=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --partial) partial=true; shift ;;
+            --trusted-desktop-preview) trusted_preview=true; shift ;;
+            *) break ;;
+        esac
+    done
 
-    if [ "${1:-}" = "--partial" ]; then
+    if [ "$partial" = true ]; then
         # Serve what this worktree already built, starting from its partial
         # image, without first building every package the canonical machines
         # need. Images that are not built show as such in the gallery.
-        shift
         if [ ! -f "$REPO_ROOT/local-binaries/partial/partial.json" ]; then
             err "No partial image is built. Run: ./run.sh partial <image> [package...]"
             exit 1
@@ -2979,6 +3005,14 @@ cmd_browser() {
         info "Serving this worktree's partial image (no full local-build)"
     else
         cmd_prepare_browser
+    fi
+
+    if [ "$trusted_preview" = true ]; then
+        if [ "$partial" = true ]; then
+            prepare_trusted_desktop_preview partial
+        else
+            prepare_trusted_desktop_preview canonical
+        fi
     fi
 
     # Install browser deps if needed (re-run if package.json is newer than node_modules)

@@ -1,4 +1,25 @@
+import { KmsBitmapRelay } from './dri/kms-bitmap-relay';
+import { GROUPED_WORKER_EXTENSIONS } from "./grouped-worker-runtime";
+import { extractHeapBase } from "./constants";
 import type { HostDiagnostic } from "./host-diagnostic.js";
+import type { WorkerHandle } from "./worker-adapter";
+import { DeferredWorkerHandle } from "./deferred-worker-handle";
+import { ThreadPageAllocator, type ThreadAllocation } from './thread-allocator';
+import { retryKernelEntryResult } from './kernel-entry-retry';
+import { GroupProcessAddressSpace, ProcessAddressFault, type NativeI32Observation } from "./process-address-space";
+import { captureProcessRead, processDataView, readProcessBytes, writeProcessBytes,
+  fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, type CapturedProcessRead,
+  type ProcessMemorySource } from "./process-memory-views";
+import {
+  decodeMemoryGroupReceipt, decodeMemoryGroupSnapshot, memoryGroupU32, decodeGroupExecPreparation, encodeMemoryGroupReceipt,
+  encodeGroupMemoryChangeRequest, decodeGroupMemoryChangeDescription, encodeGroupMemoryLayout, type GroupMemoryChangeDescription,
+  MemoryGroupProtocolFault, type MemoryGroupSnapshot, type MemoryGroupTaskReceipt,
+} from "./memory-group-protocol";
+import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
+import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
+import { MemoryGroupImageStore, type GroupImageLayout, type GroupReplicaLaunch,
+  type PreparedGroupReplica, type GroupImageExecutionPause, type PreparedGroupMapping } from "./memory-group-image-store";
+import { MEMORY_GROUP_MAXIMUM_PAGES } from "./generated/program-extensions";
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
@@ -113,6 +134,8 @@ import {
   type ExecLaunchCallback,
   type PreparedExecKernel,
   type ExecTargetAdmission,
+  type GroupedExecReservation,
+  type PreparedExecBackend,
 } from "./exec-target";
 import {
   type DeferredFetchSettled,
@@ -270,6 +293,8 @@ import {
   FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryRetirementBacklogError,
   PROCESS_MMAP_BASE,
+  computeProcessMemoryLayout,
+  type ProcessMemoryLayout,
   growMemoryToCover,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
@@ -557,19 +582,21 @@ class KernelBlockingRetryProtocolError extends Error {
 }
 
 function cstringCopySize(
-  memory: Uint8Array,
+  memory: CapturedProcessRead,
   ptr: number,
   capacity: number,
   tooLongErrno: number,
 ): { size: number } | { errno: number } {
-  if (!Number.isSafeInteger(ptr) || ptr <= 0 || ptr >= memory.length) {
+  if (!Number.isSafeInteger(ptr) || ptr <= 0 || ptr >= memory.byteLength) {
     return { errno: EFAULT };
   }
   if (capacity <= 0) return { errno: tooLongErrno };
 
-  const memoryAvailable = memory.length - ptr;
+  const memoryAvailable = memory.byteLength - ptr;
   const scanLength = Math.min(memoryAvailable, capacity);
-  const nul = memory.subarray(ptr, ptr + scanLength).indexOf(0);
+  let nul: number;
+  try { nul = memory.findZero(ptr, scanLength); }
+  catch { return { errno: EFAULT }; }
   if (nul >= 0) return { size: nul + 1 };
 
   return {
@@ -586,7 +613,7 @@ function cstringCopySize(
  * copying from this earlier view could silently stage a truncated prefix.
  */
 function checkedProcessMemoryViewRange(
-  memory: Uint8Array,
+  memory: Pick<Uint8Array, "byteLength">,
   pointerValue: number | bigint,
   lengthValue: number | bigint,
   pointerWidth: 4 | 8,
@@ -983,6 +1010,7 @@ const OWNED_RESOURCE_BYTES = 320;
 const OWNED_RESOURCE_POLL = 11;
 const OWNED_RESOURCE_MMAP = 4;
 const OWNED_RESOURCE_MMAP_EXACT = 13;
+const OWNED_RESOURCE_UNMAP_EXACT = 14;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
@@ -1666,10 +1694,12 @@ const ERRNO_NAMES: Record<number, string> = {
 /** Info about a registered thread channel. */
 interface ChannelInfo {
   pid: number;
+  /** Exact image source captured at channel attachment, never re-resolved by PID. */
+  readonly source: ProcessMemorySource;
   memory: WebAssembly.Memory;
   channelOffset: number;
-  /** Int32Array view for Atomics operations */
-  i32View: Int32Array;
+  /** Legacy native-only view; virtual channels never expose a physical view. */
+  i32View?: Int32Array;
   /** @deprecated Kept for compat — no longer used after relistenChannel simplification. */
   consecutiveSyscalls: number;
   /** True while this channel is being handled by handleSyscall or an async
@@ -1715,6 +1745,29 @@ interface FrozenChannelRequest extends FrozenCancellationPointIdentity {
   readonly syscallNr: number;
 }
 
+/** Exact caller selected before asynchronous exec preparation yields. */
+interface GroupedExecPreparationState {
+  readonly registration: ProcessRegistration;
+  readonly caller: ExecCallerIdentity;
+  readonly target: number;
+  readonly receipt: MemoryGroupTaskReceipt;
+  readonly store: MemoryGroupImageStore;
+  reservation?: GroupedExecReservation;
+  handle?: PreparedGroupReplica;
+  phase: 'prepared' | 'committed' | 'handoff' | 'installed' | 'cancelled';
+  terminationSignal?: number;
+  terminationParentPid?: number;
+}
+
+interface ExecCallerIdentity {
+  readonly registration: ProcessRegistration;
+  readonly channel: ChannelInfo;
+  readonly source: ProcessMemorySource;
+  readonly request: FrozenChannelRequest | undefined;
+  readonly tid: number;
+}
+
+
 function isWakeableCancellationPoint<
   T extends FrozenCancellationPointIdentity,
 >(
@@ -1729,6 +1782,13 @@ interface ProcessRegistration {
   pid: number;
   /** Exact Rust exec generation captured before publishing this registration. */
   readonly execGeneration: bigint;
+  /** Guest pointer source, distinct from the group's physical instantiation Memory. */
+  readonly source: ProcessMemorySource;
+  readonly grouped?: {
+    readonly store: MemoryGroupImageStore;
+    readonly handle: PreparedGroupReplica;
+    readonly receipt: MemoryGroupTaskReceipt;
+  };
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
   /** True only while a vfork child borrows its suspended parent's Memory. */
@@ -1883,6 +1943,9 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+  /** Exact low control slab, required for a fresh grouped image. */
+  controlBase?: number;
+  controlEnd?: number;
   /** The process is a vfork child borrowing another process's Memory. */
   borrowedAddressSpace?: boolean;
 }
@@ -1947,7 +2010,9 @@ interface OwnedKernelWakeEvent {
 }
 
 interface DeferredProcessWorkerStart {
-  expectedMemory: WebAssembly.Memory;
+  readonly expectedMemory: WebAssembly.Memory;
+  readonly expectedRegistration: ProcessRegistration;
+  readonly expectedSource: ProcessMemorySource;
   start: () => void;
   cancel: () => void;
   /** Return true when operation-specific rollback fully handled the failure. */
@@ -2012,6 +2077,21 @@ export interface ForkLaunchRequest {
   readonly borrowedReplay?: ForkBorrowedReplayWorkspace;
 }
 
+/** Disposable-kernel-realm launch only. The child already owns its private
+ * page snapshot and Rust admission; never clone the group's physical Memory.
+ * Resolve after normal Worker continuation replay/adoption, and retire any
+ * partial host registration before rejecting, as for ordinary onFork.
+ * Result-bearing kernel calls retry only pre-entry contention through
+ * retryKernelEntryResult, separately for each publication/registration step.
+ */
+export interface GroupedForkLaunchRequest {
+  readonly parentPid: number;
+  readonly childPid: number;
+  readonly parentSource: GroupProcessAddressSpace;
+  readonly childReplica: PreparedGroupReplica;
+  readonly continuation: ForkContinuationContext;
+}
+
 export interface ResolvedSpawnProgram {
   programBytes: ArrayBuffer;
   programModule: WebAssembly.Module;
@@ -2042,6 +2122,19 @@ export interface ThreadChannelAttachment {
   readonly memory: WebAssembly.Memory;
 }
 
+/** Same one-shot Rust clone authority, with no ordinary Memory transport. */
+export interface GroupedThreadChannelAttachment extends Omit<ThreadChannelAttachment, 'memory'> {
+  readonly memoryBackend: 'grouped';
+}
+type AnyThreadChannelAttachment = ThreadChannelAttachment | GroupedThreadChannelAttachment;
+export interface GroupedThreadLaunch {
+  readonly status: 'ready';
+  readonly handle: PreparedGroupReplica;
+  readonly launch: GroupReplicaLaunch;
+  readonly allocation: ThreadAllocation;
+  readonly processChannelOffset: number;
+}
+
 interface PendingThreadChannelAttachment {
   readonly owner: CentralizedKernelWorker;
   readonly pid: number;
@@ -2049,8 +2142,16 @@ interface PendingThreadChannelAttachment {
   readonly fnPtr: number;
   readonly argPtr: number;
   readonly memory: WebAssembly.Memory;
+  readonly source: ProcessMemorySource;
   attachedChannelOffset?: number;
   attachedChannel?: ChannelInfo;
+  groupedReplica?: PreparedGroupReplica;
+  readonly creatorChannel: ChannelInfo;
+  readonly creatorRequest: FrozenChannelRequest | undefined;
+  controlSlot?: { address: number; length: number };
+  controlPending?: Promise<number>;
+  controlOwner?: { receipt: MemoryGroupTaskReceipt; rootHandle: PreparedGroupReplica; store: MemoryGroupImageStore };
+  controlStarted?: boolean;
 }
 
 /** One Rust fork allocation owns cleanup independently of its caller mailbox. */
@@ -2058,6 +2159,7 @@ interface ForkRollbackState {
   readonly registration: ProcessRegistration | undefined;
   readonly request: FrozenChannelRequest | undefined;
   readonly memory: WebAssembly.Memory;
+  readonly source: ProcessMemorySource;
   readonly origArgs: number[];
   readonly childPid: number;
   readonly childExecGeneration: bigint;
@@ -2069,17 +2171,53 @@ interface CloneRollbackState {
   readonly registration: ProcessRegistration | undefined;
   readonly request: FrozenChannelRequest | undefined;
   readonly memory: WebAssembly.Memory;
+  readonly source: ProcessMemorySource;
   readonly origArgs: number[];
   transferred?: boolean;
   parentTidWritten: boolean;
-  cloneAttachment?: ThreadChannelAttachment;
+  cloneAttachment?: AnyThreadChannelAttachment;
   pendingAttachment?: PendingThreadChannelAttachment;
+  finished?: Promise<void>;
+  finish?: () => void;
+  controlCleanup?: Promise<void>;
+  failureCompletionPending?: boolean;
+  launchSettled?: Promise<void>;
+  settleLaunch?: () => void;
+}
+
+interface GroupThreadControlOwner {
+  readonly handle: PreparedGroupReplica;
+  readonly rootHandle: PreparedGroupReplica;
+  readonly store: MemoryGroupImageStore;
+  readonly source: GroupProcessAddressSpace;
+  readonly memory: WebAssembly.Memory;
+  readonly receipt: MemoryGroupTaskReceipt;
+  readonly allocation: ThreadAllocation;
+  readonly allocator: ThreadPageAllocator;
+  retireHostReferences?: () => boolean;
+}
+interface GroupThreadRetirement {
+  owner?: GroupThreadControlOwner;
+  readonly finished: Promise<number>;
+  released: boolean;
+}
+
+interface GroupProcessExit {
+  registration?: ProcessRegistration;
+  readonly finished: Promise<void>;
+}
+
+interface GroupImageRetirement {
+  owner?: { readonly handle: PreparedGroupReplica; readonly store: MemoryGroupImageStore;
+    readonly pid: number; readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace };
+  readonly settled: Promise<void>;
+  released: boolean;
 }
 
 // Module-private authority store: neither a caller nor a subclass can mint a
 // capability or install a forged WeakMap record through the public object.
 const pendingThreadChannelAttachments =
-  new WeakMap<ThreadChannelAttachment, PendingThreadChannelAttachment>();
+  new WeakMap<AnyThreadChannelAttachment, PendingThreadChannelAttachment>();
 
 function createThreadChannelAttachment(
   owner: CentralizedKernelWorker,
@@ -2091,8 +2229,11 @@ function createThreadChannelAttachment(
   tlsPtr: number,
   ctidPtr: number,
   memory: WebAssembly.Memory,
+  source: ProcessMemorySource,
+  creatorChannel: ChannelInfo,
+  creatorRequest: FrozenChannelRequest | undefined,
 ): {
-  attachment: ThreadChannelAttachment;
+  attachment: AnyThreadChannelAttachment;
   pending: PendingThreadChannelAttachment;
 } {
   const attachment = Object.freeze({
@@ -2104,8 +2245,8 @@ function createThreadChannelAttachment(
     stackPtr,
     tlsPtr,
     ctidPtr,
-    memory,
-  }) as ThreadChannelAttachment;
+    ...(source instanceof GroupProcessAddressSpace ? { memoryBackend: 'grouped' as const } : { memory }),
+  }) as AnyThreadChannelAttachment;
   const pending: PendingThreadChannelAttachment = {
     owner,
     pid,
@@ -2113,6 +2254,9 @@ function createThreadChannelAttachment(
     fnPtr,
     argPtr,
     memory,
+    source,
+    creatorChannel,
+    creatorRequest,
   };
   pendingThreadChannelAttachments.set(attachment, pending);
   return { attachment, pending };
@@ -2131,6 +2275,49 @@ interface PendingEntropyRead {
   registration: ProcessRegistration;
   request: object;
   timer: ReturnType<typeof setTimeout> | null;
+}
+interface PendingGroupImageOperation {
+  readonly channel: ChannelInfo;
+  readonly registration: ProcessRegistration;
+  readonly request: FrozenChannelRequest;
+  readonly receipt: MemoryGroupTaskReceipt;
+  predecessor?: PendingGroupImageOperation;
+  readonly store: MemoryGroupImageStore;
+  readonly finished: Promise<void>;
+  readonly finish: () => void;
+  barrier?: GroupImageExecutionPause;
+  done: boolean;
+}
+interface PendingGroupMapping extends PendingGroupImageOperation {
+  readonly kind: 'mapping';
+  readonly syscall: number;
+  readonly args: readonly bigint[];
+  description?: GroupMemoryChangeDescription;
+  oldBreak?: number;
+  physical?: PreparedGroupMapping;
+  populationCursor: number;
+  cancelling: boolean;
+  rustCancelled: boolean;
+  suppressCompletion: boolean;
+  failure: number;
+  scheduled: boolean;
+  hostControl?: { thread: PendingThreadChannelAttachment; complete: (result: number) => void };
+  ownedMapping?: { dispatch: PlannedBlockingChannelDispatch; packet?: Uint8Array; token?: number; transaction?: bigint };
+}
+interface PendingGroupFork extends PendingGroupImageOperation {
+  readonly kind: 'fork';
+  readonly args: number[];
+  readonly launch: NonNullable<CentralizedKernelCallbacks['onGroupedFork']>;
+  continuation?: ForkContinuationContext;
+  allocation?: ForkRollbackState;
+  childReceipt?: MemoryGroupTaskReceipt;
+  prepared?: PreparedGroupReplica;
+  launching: boolean;
+  cancelling: boolean;
+  suppressCompletion: boolean;
+  failure: number;
+  scheduled: boolean;
+  retiringImage?: boolean;
 }
 
 interface BlockingRetryDisposition extends FrozenCancellationPointIdentity {
@@ -2246,6 +2433,8 @@ export interface CentralizedKernelCallbacks {
    * continuation address in `request.continuation.forkBufAddr`.
    */
   onFork?: (request: ForkLaunchRequest) => Promise<number[]>;
+  /** Explicit grouped backend. No fallback to the native Memory-copy path. */
+  onGroupedFork?: (request: GroupedForkLaunchRequest) => Promise<number[]>;
 
   /**
    * Called when a process calls execve. The callback should resolve the
@@ -2254,6 +2443,8 @@ export interface CentralizedKernelCallbacks {
    * Returns 0 on success, negative errno on error.
    */
   onExec?: ExecLaunchCallback;
+  /** Explicit disposable-Worker grouped embedding; ordinary launch is separate. */
+  onGroupedExec?: ExecLaunchCallback;
 
   /**
    * Launch a worker for the spawned child with bytes and module derived from
@@ -2296,6 +2487,8 @@ export interface CentralizedKernelCallbacks {
    * rejection retains clone rollback responsibility here.
    */
   onClone?: (attachment: ThreadChannelAttachment) => Promise<void>;
+  /** Explicit virtual-memory backend; never falls back to ordinary onClone. */
+  onGroupedClone?: (attachment: GroupedThreadChannelAttachment) => Promise<void>;
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
@@ -2305,8 +2498,14 @@ export interface CentralizedKernelCallbacks {
    */
   onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
+  /** Scalar observation after an actual kernel park or host wait registration.
+   * Neither a completion nor an execution-stop fence; delivered outside entry. */
+  onSyscallBlocked?: (pid: number, tid: number, syscallNr: number, firstArgument: ChannelScalarValue,
+    owner: 'kernel' | 'pipe-read' | 'pipe-write') => void;
+
   /**
-   * Called when a process exits.
+   * Called when a process exits. Grouped images first join every exact
+   * execution-stop receipt.
    */
   onExit?: (pid: number, exitStatus: number) => void;
 
@@ -3013,6 +3212,11 @@ export class CentralizedKernelWorker {
   private kernelAbiContractDigest: Uint8Array | null = null;
   private processes = new Map<number, ProcessRegistration>();
   private pendingEntropyReads = new Map<ChannelInfo, PendingEntropyRead>();
+  private pendingGroupMappings = new Map<ChannelInfo, PendingGroupMapping>();
+  private pendingGroupForks = new Map<ChannelInfo, PendingGroupFork>();
+  private pendingGroupImageOperations = new Map<ChannelInfo, PendingGroupMapping | PendingGroupFork>();
+  /** Detached cleanup remains owned even after its exact channel is removed. */
+  private retiringGroupMappings = new Set<PendingGroupMapping>();
   private activeChannels: ChannelInfo[] = [];
   /**
    * Exact channel generations detached from dispatch but whose engine-owned
@@ -3021,6 +3225,7 @@ export class CentralizedKernelWorker {
    */
   private retiredChannelListeners = new Set<ChannelInfo>();
   private pendingChannelListenerCounts = new Map<ChannelInfo, number>();
+  private pendingChannelNativeObservations = new Map<ChannelInfo, Set<NativeI32Observation>>();
   private retiredChannelSettlements = new Map<
     ChannelInfo,
     { promise: Promise<void>; resolve: () => void; notified: boolean }
@@ -3031,6 +3236,7 @@ export class CentralizedKernelWorker {
   private committedExecTransitions = new Map<number, {
     readonly secureExec: boolean;
     readonly retirementMemory: WebAssembly.Memory;
+    readonly retirementSource: ProcessMemorySource;
     readonly retiredChannelOffsets: Set<number>;
     readonly addressSpaceResult: number;
   }>();
@@ -3073,6 +3279,29 @@ export class CentralizedKernelWorker {
    */
   #kernelFatalError: Error | null = null;
   #initialized = false;
+  // Dedicated kernel-Worker custody. Public proxies never receive these
+  // stores, their capabilities, or their complete physical guest backings.
+  #memoryGroupStores = new Map<number, MemoryGroupImageStore>();
+  #groupExecReservations = new WeakMap<GroupedExecReservation, GroupedExecPreparationState>();
+  #groupExecImages = new WeakMap<PreparedGroupReplica, GroupedExecPreparationState>();
+  // PID locates the private preparation; its exact registration still owns
+  // authority. Retirement removes that registration before exit publication.
+  #committedGroupExecs = new Map<number, GroupedExecPreparationState>();
+  #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
+  #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
+  #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
+  #observedMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
+  #observedMemoryGroupWorkers = new WeakSet<WorkerHandle>();
+  #memoryGroupWorkerBindings = new WeakMap<PreparedGroupReplica, { worker: WorkerHandle; retire: () => void }>();
+  #groupImageRetirements = new WeakMap<PreparedGroupReplica, GroupImageRetirement>();
+  #groupProcessExits = new WeakMap<PreparedGroupReplica, GroupProcessExit>();
+  #unstartedGroupLaunchRetirements = new WeakSet<PreparedGroupReplica>();
+  #memoryGroupImageRegistrations = new WeakMap<PreparedGroupReplica, {
+    readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace }>();
+  #pendingGroupClones = new Set<CloneRollbackState>();
+  #memoryGroupThreadControls = new WeakMap<PreparedGroupReplica, GroupThreadControlOwner>();
+  #groupThreadRetirements = new WeakMap<PreparedGroupReplica, GroupThreadRetirement>();
+  #pendingGroupThreadRetirements = new Set<GroupThreadRetirement>();
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
    *
@@ -3443,7 +3672,7 @@ export class CentralizedKernelWorker {
    * a shared-mapping comparison redundant; see `CleanStamp` in
    * crates/runtime-core/src/memory.rs.
    */
-  #memoryRunEpochs = new WeakMap<WebAssembly.Memory, number>();
+  #memoryRunEpochs = new WeakMap<ProcessMemorySource, number>();
   /**
    * Source of `#memoryRunEpochs` values. One counter for every memory, so an
    * epoch is never reused, even by a memory that replaces another (exec).
@@ -3462,6 +3691,24 @@ export class CentralizedKernelWorker {
     | undefined;
   /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
+  private kmsBitmapRelays = new Map<number, KmsBitmapRelay>();
+  private kmsBitmapCursorCanvases = new Map<number, OffscreenCanvas>();
+  private retiringKmsBitmapRelays = new Set<Promise<void>>();
+  private retireKmsBitmapRelay(relay: KmsBitmapRelay): Promise<void> {
+    const retirement = relay.close();
+    this.retiringKmsBitmapRelays.add(retirement);
+    // Rejected retirements remain in the ledger until destroy observes them.
+    void retirement.then(() => this.retiringKmsBitmapRelays.delete(retirement), () => {});
+    return retirement;
+  }
+  async closeKmsBitmapRelays(): Promise<void> {
+    for (const relay of this.kmsBitmapRelays.values()) this.retireKmsBitmapRelay(relay);
+    this.kmsBitmapRelays.clear();
+    this.kmsBitmapCursorCanvases.clear();
+    const results = await Promise.allSettled(this.retiringKmsBitmapRelays);
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'KMS bitmap retirement failed');
+  }
   private kmsCanvases = new Map<number, OffscreenCanvas>();
   private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
   /** Which context type each CRTC's canvas has been claimed for. Set
@@ -3594,13 +3841,19 @@ export class CentralizedKernelWorker {
       // Process-lifecycle callbacks are handled by the kernel worker: the
       // kernel returns EAGAIN and JS performs the host-side action.
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
-        return this.processes.get(pid)?.memory;
+        const registration = this.processes.get(pid);
+        // Graphics consumers still interpret offsets natively. Do not lend
+        // them a group's physical backing as though it were a guest image.
+        return registration?.source instanceof GroupProcessAddressSpace
+          ? undefined : registration?.memory;
       },
+      getProcessAddressSpace: (pid: number): ProcessMemorySource | undefined =>
+        this.processes.get(pid)?.source,
       getProcessQuiescentEpoch: (pid: number): bigint =>
         this.#processQuiescentEpoch(pid),
       onProcessMemoryChanged: (pid: number): void => {
-        const memory = this.processes.get(pid)?.memory;
-        if (memory) this.#noteGuestMayRun(memory);
+        const source = this.processes.get(pid)?.source;
+        if (source) this.#noteGuestMayRun(source);
       },
       onProcessMemoryTarget: (
         memory: WebAssembly.Memory,
@@ -3651,7 +3904,9 @@ export class CentralizedKernelWorker {
         const stats = this.kmsStatsViews.get(crtcId);
         if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
       },
+      onKmsCanvasUpdated: (crtcId: number) => this.kmsBitmapRelays.get(crtcId)?.changed(0),
       onKmsGlPresented: (crtcId: number) => {
+        this.kmsBitmapRelays.get(crtcId)?.changed(0);
         const stats = this.kmsStatsViews.get(crtcId);
         if (stats) {
           Atomics.add(stats, 0, 1);
@@ -4308,6 +4563,7 @@ export class CentralizedKernelWorker {
           || registration.channels.length !== 1
           || channel === undefined
           || channel.pid !== pid
+          || channel.i32View === undefined
           || kernelEntryIntrinsicApply(
             kernelEntryIntrinsicAtomicsLoad,
             kernelEntryIntrinsicAtomics,
@@ -4333,6 +4589,7 @@ export class CentralizedKernelWorker {
               current !== registration
               || current.channels.length !== 1
               || current.channels[0] !== channel
+              || channel.i32View === undefined
               || kernelEntryIntrinsicApply(
                 kernelEntryIntrinsicAtomicsLoad,
                 kernelEntryIntrinsicAtomics,
@@ -4949,6 +5206,7 @@ export class CentralizedKernelWorker {
                 [{
                   pid,
                   memory,
+                  source: memory,
                   channelOffset,
                   i32View: new KernelEntryIntrinsicInt32Array(
                     memoryBuffer,
@@ -4991,7 +5249,7 @@ export class CentralizedKernelWorker {
               return undefined;
             }
             const registration: ProcessRegistration = {
-              pid: staged.pid, memory: staged.memory, channels: staged.channels,
+              pid: staged.pid, memory: staged.memory, source: staged.memory, channels: staged.channels,
               execGeneration, borrowedAddressSpace: false,
               ptrWidth: staged.pointerWidth, explicitMaxAddr: false,
             };
@@ -5189,6 +5447,7 @@ export class CentralizedKernelWorker {
     this.#httpAdmission.close(error);
     for (const refuse of this.#httpRequests) refuse(error);
     this.#initialized = false;
+    for (const store of this.#memoryGroupStores.values()) store.close();
     // A poisoned generation can never execute or explicitly settle a parked
     // request again. Drop every detached snapshot synchronously so neither
     // guest memory nor a future kernel generation remains retained.
@@ -5209,6 +5468,12 @@ export class CentralizedKernelWorker {
     this.#scheduleMicrotaskListenerRoot(
       "kernel fatal observer",
       () => {
+        // Retirement can post device messages and await capture/display
+        // fences. Start it only after the failing entry's authority ended;
+        // destroy still observes the same retirement ledger and promise.
+        void this.closeKmsBitmapRelays().catch(error => {
+          this.callbacks.onHostDiagnostic?.({pid: 0, source: "kms-bitmap-retirement", message: String(error)});
+        });
         try {
           this.callbacks.onKernelFatal?.(error);
         } catch (callbackError) {
@@ -6937,8 +7202,12 @@ export class CentralizedKernelWorker {
       pointerWidth,
       `${field} length`,
     );
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      return checkedProcessMemoryViewRange(channel.source, canonicalPointer,
+        canonicalLength, pointerWidth, field, allowAddressZero);
+    }
     return checkedMemoryRange(
-      channel.memory,
+      channel.source,
       canonicalPointer,
       canonicalLength,
       pointerWidth,
@@ -7377,6 +7646,20 @@ export class CentralizedKernelWorker {
     retryToken = 0n,
     finishOwnedMappings = true,
   ): PlannedChannelDispatchResult {
+    if (retryToken !== 0n && channel.source instanceof GroupProcessAddressSpace) {
+      try {
+        for (const argument of plan.plannedChannelScratchArgs) {
+          if (argument.desc.direction === "out" || argument.desc.direction === "inout") {
+            checkProcessWriteRange(channel.source, argument.processPointer, argument.size);
+          }
+        }
+      } catch {
+        if (!this.#cancelHostOwnedKernelWait(channel, plan.syscallNr, entry)) {
+          this.#failBlockingRetryProtocol("Cannot retire a grouped retry with inaccessible output");
+        }
+        return { retVal: -1, publicationRetVal: -1, rawRetVal: -1n, errVal: EFAULT, outputWrites: [] };
+      }
+    }
     const dispatched = this.#executeCapacityOwnedChannel(
       channel,
       plan.plannedChannelCapacity,
@@ -7763,7 +8046,7 @@ export class CentralizedKernelWorker {
       if ((args[3]! & MAP_FIXED) !== 0) {
         this.cleanupSharedMappings(channel.pid, address, alignWasmPageLength(length), entry);
       }
-      this.ensureProcessMemoryCovers(channel.pid, channel.memory, SYS_MMAP, address, args, entry);
+      this.ensureProcessMemoryCovers(channel.pid, channel.memory, channel.source, SYS_MMAP, address, args, entry);
       const bo = this.#kernel.bos.findBindingByAddr(channel.pid, address);
       if (bo !== undefined && !this.#kernel.bos.primeBindFromSab(channel.pid, bo, channel.memory, address)) {
         throw new Error("owned mapping could not prime its exact backing");
@@ -7876,6 +8159,857 @@ export class CentralizedKernelWorker {
     return createdPid;
   }
 
+  /** Internal dedicated-Worker admission API. These methods allocate only
+   * kernel identities/receipts; they do not advertise a grouped execution
+   * backend, expose physical storage, or prove execution retirement. */
+  configureMemoryGroups(maximumPages: number, maximumGroups: number): number {
+    if (!memoryGroupU32(maximumPages, maximumGroups)) return -EINVAL;
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("configure memory groups", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const configure = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_configure;
+      if (typeof configure !== "function") this.#memoryGroupProtocolError("Missing group configuration export");
+      result = this.#checkedMemoryGroupStatus(configure(maximumPages, maximumGroups));
+      return undefined;
+    });
+    return result;
+  }
+
+  createMemoryGroup(maximumPages: number, maximumProcesses: number, maximumTasks: number): number {
+    if (!memoryGroupU32(maximumPages, maximumProcesses, maximumTasks)) return -EINVAL;
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("create memory group", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const create = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_create;
+      if (typeof create !== "function") this.#memoryGroupProtocolError("Missing group creation export");
+      const value = create(maximumPages, maximumProcesses, maximumTasks);
+      if (Number.isSafeInteger(value) && value > 0 && value <= 0x7fffffff) result = value;
+      else if (value < 0) result = this.#checkedMemoryGroupStatus(value);
+      else this.#memoryGroupProtocolError("Invalid kernel memory-group identity");
+      return undefined;
+    });
+    return result;
+  }
+
+  sealMemoryGroup(group: number): number {
+    if (!memoryGroupU32(group)) return -EINVAL;
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("seal memory group", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const seal = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_seal;
+      if (typeof seal !== "function") this.#memoryGroupProtocolError("Missing group sealing export");
+      result = this.#checkedMemoryGroupStatus(seal(group));
+      return undefined;
+    });
+    return result;
+  }
+
+  removeEmptyMemoryGroup(group: number): number {
+    if (!memoryGroupU32(group)) return -EINVAL;
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("remove empty memory group", entry => {
+      const store = this.#memoryGroupStores.get(group);
+      if (store && store.snapshot().images !== 0) { result = -EBUSY; return undefined; }
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const remove = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_remove;
+      if (typeof remove !== "function") this.#memoryGroupProtocolError("Missing group removal export");
+      result = this.#checkedMemoryGroupStatus(remove(group));
+      if (result === 0 && store) { store.close(); this.#memoryGroupStores.delete(group); }
+      return undefined;
+    });
+    return result;
+  }
+
+  inspectMemoryGroup(group: number): MemoryGroupSnapshot | number {
+    if (!memoryGroupU32(group)) return -EINVAL;
+    let result: MemoryGroupSnapshot | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("inspect memory group", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      result = this.#inspectMemoryGroupWithinKernelEntry(group, entry);
+      return undefined;
+    });
+    return result;
+  }
+
+  #inspectMemoryGroupWithinKernelEntry(group: number, entry: KernelWorkerEntryContext): MemoryGroupSnapshot | number {
+    return this.#requireMainScratchRegion().withLease(lease => {
+      const size = MEMORY_GROUP_PROTOCOL.snapshot_bytes;
+      const status = this.#invokeEntryScratchExport(entry, lease, "kernel_memory_group_snapshot",
+        [group, lease.exportPointer(0, size), size]);
+      if (status < 0) return this.#checkedMemoryGroupStatus(status);
+      if (status !== size) this.#memoryGroupProtocolError("Invalid group snapshot byte count");
+      try { return decodeMemoryGroupSnapshot(lease.copyOut(0, size), group); }
+      catch (error) { return this.#memoryGroupProtocolError("Invalid kernel group snapshot", error); }
+    });
+  }
+
+  /** Provision only the capacity Rust already reserved. */
+  createMemoryGroupBacking(group: number, initialPages = 1): number {
+    if (!memoryGroupU32(group, initialPages) || initialPages < 1) return -EINVAL;
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("create admitted memory-group backing", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      if (this.#memoryGroupStores.has(group)) { result = -EBUSY; return undefined; }
+      const admitted = this.#inspectMemoryGroupWithinKernelEntry(group, entry);
+      if (typeof admitted === "number") { result = admitted; return undefined; }
+      if (admitted.maximumPages < 2 || admitted.maximumPages > MEMORY_GROUP_MAXIMUM_PAGES
+          || initialPages > admitted.maximumPages) { result = -EINVAL; return undefined; }
+      try {
+        this.#memoryGroupStores.set(group, new MemoryGroupImageStore(group, admitted.maximumPages, initialPages));
+        this.#kernel.setGroupObjectReader((owner, object, offset, output) =>
+          this.#memoryGroupStores.get(owner)?.readFileObject(object, offset, output) ?? -EIO);
+        this.#kernel.setGroupObjectWriter((owner, object, offset, input) =>
+          this.#memoryGroupStores.get(owner)?.writeFileObject(object, offset, input) ?? -EIO);
+        result = 0;
+      } catch (error) { if (error instanceof RangeError) result = -ENOMEM; else throw error; }
+      return undefined;
+    });
+    return result;
+  }
+
+  prepareMemoryGroupImage(receipt: MemoryGroupTaskReceipt, layout: GroupImageLayout): PreparedGroupReplica | number {
+    return this.#prepareMemoryGroupReplica(receipt, layout);
+  }
+  prepareMemoryGroupThread(receipt: MemoryGroupTaskReceipt): PreparedGroupReplica | number {
+    return this.#prepareMemoryGroupReplica(receipt);
+  }
+  /** Reserve controls on demand through the same image FIFO/physical commit
+   * as mappings. The exact clone remains pending until its Worker is adopted. */
+  reserveMemoryGroupThreadControl(attachment: GroupedThreadChannelAttachment): Promise<number> {
+    const thread = pendingThreadChannelAttachments.get(attachment);
+    if (!thread || thread.owner !== this || !(thread.source instanceof GroupProcessAddressSpace)) return Promise.resolve(-ESRCH);
+    let result: Promise<number> = Promise.resolve(-ESRCH);
+    this.#runImmediateKernelEntry('reserve exact grouped thread controls', entry => {
+      const channel = thread.creatorChannel, registration = this.processes.get(thread.pid);
+      const request = thread.creatorRequest, group = registration?.grouped;
+      if (!group || !request || request.syscallNr !== SYS_CLONE || registration?.source !== thread.source
+          || this.activeChannelRequests.get(channel) !== request || !this.isRegisteredChannel(channel)
+          || this.loadChannelStatus(channel) !== CH_PENDING) return undefined;
+      if (thread.controlPending) { result = thread.controlPending; return undefined; }
+      const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(thread.pid, this.guestTidForChannel(channel), registration.execGeneration, entry);
+      if (typeof receipt === 'number') { result = Promise.resolve(receipt); return undefined; }
+      const threadReceipt = this.#readMemoryGroupReceiptWithinKernelEntry(thread.pid, thread.tid, registration.execGeneration, entry);
+      if (typeof threadReceipt === 'number') { result = Promise.resolve(threadReceipt); return undefined; }
+      thread.controlOwner = { receipt: threadReceipt, rootHandle: group.handle, store: group.store };
+      let finish!: () => void, complete!: (address: number) => void;
+      const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+      result = new this.#promiseReceiver<number>(resolve => { complete = resolve; });
+      thread.controlPending = result;
+      const predecessor = Array.from(this.pendingGroupImageOperations.values()).reverse()
+        .find(other => other.registration === registration && !other.done);
+      const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall: SYS_CLONE,
+        args: Object.freeze([]), store: group.store, finished, finish, predecessor,
+        cancelling: false, rustCancelled: false, suppressCompletion: false, failure: EIO, scheduled: false,
+        done: false, populationCursor: 0, hostControl: { thread, complete } };
+      this.pendingGroupImageOperations.set(channel, pending); this.pendingGroupMappings.set(channel, pending);
+      this.#advanceGroupMapping(pending, entry);
+      return undefined;
+    });
+    return result;
+  }
+  /** One entry owns membership, control-slot initialization, channel attachment
+   * and publication. A competing image barrier cannot see a half-built member.
+   * Pre-entry contention is retryable; a ready result has consumed attachment. */
+  prepareMemoryGroupThreadLaunch(attachment: GroupedThreadChannelAttachment,
+    allocator: ThreadPageAllocator): GroupedThreadLaunch | { status: 'waiting'; progress: Promise<void> } | number {
+    const pending = pendingThreadChannelAttachments.get(attachment);
+    if (!pending || pending.owner !== this || !(pending.source instanceof GroupProcessAddressSpace)) return -ESRCH;
+    const source = pending.source;
+    let result: GroupedThreadLaunch | { status: 'waiting'; progress: Promise<void> } | number = -ESRCH;
+    this.#runImmediateKernelEntry('prepare exact grouped thread launch', entry => {
+      const registration = this.processes.get(pending.pid), group = registration?.grouped;
+      if (!registration || !group || registration.source !== pending.source || registration.memory !== pending.memory
+          || !pending.controlSlot) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(pending.pid, entry);
+      if (generation instanceof Error || generation !== registration.execGeneration) return undefined;
+      const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(pending.pid, pending.tid, generation, entry);
+      if (typeof receipt === 'number') { result = receipt; return undefined; }
+      if (receipt.group !== group.receipt.group) return undefined;
+      if (group.store.imageHasExecutionPause(group.handle)) {
+        result = { status: 'waiting', progress: group.store.waitForImageExecutionPause(group.handle) };
+        return undefined;
+      }
+      let handle: PreparedGroupReplica | undefined, allocation: ThreadAllocation | undefined, started = false;
+      try {
+        handle = group.store.prepareThread(receipt);
+        this.#memoryGroupReplicas.set(handle, group.store);
+        allocation = allocator.allocateMapped(source, { start: pending.controlSlot.address,
+          end: pending.controlSlot.address + pending.controlSlot.length,
+          occupiedChannels: registration.channels.map(channel => channel.channelOffset) }, pending.controlSlot.address / WASM_PAGE_SIZE);
+        const attachError = this.#attachThreadChannelWithinKernelEntry(attachment, allocation.channelOffset, entry);
+        if (attachError) throw attachError;
+        const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.start, entry);
+        if (status !== 0) throw new Error(`Cannot start grouped thread admission: ${status}`);
+        started = true; pending.controlStarted = true;
+        const launch = group.store.publish(handle, receipt);
+        pending.groupedReplica = handle;
+        this.#memoryGroupThreadControls.set(handle, { handle, rootHandle: group.handle, store: group.store, source,
+          memory: pending.memory, receipt, allocation, allocator });
+        result = { status: 'ready', handle, launch, allocation, processChannelOffset: registration.channels[0]!.channelOffset };
+      } catch (error) {
+        if (handle) {
+          if (started) this.#quarantineStartedMemoryGroupReplica(group.store, handle, entry);
+          else {
+            const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+            if (status !== 0) this.#memoryGroupProtocolError('Cannot cancel unpublished grouped thread');
+            group.store.cancelUnexposed(handle); this.#memoryGroupReplicas.delete(handle);
+          }
+        }
+        if (!started && allocation) allocator.freeMapped(allocation.slotStartPage);
+        if (error instanceof RangeError || error instanceof ProcessAddressFault) result = -ENOMEM;
+        else throw error;
+      }
+      return undefined;
+    });
+    return result;
+  }
+  #prepareGroupedExecBackend(caller: ExecCallerIdentity, target: number, bytes: ArrayBuffer): PreparedExecBackend {
+    let backend: PreparedExecBackend | undefined;
+    let refusal: PreparedExecTargetError | undefined;
+    this.#runImmediateKernelEntry('reserve exact grouped exec replacement', entry => {
+      try {
+        const registration = this.processes.get(caller.registration.pid), group = registration?.grouped;
+        if (registration !== caller.registration || !group || !this.#isCurrentExecCaller(registration, caller.tid, caller)) {
+          throw new PreparedExecTargetError('Grouped exec caller changed during preparation', ESRCH);
+        }
+        const addressSpace = this.#prepareAddressSpaceForExecWithinKernelEntry(registration.pid, entry);
+        if (addressSpace < 0) throw new PreparedExecTargetError('Cannot prepare outgoing grouped mappings', -addressSpace);
+        if (!this.#memoryGroupAdmissionAvailable(entry, MEMORY_GROUP_PROTOCOL.exec_preparation.capability)) {
+          throw new PreparedExecTargetError('Kernel grouped exec preparation unavailable', ERRNO.EOPNOTSUPP);
+        }
+        const prepared = this.#requireMainScratchRegion().withLease(lease => {
+          const size = MEMORY_GROUP_PROTOCOL.exec_preparation.bytes;
+          const count = this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_exec_prepare',
+            [registration.pid, caller.tid, target, lease.exportPointer(0, size), size]);
+          if (count < 0) throw new PreparedExecTargetError('Kernel refused grouped exec reservation', -count);
+          if (count !== size) this.#memoryGroupProtocolError('Invalid grouped exec preparation byte count');
+          try { return decodeGroupExecPreparation(lease.copyOut(0, size), {
+            group: group.receipt.group, pid: registration.pid, generation: registration.execGeneration + 1n }); }
+          catch (cause) { return this.#memoryGroupProtocolError('Invalid grouped exec reservation', cause); }
+        });
+        const state: GroupedExecPreparationState = { registration, caller, target, receipt: prepared.receipt,
+          store: group.store, phase: 'prepared' };
+        this.#preparedGroupExecReservations.add(state);
+        try {
+          const maximum = group.store.processRegistration(group.handle).maximumVirtualPages;
+          const layout = Object.freeze(computeProcessMemoryLayout({ ptrWidth: 4, programBytes: bytes,
+            minPages: prepared.initialPages, maxPages: Math.min(maximum, prepared.maximumPages), heapBase: extractHeapBase(bytes) }));
+          const packet = encodeGroupMemoryLayout(prepared.receipt, { ...layout, initialPages: layout.initialPages,
+            maximumPages: layout.maximumPages, channel: layout.channelOffset, mode: 'fresh' });
+          const status = this.#requireMainScratchRegion().withLease(lease => {
+            lease.copyFrom(packet, 0, 0, packet.length);
+            return this.#checkedMemoryGroupStatus(this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_exec_layout',
+              [lease.exportPointer(0, packet.length), packet.length]));
+          });
+          if (status < 0) throw new PreparedExecTargetError('Kernel refused grouped exec layout', -status);
+          state.handle = group.store.prepareImage(prepared.receipt, { initialVirtualPages: layout.initialPages,
+            maximumVirtualPages: layout.maximumPages, scratchBytes: 65536 });
+          this.#memoryGroupReplicas.set(state.handle, group.store);
+          this.#groupExecImages.set(state.handle, state);
+          const reservation: GroupedExecReservation = Object.freeze({ kind: 'memory-group-exec', layout });
+          state.reservation = reservation;
+          this.#groupExecReservations.set(reservation, state);
+          backend = { reservation, supportedProgramExtensions: GROUPED_WORKER_EXTENSIONS,
+            rollback: outcome => {
+              if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+              return retryKernelEntryResult(() => {
+                this.#runImmediateKernelEntry('rollback exact grouped exec replacement', rollbackEntry => {
+                  if (outcome === 'uncertain' || state.phase === 'committed') {
+                    this.#memoryGroupProtocolError('Uncertain grouped exec commit retains replacement storage');
+                  }
+                  this.#cancelGroupedExecPreparationWithinKernelEntry(state, rollbackEntry);
+                  return undefined;
+                });
+              });
+            },
+            committed: () => {
+              if (state.phase !== 'committed') this.#memoryGroupProtocolError('Grouped exec commit lost its exact reservation');
+            },
+          };
+        } catch (cause) {
+          this.#cancelGroupedExecPreparationWithinKernelEntry(state, entry);
+          if (cause instanceof RangeError) throw new PreparedExecTargetError('Unable to reserve grouped replacement pages', ENOMEM);
+          throw cause;
+        }
+        return undefined;
+      } catch (cause) {
+        // A normal preparation refusal must leave the void ingress normally.
+        // Throwing through that gate means a protocol failure and poisons the
+        // entire kernel, even when the reservation was fully rolled back.
+        if (!(cause instanceof PreparedExecTargetError)) throw cause;
+        refusal = cause;
+        return undefined;
+      }
+    });
+    if (refusal) throw refusal;
+    if (!backend) throw new KernelReentrantEntryError('reserve exact grouped exec replacement');
+    return backend;
+  }
+
+  #groupExecActionWithinKernelEntry(receipt: MemoryGroupTaskReceipt, action: number, entry: KernelWorkerEntryContext): number {
+    const packet = encodeMemoryGroupReceipt(receipt);
+    return this.#requireMainScratchRegion().withLease(lease => {
+      lease.copyFrom(packet, 0, 0, packet.length);
+      return this.#checkedMemoryGroupStatus(this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_exec_action',
+        [lease.exportPointer(0, packet.length), packet.length, action]));
+    });
+  }
+
+  #cancelGroupedExecPreparationWithinKernelEntry(state: GroupedExecPreparationState, entry: KernelWorkerEntryContext): void {
+    if (state.phase === 'cancelled') return;
+    if (state.phase !== 'prepared') this.#memoryGroupProtocolError('Published exec cannot use unconstructed rollback');
+    if (this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.cancel, entry) !== 0) {
+      this.#memoryGroupProtocolError('Cannot cancel exact grouped exec task');
+    }
+    const hadImage = state.handle !== undefined;
+    if (state.handle) {
+      if (!state.store.isUnexposed(state.handle)) this.#memoryGroupProtocolError('Grouped exec storage already escaped');
+      state.store.cancelUnexposed(state.handle); this.#memoryGroupReplicas.delete(state.handle);
+      this.#groupExecImages.delete(state.handle);
+      if (!state.store.canReleaseUnexposedImage(state.receipt)) this.#memoryGroupProtocolError('Grouped exec image retains references');
+    }
+    if (this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.finishCancellation, entry) !== 0) {
+      this.#memoryGroupProtocolError('Cannot finish exact grouped exec cancellation');
+    }
+    if (hadImage) state.store.releaseUnexposedImage(state.receipt);
+    if (state.reservation) this.#groupExecReservations.delete(state.reservation);
+    state.reservation = undefined;
+    state.handle = undefined; state.phase = 'cancelled'; this.#preparedGroupExecReservations.delete(state);
+  }
+
+  /** Called on the successful commit stack, before the embedding yields.
+   * Only this exact opaque preparation can detach the old transport. */
+  beginMemoryGroupExecHandoff(reservation: GroupedExecReservation): {
+    readonly previousImage: PreparedGroupReplica;
+    readonly replacementImage: PreparedGroupReplica;
+    readonly secureExec: boolean;
+    readonly stopped: Promise<void>;
+  } {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const state = this.#groupExecReservations.get(reservation);
+    if (!state || state.phase !== 'committed' || !state.handle
+        || this.processes.get(state.registration.pid) !== state.registration) {
+      throw new MemoryGroupProtocolFault('Grouped exec handoff is stale or not committed');
+    }
+    const previous = state.registration.grouped!;
+    state.phase = 'handoff';
+    const transition = this.takeCommittedExecTransition(state.registration.pid,
+      state.registration.memory, state.registration.source);
+    if (transition.addressSpaceResult < 0
+        || !this.prepareProcessForExec(state.registration.pid, state.registration.memory)) {
+      this.#memoryGroupProtocolError('Cannot detach exact committed grouped image');
+    }
+    return Object.freeze({ previousImage: previous.handle, replacementImage: state.handle,
+      secureExec: transition.secureExec, stopped: this.#stopMemoryGroupExecImage(state) });
+  }
+
+  async #stopMemoryGroupExecImage(state: GroupedExecPreparationState): Promise<void> {
+    const previous = state.registration.grouped!;
+    for (;;) {
+      let drained = false;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('stop exact old exec image', _entry => {
+        drained = previous.store.requestImageStop(previous.handle); return undefined;
+      }));
+      if (drained) break;
+      await previous.store.waitForThreadRetirementProgress(previous.handle);
+    }
+    await previous.store.waitForImageQuiescence(previous.handle);
+  }
+
+  finishMemoryGroupExecHandoff(reservation: GroupedExecReservation): void {
+    const state = this.#groupExecReservations.get(reservation);
+    if (!state || state.phase !== 'installed' || !state.handle
+        || this.processes.get(state.receipt.pid)?.grouped?.handle !== state.handle) {
+      this.#memoryGroupProtocolError('Grouped exec replacement lost its exact registration');
+    }
+    this.finishProcessExecHandoff(state.receipt.pid);
+    this.#committedGroupExecs.delete(state.receipt.pid);
+    this.#groupExecReservations.delete(reservation); state.reservation = undefined;
+  }
+
+  inspectMemoryGroupExecTermination(reservation: GroupedExecReservation): number {
+    let signal = -1;
+    this.#runImmediateKernelEntry('inspect exact grouped exec termination', entry => {
+      const state = this.#groupExecReservations.get(reservation);
+      if (!state || state.phase !== 'handoff' || this.processes.get(state.receipt.pid) !== state.registration) {
+        this.#memoryGroupProtocolError('Grouped exec termination lost its predecessor');
+      }
+      signal = this.#getProcessExitSignal(state.receipt.pid, entry);
+      if (signal > 0) {
+        state.terminationSignal = signal;
+        state.terminationParentPid = this.getParentPid(state.receipt.pid, entry);
+      } else if (signal !== -1) this.#memoryGroupProtocolError('Held grouped exec process disappeared');
+      return undefined;
+    });
+    return signal;
+  }
+
+  /** A committed future image has never escaped, while the exact old image
+   * has stopped. Keep the kernel hold until both scratch and root can retire. */
+  cancelTerminatedMemoryGroupExec(reservation: GroupedExecReservation): void {
+    this.#runImmediateKernelEntry('cancel exact terminated grouped exec future', entry => {
+      const state = this.#groupExecReservations.get(reservation);
+      if (!state || state.phase !== 'handoff' || !state.handle || !state.terminationSignal
+          || this.processes.get(state.receipt.pid) !== state.registration
+          || !state.store.imageExecutionStopped(state.registration.grouped!.handle)
+          || !state.store.isUnexposed(state.handle)) this.#memoryGroupProtocolError('Terminated exec lacks unexposed custody');
+      const generation = this.#processExecGenerationWithinKernelEntry(state.receipt.pid, entry);
+      if (generation !== state.receipt.generation || this.#getProcessExitSignal(state.receipt.pid, entry) !== state.terminationSignal) {
+        this.#memoryGroupProtocolError('Terminated exec changed exact kernel identity');
+      }
+      if (this.#memoryGroupTaskActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry) !== 0) {
+        this.#memoryGroupProtocolError('Cannot cancel held future exec task');
+      }
+      state.store.cancelUnexposed(state.handle); this.#memoryGroupReplicas.delete(state.handle);
+      if (!state.store.canReleaseUnexposedImage(state.receipt)) this.#memoryGroupProtocolError('Future exec image retains references');
+      const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+      if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact future image retirement export');
+      const status = this.#checkedMemoryGroupStatus(retire(state.receipt.pid,
+        Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n)));
+      if (status !== 0) this.#memoryGroupProtocolError('Cannot retire held future exec image');
+      state.store.releaseUnexposedImage(state.receipt);
+      this.#groupExecImages.delete(state.handle); state.handle = undefined; state.phase = 'cancelled';
+      return undefined;
+    });
+  }
+
+  finishMemoryGroupExecTermination(reservation: GroupedExecReservation): void {
+    this.#runImmediateKernelEntry('publish exact terminated grouped exec', entry => {
+      const state = this.#groupExecReservations.get(reservation);
+      if (!state || state.phase !== 'cancelled' || !state.terminationSignal
+          || !this.#groupImageRetirements.get(state.registration.grouped!.handle)?.released) {
+        this.#memoryGroupProtocolError('Terminated exec has not retired its exact images');
+      }
+      const pid = state.receipt.pid, signal = state.terminationSignal, parent = state.terminationParentPid;
+      this.#committedGroupExecs.delete(pid); this.#groupExecReservations.delete(reservation);
+      state.reservation = undefined;
+      this.notifyParentOfExitedProcess(pid, entry, parent);
+      entry.deferProtocolEffect(() => { this.callbacks.onExit?.(pid, 128 + signal); return undefined; });
+      return undefined;
+    });
+  }
+
+  #holdCommittedGroupExecTermination(pid: number, entry: KernelWorkerEntryContext, observedSignal?: number): number | undefined {
+    const state = this.#committedGroupExecs.get(pid);
+    if (!state || (state.phase !== 'committed' && state.phase !== 'handoff' && state.phase !== 'cancelled')) return undefined;
+    const registration = this.processes.get(pid);
+    if (registration !== state.registration && (registration || state.phase !== 'cancelled')) {
+      this.#memoryGroupProtocolError('Grouped exec exit owner lost its exact registration');
+    }
+    // Cancellation can release the last kernel reaping hold. Its cached real
+    // signal/parent must survive both that reap and old transport deactivation.
+    const signal = state.terminationSignal ?? observedSignal ?? this.#getProcessExitSignal(pid, entry);
+    if (signal <= 0) return undefined;
+    if (state.terminationSignal === undefined) {
+      state.terminationSignal = signal; state.terminationParentPid = this.getParentPid(pid, entry);
+    }
+    // cancelTerminatedMemoryGroupExec already proved the old image stopped;
+    // its physical storage may now be released and cannot be touched again.
+    if (state.phase !== 'cancelled') state.store.requestImageStop(state.registration.grouped!.handle);
+    return signal;
+  }
+
+  /** An attempted constructor/transport cannot be rolled back as unexposed.
+   * Retain storage and fail this disposable kernel, rather than reporting a
+   * reusable process slot or waiting forever for an unreachable stop fence. */
+  containMemoryGroupLaunchFailure(cause: unknown): never {
+    return this.#memoryGroupProtocolError('Grouped process launch failed; storage retained', cause);
+  }
+
+  /** Postcommit failure cannot restore the old image or prove page reuse. */
+  containMemoryGroupExecFailure(cause: unknown): never {
+    return this.#memoryGroupProtocolError('Committed grouped exec failed; storage retained', cause);
+  }
+
+  #prepareMemoryGroupReplica(receipt: MemoryGroupTaskReceipt, layout?: GroupImageLayout): PreparedGroupReplica | number {
+    let result: PreparedGroupReplica | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("allocate exact memory-group replica", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const store = this.#memoryGroupStores.get(receipt.group);
+      if (!store) { result = -ERRNO.ENOENT; return undefined; }
+      const admitted = this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry);
+      if (typeof admitted === "number") { result = admitted; return undefined; }
+      try {
+        const handle = layout ? store.prepareImage(admitted, layout) : store.prepareThread(admitted);
+        this.#memoryGroupReplicas.set(handle, store); result = handle;
+      } catch (error) { if (error instanceof RangeError) result = -ENOMEM; else throw error; }
+      return undefined;
+    });
+    return result;
+  }
+
+  /** Returning a backing ends unconstructed rollback before any asynchronous
+   * postMessage/constructor. A later failure must quarantine, not return pages. */
+  publishMemoryGroupReplica(handle: PreparedGroupReplica): GroupReplicaLaunch | number {
+    let result: GroupReplicaLaunch | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("publish exact memory-group replica", entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store || !store.isUnexposed(handle)) { result = -EINVAL; return undefined; }
+      const receipt = store.receipt(handle);
+      const admitted = this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry);
+      if (typeof admitted === "number") { result = admitted; return undefined; }
+      const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.start, entry);
+      if (status < 0) { result = status; return undefined; }
+      try {
+        result = store.publish(handle, admitted);
+        // Publication owns a kernel-realm image source even when subsequent
+        // channel registration fails before a concrete Worker can start.
+        if (receipt.pid === receipt.tid) {
+          const image = store.processRegistration(handle);
+          this.#memoryGroupImageRegistrations.set(handle, { memory: image.memory, source: image.source });
+        }
+      }
+      catch (error) {
+        this.#quarantineStartedMemoryGroupReplica(store, handle, entry);
+        throw error;
+      }
+      return undefined;
+    });
+    return result;
+  }
+
+  /** Bind before starting the concrete Worker. Only a fence from this handle,
+   * or an actual Node join, retires its captured Rust receipt. Browser exit
+   * notifications (including terminate's synthetic exit) are not proof.
+   * No physical pages are released by this execution-custody transition. */
+  observeMemoryGroupReplicaWorker(handle: PreparedGroupReplica, worker: WorkerHandle,
+    options: { terminationProvesQuiescence: boolean; retireHostReferences?: () => boolean }): void {
+    const store = this.#memoryGroupReplicas.get(handle);
+    if (!store || store.isUnexposed(handle)) throw Error('Grouped Worker needs a published replica');
+    if (this.#observedMemoryGroupReplicas.has(handle) || this.#observedMemoryGroupWorkers.has(worker)) {
+      throw Error('Grouped Worker or replica already has an execution observer');
+    }
+    const receipt = store.receipt(handle);
+    const joins = options.terminationProvesQuiescence;
+    this.#runImmediateKernelEntry('observe exact grouped Worker', entry => {
+      const stale = typeof this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry) === 'number';
+      // A stale deferred launch may still prove absence. Seal it before any
+      // binding; ordinary or constructor-attempted Workers remain refused.
+      if (stale && !DeferredWorkerHandle.sealNeverStarted(worker)) throw Error('Grouped Worker has a stale admission');
+      const controlOwner = this.#memoryGroupThreadControls.get(handle);
+      if (controlOwner) controlOwner.retireHostReferences = options.retireHostReferences;
+      let settled = false;
+      const retire = (): void => {
+        if (settled) return;
+        settled = true; this.#memoryGroupWorkerBindings.delete(handle);
+        worker.off('message', onMessage); worker.off('exit', onExit);
+        if (this.#kernelFatalError !== null) return;
+        this.#runOrDeferKernelEntry('retire quiescent grouped Worker', stopEntry => {
+          const begin = this.#memoryGroupTaskActionWithinKernelEntry(receipt,
+            MEMORY_GROUP_PROTOCOL.task_actions.beginRetirement, stopEntry);
+          // EBUSY here means this exact receipt was quarantined; its terminal
+          // proof is still valid and RetireQuiescent accepts that phase.
+          if (begin !== 0 && begin !== -EBUSY) this.#memoryGroupProtocolError('Cannot begin proven grouped Worker retirement');
+          if (this.#memoryGroupTaskActionWithinKernelEntry(receipt,
+            MEMORY_GROUP_PROTOCOL.task_actions.retireQuiescent, stopEntry) !== 0) {
+            this.#memoryGroupProtocolError('Cannot retire proven grouped Worker');
+          }
+          store.noteReplicaQuiescent(handle);
+          this.#settleKernelWaitsWithinKernelEntry(stopEntry);
+          return undefined;
+        });
+      };
+      const onMessage = (raw: unknown): void => {
+        if (!raw || typeof raw !== 'object' || !('type' in raw) || raw.type !== 'memory_quiescent') return;
+        const message = raw as { pid?: number; tid?: number; memoryGroup?: MemoryGroupTaskReceipt };
+        if (message.pid !== receipt.pid || message.tid !== (receipt.tid === receipt.pid ? undefined : receipt.tid)
+            || !['group', 'pid', 'tid', 'serial', 'generation'].every(key =>
+              message.memoryGroup?.[key as keyof MemoryGroupTaskReceipt] === receipt[key as keyof MemoryGroupTaskReceipt])) {
+          this.#memoryGroupProtocolError('Wrong terminal grouped Worker receipt');
+        }
+        retire();
+      };
+      const onExit = (): void => { if (joins) retire(); };
+      this.#observedMemoryGroupReplicas.add(handle); this.#observedMemoryGroupWorkers.add(worker);
+      this.#memoryGroupWorkerBindings.set(handle, { worker, retire });
+      worker.on('message', onMessage); worker.on('exit', onExit);
+      if (stale) retire();
+      return undefined;
+    });
+  }
+
+  /** Cancel a published initial image only with its exact, never-started
+   * Deferred Worker. The caller still owns removal of the failed Process.
+   * Execution custody, channels and host references all retire before pages. */
+  async retireMemoryGroupUnstartedProcess(handle: PreparedGroupReplica, worker: WorkerHandle,
+    retireHostReferences: () => void | Promise<void>): Promise<boolean> {
+    let sealed = false;
+    this.#runImmediateKernelEntry('retire exact unstarted grouped launch', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), binding = this.#memoryGroupWorkerBindings.get(handle);
+      if (!store || binding?.worker !== worker) return undefined;
+      const receipt = store.receipt(handle), registration = this.processes.get(receipt.pid);
+      if (receipt.pid !== receipt.tid || registration && registration.grouped?.handle !== handle
+          || this.#processExecGenerationWithinKernelEntry(receipt.pid, entry) !== receipt.generation
+          || !DeferredWorkerHandle.sealNeverStarted(worker)) return undefined;
+      this.#unstartedGroupLaunchRetirements.add(handle);
+      sealed = true; binding.retire();
+      return undefined;
+    });
+    if (!sealed) return false;
+    await this.waitForMemoryGroupReplicaQuiescence(handle);
+    for (;;) {
+      const result = await retryKernelEntryResult(() => this.retireMemoryGroupImage(handle, retireHostReferences));
+      if (result === 0) return true;
+      if (result !== -EBUSY) this.#memoryGroupProtocolError('Cannot retire exact unstarted image');
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  /** Only the very same observed private Deferred handle can seal absence.
+   * No constructor attempt, other handle or synthetic exit grants this proof. */
+  sealMemoryGroupReplicaWorkerAbsence(handle: PreparedGroupReplica, worker: WorkerHandle): boolean {
+    let sealed = false;
+    this.#runImmediateKernelEntry('seal exact grouped Worker absence', _entry => {
+      const binding = this.#memoryGroupWorkerBindings.get(handle);
+      if (binding?.worker !== worker || !DeferredWorkerHandle.sealNeverStarted(worker)) return undefined;
+      sealed = true; binding.retire();
+      return undefined;
+    });
+    return sealed;
+  }
+
+  /** Request stop only for the exact observed realm. A sealed deferred handle
+   * proves absence; a constructed realm still owes its own terminal fence. */
+  requestMemoryGroupReplicaWorkerStop(handle: PreparedGroupReplica, worker: WorkerHandle): boolean {
+    let drained = false;
+    this.#runImmediateKernelEntry('stop exact grouped launch Worker', _entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store) throw Error('Grouped launch stop lost its image');
+      if (store.replicaExecutionStopped(handle)) { drained = true; return undefined; }
+      const binding = this.#memoryGroupWorkerBindings.get(handle);
+      if (binding?.worker !== worker) throw Error('Grouped launch stop names another realm');
+      if (DeferredWorkerHandle.sealNeverStarted(worker)) { binding.retire(); drained = true; }
+      else drained = store.requestImageStop(handle);
+      return undefined;
+    });
+    return drained;
+  }
+
+  cancelUnexposedMemoryGroupReplica(handle: PreparedGroupReplica): number {
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("cancel unexposed memory-group replica", entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store || !store.isUnexposed(handle)) { result = -EINVAL; return undefined; }
+      const receipt = store.receipt(handle);
+      result = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+      if (result < 0) return undefined;
+      store.cancelUnexposed(handle); this.#memoryGroupReplicas.delete(handle);
+      if (store.canReleaseUnexposedImage(receipt)) {
+        const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+        if (typeof retire !== "function") this.#memoryGroupProtocolError("Missing memory-group image retirement export");
+        const status = this.#checkedMemoryGroupStatus(retire(receipt.pid,
+          Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
+        if (status === 0) store.releaseUnexposedImage(receipt);
+        // Another Rust-owned replica may not have allocated host scratch yet.
+        // Keep the unpublished root and its budget until that owner retires.
+        else if (status !== -EBUSY) this.#memoryGroupProtocolError("Unexposed image custody could not be retired");
+      }
+      return undefined;
+    });
+    return result;
+  }
+
+  #quarantineStartedMemoryGroupReplica(store: MemoryGroupImageStore, handle: PreparedGroupReplica,
+    entry: KernelWorkerEntryContext, allowRetired = false): void {
+    const receipt = store.receipt(handle);
+    const begin = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.beginRetirement, entry);
+    if (begin !== 0 && !(allowRetired && (begin === -EBUSY || begin === -ESRCH))) {
+      this.#memoryGroupProtocolError('Unable to begin exact failed replica retirement');
+    }
+    try { store.quarantine(handle); }
+    finally {
+      // Even failed physical stop control must retain a truthful Rust ledger.
+      if (begin !== -ESRCH && this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.quarantine, entry) !== 0) {
+        this.#memoryGroupProtocolError('Unable to quarantine exact failed replica');
+      }
+    }
+  }
+
+  #observeSyscallBlocked(channel: ChannelInfo, syscallNr: number, first: ChannelScalarValue,
+    owner: 'kernel' | 'pipe-read' | 'pipe-write', entry: KernelWorkerEntryContext): void {
+    if (!this.callbacks.onSyscallBlocked) return;
+    const pid = channel.pid, tid = this.guestTidForChannel(channel);
+    entry.deferObserverEffect(() => { this.callbacks.onSyscallBlocked?.(pid, tid, syscallNr, first, owner); return undefined; });
+  }
+
+  /** Record a crash only for this currently registered execution image.
+   * A late old-Worker error cannot signal a replacement sharing its PID. */
+  recordMemoryGroupCrash(handle: PreparedGroupReplica, signum = SIGSEGV): number {
+    if (!memoryGroupU32(signum) || signum === 0 || signum > SIGNAL_MASK_BYTES * 8) return -EINVAL;
+    let result = -ESRCH;
+    this.#runImmediateKernelEntry('record exact grouped image crash', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), image = this.#memoryGroupImageRegistrations.get(handle);
+      if (!store || !image) return undefined;
+      const receipt = store.receipt(handle), registration = this.processes.get(receipt.pid);
+      if (registration?.grouped?.handle !== handle || registration.source !== image.source) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+      if (generation instanceof Error) {
+        if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH) return undefined;
+        throw generation;
+      }
+      if (generation !== receipt.generation) return undefined;
+      this.#notifyHostProcessCrashedWithinKernelEntry(receipt.pid, signum, entry); result = 0;
+      return undefined;
+    });
+    return result;
+  }
+
+  /** Bounded guest-word inspection in the disposable kernel realm. The
+   * exact image capability is required; no backing or view crosses the API. */
+  inspectMemoryGroupWord(handle: PreparedGroupReplica, address: number): number {
+    if (!memoryGroupU32(address) || address % 4) return -EINVAL;
+    let result = -ESRCH;
+    this.#runImmediateKernelEntry('inspect exact grouped guest word', _entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store) return undefined;
+      try { result = store.imageSource(handle).atomicLoadI32(address) >>> 0; }
+      catch (error) { if (error instanceof ProcessAddressFault) result = -ERRNO.EFAULT; else throw error; }
+      return undefined;
+    });
+    return result;
+  }
+
+  /** Exact queue state only. Does not expose the node/target or prove stop. */
+  inspectMemoryGroupReplicaWait(handle: PreparedGroupReplica): 'none' | 'waiting' | 'returning' | 'busy' | number {
+    let result: 'none' | 'waiting' | 'returning' | 'busy' | number = -ESRCH;
+    this.#runImmediateKernelEntry('inspect exact grouped replica wait', _entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (store) result = store.inspectReplicaWait(handle);
+      return undefined;
+    });
+    return result;
+  }
+
+  inspectMemoryGroupBacking(group: number): ReturnType<MemoryGroupImageStore["snapshot"]> | undefined {
+    return this.#memoryGroupStores.get(group)?.snapshot();
+  }
+
+  /** Copy both ledgers under one kernel entry. Inspection grants no authority
+   * to admit a participant or reuse pages and never constructs backing. */
+  inspectMemoryGroupUsage(group: number): MemoryGroupUsage | number {
+    if (!memoryGroupU32(group)) return -EINVAL;
+    let result: MemoryGroupUsage | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry('inspect memory-group usage', entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const admission = this.#inspectMemoryGroupWithinKernelEntry(group, entry);
+      if (typeof admission === 'number') { result = admission; return undefined; }
+      const backing = this.#memoryGroupStores.get(group)?.trySnapshot() ?? null;
+      // WHY: select public scalar fields before any RPC can reach a persistent
+      // browser realm. A future internal snapshot field must not export a view.
+      result = backing === 'busy' ? -EAGAIN : validateMemoryGroupUsage({ admission, backing })!;
+      return undefined;
+    });
+    return result;
+  }
+
+  #exactMemoryGroupReceiptWithinKernelEntry(receipt: MemoryGroupTaskReceipt,
+    entry: KernelWorkerEntryContext): MemoryGroupTaskReceipt | number {
+    if (!memoryGroupU32(receipt.group, receipt.pid, receipt.tid) || typeof receipt.serial !== "bigint"
+        || typeof receipt.generation !== "bigint") return -EINVAL;
+    const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+    if (generation instanceof KernelTaskBindingError) return -generation.errno;
+    if (generation instanceof Error) throw generation;
+    const current = this.#readMemoryGroupReceiptWithinKernelEntry(receipt.pid, receipt.tid, generation, entry);
+    if (typeof current === "number") return current;
+    return ["group", "pid", "tid", "serial", "generation"].every(
+      key => current[key as keyof MemoryGroupTaskReceipt] === receipt[key as keyof MemoryGroupTaskReceipt]) ? current : -ERRNO.ESRCH;
+  }
+
+  #memoryGroupTaskActionWithinKernelEntry(receipt: MemoryGroupTaskReceipt, action: number,
+    entry: KernelWorkerEntryContext): number {
+    return this.#requireMainScratchRegion().withLease(lease => {
+      const size = MEMORY_GROUP_PROTOCOL.receipt_bytes, f = MEMORY_GROUP_PROTOCOL.receipt_fields;
+      const bytes = new Uint8Array(size), data = new DataView(bytes.buffer);
+      data.setUint32(f.group, receipt.group, true); data.setUint32(f.pid, receipt.pid, true);
+      data.setUint32(f.tid, receipt.tid, true); data.setBigUint64(f.serial, receipt.serial, true);
+      data.setBigUint64(f.generation, receipt.generation, true);
+      lease.copyFrom(bytes, 0, 0, size);
+      return this.#checkedMemoryGroupStatus(this.#invokeEntryScratchExport(entry, lease,
+        "kernel_memory_group_task_action", [lease.exportPointer(0, size), size, action]));
+    });
+  }
+
+  prepareMemoryGroupProcess(group: number, pid: number): MemoryGroupTaskReceipt | number {
+    if (!memoryGroupU32(group, pid)) return -EINVAL;
+    let result: MemoryGroupTaskReceipt | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("prepare grouped process", entry => {
+      // Admission installs a new memory model before execution registration.
+      // A running ordinary image cannot become grouped in place.
+      if (this.processes.has(pid)) { result = -EBUSY; return undefined; }
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(pid, entry);
+      if (generation instanceof KernelTaskBindingError) { result = -generation.errno; return undefined; }
+      if (generation instanceof Error) throw generation;
+      const prepare = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_prepare_process;
+      if (typeof prepare !== "function") this.#memoryGroupProtocolError("Missing group admission export");
+      // Reserve/copy scratch in this same entry. No callback/await separates
+      // reading the current image from admission and its exact receipt.
+      result = this.#requireMainScratchRegion().withLease(lease => {
+        const size = MEMORY_GROUP_PROTOCOL.receipt_bytes;
+        const output = lease.exportPointer(0, size);
+        const status = this.#checkedMemoryGroupStatus(prepare(group, pid,
+          Number(generation & 0xffffffffn), Number(generation >> 32n)));
+        if (status < 0) return status;
+        const count = this.#invokeEntryScratchExport(entry, lease, "kernel_memory_group_task_receipt", [pid, pid, output, size]);
+        if (count !== size) this.#memoryGroupProtocolError("Admitted process has no exact task receipt");
+        try { return decodeMemoryGroupReceipt(lease.copyOut(0, size), { group, pid, tid: pid, generation }); }
+        catch (error) { return this.#memoryGroupProtocolError("Invalid admitted process receipt", error); }
+      });
+      return undefined;
+    });
+    return result;
+  }
+
+  readMemoryGroupTaskReceipt(pid: number, tid: number): MemoryGroupTaskReceipt | number {
+    if (!memoryGroupU32(pid, tid)) return -EINVAL;
+    let result: MemoryGroupTaskReceipt | number = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry("read memory-group task receipt", entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(pid, entry);
+      if (generation instanceof KernelTaskBindingError) { result = -generation.errno; return undefined; }
+      if (generation instanceof Error) throw generation;
+      result = this.#readMemoryGroupReceiptWithinKernelEntry(pid, tid, generation, entry);
+      return undefined;
+    });
+    return result;
+  }
+
+  #readMemoryGroupReceiptWithinKernelEntry(
+    pid: number, tid: number, generation: bigint, entry: KernelWorkerEntryContext,
+  ): MemoryGroupTaskReceipt | number {
+    return this.#requireMainScratchRegion().withLease(lease => {
+      const size = MEMORY_GROUP_PROTOCOL.receipt_bytes;
+      const status = this.#invokeEntryScratchExport(entry, lease, "kernel_memory_group_task_receipt",
+        [pid, tid, lease.exportPointer(0, size), size]);
+      if (status < 0) return this.#checkedMemoryGroupStatus(status);
+      if (status !== size) this.#memoryGroupProtocolError("Invalid task receipt byte count");
+      try { return decodeMemoryGroupReceipt(lease.copyOut(0, size), { pid, tid, generation }); }
+      catch (error) { return this.#memoryGroupProtocolError("Invalid kernel task receipt", error); }
+    });
+  }
+
+  #memoryGroupAdmissionAvailable(entry: KernelWorkerEntryContext, required: number = MEMORY_GROUP_PROTOCOL.capability_admission): boolean {
+    const exports = this.#kernelInstanceForEntry(entry).exports;
+    const protocol = exports.kernel_memory_group_protocol_version, capabilities = exports.kernel_memory_group_capabilities;
+    if (typeof protocol !== "function" || typeof capabilities !== "function") return false;
+    const version = protocol(), caps = capabilities();
+    return version === MEMORY_GROUP_PROTOCOL.version && memoryGroupU32(caps)
+      && (caps & required) === required;
+  }
+
+  #checkedMemoryGroupStatus(status: number): number {
+    if (!Number.isSafeInteger(status) || status > 0 || status < -0x80000000) {
+      this.#memoryGroupProtocolError("Invalid memory-group operation status");
+    }
+    return status;
+  }
+
+  #memoryGroupProtocolError(message: string, cause?: unknown): never {
+    const error = new MemoryGroupProtocolFault(message, { cause });
+    this.#failKernelInstance(error);
+    throw error;
+  }
+
   /**
    * Attach process memory and thread channels to an existing kernel Process.
    * Each channel is a region in the process's shared Memory.
@@ -7885,6 +9019,50 @@ export class CentralizedKernelWorker {
     memory: WebAssembly.Memory,
     channelOffsets: number[],
     options?: RegisterProcessOptions,
+  ): void {
+    this.#registerProcess(pid, memory, channelOffsets, options);
+  }
+
+  /** Kernel-Worker integration only; public grouped launch remains gated.
+   * A raw Memory or caller-supplied receipt cannot select a virtual root.
+   */
+  registerMemoryGroupProcess(
+    handle: PreparedGroupReplica,
+    channelOffsets: number[],
+    options?: RegisterProcessOptions,
+  ): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("grouped process registration");
+    }
+    const store = this.#memoryGroupReplicas.get(handle);
+    if (!store) throw new Error("Unknown grouped process replica handle");
+    if (this.#registeredMemoryGroupReplicas.has(handle)) {
+      throw new Error("Grouped main replica has already installed its process image");
+    }
+    const image = store.processRegistration(handle);
+    const exec = this.#groupExecImages.get(handle);
+    if (exec && (exec.phase !== 'handoff' || this.processes.get(image.receipt.pid) !== exec.registration
+        || !this.isExecHandoffActive(image.receipt.pid)
+        || !store.imageExecutionStopped(exec.registration.grouped!.handle))) {
+      throw new MemoryGroupProtocolFault('Grouped exec registration lacks exact stopped predecessor');
+    }
+    this.#registerProcess(image.receipt.pid, image.memory, channelOffsets, options,
+      { store, handle, ...image }, exec);
+    this.#memoryGroupImageRegistrations.set(handle, { memory: image.memory, source: image.source });
+    if (exec) { exec.phase = 'installed'; this.#groupExecImages.delete(handle); }
+  }
+
+  #registerProcess(
+    pid: number,
+    memory: WebAssembly.Memory,
+    channelOffsets: number[],
+    options?: RegisterProcessOptions,
+    grouped?: ReturnType<MemoryGroupImageStore["processRegistration"]> & {
+      readonly store: MemoryGroupImageStore;
+      readonly handle: PreparedGroupReplica;
+    },
+    preparedExec?: GroupedExecPreparationState,
   ): void {
     if (!this.#initialized) throw new Error("Kernel not initialized");
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_KERNEL_TASK_ID) {
@@ -7928,6 +9106,7 @@ export class CentralizedKernelWorker {
     const mmapBase = options?.mmapBase;
     const explicitMaxAddr = options?.maxAddr;
     const brkLimit = options?.brkLimit;
+    const controlBase = options?.controlBase, controlEnd = options?.controlEnd;
     const existingRegistration = this.processes.get(pid);
     const replacingExecImage =
       preserveProcessState
@@ -7935,6 +9114,10 @@ export class CentralizedKernelWorker {
       && existingRegistration?.channels.length === 0;
     if (existingRegistration && !replacingExecImage) {
       throw new Error(`Process ${pid} is already registered with the host`);
+    }
+    if (preparedExec && (!replacingExecImage || existingRegistration !== preparedExec.registration
+        || grouped?.handle !== preparedExec.handle)) {
+      throw new MemoryGroupProtocolFault('Prepared exec map cannot replace this registration');
     }
 
     if (argv !== undefined || env !== undefined) {
@@ -7948,11 +9131,37 @@ export class CentralizedKernelWorker {
       }
     }
 
+    const source = grouped?.source ?? memory;
+    if (grouped) {
+      if (ptrWidth !== 4 || metadataPtrWidth !== 4 || options?.borrowedAddressSpace === true) {
+        throw new Error("Grouped registration requires wasm32 and an owned image");
+      }
+      const ceiling = grouped.maximumVirtualPages * 65536;
+      if (explicitMaxAddr !== undefined && explicitMaxAddr !== ceiling) throw new Error("Grouped process layout disagrees with its admitted virtual ceiling");
+      if ((!preserveProcessState || replacingExecImage && !preparedExec)
+          && (brkBase === undefined || controlBase === undefined || controlEnd === undefined)) {
+        throw new Error("Fresh grouped registration requires its heap and control layout");
+      }
+      for (const address of [brkBase, mmapBase, explicitMaxAddr, brkLimit, controlBase, controlEnd]) {
+        if (address !== undefined && (!Number.isSafeInteger(address) || address < 0 || address > ceiling)) {
+          throw new Error("Grouped process layout exceeds its admitted virtual ceiling");
+        }
+      }
+      for (const offset of stableChannelOffsets) {
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset % 4 !== 0) {
+          throw new Error("Grouped process channel is not an aligned virtual address");
+        }
+        checkProcessWriteRange(source, offset, CH_TOTAL_SIZE);
+        // A writable header alone does not prove the listener can read it.
+        readProcessBytes(source, offset, CH_TOTAL_SIZE);
+      }
+    }
     const channels: ChannelInfo[] = stableChannelOffsets.map((offset) => ({
       pid,
       memory,
+      source,
       channelOffset: offset,
-      i32View: new Int32Array(memory.buffer, offset),
+      i32View: grouped ? undefined : new Int32Array(memory.buffer, offset),
       consecutiveSyscalls: 0,
     }));
 
@@ -7996,11 +9205,46 @@ export class CentralizedKernelWorker {
           registrationPreconditionError = execGeneration;
           return undefined;
         }
+        if (this.#memoryGroupAdmissionAvailable(entry, grouped
+          ? MEMORY_GROUP_PROTOCOL.capability_admission | MEMORY_GROUP_PROTOCOL.layout.capability : MEMORY_GROUP_PROTOCOL.capability_admission)) {
+          const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(pid, pid, execGeneration, entry);
+          if (grouped) {
+            const expected = grouped.receipt;
+            if (typeof receipt === "number" || receipt.group !== expected.group
+                || receipt.pid !== expected.pid || receipt.tid !== expected.tid
+                || receipt.serial !== expected.serial || receipt.generation !== expected.generation
+                || execGeneration !== expected.generation) {
+              registrationPreconditionError = new Error("Grouped registration no longer names its exact kernel task image");
+              return undefined;
+            }
+            // Recheck custody after Rust exports; a stale launch may not
+            // regain host access through a retained replica handle.
+            try {
+              if (grouped.store.processRegistration(grouped.handle).source !== source) {
+                registrationPreconditionError = new Error("Grouped registration image source changed");
+              }
+            } catch (error) {
+              registrationPreconditionError = error instanceof Error ? error : new Error(String(error));
+            }
+            if (registrationPreconditionError) return undefined;
+          } else if (typeof receipt !== "number") {
+            registrationPreconditionError = new Error("Grouped process requires explicit virtual-memory registration");
+            return undefined;
+          } else if (receipt !== -ERRNO.ENOENT) {
+            registrationPreconditionError = new KernelTaskBindingError(pid, pid, -receipt,
+              "Cannot prove native process memory registration");
+            return undefined;
+          }
+        } else if (grouped) {
+          registrationPreconditionError = new Error("Kernel memory-group admission is unavailable");
+          return undefined;
+        }
         const registration: ProcessRegistration = {
-          pid, memory, channels, execGeneration, borrowedAddressSpace,
-          ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined,
+          pid, memory, source, channels, execGeneration, borrowedAddressSpace,
+          ptrWidth, explicitMaxAddr: grouped !== undefined || explicitMaxAddr !== undefined,
+          grouped: grouped && Object.freeze({ store: grouped.store, handle: grouped.handle, receipt: grouped.receipt }),
         };
-        this.#noteGuestMayRun(memory);
+        this.#noteGuestMayRun(source);
         kernelEntryIntrinsicObjectDefineProperty(registration, "execGeneration", {
           value: execGeneration,
           writable: false, configurable: false, enumerable: true,
@@ -8021,7 +9265,22 @@ export class CentralizedKernelWorker {
         // publishing a host registration. Complete that transaction before
         // mutating any layout field so a failed attempt leaves the whole
         // kernel Process unchanged and can be retried safely.
-        if (
+        if (grouped) {
+          const inherited = preserveProcessState && (!replacingExecImage || preparedExec !== undefined);
+          const packet = encodeGroupMemoryLayout(grouped.receipt, {
+            initialPages: processMemoryByteLength(source) / 65536, maximumPages: grouped.maximumVirtualPages,
+            channel: stableChannelOffsets[0]!, mode: inherited ? 'inherited' : 'fresh',
+            brkBase: inherited ? undefined : brkBase, mmapBase: inherited ? undefined : mmapBase ?? brkBase,
+            brkLimit: inherited ? undefined : brkLimit ?? grouped.maximumVirtualPages * 65536,
+            controlBase: inherited ? undefined : controlBase, controlEnd: inherited ? undefined : controlEnd,
+          });
+          const status = this.#requireMainScratchRegion().withLease(lease => {
+            lease.copyFrom(packet, 0, 0, packet.length);
+            return this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_layout_install", [lease.exportPointer(0, packet.length), packet.length]);
+          });
+          if (this.#checkedMemoryGroupStatus(status) !== 0) throw new Error(`Kernel refused grouped image layout: errno ${-status}`);
+        }
+        if (!grouped &&
           brkBase !== undefined
           && !this.#setBrkBaseWithinKernelEntry(pid, brkBase, entry)
         ) {
@@ -8034,10 +9293,10 @@ export class CentralizedKernelWorker {
         // historical lowest-channel ceiling.
         const maxAddr = explicitMaxAddr
           ?? Math.min(...stableChannelOffsets);
-        this.#setMaxAddrWithinKernelEntry(pid, maxAddr, entry);
+        if (!grouped) this.#setMaxAddrWithinKernelEntry(pid, maxAddr, entry);
 
         if (
-          mmapBase !== undefined
+          !grouped && mmapBase !== undefined
           && !this.#setMmapBaseWithinKernelEntry(pid, mmapBase, entry)
         ) {
           throw new Error(
@@ -8045,7 +9304,7 @@ export class CentralizedKernelWorker {
           );
         }
         if (
-          brkLimit !== undefined
+          !grouped && brkLimit !== undefined
           && !this.#setBrkLimitWithinKernelEntry(pid, brkLimit, entry)
         ) {
           throw new Error(
@@ -8056,7 +9315,7 @@ export class CentralizedKernelWorker {
         // which the kernel finds from the request in the caller's channel.
         const setMainChannel = this.#kernelInstanceForEntry(entry).exports
           .kernel_set_main_channel_addr as (pid: number, addr: bigint) => number;
-        if (setMainChannel(pid, BigInt(stableChannelOffsets[0]!)) !== 0) {
+        if (!grouped && setMainChannel(pid, BigInt(stableChannelOffsets[0]!)) !== 0) {
           throw new Error("kernel_set_main_channel_addr refused the registration");
         }
         // The kernel parses caller-native structures for this process, so it
@@ -8096,6 +9355,7 @@ export class CentralizedKernelWorker {
           // marker only as part of the same completed registration commit.
           this.hostReaped.delete(pid);
           this.processes.set(pid, registration);
+          if (grouped) this.#registeredMemoryGroupReplicas.add(grouped.handle);
           this.activeChannels.push(...channels);
 
           if (this.usePolling) {
@@ -8116,7 +9376,7 @@ export class CentralizedKernelWorker {
           this.observeProcessMemoryTarget(memory, registration);
           for (const channel of channels) {
             this.observeProcessMemoryTarget(memory, channel);
-            this.observeProcessMemoryTarget(memory, channel.i32View);
+            if (channel.i32View) this.observeProcessMemoryTarget(memory, channel.i32View);
           }
           return undefined;
         });
@@ -9419,6 +10679,202 @@ export class CentralizedKernelWorker {
     });
   }
 
+  /** Join the kernel observer's stop transition, which can run after another
+   * listener receives the same Worker message. Message order grants no reuse. */
+  waitForMemoryGroupReplicaQuiescence(handle: PreparedGroupReplica): Promise<void> {
+    if (this.#groupThreadRetirements.get(handle)?.released || this.#groupImageRetirements.get(handle)?.released) return Promise.resolve();
+    const store = this.#memoryGroupReplicas.get(handle);
+    if (!store) return Promise.reject(new MemoryGroupProtocolFault('Unknown grouped Worker quiescence owner'));
+    return store.waitForReplicaQuiescence(handle);
+  }
+
+  /** The exact thread may recycle while its peers keep executing. This API
+   * owns references and actual old-channel settlement, never just a numeric
+   * TID or a completed pthread_join. Whole-image retirement joins this owner. */
+  retireMemoryGroupThread(handle: PreparedGroupReplica, retireHostReferences: () => void): Promise<number> {
+    const previous = this.#groupThreadRetirements.get(handle);
+    if (previous) return previous.finished;
+    let record: GroupThreadRetirement | undefined, refusal = -EBUSY;
+    this.#runImmediateKernelEntry('begin exact grouped thread retirement', entry => {
+      const owner = this.#memoryGroupThreadControls.get(handle);
+      if (!owner) { refusal = -EINVAL; return undefined; }
+      if (this.#groupImageRetirements.has(owner.rootHandle)) { refusal = -ESRCH; return undefined; }
+      if (!owner.store.replicaExecutionStopped(handle)) return undefined;
+      const registration = this.processes.get(owner.receipt.pid);
+      if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.allocation.channelOffset)) return undefined;
+      const launches = [...this.#pendingGroupClones].filter(clone => clone.pendingAttachment?.groupedReplica === handle).map(clone => clone.launchSettled!);
+      record = this.#beginGroupThreadRetirement(owner, launches, retireHostReferences, entry);
+      return undefined;
+    });
+    return record?.finished ?? Promise.resolve(refusal);
+  }
+
+  #beginGroupThreadRetirement(owner: GroupThreadControlOwner, launches: readonly Promise<void>[],
+    retireHostReferences: () => void, entry: KernelWorkerEntryContext): GroupThreadRetirement {
+    if (this.#groupThreadRetirements.has(owner.handle)) this.#memoryGroupProtocolError('Duplicate exact thread retirement');
+    let resolve!: (result: number) => void, reject!: (cause: unknown) => void;
+    const finished = new this.#promiseReceiver<number>((yes, no) => { resolve = yes; reject = no; });
+    const record: GroupThreadRetirement = { owner, finished, released: false };
+    this.#groupThreadRetirements.set(owner.handle, record); this.#pendingGroupThreadRetirements.add(record);
+    entry.deferProtocolEffect(() => {
+      void this.#settleGroupThreadRetirement(record, launches, retireHostReferences).then(resolve, reject)
+        .finally(() => { this.#pendingGroupThreadRetirements.delete(record); });
+      return undefined;
+    });
+    return record;
+  }
+
+  async #settleGroupThreadRetirement(record: GroupThreadRetirement, launches: readonly Promise<void>[],
+    retireHostReferences: () => void): Promise<number> {
+    await Promise.all(launches);
+    retireHostReferences();
+    const owner = record.owner!;
+    await this.settleRetiredChannelListeners(owner.receipt.pid, owner.memory, owner.allocation.channelOffset, owner.source);
+    for (;;) {
+      const result = await retryKernelEntryResult(() => this.#releaseGroupThreadRetirement(record));
+      if (result !== -EBUSY) return result;
+      await owner.store.waitForThreadRetirementProgress(owner.handle);
+    }
+  }
+
+  #releaseGroupThreadRetirement(record: GroupThreadRetirement): number {
+    let result = -EBUSY;
+    this.#runImmediateKernelEntry('release exact stopped thread controls', entry => {
+      if (record.released) { result = 0; return undefined; }
+      const owner = record.owner!, receipt = owner.receipt;
+      const released = owner.store.tryReleaseStoppedThread(owner.handle, owner.allocation.slotStartPage * WASM_PAGE_SIZE,
+        PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE, () => {
+          result = this.#releaseGroupThreadControlWithinKernelEntry(receipt, entry);
+          return result === 0;
+        });
+      if (released === 'busy') { if (result === 0) result = -EBUSY; return undefined; }
+      owner.allocator.freeMapped(owner.allocation.slotStartPage);
+      this.#memoryGroupReplicas.delete(owner.handle); this.#memoryGroupThreadControls.delete(owner.handle);
+      record.owner = undefined; record.released = true; result = 0;
+      return undefined;
+    });
+    return result;
+  }
+
+  /** ESRCH is harmless only after proving that this exact image has
+   * disappeared or been replaced. A live missing row remains a failure. */
+  #releaseGroupThreadControlWithinKernelEntry(receipt: MemoryGroupTaskReceipt, entry: KernelWorkerEntryContext): number {
+    const release = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_thread_control_release;
+    if (typeof release !== 'function') this.#memoryGroupProtocolError('Missing exact thread control retirement export');
+    let result = this.#checkedMemoryGroupStatus(release(receipt.group, receipt.pid, receipt.tid,
+      Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n),
+      Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
+    if (result === -ESRCH) {
+      const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+      if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH
+          || typeof generation === 'bigint' && generation !== receipt.generation) result = 0;
+    }
+    return result;
+  }
+
+  /** Release host reference owners once, then join exact channel/operation
+   * retirement. A busy queue/pool remains charged and may be retried. Neither
+   * PID disappearance nor a caller callback supplies the Worker stop proof. */
+  retireMemoryGroupImage(handle: PreparedGroupReplica, retireHostReferences: () => void | Promise<void>): Promise<number> {
+    let record = this.#groupImageRetirements.get(handle);
+    if (record?.released) return Promise.resolve(0);
+    let refusal = -EBUSY;
+    if (!record) this.#runImmediateKernelEntry('begin exact grouped image retirement', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), image = this.#memoryGroupImageRegistrations.get(handle);
+      if (!store || !image) { refusal = -EINVAL; return undefined; }
+      const receipt = store.receipt(handle);
+      if (receipt.pid !== receipt.tid) { refusal = -EINVAL; return undefined; }
+      if (!store.imageExecutionStopped(handle)) return undefined;
+      const generation = this.#processExecGenerationWithinKernelEntry(receipt.pid, entry);
+      if (generation instanceof Error) {
+        if (!(generation instanceof KernelTaskBindingError && generation.errno === ESRCH)) throw generation;
+      } else if (generation === receipt.generation) {
+        const state = (this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (pid: number) => number)(receipt.pid);
+        const failedFork = [...this.pendingGroupForks.values()].some(fork => fork.prepared === handle
+          && fork.cancelling && !fork.launching && fork.allocation?.childOwned
+          && !fork.allocation.transferred && fork.childReceipt?.serial === receipt.serial);
+        // A cancelled replay never transferred a waitable child to its
+        // parent. Its exact stop proof permits rollback without publishing a
+        // fictitious guest exit. Other live images remain refused.
+        if (state !== PROCESS_STATE_EXITED && !failedFork && !this.#unstartedGroupLaunchRetirements.has(handle)) return undefined;
+      }
+      const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+      if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact image retirement export');
+      const status = this.#checkedMemoryGroupStatus(retire(receipt.pid,
+        Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n)));
+      if (status !== 0 && status !== -ERRNO.ENOENT) { refusal = status; return undefined; }
+      const operations = new Set<Promise<void>>();
+      const exiting = this.#groupProcessExits.get(handle);
+      if (exiting) operations.add(exiting.finished);
+      for (const pending of [...this.pendingGroupImageOperations.values(), ...this.retiringGroupMappings]) {
+        if (pending.registration.source === image.source && !pending.done) operations.add(pending.finished);
+      }
+      for (const clone of this.#pendingGroupClones) if (clone.source === image.source) operations.add(clone.finished!);
+      for (const retiring of this.#pendingGroupThreadRetirements) if (retiring.owner?.source === image.source) operations.add(retiring.finished.then(() => undefined));
+      const registration = this.processes.get(receipt.pid);
+      if (registration?.source === image.source) {
+        if (registration.grouped?.handle !== handle) this.#memoryGroupProtocolError('Retiring image registration changed identity');
+        this.#deactivateProcessWithinKernelEntry(receipt.pid, entry, image.memory);
+      }
+      store.revokeImageAccess(handle);
+      let resolve!: () => void, reject!: (reason: unknown) => void;
+      const settled = new this.#promiseReceiver<void>((yes, no) => { resolve = yes; reject = no; });
+      record = { owner: { handle, store, pid: receipt.pid, ...image }, settled, released: false };
+      this.#groupImageRetirements.set(handle, record);
+      const ownedRecord = record;
+      entry.deferProtocolEffect(() => {
+        void this.#settleGroupImageRetirement(ownedRecord, [...operations], retireHostReferences).then(resolve, reject);
+        return undefined;
+      });
+      return undefined;
+    });
+    if (!record) return Promise.resolve(refusal);
+    const ownedRecord = record;
+    return ownedRecord.settled.then(() => retryKernelEntryResult(() => this.#releaseGroupImageRetirement(ownedRecord)));
+  }
+
+  async #settleGroupImageRetirement(record: GroupImageRetirement, operations: readonly Promise<void>[],
+    retireHostReferences: () => void | Promise<void>): Promise<void> {
+    await retireHostReferences();
+    await Promise.all(operations);
+    const { pid, memory, source } = record.owner!;
+    await this.settleRetiredChannelListeners(pid, memory, undefined, source);
+  }
+
+  #releaseGroupImageRetirement(record: GroupImageRetirement): number {
+    if (record.released) return 0;
+    let result = -EBUSY;
+    this.#runImmediateKernelEntry('release exact stopped image pages', entry => {
+      if (record.released) { result = 0; return undefined; }
+      const { handle, store } = record.owner!;
+      const released = store.tryReleaseStoppedImage(handle);
+      if (released !== 'busy') this.#sweepGroupFileObjects(store.group, store, entry);
+      if (released === 'busy') return undefined;
+      for (const replica of released.replicas) {
+        this.#memoryGroupReplicas.delete(replica); this.#memoryGroupThreadControls.delete(replica);
+      }
+      this.#memoryGroupImageRegistrations.delete(handle);
+      this.#unstartedGroupLaunchRetirements.delete(handle);
+      record.owner = undefined; record.released = true; result = 0;
+      return undefined;
+    });
+    return result;
+  }
+
+  deactivateMemoryGroupProcess(handle: PreparedGroupReplica): boolean {
+    let result = false;
+    this.#runImmediateKernelEntry('deactivate exact grouped image', entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      if (!store) return undefined;
+      const { pid } = store.receipt(handle), registration = this.processes.get(pid);
+      if (!registration) { result = true; return undefined; }
+      if (registration.grouped?.handle !== handle) return undefined;
+      result = this.#deactivateProcessWithinKernelEntry(pid, entry, registration.memory);
+      return undefined;
+    });
+    return result;
+  }
+
   deactivateProcess(
     pid: number,
     expectedMemory?: WebAssembly.Memory,
@@ -9453,6 +10909,11 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
+    for (const prepared of [...this.#preparedGroupExecReservations]) {
+      if (prepared.registration === registration && prepared.phase === 'prepared') {
+        this.#cancelGroupedExecPreparationWithinKernelEntry(prepared, entry);
+      }
+    }
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
@@ -9804,6 +11265,7 @@ export class CentralizedKernelWorker {
     ownerPid: number,
     target: number,
     expectedAbi: number,
+    initialGroup?: number,
   ): ExecTargetAdmission {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const region = this.#requireMainScratchRegion();
@@ -9818,12 +11280,15 @@ export class CentralizedKernelWorker {
         this.currentHandlePid = ownerPid;
         try {
           region.withLease((lease) => {
-            result = this.#invokeEntryScratchExport(entry, lease, "kernel_exec_target_admit", [
-              ownerPid,
-              target,
-              expectedAbi,
-              lease.exportPointer(0, region.capacity),
-              region.capacity,
+            const name = initialGroup === undefined ? "kernel_exec_target_admit" : "kernel_initial_group_exec_target_admit";
+            if (typeof entry.instance.exports[name] !== "function") {
+              result = -ERRNO.EOPNOTSUPP;
+              return;
+            }
+            result = this.#invokeEntryScratchExport(entry, lease, name, [
+              ownerPid, target, expectedAbi,
+              lease.exportPointer(0, region.capacity), region.capacity,
+              ...(initialGroup === undefined ? [] : [initialGroup]),
             ]);
             if (result > 0) {
               const length = this.#checkedScratchProducerByteLength(
@@ -9885,12 +11350,37 @@ export class CentralizedKernelWorker {
     return result;
   }
 
-  /**
-   * Atomically commit the exact prepared target selected by `target`.
-   * Returns 0 on success, negative errno on failure.
-   * Called only by the shared prepared-target launcher after the asynchronous
-   * host callback returns a bounded preflight plan.
-   */
+  /** Recheck image, task and frozen request before the irreversible exec edge. */
+  #isCurrentExecCaller(registration: ProcessRegistration | undefined,
+    callerTid: number, expected?: ExecCallerIdentity): boolean {
+    if (!registration) return false;
+    try {
+      const pendingExec = (channel: ChannelInfo): boolean => {
+        if (channel.memory !== registration.memory || channel.source !== registration.source
+          || !this.isRegisteredChannel(channel) || this.loadChannelStatus(channel) !== CH_PENDING) return false;
+        const syscall = processDataView(channel.source, channel.channelOffset).getUint32(CH_SYSCALL, true);
+        return (syscall === SYS_EXECVE || syscall === SYS_EXECVEAT)
+          && (!expected?.request || syscall === expected.request.syscallNr);
+      };
+      if (expected) {
+        return registration === expected.registration && registration.source === expected.source
+          && expected.channel.source === expected.source && expected.tid === callerTid
+          && this.guestTidForChannel(expected.channel) === expected.tid
+          && this.activeChannelRequests.get(expected.channel) === expected.request
+          && (!(expected.source instanceof GroupProcessAddressSpace) || expected.request !== undefined)
+          && pendingExec(expected.channel);
+      }
+      // Physical Memory identifies an ordinary image, but cannot authorize an
+      // exec for one of several virtual images sharing the same backing.
+      return !(registration.source instanceof GroupProcessAddressSpace)
+        && registration.channels.some(pendingExec);
+    } catch (error) {
+      if (error instanceof ProcessAddressFault) return false;
+      throw error;
+    }
+  }
+
+  /** Commit the prepared target only while its exact async caller survives. */
   kernelExecCommit(
     pid: number,
     callerTid: number,
@@ -9898,6 +11388,7 @@ export class CentralizedKernelWorker {
     expectedSize?: number,
     markTargetConsumed: () => void = () => {},
     expectedMemory?: WebAssembly.Memory,
+    expectedCaller?: ExecCallerIdentity,
   ): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -9909,6 +11400,7 @@ export class CentralizedKernelWorker {
     let transition: {
       readonly secureExec: boolean;
       readonly retirementMemory: WebAssembly.Memory;
+      readonly retirementSource: ProcessMemorySource;
       readonly retiredChannelOffsets: Set<number>;
       readonly addressSpaceResult: number;
     } | undefined;
@@ -9927,14 +11419,8 @@ export class CentralizedKernelWorker {
           return undefined;
         }
         const registration = this.processes.get(pid);
-        if (!registration || (expectedMemory && registration.memory !== expectedMemory)
-          || !registration.channels.some(channel => {
-            if (channel.memory !== registration.memory) return false;
-            const words = new Int32Array(channel.memory.buffer, channel.channelOffset);
-            const syscall = Atomics.load(words, CH_SYSCALL / 4);
-            return Atomics.load(words, CH_STATUS / 4) === CH_PENDING
-              && (syscall === SYS_EXECVE || syscall === SYS_EXECVEAT);
-          })) {
+        if ((expectedMemory && registration?.memory !== expectedMemory)
+          || !this.#isCurrentExecCaller(registration, callerTid, expectedCaller)) {
           // Compilation/allocation yielded. Teardown or another exec can
           // retire the caller before this irreversible commit. Cancel its
           // exact token without mutating the replacement's transition state.
@@ -10007,16 +11493,24 @@ export class CentralizedKernelWorker {
                   `exec commit has no registered old image for pid=${pid}`,
                 );
               }
-              const retirementMemory = registration.memory;
+              for (const prepared of this.#preparedGroupExecReservations) {
+                if (prepared.registration === registration && prepared.target === target) {
+                  prepared.phase = 'committed'; this.#preparedGroupExecReservations.delete(prepared);
+                  this.#committedGroupExecs.set(registration.pid, prepared);
+                }
+              }
+              const retirementMemory = registration.memory, retirementSource = registration.source;
               const retiredChannelOffsets =
                 this.#wakeProcessWorkersForExecRetirementWithinKernelEntry(
                   pid,
                   retirementMemory,
                   entry,
+                  retirementSource,
                 );
               transition = {
                 secureExec: this.#processSecureExecWithinKernelEntry(pid, entry),
                 retirementMemory,
+                retirementSource,
                 retiredChannelOffsets,
                 addressSpaceResult:
                   this.#finalizeAddressSpaceForExecWithinKernelEntry(pid, entry),
@@ -10226,6 +11720,7 @@ export class CentralizedKernelWorker {
   takeCommittedExecTransition(
     pid: number,
     expectedMemory: WebAssembly.Memory,
+    expectedSource?: ProcessMemorySource,
   ): {
     readonly secureExec: boolean;
     readonly retiredChannelOffsets: ReadonlySet<number>;
@@ -10235,7 +11730,9 @@ export class CentralizedKernelWorker {
     if (transition === undefined) {
       throw new Error(`no committed exec transition for pid=${pid}`);
     }
-    if (transition.retirementMemory !== expectedMemory) {
+    if (transition.retirementMemory !== expectedMemory
+      || (expectedSource !== undefined && transition.retirementSource !== expectedSource)
+      || (transition.retirementSource instanceof GroupProcessAddressSpace && expectedSource === undefined)) {
       throw new Error(`committed exec transition changed generation for pid=${pid}`);
     }
     this.committedExecTransitions.delete(pid);
@@ -10880,7 +12377,7 @@ export class CentralizedKernelWorker {
    * attachment object to create another authority.
    */
   attachThreadChannel(
-    attachment: ThreadChannelAttachment,
+    attachment: AnyThreadChannelAttachment,
     channelOffset: number,
   ): void {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
@@ -10906,7 +12403,7 @@ export class CentralizedKernelWorker {
   }
 
   #attachThreadChannelWithinKernelEntry(
-    attachment: ThreadChannelAttachment,
+    attachment: AnyThreadChannelAttachment,
     channelOffset: number,
     entry: KernelWorkerEntryContext,
   ): Error | undefined {
@@ -10918,7 +12415,7 @@ export class CentralizedKernelWorker {
     // attempt; a failed attempt cannot be redirected to a different mailbox.
     pendingThreadChannelAttachments.delete(attachment);
 
-    const { pid, tid, fnPtr, argPtr, memory } = pending;
+    const { pid, tid, fnPtr, argPtr, memory, source } = pending;
     if (this.execHandoffPids?.has(pid)) {
       throw new Error(`Process ${pid} is replacing its image`);
     }
@@ -10927,8 +12424,10 @@ export class CentralizedKernelWorker {
     }
     const registration = this.processes.get(pid);
     if (!registration) throw new Error(`Process ${pid} not registered`);
-    if (registration.memory !== memory) {
-      throw new Error(`Process ${pid} changed memory generation`);
+    if (registration.memory !== memory || registration.source !== source) {
+      // An expected stale attachment is a local refusal, not uncertain Rust
+      // mutation. Leave the gate usable for its exact task rollback.
+      return new Error(`Process ${pid} changed memory generation`);
     }
     const execGeneration = this.#processExecGenerationWithinKernelEntry(pid, entry);
     if (execGeneration instanceof Error) return execGeneration;
@@ -10970,11 +12469,17 @@ export class CentralizedKernelWorker {
       );
     }
 
+    if (!Number.isSafeInteger(channelOffset) || channelOffset < 0 || channelOffset % 4) {
+      throw new ProcessAddressFault('bounds');
+    }
+    checkProcessWriteRange(source, channelOffset, CH_TOTAL_SIZE);
     const channel: ChannelInfo = {
       pid,
       memory: registration.memory,
+      source: registration.source,
       channelOffset,
-      i32View: new Int32Array(registration.memory.buffer, channelOffset),
+      i32View: source instanceof GroupProcessAddressSpace ? undefined
+        : new Int32Array(source.buffer, channelOffset),
       consecutiveSyscalls: 0,
     };
     entry.deferObserverEffect(() => {
@@ -10982,16 +12487,13 @@ export class CentralizedKernelWorker {
       // channel becomes observable only after attachment completes and the
       // kernel entry scope is revoked.
       this.observeProcessMemoryTarget(registration.memory, channel);
-      this.observeProcessMemoryTarget(
-        registration.memory,
-        channel.i32View,
-      );
+      if (channel.i32View) this.observeProcessMemoryTarget(registration.memory, channel.i32View);
       return undefined;
     });
 
     try {
       registration.channels.push(channel);
-      this.#noteGuestMayRun(registration.memory);
+      this.#noteGuestMayRun(registration.source);
       this.activeChannels.push(channel);
       this.channelTids.set(channelKey, tid);
       this.threadForkContexts.set(channelKey, { fnPtr, argPtr });
@@ -11096,6 +12598,23 @@ export class CentralizedKernelWorker {
   }
 
   private retireChannelHostWaits(channel: ChannelInfo, entry?: KernelWorkerEntryContext): void {
+    const fork = this.pendingGroupForks?.get(channel);
+    if (fork) {
+      fork.cancelling = true; fork.suppressCompletion = true;
+      if (entry) this.#cancelGroupFork(fork, entry);
+      else this.#runOrDeferKernelEntry('retire exact grouped fork', next => {
+        this.#cancelGroupFork(fork, next); return undefined;
+      }, fork);
+    }
+    const mapping = this.pendingGroupMappings?.get(channel);
+    if (mapping) {
+      mapping.cancelling = true; mapping.suppressCompletion = true;
+      this.retiringGroupMappings.add(mapping);
+      if (entry) this.#cancelGroupMapping(mapping, entry);
+      else this.#runOrDeferKernelEntry("retire exact grouped mapping", next => {
+        this.#cancelGroupMapping(mapping, next); return undefined;
+      }, mapping);
+    }
     const entropy = this.pendingEntropyReads?.get(channel);
     if (entropy) {
       if (entropy.timer !== null) this.#cancelRegisteredTimeout(entropy.timer);
@@ -11162,6 +12681,12 @@ export class CentralizedKernelWorker {
     for (const channel of this.pendingEntropyReads?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
+    for (const channel of this.pendingGroupMappings?.keys() ?? []) {
+      if (channel.pid === pid) channels.add(channel);
+    }
+    for (const channel of this.pendingGroupForks?.keys() ?? []) {
+      if (channel.pid === pid) channels.add(channel);
+    }
     for (const channel of this.pendingSelectRetries?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
@@ -11199,18 +12724,30 @@ export class CentralizedKernelWorker {
    *
    * The exact retired token remains until every pending listener callback has
    * run and acknowledged the stale generation. Pool owners can await the
-   * returned Promise before reusing the backing or pthread slot.
+   * returned Promise before reusing the backing or pthread slot. A grouped
+   * caller must also name its exact image source: one backing may contain
+   * multiple exec generations with the same PID and channel offset.
    */
   settleRetiredChannelListeners(
     pid: number,
     expectedMemory?: WebAssembly.Memory,
     expectedChannelOffset?: number,
+    expectedSource?: ProcessMemorySource,
   ): Promise<void> {
     const retired = this.retiredChannelListeners;
     if (!retired || retired.size === 0) return Promise.resolve();
     const settlements: Promise<void>[] = [];
+    const selected = Array.from(retired).filter(channel => channel.pid === pid
+      && (!expectedMemory || channel.memory === expectedMemory)
+      && (expectedChannelOffset === undefined || channel.channelOffset === expectedChannelOffset)
+      && (!expectedSource || channel.source === expectedSource));
+    // A backing can contain old and replacement images at the same PID/offset.
+    // Refuse an ambiguous grouped fence before waking any selected observer.
+    if (!expectedSource && selected.some(channel => channel.source instanceof GroupProcessAddressSpace)) {
+      throw new MemoryGroupProtocolFault('Grouped listener settlement requires its exact image source');
+    }
 
-    for (const channel of Array.from(retired)) {
+    for (const channel of selected) {
       if (channel.pid !== pid) continue;
       if (expectedMemory && channel.memory !== expectedMemory) continue;
       if (
@@ -11229,16 +12766,13 @@ export class CentralizedKernelWorker {
       if (state.notified) continue;
       state.notified = true;
       try {
-        const view = new Int32Array(
-          channel.memory.buffer,
-          channel.channelOffset,
-        );
-        // Omit the count so duplicate waitAsync registrations, if introduced
-        // by a future listener bug, cannot leave one Promise retaining Memory.
-        Atomics.notify(view, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
-      } catch {
-        // A detached or otherwise invalid retired buffer has no live waiter.
-        this.acknowledgeRetiredChannelListener(channel);
+        const observations = this.pendingChannelNativeObservations.get(channel);
+        if (!observations?.size) throw new MemoryGroupProtocolFault('Pending channel listener lost its native observation');
+        for (const observation of observations) observation.wake();
+      } catch (cause) {
+        state.notified = false;
+        // A failed wake cannot prove engine settlement or release its backing.
+        throw cause;
       }
     }
     return Promise.all(settlements).then(() => {});
@@ -11262,7 +12796,8 @@ export class CentralizedKernelWorker {
   }
 
   private acknowledgeRetiredChannelListener(channel: ChannelInfo): void {
-    if ((this.pendingChannelListenerCounts?.get(channel) ?? 0) !== 0) return;
+    if ((this.pendingChannelListenerCounts?.get(channel) ?? 0) !== 0
+        || (this.pendingChannelNativeObservations.get(channel)?.size ?? 0) !== 0) return;
     (this.retiredChannelListeners ??= new Set()).delete(channel);
     const state = this.retiredChannelSettlements?.get(channel);
     if (!state) return;
@@ -11306,6 +12841,8 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(channel.pid);
     return !(this.retiredChannelListeners?.has(channel) ?? false)
       && registration !== undefined
+      && registration.memory === channel.memory
+      && registration.source === channel.source
       && registration.channels.includes(channel);
   }
 
@@ -11418,16 +12955,54 @@ export class CentralizedKernelWorker {
    * Start a prepared process/thread Worker only when the authoritative kernel
    * Process is runnable. Fork/spawn/exec setup may register memory and return
    * to its caller while stopped; the constructor itself is retained here so
-   * no guest instruction can execute before SIGCONT. `expectedMemory` is the
-   * generation token that prevents a deferred closure from attaching to a
-   * later exec image for the same persistent PID.
+   * no guest instruction can execute before SIGCONT. Native callers identify
+   * their Memory; virtual callers must also name their exact image source.
+   * Deferred constructors retain the selected registration and source, so a
+   * replacement sharing the backing cannot inherit the old constructor.
    */
+  /** Capability-bound form of the ordinary runnable gate. No physical
+   * Memory identity can select another grouped image's constructor. */
+  startMemoryGroupProcessWorkerWhenRunnable(handle: PreparedGroupReplica, start: () => void,
+    cancel: () => void, onStartError?: (error: unknown) => boolean): ProcessWorkerStartDisposition {
+    let result: ProcessWorkerStartDisposition = 'stale';
+    this.#runImmediateKernelEntry('start exact grouped process Worker', entry => {
+      const store = this.#memoryGroupReplicas.get(handle);
+      const registration = store && this.processes.get(store.receipt(handle).pid);
+      if (!registration || registration.grouped?.handle !== handle) {
+        entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
+      }
+      result = this.#startProcessWorkerWhenRunnableWithinKernelEntry(registration.pid, registration.memory,
+        start, cancel, onStartError, entry, registration.source);
+      return undefined;
+    });
+    return result;
+  }
+
+  startMemoryGroupThreadWorkerWhenRunnable(handle: PreparedGroupReplica, start: () => void,
+    cancel: () => void, onStartError?: (error: unknown) => boolean): ProcessWorkerStartDisposition {
+    let result: ProcessWorkerStartDisposition = 'stale';
+    this.#runImmediateKernelEntry('start exact grouped thread Worker', entry => {
+      const store = this.#memoryGroupReplicas.get(handle), receipt = store?.receipt(handle);
+      const registration = receipt && this.processes.get(receipt.pid);
+      if (!store || !receipt || receipt.tid === receipt.pid || !registration?.grouped
+          || registration.grouped.store !== store || registration.source !== store.imageSource(handle)
+          || typeof this.#exactMemoryGroupReceiptWithinKernelEntry(receipt, entry) === 'number') {
+        entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
+      }
+      result = this.#startProcessWorkerWhenRunnableWithinKernelEntry(receipt.pid, registration.memory,
+        start, cancel, onStartError, entry, registration.source);
+      return undefined;
+    });
+    return result;
+  }
+
   startProcessWorkerWhenRunnable(
     pid: number,
     expectedMemory: WebAssembly.Memory,
     start: () => void,
     cancel: () => void,
     onStartError?: (error: unknown) => boolean,
+    expectedSource?: ProcessMemorySource,
   ): ProcessWorkerStartDisposition {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -11444,6 +13019,7 @@ export class CentralizedKernelWorker {
           cancel,
           onStartError,
           entry,
+          expectedSource,
         );
       },
     );
@@ -11460,9 +13036,12 @@ export class CentralizedKernelWorker {
     cancel: () => void,
     onStartError: ((error: unknown) => boolean) | undefined,
     entry: KernelWorkerEntryContext,
+    expectedSource?: ProcessMemorySource,
   ): ProcessWorkerStartDisposition {
     const registration = this.processes.get(pid);
-    if (!registration || registration.memory !== expectedMemory) {
+    if (!registration || registration.memory !== expectedMemory
+      || (expectedSource !== undefined && registration.source !== expectedSource)
+      || (registration.source instanceof GroupProcessAddressSpace && expectedSource === undefined)) {
       entry.deferProtocolEffect(() => {
         cancel();
         return undefined;
@@ -11492,6 +13071,8 @@ export class CentralizedKernelWorker {
       this.stoppedPids.add(pid);
       const entry: DeferredProcessWorkerStart = {
         expectedMemory,
+        expectedRegistration: registration,
+        expectedSource: registration.source,
         start,
         cancel,
         onStartError,
@@ -11752,6 +13333,15 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Terminal reporting only: completion/rollback callbacks above still own
+   * fresh ingress. This observer neither enters Rust nor publishes a mailbox,
+   * and must also consume a rejection after that ingress has failed the gate. */
+  #observeProtocolCompletionFailure(completion: Promise<unknown>): void {
+    kernelEntryIntrinsicApply(this.#promiseThen, completion, [undefined, (cause: unknown) => {
+      this.#failKernelInstance(kernelEntryEffectFailure('protocol completion failed', cause));
+    }]);
+  }
+
   #continuePromise<T>(
     promise: Promise<T>,
     onFulfilled: (value: T) => unknown,
@@ -11783,6 +13373,16 @@ export class CentralizedKernelWorker {
     ) as Promise<Awaited<T>>;
   }
 
+  /** Refresh the exact mailbox word on both address-space backends. */
+  private loadChannelStatus(channel: ChannelInfo): number {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      return channel.source.atomicLoadI32(channel.channelOffset + CH_STATUS);
+    }
+    // Preserve the ordinary view for remaining native channel consumers.
+    channel.i32View = new Int32Array(channel.source.buffer, channel.channelOffset);
+    return Atomics.load(channel.i32View, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
+  }
+
   /**
    * Listen for a syscall on a channel using Atomics.waitAsync.
    * When the process sets status to PENDING, we handle the syscall.
@@ -11799,17 +13399,8 @@ export class CentralizedKernelWorker {
     if ((this.pendingChannelListenerCounts?.get(channel) ?? 0) !== 0) return;
     if (!this.#terminalProcessTeardown && this.deferChannelWhileStopped(channel)) return;
 
-    // Re-create Int32Array view in case memory was grown
-    const i32View = new Int32Array(
-      channel.memory.buffer,
-      channel.channelOffset,
-    );
-    channel.i32View = i32View;
-
-    const statusIndex = CH_STATUS / Int32Array.BYTES_PER_ELEMENT;
-
-    // Check if already pending (process might have sent before we started listening)
-    const currentStatus = Atomics.load(i32View, statusIndex);
+    const statusAddress = channel.channelOffset + CH_STATUS;
+    const currentStatus = this.loadChannelStatus(channel);
 
     if (currentStatus === CH_PENDING) {
       // Handle the syscall. In browser mode (relistenBatchSize=1), defer via
@@ -11838,10 +13429,18 @@ export class CentralizedKernelWorker {
     // After a syscall completes, the process resets status COMPLETE→IDLE,
     // then on its next syscall sets IDLE→PENDING. We need to handle all
     // transitions, not just IDLE→PENDING.
-    const waitResult = Atomics.waitAsync(i32View, statusIndex, currentStatus);
+    const observation = prepareProcessNativeObservationI32(channel.source, statusAddress);
+    const observations = this.pendingChannelNativeObservations.get(channel) ?? new Set<NativeI32Observation>();
+    this.pendingChannelNativeObservations.set(channel, observations); observations.add(observation);
+    this.beginChannelListenerWait(channel);
+    let waitResult;
+    try { waitResult = observation.arm(currentStatus); }
+    catch (cause) {
+      this.#failKernelInstance(kernelEntryEffectFailure(`channel observer arming pid=${channel.pid} failed`, cause));
+      return;
+    }
 
     if (waitResult.async) {
-      this.beginChannelListenerWait(channel);
       let retiredWhenSettled = false;
       this.#continueWaitAsyncListenerRoot(
         waitResult.value,
@@ -11854,6 +13453,9 @@ export class CentralizedKernelWorker {
           this.listenOnChannel(channel);
         },
         () => {
+          if (!observation.settled) throw new MemoryGroupProtocolFault('Native channel wait has not actually settled');
+          observations.delete(observation);
+          if (!observations.size) this.pendingChannelNativeObservations.delete(channel);
           const finalListener = this.finishChannelListenerWait(channel);
           retiredWhenSettled =
             this.retiredChannelListeners?.has(channel) === true;
@@ -11863,6 +13465,9 @@ export class CentralizedKernelWorker {
         },
       );
     } else {
+      observations.delete(observation);
+      if (!observations.size) this.pendingChannelNativeObservations.delete(channel);
+      this.finishChannelListenerWait(channel);
       // Synchronous result — status already changed from what we expected
       // Re-check on next tick to avoid stack overflow from tight loops
       this.relistenChannel(channel);
@@ -11904,8 +13509,16 @@ export class CentralizedKernelWorker {
   }
 
   /** Read a null-terminated C string from process memory */
-  private readCString(memory: WebAssembly.Memory, ptr: number, maxLen = 256): string {
+  private readCString(memory: ProcessMemorySource, ptr: number, maxLen = 256): string {
     if (ptr === 0) return "(null)";
+    if (memory instanceof GroupProcessAddressSpace) {
+      try {
+        const captured = captureProcessRead(memory);
+        const length = Math.max(0, Math.min(maxLen, captured.byteLength - ptr));
+        const nul = captured.findZero(ptr, length);
+        return new TextDecoder().decode(captured.readBytes(ptr, nul < 0 ? length : nul));
+      } catch { return "<unreadable>"; }
+    }
     const mem = new Uint8Array(memory.buffer);
     let len = 0;
     while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
@@ -11917,8 +13530,14 @@ export class CentralizedKernelWorker {
     return new TextDecoder().decode(copy);
   }
 
-  private readBytesPreview(memory: WebAssembly.Memory, ptr: number, len: number, maxLen = 160): string {
+  private readBytesPreview(memory: ProcessMemorySource, ptr: number, len: number, maxLen = 160): string {
     if (ptr === 0 || len <= 0) return "";
+    if (memory instanceof GroupProcessAddressSpace) {
+      try {
+        const length = Math.max(0, Math.min(len, maxLen, memory.byteLength - ptr));
+        return new TextDecoder("utf-8", { fatal: false }).decode(memory.readBytes(ptr, length));
+      } catch { return "<unreadable>"; }
+    }
     const mem = new Uint8Array(memory.buffer);
     const capped = Math.max(0, Math.min(len, maxLen, mem.length - ptr));
     if (capped <= 0) return "";
@@ -11927,9 +13546,9 @@ export class CentralizedKernelWorker {
     return new TextDecoder("utf-8", { fatal: false }).decode(copy);
   }
 
-  private formatPollFds(memory: WebAssembly.Memory, ptr: number, nfds: number): string {
+  private formatPollFds(memory: ProcessMemorySource, ptr: number, nfds: number): string {
     if (ptr === 0 || nfds <= 0) return "";
-    const view = new DataView(memory.buffer);
+    const view = processDataView(memory);
     const entries: string[] = [];
     const capped = Math.min(nfds, 8);
     for (let i = 0; i < capped; i++) {
@@ -11965,33 +13584,33 @@ export class CentralizedKernelWorker {
     // Decode args based on syscall type
     switch (syscallNr) {
       case ABI_SYSCALLS.Open: // open(path, flags, mode)
-        return `[${pid}${tidSuffix}] open("${this.readCString(channel.memory, args[0])}", 0x${(args[1] >>> 0).toString(16)}, 0o${(args[2] >>> 0).toString(8)})`;
+        return `[${pid}${tidSuffix}] open("${this.readCString(channel.source, args[0])}", 0x${(args[1] >>> 0).toString(16)}, 0o${(args[2] >>> 0).toString(8)})`;
       case ABI_SYSCALLS.Openat: // openat(dirfd, path, flags, mode)
-        return `[${pid}${tidSuffix}] openat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[2] >>> 0).toString(16)}, 0o${(args[3] >>> 0).toString(8)})`;
+        return `[${pid}${tidSuffix}] openat(${args[0]}, "${this.readCString(channel.source, args[1])}", 0x${(args[2] >>> 0).toString(16)}, 0o${(args[3] >>> 0).toString(8)})`;
       case ABI_SYSCALLS.Stat: // stat(path, buf)
-        return `[${pid}${tidSuffix}] stat("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] stat("${this.readCString(channel.source, args[0])}")`;
       case ABI_SYSCALLS.Lstat: // lstat(path, buf)
-        return `[${pid}${tidSuffix}] lstat("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] lstat("${this.readCString(channel.source, args[0])}")`;
       case ABI_SYSCALLS.Fstatat: // fstatat(dirfd, path, buf, flags)
-        return `[${pid}${tidSuffix}] fstatat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[3] >>> 0).toString(16)})`;
+        return `[${pid}${tidSuffix}] fstatat(${args[0]}, "${this.readCString(channel.source, args[1])}", 0x${(args[3] >>> 0).toString(16)})`;
       case ABI_SYSCALLS.Access: // access(path, mode)
-        return `[${pid}${tidSuffix}] access("${this.readCString(channel.memory, args[0])}", ${args[1]})`;
+        return `[${pid}${tidSuffix}] access("${this.readCString(channel.source, args[0])}", ${args[1]})`;
       case ABI_SYSCALLS.Faccessat: // faccessat(dirfd, path, mode, flags)
-        return `[${pid}${tidSuffix}] faccessat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[2]})`;
+        return `[${pid}${tidSuffix}] faccessat(${args[0]}, "${this.readCString(channel.source, args[1])}", ${args[2]})`;
       case ABI_SYSCALLS.Chdir: // chdir(path)
-        return `[${pid}${tidSuffix}] chdir("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] chdir("${this.readCString(channel.source, args[0])}")`;
       case ABI_SYSCALLS.Opendir: // opendir(path)
-        return `[${pid}${tidSuffix}] opendir("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] opendir("${this.readCString(channel.source, args[0])}")`;
       case ABI_SYSCALLS.Readlink: // readlink(path, buf, bufsiz)
-        return `[${pid}${tidSuffix}] readlink("${this.readCString(channel.memory, args[0])}", ${args[2]})`;
+        return `[${pid}${tidSuffix}] readlink("${this.readCString(channel.source, args[0])}", ${args[2]})`;
       case ABI_SYSCALLS.Readlinkat: // readlinkat(dirfd, path, buf, bufsiz)
-        return `[${pid}${tidSuffix}] readlinkat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[3]})`;
+        return `[${pid}${tidSuffix}] readlinkat(${args[0]}, "${this.readCString(channel.source, args[1])}", ${args[3]})`;
       case ABI_SYSCALLS.Realpath: // realpath(path, buf, bufsiz)
-        return `[${pid}${tidSuffix}] realpath("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] realpath("${this.readCString(channel.source, args[0])}")`;
       case ABI_SYSCALLS.Read: // read(fd, buf, count)
         return `[${pid}${tidSuffix}] read(${args[0]}, ${args[2]})`;
       case ABI_SYSCALLS.Write: // write(fd, buf, count)
-        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]}, ${JSON.stringify(this.readBytesPreview(channel.memory, args[1], args[2]))})`;
+        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]}, ${JSON.stringify(this.readBytesPreview(channel.source, args[1], args[2]))})`;
       case ABI_SYSCALLS.Close: // close(fd)
         return `[${pid}${tidSuffix}] close(${args[0]})`;
       case ABI_SYSCALLS.Fstat: // fstat(fd, buf)
@@ -12015,14 +13634,14 @@ export class CentralizedKernelWorker {
       case ABI_SYSCALLS.Brk: // brk(addr)
         return `[${pid}${tidSuffix}] brk(0x${args[0].toString(16)})`;
       case HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE: // execve(path, argv, envp)
-        return `[${pid}${tidSuffix}] execve("${this.readCString(channel.memory, args[0])}")`;
+        return `[${pid}${tidSuffix}] execve("${this.readCString(channel.source, args[0])}")`;
       case HOST_INTERCEPTED_SYSCALLS.SYS_FORK: return `[${pid}${tidSuffix}] fork()`;
       case HOST_INTERCEPTED_SYSCALLS.SYS_VFORK: return `[${pid}${tidSuffix}] vfork()`;
       case ABI_SYSCALLS.Clone: // clone(flags, stack, ptid, tls, ctid)
         return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
       case ABI_SYSCALLS.Exit: return `[${pid}${tidSuffix}] exit(${args[0]})`;
       case ABI_SYSCALLS.Poll: // poll(fds, nfds, timeout)
-        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]}, [${this.formatPollFds(channel.memory, args[0], args[1])}])`;
+        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]}, [${this.formatPollFds(channel.source, args[0], args[1])}])`;
       case ABI_SYSCALLS.Ioctl: // ioctl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
       default:
@@ -12081,6 +13700,12 @@ export class CentralizedKernelWorker {
   ): FrozenChannelRequest | null {
     const active = this.activeChannelRequests.get(channel);
     if (active) {
+      const grouped = this.pendingGroupImageOperations.get(channel);
+      if (grouped) {
+        if (grouped.kind === 'fork') this.#advanceGroupFork(grouped, entry);
+        else this.#advanceGroupMapping(grouped, entry);
+        return null;
+      }
       const entropy = this.pendingEntropyReads.get(channel);
       if (entropy) {
         if (this.#completeTerminalTeardownChannel(channel, entry)
@@ -12092,10 +13717,7 @@ export class CentralizedKernelWorker {
       return active;
     }
 
-    const processView = new DataView(
-      channel.memory.buffer,
-      channel.channelOffset,
-    );
+    const processView = processDataView(channel.source, channel.channelOffset);
     const syscallNr = processView.getUint32(CH_SYSCALL, true);
     const requestFlags = processView.getUint32(CH_REQUEST_FLAGS, true);
     processView.setUint32(CH_REQUEST_FLAGS, 0, true);
@@ -12168,7 +13790,7 @@ export class CentralizedKernelWorker {
     if (this.deferChannelWhileStopped(channel)) return;
     try {
       if (PROFILING) {
-        const pv = new DataView(channel.memory.buffer, channel.channelOffset);
+        const pv = processDataView(channel.source, channel.channelOffset);
         const nr = pv.getUint32(CH_SYSCALL, true);
         const start = performance.now();
         this.#handleSyscallInner(channel, entry);
@@ -12437,7 +14059,14 @@ export class CentralizedKernelWorker {
         `${purpose} requires one exact process-owned main channel`,
       );
     }
-    const buffer = kernelEntryMemoryBuffer(registration.memory);
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      if (channel.channelOffset > channel.source.byteLength - CH_TOTAL_SIZE
+          || channel.source.atomicLoadI32(channel.channelOffset + CH_STATUS) !== CH_PENDING) {
+        throw new TypeError(`${purpose} main channel is outside its image or not pending`);
+      }
+      return channel;
+    }
+    const buffer = kernelEntryMemoryBuffer(channel.source);
     if (channel.channelOffset > buffer.byteLength - CH_TOTAL_SIZE) {
       throw new TypeError(
         `${purpose} main channel is outside process Memory`,
@@ -12591,6 +14220,7 @@ export class CentralizedKernelWorker {
         channel: {
           pid,
           memory,
+          source: registration.source,
           channelOffset,
           i32View: new KernelEntryIntrinsicInt32Array(
             memoryBuffer,
@@ -12685,17 +14315,7 @@ export class CentralizedKernelWorker {
         ) {
           return;
         }
-        const i32View = new Int32Array(
-          channel.memory.buffer,
-          channel.channelOffset,
-        );
-        channel.i32View = i32View;
-        if (
-          Atomics.load(
-            i32View,
-            CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-          ) !== CH_PENDING
-        ) {
+        if (this.loadChannelStatus(channel) !== CH_PENDING) {
           // A duplicate notification can remain queued after another path
           // publishes this mailbox. It no longer owns work and must not leave
           // polling mode permanently convinced that a handler is active.
@@ -12863,10 +14483,7 @@ export class CentralizedKernelWorker {
     channel.waitHandle = undefined;
     channel.pollSigmaskSwapped = undefined;
 
-    const processView = new DataView(
-      channel.memory.buffer,
-      channel.channelOffset,
-    );
+    const processView = processDataView(channel.source, channel.channelOffset);
     const syscallNr = processView.getUint32(CH_SYSCALL, true);
 
     if (syscallNr === SYS_EXIT || syscallNr === SYS_EXIT_GROUP) {
@@ -12893,7 +14510,7 @@ export class CentralizedKernelWorker {
     // here. Retire only this old host match before its terminal marker: a
     // previously queued park result must not erase it or publish again.
     channel.kernelWaitGeneration = undefined;
-    const view = new DataView(channel.memory.buffer, channel.channelOffset);
+    const view = processDataView(channel.source, channel.channelOffset);
     view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
     view.setUint32(CH_SIG_HANDLER, 0, true);
     view.setUint32(CH_SIG_SI_CODE, EXIT_RETIRE_SIGNAL_CODE, true);
@@ -12919,10 +14536,7 @@ export class CentralizedKernelWorker {
     for (const channel of registration.channels) {
       if (channel === initiatingChannel) continue;
       this.discardStoppedChannelState(channel);
-      const status = Atomics.load(
-        new Int32Array(channel.memory.buffer, channel.channelOffset),
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-      );
+      const status = this.loadChannelStatus(channel);
       if (status === CH_PENDING) this.handleExitedProcessChannel(channel, entry);
     }
   }
@@ -12960,11 +14574,8 @@ export class CentralizedKernelWorker {
     // that carried this notification. A concurrent memory.grow may replace the
     // Memory.buffer getter result, but must not splice a newer range proof onto
     // bytes read from this older view.
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(
-      processMem.buffer,
-      processMem.byteOffset + channel.channelOffset,
-    );
+    const processMem = captureProcessRead(channel.source);
+    const processView = processMem.dataView(channel.channelOffset, CH_DATA);
 
     // Production capture freezes the syscall number beside its request flags.
     // WHY: a stopped or retried mailbox must not pair a later live syscall
@@ -13065,6 +14676,13 @@ export class CentralizedKernelWorker {
         origArgs,
         diagnosticArgs,
       );
+    }
+
+    if (channel.source instanceof GroupProcessAddressSpace
+        && (syscallNr === SYS_MMAP || syscallNr === SYS_MUNMAP || syscallNr === SYS_MPROTECT
+          || syscallNr === SYS_MREMAP || syscallNr === SYS_BRK)) {
+      this.#beginGroupMapping(channel, syscallNr, adjustedArgs, entry);
+      return;
     }
 
     // Separate Wasm memories cannot observe MAP_SHARED/SysV writes directly.
@@ -13207,9 +14825,9 @@ export class CentralizedKernelWorker {
     if (
       ((syscallNr === SYS_READ || syscallNr === SYS_WRITE
         || syscallNr === SYS_PREAD || syscallNr === SYS_PWRITE)
-        && (origArgs[2] ?? 0) > CH_DATA_SIZE)
+        && ((origArgs[2] ?? 0) > CH_DATA_SIZE || channel.source instanceof GroupProcessAddressSpace))
       || (syscallNr === ABI_SYSCALLS.Getrandom
-        && BigInt.asUintN(64, rawArgs[1] ?? 0n) > BigInt(CH_DATA_SIZE))
+        && (BigInt.asUintN(64, rawArgs[1] ?? 0n) > BigInt(CH_DATA_SIZE) || channel.source instanceof GroupProcessAddressSpace))
     ) {
       try {
         const random = syscallNr === ABI_SYSCALLS.Getrandom;
@@ -13549,14 +15167,14 @@ export class CentralizedKernelWorker {
           }
           continue;
         }
-        capturedDerefU32Inputs[desc.size.argIndex] = {
-          processPointer: derefPtr,
-          value: new DataView(
-            processMem.buffer,
-            processMem.byteOffset,
-            processMem.byteLength,
-          ).getUint32(derefPtr, true),
-        };
+        let value: number;
+        try {
+          value = processMem.dataView(derefPtr, 4).getUint32(0, true);
+        } catch {
+          this.completeChannel(channel, syscallNr, origArgs, undefined, -1, EFAULT, [], undefined, entry);
+          return;
+        }
+        capturedDerefU32Inputs[desc.size.argIndex] = { processPointer: derefPtr, value };
       }
 
       // Resolve every Deref capacity before descriptor-order-dependent
@@ -13921,6 +15539,14 @@ export class CentralizedKernelWorker {
             pointerWidth,
             `syscall ${syscallNr} arg ${desc.argIndex} data`,
           );
+          if (channel.source instanceof GroupProcessAddressSpace) {
+            if (desc.direction === "in" || desc.direction === "inout") {
+              channel.source.checkAccessRange(ptr, size, "read");
+            }
+            if (desc.direction === "out" || desc.direction === "inout") {
+              checkProcessWriteRange(channel.source, ptr, size);
+            }
+          }
         } catch {
           if (deferSchedGetaffinityOutputError) {
             // Linux resolves the requested task before copying its affinity
@@ -13973,7 +15599,7 @@ export class CentralizedKernelWorker {
               true,
             );
           } else {
-            inputBytes = processMem.slice(ptr, ptr + size);
+            inputBytes = processMem.readBytes(ptr, size);
           }
         }
         const plannedArg: PlannedChannelScratchArg = {
@@ -14078,11 +15704,7 @@ export class CentralizedKernelWorker {
             pointerWidth,
             "ppoll timeout",
           );
-          const pv = new DataView(
-            processMem.buffer,
-            processMem.byteOffset + range.pointer,
-            range.length,
-          );
+          const pv = processMem.dataView(range.pointer, range.length);
           const sec = Number(pv.getBigInt64(0, true));
           const nsec = Number(pv.getBigInt64(8, true));
           // POSIX/Linux: a negative tv_sec or a tv_nsec outside
@@ -14113,11 +15735,7 @@ export class CentralizedKernelWorker {
             pointerWidth,
             "ppoll signal mask",
           );
-          const pv = new DataView(
-            processMem.buffer,
-            processMem.byteOffset + range.pointer,
-            range.length,
-          );
+          const pv = processMem.dataView(range.pointer, range.length);
           adjustedArgs[3] = 1; // has_mask = true
           adjustedArgs[4] = pv.getUint32(0, true); // mask_lo
           adjustedArgs[5] = pv.getUint32(4, true); // mask_hi
@@ -14413,6 +16031,13 @@ export class CentralizedKernelWorker {
         retryForbiddenByCallFlags,
         readinessTimeoutMs,
       };
+      if (channel.source instanceof GroupProcessAddressSpace && isOwnedResourceDispatch(plannedDispatch)) {
+        const action = ownedResourceInput(plannedDispatch).getUint32(4, true);
+        if (action === OWNED_RESOURCE_MMAP || action === OWNED_RESOURCE_MMAP_EXACT || action === OWNED_RESOURCE_UNMAP_EXACT) {
+          this.#beginGroupMapping(channel, syscallNr, adjustedArgs, entry, plannedDispatch);
+          return;
+        }
+      }
       let kernelResult: PlannedChannelDispatchResult;
       try {
         kernelResult = this.#executePlannedBlockingChannelDispatch(
@@ -14521,6 +16146,7 @@ export class CentralizedKernelWorker {
         // that, or a signal that was already pending for this thread.
         if (logging) console.error(logEntry + " = (parked in kernel)");
         channel.kernelWaitGeneration = Number(kernelResult.rawRetVal);
+        this.#observeSyscallBlocked(channel, syscallNr, origArgs[0], 'kernel', entry);
         const identity = this.#cancellationPointIdentity(channel);
         if (
           identity.cancellationPoint
@@ -14612,6 +16238,7 @@ export class CentralizedKernelWorker {
           this.ensureProcessMemoryCovers(
             channel.pid,
             channel.memory,
+            channel.source,
             syscallNr,
             retVal,
             origArgs,
@@ -14642,7 +16269,7 @@ export class CentralizedKernelWorker {
               return;
             }
             fileSharedMmapPreparation = null;
-            if (err instanceof RangeError && channel.memory.buffer.byteLength < retVal + origArgs[1]) {
+            if (err instanceof RangeError && processMemoryByteLength(channel.source) < retVal + origArgs[1]) {
               retVal = -1;
               publicationRetVal = -1;
               errVal = ENOMEM;
@@ -15133,7 +16760,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     syscallNr: number,
     origArgs: number[],
-    processMem: Uint8Array,
+    processMem: CapturedProcessRead,
     logEntry: string,
     entry: KernelWorkerEntryContext,
   ): void {
@@ -15146,10 +16773,7 @@ export class CentralizedKernelWorker {
     // that snapshot, so the length the kernel reads is the length copied even
     // if the guest rewrites its channel meanwhile. An out-of-range length is
     // clamped only to bound the copy; the kernel refuses the record.
-    const recordHeader = processMem.slice(
-      recordStart,
-      recordStart + RECORD_HEADER_BYTES,
-    );
+    const recordHeader = processMem.readBytes(recordStart, RECORD_HEADER_BYTES);
     const declaredLength = new DataView(
       recordHeader.buffer,
       recordHeader.byteOffset,
@@ -15159,7 +16783,7 @@ export class CentralizedKernelWorker {
       Math.max(declaredLength, RECORD_HEADER_BYTES),
       RECORD_INLINE_BUDGET,
     );
-    const recordIn = processMem.slice(recordStart, recordStart + recordLength);
+    const recordIn = processMem.readBytes(recordStart, recordLength);
     recordIn.set(recordHeader, 0);
 
     let rawRetVal = -1n;
@@ -15245,7 +16869,7 @@ export class CentralizedKernelWorker {
       // Re-fetch the process view: a coherence sync inside the kernel entry
       // could have replaced Memory.buffer. Record-eligible syscalls never grow
       // process memory, but this stays correct if that ever changes.
-      new Uint8Array(channel.memory.buffer).set(recordOut, recordStart);
+      writeProcessBytes(channel.source, recordStart, recordOut);
     }
 
     const { publicationRetVal, errVal: normErr } =
@@ -15286,10 +16910,7 @@ export class CentralizedKernelWorker {
     suppressRestart = false,
   ): number {
     const requestFlags = this.activeChannelRequests.get(channel)?.requestFlags
-      ?? new DataView(
-        channel.memory.buffer,
-        channel.channelOffset,
-      ).getUint32(CH_REQUEST_FLAGS, true);
+      ?? processDataView(channel.source, channel.channelOffset).getUint32(CH_REQUEST_FLAGS, true);
     if (
       (requestFlags & CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY) !== 0
     ) {
@@ -15302,10 +16923,7 @@ export class CentralizedKernelWorker {
     }
     const preparedSignals = this.resumePreparedSignals;
     if (preparedSignals?.has(channel)) {
-      const channelView = new DataView(
-        channel.memory.buffer,
-        channel.channelOffset,
-      );
+      const channelView = processDataView(channel.source, channel.channelOffset);
       const existingSignal = channelView.getUint32(CH_SIG_SIGNUM, true);
       if (existingSignal > 0 && suppressRestart) {
         channelView.setUint32(
@@ -15391,20 +17009,12 @@ export class CentralizedKernelWorker {
       }
       // Copy the complete generated signal-delivery wire into its reserved
       // process-channel slot.
-      const processMem = new Uint8Array(channel.memory.buffer);
-      processMem.set(
-        bytes,
-        channel.channelOffset + CH_SIG_BASE,
-      );
+      writeProcessBytes(channel.source, channel.channelOffset + CH_SIG_BASE, bytes);
       return sigResult;
     } else {
       // Clear the complete reserved area, including its trailing pad.
       const sigStart = channel.channelOffset + CH_SIG_BASE;
-      new Uint8Array(
-        channel.memory.buffer,
-        sigStart,
-        CH_SIG_AREA_SIZE,
-      ).fill(0);
+      fillProcessBytes(channel.source, sigStart, CH_SIG_AREA_SIZE, 0);
       return 0;
     }
   }
@@ -15596,7 +17206,19 @@ export class CentralizedKernelWorker {
     }
 
     channel.handling = false;
-    const buffer = kernelEntryMemoryBuffer(channel.memory);
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      const bytes = new Uint8Array(CH_ERRNO + 4 - CH_RETURN);
+      const result = new DataView(bytes.buffer);
+      result.setBigInt64(0, KernelEntryIntrinsicBigInt(prepared.retVal), true);
+      result.setUint32(CH_ERRNO - CH_RETURN, prepared.errVal, true);
+      this.resumePreparedSignals?.delete(channel);
+      this.#noteGuestMayRun(channel.source);
+      channel.source.publishBytes(channel.channelOffset + CH_RETURN, bytes,
+        channel.channelOffset + CH_STATUS, CH_COMPLETE, 1);
+      if (prepared.relistenRequested && this.isRegisteredChannel(channel)) this.relistenChannel(channel);
+      return;
+    }
+    const buffer = kernelEntryMemoryBuffer(channel.source);
     const processView = new KernelEntryIntrinsicDataView(
       buffer,
       channel.channelOffset,
@@ -15615,7 +17237,7 @@ export class CentralizedKernelWorker {
     // The copied signal record now belongs to the guest. A later syscall may
     // dequeue another signal after this boundary has actually been observed.
     this.resumePreparedSignals?.delete(channel);
-    this.#noteGuestMayRun(channel.memory);
+    this.#noteGuestMayRun(channel.source);
     const i32View = new KernelEntryIntrinsicInt32Array(
       buffer,
       channel.channelOffset,
@@ -15643,9 +17265,11 @@ export class CentralizedKernelWorker {
   ): void {
     if (prepared.materialized) return;
 
-    const processMem = new Uint8Array(channel.memory.buffer);
     for (const write of prepared.outputWrites) {
-      processMem.set(write.bytes, write.ptr);
+      checkProcessWriteRange(channel.source, write.ptr, write.bytes.byteLength);
+    }
+    for (const write of prepared.outputWrites) {
+      writeProcessBytes(channel.source, write.ptr, write.bytes);
     }
     prepared.outputWrites = [];
     // The completion's effects on process memory are final here: its output
@@ -15653,7 +17277,7 @@ export class CentralizedKernelWorker {
     // buffers. A stopped process keeps them while its completion stays
     // parked, so the epoch changes now, not only when the completion is
     // published (`CleanStamp` in crates/runtime-core/src/memory.rs).
-    this.#noteGuestMayRun(channel.memory);
+    this.#noteGuestMayRun(channel.source);
 
     try {
       this.synchronizeSharedMemoryForBoundary(channel, "completion", entry);
@@ -15746,10 +17370,7 @@ export class CentralizedKernelWorker {
       // kernel chose and leave this one parked with a handler record.
       if (channel.kernelWaitGeneration !== undefined) continue;
 
-      const channelView = new DataView(
-        channel.memory.buffer,
-        channel.channelOffset,
-      );
+      const channelView = processDataView(channel.source, channel.channelOffset);
       let deliveredSignal = channelView.getUint32(CH_SIG_SIGNUM, true);
       if (deliveredSignal > 0) {
         // A caught signal may already have been attached before the syscall
@@ -15866,6 +17487,8 @@ export class CentralizedKernelWorker {
         const currentRegistration = this.processes.get(pid);
         if (
           !currentRegistration
+          || currentRegistration !== deferredStart.expectedRegistration
+          || currentRegistration.source !== deferredStart.expectedSource
           || currentRegistration.memory !== deferredStart.expectedMemory
         ) {
           deferredStart.cancel();
@@ -15995,10 +17618,7 @@ export class CentralizedKernelWorker {
     }
     if (syscallNr === undefined) {
       try {
-        syscallNr = new DataView(
-          channel.memory.buffer,
-          channel.channelOffset,
-        ).getUint32(CH_SYSCALL, true);
+        syscallNr = processDataView(channel.source, channel.channelOffset).getUint32(CH_SYSCALL, true);
       } catch {
         return false;
       }
@@ -16116,26 +17736,27 @@ export class CentralizedKernelWorker {
    * could not be constructed. The entry layer separately rolls back ThreadInfo,
    * channel, allocator, and Worker registries before this completion publishes.
    */
-  failDeferredCloneLaunch(pid: number, tid: number, errno: number): boolean {
+  failDeferredCloneLaunch(pid: number, tid: number, errno: number,
+    expectedSource?: ProcessMemorySource): boolean {
     for (const [channel, parked] of this.parkedChannelCompletions ?? []) {
       const clone = parked.prepared.deferredClone;
-      if (channel.pid !== pid || clone?.tid !== tid) continue;
+      if (channel.pid !== pid || clone?.tid !== tid || !this.isRegisteredChannel(channel)
+        || (expectedSource !== undefined && channel.source !== expectedSource)
+        || (channel.source instanceof GroupProcessAddressSpace && expectedSource === undefined)) continue;
 
       // WHY: the guest mailbox is mutable while this completion is parked.
       // Clear only the parent-TID address validated for the original clone,
       // never flags/pointers re-read from potentially replaced channel bytes.
       const ptidPtr = clone.parentTidPointer;
       if (ptidPtr !== undefined) {
-        if (
-          !isValidMemoryRange(
-            new Uint8Array(channel.memory.buffer),
-            ptidPtr,
-            4,
-          )
-        ) {
-          return false;
-        }
-        Atomics.compareExchange(new Int32Array(channel.memory.buffer), ptidPtr / 4, tid, 0);
+        try {
+          checkProcessWriteRange(channel.source, ptidPtr, 4);
+          if (channel.source instanceof GroupProcessAddressSpace) {
+            channel.source.atomicCompareExchangeI32(ptidPtr, tid, 0);
+          } else {
+            Atomics.compareExchange(new Int32Array(channel.source.buffer), ptidPtr / 4, tid, 0);
+          }
+        } catch { return false; }
       }
 
       parked.prepared.outputWrites = [];
@@ -16271,6 +17892,14 @@ export class CentralizedKernelWorker {
       cancel(channel.pid, pending.tid, pending.token);
     }
     this.pendingEntropyReads.clear();
+    for (const pending of this.pendingGroupForks.values()) {
+      pending.cancelling = true; pending.suppressCompletion = true;
+      this.#cancelGroupFork(pending, entry);
+    }
+    for (const pending of this.pendingGroupMappings.values()) {
+      pending.cancelling = true; pending.suppressCompletion = true;
+      this.retiringGroupMappings.add(pending); this.#cancelGroupMapping(pending, entry);
+    }
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
@@ -16297,15 +17926,11 @@ export class CentralizedKernelWorker {
         if (includeRunning) this.discardStoppedChannelState(channel);
         let status: number;
         try {
-          const i32 = new Int32Array(channel.memory.buffer, channel.channelOffset);
-          status = Atomics.load(
-            i32,
-            CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-          );
+          status = this.loadChannelStatus(channel);
         } catch { continue; }
         if (status !== CH_PENDING) continue;
         if (includeRunning) {
-          const syscall = new DataView(channel.memory.buffer, channel.channelOffset).getUint32(CH_SYSCALL, true);
+          const syscall = processDataView(channel.source, channel.channelOffset).getUint32(CH_SYSCALL, true);
           if (syscall === SYS_EXIT || syscall === SYS_EXIT_GROUP) {
             entry.deferProtocolEffect(() => {
               this.relistenChannel(channel);
@@ -16332,14 +17957,11 @@ export class CentralizedKernelWorker {
   ): boolean {
     if (!this.#terminalProcessTeardown) return false;
     if (!this.isRegisteredChannel(channel)) return true;
-    const status = Atomics.load(
-      new Int32Array(channel.memory.buffer, channel.channelOffset),
-      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-    );
+    const status = this.loadChannelStatus(channel);
     if (status !== CH_PENDING) return true;
     this.discardStoppedChannelState(channel);
     if (this.handleExitedProcessChannel(channel, entry)) return true;
-    const syscall = new DataView(channel.memory.buffer, channel.channelOffset).getUint32(CH_SYSCALL, true);
+    const syscall = processDataView(channel.source, channel.channelOffset).getUint32(CH_SYSCALL, true);
     if (syscall === SYS_EXIT || syscall === SYS_EXIT_GROUP) return false;
     this.wakeChannelForTeardownExit(channel, entry);
     return true;
@@ -16447,8 +18069,7 @@ export class CentralizedKernelWorker {
     for (const channel of registration.channels) {
       let status: number;
       try {
-        const i32 = new Int32Array(channel.memory.buffer, channel.channelOffset);
-        status = Atomics.load(i32, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
+        status = this.loadChannelStatus(channel);
       } catch { continue; }
       if (status !== CH_PENDING) continue;
       try {
@@ -16475,6 +18096,7 @@ export class CentralizedKernelWorker {
   wakeProcessWorkersForExecRetirement(
     pid: number,
     expectedMemory: WebAssembly.Memory,
+    expectedSource?: ProcessMemorySource,
   ): Set<number> {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -16484,7 +18106,9 @@ export class CentralizedKernelWorker {
     }
     const registration = this.processes.get(pid);
     if (!registration) return new Set<number>();
-    if (registration.memory !== expectedMemory) {
+    if (registration.memory !== expectedMemory
+      || (expectedSource !== undefined && registration.source !== expectedSource)
+      || (registration.source instanceof GroupProcessAddressSpace && expectedSource === undefined)) {
       // A stale entry adapter request is an ordinary generation mismatch, not
       // a kernel failure. Reject it before opening an entry scope so it cannot
       // poison the current kernel generation.
@@ -16498,6 +18122,7 @@ export class CentralizedKernelWorker {
           pid,
           expectedMemory,
           entry,
+          expectedSource,
         );
         return undefined;
       },
@@ -16514,26 +18139,23 @@ export class CentralizedKernelWorker {
     pid: number,
     expectedMemory: WebAssembly.Memory,
     entry: KernelWorkerEntryContext,
+    expectedSource?: ProcessMemorySource,
   ): Set<number> {
     const wokenOffsets = new Set<number>();
     const registration = this.processes.get(pid);
     if (!registration) return wokenOffsets;
-    if (registration.memory !== expectedMemory) {
+    if (registration.memory !== expectedMemory
+      || (expectedSource !== undefined && registration.source !== expectedSource)
+      || (registration.source instanceof GroupProcessAddressSpace && expectedSource === undefined)) {
       throw new Error(
         `Exec retirement generation changed for pid ${pid}`,
       );
     }
     const execCallers = registration.channels.filter((channel) => {
-      if (channel.memory !== expectedMemory) return false;
-      const view = new DataView(
-        expectedMemory.buffer,
-        channel.channelOffset,
-      );
+      if (channel.memory !== expectedMemory || channel.source !== registration.source) return false;
+      const view = processDataView(channel.source, channel.channelOffset);
       const syscall = view.getUint32(CH_SYSCALL, true);
-      const status = Atomics.load(
-        new Int32Array(expectedMemory.buffer, channel.channelOffset),
-        CH_STATUS / 4,
-      );
+      const status = this.loadChannelStatus(channel);
       return status === CH_PENDING
         && (syscall === SYS_EXECVE || syscall === SYS_EXECVEAT);
     });
@@ -16543,20 +18165,13 @@ export class CentralizedKernelWorker {
       );
     }
     for (const channel of registration.channels) {
-      if (channel.memory !== expectedMemory) {
+      if (channel.memory !== expectedMemory || channel.source !== registration.source) {
         throw new Error(
           `Exec retirement found a mixed memory generation for pid ${pid}`,
         );
       }
-      const i32 = new Int32Array(
-        channel.memory.buffer,
-        channel.channelOffset,
-      );
-      if (Atomics.load(i32, CH_STATUS / 4) !== CH_PENDING) continue;
-      const view = new DataView(
-        channel.memory.buffer,
-        channel.channelOffset,
-      );
+      if (this.loadChannelStatus(channel) !== CH_PENDING) continue;
+      const view = processDataView(channel.source, channel.channelOffset);
       // WHY: exec has committed in Rust, but this exact old ChannelInfo can
       // remain registered until its Worker unwinds. Revoke its queued-park
       // match before the marker without cancelling the successor image's TID.
@@ -16615,7 +18230,7 @@ export class CentralizedKernelWorker {
       }
       channel.kernelWaitGeneration = undefined;
     }
-    const pv = new DataView(channel.memory.buffer, channel.channelOffset);
+    const pv = processDataView(channel.source, channel.channelOffset);
     // Queue SIGKILL for the glue's post-syscall __deliver_pending_signal. The
     // syscall handlers may have called dequeueSignalForDelivery, but SIGKILL
     // is never a queued Handler signal, so this slot is ours to set. Zero the
@@ -16738,34 +18353,13 @@ export class CentralizedKernelWorker {
     for (const channel of channels) {
       if (!this.isRegisteredChannel(channel)) continue;
       if (!this.#terminalProcessTeardown && this.stoppedPids?.has(channel.pid)) {
-        const stoppedView = new Int32Array(
-          channel.memory.buffer,
-          channel.channelOffset,
-        );
-        channel.i32View = stoppedView;
-        if (
-          Atomics.load(
-            stoppedView,
-            CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-          ) === CH_PENDING
-        ) {
+        if (this.loadChannelStatus(channel) === CH_PENDING) {
           this.deferChannelWhileStopped(channel);
         }
         continue;
       }
       if (channel.handling) continue;
-      // Re-create view in case memory was grown
-      const i32View = new Int32Array(
-        channel.memory.buffer,
-        channel.channelOffset,
-      );
-      channel.i32View = i32View;
-      if (
-        Atomics.load(
-          i32View,
-          CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-        ) === CH_PENDING
-      ) {
+      if (this.loadChannelStatus(channel) === CH_PENDING) {
         channel.handling = true;
         this.handleSyscall(channel);
       }
@@ -17975,10 +19569,7 @@ export class CentralizedKernelWorker {
         ) {
           return false;
         }
-        const syscallNr = new DataView(
-          channel.memory.buffer,
-          channel.channelOffset,
-        ).getUint32(CH_SYSCALL, true);
+        const syscallNr = processDataView(channel.source, channel.channelOffset).getUint32(CH_SYSCALL, true);
         return syscallNr === SYS_WRITE || syscallNr === SYS_WRITEV;
       });
       if (!writer) continue;
@@ -19318,6 +20909,7 @@ export class CentralizedKernelWorker {
             channel,
             pid: channel.pid,
           });
+          this.#observeSyscallBlocked(channel, syscallNr, origArgs[0], 'pipe-read', entry);
         }
         if (PROFILING) {
           const profile = this.profileData!.get(syscallNr);
@@ -19361,6 +20953,7 @@ export class CentralizedKernelWorker {
             channel,
             pid: channel.pid,
           });
+          this.#observeSyscallBlocked(channel, syscallNr, origArgs[0], 'pipe-write', entry);
         }
         if (PROFILING) {
           const profile = this.profileData!.get(syscallNr);
@@ -19515,6 +21108,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    const grouped = this.pendingGroupImageOperations.get(channel);
+    if (grouped) {
+      if (grouped.kind === 'fork') this.#advanceGroupFork(grouped, entry);
+      else this.#advanceGroupMapping(grouped, entry);
+      return;
+    }
     const entropy = this.pendingEntropyReads.get(channel);
     if (entropy) {
       this.#advanceEntropyRead(channel, entropy, entry);
@@ -19745,7 +21344,7 @@ export class CentralizedKernelWorker {
         EINVAL,
       );
     }
-    const processBytes = new Uint8Array(channel.memory.buffer);
+    const processRead = captureProcessRead(channel.source);
     const captureFdSet = (pointer: number, field: string): Uint8Array | null => {
       if (pointer === 0) return null;
       const range = this.checkedProcessRange(
@@ -19754,7 +21353,8 @@ export class CentralizedKernelWorker {
         SELECT_FD_SET_BYTES,
         field,
       );
-      return processBytes.slice(range.pointer, range.end);
+      checkProcessWriteRange(channel.source, range.pointer, range.length);
+      return processRead.readBytes(range.pointer, range.length);
     };
     const readPointer = origArgs[1];
     const writePointer = origArgs[2];
@@ -19785,11 +21385,7 @@ export class CentralizedKernelWorker {
         timeoutBytes,
         syscallNr === SYS_SELECT ? "select timeout" : "pselect6 timeout",
       );
-      const timeoutView = new DataView(
-        channel.memory.buffer,
-        range.pointer,
-        range.length,
-      );
+      const timeoutView = processRead.dataView(range.pointer, range.length);
       if (syscallNr === SYS_SELECT) {
         const sec = pointerWidth === 8
           ? Number(timeoutView.getBigInt64(0, true))
@@ -19815,11 +21411,7 @@ export class CentralizedKernelWorker {
         pointerWidth === 8 ? 16 : 8,
         "pselect6 mask descriptor",
       );
-      const descriptor = new DataView(
-        channel.memory.buffer,
-        outer.pointer,
-        outer.length,
-      );
+      const descriptor = processRead.dataView(outer.pointer, outer.length);
       const rawMaskPointer = pointerWidth === 8
         ? descriptor.getBigUint64(0, true)
         : descriptor.getUint32(0, true);
@@ -19844,7 +21436,7 @@ export class CentralizedKernelWorker {
           SIGNAL_MASK_BYTES,
           "pselect6 signal mask",
         );
-        maskBytes = processBytes.slice(range.pointer, range.end);
+        maskBytes = processRead.readBytes(range.pointer, range.length);
       }
     }
 
@@ -19996,6 +21588,9 @@ export class CentralizedKernelWorker {
         null,
         entry,
       );
+      if (attempt.read) writeProcessBytes(channel.source, readPtr, attempt.read);
+      if (attempt.write) writeProcessBytes(channel.source, writePtr, attempt.write);
+      if (attempt.except) writeProcessBytes(channel.source, exceptPtr, attempt.except);
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       if (
@@ -20011,10 +21606,6 @@ export class CentralizedKernelWorker {
       return;
     }
     const { retVal, errVal } = attempt;
-    const freshProcessMem = new Uint8Array(channel.memory.buffer);
-    if (attempt.read) freshProcessMem.set(attempt.read, readPtr);
-    if (attempt.write) freshProcessMem.set(attempt.write, writePtr);
-    if (attempt.except) freshProcessMem.set(attempt.except, exceptPtr);
 
     if (this.completeSelectSignalOutcome(
       channel,
@@ -20164,6 +21755,9 @@ export class CentralizedKernelWorker {
         snapshot.maskBytes,
         entry,
       );
+      if (attempt.read) writeProcessBytes(channel.source, readPtr, attempt.read);
+      if (attempt.write) writeProcessBytes(channel.source, writePtr, attempt.write);
+      if (attempt.except) writeProcessBytes(channel.source, exceptPtr, attempt.except);
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       if (!this.#cancelHostOwnedKernelWait(channel, SYS_PSELECT6, entry)) {
@@ -20176,10 +21770,6 @@ export class CentralizedKernelWorker {
       return;
     }
     const { retVal, errVal } = attempt;
-    const freshProcessMem = new Uint8Array(channel.memory.buffer);
-    if (attempt.read) freshProcessMem.set(attempt.read, readPtr);
-    if (attempt.write) freshProcessMem.set(attempt.write, writePtr);
-    if (attempt.except) freshProcessMem.set(attempt.except, exceptPtr);
 
     if (this.completeSelectSignalOutcome(
       channel,
@@ -20388,6 +21978,8 @@ export class CentralizedKernelWorker {
         maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT,
         "epoll output events",
       ).pointer;
+      checkProcessWriteRange(channel.source, eventsPtr,
+        maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT);
       if (syscallNr === SYS_EPOLL_PWAIT) {
         const rawMaskPointer = rawArgs?.[4] ?? BigInt(origArgs[4]);
         if (rawMaskPointer !== 0n) {
@@ -20431,8 +22023,8 @@ export class CentralizedKernelWorker {
               "kernel lacks kernel_swap_poll_sigmask: epoll_pwait's signal mask cannot be honoured",
             );
           }
-          const mask = new DataView(channel.memory.buffer)
-            .getBigUint64(maskPointer, true);
+          const mask = processDataView(channel.source, maskPointer, SIGNAL_MASK_BYTES)
+            .getBigUint64(0, true);
           swapMask(channel.pid, this.guestTidForChannel(channel), mask);
           channel.pollSigmaskSwapped = true;
         }
@@ -20540,7 +22132,11 @@ export class CentralizedKernelWorker {
     // Ready: the kernel wrote the ready epoll_events into the scratch; copy them
     // into the caller's array and return the count.
     if (retVal > 0 && events !== null) {
-      new Uint8Array(channel.memory.buffer).set(events, eventsPtr);
+      try { writeProcessBytes(channel.source, eventsPtr, events); }
+      catch (error) {
+        this.#rejectScratchTransfer(channel, error, entry);
+        return;
+      }
       // Imported-bo coherence: an epoll_wait return is the moment a
       // compositor-style importer wakes to process a client's commit and
       // re-read its long-lived imported wl_shm mappings. Refresh them from
@@ -20641,7 +22237,7 @@ export class CentralizedKernelWorker {
                 // changed argument/header must reach the full protocol path.
                 let unchanged: boolean;
                 {
-                  const view = new DataView(channel.memory.buffer, channel.channelOffset);
+                  const view = processDataView(channel.source, channel.channelOffset);
                   unchanged = view.getUint32(CH_SYSCALL, true) === syscallNr
                     && view.getUint32(CH_REQUEST_FLAGS, true) === 0
                     && frozenArgs.every((arg, index) => arg === view.getBigInt64(
@@ -20691,7 +22287,7 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** Execute only large scalar I/O, with guest addresses in a fixed header. */
+  /** Execute guest-address I/O in a fixed header (all grouped scalar I/O). */
   #executeGuestIo(
     channel: ChannelInfo,
     request: GuestIoRequest,
@@ -20788,6 +22384,626 @@ export class CentralizedKernelWorker {
     }
     this.completeChannel(channel, syscallNr, origArgs, undefined,
       result.retVal, result.errVal, [], undefined, entry);
+  }
+
+  #groupMappingCallerCurrent(pending: PendingGroupImageOperation, entry: KernelWorkerEntryContext): boolean {
+    const { channel, registration, request } = pending;
+    if (this.processes.get(channel.pid) !== registration || channel.source !== registration.source
+        || channel.memory !== registration.memory || !this.isRegisteredChannel(channel)
+        || this.activeChannelRequests.get(channel) !== request || this.hostReaped.has(channel.pid)) return false;
+    // Stop may precede Rust's final generation/registration retirement. A
+    // queued request retains custody, but cannot start or retain a mapping
+    // or fork barrier after this exact image closes execution admission.
+    const group = registration.grouped!;
+    if (group.store.imageStopRequested(group.handle)
+        || this.loadChannelStatus(channel) !== CH_PENDING) return false;
+    const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+    if (generation instanceof KernelTaskBindingError && generation.errno === ESRCH) return false;
+    if (generation instanceof Error) this.#memoryGroupProtocolError("Cannot validate pending mapping generation", generation);
+    return generation === registration.execGeneration;
+  }
+
+  #beginGroupFork(channel: ChannelInfo, args: number[], entry: KernelWorkerEntryContext): void {
+    const previous = this.pendingGroupForks.get(channel);
+    if (previous) { this.#advanceGroupFork(previous, entry); return; }
+    const registration = this.processes.get(channel.pid), request = this.activeChannelRequests.get(channel);
+    const grouped = registration?.grouped, launch = this.callbacks.onGroupedFork;
+    if (!registration || !request || !grouped || !launch || registration.source !== channel.source) {
+      this.#memoryGroupProtocolError('Grouped fork has no exact image/request/backend');
+    }
+    this.#bindKernelTidForChannel(channel, entry);
+    const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(channel.pid, this.guestTidForChannel(channel), registration.execGeneration, entry);
+    if (typeof receipt === 'number' || receipt.group !== grouped.receipt.group) this.#memoryGroupProtocolError('Grouped fork caller has lost its image admission');
+    let finish!: () => void;
+    const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+    const pending: PendingGroupFork = { kind: 'fork', channel, registration, request, receipt, store: grouped.store,
+      args: [...args], launch, finished, finish, predecessor: Array.from(this.pendingGroupImageOperations.values()).reverse().find(other => other.registration === registration && !other.done),
+      launching: false, cancelling: false, suppressCompletion: false, failure: EIO, scheduled: false, done: false };
+    channel.handling = true;
+    this.pendingGroupImageOperations.set(channel, pending);
+    this.pendingGroupForks.set(channel, pending); this.#advanceGroupFork(pending, entry);
+  }
+
+  #advanceGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    if (pending.done || pending.launching || pending.retiringImage) return;
+    if (!this.#groupMappingCallerCurrent(pending, entry)) { pending.cancelling = true; pending.suppressCompletion = true; }
+    if (pending.cancelling) { this.#cancelGroupFork(pending, entry); return; }
+    if (this.deferChannelWhileStopped(pending.channel)) return;
+    while (pending.predecessor?.done) pending.predecessor = pending.predecessor.predecessor;
+    if (pending.predecessor) {
+      if (!pending.scheduled) {
+        const predecessor = pending.predecessor; pending.scheduled = true;
+        entry.deferProtocolEffect(() => {
+          predecessor.finished.then(() => this.#queueGroupForkTurn(pending)).catch(error => this.#failKernelInstance(error));
+        });
+      }
+      return;
+    }
+    if (!pending.barrier) pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle);
+    if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier)) { this.#scheduleGroupFork(pending, 'barrier', entry); return; }
+    if (!pending.allocation) {
+      const extent = pending.store.virtualExtentAtBarrier(pending.barrier);
+      if (typeof extent !== 'number') { this.#scheduleGroupFork(pending, extent === 'waiting' ? 'barrier' : 'locks', entry); return; }
+      const channel = pending.channel, parentPid = channel.pid;
+      try {
+        const forkBufAddr = readForkContinuationAnchor(channel.source, channel.channelOffset - FORK_BUF_SIZE, 4);
+        const thread = this.threadForkContexts.get(`${parentPid}:${channel.channelOffset}`);
+        const continuation: ForkContinuationContext = thread ? { kind: 'thread', fnPtr: thread.fnPtr, argPtr: thread.argPtr,
+          forkBufAddr, slotStart: channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE,
+          slotLen: PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE } : { kind: 'main', forkBufAddr };
+        if (continuation.kind === 'thread') checkedWasmAddressRange(continuation.slotStart, continuation.slotLen, 4, 'grouped fork caller control slot');
+        pending.continuation = continuation;
+      } catch {
+        pending.cancelling = true; pending.failure = EFAULT; this.#cancelGroupFork(pending, entry); return;
+      }
+      const fork = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_fork;
+      if (typeof fork !== 'function') { pending.cancelling = true; pending.failure = ERRNO.EOPNOTSUPP; this.#cancelGroupFork(pending, entry); return; }
+      const r = pending.receipt;
+      const childPid = fork(r.group, r.pid, r.tid, Number(r.serial & 0xffffffffn), Number(r.serial >> 32n),
+        Number(r.generation & 0xffffffffn), Number(r.generation >> 32n), extent);
+      if (!Number.isSafeInteger(childPid) || childPid === 0 || childPid < -4095 || childPid > MAX_KERNEL_TASK_ID) {
+        this.#memoryGroupProtocolError('Invalid grouped fork allocation result');
+      }
+      if (childPid < 0) { pending.cancelling = true; pending.failure = -childPid; this.#cancelGroupFork(pending, entry); return; }
+      const childExecGeneration = this.#processExecGenerationWithinKernelEntry(childPid, entry);
+      if (childExecGeneration instanceof Error) this.#memoryGroupProtocolError('Cannot confirm allocated grouped fork child', childExecGeneration);
+      pending.allocation = { registration: pending.registration, request: pending.request,
+        memory: channel.memory, source: channel.source, origArgs: pending.args,
+        childPid, childExecGeneration, childOwned: true, transferred: false };
+      const childReceipt = this.#readMemoryGroupReceiptWithinKernelEntry(childPid, childPid, childExecGeneration, entry);
+      if (typeof childReceipt === 'number' || childReceipt.group !== r.group) this.#memoryGroupProtocolError('Allocated fork child has no exact group admission');
+      pending.childReceipt = childReceipt;
+      const clear = this.#kernelInstanceForEntry(entry).exports.kernel_clear_fork_child;
+      if (typeof clear !== 'function' || clear(childPid) !== 0) this.#memoryGroupProtocolError('Cannot clear allocated grouped fork child marker');
+      // The grouped MM inherited every reserved control interval; no fresh
+      // all-writable image or ordinary thread-slot reservation may replace it.
+      try { this.inheritHostFdMirrors(parentPid, childPid, entry); }
+      catch (error) {
+        this.#rethrowKernelEntryFatal(error);
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupFork(pending, entry); return;
+      }
+    }
+    const admitted = this.#exactMemoryGroupReceiptWithinKernelEntry(pending.childReceipt!, entry);
+    if (typeof admitted === 'number') { pending.cancelling = true; pending.failure = -admitted; this.#cancelGroupFork(pending, entry); return; }
+    if (!pending.prepared) {
+      let prepared: ReturnType<MemoryGroupImageStore['preparePrivateFork']>;
+      try { prepared = pending.store.preparePrivateFork(pending.barrier, admitted); }
+      catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupFork(pending, entry); return;
+      }
+      if (prepared === 'waiting' || prepared === 'busy') { this.#scheduleGroupFork(pending, prepared === 'waiting' ? 'barrier' : 'pool', entry); return; }
+      if (prepared === 'exhausted') { pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupFork(pending, entry); return; }
+      pending.prepared = prepared; this.#memoryGroupReplicas.set(prepared, pending.store);
+    }
+    this.#launchGroupFork(pending, entry);
+  }
+
+  #launchGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    const state = pending.allocation!, handle = pending.prepared!;
+    pending.launching = true;
+    const reject = (cause: unknown) => {
+      this.#runOrDeferAllocatedForkCompletionKernelEntry(state.childPid, 'grouped fork launch rejection', next => {
+        pending.launching = false; pending.cancelling = true; pending.failure = ENOMEM;
+        next.deferObserverEffect(() => { console.error(`[kernel-worker] grouped fork launch failed: ${String(cause)}`); return undefined; });
+        this.#cancelGroupFork(pending, next); return undefined;
+      }, state);
+    };
+    entry.deferProtocolTransactionStart(() => {
+      let launch: Promise<number[]>;
+      try {
+        launch = this.#resolvePromise(pending.launch({ parentPid: pending.receipt.pid, childPid: state.childPid,
+          parentSource: pending.registration.source as GroupProcessAddressSpace, childReplica: handle, continuation: pending.continuation! }));
+      } catch (cause) { reject(cause); return undefined; }
+      this.#continuePromise(launch, () => {
+        this.#runOrDeferAllocatedForkCompletionKernelEntry(state.childPid, 'grouped fork launch completion', next => {
+          if (!this.#registeredMemoryGroupReplicas.has(handle) || pending.store.isUnexposed(handle)) {
+            this.#memoryGroupProtocolError('Grouped fork callback resolved without child image adoption');
+          }
+          state.transferred = true; state.childOwned = false;
+          pending.launching = false; this.#finishGroupFork(pending, next);
+          try {
+            this.#finalizePendingChildTerminationWithinKernelEntry(state.childPid, next);
+            if (this.#isCurrentForkImageWithinKernelEntry(pending.channel, state, next)) {
+              this.#completeForkWithinKernelEntry(pending.channel, state.origArgs, state.childPid, 0, next);
+            }
+          } catch (cause) { this.#rethrowKernelEntryFatal(cause); this.#rollbackForkWithinKernelEntry(pending.channel, state, cause, next); }
+          return undefined;
+        }, state);
+      }, reject);
+      return undefined;
+    });
+  }
+
+  #finishGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    if (pending.done) return;
+    if (pending.barrier) pending.store.resumeImageExecutionPause(pending.barrier);
+    pending.done = true;
+    if (this.pendingGroupForks.get(pending.channel) === pending) this.pendingGroupForks.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    pending.prepared = undefined; pending.childReceipt = undefined; pending.allocation = undefined;
+    entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+  }
+
+  #cancelGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
+    // A launched callback owns partial Worker publication until it settles.
+    // Parent teardown cannot revoke its child or infer a terminal fence.
+    if (pending.done || pending.launching || pending.retiringImage) return;
+    const state = pending.allocation, receipt = pending.childReceipt, handle = pending.prepared;
+    try {
+      if (receipt) {
+        if (handle && this.#memoryGroupReplicas.get(handle) !== pending.store) {
+          // Callback already consumed exact unconstructed cancellation.
+        } else if (handle && !pending.store.isUnexposed(handle)) {
+          if (pending.store.imageExecutionStopped(handle)) {
+            // Callback rejection has stopped its own realm, but image pages,
+            // listeners and Rust custody must retire before Process removal.
+            // Keep the parent's barrier and failed fork owner until that joins.
+            pending.retiringImage = true;
+            entry.deferProtocolEffect(() => {
+              void (async () => {
+                const status = await retryKernelEntryResult(() => this.retireMemoryGroupImage(handle, () => {}));
+                pending.retiringImage = false;
+                if (status !== 0 && status !== -EBUSY) this.#memoryGroupProtocolError('Cannot retire failed grouped fork image');
+                this.#queueGroupForkTurn(pending);
+              })().catch(error => this.#failKernelInstance(error));
+              return undefined;
+            });
+            return;
+          }
+          this.#quarantineStartedMemoryGroupReplica(pending.store, handle, entry, true);
+          // Never return published storage, including failed Worker launches.
+        } else {
+          const cancel = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+          if (cancel !== 0 && cancel !== -ESRCH) this.#memoryGroupProtocolError('Cannot cancel unconstructed fork child');
+          if (handle) { pending.store.cancelUnexposed(handle); this.#memoryGroupReplicas.delete(handle); }
+          const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+          if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing fork image retirement export');
+          const status = retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n));
+          if (status !== 0 && status !== -ERRNO.ENOENT) this.#memoryGroupProtocolError('Cannot retire exact unconstructed fork image');
+          if (handle) pending.store.releaseUnexposedImage(receipt);
+        }
+      }
+      if (state) this.#rollbackForkAllocationWithinKernelEntry(state, entry);
+    } catch (cause) { this.#memoryGroupProtocolError('Unable to roll back exact grouped fork owner', cause); }
+    this.#finishGroupFork(pending, entry);
+    if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
+      this.#completeForkWithinKernelEntry(pending.channel, pending.args, -1, pending.failure, entry);
+    }
+  }
+
+  #queueGroupForkTurn(pending: PendingGroupFork): void {
+    if (pending.done || this.#kernelFatalError !== null || !this.#kernelInstance) return;
+    this.#registerTimeout(() => {
+      pending.scheduled = false;
+      if (pending.done || this.#kernelFatalError !== null) return;
+      this.#runOrDeferKernelEntry('exact grouped fork continuation', next => { this.#advanceGroupFork(pending, next); return undefined; }, pending);
+    }, 0);
+  }
+
+  #scheduleGroupFork(pending: PendingGroupFork, target: 'barrier' | 'locks' | 'pool', entry: KernelWorkerEntryContext): void {
+    if (pending.done || pending.scheduled) return;
+    pending.scheduled = true;
+    entry.deferProtocolEffect(() => {
+      if (pending.done || this.#kernelFatalError !== null) return;
+      pending.store.waitForMappingProgress(pending.barrier!, target).then(() => this.#queueGroupForkTurn(pending))
+        .catch(error => this.#failKernelInstance(error));
+    });
+  }
+
+  #readGroupMemoryBreak(pid: number, tid: number, entry: KernelWorkerEntryContext): number {
+    const getBreak = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_break;
+    if (typeof getBreak !== "function") this.#memoryGroupProtocolError("Kernel lacks grouped heap query");
+    const result = getBreak(pid, tid);
+    if (typeof result !== "bigint" || result < -4095n || result > 0xffffffffn) this.#memoryGroupProtocolError("Invalid grouped heap query result");
+    return Number(result);
+  }
+  #completeGroupMemorySyscall(channel: ChannelInfo, result: number, errno: number, entry: KernelWorkerEntryContext): void {
+    this.#dequeueSignalForDelivery(channel, entry);
+    if (this.#finishSignalTermination(channel, entry)) return;
+    this.completeChannelRawAndRelisten(channel, result, errno, entry);
+  }
+
+  #beginGroupMapping(channel: ChannelInfo, syscall: number, args: readonly ChannelScalarValue[],
+    entry: KernelWorkerEntryContext, ownedDispatch?: PlannedBlockingChannelDispatch): void {
+    const previous = this.pendingGroupMappings.get(channel);
+    if (previous) { this.#advanceGroupMapping(previous, entry); return; }
+    const registration = this.processes.get(channel.pid), request = this.activeChannelRequests.get(channel);
+    const grouped = registration?.grouped;
+    if (!registration || !request || !grouped || registration.source !== channel.source) this.#memoryGroupProtocolError("Grouped mapping has no exact registered image/request");
+    const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+    if ((generation instanceof KernelTaskBindingError && generation.errno === ESRCH)
+        || (typeof generation === "bigint" && generation !== registration.execGeneration)) return;
+    if (generation instanceof Error) this.#memoryGroupProtocolError("Cannot confirm grouped mapping caller generation", generation);
+    this.#bindKernelTidForChannel(channel, entry);
+    const capabilities = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_capabilities as (() => number) | undefined;
+    if (!capabilities || (capabilities() & MEMORY_GROUP_PROTOCOL.mapping.capability) === 0) {
+      this.#completeGroupMemorySyscall(channel, -1, ERRNO.EOPNOTSUPP, entry); return;
+    }
+    const tid = this.guestTidForChannel(channel);
+    const receipt = this.#readMemoryGroupReceiptWithinKernelEntry(channel.pid, tid, registration.execGeneration, entry);
+    if (typeof receipt === "number" || receipt.group !== grouped.receipt.group) this.#memoryGroupProtocolError("Grouped mapping task no longer belongs to its registered image");
+    const copied = args.map(value => BigInt.asIntN(64, BigInt(value)));
+    if (syscall === SYS_MMAP || syscall === SYS_MPROTECT) copied[2] = BigInt.asUintN(32, copied[2]);
+    if (syscall === SYS_MMAP || syscall === SYS_MREMAP) copied[3] = BigInt.asUintN(32, copied[3]);
+    // A query does not mutate either model or PTEs and needs no allocation or
+    // all-thread barrier. It observes the committed break under kernel entry.
+    if (syscall === SYS_BRK && copied[0] === 0n) {
+      const result = this.#readGroupMemoryBreak(channel.pid, tid, entry);
+      this.#completeGroupMemorySyscall(channel, result < 0 ? -1 : result, result < 0 ? -result : 0, entry); return;
+    }
+    let finish!: () => void;
+    const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
+    const predecessor = Array.from(this.pendingGroupImageOperations.values()).reverse().find(other => other.registration === registration && !other.done);
+    // Host custody is allocated before asking Rust to retain a metadata plan.
+    const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall, args: Object.freeze(copied),
+      store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
+      suppressCompletion: false, failure: EIO, scheduled: false, done: false, populationCursor: 0,
+      ownedMapping: ownedDispatch ? { dispatch: ownedDispatch } : undefined };
+    this.pendingGroupImageOperations.set(channel, pending);
+    this.pendingGroupMappings.set(channel, pending); this.#advanceGroupMapping(pending, entry);
+  }
+
+  #prepareGroupMapping(pending: PendingGroupMapping, observedPages: number, entry: KernelWorkerEntryContext): GroupMemoryChangeDescription | number {
+    this.#sweepGroupFileObjects(pending.receipt.group, pending.store, entry);
+    const protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    return this.#requireMainScratchRegion().withLease(lease => {
+      if (pending.hostControl) {
+        const count = this.#invokeEntryScratchExport(entry, lease, 'kernel_group_memory_thread_control_prepare', [
+          pending.receipt.pid, pending.receipt.tid, pending.hostControl.thread.tid, observedPages,
+          lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+        ]);
+        if (count < 0) return this.#checkedMemoryGroupStatus(count);
+        if (count !== protocol.description_bytes) this.#memoryGroupProtocolError('Invalid thread control preparation length');
+        const description = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), pending.receipt);
+        if (description.kind !== 'map' || description.length !== PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE
+            || description.prot !== 3 || description.populationLength !== 0) this.#memoryGroupProtocolError('Invalid thread control effect');
+        return description;
+      }
+      if (pending.ownedMapping) {
+        const owned = pending.ownedMapping;
+        const bytes = owned.dispatch.plannedChannelScratchArgs.find(arg => arg.desc.argIndex === 2)?.inputBytes;
+        if (!bytes || bytes.length !== OWNED_RESOURCE_BYTES) this.#memoryGroupProtocolError('Missing owned mapping input');
+        lease.copyFrom(bytes, 0, 0, bytes.length);
+        const count = this.#invokeEntryScratchExport(entry, lease, 'kernel_group_owned_mapping_prepare', [
+          pending.receipt.pid, pending.receipt.tid, observedPages,
+          lease.exportPointer(0, bytes.length), bytes.length,
+          lease.exportPointer(bytes.length, protocol.description_bytes), protocol.description_bytes,
+        ]);
+        if (count < 0) return this.#checkedMemoryGroupStatus(count);
+        owned.packet = lease.copyOut(0, bytes.length);
+        const packet = new DataView(owned.packet.buffer);
+        owned.token = packet.getUint32(24, true); owned.transaction = packet.getBigUint64(8, true);
+        if (count === 0) return 0;
+        if (count !== protocol.description_bytes) this.#memoryGroupProtocolError('Invalid grouped driver preparation length');
+        return decodeGroupMemoryChangeDescription(lease.copyOut(bytes.length, count), pending.receipt);
+      }
+      const packet = encodeGroupMemoryChangeRequest(pending.syscall, pending.args, observedPages);
+      lease.copyFrom(packet, 0, 0, packet.length);
+      const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_prepare", [
+        pending.receipt.pid, pending.receipt.tid, lease.exportPointer(0, packet.length), packet.length,
+        lease.exportPointer(packet.length, protocol.description_bytes), protocol.description_bytes,
+      ]);
+      if (count < 0) return this.#checkedMemoryGroupStatus(count);
+      if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid prepared mapping record length");
+      try { return decodeGroupMemoryChangeDescription(lease.copyOut(packet.length, count), pending.receipt); }
+      catch (error) { return this.#memoryGroupProtocolError("Invalid prepared mapping record", error); }
+    });
+  }
+
+  #sweepGroupFileObjects(group: number, store: MemoryGroupImageStore, entry: KernelWorkerEntryContext): void {
+    store.sweepFileObjects(id => {
+      const alive = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_object_alive;
+      if (typeof alive !== 'function') this.#memoryGroupProtocolError('Missing grouped file lifetime export');
+      const result = alive(group, Number(id & 0xffffffffn), Number(id >> 32n));
+      if (result !== 0 && result !== 1) this.#memoryGroupProtocolError('Invalid grouped file lifetime result');
+      return result === 1;
+    });
+  }
+
+  #validateGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): number {
+    if (!this.#groupMappingCallerCurrent(pending, entry)) return -ESRCH;
+    const description = pending.description;
+    if (!description) this.#memoryGroupProtocolError("Mapping has no Rust preparation");
+    const { receipt, token } = description, protocol = MEMORY_GROUP_PROTOCOL.mapping;
+    const result = this.#requireMainScratchRegion().withLease(lease => {
+      const owned = pending.ownedMapping;
+      const count = this.#invokeEntryScratchExport(entry, lease,
+        owned ? 'kernel_group_owned_mapping_validate' : 'kernel_group_memory_change_validate', owned ? [
+          receipt.pid, receipt.tid, owned.token!, owned.transaction!,
+          lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+        ] : [
+          receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
+          lease.exportPointer(0, protocol.description_bytes), protocol.description_bytes,
+        ]);
+      if (count < 0) return this.#checkedMemoryGroupStatus(count);
+      if (count !== protocol.description_bytes) this.#memoryGroupProtocolError("Invalid validated mapping record length");
+      let current: GroupMemoryChangeDescription;
+      try { current = decodeGroupMemoryChangeDescription(lease.copyOut(0, count), receipt, token); }
+      catch (error) { return this.#memoryGroupProtocolError("Invalid validated mapping record", error); }
+      for (const key of ["kind", "prot", "address", "length", "oldAddress", "oldLength", "result", "flags", "populationAddress", "populationLength", "sharedObject", "sharedLength", "sharedOffset"] as const) {
+        if (current[key] !== description[key]) this.#memoryGroupProtocolError("Prepared mapping effect changed under its exact token");
+      }
+      return 0;
+    });
+    return result === 0 && !this.#groupMappingCallerCurrent(pending, entry) ? -ESRCH : result;
+  }
+
+  #groupMappingAction(pending: PendingGroupMapping, cancel: boolean, entry: KernelWorkerEntryContext): number {
+    const description = pending.description;
+    if (!description) { if (cancel) return 0; this.#memoryGroupProtocolError("Mapping commit has no preparation"); }
+    const { receipt, token } = description, exports = this.#kernelInstanceForEntry(entry).exports;
+    if (pending.ownedMapping) {
+      const owned = pending.ownedMapping;
+      const operation = exports.kernel_group_owned_mapping_finish;
+      if (typeof operation !== 'function') this.#memoryGroupProtocolError('Missing grouped driver mapping finish');
+      const status = this.#checkedMemoryGroupStatus(operation(receipt.pid, receipt.tid,
+        owned.token!, owned.transaction!, cancel ? EIO : 0));
+      return cancel && status === -EIO ? 0 : status;
+    }
+    const operation = cancel ? exports.kernel_group_memory_change_cancel : exports.kernel_group_memory_change_commit;
+    if (typeof operation !== "function") this.#memoryGroupProtocolError("Kernel lacks exact mapping action");
+    return this.#checkedMemoryGroupStatus(operation(receipt.pid, receipt.tid,
+      Number(token & 0xffffffffn), Number(token >> 32n)));
+  }
+
+  #reuseGroupThreadControl(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): number {
+    const reuse = this.#kernelInstanceForEntry(entry).exports.kernel_group_memory_thread_control_reuse;
+    if (typeof reuse !== 'function') this.#memoryGroupProtocolError('Missing exact thread control reuse export');
+    const address = reuse(pending.receipt.pid, pending.receipt.tid, pending.hostControl!.thread.tid);
+    if (typeof address !== 'bigint' || address < -4095n || address > 0xffffffffn
+        || address >= 0n && (address === 0n || address % BigInt(WASM_PAGE_SIZE))) this.#memoryGroupProtocolError('Invalid recycled thread control address');
+    return Number(address);
+  }
+
+  #completeGroupThreadControl(pending: PendingGroupMapping, address: number, length: number, entry: KernelWorkerEntryContext): void {
+    pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    pending.store.resumeImageExecutionPause(pending.barrier!);
+    pending.hostControl!.thread.controlSlot = { address, length };
+    const { complete } = pending.hostControl!;
+    entry.deferProtocolEffect(() => { pending.finish(); complete(address); return undefined; });
+  }
+
+  #advanceGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {
+    if (pending.done) return;
+    if (pending.cancelling) { this.#cancelGroupMapping(pending, entry); return; }
+    if (!this.#groupMappingCallerCurrent(pending, entry)) {
+      pending.cancelling = true; pending.suppressCompletion = true; this.#cancelGroupMapping(pending, entry); return;
+    }
+    if (this.deferChannelWhileStopped(pending.channel)) return;
+    // Cancellation may finish a queued middle owner before its predecessor.
+    // Follow that dependency rather than letting its successor bypass the
+    // still-live earlier image barrier.
+    while (pending.predecessor?.done) pending.predecessor = pending.predecessor.predecessor;
+    if (pending.predecessor && !pending.predecessor.done) {
+      if (!pending.scheduled) {
+        const predecessor = pending.predecessor;
+        pending.scheduled = true;
+        entry.deferProtocolEffect(() => {
+          predecessor.finished.then(() => this.#queueGroupMappingTurn(pending)).catch(error => this.#failKernelInstance(error));
+        });
+      }
+      return;
+    }
+    if (!pending.barrier) {
+      try { pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle); }
+      catch (error) {
+        const owners = Array.from(this.pendingGroupImageOperations.values())
+          .filter(other => other.registration === pending.registration)
+          .map(other => `${other.kind}:${other.receipt.tid}:done=${other.done}:barrier=${!!other.barrier}`);
+        this.#memoryGroupProtocolError(`Cannot establish grouped mapping barrier pid=${pending.receipt.pid} tid=${pending.receipt.tid} syscall=${pending.syscall} owners=[${owners.join(';')}]`, error);
+      }
+    }
+    if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier)) {
+      this.#scheduleGroupMapping(pending, "barrier", entry); return;
+    }
+    if (!pending.description) {
+      const extent = pending.store.virtualExtentAtBarrier(pending.barrier);
+      if (typeof extent !== "number") { this.#scheduleGroupMapping(pending, extent === "waiting" ? "barrier" : "locks", entry); return; }
+      if (pending.store.tryReclaimRemovedPages(pending.registration.grouped!.handle) === 'busy') {
+        this.#scheduleGroupMapping(pending, 'locks', entry); return;
+      }
+      if (pending.hostControl) {
+        const address = this.#reuseGroupThreadControl(pending, entry);
+        if (address >= 0) {
+          checkProcessWriteRange(pending.registration.source, address, PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE);
+          this.#completeGroupThreadControl(pending, address, PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE, entry);
+          return;
+        }
+        if (address !== -ERRNO.ENOENT) { pending.cancelling = true; pending.failure = -address; this.#cancelGroupMapping(pending, entry); return; }
+      }
+      if (pending.syscall === SYS_BRK) {
+        const old = this.#readGroupMemoryBreak(pending.receipt.pid, pending.receipt.tid, entry);
+        if (old < 0) { pending.cancelling = true; pending.failure = -old; this.#cancelGroupMapping(pending, entry); return; }
+        pending.oldBreak = old;
+      }
+      const description = this.#prepareGroupMapping(pending, extent, entry);
+      if (typeof description === "number") {
+        if (description === 0 && pending.ownedMapping) {
+          pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+          this.pendingGroupImageOperations.delete(pending.channel);
+          pending.store.resumeImageExecutionPause(pending.barrier);
+          entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+          this.#completeGroupOwnedMapping(pending, entry, false); return;
+        }
+        pending.cancelling = true; pending.failure = -description; this.#cancelGroupMapping(pending, entry); return;
+      }
+      pending.description = description;
+    }
+    const validity = this.#validateGroupMapping(pending, entry);
+    if (validity < 0) { pending.cancelling = true; pending.failure = -validity; this.#cancelGroupMapping(pending, entry); return; }
+    if (!pending.physical) {
+      let physical: ReturnType<MemoryGroupImageStore["prepareImageMapping"]>;
+      try { physical = pending.store.prepareImageMapping(pending.barrier, pending.description); }
+      catch (error) {
+        if (!(error instanceof RangeError)) this.#memoryGroupProtocolError("Physical mapping preparation failed", error);
+        pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return;
+      }
+      if (physical === "waiting" || physical === "busy") { this.#scheduleGroupMapping(pending, physical === "waiting" ? "barrier" : "locks", entry); return; }
+      if (physical === "exhausted") { pending.cancelling = true; pending.failure = ENOMEM; this.#cancelGroupMapping(pending, entry); return; }
+      pending.physical = physical;
+    }
+    // Read through the exact Rust source retained by this token, never the old
+    // descriptor number. Write only allocated unpublished pages. A failure can
+    // still cancel both halves without replacing a live MAP_FIXED interval.
+    for (let batch = 0; batch < 4 && pending.populationCursor < pending.description.populationLength; batch++) {
+      const capacity = Math.min(CH_DATA_SIZE, pending.description.populationLength - pending.populationCursor);
+      const attempt = this.#requireMainScratchRegion().withLease(lease => {
+        const { receipt, token } = pending.description!;
+        const count = this.#invokeEntryScratchExport(entry, lease, "kernel_group_memory_change_read", [
+          receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n),
+          pending.populationCursor >>> 0, Math.floor(pending.populationCursor / 0x1_0000_0000),
+          lease.exportPointer(0, capacity), capacity,
+        ]);
+        if (!Number.isSafeInteger(count) || count < -4095 || count > capacity) this.#memoryGroupProtocolError("Invalid private mapping read result");
+        return { count, bytes: count > 0 ? lease.copyOut(0, count) : undefined };
+      });
+      if (attempt.count < 0) {
+        if (attempt.count === -EAGAIN) {
+          pending.scheduled = true;
+          entry.deferProtocolEffect(() => {
+            this.#registerTimeout(() => {
+              pending.scheduled = false;
+              if (!pending.done) this.#runOrDeferKernelEntry("private mapping population retry", next => {
+                this.#advanceGroupMapping(pending, next); return undefined;
+              }, pending);
+            }, 10);
+          });
+          return;
+        }
+        pending.cancelling = true; pending.failure = -attempt.count; this.#cancelGroupMapping(pending, entry); return;
+      }
+      if (attempt.count === 0) { pending.populationCursor = pending.description.populationLength; break; }
+      pending.store.populateImageMapping(pending.physical, pending.populationCursor, attempt.bytes!);
+      pending.populationCursor += attempt.count;
+    }
+    if (pending.populationCursor < pending.description.populationLength) {
+      pending.scheduled = true;
+      entry.deferProtocolEffect(() => { this.#queueGroupMappingTurn(pending); return undefined; });
+      return;
+    }
+    let validation = 0;
+    let result: ReturnType<MemoryGroupImageStore["commitImageMapping"]>;
+    try {
+      result = pending.store.commitImageMapping(pending.physical,
+        () => { validation = this.#validateGroupMapping(pending, entry); return validation === 0; },
+        () => this.#groupMappingAction(pending, false, entry));
+    } catch (error) { return this.#memoryGroupProtocolError("Uncertain grouped mapping publication", error); }
+    if (result === "busy") { this.#scheduleGroupMapping(pending, "locks", entry); return; }
+    if (result !== "committed") {
+      pending.cancelling = true; pending.failure = typeof result === "number" ? -result : validation < 0 ? -validation : EAGAIN;
+      this.#cancelGroupMapping(pending, entry); return;
+    }
+    // Published PTEs no longer name removed storage. Pins may retain selected
+    // pages until a later mapping turn; a busy lock never rolls back commit.
+    pending.store.tryReclaimRemovedPages(pending.registration.grouped!.handle);
+    this.#sweepGroupFileObjects(pending.receipt.group, pending.store, entry);
+    if (pending.hostControl) {
+      this.#completeGroupThreadControl(pending, pending.description.address, pending.description.length, entry);
+      return;
+    }
+    pending.done = true; this.pendingGroupMappings.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    pending.store.resumeImageExecutionPause(pending.barrier);
+    entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+    if (pending.ownedMapping) this.#completeGroupOwnedMapping(pending, entry, true);
+    else this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
+  }
+
+  #completeGroupOwnedMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext, recover: boolean): void {
+    const owned = pending.ownedMapping!;
+    const argument = owned.dispatch.plannedChannelScratchArgs.find(arg => arg.desc.argIndex === 2)!;
+    let bytes = owned.packet!;
+    if (recover) {
+      bytes = bytes.slice();
+      const packet = new DataView(bytes.buffer);
+      packet.setUint32(4, 6, true); // READ_LAST is read-only; never repeat construction.
+      packet.setBigUint64(16, 0n, true); packet.setUint32(28, 0, true); packet.setInt32(32, -1, true);
+      bytes.fill(0, 36, 56); bytes.fill(0, 64);
+      const result = this.#executePlannedBlockingChannelDispatch(pending.channel, {
+        ...owned.dispatch,
+        plannedScratchWrites: owned.dispatch.plannedScratchWrites.map(write => write.argIndex === 2 ? { ...write, inputBytes: bytes } : write),
+        plannedChannelScratchArgs: owned.dispatch.plannedChannelScratchArgs.map(arg => arg.desc.argIndex === 2 ? { ...arg, inputBytes: bytes } : arg),
+      }, entry);
+      const output = result.outputWrites.find(write => write.ptr === argument.processPointer)?.bytes;
+      if (result.retVal !== 0 || output?.length !== OWNED_RESOURCE_BYTES) this.#memoryGroupProtocolError('No sealed grouped driver receipt');
+      bytes = output;
+      const sealed = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      if (sealed.getUint32(24, true) !== owned.token || sealed.getBigUint64(8, true) !== owned.transaction
+          || sealed.getUint32(52, true) !== 1 || sealed.getInt32(48, true) !== 0) {
+        this.#memoryGroupProtocolError('Grouped driver receipt contradicted publication');
+      }
+    }
+    this.#dequeueSignalForDelivery(pending.channel, entry);
+    if (this.#finishSignalTermination(pending.channel, entry)) return;
+    this.completeChannel(pending.channel, SYS_IOCTL, [], undefined, 0, 0,
+      [{ ptr: argument.processPointer, bytes }], undefined, entry);
+  }
+
+  #cancelGroupMapping(pending: PendingGroupMapping, entry: KernelWorkerEntryContext): void {
+    if (pending.done) return;
+    this.retiringGroupMappings.add(pending);
+    if (!pending.rustCancelled) {
+      const status = this.#groupMappingAction(pending, true, entry);
+      if (status !== 0 && status !== -ESRCH) this.#memoryGroupProtocolError("Cannot cancel exact Rust mapping owner");
+      pending.rustCancelled = true;
+    }
+    if (pending.physical && pending.store.cancelImageMapping(pending.physical) === "busy") { this.#scheduleGroupMapping(pending, "pool", entry); return; }
+    if (pending.barrier) pending.store.resumeImageExecutionPause(pending.barrier);
+    pending.done = true; this.retiringGroupMappings.delete(pending);
+    if (this.pendingGroupMappings.get(pending.channel) === pending) this.pendingGroupMappings.delete(pending.channel);
+    if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
+    if (pending.hostControl) {
+      const { complete } = pending.hostControl;
+      entry.deferProtocolEffect(() => { complete(-pending.failure); return undefined; });
+      return;
+    }
+    if (!pending.suppressCompletion && this.#groupMappingCallerCurrent(pending, entry)) {
+      // brk's raw ABI reports the unchanged break on memory-admission failure.
+      const oldBreak = pending.syscall === SYS_BRK && pending.failure === ENOMEM ? pending.oldBreak : undefined;
+      this.#completeGroupMemorySyscall(pending.channel, oldBreak ?? -1, oldBreak === undefined ? pending.failure : 0, entry);
+    }
+  }
+
+  #queueGroupMappingTurn(pending: PendingGroupMapping): void {
+    if (pending.done || this.#kernelFatalError !== null || !this.#kernelInstance) return;
+    this.#registerTimeout(() => {
+      pending.scheduled = false;
+      if (pending.done || this.#kernelFatalError !== null) return;
+      this.#runOrDeferKernelEntry("exact grouped mapping continuation", next => { this.#advanceGroupMapping(pending, next); return undefined; }, pending);
+    }, 0);
+  }
+
+  #scheduleGroupMapping(pending: PendingGroupMapping, target: 'barrier' | 'locks' | 'pool', entry: KernelWorkerEntryContext): void {
+    if (pending.done || pending.scheduled) return;
+    pending.scheduled = true;
+    entry.deferProtocolEffect(() => {
+      if (pending.done || this.#kernelFatalError !== null) return;
+      pending.store.waitForMappingProgress(pending.barrier!, target).then(() => this.#queueGroupMappingTurn(pending))
+        .catch(error => { this.#failKernelInstance(error); });
+    });
   }
 
   #queueEntropyRead(channel: ChannelInfo, token: bigint, entry: KernelWorkerEntryContext): void {
@@ -21168,12 +23384,11 @@ export class CentralizedKernelWorker {
       || (state.request.syscallNr !== SYS_FORK && state.request.syscallNr !== SYS_VFORK)
       || this.processes.get(channel.pid) !== registration
       || registration.memory !== state.memory || channel.memory !== state.memory
+      || registration.source !== state.source || channel.source !== state.source
       || this.execHandoffPids?.has(channel.pid) || !this.isRegisteredChannel(channel)
       || channel.handling !== true || this.activeChannelRequests.get(channel) !== state.request) return false;
-    const buffer = state.memory.buffer;
-    return Atomics.load(new Int32Array(buffer, channel.channelOffset),
-      CH_STATUS / Int32Array.BYTES_PER_ELEMENT) === CH_PENDING
-      && new DataView(buffer, channel.channelOffset).getUint32(CH_SYSCALL, true) === state.request.syscallNr;
+    return this.loadChannelStatus(channel) === CH_PENDING
+      && processDataView(state.source, channel.channelOffset).getUint32(CH_SYSCALL, true) === state.request.syscallNr;
   }
 
   #isCurrentForkImageWithinKernelEntry(
@@ -21324,6 +23539,12 @@ export class CentralizedKernelWorker {
     mode: ProcessForkMode,
     entry: KernelWorkerEntryContext,
   ): void {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      if (mode !== PROCESS_FORK_MODE_FORK || !this.callbacks.onGroupedFork) {
+        this.#completeForkWithinKernelEntry(channel, _origArgs, -1, ERRNO.EOPNOTSUPP, entry); return;
+      }
+      this.#beginGroupFork(channel, _origArgs, entry); return;
+    }
     if (!this.callbacks.onFork) {
       // No fork handler — return -ENOSYS
       this.#completeForkWithinKernelEntry(
@@ -21467,6 +23688,7 @@ export class CentralizedKernelWorker {
       registration: this.processes.get(parentPid),
       request: this.activeChannelRequests.get(channel),
       memory: channel.memory,
+      source: channel.source,
       origArgs: [..._origArgs],
       childPid, childExecGeneration, childOwned: true, transferred: false,
     };
@@ -21657,6 +23879,7 @@ export class CentralizedKernelWorker {
       if (pidOutPtr !== 0) {
         checkedPidOutPtr = this.checkedProcessRange(channel, pidOutPtr, 4, "spawn pid output")
           .pointer;
+        checkProcessWriteRange(channel.source, checkedPidOutPtr, 4);
       }
     } catch {
       this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, EFAULT, entry);
@@ -21720,7 +23943,7 @@ export class CentralizedKernelWorker {
     try {
       const start = this.checkedProcessRange(channel, pathPtr, pathLen, "spawn path").pointer;
       path = new TextDecoder()
-        .decode(new Uint8Array(channel.memory.buffer).slice(start, start + pathLen))
+        .decode(readProcessBytes(channel.source, start, pathLen))
         .replace(/\0$/, "");
       metadata = this.#readProcessMetadataWithinKernelEntry(childPid, entry);
     } catch (error) {
@@ -21837,6 +24060,12 @@ export class CentralizedKernelWorker {
       );
       return;
     }
+    try { if (pidOutPtr !== 0) checkProcessWriteRange(channel.source, pidOutPtr, 4); }
+    catch (error) {
+      this.#rollbackSpawnWithinKernelEntry(channel, origArgs, parentPid, childPid,
+        EFAULT, error, entry);
+      return;
+    }
     const publishSpawnChild = this.#kernelInstanceForEntry(entry).exports
       .kernel_publish_spawn_child as
         ((parentPid: number, childPid: number) => number) | undefined;
@@ -21889,7 +24118,7 @@ export class CentralizedKernelWorker {
       return;
     }
     if (pidOutPtr !== 0) {
-      new DataView(channel.memory.buffer).setInt32(pidOutPtr, childPid, true);
+      processDataView(channel.source, pidOutPtr, 4).setInt32(0, childPid, true);
     }
     // Publish the spawn result before a waiter can consume the newly visible
     // status. Both writes occur within this serialized kernel entry.
@@ -22207,7 +24436,7 @@ export class CentralizedKernelWorker {
    * different, truncated path.
    */
   private readExecPathFromProcess(
-    mem: Uint8Array,
+    mem: CapturedProcessRead,
     ptr: number,
   ): { value: string } | { errno: number } {
     if (!Number.isSafeInteger(ptr) || ptr <= 0 || ptr >= mem.byteLength) {
@@ -22216,19 +24445,17 @@ export class CentralizedKernelWorker {
 
     const available = mem.byteLength - ptr;
     const scanLength = Math.min(available, POSIX_PATH_MAX_BYTES);
-    let byteLength = 0;
-    while (byteLength < scanLength && mem[ptr + byteLength] !== 0) {
-      byteLength++;
-    }
-    if (byteLength === scanLength) {
+    let byteLength: number;
+    try { byteLength = mem.findZero(ptr, scanLength); }
+    catch { return { errno: EFAULT }; }
+    if (byteLength < 0) {
       return { errno: available >= POSIX_PATH_MAX_BYTES ? ENAMETOOLONG : EFAULT };
     }
 
-    return {
-      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
-      // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
-      value: new TextDecoder().decode(mem.slice(ptr, ptr + byteLength)),
-    };
+    try {
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; owned bytes preserve TextDecoder compatibility.
+      return { value: new TextDecoder().decode(mem.readBytes(ptr, byteLength)) };
+    } catch { return { errno: EFAULT }; }
   }
 
   /**
@@ -22238,14 +24465,13 @@ export class CentralizedKernelWorker {
    * separate from the aggregate ARG_MAX byte budget, which includes pointers.
    */
   private readStringArrayFromProcess(
-    mem: Uint8Array,
+    mem: CapturedProcessRead,
     arrayPtr: number,
     ptrWidth: 4 | 8 = 4,
     maxCount: number = PROCESS_STARTUP_MAX_ARGV_COUNT,
   ): { values: string[] } | { errno: number } {
     if (arrayPtr === 0) return { values: [] };
     const values: string[] = [];
-    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     // Reserve the list's terminating null pointer up front. Every non-null
     // entry consumes at least ptrWidth + one NUL byte, so this byte budget also
     // provides a finite loop bound for arrays containing empty strings.
@@ -22253,17 +24479,22 @@ export class CentralizedKernelWorker {
     for (let i = 0; representedBytes <= POSIX_ARG_MAX_BYTES; i++) {
       const pointerOffset = arrayPtr + i * ptrWidth;
       if (!Number.isSafeInteger(pointerOffset) || pointerOffset < 0
-          || pointerOffset + ptrWidth > view.byteLength) {
+          || pointerOffset + ptrWidth > mem.byteLength) {
         return { errno: EFAULT };
       }
       let strPtr: number;
-      if (ptrWidth === 8) {
-        const rawPtr = view.getBigUint64(pointerOffset, true);
-        if (rawPtr > BigInt(Number.MAX_SAFE_INTEGER)) return { errno: EFAULT };
-        strPtr = Number(rawPtr);
-      } else {
-        strPtr = view.getUint32(pointerOffset, true);
-      }
+      try {
+        // Read only this pointer; a virtual view over the whole image would
+        // copy unrelated pages and incorrectly require every hole readable.
+        const view = mem.dataView(pointerOffset, ptrWidth);
+        if (ptrWidth === 8) {
+          const rawPtr = view.getBigUint64(0, true);
+          if (rawPtr > BigInt(Number.MAX_SAFE_INTEGER)) return { errno: EFAULT };
+          strPtr = Number(rawPtr);
+        } else {
+          strPtr = view.getUint32(0, true);
+        }
+      } catch { return { errno: EFAULT }; }
       if (strPtr === 0) return { values };
       if (values.length >= maxCount) return { errno: E2BIG };
       if (strPtr < 0 || strPtr >= mem.byteLength) return { errno: EFAULT };
@@ -22272,11 +24503,10 @@ export class CentralizedKernelWorker {
         mem.byteLength - strPtr,
         PROCESS_METADATA_ENTRY_MAX_BYTES + 1,
       );
-      let byteLength = 0;
-      while (byteLength < scanLength && mem[strPtr + byteLength] !== 0) {
-        byteLength++;
-      }
-      if (byteLength === scanLength) {
+      let byteLength: number;
+      try { byteLength = mem.findZero(strPtr, scanLength); }
+      catch { return { errno: EFAULT }; }
+      if (byteLength < 0) {
         return {
           errno: scanLength > PROCESS_METADATA_ENTRY_MAX_BYTES
             ? E2BIG
@@ -22293,9 +24523,10 @@ export class CentralizedKernelWorker {
         return { errno: E2BIG };
       }
 
-      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
-      // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
-      values.push(new TextDecoder().decode(mem.slice(strPtr, strPtr + byteLength)));
+      try {
+        // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; owned bytes preserve TextDecoder compatibility.
+        values.push(new TextDecoder().decode(mem.readBytes(strPtr, byteLength)));
+      } catch { return { errno: EFAULT }; }
     }
     return { errno: E2BIG };
   }
@@ -22307,9 +24538,11 @@ export class CentralizedKernelWorker {
     origArgs: number[],
     errno: number,
     entry: KernelWorkerEntryContext,
+    expectedRequest?: FrozenChannelRequest,
   ): void {
     if (
-      !this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
+      (expectedRequest !== undefined && this.activeChannelRequests.get(channel) !== expectedRequest)
+      || !this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
     ) {
       return;
     }
@@ -22326,15 +24559,27 @@ export class CentralizedKernelWorker {
     );
   }
 
+  #execTargetKernelForGroup(initialGroup?: number): PreparedExecKernel {
+    return initialGroup === undefined ? this as PreparedExecKernel : {
+      execTargetSize: (owner, target) => this.execTargetSize(owner, target),
+      execTargetRead: (owner, target, offset, bytes) => this.execTargetRead(owner, target, offset, bytes),
+      execTargetCancel: (owner, target) => this.execTargetCancel(owner, target),
+      execTargetAdmit: (owner, target, abi) => this.execTargetAdmit(owner, target, abi, initialGroup),
+      deferredFetchSettled: () => this.deferredFetchSettled(),
+    };
+  }
+
   async launchInitialPath(
     pid: number,
     path: string,
     argv: string[],
     envp: string[],
     callback: ExecLaunchCallback,
+    initialGroup?: number,
   ): Promise<number> {
     return launchPreparedExecTarget({
-      kernel: this as PreparedExecKernel,
+      kernel: this.#execTargetKernelForGroup(initialGroup),
+      supportedProgramExtensions: initialGroup === undefined ? undefined : GROUPED_WORKER_EXTENSIONS,
       ownerPid: pid,
       pid,
       callerTid: pid,
@@ -22362,9 +24607,11 @@ export class CentralizedKernelWorker {
   ): Promise<number> {
     const callback = this.callbacks.onSpawn;
     if (!callback) return -ENOSYS;
+    const group = this.processes.get(parentPid)?.grouped?.receipt.group;
     try {
       return await launchPreparedExecTarget({
-        kernel: this as PreparedExecKernel,
+        kernel: this.#execTargetKernelForGroup(group),
+        supportedProgramExtensions: group === undefined ? undefined : GROUPED_WORKER_EXTENSIONS,
         ownerPid: childPid,
         pid: childPid,
         callerTid: childPid,
@@ -22415,11 +24662,20 @@ export class CentralizedKernelWorker {
     diagnosticPath: string,
     argv: string[],
     envp: string[],
+    caller: ChannelInfo,
+    expectedRequest: FrozenChannelRequest | undefined,
   ): Promise<number> {
-    const callback = this.callbacks.onExec;
-    if (!callback) return -ENOSYS;
-    const expectedMemory = this.processes.get(pid)?.memory;
-    if (!expectedMemory) return -ESRCH;
+    const registration = this.processes.get(pid);
+    // Backend authority comes from the kernel-admitted registration, not the
+    // shape of an arbitrary virtual byte source used to decode metadata.
+    const grouped = registration?.grouped !== undefined;
+    const callback = grouped ? this.callbacks.onGroupedExec : this.callbacks.onExec;
+    if (!callback) return grouped ? -ERRNO.EOPNOTSUPP : -ENOSYS;
+    if (!registration || !this.isRegisteredChannel(caller)
+      || this.activeChannelRequests.get(caller) !== expectedRequest) return -ESRCH;
+    const expectedMemory = registration.memory;
+    const expectedCaller: ExecCallerIdentity = { registration, channel: caller,
+      source: caller.source, request: expectedRequest, tid: callerTid };
     try {
       return await launchPreparedExecTarget({
         kernel: this as PreparedExecKernel,
@@ -22454,8 +24710,10 @@ export class CentralizedKernelWorker {
             expectedSize,
             markTargetConsumed,
             expectedMemory,
+            expectedCaller,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
+        prepareBackend: grouped ? (target, bytes) => this.#prepareGroupedExecBackend(expectedCaller, target, bytes) : undefined,
       }, callback);
     } catch (error) {
       if (error instanceof PreparedExecTargetError) return -error.errno;
@@ -22472,7 +24730,7 @@ export class CentralizedKernelWorker {
     origArgs: number[],
     entry: KernelWorkerEntryContext,
   ): void {
-    const processMem = new Uint8Array(channel.memory.buffer);
+    const processMem = captureProcessRead(channel.source);
 
     // Read path (arg 0), argv (arg 1), envp (arg 2) from process memory
     const pw = this.getPtrWidth(channel.pid);
@@ -22576,27 +24834,29 @@ export class CentralizedKernelWorker {
       path = resolvedPath.value;
     }
 
-    if (!this.callbacks.onExec) {
+    const grouped = this.processes.get(channel.pid)?.grouped !== undefined;
+    if (!(grouped ? this.callbacks.onGroupedExec : this.callbacks.onExec)) {
       this.completeChannel(
         channel,
         SYS_EXECVE,
         origArgs,
         undefined,
         -1,
-        38,
+        grouped ? ERRNO.EOPNOTSUPP : ENOSYS,
         [],
         undefined,
         entry,
-      ); // ENOSYS
+      );
       return;
     }
 
-    // Call the async exec handler FIRST — onExec returns ENOENT early if the
+    // Call the selected async exec handler first; it returns ENOENT early if the
     // program doesn't exist, allowing posix_spawnp/execvpe PATH search to retry.
     // The exact kernel exec prepare/commit sequence and host teardown are
     // deferred until after onExec confirms the program exists (returns 0).
     const pid = channel.pid;
     const callerTid = this.guestTidForChannel(channel);
+    const expectedRequest = this.activeChannelRequests.get(channel);
     entry.deferProtocolTransactionStart(() => {
       let transaction: Promise<number>;
       try {
@@ -22610,6 +24870,8 @@ export class CentralizedKernelWorker {
             path,
             argv,
             envp,
+            channel,
+            expectedRequest,
           ),
         );
       } catch (cause) {
@@ -22627,6 +24889,7 @@ export class CentralizedKernelWorker {
               origArgs,
               EIO,
               failureEntry,
+              expectedRequest,
             );
             return undefined;
           },
@@ -22647,6 +24910,7 @@ export class CentralizedKernelWorker {
               origArgs,
               (-result) >>> 0,
               completionEntry,
+              expectedRequest,
             );
             return undefined;
           },
@@ -22666,6 +24930,7 @@ export class CentralizedKernelWorker {
               origArgs,
               EIO,
               failureEntry,
+              expectedRequest,
             );
             return undefined;
           },
@@ -22716,7 +24981,7 @@ export class CentralizedKernelWorker {
     const dirfd = origArgs[0];
     const flags = origArgs[4];
 
-    const processMem = new Uint8Array(channel.memory.buffer);
+    const processMem = captureProcessRead(channel.source);
 
     // Read path from process memory
     const pw = this.getPtrWidth(channel.pid);
@@ -22842,23 +25107,25 @@ export class CentralizedKernelWorker {
       execPath = this.normalizeSharedMmapPath(`${base}/${pathStr}`);
     }
 
-    if (!this.callbacks.onExec) {
+    const grouped = this.processes.get(channel.pid)?.grouped !== undefined;
+    if (!(grouped ? this.callbacks.onGroupedExec : this.callbacks.onExec)) {
       this.completeChannel(
         channel,
         SYS_EXECVEAT,
         origArgs,
         undefined,
         -1,
-        38,
+        grouped ? ERRNO.EOPNOTSUPP : ENOSYS,
         [],
         undefined,
         entry,
-      ); // ENOSYS
+      );
       return;
     }
 
     const pid = channel.pid;
     const callerTid = this.guestTidForChannel(channel);
+    const expectedRequest = this.activeChannelRequests.get(channel);
     entry.deferProtocolTransactionStart(() => {
       let transaction: Promise<number>;
       try {
@@ -22872,6 +25139,8 @@ export class CentralizedKernelWorker {
             execPath,
             argv,
             envp,
+            channel,
+            expectedRequest,
           ),
         );
       } catch (cause) {
@@ -22892,6 +25161,7 @@ export class CentralizedKernelWorker {
               origArgs,
               EIO,
               failureEntry,
+              expectedRequest,
             );
             return undefined;
           },
@@ -22910,6 +25180,7 @@ export class CentralizedKernelWorker {
               origArgs,
               (-result) >>> 0,
               completionEntry,
+              expectedRequest,
             );
             return undefined;
           },
@@ -22932,6 +25203,7 @@ export class CentralizedKernelWorker {
               origArgs,
               EIO,
               failureEntry,
+              expectedRequest,
             );
             return undefined;
           },
@@ -22964,14 +25236,16 @@ export class CentralizedKernelWorker {
     // come from the channel in Linux syscall convention:
     //   origArgs[0]=flags, [1]=stack, [2]=ptid, [3]=tls, [4]=ctid
 
-    if (!this.callbacks.onClone) {
+    const groupedClone = channel.source instanceof GroupProcessAddressSpace;
+    const cloneCallback = groupedClone ? this.callbacks.onGroupedClone : this.callbacks.onClone;
+    if (!cloneCallback) {
       this.completeChannel(
         channel,
         SYS_CLONE,
         origArgs,
         undefined,
         -1,
-        38,
+        groupedClone ? ERRNO.EOPNOTSUPP : 38,
         [],
         undefined,
         entry,
@@ -22982,9 +25256,11 @@ export class CentralizedKernelWorker {
     const flags = origArgs[0] >>> 0;
     const ptidPtr = origArgs[2];
     const rawCtidPtr = origArgs[4];
-    const processBytes = new Uint8Array(channel.memory.buffer);
-    const validTaskWord = (ptr: number) =>
-      (ptr & 3) === 0 && isValidMemoryRange(processBytes, ptr, 4);
+    const validTaskWord = (ptr: number): boolean => {
+      if (!Number.isSafeInteger(ptr) || ptr <= 0 || ptr % 4) return false;
+      try { checkProcessWriteRange(channel.source, ptr, 4); return true; }
+      catch { return false; }
+    };
     if ((flags & CLONE_PARENT_SETTID) !== 0 && !validTaskWord(ptidPtr)) {
       this.completeChannel(
         channel,
@@ -23074,6 +25350,7 @@ export class CentralizedKernelWorker {
       registration: this.processes.get(channel.pid),
       request: this.activeChannelRequests.get(channel),
       memory: channel.memory,
+      source: channel.source,
       origArgs,
       parentTidWritten: false,
     };
@@ -23087,13 +25364,13 @@ export class CentralizedKernelWorker {
       // write only after Rust has committed the exact TID. Preflight above
       // guarantees this cannot strand ThreadInfo with a host RangeError.
       if ((flags & CLONE_PARENT_SETTID) !== 0) {
-        new DataView(channel.memory.buffer).setInt32(ptidPtr, tid, true);
+        processDataView(channel.source, ptidPtr, 4).setInt32(0, tid, true);
         cloneState.parentTidWritten = true;
       }
 
       // Read fnPtr and argPtr from CH_DATA (written by the clone glue). Wasm
       // table indices remain u32 even for a wasm64 process.
-      const processView = new DataView(channel.memory.buffer, channel.channelOffset);
+      const processView = processDataView(channel.source, channel.channelOffset);
       const fnPtr = processView.getUint32(CH_DATA, true);
       const argPtr = processView.getUint32(CH_DATA + 4, true);
       const stackPtr = origArgs[1];
@@ -23109,6 +25386,9 @@ export class CentralizedKernelWorker {
         tlsPtr,
         ctidPtr,
         channel.memory,
+        channel.source,
+        channel,
+        cloneState.request,
       );
       cloneState.cloneAttachment = createdAttachment.attachment;
       cloneState.pendingAttachment = createdAttachment.pending;
@@ -23129,6 +25409,11 @@ export class CentralizedKernelWorker {
     }
 
     const attachment = cloneState.cloneAttachment!;
+    if (groupedClone) {
+      cloneState.finished = new this.#promiseReceiver<void>(resolve => { cloneState.finish = resolve; });
+      cloneState.launchSettled = new this.#promiseReceiver<void>(resolve => { cloneState.settleLaunch = resolve; });
+      this.#pendingGroupClones.add(cloneState);
+    }
     entry.deferProtocolTransactionStart(() => {
       // Destroy can complete the original mailbox while this detached start
       // waits its turn. Its Rust allocation still needs rollback even though
@@ -23151,7 +25436,9 @@ export class CentralizedKernelWorker {
       let transaction: Promise<void>;
       try {
         transaction = this.#resolvePromise(
-          this.callbacks.onClone!(attachment),
+          groupedClone
+            ? this.callbacks.onGroupedClone!(attachment as GroupedThreadChannelAttachment)
+            : this.callbacks.onClone!(attachment as ThreadChannelAttachment),
         );
       } catch (cause) {
         this.#runOrDeferAllocatedCloneCompletionKernelEntry(
@@ -23167,50 +25454,59 @@ export class CentralizedKernelWorker {
         );
         return undefined;
       }
-      this.#continuePromise(transaction, () => {
+      const completion = this.#continuePromise(transaction, () => {
         this.#runOrDeferAllocatedCloneCompletionKernelEntry(
           tid,
           `clone launch completion pid=${channel.pid}`,
           (completionEntry) => {
-            // A successful callback without an attachment is a real contract
-            // failure even when teardown already retired its caller.
-            if (cloneState.pendingAttachment?.attachedChannelOffset === undefined) {
-              this.#finishFailedCloneWithinKernelEntry(
-                channel, tid, ptidPtr, cloneState,
-                new Error(`onClone returned without attaching kernel tid ${tid}`),
-                false, completionEntry,
+            try {
+              // A successful callback without an attachment is a real contract
+              // failure even when teardown already retired its caller.
+              if (cloneState.pendingAttachment?.attachedChannelOffset === undefined) {
+                this.#finishFailedCloneWithinKernelEntry(
+                  channel, tid, ptidPtr, cloneState,
+                  new Error(`onClone returned without attaching kernel tid ${tid}`),
+                  false, completionEntry,
+                );
+                return undefined;
+              }
+              const groupedReplica = cloneState.pendingAttachment.groupedReplica;
+              if (groupedClone && (!groupedReplica || !this.#observedMemoryGroupReplicas.has(groupedReplica))) {
+                this.#finishFailedCloneWithinKernelEntry(channel, tid, ptidPtr, cloneState,
+                  new Error(`onGroupedClone returned without publishing an observed Worker for tid ${tid}`),
+                  false, completionEntry);
+                return undefined;
+              }
+              // The callback published its Worker owner before resolving. A
+              // retired caller only loses result-publication authority; removing
+              // this transferred channel would prevent that Worker's cooperative
+              // exit and its exact memory-quiescence acknowledgement.
+              cloneState.transferred = true;
+              pendingThreadChannelAttachments.delete(attachment);
+              if (
+                !this.#isCurrentCloneImageWithinKernelEntry(
+                  channel, cloneState, completionEntry,
+                )
+              ) {
+                return undefined;
+              }
+              this.completeChannel(
+                channel,
+                SYS_CLONE,
+                origArgs,
+                undefined,
+                tid,
+                0,
+                [],
+                {
+                  tid,
+                  parentTidPointer:
+                    cloneState.parentTidWritten ? ptidPtr : undefined,
+                },
+                completionEntry,
               );
               return undefined;
-            }
-            // The callback published its Worker owner before resolving. A
-            // retired caller only loses result-publication authority; removing
-            // this transferred channel would prevent that Worker's cooperative
-            // exit and its exact memory-quiescence acknowledgement.
-            cloneState.transferred = true;
-            pendingThreadChannelAttachments.delete(attachment);
-            if (
-              !this.#isCurrentCloneImageWithinKernelEntry(
-                channel, cloneState, completionEntry,
-              )
-            ) {
-              return undefined;
-            }
-            this.completeChannel(
-              channel,
-              SYS_CLONE,
-              origArgs,
-              undefined,
-              tid,
-              0,
-              [],
-              {
-                tid,
-                parentTidPointer:
-                  cloneState.parentTidWritten ? ptidPtr : undefined,
-              },
-              completionEntry,
-            );
-            return undefined;
+            } finally { this.#finishGroupClone(cloneState, completionEntry); }
           },
           cloneState,
         );
@@ -23227,6 +25523,7 @@ export class CentralizedKernelWorker {
           cloneState,
         );
       });
+      this.#observeProtocolCompletionFailure(completion);
       return undefined;
     });
   }
@@ -23264,16 +25561,13 @@ export class CentralizedKernelWorker {
       !registration || !state.request || state.request.syscallNr !== SYS_CLONE
       || this.processes.get(channel.pid) !== registration
       || registration.memory !== state.memory || channel.memory !== state.memory
+      || registration.source !== state.source || channel.source !== state.source
       || this.execHandoffPids?.has(channel.pid)
       || !this.isRegisteredChannel(channel) || channel.handling !== true
       || this.activeChannelRequests.get(channel) !== state.request
     ) return false;
-    const buffer = state.memory.buffer;
-    const view = new DataView(buffer, channel.channelOffset);
-    return Atomics.load(
-      new Int32Array(buffer, channel.channelOffset),
-      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-    ) === CH_PENDING && view.getUint32(CH_SYSCALL, true) === SYS_CLONE;
+    return this.loadChannelStatus(channel) === CH_PENDING
+      && processDataView(state.source, channel.channelOffset).getUint32(CH_SYSCALL, true) === SYS_CLONE;
   }
 
   #isCurrentCloneImageWithinKernelEntry(
@@ -23305,29 +25599,76 @@ export class CentralizedKernelWorker {
     cancelled: boolean,
     entry: KernelWorkerEntryContext,
   ): void {
-    if (state.transferred) {
-      // Successful launch has already made the thread observable. A later
-      // publication failure cannot undo it as though no Worker ever ran.
-      this.#terminateForKernelProtocolFailureWithinKernelEntry(
-        channel, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
-      );
-      return;
-    }
     try {
-      this.#rollbackCloneWithinKernelEntry(channel, tid, ptidPtr, state, entry);
-    } catch (rollbackError) {
-      this.#rethrowKernelEntryFatal(rollbackError);
-      this.#terminateForKernelProtocolFailureWithinKernelEntry(
-        channel,
-        `could not roll back allocated tid ${tid}: ${
-          rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-        }`,
-        entry,
-      );
+      if (state.transferred) {
+        // Successful launch has already made the thread observable. A later
+        // publication failure cannot undo it as though no Worker ever ran.
+        this.#failCloneProtocolWithinKernelEntry(
+          channel, state, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
+        );
+        return;
+      }
+      try {
+        this.#rollbackCloneWithinKernelEntry(channel, tid, ptidPtr, state, entry);
+      } catch (rollbackError) {
+        this.#rethrowKernelEntryFatal(rollbackError);
+        this.#failCloneProtocolWithinKernelEntry(
+          channel, state,
+          `could not roll back allocated tid ${tid}: ${
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          }`,
+          entry,
+        );
+        return;
+      }
+      const replica = state.pendingAttachment?.groupedReplica;
+      if (replica && !this.#memoryGroupReplicas.get(replica)!.replicaExecutionStopped(replica)) {
+        // Returning an errno would let musl unmap/reuse the failed stack while
+        // an uncertain realm may still execute. Keep the creator pending and
+        // retain all charges; never report a synthetic exit or crash a successor.
+        state.failureCompletionPending = true;
+        this.#failKernelInstance(new MemoryGroupProtocolFault('Failed grouped thread has no execution-stop proof', { cause }));
+        return;
+      }
+      if (state.controlCleanup) {
+        state.failureCompletionPending = true;
+        entry.deferProtocolEffect(() => {
+          void this.#continuePromise(state.controlCleanup!, () => {
+            this.#runOrDeferAllocatedCloneCompletionKernelEntry(tid, 'complete reclaimed clone refusal', completionEntry => {
+              state.failureCompletionPending = false;
+              try { this.#completeFailedCloneWithinKernelEntry(channel, state, cause, cancelled, completionEntry); }
+              finally { this.#finishGroupClone(state, completionEntry); }
+              return undefined;
+            }, state);
+          }, cleanupError => {
+            // A stale image must never crash a replacement through its PID.
+            // Poison the instance and retain charge if exact cleanup fails.
+            this.#failKernelInstance(new MemoryGroupProtocolFault(
+              `Could not retire unconstructed tid ${tid}`, { cause: cleanupError }));
+          });
+          return undefined;
+        });
+        return;
+      }
+      this.#completeFailedCloneWithinKernelEntry(channel, state, cause, cancelled, entry);
+    } finally { this.#finishGroupClone(state, entry); }
+  }
+
+  #failCloneProtocolWithinKernelEntry(channel: ChannelInfo, state: CloneRollbackState,
+    reason: string, entry: KernelWorkerEntryContext): void {
+    if (state.source instanceof GroupProcessAddressSpace) {
+      // An old grouped continuation has no PID-only authority over a newer
+      // image. Uncertain rollback/adoption is fatal, retaining every charge.
+      state.failureCompletionPending = true;
+      this.#failKernelInstance(new MemoryGroupProtocolFault(reason));
       return;
     }
-    // A closed creator gate proves terminal refusal, not Worker failure.
-    // Classify it only AFTER exact rollback; unknown ownership stays fatal.
+    this.#terminateForKernelProtocolFailureWithinKernelEntry(channel, reason, entry);
+  }
+
+  #completeFailedCloneWithinKernelEntry(channel: ChannelInfo, state: CloneRollbackState,
+    cause: unknown, cancelled: boolean, entry: KernelWorkerEntryContext): void {
+    // Classify refusal only after exact rollback; unknown ownership stays fatal.
     if (!cancelled && !isProcessMemoryCreatorAdmissionClosed(cause)) {
       entry.deferObserverEffect(() => {
         console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
@@ -23335,9 +25676,44 @@ export class CentralizedKernelWorker {
       });
     }
     if (!this.#isCurrentCloneImageWithinKernelEntry(channel, state, entry)) return;
-    this.completeChannel(
-      channel, SYS_CLONE, state.origArgs, undefined, -1, 12, [], undefined, entry,
-    );
+    this.completeChannel(channel, SYS_CLONE, state.origArgs, undefined, -1, ENOMEM, [], undefined, entry);
+  }
+
+  #finishGroupClone(state: CloneRollbackState, entry: KernelWorkerEntryContext): void {
+    if (this.#kernelFatalError !== null) return;
+    const settle = state.settleLaunch;
+    if (settle) {
+      state.settleLaunch = undefined;
+      entry.deferProtocolEffect(() => { settle(); return undefined; });
+    }
+    if (state.failureCompletionPending || !this.#pendingGroupClones.delete(state)) return;
+    const finish = state.finish!;
+    entry.deferProtocolEffect(() => { finish(); return undefined; });
+  }
+
+  async #settleUnconstructedThreadControl(thread: PendingThreadChannelAttachment, attachedOffset: number | undefined): Promise<void> {
+    const owner = thread.controlOwner!, slot = thread.controlSlot!;
+    if (attachedOffset !== undefined) {
+      await this.settleRetiredChannelListeners(thread.pid, thread.memory, attachedOffset, thread.source);
+    }
+    for (;;) {
+      let result = -EBUSY;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('release unconstructed thread controls', entry => {
+        const current = this.processes.get(thread.pid);
+        if (current?.source === thread.source && current.channels.some(channel =>
+          channel.channelOffset >= slot.address && channel.channelOffset < slot.address + slot.length)) return undefined;
+        const released = owner.store.tryReleaseUnconstructedThreadControl(owner.rootHandle, slot.address, slot.length, () => {
+          result = this.#releaseGroupThreadControlWithinKernelEntry(owner.receipt, entry);
+          return result === 0;
+        });
+        if (released === 'released') result = 0;
+        else if (result === 0) result = -EBUSY;
+        return undefined;
+      }));
+      if (result === 0) return;
+      if (result !== -EBUSY) throw new MemoryGroupProtocolFault(`Unconstructed control retirement refused: ${result}`);
+      await owner.store.waitForThreadRetirementProgress(owner.rootHandle);
+    }
   }
 
   /**
@@ -23365,7 +25741,8 @@ export class CentralizedKernelWorker {
       // as by exec. Only the exact attached channel AND Rust TID are ours.
       const registration = this.processes.get(channel.pid);
       const attachedChannel = state.pendingAttachment?.attachedChannel;
-      if (registration?.memory === state.memory && attachedChannel
+      if (registration?.memory === state.memory && registration.source === state.source && attachedChannel
+        && attachedChannel.source === state.source
         && registration.channels.includes(attachedChannel)
         && this.channelTids.get(`${channel.pid}:${attachedChannelOffset}`) === tid) {
         try {
@@ -23384,8 +25761,26 @@ export class CentralizedKernelWorker {
     if (state.parentTidWritten) {
       // The original mailbox may already have returned to its caller. Do
       // not clear a replacement task's word, even if it uses the same address.
-      Atomics.compareExchange(new Int32Array(state.memory.buffer), ptidPtr / 4, tid, 0);
+      try {
+        if (state.source instanceof GroupProcessAddressSpace) {
+          state.source.atomicCompareExchangeI32(ptidPtr, tid, 0);
+        } else {
+          Atomics.compareExchange(new Int32Array(state.source.buffer), ptidPtr / 4, tid, 0);
+        }
+      } catch (error) {
+        // Revoked images have no caller to observe rollback. Always retire
+        // the exact Rust task even if its old word can no longer be written.
+        if (!(error instanceof ProcessAddressFault && error.reason === 'retired')) {
+          transportRollbackError ??= error;
+        }
+      }
       state.parentTidWritten = false;
+    }
+    const groupedReplica = state.pendingAttachment?.groupedReplica;
+    if (groupedReplica) {
+      const store = this.#memoryGroupReplicas.get(groupedReplica);
+      if (!store) this.#memoryGroupProtocolError('Clone rollback lost its exact replica');
+      if (!store.replicaExecutionStopped(groupedReplica)) this.#quarantineStartedMemoryGroupReplica(store, groupedReplica, entry, true);
     }
     this.#rollbackKernelThreadWithinKernelEntry(
       channel.pid,
@@ -23394,6 +25789,31 @@ export class CentralizedKernelWorker {
     );
     if (transportRollbackError !== undefined) {
       throw transportRollbackError;
+    }
+    const pending = state.pendingAttachment;
+    if (groupedReplica && !state.controlCleanup) {
+      const owner = this.#memoryGroupThreadControls.get(groupedReplica);
+      if (owner?.store.replicaExecutionStopped(groupedReplica)) {
+        const retire = owner.retireHostReferences;
+        if (!retire) this.#memoryGroupProtocolError('Failed published thread lost its reference owner');
+        // This cleanup itself owns clone.finished. Joining that same promise
+        // here would deadlock refusal and image retirement behind one another.
+        const record = this.#groupThreadRetirements.get(groupedReplica) ?? this.#beginGroupThreadRetirement(owner, [], () => {
+          if (!retire()) throw new MemoryGroupProtocolFault('Failed published thread references have no stop proof');
+        }, entry);
+        state.controlCleanup = record.finished.then(status => {
+          if (status !== 0) throw new MemoryGroupProtocolFault(`Failed published thread retirement refused: ${status}`);
+        });
+      }
+    }
+    if (pending?.controlSlot && pending.controlOwner && !pending.controlStarted && !state.controlCleanup) {
+      // Keep the exact clone/image owner until fresh-entry cleanup completes.
+      state.controlCleanup = new this.#promiseReceiver<void>((resolve, reject) => {
+        entry.deferProtocolEffect(() => {
+          void this.#settleUnconstructedThreadControl(pending, attachedChannelOffset).then(resolve, reject);
+          return undefined;
+        });
+      });
     }
   }
 
@@ -23545,7 +25965,7 @@ export class CentralizedKernelWorker {
       // An already-reaped zombie is normal here (see above).
       this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry, true);
       this.hostReaped.add(exitingPid);
-      this.notifyParentOfExitedProcess(exitingPid, entry, exitParentPid);
+      if (!this.processes.get(exitingPid)?.grouped) this.notifyParentOfExitedProcess(exitingPid, entry, exitParentPid);
     }
 
     // Complete the channel so the worker unblocks from Atomics.wait().
@@ -23554,6 +25974,12 @@ export class CentralizedKernelWorker {
     this.completeProcessExitHandshake(channel, syscallNr, entry);
     this.#retireExitedProcessChannels(exitingPid, entry, channel);
 
+    const groupedExit = this.processes.get(exitingPid);
+    if (groupedExit?.grouped) {
+      this.#beginGroupProcessExit(groupedExit, exitStatus, exitParentPid, this.guestTidForChannel(channel), entry);
+      entry.deferProtocolEffect(() => { this.scheduleWakeBlockedRetries(); return undefined; });
+      return;
+    }
     // Wake any processes blocked on pipe reads/polls — the exiting process's
     // FDs were closed by the kernel (sys_exit), so pipes with no remaining
     // writers should now return EOF to readers.
@@ -23565,6 +25991,50 @@ export class CentralizedKernelWorker {
       this.callbacks.onExit?.(exitingPid, exitStatus);
       return undefined;
     });
+  }
+
+  /** Rust has committed exit, but a grouped image can still execute.
+   * Keep exact image custody through cooperative stop and every Worker fence
+   * before publishing SIGCHLD/onExit. The natural actor keeps its exit handshake. */
+  #beginGroupProcessExit(registration: ProcessRegistration, exitStatus: number, parentPid: number | undefined,
+    naturalExitTid: number | undefined, entry: KernelWorkerEntryContext): void {
+    const group = registration.grouped!;
+    if (this.#groupProcessExits.has(group.handle)) return;
+    let resolve!: () => void, reject!: (cause: unknown) => void;
+    const finished = new this.#promiseReceiver<void>((yes, no) => { resolve = yes; reject = no; });
+    const record: GroupProcessExit = { registration, finished };
+    this.#groupProcessExits.set(group.handle, record);
+    group.store.requestImageStop(group.handle, naturalExitTid);
+    entry.deferProtocolEffect(() => {
+      void this.#settleGroupProcessExit(record, exitStatus, parentPid, naturalExitTid).then(() => {
+        record.registration = undefined; resolve();
+      }, reject);
+      this.#observeProtocolCompletionFailure(finished);
+      return undefined;
+    });
+  }
+
+  async #settleGroupProcessExit(record: GroupProcessExit, exitStatus: number, parentPid: number | undefined,
+    naturalExitTid: number | undefined): Promise<void> {
+    const registration = record.registration!, group = registration.grouped!;
+    for (;;) {
+      let drained = false;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('drain exact grouped image stop', _entry => {
+        drained = group.store.requestImageStop(group.handle, naturalExitTid); return undefined;
+      }));
+      if (drained) break;
+      await group.store.waitForThreadRetirementProgress(group.handle);
+    }
+    await group.store.waitForImageQuiescence(group.handle);
+    await retryKernelEntryResult(() => this.#runImmediateKernelEntry('publish stopped grouped process exit', entry => {
+      const generation = this.#processExecGenerationWithinKernelEntry(registration.pid, entry);
+      if (generation instanceof Error) {
+        if (!(generation instanceof KernelTaskBindingError && generation.errno === ESRCH)) throw generation;
+      } else if (generation !== registration.execGeneration) return undefined;
+      this.notifyParentOfExitedProcess(registration.pid, entry, parentPid);
+      entry.deferProtocolEffect(() => { this.callbacks.onExit?.(registration.pid, exitStatus); return undefined; });
+      return undefined;
+    }));
   }
 
   /**
@@ -23594,6 +26064,8 @@ export class CentralizedKernelWorker {
   ): void {
     const exitingPid = channel.pid;
     const registration = this.processes.get(exitingPid);
+    if (this.#holdCommittedGroupExecTermination(exitingPid, entry) !== undefined) return;
+    const signal = this.#getProcessExitSignal(exitingPid, entry);
     const canQuiesceBorrowedWorker =
       registration?.borrowedAddressSpace === true
       && registration.channels.length === 1
@@ -23614,7 +26086,6 @@ export class CentralizedKernelWorker {
     // early guard prevents recursive termination cleanup.
     // Capture the signal before notifying the parent: a synchronous wait can
     // consume and reap the zombie, after which the kernel query returns ESRCH.
-    const signal = this.#getProcessExitSignal(exitingPid, entry);
     // Likewise the parent: the drain below may let it reap the zombie.
     const parentPid = this.getParentPid(exitingPid, entry);
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(exitingPid);
@@ -23625,9 +26096,13 @@ export class CentralizedKernelWorker {
     // Exited and released its process/OFD/flock records. Consume that generic
     // kernel wake before a parent waiter or host exit callback can run.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-    this.notifyParentOfExitedProcess(exitingPid, entry, parentPid);
+    if (!registration?.grouped) this.notifyParentOfExitedProcess(exitingPid, entry, parentPid);
     this.#retireExitedProcessChannels(exitingPid, entry,
       canQuiesceBorrowedWorker ? channel : undefined);
+    if (registration?.grouped) {
+      this.#beginGroupProcessExit(registration, signal > 0 ? 128 + signal : -1, parentPid, undefined, entry);
+      return;
+    }
 
     if (canQuiesceBorrowedWorker) {
       // WHY: forced Worker termination cannot prove that a vfork child has
@@ -23729,6 +26204,9 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     if (this.hostReaped.has(pid)) return;
+    // A late old-Worker error cannot overwrite an already recorded exec
+    // signal, or re-enter Rust after the cancelled future permits reaping.
+    if (this.#holdCommittedGroupExecTermination(pid, entry) !== undefined) return;
     const markSignaled = entry.instance.exports
       .kernel_mark_process_signaled as
       ((pid: number, signum: number) => number) | undefined;
@@ -23742,6 +26220,10 @@ export class CentralizedKernelWorker {
         `Kernel rejected signal-death transition for process ${pid}: ${detail}`,
       );
     }
+    if (this.#holdCommittedGroupExecTermination(pid, entry) !== undefined) {
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      return;
+    }
     // The drain below may let a parked parent reap the zombie; learn the
     // parent while the zombie still names it.
     const parentPid = this.getParentPid(pid, entry);
@@ -23754,8 +26236,10 @@ export class CentralizedKernelWorker {
     // even for a root/no-parent process, where SIGCHLD routing cannot provide
     // an incidental kernel event drain.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-    this.notifyParentOfExitedProcess(pid, entry, parentPid);
+    const registration = this.processes.get(pid);
+    if (!registration?.grouped) this.notifyParentOfExitedProcess(pid, entry, parentPid);
     this.#retireExitedProcessChannels(pid, entry);
+    if (registration?.grouped) this.#beginGroupProcessExit(registration, 128 + signum, parentPid, undefined, entry);
   }
 
   /**
@@ -23796,6 +26280,8 @@ export class CentralizedKernelWorker {
         this.#handleProcessTerminatedWithinKernelEntry(ch, entry);
       } else if (ch) {
         this.handleProcessTerminated(ch);
+      } else if (proc?.grouped && entry && signal > 0) {
+        this.#holdCommittedGroupExecTermination(pid, entry, signal);
       }
     }
   }
@@ -23860,8 +26346,14 @@ export class CentralizedKernelWorker {
     pid: number,
     entry: KernelWorkerEntryContext,
   ): number {
+    const held = this.#holdCommittedGroupExecTermination(pid, entry);
+    if (held !== undefined) return held;
     const signal = this.#getProcessExitSignal(pid, entry);
     if (signal <= 0) return signal;
+    // Grouped exec retires the old registration before its final callback.
+    // Rust's existing publication bit survives that removal; no per-PID host
+    // tombstone is needed to suppress a later generic finalizer.
+    if (this.#isKernelProcessExitPublished(pid, entry)) return signal;
     this.discardStoppedChannelStateForProcess(pid);
     if (this.hostReaped.has(pid)) return signal;
 
@@ -23910,6 +26402,15 @@ export class CentralizedKernelWorker {
    *  never reused; entries are cleared only with retired host transport state. */
   private hostReaped = new Set<number>();
 
+  #isKernelProcessExitPublished(pid: number, entry: KernelWorkerEntryContext): boolean {
+    const readPublished = this.#kernelInstanceForEntry(entry).exports.kernel_get_process_exit_published;
+    if (typeof readPublished !== 'function') this.#memoryGroupProtocolError('Missing kernel exit publication query');
+    const status = readPublished(pid);
+    if (status === 0) return false;
+    if (status === 1 || status === -ESRCH) return true;
+    return this.#memoryGroupProtocolError('Invalid kernel exit publication query result');
+  }
+
   private getParentPid(
     pid: number,
     entry: KernelWorkerEntryContext,
@@ -23950,8 +26451,9 @@ export class CentralizedKernelWorker {
    * Route a child's exit to its parent's host-owned waits.
    *
    * The kernel announces the exit itself (SIGCHLD, or the SA_NOCLDWAIT /
-   * SIG_IGN auto-reap) when it records it, before any wait is decided
-   * (`wait_child::announce_exit`), so the host never generates exit SIGCHLD.
+   * SIG_IGN auto-reap) once its status is observable, before any wait is
+   * decided (`wait_child::announce_exit`). Grouped execution custody defers
+   * both the status and announcement; the host never generates exit SIGCHLD.
    * What remains here is transitional: until every wait is kernel-owned
    * (step 5 of docs/plans/2026-09-27-guest-waits-into-rust.md), a parent
    * thread parked in a host-owned wait (poll, select, accept, a blocking
@@ -24450,8 +26952,12 @@ export class CentralizedKernelWorker {
     ) return false;
     const end = addr + len;
     if (!Number.isSafeInteger(end) || end < addr) return false;
-    const before = channel.memory.buffer.byteLength;
+    const before = processMemoryByteLength(channel.source);
     if (end <= before) return true;
+    // A group's physical extent includes other images and control pages. It
+    // cannot grow a virtual root. Fail capacity preflight until the mapping
+    // transaction owns virtual page allocation and publication.
+    if (channel.source instanceof GroupProcessAddressSpace) return false;
     try {
       const ptrWidth = this.processes.get(channel.pid)?.ptrWidth ?? 4;
       growMemoryToCover(channel.memory, end, ptrWidth);
@@ -24476,6 +26982,7 @@ export class CentralizedKernelWorker {
   private ensureProcessMemoryCovers(
     pid: number,
     processMemory: WebAssembly.Memory,
+    source: ProcessMemorySource,
     syscallNr: number,
     retVal: number,
     origArgs: number[],
@@ -24488,7 +26995,7 @@ export class CentralizedKernelWorker {
       );
     }
     const ptrWidth = this.processes.get(pid)?.ptrWidth ?? 4;
-    if (syscallNr === SYS_MREMAP) {
+    if (syscallNr === SYS_MREMAP && !(source instanceof GroupProcessAddressSpace)) {
       // The old bytes are a host copy source when a mapping moves. Prove that
       // complete caller range before memory.grow or zero-fill mutates the new
       // destination.
@@ -24538,9 +27045,19 @@ export class CentralizedKernelWorker {
       );
     }
 
-    const currentBytes = processMemory.buffer.byteLength;
+    const currentBytes = processMemoryByteLength(source);
+    // Read before zeroing the destination: even discontiguous guest spans
+    // may alias physical pages. Keep the prefix owned across every store.
+    const movedPrefix = source instanceof GroupProcessAddressSpace
+      && syscallNr === SYS_MREMAP && retVal !== origArgs[0]
+      && origArgs[0] !== 0 && origArgs[1] > 0
+      ? readProcessBytes(source, origArgs[0], Math.min(alignWasmPageLength(origArgs[1]), alignWasmPageLength(mmapLen)))
+      : undefined;
 
     if (endAddr > 0 && endAddr > currentBytes) {
+      if (source instanceof GroupProcessAddressSpace) {
+        throw new RangeError("Grouped mapping exceeds its published virtual extent");
+      }
       growMemoryToCover(processMemory, endAddr, ptrWidth);
       const grownBuffer = processMemory.buffer;
       entry.deferObserverEffect(() => {
@@ -24569,7 +27086,7 @@ export class CentralizedKernelWorker {
     if (mmapLen > 0) {
       const PAGE_SIZE = 65536; // Wasm page size
       const alignedLen = Math.ceil(mmapLen / PAGE_SIZE) * PAGE_SIZE;
-      const newBytes = processMemory.buffer.byteLength;
+      const newBytes = processMemoryByteLength(source);
       let zeroStart = mmapAddr;
       const zeroEnd = Math.min(mmapAddr + alignedLen, newBytes);
       if (syscallNr === SYS_MREMAP) {
@@ -24589,7 +27106,7 @@ export class CentralizedKernelWorker {
         // doesn't touch.
       }
       if (zeroStart < zeroEnd) {
-        new Uint8Array(processMemory.buffer, zeroStart, zeroEnd - zeroStart).fill(0);
+        fillProcessBytes(source, zeroStart, zeroEnd - zeroStart, 0);
       }
     }
 
@@ -24615,13 +27132,14 @@ export class CentralizedKernelWorker {
     ) {
       const oldAddr = origArgs[0];
       const newAddr = retVal;
-      // Whole pages move: bytes past old_len in its last page belong to the
-      // mapping too, as they do when Linux moves the page itself.
+      // Move whole pages while retaining the exact source for paged images.
       const copyLen = Math.min(
         alignWasmPageLength(origArgs[1]),
         alignWasmPageLength(origArgs[2]),
       );
-      if (copyLen > 0) {
+      if (copyLen > 0 && movedPrefix) {
+        writeProcessBytes(source, newAddr, movedPrefix);
+      } else if (copyLen > 0) {
         const buf = processMemory.buffer;
         const totalBytes = buf.byteLength;
         if (oldAddr + copyLen <= totalBytes && newAddr + copyLen <= totalBytes) {
@@ -25113,8 +27631,8 @@ export class CentralizedKernelWorker {
    * completion, registered process, attached thread channel, kernel-published
    * wait completion and `host_proc_write_bytes`.
    */
-  #noteGuestMayRun(memory: WebAssembly.Memory): void {
-    this.#memoryRunEpochs.set(memory, ++this.#memoryRunEpochCounter);
+  #noteGuestMayRun(source: ProcessMemorySource): void {
+    this.#memoryRunEpochs.set(source, ++this.#memoryRunEpochCounter);
   }
 
   /**
@@ -25137,15 +27655,19 @@ export class CentralizedKernelWorker {
   #processQuiescentEpoch(pid: number): bigint {
     const registration = this.processes?.get(pid);
     if (!registration || registration.channels.length === 0) return -1n;
+    // A parked channel alone cannot prove all translated replicas and their
+    // writers are quiescent. Keep CleanStamp reuse disabled until that exact
+    // image's execution/lifecycle barrier is integrated.
+    if (registration.source instanceof GroupProcessAddressSpace) return -1n;
     for (const channel of registration.channels) {
-      if (Atomics.load(channel.i32View, CH_STATUS / 4) !== CH_PENDING) return -1n;
+      if (this.loadChannelStatus(channel) !== CH_PENDING) return -1n;
     }
     for (const other of this.processes.values()) {
       if (other !== registration && other.memory === registration.memory) {
         return -1n;
       }
     }
-    return BigInt(this.#memoryRunEpochs.get(registration.memory) ?? 0);
+    return BigInt(this.#memoryRunEpochs.get(registration.source) ?? 0);
   }
 
   /**
@@ -27234,9 +29756,9 @@ export class CentralizedKernelWorker {
       if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) break;
       if (bytesRead > chunkSize) break;
 
-      // Copy from kernel scratch data area to process memory
-      const processMem = new Uint8Array(channel.memory.buffer);
-      processMem.set(attempt.bytes, mmapAddr + written);
+      // The lease ended with owned bytes; the destination is a guest
+      // virtual address even when this image shares physical storage.
+      writeProcessBytes(channel.source, mmapAddr + written, attempt.bytes);
 
       written += bytesRead;
       fileOffset += bytesRead;
@@ -29737,17 +32259,14 @@ export class CentralizedKernelWorker {
   reapHostOwnedExitedProcess(pid: number): HostOwnedProcessReapResult {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let result: HostOwnedProcessReapResult | undefined;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `host-owned process reap pid=${pid}`,
       (entry) => {
         result = reapHostOwnedExitedProcessFromKernel(entry.instance, pid);
         return undefined;
       },
     );
-    if (deferred || result === undefined) {
-      throw new KernelReentrantEntryError(`host-owned process reap pid=${pid}`);
-    }
-    return result;
+    return result!;
   }
 
   // ---------------------------------------------------------------------------
@@ -31785,6 +34304,7 @@ export class CentralizedKernelWorker {
       this.ensureProcessMemoryCovers(
         channel.pid,
         channel.memory,
+        channel.source,
         SYS_MMAP,
         allocatedAddr,
         [checkedShmaddr, size, prot, 0x22, -1, 0],
@@ -32138,7 +34658,7 @@ export class CentralizedKernelWorker {
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas; bitmapPort?: MessagePort },
   ): void {
     // An embedder may attach a NEW OffscreenCanvas for the same CRTC;
     // a presenter cached against the old canvas would keep painting the
@@ -32162,6 +34682,16 @@ export class CentralizedKernelWorker {
           `current one; the new canvas stays blank until that session ends`,
         );
       }
+    }
+    const priorRelay = this.kmsBitmapRelays.get(crtc_id);
+    if (priorRelay) this.retireKmsBitmapRelay(priorRelay);
+    this.kmsBitmapRelays.delete(crtc_id);
+    this.kmsBitmapCursorCanvases.delete(crtc_id);
+    if (opts?.bitmapPort) {
+      this.kmsBitmapRelays.set(crtc_id, new KmsBitmapRelay(opts.bitmapPort, error => {
+        this.callbacks.onHostDiagnostic?.({pid: 0, source: 'kms-bitmap-relay', message: error.message + (error.cause === undefined ? '' : ': ' + String(error.cause))});
+      }));
+      if (opts.cursorCanvas) this.kmsBitmapCursorCanvases.set(crtc_id, opts.cursorCanvas);
     }
     const statsView = statsSab === undefined
       ? undefined
@@ -32562,12 +35092,12 @@ export class CentralizedKernelWorker {
         const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
           const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
-          return { plane, width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
+          return { crtcId, plane, width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
         });
         entry.deferObserverEffect(() => {
           if (this.vblankClock !== clock) return undefined;
-          for (const { plane, width, height, composited } of cursorPlanes) {
-            plane.present(cursorSnapshot, width, height, composited);
+          for (const { crtcId, plane, width, height, composited } of cursorPlanes) {
+            if (plane.present(cursorSnapshot, width, height, composited)) this.kmsBitmapRelays.get(crtcId)?.changed(1);
           }
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
@@ -32602,6 +35132,7 @@ export class CentralizedKernelWorker {
               0,
               0,
             );
+            this.kmsBitmapRelays.get(blit.crtcId)?.changed(0);
             if (blit.stats) {
               const blitUs =
                 ((performance.now() - blitStart) * 1000) | 0;
@@ -32627,6 +35158,7 @@ export class CentralizedKernelWorker {
               cursorSnapshot,
             );
             if (!painted) continue;
+            this.kmsBitmapRelays.get(present.crtcId)?.changed(0);
             const presentUs =
               ((performance.now() - presentStart) * 1000) | 0;
             const stats = this.kmsStatsViews.get(present.crtcId);
@@ -32655,6 +35187,11 @@ export class CentralizedKernelWorker {
               presenter.lastFbId = -1;
             }
             this.kmsBlanked.add(crtcId);
+            this.kmsBitmapRelays.get(crtcId)?.changed(0);
+          }
+          for (const [crtcId, relay] of this.kmsBitmapRelays) {
+            const canvas = this.kmsCanvases.get(crtcId);
+            if (canvas) relay.present(canvas, this.kmsBitmapCursorCanvases.get(crtcId));
           }
           for (const snapshot of statsSnapshots) {
             // Display capability outlives applications. Publish ownership

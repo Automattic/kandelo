@@ -48,6 +48,7 @@ const SCRATCH_OFFSET = 4096;
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -73,6 +74,7 @@ function createChannel(
   memory = createSharedMemory(),
 ): TestChannel {
   const channel: TestChannel = {
+    source: memory,
     pid,
     memory,
     channelOffset,
@@ -205,7 +207,7 @@ function registerProcess(
   const state = mutableState(harness);
   state.processes.set(pid, {
     pid,
-    memory: channels[0]!.memory,
+    memory: channels[0]!.memory, source: channels[0]!.source,
     channels,
     ptrWidth: 4,
   });

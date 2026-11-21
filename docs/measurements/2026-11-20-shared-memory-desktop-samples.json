@@ -1,0 +1,4477 @@
+{
+  "schemaVersion": 1,
+  "scope": "Derived review samples from retained raw reports. No promotion clearance, confidence interval, global speed claim, net memory saving or memory plateau. Absolute producer/cache paths and descriptive Git refs are omitted; logical input names, sizes, hashes and full source-report hashes are retained.",
+  "ordinaryExecutionBenchmarks": {
+    "scope": "DIAGNOSTIC ONLY: current conformance333 remains failed (tcgetwinsize both hosts, Node poll TIME), original failures retained; no promotion evidence. Corrected root-reap runtime369+exact327patch, emitted27JS rawexactfcf, ordinary-execution comparison with pinned develop715; fresh fetched bcc advancement reviewed as one test-classification row. All nine enabled suites, Node and browser; three fresh independent CLI launches per arm/host with alternating arm order. No inherited Node dataset, shared-group or desktop performance claim. Preserve existing explicit Erlang exclusion Later frontend checkpoint347b also FAILS two Firefox cases (confirmed Quake proxy502, unresolved audio activation; isolated359passes). Retain all outcomes; no current memory/correctness clearance.",
+    "sourceCampaignSha256": "9d4edd203b39097d27c3aa92f1038c627d56c32788c32a07d167d99de4324242",
+    "baselineCommit": "715243ed0aa1a8564a0dd8ad4bcef331ac3ca18a",
+    "candidateExecutionCommit": "369e61cb9b1b20d33e5b656d4407f74888b77f45",
+    "candidatePatchSha256": "b657473de616e01b4c378f95264c4425e4aac010e7bfc6dea0d8351922275abf",
+    "publishedEquivalentRuntimeCommit": "fcf00d4dfa9d7370d5b6c5a4a4fc91864cf575ae",
+    "destinationCommit": "bcc8b0c79523912872275f116965ed0fcf835b19",
+    "destinationDifference": "One CI evidence-classification row only, checked before and after",
+    "independentCliLaunches": 12,
+    "launchesPerArmAndHost": 3,
+    "roundsPerLaunch": 1,
+    "trackedOverlappingComputeJobs": 0,
+    "wholePhaseHostSleepAuditSha256": "e3a8e91a92c9802c460e77fa1403c0d436bae011895f66335a0b37620f09ea08",
+    "backgroundScope": "Reviewed retained preview identities/CPU recorded. No completely idle OS claim.",
+    "results": [
+      {
+        "host": "node",
+        "arm": "develop",
+        "sourceReportSha256": "2b13752ed5c43de46246e09c27d215ffcb3ddda7a958ab59b1e861028890d5f1",
+        "platform": "darwin",
+        "arch": "arm64",
+        "nodeVersion": "v24.22.1",
+        "timestamp": "2026-11-20T13:17:53.335856+00:00",
+        "aggregation": "Median of three independent normal CLI launches, one round each; arm order alternated",
+        "artifacts": {
+          "gitHead": "715243ed0aa1a8564a0dd8ad4bcef331ac3ca18a",
+          "files": {
+            "benchmarks/wasm/pipe-throughput.wasm": {
+              "path": "benchmarks/wasm/pipe-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44776,
+              "sha256": "37df700738cf016aa7ef75e2b02e51d87620db95b1e8aa98204b256173c080dd"
+            },
+            "benchmarks/wasm/file-throughput.wasm": {
+              "path": "benchmarks/wasm/file-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 42698,
+              "sha256": "4e3ccf5e9c3a90d4f75c75aa4e99b4339bdb8d1f84b4b812cd7cbed2372958f3"
+            },
+            "benchmarks/wasm/syscall-latency.wasm": {
+              "path": "benchmarks/wasm/syscall-latency.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 37150,
+              "sha256": "e8b8cb1dff848446e04fef24bc20eeede804b81606db10973100a807bdec29f4"
+            },
+            "benchmarks/wasm/stdin-throughput.wasm": {
+              "path": "benchmarks/wasm/stdin-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 38615,
+              "sha256": "617eeb17a679fcb2e94beecf42556a78e4b999380402b5d25ee2868657530155"
+            },
+            "benchmarks/wasm/hello.wasm": {
+              "path": "benchmarks/wasm/hello.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 18924,
+              "sha256": "3fb5d824a1c0db04504d1e6b467a24d2d7567e2690e4459906779286e88f0465"
+            },
+            "benchmarks/wasm/fork-bench.wasm": {
+              "path": "benchmarks/wasm/fork-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44460,
+              "sha256": "434ab4e2f16402b25c50237cf7db925ca84e4a10237815a6b63abfa2d7600a86"
+            },
+            "benchmarks/wasm/exec-bench.wasm": {
+              "path": "benchmarks/wasm/exec-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 21585,
+              "sha256": "01a9187c254a83fbbbb9910f3283719e20b6dfdf59e7ea079b42e95b84133838"
+            },
+            "benchmarks/wasm/clone-bench.wasm": {
+              "path": "benchmarks/wasm/clone-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 41158,
+              "sha256": "a0764cc5347ebf93a590f4ad334420d789d2957df4b5711dcbbc7885f58c8f83"
+            },
+            "benchmarks/wasm/spawn-bench.wasm": {
+              "path": "benchmarks/wasm/spawn-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 48688,
+              "sha256": "22e8a916c92379f5ef5ec281806025c64346a84a2e0241edfcaa29f5fbb5faaa"
+            },
+            "runtime.nodeWorkerBundle": {
+              "path": "host/dist/node-kernel-worker-entry.js",
+              "required": true,
+              "used": true,
+              "sizeBytes": 3213694,
+              "sha256": "b2a2b79d9d803261d819060597a746d4af6119ebb578c2bb4728cfb97bdb7cdd"
+            },
+            "runtime.kernel": {
+              "path": "kernel.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "kernel.wasm",
+              "sizeBytes": 2987889,
+              "sha256": "1f413aa9848aaf6ee80040a771403d8a27ed5468f1efc6a2169f9199bd6dcb06"
+            },
+            "runtime.rootfs": {
+              "path": "rootfs.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/rootfs.vfs.zst",
+              "sizeBytes": 173985,
+              "sha256": "ff8ea386b01ec8c136e577818fac3e66bd96150b03b244c6cc5ef7e817b67641"
+            },
+            "node.wordpress.php": {
+              "path": "programs/php/php.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/php/php.wasm",
+              "sizeBytes": 36853899,
+              "sha256": "e04b98f2bd39893616d3ad233e9ca8cc60c0f7103af4e37bae83ee438096f1e3"
+            },
+            "node.wordpress.config": {
+              "path": "packages/registry/wordpress/wordpress/wp-config.php",
+              "required": true,
+              "used": true,
+              "sizeBytes": 1257,
+              "sha256": "bb5a455216bb368b53508e5b21a71756ca8685fa5a2507070c5ac07bfdffba7e"
+            },
+            "node.wordpress.router": {
+              "path": "packages/registry/wordpress/demo/router.php",
+              "required": true,
+              "used": true,
+              "sizeBytes": 536,
+              "sha256": "d11a898dbd3af98b1642a8c24c120f3ef75deb2c10458847eab4ccdf3a00c3b8"
+            },
+            "node.mariadb.wasm32.server": {
+              "path": "programs/mariadb/mariadbd.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/mariadb/mariadbd.wasm",
+              "sizeBytes": 13087504,
+              "sha256": "4b5620c24064689e3d16914b5a6289c427fee6980310ba8d03560b930c9e8a61"
+            },
+            "node.mariadb.wasm32.client": {
+              "path": "programs/mariadb/mysqltest.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/mariadb/mysqltest.wasm",
+              "sizeBytes": 4163439,
+              "sha256": "c34270ef8486d029193662ec4061f44b1d5ff4dedac6e5faf95c01a894adf4c5"
+            },
+            "node.mariadb.wasm32.bootstrap.systemTables": {
+              "path": "<producer-path>/mysql_system_tables.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 30145,
+              "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+            },
+            "node.mariadb.wasm32.bootstrap.systemData": {
+              "path": "<producer-path>/mysql_system_tables_data.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 3328,
+              "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+            },
+            "node.mariadb.wasm64.server": {
+              "path": "programs/wasm64/mariadb/mariadbd.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wasm64/mariadb/mariadbd.wasm",
+              "sizeBytes": 14675300,
+              "sha256": "9ee4286596de580aa37b73e22879ea5204c6f657130449e5f9da99950e122e6e"
+            },
+            "node.mariadb.wasm64.client": {
+              "path": "programs/wasm64/mariadb/mysqltest.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wasm64/mariadb/mysqltest.wasm",
+              "sizeBytes": 4366841,
+              "sha256": "0c1847e1294157ba6c02d48f46937219a3f8335630157e0f1c30ab96ca1060b4"
+            },
+            "node.mariadb.wasm64.bootstrap.systemTables": {
+              "path": "<producer-path>/mysql_system_tables.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 30145,
+              "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+            },
+            "node.mariadb.wasm64.bootstrap.systemData": {
+              "path": "<producer-path>/mysql_system_tables_data.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 3328,
+              "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+            }
+          },
+          "directories": {
+            "runtime.hostSources": {
+              "path": "host/src",
+              "fileCount": 367,
+              "sizeBytes": 6679765,
+              "sha256": "07a2302d07a44cf8c1c937bbcf011d4c42caa4635d021786afe758a1be1bf0e4",
+              "required": true,
+              "excludedPaths": []
+            },
+            "node.wordpress.sourceTree": {
+              "path": "packages/registry/wordpress/wordpress",
+              "fileCount": 3972,
+              "sizeBytes": 86397207,
+              "sha256": "ba981f10172b7df6e0844b2744bcaf222c5193c53e6b900cc0e92b446d833c55",
+              "required": true,
+              "excludedPaths": [
+                "wp-content/database",
+                "wp-content/debug.log"
+              ]
+            }
+          },
+          "forkBench": {
+            "hasWpkForkSymbols": true,
+            "hasLegacyForkSymbols": false,
+            "matchedSymbols": [
+              "$wpk_fork_module_state_finish_restore",
+              "1$kandelo.wpk_fork.static_root_catalogKFSR",
+              "__wpk_fork_boundary",
+              "__wpk_fork_exception_materialize",
+              "__wpk_fork_frame_commit",
+              "__wpk_fork_frame_next",
+              "__wpk_fork_frame_reserve",
+              "__wpk_fork_function_catalog",
+              "__wpk_fork_global_1",
+              "__wpk_fork_global_2",
+              "__wpk_fork_global_3",
+              "__wpk_fork_global_4",
+              "__wpk_fork_global_5",
+              "__wpk_fork_global_6",
+              "__wpk_fork_module_activation",
+              "__wpk_fork_module_state_record_commit",
+              "__wpk_fork_module_state_record_find",
+              "__wpk_fork_module_state_record_reserve",
+              "__wpk_fork_module_state_table_reconcile",
+              "__wpk_fork_ref_decode_exnref",
+              "__wpk_fork_ref_encode_exnref",
+              "__wpk_fork_ref_exn_abort",
+              "__wpk_fork_ref_exn_broker_encode",
+              "__wpk_fork_ref_exn_broker_throw_recipe",
+              "__wpk_fork_ref_exn_cache_index",
+              "__wpk_fork_ref_exn_clear",
+              "__wpk_fork_ref_exn_encode_ingress",
+              "__wpk_fork_ref_exn_ingress_throw",
+              "__wpk_fork_ref_exn_lookup",
+              "__wpk_fork_ref_exn_route",
+              "__wpk_fork_ref_exn_throw_recipe",
+              "__wpk_fork_ref_exn_throw_slot",
+              "__wpk_fork_ref_gc_allocate",
+              "__wpk_fork_ref_gc_broker_encode",
+              "__wpk_fork_ref_gc_encode_slot",
+              "__wpk_fork_ref_gc_fill",
+              "__wpk_fork_ref_gc_i31",
+              "__wpk_fork_ref_gc_load",
+              "__wpk_fork_ref_gc_lookup",
+              "__wpk_fork_ref_gc_payload_len",
+              "__wpk_fork_ref_gc_probe",
+              "__wpk_fork_ref_gc_publish_externref",
+              "__wpk_fork_ref_gc_route",
+              "__wpk_fork_ref_gc_transit",
+              "__wpk_fork_ref_scratch_release",
+              "__wpk_fork_ref_scratch_reserve",
+              "__wpk_fork_resume_catalog",
+              "__wpk_fork_resume_peek",
+              "__wpk_fork_resume_table",
+              "__wpk_fork_static_root_catalog",
+              "__wpk_fork_static_root_harvest",
+              "__wpk_fork_table_1",
+              "__wpk_fork_unwind",
+              "env-__wpk_fork_module_state_table_generation_addr",
+              "kandelo.wpk_fork.boundariesKFSB",
+              "kandelo.wpk_fork.capabilities",
+              "kandelo.wpk_fork.exception_codec",
+              "kandelo.wpk_fork.gc_codecKFGC",
+              "kandelo.wpk_fork.imported_globalsKFIG",
+              "kandelo.wpk_fork.imported_tablesKFIT",
+              "kandelo.wpk_fork.linked_framesKLCF",
+              "kandelo.wpk_fork.module_stateKFMD",
+              "kandelo.wpk_fork.resume_catalogKFRC",
+              "kandelo.wpk_fork.unwind_transport",
+              "wpk_fork_abort_begin",
+              "wpk_fork_abort_end",
+              "wpk_fork_module_bootstrap",
+              "wpk_fork_module_state_restore",
+              "wpk_fork_module_state_save",
+              "wpk_fork_module_table_state_restore",
+              "wpk_fork_module_table_state_save",
+              "wpk_fork_module_thread_bootstrap",
+              "wpk_fork_resume_sink",
+              "wpk_fork_resume_start",
+              "wpk_fork_resume_thread",
+              "wpk_fork_rewind_begin",
+              "wpk_fork_rewind_end",
+              "wpk_fork_state",
+              "wpk_fork_unwind_begin",
+              "wpk_fork_unwind_end"
+            ],
+            "expected": "wpk_fork_without_legacy",
+            "passed": true
+          }
+        },
+        "medians": {
+          "syscall-io": {
+            "pipe_mbps": 49.2,
+            "file_write_mbps": 56.48,
+            "file_read_mbps": 121.86,
+            "lock_many_files_acquire_us_per_op": 30.17,
+            "lock_many_files_conflict_us_per_op": 26.06,
+            "lock_many_files_replace_us_per_op": 29.05,
+            "lock_many_files_unlock_us_per_op": 25.31,
+            "lock_dense_file_acquire_us_per_op": 25.47,
+            "lock_dense_file_conflict_us_per_op": 24.29,
+            "lock_dense_file_replace_us_per_op": 25.24,
+            "lock_dense_file_unlock_us_per_op": 23.74,
+            "syscall_latency_us": 28.93,
+            "poll_ready_us_per_op": 29.36,
+            "poll_timeout_us_per_op": 1438.62,
+            "select_timeout_us_per_op": 1512.03,
+            "epoll_ready_us_per_op": 34.67
+          },
+          "stdin-throughput": {
+            "stdin_mbps": 869.06
+          },
+          "process-lifecycle": {
+            "hello_start_ms": 325.13,
+            "fork_ms": 78.13,
+            "exec_ms": 396.53,
+            "clone_ms": 64
+          },
+          "spawn-scratch": {
+            "spawn_ms": 70.23,
+            "spawn_large_wire_bytes": 84386,
+            "spawn_large_first_ms": 63.74,
+            "spawn_large_repeat_ms": 62.92,
+            "spawn_scratch_kernel_bytes": 10485760
+          },
+          "wordpress": {
+            "cli_require_ms": 483.24,
+            "http_first_response_ms": 3049.78
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": 2073.88,
+            "query_create_ms": 217.04,
+            "query_insert_ms": 1021.17,
+            "query_select_ms": 128.92,
+            "query_join_ms": 83.97
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": 2254.24,
+            "query_create_ms": 218.68,
+            "query_insert_ms": 1084.81,
+            "query_select_ms": 119.06,
+            "query_join_ms": 85.8
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": 1984.36,
+            "query_create_ms": 231.52,
+            "query_insert_ms": 258.99,
+            "query_select_ms": 92.86,
+            "query_join_ms": 88.81
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": 2156.12,
+            "query_create_ms": 223.62,
+            "query_insert_ms": 257.62,
+            "query_select_ms": 92.98,
+            "query_join_ms": 85.21
+          }
+        },
+        "independentSamples": {
+          "syscall-io": {
+            "pipe_mbps": [
+              49.2,
+              43.05,
+              49.5
+            ],
+            "file_write_mbps": [
+              56.3,
+              56.97,
+              56.48
+            ],
+            "file_read_mbps": [
+              121.95,
+              120.88,
+              121.86
+            ],
+            "lock_many_files_acquire_us_per_op": [
+              30.36,
+              30.17,
+              29.91
+            ],
+            "lock_many_files_conflict_us_per_op": [
+              26.06,
+              25.6,
+              26.27
+            ],
+            "lock_many_files_replace_us_per_op": [
+              29.07,
+              29.05,
+              29.04
+            ],
+            "lock_many_files_unlock_us_per_op": [
+              25.55,
+              25.31,
+              25.02
+            ],
+            "lock_dense_file_acquire_us_per_op": [
+              25.47,
+              25.68,
+              25.29
+            ],
+            "lock_dense_file_conflict_us_per_op": [
+              24.44,
+              23.95,
+              24.29
+            ],
+            "lock_dense_file_replace_us_per_op": [
+              25.24,
+              25.14,
+              25.38
+            ],
+            "lock_dense_file_unlock_us_per_op": [
+              23.79,
+              23.69,
+              23.74
+            ],
+            "syscall_latency_us": [
+              28.93,
+              31.51,
+              28.22
+            ],
+            "poll_ready_us_per_op": [
+              28.73,
+              29.63,
+              29.36
+            ],
+            "poll_timeout_us_per_op": [
+              1439.35,
+              1436.09,
+              1438.62
+            ],
+            "select_timeout_us_per_op": [
+              1516.73,
+              1512.03,
+              1507.23
+            ],
+            "epoll_ready_us_per_op": [
+              35.31,
+              34.67,
+              34.44
+            ]
+          },
+          "stdin-throughput": {
+            "stdin_mbps": [
+              870.8,
+              860,
+              869.06
+            ]
+          },
+          "process-lifecycle": {
+            "hello_start_ms": [
+              323.56,
+              325.13,
+              325.26
+            ],
+            "fork_ms": [
+              77.88,
+              78.13,
+              79.6
+            ],
+            "exec_ms": [
+              395.86,
+              396.53,
+              396.93
+            ],
+            "clone_ms": [
+              63.27,
+              64,
+              64.03
+            ]
+          },
+          "spawn-scratch": {
+            "spawn_ms": [
+              70.23,
+              67.97,
+              71.15
+            ],
+            "spawn_large_wire_bytes": [
+              84386,
+              84386,
+              84386
+            ],
+            "spawn_large_first_ms": [
+              62.6,
+              63.74,
+              64.2
+            ],
+            "spawn_large_repeat_ms": [
+              62.3,
+              62.92,
+              63.19
+            ],
+            "spawn_scratch_kernel_bytes": [
+              10485760,
+              10485760,
+              10485760
+            ]
+          },
+          "wordpress": {
+            "cli_require_ms": [
+              484.25,
+              483.24,
+              480.87
+            ],
+            "http_first_response_ms": [
+              3049.78,
+              3209.66,
+              1657.79
+            ]
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": [
+              2072.66,
+              2100,
+              2073.88
+            ],
+            "query_create_ms": [
+              218.78,
+              216.53,
+              217.04
+            ],
+            "query_insert_ms": [
+              1041.5,
+              1005.15,
+              1021.17
+            ],
+            "query_select_ms": [
+              129.58,
+              128.92,
+              99.31
+            ],
+            "query_join_ms": [
+              83.66,
+              83.97,
+              90.68
+            ]
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": [
+              2250.62,
+              2260.12,
+              2254.24
+            ],
+            "query_create_ms": [
+              217,
+              218.68,
+              221.35
+            ],
+            "query_insert_ms": [
+              1084.81,
+              1067.17,
+              1086.46
+            ],
+            "query_select_ms": [
+              120.08,
+              118.92,
+              119.06
+            ],
+            "query_join_ms": [
+              85.8,
+              85.42,
+              87.28
+            ]
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": [
+              1987.24,
+              1984.36,
+              1964.61
+            ],
+            "query_create_ms": [
+              231.52,
+              311.4,
+              221
+            ],
+            "query_insert_ms": [
+              264.92,
+              258.99,
+              258.35
+            ],
+            "query_select_ms": [
+              93.91,
+              92.86,
+              88.41
+            ],
+            "query_join_ms": [
+              88.81,
+              89.43,
+              83.71
+            ]
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": [
+              2156.12,
+              2139.28,
+              2159.58
+            ],
+            "query_create_ms": [
+              223.6,
+              223.62,
+              228.01
+            ],
+            "query_insert_ms": [
+              254.28,
+              261.33,
+              257.62
+            ],
+            "query_select_ms": [
+              93.43,
+              92.29,
+              92.98
+            ],
+            "query_join_ms": [
+              85.03,
+              85.21,
+              85.79
+            ]
+          }
+        }
+      },
+      {
+        "host": "node",
+        "arm": "candidate",
+        "sourceReportSha256": "d1ee16df870f83069492ca2ebb2fedc3fe2fec6a21b62569a12884ca720a53c4",
+        "platform": "darwin",
+        "arch": "arm64",
+        "nodeVersion": "v24.22.1",
+        "timestamp": "2026-11-20T13:17:53.336637+00:00",
+        "aggregation": "Median of three independent normal CLI launches, one round each; arm order alternated",
+        "artifacts": {
+          "gitHead": "369e61cb9b1b20d33e5b656d4407f74888b77f45",
+          "files": {
+            "benchmarks/wasm/pipe-throughput.wasm": {
+              "path": "benchmarks/wasm/pipe-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44776,
+              "sha256": "37df700738cf016aa7ef75e2b02e51d87620db95b1e8aa98204b256173c080dd"
+            },
+            "benchmarks/wasm/file-throughput.wasm": {
+              "path": "benchmarks/wasm/file-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 42698,
+              "sha256": "4e3ccf5e9c3a90d4f75c75aa4e99b4339bdb8d1f84b4b812cd7cbed2372958f3"
+            },
+            "benchmarks/wasm/syscall-latency.wasm": {
+              "path": "benchmarks/wasm/syscall-latency.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 37150,
+              "sha256": "e8b8cb1dff848446e04fef24bc20eeede804b81606db10973100a807bdec29f4"
+            },
+            "benchmarks/wasm/stdin-throughput.wasm": {
+              "path": "benchmarks/wasm/stdin-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 38615,
+              "sha256": "617eeb17a679fcb2e94beecf42556a78e4b999380402b5d25ee2868657530155"
+            },
+            "benchmarks/wasm/hello.wasm": {
+              "path": "benchmarks/wasm/hello.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 18924,
+              "sha256": "3fb5d824a1c0db04504d1e6b467a24d2d7567e2690e4459906779286e88f0465"
+            },
+            "benchmarks/wasm/fork-bench.wasm": {
+              "path": "benchmarks/wasm/fork-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44460,
+              "sha256": "434ab4e2f16402b25c50237cf7db925ca84e4a10237815a6b63abfa2d7600a86"
+            },
+            "benchmarks/wasm/exec-bench.wasm": {
+              "path": "benchmarks/wasm/exec-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 21585,
+              "sha256": "01a9187c254a83fbbbb9910f3283719e20b6dfdf59e7ea079b42e95b84133838"
+            },
+            "benchmarks/wasm/clone-bench.wasm": {
+              "path": "benchmarks/wasm/clone-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 41158,
+              "sha256": "a0764cc5347ebf93a590f4ad334420d789d2957df4b5711dcbbc7885f58c8f83"
+            },
+            "benchmarks/wasm/spawn-bench.wasm": {
+              "path": "benchmarks/wasm/spawn-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 48688,
+              "sha256": "22e8a916c92379f5ef5ec281806025c64346a84a2e0241edfcaa29f5fbb5faaa"
+            },
+            "runtime.nodeWorkerBundle": {
+              "path": "host/dist/node-kernel-worker-entry.js",
+              "required": true,
+              "used": true,
+              "sizeBytes": 3546170,
+              "sha256": "6f0c6f862e380ad154db2add062abfdb2d33e24ec9abd092569f6f9c901ccdaa"
+            },
+            "runtime.kernel": {
+              "path": "kernel.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "kernel.wasm",
+              "sizeBytes": 3129524,
+              "sha256": "c8720e84e8b5cf53616db823b3ff1d85baf5f9e2737f023bcb59e460fa4b0ed1"
+            },
+            "runtime.rootfs": {
+              "path": "rootfs.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/rootfs.vfs.zst",
+              "sizeBytes": 173979,
+              "sha256": "decbbb47665001f54713e3201ae1002232dc11852babd576c89dee2aa730c78b"
+            },
+            "node.wordpress.php": {
+              "path": "programs/php/php.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/php/php.wasm",
+              "sizeBytes": 36853903,
+              "sha256": "cdec66472fbeb9c78742fc81ed4cb94984aba0538da538b5b75b934f1338e723"
+            },
+            "node.wordpress.config": {
+              "path": "packages/registry/wordpress/wordpress/wp-config.php",
+              "required": true,
+              "used": true,
+              "sizeBytes": 1257,
+              "sha256": "bb5a455216bb368b53508e5b21a71756ca8685fa5a2507070c5ac07bfdffba7e"
+            },
+            "node.wordpress.router": {
+              "path": "packages/registry/wordpress/demo/router.php",
+              "required": true,
+              "used": true,
+              "sizeBytes": 536,
+              "sha256": "d11a898dbd3af98b1642a8c24c120f3ef75deb2c10458847eab4ccdf3a00c3b8"
+            },
+            "node.mariadb.wasm32.server": {
+              "path": "programs/mariadb/mariadbd.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/mariadb/mariadbd.wasm",
+              "sizeBytes": 13087312,
+              "sha256": "32265966c316595c0a7f6607cdbffed4f9acb2380398b6d9f58413ba0fa82026"
+            },
+            "node.mariadb.wasm32.client": {
+              "path": "programs/mariadb/mysqltest.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/mariadb/mysqltest.wasm",
+              "sizeBytes": 4163439,
+              "sha256": "e9ecd97aa734bbff69b946eed2972a9f7e9082328065f985c3927ff2a10de495"
+            },
+            "node.mariadb.wasm32.bootstrap.systemTables": {
+              "path": "<producer-path>/mysql_system_tables.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 30145,
+              "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+            },
+            "node.mariadb.wasm32.bootstrap.systemData": {
+              "path": "<producer-path>/mysql_system_tables_data.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 3328,
+              "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+            },
+            "node.mariadb.wasm64.server": {
+              "path": "programs/wasm64/mariadb/mariadbd.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wasm64/mariadb/mariadbd.wasm",
+              "sizeBytes": 14675300,
+              "sha256": "c6d09983896eba9939b651639467d8946e092f86e062b7926c5b10286193fe12"
+            },
+            "node.mariadb.wasm64.client": {
+              "path": "programs/wasm64/mariadb/mysqltest.wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wasm64/mariadb/mysqltest.wasm",
+              "sizeBytes": 4366841,
+              "sha256": "a481c70677040b2a83a9744c1402889039ffc39f0e7611892717a53a163eb335"
+            },
+            "node.mariadb.wasm64.bootstrap.systemTables": {
+              "path": "<producer-path>/mysql_system_tables.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 30145,
+              "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+            },
+            "node.mariadb.wasm64.bootstrap.systemData": {
+              "path": "<producer-path>/mysql_system_tables_data.sql",
+              "required": true,
+              "used": true,
+              "sizeBytes": 3328,
+              "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+            }
+          },
+          "directories": {
+            "runtime.hostSources": {
+              "path": "host/src",
+              "fileCount": 386,
+              "sizeBytes": 7111434,
+              "sha256": "2aec82dd53cc201c40adae1d0ad01eab4c0348bd7e73e8e51bb32b15a6f668c6",
+              "required": true,
+              "excludedPaths": []
+            },
+            "node.wordpress.sourceTree": {
+              "path": "packages/registry/wordpress/wordpress",
+              "fileCount": 3972,
+              "sizeBytes": 86397207,
+              "sha256": "ba981f10172b7df6e0844b2744bcaf222c5193c53e6b900cc0e92b446d833c55",
+              "required": true,
+              "excludedPaths": [
+                "wp-content/database",
+                "wp-content/debug.log"
+              ]
+            }
+          },
+          "forkBench": {
+            "hasWpkForkSymbols": true,
+            "hasLegacyForkSymbols": false,
+            "matchedSymbols": [
+              "$wpk_fork_module_state_finish_restore",
+              "1$kandelo.wpk_fork.static_root_catalogKFSR",
+              "__wpk_fork_boundary",
+              "__wpk_fork_exception_materialize",
+              "__wpk_fork_frame_commit",
+              "__wpk_fork_frame_next",
+              "__wpk_fork_frame_reserve",
+              "__wpk_fork_function_catalog",
+              "__wpk_fork_global_1",
+              "__wpk_fork_global_2",
+              "__wpk_fork_global_3",
+              "__wpk_fork_global_4",
+              "__wpk_fork_global_5",
+              "__wpk_fork_global_6",
+              "__wpk_fork_module_activation",
+              "__wpk_fork_module_state_record_commit",
+              "__wpk_fork_module_state_record_find",
+              "__wpk_fork_module_state_record_reserve",
+              "__wpk_fork_module_state_table_reconcile",
+              "__wpk_fork_ref_decode_exnref",
+              "__wpk_fork_ref_encode_exnref",
+              "__wpk_fork_ref_exn_abort",
+              "__wpk_fork_ref_exn_broker_encode",
+              "__wpk_fork_ref_exn_broker_throw_recipe",
+              "__wpk_fork_ref_exn_cache_index",
+              "__wpk_fork_ref_exn_clear",
+              "__wpk_fork_ref_exn_encode_ingress",
+              "__wpk_fork_ref_exn_ingress_throw",
+              "__wpk_fork_ref_exn_lookup",
+              "__wpk_fork_ref_exn_route",
+              "__wpk_fork_ref_exn_throw_recipe",
+              "__wpk_fork_ref_exn_throw_slot",
+              "__wpk_fork_ref_gc_allocate",
+              "__wpk_fork_ref_gc_broker_encode",
+              "__wpk_fork_ref_gc_encode_slot",
+              "__wpk_fork_ref_gc_fill",
+              "__wpk_fork_ref_gc_i31",
+              "__wpk_fork_ref_gc_load",
+              "__wpk_fork_ref_gc_lookup",
+              "__wpk_fork_ref_gc_payload_len",
+              "__wpk_fork_ref_gc_probe",
+              "__wpk_fork_ref_gc_publish_externref",
+              "__wpk_fork_ref_gc_route",
+              "__wpk_fork_ref_gc_transit",
+              "__wpk_fork_ref_scratch_release",
+              "__wpk_fork_ref_scratch_reserve",
+              "__wpk_fork_resume_catalog",
+              "__wpk_fork_resume_peek",
+              "__wpk_fork_resume_table",
+              "__wpk_fork_static_root_catalog",
+              "__wpk_fork_static_root_harvest",
+              "__wpk_fork_table_1",
+              "__wpk_fork_unwind",
+              "env-__wpk_fork_module_state_table_generation_addr",
+              "kandelo.wpk_fork.boundariesKFSB",
+              "kandelo.wpk_fork.capabilities",
+              "kandelo.wpk_fork.exception_codec",
+              "kandelo.wpk_fork.gc_codecKFGC",
+              "kandelo.wpk_fork.imported_globalsKFIG",
+              "kandelo.wpk_fork.imported_tablesKFIT",
+              "kandelo.wpk_fork.linked_framesKLCF",
+              "kandelo.wpk_fork.module_stateKFMD",
+              "kandelo.wpk_fork.resume_catalogKFRC",
+              "kandelo.wpk_fork.unwind_transport",
+              "wpk_fork_abort_begin",
+              "wpk_fork_abort_end",
+              "wpk_fork_module_bootstrap",
+              "wpk_fork_module_state_restore",
+              "wpk_fork_module_state_save",
+              "wpk_fork_module_table_state_restore",
+              "wpk_fork_module_table_state_save",
+              "wpk_fork_module_thread_bootstrap",
+              "wpk_fork_resume_sink",
+              "wpk_fork_resume_start",
+              "wpk_fork_resume_thread",
+              "wpk_fork_rewind_begin",
+              "wpk_fork_rewind_end",
+              "wpk_fork_state",
+              "wpk_fork_unwind_begin",
+              "wpk_fork_unwind_end"
+            ],
+            "expected": "wpk_fork_without_legacy",
+            "passed": true
+          }
+        },
+        "medians": {
+          "syscall-io": {
+            "pipe_mbps": 58.1,
+            "file_write_mbps": 77.66,
+            "file_read_mbps": 118.53,
+            "lock_many_files_acquire_us_per_op": 29.05,
+            "lock_many_files_conflict_us_per_op": 25.04,
+            "lock_many_files_replace_us_per_op": 28.4,
+            "lock_many_files_unlock_us_per_op": 24.43,
+            "lock_dense_file_acquire_us_per_op": 24.27,
+            "lock_dense_file_conflict_us_per_op": 28.64,
+            "lock_dense_file_replace_us_per_op": 25.18,
+            "lock_dense_file_unlock_us_per_op": 23.72,
+            "syscall_latency_us": 27.32,
+            "poll_ready_us_per_op": 26.66,
+            "poll_timeout_us_per_op": 1433.74,
+            "select_timeout_us_per_op": 1502.72,
+            "epoll_ready_us_per_op": 33.56
+          },
+          "stdin-throughput": {
+            "stdin_mbps": 779.25
+          },
+          "process-lifecycle": {
+            "hello_start_ms": 347.79,
+            "fork_ms": 78.35,
+            "exec_ms": 423.94,
+            "clone_ms": 61.52
+          },
+          "spawn-scratch": {
+            "spawn_ms": 68.45,
+            "spawn_large_wire_bytes": 84386,
+            "spawn_large_first_ms": 62.43,
+            "spawn_large_repeat_ms": 61.33,
+            "spawn_scratch_kernel_bytes": 10485760
+          },
+          "wordpress": {
+            "cli_require_ms": 486.77,
+            "http_first_response_ms": 3067.89
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": 2115.72,
+            "query_create_ms": 219.43,
+            "query_insert_ms": 1020.44,
+            "query_select_ms": 126.92,
+            "query_join_ms": 86
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": 2265.49,
+            "query_create_ms": 216.13,
+            "query_insert_ms": 1039.15,
+            "query_select_ms": 118.83,
+            "query_join_ms": 85.66
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": 2001.2,
+            "query_create_ms": 224.06,
+            "query_insert_ms": 258.82,
+            "query_select_ms": 88.38,
+            "query_join_ms": 85.14
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": 2127.74,
+            "query_create_ms": 221.76,
+            "query_insert_ms": 268.29,
+            "query_select_ms": 88.86,
+            "query_join_ms": 84.08
+          }
+        },
+        "independentSamples": {
+          "syscall-io": {
+            "pipe_mbps": [
+              57.74,
+              58.1,
+              59.37
+            ],
+            "file_write_mbps": [
+              77.66,
+              76.58,
+              78.11
+            ],
+            "file_read_mbps": [
+              119.29,
+              116.84,
+              118.53
+            ],
+            "lock_many_files_acquire_us_per_op": [
+              28.43,
+              29.25,
+              29.05
+            ],
+            "lock_many_files_conflict_us_per_op": [
+              25.13,
+              24.92,
+              25.04
+            ],
+            "lock_many_files_replace_us_per_op": [
+              29.6,
+              28.4,
+              27.78
+            ],
+            "lock_many_files_unlock_us_per_op": [
+              25.14,
+              24.43,
+              24.43
+            ],
+            "lock_dense_file_acquire_us_per_op": [
+              24.27,
+              24.45,
+              23.82
+            ],
+            "lock_dense_file_conflict_us_per_op": [
+              28.89,
+              28.64,
+              27.45
+            ],
+            "lock_dense_file_replace_us_per_op": [
+              25.18,
+              25.21,
+              25.07
+            ],
+            "lock_dense_file_unlock_us_per_op": [
+              23.59,
+              23.72,
+              23.9
+            ],
+            "syscall_latency_us": [
+              27.32,
+              28.2,
+              25.42
+            ],
+            "poll_ready_us_per_op": [
+              26.66,
+              27.01,
+              26.49
+            ],
+            "poll_timeout_us_per_op": [
+              1441.05,
+              1424.16,
+              1433.74
+            ],
+            "select_timeout_us_per_op": [
+              1502.72,
+              1484.24,
+              1507.25
+            ],
+            "epoll_ready_us_per_op": [
+              35.57,
+              30.27,
+              33.56
+            ]
+          },
+          "stdin-throughput": {
+            "stdin_mbps": [
+              790.62,
+              779.25,
+              272.08
+            ]
+          },
+          "process-lifecycle": {
+            "hello_start_ms": [
+              347.79,
+              345.43,
+              387.08
+            ],
+            "fork_ms": [
+              78.35,
+              78.65,
+              74.71
+            ],
+            "exec_ms": [
+              427.78,
+              413.26,
+              423.94
+            ],
+            "clone_ms": [
+              63.3,
+              61.52,
+              58.23
+            ]
+          },
+          "spawn-scratch": {
+            "spawn_ms": [
+              68.45,
+              70.4,
+              65.95
+            ],
+            "spawn_large_wire_bytes": [
+              84386,
+              84386,
+              84386
+            ],
+            "spawn_large_first_ms": [
+              63.37,
+              62.43,
+              58.98
+            ],
+            "spawn_large_repeat_ms": [
+              61.33,
+              62.46,
+              57.55
+            ],
+            "spawn_scratch_kernel_bytes": [
+              10485760,
+              10485760,
+              10485760
+            ]
+          },
+          "wordpress": {
+            "cli_require_ms": [
+              656.64,
+              479.92,
+              486.77
+            ],
+            "http_first_response_ms": [
+              3035.03,
+              3106,
+              3067.89
+            ]
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": [
+              2217.22,
+              2115.72,
+              2093.57
+            ],
+            "query_create_ms": [
+              217.11,
+              219.43,
+              221.33
+            ],
+            "query_insert_ms": [
+              934.95,
+              1020.44,
+              1045.45
+            ],
+            "query_select_ms": [
+              120.93,
+              126.92,
+              128.03
+            ],
+            "query_join_ms": [
+              85.79,
+              86,
+              86.43
+            ]
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": [
+              2258.1,
+              2270.46,
+              2265.49
+            ],
+            "query_create_ms": [
+              216.13,
+              244.57,
+              214.74
+            ],
+            "query_insert_ms": [
+              1076,
+              995.35,
+              1039.15
+            ],
+            "query_select_ms": [
+              118.83,
+              115.6,
+              151.37
+            ],
+            "query_join_ms": [
+              85.66,
+              83.52,
+              93.88
+            ]
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": [
+              1996.95,
+              2001.2,
+              2024.3
+            ],
+            "query_create_ms": [
+              248.32,
+              221.99,
+              224.06
+            ],
+            "query_insert_ms": [
+              278.83,
+              257.12,
+              258.82
+            ],
+            "query_select_ms": [
+              88.38,
+              90.69,
+              88.19
+            ],
+            "query_join_ms": [
+              88.57,
+              85.14,
+              84.31
+            ]
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": [
+              2051.66,
+              2197.93,
+              2127.74
+            ],
+            "query_create_ms": [
+              221.76,
+              225.01,
+              217.78
+            ],
+            "query_insert_ms": [
+              277.87,
+              268.29,
+              265.58
+            ],
+            "query_select_ms": [
+              90.68,
+              88.86,
+              83.07
+            ],
+            "query_join_ms": [
+              85.03,
+              84.08,
+              77.78
+            ]
+          }
+        }
+      },
+      {
+        "host": "browser",
+        "arm": "develop",
+        "sourceReportSha256": "7ee993e997679bce38a53b5080daef3b3953aaba6b6fca556ef6ecc18f1d3853",
+        "platform": "darwin",
+        "arch": "arm64",
+        "nodeVersion": "v24.22.1",
+        "timestamp": "2026-11-20T13:17:53.609765+00:00",
+        "aggregation": "Median of three independent normal CLI launches, one round each; arm order alternated",
+        "artifacts": {
+          "gitHead": "715243ed0aa1a8564a0dd8ad4bcef331ac3ca18a",
+          "files": {
+            "benchmarks/wasm/pipe-throughput.wasm": {
+              "path": "benchmarks/wasm/pipe-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44776,
+              "sha256": "37df700738cf016aa7ef75e2b02e51d87620db95b1e8aa98204b256173c080dd"
+            },
+            "benchmarks/wasm/file-throughput.wasm": {
+              "path": "benchmarks/wasm/file-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 42698,
+              "sha256": "4e3ccf5e9c3a90d4f75c75aa4e99b4339bdb8d1f84b4b812cd7cbed2372958f3"
+            },
+            "benchmarks/wasm/syscall-latency.wasm": {
+              "path": "benchmarks/wasm/syscall-latency.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 37150,
+              "sha256": "e8b8cb1dff848446e04fef24bc20eeede804b81606db10973100a807bdec29f4"
+            },
+            "benchmarks/wasm/stdin-throughput.wasm": {
+              "path": "benchmarks/wasm/stdin-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 38615,
+              "sha256": "617eeb17a679fcb2e94beecf42556a78e4b999380402b5d25ee2868657530155"
+            },
+            "benchmarks/wasm/hello.wasm": {
+              "path": "benchmarks/wasm/hello.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 18924,
+              "sha256": "3fb5d824a1c0db04504d1e6b467a24d2d7567e2690e4459906779286e88f0465"
+            },
+            "benchmarks/wasm/fork-bench.wasm": {
+              "path": "benchmarks/wasm/fork-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44460,
+              "sha256": "434ab4e2f16402b25c50237cf7db925ca84e4a10237815a6b63abfa2d7600a86"
+            },
+            "benchmarks/wasm/exec-bench.wasm": {
+              "path": "benchmarks/wasm/exec-bench.wasm",
+              "required": false,
+              "used": false,
+              "sizeBytes": 21585,
+              "sha256": "01a9187c254a83fbbbb9910f3283719e20b6dfdf59e7ea079b42e95b84133838"
+            },
+            "benchmarks/wasm/clone-bench.wasm": {
+              "path": "benchmarks/wasm/clone-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 41158,
+              "sha256": "a0764cc5347ebf93a590f4ad334420d789d2957df4b5711dcbbc7885f58c8f83"
+            },
+            "benchmarks/wasm/spawn-bench.wasm": {
+              "path": "benchmarks/wasm/spawn-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 48688,
+              "sha256": "22e8a916c92379f5ef5ec281806025c64346a84a2e0241edfcaa29f5fbb5faaa"
+            },
+            "runtime.kernel": {
+              "path": "@kernel-wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "kernel.wasm",
+              "sizeBytes": 2987889,
+              "sha256": "1f413aa9848aaf6ee80040a771403d8a27ed5468f1efc6a2169f9199bd6dcb06"
+            },
+            "browser.wordpress.vfs": {
+              "path": "apps/browser-demos/public/wordpress.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wordpress.vfs.zst",
+              "sizeBytes": 40827566,
+              "sha256": "6f300d706ba953b8e8f48b082e6eddffe1f89982a900dfe8664c6994605fcccd"
+            },
+            "browser.mariadb.wasm32.vfs": {
+              "path": "apps/browser-demos/public/mariadb.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/mariadb-vfs.vfs.zst",
+              "sizeBytes": 4477352,
+              "sha256": "a90f059b084d877f8256a1658c0f68b31139b84322afcdb968090fb01c929c13"
+            },
+            "browser.mariadb.wasm64.vfs": {
+              "path": "apps/browser-demos/public/mariadb-64.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wasm64/mariadb-vfs.vfs.zst",
+              "sizeBytes": 4688113,
+              "sha256": "1e73e3c3ff0073fa96f801b50715367e62cd81e3163e22142d0be33d218ec576"
+            }
+          },
+          "directories": {
+            "runtime.hostSources": {
+              "path": "host/src",
+              "fileCount": 367,
+              "sizeBytes": 6679765,
+              "sha256": "07a2302d07a44cf8c1c937bbcf011d4c42caa4635d021786afe758a1be1bf0e4",
+              "required": true,
+              "excludedPaths": []
+            }
+          },
+          "forkBench": {
+            "hasWpkForkSymbols": true,
+            "hasLegacyForkSymbols": false,
+            "matchedSymbols": [
+              "$wpk_fork_module_state_finish_restore",
+              "1$kandelo.wpk_fork.static_root_catalogKFSR",
+              "__wpk_fork_boundary",
+              "__wpk_fork_exception_materialize",
+              "__wpk_fork_frame_commit",
+              "__wpk_fork_frame_next",
+              "__wpk_fork_frame_reserve",
+              "__wpk_fork_function_catalog",
+              "__wpk_fork_global_1",
+              "__wpk_fork_global_2",
+              "__wpk_fork_global_3",
+              "__wpk_fork_global_4",
+              "__wpk_fork_global_5",
+              "__wpk_fork_global_6",
+              "__wpk_fork_module_activation",
+              "__wpk_fork_module_state_record_commit",
+              "__wpk_fork_module_state_record_find",
+              "__wpk_fork_module_state_record_reserve",
+              "__wpk_fork_module_state_table_reconcile",
+              "__wpk_fork_ref_decode_exnref",
+              "__wpk_fork_ref_encode_exnref",
+              "__wpk_fork_ref_exn_abort",
+              "__wpk_fork_ref_exn_broker_encode",
+              "__wpk_fork_ref_exn_broker_throw_recipe",
+              "__wpk_fork_ref_exn_cache_index",
+              "__wpk_fork_ref_exn_clear",
+              "__wpk_fork_ref_exn_encode_ingress",
+              "__wpk_fork_ref_exn_ingress_throw",
+              "__wpk_fork_ref_exn_lookup",
+              "__wpk_fork_ref_exn_route",
+              "__wpk_fork_ref_exn_throw_recipe",
+              "__wpk_fork_ref_exn_throw_slot",
+              "__wpk_fork_ref_gc_allocate",
+              "__wpk_fork_ref_gc_broker_encode",
+              "__wpk_fork_ref_gc_encode_slot",
+              "__wpk_fork_ref_gc_fill",
+              "__wpk_fork_ref_gc_i31",
+              "__wpk_fork_ref_gc_load",
+              "__wpk_fork_ref_gc_lookup",
+              "__wpk_fork_ref_gc_payload_len",
+              "__wpk_fork_ref_gc_probe",
+              "__wpk_fork_ref_gc_publish_externref",
+              "__wpk_fork_ref_gc_route",
+              "__wpk_fork_ref_gc_transit",
+              "__wpk_fork_ref_scratch_release",
+              "__wpk_fork_ref_scratch_reserve",
+              "__wpk_fork_resume_catalog",
+              "__wpk_fork_resume_peek",
+              "__wpk_fork_resume_table",
+              "__wpk_fork_static_root_catalog",
+              "__wpk_fork_static_root_harvest",
+              "__wpk_fork_table_1",
+              "__wpk_fork_unwind",
+              "env-__wpk_fork_module_state_table_generation_addr",
+              "kandelo.wpk_fork.boundariesKFSB",
+              "kandelo.wpk_fork.capabilities",
+              "kandelo.wpk_fork.exception_codec",
+              "kandelo.wpk_fork.gc_codecKFGC",
+              "kandelo.wpk_fork.imported_globalsKFIG",
+              "kandelo.wpk_fork.imported_tablesKFIT",
+              "kandelo.wpk_fork.linked_framesKLCF",
+              "kandelo.wpk_fork.module_stateKFMD",
+              "kandelo.wpk_fork.resume_catalogKFRC",
+              "kandelo.wpk_fork.unwind_transport",
+              "wpk_fork_abort_begin",
+              "wpk_fork_abort_end",
+              "wpk_fork_module_bootstrap",
+              "wpk_fork_module_state_restore",
+              "wpk_fork_module_state_save",
+              "wpk_fork_module_table_state_restore",
+              "wpk_fork_module_table_state_save",
+              "wpk_fork_module_thread_bootstrap",
+              "wpk_fork_resume_sink",
+              "wpk_fork_resume_start",
+              "wpk_fork_resume_thread",
+              "wpk_fork_rewind_begin",
+              "wpk_fork_rewind_end",
+              "wpk_fork_state",
+              "wpk_fork_unwind_begin",
+              "wpk_fork_unwind_end"
+            ],
+            "expected": "wpk_fork_without_legacy",
+            "passed": true
+          }
+        },
+        "medians": {
+          "syscall-io": {
+            "pipe_mbps": 57.94,
+            "file_write_mbps": 83.48,
+            "file_read_mbps": 110.67,
+            "lock_many_files_acquire_us_per_op": 30.47,
+            "lock_many_files_conflict_us_per_op": 26.62,
+            "lock_many_files_replace_us_per_op": 31.02,
+            "lock_many_files_unlock_us_per_op": 26.89,
+            "lock_dense_file_acquire_us_per_op": 27.09,
+            "lock_dense_file_conflict_us_per_op": 26.15,
+            "lock_dense_file_replace_us_per_op": 28.13,
+            "lock_dense_file_unlock_us_per_op": 25.86,
+            "syscall_latency_us": 28.83
+          },
+          "stdin-throughput": {
+            "stdin_mbps": 880.41
+          },
+          "process-lifecycle": {
+            "hello_start_ms": 191.8,
+            "fork_ms": 43.39,
+            "clone_ms": 30.85
+          },
+          "spawn-scratch": {
+            "spawn_ms": 37.92,
+            "spawn_large_wire_bytes": 84386,
+            "spawn_large_first_ms": 28.72,
+            "spawn_large_repeat_ms": 28.5,
+            "spawn_scratch_kernel_bytes": 10485760
+          },
+          "wordpress": {
+            "boot_ms": 8491.26,
+            "http_first_response_ms": 209.75
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": 1034.56,
+            "query_create_ms": 13.89,
+            "query_insert_ms": 80.96,
+            "query_select_ms": 7.4,
+            "query_join_ms": 1.63
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": 1083.14,
+            "query_create_ms": 13.92,
+            "query_insert_ms": 79.37,
+            "query_select_ms": 6.57,
+            "query_join_ms": 1.71
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": 965.72,
+            "query_create_ms": 19.39,
+            "query_insert_ms": 131.55,
+            "query_select_ms": 6.49,
+            "query_join_ms": 1.63
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": 975.29,
+            "query_create_ms": 21.38,
+            "query_insert_ms": 140.16,
+            "query_select_ms": 7.26,
+            "query_join_ms": 1.9
+          }
+        },
+        "independentSamples": {
+          "syscall-io": {
+            "pipe_mbps": [
+              57.94,
+              55.48,
+              58.7
+            ],
+            "file_write_mbps": [
+              84.57,
+              83.48,
+              81.83
+            ],
+            "file_read_mbps": [
+              110.02,
+              112.93,
+              110.67
+            ],
+            "lock_many_files_acquire_us_per_op": [
+              28.35,
+              30.47,
+              31.5
+            ],
+            "lock_many_files_conflict_us_per_op": [
+              26.57,
+              27.09,
+              26.62
+            ],
+            "lock_many_files_replace_us_per_op": [
+              31.02,
+              31.17,
+              30.4
+            ],
+            "lock_many_files_unlock_us_per_op": [
+              26.97,
+              26.89,
+              26.57
+            ],
+            "lock_dense_file_acquire_us_per_op": [
+              27.09,
+              26.72,
+              28.13
+            ],
+            "lock_dense_file_conflict_us_per_op": [
+              25.68,
+              26.15,
+              26.25
+            ],
+            "lock_dense_file_replace_us_per_op": [
+              27.56,
+              28.14,
+              28.13
+            ],
+            "lock_dense_file_unlock_us_per_op": [
+              25.55,
+              26.04,
+              25.86
+            ],
+            "syscall_latency_us": [
+              28.24,
+              28.83,
+              28.97
+            ]
+          },
+          "stdin-throughput": {
+            "stdin_mbps": [
+              886.1,
+              880.41,
+              874
+            ]
+          },
+          "process-lifecycle": {
+            "hello_start_ms": [
+              190.39,
+              191.8,
+              278.01
+            ],
+            "fork_ms": [
+              43.3,
+              43.39,
+              44.2
+            ],
+            "clone_ms": [
+              30.45,
+              30.85,
+              30.92
+            ]
+          },
+          "spawn-scratch": {
+            "spawn_ms": [
+              42.32,
+              37.84,
+              37.92
+            ],
+            "spawn_large_wire_bytes": [
+              84386,
+              84386,
+              84386
+            ],
+            "spawn_large_first_ms": [
+              31.06,
+              27.8,
+              28.72
+            ],
+            "spawn_large_repeat_ms": [
+              30.57,
+              28.33,
+              28.5
+            ],
+            "spawn_scratch_kernel_bytes": [
+              10485760,
+              10485760,
+              10485760
+            ]
+          },
+          "wordpress": {
+            "boot_ms": [
+              8516.63,
+              8465.65,
+              8491.26
+            ],
+            "http_first_response_ms": [
+              210.24,
+              209.13,
+              209.75
+            ]
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": [
+              1034.56,
+              1046.23,
+              1016.12
+            ],
+            "query_create_ms": [
+              14.03,
+              13.75,
+              13.89
+            ],
+            "query_insert_ms": [
+              80.96,
+              82.19,
+              80.54
+            ],
+            "query_select_ms": [
+              7.45,
+              6.89,
+              7.4
+            ],
+            "query_join_ms": [
+              1.65,
+              1.57,
+              1.63
+            ]
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": [
+              1080.38,
+              1094.5,
+              1083.14
+            ],
+            "query_create_ms": [
+              14.16,
+              13.92,
+              13.8
+            ],
+            "query_insert_ms": [
+              76.5,
+              79.37,
+              79.57
+            ],
+            "query_select_ms": [
+              6.9,
+              6.57,
+              6.46
+            ],
+            "query_join_ms": [
+              1.73,
+              1.65,
+              1.71
+            ]
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": [
+              965.72,
+              963.51,
+              978.55
+            ],
+            "query_create_ms": [
+              19.34,
+              19.39,
+              19.4
+            ],
+            "query_insert_ms": [
+              130.17,
+              140.62,
+              131.55
+            ],
+            "query_select_ms": [
+              6.49,
+              6.57,
+              6.43
+            ],
+            "query_join_ms": [
+              1.63,
+              1.5,
+              1.63
+            ]
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": [
+              975.29,
+              992.45,
+              973.26
+            ],
+            "query_create_ms": [
+              21.38,
+              20.55,
+              21.73
+            ],
+            "query_insert_ms": [
+              140.61,
+              128.59,
+              140.16
+            ],
+            "query_select_ms": [
+              7.2,
+              7.26,
+              8.34
+            ],
+            "query_join_ms": [
+              1.88,
+              1.91,
+              1.9
+            ]
+          }
+        }
+      },
+      {
+        "host": "browser",
+        "arm": "candidate",
+        "sourceReportSha256": "3238ae3bb78046c48514fe4921ba58f7e12705c0bed443c32a659c641eef7b71",
+        "platform": "darwin",
+        "arch": "arm64",
+        "nodeVersion": "v24.22.1",
+        "timestamp": "2026-11-20T13:17:53.610303+00:00",
+        "aggregation": "Median of three independent normal CLI launches, one round each; arm order alternated",
+        "artifacts": {
+          "gitHead": "369e61cb9b1b20d33e5b656d4407f74888b77f45",
+          "files": {
+            "benchmarks/wasm/pipe-throughput.wasm": {
+              "path": "benchmarks/wasm/pipe-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44776,
+              "sha256": "37df700738cf016aa7ef75e2b02e51d87620db95b1e8aa98204b256173c080dd"
+            },
+            "benchmarks/wasm/file-throughput.wasm": {
+              "path": "benchmarks/wasm/file-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 42698,
+              "sha256": "4e3ccf5e9c3a90d4f75c75aa4e99b4339bdb8d1f84b4b812cd7cbed2372958f3"
+            },
+            "benchmarks/wasm/syscall-latency.wasm": {
+              "path": "benchmarks/wasm/syscall-latency.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 37150,
+              "sha256": "e8b8cb1dff848446e04fef24bc20eeede804b81606db10973100a807bdec29f4"
+            },
+            "benchmarks/wasm/stdin-throughput.wasm": {
+              "path": "benchmarks/wasm/stdin-throughput.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 38615,
+              "sha256": "617eeb17a679fcb2e94beecf42556a78e4b999380402b5d25ee2868657530155"
+            },
+            "benchmarks/wasm/hello.wasm": {
+              "path": "benchmarks/wasm/hello.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 18924,
+              "sha256": "3fb5d824a1c0db04504d1e6b467a24d2d7567e2690e4459906779286e88f0465"
+            },
+            "benchmarks/wasm/fork-bench.wasm": {
+              "path": "benchmarks/wasm/fork-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 44460,
+              "sha256": "434ab4e2f16402b25c50237cf7db925ca84e4a10237815a6b63abfa2d7600a86"
+            },
+            "benchmarks/wasm/exec-bench.wasm": {
+              "path": "benchmarks/wasm/exec-bench.wasm",
+              "required": false,
+              "used": false,
+              "sizeBytes": 21585,
+              "sha256": "01a9187c254a83fbbbb9910f3283719e20b6dfdf59e7ea079b42e95b84133838"
+            },
+            "benchmarks/wasm/clone-bench.wasm": {
+              "path": "benchmarks/wasm/clone-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 41158,
+              "sha256": "a0764cc5347ebf93a590f4ad334420d789d2957df4b5711dcbbc7885f58c8f83"
+            },
+            "benchmarks/wasm/spawn-bench.wasm": {
+              "path": "benchmarks/wasm/spawn-bench.wasm",
+              "required": true,
+              "used": true,
+              "sizeBytes": 48688,
+              "sha256": "22e8a916c92379f5ef5ec281806025c64346a84a2e0241edfcaa29f5fbb5faaa"
+            },
+            "runtime.kernel": {
+              "path": "@kernel-wasm",
+              "required": true,
+              "used": true,
+              "resolverRequest": "kernel.wasm",
+              "sizeBytes": 3129524,
+              "sha256": "c8720e84e8b5cf53616db823b3ff1d85baf5f9e2737f023bcb59e460fa4b0ed1"
+            },
+            "browser.wordpress.vfs": {
+              "path": "apps/browser-demos/public/wordpress.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wordpress.vfs.zst",
+              "sizeBytes": 40828087,
+              "sha256": "bb2516b2e31f2ac16b9c2e794fae25238835c8b0f49f399b4e02e7bfb45710e1"
+            },
+            "browser.mariadb.wasm32.vfs": {
+              "path": "apps/browser-demos/public/mariadb.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/mariadb-vfs.vfs.zst",
+              "sizeBytes": 4478234,
+              "sha256": "b4ab68e25a741e73deab70a2833a04d1cf9244b6986be3176554b0ce6cbdf1d3"
+            },
+            "browser.mariadb.wasm64.vfs": {
+              "path": "apps/browser-demos/public/mariadb-64.vfs.zst",
+              "required": true,
+              "used": true,
+              "resolverRequest": "programs/wasm64/mariadb-vfs.vfs.zst",
+              "sizeBytes": 4688081,
+              "sha256": "4c3db57847d7d505d36b009b105d0a2143db13181b79f12c19ec77b1d052542a"
+            }
+          },
+          "directories": {
+            "runtime.hostSources": {
+              "path": "host/src",
+              "fileCount": 386,
+              "sizeBytes": 7111434,
+              "sha256": "2aec82dd53cc201c40adae1d0ad01eab4c0348bd7e73e8e51bb32b15a6f668c6",
+              "required": true,
+              "excludedPaths": []
+            }
+          },
+          "forkBench": {
+            "hasWpkForkSymbols": true,
+            "hasLegacyForkSymbols": false,
+            "matchedSymbols": [
+              "$wpk_fork_module_state_finish_restore",
+              "1$kandelo.wpk_fork.static_root_catalogKFSR",
+              "__wpk_fork_boundary",
+              "__wpk_fork_exception_materialize",
+              "__wpk_fork_frame_commit",
+              "__wpk_fork_frame_next",
+              "__wpk_fork_frame_reserve",
+              "__wpk_fork_function_catalog",
+              "__wpk_fork_global_1",
+              "__wpk_fork_global_2",
+              "__wpk_fork_global_3",
+              "__wpk_fork_global_4",
+              "__wpk_fork_global_5",
+              "__wpk_fork_global_6",
+              "__wpk_fork_module_activation",
+              "__wpk_fork_module_state_record_commit",
+              "__wpk_fork_module_state_record_find",
+              "__wpk_fork_module_state_record_reserve",
+              "__wpk_fork_module_state_table_reconcile",
+              "__wpk_fork_ref_decode_exnref",
+              "__wpk_fork_ref_encode_exnref",
+              "__wpk_fork_ref_exn_abort",
+              "__wpk_fork_ref_exn_broker_encode",
+              "__wpk_fork_ref_exn_broker_throw_recipe",
+              "__wpk_fork_ref_exn_cache_index",
+              "__wpk_fork_ref_exn_clear",
+              "__wpk_fork_ref_exn_encode_ingress",
+              "__wpk_fork_ref_exn_ingress_throw",
+              "__wpk_fork_ref_exn_lookup",
+              "__wpk_fork_ref_exn_route",
+              "__wpk_fork_ref_exn_throw_recipe",
+              "__wpk_fork_ref_exn_throw_slot",
+              "__wpk_fork_ref_gc_allocate",
+              "__wpk_fork_ref_gc_broker_encode",
+              "__wpk_fork_ref_gc_encode_slot",
+              "__wpk_fork_ref_gc_fill",
+              "__wpk_fork_ref_gc_i31",
+              "__wpk_fork_ref_gc_load",
+              "__wpk_fork_ref_gc_lookup",
+              "__wpk_fork_ref_gc_payload_len",
+              "__wpk_fork_ref_gc_probe",
+              "__wpk_fork_ref_gc_publish_externref",
+              "__wpk_fork_ref_gc_route",
+              "__wpk_fork_ref_gc_transit",
+              "__wpk_fork_ref_scratch_release",
+              "__wpk_fork_ref_scratch_reserve",
+              "__wpk_fork_resume_catalog",
+              "__wpk_fork_resume_peek",
+              "__wpk_fork_resume_table",
+              "__wpk_fork_static_root_catalog",
+              "__wpk_fork_static_root_harvest",
+              "__wpk_fork_table_1",
+              "__wpk_fork_unwind",
+              "env-__wpk_fork_module_state_table_generation_addr",
+              "kandelo.wpk_fork.boundariesKFSB",
+              "kandelo.wpk_fork.capabilities",
+              "kandelo.wpk_fork.exception_codec",
+              "kandelo.wpk_fork.gc_codecKFGC",
+              "kandelo.wpk_fork.imported_globalsKFIG",
+              "kandelo.wpk_fork.imported_tablesKFIT",
+              "kandelo.wpk_fork.linked_framesKLCF",
+              "kandelo.wpk_fork.module_stateKFMD",
+              "kandelo.wpk_fork.resume_catalogKFRC",
+              "kandelo.wpk_fork.unwind_transport",
+              "wpk_fork_abort_begin",
+              "wpk_fork_abort_end",
+              "wpk_fork_module_bootstrap",
+              "wpk_fork_module_state_restore",
+              "wpk_fork_module_state_save",
+              "wpk_fork_module_table_state_restore",
+              "wpk_fork_module_table_state_save",
+              "wpk_fork_module_thread_bootstrap",
+              "wpk_fork_resume_sink",
+              "wpk_fork_resume_start",
+              "wpk_fork_resume_thread",
+              "wpk_fork_rewind_begin",
+              "wpk_fork_rewind_end",
+              "wpk_fork_state",
+              "wpk_fork_unwind_begin",
+              "wpk_fork_unwind_end"
+            ],
+            "expected": "wpk_fork_without_legacy",
+            "passed": true
+          }
+        },
+        "medians": {
+          "syscall-io": {
+            "pipe_mbps": 57.97,
+            "file_write_mbps": 79.77,
+            "file_read_mbps": 113.31,
+            "lock_many_files_acquire_us_per_op": 33.78,
+            "lock_many_files_conflict_us_per_op": 29.41,
+            "lock_many_files_replace_us_per_op": 31.14,
+            "lock_many_files_unlock_us_per_op": 27.2,
+            "lock_dense_file_acquire_us_per_op": 28.1,
+            "lock_dense_file_conflict_us_per_op": 26.91,
+            "lock_dense_file_replace_us_per_op": 28.45,
+            "lock_dense_file_unlock_us_per_op": 26.66,
+            "syscall_latency_us": 29.23
+          },
+          "stdin-throughput": {
+            "stdin_mbps": 859.14
+          },
+          "process-lifecycle": {
+            "hello_start_ms": 201.37,
+            "fork_ms": 45.52,
+            "clone_ms": 33.27
+          },
+          "spawn-scratch": {
+            "spawn_ms": 40.1,
+            "spawn_large_wire_bytes": 84386,
+            "spawn_large_first_ms": 30.76,
+            "spawn_large_repeat_ms": 30.9,
+            "spawn_scratch_kernel_bytes": 10485760
+          },
+          "wordpress": {
+            "boot_ms": 8480.01,
+            "http_first_response_ms": 209.37
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": 1076.15,
+            "query_create_ms": 14.89,
+            "query_insert_ms": 82.69,
+            "query_select_ms": 7.11,
+            "query_join_ms": 1.62
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": 1081.17,
+            "query_create_ms": 14.16,
+            "query_insert_ms": 81.22,
+            "query_select_ms": 6.54,
+            "query_join_ms": 1.72
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": 1012.06,
+            "query_create_ms": 20.95,
+            "query_insert_ms": 140.26,
+            "query_select_ms": 6.65,
+            "query_join_ms": 1.69
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": 1001.81,
+            "query_create_ms": 20.13,
+            "query_insert_ms": 136.35,
+            "query_select_ms": 7.42,
+            "query_join_ms": 2.15
+          }
+        },
+        "independentSamples": {
+          "syscall-io": {
+            "pipe_mbps": [
+              56.21,
+              59.93,
+              57.97
+            ],
+            "file_write_mbps": [
+              79.77,
+              79.68,
+              83.13
+            ],
+            "file_read_mbps": [
+              112.68,
+              113.31,
+              115.13
+            ],
+            "lock_many_files_acquire_us_per_op": [
+              34.02,
+              33.78,
+              33.77
+            ],
+            "lock_many_files_conflict_us_per_op": [
+              29.09,
+              29.41,
+              29.53
+            ],
+            "lock_many_files_replace_us_per_op": [
+              32.37,
+              31.14,
+              30.46
+            ],
+            "lock_many_files_unlock_us_per_op": [
+              27.2,
+              26.89,
+              27.36
+            ],
+            "lock_dense_file_acquire_us_per_op": [
+              28.22,
+              27.64,
+              28.1
+            ],
+            "lock_dense_file_conflict_us_per_op": [
+              26.91,
+              27.11,
+              26.38
+            ],
+            "lock_dense_file_replace_us_per_op": [
+              28.44,
+              28.45,
+              28.85
+            ],
+            "lock_dense_file_unlock_us_per_op": [
+              26.29,
+              27.11,
+              26.66
+            ],
+            "syscall_latency_us": [
+              29.72,
+              29.23,
+              28.94
+            ]
+          },
+          "stdin-throughput": {
+            "stdin_mbps": [
+              798.14,
+              868.78,
+              859.14
+            ]
+          },
+          "process-lifecycle": {
+            "hello_start_ms": [
+              201.37,
+              219.68,
+              186.12
+            ],
+            "fork_ms": [
+              45.54,
+              45.26,
+              45.52
+            ],
+            "clone_ms": [
+              33.59,
+              32.96,
+              33.27
+            ]
+          },
+          "spawn-scratch": {
+            "spawn_ms": [
+              41.45,
+              39.13,
+              40.1
+            ],
+            "spawn_large_wire_bytes": [
+              84386,
+              84386,
+              84386
+            ],
+            "spawn_large_first_ms": [
+              31.31,
+              30.49,
+              30.76
+            ],
+            "spawn_large_repeat_ms": [
+              31.09,
+              30.9,
+              30.52
+            ],
+            "spawn_scratch_kernel_bytes": [
+              10485760,
+              10485760,
+              10485760
+            ]
+          },
+          "wordpress": {
+            "boot_ms": [
+              8480.01,
+              8538.97,
+              8455.98
+            ],
+            "http_first_response_ms": [
+              209.44,
+              209.37,
+              206.91
+            ]
+          },
+          "mariadb-aria": {
+            "bootstrap_ms": [
+              1073.75,
+              1076.15,
+              1077.25
+            ],
+            "query_create_ms": [
+              15.29,
+              14.46,
+              14.89
+            ],
+            "query_insert_ms": [
+              82.87,
+              82.68,
+              82.69
+            ],
+            "query_select_ms": [
+              7.18,
+              6.83,
+              7.11
+            ],
+            "query_join_ms": [
+              1.62,
+              1.61,
+              1.62
+            ]
+          },
+          "mariadb-aria-64": {
+            "bootstrap_ms": [
+              1272.32,
+              1058.52,
+              1081.17
+            ],
+            "query_create_ms": [
+              14.16,
+              13.92,
+              14.28
+            ],
+            "query_insert_ms": [
+              81.22,
+              81.36,
+              78.4
+            ],
+            "query_select_ms": [
+              6.54,
+              6.5,
+              6.69
+            ],
+            "query_join_ms": [
+              1.69,
+              1.72,
+              1.93
+            ]
+          },
+          "mariadb-innodb": {
+            "bootstrap_ms": [
+              1012.06,
+              1007.2,
+              1168.69
+            ],
+            "query_create_ms": [
+              25.27,
+              20.76,
+              20.95
+            ],
+            "query_insert_ms": [
+              149.86,
+              131.31,
+              140.26
+            ],
+            "query_select_ms": [
+              6.36,
+              6.74,
+              6.65
+            ],
+            "query_join_ms": [
+              1.63,
+              1.71,
+              1.69
+            ]
+          },
+          "mariadb-innodb-64": {
+            "bootstrap_ms": [
+              1005.79,
+              998.75,
+              1001.81
+            ],
+            "query_create_ms": [
+              24.4,
+              20.13,
+              17.98
+            ],
+            "query_insert_ms": [
+              136.35,
+              140.41,
+              127.98
+            ],
+            "query_select_ms": [
+              6.91,
+              7.42,
+              7.49
+            ],
+            "query_join_ms": [
+              2.32,
+              1.9,
+              2.15
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "sameEntryPersistentChromium": {
+    "scope": "96realUIcycles, threefreshChromiumparents/arm,16cyclesinunchangedpage/entry perparent; noGC/reload/reimports. Wholephasequiet/Sleep0 andsourceidentitiesPASS. Finitefootprintobservations, not asymptoticplateau/fullapp/audio/JSCreservation proof. Failed347b/333remain; diagnosticonly.",
+    "sourceSummarySha256": "d0aae9de63637bf0ef5e622c8ab5067f19ac5f48044dbaa85f850dbcd77bdb4a",
+    "parents": [
+      {
+        "index": 0,
+        "arm": "ordinary",
+        "stoppedMiB": [
+          1041.7615585327148,
+          1073.0271835327148,
+          1042.8865585327148,
+          1071.7303085327148,
+          1059.5584335327148,
+          1086.9022521972656,
+          1081.6366729736328,
+          1122.1055145263672,
+          1118.9180145263672,
+          1130.4336395263672,
+          1093.6680145263672,
+          1143.2618103027344,
+          1127.9493103027344,
+          1110.7306289672852,
+          1098.1681060791016,
+          1132.5587310791016
+        ],
+        "firstFourMedianMiB": 1057.3084335327148,
+        "lastFourMedianMiB": 1119.3399696350098,
+        "rangeMiB": [
+          1041.7615585327148,
+          1143.2618103027344
+        ]
+      },
+      {
+        "index": 1,
+        "arm": "grouped",
+        "stoppedMiB": [
+          1314.5898666381836,
+          1274.3867645263672,
+          1258.4336395263672,
+          1307.6992874145508,
+          1350.0431518554688,
+          1321.4025268554688,
+          1387.3088684082031,
+          1403.8244705200195,
+          1379.0432434082031,
+          1425.3088684082031,
+          1465.8870162963867,
+          1385.1057891845703,
+          1409.090187072754,
+          1410.621437072754,
+          1435.4027099609375,
+          1437.1527099609375
+        ],
+        "firstFourMedianMiB": 1291.043025970459,
+        "lastFourMedianMiB": 1423.0120735168457,
+        "rangeMiB": [
+          1258.4336395263672,
+          1465.8870162963867
+        ]
+      },
+      {
+        "index": 2,
+        "arm": "grouped",
+        "stoppedMiB": [
+          1348.8399353027344,
+          1269.4493789672852,
+          1269.0900039672852,
+          1323.7462768554688,
+          1319.0275497436523,
+          1382.5744247436523,
+          1391.8401184082031,
+          1375.4339141845703,
+          1434.402687072754,
+          1438.683937072754,
+          1442.230857849121,
+          1457.9653244018555,
+          1510.8559265136719,
+          1462.1059265136719,
+          1406.6684036254883,
+          1399.7778015136719
+        ],
+        "firstFourMedianMiB": 1296.597827911377,
+        "lastFourMedianMiB": 1434.38716506958,
+        "rangeMiB": [
+          1269.0900039672852,
+          1510.8559265136719
+        ]
+      },
+      {
+        "index": 3,
+        "arm": "ordinary",
+        "stoppedMiB": [
+          1070.1209106445312,
+          1085.8396835327148,
+          1052.8240585327148,
+          1098.4803314208984,
+          1083.0584335327148,
+          1122.9178771972656,
+          1081.8397979736328,
+          1110.8241729736328,
+          1097.0741729736328,
+          1133.0116958618164,
+          1107.6522979736328,
+          1146.3554229736328,
+          1139.3241729736328,
+          1142.96484375,
+          1110.0429458618164,
+          1134.3868103027344
+        ],
+        "firstFourMedianMiB": 1077.980297088623,
+        "lastFourMedianMiB": 1136.8554916381836,
+        "rangeMiB": [
+          1052.8240585327148,
+          1146.3554229736328
+        ]
+      },
+      {
+        "index": 4,
+        "arm": "ordinary",
+        "stoppedMiB": [
+          1081.9332733154297,
+          1095.4645233154297,
+          1034.4176483154297,
+          1095.5270690917969,
+          1044.4020919799805,
+          1105.8708877563477,
+          1084.7771835327148,
+          1125.0584335327148,
+          1087.7771606445312,
+          1127.6677856445312,
+          1103.1052856445312,
+          1151.6365585327148,
+          1120.6521835327148,
+          1132.1053314208984,
+          1106.5428314208984,
+          1127.6053085327148
+        ],
+        "firstFourMedianMiB": 1088.6988983154297,
+        "lastFourMedianMiB": 1124.1287460327148,
+        "rangeMiB": [
+          1034.4176483154297,
+          1151.6365585327148
+        ]
+      },
+      {
+        "index": 5,
+        "arm": "grouped",
+        "stoppedMiB": [
+          1309.449562072754,
+          1272.1683349609375,
+          1333.121437072754,
+          1340.324607849121,
+          1286.699607849121,
+          1324.8715286254883,
+          1404.2465744018555,
+          1385.8403244018555,
+          1406.871597290039,
+          1423.4341430664062,
+          1558.0435638427734,
+          1510.7936325073242,
+          1356.1373596191406,
+          1421.1842803955078,
+          1388.1217803955078,
+          1423.7624053955078
+        ],
+        "firstFourMedianMiB": 1321.285499572754,
+        "lastFourMedianMiB": 1404.6530303955078,
+        "rangeMiB": [
+          1272.1683349609375,
+          1558.0435638427734
+        ]
+      }
+    ]
+  },
+  "gateContext": {
+    "conformance333": {
+      "passed": false,
+      "sourceReceiptSha256": "4903463b1876a5c77993cacab3b11fe013838db084daf5b1962b13bc4d16f604",
+      "wrapperExitCodes": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        1
+      ],
+      "unexpectedSortix": "tcgetwinsize both hosts; poll timeout on Node. No expectation/deadline changes. Node libc pthread_cond-smasher flake-pass retained."
+    },
+    "fullMemory347b": {
+      "passed": false,
+      "sourceReceiptSha256": "cf63f17fe630eb34d080d08a270b42968b7899c66dc94123bf4e628613e26e63",
+      "browser": {
+        "passed": 16,
+        "failed": 2,
+        "skipped": 0,
+        "flaky": 0
+      },
+      "failures": "Firefox Quake proxy502/upstream timeout and unresolved audio-active timeout; unchanged isolated audio359 passes, mixed outcomes retained."
+    },
+    "fullMemory370": {
+      "passed": true,
+      "sourceReceiptSha256": "cf266ff42db1ba7c381b1e5c818e9d2874dd5973aed951350f7036b45fc2a5dc",
+      "trackedInputsUnchanged": true,
+      "sourceChecks": 1544,
+      "sourceFiles": 59,
+      "nodeChecks": 3,
+      "bunChecks": 7,
+      "browser": {
+        "expected": 18,
+        "unexpected": 0,
+        "flaky": 0,
+        "skipped": 0
+      },
+      "scope": "Unchanged own341 source/artifacts and original deadlines/budgets. Four constrained switching cycles per engine. This pass does not erase347b or identify its cause. Firefox owned-profile EACCES cleanup remains."
+    },
+    "bunShutdownFallbacks": "10 ordinary pthread-exit cleanup fallbacks in331,347b,370; Node/V8 zero. Guest checks pass, graceful Bun cleanup not established."
+  },
+  "previousCanonicalDesktopResources": {
+    "scope": "Current reusable canonical desktop; ordinary/direct canvas versus shared/bitmap relay, three fresh Chromium parents per arm in O,G,G,O,O,G order. 1920x1080. Whole-owned-browser OS multi-PID physical footprint adjusts shared regions; do not replace with per-process sums. Fifteen physical commands verified through guest file output. Stop snapshots are immediate, not steady state. Resource phase independently passes; its enclosing glyph campaign fails.",
+    "sourceReceiptSha256": "dabade98eb8fda9f46f4999881266f342f5427642baae8165d0834c6945bb5ed",
+    "trackedOverlapAndWholePhaseSleepChecks": "Passed; original receipt retained. No completely idle OS claim.",
+    "samples": [
+      {
+        "index": 0,
+        "arm": "ordinary",
+        "browserVersion": "153.0.8010.12",
+        "startedAt": "2026-11-20T12:38:35.552Z",
+        "sourceReportSha256": "11384853382431dfe9c5fb36aa3a56575fdb1da88eb53ab01fffdbd4f78cb0d9",
+        "physicalFootprintBytes": {
+          "one-visible": 2002499216,
+          "two-tiled": 2141141152,
+          "two-separated": 2161473744,
+          "two-retiled": 2187589984,
+          "afterStop": 1203892272
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.1147319999999998,
+        "trustedEnterToVerifiedFileOutputMs": [
+          27.320000052452087,
+          37.984999895095825,
+          36.700000047683716,
+          26.18500006198883,
+          23.509999990463257,
+          30.230000019073486,
+          32.19000005722046,
+          39.37999999523163,
+          38.00999999046326,
+          25.740000009536743,
+          32.50999999046326,
+          28.819999933242798,
+          26.96499991416931,
+          32.8199999332428,
+          21.50499999523163
+        ],
+        "startToMappedWindowMs": 2110.7385000000004,
+        "assetTransportCancellationCount": 4,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0
+      },
+      {
+        "index": 1,
+        "arm": "grouped",
+        "browserVersion": "153.0.8010.12",
+        "startedAt": "2026-11-20T12:38:41.911Z",
+        "sourceReportSha256": "453b899afbf4ae8c39449d3ffe41628e0b7d2502e60436ddc582c29c1b9aba74",
+        "physicalFootprintBytes": {
+          "one-visible": 2204857904,
+          "two-tiled": 2332833688,
+          "two-separated": 2337027944,
+          "two-retiled": 2342729720,
+          "afterStop": 1530818728
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.0660619999999994,
+        "trustedEnterToVerifiedFileOutputMs": [
+          10.360000014305115,
+          8.429999947547913,
+          11.335000038146973,
+          3.9700000286102295,
+          11.139999985694885,
+          13.09500002861023,
+          9.774999976158142,
+          14.059999942779541,
+          27.625,
+          10.024999976158142,
+          21.554999947547913,
+          28.06499993801117,
+          10.129999995231628,
+          17.759999990463257,
+          9.72000002861023
+        ],
+        "startToMappedWindowMs": 2650.9582499999997,
+        "assetTransportCancellationCount": 1,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0
+      },
+      {
+        "index": 2,
+        "arm": "grouped",
+        "browserVersion": "153.0.8010.12",
+        "startedAt": "2026-11-20T12:38:47.918Z",
+        "sourceReportSha256": "6dcb8e7910dad5f2e88cf0a7795c74c8b8a020fb9bcf4ab6b030f0d170a1de3f",
+        "physicalFootprintBytes": {
+          "one-visible": 2205120072,
+          "two-tiled": 2317924272,
+          "two-separated": 2330097560,
+          "two-retiled": 2359244792,
+          "afterStop": 1532407976
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.0425520000000004,
+        "trustedEnterToVerifiedFileOutputMs": [
+          10.56499993801117,
+          9.924999952316284,
+          6.199999928474426,
+          7.060000061988831,
+          8.579999923706055,
+          10.754999995231628,
+          11.125,
+          14.009999990463257,
+          12.014999985694885,
+          30.985000014305115,
+          13.759999990463257,
+          30.044999957084656,
+          30.84499990940094,
+          14.829999923706055,
+          11.684999942779541
+        ],
+        "startToMappedWindowMs": 2709.0430000000015,
+        "assetTransportCancellationCount": 0,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0
+      },
+      {
+        "index": 3,
+        "arm": "ordinary",
+        "browserVersion": "153.0.8010.12",
+        "startedAt": "2026-11-20T12:38:53.955Z",
+        "sourceReportSha256": "43f8e419f3c11874d4e6306d5c350a0958dbb66914bc104d6bd39f6e97fac7d4",
+        "physicalFootprintBytes": {
+          "one-visible": 2005562616,
+          "two-tiled": 2145826568,
+          "two-separated": 2178807728,
+          "two-retiled": 2196748280,
+          "afterStop": 1225322160
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.1842390000000003,
+        "trustedEnterToVerifiedFileOutputMs": [
+          25.575000047683716,
+          33.11500000953674,
+          34.05999994277954,
+          24.980000019073486,
+          30.634999990463257,
+          21.764999985694885,
+          33.329999923706055,
+          4.75,
+          67.75,
+          30.81499993801117,
+          34.40499997138977,
+          21,
+          28.054999947547913,
+          32.644999980926514,
+          24.545000076293945
+        ],
+        "startToMappedWindowMs": 2042.4918749999997,
+        "assetTransportCancellationCount": 6,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0
+      },
+      {
+        "index": 4,
+        "arm": "ordinary",
+        "browserVersion": "153.0.8010.12",
+        "startedAt": "2026-11-20T12:39:00.189Z",
+        "sourceReportSha256": "4cdc6bfcf35a3cb9ace5065b717523f1e979aa680bdd5d26d9483302e21191cf",
+        "physicalFootprintBytes": {
+          "one-visible": 2001303016,
+          "two-tiled": 2152019936,
+          "two-separated": 2160932952,
+          "two-retiled": 2190358664,
+          "afterStop": 1223913328
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.1584789999999996,
+        "trustedEnterToVerifiedFileOutputMs": [
+          30.37999999523163,
+          33.169999957084656,
+          30.825000047683716,
+          31.555000066757202,
+          35.4449999332428,
+          39.67999994754791,
+          43.99000000953674,
+          45.3050000667572,
+          38.00999999046326,
+          38.59500002861023,
+          35.019999980926514,
+          39.58999991416931,
+          40.75,
+          37.97000002861023,
+          41.514999985694885
+        ],
+        "startToMappedWindowMs": 2039.3762910000005,
+        "assetTransportCancellationCount": 5,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0
+      },
+      {
+        "index": 5,
+        "arm": "grouped",
+        "browserVersion": "153.0.8010.12",
+        "startedAt": "2026-11-20T12:39:06.305Z",
+        "sourceReportSha256": "72aeff42600d6f9ce5934761be1122332d4c7bf278c4331c826f3a1909461c14",
+        "physicalFootprintBytes": {
+          "one-visible": 2196714912,
+          "two-tiled": 2350806864,
+          "two-separated": 2375169848,
+          "two-retiled": 2364159944,
+          "afterStop": 1539797088
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.0109559999999997,
+        "trustedEnterToVerifiedFileOutputMs": [
+          9.235000014305115,
+          7.324999928474426,
+          7.610000014305115,
+          8.620000004768372,
+          9.504999995231628,
+          12.465000033378601,
+          12.474999904632568,
+          18.330000042915344,
+          16.3400000333786,
+          17.730000019073486,
+          20.039999961853027,
+          18.830000042915344,
+          29.37999999523163,
+          13.365000009536743,
+          9.605000019073486
+        ],
+        "startToMappedWindowMs": 2638.622625,
+        "assetTransportCancellationCount": 2,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0
+      }
+    ]
+  },
+  "currentOffsetWrapperDesktopResources": {
+    "sourceReceiptSha256": "dabdf9b067b71f8bf637247fcaafceb20d8658683934c055e7da49accb756d79",
+    "scope": "DIAGNOSTIC app-scoped freshordinary360/directcanvas versus own369offsetSDKgrouped383/bitmaprelay; same350b/379 ordinary executable hashes and Host27JS exact. ThreefreshChromiumparents/arm O,G,G,O,O,G. Gate381/SDK382b required before samples; retained347b/333/382failures. All original resource/input/CPU/Stop assertions and deadlines unchanged. No netmemory/plateau/globalCPU or promotion claim until measured and reviewed. Failed382 dependency setup and347b fullmemory remain historical failures; successful complete reruns do not erase them. Conformance333 stillfailed. No promotion clearance.",
+    "samples": [
+      {
+        "index": 0,
+        "arm": "ordinary",
+        "browserVersion": "153.0.8010.12",
+        "sourceReportSha256": "2fac76adca092cb1fe7ef63a10c6df48cec43d54225a660e664d806bb4a7c861",
+        "physicalFootprintBytes": {
+          "one-visible": 2003219848,
+          "two-tiled": 2100508520,
+          "two-separated": 2149808120,
+          "two-retiled": 2164094896,
+          "afterStop": 1195142928
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.1874930000000001,
+        "trustedEnterToVerifiedFileOutputMs": [
+          28.539999961853027,
+          34.41000008583069,
+          35.125,
+          24.49500000476837,
+          40.019999980926514,
+          34.06000006198883,
+          48.50499999523163,
+          20.875,
+          36.49000000953674,
+          42.325000047683716,
+          26.59999990463257,
+          34.980000019073486,
+          32.59999990463257,
+          35.110000014305115,
+          26.174999952316284
+        ],
+        "startToMappedWindowMs": 2162.6435,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0,
+        "assetTransportCancellationCount": 4
+      },
+      {
+        "index": 1,
+        "arm": "grouped",
+        "browserVersion": "153.0.8010.12",
+        "sourceReportSha256": "50509f5dd4470abff0a490510a1b716becb8eec56d13cb4d67e19277913c66cb",
+        "physicalFootprintBytes": {
+          "one-visible": 2055337184,
+          "two-tiled": 2166666872,
+          "two-separated": 2202236416,
+          "two-retiled": 2183886504,
+          "afterStop": 1289809752
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 0.988381,
+        "trustedEnterToVerifiedFileOutputMs": [
+          10.424999952316284,
+          9.575000047683716,
+          7.794999957084656,
+          10.195000052452087,
+          12.230000019073486,
+          8.889999985694885,
+          7.6600000858306885,
+          17.645000100135803,
+          25.204999923706055,
+          13.644999980926514,
+          17.429999947547913,
+          26.069999933242798,
+          16,
+          14.820000052452087,
+          8.725000023841858
+        ],
+        "startToMappedWindowMs": 2685.1839579999996,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0,
+        "assetTransportCancellationCount": 1
+      },
+      {
+        "index": 2,
+        "arm": "grouped",
+        "browserVersion": "153.0.8010.12",
+        "sourceReportSha256": "93592177eba251c0fd97d3cffc833d860991d9803da62892aab0a42772ae0233",
+        "physicalFootprintBytes": {
+          "one-visible": 2007791008,
+          "two-tiled": 2155886344,
+          "two-separated": 2165077792,
+          "two-retiled": 2162734880,
+          "afterStop": 1321103216
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.0014910000000001,
+        "trustedEnterToVerifiedFileOutputMs": [
+          15.450000047683716,
+          9.175000071525574,
+          23.455000042915344,
+          11.179999947547913,
+          19.009999990463257,
+          24.789999961853027,
+          11.200000047683716,
+          7.09499990940094,
+          12.455000042915344,
+          10.65500009059906,
+          13.289999961853027,
+          10.705000042915344,
+          10.100000023841858,
+          16.49500000476837,
+          8.995000004768372
+        ],
+        "startToMappedWindowMs": 2705.0847909999993,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0,
+        "assetTransportCancellationCount": 1
+      },
+      {
+        "index": 3,
+        "arm": "ordinary",
+        "browserVersion": "153.0.8010.12",
+        "sourceReportSha256": "756ff30aea8083a12ae6965a508434c65cba7d56054d846af917800b1da0a5e9",
+        "physicalFootprintBytes": {
+          "one-visible": 1981183200,
+          "two-tiled": 2111731608,
+          "two-separated": 2147121144,
+          "two-retiled": 2171549736,
+          "afterStop": 1205563032
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.0033349999999994,
+        "trustedEnterToVerifiedFileOutputMs": [
+          26.855000019073486,
+          41.12000000476837,
+          46.485000014305115,
+          20.679999947547913,
+          20.954999923706055,
+          35.10000002384186,
+          39.9650000333786,
+          46.0900000333786,
+          35.294999957084656,
+          39.9650000333786,
+          36.40000009536743,
+          24.509999990463257,
+          31.195000052452087,
+          18.40000009536743,
+          34.730000019073486
+        ],
+        "startToMappedWindowMs": 2676.744666999999,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0,
+        "assetTransportCancellationCount": 5
+      },
+      {
+        "index": 4,
+        "arm": "ordinary",
+        "browserVersion": "153.0.8010.12",
+        "sourceReportSha256": "7a3d5dfe2750a233d1e27c1f55cd93e040d0e7c64fd2028b1cf8995dedcca7fe",
+        "physicalFootprintBytes": {
+          "one-visible": 2003826224,
+          "two-tiled": 2147088496,
+          "two-separated": 2165209296,
+          "two-retiled": 2177726672,
+          "afterStop": 1229795304
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.131542,
+        "trustedEnterToVerifiedFileOutputMs": [
+          25.37999999523163,
+          37.63499999046326,
+          37.84500002861023,
+          38.5200001001358,
+          39.00999999046326,
+          39.43499994277954,
+          52.39999997615814,
+          25.389999985694885,
+          32.080000042915344,
+          43.644999980926514,
+          22.09500002861023,
+          33.204999923706055,
+          16.84500002861023,
+          23.979999899864197,
+          31.419999957084656
+        ],
+        "startToMappedWindowMs": 2115.5632920000025,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0,
+        "assetTransportCancellationCount": 3
+      },
+      {
+        "index": 5,
+        "arm": "grouped",
+        "browserVersion": "153.0.8010.12",
+        "sourceReportSha256": "0ac55c210c58ea8810205f8fe67555b4ad84a17b03253e2546558b185a8104ad",
+        "physicalFootprintBytes": {
+          "one-visible": 2040362208,
+          "two-tiled": 2132227728,
+          "two-separated": 2161948304,
+          "two-retiled": 2160080600,
+          "afterStop": 1291693792
+        },
+        "wholeBrowserCpuSecondsFor15Commands": 1.0162229999999999,
+        "trustedEnterToVerifiedFileOutputMs": [
+          7.865000009536743,
+          19.350000023841858,
+          28.074999928474426,
+          7.485000014305115,
+          22.419999957084656,
+          25.97000002861023,
+          11.575000047683716,
+          10.504999995231628,
+          9.865000009536743,
+          10.43999993801117,
+          15.699999928474426,
+          10.589999914169312,
+          8.680000066757202,
+          8.950000047683716,
+          13.629999995231628
+        ],
+        "startToMappedWindowMs": 2684.958166000004,
+        "httpFailureCount": 0,
+        "consoleErrorCount": 0,
+        "assetTransportCancellationCount": 2
+      }
+    ]
+  },
+  "currentCapturedGlyph": {
+    "sourceReceiptSha256": "1b388f9ba391053f5da2252bc7fad7fb968e1af167aeed7e04aa6e6345ffb040",
+    "scope": "Fresh matched glyph diagnostic: ordinary360 versus own369offsetSDK383, three fresh Chromium parents/arm O,G,G,O,O,G. ActualFootclientcrop/clear-screenbaseline, unchanged10sec/32pixelbounds, three noinput and50ms stall controls. Includes video capture/readback, NOT photon/GPUtime. Original365blackcalibrationfailure remains unresolved/retained. Whole phase rejected on any calibration failure; no selectedparents. Required381fullmemory and382b84SDK pass. No promotion clearance. Failed382 dependency setup and347b fullmemory remain historical failures; successful complete reruns do not erase them. Conformance333 stillfailed. No promotion clearance.",
+    "samples": [
+      {
+        "index": 0,
+        "arm": "ordinary",
+        "sourceReportSha256": "1f272d059463e32915f9603f41c3823e564d4264cb12e51fde06d60ef7caf21b",
+        "keydownToCapturedGlyphMs": [
+          32.324999928474426,
+          32.30999994277954,
+          32.24500000476837,
+          33.72500002384186,
+          32.18500006198883,
+          31.134999990463257,
+          32.62000000476837,
+          32.3050000667572,
+          33.269999980926514,
+          32.24000000953674,
+          32.299999952316284,
+          31.259999990463257,
+          33.375,
+          32.389999985694885,
+          33.514999985694885
+        ],
+        "deliberateDelayControls": [
+          {
+            "keydownToCapturedGlyphMs": 98.90499997138977,
+            "handlerDelayMs": 0.0700000524520874,
+            "deliberateDelayMs": 50,
+            "mediaTime": 7.310603,
+            "presentedFrames": 41
+          }
+        ],
+        "noInputControls": [
+          {
+            "at": 8036.804999947548,
+            "matched": false
+          },
+          {
+            "at": 9160.384999990463,
+            "matched": false
+          },
+          {
+            "at": 9187.855000019073,
+            "matched": false
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "arm": "grouped",
+        "sourceReportSha256": "f96c67f4ab3d6e377c0236526ac29e93aa0c24ca4adbb004d0749cce18049e7d",
+        "keydownToCapturedGlyphMs": [
+          32.15000009536743,
+          30.955000042915344,
+          32.175000071525574,
+          32.485000014305115,
+          32.1599999666214,
+          33.139999985694885,
+          32.49500000476837,
+          31.52999997138977,
+          32.575000047683716,
+          32.50499999523163,
+          30.46499991416931,
+          29.850000023841858,
+          31.509999990463257,
+          32.6049998998642,
+          32.72000002861023
+        ],
+        "deliberateDelayControls": [
+          {
+            "keydownToCapturedGlyphMs": 66.88500010967255,
+            "handlerDelayMs": 0.08000004291534424,
+            "deliberateDelayMs": 50,
+            "mediaTime": 7.984629,
+            "presentedFrames": 43
+          }
+        ],
+        "noInputControls": [
+          {
+            "at": 9393.05999994278,
+            "matched": false
+          },
+          {
+            "at": 10525.365000009537,
+            "matched": false
+          },
+          {
+            "at": 10559.504999995232,
+            "matched": false
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "arm": "grouped",
+        "sourceReportSha256": "a4b5f9aa49ee9a9d5d2763960de84e6fab72a320c8a160d0544974c72ce0b652",
+        "keydownToCapturedGlyphMs": [
+          62.88499999046326,
+          32.294999957084656,
+          32.41500008106232,
+          32.375,
+          31.75,
+          34.0900000333786,
+          30.43499994277954,
+          31.90000009536743,
+          32.230000019073486,
+          30.87999999523163,
+          32.03500008583069,
+          32.37999999523163,
+          32.3050000667572,
+          31.87999999523163,
+          32.12999999523163
+        ],
+        "deliberateDelayControls": [
+          {
+            "keydownToCapturedGlyphMs": 68.28000009059906,
+            "handlerDelayMs": 0.08000004291534424,
+            "deliberateDelayMs": 50,
+            "mediaTime": 9.0152,
+            "presentedFrames": 41
+          }
+        ],
+        "noInputControls": [
+          {
+            "at": 11559.710000038147,
+            "matched": false
+          },
+          {
+            "at": 11592.889999985695,
+            "matched": false
+          },
+          {
+            "at": 12742.644999980927,
+            "matched": false
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "arm": "ordinary",
+        "sourceReportSha256": "da4b3c4f342bb48b68945a82de7a08df9ca349baed1a4662ea18d4f5869b01e1",
+        "keydownToCapturedGlyphMs": [
+          33.53999996185303,
+          32.31499993801117,
+          31.87000000476837,
+          32.33500003814697,
+          32.355000019073486,
+          32.419999957084656,
+          32.375,
+          32.669999957084656,
+          32.329999923706055,
+          32.40500009059906,
+          32.30499994754791,
+          32.29000008106232,
+          32.389999985694885,
+          31.1599999666214,
+          32.34999990463257
+        ],
+        "deliberateDelayControls": [
+          {
+            "keydownToCapturedGlyphMs": 67.63499999046326,
+            "handlerDelayMs": 0.07499992847442627,
+            "deliberateDelayMs": 50,
+            "mediaTime": 8.34924,
+            "presentedFrames": 40
+          }
+        ],
+        "noInputControls": [
+          {
+            "at": 9077.759999990463,
+            "matched": false
+          },
+          {
+            "at": 10208.424999952316,
+            "matched": false
+          },
+          {
+            "at": 10239.754999995232,
+            "matched": false
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "arm": "ordinary",
+        "sourceReportSha256": "009b00f6fc1d77fa7fad728e9b7e2905a16eda5105cdb838f6df51689e8fa147",
+        "keydownToCapturedGlyphMs": [
+          44.21000003814697,
+          32.25,
+          33.044999957084656,
+          32.20999991893768,
+          31.7150000333786,
+          33.68499994277954,
+          32.330000042915344,
+          32.2700001001358,
+          32.235000014305115,
+          32.170000076293945,
+          32.28999996185303,
+          32.28999996185303,
+          32.7849999666214,
+          31.575000047683716,
+          20.62999999523163
+        ],
+        "deliberateDelayControls": [
+          {
+            "keydownToCapturedGlyphMs": 65.62000000476837,
+            "handlerDelayMs": 0.07500004768371582,
+            "deliberateDelayMs": 50,
+            "mediaTime": 8.116962,
+            "presentedFrames": 41
+          }
+        ],
+        "noInputControls": [
+          {
+            "at": 7705.100000023842,
+            "matched": false
+          },
+          {
+            "at": 8826.355000019073,
+            "matched": false
+          },
+          {
+            "at": 9977.615000009537,
+            "matched": false
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "arm": "grouped",
+        "sourceReportSha256": "faaaa9156b056e147ae0f3b7f9972e56dd35eb026b45b73b060b2071084c7cc0",
+        "keydownToCapturedGlyphMs": [
+          1150.4599999189377,
+          32.375,
+          32.875,
+          32.75,
+          32.21000003814697,
+          32.919999957084656,
+          33.90500009059906,
+          33.894999980926514,
+          32.70999991893768,
+          31.804999947547913,
+          32.2849999666214,
+          32.63499999046326,
+          31.960000038146973,
+          32.41500008106232,
+          31.039999961853027
+        ],
+        "deliberateDelayControls": [
+          {
+            "keydownToCapturedGlyphMs": 66.93500006198883,
+            "handlerDelayMs": 0.10000002384185791,
+            "deliberateDelayMs": 50,
+            "mediaTime": 10.529754,
+            "presentedFrames": 43
+          }
+        ],
+        "noInputControls": [
+          {
+            "at": 11858.879999995232,
+            "matched": false
+          },
+          {
+            "at": 13009.549999952316,
+            "matched": false
+          },
+          {
+            "at": 13041.899999976158,
+            "matched": false
+          }
+        ]
+      }
+    ]
+  },
+  "currentSameEntryPersistentChromium": {
+    "sourceReceiptSha256": "f734064ab22b1890cc02ba215aec142b8b4d071b5220400b5b32f8bca1becd0c",
+    "scope": "Fresh persistent lifecycle diagnostic: ordinary360 versus own369offsetSDK383, three fresh Chromium parents/arm O,G,G,O,O,G. Sixteen actualStart/Stop cycles perparent in sameentry/page; freshfiles/physicalinput/workspaces/composition/closedhost+memoryboundarychecks and OSfootprintaftereachStop. NoGC/reloads/reimports/limits/deadlinechanges. Finiteobservations, NOT asymptoticplateau/fullapp/audio. Required381fullmemory and382b84SDKpass. No promotionclearance. Failed382 dependency setup and347b fullmemory remain historical failures; successful complete reruns do not erase them. Conformance333 stillfailed. No promotion clearance.",
+    "parents": [
+      {
+        "index": 0,
+        "arm": "ordinary",
+        "sourceReportSha256": "125c6acc3da82c70c64507eeb167f554715d2e53eefaf3b2f866471a9f9be56c",
+        "stoppedPhysicalFootprintBytes": [
+          1091038920,
+          1130835656,
+          1089334960,
+          1135374024,
+          1141714608,
+          1163390664,
+          1129803584,
+          1165176640,
+          1136357184,
+          1193455472,
+          1151348568,
+          1206448008,
+          1202139016,
+          1172254648,
+          1149841312,
+          950595464
+        ],
+        "mainHeapAfterStop": [
+          {
+            "usedSize": 4316344,
+            "totalSize": 7733248,
+            "embedderHeapUsedSize": 2012872,
+            "backingStorageSize": 17294959
+          },
+          {
+            "usedSize": 3380928,
+            "totalSize": 6160384,
+            "embedderHeapUsedSize": 1470224,
+            "backingStorageSize": 30083529
+          },
+          {
+            "usedSize": 3769904,
+            "totalSize": 6422528,
+            "embedderHeapUsedSize": 1240528,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3500436,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1364992,
+            "backingStorageSize": 29388589
+          },
+          {
+            "usedSize": 3880248,
+            "totalSize": 5111808,
+            "embedderHeapUsedSize": 1229752,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3611816,
+            "totalSize": 5898240,
+            "embedderHeapUsedSize": 1295040,
+            "backingStorageSize": 29531000
+          },
+          {
+            "usedSize": 3820344,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1256288,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3844960,
+            "totalSize": 5111808,
+            "embedderHeapUsedSize": 1296624,
+            "backingStorageSize": 28448321
+          },
+          {
+            "usedSize": 3996036,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1180072,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3689824,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1357624,
+            "backingStorageSize": 29388589
+          },
+          {
+            "usedSize": 3925212,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1195320,
+            "backingStorageSize": 16100412
+          },
+          {
+            "usedSize": 3725036,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1352936,
+            "backingStorageSize": 29400153
+          },
+          {
+            "usedSize": 3967060,
+            "totalSize": 4587520,
+            "embedderHeapUsedSize": 1193328,
+            "backingStorageSize": 16100519
+          },
+          {
+            "usedSize": 3752316,
+            "totalSize": 4325376,
+            "embedderHeapUsedSize": 1292952,
+            "backingStorageSize": 29531009
+          },
+          {
+            "usedSize": 4012168,
+            "totalSize": 4587520,
+            "embedderHeapUsedSize": 1230912,
+            "backingStorageSize": 16100519
+          },
+          {
+            "usedSize": 3692616,
+            "totalSize": 5111808,
+            "embedderHeapUsedSize": 1345064,
+            "backingStorageSize": 30083538
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "arm": "grouped",
+        "sourceReportSha256": "a419bfecdb07d2976d75ac5287afeee128cb5b35c0ab389630a3f64c5a4eeb7d",
+        "stoppedPhysicalFootprintBytes": [
+          1202122416,
+          1264971464,
+          1241575112,
+          1294757576,
+          1298935568,
+          1321709376,
+          1301114736,
+          1373253488,
+          1373450120,
+          1933046144,
+          2106995360,
+          1979019936,
+          1947595496,
+          1962717880,
+          1716892368,
+          1742729864
+        ],
+        "mainHeapAfterStop": [
+          {
+            "usedSize": 4372200,
+            "totalSize": 7733248,
+            "embedderHeapUsedSize": 1560904,
+            "backingStorageSize": 34623772
+          },
+          {
+            "usedSize": 4513520,
+            "totalSize": 7995392,
+            "embedderHeapUsedSize": 1393432,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4554840,
+            "totalSize": 8257536,
+            "embedderHeapUsedSize": 1325200,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4617408,
+            "totalSize": 9043968,
+            "embedderHeapUsedSize": 1251568,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4642832,
+            "totalSize": 10354688,
+            "embedderHeapUsedSize": 1225512,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4675428,
+            "totalSize": 10354688,
+            "embedderHeapUsedSize": 1319024,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4619636,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1263520,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4711564,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1258712,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4820704,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1295720,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 7100688,
+            "totalSize": 11665408,
+            "embedderHeapUsedSize": 1410912,
+            "backingStorageSize": 97390657
+          },
+          {
+            "usedSize": 7123560,
+            "totalSize": 13238272,
+            "embedderHeapUsedSize": 1379080,
+            "backingStorageSize": 97575072
+          },
+          {
+            "usedSize": 4675876,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1238912,
+            "backingStorageSize": 20431222
+          },
+          {
+            "usedSize": 4484004,
+            "totalSize": 8257536,
+            "embedderHeapUsedSize": 1324120,
+            "backingStorageSize": 32549630
+          },
+          {
+            "usedSize": 4885800,
+            "totalSize": 8257536,
+            "embedderHeapUsedSize": 1431792,
+            "backingStorageSize": 42643997
+          },
+          {
+            "usedSize": 4858080,
+            "totalSize": 7733248,
+            "embedderHeapUsedSize": 1329288,
+            "backingStorageSize": 34808189
+          },
+          {
+            "usedSize": 4869820,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1407560,
+            "backingStorageSize": 34623782
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "arm": "grouped",
+        "sourceReportSha256": "d279650b4802a80966710319f41663092472e9fe617f649c2257e98ed3f09531",
+        "stoppedPhysicalFootprintBytes": [
+          1190342344,
+          1209118432,
+          1746809072,
+          1889595944,
+          1934701096,
+          1912893992,
+          1967485504,
+          1983165016,
+          1747235320,
+          1755558392,
+          1860235888,
+          1784214152,
+          1722233432,
+          1709732488,
+          1748185784,
+          1739649744
+        ],
+        "mainHeapAfterStop": [
+          {
+            "usedSize": 4364156,
+            "totalSize": 7733248,
+            "embedderHeapUsedSize": 1557960,
+            "backingStorageSize": 34623772
+          },
+          {
+            "usedSize": 4544916,
+            "totalSize": 7995392,
+            "embedderHeapUsedSize": 1395328,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4601588,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1391712,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4629440,
+            "totalSize": 9043968,
+            "embedderHeapUsedSize": 1255776,
+            "backingStorageSize": 34808180
+          },
+          {
+            "usedSize": 4647612,
+            "totalSize": 10354688,
+            "embedderHeapUsedSize": 1260984,
+            "backingStorageSize": 34808180
+          },
+          {
+            "usedSize": 5886408,
+            "totalSize": 11403264,
+            "embedderHeapUsedSize": 1562512,
+            "backingStorageSize": 42643988
+          },
+          {
+            "usedSize": 4683896,
+            "totalSize": 11141120,
+            "embedderHeapUsedSize": 1498696,
+            "backingStorageSize": 42459581
+          },
+          {
+            "usedSize": 4798884,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1239472,
+            "backingStorageSize": 34808180
+          },
+          {
+            "usedSize": 4791336,
+            "totalSize": 11141120,
+            "embedderHeapUsedSize": 1506536,
+            "backingStorageSize": 42459581
+          },
+          {
+            "usedSize": 4854368,
+            "totalSize": 11403264,
+            "embedderHeapUsedSize": 1390200,
+            "backingStorageSize": 42459560
+          },
+          {
+            "usedSize": 7120964,
+            "totalSize": 11403264,
+            "embedderHeapUsedSize": 1437752,
+            "backingStorageSize": 97390665
+          },
+          {
+            "usedSize": 9599216,
+            "totalSize": 15335424,
+            "embedderHeapUsedSize": 1558952,
+            "backingStorageSize": 97390659
+          },
+          {
+            "usedSize": 4717116,
+            "totalSize": 9306112,
+            "embedderHeapUsedSize": 1271096,
+            "backingStorageSize": 20246822
+          },
+          {
+            "usedSize": 4810936,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1314272,
+            "backingStorageSize": 34623782
+          },
+          {
+            "usedSize": 4865772,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1355360,
+            "backingStorageSize": 34623782
+          },
+          {
+            "usedSize": 4943964,
+            "totalSize": 9568256,
+            "embedderHeapUsedSize": 1310832,
+            "backingStorageSize": 34623782
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "arm": "ordinary",
+        "sourceReportSha256": "0ba3eb41a950c5e4c315d58211d649233fac9d41e021ba82a227a0580e44b186",
+        "stoppedPhysicalFootprintBytes": [
+          1123643176,
+          1134817088,
+          1094020952,
+          1144844120,
+          1127018328,
+          1162080088,
+          1129443232,
+          1173712800,
+          1142337440,
+          1183985568,
+          1154838432,
+          1201024928,
+          1189785504,
+          1179070416,
+          1163063224,
+          1199861688
+        ],
+        "mainHeapAfterStop": [
+          {
+            "usedSize": 4320064,
+            "totalSize": 7471104,
+            "embedderHeapUsedSize": 2013600,
+            "backingStorageSize": 17306497
+          },
+          {
+            "usedSize": 3432032,
+            "totalSize": 6422528,
+            "embedderHeapUsedSize": 1469376,
+            "backingStorageSize": 30083529
+          },
+          {
+            "usedSize": 3758444,
+            "totalSize": 6422528,
+            "embedderHeapUsedSize": 1222216,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3760388,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1403600,
+            "backingStorageSize": 28448321
+          },
+          {
+            "usedSize": 3852472,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1213104,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3504760,
+            "totalSize": 5898240,
+            "embedderHeapUsedSize": 1284848,
+            "backingStorageSize": 28852438
+          },
+          {
+            "usedSize": 3777900,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1241728,
+            "backingStorageSize": 16100293
+          },
+          {
+            "usedSize": 3651148,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1307592,
+            "backingStorageSize": 29540711
+          },
+          {
+            "usedSize": 3995760,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1175792,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3585812,
+            "totalSize": 5636096,
+            "embedderHeapUsedSize": 1349416,
+            "backingStorageSize": 29126891
+          },
+          {
+            "usedSize": 3995308,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1210552,
+            "backingStorageSize": 16100518
+          },
+          {
+            "usedSize": 3700112,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1383944,
+            "backingStorageSize": 29388591
+          },
+          {
+            "usedSize": 4070632,
+            "totalSize": 4587520,
+            "embedderHeapUsedSize": 1225264,
+            "backingStorageSize": 16088981
+          },
+          {
+            "usedSize": 3768260,
+            "totalSize": 4325376,
+            "embedderHeapUsedSize": 1306672,
+            "backingStorageSize": 29531009
+          },
+          {
+            "usedSize": 3933356,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1187176,
+            "backingStorageSize": 16088764
+          },
+          {
+            "usedSize": 5097984,
+            "totalSize": 6946816,
+            "embedderHeapUsedSize": 1311592,
+            "backingStorageSize": 30083538
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "arm": "ordinary",
+        "sourceReportSha256": "a857a01db5059222da1c41619064e5e182df86dac2e012472db55b6c46c1d225",
+        "stoppedPhysicalFootprintBytes": [
+          1122774416,
+          1138585096,
+          1067232752,
+          1145957896,
+          1114959344,
+          1144811064,
+          1139273320,
+          1170533992,
+          1138716264,
+          1182625408,
+          1147481704,
+          1199517288,
+          1143189096,
+          1176874648,
+          1155100264,
+          1188572776
+        ],
+        "mainHeapAfterStop": [
+          {
+            "usedSize": 4313212,
+            "totalSize": 7733248,
+            "embedderHeapUsedSize": 2013264,
+            "backingStorageSize": 17306497
+          },
+          {
+            "usedSize": 3394108,
+            "totalSize": 5898240,
+            "embedderHeapUsedSize": 1444288,
+            "backingStorageSize": 30083529
+          },
+          {
+            "usedSize": 3640484,
+            "totalSize": 5898240,
+            "embedderHeapUsedSize": 1192696,
+            "backingStorageSize": 5237519
+          },
+          {
+            "usedSize": 3459108,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1304240,
+            "backingStorageSize": 29257740
+          },
+          {
+            "usedSize": 3778080,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1227048,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3548168,
+            "totalSize": 5636096,
+            "embedderHeapUsedSize": 1272160,
+            "backingStorageSize": 29126891
+          },
+          {
+            "usedSize": 3881468,
+            "totalSize": 5898240,
+            "embedderHeapUsedSize": 1265552,
+            "backingStorageSize": 16100510
+          },
+          {
+            "usedSize": 3585900,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1293768,
+            "backingStorageSize": 29257740
+          },
+          {
+            "usedSize": 4039720,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1151216,
+            "backingStorageSize": 16099304
+          },
+          {
+            "usedSize": 3712824,
+            "totalSize": 5636096,
+            "embedderHeapUsedSize": 1351032,
+            "backingStorageSize": 29400151
+          },
+          {
+            "usedSize": 3909616,
+            "totalSize": 4587520,
+            "embedderHeapUsedSize": 1192680,
+            "backingStorageSize": 16100301
+          },
+          {
+            "usedSize": 3631068,
+            "totalSize": 4587520,
+            "embedderHeapUsedSize": 1334600,
+            "backingStorageSize": 28983289
+          },
+          {
+            "usedSize": 3787524,
+            "totalSize": 5111808,
+            "embedderHeapUsedSize": 939152,
+            "backingStorageSize": 3641264
+          },
+          {
+            "usedSize": 3695184,
+            "totalSize": 5636096,
+            "embedderHeapUsedSize": 1272976,
+            "backingStorageSize": 29257749
+          },
+          {
+            "usedSize": 4079104,
+            "totalSize": 4849664,
+            "embedderHeapUsedSize": 1193088,
+            "backingStorageSize": 16100519
+          },
+          {
+            "usedSize": 3678488,
+            "totalSize": 5373952,
+            "embedderHeapUsedSize": 1339704,
+            "backingStorageSize": 30083538
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "arm": "grouped",
+        "sourceReportSha256": "567056779f01f025cde866a8751e373377f93008002840ce1346345d8fdd1376",
+        "stoppedPhysicalFootprintBytes": [
+          1230368528,
+          1217081128,
+          1264971584,
+          1293234008,
+          1296445272,
+          1320578952,
+          1340207056,
+          1323216848,
+          1307324464,
+          1423896672,
+          1482715328,
+          1414967536,
+          1360408720,
+          1870967480,
+          1932522336,
+          1925723000
+        ],
+        "mainHeapAfterStop": [
+          {
+            "usedSize": 4354392,
+            "totalSize": 7471104,
+            "embedderHeapUsedSize": 1560720,
+            "backingStorageSize": 34623772
+          },
+          {
+            "usedSize": 4537532,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1269496,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4561940,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1279280,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4579908,
+            "totalSize": 9568256,
+            "embedderHeapUsedSize": 1366672,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4616992,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1253344,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4646932,
+            "totalSize": 10354688,
+            "embedderHeapUsedSize": 1414656,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4656000,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1293840,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 4684308,
+            "totalSize": 10092544,
+            "embedderHeapUsedSize": 1316736,
+            "backingStorageSize": 34623773
+          },
+          {
+            "usedSize": 3350880,
+            "totalSize": 11403264,
+            "embedderHeapUsedSize": 445088,
+            "backingStorageSize": 25822129
+          },
+          {
+            "usedSize": 4866540,
+            "totalSize": 11927552,
+            "embedderHeapUsedSize": 1418160,
+            "backingStorageSize": 42459560
+          },
+          {
+            "usedSize": 8380668,
+            "totalSize": 13762560,
+            "embedderHeapUsedSize": 1434752,
+            "backingStorageSize": 97390665
+          },
+          {
+            "usedSize": 7140008,
+            "totalSize": 15335424,
+            "embedderHeapUsedSize": 1430680,
+            "backingStorageSize": 97390659
+          },
+          {
+            "usedSize": 4728356,
+            "totalSize": 8781824,
+            "embedderHeapUsedSize": 1258296,
+            "backingStorageSize": 20246822
+          },
+          {
+            "usedSize": 4871972,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1257904,
+            "backingStorageSize": 34623782
+          },
+          {
+            "usedSize": 4896044,
+            "totalSize": 8519680,
+            "embedderHeapUsedSize": 1310216,
+            "backingStorageSize": 34808189
+          },
+          {
+            "usedSize": 4919548,
+            "totalSize": 9568256,
+            "embedderHeapUsedSize": 1270008,
+            "backingStorageSize": 34808189
+          }
+        ]
+      }
+    ]
+  },
+  "offsetWrapperValidation": {
+    "workspaceRustAndNodeSdk": {
+      "passed": true,
+      "sourceReceiptSha256": "85da1e4a58f27bbcfe90e198a3fa9752926bfd7c3cabf3502f54594756956d44"
+    },
+    "fullBrowserMemory": {
+      "passed": true,
+      "sourceReceiptSha256": "83fd3cdebfa824d3ecfc150ac9555cf25c89ed57e413bdde08a64e63bd81ecf5"
+    },
+    "browserSdk": {
+      "passed": true,
+      "sourceReceiptSha256": "4ee7e44305aa22146335823f9e3e0a3ad4f64b47882af9b833e38c207497665a"
+    },
+    "extendedDesktop": {
+      "passed": true,
+      "sourceReceiptSha256": "4add49bf545b3d6b2a90b74cba23ee1eb99a56471b0535a210208e3ccd574a79"
+    },
+    "sixteenCycleFirefoxWebKit": {
+      "passed": true,
+      "sourceReceiptSha256": "c31cb0c6cd9d14e2fa37294340e6bc41480abd167923fc9a7ac3e16d343f0b3a"
+    },
+    "sourcePatchSha256": "54d9d4b303f5ed33d88000c1dccdb6943f47ca4030184e3a94287bdbb9918889",
+    "limits": "Existing failed conformance333, memory347b, dependency setup382 and black capture365 retained. Full memory381 and whole browser SDK382b pass without clearing their historical failures or identifying a runtime defect. No asymptotic plateau, net browser memory win, broad speedup, or full PR1\u2013PR9 completion claim."
+  },
+  "combinedBranchValidation": {
+    "sourceReceiptSha256": "e0a2c5746138e47f301ac8097c9d1c1324c0e6cda4c08d5ecc98c074c6d10449",
+    "browserReceiptSha256": "be20def88509a24d9cd8bf745b87533423027e0cd2b0dcc733daf02f39793c7f",
+    "browserTests": {
+      "expected": 12,
+      "unexpected": 0,
+      "skipped": 0,
+      "flaky": 0
+    },
+    "rootImageSha256": "8e7e119d837782b9a11792350a38c55a71240e6261a39a7dc7761f092d52c4fd",
+    "rootImageBytes": 7835655,
+    "artifactDifference": "All 7 ordinary/prepared desktop hash pairs and browserJS/kernel exact. NetHack archive differs solely in kandelo.build.key custom section; image/manifest bindings also differ. Raw bytes retained, no normalization.",
+    "manualScreenshotReview": "Firefox/WebKit show two terminals. Chromium finalPNG is black despite 3 preceding nonblack captured frames and passing physicalinput/workspace tests; presentation versus capture unresolved. Not visual acceptance.",
+    "workerTargetControl": "16 noTracing cycles pass actual owned Worker CDP target absence after Stop, while physicalfootprint still rises1135.9to1287.3MiB. No plateau claim."
+  },
+  "callerCopyChange": {
+    "sourceHead": "045a50aab8f4e4e6c85e1febf62f8f9ce2106268",
+    "sourcePatchSha256": "5d9682da4eefe5675ecc6f82f19f640790c193daaa94c23c8040585055e4fa32",
+    "scope": "Only developer-page caller avoids redundant copy for exact owned VFS buffers. Host protective snapshot and all runtime/SDK/kernel/guest artifacts unchanged. Not ordinary comparison or retention fix.",
+    "validationReceiptSha256": "725a885211dac80f88221e872f57ed3d8bdf8d22be736ec57a85aef86e87d8bc",
+    "resources": {
+      "passed": true,
+      "scope": "App-only redundant-copy diagnostic: both grouped, publishedRoot392 versus candidate405. All353routes/kernel/image/workerJS/normalSDK/guestcodes/budgets/relay same. Main entry and linkedimport names differ only. Three fresh Chromium parents/arm P,C,C,P,P,C. Original15physicalcommands/completeCPU/OSphysicalfootprint/Stop assertions. No netmemory/globalCPU/plateau/release claim. Fullconformance333 and visualblack396b remainopen.",
+      "samples": [
+        {
+          "index": 0,
+          "arm": "prior",
+          "separateMiB": 2073.5759811401367,
+          "stopMiB": 1288.6991958618164,
+          "cpuSeconds": 0.9922759999999998,
+          "inputMedianMs": 13.370000004768372,
+          "rawSha256": "46d1d6d1bd2a5bcae4c7db707470267d7aa9e2e273cc51ec21224db38da23186"
+        },
+        {
+          "index": 1,
+          "arm": "candidate",
+          "separateMiB": 2032.4980392456055,
+          "stopMiB": 1281.8086853027344,
+          "cpuSeconds": 1.1231399999999994,
+          "inputMedianMs": 11.259999990463257,
+          "rawSha256": "337c7413bd2407f752ba9299526e2e0ef946158782c320fcf5176be635e09ba8"
+        },
+        {
+          "index": 2,
+          "arm": "candidate",
+          "separateMiB": 2048.6071166992188,
+          "stopMiB": 1273.6834335327148,
+          "cpuSeconds": 0.9793699999999997,
+          "inputMedianMs": 12.590000033378601,
+          "rawSha256": "72b98666f8b2ea1363928c6b84bd09b2fd0b25483fe9546cdb0e8e06e2764d44"
+        },
+        {
+          "index": 3,
+          "arm": "prior",
+          "separateMiB": 2067.1696395874023,
+          "stopMiB": 1256.2303314208984,
+          "cpuSeconds": 0.9672759999999994,
+          "inputMedianMs": 11.850000023841858,
+          "rawSha256": "c943752270184dc601685df53e3305a1c3eeb32eee603dffdc0b310fb82460bf"
+        },
+        {
+          "index": 4,
+          "arm": "prior",
+          "separateMiB": 2052.091377258301,
+          "stopMiB": 1313.1206817626953,
+          "cpuSeconds": 0.9664409999999994,
+          "inputMedianMs": 12.674999952316284,
+          "rawSha256": "d6cfb693d6454744ce44fcc941cef99e2b5c8c9dcd0134960b1b1597e9272ab1"
+        },
+        {
+          "index": 5,
+          "arm": "candidate",
+          "separateMiB": 2039.1540145874023,
+          "stopMiB": 1281.2146606445312,
+          "cpuSeconds": 0.9456830000000006,
+          "inputMedianMs": 11.659999966621399,
+          "rawSha256": "060a71b3ed863eb79143c1ab686ef673d9278e66e35b732b2fbe6a313d98a094"
+        }
+      ]
+    },
+    "persistent": {
+      "passed": true,
+      "scope": "Both grouped Root392/caller-copy405. Sixteen actualUI Start/Stop per fresh Chromiumparent,3parents/arm P,C,C,P,P,C, oneentry/document perparent. ExactsameSDK/kernel/image/353routes/workerJS/budgets/relay; callerentry/helperimportnames onlydifference. No GC/reloads/reimports. ActualfreshFS/physicalinput/workspaces/composition/Stop/memoryboundaries+OSfootprint. Diagnosticfiniteobservations, not plateau/netmemory/ordinarycomparison/acceptance. Originalblack396b/conformance333 failures retained.",
+      "parents": [
+        {
+          "arm": "prior",
+          "index": 0,
+          "stoppedMiB": [
+            1137.8081130981445,
+            1195.120590209961,
+            1180.8862609863281,
+            1203.0112609863281,
+            1216.6988067626953,
+            1252.464454650879,
+            1258.2926483154297,
+            1263.9176712036133,
+            1328.3083190917969,
+            1291.6520919799805,
+            1344.2146377563477,
+            1272.6365585327148,
+            1284.3396835327148,
+            1310.245979309082,
+            1276.714729309082,
+            1308.183479309082
+          ],
+          "firstToLastMiB": 170.3753662109375,
+          "rawSha256": "a32da9f0cb2d16885b079d06869d553cf866e3f61e45617f74dc283a71ef77a4"
+        },
+        {
+          "arm": "candidate",
+          "index": 1,
+          "stoppedMiB": [
+            1119.9491500854492,
+            1175.683479309082,
+            1187.5585250854492,
+            1168.8710250854492,
+            1221.5585250854492,
+            1235.10546875,
+            1216.3086624145508,
+            1243.7149124145508,
+            1302.1212768554688,
+            1293.4494018554688,
+            1327.996322631836,
+            1351.0588455200195,
+            1316.4026184082031,
+            1256.6369705200195,
+            1302.4651184082031,
+            1266.1994705200195
+          ],
+          "firstToLastMiB": 146.2503204345703,
+          "rawSha256": "85ad023001c91e19d8dffb3aaeb8b707060986bbcfcbbe463e30ef3289b51a1f"
+        },
+        {
+          "arm": "candidate",
+          "index": 2,
+          "stoppedMiB": [
+            1123.886329650879,
+            1183.7144088745117,
+            1175.6519088745117,
+            1173.2300567626953,
+            1239.6988067626953,
+            1203.7769775390625,
+            1255.7770233154297,
+            1263.1988983154297,
+            1300.4020462036133,
+            1308.6208419799805,
+            1325.1521606445312,
+            1355.5428085327148,
+            1321.3085021972656,
+            1303.449104309082,
+            1272.4335250854492,
+            1271.7616271972656
+          ],
+          "firstToLastMiB": 147.87529754638672,
+          "rawSha256": "c2fdc5a57c6f64e9e902b4277789b1bdddf3fca41b0b877c2679ec8164f8f7cc"
+        },
+        {
+          "arm": "prior",
+          "index": 3,
+          "stoppedMiB": [
+            1142.2458190917969,
+            1139.1208190917969,
+            1175.1208190917969,
+            1242.527114868164,
+            1202.558364868164,
+            1160.2302856445312,
+            1230.6678085327148,
+            1247.6365814208984,
+            1255.9335021972656,
+            1319.9491958618164,
+            1301.3710708618164,
+            1287.0898666381836,
+            1303.8555145263672,
+            1297.2461166381836,
+            1275.1836395263672,
+            1273.6836395263672
+          ],
+          "firstToLastMiB": 131.4378204345703,
+          "rawSha256": "74daacf9e8130af79ea1b067f88c469e1163712c9c91c901bb7185be8592fb49"
+        },
+        {
+          "arm": "prior",
+          "index": 4,
+          "stoppedMiB": [
+            1130.8552627563477,
+            1133.1364669799805,
+            1144.6677169799805,
+            1228.0896377563477,
+            1204.9490127563477,
+            1258.433479309082,
+            1244.667854309082,
+            1286.7772521972656,
+            1274.6679458618164,
+            1321.1367416381836,
+            1296.2461624145508,
+            1312.9336624145508,
+            1267.3399124145508,
+            1260.6837310791016,
+            1316.8399810791016,
+            1275.8399810791016
+          ],
+          "firstToLastMiB": 144.9847183227539,
+          "rawSha256": "7ddf75d054a3b4105045809f2c8e718a124dceaa04c1947201302f6a3a3e221c"
+        },
+        {
+          "arm": "candidate",
+          "index": 5,
+          "stoppedMiB": [
+            1120.730354309082,
+            1107.0740814208984,
+            1128.3084564208984,
+            1205.261604309082,
+            1232.3866500854492,
+            1197.2772979736328,
+            1258.74609375,
+            1281.80859375,
+            1266.8243103027344,
+            1293.9649353027344,
+            1291.6056518554688,
+            1248.2150497436523,
+            1288.3712997436523,
+            1295.558822631836,
+            1288.9651184082031,
+            1286.8244934082031
+          ],
+          "firstToLastMiB": 166.0941390991211,
+          "rawSha256": "eff328b0b484c6709a48375804c2368ba19d3d06013b0927c8b36f0d927f1047"
+        }
+      ]
+    },
+    "copyObservations": [
+      {
+        "arm": "prior",
+        "counts": {
+          "from": [
+            14376960,
+            155294
+          ],
+          "slice": [
+            14376960,
+            155294
+          ]
+        },
+        "errors": [],
+        "scope": "Diagnostic main-realm staticUint8Array.from andArrayBuffer.slice wrappers observe actual14376960B Sway/155294B Swaymsg file spans, not inferredcopies. PreserveReflect.apply receiver/args; no guestmemories retained. NoGC/reload, no performance claim."
+      },
+      {
+        "arm": "candidate",
+        "counts": {
+          "from": [],
+          "slice": [
+            14376960,
+            155294
+          ]
+        },
+        "errors": [],
+        "scope": "Diagnostic main-realm staticUint8Array.from andArrayBuffer.slice wrappers observe actual14376960B Sway/155294B Swaymsg file spans, not inferredcopies. PreserveReflect.apply receiver/args; no guestmemories retained. NoGC/reload, no performance claim."
+      }
+    ],
+    "fullBrowserMemoryGate": "Not rerun for this caller-only change; unchanged Host/SDK/kernel and ordinary full app previously pass381. Changed developer page has12crossenginecases and96actualUIcycles."
+  },
+  "openDiagnosticContext": {
+    "nativeAllocationSampling": "16cycles noTracing/GC, unsymbolized native stacks. Repeated10447552B allocations and14376960B Sway-size allocations observed; sampled totals not OSfootprint or cause proof.",
+    "bitmapApiControl": "401 standalone3K scene/cursor twoWorker2DandWebGL control passes240captures, noKandelo/Wasm, no black. Not engine fault evidence.",
+    "compositionCorrection": "399 helper is screenshot/PNG based, not video. One black screenshot before helper and14normal; cause unresolved. Glyph388 is separate video measurement.",
+    "initialVfsControl": "404b ordinaryPASS/groupedFAIL ENOEXEC unsupported required extension kandelo.memory-group.v3.memory. No policy/permission relaxation."
+  },
+  "bitmapHandoffCorrection": {
+    "sourceHead": "2b94115f30d3973dbbf919e51f7b838250f81b3c",
+    "capturePatchSha256": "5cf22ec8139b94253c4375d2f3f3eae19263a5dde08ce311b4491fc3089df53e",
+    "comparison": [
+      {
+        "arm": "before",
+        "engine": "brave-dpr2",
+        "browser": "157.0.8103.79",
+        "captures": 100,
+        "black": 92,
+        "errors": []
+      },
+      {
+        "arm": "before",
+        "engine": "chromium-dpr2",
+        "browser": "153.0.8010.12",
+        "captures": 100,
+        "black": 91,
+        "errors": []
+      },
+      {
+        "arm": "after",
+        "engine": "brave-dpr2",
+        "browser": "157.0.8103.79",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "arm": "after",
+        "engine": "chromium-dpr2",
+        "browser": "153.0.8010.12",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      }
+    ],
+    "repeatAllEngines": [
+      {
+        "engine": "webkit-dpr2",
+        "browser": "26.6",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "engine": "brave-dpr2",
+        "browser": "157.0.8103.79",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "engine": "chromium-dpr2",
+        "browser": "153.0.8010.12",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      },
+      {
+        "engine": "firefox-dpr2",
+        "browser": "155.0",
+        "captures": 100,
+        "black": 0,
+        "errors": []
+      }
+    ],
+    "identicalArtifactRoutes": 353,
+    "limits": "No performance or browser-memory acceptance; snapshot retains producer pixels and costs need measurement. No upstream runtime defect claim."
+  },
+  "bitmapCaptureResourceComparison438": {
+    "scope": "Matched clean2b consuming-transfer versus snapshot capture only. Chromium153; three fresh parents per arm. Not ordinary comparison, performance acceptance or sustained lifecycle.",
+    "samples": [
+      {
+        "index": 0,
+        "arm": "prior",
+        "activeMiB": 2058.2167205810547,
+        "stoppedMiB": 1243.4336624145508,
+        "cpuSeconds": 1.0150540000000001,
+        "inputMedianMs": 12.585000038146973
+      },
+      {
+        "index": 1,
+        "arm": "candidate",
+        "activeMiB": 2050.997833251953,
+        "stoppedMiB": 1308.1210021972656,
+        "cpuSeconds": 0.9891269999999993,
+        "inputMedianMs": 12.175000071525574
+      },
+      {
+        "index": 2,
+        "arm": "candidate",
+        "activeMiB": 2070.7164001464844,
+        "stoppedMiB": 1309.6208877563477,
+        "cpuSeconds": 0.9400949999999998,
+        "inputMedianMs": 12.15500009059906
+      },
+      {
+        "index": 3,
+        "arm": "prior",
+        "activeMiB": 2008.3572311401367,
+        "stoppedMiB": 1206.5740814208984,
+        "cpuSeconds": 0.9505859999999999,
+        "inputMedianMs": 11.444999933242798
+      },
+      {
+        "index": 4,
+        "arm": "prior",
+        "activeMiB": 2057.466651916504,
+        "stoppedMiB": 1203.0585021972656,
+        "cpuSeconds": 0.9335540000000006,
+        "inputMedianMs": 10.884999990463257
+      },
+      {
+        "index": 5,
+        "arm": "candidate",
+        "activeMiB": 2026.841651916504,
+        "stoppedMiB": 1226.9022979736328,
+        "cpuSeconds": 0.9470219999999996,
+        "inputMedianMs": 11.259999990463257
+      }
+    ],
+    "medians": {
+      "prior": {
+        "activeMiB": 2057.466651916504,
+        "stoppedMiB": 1206.5740814208984,
+        "cpuSeconds": 0.9505859999999999,
+        "inputMedianMs": 11.444999933242798
+      },
+      "candidate": {
+        "activeMiB": 2050.997833251953,
+        "stoppedMiB": 1308.1210021972656,
+        "cpuSeconds": 0.9470219999999996,
+        "inputMedianMs": 12.15500009059906
+      }
+    }
+  },
+  "currentNormalApp760": {
+    "scope": "Method-qualified current-source normal-app pilot under concurrent memory/sustained tests; not accepted quiet performance comparison, not unique guest backing/reservation/native display latency or machine destroy proof. Boot image forwarded unchanged through context route and unregistered before samples.",
+    "kernelSha256": "1630584d60491267bc4c4681d8e00035043eaa2dc5e1b292bf66ee199d77b55d",
+    "browser": "153.0.8010.12",
+    "ordinaryImage": {
+      "url": "http://127.0.0.1:6386/@kandelo-partial/image.vfs.zst",
+      "status": 200,
+      "bytes": 777259,
+      "sha256": "e99c19bfb70b89ac75649f2da2beb06dcbf31c68bfe5d571f660fb62bf10bec2",
+      "receiptKind": "Exact network body forwarded unchanged to the actual app fetch before disposable image-owner retirement"
+    },
+    "groupedImage": {
+      "url": "http://127.0.0.1:6385/@kandelo-partial/image.vfs.zst",
+      "status": 200,
+      "bytes": 119429,
+      "sha256": "4b3bb368563d1dbd1e5b9b6aee92fc7351030256961ae7c7a7994eda7b832411",
+      "receiptKind": "Exact network body forwarded unchanged to the actual app fetch before disposable image-owner retirement"
+    },
+    "footprint": [
+      {
+        "phase": "one-visible",
+        "ordinaryMiB": 2330.798095703125,
+        "groupedMiB": 2475.376174926758,
+        "deltaMiB": 144.5780792236328,
+        "deltaPercent": 6.202943081606493
+      },
+      {
+        "phase": "two-tiled",
+        "ordinaryMiB": 2550.095634460449,
+        "groupedMiB": 2636.579734802246,
+        "deltaMiB": 86.48410034179688,
+        "deltaPercent": 3.391406156424215
+      },
+      {
+        "phase": "two-separated",
+        "ordinaryMiB": 2567.080009460449,
+        "groupedMiB": 2656.7047576904297,
+        "deltaMiB": 89.62474822998047,
+        "deltaPercent": 3.491311057687607
+      },
+      {
+        "phase": "two-retiled",
+        "ordinaryMiB": 2538.9238510131836,
+        "groupedMiB": 2667.1266326904297,
+        "deltaMiB": 128.2027816772461,
+        "deltaPercent": 5.049492982079218
+      },
+      {
+        "phase": "after-guest-exit-machine-still-live",
+        "ordinaryMiB": 2277.2193756103516,
+        "groupedMiB": 2379.203453063965,
+        "deltaMiB": 101.98407745361328,
+        "deltaPercent": 4.478447643028649
+      }
+    ],
+    "cpuSeconds": {
+      "ordinary": 16.796545000000002,
+      "grouped": 17.302887999999996
+    },
+    "performanceAcceptance": false
+  },
+  "currentNormalValidation767769": {
+    "runtimeCommit": "c85334be07250433dfa26f40c4aa3fe1685605d3",
+    "fullMemory741": "PASS: canonical,1574host,3Node,7Bun,18browser across three engines,zero skipped/flaky/unexpected browser cases",
+    "production763": "PASS: canonical,asset group,registry audit,strict types,bundle; image-owned desktop metadata",
+    "built769": {
+      "expected": 15,
+      "passed": 14,
+      "failed": 1,
+      "failure": "Chromium Freeciv ordinary data archive fetch; no client created",
+      "scummvmPass": 3,
+      "swayCapacityPass": 6,
+      "cagePass": 5
+    },
+    "network773": "Three fixed Chromium diagnostic repetitions PASS; no reproduction or fix of769 failure",
+    "ordinaryConformance767": {
+      "suiteExitCodes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "outerJobExit": 1,
+      "outerFailure": "porcelain guard detects untracked libc-test build/ output; pinned test revision and all tracked source unchanged",
+      "nodePosix": {
+        "pass": 174,
+        "xfail": 3,
+        "skip": 2
+      },
+      "browserPosix": {
+        "pass": 174,
+        "xfail": 3,
+        "skip": 2
+      },
+      "nodeLibc": {
+        "pass": 306,
+        "xfail": 17,
+        "listedFlakyPass": 1
+      },
+      "browserLibc": {
+        "pass": 307,
+        "xfail": 17
+      }
+    },
+    "sustained752": {
+      "chromium": "1200cycles PASS with actual Sway exit/cleanup",
+      "firefox": "464 completed cycles; next launch produced3Foot instead of2,FAIL; cause unknown",
+      "webkit": "running at recording"
+    },
+    "complete": false
+  }
+}

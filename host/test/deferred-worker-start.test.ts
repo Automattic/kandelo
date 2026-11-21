@@ -1,3 +1,4 @@
+import { MemoryGroupImageStore } from "../src/memory-group-image-store";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerAbsence, DeferredWorkerHandle } from "../src/deferred-worker-handle";
 import type { WorkerAbsence } from "../src/deferred-worker-handle";
@@ -55,6 +56,16 @@ describe("DeferredWorkerHandle", () => {
     expect(messages).toEqual([{ type: "ready" }]);
   });
 
+  it('removes exact listeners from a retired backing after dropping its strong reference', async () => {
+    const adapter = new MockWorkerAdapter(), handle = new DeferredWorkerHandle(() => adapter.createWorker({}));
+    const message = vi.fn(), exit = vi.fn(); handle.on('message', message); handle.on('exit', exit); handle.start();
+    const backing = adapter.lastWorker!;
+    await handle.terminate();
+    expect((handle as any).worker).toBeNull();
+    handle.off('message', message); handle.off('exit', exit);
+    backing.simulateMessage({ type: 'stale' }); backing.simulateExit(0);
+    expect(message).not.toHaveBeenCalled(); expect(exit).not.toHaveBeenCalled();
+  });
   it("permanently cancels construction when terminated before start", async () => {
     const create = vi.fn(() => new MockWorkerAdapter().createWorker({}));
     const handle = new DeferredWorkerHandle(create);
@@ -107,6 +118,47 @@ describe("DeferredWorkerHandle", () => {
 });
 
 describe("stopped process Worker launch gate", () => {
+  it("does not release a constructor into a replacement registration sharing native Memory", async () => {
+    let state: number = PROCESS_STATE_STOPPED;
+    const memory = createSharedMemory(), { worker } = createWorkerHarness(memory, () => state);
+    const canceled = Promise.withResolvers<void>();
+    const start = vi.fn(), cancel = vi.fn(() => { canceled.resolve(); });
+    expect(worker.startProcessWorkerWhenRunnable(41, memory, start, cancel)).toBe("deferred");
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({ pid: 41, memory, channelOffsets: [0] });
+    state = PROCESS_STATE_RUNNING;
+    expect(worker.testAuthority.resumeStoppedProcessForTest(41)).toBe(true);
+    await canceled.promise;
+    expect(start).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("requires the virtual source and keeps deferred constructors bound to that exact image", async () => {
+    const store = new MemoryGroupImageStore(7, 32, 32);
+    const task = { group: 7, pid: 41, tid: 41, serial: 1n, generation: 0n };
+    const owner = store.prepareImage(task, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
+    const launch = store.publish(owner, task), source = store.imageSource(owner), memory = launch.envelope.memory;
+    let state: number = PROCESS_STATE_STOPPED;
+    const { worker, channel } = createWorkerHarness(memory, () => state);
+    const registration = (worker as any).processes.get(41);
+    Object.assign(registration, { source }); Object.assign(channel, { source });
+    const canceled = Promise.withResolvers<void>();
+    const start = vi.fn(), cancel = vi.fn(() => { canceled.resolve(); }), bareCancel = vi.fn();
+    try {
+      expect(worker.startProcessWorkerWhenRunnable(41, memory, start, bareCancel)).toBe("stale");
+      expect(bareCancel).toHaveBeenCalledOnce();
+      expect(worker.startProcessWorkerWhenRunnable(41, memory, start, cancel, undefined, source)).toBe("deferred");
+      const next = { ...task, serial: 2n, generation: 1n };
+      const nextOwner = store.prepareImage(next, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
+      const nextLaunch = store.publish(nextOwner, next), nextSource = store.imageSource(nextOwner);
+      expect(nextLaunch.envelope.memory).toBe(memory);
+      (worker as any).processes.set(41, { ...registration, source: nextSource,
+        channels: [{ ...channel, source: nextSource }] });
+      state = PROCESS_STATE_RUNNING;
+      expect(worker.testAuthority.resumeStoppedProcessForTest(41)).toBe(true);
+      await canceled.promise;
+      expect(start).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+    } finally { store.close(); }
+  });
+
   it("holds construction through STOPPED and releases it on SIGCONT", async () => {
     let processState = 1;
     const memory = createSharedMemory();
@@ -311,6 +363,7 @@ describe("stopped process Worker launch gate", () => {
     let processState = PROCESS_STATE_STOPPED;
     const memory = createSharedMemory();
     const channel = {
+      source: memory,
       pid: 41,
       memory,
       channelOffset: 0,
@@ -499,6 +552,7 @@ describe("stopped process Worker launch gate", () => {
     let processState = 1;
     const memory = createSharedMemory();
     const channel = {
+      source: memory,
       pid: 41,
       memory,
       channelOffset: 0,
@@ -594,6 +648,7 @@ function createWorkerHarness(
   readonly channel: {
     readonly pid: number;
     readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
     readonly channelOffset: number;
     readonly i32View: Int32Array;
     consecutiveSyscalls: number;

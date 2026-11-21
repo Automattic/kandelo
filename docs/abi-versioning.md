@@ -16,7 +16,83 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Optional initial grouped path validation
+
+`kernel_initial_group_exec_target_admit(pid, target, expectedAbi, out, capacity,
+group)` adds an optional kernel-host capability using the existing bounded
+admission reply. It validates a fresh root or pending spawn child's exact
+retained token and configured group, without reserving an image or changing
+membership. A spawn child must name its real parent in that parent's group.
+Initial/spawn commit and subsequent execution admission retain their existing
+semantics. Opted-in path launch refuses a kernel without this capability.
+
+This is an additive optional export: existing signatures, required capabilities,
+program ABI 56 and its digest remain unchanged. The regenerated snapshot records
+the new export and optional manifest entry. This does not establish full-app or
+lifecycle acceptance.
+
+## Grouped CPU graphical buffer bindings
+
+Host-adapter 24 requires `host_gbm_bo_bind_group(pid, bo, address, length,
+boOffset, group, object, objectLength)`. Rust passes the exact kernel-owned
+BO/group object identity with scalar virtual mapping metadata. The host
+accesses the admitted object through its worker-local group store, rather
+than treating virtual addresses as offsets into a raw process Memory.
+Mapping-description protocol 5 keeps its 136-byte layout and permits bounded
+non-anonymous prefixes to name their full descriptor backing. Anonymous
+creation still requires an exact whole-object extent. The ordinary
+`host_gbm_bo_bind` interface remains unchanged. Program ABI 56,
+its supported digest and executable format4 remain unchanged; kernel and
+host must rebuild together. This interface does not establish final browser
+memory, resource or desktop acceptance.
+
 ## Supported persistent-program baseline
+
+Kernel-host adapter version 21 extends internal grouped mapping descriptions
+from 112 to 136 bytes (mapping protocol v4). The added u64 object ID, initial
+backing length and mapping offset are zero for private effects. Anonymous
+shared creation binds the ID to its exact preparation token; inherited remaps
+retain that identity under their own token. Kernel-owned capabilities persist
+through live MM inheritance and fragments; host pages are not kernel IDs.
+Executable format4 and program ABI 56/digest remain unchanged. This does not
+advertise public grouped launch, descriptor-object or graphics support.
+
+Kernel-host adapter version 20 requires the scalar
+`kernel_get_process_exit_published(pid)` query: 0 before host exit
+acknowledgement, 1 afterward, and `-ESRCH` for an absent or reaped process.
+It reads Rust's existing publication bit. A late generic exec finalizer can
+therefore suppress a duplicate exit callback after old host registration
+retirement without accumulating host PID tombstones. Program ABI 56 and its
+supported digest remain unchanged; host and kernel rebuild together.
+
+Kernel-host adapter version 19 retains a committed exec's unexposed future
+image until Start transfers its custody to the execution receipt or explicit
+unconstructed image retirement ends cancellation. Parent waits cannot reap
+that process while this host-owned hold remains. Image retirement revisits
+parked child waits and already-published synthetic-init reaping after the hold
+ends. Program ABI 56 and its digest are unchanged; host and kernel rebuild
+together.
+
+Kernel-host adapter version 15 adds exact on-demand grouped pthread control
+reservation. Rust stages a host-reserved interval for the same unconstructed
+TID; the host commits its pages through the image mapping transaction before
+attaching the thread. The descriptor format is unchanged, and controls remain
+protected from guest remapping. Program ABI 56 and its supported digest are
+unchanged; the host and kernel must be rebuilt together.
+
+Kernel-host adapter version 14 connects exact grouped Worker stop receipts
+to execution admission retirement. Grouped child exit waits remain pending
+until all execution admissions retire, and the final receipt wakes parked
+waits and retries already-published synthetic-init reaping. Browser Worker
+termination alone is insufficient proof. Physical pages remain charged pending
+the broader retirement work. The host and kernel must be rebuilt together;
+program ABI 56 and its supported digest are unchanged.
+
+Kernel-host adapter version 8 adds opt-in memory-group admission metadata,
+exact task/image receipts and kernel-owned custody to version 7's entropy
+and I/O contracts. The host and kernel must be rebuilt together. This stage
+advertises admission only; grouped execution is not available through the
+normal launcher. Guest program ABI 56 and its supported digest are unchanged.
 
 Kernel-host adapter version 7 adds bounded entropy-read continuations, a
 nonallocating process-range validation import, and a private guest-address I/O
@@ -3113,6 +3189,113 @@ and does not itself change the ABI.
   protected by the ABI check.
 
 ## ABI bumps and package rebuilds
+
+Host-adapter 18 adds grouped exec reservation metadata. The 40-byte preparation
+record contains the exact future main receipt and the SDK virtual minimum and
+maximum. `kernel_group_memory_exec_prepare` creates it for an exact current
+caller and retained target; `kernel_group_memory_exec_layout` prepares the
+future MM with the existing 96-byte fresh-layout record. The receipt action
+export validates, cancels the unconstructed task, or finishes image custody
+once host scratch/reference cleanup is ready. The host returns final
+root/payload pages in that same serialized entry. All records use bounded kernel scratch. The
+existing Start action now refuses a successor while older same-PID task
+receipts remain, including stopping and quarantined Workers. The image serial
+survives task cancellation to prevent stale cleanup of a later reservation.
+Program ABI 56 and its digest remain unchanged. These interfaces do not enable
+public grouped launch or supply host execution/retirement proof.
+
+The grouped exec preflight selects artifact policy from the kernel's current
+image membership and checks the existing grouped declaration and binding
+signatures. The SDK validates its output with the same reader. This adds no
+Wasm export or wire field. Its parser raises the kernel's imported memory
+minimum from 21 to 22 pages (64 KiB per page), so host-adapter 17 records this
+incompatible kernel-host import change. The memory ceiling is unchanged.
+Program ABI 56 and its contract digest remain unchanged. Preflight does not
+authorize replacement allocation or commit.
+
+Host-adapter 16 adds scalar-only grouped thread-control reuse and release.
+Exact replica queue inspection copies only none/waiting/returning/busy inside
+the disposable kernel realm. It adds no Wasm export, wire field or stop/reuse
+authority; the host-adapter and program versions remain unchanged.
+`kernel_group_memory_thread_control_reuse(pid, callerTid, newTid) -> i64`
+returns a Rust-selected guest virtual address or a negative errno.
+`kernel_group_memory_thread_control_release(group, pid, tid, serialLo,
+serialHi, generationLo, generationHi) -> i32` retains exact ownership after
+ThreadInfo removal and refuses release while Rust task or Worker custody lives.
+Mapped controls stay host-reserved for bounded reuse; the host independently
+joins exact Worker, reference, channel and queue/native-observer fences before
+returning replica scratch. Fork inherits protected reserved bytes without the
+parent's reusable-slot authority. Before Start, failed thread launch retains
+the full receipt through exact channel/native/queue cleanup and releases the
+mapped control row to this same cache; it does not unreserve arbitrary guest
+addresses. Start precedes publication and rules out unconstructed rollback
+once accepted. Published launch failures instead require the exact observed
+Worker's private never-started seal or an actual stop proof. Their control and
+scratch retirement joins full receipt, reference and channel cleanup before
+publishing creator failure. Constructor uncertainty fails the instance and
+retains storage, rather than returning an errno that would permit stack reuse.
+These host-internal custody paths add no export or wire change. Grouped exit
+publication also joins exact image stop/fences before host onExit; opaque image
+crash recording verifies the current source and Rust generation. Bounded word
+inspection and scalar blocked-wait observations remain in the disposable
+kernel realm. The program ABI and digest stay at 56.
+
+Host-adapter 13 adds optional `kernel_group_memory_fork(group, pid, tid,
+serialLo, serialHi, generationLo, generationHi, observedPages) -> i32`.
+The host must first acknowledge an image-wide execution barrier and read the
+logical root extent. Rust validates the exact running receipt, refuses pending
+mapping plans and unsupported shared/device inheritance, observes actual
+virtual growth, and only then allocates the child and copies its MM metadata.
+It returns the kernel-assigned child PID or the original negative errno; the
+child's group admission remains prepared until normal publication. The
+ordinary `kernel_fork_process` export refuses grouped images, so it cannot
+silently omit growth synchronization. All eight parameters are scalar `i32`
+words, with unsigned low/high receipt fields. This does not implement the
+unfinished host fork dispatcher or Worker launch. Program ABI 56 and its
+contract digest are unchanged.
+
+Host-adapter 12 adds private-file population to the internal grouped mapping
+transaction. Mapping record version 3 keeps the 64-byte request and expands
+the description to 112 bytes: `populationAddress` and `populationLength` at
+offsets 96 and 104 name only fresh unpublished pages. The new
+`kernel_group_memory_change_read` takes PID/TID, token low/high words,
+relative offset low/high words, a scratch output pointer and capacity. Its
+nonnegative result is a byte count; a negative result is the original errno.
+Rust requires sequential reads through its retained exact source, and refuses
+commit until the whole interval or EOF has been observed. Remap growth reads
+from the retained file at the inherited byte offset. Cancellation releases
+that source without restoring old metadata over a replacement image.
+This kernel-host change leaves program ABI 56, the fork wire and the program
+digest unchanged. It does not claim file-truncation/SIGBUS or shared-object
+acceptance. The standalone resolver must be rebuilt with the new host records.
+
+Host-adapter 11 adds an explicit `ProcessMemoryAccess` argument to
+`host_proc_validate_range(pid, address, length, access)`: guest read is 1,
+guest write is 2, and any other direction is `EINVAL`. The host checks the
+entire current virtual range and page rights without a payload copy. Rust
+uses write preflight before destructive scalar/vector reads and entropy,
+including resumed operations, and read preflight for scalar write sources.
+All grouped scalar I/O uses the existing guest-address transport, regardless
+of size. This kernel-host change leaves program ABI 56 and its digest intact;
+it does not establish complete grouped I/O or execution acceptance.
+The same access import serves generic grouped output plans, frozen retries,
+recvmsg nested output preparation and DRI/GL probes. Moving receive/publication
+ownership into runtime-core adds no new program record, host import or export.
+
+Host-adapter 10 introduced the internal grouped mapping preparation transport:
+`kernel_group_memory_change_prepare`, `validate`, `commit` and `cancel`.
+The first two use fixed scratch records, and the latter two consume exact
+unsigned 64-bit tokens through separate low/high words and status returns.
+The kernel-host memory-group contract records their sizes, fields and effect
+kinds. Mapping record version 2 includes the observed paused virtual extent;
+the request is 64 bytes. `kernel_group_memory_layout_install` takes a fixed
+96-byte receipt/layout record, atomically installs fresh image/heap/control
+metadata or validates inherited state, and registers the main channel.
+`kernel_group_memory_break` returns a memory32 committed break or negative
+errno as i64 without a metadata allocation. These are kernel-host records;
+the existing program fork wire is unchanged, with grouped state inherited
+from the live Rust parent. Program ABI 56 and its digest stay unchanged. This interface does not
+advertise complete grouped mapping, execution or retirement support.
 
 Every built binary carries the ABI version it was compiled against in a
 wasm custom section (`wasm-posix-abi`). The host refuses to launch a

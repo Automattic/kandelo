@@ -14,7 +14,6 @@ pub(crate) struct IoRc<Value>(Rc<SharedValue<Value>>);
 
 impl<Value> IoRc<Value> {
     pub(crate) fn identity(&self) -> usize { &self.0.value as *const Value as usize }
-    #[cfg(test)]
     pub(crate) fn strong_count(&self) -> usize { Rc::strong_count(&self.0) }
     #[cfg(test)]
     pub(crate) fn admitted_bytes(&self) -> usize { self.0._reservation.bytes() }
@@ -31,6 +30,37 @@ impl<Value> IoRc<Value> {
         Rc::try_new(SharedValue { value, _reservation: reservation })
             .map(Self).map_err(|_| Errno::ENOMEM)
     }
+}
+
+/// Shared metadata that may also be retained by a synchronized global table.
+/// Unlike IoRc, clones can leave that table on different native threads.
+pub(crate) struct IoArc<Value>(alloc::sync::Arc<SharedValue<Value>>);
+
+impl<Value> IoArc<Value> {
+    pub(crate) fn identity(&self) -> usize { &self.0.value as *const Value as usize }
+    pub(crate) fn strong_count(&self) -> usize { alloc::sync::Arc::strong_count(&self.0) }
+    pub(crate) fn try_new(value: Value) -> Result<Self, Errno> {
+        Self::try_new_in(&IO_MEMORY, value)
+    }
+    pub(crate) fn try_new_in(budget: &'static MetadataBudget, value: Value) -> Result<Self, Errno> {
+        let bytes = core::mem::size_of::<SharedValue<Value>>()
+            .checked_add(4 * core::mem::size_of::<usize>())
+            .and_then(|bytes| bytes.checked_add(core::mem::align_of::<SharedValue<Value>>()))
+            .and_then(|bytes| bytes.checked_mul(2)).ok_or(Errno::ENOMEM)?;
+        let reservation = budget.reserve(bytes)?;
+        alloc::sync::Arc::try_new(SharedValue { value, _reservation: reservation })
+            .map(Self).map_err(|_| Errno::ENOMEM)
+    }
+}
+impl<Value> Clone for IoArc<Value> {
+    fn clone(&self) -> Self { Self(self.0.clone()) }
+}
+impl<Value> Deref for IoArc<Value> {
+    type Target = Value;
+    fn deref(&self) -> &Value { &self.0.value }
+}
+impl<Value: core::fmt::Debug> core::fmt::Debug for IoArc<Value> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { self.0.value.fmt(formatter) }
 }
 
 pub struct IoBox<Value>(Box<SharedValue<Value>>);
@@ -111,6 +141,24 @@ mod tests {
         assert_eq!(BUDGET.usage().0, retained);
         drop(alias);
         assert_eq!(drops.get(), 2);
+        assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn atomic_shared_owner_retains_one_credit_across_thread_and_final_release() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        BUDGET.set_limit(0).unwrap();
+        assert!(matches!(IoArc::try_new_in(&BUDGET, 42u32), Err(Errno::ENOMEM)));
+        assert_eq!(BUDGET.usage().0, 0);
+        BUDGET.set_limit(4096).unwrap();
+        let owner = IoArc::try_new_in(&BUDGET, 42u32).unwrap();
+        let held = BUDGET.usage().0;
+        let alias = owner.clone();
+        assert_eq!(alias.identity(), owner.identity());
+        std::thread::spawn(move || { assert_eq!(*alias, 42); drop(alias); }).join().unwrap();
+        assert_eq!(owner.strong_count(), 1);
+        assert_eq!(BUDGET.usage().0, held);
+        drop(owner);
         assert_eq!(BUDGET.usage().0, 0);
     }
 

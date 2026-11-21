@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { processDataView, type ProcessMemorySource } from "../src/process-memory-views";
 import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
@@ -17,6 +19,7 @@ import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  source: ProcessMemorySource;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -41,26 +44,37 @@ interface MutableCopybackWorkerState {
 function createTestChannel(
   pid: number,
   memory: WebAssembly.Memory,
+  source: ProcessMemorySource = memory,
+  channelOffset = 0,
 ): TestChannel {
   return {
+    source,
     pid,
     memory,
-    channelOffset: 0,
+    channelOffset,
     i32View: new Int32Array(memory.buffer),
     consecutiveSyscalls: 0,
     handling: true,
   };
 }
 
-function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
+function makeCopybackHarness(ptrWidth: 4 | 8 = 4, grouped = false, channelOffset = 0) {
   const pid = 100;
   const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-  const processMemory = new WebAssembly.Memory({
+  const store = grouped ? new MemoryGroupImageStore(7, 32, 32) : undefined;
+  const task = { group: 7, pid, tid: pid, serial: 1n, generation: 0n };
+  const launch = store ? store.publish(store.prepareImage(task,
+    { initialVirtualPages: 3, maximumVirtualPages: 16, scratchBytes: 65536 }), task) : undefined;
+  if (launch) {
+    const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
+    [ptes[0], ptes[2]] = [ptes[2], ptes[0]];
+  }
+  const processMemory = launch?.envelope.memory ?? new WebAssembly.Memory({
     initial: 2,
     maximum: 2,
     shared: true,
   });
-  const channel = createTestChannel(pid, processMemory);
+  const channel = createTestChannel(pid, processMemory, launch?.source, channelOffset);
   const worker = createCentralizedKernelWorkerTestDouble();
   installKernelWorkerTestScratch(
     worker,
@@ -75,7 +89,7 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
       pid,
       {
         pid,
-        memory: processMemory,
+        memory: processMemory, source: channel.source,
         channels: [channel],
         ptrWidth,
         explicitMaxAddr: false,
@@ -86,21 +100,48 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
   // Completion normally relistens the mailbox. Polling mode keeps this
   // focused harness synchronous without replacing a worker method.
   state.usePolling = true;
-  Atomics.store(
-    channel.i32View,
-    CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-    CHANNEL_STATUS_PENDING,
-  );
+  if (launch) launch.source.atomicStoreI32(channelOffset + CH_STATUS, CHANNEL_STATUS_PENDING);
+  else Atomics.store(channel.i32View, CH_STATUS / Int32Array.BYTES_PER_ELEMENT, CHANNEL_STATUS_PENDING);
 
   return {
     worker,
     channel,
     state,
+    store, launch,
     processMem: new Uint8Array(processMemory.buffer),
   };
 }
 
 describe("CentralizedKernelWorker syscall copy-back", () => {
+  it("copies a split virtual output through the channel's captured image source", () => {
+    const { worker, channel, launch, store } = makeCopybackHarness(4, true);
+    try {
+      const source = launch!.source, destination = 65536 - 2;
+      source.fillBytes(destination, 8, 0xa5);
+      worker.testAuthority.completeDetachedCopybackForTest({
+        pid: channel.pid, registrationWitness: channel, operation: "read", fd: 0,
+        destination, requestedLength: 8, returnValue: 4, outputBytes: Uint8Array.of(1, 2, 3, 4),
+      });
+      expect([...source.readBytes(destination, 8)]).toEqual([1, 2, 3, 4, 0xa5, 0xa5, 0xa5, 0xa5]);
+      expect(source.atomicLoadI32(CH_STATUS)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(processDataView(source).getBigInt64(CH_RETURN, true)).toBe(4n);
+    } finally { store!.close(); }
+  });
+  it("publishes a result and status across two virtual pages without touching physical offsets", () => {
+    const offset = 65536 - 60;
+    const { worker, channel, launch, store } = makeCopybackHarness(4, true, offset);
+    try {
+      const source = launch!.source;
+      worker.testAuthority.completeDetachedCopybackForTest({
+        pid: channel.pid, registrationWitness: channel, operation: "read", fd: 0,
+        destination: 8192, requestedLength: 4, returnValue: 4, outputBytes: Uint8Array.of(5, 6, 7, 8),
+      });
+      expect([...source.readBytes(8192, 4)]).toEqual([5, 6, 7, 8]);
+      expect(source.atomicLoadI32(offset + CH_STATUS)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(processDataView(source, offset).getBigInt64(CH_RETURN, true)).toBe(4n);
+      expect(processDataView(source, offset).getUint32(CH_ERRNO, true)).toBe(0);
+    } finally { store!.close(); }
+  });
   it("leaves the destination unchanged when read reports EOF", () => {
     const { worker, channel, processMem } = makeCopybackHarness();
     const dest = 1024;
@@ -270,7 +311,7 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
     const nestedChannel = createTestChannel(nestedPid, nestedMemory);
     state.processes.set(nestedPid, {
       pid: nestedPid,
-      memory: nestedMemory,
+      memory: nestedMemory, source: nestedMemory,
       channels: [nestedChannel],
       ptrWidth: 4,
       explicitMaxAddr: false,

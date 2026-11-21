@@ -1,3 +1,4 @@
+import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
@@ -14,6 +15,7 @@ export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -59,6 +61,7 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -139,6 +142,7 @@ export interface InitMessage {
   remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   config: {
+    experimentalMemoryGroup?: TrustedMemoryGroupOptions;
     maxWorkers: number;
     maxPages?: number;
     kernelMaxPages?: number;
@@ -380,6 +384,7 @@ export type MainToKernelMessage =
   | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetMemoryGroupUsageRequestMessage
   | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | SignalProcessMessage
