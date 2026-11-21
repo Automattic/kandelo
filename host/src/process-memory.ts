@@ -3,6 +3,7 @@ import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
   extractThreadSlotDeclaration,
+  extractThreadSlotPreallocation,
   WASM_PAGE_SIZE,
 } from "./constants";
 import {
@@ -263,9 +264,20 @@ export function computeProcessMemoryLayout(
   const firstThreadSlotPage = channelPage + CHANNEL_PAGES;
   const firstThreadBasePage =
     firstThreadSlotPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
+  const declaredPreallocation = options.programBytes === undefined
+    ? null
+    : extractThreadSlotPreallocation(options.programBytes);
+  if (declaredPreallocation !== null && declaredPreallocation !== 1) {
+    throw new Error(`invalid process thread preallocation declaration: ${declaredPreallocation}`);
+  }
+  if (declaredPreallocation === 1 &&
+    (extractThreadSlotDeclaration(options.programBytes!) ?? 0) <= 0) {
+    throw new Error("thread preallocation requires a positive thread slot declaration");
+  }
+  const preallocateThreadSlots = options.preallocateThreadSlots ?? declaredPreallocation === 1;
   const threadArenaEndPage =
     firstThreadSlotPage + (
-      options.preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
+      preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
     );
 
   const initialPages = Math.max(

@@ -2201,6 +2201,8 @@ pub mod process_memory {
     /// the requested concurrent pthread limit.
     pub const THREAD_SLOT_DECL_EXPORT: &str = wasm_posix_program_abi::abi::THREAD_SLOT_DECL_EXPORT;
 
+    pub const THREAD_SLOT_PREALLOCATE_EXPORT: &str = "__wasm_posix_preallocate_thread_slots";
+
     /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
     /// per process but still expose the legacy boundary for compatibility.
     pub const LEGACY_MMAP_BASE: u32 = 0x0400_0000;
@@ -2343,7 +2345,7 @@ pub mod abi {
     ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
     /// 7: bounded entropy continuations, process-range validation, and private
     ///    guest-address I/O transport.
-    pub const HOST_ADAPTER_VERSION: u32 = 7;
+    pub const HOST_ADAPTER_VERSION: u32 = 8;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

@@ -84,6 +84,22 @@ const VOID = { params: [], results: [] };
 const I32_RESULT = { params: [], results: [0x7f] };
 
 describe("patchWasmForThread", () => {
+  it("does not replay active data over live shared memory when starting a thread", async () => {
+    // Import the shared memory so both instances observe the same bytes.
+    const importing = Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      ...section(2, [1, ...name("env"), ...name("memory"), 2, 0x03, 1, 1]),
+      ...section(11, [1, 0, 0x41, 0, 0x0b, 1, 42]),
+    ]).buffer;
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    await WebAssembly.instantiate(importing, { env: { memory } });
+    const view = new Uint8Array(memory.buffer);
+    expect(view[0]).toBe(42);
+    view[0] = 99;
+    await WebAssembly.instantiate(patchWasmForThread(importing), { env: { memory } });
+    expect(view[0]).toBe(99);
+  });
+
   it("does not rewrite an unrelated exported call target when no constructors exist", async () => {
     const original = moduleBytes({
       types: [VOID, I32_RESULT],

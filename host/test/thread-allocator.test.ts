@@ -185,6 +185,22 @@ describe("ThreadPageAllocator", () => {
     expect(reservations).toBe(2);
   });
 
+  it("keeps host control out of a preallocated pthread arena after recycling", () => {
+    const mem = makeMemory();
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE + PAGES_PER_THREAD,
+      reservedSlots: 1,
+      reserveSlotStartPage: () => 128,
+    });
+
+    const hostControl = alloc.allocateHostControl(mem);
+    alloc.free(hostControl.slotStartPage);
+    const pthread = alloc.allocate(mem);
+    expect(pthread.slotStartPage).toBe(FIRST_THREAD_SLOT_PAGE);
+    expect(alloc.allocateHostControl(mem).slotStartPage).toBe(hostControl.slotStartPage);
+  });
+
   it("reserves vfork host control for a zero-pthread process", () => {
     let nextPage = 128;
     const alloc = new ThreadPageAllocator({
