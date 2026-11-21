@@ -158,6 +158,7 @@ const TEST_PROGRAMS = [
   "dsp_signal_test.c",
   "lseek_invalid_test.c",
   "int128_division_test.c",
+  "compiler_builtins_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
   "random_read_test.c",
@@ -222,6 +223,7 @@ const TEST_PROGRAMS = [
 const WASM64_TEST_PROGRAMS = [...new Set([
   "lseek_invalid_test.c",
   "int128_division_test.c",
+  "compiler_builtins_test.c",
   ...readBrowserMemory64FixtureSources().map(source => basename(source)),
 ])];
 

@@ -36,9 +36,10 @@ MIT:
   libc/glue/            Syscall glue compiled into user programs
 
 The MIT grant covers the code we wrote in those two directories. They also
-hold a few unmodified upstream headers that keep their own licenses; see
-"Copied into libc/musl-overlay/ and libc/glue/" below. Each of those licenses
-permits linking into proprietary programs, so the paragraph above still holds.
+hold upstream headers and code adapted from upstream projects, which keep
+their own licenses; see "Copied into libc/musl-overlay/ and libc/glue/"
+below. Each of those licenses permits linking into proprietary programs, so
+the paragraph above still holds.
 
 
 Third-Party Software
@@ -79,6 +80,12 @@ libc/glue/:
       Linux UAPI header. Copyright Vojtech Pavlik and Hans de Goede.
       GPL-2.0-only WITH Linux-syscall-note. The syscall note lets user-space
       programs include the header without the GPL applying to them.
+  libc/glue/compiler_rt.c, mul_64x64 (used by __multi3)
+      Adapted from __mulddi3 in LLVM compiler-rt lib/builtins/multi3.c.
+      Copyright the LLVM Project contributors. Apache-2.0 WITH
+      LLVM-exception. The exception lets programs carry the compiled
+      builtin without Apache-2.0's attribution requirement. See
+      sdk/kandelo/licenses/LLVM-LICENSE.TXT.
   libc/glue/wayland-egl-include/
       wayland-egl headers from the Wayland project. Copyright Kristian
       Høgsberg and Benjamin Franzke. MIT (license text in each file).
@@ -102,12 +109,6 @@ third_party/stb_truetype.h
 third_party/Inconsolata-Regular.ttf
   Raph Levien and The Inconsolata Project Authors. SIL Open Font License
   1.1. See third_party/NOTICE.md.
-
-packages/registry/wayland-protocols/xml/
-  Protocol XML from wayland 1.24.0, wayland-protocols 1.45 and wlroots'
-  wlr-protocols. Most files carry their own copyright and MIT-style license
-  text; the rest are covered by wayland-protocols' MIT license, copied to
-  packages/registry/wayland-protocols/COPYING.
 
 packages/registry/openssl/src/tls/
   TLS 1.2 implementation from WordPress Playground. Copyright WordPress
