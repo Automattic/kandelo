@@ -1275,3 +1275,62 @@ input/presentation latency, quiet alternating samples, sustained all-engine
 completion and the target-branch benchmark comparison remain open gates.
 Raw inputs, logs, screenshots and guard audits for these runs are retained
 under `.context/shared-desktop-current-753/` in the workspace archive.
+
+### Built-app cache correction and sustained input controls (2026-11-21)
+
+The cache correction in `2ddabdca310a1908f4ceedc5012fe458f377e449`
+keeps a completed lazy VFS network response readable when optional
+CacheStorage open/put fails. Native size/digest checks, Content-Length and
+body-read failures retain their existing behavior. A fresh owned Chromium
+profile with a managed quota reproduces the failure before the fix (798):
+the actual Freeciv archive receives a network 200 but its caller gets
+`Failed to fetch`. An independent CacheStorage write rejects with
+`QuotaExceededError`. The maintained regression also fails before the fix
+(799). This establishes a cache error-handling defect; the unlogged cause
+of the earlier run 769 remains unknown.
+
+After the fix, all cache contracts across the three engines pass (802):
+83 passes, 16 explicit skips for Chromium-CDP-only controls, zero unexpected
+or flaky results. The first broad invocation (801) lacked the maintained
+macOS Firefox profile environment and failed before those test bodies;
+that fixture failure remains retained.
+
+Normal production build 803 passes with unchanged tracked-source guards,
+the same partial-image and kernel hashes, and the optional Inspector group
+counter presentation from `3c2cd9718bc6`. The actual built-app archive
+checks (805) pass both unrestricted and quota-refused cases: 48,851,310
+bytes with SHA-256
+`8a824448153fe38e58e9cff4522ba77b9d8cf9a11b4d71c1138d5398b2ec2411`.
+The independent native cache refusal still occurs in the limited case;
+the fix returns the complete network bytes rather than promising durable
+cache storage. Built-app run 806 passes all fifteen maintained cases:
+six Cage/Foot/Freeciv, three ScummVM, and six Sway/capacity cases across
+Chromium, Firefox and WebKit, with no skips, flaky or unexpected results.
+Source guards match. These bounded passes do not erase run 769 or establish
+sustained acceptance.
+
+Sustained run 752 finally fails WebKit after 637 completed cycles with the
+same extra-terminal symptom. Firefox diagnostics reproduce it after 250
+(775), 450 (789) and 103 (800) completed cycles. Run 789 observes one actual
+DOM shortcut and exactly one forwarded Alt-down/Enter-down/Enter-up/Alt-up
+sequence. Run 800 additionally observes one such sequence received by the
+actual kernel worker, with Enter down/up 5.14 ms apart. Its synchronous
+message handler returns quickly; this does not timestamp deferred kernel
+entry execution or prove when Sway consumes the release.
+
+The ordinary current-runtime control (795), using the ordinary partial
+image without group admission, also fails after 537 completed cycles:
+three Foot processes and shells instead of two. It likewise records one
+DOM and main-to-worker shortcut sequence (Enter held about 96 ms). Thus
+these results do not establish a group-specific failure or a regression
+against the recorded target branch. The common input/launch path remains
+under investigation without changing counts, deadlines or repeat policy.
+A three-cycle diagnostic pilot (809) successfully collects the existing
+Inspector syscall trace and scalar process events without runtime source
+rewriting; its longer fixed-length run is pending. Trace instrumentation
+is diagnostic evidence, not a performance sample.
+
+The cache correction changes no Node, SDK, ABI, kernel or memory ownership
+contract. The full memory and conformance receipts above predate it.
+Quiet resource/latency measurements, target-branch benchmark comparison,
+material-cost treatment and sustained acceptance remain incomplete.
