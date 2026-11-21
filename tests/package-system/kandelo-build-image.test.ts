@@ -45,8 +45,8 @@ describe("kandelo-build-image package", () => {
     // a package the rootfs gains must reach the image too.
     expect(dependsOn("packages/registry/kandelo-build-image/package.toml")).toEqual([
       ...dependsOn("packages/registry/rootfs/package.toml"),
-      "kandelo-sdk-browser-bundle@21.1.7",
-      "clang@21.1.7",
+      "kandelo-sdk-browser-bundle@23.1.3",
+      "clang@23.1.3",
       "perl-browser-bundle@5.40.3",
       "python-browser-bundle@3.13.3",
       // BUILD_IMAGE_ARCHIVE_TOOL_IDS.

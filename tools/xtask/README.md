@@ -45,9 +45,6 @@ pass an explicit host target:
 cargo test  -p xtask --target aarch64-apple-darwin
 cargo build -p xtask --target aarch64-apple-darwin
 
-# macOS Intel
-cargo test  -p xtask --target x86_64-apple-darwin
-
 # Linux
 cargo test  -p xtask --target x86_64-unknown-linux-gnu
 ```

@@ -358,6 +358,11 @@ mod tests {
             lld_major_from_version("LLD 21.1.7 (compatible with GNU linkers)"),
             Some(21)
         );
+        assert_eq!(
+            lld_major_from_version("LLD 23.1.3 (compatible with GNU linkers)"),
+            Some(23)
+        );
+        assert_eq!(lld_major_from_version("LLD 23.1.3\n"), Some(23));
         assert_eq!(lld_major_from_version("Homebrew LLD 22.0.0"), Some(22));
         assert_eq!(lld_major_from_version("wasm-ld version"), None);
     }

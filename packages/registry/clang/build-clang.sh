@@ -115,7 +115,7 @@ if [ -z "$LLVM_TABLEGEN_BIN" ] || [ -z "$CLANG_TABLEGEN_BIN" ]; then
     -DLLVM_TARGETS_TO_BUILD="WebAssembly" -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
     -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF \
-    -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBEDIT=OFF
+    -DLLVM_ENABLE_LIBEDIT=OFF
   cmake --build "$HOST_BUILD_DIR" --target llvm-tblgen clang-tblgen \
     -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
   LLVM_TABLEGEN_BIN="$HOST_BUILD_DIR/bin/llvm-tblgen"
@@ -142,6 +142,12 @@ COMMON_FLAGS=("-ffile-prefix-map=$REPO_ROOT=/kandelo" "-ffile-prefix-map=$WORK_D
 # Keep each large host wasm-ld link within the same resource bound as the
 # default serial build, even when compilation jobs are raised explicitly.
 LINK_FLAGS=(-Wl,--threads=1 "$LIBCXX_DIR/lib/libc++.a" "$LIBCXX_DIR/lib/libc++abi.a")
+# CMAKE_DISABLE_PRECOMPILE_HEADERS works around a KandeloCallTypes
+# limitation: LLVM 23 precompiles headers by default, and a unit that
+# reuses a PCH gets different AST-side compiler facts (docs/sdk-guide.md,
+# "Compiler facts for fork instrumentation", known gap).
+# CLANG_PLUGIN_SUPPORT concerns loading plugins from shared libraries only;
+# the built-in KandeloCallTypes plugin above does not depend on it.
 
 cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/llvm" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_SYSTEM_NAME=Kandelo \
@@ -167,10 +173,11 @@ cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/llvm" -B "$BUILD_DIR" \
   -DLLVM_ENABLE_PIC=OFF -DLLVM_ENABLE_ZSTD=OFF \
   -DLLVM_ENABLE_ZLIB=FORCE_ON -DZLIB_INCLUDE_DIR="$ZLIB_DIR/include" \
   -DZLIB_LIBRARY="$ZLIB_DIR/lib/libz.a" \
-  -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBEDIT=OFF \
+  -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_LIBEDIT=OFF \
   -DLLVM_ENABLE_LIBCXX=ON -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF \
-  -DBUILD_SHARED_LIBS=OFF -DCLANG_ENABLE_ARCMT=OFF \
-  -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_PLUGIN_SUPPORT=OFF
+  -DBUILD_SHARED_LIBS=OFF -DCLANG_ENABLE_OBJC_REWRITER=OFF \
+  -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_PLUGIN_SUPPORT=OFF \
+  -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 
 # The LLVM binary tools, each one output. Several answer to more than one
 # name by argv[0], as their LLVM builds' own symlinks do: llvm-objcopy runs

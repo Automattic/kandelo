@@ -635,13 +635,17 @@ describe.skipIf(!hasCompiler())("shared library loading", () => {
   });
 
   it("handles function pointers (indirect calls through the table)", async () => {
-    // Use a function pointer array to force table entries (prevents inlining)
+    // An externally visible function-pointer array forces table entries.
+    // It must not be `static`: clang 23 folds a constant two-entry static
+    // array into a `select` between direct calls, which leaves the module
+    // with no table for this test to check. A global array can be changed
+    // from outside this translation unit, so its slots stay in the table.
     const wasmBytes = buildSharedLib(
       `
       typedef int (*op_fn)(int, int);
       static int add(int a, int b) { return a + b; }
       static int sub(int a, int b) { return a - b; }
-      static op_fn ops[] = {add, sub};
+      op_fn ops[] = {add, sub};
       int apply(int which, int a, int b) { return ops[which](a, b); }
       `,
       "funcptr",

@@ -3,6 +3,17 @@ inputs = [
   "packages/registry/kandelo-sdk-browser-bundle/build-kandelo-sdk-browser-bundle.sh",
   "images/vfs/scripts/build-kandelo-sdk-zip.sh",
   "images/vfs/scripts/create-deterministic-zip.sh",
+  # The SDK sysroot is selected from the build machine's sysroot by this
+  # script and checked against the musl output receipt. The graphics
+  # libraries it selects come from these producers, which the global
+  # toolchain inputs do not cover.
+  "images/vfs/scripts/stage-sdk-sysroot.sh",
+  "scripts/musl-output-state.mjs",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/build-step-input-hash.sh",
+  "scripts/write-graphics-pkgconfig.sh",
+  "packages/registry/libdrm",
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",
   "sdk/activate.sh",
