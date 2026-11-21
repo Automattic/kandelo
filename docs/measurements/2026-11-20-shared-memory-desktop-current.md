@@ -1,12 +1,72 @@
 # Shared-memory desktop: current validation and resource cost
 
-This checkpoint distinguishes the current grouped-root lifecycle correction
-from the preceding `c9178e6526` runtime, browser import correction `4bd526d429`
-and owned-image consumer `a9e54e9ec2`. It supersedes the current-status summary in the
+This record retains successive desktop integration checkpoints, including the
+grouped-root lifecycle correction, `c9178e6526` runtime, browser import correction
+`4bd526d429` and owned-image consumer `a9e54e9ec2`. The latest normal-app checkpoint
+is below; later checks do not erase earlier failures. It supersedes the summary in the
 [November 19 investigation](2026-11-19-shared-memory-desktop-integration.md),
 which retains earlier measurements and failed experiments. The batch remains a
 draft targeting `develop`; neither the original PR1–PR9 plan nor merge
 acceptance is complete.
+
+## Normal app and admission policy
+
+The normal opt-in app now prepares its Sway/Foot image through the SDK, package
+resolver and image writer, including compatible shell, login and syslog
+participants. `./run.sh browser --partial --trusted-desktop-preview` uses the
+server's root URL. The validated partial shell contains Sway, Swaybg, Foot,
+Wayland desktop data, the Bibata cursor theme and sysklogd. Ordinary app builds
+keep their existing backend. The canonical production build remains pending;
+the serial retry has progressed beyond Rust to the guest Clang toolchain.
+
+An explicit 24-process/64-task developer fixture reproduces the user's refusal
+at nine terminals: 23 live non-init processes, about 25 tasks and 299 MiB of
+shared backing capacity. Sway's transient command/launch processes exhaust the
+process allowance before the 512 MiB backing ceiling. Closing and reopening a
+terminal restores capacity. These numbers describe that fixture, not every
+normal app login tree or resident memory.
+
+The normal trusted app now supplies only its existing 512 MiB backing budget.
+Process and task quotas are optional embedder choices; omitted counts use the
+protocol's u32 ceiling without preallocation. Explicit quotas remain enforced,
+and kernel metadata, backing allocation and host Workers remain finite.
+This removes a small configured desktop ceiling without promising unlimited
+resources. See [the option contract](../shared-memory-groups.md#desktop-first-opt-in).
+
+| Current bounded validation | Result |
+|---|---|
+| Normal app: clock/input/workspaces/tiling, exit and CPU-renderer restart | Passed on Chromium, Firefox and WebKit |
+| Normal app: twelve actual Foots and shell children, physical close, new-PID reopen, guest Sway exit and cleanup | Passed on all three engines |
+| Public SDK: 26 simultaneously live children followed by 66 simultaneously live pthreads, 512 MiB backing | Passed on Node and all three browser engines |
+| Full Node SDK selection | 62 passed, no skips |
+| Public browser VFS launch/identity/refusal/DRM selection | 15 passed, no skips |
+| Browser SDK and exact retirement selection | 105 passed, no skips |
+| Host build/declarations, browser types and ABI check against develop | Passed |
+
+The live-child SDK probe first failed in both grouped Node launch modes at its
+128 MiB fixture budget with `ENOMEM`; ordinary execution passed. A controlled
+128/512 MiB pair reproduced the refusal and then completed the same C program
+at 512 MiB. The maintained admission case now matches that preview budget.
+The failed run is retained, and does not count as a passing 128 MiB workload.
+The ordinary private-file fixture now checks develop's explicit `EFAULT` on
+unsupported growth and verifies that its original mapping survives; the grouped
+arm still requires successful growth against the retained original file.
+
+The full ordinary Node Open POSIX run completed 174 passes, three expected
+failures and two standard skips, with no failures or timeouts. Libc completed
+305 passes, 17 expected failures, one listed flaky pass and a `raise-race`
+timeout at the unchanged 30-second limit; it is not a passing suite. Isolating
+that case timed out again. A pinned develop baseline is being prepared to
+classify it. The current normal-app lifecycle probe stopped after eleven
+completed iterations on an empty cached file preview; a fresh-read control is
+pending. The longer Firefox/WebKit input and IPC failures also remain open.
+These short checks establish neither sustained reliability nor an OS memory,
+CPU or presentation-latency benefit. The full combined browser-memory gate,
+canonical build and matched resource measurements remain required.
+
+Raw sources, failed and passing reports, screenshots and provenance are retained
+under `.context/shared-desktop-followup-545/`; lifecycle probe 555 retains its
+separate job evidence. No runtime source was rewritten for these checks.
 
 ## Bitmap handoff correction
 
@@ -78,10 +138,10 @@ Trusted compatible programs opt into the existing kernel-owned group through
 `experimentalMemoryGroup`. Normal SDK version 3/layout 3 artifacts supply
 Sway, Swaybar, Swaybg, Swaymsg, Foot, Bash and Coreutils; historical “format4”
 is a prototype label. The developer consumer uses byte launch from its actual
-VFS, a 512 MiB group budget, 24 processes and 64 tasks. It is temporary and
-in memory. Ordinary execution remains the default in the full Kandelo app.
-Grouped initial `spawnFromVfs` and a shared-mode launch in that app are still
-absent. The developer page is the working shared desktop preview.
+VFS, a 512 MiB group budget, 24 processes and 64 tasks. The normal opt-in app
+also supports initial `spawnFromVfs` through its image-owned login path, with
+the admission policy described above. Both previews are temporary and in memory.
+Ordinary execution remains the default in ordinary app builds.
 
 PHP-FPM is unchanged. Persistent writable sharing, mixed graphical clients,
 PostgreSQL and Apache remain follow-ons. Shared objects are whole, fixed-size

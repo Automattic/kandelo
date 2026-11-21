@@ -5116,6 +5116,9 @@ the normal login path and default to its image-owned Sway profile. They exclude
 unprepared profiles from that image's activity metadata. Ordinary app builds
 keep their existing memory backend. See [desktop opt-in](shared-memory-groups.md#desktop-first-opt-in)
 for package selection, compatibility limits and remaining acceptance.
+The normal trusted preview has a 512 MiB shared backing ceiling without an
+additional small process/task quota. Embedders may supply explicit count quotas;
+kernel metadata, backing allocation and host Workers remain finite resources.
 
 Shutdown stops frame admission synchronously, waits for any pending capture,
 and closes late images. It sends an ordered retirement request naming the last

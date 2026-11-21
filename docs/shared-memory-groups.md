@@ -136,9 +136,19 @@ desktop milestone.
 
 ```ts
 experimentalMemoryGroup: {
-  maximumPages: 8192, maximumProcesses: 24, maximumTasks: 64,
+  maximumPages: 8192,
 }
 ```
+
+`maximumPages` is required. Optional `maximumProcesses` and `maximumTasks`
+allow embedders to impose explicit admission quotas. Omitted counts use the
+protocol's unsigned 32-bit ceiling; they do not reserve or allocate capacity.
+If only a task quota is supplied, it also bounds the process count. An explicit
+process quota cannot exceed the task quota. Tasks include each process's main
+execution, pthreads, pending admissions and executions awaiting exact retirement.
+The kernel refuses a count quota with `EAGAIN` and backing exhaustion with
+`ENOMEM`. Fallible kernel metadata allocation and host Worker construction can
+also refuse admission; omitting count quotas does not promise unlimited resources.
 
 Compatible byte launches through `spawn(bytes, argv, options)` use a single
 kernel-owned group in that machine. The option configures a physical ceiling;
@@ -193,6 +203,12 @@ The command prepares a separate image through the normal SDK and defaults to
 its Sway profile at the server's root URL. The image advertises Sway and Foot
 only; other ordinary image profiles are excluded. The input image stays intact.
 This is a temporary trusted preview, with no managed or persistent computers.
+The normal app sets a 512 MiB shared backing ceiling and no additional process
+or task quota. Its earlier 24-process/64-task defaults could refuse a desktop at
+about nine Foot windows even with backing capacity available. The separate
+developer pressure fixture below retains those explicit quotas to test refusal
+and recovery. Neither fixture establishes resident-memory usage or sustained
+desktop capacity.
 WebKit's longer lifecycle failures remain under investigation; passing a short
 desktop interaction check does not establish sustained support.
 
@@ -218,6 +234,10 @@ This tests the build's default image without a `?vfs` override on Chromium,
 Firefox and WebKit. It retains the normal Sway clock, input, workspace, tiling,
 exit and CPU-renderer restart checks and rejects browser errors. It is separate
 from sustained lifecycle and resource acceptance.
+The same config checks twelve actual Foot processes and their shell children,
+physical Ctrl+D exit, replacement by a new terminal PID and guest-driven Sway
+exit with terminal cleanup. Twelve is a regression workload, not a capacity
+promise or a configured maximum.
 
 Grouped child exit notification follows the same execution-stop boundary as
 wait status. The kernel keeps SIGCHLD and automatic reaping pending while any

@@ -19,8 +19,10 @@ import type { CentralizedWorkerInitMessage } from './worker-protocol';
  * ordinary artifacts retain their ordinary path. Membership remains in Rust. */
 export interface TrustedMemoryGroupOptions {
   maximumPages: number;
-  maximumProcesses: number;
-  maximumTasks: number;
+  /** Optional embedder admission quota; omitted means the protocol's u32 ceiling. */
+  maximumProcesses?: number;
+  /** Includes pthreads and pending/retiring executions, not just processes. */
+  maximumTasks?: number;
 }
 type Layout = ReturnType<typeof computeProcessMemoryLayout>;
 type Ownership = GroupedExecWorkerOwnership | GroupedForkWorkerOwnership;
@@ -54,12 +56,20 @@ export class GroupedSessionRuntime {
   private closed = false;
   private closing = false;
   private readonly launches = new Set<Promise<void>>();
+  private readonly options: Required<TrustedMemoryGroupOptions>;
   constructor(private readonly kernel: CentralizedKernelWorker, private readonly adapter: WorkerAdapter,
-    private readonly options: TrustedMemoryGroupOptions, private readonly joins: boolean,
+    options: TrustedMemoryGroupOptions, private readonly joins: boolean,
     private readonly onExit: (pid: number, status: number, generation: number) => void,
     private readonly report: (pid: number, error: Error) => void,
     private readonly initialBackingPages = 1) {
-    if (![options.maximumPages, options.maximumProcesses, options.maximumTasks].every(value => Number.isSafeInteger(value) && value > 0)
+    // WHY: a shared backing budget is the resource authority. A small default
+    // count would refuse otherwise affordable desktops. Keep explicit quotas
+    // for embedders/tests without preallocating any task or Worker capacity.
+    const maximumTasks = options.maximumTasks ?? 0xffff_ffff;
+    const maximumProcesses = options.maximumProcesses ?? maximumTasks;
+    this.options = { maximumPages: options.maximumPages, maximumProcesses, maximumTasks };
+    if (![options.maximumPages, maximumProcesses, maximumTasks].every(value => Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff)
+        || maximumTasks < maximumProcesses
         || options.maximumPages < 2 || options.maximumPages > G.MEMORY_GROUP_MAXIMUM_PAGES
         || !Number.isSafeInteger(initialBackingPages) || initialBackingPages < 1
         || initialBackingPages > options.maximumPages) throw Error('Invalid trusted memory-group budgets');
