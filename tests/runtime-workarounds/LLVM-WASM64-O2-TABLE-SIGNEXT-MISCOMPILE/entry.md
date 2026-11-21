@@ -9,8 +9,9 @@ The MariaDB build script says that the LLVM 21 wasm64 backend has `-O2`
 miscompilation bugs, specifically the sign extension of an `i32` to an
 `i64` in table lookups, and that the wasm64 build therefore uses `-O1`
 "until the LLVM wasm64 backend matures". `docs/profiling.md` repeats the
-claim as "an LLVM 21 wasm64 backend miscompilation in table-lookup
-sign-extension".
+claim as an LLVM wasm64 backend miscompilation in table-lookup
+sign-extension observed on LLVM 21. Kandelo now pins LLVM 23.1.3; whether
+MariaDB wasm64 still fails at `-O2` with it has not been re-tested.
 
 ## Why Kandelo is affected
 
@@ -24,8 +25,9 @@ default). The cost is slower wasm64 MariaDB code; it has not been measured.
 ## Evidence
 
 Only the comment and the profiling doc line. There is no failing input, no
-reduction, no clang version more precise than "LLVM 21", and no record of
-which MariaDB function misbehaved or how.
+reduction, no clang version more precise than "LLVM 21", no check on the
+pinned LLVM 23.1.3, and no record of which MariaDB function misbehaved or
+how.
 
 ## Why this is not a Kandelo defect
 

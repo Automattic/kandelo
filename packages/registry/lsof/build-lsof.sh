@@ -90,6 +90,10 @@ LINK_FLAGS=(
     -Wl,--shared-memory
     -Wl,--max-memory=1073741824
     -Wl,-z,stack-size=8388608
+    # LLD 22 made --stack-first the default. Keep the stack-after-data layout
+    # this recipe had with LLD 21 and every SDK-linked program still gets
+    # (crates/kandelo-cc/src/driver.rs); this is not SDK catch-up.
+    -Wl,--no-stack-first
     -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
     -Wl,--table-base=3
     -Wl,--export-table
