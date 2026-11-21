@@ -442,14 +442,102 @@
       "reportSha256": "2bc4be01ee854797ce40b6e9fa42b1315f34be2d371df2c6850e89c4d5c6608e"
     },
     "pending": [
-      "600-cycle WebKit physical-input/lifecycle screen is running; no outcome yet.",
-      "Normal production/full browser-memory and required ABI/conformance checks on the integrated candidate.",
+      "Final combined normal full-browser-memory/ABI gate and production/conformance/SDK checks.",
       "Quiet matched resource/latency measurements, all destination benchmark suites and material-cost decision."
     ],
     "limits": [
       "Runs overlap builds and do not establish quiet performance or net memory savings.",
       "No SDK/program ABI or memory limits changed.",
       "Native Safari untested."
-    ]
+    ],
+    "sustainedWebKit600": {
+      "testedRuntime": "f35a3070fed3cd9f0131572522ac737df1f924e2",
+      "scope": "Isolated Vite runtime equivalent to publishedf35 except a comment, frozen normal756SDK/image; no profiler, global Atomics wrappers or recorder. This precedes the adjacent direct-import follow-up.",
+      "controlStats": {
+        "startTime": "2026-11-21T18:37:48.423Z",
+        "duration": 14478.844,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "stats": {
+        "startTime": "2026-11-21T18:38:03.122Z",
+        "duration": 1902298.392,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "completedCycles": 600,
+      "actualSwayExit": true,
+      "pageErrors": [],
+      "allocatedPagesAfterGraphics": 325,
+      "nativeObserversAfterGraphics": 0,
+      "sharedObjectsAfterGraphics": 0,
+      "sharedPagesAfterGraphics": 0,
+      "sharedReferencesAfterGraphics": 0,
+      "mappingReferencesAfterGraphics": 0,
+      "waitDrainsAfterGraphics": 0,
+      "quarantinedAfterGraphics": 0,
+      "periodicAllocatedPages": 1753,
+      "initialBufferExtentPages": 8192,
+      "finalBufferExtentPages": 8192,
+      "finalHighWaterPages": 2554,
+      "pageBytes": 65536,
+      "limits": [
+        "Machine stays alive with two remaining images; logical allocation20.3125MiBaftergraphics is not RSS or collection.",
+        "WebKit backing buffer extent is512MiB from the initial snapshot and remains so. Stable live allocations do not prove reservation release or net memory savings.",
+        "Concurrent builds prevent quiet resource/latency conclusions. This does not erase earlier failed runs or establish1200cycle endurance."
+      ],
+      "reportsSha256": {
+        "smoke": "40b62da51089e6c1d12f78dffd587a152affabdd65b0c5ed82747a43bef4ca20",
+        "sustained": "62bc9028c63dad9ac5ebf583fb7263187e5fd8fd68c9854ee2d7eacaffba3ee8"
+      }
+    },
+    "directPublicationFollowUp": {
+      "recordedAt": "2026-11-21T19:25:43.982263+00:00",
+      "scope": "Adjacent host_publish_wait_completion grouped direct fast path also avoids synchronous Q wait. Internalbusy/EAGAIN leaves Rust FLAG_PUBLISHED clear, so existing exact queued completion owns the result without replay. Explicit linear address-space adapters retain their publication contract. No SDK/program ABI or memory ceiling changes.",
+      "patchSha256": "149a659a1937b656719a3bcdfb28e4378733ae7745945fa7fc7496bfabe5ff59",
+      "controlledFailures": [
+        "Held-Q direct import calls Atomics.wait on publishedf35; regression fails before fix.",
+        "An intermediate candidate violated explicit linear-adapter publication; added regression fails before class-narrowed method selection."
+      ],
+      "checks": {
+        "nodeFocused": {
+          "passed": 204,
+          "files": 4,
+          "skipped": 0
+        },
+        "selectedActualBun": {
+          "version": "1.3.3",
+          "passed": 43,
+          "deselected": 118,
+          "files": 3
+        },
+        "fullNodeSourceMemory": {
+          "passed": 1588,
+          "files": 60,
+          "skipped": 0
+        },
+        "typesAndHostBuild": "PASS"
+      },
+      "broaderBunControl": {
+        "candidatePassed": 152,
+        "candidateFailed": 8,
+        "unchangedF35SelectedControlFailed": 8,
+        "reasonObserved": "Eight existing native snapshot comparison-contract cases return capability fallback2 rather than expected fast comparison/error; same cases fail unchangedf35. This investigation changes no comparator.",
+        "limits": "Expanded private selection, not a claim that all Bun host sources pass. Raw candidate/control failures retained; no maintained test exclusions or engine defect claim."
+      },
+      "evidenceSha256": {
+        "red-corrected.log": "a5d17daed80388bbd94c3e7d185614de12d12f0eec7e83561641da2e0aa5a08c",
+        "linear-candidate-red.log": "673976d2ac0dd45f4c60a51d5fb503a11b8e90564f4f1a85b31cc6867a5f8986",
+        "typed-candidate.log": "5c98e4838077db683c19b9b7ac47f903feb58ca11c0755b8b29ba48c2cd4de65",
+        "bun-focused-933.log": "35cc004c3e436b01d7892b11d8009bdbc69e22383023a8643c91bcd8e5869985",
+        "bun-933.log": "cd9242f04bea463e9d6ce42103825b2aad05fb1f3c817f5a8b83dfa7e5e5b9af",
+        "bun-f35-control.log": "c14d2ac596619e3723f4377728f50e15d924230866a8666dc3e5df2e6e84a573"
+      },
+      "fullSourceLogSha256": "4ec792a6e77603dec4a6f1e8ead35c53c7026fd075580444a03ae3f445ea2b3a"
+    }
   }
 }

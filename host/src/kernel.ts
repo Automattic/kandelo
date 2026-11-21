@@ -5,7 +5,7 @@ import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
-import { processAddressFromWasm, type ProcessAddressSpace } from "./process-address-space";
+import { GroupProcessAddressSpace, processAddressFromWasm, type ProcessAddressSpace } from "./process-address-space";
 import { MemoryGroupProtocolFault } from "./memory-group-protocol";
 import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord, type PlanarPlaneStorage } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
@@ -4279,8 +4279,15 @@ export class WasmPosixKernel {
               const result = new IntrinsicDataView(bytes.buffer);
               intrinsicApply(intrinsicDataViewSetBigInt64, result, [0, ret, true]);
               intrinsicApply(intrinsicDataViewSetUint32, result, [CH_ERRNO - CH_RETURN, errno, true]);
-              addressSpace.publishBytes(base + CH_RETURN, bytes, base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1);
-              return 0;
+              // A nonzero return leaves FLAG_PUBLISHED clear: Rust queues
+              // this exact result for the normal host completion owner.
+              // Never block a live kernel entry on a participant's queue.
+              const published = addressSpace instanceof GroupProcessAddressSpace
+                ? addressSpace.tryPublishBytes(base + CH_RETURN, bytes,
+                  base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1)
+                : addressSpace.publishBytes(base + CH_RETURN, bytes,
+                  base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1);
+              return published === 'busy' ? -11 : 0;
             }
           } catch (caught) {
             if (caught instanceof MemoryGroupProtocolFault) {

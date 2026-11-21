@@ -592,6 +592,9 @@ never authorizes reuse.
 An already exited Process may still finish its exact EXIT or terminal-marker
 transport handshake. That narrow completion never redispatches into the dead
 Process and remains distinct from an ordinary late result, which is discarded.
+The in-entry direct transfer optimization also declines publication when that
+queue is busy. Rust queues its already decided result for the same host
+completion path; the transfer is not executed again.
 
 The mapping coordinator's internal image barrier freezes replica membership
 and requests a distinct epoch from every live execution replica. A partial

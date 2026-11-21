@@ -1,4 +1,5 @@
-import { GroupProcessAddressSpace } from "../src/process-address-space";
+import * as G from "../src/generated/program-extensions";
+import { GroupProcessAddressSpace, LinearProcessAddressSpace } from "../src/process-address-space";
 import { recordComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { describe, expect, it, vi } from "vitest";
 
@@ -1914,6 +1915,40 @@ describe("explicit grouped process byte imports", () => {
     const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
     return { process, words, pte, access, kernelMemory: memory, env: imports.env };
   }
+  it("preserves direct completion for an explicit linear address-space adapter", () => {
+    const process=new WebAssembly.Memory({initial:2,maximum:2,shared:true});
+    const source=new LinearProcessAddressSpace(process);
+    const {kernel,memory}=kernelHarness({},4,{}, {getProcessAddressSpace:()=>source});
+    const {env}=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+    expect(env.host_publish_wait_completion(7,64n,23n,0)).toBe(0);
+    const view=new DataView(process.buffer);
+    expect(view.getBigInt64(64+56,true)).toBe(23n);
+    expect(view.getUint32(64+64,true)).toBe(0);
+    expect(source.atomicLoadI32(64)).toBe(2);
+  });
+  it("defers direct grouped transfer publication without blocking on participant Q", () => {
+    const {access,env,process}=grouped();
+    const words=new Int32Array(process.buffer);
+    const channel=65536-60,q=G.MEMORY_GROUP_WAIT_HEADER / 4;
+    access.fillBytes(channel,128,0xa5);
+    const before=access.readBytes(channel,128);
+    const wait=vi.spyOn(Atomics,'wait').mockImplementation(()=>{throw Error('Direct kernel completion must not block on Q');});
+    Atomics.store(words,q,1);
+    try {
+      // The existing Rust caller treats a nonzero import return as NOT
+      // published and queues the real result for the host completion owner.
+      const result=env.host_publish_wait_completion(7,BigInt(channel),23n,0);
+      expect(wait).not.toHaveBeenCalled();
+      expect(result).toBe(-11);
+      expect(access.readBytes(channel,128)).toEqual(before);
+      expect(Atomics.load(words,q)).toBe(1);
+      Atomics.store(words,q,0);
+      expect(env.host_publish_wait_completion(7,BigInt(channel),23n,0)).toBe(0);
+      expect(access.atomicLoadI32(channel)).toBe(2);
+      const body=new DataView(access.readBytes(channel+56,12).buffer);
+      expect(body.getBigInt64(0,true)).toBe(23n);expect(body.getUint32(8,true)).toBe(0);
+    } finally {Atomics.store(words,q,0);Atomics.notify(words,q);wait.mockRestore();}
+  });
   it("publishes virtual channel completion across scattered pages", () => {
     const { access, env } = grouped();
     const channel = 65536 - 60;
