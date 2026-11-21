@@ -1,0 +1,30 @@
+Link Qt6Core against the SDK's -lkandelo-mprotect on Kandelo.
+
+io/qresource.cpp's mapUncompressed_sys() (compiled because musl defines
+MREMAP_MAYMOVE and MREMAP_DONTUNMAP) remaps a resource and makes the copy
+writable with mprotect(PROT_READ | PROT_WRITE). Kandelo's libc.a leaves
+mprotect() out; -lkandelo-mprotect carries out requests that keep read
+and write access, which is the only kind Qt6Core makes. As a private
+library of a static Qt6Core it lands in Qt6CoreTargets.cmake as
+$<LINK_ONLY:kandelo-mprotect>, so every CMake consumer links it without
+naming it.
+
+--- a/src/corelib/CMakeLists.txt
++++ b/src/corelib/CMakeLists.txt
+@@ -804,6 +804,16 @@
+     LIBRARIES
+         fsnotify
+ )
++
++# Kandelo (wasm32posix): io/qresource.cpp's mapUncompressed_sys() makes a
++# remapped resource writable with mprotect(PROT_READ | PROT_WRITE). Kandelo's
++# libc.a leaves mprotect() out; the SDK's -lkandelo-mprotect provides it,
++# carrying out requests that keep read and write access. A private library of
++# a static Qt6Core lands in its exported link interface, so every consumer
++# links it without naming it.
++if(LINUX AND CMAKE_SYSTEM_PROCESSOR MATCHES "^wasm(32|64)$")
++    qt_internal_extend_target(Core LIBRARIES kandelo-mprotect)
++endif()
+ 
+ qt_internal_extend_target(Core CONDITION QT_FEATURE_qqnx_eventfd
+     LIBRARIES

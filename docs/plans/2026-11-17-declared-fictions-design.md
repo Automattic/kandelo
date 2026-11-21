@@ -162,9 +162,30 @@ registry file, driver support, and replacing each recipe's `-l` flag with a
 - **erlang**: nothing. The literal-area sealing (`erts_mem_guard`) runs only
   in `DEBUG` emulators and the JIT is disabled, so a release build has no
   live `mprotect` call.
+- **file**: `read_only` accepted without a limit (libmagic seals a loaded
+  compiled `.mgc` database read-only and refuses it if that fails).
+
+A full rebuild found library archive members that call `mprotect` and fail
+every consumer link that pulls them in:
+
+- **openssl**: built `no-secure-memory`; the secure heap (guard pages) is
+  unavailable instead of unguarded.
+- **qtbase** (Qt6Core, `qresource.cpp`) and **qtdeclarative** (Qt6Qml, V4
+  heap commit): only widen access; a source patch adds `kandelo-mprotect` to
+  each library's CMake link interface. Qt6Qml's `PROT_NONE` decommit stays
+  with each consuming program's declaration (quickshell).
+- **spidermonkey**: links `-lkandelo-mprotect` (buffer commits); its
+  restrictive callers are DEBUG-only or JIT-only.
+- **rust-llvm** (`libLLVM.a`, `Memory.cpp.o` and ORC's
+  `ExecutorSharedMemoryMapperService.cpp.o`): no change. Its only consumer,
+  rustc, links without reaching either member's `mprotect` call.
 
 ## Not done
 
 - Library packages cannot declare fictions; a library whose code needs one
-  documents it, and each program that links it declares it.
+  documents it, and each program that links it declares it. Nothing checks
+  that a consumer did: a Qt6Qml program without the declaration links and
+  crashes at its first heap decommit. A library-side requirement that the
+  package build checks against each consumer's declarations would close
+  that gap.
 - No fiction other than `mprotect` exists yet.

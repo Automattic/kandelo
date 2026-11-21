@@ -1,0 +1,36 @@
+Link Qt6Qml against the SDK's -lkandelo-mprotect on Kandelo.
+
+masm/wtf/OSAllocatorPosix.cpp commits V4 JS heap pages with
+mprotect(PROT_READ | PROT_WRITE). Kandelo's libc.a leaves mprotect()
+out; -lkandelo-mprotect carries out requests that keep read and write
+access. As a private library of a static Qt6Qml it lands in
+Qt6QmlTargets.cmake as $<LINK_ONLY:kandelo-mprotect>, so every CMake
+consumer links it without naming it.
+
+The same file's decommit() asks for PROT_NONE after MADV_DONTNEED and
+calls CRASH() if refused. -lkandelo-mprotect refuses it with ENOTSUP, so
+a program that links Qt6Qml declares the mprotect fiction for that
+call in its own package.toml (quickshell does). Library packages cannot
+declare fictions.
+
+--- a/src/qml/CMakeLists.txt
++++ b/src/qml/CMakeLists.txt
+@@ -762,6 +762,18 @@
+     SOURCES
+         ../3rdparty/masm/wtf/OSAllocatorPosix.cpp
+ )
++
++# Kandelo (wasm32posix): ../3rdparty/masm/wtf/OSAllocatorPosix.cpp commits JS
++# heap pages with mprotect(PROT_READ | PROT_WRITE), and Kandelo's libc.a
++# leaves mprotect() out. The SDK's -lkandelo-mprotect carries out such
++# requests; a private library of a static Qt6Qml lands in its exported link
++# interface, so every consumer links it without naming it. The same file's
++# decommit() also asks for PROT_NONE, which that library refuses with
++# ENOTSUP and decommit() answers with CRASH(): a program linking Qt6Qml
++# declares the mprotect fiction for it (see quickshell's package.toml).
++if(LINUX AND CMAKE_SYSTEM_PROCESSOR MATCHES "^wasm(32|64)$")
++    qt_internal_extend_target(Qml LIBRARIES kandelo-mprotect)
++endif()
+ 
+ qt_internal_extend_target(Qml CONDITION DEFINES___contains___WTF_USE_UDIS86=1
+     SOURCES

@@ -141,7 +141,14 @@ ENDIAN_EOF
 COMMON_FLAGS=("-ffile-prefix-map=$REPO_ROOT=/kandelo" "-ffile-prefix-map=$WORK_DIR=/kandelo-build/clang" -O1 -g0 -fno-exceptions -fno-rtti -isystem "$COMPAT_INC" -DCLANG_BUILD_STATIC -DLLVM_BUILD_STATIC)
 # Keep each large host wasm-ld link within the same resource bound as the
 # default serial build, even when compilation jobs are raised explicitly.
-LINK_FLAGS=(-Wl,--threads=1 "$LIBCXX_DIR/lib/libc++.a" "$LIBCXX_DIR/lib/libc++abi.a")
+# -lkandelo-mprotect: libc.a has no mprotect(). LLVMSupport's
+# Memory::allocateMappedMemory calls protectMappedMemory (mprotect) for
+# executable requests, and wasm-ld reaches it through FileOutputBuffer's
+# in-memory buffer, which asks only for read/write. The SDK's opt-in library
+# carries out read/write requests and refuses executable ones with ENOTSUP,
+# which LLVM reports as an error; none of these tools JIT. The archive member
+# is linked only into tools that call it.
+LINK_FLAGS=(-Wl,--threads=1 "$LIBCXX_DIR/lib/libc++.a" "$LIBCXX_DIR/lib/libc++abi.a" -lkandelo-mprotect)
 # CMAKE_DISABLE_PRECOMPILE_HEADERS works around a KandeloCallTypes
 # limitation: LLVM 23 precompiles headers by default, and a unit that
 # reuses a PCH gets different AST-side compiler facts (docs/sdk-guide.md,
