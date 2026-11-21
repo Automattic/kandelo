@@ -4362,5 +4362,116 @@
         "inputMedianMs": 12.15500009059906
       }
     }
+  },
+  "currentNormalApp760": {
+    "scope": "Method-qualified current-source normal-app pilot under concurrent memory/sustained tests; not accepted quiet performance comparison, not unique guest backing/reservation/native display latency or machine destroy proof. Boot image forwarded unchanged through context route and unregistered before samples.",
+    "kernelSha256": "1630584d60491267bc4c4681d8e00035043eaa2dc5e1b292bf66ee199d77b55d",
+    "browser": "153.0.8010.12",
+    "ordinaryImage": {
+      "url": "http://127.0.0.1:6386/@kandelo-partial/image.vfs.zst",
+      "status": 200,
+      "bytes": 777259,
+      "sha256": "e99c19bfb70b89ac75649f2da2beb06dcbf31c68bfe5d571f660fb62bf10bec2",
+      "receiptKind": "Exact network body forwarded unchanged to the actual app fetch before disposable image-owner retirement"
+    },
+    "groupedImage": {
+      "url": "http://127.0.0.1:6385/@kandelo-partial/image.vfs.zst",
+      "status": 200,
+      "bytes": 119429,
+      "sha256": "4b3bb368563d1dbd1e5b9b6aee92fc7351030256961ae7c7a7994eda7b832411",
+      "receiptKind": "Exact network body forwarded unchanged to the actual app fetch before disposable image-owner retirement"
+    },
+    "footprint": [
+      {
+        "phase": "one-visible",
+        "ordinaryMiB": 2330.798095703125,
+        "groupedMiB": 2475.376174926758,
+        "deltaMiB": 144.5780792236328,
+        "deltaPercent": 6.202943081606493
+      },
+      {
+        "phase": "two-tiled",
+        "ordinaryMiB": 2550.095634460449,
+        "groupedMiB": 2636.579734802246,
+        "deltaMiB": 86.48410034179688,
+        "deltaPercent": 3.391406156424215
+      },
+      {
+        "phase": "two-separated",
+        "ordinaryMiB": 2567.080009460449,
+        "groupedMiB": 2656.7047576904297,
+        "deltaMiB": 89.62474822998047,
+        "deltaPercent": 3.491311057687607
+      },
+      {
+        "phase": "two-retiled",
+        "ordinaryMiB": 2538.9238510131836,
+        "groupedMiB": 2667.1266326904297,
+        "deltaMiB": 128.2027816772461,
+        "deltaPercent": 5.049492982079218
+      },
+      {
+        "phase": "after-guest-exit-machine-still-live",
+        "ordinaryMiB": 2277.2193756103516,
+        "groupedMiB": 2379.203453063965,
+        "deltaMiB": 101.98407745361328,
+        "deltaPercent": 4.478447643028649
+      }
+    ],
+    "cpuSeconds": {
+      "ordinary": 16.796545000000002,
+      "grouped": 17.302887999999996
+    },
+    "performanceAcceptance": false
+  },
+  "currentNormalValidation767769": {
+    "runtimeCommit": "c85334be07250433dfa26f40c4aa3fe1685605d3",
+    "fullMemory741": "PASS: canonical,1574host,3Node,7Bun,18browser across three engines,zero skipped/flaky/unexpected browser cases",
+    "production763": "PASS: canonical,asset group,registry audit,strict types,bundle; image-owned desktop metadata",
+    "built769": {
+      "expected": 15,
+      "passed": 14,
+      "failed": 1,
+      "failure": "Chromium Freeciv ordinary data archive fetch; no client created",
+      "scummvmPass": 3,
+      "swayCapacityPass": 6,
+      "cagePass": 5
+    },
+    "network773": "Three fixed Chromium diagnostic repetitions PASS; no reproduction or fix of769 failure",
+    "ordinaryConformance767": {
+      "suiteExitCodes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "outerJobExit": 1,
+      "outerFailure": "porcelain guard detects untracked libc-test build/ output; pinned test revision and all tracked source unchanged",
+      "nodePosix": {
+        "pass": 174,
+        "xfail": 3,
+        "skip": 2
+      },
+      "browserPosix": {
+        "pass": 174,
+        "xfail": 3,
+        "skip": 2
+      },
+      "nodeLibc": {
+        "pass": 306,
+        "xfail": 17,
+        "listedFlakyPass": 1
+      },
+      "browserLibc": {
+        "pass": 307,
+        "xfail": 17
+      }
+    },
+    "sustained752": {
+      "chromium": "1200cycles PASS with actual Sway exit/cleanup",
+      "firefox": "464 completed cycles; next launch produced3Foot instead of2,FAIL; cause unknown",
+      "webkit": "running at recording"
+    },
+    "complete": false
   }
 }
