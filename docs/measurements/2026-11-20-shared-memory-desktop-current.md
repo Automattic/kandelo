@@ -1196,3 +1196,82 @@ Sway profile/VFS query of the normal partial image, rather than rejecting the
 documented profile URL. Run 758 passes its three selected capacity cases and
 strict types on all three engines. The other Sway cases were not selected by
 that invocation and are not newly claimed here.
+
+
+### Current production, memory and conformance results (2026-11-21)
+
+The unmodified full `./run.sh test browser-memory` gate (741) passes on
+runtime `c85334be07250433dfa26f40c4aa3fe1685605d3`: normal canonical
+preparation, 1,574 host tests in 60 files, three Node and seven Bun teardown
+cases, and eighteen browser cases across Chromium, Firefox and WebKit.
+There are no skipped, flaky or unexpected browser cases. HEAD, status and
+tracked-diff guards match. A nonfatal Firefox temporary-profile cleanup
+permission warning is retained; it is not a guest-memory release failure.
+
+The normal production build (763) passes canonical preparation, the
+unchanged machine-registry audit, strict types, the authenticated asset
+group and the production bundle. The packaging correction validates the
+full authored SDK inventory instead of synthesizing a desktop identity in
+the app. The same 119,429-byte partial image and kernel hashes recorded
+above are consumed by the built app; the eighteen programs remain separate
+lazy archives. No additional launch image is created.
+
+The built-app run (769) has fourteen passes and one failure: all three
+ScummVM cases, all six Sway/capacity cases and five of six Cage cases pass.
+Chromium's Freeciv case fails before client creation because its ordinary
+data archive fetch fails. Firefox and WebKit run Freeciv successfully.
+The corrected network diagnostic (773), fixed at three Chromium repetitions,
+passes gameplay, native Quit, physical Foot input and exact Cage cleanup
+without reproducing that download failure. The original failure remains
+unresolved; this is an intermittent result, not a clean full-suite pass.
+Diagnostic 771 had reached the game but incorrectly tried a shell command
+before quitting it. Its failure is retained separately from the real fetch
+failure. No browser-engine defect is established.
+
+Current ordinary conformance (767) completes all four default inventories:
+
+| Host | Suite | Pass | Expected failure | Standard skip | Listed flaky pass | Failure/timeout |
+|---|---|---:|---:|---:|---:|---:|
+| Node | POSIX | 174 | 3 | 2 | 0 | 0 |
+| Chromium | POSIX | 174 | 3 | 2 | 0 | 0 |
+| Node | libc | 306 | 17 | 0 | 1 | 0 |
+| Chromium | libc | 307 | 17 | 0 | 0 | 0 |
+
+Each suite exits zero. The outer job exits one because its final porcelain
+status guard detects the libc submodule's generated, untracked `build/`
+directory. Audit confirms the parent HEAD and binary diff are identical,
+the upstream test revision remains
+`790f94c7b6feb8ade25868c10fba46233f783a0b`, its tracked diff is empty, and all
+325 new files are under `build/`. This is ordinary regression evidence;
+it does not establish full grouped execution conformance. The raw job
+failure and the guard audit are retained without changing expectations.
+
+The fixed 1,200-cycle-per-engine sustained run (752) passes Chromium,
+including real Sway exit and initialized zero-Foot cleanup. Firefox completes
+464 cycles, then one launch shortcut leaves three Foot processes and shells
+where exactly two were expected. The assertion fails after its unchanged
+deadline. WebKit is still running at this recording. Repeated input and
+duplicate process creation remain hypotheses; neither is established.
+The original failed run remains retained while a separate fixed-length
+Firefox diagnostic records actual DOM key transitions around launches.
+This loop does not measure unique backing, reservation or whole-machine
+memory reclamation.
+
+The current-source resource pilot (760) used Chromium 153.0.8010.12, two fresh
+browser parents, the normal ordinary/grouped partial images and the same
+Sway/Foot workload. It ran under concurrent validation load and is a method
+pilot, not the required quiet alternating comparison. Exact image bytes were
+forwarded unchanged to the app; interception ended before sampling. The
+owned-process macOS footprint includes GPU and shared-region accounting.
+
+| Two-terminal workload | Ordinary | Shared group |
+|---|---:|---:|
+| Tiled browser footprint (MiB) | 2,550.10 | 2,636.58 |
+| CPU seconds for fifteen physical shell commands and fresh file reads | 16.7965 | 17.3029 |
+
+The grouped footprint is 86.48 MiB (3.39%) higher in this pilot. No net memory,
+CPU or latency benefit is claimed. Unique guest backing, reserved capacity,
+input/presentation latency, quiet alternating samples, sustained all-engine
+completion and the target-branch benchmark comparison remain open gates.
+Raw inputs, logs, screenshots and guard audits for these runs are retained
+under `.context/shared-desktop-current-753/` in the workspace archive.
