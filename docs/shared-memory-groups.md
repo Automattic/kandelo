@@ -251,10 +251,10 @@ sustained lifecycle and resource acceptance.
 The same config checks twelve actual Foot processes and their shell children,
 physical Ctrl+D exit, replacement by a new terminal PID and guest-driven Sway
 exit. The final zero-terminal check requires init PID 1 in the same process
-snapshot, so a transient loading table cannot satisfy cleanup. An earlier run
-of this bounded check passed all three engines. The current rerun passes Chromium and WebKit,
-but Firefox times out at the final Sway exit after reopening a terminal; see
-the current measurement record. Twelve is a regression workload, not a capacity
+snapshot, so a transient loading table cannot satisfy cleanup. The check waits for an actual Bash
+prompt in the focused tile before shell input, rather than treating process
+creation as input readiness. It passes all three engines. Earlier Firefox exit
+and diagnostic focus failures remain in the current measurement record. Twelve is a regression workload, not a capacity
 promise or a configured maximum.
 
 Grouped child exit notification follows the same execution-stop boundary as

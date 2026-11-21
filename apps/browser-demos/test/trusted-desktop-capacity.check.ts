@@ -3,6 +3,7 @@ import { expect, type Page } from '../playwright-test';
 import { waitForMachineBootInput } from './support/kandelo-machine';
 import { setInternalsOpen } from './support/dock';
 import { typePhysicalText } from './support/physical-typing';
+import { waitForSwayFootPrompt } from './support/sway-foot-prompt';
 
 // Selected only by the explicit trusted-preview config, never ordinary builds.
 test.use({ headless: true });
@@ -62,6 +63,7 @@ test('trusted desktop keeps twelve terminals usable and reuses closed capacity',
       await page.keyboard.press('Alt+Enter');
       twelve = await footPids(count);
     }
+    await waitForSwayFootPrompt(page, canvas(page), 12);
     await info.attach('twelve-terminals.png', { body: await canvas(page).screenshot(), contentType: 'image/png' });
     // Input must reach a live shell: Ctrl+D really exits the focused terminal.
     await page.keyboard.press('Control+d');
@@ -72,6 +74,7 @@ test('trusted desktop keeps twelve terminals usable and reuses closed capacity',
     expect(reopened.filter(pid => !twelve.includes(pid))).toHaveLength(1);
     for (const pid of eleven) expect(reopened).toContain(pid);
 
+    await waitForSwayFootPrompt(page, canvas(page), 12);
     // A real guest IPC command must still be able to start at this occupancy.
     await typePhysicalText(page, 'swaymsg exit\n', { delay: 40 });
     await expect.poll(async () => Number(await page.locator('.kmachine-primary .kmodeset-surface')
