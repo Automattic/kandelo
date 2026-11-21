@@ -3,6 +3,7 @@ policy = "source-only-v1"
 dependency_only = [
   "bytepath-source",
   "genesis-plus-gx-source",
+  "go-bootstrap-source",
   "snkrx-source",
   "stb-source",
   "libyaml-source",
@@ -469,6 +470,10 @@ class = "platform"
 [[packages]]
 name = "glibmm"
 class = "platform"
+
+[[packages]]
+name = "go-hello"
+class = "user-software"
 
 [[packages]]
 name = "gobject-callback-tests"
