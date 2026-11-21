@@ -1,0 +1,46 @@
+id = "BINARYEN-133-CONSTRAINT-ANALYSIS"
+kind = "bug"
+status = "confirmed"
+runtimes = ["wasm-opt"]
+summary = "Binaryen 133's constraint-analysis pass (run at -O3/-O4/-Os/-Oz) aborts with !constraints.provesEverything() on contradictory constraint sets, e.g. FFmpeg's ff_spatial_dwt built by LLVM 23"
+reports = "human-only"
+
+[[repro]]
+kind = "script"
+entry = "run.sh"
+targets = ["wasm-opt"]
+self_judging = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "wasm-opt"
+version = "wasm-opt version 133"
+os = "macos"
+reproduced = true
+date = 2026-11-15
+source = "suite"
+released = true
+
+[[sites_without_tags]]
+path = "docs/sdk-guide.md"
+note = "Prose: the SDK's post-link wasm-opt and the instrumenter's pass skip constraint-analysis; links this entry."
+
+[[sites_without_tags]]
+path = "docs/fork-instrumentation.md"
+note = "Prose: the instrumenter's post-instrumentation wasm-opt skips constraint-analysis; links this entry."
+
+[[sites_without_tags]]
+path = "docs/architecture.md"
+note = "Prose: the fork-instrumentation pipeline's post-instrumentation wasm-opt skips constraint-analysis; links the future-improvements entry."
+
+[[sites_without_tags]]
+path = "docs/porting-guide.md"
+note = "Prose: the instrumenter runs wasm-opt -Os skipping constraint-analysis; links the future-improvements entry."
+
+[[sites_without_tags]]
+path = "packages/registry/git/build-git.sh"
+note = "Build-script comment describing the instrumenter's -Os pass with constraint-analysis skipped; a tag here would only add a cache-key change."
+
+[[sites_without_tags]]
+path = "docs/future-improvements.md"
+note = "Prose: \"Revisit Binaryen's constraint-analysis pass\", the decision to skip the pass, its measurements and the triggers and criteria for re-enabling it."

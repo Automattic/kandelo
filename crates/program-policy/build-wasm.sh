@@ -18,7 +18,11 @@ done
 cargo build --release -p kandelo-program-policy --bin kandelo-program-policy-module \
     --features standalone --target wasm32-unknown-unknown -Z build-std=core,alloc
 SOURCE="target/wasm32-unknown-unknown/release/kandelo-program-policy-module.wasm"
-wasm-opt -Oz --enable-bulk-memory "$SOURCE" -o "$SOURCE.opt"
+# [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] -Oz schedules
+# Binaryen 133's constraint-analysis pass, which aborts on some LLVM 23 code
+# and measured no worthwhile win; Kandelo skips it everywhere until a
+# re-measured decision (docs/future-improvements.md) says otherwise.
+wasm-opt -Oz --skip-pass=constraint-analysis --enable-bulk-memory "$SOURCE" -o "$SOURCE.opt"
 node --input-type=module - "$SOURCE.opt" <<'JS'
 import { readFileSync } from "node:fs";
 const module = new WebAssembly.Module(readFileSync(process.argv[2]));
