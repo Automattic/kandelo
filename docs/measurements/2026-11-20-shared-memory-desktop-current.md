@@ -38,7 +38,7 @@ resources. See [the option contract](../shared-memory-groups.md#desktop-first-op
 | Current bounded validation | Result |
 |---|---|
 | Normal app: clock/input/workspaces/tiling, exit and CPU-renderer restart | Passed on Chromium, Firefox and WebKit |
-| Normal app: twelve actual Foots and shell children, physical close and new-PID reopen | Passed on all three engines; final zero-process cleanup oracle requires correction below |
+| Normal app: twelve actual Foots and shell children, physical close and new-PID reopen | Passed on all three engines; initialized process-table cleanup rerun also passes below |
 | Public SDK: 26 simultaneously live children followed by 66 simultaneously live pthreads, 512 MiB backing | Passed on Node and all three browser engines |
 | Full Node SDK selection, including copied usage inspection | 63 passed, no skips |
 | Public browser VFS launch/identity/refusal/DRM/inspection selection | 18 passed, no skips |
@@ -119,16 +119,41 @@ file-content and close oracles remain; earlier failures are retained. A new
 normal bare-root WebKit sustained run is in progress without the evdev observer
 or derived diagnostic image. Short controls are not sustained acceptance.
 
-A subsequent audit found that the final zero-Foot process check could accept a
-transient empty Inspector table while it was loading. Counts requiring one or
-two Foots, including the extra-terminal failures, do not have that false-zero
-path. Final cleanup claims from that fixture are withdrawn pending a check
-that first requires a real initialized process snapshot. A corrected bounded
-Cage/Foot Chromium check requires init PID 1 and verifies that the known Cage,
-Foot and shell PIDs are absent after exit. This does not establish sustained
-Sway cleanup or whole-machine backing reclamation. Both sustained jobs remain
-live but have stopped advancing at their latest checkpoints; no terminal result
-or cause has been established.
+A subsequent audit found that a final zero-Foot process check could accept a
+transient empty Inspector table while loading. Nonzero-count failures are
+unaffected. The corrected maintained capacity check requires init PID 1 in
+the same snapshot: twelve actual Foots/shells, physical close and new-PID
+reopen, guest Sway exit and initialized zero-Foot/shell cleanup now pass on
+all three engines (run 644). This is bounded terminal cleanup, not proof of
+whole-machine backing reclamation.
+
+The maintained Cage suite passes six cases across Chromium, Firefox and
+WebKit (run 643). It proves physical exact-shell-PID output, initialized
+Cage/Foot/shell exit and KMS owner zero, plus Freeciv menu Quit, new-PID
+relaunch, actual server child, rendered lobby/world, stable no-input controls,
+physical end-turn input, native Options/Quit and both client/server retirement,
+then restored Foot input and graphical exit. Strict TypeScript checks pass.
+Retain the earlier config initialization failure (639) and Chromium shortcut
+Quit failure (641); the latter's cause is unproven. The final fixture opens
+and observes the native Options dialog before requesting Quit.
+
+The two-hour grouped sustained runs 584 and 596 timed out. Host power logs
+record clamshell sleep at 21:58:56 and wake at 22:00:27 near their last progress
+checkpoints. This is correlation, not a proven cause or browser defect.
+The WebKit failure screenshot shows the entire page white. Its final page
+evaluation failed after context closure, losing the final JSON. The grouped
+584 observer file contains only an initial, uncommitted snapshot; its automatic
+attachments were overwritten by the ordinary arm's shared output directory.
+Retained raw reports and checkpoints do not establish failure event timing.
+No sustained acceptance follows from these interrupted runs. Further runs
+need distinct output directories, phase/error persistence before page awaits
+and a recorded host sleep window.
+
+The current full `./run.sh test browser-memory` attempt (634, head 64652cc29e)
+failed in normal product preparation before runtime checks: the fresh
+worktree's declared Rust libc submodule was uninitialized. It is now initialized
+to the tracked commit, but a full successful retry is still required. This is
+provisioning repair, not a waived memory gate.
 
 The normal-app captured-glyph latency method now passes on both ordinary and
 grouped Chromium: actual `a`/`b` glyph calibration, three no-input captures,
