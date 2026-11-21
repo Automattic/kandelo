@@ -1,9 +1,15 @@
+Populate import.meta.{url,dirname,require} through node-compat.
+
+ESR 153 rebase: populateImportMeta now receives the module record instead of
+its private value; the helper is placed before it and called with the same
+resolved path.
+
 --- a/js/src/shell/ModuleLoader.cpp
 +++ b/js/src/shell/ModuleLoader.cpp
-@@ -185,6 +185,77 @@
-   }
+@@ -361,6 +361,77 @@
  
-   return loadAndParse(cx, path, moduleRequest);
+   return JS::FinishLoadingImportedModule(cx, referrer, moduleRequest, payload,
+                                          module, false);
 +}
 +
 +// Kandelo: populate import.meta.{url,dirname,require} for a native ES module by
@@ -78,7 +84,7 @@
  }
  
  bool ModuleLoader::populateImportMeta(JSContext* cx,
-@@ -204,9 +275,18 @@
+@@ -381,9 +452,18 @@
      }
    }
  

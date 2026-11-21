@@ -1,16 +1,20 @@
-diff --git a/mfbt/RandomNum.cpp b/mfbt/RandomNum.cpp
+Use <sys/random.h> for GRND_NONBLOCK on wasm32.
+
+The Kandelo sysroot provides the POSIX/musl <sys/random.h> but not the Linux
+UAPI <linux/random.h>.
+
 --- a/mfbt/RandomNum.cpp
 +++ b/mfbt/RandomNum.cpp
-@@ -35,7 +35,11 @@
+@@ -32,7 +32,11 @@
  #endif
-
+ 
  #if defined(__linux__)
+-#  include <linux/random.h>  // For GRND_NONBLOCK.
 +#  if defined(__wasm32__)
 +#    include <sys/random.h>  // For GRND_NONBLOCK.
 +#  else
--#  include <linux/random.h>  // For GRND_NONBLOCK.
 +#    include <linux/random.h>  // For GRND_NONBLOCK.
 +#  endif
  #  include <sys/syscall.h>   // For SYS_getrandom.
-
+ 
  // Older glibc versions don't define SYS_getrandom, so we define it here if

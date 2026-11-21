@@ -1,12 +1,17 @@
-diff --git a/build/rust/getrandom/lib.rs b/build/rust/getrandom/lib.rs
+Provide the getrandom crate's custom backend on wasm32-unknown-unknown.
+
+The Rust side builds for wasm32-unknown-unknown (see 0002), where the
+getrandom 0.3 crate has no OS backend. The build selects the custom backend
+with --cfg getrandom_backend="custom"; this supplies
+__getrandom_v03_custom by calling the Kandelo libc getrandom(2), failing
+loudly rather than returning partial data.
+
 --- a/build/rust/getrandom/lib.rs
 +++ b/build/rust/getrandom/lib.rs
-@@ -1,5 +1,39 @@
- /* This Source Code Form is subject to the terms of the Mozilla Public
+@@ -2,4 +2,38 @@
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
--
-+
+ 
 +#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 +use core::ffi::c_void;
 +
