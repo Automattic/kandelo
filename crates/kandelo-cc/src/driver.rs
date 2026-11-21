@@ -7,7 +7,8 @@ use crate::arch::{Language, WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
-    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, filter_args,
+    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, default_visibility_flags,
+    filter_args,
     host_imports_allowance, infer_thread_slot_declaration, join, link_flags,
     main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
     shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
@@ -362,13 +363,15 @@ pub fn working_directory_from_clang_trace(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Glue {
     /// Linked as objects ahead of crt1.o and the caller's inputs, in this
-    /// order: the syscall channel and compiler-rt builtins, the dlopen loader
-    /// when the link asks for it, and the C++ runtime entry
-    /// (`cxxrt_entry.cpp`) when the link includes libc++abi.
+    /// order: the syscall channel and compiler-rt builtins, and the C++
+    /// runtime entry (`cxxrt_entry.cpp`) when the link includes libc++abi.
     pub leading: Vec<String>,
-    /// The minimal C++ runtime fallback (`cxxrt.c`), linked lazily after the
-    /// caller's inputs and the C++ libraries: a member is used only when
-    /// nothing earlier defines what it provides.
+    /// Linked lazily after the caller's inputs and the C++ libraries, ahead
+    /// of libc.a: a member is used only when the program needs what it
+    /// defines and nothing earlier defines it. These are the minimal C++
+    /// runtime fallback (`cxxrt.c`) and the dlopen loader (`dlopen.c`),
+    /// which a program gets when it calls dlopen, dlsym, dlclose or dlerror,
+    /// with or without -ldl, in place of the static stubs in musl's libc.a.
     pub fallback: Vec<String>,
 }
 
@@ -376,18 +379,15 @@ pub struct Glue {
 pub const CXX_ENTRY_GLUE: &str = "cxxrt_entry.cpp";
 
 /// Link-time libc glue sources, in link order.
-pub fn glue_sources(toolchain: &Toolchain, link_dl: bool, cxx_runtime: bool) -> Glue {
+pub fn glue_sources(toolchain: &Toolchain, cxx_runtime: bool) -> Glue {
     let mut leading = vec!["channel_syscall.c", "compiler_rt.c"];
-    if link_dl {
-        leading.push("dlopen.c");
-    }
     if cxx_runtime {
         leading.push(CXX_ENTRY_GLUE);
     }
     let path = |name: &&str| join(&toolchain.glue_dir, name);
     Glue {
         leading: leading.iter().map(path).collect(),
-        fallback: ["cxxrt.c"].iter().map(path).collect(),
+        fallback: ["cxxrt.c", "dlopen.c"].iter().map(path).collect(),
     }
 }
 
@@ -433,6 +433,14 @@ pub fn build_cxx_glue_compile_args(
 
 fn glue_compile_base(toolchain: &Toolchain, arch: WasmArch) -> Vec<String> {
     let mut args = compile_flags(arch);
+    // The glue is the platform's private implementation (the syscall
+    // channel, the fork entry, compiler builtins), so it stays hidden
+    // (Clang's WebAssembly default, which user code compiled for an
+    // executable does not get; see default_visibility_flags): a program's
+    // -rdynamic does not export it, and exporting therefore does not keep
+    // fork, and with it the kernel's fork import, in a program that never
+    // calls fork. The dlopen loader marks its public interface default.
+    args.push("-fvisibility=hidden".into());
     // The glue is code of every executable, so its facts must be in the link
     // like any other object's.
     if let Some(plugin) = &toolchain.calltypes_plugin {
@@ -527,6 +535,7 @@ fn build_clang_args_internal(
     // that compile glue, and response-hidden compile jobs found by the trace.
     if may_run_compile {
         args.extend(compile_flags(arch));
+        args.extend(default_visibility_flags(&parsed));
         if compiles_cxx(language, &filtered) {
             args.extend(cxx_compile_flags());
         }
@@ -637,11 +646,7 @@ fn build_clang_args_internal(
             }
             let glue = match glue_objects {
                 Some(objects) => objects.clone(),
-                None => glue_sources(
-                    toolchain,
-                    parsed.link_dl,
-                    links_cxx_runtime(language, &filtered),
-                ),
+                None => glue_sources(toolchain, links_cxx_runtime(language, &filtered)),
             };
             args.extend(glue.leading);
             let lib = join(&toolchain.sysroot, "lib");
@@ -659,6 +664,9 @@ fn build_clang_args_internal(
             // supplies only what they did not: libc++'s operator new, which
             // throws std::bad_alloc, is weak like the fallback's, so a
             // fallback object linked earlier would win and abort instead.
+            // The dlopen loader is lazy like libc's own members: a program
+            // that never calls dlopen gets none of it, and one that does
+            // gets it ahead of libc.a's static stubs.
             if !glue.fallback.is_empty() {
                 args.push("-Wl,--start-lib".into());
                 args.extend(glue.fallback);
@@ -769,11 +777,7 @@ pub fn compile_executable_glue(
     }
     let define = executable_thread_slot_define(user_args, arch)?;
     let dir = TempDir::new("kandelo-glue-")?;
-    let sources = glue_sources(
-        toolchain,
-        parsed.link_dl,
-        links_cxx_runtime(language, &filtered),
-    );
+    let sources = glue_sources(toolchain, links_cxx_runtime(language, &filtered));
     let (cxx_sources, c_sources): (Vec<String>, Vec<String>) = sources
         .leading
         .iter()

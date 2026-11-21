@@ -369,6 +369,11 @@ fi
 # 2. Write config.mak
 # ---------------------------------------------------------------
 echo "==> Writing config.mak..."
+# -fvisibility=default: musl's public interface has default visibility, as
+# on every Unix, and its internals are marked hidden in its own sources.
+# Clang's WebAssembly default is hidden, which kept a plugin host's
+# -rdynamic from exporting the libc functions its modules call. The static
+# library's code is the same either way.
 cat > "$MUSL_DIR/config.mak" << EOF
 ARCH = $ARCH
 srcdir = .
@@ -376,7 +381,7 @@ prefix = $SYSROOT
 CC = $CC --target=$TARGET
 AR = $AR
 RANLIB = $RANLIB
-CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math $CALLTYPES_FLAGS
+CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math -fvisibility=default $CALLTYPES_FLAGS
 CFLAGS_AUTO =
 LDFLAGS_AUTO =
 LIBCC =

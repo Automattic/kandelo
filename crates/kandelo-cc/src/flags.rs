@@ -553,6 +553,34 @@ pub fn link_flags(
 }
 
 /// Link flags for building shared Wasm libraries (.so side modules).
+/// The visibility a compile gets unless the caller chooses one.
+///
+/// Unix visibility for code that can only end up in an executable. Clang
+/// gives WebAssembly symbols hidden visibility unless told otherwise, so
+/// -rdynamic and -Wl,--export-dynamic, which export default-visibility
+/// symbols, exported nothing a plugin could call. An executable's code is
+/// the same either way: only its export set under --export-dynamic
+/// changes. A caller's own -fvisibility, later on the command line, wins.
+///
+/// Position-independent compiles (-fPIC, -fpic, -shared) keep Clang's
+/// hidden default, because such code may become a side module: wasm-ld
+/// imports a side module's own weak default-visibility definitions (inline
+/// functions, template instances, implicit virtual destructors) so another
+/// module's copy can win, and the loader resolves imports only against the
+/// program and other modules. Hidden, the module binds them to its own
+/// copies, as it always has. PIC code linked into an executable is
+/// therefore not exported unless it declares default visibility.
+pub fn default_visibility_flags(parsed: &ParsedArgs) -> Vec<String> {
+    let position_independent = parsed.pic
+        || parsed.shared
+        || parsed.forwarded_args.iter().any(|arg| arg == "-fpic");
+    if position_independent {
+        Vec::new()
+    } else {
+        vec!["-fvisibility=default".to_string()]
+    }
+}
+
 pub fn shared_link_flags() -> Vec<String> {
     [
         // Side modules keep --allow-undefined: their undefined symbols are
@@ -586,7 +614,6 @@ const IGNORED_EXACT: &[&str] = &[
     // regardless of command-line order. Meson emits them.
     "-Wl,--start-group",
     "-Wl,--end-group",
-    "-rdynamic",
     "-Wl,-Bsymbolic",
     "-Wl,-z,noexecstack",
     "-Wl,-z,text",
@@ -639,6 +666,14 @@ pub fn filter_args(args: &[String], arch: WasmArch) -> FilterResult {
         if IGNORED_EXACT.contains(&arg.as_str())
             || IGNORED_PREFIXES.iter().any(|p| arg.starts_with(p))
         {
+            i += 1;
+            continue;
+        }
+        // -rdynamic: export the executable's symbols to the modules it
+        // loads. wasm-ld spells that --export-dynamic; it exports
+        // default-visibility symbols, which compile_flags makes the default.
+        if arg == "-rdynamic" {
+            filtered.push("-Wl,--export-dynamic".into());
             i += 1;
             continue;
         }

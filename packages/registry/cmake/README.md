@@ -18,16 +18,26 @@ libraries work. `patches/0001-kandelo-platform.patch` names the machine
 `CMAKE_SYSTEM_PROCESSOR` from `uname -m` (`wasm32`), and adds
 `Modules/Platform/Kandelo.cmake` for native builds:
 
-- **Static libraries only.** A Kandelo executable cannot be linked
-  against a shared library (`cc -shared` builds side modules for
-  `dlopen`, nothing more; see `docs/sdk-guide.md`). The platform sets
-  `TARGET_SUPPORTS_SHARED_LIBS` false, so `add_library(SHARED)` and
-  `add_library(MODULE)` follow policy CMP0164: a project requiring
-  CMake 3.30 or later stops with "the target platform does not support
-  dynamic linking"; an older one gets CMake's warning and a static
-  library. `find_library()` finds only `.a` files.
+- **Modules, not shared libraries.** A Kandelo executable cannot be
+  linked against a shared library, but its `dlopen` loads the side
+  modules `cc -shared` builds (see "Plugin modules" in
+  `docs/sdk-guide.md`). The platform sets `TARGET_SUPPORTS_SHARED_LIBS`
+  false, so `add_library(SHARED)` follows policy CMP0164: a project
+  requiring CMake 3.30 or later stops with "the target platform does not
+  support dynamic linking"; an older one gets CMake's warning and a
+  static library. It also sets `TARGET_SUPPORTS_MODULE_LIBS`, a global
+  property this patch adds to `add_library()`, so `add_library(MODULE)`
+  builds a side module, `lib<name>.so`. As on every platform, no target
+  can link against a `MODULE` library. `find_library()` finds only `.a`
+  files.
+- `ENABLE_EXPORTS` on an executable adds `-Wl,--export-dynamic`
+  (`CMAKE_EXE_EXPORTS_<LANG>_FLAG`), which exports its symbols, and the
+  libc functions it links, to the modules it loads (see "Plugin modules"
+  in `docs/sdk-guide.md`).
+- `CMAKE_DL_LIBS` is empty: `dlopen` is in libc. The SDK links its loader
+  into any program that calls it.
 - `UNIX` is set and the usual Unix search prefixes (`/usr/local`, `/usr`)
-  apply. `CMAKE_DL_LIBS` is empty: `dlopen` is in libc.
+  apply.
 - Executables have no suffix, as the guest `cc` writes them.
 
 Kandelo is not Linux, and CMake does not say it is. `CMAKE_SYSTEM_NAME` is

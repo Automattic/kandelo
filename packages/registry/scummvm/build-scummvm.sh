@@ -196,8 +196,9 @@ chmod +x "$SDL_SHIM_PREFIX/bin/sdl2-config"
 # game detection stays in the main program, so the launcher recognizes any
 # game without loading an engine. ScummVM's Linux plugin mode (patch 0001
 # maps the host there) links plugins with -shared and the program with
-# -export-dynamic, and adds -ldl so dlopen is Kandelo's real loader rather
-# than musl's stub. Three things differ on Kandelo:
+# -export-dynamic, and adds -ldl (which Kandelo accepts but does not need:
+# the SDK links its dlopen loader into any program that calls dlopen).
+# Three things differ on Kandelo:
 #
 # - UNCACHED_PLUGINS is ScummVM's own mode for ports that cannot afford to
 #   keep every engine loaded (Emscripten, Dingux): a launch opens only the
