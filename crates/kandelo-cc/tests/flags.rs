@@ -8,7 +8,7 @@ use kandelo_cc::flags::{
     DEFAULT_MAIN_THREAD_STACK_SIZE, MAX_EXECUTABLE_MEMORY_SIZE, MAX_RESPONSE_FILE_EXPANSIONS,
     ResponseFileContents, THREAD_SLOT_NONE, THREAD_SLOT_USE_HOST_DEFAULT, compile_flags,
     compiles_cxx, filter_args, infer_thread_slot_declaration, link_flags, main_thread_stack_size,
-    needs_linking, parse_args, shared_link_flags,
+    needs_linking, parse_args, shared_link_flags, default_visibility_flags,
 };
 use std::collections::HashMap;
 
@@ -324,15 +324,27 @@ fn compile_flags_include_target_and_wasm_features() {
         "-D__unix=1",
         "-matomics",
         "-mbulk-memory",
-        "-fvisibility=default",
     ] {
         assert!(flags.iter().any(|f| f == flag), "{flag}");
     }
 }
 
 #[test]
-fn side_modules_bind_their_own_symbols_locally() {
-    assert!(shared_link_flags().iter().any(|f| f == "-Wl,-Bsymbolic"));
+fn only_executable_code_gets_default_visibility() {
+    let parse = |args: &[&str]| {
+        parse_args(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>()).unwrap()
+    };
+    assert_eq!(
+        default_visibility_flags(&parse(&["-c", "main.c"])),
+        vec!["-fvisibility=default".to_string()]
+    );
+    // Code that may become a side module keeps Clang's hidden default, so
+    // wasm-ld does not turn its own inline and template definitions into
+    // imports.
+    for pic in [&["-fPIC", "-c", "m.c"][..], &["-fpic", "-c", "m.c"], &["-shared", "m.c"]] {
+        assert!(default_visibility_flags(&parse(pic)).is_empty(), "{pic:?}");
+    }
+    assert!(!shared_link_flags().iter().any(|f| f == "-Wl,-Bsymbolic"));
 }
 
 #[test]
