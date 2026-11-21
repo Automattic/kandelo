@@ -138,6 +138,51 @@ these checks. The evdev observer's initial blocking-read failure is retained;
 its normal nonblocking poll/read consumer does not resolve the documented
 blocking evdev-read gap.
 
+
+### Exploratory normal-app resource pilot
+
+A single fresh-browser ordinary/grouped Chromium pair validates the collection
+path at develop `d2ff5af69e` and runtime `6ba046c7f9`. It ran under concurrent
+builds and sustained tests, with load averages around 15–20. These are raw
+pilot observations, not a fair acceptance comparison or evidence of a memory
+benefit. Each phase uses macOS's shared-region-adjusted footprint total for the
+owned browser family, including GPU and utility processes; every PID/identity
+and report-schema guard passes. No forced GC, syscall tracing or CPU sampling
+runs in the workload. The six-package partial and ordinary/grouped normal app
+paths above are used without an observer program or runtime source rewriting.
+
+| Observed phase | Ordinary MiB | Grouped MiB |
+|---|---:|---:|
+| One visible terminal | 2,378.0 | 2,517.2 |
+| Two tiled terminals | 2,473.7 | 2,684.7 |
+| Two terminals on separate workspaces | 2,514.7 | 2,683.5 |
+| Two terminals retiled | 2,496.6 | 2,682.6 |
+| After guest Sway exit, login machine still live | 2,158.4 | 2,405.4 |
+
+Fifteen physical shell commands, each followed by a fresh Inspector proof-file
+read, consume 17.776/18.533 browser-family CPU seconds over 14.158/14.132 elapsed
+seconds respectively. CPU inventories remain stable, and page/memory-boundary
+errors are empty. This measures the normal app workflow, including Inspector;
+it is neither a kernel-only microbenchmark nor input/presentation latency.
+Guest exit does not destroy the machine: the final row cannot prove backing
+reclamation. Independent HTTP receipts record observed same-origin asset URLs;
+they are not hashes of the browser-consumed response bodies. The initial
+collection-hook failure is retained alongside the passing pilot.
+
+The higher observed grouped footprint remains a material cost to investigate.
+The pool clears allocated pages and grouped forks copy all private pages. An
+isolated disposable-Worker Node screen separates allocation from verification:
+reading every word can itself make fresh shared pages resident. In its 128 MiB
+case, an untouched allocation uses about 27 MiB before verification and 155 MiB
+after; clearing or scanning it uses about 155 MiB beforehand. Sparse copy uses
+about 160 MiB before verification against 283 MiB for dense copy, with a CPU
+tradeoff. These private-memory operations establish neither application savings
+nor the cause of this desktop pilot's difference. No allocator/fork change has
+been made on that evidence. Fair alternating desktop measurements and complete
+cross-host validation remain required. Raw evidence and source are retained in
+`.context/shared-desktop-readiness-592/` and
+`.context/shared-desktop-allocation-601/`.
+
 ## Bitmap handoff correction
 
 The user's screen recording confirms visible scene blanking at 1280×720 while
