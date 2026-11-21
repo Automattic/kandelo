@@ -251,8 +251,10 @@ sustained lifecycle and resource acceptance.
 The same config checks twelve actual Foot processes and their shell children,
 physical Ctrl+D exit, replacement by a new terminal PID and guest-driven Sway
 exit. The final zero-terminal check requires init PID 1 in the same process
-snapshot, so a transient loading table cannot satisfy cleanup. This bounded
-check passes on all three engines; see the current measurement record. Twelve is a regression workload, not a capacity
+snapshot, so a transient loading table cannot satisfy cleanup. An earlier run
+of this bounded check passed all three engines. The current rerun passes Chromium and WebKit,
+but Firefox times out at the final Sway exit after reopening a terminal; see
+the current measurement record. Twelve is a regression workload, not a capacity
 promise or a configured maximum.
 
 Grouped child exit notification follows the same execution-stop boundary as
@@ -292,9 +294,12 @@ Run `freeciv` or `scummvm-static` from Foot. `scummvm-static-play GAME` uses the
 existing SHA-256-pinned freeware catalog through guest curl and unzip.
 ScummVM retains the ordinary package's fourteen-engine selection, including
 SCUMM v7/v8, using upstream static engines because grouped dynamic side modules
-remain unsupported. The launcher passes on Chromium, Firefox and WebKit;
-ScummVM gameplay is still unproven. Compatibility is an SDK build requirement,
-not an app certification gate before experiments.
+remain unsupported. The launcher and God of Thunder gameplay, physical
+movement, native Quit with status 0, return to Foot and Cage cleanup pass on
+Chromium, Firefox and WebKit.
+Other games, audio and sustained ScummVM operation remain unproven.
+Compatibility is an SDK build requirement, not an app certification gate
+before experiments.
 
 The package also registers its variants under
 `/usr/libexec/kandelo/shared-desktop/`. Canonical ordinary images retain their
@@ -321,6 +326,22 @@ KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6383/ \
   apps/browser-demos/node_modules/.bin/playwright test \
   --config apps/browser-demos/playwright.trusted-cage.config.ts
 ```
+
+The separate ScummVM regression runs the actual verified game download,
+menus, movement and native Quit, then proves Foot input and exact Cage cleanup:
+
+```sh
+scripts/dev-shell.sh env KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6385/ \
+  apps/browser-demos/node_modules/.bin/playwright test \
+  --config apps/browser-demos/playwright.trusted-scummvm.config.ts
+```
+
+It requires network access to the pinned freeware catalog. Failed downloads,
+missing outputs and incomplete game or exit checks fail this explicit run.
+It checks the consumed kernel response against the normal local resolver,
+uses authored scene masks and full-color readiness to reject intro fades,
+and refreshes actual file contents until the shell publishes status 0.
+This is bounded gameplay evidence, without an audio or performance claim.
 
 This check requires the normal package-backed partial image. It uses a fixed
 1280×840 viewport and unit display scale, validates the rendered prompt before
