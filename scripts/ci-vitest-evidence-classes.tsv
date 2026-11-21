@@ -175,6 +175,7 @@ host/test/fork-replay-gate.test.ts	source-only
 host/test/fork-replay-host-parity.test.ts	source-only
 host/test/fork-resume-catalog.test.ts	source-only
 host/test/fork-save-buffer-overrun.test.ts	source-only
+host/test/fork-share-memory.test.ts	prepared-product
 host/test/fork-side-module-contract.test.ts	source-only
 host/test/fork-static-root-catalog.test.ts	source-only
 host/test/fork-unwind-transport.test.ts	source-only
@@ -323,6 +324,7 @@ host/test/man-shell-lazy-archive.test.ts	prepared-product
 host/test/mariadb-image-helpers.test.ts	prepared-product
 host/test/mariadb-test-source-copy.test.ts	prepared-product
 host/test/masked-wait-wake.test.ts	prepared-product
+host/test/memory-instrument.test.ts	prepared-product
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
 host/test/mkdir-existing-directory.test.ts	prepared-product
@@ -414,6 +416,8 @@ host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
+host/test/process-address-space.test.ts	source-only
+host/test/process-data-view.test.ts	source-only
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-generation-observation.test.ts	source-only

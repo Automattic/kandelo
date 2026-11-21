@@ -6,6 +6,7 @@ import {
   createCentralizedKernelWorkerTestDouble, CentralizedKernelWorker
 } from "../src/kernel-worker";
 import { WASM_PAGE_SIZE } from "../src/constants";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
@@ -33,6 +34,7 @@ interface TestChannel {
   readonly pid: number;
   readonly channelOffset: number;
   readonly memory: WebAssembly.Memory;
+  readonly addressSpace: ProcessAddressSpace;
   i32View: Int32Array;
   consecutiveSyscalls: number;
   handling?: boolean;
@@ -78,6 +80,7 @@ function makeCloneHarness(
     pid: PID,
     channelOffset: CHANNEL_OFFSET,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     i32View: new Int32Array(memory.buffer, CHANNEL_OFFSET),
     consecutiveSyscalls: 0,
   };
@@ -181,6 +184,7 @@ function makeChannelOwnershipHarness() {
     pid: PID,
     channelOffset: mainChannelOffset,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     i32View: new Int32Array(memory.buffer, mainChannelOffset),
     consecutiveSyscalls: 0,
   };
@@ -534,7 +538,7 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(KERNEL_TID);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
-      .toEqual({ fnPtr: 11, argPtr: 22 });
+      .toEqual({ fnPtr: 11, argPtr: 22, channelAddress: firstThreadOffset });
   });
 
   it("rejects assigning one kernel TID to a second channel", async () => {
@@ -598,14 +602,14 @@ describe("thread channel ownership", () => {
     const sibling = await issueThreadAttachment(siblingTid, 33, 44);
 
     worker.attachThreadChannel(first, firstThreadOffset);
-    worker.attachThreadChannel(sibling, secondThreadOffset);
+    worker.attachThreadChannel(sibling, secondThreadOffset, 9 * WASM_PAGE_SIZE);
 
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(KERNEL_TID);
     expect((worker as any).channelTids.get(`${PID}:${secondThreadOffset}`))
       .toBe(siblingTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${secondThreadOffset}`))
-      .toEqual({ fnPtr: 33, argPtr: 44 });
+      .toEqual({ fnPtr: 33, argPtr: 44, channelAddress: 9 * WASM_PAGE_SIZE });
     expect((worker as any).addChannel).toBeUndefined();
 
     // A failed public ingress poisons this deliberately conservative test
@@ -655,7 +659,7 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(replacementTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
-      .toEqual({ fnPtr: 33, argPtr: 44 });
+      .toEqual({ fnPtr: 33, argPtr: 44, channelAddress: firstThreadOffset });
   });
 });
 

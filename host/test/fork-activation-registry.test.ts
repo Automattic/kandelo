@@ -15,13 +15,14 @@ import {
 import {
   WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT,
 } from "../src/generated/abi";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE_SIZE = 65_536;
 
 function makeArena(memory: WebAssembly.Memory, label: string): ForkModuleStateArena {
   let next = PAGE_SIZE;
   return new ForkModuleStateArena(
-    memory,
+    new ProcessAddressSpace(memory, null),
     4,
     (size) => {
       const address = next;
@@ -112,7 +113,7 @@ function registration(
 
 function registry(memory: WebAssembly.Memory, label: string): ForkActivationRegistry {
   return new ForkActivationRegistry(
-    memory,
+    new ProcessAddressSpace(memory, null),
     {
       capture: () => {
         throw new Error("fixture has no externrefs");
@@ -190,7 +191,7 @@ describe("ForkActivationRegistry", () => {
     });
     new Uint8Array(childMemory.buffer).set(new Uint8Array(parentMemory.buffer));
     const childArena = new ForkModuleStateArena(
-      childMemory,
+      new ProcessAddressSpace(childMemory, null),
       4,
       () => { throw new Error("attached child arena must not allocate"); },
       () => {},

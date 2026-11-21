@@ -9,6 +9,7 @@ import {
 } from "../src/dylink-fork-archive";
 import type { ForkActivationRegistry } from "../src/fork-activation-registry";
 import type { ForkModuleStateArena } from "../src/fork-module-state";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 interface TestTableReplicationOwner {
   beginMutation(): bigint;
@@ -26,7 +27,7 @@ function archiveFixture() {
   let head = 0;
   let next = 4_096;
   const archive = new DylinkForkArchive(
-    memory,
+    new ProcessAddressSpace(memory, null),
     4,
     () => head,
     (value) => { head = value; },

@@ -23,6 +23,8 @@ import {
   type ForkResumeTarget,
   ForkResumeTable,
 } from "./fork-replay-events";
+import type { ProcessAddressSpace } from "./process-address-space";
+import { processDataView } from "./process-data-view";
 import {
   checkedWasmGuestPointerOffset,
   type WasmGuestPointer,
@@ -135,7 +137,7 @@ export class ForkProcessContinuationCoordinator {
   private replayOwnership: ProcessReplayOwnership | null = null;
 
   constructor(
-    private readonly memory: WebAssembly.Memory,
+    private readonly space: ProcessAddressSpace,
     private readonly registry: ForkActivationRegistry,
     private readonly label: string,
   ) {}
@@ -334,7 +336,7 @@ export class ForkProcessContinuationCoordinator {
         // root, allowing the deterministic launch root chosen after unwind
         // to come from any active module without an archive-private side slot.
         writeForkModuleStateRoot(
-          this.memory,
+          this.space,
           root,
           activation.continuation.format.ptrWidth,
           arena.rootAddress(),
@@ -1017,12 +1019,12 @@ export class ForkProcessContinuationCoordinator {
       continuation.format.ptrWidth,
       `${this.label}: ${operation} frame`,
     );
-    if (offset > this.memory.buffer.byteLength - 4) {
+    if (offset > this.space.memory.buffer.byteLength - 4) {
       throw new RangeError(
         `${this.label}: ${operation} frame header escapes process memory`,
       );
     }
-    return new DataView(this.memory.buffer).getUint32(offset, true);
+    return processDataView(this.space).getUint32(offset, true);
   }
 
   private getActivation(activationId: number): CompleteForkProcessActivation {

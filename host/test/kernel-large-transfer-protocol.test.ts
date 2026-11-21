@@ -47,6 +47,7 @@ import {
   SOCKET_SOL_SOCKET,
   WAKEUP_EVENT_RECORD_BYTES,
 } from "../src/generated/abi";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const EAGAIN = 11;
@@ -64,6 +65,7 @@ afterEach(() => {
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  addressSpace: ProcessAddressSpace;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -109,6 +111,7 @@ function makeChannel(pid: number): TestChannel {
   return {
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channelOffset: 0,
     i32View: new Int32Array(memory.buffer),
     consecutiveSyscalls: 0,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCentralizedKernelWorkerTestDouble } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const SYS_IOCTL = 72;
@@ -20,7 +21,7 @@ function makeWorker(memory: WebAssembly.Memory) {
     kernelExportNames: Object.keys(exports),
   });
   const channel = (offset: number) => ({
-    pid: 7, memory, channelOffset: offset,
+    pid: 7, memory, addressSpace: new ProcessAddressSpace(memory, null), channelOffset: offset,
     i32View: new Int32Array(memory.buffer, offset), consecutiveSyscalls: 0,
   });
   return { worker: worker as any, channel };

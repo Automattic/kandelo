@@ -21,6 +21,7 @@ import {
   FORK_UNWIND_TAG_IMPORT_NAME,
   isForkUnwindException,
 } from "../src/fork-unwind-transport";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 export interface SingleActivationForkRuntimeOptions {
   readonly module: WebAssembly.Module;
@@ -54,7 +55,7 @@ export class SingleActivationForkRuntime {
   ) {
     const { memory, continuation, label } = options;
     this.registry = new ForkActivationRegistry(
-      memory,
+      new ProcessAddressSpace(memory, null),
       {
         capture: () => {
           throw new Error(`${label}: fixture unexpectedly captured externref`);
@@ -66,7 +67,7 @@ export class SingleActivationForkRuntime {
       `${label}: activation registry`,
     );
     this.coordinator = new ForkProcessContinuationCoordinator(
-      memory,
+      new ProcessAddressSpace(memory, null),
       this.registry,
       `${label}: process continuation`,
     );

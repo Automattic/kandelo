@@ -5,6 +5,8 @@ import type {
   DylinkInitializationStage,
 } from "./dylink";
 import { computeForkModuleTemplateIdSync } from "./fork-module-state";
+import type { ProcessAddressSpace } from "./process-address-space";
+import { processDataView } from "./process-data-view";
 
 const ARCHIVE_MAGIC = 0x414c_464b; // "KFLA" in little-endian memory.
 const ARCHIVE_VERSION = 4;
@@ -413,7 +415,7 @@ export class DylinkForkArchive {
   };
 
   constructor(
-    private readonly memory: WebAssembly.Memory,
+    private readonly space: ProcessAddressSpace,
     private readonly ptrWidth: 4 | 8,
     private readonly readHead: () => number,
     private readonly writeHead: (address: number) => void,
@@ -537,7 +539,7 @@ export class DylinkForkArchive {
       );
     }
 
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     this.writeU64(this.headerAddress + 16, owned.nextHandle);
     view.setUint32(this.headerAddress + 24, target.length, true);
     view.setUint32(this.headerAddress + 28, 0, true);
@@ -596,7 +598,7 @@ export class DylinkForkArchive {
     this.writeU64(this.headerAddress + 48, tableStateRoot);
     this.writeU64(this.headerAddress + 56, 0);
     this.writeU64(this.headerAddress + 64, 0);
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     view.setUint32(this.headerAddress + 72, 0, true);
     view.setUint32(this.headerAddress + 76, 0, true);
     this.writeU64(this.headerAddress + 80, generation);
@@ -663,7 +665,7 @@ export class DylinkForkArchive {
       this.writeU64(this.headerAddress + 56, record.allocation.address);
     }
     this.writeU64(this.headerAddress + 64, record.allocation.address);
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     view.setUint32(
       this.headerAddress + 72,
       this.tablePatchRecords.length + 1,
@@ -734,7 +736,7 @@ export class DylinkForkArchive {
       ARCHIVE_HEADER_SIZE,
       "archive header",
     );
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     if (view.getUint32(head, true) !== ARCHIVE_MAGIC) {
       throw new Error(`${this.label}: invalid dylink fork archive magic`);
     }
@@ -755,7 +757,7 @@ export class DylinkForkArchive {
     const nextHandle = checkedNextHandle(this.readU64(head + 16, "next handle"));
     const count = view.getUint32(head + 24, true);
     const maximumPhysicalModules = Math.floor(
-      (this.memory.buffer.byteLength - ARCHIVE_HEADER_SIZE)
+      (this.space.memory.buffer.byteLength - ARCHIVE_HEADER_SIZE)
         / MODULE_HEADER_SIZE,
     );
     if (count > maximumPhysicalModules) {
@@ -798,7 +800,7 @@ export class DylinkForkArchive {
       "first staged transaction",
     );
     const maximumPhysicalTransactions = Math.floor(
-      (this.memory.buffer.byteLength - ARCHIVE_HEADER_SIZE)
+      (this.space.memory.buffer.byteLength - ARCHIVE_HEADER_SIZE)
         / TRANSACTION_HEADER_SIZE,
     );
     if (transactionCount > maximumPhysicalTransactions) {
@@ -1008,9 +1010,8 @@ export class DylinkForkArchive {
       allocation.size,
       "new archive header",
     );
-    const bytes = new Uint8Array(this.memory.buffer, address, allocation.size);
-    bytes.fill(0);
-    const view = new DataView(this.memory.buffer);
+    this.space.zero(address, allocation.size);
+    const view = processDataView(this.space);
     view.setUint32(address, ARCHIVE_MAGIC, true);
     view.setUint16(address + 4, ARCHIVE_VERSION, true);
     view.setUint16(address + 6, ARCHIVE_HEADER_SIZE, true);
@@ -1128,9 +1129,8 @@ export class DylinkForkArchive {
       allocation.size,
       "new table patch",
     );
-    const bytes = new Uint8Array(this.memory.buffer, address, totalSize);
-    bytes.fill(0);
-    const view = new DataView(this.memory.buffer);
+    this.space.zero(address, totalSize);
+    const view = processDataView(this.space);
     view.setUint32(address, TABLE_PATCH_MAGIC, true);
     view.setUint16(address + 4, TABLE_PATCH_VERSION, true);
     view.setUint16(address + 6, TABLE_PATCH_HEADER_SIZE, true);
@@ -1169,7 +1169,7 @@ export class DylinkForkArchive {
       TABLE_PATCH_HEADER_SIZE,
       `table patch ${ordinal} header`,
     );
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     if (view.getUint32(address, true) !== TABLE_PATCH_MAGIC) {
       throw new Error(`${this.label}: table patch ${ordinal} has invalid magic`);
     }
@@ -1265,9 +1265,8 @@ export class DylinkForkArchive {
       allocation.size,
       `new staged transaction ${state.token}`,
     );
-    const bytes = new Uint8Array(this.memory.buffer, address, totalSize);
-    bytes.fill(0);
-    const view = new DataView(this.memory.buffer);
+    this.space.zero(address, totalSize);
+    const view = processDataView(this.space);
     view.setUint32(address, TRANSACTION_MAGIC, true);
     view.setUint16(address + 4, TRANSACTION_VERSION, true);
     view.setUint16(address + 6, TRANSACTION_HEADER_SIZE, true);
@@ -1280,14 +1279,14 @@ export class DylinkForkArchive {
       state.globalVisibility ? TRANSACTION_FLAG_GLOBAL : 0,
       true,
     );
-    bytes.set(
+    this.space.write(
+      address + TRANSACTION_DIGEST_OFFSET,
       computeForkModuleTemplateIdSync(state.moduleBytes),
-      TRANSACTION_DIGEST_OFFSET,
     );
-    bytes.set(name, TRANSACTION_HEADER_SIZE);
-    bytes.set(
+    this.space.write(address + TRANSACTION_HEADER_SIZE, name);
+    this.space.write(
+      address + TRANSACTION_HEADER_SIZE + nameAligned,
       state.moduleBytes,
-      TRANSACTION_HEADER_SIZE + nameAligned,
     );
     return {
       allocation,
@@ -1305,7 +1304,7 @@ export class DylinkForkArchive {
       TRANSACTION_HEADER_SIZE,
       `staged transaction ${ordinal} header`,
     );
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     if (view.getUint32(address, true) !== TRANSACTION_MAGIC) {
       throw new Error(
         `${this.label}: staged transaction ${ordinal} has invalid magic`,
@@ -1354,30 +1353,25 @@ export class DylinkForkArchive {
       );
     }
     intervals.push({ start: address, end });
-    const nameBytes = new Uint8Array(
-      this.memory.buffer,
+    const nameBytes = this.space.read(
       address + TRANSACTION_HEADER_SIZE,
       nameLength,
     );
     let name: string;
     try {
       name = new TextDecoder("utf-8", { fatal: true }).decode(
-        new Uint8Array(nameBytes),
+        nameBytes,
       );
     } catch {
       throw new Error(
         `${this.label}: staged transaction ${ordinal} has invalid UTF-8 name`,
       );
     }
-    const moduleBytes = new Uint8Array(
-      new Uint8Array(
-        this.memory.buffer,
-        address + TRANSACTION_HEADER_SIZE + align8(nameLength),
-        bytesLength,
-      ),
+    const moduleBytes = this.space.read(
+      address + TRANSACTION_HEADER_SIZE + align8(nameLength),
+      bytesLength,
     );
-    const expectedDigest = new Uint8Array(
-      this.memory.buffer,
+    const expectedDigest = this.space.read(
       address + TRANSACTION_DIGEST_OFFSET,
       MODULE_DIGEST_SIZE,
     );
@@ -1431,9 +1425,8 @@ export class DylinkForkArchive {
       allocation.size,
       `new module ${state.name}`,
     );
-    const bytes = new Uint8Array(this.memory.buffer, address, totalSize);
-    bytes.fill(0);
-    const view = new DataView(this.memory.buffer);
+    this.space.zero(address, totalSize);
+    const view = processDataView(this.space);
     view.setUint32(address, MODULE_MAGIC, true);
     view.setUint16(address + 4, MODULE_VERSION, true);
     view.setUint16(address + 6, MODULE_HEADER_SIZE, true);
@@ -1457,15 +1450,18 @@ export class DylinkForkArchive {
         ),
       true,
     );
-    bytes.set(
+    this.space.write(
+      address + MODULE_DIGEST_OFFSET,
       computeForkModuleTemplateIdSync(state.moduleBytes),
-      MODULE_DIGEST_OFFSET,
     );
-    bytes.set(name, MODULE_HEADER_SIZE);
-    bytes.set(state.moduleBytes, MODULE_HEADER_SIZE + nameAligned);
-    bytes.set(
+    this.space.write(address + MODULE_HEADER_SIZE, name);
+    this.space.write(
+      address + MODULE_HEADER_SIZE + nameAligned,
+      state.moduleBytes,
+    );
+    this.space.write(
+      address + MODULE_HEADER_SIZE + nameAligned + moduleBytesAligned,
       providers.bytes,
-      MODULE_HEADER_SIZE + nameAligned + moduleBytesAligned,
     );
     const allocationOffset =
       address
@@ -1512,7 +1508,7 @@ export class DylinkForkArchive {
     intervals: Array<{ start: number; end: number }>,
   ): IndexedModule {
     this.checkedRange(address, MODULE_HEADER_SIZE, `module ${ordinal} header`);
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     if (view.getUint32(address, true) !== MODULE_MAGIC) {
       throw new Error(`${this.label}: module ${ordinal} has invalid archive magic`);
     }
@@ -1559,15 +1555,14 @@ export class DylinkForkArchive {
     if ((flags & ~MODULE_FLAG_KNOWN_MASK) !== 0) {
       throw new Error(`${this.label}: module ${ordinal} has unknown archive flags`);
     }
-    const nameBytes = new Uint8Array(
-      this.memory.buffer,
+    const nameBytes = this.space.read(
       address + MODULE_HEADER_SIZE,
       nameLength,
     );
     let name: string;
     try {
       name = new TextDecoder("utf-8", { fatal: true }).decode(
-        new Uint8Array(nameBytes),
+        nameBytes,
       );
     } catch {
       throw new Error(`${this.label}: module ${ordinal} has invalid UTF-8 name`);
@@ -1575,22 +1570,16 @@ export class DylinkForkArchive {
     if (name.length === 0) {
       throw new Error(`${this.label}: module ${ordinal} has an empty name`);
     }
-    const moduleBytes = new Uint8Array(
-      new Uint8Array(
-        this.memory.buffer,
-        address + MODULE_HEADER_SIZE + align8(nameLength),
-        bytesLength,
-      ),
+    const moduleBytes = this.space.read(
+      address + MODULE_HEADER_SIZE + align8(nameLength),
+      bytesLength,
     );
-    const providerBytes = new Uint8Array(
-      new Uint8Array(
-        this.memory.buffer,
-        address
-          + MODULE_HEADER_SIZE
-          + align8(nameLength)
-          + align8(bytesLength),
-        providerBytesLength,
-      ),
+    const providerBytes = this.space.read(
+      address
+        + MODULE_HEADER_SIZE
+        + align8(nameLength)
+        + align8(bytesLength),
+      providerBytesLength,
     );
     const providerDependencies = decodeProviderDependencies(
       providerBytes,
@@ -1627,8 +1616,7 @@ export class DylinkForkArchive {
         };
       },
     );
-    const expectedDigest = new Uint8Array(
-      this.memory.buffer,
+    const expectedDigest = this.space.read(
       address + MODULE_DIGEST_OFFSET,
       MODULE_DIGEST_SIZE,
     );
@@ -1855,7 +1843,7 @@ export class DylinkForkArchive {
     for (const [index, allocation] of allocations.entries()) {
       if (
         allocation.mappingAddress
-          > this.memory.buffer.byteLength - allocation.mappingSize
+          > this.space.memory.buffer.byteLength - allocation.mappingSize
       ) {
         throw new RangeError(
           `${this.label}: ${state.name} allocation ${index} escapes linear memory`,
@@ -1937,7 +1925,7 @@ export class DylinkForkArchive {
     address: number,
     state: DylinkForkLibraryState,
   ): void {
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     this.writeU64(address + 40, state.tlsBase ?? 0);
     view.setUint32(address + 52, state.handle ?? 0, true);
     view.setUint32(address + 56, state.refCount ?? 0, true);
@@ -1975,7 +1963,7 @@ export class DylinkForkArchive {
     if (
       !Number.isSafeInteger(size)
       || size <= 0
-      || address > this.memory.buffer.byteLength - size
+      || address > this.space.memory.buffer.byteLength - size
     ) {
       throw new RangeError(`${this.label}: ${context} escapes linear memory`);
     }
@@ -1983,7 +1971,7 @@ export class DylinkForkArchive {
   }
 
   private readU64(address: number, context: string): number {
-    const value = new DataView(this.memory.buffer).getBigUint64(address, true);
+    const value = processDataView(this.space).getBigUint64(address, true);
     if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new RangeError(`${this.label}: ${context} exceeds exact host integers`);
     }
@@ -2002,7 +1990,7 @@ export class DylinkForkArchive {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new RangeError(`${this.label}: cannot archive inexact u64 ${String(value)}`);
     }
-    new DataView(this.memory.buffer).setBigUint64(address, BigInt(value), true);
+    processDataView(this.space).setBigUint64(address, BigInt(value), true);
   }
 
   private nextGeneration(current: number): number {
@@ -2021,11 +2009,14 @@ export class DylinkForkArchive {
     let value: bigint;
     if (
       typeof SharedArrayBuffer !== "undefined"
-      && this.memory.buffer instanceof SharedArrayBuffer
+      && this.space.memory.buffer instanceof SharedArrayBuffer
     ) {
-      value = Atomics.load(new BigUint64Array(this.memory.buffer, address, 1), 0);
+      value = Atomics.load(
+        new BigUint64Array(this.space.memory.buffer, this.space.readable(address), 1),
+        0,
+      );
     } else {
-      value = new DataView(this.memory.buffer).getBigUint64(address, true);
+      value = processDataView(this.space).getBigUint64(address, true);
     }
     if (value > BigInt(MAX_EXACT_GENERATION)) {
       throw new RangeError(`${this.label}: dylink archive generation is inexact`);
@@ -2044,15 +2035,15 @@ export class DylinkForkArchive {
     const address = header + 40;
     if (
       typeof SharedArrayBuffer !== "undefined"
-      && this.memory.buffer instanceof SharedArrayBuffer
+      && this.space.memory.buffer instanceof SharedArrayBuffer
     ) {
       Atomics.store(
-        new BigUint64Array(this.memory.buffer, address, 1),
+        new BigUint64Array(this.space.memory.buffer, this.space.writable(address), 1),
         0,
         BigInt(generation),
       );
     } else {
-      new DataView(this.memory.buffer).setBigUint64(
+      processDataView(this.space).setBigUint64(
         address,
         BigInt(generation),
         true,

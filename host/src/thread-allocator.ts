@@ -1,5 +1,6 @@
 import { CH_TOTAL_SIZE, WASM_PAGE_SIZE, PAGES_PER_THREAD } from "./constants";
-import { FORK_SAVE_BUFFER_SIZE, growMemoryToCover } from "./process-memory";
+import { FORK_SAVE_BUFFER_SIZE, channelStopOffset } from "./process-memory";
+import { STOP_WORDS_BYTES, type ProcessAddressSpace } from "./process-address-space";
 import {
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE,
@@ -11,12 +12,14 @@ export interface ThreadAllocation {
   slotStartPage: number;
   /** @deprecated Use slotStartPage. */
   basePage: number;
-  /** Byte offset of the TLS/control page in Memory. */
+  /** Guest address of the TLS/control page. */
   tlsOffset: number;
-  /** Byte offset of the per-thread fork-save/scratch page in Memory. */
+  /** Physical byte offset of the per-thread fork-save/scratch page in Memory. */
   forkSaveOffset: number;
-  /** Byte offset of the channel in Memory */
+  /** Physical byte offset of the channel in Memory */
   channelOffset: number;
+  /** Guest address of the channel. */
+  channelAddress: number;
   /** @deprecated Use tlsOffset. */
   tlsAllocAddr: number;
 }
@@ -59,6 +62,7 @@ export class ThreadPageAllocator {
   private readonly reserveSlotStartPage?: () => number;
   private activeCount = 0;
   private readonly hostControlPages = new Set<number>();
+  private readonly liveSlots = new Set<number>();
 
   constructor(options: ThreadPageAllocatorOptions);
   constructor(maxPages: number);
@@ -93,8 +97,8 @@ export class ThreadPageAllocator {
   }
 
   /** Allocate pages for a new thread. Zeros the channel and TLS regions. */
-  allocate(memory: WebAssembly.Memory): ThreadAllocation {
-    return this.allocateSlot(memory, false);
+  allocate(space: ProcessAddressSpace): ThreadAllocation {
+    return this.allocateSlot(space, false);
   }
 
   /**
@@ -105,12 +109,12 @@ export class ThreadPageAllocator {
    * syscall channel, replay prefix, and scratch page, but that platform state
    * must neither require nor consume capacity promised to pthread_create.
    */
-  allocateHostControl(memory: WebAssembly.Memory): ThreadAllocation {
-    return this.allocateSlot(memory, true);
+  allocateHostControl(space: ProcessAddressSpace): ThreadAllocation {
+    return this.allocateSlot(space, true);
   }
 
   private allocateSlot(
-    memory: WebAssembly.Memory,
+    space: ProcessAddressSpace,
     hostControl: boolean,
   ): ThreadAllocation {
     if (!hostControl && this.activeCount >= this.reservedSlots) {
@@ -146,39 +150,55 @@ export class ThreadPageAllocator {
       );
     }
 
+    // WHY: the host uses the fork-save page and the channel at their physical
+    // offset, so the slot must be one run that no other process shares.
+    const physicalPage = space.privateRun(slotStartPage, PAGES_PER_THREAD, this.ptrWidth);
     const tlsOffset =
       (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
-    const forkSaveOffset =
-      (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE) * WASM_PAGE_SIZE;
-    const channelOffset =
+    const channelAddress =
       (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
-    growMemoryToCover(
-      memory,
-      (slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE,
-      this.ptrWidth,
-    );
+    const forkSaveOffset =
+      (physicalPage + PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE) * WASM_PAGE_SIZE;
+    const channelOffset =
+      (physicalPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
 
     // Zero channel, TLS, and the per-thread fork save buffer.
+    const memory = space.memory;
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
-    new Uint8Array(memory.buffer, tlsOffset, WASM_PAGE_SIZE).fill(0);
+    // WHY: a fork child gets a copy of every slot of its parent, with the
+    // stop words of a parent thread that fork parked.
+    new Uint8Array(memory.buffer, channelStopOffset(channelOffset), STOP_WORDS_BYTES).fill(0);
+    new Uint8Array(
+      memory.buffer,
+      (physicalPage + PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE,
+      WASM_PAGE_SIZE,
+    ).fill(0);
     new Uint8Array(memory.buffer, forkSaveOffset, WASM_PAGE_SIZE).fill(0);
     new Uint8Array(memory.buffer, forkSaveOffset, FORK_SAVE_BUFFER_SIZE).fill(0);
 
     if (hostControl) this.hostControlPages.add(slotStartPage);
     else this.activeCount++;
+    this.liveSlots.add(slotStartPage);
     return {
       slotStartPage,
       basePage: slotStartPage,
       tlsOffset,
       forkSaveOffset,
       channelOffset,
+      channelAddress,
       tlsAllocAddr: tlsOffset,
     };
+  }
+
+  /** Start pages of the slots in use, pthread and host control. */
+  liveSlotStartPages(): number[] {
+    return [...this.liveSlots];
   }
 
   /** Return pages to the free list after thread exit. */
   free(slotStartPage: number): void {
     this.freePages.push(slotStartPage);
+    this.liveSlots.delete(slotStartPage);
     if (!this.hostControlPages.delete(slotStartPage)) {
       this.activeCount = Math.max(0, this.activeCount - 1);
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BorrowedVforkWorkspace } from "../src/vfork-workspace";
 import { ThreadPageAllocator } from "../src/thread-allocator";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE = 65_536;
 
@@ -25,7 +26,7 @@ describe("borrowed vfork workspace", () => {
       maxPageExclusive: 10,
       reservedSlots: 0,
     });
-    const childControl = allocator.allocateHostControl(shared);
+    const childControl = allocator.allocateHostControl(new ProcessAddressSpace(shared, null));
     const workspace = new BorrowedVforkWorkspace(
       shared,
       4,

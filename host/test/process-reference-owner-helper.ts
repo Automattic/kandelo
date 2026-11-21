@@ -7,6 +7,7 @@ import { ForkExternrefProcessOwner } from "../src/fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "../src/fork-reference-broker";
 import type { WorkerHandle } from "../src/worker-adapter";
 import type { WorkerToHostMessage } from "../src/worker-protocol";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 export interface TestProcessReferenceInit {
   readonly externrefGenerationId: number;
@@ -49,7 +50,7 @@ export class TestProcessReferenceOwners {
     const child = this.owner.forkGenerationFromContinuation(
       parent.generation,
       childPid,
-      memory,
+      new ProcessAddressSpace(memory, null),
       ptrWidth,
       moduleBufferAddress,
       `direct-worker test fork child pid=${childPid}`,

@@ -38,6 +38,8 @@ import {
   wasmModuleExports,
   wasmModuleImports,
 } from "./wasm-module-reflection";
+import { instrumentSideModule } from "./memory-instrument";
+import { ProcessAddressSpace } from "./process-address-space";
 import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 
 // dylink.0 sub-section types
@@ -159,17 +161,20 @@ function readString(data: Uint8Array, offset: { value: number }): string {
 }
 
 /**
- * Reject automatic linear-memory writes before instantiating over a borrow.
+ * Reject automatic linear-memory writes before instantiating over a borrow
+ * or in a process with page tables.
  *
  * wasm-ld side modules use passive data plus a guarded start function. An
  * arbitrary active data segment would instead write imported Memory inside
- * WebAssembly.Instance(), before JavaScript can recover from the mutation.
+ * WebAssembly.Instance(), before JavaScript can recover from the mutation
+ * and at an untranslated address.
  * The source module has already passed engine validation, so this parser only
  * distinguishes the standardized data-segment encodings.
  */
-function requirePassiveDataSegmentsForBorrowedReplay(
+function requirePassiveDataSegments(
   wasmBytes: Uint8Array,
   name: string,
+  context: string,
 ): void {
   const offset = { value: 8 };
   while (offset.value < wasmBytes.length) {
@@ -185,7 +190,7 @@ function requirePassiveDataSegmentsForBorrowedReplay(
       const flags = readVarUint(wasmBytes, offset);
       if (flags !== 1) {
         throw new Error(
-          `${name}: borrowed replay requires passive data segments; `
+          `${name}: ${context} requires passive data segments; `
           + `segment ${index} has flags ${flags}`,
         );
       }
@@ -193,7 +198,7 @@ function requirePassiveDataSegmentsForBorrowedReplay(
       offset.value += length;
     }
     if (offset.value !== sectionEnd) {
-      throw new Error(`${name}: malformed data section during borrowed replay`);
+      throw new Error(`${name}: malformed data section during ${context}`);
     }
     return;
   }
@@ -205,12 +210,15 @@ function requirePassiveDataSegmentsForBorrowedReplay(
  * WHY: start executes during WebAssembly.Instance() and can write the
  * suspended parent's live Memory. Complete fork replay reconstructs fresh
  * instance globals from ABI 43 state and already owns the parent's initialized
- * bytes, so wasm-ld's exported `__wasm_init_memory` start is unnecessary. An
+ * bytes, so wasm-ld's exported `__wasm_init_memory` start is unnecessary. In
+ * a process with page tables the start would run before the loader stores
+ * the table addresses in the module, so the loader calls it afterwards. An
  * arbitrary start is rejected rather than silently changing its semantics.
  */
-function withoutBorrowedReplayStart(
+function withoutInitMemoryStart(
   wasmBytes: Uint8Array,
   name: string,
+  context: string,
 ): Uint8Array {
   const retained: Uint8Array[] = [wasmBytes.subarray(0, 8)];
   const offset = { value: 8 };
@@ -225,7 +233,7 @@ function withoutBorrowedReplayStart(
     if (sectionId === 8) {
       startFunctionIndex = readVarUint(wasmBytes, offset);
       if (offset.value !== sectionEnd) {
-        throw new Error(`${name}: malformed start section during borrowed replay`);
+        throw new Error(`${name}: malformed start section during ${context}`);
       }
     } else {
       const section = wasmBytes.subarray(sectionStart, sectionEnd);
@@ -249,7 +257,7 @@ function withoutBorrowedReplayStart(
   if (startFunctionIndex === undefined) return wasmBytes;
   if (startFunctionIndex !== wasmLdInitFunctionIndex) {
     throw new Error(
-      `${name}: borrowed replay cannot suppress unrecognized start function `
+      `${name}: ${context} cannot suppress unrecognized start function `
       + `${startFunctionIndex}; expected exported __wasm_init_memory`,
     );
   }
@@ -794,6 +802,14 @@ export interface LoadSharedLibraryOptions {
   withModuleInstantiation?: <T>(operation: () => T) => T;
   /** The shared Wasm.Memory used by the process */
   memory: WebAssembly.Memory;
+  /**
+   * Guest view of `memory`; absent means the identity mapping. When it has
+   * page tables, every side module is rewritten with `memoryInstrumenter`
+   * before it runs.
+   */
+  addressSpace?: ProcessAddressSpace;
+  /** Compiled `kandelo_memory_instrument32.wasm`; required with page tables. */
+  memoryInstrumenter?: WebAssembly.Module;
   /** The process's indirect function table */
   table: WebAssembly.Table;
   /** Stack pointer global (shared across all modules) */
@@ -1204,18 +1220,40 @@ function* instantiateSharedLibrarySteps(
         `${name}: borrowed replay cannot resume an in-flight dlopen initializer`,
       );
     }
-    requirePassiveDataSegmentsForBorrowedReplay(wasmBytes, name);
+    requirePassiveDataSegments(wasmBytes, name, "borrowed replay");
   }
-  const borrowedModuleBytes = borrowsMemory
-    ? withoutBorrowedReplayStart(wasmBytes, name)
-    : undefined;
-  const module = borrowedModuleBytes
+  const addressSpace = options.addressSpace
+    ?? new ProcessAddressSpace(options.memory, null);
+  const pageTable = addressSpace.location;
+  const startlessModuleBytes = borrowsMemory
+    ? withoutInitMemoryStart(wasmBytes, name, "borrowed replay")
+    : pageTable
+      ? withoutInitMemoryStart(wasmBytes, name, "a process with page tables")
+      : undefined;
+  const runsInitMemory = !borrowsMemory
+    && startlessModuleBytes !== undefined
+    && startlessModuleBytes !== wasmBytes;
+  let instanceModuleBytes = startlessModuleBytes;
+  if (pageTable) {
+    if (!options.memoryInstrumenter) {
+      throw new Error(
+        `${name}: a process with page tables cannot load a side module `
+        + "without the memory instrumenter",
+      );
+    }
+    requirePassiveDataSegments(wasmBytes, name, "a process with page tables");
+    instanceModuleBytes = instrumentSideModule(
+      options.memoryInstrumenter,
+      startlessModuleBytes!,
+    );
+  }
+  const module = instanceModuleBytes
     ? new WebAssembly.Module(
-        borrowedModuleBytes as unknown as BufferSource,
+        instanceModuleBytes as unknown as BufferSource,
       )
     : sourceModule;
-  if (borrowedModuleBytes) {
-    registerWasmModuleReflection(module, borrowedModuleBytes);
+  if (instanceModuleBytes) {
+    registerWasmModuleReflection(module, instanceModuleBytes);
   }
   const moduleImports = wasmModuleImports(module);
   checkSideModuleForkContract(
@@ -1595,7 +1633,7 @@ function* instantiateSharedLibrarySteps(
       if (!replay) {
         // Skip zero-init in replay: child memory already holds parent's
         // post-startup data via fork memcpy.
-        new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+        addressSpace.zero(memoryBase, metadata.memorySize);
       }
     } else if ((replay?.allocations?.length ?? 0) !== 0) {
       throw new Error(`${name}: zero-memory side module owns archived mappings`);
@@ -1945,6 +1983,15 @@ function* instantiateSharedLibrarySteps(
       ? options.withModuleInstantiation(() => new WebAssembly.Instance(module, instanceImports))
       : new WebAssembly.Instance(module, instanceImports);
     noteProcessMemoryInstance(instance);
+    if (pageTable) {
+      (instance.exports.__memory_table_base as WebAssembly.Global).value =
+        pageTable.table;
+      (instance.exports.__memory_group_base as WebAssembly.Global).value =
+        pageTable.group;
+      (instance.exports.__memory_stop_base as WebAssembly.Global).value =
+        pageTable.stop!;
+      if (runsInitMemory) (instance.exports.__wasm_init_memory as () => void)();
+    }
     preparedActivation?.register(instance);
     const ownedModuleBytes = wasmBytes.slice();
     const initializationForkState = (

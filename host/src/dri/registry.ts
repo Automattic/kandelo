@@ -32,7 +32,7 @@ export type GbmBoCreateInput = {
 };
 
 export type GbmBoBinding = {
-  /** Offset within the process's wasm Memory. */
+  /** Guest address of the mapping. */
   addr: number;
   /** Exact process mapping length, including permitted trailing page padding.
    * Coherence copies are independently clipped to canonical BO storage. */
@@ -93,6 +93,9 @@ export type GbmBoChangeListener = (
 type InternalBinding = GbmBoBinding & {
   pid: number;
   boOffset: number;
+  /** Offset of the mapping within its process Memory, minus `addr`. Set at
+   * the prime; splits retain it. */
+  delta: number;
   /** Independent baseline; never a guest memory view. */
   snapshot: Uint8Array;
   /** Independent bounded baseline storage; never imports a guest memory. */
@@ -129,6 +132,11 @@ type InternalEntry = {
   /** Legacy mutable pixel views cannot report later writes; keep their readers conservative. */
   exposedPixels: boolean;
 };
+
+/** Gives the Memory offset of the `len` mapped bytes at guest address `addr`,
+ * after it made their pages one run that no other process shares. */
+type MappingPlacement = (addr: number, len: number) => number;
+const identityPlacement: MappingPlacement = (addr) => addr;
 
 /** Consulted only for a NEW mapping admission. Later coherence and cleanup
  * retain that exact Memory, including across PID registration replacement. */
@@ -336,7 +344,7 @@ export class GbmBoRegistry {
       const lineage: MappingLineage = {memory:this.getProcessMemory?.(pid) ?? null,
         fragments:new Set()};
       if (lineage.memory) mappingMemoryBuffer(lineage.memory);
-      const admitted: InternalBinding = {pid,addr,len,boOffset,primed:false,lineage,
+      const admitted: InternalBinding = {pid,addr,len,boOffset,delta:0,primed:false,lineage,
         ...allocateByteSnapshot(Math.max(0,Math.min(len,entry.size-boOffset)),lineage.memory)};
       target.bindingsByPid.get(pid)!.set(addr, admitted);
       const stagedLineages = this.stageLineages(retiring.map(value => value.binding),
@@ -483,6 +491,19 @@ export class GbmBoRegistry {
     }
   }
 
+  /** The guest ranges of `pid`'s primed mappings: the pages a fork must
+   * leave unshared, because this registry accesses them at a fixed offset. */
+  primedRanges(pid: number): {addr: number; len: number}[] {
+    const ranges: {addr: number; len: number}[] = [];
+    if (!this.bindingCounts.has(pid)) return ranges;
+    for (const e of this.bos.values()) {
+      for (const binding of e.bindingsByPid.get(pid)?.values() ?? []) {
+        if (binding.primed) ranges.push({addr: binding.addr, len: binding.len});
+      }
+    }
+    return ranges;
+  }
+
   /** Find the bo bound for `pid` at `addr`. Used by kernel-worker's
    *  post-mmap hook to decide whether to run `primeBindFromSab`. */
   findBindingByAddr(pid: number, addr: number): number | undefined {
@@ -494,8 +515,8 @@ export class GbmBoRegistry {
 
   /** Post-mmap prime — flushes every OTHER bound pid's wasm Memory
    *  into the bo's SAB, then copies the SAB into `pid`'s `memory`
-   *  at the recorded [addr, len). Caller (kernel-worker.ts) invokes
-   *  this AFTER `ensureProcessMemoryCovers` has grown the Memory and
+   *  where `place` puts the recorded [addr, len). Caller (kernel-worker.ts)
+   *  invokes this AFTER `ensureProcessMemoryCovers` has grown the Memory and
    *  the anonymous-mmap zero-fill has run, so our primed bytes are
    *  the final state seen by the user program. */
   primeBindFromSab(
@@ -503,6 +524,7 @@ export class GbmBoRegistry {
     bo_id: number,
     memory: WebAssembly.Memory,
     addr?: number,
+    place = identityPlacement,
   ): boolean {
     try {
       const e = this.bos.get(bo_id);
@@ -510,12 +532,14 @@ export class GbmBoRegistry {
       const binding = addr === undefined ? this.latestBinding(e,pid) : e.bindingsByPid.get(pid)?.get(addr);
       if (!binding || this.mutating || (binding.lineage.memory !== null && binding.lineage.memory !== memory)) return false;
       const copyLen = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
-      if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength || binding.snapshot.length !== copyLen) return false;
+      const offset = place(binding.addr, binding.len);
+      if (offset + binding.len > mappingMemoryBuffer(memory).byteLength || binding.snapshot.length !== copyLen) return false;
       for (const other of this.bindings(e)) if (other !== binding) this.flushMemoryToSab(e, other);
-      const dst = new Uint8Array(mappingMemoryBuffer(memory), binding.addr, copyLen);
+      const dst = new Uint8Array(mappingMemoryBuffer(memory), offset, copyLen);
       const src = new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen);
       dst.set(src);
       binding.snapshot.set(src);
+      binding.delta = offset - binding.addr;
       binding.lineage.memory = memory;
       binding.primed = true;
       binding.seenWrites = e.writes;
@@ -532,11 +556,11 @@ export class GbmBoRegistry {
   /** Prime kernel-announced inherited aliases after the child's clone is
    * complete. Preflight every destination before exposing any child mapping.
    * Pending clone bytes never become a writer. Local guest views do not escape. */
-  primeProcessMappings(pid: number, memory: WebAssembly.Memory): boolean {
+  primeProcessMappings(pid: number, memory: WebAssembly.Memory, place = identityPlacement): boolean {
     if (this.mutating) return false;
     if (!this.bindingCounts.has(pid)) return true;
     try {
-      const targets: {entry: InternalEntry; binding: InternalBinding;
+      const targets: {entry: InternalEntry; binding: InternalBinding; offset: number;
         destination: Uint8Array; source: Uint8Array; length: number}[] = [];
       for (const entry of this.bos.values()) {
         const aliases = entry.bindingsByPid.get(pid);
@@ -546,14 +570,16 @@ export class GbmBoRegistry {
           if (binding.lineage.memory !== null && binding.lineage.memory !== memory) return false;
           if (binding.primed) continue;
           const length = Math.max(0,Math.min(binding.len, entry.size - binding.boOffset));
-          if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength || binding.snapshot.length !== length) return false;
-          targets.push({entry, binding, length,
-            destination: new Uint8Array(mappingMemoryBuffer(memory),binding.addr,length), source: new Uint8Array(entry.sab,Math.min(binding.boOffset,entry.size),length)});
+          const offset = place(binding.addr, binding.len);
+          if (offset + binding.len > mappingMemoryBuffer(memory).byteLength || binding.snapshot.length !== length) return false;
+          targets.push({entry, binding, offset, length,
+            destination: new Uint8Array(mappingMemoryBuffer(memory),offset,length), source: new Uint8Array(entry.sab,Math.min(binding.boOffset,entry.size),length)});
         }
       }
       if (targets.some(target => target.destination.byteLength !== target.length)) return false;
-      for (const {entry,binding,destination,source} of targets) {
-        destination.set(source); binding.snapshot.set(source); binding.lineage.memory=memory; binding.primed=true;
+      for (const {entry,binding,offset,destination,source} of targets) {
+        destination.set(source); binding.snapshot.set(source); binding.delta=offset-binding.addr;
+        binding.lineage.memory=memory; binding.primed=true;
         binding.seenWrites=entry.writes; binding.cleanEpoch=undefined;
         this.onProcessMemoryChanged?.(pid,memory);
         entry.pendingReaders.delete(pid);
@@ -581,7 +607,7 @@ export class GbmBoRegistry {
     if (!mem) this.fault(`${primedMapping(e,binding)} has no address space to publish from`);
     const copyLen = Math.max(0, Math.min(binding.len, e.size - binding.boOffset, byteLimit - binding.boOffset));
     const memoryBytes = mappingMemoryBuffer(mem).byteLength;
-    if (binding.addr + binding.len > memoryBytes)
+    if (binding.addr + binding.delta + binding.len > memoryBytes)
       this.fault(`${primedMapping(e,binding)} extends past its ${memoryBytes}-byte address space`);
     if (binding.snapshot.length < copyLen)
       this.fault(`${primedMapping(e,binding)} has a ${binding.snapshot.length}-byte baseline for a ${copyLen}-byte publication`);
@@ -592,7 +618,7 @@ export class GbmBoRegistry {
     // Publish and advance the baseline together, using only the bytes that
     // reached canonical storage. Reading src again here could swallow stores
     // made by a still-running producer after its changed run was copied.
-    if (publishMappedBytes(mem, binding.addr, binding, dst, copyLen)) {
+    if (publishMappedBytes(mem, binding.addr + binding.delta, binding, dst, copyLen)) {
       e.writes++;
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
@@ -660,9 +686,10 @@ export class GbmBoRegistry {
         if (!memory) return false;
         const length = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
         const snapshot = binding.snapshot;
+        const offset = binding.addr + binding.delta;
         if (!snapshot || snapshot.byteLength !== length ||
-            binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength) return false;
-        targets.push({pid, length, view: new Uint8Array(mappingMemoryBuffer(memory), binding.addr, length),
+            offset + binding.len > mappingMemoryBuffer(memory).byteLength) return false;
+        targets.push({pid, length, view: new Uint8Array(mappingMemoryBuffer(memory), offset, length),
           source: canonical.subarray(binding.boOffset, binding.boOffset + length), snapshot});
       }
       // All destinations belong to their original mapping admissions.
@@ -738,9 +765,10 @@ export class GbmBoRegistry {
         if (!binding.primed) continue;
         if (binding.lineage.memory !== memory) { complete = false; continue; }
         const copyLen = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
-        if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength) { complete = false; continue; }
+        const offset = binding.addr + binding.delta;
+        if (offset + binding.len > mappingMemoryBuffer(memory).byteLength) { complete = false; continue; }
         if (!e.exposedPixels && Number.isSafeInteger(e.writes) && binding.seenWrites === e.writes) continue;
-        const dst = new Uint8Array(mappingMemoryBuffer(memory), binding.addr, copyLen);
+        const dst = new Uint8Array(mappingMemoryBuffer(memory), offset, copyLen);
         // Canonical storage is stable on this worker. Advance the baseline
         // from that source, never from a destination a live guest can change
         // immediately after the copy. Preserve writes outside changed runs.

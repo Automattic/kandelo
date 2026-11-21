@@ -12,11 +12,13 @@ import {
   CH_STATUS,
   SYSCALL_ARGS,
 } from "../src/generated/abi";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  addressSpace: ProcessAddressSpace;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -45,6 +47,7 @@ function createTestChannel(
   return {
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channelOffset: 0,
     i32View: new Int32Array(memory.buffer),
     consecutiveSyscalls: 0,

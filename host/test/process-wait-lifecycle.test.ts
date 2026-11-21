@@ -58,6 +58,7 @@ import {
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const SIGCHLD = 17;
 const SIGCONT = 18;
@@ -1768,6 +1769,7 @@ function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 
   return {
     pid,
     memory,
+    addressSpace: new ProcessAddressSpace(memory, null),
     channelOffset,
     i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,

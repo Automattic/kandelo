@@ -9,6 +9,7 @@ import {
   KernelReentrantEntryError,
 } from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
@@ -45,6 +46,7 @@ const KERNEL_EXPORT_NAMES = [
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  readonly addressSpace: ProcessAddressSpace;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -81,6 +83,7 @@ function makeHarness(
   const channel: TestChannel = {
     pid: 41,
     memory: channelMemory,
+    addressSpace: new ProcessAddressSpace(channelMemory, null),
     channelOffset: 0,
     i32View: new Int32Array(channelMemory.buffer),
     consecutiveSyscalls: 0,

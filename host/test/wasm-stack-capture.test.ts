@@ -7,6 +7,7 @@ import { captureWasmStackText, createStackCaptureImport, parseWasmStack } from "
 import { describeProgramExtensionFailures } from "../src/program-extensions";
 import { describeWasmArtifactPolicyFailures, readWasmFunctionImports, readWasmImportDescriptors } from "../src/constants";
 import * as wire from "../src/generated/program-extensions";
+import { ProcessAddressSpace } from "../src/process-address-space";
 const repo = resolve(import.meta.dirname, "../..");
 let directory: string, bytes: ArrayBuffer;
 beforeAll(() => {
@@ -28,7 +29,7 @@ describe("versioned stack capture", () => {
     const descriptor = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
     const formatter = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
     let stack = "";
-    const capture = createStackCaptureImport(memory, 4, bytes, () => true, () => { stack = captureWasmStackText(); return stack; });
+    const capture = createStackCaptureImport(new ProcessAddressSpace(memory, null), 4, bytes, () => true, () => { stack = captureWasmStackText(); return stack; });
     const { instance } = await WebAssembly.instantiate(bytes, { env: { memory }, [wire.STACK_MODULE]: { [wire.STACK_IMPORT]: capture } });
     const length = (instance.exports.run as (pointer: number) => number)(1024);
     expect(length, stack).toBeGreaterThan(wire.STACK_HEADER_BYTES);
@@ -49,7 +50,7 @@ describe("versioned stack capture", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     new Uint8Array(memory.buffer).fill(0xa5);
     let calls = 0;
-    const capture = createStackCaptureImport(memory, 4, bytes, () => true, () => { calls++; return ""; });
+    const capture = createStackCaptureImport(new ProcessAddressSpace(memory, null), 4, bytes, () => true, () => { calls++; return ""; });
     expect(capture(-1, 128, 8)).toBe(wire.STACK_INVALID_ADDRESS);
     expect(capture(65530, 128, 8)).toBe(wire.STACK_INVALID_ADDRESS);
     expect(capture(0, wire.STACK_MAX_PACKET_BYTES + 1, 8)).toBe(wire.STACK_INVALID_ARGUMENT);
@@ -59,7 +60,7 @@ describe("versioned stack capture", () => {
   });
   it("keeps ambiguous module ownership unresolved", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
-    const capture = createStackCaptureImport(memory, 4, bytes, () => false, () => "at inner (wasm://wasm/test:wasm-function[1]:0x80)");
+    const capture = createStackCaptureImport(new ProcessAddressSpace(memory, null), 4, bytes, () => false, () => "at inner (wasm://wasm/test:wasm-function[1]:0x80)");
     const length = capture(0, 4096, 8);
     const packet = new DataView(memory.buffer, 0, length);
     expect(packet.getUint16(wire.STACK_FLAGS_OFFSET, true) & wire.STACK_FLAG_MODULE_UNRESOLVED).not.toBe(0);
@@ -91,7 +92,7 @@ describe("versioned stack capture", () => {
     const program = Uint8Array.from(readFileSync(prepared)).buffer;
     const memory = new WebAssembly.Memory({ initial: 4 });
     let capturedStack = "";
-    const capture = createStackCaptureImport(memory, 4, program, () => true, () => { capturedStack = captureWasmStackText(); return capturedStack; });
+    const capture = createStackCaptureImport(new ProcessAddressSpace(memory, null), 4, program, () => true, () => { capturedStack = captureWasmStackText(); return capturedStack; });
     let length = 0;
     const imports: WebAssembly.Imports = { env: { memory, capture: () => { length = capture(1024, 16384, 32); } } };
     const module = new WebAssembly.Module(program);

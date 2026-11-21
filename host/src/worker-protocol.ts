@@ -5,6 +5,7 @@ import type {
   ForkExternrefImportWake,
 } from "./fork-externref-import-mailbox";
 import type { ProcessForkMode } from "./generated/abi";
+import type { PageTableLocation } from "./process-address-space";
 
 export type ForkMemoryOwnership = "copied" | "borrowed";
 
@@ -44,6 +45,26 @@ export interface CentralizedWorkerInitMessage {
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
   channelOffset: number;
+  /**
+   * Page tables of a program rewritten by `wasm-memory-instrument` in
+   * `"share"` mode. The Worker stores `table` in `__memory_table_base`,
+   * `group` in `__memory_group_base` and `stop` in `__memory_stop_base`
+   * before guest code runs, and translates its own accesses to guest memory
+   * through the same tables.
+   */
+  pageTable?: PageTableLocation;
+  /**
+   * Compiled `kandelo_memory_instrument32.wasm`. A process with `pageTable`
+   * rewrites every side module it loads with `dlopen` through it.
+   */
+  memoryInstrumenter?: WebAssembly.Module;
+  /**
+   * Guest address of the syscall channel when it differs from
+   * `channelOffset`, the channel's physical offset. A fork child that shares
+   * its parent's Memory keeps the parent's guest address on its own
+   * physical pages.
+   */
+  channelAddress?: number;
   /** Kernel-owned sticky secure-execution state for this exact image. */
   secureExec: boolean;
   /**
@@ -142,7 +163,19 @@ export interface CentralizedThreadInitMessage {
   /** Main process channel offset. The thread reads the process-wide dlopen
    * archive head relative to this live shared-memory anchor before fork. */
   processChannelOffset: number;
+  /**
+   * Guest address of the main process channel when it differs from
+   * `processChannelOffset`. Guest code loads the dlopen generation word
+   * relative to it.
+   */
+  processChannelAddress?: number;
   channelOffset: number;
+  /** See [`CentralizedWorkerInitMessage#channelAddress`]. */
+  channelAddress?: number;
+  /** See [`CentralizedWorkerInitMessage#pageTable`]. */
+  pageTable?: PageTableLocation;
+  /** See [`CentralizedWorkerInitMessage#memoryInstrumenter`]. */
+  memoryInstrumenter?: WebAssembly.Module;
   /** Same sticky image marker as the process worker. */
   secureExec: boolean;
   /**

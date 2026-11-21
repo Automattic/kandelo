@@ -3628,6 +3628,12 @@ pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[Coresident
     closure_crates: &["kandelo-program-policy"],
     artifacts: &[("kandelo_program_policy32.wasm", "wasm32", true)],
     closure_description: "crates/program-policy and its workspace dependencies",
+}, CoresidentSideModule {
+    node_name: "kandelo-memory-instrument",
+    script: "crates/memory-instrument/build-wasm.sh",
+    closure_crates: &["memory-instrument"],
+    artifacts: &[("kandelo_memory_instrument32.wasm", "wasm32", true)],
+    closure_description: "crates/memory-instrument and its workspace dependencies",
 }];
 
 /// Whether a projection node name belongs to a co-resident side module rather
@@ -8906,7 +8912,11 @@ materialization = "lazy"
 
     #[test]
     fn coresident_table_has_the_image_writer_and_isolated_program_policy() {
-        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 2);
+        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 3);
+        let instrumenter = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-memory-instrument").unwrap();
+        assert_eq!(instrumenter.script, "crates/memory-instrument/build-wasm.sh");
+        assert_eq!(instrumenter.closure_crates, &["memory-instrument"]);
+        assert_eq!(instrumenter.artifacts, &[("kandelo_memory_instrument32.wasm", "wasm32", true)]);
         let policy = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-program-policy").unwrap();
         assert_eq!(policy.script, "crates/program-policy/build-wasm.sh");
         assert_eq!(policy.closure_crates, &["kandelo-program-policy"]);

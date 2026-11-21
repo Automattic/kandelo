@@ -16,6 +16,7 @@ import {
 import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
+import { ProcessAddressSpace } from "../src/process-address-space";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import {
   createKernelSharedMappingStub,
@@ -45,6 +46,7 @@ function createFileHarness() {
     return [pid, {
       pid,
       memory: processMemory,
+      addressSpace: new ProcessAddressSpace(processMemory, null),
       channelOffset: 0,
       i32View: new Int32Array(processMemory.buffer, 0, 1),
       consecutiveSyscalls: 0,
@@ -135,6 +137,7 @@ function createFileHarness() {
   const processes = new Map(pids.map((pid) => [pid, {
     pid,
     memory: memories.get(pid)!,
+    addressSpace: channels.get(pid)!.addressSpace,
     channels: [channels.get(pid)!],
   }]));
   const fdSupportsMmapWriteback = vi.fn(() => true);

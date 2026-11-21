@@ -41,6 +41,7 @@ import {
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32,
   WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I64,
 } from "../src/generated/abi";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE_SIZE = 65_536;
 
@@ -306,7 +307,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,
@@ -397,7 +398,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,
@@ -513,7 +514,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 4 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,
@@ -651,7 +652,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 4 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,
@@ -758,7 +759,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 4 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,
@@ -850,7 +851,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,
@@ -921,7 +922,7 @@ describe("fork imported-global provider planning", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const allocations = allocator(memory);
     const arena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocations.allocate,
       allocations.deallocate,

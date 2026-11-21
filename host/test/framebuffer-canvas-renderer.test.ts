@@ -48,9 +48,11 @@ describe("independent canvas framebuffer storage", () => {
     const { canvas, paint, tick } = rendererHarness();
     const registry = new FramebufferRegistry(); registry.bind(mapping(16, 4));
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-    new Uint8Array(memory.buffer, 16, 4).set([4, 5, 6, 0]);
+    new Uint8Array(memory.buffer, 32, 4).set([4, 5, 6, 0]);
     const getProcessMemory = vi.fn(() => memory);
     const stop = attachCanvas(canvas, registry, 7, { getProcessMemory });
+    tick(); expect(paint).not.toHaveBeenCalled();
+    registry.place(7, 32);
     tick(); expect(paint.mock.calls[0][0].data).toEqual(new Uint8ClampedArray([6, 5, 4, 255]));
     expect(getProcessMemory).toHaveBeenCalledWith(7); stop();
   });

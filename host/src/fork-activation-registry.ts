@@ -71,6 +71,7 @@ import {
   FORK_STATIC_ROOT_HARVEST_EXPORT,
   ForkStaticRootCatalog,
 } from "./fork-static-root-catalog";
+import type { ProcessAddressSpace } from "./process-address-space";
 
 export const FORK_MODULE_BOOTSTRAP_EXPORT = "wpk_fork_module_bootstrap";
 export const FORK_MODULE_STATE_SAVE_EXPORT = "wpk_fork_module_state_save";
@@ -651,7 +652,7 @@ export class ForkActivationRegistry {
   private readonly gcProvenance = new ForkGcProvenanceRegistry();
 
   constructor(
-    private readonly memory: WebAssembly.Memory,
+    private readonly space: ProcessAddressSpace,
     private readonly externrefs: ForkExternrefRecipeProvider,
     private readonly label: string,
     private readonly allocateScratch?: ForkReferenceScratchAllocate,
@@ -1292,7 +1293,7 @@ export class ForkActivationRegistry {
     const references = new ForkReferenceTransaction(
       functions,
       this.externrefs,
-      this.memory,
+      this.space,
       this.allocateScratch,
       this.deallocateScratch,
       `${this.label}: references`,
@@ -1342,7 +1343,7 @@ export class ForkActivationRegistry {
     const references = new ForkReferenceTransaction(
       functions,
       this.externrefs,
-      this.memory,
+      this.space,
       this.allocateScratch,
       this.deallocateScratch,
       `${this.label}: peer table references`,
@@ -1413,7 +1414,7 @@ export class ForkActivationRegistry {
     const references = new ForkReferenceTransaction(
       functions,
       this.externrefs,
-      this.memory,
+      this.space,
       this.allocateScratch,
       this.deallocateScratch,
       `${this.label}: peer table references`,
@@ -1504,7 +1505,7 @@ export class ForkActivationRegistry {
     const references = new ForkReferenceTransaction(
       functions,
       this.externrefs,
-      this.memory,
+      this.space,
       this.allocateScratch,
       this.deallocateScratch,
       `${this.label}: references`,

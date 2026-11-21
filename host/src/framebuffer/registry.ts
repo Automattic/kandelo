@@ -6,7 +6,7 @@
  *   - **mmap-based** — pixel buffer lives inside the process's wasm
  *     `Memory` (a SharedArrayBuffer). The kernel emits a real
  *     `bind(pid, addr, len, w, h, stride, fmt)` and renderers project
- *     `[addr, addr+len)` of the process Memory onto a canvas. The
+ *     `[offset, offset+len)` of the process Memory onto a canvas. The
  *     view is rebuilt after every `WebAssembly.Memory.grow()`.
  *
  *   - **write-based** — used by software (e.g. fbDOOM) that does
@@ -26,10 +26,14 @@ export type FbFormat = "BGRA32";
 
 export type FbBindingInput = {
   pid: number;
-  /** Offset within the process's wasm Memory. `0` together with
+  /** Guest address of the mapping. `0` together with
    *  `len === 0` is the sentinel for a write-based binding (see file
    *  header) — the host owns the buffer in that case. */
   addr: number;
+  /** Offset of the mapping within the process's wasm Memory. The kernel
+   *  worker sets it with `place` once the mapping has its pages; a reader
+   *  of process Memory waits for it. */
+  offset?: number;
   /** Length in bytes (smem_len). `0` together with `addr === 0` is
    *  the write-based sentinel. */
   len: number;
@@ -110,6 +114,17 @@ export class FramebufferRegistry {
 
   get(pid: number): FbBinding | undefined {
     return this.bindings.get(pid);
+  }
+
+  /**
+   * Record where the pages of `pid`'s mmap-based binding are in its
+   * process Memory, and drop the cached view of any earlier placement.
+   */
+  place(pid: number, offset: number): void {
+    const b = this.bindings.get(pid);
+    if (!b) return;
+    b.offset = offset;
+    this.rebindMemory(pid);
   }
 
   /**

@@ -23,6 +23,7 @@ import {
   type ForkGcCodecProvider,
   type ForkGcLayoutDescriptor,
 } from "../src/fork-gc-codec";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 function makeFunctionCatalog(
   moduleActivation: number,
@@ -74,7 +75,7 @@ function withArena(
   const memory = new WebAssembly.Memory({ initial: 16 });
   let next = 0x1_0000;
   const arena = new ForkModuleStateArena(
-    memory,
+    new ProcessAddressSpace(memory, null),
     4,
     (size) => {
       const addr = next;
@@ -310,7 +311,7 @@ describe("ForkReferenceTransaction", () => {
     const transaction = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
     );
     const provider = {
       throwSlot(_slot: number): never {
@@ -361,7 +362,7 @@ describe("ForkReferenceTransaction", () => {
     const transaction = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
       (size) => {
         const addr = next;
         next += size;
@@ -401,7 +402,7 @@ describe("ForkReferenceTransaction", () => {
     const transaction = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
       (size) => {
         const addr = next;
         next += size;
@@ -436,7 +437,7 @@ describe("ForkReferenceTransaction", () => {
     const parent = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       externrefs.provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
     );
     parent.setExceptionSlotProvider({
       throwSlot(slot): never {
@@ -498,7 +499,7 @@ describe("ForkReferenceTransaction", () => {
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      childMemory,
+      new ProcessAddressSpace(childMemory, null),
     );
     child.attachChild(records);
     expect(child.routeException(exceptionId, 7)).toBe(9);
@@ -574,7 +575,7 @@ function captureGcStructGraph(options: {
   const transaction = new ForkReferenceTransaction(
     makeFunctionCatalog(0, []),
     makeExternrefs().provider,
-    memory,
+    new ProcessAddressSpace(memory, null),
   );
   const table = new WebAssembly.Table({
     element: "externref",
@@ -625,7 +626,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
+      new ProcessAddressSpace(new WebAssembly.Memory({ initial: 2 }), null),
     );
     child.attachChild(records);
 
@@ -709,7 +710,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
+      new ProcessAddressSpace(new WebAssembly.Memory({ initial: 2 }), null),
       undefined,
       undefined,
       "deep typed child",
@@ -753,7 +754,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const parent = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
       undefined,
       undefined,
       "static-root graph parent",
@@ -808,7 +809,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
+      new ProcessAddressSpace(new WebAssembly.Memory({ initial: 2 }), null),
       undefined,
       undefined,
       "static-root graph child",
@@ -862,7 +863,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
       undefined,
       undefined,
       "typed child",
@@ -904,7 +905,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
+      new ProcessAddressSpace(new WebAssembly.Memory({ initial: 2 }), null),
       undefined,
       undefined,
       "typed cycle",
@@ -938,7 +939,7 @@ describe("ForkReferenceTransaction typed replay barrier", () => {
     const transaction = new ForkReferenceTransaction(
       makeFunctionCatalog(0, []),
       makeExternrefs().provider,
-      memory,
+      new ProcessAddressSpace(memory, null),
     );
     const table = new WebAssembly.Table({
       element: "externref",

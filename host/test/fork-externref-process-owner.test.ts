@@ -13,6 +13,7 @@ import {
   encodeSegmentedForkReferenceRecords,
   PagedForkReferenceVector,
 } from "../src/fork-reference-segments";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 function copiedContinuation(
   graph: ForkReferenceRecipeGraph,
@@ -23,7 +24,7 @@ function copiedContinuation(
   const memory = new WebAssembly.Memory({ initial: 8 });
   let next = 0x2_0000;
   const arena = new ForkModuleStateArena(
-    memory,
+    new ProcessAddressSpace(memory, null),
     4,
     (size) => {
       const address = next;
@@ -49,7 +50,7 @@ function copiedContinuation(
   arena.seal();
 
   const moduleBufferAddress = 0x1_0000;
-  writeForkModuleStateRoot(memory, moduleBufferAddress, 4, root);
+  writeForkModuleStateRoot(new ProcessAddressSpace(memory, null), moduleBufferAddress, 4, root);
   return { memory, moduleBufferAddress };
 }
 
@@ -83,7 +84,7 @@ describe("ForkExternrefProcessOwner", () => {
     const grant = owner.forkGenerationFromContinuation(
       parent,
       42,
-      copied.memory,
+      new ProcessAddressSpace(copied.memory, null),
       4,
       copied.moduleBufferAddress,
     );
@@ -128,7 +129,7 @@ describe("ForkExternrefProcessOwner", () => {
       owner.forkGenerationFromContinuation(
         parent,
         62,
-        copied.memory,
+        new ProcessAddressSpace(copied.memory, null),
         4,
         copied.moduleBufferAddress,
       )
@@ -167,7 +168,7 @@ describe("ForkExternrefProcessOwner", () => {
       const grant = owner.forkGenerationFromContinuation(
         parent,
         82,
-        copied.memory,
+        new ProcessAddressSpace(copied.memory, null),
         4,
         copied.moduleBufferAddress,
       );

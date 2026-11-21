@@ -51,6 +51,8 @@ import {
   type ForkReferenceVector,
   type MutableForkReferenceVectorInternIndex,
 } from "./fork-reference-segments";
+import type { ProcessAddressSpace } from "./process-address-space";
+import { processDataView } from "./process-data-view";
 
 const MAX_REFERENCE_VECTOR_ORDINAL = 0xffff_ffff;
 
@@ -117,7 +119,7 @@ export interface ForkEarlyChildReferenceProviderOptions {
   readonly declarations: readonly ForkEarlyReferenceActivationDeclaration[];
   readonly externrefs: ForkExternrefRecipeProvider;
   readonly transit: ForkEarlyReferenceTransit;
-  readonly memory: WebAssembly.Memory;
+  readonly space: ProcessAddressSpace;
   readonly allocateScratch: ForkReferenceScratchAllocate;
   readonly deallocateScratch: ForkReferenceScratchDeallocate;
   readonly label?: string;
@@ -373,7 +375,7 @@ export class ForkEarlyChildReferenceProvider
   private readonly label: string;
   private readonly externrefs: ForkExternrefRecipeProvider;
   private readonly transit: ForkEarlyReferenceTransit;
-  private readonly memory: WebAssembly.Memory;
+  private readonly space: ProcessAddressSpace;
   private readonly allocateScratch: ForkReferenceScratchAllocate;
   private readonly deallocateScratch: ForkReferenceScratchDeallocate;
 
@@ -381,7 +383,7 @@ export class ForkEarlyChildReferenceProvider
     this.label = options.label ?? "early child references";
     this.externrefs = options.externrefs;
     this.transit = options.transit;
-    this.memory = options.memory;
+    this.space = options.space;
     this.allocateScratch = options.allocateScratch;
     this.deallocateScratch = options.deallocateScratch;
     this.transaction = options.transaction;
@@ -905,7 +907,7 @@ export class ForkEarlyChildReferenceProvider
         !Number.isSafeInteger(addr)
         || addr <= 0
         || addr % 16 !== 0
-        || addr > this.memory.buffer.byteLength - chunkSize
+        || addr > this.space.memory.buffer.byteLength - chunkSize
       ) {
         if (Number.isSafeInteger(addr) && addr > 0) {
           try {
@@ -924,7 +926,7 @@ export class ForkEarlyChildReferenceProvider
     const previousUsed = chunk.used;
     const addr = chunk.addr + previousUsed;
     chunk.used += alignedSize;
-    new Uint8Array(this.memory.buffer, addr, alignedSize).fill(0);
+    this.space.zero(addr, alignedSize);
     this.scratchReservations.push({
       addr,
       requestedSize,
@@ -950,11 +952,7 @@ export class ForkEarlyChildReferenceProvider
         `${this.label}: scratch release is not the most recent reservation`,
       );
     }
-    new Uint8Array(
-      this.memory.buffer,
-      reservation.addr,
-      reservation.alignedSize,
-    ).fill(0);
+    this.space.zero(reservation.addr, reservation.alignedSize);
     reservation.chunk.used = reservation.previousUsed;
     const tail = this.scratchChunks[this.scratchChunks.length - 1];
     if (
@@ -1460,7 +1458,7 @@ export class ForkEarlyChildReferenceProvider
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, bytes.byteLength, context);
-    new Uint8Array(this.memory.buffer, offset, bytes.byteLength).set(bytes);
+    this.space.write(offset, bytes);
   }
 
   private writeRecipeIds(
@@ -1469,7 +1467,7 @@ export class ForkEarlyChildReferenceProvider
     context: string,
   ): void {
     const { offset } = this.memoryRange(pointer, ids.length * 4, context);
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.space);
     ids.forEach((id, index) => {
       assertRecipeId(id, this.nodes.length);
       view.setUint32(offset + index * 4, id, true);
@@ -1490,7 +1488,7 @@ export class ForkEarlyChildReferenceProvider
     ) {
       throw new RangeError(`${this.label}: ${context} has an invalid guest pointer`);
     }
-    const memoryLength = this.memory.buffer.byteLength;
+    const memoryLength = this.space.memory.buffer.byteLength;
     if (offset > memoryLength || byteLength > memoryLength - offset) {
       throw new RangeError(`${this.label}: ${context} exceeds WebAssembly memory`);
     }
@@ -1540,7 +1538,7 @@ export class ForkEarlyChildReferenceProvider
     const failures: unknown[] = [];
     for (const chunk of chunks) {
       try {
-        new Uint8Array(this.memory.buffer, chunk.addr, chunk.size).fill(0);
+        this.space.zero(chunk.addr, chunk.size);
         this.deallocateScratch(chunk.addr, chunk.size);
       } catch (error) {
         failures.push(error);

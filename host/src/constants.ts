@@ -2766,12 +2766,28 @@ function skipGlobalEntry(src: Uint8Array, pos: number): number {
  * large data sections like mariadbd).
  */
 export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
+  return extractGlobalExportInit(programBytes, "__heap_base");
+}
+
+/**
+ * Extract the initial `__memory_table_base` of a program rewritten by
+ * `wasm-memory-instrument`: the physical address of its page tables. Null
+ * when the program is not instrumented.
+ */
+export function extractMemoryTableBase(programBytes: ArrayBuffer): bigint | null {
+  return extractGlobalExportInit(programBytes, "__memory_table_base");
+}
+
+function extractGlobalExportInit(
+  programBytes: ArrayBuffer,
+  exportName: string,
+): bigint | null {
   const src = new Uint8Array(programBytes);
   if (src.length < 8) return null;
 
   let globalImports = 0;
   let funcImports = 0;
-  let heapBaseGlobalIndex: number | null = null;
+  let globalIndex: number | null = null;
   let globalSectionContent: { offset: number; size: number } | null = null;
 
   let offset = 8; // skip magic + version
@@ -2795,7 +2811,7 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
       // Global section — defer until we know the global index
       globalSectionContent = { offset: contentOffset, size: sectionSize };
     } else if (sectionId === 7) {
-      // Export section — find __heap_base
+      // Export section — find the global export
       let pos = contentOffset;
       const [exportCount, countBytes] = readULEB128(src, pos); pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
@@ -2803,12 +2819,12 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
         const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
-        if (kind === 3 && name === "__heap_base") {
-          heapBaseGlobalIndex = idx;
+        if (kind === 3 && name === exportName) {
+          globalIndex = idx;
           break;
         }
       }
-      if (heapBaseGlobalIndex === null) return null;
+      if (globalIndex === null) return null;
       if (globalSectionContent === null) {
         // Sections appear in canonical order, so Global (id=6) comes
         // before Export (id=7). Reaching here means the binary is
@@ -2821,11 +2837,11 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
     offset = contentOffset + sectionSize;
   }
 
-  if (heapBaseGlobalIndex === null || globalSectionContent === null) return null;
+  if (globalIndex === null || globalSectionContent === null) return null;
 
   // The export's global index counts both imports and defined globals.
   // Defined globals start at index `globalImports`.
-  const definedIndex = heapBaseGlobalIndex - globalImports;
+  const definedIndex = globalIndex - globalImports;
   if (definedIndex < 0) return null; // imported global, can't read its init here
 
   let pos = globalSectionContent.offset;

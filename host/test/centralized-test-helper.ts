@@ -47,6 +47,7 @@ import type { ForkExternrefGeneration } from "../src/fork-reference-broker";
 import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
+import { ProcessAddressSpace, type ForkMemory } from "../src/process-address-space";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -169,6 +170,9 @@ export interface RunProgramOptions {
   maxProcessMemoryBytes?: number;
   /** Fork address-space copy mode (NodeKernelHost default when omitted). */
   forkCopy?: ForkAddressSpaceCopy;
+  /** Fork memory mode (NodeKernelHost default when omitted). Worker-thread
+   *  mode only. */
+  forkMemory?: ForkMemory;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -307,6 +311,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     forkCopy: options.forkCopy,
+    forkMemory: options.forkMemory,
     rootfsImage,
     rootfsMountSpec: options.rootfsNosuid === undefined
       ? undefined
@@ -703,7 +708,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           externrefProcessOwner.forkGenerationFromContinuation(
             parentGeneration,
             childPid,
-            parentMemory,
+            new ProcessAddressSpace(parentMemory, null),
             parentPtrWidth,
             forkBufAddr,
             `centralized test fork child pid=${childPid}`,
@@ -1028,9 +1033,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         if (processChannelOffset === undefined) {
           throw new Error(`Unknown process channel for pid ${clonePid}`);
         }
-        const alloc = threadAllocator.allocate(memory);
+        const alloc = threadAllocator.allocate(kernelWorker.getProcessAddressSpace(clonePid)!);
         try {
-          kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
+          kernelWorker.attachThreadChannel(attachment, alloc.channelOffset, alloc.channelAddress);
         } catch (err) {
           threadAllocator.free(alloc.basePage);
           throw err;

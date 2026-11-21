@@ -16,6 +16,7 @@ import {
 import {
   unwrapForkWorkerExceptionCapability,
 } from "./fork-worker-exception-capability";
+import type { ProcessAddressSpace } from "./process-address-space";
 
 export interface ForkExternrefForkGrant {
   readonly generation: ForkExternrefGeneration;
@@ -74,7 +75,7 @@ export class ForkExternrefProcessOwner {
   forkGenerationFromContinuation(
     parent: ForkExternrefGeneration,
     childPid: number,
-    memory: WebAssembly.Memory,
+    space: ProcessAddressSpace,
     ptrWidth: 4 | 8,
     moduleBufferAddress: number,
     label = `fork child pid=${childPid}: externref owner`,
@@ -87,7 +88,7 @@ export class ForkExternrefProcessOwner {
     }
 
     const root = readForkModuleStateRoot(
-      memory,
+      space,
       moduleBufferAddress,
       ptrWidth,
     );
@@ -101,7 +102,7 @@ export class ForkExternrefProcessOwner {
     // execution. Its allocation callbacks remain deliberately impossible:
     // the arena belongs to the blocked parent and cannot be mutated here.
     const arena = new ForkModuleStateArena(
-      memory,
+      space,
       ptrWidth,
       () => {
         throw new Error(`${label}: read-only arena attempted allocation`);

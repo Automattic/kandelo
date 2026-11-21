@@ -15,6 +15,7 @@ import {
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
   WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
 } from "../src/generated/abi";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 function addressBeginExport(pointerType: 0x7f | 0x7e): WebAssembly.ExportValue {
   const module = new WebAssembly.Module(new Uint8Array([
@@ -185,7 +186,7 @@ describe("LinkedForkContinuation", () => {
     const parentMemory = new WebAssembly.Memory({ initial: 8 });
     const parentAllocator = allocator(parentMemory);
     const parent = new LinkedForkContinuation(
-      parentMemory,
+      new ProcessAddressSpace(parentMemory, null),
       FORMAT,
       parentAllocator.allocate,
       parentAllocator.deallocate,
@@ -203,7 +204,7 @@ describe("LinkedForkContinuation", () => {
     const childMemory = cloneMemory(parentMemory);
     const childAllocator = allocator(childMemory);
     const child = new LinkedForkContinuation(
-      childMemory,
+      new ProcessAddressSpace(childMemory, null),
       FORMAT,
       childAllocator.allocate,
       childAllocator.deallocate,
@@ -232,7 +233,7 @@ describe("LinkedForkContinuation", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 4 });
       const parentAllocator = allocator(parentMemory);
       const parent = new LinkedForkContinuation(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -268,7 +269,7 @@ describe("LinkedForkContinuation", () => {
 
       const childAllocator = allocator(childMemory);
       const child = new LinkedForkContinuation(
-        childMemory,
+        new ProcessAddressSpace(childMemory, null),
         format,
         childAllocator.allocate,
         childAllocator.deallocate,
@@ -295,7 +296,7 @@ describe("LinkedForkContinuation", () => {
       const memory = new WebAssembly.Memory({ initial: 8 });
       const parentAllocator = allocator(memory);
       const parent = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -329,7 +330,7 @@ describe("LinkedForkContinuation", () => {
       }));
 
       const borrower = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         format,
         () => { throw new Error("borrowed replay must not allocate"); },
         () => { throw new Error("borrowed replay must not release"); },
@@ -417,7 +418,7 @@ describe("LinkedForkContinuation", () => {
       const memory = new WebAssembly.Memory({ initial: 4 });
       const parentAllocator = allocator(memory);
       const parent = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -429,7 +430,7 @@ describe("LinkedForkContinuation", () => {
       parent.finishUnwind();
 
       const borrower = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         format,
         () => { throw new Error("borrowed replay must not allocate"); },
         () => { throw new Error("borrowed replay must not release"); },
@@ -453,7 +454,7 @@ describe("LinkedForkContinuation", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 5 });
       const parentAllocator = allocator(parentMemory);
       const parent = new LinkedForkContinuation(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -474,7 +475,7 @@ describe("LinkedForkContinuation", () => {
 
       const childMemory = cloneMemory(parentMemory);
       const child = new LinkedForkContinuation(
-        childMemory,
+        new ProcessAddressSpace(childMemory, null),
         format,
         () => { throw new Error("replay must not allocate"); },
         () => { throw new Error("failed attachment must not release"); },
@@ -494,7 +495,7 @@ describe("LinkedForkContinuation", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 8 });
       const parentAllocator = allocator(parentMemory);
       const parent = new LinkedForkContinuation(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -574,7 +575,7 @@ describe("LinkedForkContinuation", () => {
 
       const releases: Array<{ addr: number; size: number }> = [];
       const child = new LinkedForkContinuation(
-        cloneMemory(parentMemory),
+        new ProcessAddressSpace(cloneMemory(parentMemory), null),
         format,
         () => { throw new Error("replay must not allocate"); },
         (addr, size) => releases.push({ addr, size }),
@@ -595,7 +596,7 @@ describe("LinkedForkContinuation", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 4 });
       const parentAllocator = allocator(parentMemory);
       const parent = new LinkedForkContinuation(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -610,7 +611,7 @@ describe("LinkedForkContinuation", () => {
 
       const releases: Array<{ addr: number; size: number }> = [];
       const child = new LinkedForkContinuation(
-        cloneMemory(parentMemory),
+        new ProcessAddressSpace(cloneMemory(parentMemory), null),
         format,
         () => { throw new Error("replay must not allocate"); },
         (addr, size) => releases.push({ addr, size }),
@@ -631,7 +632,7 @@ describe("LinkedForkContinuation", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 4 });
       const parentAllocator = allocator(parentMemory);
       const parent = new LinkedForkContinuation(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -652,7 +653,7 @@ describe("LinkedForkContinuation", () => {
 
       const releases: Array<{ addr: number; size: number }> = [];
       const child = new LinkedForkContinuation(
-        cloneMemory(parentMemory),
+        new ProcessAddressSpace(cloneMemory(parentMemory), null),
         format,
         () => { throw new Error("replay must not allocate"); },
         (addr, size) => releases.push({ addr, size }),
@@ -674,7 +675,7 @@ describe("LinkedForkContinuation", () => {
         const memory = new WebAssembly.Memory({ initial: 4 });
         const arenaAllocator = allocator(memory);
         const arena = new LinkedForkContinuation(
-          memory,
+          new ProcessAddressSpace(memory, null),
           format,
           arenaAllocator.allocate,
           arenaAllocator.deallocate,
@@ -709,7 +710,7 @@ describe("LinkedForkContinuation", () => {
       const releases: Array<{ addr: number; size: number }> = [];
       let allocations = 0;
       const arena = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         format,
         (size) => {
           if (allocations++ > 0) {
@@ -736,7 +737,7 @@ describe("LinkedForkContinuation", () => {
     let allocations = 0;
     let requestedGrowth = 0;
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       (size) => {
         if (allocations++ > 0) {
@@ -759,7 +760,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 4 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       formatFor(8),
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -776,7 +777,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 3 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -793,7 +794,7 @@ describe("LinkedForkContinuation", () => {
     writePointer(memory, 4, second.addr + 8 + 2 * FORMAT.ptrWidth, 3 * PAGE_SIZE);
 
     const child = new LinkedForkContinuation(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       FORMAT,
       () => { throw new Error("replay must not allocate"); },
       () => { throw new Error("failed attachment must not release"); },
@@ -809,7 +810,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 5 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -829,7 +830,7 @@ describe("LinkedForkContinuation", () => {
     writePointer(memory, 4, tailNode + 8, prior.addr + prior.size);
 
     const child = new LinkedForkContinuation(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       FORMAT,
       () => { throw new Error("replay must not allocate"); },
       () => {},
@@ -845,7 +846,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 5 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -865,7 +866,7 @@ describe("LinkedForkContinuation", () => {
     writePointer(memory, 4, tailNode + 8, priorChunkNode);
 
     const child = new LinkedForkContinuation(
-      cloneMemory(memory),
+      new ProcessAddressSpace(cloneMemory(memory), null),
       FORMAT,
       () => { throw new Error("replay must not allocate"); },
       () => {},
@@ -884,7 +885,7 @@ describe("LinkedForkContinuation", () => {
       const parentMemory = new WebAssembly.Memory({ initial: 5 });
       const parentAllocator = allocator(parentMemory);
       const parent = new LinkedForkContinuation(
-        parentMemory,
+        new ProcessAddressSpace(parentMemory, null),
         format,
         parentAllocator.allocate,
         parentAllocator.deallocate,
@@ -907,7 +908,7 @@ describe("LinkedForkContinuation", () => {
       const childMemory = cloneMemory(parentMemory);
       const childAllocator = allocator(childMemory);
       const child = new LinkedForkContinuation(
-        childMemory,
+        new ProcessAddressSpace(childMemory, null),
         format,
         childAllocator.allocate,
         childAllocator.deallocate,
@@ -932,7 +933,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 8 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -953,7 +954,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 8 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -968,7 +969,7 @@ describe("LinkedForkContinuation", () => {
     const memory = new WebAssembly.Memory({ initial: 8 });
     const arenaAllocator = allocator(memory);
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       arenaAllocator.allocate,
       arenaAllocator.deallocate,
@@ -982,7 +983,7 @@ describe("LinkedForkContinuation", () => {
     const childMemory = cloneMemory(memory);
     const childAllocator = allocator(childMemory);
     const child = new LinkedForkContinuation(
-      childMemory,
+      new ProcessAddressSpace(childMemory, null),
       FORMAT,
       childAllocator.allocate,
       childAllocator.deallocate,
@@ -997,7 +998,7 @@ describe("LinkedForkContinuation", () => {
     const releases: Array<{ addr: number; size: number }> = [];
     let allocations = 0;
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       (size) => {
         if (allocations++ > 0) throw new Error("synthetic ENOMEM");
@@ -1021,7 +1022,7 @@ describe("LinkedForkContinuation", () => {
     const releases: Array<{ addr: number; size: number }> = [];
     let allocations = 0;
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       (size) => {
         if (allocations++ > 0) {
@@ -1047,7 +1048,7 @@ describe("LinkedForkContinuation", () => {
   it("propagates typed root allocation failure without activating unwind", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       (size) => { throw new ContinuationAllocationError(12, size, "root ENOMEM"); },
       () => { throw new Error("nothing was allocated"); },
@@ -1061,7 +1062,7 @@ describe("LinkedForkContinuation", () => {
   it("reports an initial allocation failure before any frame write", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     const arena = new LinkedForkContinuation(
-      memory,
+      new ProcessAddressSpace(memory, null),
       FORMAT,
       () => { throw new Error("synthetic initial ENOMEM"); },
       () => { throw new Error("nothing was allocated"); },

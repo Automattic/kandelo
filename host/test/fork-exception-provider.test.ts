@@ -17,6 +17,7 @@ import {
   ForkExternrefTokenCache,
   ForkExternrefTokenRecipeProvider,
 } from "../src/fork-reference-broker";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE_SIZE = 65_536;
 
@@ -70,7 +71,7 @@ function activeRegistry(
     return address;
   };
   const registry = new ForkActivationRegistry(
-    memory,
+    new ProcessAddressSpace(memory, null),
     {
       capture: () => 41,
       materialize: () => {
@@ -85,7 +86,7 @@ function activeRegistry(
     registry.registerActivation(registration(activationId, provider));
   }
   const arena = new ForkModuleStateArena(
-    memory,
+    new ProcessAddressSpace(memory, null),
     4,
     allocate,
     () => {},
@@ -208,7 +209,7 @@ describe("ForkExceptionBroker", () => {
       return address;
     };
     const parentRegistry = new ForkActivationRegistry(
-      memory,
+      new ProcessAddressSpace(memory, null),
       new ForkExternrefTokenRecipeProvider(parentTokens),
       "normalized JSTag parent",
       allocate,
@@ -232,7 +233,7 @@ describe("ForkExceptionBroker", () => {
       registration(0, sourceProvider),
     );
     const parentArena = new ForkModuleStateArena(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       allocate,
       () => {},
@@ -258,11 +259,11 @@ describe("ForkExceptionBroker", () => {
     parentRegistry.sealCapture();
 
     const moduleBufferAddress = 0x1000;
-    writeForkModuleStateRoot(memory, moduleBufferAddress, 4, root);
+    writeForkModuleStateRoot(new ProcessAddressSpace(memory, null), moduleBufferAddress, 4, root);
     const childGrant = owner.forkGenerationFromContinuation(
       parentGeneration,
       102,
-      memory,
+      new ProcessAddressSpace(memory, null),
       4,
       moduleBufferAddress,
     );
@@ -283,7 +284,7 @@ describe("ForkExceptionBroker", () => {
     parentRegistry.finishReplay();
 
     const childArena = new ForkModuleStateArena(
-      childMemory,
+      new ProcessAddressSpace(childMemory, null),
       4,
       () => {
         throw new Error("fresh child arena must not allocate");
@@ -294,7 +295,7 @@ describe("ForkExceptionBroker", () => {
     childArena.attach(root);
     const childTokens = new ForkExternrefTokenCache(childGrant.generation.id);
     const childRegistry = new ForkActivationRegistry(
-      childMemory,
+      new ProcessAddressSpace(childMemory, null),
       new ForkExternrefTokenRecipeProvider(childTokens),
       "normalized JSTag child",
     );

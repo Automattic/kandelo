@@ -14,6 +14,7 @@ import {
   readForkModuleStateRoot,
 } from "../src/fork-module-state";
 import { SingleActivationForkRuntime } from "./fork-instrument-runtime-harness";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 const PAGE_SIZE = 65_536;
 
@@ -63,7 +64,7 @@ describe("borrowed fork replay", () => {
       let nextAddress = PAGE_SIZE;
       let nextArenaAddress = 5 * PAGE_SIZE;
       const parentContinuation = new LinkedForkContinuation(
-        memory,
+        new ProcessAddressSpace(memory, null),
         linkedFormat,
         (size) => {
           const addr = nextAddress;
@@ -80,7 +81,7 @@ describe("borrowed fork replay", () => {
         memory,
         continuation: parentContinuation,
         newArena: () => new ForkModuleStateArena(
-          memory,
+          new ProcessAddressSpace(memory, null),
           linkedFormat.ptrWidth,
           (size) => {
             const address = nextArenaAddress;
@@ -117,7 +118,7 @@ describe("borrowed fork replay", () => {
       parentRuntime.coordinator.sealCapture();
       const moduleBuffer = parentRuntime.coordinator.rootFor(0);
       const moduleStateRoot = readForkModuleStateRoot(
-        memory,
+        new ProcessAddressSpace(memory, null),
         moduleBuffer,
         linkedFormat.ptrWidth,
       );

@@ -760,6 +760,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-instrument"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "wasm-encoder 0.247.0",
+ "wasmparser 0.247.0",
+ "wasmprinter",
+ "wat",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

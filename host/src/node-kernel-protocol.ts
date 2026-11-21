@@ -7,6 +7,7 @@ import type {
 } from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { ForkAddressSpaceCopy } from "./process-memory";
+import type { ForkMemory } from "./process-address-space";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -151,6 +152,10 @@ export interface InitMessage {
     maxProcessMemoryBytes: number;
     /** Fork address-space copy mode; the allocator defaults to `"sparse"`. */
     forkCopy?: ForkAddressSpaceCopy;
+    /** Address-space mode for memory-instrumented programs; defaults to `"copy"`. */
+    forkMemory?: ForkMemory;
+    /** Bytes of the memory instrumenter module that rewrites side modules. */
+    memoryInstrumenter?: ArrayBuffer;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     dataBufferSize?: number;

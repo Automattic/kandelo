@@ -9,6 +9,7 @@ import {
   CH_SYSCALL,
 } from "../src/generated/abi";
 import { buildDlopenImports } from "../src/worker-main";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 type WasmPointer = number | bigint;
 
@@ -64,7 +65,7 @@ function createImports(ptrWidth: 4 | 8): {
     ptrWidth === 8 ? 32_768n : 32_768,
   );
   const support = buildDlopenImports(
-    memory,
+    new ProcessAddressSpace(memory, null),
     4_096,
     128,
     () => table,
@@ -100,7 +101,7 @@ describe("dlopen host import pointer widths", () => {
     );
     const archiveControlAddr = 128;
     const support = buildDlopenImports(
-      memory,
+      new ProcessAddressSpace(memory, null),
       4_096,
       archiveControlAddr,
       () => table,
@@ -226,7 +227,7 @@ describe("dlopen host import pointer widths", () => {
       32_768,
     );
     const support = buildDlopenImports(
-      memory,
+      new ProcessAddressSpace(memory, null),
       channelOffset,
       archiveControlAddr,
       () => table,

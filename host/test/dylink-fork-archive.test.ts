@@ -4,6 +4,7 @@ import {
   DylinkForkArchive,
   DylinkForkTableReplica,
 } from "../src/dylink-fork-archive";
+import { ProcessAddressSpace } from "../src/process-address-space";
 
 function fixture(ptrWidth: 4 | 8 = 4) {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
@@ -12,7 +13,7 @@ function fixture(ptrWidth: 4 | 8 = 4) {
   const allocations = new Map<number, number>();
   const deallocated: Array<{ address: number; size: number }> = [];
   const archive = () => new DylinkForkArchive(
-    memory,
+    new ProcessAddressSpace(memory, null),
     ptrWidth,
     () => head,
     (value) => { head = value; },
@@ -479,7 +480,7 @@ describe("compact dylink fork archive", () => {
     const f = fixture(4);
     f.archive().sync(state());
     const wrongWidth = new DylinkForkArchive(
-      f.memory,
+      new ProcessAddressSpace(f.memory, null),
       8,
       () => f.head,
       () => { throw new Error("must not publish"); },
