@@ -31,9 +31,12 @@ portability patches where needed.
 
 ## Quick start
 
-To build locally, you need **macOS or Linux**, **Git**, and
-**[Nix](https://nixos.org/download/) with flakes enabled**. Nix supplies the
-compilers, Node.js, and other build tools.
+To build locally, you need **macOS on Apple silicon or Linux (x86-64 or
+ARM64)**, **Git**, and **[Nix](https://nixos.org/download/) with flakes
+enabled**. Nix supplies the compilers, Node.js, and other build tools. On an
+Intel Mac, run Linux natively or in a VM and use the `x86_64-linux` shell;
+open the demo in a browser inside that Linux system, or forward port 5401 to
+the Mac's localhost (for example `ssh -L 5401:127.0.0.1:5401 <vm>`).
 
 ```bash
 git clone https://github.com/Automattic/kandelo.git

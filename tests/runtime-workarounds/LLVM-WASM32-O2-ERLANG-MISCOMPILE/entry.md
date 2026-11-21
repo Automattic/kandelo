@@ -15,8 +15,9 @@ The Erlang package build says that LLVM's wasm32 backend, at `-O2`:
   `erl_db_hash.c` (`match_traverse` corruption).
 
 `docs/package-management.md` ("Optimization-level workarounds") calls it
-a Heisenbug: adding an `fprintf` inside the function hides it. The LLVM
-version is given there as LLVM 21.
+a Heisenbug: adding an `fprintf` inside the function hides it. The claim
+was made on LLVM 21. Kandelo now pins LLVM 23.1.3; whether OTP still
+miscompiles at `-O2` with it has not been re-tested.
 
 ## Why Kandelo is affected
 
@@ -35,7 +36,8 @@ syscall or POSIX behavior.
 
 Only the comments in the build script, the patch script and
 `docs/package-management.md`. No reduction, no LLVM bug report, no
-bisection and no compiler version beyond "LLVM 21".
+bisection, no compiler version beyond "LLVM 21", and no check on the
+pinned LLVM 23.1.3.
 
 ## Why this is not a Kandelo defect
 

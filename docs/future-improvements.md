@@ -849,6 +849,17 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 **Files:** `crates/runtime-core/src/syscalls.rs` — `filesystem_pathconf_value`, `host_clock_id`, `is_encoded_process_cpu_clock_id`; `scripts/sortix-expectations.sh`
 
+### Read `PR_SET_NAME` names only up to the terminating NUL
+
+The `prctl` marshalling in `libc/glue/channel_syscall.c` always copies 16
+bytes for `PR_SET_NAME`, whatever the name's length. Linux reads the
+name only up to its NUL, at most 16 bytes, so a short name at the end of
+readable memory succeeds there. Check and fix this before enabling thread
+names in the generic Qt build (row 5 of the table in "Build Qt as a
+generic POSIX Unix instead of Linux").
+
+**Files:** `libc/glue/channel_syscall.c`
+
 ## Graphics
 
 D-64 approves one combined foundation/B1 shipment through #1594 and closes
@@ -1461,7 +1472,315 @@ On 2026-10-30 a full setup in a second checkout of main (`e4bca8639e`) failed wi
 
 **Files:** `packages/registry/php/`, the local-build cache-winner receipts
 
+### NetHack's in-Kandelo build is not reproducible
+
+`packages/registry/nethack` compiles NetHack inside a Kandelo machine
+booted from `kandelo-build-image` (`build-nethack-guest.sh`), then
+fork-instruments `nethack.wasm` on the build machine. Two builds with
+byte-identical `kandelo-build-image` artifacts produced different
+`nethack.wasm` files. The cause has not been isolated. Compare the two
+builds' guest-compiled objects and uninstrumented module to tell whether
+the difference comes from the guest build or from host-side
+instrumentation, then remove it.
+
+**Files:** `packages/registry/nethack/`,
+`packages/registry/kandelo-build-image/`
+
+### Build Qt as a generic POSIX Unix instead of Linux
+
+The Qt recipes (qtbase, qtshadertools, qtdeclarative, qtgallery and
+quickshell) compile with `-D__linux__=1 -DQT_LINUXBASE`, and all but
+qtgallery also configure CMake with `-DCMAKE_SYSTEM_NAME=Linux`. Qt's
+`qsystemdetection.h` stops with an error for any OS it does not recognize,
+and it recognizes Wasm only through `__EMSCRIPTEN__`. The SDK already
+declares Kandelo as a POSIX Unix (`sdk/cmake/Platform/Kandelo.cmake`), but
+Qt never sees it. Pretending to be Linux costs:
+
+- Linux-header shims: qtbase's `src/include/linux/fs.h` and qtdeclarative's
+  `src/include/linux/limits.h`.
+- Patches: `qmutex` and `qthread-name`, where upstream forgot to honor
+  `QT_LINUXBASE`, and `forkfd`, which `__linux__` routes to raw `clone(2)`.
+- Linux-only code paths in Qt, for example raw `syscall(SYS_memfd_create)`.
+
+**Direction.** Build Qt as a generic POSIX Unix, with no Kandelo identity
+macro in source. The project avoids such a macro on purpose, so that porting
+work improves general POSIX compatibility instead of inviting special cases.
+That means:
+
+- a generic `Q_OS_UNIX` fallback in `qsystemdetection.h` for an unrecognized
+  `__unix__` system;
+- a generic mkspec;
+- Qt's CMake run with the SDK's `Kandelo` system name, which sets `UNIX`;
+- Linux-gated CMake checks widened to capability checks: the Wayland and EGL
+  discovery gated on `LINUX OR FREEBSD`, and `--gc-sections` gated on
+  `LINUX OR BSD`;
+- features enabled by capability, not by OS name.
+
+**Gaps to resolve.**
+
+| # | Feature | Today (Linux path) | Generic path | Plan |
+|---|---|---|---|---|
+| 1 | Wayland SHM pools | memfd via raw syscall | temp file | `memfd_create()` when declared |
+| 2 | `applicationFilePath()` | `/proc/self/exe` | empty string | runtime readlink probe |
+| 3 | QLockFile stale check | `/proc/<pid>/exe` | PID liveness only | same probe |
+| 4 | `QStorageInfo::mountedVolumes()` | `/proc/self/mountinfo` | empty | read mountinfo, else `getmntent()` on `/etc/mtab` |
+| 5 | thread names | disabled under `QT_LINUXBASE` | disabled | `pthread_setname_np` if present and working; Kandelo implements `prctl(PR_SET_NAME)` |
+| 6 | thread ids in logs | `SYS_gettid` | `pthread_self` | `gettid()` when declared |
+| 7 | abstract-namespace local sockets | supported | unsupported option | accept generic path |
+| 8 | UDP pending-datagram size | `MSG_TRUNC` | generic sizing | accept generic path |
+| 9 | file watching | inotify, `ENOSYS` today, so polling | polling | Qt's inotify feature test applies if Kandelo implements inotify |
+| 10 | QMutex | futex-free dummy (`QT_LINUXBASE`) | generic Unix mutex | accept; benchmark |
+| 11 | QML JS memory (bundled WTF) | memfd-backed pages; relies on Linux `MADV_DONTNEED` zeroing that Kandelo does not provide | plain `mmap`, zeroed by WTF | accept |
+| 12 | Wayland plugin, `--gc-sections` | built | silently dropped | widen the CMake gates; compare configure summaries |
+
+Visible changes: `Qt.platform.os` becomes `"unix"`, the default Qt Quick
+Controls style may change, and `QSysInfo` reports the kernel from `uname()`.
+
+quickshell is not Linux-only: its upstream build has a FreeBSD branch.
+
+**Other packages.** basu, erlang, libdrm and spidermonkey also define
+`__linux__` (libdrm only while compiling its own sources), and mariadb's
+build script widens two `__linux__` checks to Wasm. They should get the same
+treatment: capability probes, or closing the Kandelo POSIX gap the Linux
+path stands in for.
+
+**Files:** `packages/registry/qt*/`, `packages/registry/quickshell/`,
+`sdk/cmake/Platform/Kandelo.cmake`
+
+### Stage the SDK sysroot from output receipts instead of hand lists
+
+`images/vfs/scripts/stage-sdk-sysroot.sh` copies the guest SDK's sysroot
+out of the build machine's shared sysroot. Paths in musl's output receipt
+(`.kandelo-musl.outputs.json`, written by `scripts/musl-output-state.mjs`)
+are checked against their recorded digests after copying, but the receipt
+covers only five `lib/` files plus `include/`. The rest of musl's `lib/`
+output is listed by hand in `MUSL_LIBRARY_FILES`, and the graphics stubs in
+`GRAPHICS_FILES` and `GRAPHICS_TREES`. Those files are checked only for
+existence: a stale archive is copied as it is, and a file that a build
+script starts installing is left out until someone edits the lists.
+
+Extend the musl receipt to every file `scripts/build-musl.sh` installs
+under `lib/`, then drop `MUSL_LIBRARY_FILES`. For the graphics stubs, add
+an output receipt, or check the input-hash stamps that
+`scripts/build-dri-stubs.sh` and `scripts/build-gles-stubs.sh` already
+write (`.kandelo-dri-stubs.input-hash`, `.kandelo-gles-stubs.input-hash`).
+`scripts/musl-output-state.mjs` is a global package build input
+(`GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` in `tools/xtask/src/build_deps.rs`), so
+changing it re-keys every package.
+
+**Files:** `images/vfs/scripts/stage-sdk-sysroot.sh`,
+`scripts/musl-output-state.mjs`, `scripts/build-musl.sh`,
+`scripts/build-dri-stubs.sh`, `scripts/build-gles-stubs.sh`
+
+### Reject symlinked parent directories when staging the SDK sysroot
+
+`copy_file` in `images/vfs/scripts/stage-sdk-sysroot.sh` rejects a source
+file that is itself a symlink, but not one reached through a symlinked
+parent directory, such as a `lib/` that points elsewhere. Receipt files
+are still caught by the final digest check. Files from `MUSL_LIBRARY_FILES`
+and `GRAPHICS_FILES` have no such check, so their bytes could come from
+outside the source sysroot. Check every path component below the source
+sysroot.
+
+**Files:** `images/vfs/scripts/stage-sdk-sysroot.sh`
+
+### Make the `developer-kandelo-sdk` product's builder field truthful
+
+`images/vfs/products/developer-kandelo-sdk.toml` declares
+`builder = "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"`. Product
+validation (`tools/xtask/src/vfs_products/product_manifest.rs`) only
+checks that the path is a regular file; nothing runs it as the product's
+build. The image is built by the `kandelo-sdk` package script
+(`packages/registry/kandelo-sdk/build-kandelo-sdk.sh`), which stages the
+sysroot with `stage-sdk-sysroot.sh` and then calls that builder with the
+inputs it requires. Either run product builds through the declared
+builder, or make the field name the real build path.
+
+**Files:** `images/vfs/products/developer-kandelo-sdk.toml`,
+`packages/registry/kandelo-sdk/build-kandelo-sdk.sh`,
+`tools/xtask/src/vfs_products/product_manifest.rs`
+
+### Keep `build-programs.sh` fixtures out of the shared sysroot
+
+`scripts/build-programs.sh` stages resolved fixture libraries and headers
+(SDL2, Wayland, libffi, glib and others) into the repository's shared
+`sysroot/`. SDK package recipes compile against that same directory:
+the compiler driver falls back to it when `WASM_POSIX_SYSROOT` is unset,
+many recipes set `WASM_POSIX_SYSROOT` to it themselves, and
+`kandelo_package_prepare_private_sysroot` (`scripts/package-build-roots.sh`)
+seeds private sysroots by copying it. A configure or CMake probe can
+therefore find a library or header the recipe never declared, depending
+on whether `build-programs.sh` ran first, under a cache key that does not
+cover it. The SDK bundle already copies only declared content
+(`images/vfs/scripts/stage-sdk-sysroot.sh`). The root fix is for
+`build-programs.sh` to stage into a fixture-only sysroot.
+
+**Files:** `scripts/build-programs.sh`, `scripts/package-build-roots.sh`
+
+### Keep the user's Cargo configuration out of Rust recipes
+
+Cargo reads `.cargo/config.toml` from its working directory and from
+every parent directory. Resolver work directories are created next to
+their cache entries under the binary cache root (`$HOME/.cache/kandelo`
+by default), so `$HOME/.cargo/config.toml` is in that search path for
+every Rust recipe, even one that sets its own `CARGO_HOME`. A user's
+target, linker, flags or source replacement can then change a package
+build without appearing in its cache key. Stable Cargo has no switch to
+stop the parent-directory search, so the fix has to come from where the
+work directories live or from a check that refuses an inherited
+configuration file.
+
+**Files:** `tools/xtask/src/build_deps.rs` (`create_build_work_root`),
+Rust package build scripts
+
+### Move the Rust toolchain to an LLVM 23 nightly
+
+The C/C++ toolchain is LLVM 23.1.3, while Rust stays on
+`nightly-2026-04-27` with LLVM 22.1.2, and the guest `rust-llvm` (22.1.2)
+and `rustc` packages match that nightly. Moving Rust to an LLVM 23 nightly
+is a separate change: rebase `sdk/rust/std-kandelo.patch` and
+`sdk/rust/libc-kandelo.patch` onto the new nightly, and move the guest
+`rust-llvm` and `rustc` packages to the matching fork. LLVM 23's own CMake
+build defaults to precompiled headers, which change KandeloCallTypes
+compiler facts (see "Known gap: precompiled headers" in
+`docs/sdk-guide.md`). The `clang` package turns them off; a `rust-llvm`
+built from LLVM 23 sources needs the same.
+
+**Files:** `rust-toolchain.toml`, `sdk/rust/`,
+`packages/registry/rust-llvm/`, `packages/registry/rustc/`
+
+### Share one C++ runtime per process across side modules
+
+Upstream LLVM expects one C++ runtime per process: a single
+`libunwind.so` defines the Wasm C++ exception tag, `__cpp_exception`, and
+every module that throws or catches imports it. llvm-project #185770
+(LLVM 23) moved the tag's definition from compiled code into libunwind on
+that assumption.
+
+Kandelo instead links `libc++-pic.a` and `libc++abi-pic.a`, which
+bundles libunwind, statically into each C++ side module (PHP's `intl.so`,
+the `fork-dlopen-replay-e2e` C++ fixture). A process that loads several
+C++ side modules carries a copy of the C++ runtime, and of its global
+state such as the terminate handler and emergency exception pool, in
+each one. The exception tag is kept shared
+only by a recipe patch,
+[`0004-keep-cpp-exception-tag-imported-in-pic.patch`](../packages/registry/libcxx/patches/0004-keep-cpp-exception-tag-imported-in-pic.patch),
+which leaves the tag undefined in the PIC build so each side module
+imports the process's `env.__cpp_exception`.
+
+Provide one shared C++ runtime that every C++ module in a process uses:
+either a `libc++` side module that C++ side modules import, or exports
+from a C++ main program that side modules link against. Define the
+exception tag once in that runtime, so the libcxx package no longer needs
+the patch. This changes how C++ side modules are linked and which symbols
+a main program exports, so it needs an ABI review
+(`docs/abi-versioning.md`) and a plan for side modules built against the
+static archives.
+
+**Files:** `packages/registry/libcxx/`,
+`packages/registry/php/build-php.sh` (`intl.so`), `host/src/dylink.ts`,
+`host/src/worker-main.ts`, `host/test/fork-dlopen-replay-e2e.test.ts`
+
 ## Performance
+
+### Revisit Binaryen's constraint-analysis pass
+
+**Decision (2026-11-15): Kandelo skips Binaryen's `constraint-analysis`
+pass. This is a deliberate, temporary choice; revisit it when a trigger
+below fires.** Every `wasm-opt` run Kandelo makes at a level that schedules
+the pass (`-O3`, `-O4`, `-Os`, `-Oz`) passes
+`--skip-pass=constraint-analysis`: the fork instrumenter's post-instrumentation
+`-Os`, the SDK driver's post-link job for modules that do not fork, and the
+`-Oz` steps of the image-module and program-policy builds. The sites carry
+the `[RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS]` tag; the
+registry entry
+[`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)
+lists them.
+
+**Why: it buys Kandelo nothing measurable.** Measured 2026-11-15 with
+Binaryen 133 plus #9258 (so no input aborts), `wasm-opt -Os` with and
+without the pass, three alternating runs per input, on macOS:
+
+| inputs | size with the pass | `wasm-opt` CPU |
+|---|---|---|
+| raw links and instrumenter output: dash, bash, ffplay, jq, sqlite3, mariadbd | −0.002% to −0.022% (−10 to −1,507 bytes; largest relative: sqlite3, −455 of 2.07 MB) | +3% to +18% |
+| `-O2`-optimized modules: git, vim, python, php | 0 bytes, except python −53 | +3% to +8% |
+| published instrumented binaries: coreutils, bash, redis-server, perl, clang | 0 bytes, except bash −5 and clang −49 of 109 MB | +4% to +6% (clang, one single-threaded run: −0.7%) |
+
+Runtime: sqlite3 built both ways ran a recursive-CTE and indexed-insert
+workload on the Node host, five alternating runs each. The median was
+18.62 s with the pass and 18.25 s without, inside a run-to-run spread of
+12.4–21.1 s; smaller and startup-only workloads showed no difference
+beyond noise either. Every output was deterministic across runs. The likely reason:
+the pass removes comparisons that earlier checks already decide, which
+matters most for bounds checks that managed-language compilers emit into
+Wasm. Kandelo's C, C++ and Rust arrive already optimized by LLVM, which
+removes most such checks first.
+
+**Risk history.** The pass is new: added in
+[#8853](https://github.com/WebAssembly/binaryen/pull/8853) and enabled by
+default in [#9010](https://github.com/WebAssembly/binaryen/pull/9010), both
+first released in 133. Before that release it needed five correctness fixes
+([#9029](https://github.com/WebAssembly/binaryen/pull/9029) i64 parsing,
+[#9037](https://github.com/WebAssembly/binaryen/pull/9037) increment
+overflow, [#9041](https://github.com/WebAssembly/binaryen/pull/9041) float
+comparisons, [#9045](https://github.com/WebAssembly/binaryen/pull/9045)
+mixed signed/unsigned comparisons,
+[#9049](https://github.com/WebAssembly/binaryen/pull/9049) floats without
+fast-math) and a hang fix
+([#9058](https://github.com/WebAssembly/binaryen/pull/9058)). After it,
+[#9216](https://github.com/WebAssembly/binaryen/pull/9216) notes that the
+pass in 133 can take quadratic or cubic time on consecutive loops, and 133
+aborts on FFmpeg (next paragraph).
+
+**The abort.** On FFmpeg's `ff_spatial_dwt` built by LLVM 23, 133's pass
+fails `!constraints.provesEverything()` at `-O3`, `-Os` and `-Oz`, so
+`ffplay` could not be built. The fix is
+[#9258](https://github.com/WebAssembly/binaryen/pull/9258), merged
+2026-10-13 and in no release yet. The registry entry has a standalone
+reproduction that the runtime-workarounds suite runs.
+
+**Revisit triggers.** Re-measure when either happens:
+
+- a released Binaryen contains #9258 (the abort is fixed; the registry run
+  of the entry's reproduction reports `not-reproduced` on it);
+- a released Binaryen contains
+  [#9136](https://github.com/WebAssembly/binaryen/pull/9136)
+  ("ConstraintAnalysis: Optimize `local.get`"), which makes the pass find
+  more (and run about 30% slower). Its broader analysis is the most likely
+  source of a real win and has not been measured on Kandelo; it postdates 133.
+
+**Re-measurement procedure.** With the candidate Binaryen in the dev shell:
+
+1. Collect the inputs `wasm-opt` sees in real builds: raw links of programs
+   that do not fork (`wasm32posix-cc ... --no-wasm-opt`), instrumenter
+   output before its own pass (`wasm-fork-instrument IN -o OUT
+   --post-optimize none`; to capture links from a package build, set
+   `WASM_POSIX_FORK_INSTRUMENT` to a wrapper that copies its input before
+   running the real tool), and installed binaries. Use at least the
+   programs above.
+2. Run `scripts/measure-wasm-opt-pass.sh --runs 3 --out DIR INPUT...`. It
+   alternates `wasm-opt -Os` with and without the pass and prints size,
+   identical-output and median CPU per input. Repeat with `--level O3` or
+   `--level Oz` for SDK links built at those levels.
+3. For any input whose size changes, build the program both ways and
+   compare run time on the Node host, alternating runs, with a workload that
+   runs long enough to beat the noise (sqlite3 above: 5 runs of a
+   15M-row recursive CTE). Use the benchmark suites for programs they cover.
+
+**Criteria for re-enabling** (remove the skip from every tagged site and
+retire the entry):
+
+- a meaningful size or runtime win on Kandelo's programs or benchmarks,
+  well beyond run-to-run noise, that justifies the extra `wasm-opt` time;
+- no open wrong-code, abort or hang bugs against the pass in the released
+  Binaryen being pinned;
+- the registry reproduction reports `not-reproduced` on that release.
+
+If the triggers fire and the re-measurement still shows no win, keep the
+skip, record the new numbers here, and retire the registry entry as
+described in its removal criteria (the skip is then a measured choice, not
+a workaround).
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads
 A May 6, 2026 prototype found that the Rust kernel can likely be built as
@@ -1670,6 +1989,36 @@ run without an API-level invocation, then restore browser acceptance to execute
 **Files:** `packages/registry/node-compat/bootstrap.js`,
 `apps/browser-demos/test/kandelo-node.spec.ts`
 
+### Match Node's exit status and timer order in spidermonkey-node
+
+These differences from Node were observed on the Node host with the
+current `spidermonkey-node`:
+
+- A CommonJS main that throws an uncaught error, or leaves a promise
+  rejection unhandled, exits with status 3; Node exits with 1.
+- An ES module main runs through `_runEsmMain`
+  (`packages/registry/node-compat/bootstrap.js`), which rewrites static
+  imports and `import.meta.url` with regular expressions and evaluates
+  the result as an async function body, not through the native module
+  loader. Other `import.meta` properties fail: `import.meta.dirname`
+  raises "import.meta may only appear in a module".
+- `setTimeout(fn, 0)` and `setImmediate(fn)` queue microtasks
+  (`packages/registry/spidermonkey/node-compat/adapter.js`), so they run
+  before promise callbacks queued after them. Node runs those promise
+  callbacks first.
+- An exception thrown by a delayed timer callback is discarded:
+  `KandeloRunDueTimers` in
+  `packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch`
+  clears it, and the process exits 0. Node reports an uncaught exception
+  and exits with 1.
+
+The node-compat inventory in `docs/posix-status.md` does not list these
+yet.
+
+**Files:** `packages/registry/node-compat/bootstrap.js`,
+`packages/registry/spidermonkey/node-compat/adapter.js`,
+`packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch`
+
 ### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.
@@ -1827,6 +2176,17 @@ wiring for stack bounds), plus any other `build-*.sh` that hits the same wall
 in the meantime.
 
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
+
+### Provide the missing complex-multiply and `__int128` conversion builtins
+
+`libc/glue/compiler_rt.c` does not define `__floattitf` (`__int128` to
+`long double`) or the complex-multiply helpers `__muldc3`, `__mulsc3` and
+`__multc3`. Clang emits calls to them, and libc.a's `cpow`, `cpowf` and
+`cpowl` need the multiply helpers. An executable that uses any of them
+fails to link with an undefined symbol, so a configure probe for `cpow`
+reports it as missing.
+
+**Files:** `libc/glue/compiler_rt.c`
 
 ## Testing
 

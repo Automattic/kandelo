@@ -19,7 +19,7 @@ post-link job is decided by the same code.
 
 1. **Git and Nix with flakes enabled** for the repository build workflow.
    `./run.sh setup` requires Nix and enters the declared dev shell itself.
-   It supplies the pinned Rust nightly, LLVM 21 (including clang and wasm-ld),
+   It supplies the pinned Rust nightly, LLVM 23 (including clang and wasm-ld),
    Node.js 24, and the remaining build tools. See
    [Quick start](../README.md#quick-start) and
    [development environment](../CONTRIBUTING.md#development-environment).
@@ -209,22 +209,26 @@ pointer. These are libc++'s definitions. The SDK's minimal fallback in
 automatically"), so it no longer replaces them; it only serves C++ code
 linked without libc++.
 
-#### LLVM 21 SjLj and `noexcept` limitation
+#### SjLj and `noexcept` limitation
 
-Kandelo's pinned LLVM 21.1.7 toolchain lowers `longjmp` and `siglongjmp` to an
+Kandelo's pinned LLVM 23.1.3 toolchain lowers `longjmp` and `siglongjmp` to an
 internal Wasm exception. If that transfer crosses a C++ `noexcept` frame,
 Clang's generated termination handler can intercept the internal tag before
 the matching `setjmp` or `sigsetjmp` landing consumes it. The process then
-calls `std::terminate()` even when the C control transfer itself is valid.
+calls `std::terminate()` (reported as `libc++abi: terminating`) even when the
+C control transfer itself is valid.
 
 This is a known SDK/toolchain limitation tracked in
 [issue #918](https://github.com/Automattic/kandelo/issues/918), not a change to
-POSIX signal or `longjmp` semantics. It is present in raw clang-linked wasm32
-and wasm64 modules and remains present after Kandelo's wasm32 fork
-instrumentation. Until the pinned compiler is fixed, code that establishes a
-jump landing and calls work that can jump back across the current frame must
-not mark that crossed frame `noexcept`. Keep the workaround scoped to that
-boundary; do not disable C++ exceptions, signal delivery, or child reaping.
+POSIX signal or `longjmp` semantics. On LLVM 21.1.7 it was present in raw
+clang-linked wasm32 and wasm64 modules and remained present after Kandelo's
+wasm32 fork instrumentation. On LLVM 23.1.3 it was re-checked only in a raw
+clang-linked wasm32 C++ module built at `-O1`, where it still reproduces; the
+wasm64 and fork-instrumented cases have not been re-checked. Until the pinned
+compiler is fixed, code that establishes a jump landing and calls work that
+can jump back across the current frame must not mark that crossed frame
+`noexcept`. Keep the workaround scoped to that boundary; do not disable C++
+exceptions, signal delivery, or child reaping.
 
 ### Building static libraries
 
@@ -373,6 +377,15 @@ activating `kandelo-fncasts` also registers the LLVM passes, through
 `-load` alone produces the same object bytes as the normal library with
 `-fpass-plugin`.
 
+**Known gap: precompiled headers.** A translation unit compiled with a
+clang precompiled header (`-include-pch`, CMake's
+`target_precompile_headers`) gets different AST-side facts than the same
+unit compiled from its own includes: some template-related flow facts are
+missing and others are added. The LLVM-side facts match. Missing flow facts
+could make fork analysis unsound, so builds whose objects feed fork
+instrumentation should not use precompiled headers until the plugin handles
+them. The `clang` package disables LLVM's default PCH for this reason.
+
 **Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
 and an optimization level is set. Binaryen inlines and merges functions,
 which would move call sites to other functions and make per-function facts
@@ -381,10 +394,20 @@ linked module:
 
 - A module that imports `kernel.kernel_fork` (it can fork) keeps its
   `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
-  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+  fork-instrumented next; the instrumenter runs `wasm-opt -Os` itself after
   instrumenting.
-- Any other module loses the section and then gets exactly the `wasm-opt`
-  command clang scheduled.
+- Any other module loses the section and then gets the `wasm-opt` command
+  clang scheduled, plus `--skip-pass=constraint-analysis`.
+
+Both `wasm-opt` runs skip Binaryen's `constraint-analysis` pass, which
+Binaryen 133 schedules at `-O3`, `-O4`, `-Os` and `-Oz`. In 133 the pass
+aborts on some LLVM 23 output, and it measured no worthwhile size or speed
+win on Kandelo's programs. The skip is a decision to revisit, not a
+permanent setting: see the registry entry
+[`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)
+and [Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass).
+A recipe that runs `wasm-opt` itself at one of those levels must pass the
+same flag.
 
 Last, the SDK stamps every executable it links (not shared libraries)
 with the `kandelo.abi.contract` digest from the glue
@@ -518,8 +541,8 @@ slot in the pinned Clang trace and fails before linking if the trace omits or
 contradicts that invariant. Debug, coverage, and file compilation-directory
 options do not affect linker response resolution.
 
-LLVM 21 accepts the lld forms `-z stack-size=<bytes>` and
-`-zstack-size=<bytes>`. Stack sizes follow LLVM 21's radix-0 integer syntax:
+The pinned LLD 23.1.3 accepts the lld forms `-z stack-size=<bytes>` and
+`-zstack-size=<bytes>`. Stack sizes follow LLVM's radix-0 integer syntax:
 decimal, leading-zero or `0o` octal, `0x`/`0X` hexadecimal, and `0b`/`0B`
 binary.
 
@@ -863,7 +886,7 @@ wasm32posix-cc program.c -o program.wasm
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
+# file needed — then runs wasm-opt -Os over the result. The wrapper builds
 # the tool on demand if tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
@@ -973,8 +996,8 @@ references in `shell.vfs.zst`. Opening a compiler or SDK file fetches
 `/usr`. Shell startup does not fetch the ZIP. Its compressed byte count
 and SHA-256 are recorded in the shell image and verified on download.
 
-The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
-It contains the source-built `clang@21.1.7` tools, matching Clang resource
+The ZIP is the declared output of `kandelo-sdk-browser-bundle@23.1.3`.
+It contains the source-built `clang@23.1.3` tools, matching Clang resource
 headers, musl and libc++ sysroot, syscall glue, the SDK driver
 (`kandelo-cc`) and Binaryen's `wasm-opt`. The five
 LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
@@ -983,6 +1006,21 @@ under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
 and `c++`; `ld` runs `wasm-ld` (see [GNU build tools](#gnu-build-tools)).
 This delivery uses the base shell's existing lazy archive mechanism and
 requires no separate compiler image.
+
+The archive's sysroot holds only the SDK's declared content: the files in
+the musl output receipt (checked against their recorded digests), the
+other files `scripts/build-musl.sh` installs, the
+[platform graphics libraries](#sysroot-platform-libraries), and libc++
+from the declared `libcxx` dependency. The build machine's `sysroot/` is
+shared and also holds libraries other tools stage there, such as the
+GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
+fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind.
+The `kandelo-sdk` image's package build stages its sysroot through the
+same script and passes the `libcxx` output separately. Its image builder,
+`images/vfs/scripts/build-kandelo-sdk-vfs-image.sh`, has no default
+sysroot: it requires both inputs and refuses a sysroot that still holds
+the build machine's musl output receipt, other `.kandelo-*` stamps, or
+libc++.
 
 In a shell session:
 
@@ -1000,7 +1038,8 @@ SDK driver (`crates/kandelo-cc`) built for Kandelo, so a command runs the
 same compiler, linker and post-link jobs it would on the build machine:
 the Kandelo target flags, the glue compiled into each executable, the
 link layout, the compiler facts, and clang's post-link `wasm-opt` for
-modules that do not fork. Only toolchain discovery differs: inside
+modules that do not fork, which skips the same Binaryen pass (see
+**Links** above). Only toolchain discovery differs: inside
 Kandelo the driver uses the fixed `/usr` layout above (overridable with
 the same `WASM_POSIX_*` variables), and clang has the facts plugin
 compiled in (see [Compiler facts for fork instrumentation](#compiler-facts-for-fork-instrumentation)).
@@ -1037,7 +1076,7 @@ digest; the host still accepts it with a warning during the digest
 rollout.
 
 DWARF from `-g` builds records clang's resource directory, which is
-`/usr/lib/llvm/lib/clang/21` here and a different path on the build
+`/usr/lib/llvm/lib/clang/23` here and a different path on the build
 machine, so `-g` outputs are not byte-identical between the two SDKs.
 
 Running the build machine's jobs costs time inside Kandelo: a link runs
