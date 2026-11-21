@@ -11,6 +11,7 @@ import type { WebPreviewTarget } from "./web-preview-address";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
+import type { MemoryGroupUsage } from "../../../host/src/memory-group-usage";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -255,6 +256,8 @@ export interface KernelOwnedJobScope {
 
 export interface KernelLike {
   getOwnedJobLifetime?(): { readonly closed: boolean };
+  /** Optional copied group counters; reading never creates a group or backing. */
+  getMemoryGroupUsage?(): Promise<MemoryGroupUsage | null>;
   // WHY there is no synchronous VFS handle here: the kernel worker owns the
   // filesystem, and the main thread must never hold worker-shared memory —
   // on WebKit only Worker.terminate() reclaims it. Every read below is an
@@ -2964,6 +2967,7 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async getKernelState(): Promise<KernelStateKV[]> {
+    const kernel = this.kernel;
     // sysctl-style flat view, filled out as procfs paths become available.
     const probes: Array<[key: string, path: string]> = [
       ["kernel.hostname", "/proc/sys/kernel/hostname"],
@@ -2984,6 +2988,25 @@ export class LiveKernelHost implements KernelHost {
       }
     }
     out.push({ k: "kandelo.kernel", v: this._descriptor.runtime.kernel });
+    if (kernel?.getMemoryGroupUsage) {
+      // Inspect only the attached machine. A late reply from a replaced
+      // kernel must not label the new machine with the old group's counters.
+      const changed = () => new Error("Kernel changed during state inspection; refresh to read the current machine");
+      if (kernel !== this.kernel) throw changed();
+      const usage = await kernel.getMemoryGroupUsage();
+      if (kernel !== this.kernel) throw changed();
+      if (usage !== null) {
+        const prefix = "kandelo.memory_group";
+        out.push({ k: `${prefix}.pageBytes`, v: "65536" });
+        for (const section of ["admission", "backing"] as const) {
+          const counters = usage[section];
+          if (counters === null) out.push({ k: `${prefix}.${section}`, v: "unallocated" });
+          else for (const [key, value] of Object.entries(counters)) {
+            out.push({ k: `${prefix}.${section}.${key}`, v: String(value) });
+          }
+        }
+      }
+    }
     return out;
   }
 

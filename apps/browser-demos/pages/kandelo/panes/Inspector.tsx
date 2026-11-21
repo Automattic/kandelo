@@ -654,6 +654,8 @@ const ConfigTab: React.FC = () => {
         </>}
       </ConfigSection>
       <ConfigSection title="Kernel">
+        {kstate.kind === "ready" && kstate.value.some(row => row.k.startsWith("kandelo.memory_group.")) &&
+          <p style={{ padding: "0 10px" }}>Shared-memory pages are 64 KiB. Buffer capacity and allocated pages are not measured resident RAM. Refresh to update these counters.</p>}
         {kstate.kind === "loading" && <Loading />}
         {kstate.kind === "missing" && <MissingEndpoint label="Kernel state" detail={kstate.message} />}
         {kstate.kind === "error" && <ErrorBox message={kstate.message} />}

@@ -157,6 +157,14 @@ counters are collected under one kernel entry; they describe different owners
 and need not have identical image counts during preparation or retirement.
 The result carries no memory, views, mapping roots or admission capabilities.
 This optional troubleshooting API runs only when called; it adds no polling.
+The normal browser app also exposes these copied counters under Internals →
+Config → Kernel as `kandelo.memory_group.admission.*` and
+`kandelo.memory_group.backing.*`. Opening or refreshing that view requests a
+new snapshot through `KernelHost.getKernelState()`; it does not enable a group.
+No group rows appear on ordinary machines. `pageBytes` is 65,536, and a
+`backing` value of `unallocated` means the admitted group has no backing yet.
+A machine replacement during inspection rejects the old response rather than
+showing another machine's counters. Errors remain visible in the Inspector.
 If a guest holds the allocator lock, the call rejects with `EAGAIN` instead of
 blocking the kernel Worker. The caller can request a fresh snapshot later.
 
