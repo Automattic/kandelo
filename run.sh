@@ -22,12 +22,12 @@
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
 #   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]
 #                                 Build the deployable static browser app
-#                                 --trusted-desktop-preview opts into Sway/Foot
+#                                 --trusted-desktop-preview uses the prepared partial desktop
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh browser --partial    ...serving only what is built, starting from
 #                                 the partial image (no full local-build)
 #   ./run.sh browser --partial --trusted-desktop-preview
-#                                 Prepare and launch the trusted Sway/Foot preview
+#                                 Launch the package-backed trusted partial desktop
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
 #
@@ -2774,10 +2774,10 @@ cmd_partial() {
 }
 
 prepare_trusted_desktop_preview() {
-    step "Preparing the opt-in trusted Sway/Foot image"
+    step "Checking the opt-in partial shell SDK artifacts"
     bash "$REPO_ROOT/scripts/dev-shell.sh" \
         bash "$REPO_ROOT/scripts/prepare-trusted-desktop-preview.sh" "$1" || return $?
-    export KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE="$REPO_ROOT/local-binaries/trusted-desktop-preview/desktop.vfs.zst"
+    export KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE="$REPO_ROOT/local-binaries/partial/shell-partial.vfs.zst"
 }
 
 cmd_run() {

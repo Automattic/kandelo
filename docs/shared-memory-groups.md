@@ -206,7 +206,7 @@ physical-image restoration before a successful fork. An uncertain constructor
 failure stays fatal and charged; stopped and concurrently destroyed initial
 launches retire through their exact receipts. These pass on Node and all three
 browser engines. Full browser-memory and app acceptance remain pending for the
-combined change. The published developer preview still uses byte launch.
+combined change. The earlier byte-launch controls remain separate from the normal app path below.
 
 The app's programmatic `createLiveHost` also carries this trusted embedder
 option to its normal kernel boot. It rejects managed or persistent machines.
@@ -216,37 +216,27 @@ existing display API. The normal browser commands accept an explicit
 enable it. This integration is under validation and is not enabled in ordinary
 app builds.
 
-For a local development preview, build a partial shell and launch the normal app:
+Use the normal package-backed partial-shell command in
+[Normal partial-shell preview](#normal-partial-shell-preview). It opens Cage by
+default and offers the prepared Sway profile as well. This is a temporary
+trusted preview with no managed or persistent computers. The normal app sets a
+512 MiB shared backing ceiling and no additional process or task quota. Its
+earlier 24-process/64-task defaults could refuse a desktop at about nine Foot
+windows despite available backing. The developer pressure fixture retains
+explicit quotas to check refusal and recovery; it is not a capacity promise.
+WebKit's longer lifecycle failures remain under investigation.
 
-```sh
-./run.sh partial shell sway swaybg foot wayland-demo bibata-cursor-theme sysklogd
-./run.sh browser --partial --trusted-desktop-preview
-```
+`./run.sh build-browser --trusted-desktop-preview --out DIR` first performs the
+normal canonical browser preparation and authenticated lazy-asset build. It
+then bundles the previously built, package-backed partial image and public
+provenance, without creating another image. Build that partial image first.
+Public provenance omits build-machine paths; full SDK reports are package
+artifacts in `shared-desktop-programs/programs.json`. The full current canonical
+production build and browser-memory gates remain required before promotion;
+short desktop checks do not establish sustained support or resident memory.
 
-The command prepares a separate image through the normal SDK and defaults to
-its Sway profile at the server's root URL. The image advertises Sway and Foot
-only; other ordinary image profiles are excluded. The input image stays intact.
-This is a temporary trusted preview, with no managed or persistent computers.
-The normal app sets a 512 MiB shared backing ceiling and no additional process
-or task quota. Its earlier 24-process/64-task defaults could refuse a desktop at
-about nine Foot windows even with backing capacity available. The separate
-developer pressure fixture below retains those explicit quotas to test refusal
-and recovery. Neither fixture establishes resident-memory usage or sustained
-desktop capacity.
-WebKit's longer lifecycle failures remain under investigation; passing a short
-desktop interaction check does not establish sustained support.
-
-`./run.sh build-browser --trusted-desktop-preview --out DIR` uses the canonical
-browser preparation and authenticated lazy-asset group, then emits the separate
-prepared image and a public hash report with the app. The public report omits
-build-machine paths; the full SDK report stays under
-`local-binaries/trusted-desktop-preview/`. A missing participant or mismatched
-preparation report refuses the build. Full combined release checks remain
-required before promotion.
-
-To run the maintained full desktop interaction and renderer-restart check, set
-`PREVIEW_URL` to the running app's directory URL (including its trailing slash),
-then run:
+The maintained Sway checks use the explicit Sway profile of the same partial
+image. Set `PREVIEW_URL` to that profile URL, then run:
 
 ```sh
 scripts/dev-shell.sh env KANDELO_TEST_SWAY_PREVIEW_URL="$PREVIEW_URL" \
@@ -254,10 +244,10 @@ scripts/dev-shell.sh env KANDELO_TEST_SWAY_PREVIEW_URL="$PREVIEW_URL" \
   --config apps/browser-demos/playwright.trusted-desktop.config.ts
 ```
 
-This tests the build's default image without a `?vfs` override on Chromium,
-Firefox and WebKit. It retains the normal Sway clock, input, workspace, tiling,
-exit and CPU-renderer restart checks and rejects browser errors. It is separate
-from sustained lifecycle and resource acceptance.
+They cover physical input, workspace changes, exit and CPU-renderer restart
+on Chromium, Firefox and WebKit. These bounded checks are separate from
+sustained lifecycle and resource acceptance.
+
 The same config checks twelve actual Foot processes and their shell children,
 physical Ctrl+D exit, replacement by a new terminal PID and guest-driven Sway
 exit. The final zero-terminal check requires init PID 1 in the same process
@@ -274,150 +264,71 @@ status is available. The public Node regression repeats this signal-driven
 reaping pattern for 64 exits with live pthreads, in both prepared and ordinary
 program modes.
 
-Prepare a separate opt-in image from an ordinary SDK/package-built desktop
-image through the normal SDK and image writer:
+The historical `prepare-shared-desktop-image.ts` tool remains available to
+reproduce earlier Sway/Cage experiments. It derives a separate eager image,
+keeps the ordinary input, preserves executable credentials and writes an
+adjacent SDK report (including failures). It is not the normal package-backed
+launch path described below.
+
+### Normal partial-shell preview
+
+The opt-in preview uses a normal partial shell and the
+`shared-desktop-programs` package. Its formal SDK artifacts are individual lazy
+ZIPs served through the existing package resolver and asset group. Launching a
+preview validates the partial manifest; it does not manufacture another image.
 
 ```sh
-scripts/dev-shell.sh host/node_modules/.bin/tsx --experimental-wasm-exnref \
-  images/vfs/scripts/prepare-shared-desktop-image.ts \
-  ORDINARY.vfs.zst GROUPED.vfs.zst
+./run.sh partial shell shared-desktop-programs cage foot sway swaybg freeciv-browser-bundle scummvm-static curl unzip sysklogd wayland-demo bibata-cursor-theme
+./run.sh browser --partial --trusted-desktop-preview
 ```
 
-The builder resolves deferred programs through the normal package resolver,
-prepares Sway, Swaybar, Swaybg, Swaymsg, Swaynag, Foot, the shell and Coreutils, and
-validates explicit per-path grouped artifact policies. It preserves the input
-and writes an adjacent `.memory-group.json` provenance report. A failed
-preparation retains its report and staging files. Its optional source-provider
-API permits explicitly retained compatible image fixtures; that evidence does
-not establish a fresh package build or a canonical image.
+Add `cage-docs sway-docs foot-docs freeciv-docs scummvm-docs` for upstream manuals.
+Partial images install named packages; building a dependency does not itself
+install that dependency's application into the image. The composer reports
+missing image packages before activating the SDK closure.
 
-For the normal app's image-owned login chain, append `--login-session`. This
-also prepares `/bin/login` and `/usr/sbin/syslogd` and preserves each replaced
-executable's mode and ownership. It does not change the image's init script or
-replace the login session with a host launcher. The ordinary input stays intact.
-When using a partial shell for this mode, include `sysklogd` in the selection
-alongside Sway, Swaybg, Foot, Wayland desktop data and the cursor theme. The
-preparer requires every participant; it refuses an incomplete input image.
-The prepared image has its own Sway-only demo metadata and default profile;
-unprepared applications from the ordinary source are not advertised as supported.
+The partial image offers Cage/Foot and Sway/Foot, with Cage as its default.
+Run `freeciv` or `scummvm-static` from Foot. `scummvm-static-play GAME` uses the
+existing SHA-256-pinned freeware catalog through guest curl and unzip.
+ScummVM retains the ordinary package's fourteen-engine selection, including
+SCUMM v7/v8, using upstream static engines because grouped dynamic side modules
+remain unsupported. The launcher passes on Chromium, Firefox and WebKit;
+ScummVM gameplay is still unproven. Compatibility is an SDK build requirement,
+not an app certification gate before experiments.
 
-### Experimental Cage session
+The package also registers its variants under
+`/usr/libexec/kandelo/shared-desktop/`. Canonical ordinary images retain their
+ordinary executable paths and default execution mode. Only a partial image
+explicitly selecting this package activates prepared programs at their normal
+paths. Activation verifies every ordinary source identity, archive/member
+size and SHA-256, and SDK artifact declaration before changing any file. It
+preserves credentials and existing symlink/hard-link aliases; active paths and
+package paths share actual inodes, so one program cannot materialize twice.
+The embedding host must still explicitly enable the trusted backend: image
+metadata or URL parameters cannot grant it.
 
-The image preparer also accepts `--desktop cage`, selecting the image-owned
-Cage profile and launching Foot as its kiosk application. Add `--freeciv` to
-prepare the packaged Freeciv client and server in the same group. For example,
-inside the declared development environment:
-
-```sh
-./run.sh partial shell sway swaybg cage cage-docs foot wayland-demo bibata-cursor-theme sysklogd freeciv-browser-bundle freeciv-docs
-node --experimental-wasm-exnref --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
-  local-binaries/partial/shell-partial.vfs.zst .scratch/cage-freeciv.vfs.zst \
-  --desktop cage --login-session --freeciv
-export KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE="$PWD/.scratch/cage-freeciv.vfs.zst"
-./run.sh browser --partial --port 6381 --strictPort
-```
-
-The root URL opens the selected Cage session. Run `freeciv` from Foot; exiting
-Foot ends Cage. This explicit prepared-image environment option enables the
-normal app's trusted backend. Omit the separate `--trusted-desktop-preview`
-launcher flag here, because that flag prepares the default Sway image.
-
-The current opt-in group is machine-wide: boot/login, Cage, Foot, shell commands
-and compatible game descendants share one kernel-owned group. Separate
-machines retain separate groups. Preparing a compatible artifact is a build
-requirement, not an application certification gate. Experimental applications
-can be tried before claiming support or merge acceptance. An ordinary,
-unprepared executable cannot silently join this memory ABI.
-
-For executables inside lazy ZIP packages, preparation checks the image's
-archive digest and size and the exact member name, size and declared digest,
-then translates only that executable through the formal SDK. Other assets
-remain lazy. The adjacent report binds the selected desktop, participants and
-output image; the embedder rejects a missing required participant or changed
-image. Cage/Foot physical typing, exact shell-PID file output and initialized
-process-table exit checks pass on Chromium, Firefox and WebKit. The maintained
-Cage check also exercises Freeciv's menu Quit, a new-PID relaunch, a real local
-server and rendered world, physical end-turn input, in-game Quit with both
-client and server retirement, then physical shell input and graphical exit.
-Run it against an image prepared with `--freeciv`:
+The current machine-wide group covers the prepared boot/login chain, shells,
+compositors and applications. A cold Foot-only session fetches its needed SDK
+archives without fetching the Freeciv or ScummVM variants on all three engines.
+Bounded Freeciv menu quit/relaunch, local server/world/end-turn, in-game
+client/server exit and restored Foot input also pass on all three engines.
+Tests of absolute pointer input release pointer capture; relative input,
+sustained game operation, whole-machine backing reclamation and matched
+resource/performance comparisons remain unproven.
 
 ```sh
-KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6381/ \
+KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6383/ \
   apps/browser-demos/node_modules/.bin/playwright test \
   --config apps/browser-demos/playwright.trusted-cage.config.ts
 ```
 
-The check uses a fixed 1280×840 viewport and unit display scale, validates the
-rendered Foot prompt before typing and records phase/error evidence before
-bounded failure screenshots. Absolute pointer tests release pointer capture;
-this does not validate relative pointer input. Sustained game operation,
-whole-machine memory reclamation and Cage-versus-Sway performance remain unproven.
-This is an experimental partial-image path; canonical and full release gates
-remain required.
-
-The developer consumer is `apps/browser-demos/grouped-desktop.html`. Prepare
-its development image through the ordinary package, SDK and image paths
-inside the declared dev shell:
-
-```sh
-./run.sh partial shell sway swaybg foot wayland-demo bibata-cursor-theme
-node --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
-  local-binaries/partial/shell-partial.vfs.zst .scratch/shared-desktop.vfs.zst
-export KANDELO_GROUPED_DESKTOP_IMAGE="$PWD/.scratch/shared-desktop.vfs.zst"
-./run.sh browser --partial --config vite.grouped-desktop.config.ts --port 6209 --strictPort
-```
-
-The selected image's lazy files and archives resolve through the normal
-validated package resolver; build output includes those bodies and a hash
-manifest. `KANDELO_GROUPED_DESKTOP_ASSETS` explicitly selects an optional
-verified frozen asset manifest for retained historical fixtures. It is not
-required for a fresh package build. The Vite config uses the normal browser
-app's checked terminal-worker bundling contract.
-
-The page opens a temporary trusted Sway desktop with real terminal input,
-serialized Sway IPC controls and Stop. `groupPages` can select a lower
-physical page budget (256–8192); process and task budgets stay 24 and 64.
-Exhaustion can refuse the Sway IPC client itself with EAGAIN, a Sway fork,
-or a guest exec with ENOMEM. The preview does not reserve a control slot.
-On JavaScriptCore the group provisions its complete admitted backing extent
-before launching participants. This avoids concurrent shared-memory growth
-and participant-instance teardown, a confirmed engine boundary. An 8192-page
-group therefore exposes a 512 MiB backing buffer from startup; this is capacity,
-not mapped guest usage or measured resident memory. The declared maximum and
-allocation budget do not increase. Other browser engines grow the backing as
-needed. Constructor refusal remains visible. This policy does not establish
-that the intermittent IPC timeout is resolved; sustained and resource-cost
-validation remain required.
-
-The isolated Playwright config is `playwright.grouped-desktop.config.ts`;
-select a retained evidence directory with `KANDELO_GROUPED_DESKTOP_EVIDENCE`
-and an existing server with `KANDELO_GROUPED_DESKTOP_URL`. Tests exercise
-actual pointer-selected shell PIDs, workspace changes, and terminal recovery
-after a real capacity refusal. This consumer is separate from the normal
-gallery and does not change its default launch behavior. Each stdout/stderr
-diagnostic tail retains at most 64 KiB of independent bytes; copied state
-reports how many bytes were discarded. Serialized Sway commands capture their
-complete replies separately, including UTF-8 split across callback chunks.
-Diagnostic retention does not truncate command replies.
-The copied diagnostic state also retains the last 512 process events with
-their parent IDs and main-realm receipt times. It uses the ordinary process
-event callback and adds no polling; these records are not retirement proofs.
-
-The fresh partial-image candidate passes the default two-terminal interaction
-and capacity-refusal/recovery checks on Chromium, Firefox and WebKit. In a
-longer run of the frozen developer preview, Chromium completed 1,200 terminal
-lifecycles, including physical input and process removal, but kernel capacity
-grew from 1,575 to 2,234 Wasm pages (about 41 MiB). This is not a flat memory
-plateau or an OS footprint measurement. Firefox completed 451 cycles before a
-typed shell command failed its 30-second file-content check, despite Sway
-reporting the terminal focused. WebKit runs failed after 286 and 191 completed
-cycles at IPC and new-window readiness checks. The causes remain unresolved;
-these failures do not establish browser-engine defects. The runs used the
-developer bundle before the display-ready handshake and shared the machine
-with builds, so they do not establish sustained acceptance of the final app
-or a performance comparison. The current image also reports a missing Compose
-table, so dead-key input is not available. The bounded checks are not sustained
-lifecycle, native Safari, conformance or performance acceptance.
+This check requires the normal package-backed partial image. It uses a fixed
+1280×840 viewport and unit display scale, validates the rendered prompt before
+typing, checks initialized process-table cleanup and records phase/error
+before bounded screenshots. The direct `prepare-shared-desktop-image.ts` tool
+and older image/report inputs remain available to reproduce historical
+experiments. They are not the normal launch path. Canonical production and
+full release gates remain required before promotion.
 
 ## Accounting and acceptance
 

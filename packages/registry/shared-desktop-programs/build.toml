@@ -1,0 +1,23 @@
+script_path = "packages/registry/shared-desktop-programs/build-shared-desktop-programs.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/shared-desktop-programs/build-shared-desktop-programs.sh",
+  "packages/registry/shared-desktop-programs/prepare.ts",
+  "packages/registry/shared-desktop-programs/programs.json",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/build-shared-memory-helpers.sh",
+  "scripts/build-fork-instrument-tool.sh",
+  "scripts/fork-instrument-tool-input-hash.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "sdk/bin/wasm32posix-shared-memory",
+  "cargo:shared-memory-instrument",
+  "cargo:fork-instrument",
+  "cargo:xtask",
+  "package.json",
+  "package-lock.json",
+]

@@ -19,6 +19,7 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
   /** Explicit compatible session closure. Existing callers retain Sway. */
   desktopProfile?: SharedDesktopProfile;
   includeFreeciv?: boolean;
+  includeScummvm?: boolean;
   /** Also prepare the normal image-owned login/syslog boot chain. */
   includeLoginSession?: boolean;
   /** Explicit source provider for retained image/package fixtures. Default:
@@ -36,9 +37,10 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
   const sdk = fileURLToPath(new URL('../../../sdk/bin/wasm32posix-shared-memory', import.meta.url));
   const desktopProfile = options.desktopProfile ?? 'sway';
   const includeFreeciv = options.includeFreeciv ?? false;
-  const requestedPrograms = sharedDesktopPrograms(desktopProfile, includeFreeciv);
+  const includeScummvm = options.includeScummvm ?? false;
+  const requestedPrograms = sharedDesktopPrograms(desktopProfile, includeFreeciv, includeScummvm);
   const manifest: { input: string; inputSha256: string; desktop: unknown; programs: unknown[]; profiles?: unknown; output?: unknown } = {
-    input, inputSha256: hash(original), desktop: { profile: desktopProfile, freeciv: includeFreeciv }, programs: [],
+    input, inputSha256: hash(original), desktop: { profile: desktopProfile, freeciv: includeFreeciv, scummvm: includeScummvm }, programs: [],
   };
   let succeeded = false;
   try {
@@ -48,25 +50,27 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
     const selected = demo?.profiles?.[desktopProfile];
     if (!demo || !selected) throw Error('Trusted desktop preview requires an image-owned ' + desktopProfile + ' profile');
     const title = (desktopProfile === 'cage' ? 'Cage and Foot' : 'Sway and Foot')
-      + (includeFreeciv ? ' with Freeciv' : '') + ' preview';
+      + (includeFreeciv ? ' with Freeciv' : '') + (includeScummvm ? ' and ScummVM' : '') + ' preview';
     // Participant choice is an explicit image/embedding decision. URLs do not
     // enable the backend, and ordinary image profiles retain their own closure.
     const profile = { ...selected,
       requires: [...new Set([...(selected.requires ?? []),
         ...(desktopProfile === 'cage' ? ['foot'] : []),
-        ...(includeFreeciv ? ['freeciv-browser-bundle'] : [])])],
+        ...(includeFreeciv ? ['freeciv-browser-bundle'] : []),
+        ...(includeScummvm ? ['scummvm-static', 'curl', 'unzip'] : [])])],
       ...(desktopProfile === 'cage' ? { init: { ...selected.init,
         shellCommand: 'LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini' } } : {}),
       identity: selected.identity === undefined ? undefined : { ...selected.identity, title,
-        summary: desktopProfile === 'sway' && !includeFreeciv
+        summary: desktopProfile === 'sway' && !includeFreeciv && !includeScummvm
           ? 'Temporary desktop preview with Sway and Foot. Other applications are not supported.'
           : 'Temporary trusted graphical-session experiment.' },
       guide: { ...selected.guide, title,
-        summary: desktopProfile === 'sway' && !includeFreeciv
+        summary: desktopProfile === 'sway' && !includeFreeciv && !includeScummvm
           ? 'Temporary preview for compatible, trusted programs. Sway and Foot are the supported applications. '
             + (selected.guide?.summary ?? '')
           : 'Temporary preview for compatible, trusted participants. '
           + (includeFreeciv ? 'Run freeciv from Foot; quitting the game returns to the terminal. ' : '')
+          + (includeScummvm ? 'Run scummvm-static, or scummvm-static-play steel-sky to download and play a freeware game. ' : '')
           + (desktopProfile === 'cage' ? 'Exiting Foot ends the Cage session. ' : '')
           + (selected.guide?.summary ?? '') },
     };
@@ -132,12 +136,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const flag = extra[at];
     if (flag === '--login-session' && options.includeLoginSession === undefined) options.includeLoginSession = true;
     else if (flag === '--freeciv' && options.includeFreeciv === undefined) options.includeFreeciv = true;
+    else if (flag === '--scummvm' && options.includeScummvm === undefined) options.includeScummvm = true;
     else if (flag === '--desktop' && options.desktopProfile === undefined) {
       const profile = extra[++at];
       if (profile !== 'sway' && profile !== 'cage') throw Error('Select --desktop sway or cage');
       options.desktopProfile = profile;
     } else throw Error('Unknown or repeated trusted desktop option: ' + flag);
   }
-  if (!input || !output) throw Error('Usage: prepare-shared-desktop-image.ts ORDINARY.vfs.zst GROUPED.vfs.zst [--login-session] [--desktop sway|cage] [--freeciv]');
+  if (!input || !output) throw Error('Usage: prepare-shared-desktop-image.ts ORDINARY.vfs.zst GROUPED.vfs.zst [--login-session] [--desktop sway|cage] [--freeciv] [--scummvm]');
   await prepareSharedDesktopImage(input, output, options);
 }

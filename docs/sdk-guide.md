@@ -1264,8 +1264,11 @@ refuses the required `kandelo.memory-group.v3.memory` import. Path launch keeps
 the kernel's retained executable descriptor and credentials. Compatible
 `posix_spawn` children of grouped parents use the same checked admission.
 The normal browser app has an explicit `--trusted-desktop-preview` development
-and production build choice for a temporary Sway/Foot image prepared through
-the SDK. See [the desktop launch contract](shared-memory-groups.md). This is an
+and production build choice for a temporary normal partial shell. The
+`shared-desktop-programs` package prepares compatible programs through the SDK,
+each in its own lazy archive. Explicit partial selection activates those
+variants at ordinary guest paths; canonical ordinary paths stay unchanged.
+See [the desktop launch contract](shared-memory-groups.md#normal-partial-shell-preview). This is an
 experimental path; further lifecycle and browser-memory validation remains
 required before promotion. Ordinary programs, including PHP-FPM, keep their existing build
 and launch behavior.

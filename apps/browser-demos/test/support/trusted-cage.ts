@@ -36,6 +36,7 @@ export class CageSession {
   readonly canvas;
   readonly surface;
   readonly errors: string[] = [];
+  readonly preparedProgramRequests: string[] = [];
   readonly retirementFailures: string[] = [];
   readonly evidence: Record<string, unknown> = {
     scope: "Bounded factory-image Cage/Foot/Freeciv functionality at 1x density; no sustained or performance claim",
@@ -47,6 +48,9 @@ export class CageSession {
   constructor(readonly page: Page, readonly info: TestInfo) {
     this.canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas");
     this.surface = page.locator(".kmachine-primary .kmodeset-surface");
+    page.on("request", request => {
+      if (request.url().includes("/shared-desktop-programs/")) this.preparedProgramRequests.push(request.url());
+    });
     page.on("pageerror", error => this.errors.push(error.stack ?? error.message));
     page.on("console", message => {
       const failedRetirement = /release acknowledgement timed out|retirement wake failed|incomplete graceful generation detach|graceful kernel-worker detach timed out|destroy drain timed out with woken process|force-terminating|terminated the kernel worker realm|kernel-worker realm termination failed/;
@@ -57,7 +61,7 @@ export class CageSession {
   }
 
   record(fields: Record<string, unknown>) {
-    Object.assign(this.evidence, fields, { errors: this.errors, retirementFailures: this.retirementFailures });
+    Object.assign(this.evidence, fields, { preparedProgramRequests: this.preparedProgramRequests, errors: this.errors, retirementFailures: this.retirementFailures });
     const path = this.info.outputPath("cage.json");
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(this.evidence, null, 2) + "\n");

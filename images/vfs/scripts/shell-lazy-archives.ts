@@ -1,3 +1,4 @@
+import { sharedDesktopPackageArchives } from './shared-desktop-package-contract';
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -160,6 +161,7 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
 ] as const;
 
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
+  ...sharedDesktopPackageArchives,
   {
     id: "rust-docs",
     dependency: "rust-docs",
