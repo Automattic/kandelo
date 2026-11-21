@@ -151,9 +151,10 @@ echo "==> Configuring SDL2 with the OSS, KMSDRM, Wayland and evdev backends..."
 # builds take.
 #
 # SDL_LoadObject itself is real (--enable-loadso, backed by dlopen):
-# programs such as ScummVM load their own plugins through it. A program
-# that links -ldl gets Kandelo's dynamic loader; one that does not gets
-# musl's stub, which fails honestly with "Dynamic loading not supported".
+# programs such as ScummVM load their own plugins through it. The SDK
+# links its dynamic loader into any program that calls dlopen, with or
+# without -ldl, and SDL's dynamic API (SDL_DYNAMIC_API) calls it, so every
+# SDL program gets the loader; ffplay grew by about 22 KB.
 (
     cd "$BUILD_DIR"
     LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \

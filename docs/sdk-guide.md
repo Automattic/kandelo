@@ -324,6 +324,14 @@ How the SDK makes that work:
   none of it, and `-ldl` changes nothing. Configure probes therefore see
   working functions in libc: Meson's `dependency('dl')` is built in, and
   Autoconf's `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
+  A program that references `dlopen` only in passing gets the loader too:
+  SDL's dynamic API does, so every SDL program does; so do GLib's GModule,
+  Qt, MariaDB, Vim and several Rust programs. The loader's imports are
+  among the host imports every program may use
+  (`libc/glue/kandelo-host-imports.txt`). A fork-capable program that
+  imports them is instrumented as a dynamic-linking program (fork
+  capability bit 0x02, plus a dlopen contract); ffplay grew by 22 KB
+  (0.09%).
 - **Executable code has Unix visibility.** Clang gives WebAssembly symbols
   hidden visibility unless told otherwise, which left `--export-dynamic`,
   which exports default-visibility symbols, nothing to export. The SDK

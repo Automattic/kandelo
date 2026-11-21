@@ -3,9 +3,9 @@
 #
 # WHY: a configure that exits 0 with a feature silently missing, or that
 # claims a libc function Kandelo does not provide, is the misleading-probe
-# failure in the design's §4. The SDK links executables with
-# --allow-undefined, so a link probe can succeed for a function that does
-# not exist; only the real archive symbols can say whether it does.
+# failure in the design's §4. A link probe is not proof enough for the
+# configure checks below; only the real archive symbols can say whether a
+# function exists.
 #
 #   audit-configure.sh config <configured-tree> <sysroot>
 #   audit-configure.sh link <program.wasm>
@@ -52,14 +52,17 @@ link)
     n=$(wasm-objdump -d "$wasm" | grep -cE '\b(v128|i8x16|i16x8|i32x4|i64x2|f32x4|f64x2)\.' || true)
     echo "audit: $(basename "$wasm") contains $n SIMD instructions"
     [ "$n" -gt 0 ] || { echo "audit: no SIMD instructions in $wasm" >&2; bad=1; }
-    # The SDK links with --allow-undefined, so a missing function becomes a
-    # host import that traps when called. Everything a program imports from
-    # `env` must be something the platform actually provides.
+    # Everything a program imports from `env` must be something the host
+    # provides: the SDK's generated host-import list
+    # (libc/glue/kandelo-host-imports.txt), which includes the dlopen
+    # loader's imports for a program that calls dlopen, plus the memory.
+    host_imports="$(cd "$(dirname "$0")/../../.." && pwd)/libc/glue/kandelo-host-imports.txt"
+    [ -s "$host_imports" ] || { echo "audit: $host_imports is missing" >&2; exit 1; }
     undefined=$(wasm-objdump -x -j Import "$wasm" \
         | sed -n 's/.*<- env\.\([A-Za-z0-9_]*\).*/\1/p' \
-        | grep -vxE 'memory|__channel_base' || true)
+        | grep -vx memory | grep -vxF -f "$host_imports" || true)
     if [ -n "$undefined" ]; then
-        echo "audit: $(basename "$wasm") imports symbols no library defines:" $undefined >&2
+        echo "audit: $(basename "$wasm") imports env symbols the host does not provide:" $undefined >&2
         bad=1
     fi
     exit "$bad"
