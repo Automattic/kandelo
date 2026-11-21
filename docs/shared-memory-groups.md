@@ -213,8 +213,11 @@ registration refusals before and after registration, then prove budget and
 physical-image restoration before a successful fork. An uncertain constructor
 failure stays fatal and charged; stopped and concurrently destroyed initial
 launches retire through their exact receipts. These pass on Node and all three
-browser engines. Full browser-memory and app acceptance remain pending for the
-combined change. The earlier byte-launch controls remain separate from the normal app path below.
+browser engines. The pinned integrated runtime also passes the full normal
+browser-memory gate and bounded built-app checks recorded in the
+[current integration checkpoint](measurements/2026-11-20-shared-memory-desktop-current.md).
+Those results do not establish sustained WebKit reliability or a resource benefit.
+The earlier byte-launch controls remain separate from the normal app path below.
 
 The app's programmatic `createLiveHost` also carries this trusted embedder
 option to its normal kernel boot. It rejects managed or persistent machines.
@@ -239,9 +242,11 @@ normal canonical browser preparation and authenticated lazy-asset build. It
 then bundles the previously built, package-backed partial image and public
 provenance, without creating another image. Build that partial image first.
 Public provenance omits build-machine paths; full SDK reports are package
-artifacts in `shared-desktop-programs/programs.json`. The full current canonical
-production build and browser-memory gates remain required before promotion;
-short desktop checks do not establish sustained support or resident memory.
+artifacts in `shared-desktop-programs/programs.json`. The pinned normal
+production build and full browser-memory gate have passed; rerun the applicable
+gates when their production inputs change. Sustained WebKit failures and quiet
+resource/performance comparisons remain open in the current integration record.
+Short desktop checks do not establish sustained support or resident memory.
 
 The maintained Sway checks use the explicit Sway profile of the same partial
 image. Set `PREVIEW_URL` to that profile URL, then run:
@@ -449,7 +454,13 @@ before promotion: capacity benefit, total footprint, CPU, input response and
 presentation observations. Usable interaction permits measured overhead; it
 does not waive correct semantics, bounded ownership or truthful reporting.
 
-## Review stages
+## Implementation history
+
+The following checkpoints describe the interfaces as they were introduced.
+Their earlier gating and unfinished-work statements apply to those individual
+revisions. Use the desktop-first contract above and the
+[current integration record](measurements/2026-11-20-shared-memory-desktop-current.md)
+for the supported preview scope and remaining acceptance work.
 
 The initial kernel component now owns admission, image and task receipts, plus
 backing-owner holds. Fork reserves the child image before publication; pthread
