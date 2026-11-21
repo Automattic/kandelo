@@ -1990,7 +1990,7 @@ interface PreparedChannelCompletion {
   relistenRequested: boolean;
   /** Rust already exited; only the exact old transport may unwind, without
    * dispatching another syscall or granting any storage-retirement proof. */
-  exitHandshake?: boolean;
+  exitHandshake?: boolean | 'thread';
   /**
    * Exact clone state needed only if a stopped process's deferred Worker
    * constructor fails before this parked success can be published.
@@ -17223,6 +17223,7 @@ export class CentralizedKernelWorker {
       this.resumePreparedSignals?.delete(channel);
       channel.handling = false;
       if (prepared.relistenRequested && this.isRegisteredChannel(channel)) this.relistenChannel(channel);
+      if (prepared.exitHandshake === 'thread') this.acknowledgeIdleRetiredCompletionChannel(channel);
       return;
     }
     channel.handling = false;
@@ -17266,6 +17267,25 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Rust has already removed a naturally exiting pthread and its host
+   * registration. Its exact retired channel still owns the final EXIT wake;
+   * the Worker/observer fences keep that storage pinned until it unwinds.
+   * This never resurrects a task, relistens it, or authorizes ordinary work. */
+  private canPublishPreparedChannelCompletion(channel: ChannelInfo, prepared: PreparedChannelCompletion): boolean {
+    return this.isRegisteredChannel(channel)
+      || (prepared.exitHandshake === 'thread' && this.retiredChannelListeners.has(channel));
+  }
+
+  /** Cancellation may discard the response before the real queue observation
+   * settles. Keep the token only while an observation or publication owns it. */
+  private acknowledgeIdleRetiredCompletionChannel(channel: ChannelInfo): void {
+    if (this.retiredChannelListeners.has(channel)
+        && !this.parkedChannelCompletions.has(channel)
+        && (this.pendingChannelListenerCounts.get(channel) ?? 0) === 0) {
+      this.acknowledgeRetiredChannelListener(channel);
+    }
+  }
+
   /** Retain one already-materialized result while Q belongs to a participant.
    * No kernel scratch survives this boundary. The exact native observation is
    * charged to the image/channel until its engine promise really settles. */
@@ -17302,27 +17322,40 @@ export class CentralizedKernelWorker {
       const finalListener = this.finishChannelListenerWait(channel);
       retiredWhenSettled = this.retiredChannelListeners.has(channel);
       if (retiredWhenSettled) {
-        if (parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
-        if (finalListener) this.acknowledgeRetiredChannelListener(channel);
+        if (prepared.exitHandshake !== 'thread' && parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
+        if (finalListener) this.acknowledgeIdleRetiredCompletionChannel(channel);
       }
     };
     const retry = () => {
-      if (retiredWhenSettled || parkedCompletions.get(channel) !== parked) return;
+      if ((retiredWhenSettled && prepared.exitHandshake !== 'thread') || parkedCompletions.get(channel) !== parked) {
+        this.acknowledgeIdleRetiredCompletionChannel(channel);
+        return;
+      }
       this.#runOrDeferKernelEntry(`completion queue publication pid=${channel.pid}`, entry => {
-        if (parkedCompletions.get(channel) !== parked) return undefined;
+        if (parkedCompletions.get(channel) !== parked) {
+          this.acknowledgeIdleRetiredCompletionChannel(channel);
+          return undefined;
+        }
         // A dead Process can retain its exact host registration during orderly
         // teardown. A settled Q wait grants no authority to wake that image.
-        if (this.#kernelFatalError !== null || !this.isRegisteredChannel(channel)
+        if (this.#kernelFatalError !== null || !this.canPublishPreparedChannelCompletion(channel, prepared)
             || (!prepared.exitHandshake
               && (!this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
                 || !this.#isProcessExecutionActiveWithinKernelEntry(channel.pid, entry)))) {
           if (parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
+          this.acknowledgeIdleRetiredCompletionChannel(channel);
           return undefined;
         }
         entry.deferProtocolEffect(() => {
-          if (parkedCompletions.get(channel) !== parked) return;
+          if (parkedCompletions.get(channel) !== parked) {
+            this.acknowledgeIdleRetiredCompletionChannel(channel);
+            return;
+          }
           parkedCompletions.delete(channel);
-          if (!this.isRegisteredChannel(channel) || this.#kernelFatalError !== null) return;
+          if (!this.canPublishPreparedChannelCompletion(channel, prepared) || this.#kernelFatalError !== null) {
+            this.acknowledgeIdleRetiredCompletionChannel(channel);
+            return;
+          }
           prepared.relistenRequested ||= parked.relistenRequested;
           // STOP may have arrived while Q was busy. Keep the materialized
           // result parked until normal SIGCONT preflight permits publication.
@@ -17520,6 +17553,10 @@ export class CentralizedKernelWorker {
     for (const [channel, entry] of parked) {
       if (parkedCompletions.get(channel) !== entry) continue;
       if (!this.isRegisteredChannel(channel)) {
+        // The task already exited; only its final transport is waiting on Q.
+        // SIGCONT must leave that observer's exact publication owner intact.
+        if (entry.prepared.exitHandshake === 'thread'
+            && this.canPublishPreparedChannelCompletion(channel, entry.prepared)) continue;
         parkedCompletions.delete(channel);
         deferredChannels.delete(channel);
         continue;
@@ -18503,7 +18540,7 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
     relistenRequested = false,
     refreshImportedBos = false,
-    exitHandshake = false,
+    exitHandshake: boolean | 'thread' = false,
   ): void {
     this.#releaseBlockingRetrySnapshot(channel, entry);
     this.#finishChannelRequest(channel);
@@ -25946,7 +25983,7 @@ export class CentralizedKernelWorker {
       // forever. Observed as: MariaDB's connection-handler thread (cloned when
       // it accepts php-fpm's DB connection) never runs its first syscall, so
       // the WordPress-over-MariaDB demo never gets a MySQL greeting and hangs.
-      this.completeChannelRaw(channel, 0, 0, entry);
+      this.completeChannelRaw(channel, 0, 0, entry, false, false, 'thread');
       entry.deferProtocolEffect(() => {
         this.callbacks.onThreadExit?.(
           channel.pid,

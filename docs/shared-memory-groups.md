@@ -1056,3 +1056,13 @@ Private Worker IPC requests wake the kernel's native observer directly. Replies
 and guest atomic notifications continue to use the versioned group wait queue.
 Every notification validates the current source and virtual word; no translated
 pointer or guest view is retained across calls.
+
+A naturally exiting pthread may lose its Rust task and host registration before
+its final EXIT response can take the queue mutex. That exact retired mailbox
+keeps only terminal publication authority until the response lands. It never
+relistens or dispatches another syscall; ordinary stale completions remain
+rejected. The final wake grants no Worker quiescence or storage reuse proof: the
+existing exact Worker, native-observer and image retirement fences still apply.
+If teardown cancels this queued response, its last actual native observation
+still settles before releasing the retired transport token. STOP/CONT preflight
+preserves this terminal queue owner without reactivating the removed task.

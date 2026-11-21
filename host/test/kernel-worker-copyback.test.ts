@@ -64,7 +64,7 @@ function createTestChannel(
 }
 
 function makeCopybackHarness(ptrWidth: 4 | 8 = 4, grouped = false, channelOffset = 0,
-  lifecycle?: { exitSignal?: () => number; state?: () => number }) {
+  lifecycle?: { exitSignal?: () => number; state?: () => number; threadExit?: (pid: number, tid: number, ran: number) => bigint }) {
   const pid = 100;
   const kernelMemory = new WebAssembly.Memory({ initial: 2 });
   const store = grouped ? new MemoryGroupImageStore(7, 32, 32) : undefined;
@@ -98,6 +98,7 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4, grouped = false, channelOffset
       kernel_drain_wakeup_events: () => 0,
       kernel_get_parent_pid: () => -1,
       kernel_set_current_tid: () => 0,
+      kernel_thread_exit: lifecycle?.threadExit ?? (() => 0n),
     } },
   );
   const state = worker as unknown as MutableCopybackWorkerState;
@@ -130,6 +131,71 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4, grouped = false, channelOffset
 }
 
 describe("CentralizedKernelWorker syscall copy-back", () => {
+  it("settles the retired pthread observer when teardown cancels its queued EXIT response", async () => {
+    const { worker, channel, launch, store, state } = makeCopybackHarness(4, true);
+    const source = launch!.source, words = new Int32Array(channel.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const main = createTestChannel(channel.pid, channel.memory, source, 8192);
+    state.processes.get(channel.pid)!.channels.unshift(main);
+    state.activeChannels.unshift(main);
+    (worker as any).channelTids.set(`${channel.pid}:${channel.channelOffset}`, 101);
+    processDataView(source).setUint32(CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+    Atomics.store(words, q, 1);
+    try {
+      (worker as any).handleSyscall(channel);
+      expect((worker as any).parkedChannelCompletions.size).toBe(1);
+      // Process teardown discards already-decided old-image publications.
+      // Its actual engine observation must settle before its token can end.
+      (worker as any).discardStoppedChannelStateForProcess(channel.pid);
+      Atomics.store(words, q, 0); Atomics.notify(words, q);
+      await expect.poll(() => store!.snapshot().nativeObservers).toBe(0);
+      expect((worker as any).pendingChannelNativeObservations.size).toBe(0);
+      expect((worker as any).retiredChannelListeners.has(channel)).toBe(false);
+      expect(source.atomicLoadI32(CH_STATUS)).toBe(CHANNEL_STATUS_PENDING);
+      expect(state.processes.get(channel.pid)!.channels).toEqual([main]);
+    } finally { Atomics.store(words, q, 0); Atomics.notify(words, q); store!.close(); }
+  });
+
+  it.each(['notify', 'timeout', 'resume'] as const)("finishes the exact removed pthread EXIT transport after notification queue contention (%s)", async mode => {
+    let processState: number = PROCESS_STATE_RUNNING;
+    const threadExit = vi.fn(() => 0n);
+    const { worker, channel, launch, store, state } = makeCopybackHarness(4, true, 0, { threadExit, state: () => processState });
+    const source = launch!.source, words = new Int32Array(channel.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
+    const main = createTestChannel(channel.pid, channel.memory, source, 8192);
+    const waits = vi.spyOn(Atomics, 'waitAsync');
+    state.processes.get(channel.pid)!.channels.unshift(main);
+    state.activeChannels.unshift(main);
+    (worker as any).channelTids.set(`${channel.pid}:${channel.channelOffset}`, 101);
+    processDataView(source).setUint32(CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+    Atomics.store(words, q, 1);
+    try {
+      (worker as any).handleSyscall(channel);
+      expect(threadExit).toHaveBeenCalledExactlyOnceWith(channel.pid, 101, 1);
+      expect(state.processes.get(channel.pid)!.channels).toEqual([main]);
+      expect(source.atomicLoadI32(CH_STATUS)).toBe(CHANNEL_STATUS_PENDING);
+      expect((worker as any).parkedChannelCompletions.size).toBe(1);
+      await expect.poll(() => waits.mock.calls.filter(([word]) => word.byteOffset === G.MEMORY_GROUP_WAIT_HEADER).length).toBeGreaterThan(1);
+      expect((worker as any).retiredChannelListeners.has(channel)).toBe(true);
+      if (mode === 'resume') {
+        processState = PROCESS_STATE_STOPPED;
+        (worker as any).stoppedPids.add(channel.pid);
+        expect(worker.testAuthority.resumeStoppedProcessForTest(channel.pid)).toBe(false);
+        processState = PROCESS_STATE_RUNNING;
+        expect(worker.testAuthority.resumeStoppedProcessForTest(channel.pid)).toBe(true);
+      }
+      Atomics.store(words, q, 0);
+      if (mode !== 'timeout') Atomics.notify(words, q);
+      await expect.poll(() => source.atomicLoadI32(CH_STATUS), { timeout: 1000 }).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(processDataView(source).getBigInt64(CH_RETURN, true)).toBe(0n);
+      expect(threadExit).toHaveBeenCalledTimes(1);
+      expect(state.processes.get(channel.pid)!.channels).toEqual([main]);
+      expect((worker as any).parkedChannelCompletions.size).toBe(0);
+      expect((worker as any).pendingChannelNativeObservations.size).toBe(0);
+      expect(store!.snapshot().nativeObservers).toBe(0);
+      expect((worker as any).retiredChannelListeners.has(channel)).toBe(false);
+      expect(source.atomicLoadI32(main.channelOffset + CH_STATUS)).toBe(0);
+    } finally { Atomics.store(words, q, 0); Atomics.notify(words, q); waits.mockRestore(); store!.close(); }
+  });
+
   it("keeps the kernel available while grouped completion notification Q is held", async () => {
     const { worker, channel, launch, store, state } = makeCopybackHarness(4, true);
     const words = new Int32Array(channel.memory.buffer), q = G.MEMORY_GROUP_WAIT_HEADER / 4;
