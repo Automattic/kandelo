@@ -1,9 +1,10 @@
 id = "LLVM-WASM-CFG-REACHABILITY-COST"
 kind = "bug"
-status = "confirmed"
+status = "retired"
 runtimes = ["clang"]
 summary = "LLVM's Wasm irreducibility analysis consumes excessive time and memory on large reducible state machines"
 reports = "human-only"
+retired_reason = "Fixed upstream in LLVM 23 (llvm-project#184441 replaced the pass's reachability graph with SCCs; #185072 then removed the opt-out switch). The standalone repro does not reproduce on released clang 23.1.3, so Harper's tree-sitter-gitcommit patch that passed the removed switch was deleted."
 
 [[repro]]
 kind = "script"
@@ -19,4 +20,13 @@ os = "macos"
 reproduced = true
 date = 2026-11-05
 source = "manual"
+released = true
+
+[[observed]]
+runtime = "clang"
+version = "clang version 23.1.3"
+os = "macos"
+reproduced = false
+date = 2026-11-15
+source = "suite"
 released = true

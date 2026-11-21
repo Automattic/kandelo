@@ -1,7 +1,7 @@
 script_path = "packages/registry/harper/build-harper.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 1
+revision = 2
 inputs = [
   "packages/registry/harper/build-harper.sh",
   "packages/registry/harper/patches",

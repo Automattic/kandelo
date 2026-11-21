@@ -1,0 +1,31 @@
+# Upstream fix backport: pass the GtkWidget to gtk_widget_queue_resize
+#
+# gtk_label_style_updated() calls gtk_widget_queue_resize() with its
+# GtkLabel pointer instead of the GtkWidget pointer it was given. Both
+# point at the same instance, so the call works, but the argument type is
+# wrong. Clang 23 makes -Wincompatible-pointer-types an error by default,
+# so gtklabel.c stops compiling:
+#
+#   gtk/gtklabel.c:4247:32: error: incompatible pointer types passing
+#   'GtkLabel *' (aka 'struct _GtkLabel *') to parameter of type
+#   'GtkWidget *' (aka 'struct _GtkWidget *') [-Wincompatible-pointer-types]
+#
+# This backports the one-line upstream change unchanged; there is nothing
+# Kandelo-specific in it.
+#
+# Upstream: gtk+ 3.24.34. Fixed upstream by
+#   a3e82f20a1a1e7d8ffbc960a8bb4aa65b0d151ee ("Use the right type when
+#   calling GtkWidget methods"; first released in GTK 3.24.36).
+# Upstream status: merged upstream; drop when gtk3 moves to 3.24.36 or
+# later.
+--- a/gtk/gtklabel.c
++++ b/gtk/gtklabel.c
+@@ -4232,7 +4232,7 @@
+   if (change == NULL || gtk_css_style_change_affects (change, GTK_CSS_AFFECTS_FONT))
+     {
+       gtk_label_clear_layout (GTK_LABEL (widget));
+-      gtk_widget_queue_resize (label);
++      gtk_widget_queue_resize (widget);
+     }
+ 
+   if (change == NULL || gtk_css_style_change_affects (change, GTK_CSS_AFFECTS_TEXT_ATTRS) ||

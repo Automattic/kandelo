@@ -82,6 +82,10 @@ if [ ! -d "$SRC_DIR" ]; then
     patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-class-handler-contract.patch"
     # Child-watch dispatch is void; only the inner GClosure returns gboolean.
     patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-child-watch-contract.patch"
+    # Backport of GLib's G_GNUC_UNUSED on the G_DEFINE_*TYPE parent_class
+    # static; clang 23's -Wunused-but-set-global otherwise breaks -Werror
+    # consumers such as pango.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/gtype-unused-parent-class.patch"
 fi
 
 # Fresh build + install each run — stale objects would shadow config

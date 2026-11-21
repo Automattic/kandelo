@@ -1,0 +1,50 @@
+# Upstream missing-include defect: std::nothrow used without <new>
+#
+# Compressor.cpp allocates its output buffers with
+# `new (std::nothrow) char[...]`. std::nothrow is declared in <new>, but
+# the file never includes it and relied on <zlib.h>, the lz4 headers or
+# LOVE's own headers pulling it in transitively. libc++ 23 removed that
+# transitive include, so the build stopped with
+#
+#   src/modules/data/Compressor.cpp:90:29: error: no member named
+#   'nothrow' in namespace 'std'
+#
+# (and the same at line 296). Include the header the code uses. The only
+# other std::nothrow user in the tree, src/common/android.cpp, has the
+# same missing include; it is compiled only for LOVE_ANDROID and not for
+# Kandelo, but gets the same one-line fix so the patch covers the whole
+# defect rather than the one file this target happens to build.
+#
+# This is a portability fix with nothing specific to Kandelo or wasm; any
+# C++ standard library that does not leak <new> through these headers
+# hits it.
+#
+# Upstream: love2d/love commit 6eb8d546736d5915a8b5af30b2cf33456dfdcb1a;
+# the 11.x and main branches still lack the include in Compressor.cpp.
+# Upstream status: upstreamable, not yet proposed upstream.
+diff --git a/src/common/android.cpp b/src/common/android.cpp
+index c10ef99..e1cae7e 100644
+--- a/src/common/android.cpp
++++ b/src/common/android.cpp
+@@ -23,6 +23,7 @@
+ #ifdef LOVE_ANDROID
+ 
+ #include <cerrno>
++#include <new>
+ #include <unordered_map>
+ 
+ #include <SDL.h>
+diff --git a/src/modules/data/Compressor.cpp b/src/modules/data/Compressor.cpp
+index 4712a31..22a6174 100644
+--- a/src/modules/data/Compressor.cpp
++++ b/src/modules/data/Compressor.cpp
+@@ -28,6 +28,9 @@
+ 
+ #include <zlib.h>
+ 
++// C++
++#include <new>
++
+ namespace love
+ {
+ namespace data
