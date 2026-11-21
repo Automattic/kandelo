@@ -1447,6 +1447,10 @@ if (typeof window !== "undefined") {
     return response.clone().arrayBuffer().then(function () {
       return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
         return cache.put(request, response.clone());
+      }).catch(function (error) {
+        // Cache storage is optional reuse of a completed network body. Keep
+        // this catch inside that boundary: truncated network bodies must fail.
+        console.warn("Unable to cache lazy VFS response; serving network bytes", request.url, String(error));
       });
     }).then(function () {
       return response;
