@@ -1219,41 +1219,52 @@ __int128 __ashrti3(__int128 a, int b) {
     return result.i;
 }
 
-/* ===== 128-bit integer multiply (needed by scanf/printf internals) ===== */
+/* ===== 128-bit integer multiply (needed by scanf/printf internals) =====
+ *
+ * Clang lowers every __int128 multiply, including a 64x64->128 widening
+ * one, to __multi3, so nothing in this body may be recognizable as a
+ * 128-bit multiply. Clang 23's AggressiveInstCombine (foldMulHigh) turns
+ * the high word of a split 32-bit multiply, computed on its own, into
+ * `mul i128` of the zero-extended operands; the Wasm backend lowers that
+ * back to a call to __multi3, so the previous body here called itself
+ * until the stack overflowed. -fno-builtin does not stop that fold.
+ *
+ * mul_64x64 follows LLVM compiler-rt's __mulddi3 (lib/builtins/multi3.c):
+ * the low and high words are built from the same partial sums, the form
+ * upstream compiles its own __multi3 from and one foldMulHigh does not
+ * match, because those sums have more than one use. Adapted from LLVM
+ * compiler-rt, Apache-2.0 WITH LLVM-exception. The compiler-builtins
+ * guest test (host/test/compiler-builtins-guest.test.ts) fails if any
+ * function in this file calls itself.
+ */
 
+static u128 mul_64x64(uint64_t a, uint64_t b) {
+    const uint64_t lower_mask = 0xFFFFFFFFULL;
+    u128 r;
+    r.lo = (a & lower_mask) * (b & lower_mask);
+    uint64_t t = r.lo >> 32;
+    r.lo &= lower_mask;
+    t += (a >> 32) * (b & lower_mask);
+    r.lo += (t & lower_mask) << 32;
+    r.hi = t >> 32;
+    t = r.lo >> 32;
+    r.lo &= lower_mask;
+    t += (b >> 32) * (a & lower_mask);
+    r.lo += (t & lower_mask) << 32;
+    r.hi += t >> 32;
+    r.hi += (a >> 32) * (b >> 32);
+    return r;
+}
+
+/* (a_hi * 2^64 + a_lo) * (b_hi * 2^64 + b_lo) mod 2^128
+ * = a_lo*b_lo + (a_hi*b_lo + a_lo*b_hi) * 2^64 */
 __int128 __multi3(__int128 a, __int128 b) {
-    i128_bits ua, ub;
+    i128_bits ua, ub, r;
     ua.i = a;
     ub.i = b;
-
-    uint64_t a_lo = ua.parts.lo, a_hi = ua.parts.hi;
-    uint64_t b_lo = ub.parts.lo, b_hi = ub.parts.hi;
-
-    /* (a_hi * 2^64 + a_lo) * (b_hi * 2^64 + b_lo) mod 2^128
-     * = a_lo*b_lo + (a_lo*b_hi + a_hi*b_lo) * 2^64 */
-    uint64_t lo = a_lo * b_lo;
-
-    /* High 64 bits of a_lo * b_lo */
-    /* Use the widening multiply: split into 32-bit pieces */
-    uint64_t a_lo_lo = a_lo & 0xFFFFFFFF;
-    uint64_t a_lo_hi = a_lo >> 32;
-    uint64_t b_lo_lo = b_lo & 0xFFFFFFFF;
-    uint64_t b_lo_hi = b_lo >> 32;
-
-    uint64_t cross1 = a_lo_lo * b_lo_hi;
-    uint64_t cross2 = a_lo_hi * b_lo_lo;
-    uint64_t lo_lo = a_lo_lo * b_lo_lo;
-    uint64_t hi_hi = a_lo_hi * b_lo_hi;
-
-    uint64_t carry = ((lo_lo >> 32) + (cross1 & 0xFFFFFFFF) + (cross2 & 0xFFFFFFFF)) >> 32;
-    uint64_t hi = hi_hi + (cross1 >> 32) + (cross2 >> 32) + carry;
-
-    hi += a_lo * b_hi + a_hi * b_lo;
-
-    i128_bits result;
-    result.parts.lo = lo;
-    result.parts.hi = hi;
-    return result.i;
+    r.parts = mul_64x64(ua.parts.lo, ub.parts.lo);
+    r.parts.hi += ua.parts.hi * ub.parts.lo + ua.parts.lo * ub.parts.hi;
+    return r.i;
 }
 
 /* ===== 128-bit integer division and modulo =====
