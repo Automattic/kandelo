@@ -3,7 +3,7 @@ name = "wasm-fork-instrument"
 version = "0.1.0"
 kernel_abi = 55
 arches = ["wasm32"]
-depends_on = ["binaryen@126"]
+depends_on = ["binaryen@133"]
 
 [source]
 provider = "repository"

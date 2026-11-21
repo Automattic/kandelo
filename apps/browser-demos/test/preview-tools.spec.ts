@@ -1,10 +1,16 @@
 import { expect, type Page } from "../playwright-test";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "./support/persistent-page";
 import { machineUrl } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 import { clickDockTool, setInternalsOpen } from "./support/dock";
 import { confirmKeepComputer, currentComputerMetadata, configureNewComputer, keepComputerDialog } from "./support/computer-library";
+
+// The guest wasm-opt must report the Binaryen version the package declares.
+const binaryenVersion = readFileSync(
+  new URL("../../../packages/registry/binaryen/package.toml", import.meta.url), "utf8",
+).match(/^version = "([^"]+)"/m)![1];
 
 async function shell(page: Page): Promise<void> {
   await page.goto(await machineUrl(page, "shell"));
@@ -72,11 +78,11 @@ test("the normal shell lazily installs the guest preparer and SDK optimizer and 
   await shell(page);
   const command = "set -e; wasm-fork-instrument --help > /home/projects/preparer-help.txt; head -n 1 /home/projects/preparer-help.txt; wasm-opt --version";
   const first = await runTerminalCommand(page, command, "Instrument a wasm module", 180_000);
-  expect(first.output).toContain("wasm-opt version 126");
+  expect(first.output).toContain(`wasm-opt version ${binaryenVersion}`);
   await page.reload();
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
   const reopened = await runTerminalCommand(page, command, "Instrument a wasm module", 180_000);
-  expect(reopened.output).toContain("wasm-opt version 126");
+  expect(reopened.output).toContain(`wasm-opt version ${binaryenVersion}`);
 });
 
 test("boot has its own syslog and running WordPress services own their shortcuts", async ({ page }, testInfo) => {

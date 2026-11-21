@@ -17,7 +17,7 @@ WORK="$KANDELO_PACKAGE_WORK_DIR"
 OWNER="${WASM_POSIX_DEP_BINARYEN_DIR:?binaryen dependency dir required}"
 # The resolver passes the package version; a direct run reads the manifest.
 VERSION="${WASM_POSIX_DEP_VERSION:-$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["version"])' "$HERE/package.toml")}"
-EPOCH="$(kandelo_man_pages_date_epoch "$(kandelo_man_pages_release_date "$VERSION" 126=2026-02-13)")"
+EPOCH="$(kandelo_man_pages_date_epoch "$(kandelo_man_pages_release_date "$VERSION" 133=2026-09-21)")"
 
 SPEC="$WORK/help-capture.json"
 cat > "$SPEC" <<EOF
@@ -37,5 +37,5 @@ kandelo_man_pages_capture_help "$SPEC" "$CAP"
 PAGES="$WORK/pages"
 rm -rf "$PAGES"
 SOURCE_DATE_EPOCH="$EPOCH" kandelo_man_pages_help2man "$CAP" wasm-opt "$PAGES/wasm-opt.1" \
-    --source="Binaryen 126"
+    --source="Binaryen $VERSION"
 install_package_man_pages binaryen-docs "$PAGES" wasm-opt.1
