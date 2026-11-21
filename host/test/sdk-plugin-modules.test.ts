@@ -26,6 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const FIXTURE = join(__dirname, "fixtures/guest-build/plugins");
 const CC = join(REPO_ROOT, "sdk/bin/wasm32posix-cc");
+const CXX = join(REPO_ROOT, "sdk/bin/wasm32posix-c++");
 const BUILD_DIR = makeHostScratchTempRoot("sdk-plugin-modules-");
 const pluginOutput = "plugin: host_scale=3\nplugin_run(7) = 22\n";
 
@@ -38,9 +39,9 @@ function link(name: string, source: string, flags: string[]): string {
   return program;
 }
 
-function buildPlugin(source: string): string {
-  const module = join(BUILD_DIR, source.replace(/\.c$/, ".so"));
-  execFileSync(CC, ["-shared", "-fPIC", "-O2", join(FIXTURE, source), "-o", module], { stdio: "pipe" });
+function buildPlugin(source: string, compiler = CC, flags = ["-O2"]): string {
+  const module = join(BUILD_DIR, source.replace(/\.(c|cpp)$/, ".so"));
+  execFileSync(compiler, ["-shared", "-fPIC", ...flags, join(FIXTURE, source), "-o", module], { stdio: "pipe" });
   return module;
 }
 
@@ -113,6 +114,26 @@ describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin module
       expect(imports(program).some((i) => i.startsWith("env.__wasm_dlopen")), `${flags}`).toBe(false);
       expect(exports(program), `${flags}`).not.toContain("dlopen");
     }
+  });
+
+  // A side module's own vague-linkage definitions (inline functions, inline
+  // virtual members, template members) must bind to its own copies. With
+  // default visibility, wasm-ld imports a module's weak definitions instead,
+  // which the loader cannot satisfy: ScummVM's engines stopped loading that
+  // way. Position-independent compiles therefore keep hidden visibility.
+  it("a C++ plugin binds its own inline, virtual and template definitions", { timeout: 120_000 }, async () => {
+    const pluginCxx = buildPlugin("plugin-cxx.cpp", CXX, ["-O0", "-fno-rtti"]);
+    const own = new Set(exports(pluginCxx));
+    const fromProgram = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(pluginCxx)))
+      .filter((i) => i.module === "env" && i.kind === "function")
+      .map((i) => i.name);
+    expect(fromProgram.filter((name) => own.has(name))).toEqual([]);
+    expect(fromProgram.sort()).toEqual(["host_callback", "printf"]);
+
+    const result = await run(host, pluginCxx);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe("plugin-cxx: area=49\nplugin_run(7) = 42\n");
+    expect(result.exitCode).toBe(0);
   });
 
   // A plugin takes libc from the program, so a libc function the program

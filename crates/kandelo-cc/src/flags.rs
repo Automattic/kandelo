@@ -27,16 +27,6 @@ pub fn compile_flags(arch: WasmArch) -> Vec<String> {
             "-mllvm",
             "-wasm-use-legacy-eh=false",
             "-fno-trapping-math",
-            // Unix symbol visibility. Clang gives WebAssembly symbols hidden
-            // visibility unless told otherwise, so -rdynamic and
-            // -Wl,--export-dynamic, which export default-visibility symbols,
-            // exported nothing a plugin could call. An executable's code is
-            // the same either way: only its export set under
-            // --export-dynamic changes. A caller's own -fvisibility, later
-            // on the command line, still wins. The SDK's glue opts back out
-            // (glue_compile_base); side modules bind their own symbols with
-            // -Bsymbolic (shared_link_flags).
-            "-fvisibility=default",
         ]
         .map(String::from),
     );
@@ -563,6 +553,34 @@ pub fn link_flags(
 }
 
 /// Link flags for building shared Wasm libraries (.so side modules).
+/// The visibility a compile gets unless the caller chooses one.
+///
+/// Unix visibility for code that can only end up in an executable. Clang
+/// gives WebAssembly symbols hidden visibility unless told otherwise, so
+/// -rdynamic and -Wl,--export-dynamic, which export default-visibility
+/// symbols, exported nothing a plugin could call. An executable's code is
+/// the same either way: only its export set under --export-dynamic
+/// changes. A caller's own -fvisibility, later on the command line, wins.
+///
+/// Position-independent compiles (-fPIC, -fpic, -shared) keep Clang's
+/// hidden default, because such code may become a side module: wasm-ld
+/// imports a side module's own weak default-visibility definitions (inline
+/// functions, template instances, implicit virtual destructors) so another
+/// module's copy can win, and the loader resolves imports only against the
+/// program and other modules. Hidden, the module binds them to its own
+/// copies, as it always has. PIC code linked into an executable is
+/// therefore not exported unless it declares default visibility.
+pub fn default_visibility_flags(parsed: &ParsedArgs) -> Vec<String> {
+    let position_independent = parsed.pic
+        || parsed.shared
+        || parsed.forwarded_args.iter().any(|arg| arg == "-fpic");
+    if position_independent {
+        Vec::new()
+    } else {
+        vec!["-fvisibility=default".to_string()]
+    }
+}
+
 pub fn shared_link_flags() -> Vec<String> {
     [
         // Side modules keep --allow-undefined: their undefined symbols are
@@ -574,12 +592,6 @@ pub fn shared_link_flags() -> Vec<String> {
         "-Wl,--shared-memory",
         "-Wl,--export-all",
         "-Wl,--allow-undefined",
-        // A side module binds its own definitions locally, as it did when
-        // its symbols were hidden by default: with default visibility (see
-        // compile_flags) wasm-ld would otherwise route the module's own data
-        // and function addresses through GOT imports the loader fills.
-        // Kandelo does not support interposing a module's own symbols.
-        "-Wl,-Bsymbolic",
     ]
     .map(String::from)
     .to_vec()

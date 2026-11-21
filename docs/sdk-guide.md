@@ -278,15 +278,24 @@ How the SDK makes that work:
   none of it, and `-ldl` changes nothing. Configure probes therefore see
   working functions in libc: Meson's `dependency('dl')` is built in, and
   Autoconf's `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
-- **Symbols have Unix visibility.** Clang gives WebAssembly symbols hidden
-  visibility unless told otherwise, which left `--export-dynamic`, which
-  exports default-visibility symbols, nothing to export. The SDK compiles
-  with `-fvisibility=default` (a caller's own `-fvisibility` still wins),
-  and musl's `libc.a` is built the same way, with musl's internals hidden
-  by musl's own annotations. An executable's code is the same either way;
-  only the export set under `--export-dynamic` changes. Side modules link
-  with `-Bsymbolic`, so a module still binds its own definitions locally,
-  as before.
+- **Executable code has Unix visibility.** Clang gives WebAssembly symbols
+  hidden visibility unless told otherwise, which left `--export-dynamic`,
+  which exports default-visibility symbols, nothing to export. The SDK
+  compiles code that is not position-independent with
+  `-fvisibility=default` (a caller's own `-fvisibility` still wins), and
+  musl's `libc.a` is built the same way, with musl's internals hidden by
+  musl's own annotations. An executable's code is the same either way; only
+  the export set under `--export-dynamic` changes.
+- **Module code keeps hidden visibility.** A compile with `-fPIC`, `-fpic`
+  or `-shared` may become a side module, and wasm-ld imports a side
+  module's own weak default-visibility definitions (inline functions,
+  template instances, implicit virtual destructors) so that another
+  module's copy can win; Kandelo's loader resolves imports only against the
+  program and other modules, so such a module would not load. Hidden, a
+  module binds them to its own copies, as it always has. The cost: PIC code
+  linked into an executable (a Libtool convenience library, a Meson static
+  library under its default `b_staticpic`) is not exported by `-rdynamic`
+  unless it declares default visibility.
 - **Exporting does not make the program fork-capable.** The SDK's glue
   (the syscall channel, the `fork` entry, compiler builtins) is compiled
   hidden, so `--export-dynamic` neither exports it nor keeps `fork`, and
@@ -309,7 +318,8 @@ see [GNU build tools](#gnu-build-tools) and
 back into it and into libc with each of them, and runs it.
 `host/test/sdk-plugin-modules.test.ts` checks the SDK contract above with
 the build machine's `cc`: `-rdynamic` without `-ldl`, the export set, no
-fork import, no loader in a program that never calls `dlopen`, and a plugin
+fork import, no loader in a program that never calls `dlopen`, a C++ plugin
+that binds its own inline, virtual and template definitions, and a plugin
 that needs a libc function the program does not link.
 
 ## What the SDK Does
@@ -326,8 +336,9 @@ that needs a libc function the program does not link.
 -mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
                                    # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
--fvisibility=default               # Unix symbol visibility (see "Plugin
-                                   # modules"); the caller's -fvisibility wins
+-fvisibility=default               # Non-PIC compiles only: Unix symbol
+                                   # visibility (see "Plugin modules");
+                                   # the caller's -fvisibility wins
 -fwasm-exceptions                  # Compiles with C++ input only (see
                                    # "C++ exceptions")
 --sysroot=<path>                   # musl sysroot
@@ -702,7 +713,7 @@ These flags are common in build systems but irrelevant for Wasm:
 - `-lpthread` (pthread symbols are provided by musl's `libc.a`)
 - `-fPIE`, `-pie` (no position-independent executables in Wasm)
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
-- `-Wl,-Bsymbolic` (side modules always bind their own symbols locally)
+- `-Wl,-Bsymbolic`
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
 - `-Wl,--start-group`, `-Wl,--end-group` (wasm-ld rejects them; like ELF lld it
   resolves archive members regardless of command-line order)

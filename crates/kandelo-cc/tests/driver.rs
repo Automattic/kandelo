@@ -276,12 +276,9 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     assert!(has(&args, "-O2"));
     assert!(has(&args, "-DSLOTS=4"));
     assert!(has(&args, "--target=wasm32-unknown-unknown"));
-    // The glue is hidden even though user code defaults to default
-    // visibility: the later flag wins.
-    assert!(
-        index_of(&args, "-fvisibility=hidden").unwrap()
-            > index_of(&args, "-fvisibility=default").unwrap()
-    );
+    // The glue stays hidden.
+    assert!(has(&args, "-fvisibility=hidden"));
+    assert!(!has(&args, "-fvisibility=default"));
     assert!(has(&args, "--sysroot=/tmp/sysroot"));
     let x = index_of(&args, "-x").unwrap();
     assert_eq!(args[x..x + 2], strings(&["-x", "c"])[..]);

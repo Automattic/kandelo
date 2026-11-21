@@ -7,7 +7,8 @@ use crate::arch::{Language, WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
-    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, filter_args,
+    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, default_visibility_flags,
+    filter_args,
     host_imports_allowance, infer_thread_slot_declaration, join, link_flags,
     main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
     shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
@@ -433,11 +434,12 @@ pub fn build_cxx_glue_compile_args(
 fn glue_compile_base(toolchain: &Toolchain, arch: WasmArch) -> Vec<String> {
     let mut args = compile_flags(arch);
     // The glue is the platform's private implementation (the syscall
-    // channel, the fork entry, compiler builtins), so it stays hidden: a
-    // program's -rdynamic does not export it, and exporting therefore does
-    // not keep fork, and with it the kernel's fork import, in a program
-    // that never calls fork. The dlopen loader marks its public interface
-    // default itself.
+    // channel, the fork entry, compiler builtins), so it stays hidden
+    // (Clang's WebAssembly default, which user code compiled for an
+    // executable does not get; see default_visibility_flags): a program's
+    // -rdynamic does not export it, and exporting therefore does not keep
+    // fork, and with it the kernel's fork import, in a program that never
+    // calls fork. The dlopen loader marks its public interface default.
     args.push("-fvisibility=hidden".into());
     // The glue is code of every executable, so its facts must be in the link
     // like any other object's.
@@ -533,6 +535,7 @@ fn build_clang_args_internal(
     // that compile glue, and response-hidden compile jobs found by the trace.
     if may_run_compile {
         args.extend(compile_flags(arch));
+        args.extend(default_visibility_flags(&parsed));
         if compiles_cxx(language, &filtered) {
             args.extend(cxx_compile_flags());
         }
