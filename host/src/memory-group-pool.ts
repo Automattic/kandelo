@@ -5,6 +5,10 @@ const PAGE=G.MEMORY_GROUP_PAGE_BYTES,CONTROL=G.MEMORY_GROUP_CONTROL/4;
 export interface GroupPageExtent {readonly first:number;readonly pages:number}
 export interface GroupImagePageAllocation {readonly controls:GroupPageExtent;readonly scratch:GroupPageExtent}
 export type GroupPageAllocationResult = 'allocated' | 'busy' | 'exhausted';
+export interface GroupPagePoolSnapshot {
+  readonly maximumPages:number;readonly allocatedPages:number;
+  readonly highWaterPages:number;readonly physicalExtentPages:number;
+}
 
 /** Physical allocation primitive shared with the translated C grow helper.
  * Only disposable kernel/process Workers may own it. Its caller must retain
@@ -186,11 +190,16 @@ export class MemoryGroupPagePool {
       return 'released';
     });
   }
-  snapshot():{maximumPages:number;allocatedPages:number;highWaterPages:number;physicalExtentPages:number} {
-    return this.locked(words=>{
-      let allocatedPages=0;for(let page=0;page<this.maximumPages;page++)if(this.used(words,page))allocatedPages++;
-      return {maximumPages:this.maximumPages,allocatedPages,highWaterPages:words[CONTROL+1],physicalExtentPages:this.memory.buffer.byteLength/PAGE};
-    });
+  snapshot():GroupPagePoolSnapshot {
+    return this.locked(words=>this.copySnapshot(words));
+  }
+  /** A diagnostic must not wait on a guest allocator that might never unlock. */
+  trySnapshot():GroupPagePoolSnapshot|'busy' {
+    return this.tryLocked<GroupPagePoolSnapshot|'busy'>('busy',words=>this.copySnapshot(words));
+  }
+  private copySnapshot(words:Uint32Array):GroupPagePoolSnapshot {
+    let allocatedPages=0;for(let page=0;page<this.maximumPages;page++)if(this.used(words,page))allocatedPages++;
+    return Object.freeze({maximumPages:this.maximumPages,allocatedPages,highWaterPages:words[CONTROL+1],physicalExtentPages:this.memory.buffer.byteLength/PAGE});
   }
   private used(words:Uint32Array,page:number):boolean {return (words[G.MEMORY_GROUP_BITMAP/4+(page>>>5)]&(1<<(page&31)))!==0;}
   private setUsed(words:Uint32Array,page:number,value:boolean):void {

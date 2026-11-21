@@ -15,6 +15,7 @@ export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -60,6 +61,7 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -382,6 +384,7 @@ export type MainToKernelMessage =
   | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetMemoryGroupUsageRequestMessage
   | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | SignalProcessMessage

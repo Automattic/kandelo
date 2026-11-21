@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { KandeloImageFs } from '../../../images/vfs/lib/kandelo-image-fs';
 import { compileSdkFixture } from '../../../host/test/support/compile-sdk-fixture';
 import { resolveBinary } from '../../../host/src/binary-resolver';
+import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from './support/browser-memory-boundary';
 const root = resolve(import.meta.dirname, '../../..');
 let out: string;
 const inputs: Record<string, string> = {};
@@ -17,7 +18,7 @@ test.beforeAll(async () => {
     try {
         image.mkdir('/tmp', 0o1777);
         image.mkdir('/bin', 0o755);
-        for (const name of ['fork', 'pthread', 'executable-identity', 'dri-mapping-fork', 'dri-direct', 'admission']) {
+        for (const name of ['fork', 'pthread', 'executable-identity', 'dri-mapping-fork', 'dri-direct', 'admission', 'inspection']) {
             const fixture = compileSdkFixture(new URL(`../../../host/test/fixtures/${name === 'dri-mapping-fork' ? 'dri-mapping-fork.c' : `grouped-sdk-${name}.c`}`, import.meta.url), [], { forkInstrument: true });
             fixtures.push(fixture);
             const grouped = fixture.programPath + '.grouped.wasm';
@@ -40,6 +41,59 @@ test.beforeAll(async () => {
     finally {
         image.reset();
     }
+});
+
+test('copies live group accounting and unique shared storage through the public browser host', async ({ page }, info) => {
+    test.setTimeout(120000);
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await installBrowserMemoryBoundaryProbe(page);
+    await page.goto(`/@fs${out}/index.html`);
+    const result = await page.evaluate(async ({ root, out }) => {
+        const { BrowserKernel } = await import(`/@fs${root}/host/src/browser-kernel-host.ts`);
+        const [kernel, image] = await Promise.all(['kernel.wasm', 'rootfs.vfs']
+            .map(path => fetch(`/@fs${out}/${path}`).then(response => response.arrayBuffer())));
+        let stdout = '', stderr = ''; const diagnostics: unknown[] = [];
+        const host = new BrowserKernel({ maxMemoryPages: 2048, kernelMaxPages: 1024,
+            experimentalMemoryGroup: { maximumPages: 2048, maximumProcesses: 4, maximumTasks: 8 },
+            onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
+            onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
+            onHostDiagnostic: (event: unknown) => diagnostics.push(event) });
+        try {
+            await host.initFromOwnedImage({ kernelWasm: kernel, vfsImage: image });
+            const initial = await host.getMemoryGroupUsage();
+            const child = await host.spawnFromVfs('/bin/inspection-grouped', ['inspection']);
+            const deadline = performance.now() + 30000;
+            while (!stdout.includes('inspection-ready')) {
+                if (performance.now() >= deadline) throw Error('Inspection fixture readiness: ' + stderr);
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const live = await host.getMemoryGroupUsage();
+            const reread = await host.getMemoryGroupUsage();
+            const frozen = Object.isFrozen(live) && Object.isFrozen(live!.admission) && Object.isFrozen(live!.backing);
+            host.appendStdinData(child.pid, new TextEncoder().encode('x'));
+            const code = await child.exit;
+            const retired = await host.getMemoryGroupUsage();
+            const rootRecord = await host.readFileFromVfs(`/proc/${child.pid}/stat`);
+            return { initial, live, reread, frozen, code, retired, rootRecord, stdout, stderr, diagnostics };
+        } finally { await host.destroy(); }
+    }, { root, out });
+    writeFileSync(info.outputPath('result.json'), JSON.stringify({ engine: info.project.name, inputs, result, pageErrors }, null, 2) + '\n');
+    expect(result.initial).toBeNull();
+    expect(result.live?.admission).toMatchObject({ maximumPages: 2048, maximumProcesses: 4, maximumTasks: 8,
+        processes: 1, tasks: 1, images: 1, quarantinedTasks: 0 });
+    expect(result.live?.backing).toMatchObject({ images: 1, replicas: 1, sharedObjects: 1, sharedPages: 2, sharedImageReferences: 1 });
+    expect(result.reread).toEqual(result.live);
+    expect(result.frozen).toBe(true);
+    expect(result.code).toBe(0);
+    expect(result.retired?.admission).toMatchObject({ group: result.live!.admission.group, processes: 0, tasks: 0, images: 0 });
+    expect(result.retired?.backing).toMatchObject({ allocatedPages: 1, images: 0, replicas: 0, sharedObjects: 0, sharedPages: 0, nativeObservers: 0 });
+    expect(result.rootRecord).toBeNull();
+    expect(result.stdout).toContain('grouped-sdk-inspection PASS');
+    expect(result.stderr).toBe('');
+    expect(result.diagnostics).toEqual([]);
+    expect(pageErrors).toEqual([]);
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
 test('admits live process and pthread cohorts without default count quotas', async ({ page }, info) => {

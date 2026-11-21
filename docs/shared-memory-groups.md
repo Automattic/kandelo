@@ -150,6 +150,30 @@ The kernel refuses a count quota with `EAGAIN` and backing exhaustion with
 `ENOMEM`. Fallible kernel metadata allocation and host Worker construction can
 also refuse admission; omitting count quotas does not promise unlimited resources.
 
+The Node/browser host method `getMemoryGroupUsage()` returns a copied scalar
+snapshot of this machine's opted-in group, or `null` before a group exists.
+Reading does not create a group or reserve backing. Admission and backing
+counters are collected under one kernel entry; they describe different owners
+and need not have identical image counts during preparation or retirement.
+The result carries no memory, views, mapping roots or admission capabilities.
+This optional troubleshooting API runs only when called; it adds no polling.
+If a guest holds the allocator lock, the call rejects with `EAGAIN` instead of
+blocking the kernel Worker. The caller can request a fresh snapshot later.
+
+`admission` reports the kernel identity, effective limits and live/pending task,
+process, image, backing and quarantine counts. `backing` is `null` until backing
+exists; otherwise it reports allocator, shared-object, replica, native-observer
+and mapping-staging counters. Page counts use 64 KiB units. `allocatedPages`
+counts live pool allocations once; `sharedPages` counts unique object pages,
+not the sum across aliases. `physicalExtentPages` is the current common buffer
+capacity, `highWaterPages` is the allocator high-water mark and `maximumPages`
+is the admitted ceiling. The backing stays available for reuse until machine
+destruction; returning pages to the allocator does not shrink its buffer.
+None measures browser RSS, GPU storage or native
+Worker/code memory. `mappingStagingBytes` counts independent host staging bytes;
+`retainedMappingReferences` and `sharedImageReferences` are reference counts.
+Copied inspection is observational and never authorizes reuse or admission.
+
 Compatible byte launches through `spawn(bytes, argv, options)` use a single
 kernel-owned group in that machine. The option configures a physical ceiling;
 it does not raise ordinary process or renderer limits. Ordinary artifacts

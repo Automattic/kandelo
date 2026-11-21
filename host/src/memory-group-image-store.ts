@@ -1,5 +1,5 @@
 import * as G from './generated/program-extensions';
-import { MemoryGroupPagePool, type GroupPageExtent } from './memory-group-pool';
+import { MemoryGroupPagePool, type GroupPageExtent, type GroupPagePoolSnapshot } from './memory-group-pool';
 import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt, type GroupMemoryChangeDescription } from './memory-group-protocol';
 import { GroupProcessAddressSpace, ProcessAddressFault, NativeI32Observation } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation,
@@ -1212,6 +1212,15 @@ export class MemoryGroupImageStore {
     readonly mappingStagingBytes: number; readonly retainedMappingReferences: number;
     readonly sharedObjects: number; readonly sharedPages: number; readonly sharedImageReferences: number;
     readonly maximumPages: number; readonly highWaterPages: number; readonly physicalExtentPages: number } {
+    return this.copySnapshot(this.pool.snapshot());
+  }
+  /** Public diagnostic reads refuse allocator contention instead of blocking
+   * the kernel Worker on a lock owned by a guest Worker. */
+  trySnapshot(): ReturnType<MemoryGroupImageStore['snapshot']> | 'busy' {
+    const pool = this.pool.trySnapshot();
+    return pool === 'busy' ? pool : this.copySnapshot(pool);
+  }
+  private copySnapshot(pool: GroupPagePoolSnapshot): ReturnType<MemoryGroupImageStore['snapshot']> {
     let mappingStagingBytes = 0, retainedMappingReferences = 0;
     for (const image of this.images.values()) {
       const pending = image.mapping;
@@ -1228,6 +1237,6 @@ export class MemoryGroupImageStore {
       sharedObjects: this.sharedObjects.size,
       sharedPages: [...this.sharedObjects.values()].reduce((sum, object) => sum + object.pages.length, 0),
       sharedImageReferences: [...this.sharedObjects.values()].reduce((sum, object) => sum + object.owners.size, 0),
-      ...this.pool.snapshot() });
+      ...pool });
   }
 }

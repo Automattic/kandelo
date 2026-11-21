@@ -4500,6 +4500,14 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "get_memory_group_usage": {
+      void (groupedSession?.usage() ?? Promise.resolve(null)).then(
+        usage => post({ type: "response", requestId: msg.requestId, result: usage }),
+        error => post({ type: "response", requestId: msg.requestId, result: undefined,
+          error: error instanceof Error ? error.message : String(error) }),
+      );
+      break;
+    }
     case "get_storage_metadata_memory_usage": {
       try {
         post({ type: "response", requestId: msg.requestId,

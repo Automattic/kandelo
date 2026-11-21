@@ -9,6 +9,7 @@ import { CH_TOTAL_SIZE, MEMORY_GROUP_PROTOCOL as P, PROCESS_STATE_RUNNING, PROCE
 import * as G from '../src/generated/program-extensions';
 import { processDataView } from '../src/process-memory-views';
 import { MemoryGroupPagePool } from '../src/memory-group-pool';
+import { MemoryGroupImageStore } from '../src/memory-group-image-store';
 import { createKernelScratchTestInstance } from './support/kernel-scratch-instance';
 import { writeForkContinuationAnchor } from '../src/fork-continuation';
 import { FORK_SAVE_BUFFER_SIZE } from '../src/process-memory';
@@ -125,6 +126,45 @@ function harness(pointerWidth: 4 | 8 = 4, callbacks: CentralizedKernelCallbacks 
   return { worker, instance, implementations, memory, layoutRecords };
 }
 describe('kernel-Worker memory group admission', () => {
+  it.each([4, 8] as const)('projects diagnostic scalars before worker RPC at kernel width %s', width => {
+    const { worker } = harness(width);
+    expect(worker.inspectMemoryGroupUsage(23)).toMatchObject({ admission: { group: 23 }, backing: null });
+    worker.createMemoryGroupBacking(23, 8);
+    const original = MemoryGroupImageStore.prototype.trySnapshot;
+    const snapshot = vi.spyOn(MemoryGroupImageStore.prototype, 'trySnapshot').mockImplementation(function (this: MemoryGroupImageStore) {
+      const current = original.call(this);
+      if (current === 'busy') throw Error('Unexpected contention');
+      return { ...current, futureInternalView: new Uint8Array(new SharedArrayBuffer(16)) };
+    });
+    try {
+      const usage = worker.inspectMemoryGroupUsage(23);
+      if (typeof usage === 'number') throw Error(`Missing diagnostic: ${usage}`);
+      expect(usage.backing).toMatchObject({ group: 23, allocatedPages: 1 });
+      expect(usage.backing).not.toHaveProperty('futureInternalView');
+      expect(Object.values(usage.backing!).every(value => typeof value === 'number')).toBe(true);
+      expect(Object.isFrozen(usage) && Object.isFrozen(usage.admission) && Object.isFrozen(usage.backing)).toBe(true);
+    } finally { snapshot.mockRestore(); }
+  });
+  it.each([4, 8] as const)('keeps the kernel responsive when diagnostic allocation accounting is busy at width %s', width => {
+    const { worker } = harness(width);
+    worker.createMemoryGroupBacking(23, 8);
+    const receipt = worker.prepareMemoryGroupProcess(23, 100);
+    if (typeof receipt === 'number') throw Error('Missing admission');
+    const handle = worker.prepareMemoryGroupImage(receipt, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
+    if (typeof handle === 'number') throw Error('Missing image');
+    const launch = worker.publishMemoryGroupReplica(handle);
+    if (typeof launch === 'number') throw Error('Missing replica');
+    const lock = new Int32Array(launch.envelope.memory.buffer, G.MEMORY_GROUP_CONTROL, 1);
+    const before = worker.inspectMemoryGroupUsage(23);
+    const wait = vi.spyOn(Atomics, 'wait').mockImplementation(() => { throw Error('Diagnostic must not wait'); });
+    Atomics.store(lock, 0, 1);
+    try {
+      expect(worker.inspectMemoryGroupUsage(23)).toBe(-11);
+      expect(worker.inspectMemoryGroup(23)).toMatchObject({ group: 23, tasks: 2 });
+      expect(Atomics.load(lock, 0)).toBe(1);
+    } finally { Atomics.store(lock, 0, 0); wait.mockRestore(); }
+    expect(worker.inspectMemoryGroupUsage(23)).toEqual(before);
+  });
   it.each(['group', 'pid', 'tid', 'serial', 'generation'] as const)('refuses a terminal fence with the wrong %s', key => {
     const { worker, implementations } = harness();
     worker.createMemoryGroupBacking(23, 16);
@@ -432,7 +472,7 @@ describe('kernel-Worker memory group admission', () => {
     const snapshot = vi.spyOn(implementations, 'kernel_memory_group_snapshot');
     const calls = [() => worker.configureMemoryGroups(2048, 2), () => worker.createMemoryGroup(1024, 4, 8),
       () => worker.sealMemoryGroup(23), () => worker.removeEmptyMemoryGroup(23),
-      () => worker.inspectMemoryGroup(23), () => worker.prepareMemoryGroupProcess(23, 100),
+      () => worker.inspectMemoryGroup(23), () => worker.inspectMemoryGroupUsage(23), () => worker.prepareMemoryGroupProcess(23, 100),
       () => worker.readMemoryGroupTaskReceipt(100, 101)];
     calls.push(() => worker.createMemoryGroupBacking(23, 8));
     calls.push(() => worker.prepareMemoryGroupImage({ group: 23, pid: 100, tid: 100, serial: SERIAL, generation: GENERATION },

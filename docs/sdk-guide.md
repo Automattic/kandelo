@@ -1325,6 +1325,11 @@ experimental path; further lifecycle and browser-memory validation remains
 required before promotion. Ordinary programs, including PHP-FPM, keep their existing build
 and launch behavior.
 
+`NodeKernelHost.getMemoryGroupUsage()` and `BrowserKernel.getMemoryGroupUsage()`
+provide copied admission and backing accounting without creating a group or
+exposing memory. Shared pages are counted once across aliases; backing extent
+is capacity, not measured RAM. See [inspection units and lifetime semantics](shared-memory-groups.md#desktop-first-opt-in).
+
 The command uses this checkout's normal SDK program version, ABI stamp and fork
 instrumenter, then compiles the checked translation helpers and runs
 `crates/shared-memory-instrument`. It retains the ordinary input, refuses stale

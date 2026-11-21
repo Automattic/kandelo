@@ -154,3 +154,40 @@ it('records the ordinary direct-DRM-alias negative control without claiming cohe
     expect(diagnostics).toEqual([]);
   } finally { await host?.destroy(); fixture.cleanup(); }
 }, 90_000);
+
+it('inspects independent group counters without allocation or double-counting shared aliases', async () => {
+  const fixture = compileSdkFixture(new URL('./fixtures/grouped-sdk-inspection.c', import.meta.url), [], { forkInstrument: true });
+  let host: NodeKernelHost | undefined;
+  try {
+    const grouped = fixture.programPath + '.grouped.wasm';
+    execFileSync(fileURLToPath(new URL('../../sdk/bin/wasm32posix-shared-memory', import.meta.url)),
+      [fixture.programPath, '-o', grouped], { stdio: 'pipe' });
+    const image = KandeloImageFs.create(); image.mkdir('/tmp', 0o1777); image.mkdir('/bin', 0o755);
+    image.writeFile('/bin/inspection', new Uint8Array(readFileSync(grouped)), 0o755);
+    const rootfsImage = await image.saveImage(); image.reset();
+    let stdout = '', stderr = ''; const diagnostics: unknown[] = [];
+    host = new NodeKernelHost({ rootfsImage, kernelMaxPages: 1024, maxPages: 2048,
+      experimentalMemoryGroup: { maximumPages: 2048, maximumProcesses: 4, maximumTasks: 8 },
+      onStdout: (_pid, bytes) => { stdout += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+      onHostDiagnostic: event => diagnostics.push(event) });
+    await host.init();
+    for (let read = 0; read < 3; read++) expect(await host.getMemoryGroupUsage()).toBeNull();
+    const child = await host.spawnFromVfs('/bin/inspection', ['inspection'], { onStarted: () => {} });
+    await expect.poll(() => stdout, { timeout: 30_000 }).toContain('inspection-ready');
+    const live = await host.getMemoryGroupUsage();
+    expect(live?.admission).toMatchObject({ maximumPages: 2048, maximumProcesses: 4, maximumTasks: 8,
+      processes: 1, tasks: 1, images: 1, quarantinedTasks: 0 });
+    expect(live?.backing).toMatchObject({ images: 1, replicas: 1, sharedObjects: 1, sharedPages: 2, sharedImageReferences: 1 });
+    expect(await host.getMemoryGroupUsage()).toEqual(live);
+    expect(Object.isFrozen(live) && Object.isFrozen(live!.admission)).toBe(true);
+    host.appendStdinData(child.pid, new TextEncoder().encode('x'));
+    expect(await child.exit, stderr).toBe(0);
+    const retired = await host.getMemoryGroupUsage();
+    expect(retired?.admission).toMatchObject({ group: live!.admission.group, processes: 0, tasks: 0, images: 0 });
+    expect(retired?.backing).toMatchObject({ images: 0, replicas: 0, allocatedPages: 1, sharedObjects: 0, sharedPages: 0, nativeObservers: 0 });
+    expect(stdout).toContain('grouped-sdk-inspection PASS');
+    expect({ stderr, diagnostics }).toEqual({ stderr: '', diagnostics: [] });
+    expect(await host.readFileFromVfs(`/proc/${child.pid}/stat`)).toBeNull();
+  } finally { await host?.destroy(); fixture.cleanup(); }
+}, 90_000);

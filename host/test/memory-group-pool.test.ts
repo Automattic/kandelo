@@ -1,4 +1,4 @@
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {MemoryGroupPagePool} from '../src/memory-group-pool';
 import * as G from '../src/generated/program-extensions';
 const PAGE=65536;
@@ -7,6 +7,18 @@ function fixture(initial=2,maximum=8,capacity=maximum) {
   return {memory,pool:MemoryGroupPagePool.initialize(memory,capacity)};
 }
 describe('shared physical page pool primitive',()=>{
+ it('refuses diagnostic lock contention without waiting, then reports fresh allocation',()=>{
+  const {pool,memory}=fixture(),lock=new Int32Array(memory.buffer,G.MEMORY_GROUP_CONTROL,1);
+  const before=pool.trySnapshot();
+  const wait=vi.spyOn(Atomics,'wait').mockImplementation(()=>{throw Error('Inspection must not wait');});
+  Atomics.store(lock,0,1);
+  try {expect(pool.trySnapshot()).toBe('busy');expect(Atomics.load(lock,0)).toBe(1);}
+  finally {Atomics.store(lock,0,0);wait.mockRestore();}
+  expect(pool.trySnapshot()).toEqual(before);
+  pool.allocateContiguous(3);
+  expect(pool.trySnapshot()).toEqual({maximumPages:8,allocatedPages:4,highWaterPages:4,physicalExtentPages:4});
+  expect(before).toEqual({maximumPages:8,allocatedPages:1,highWaterPages:1,physicalExtentPages:2});
+ });
  it('reserves image controls and fragmented payload atomically and zeroes every reused page',()=>{
   const {pool,memory}=fixture(1,16);pool.allocateContiguous(15);
   new Uint8Array(memory.buffer,PAGE,15*PAGE).fill(0xad);
