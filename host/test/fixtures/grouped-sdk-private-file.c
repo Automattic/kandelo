@@ -23,13 +23,22 @@ int main(int argc, char **argv) {
  CHECK(p[0]=='x' && p[P-1]=='b');
  int replacement=open(path,O_CREAT|O_TRUNC|O_RDWR,0600); CHECK(replacement==fd);
  CHECK(write(replacement,contents,P)==P);
- p=mremap(p,P,2*P,MREMAP_MAYMOVE); CHECK(p!=MAP_FAILED);
- CHECK(p[0]=='x' && p[P-1]=='b');
+ unsigned char *grown=mremap(p,P,2*P,MREMAP_MAYMOVE);
  if (argc == 2 && !strcmp(argv[1],"ordinary")) {
-  CHECK(p[P]==0 && p[2*P-1]==0);
-  puts("ordinary-private-file-growth-partial");
- } else { CHECK(p[P]=='c' && p[2*P-1]=='c'); }
- CHECK(munmap(p,2*P)==0);
+  // Ordinary mappings retain descriptive metadata, not the closed file's
+  // backing. The supported contract refuses growth instead of inventing
+  // zero-filled file pages; refusal must preserve the original mapping.
+  CHECK(grown==MAP_FAILED && errno==EFAULT);
+  CHECK(p[0]=='x' && p[P-1]=='b');
+  CHECK(munmap(p,P)==0);
+  puts("ordinary-private-file-growth-unsupported");
+ } else {
+  CHECK(grown!=MAP_FAILED); p=grown;
+  CHECK(p[0]=='x' && p[P-1]=='b');
+  CHECK(p[P]=='c' && p[2*P-1]=='c');
+  CHECK(munmap(p,2*P)==0);
+ }
+ CHECK(pread(replacement,&byte,1,0)==1 && byte=='a');
  CHECK(close(replacement)==0); CHECK(unlink(path)==0);
  puts("grouped-sdk-private-file PASS"); return 0;
 }
