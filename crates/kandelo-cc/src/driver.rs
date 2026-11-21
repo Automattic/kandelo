@@ -4,7 +4,7 @@
 
 use crate::Result;
 use crate::arch::{Language, WasmArch, target_triple};
-use crate::exec::{run, run_passthrough, run_without_env};
+use crate::exec::{run, run_passthrough, run_passthrough_capturing_stderr, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
     calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, filter_args,
@@ -1037,8 +1037,11 @@ pub fn run_compiler_driver(
             );
         }
     }
-    let exit_code = run_passthrough(compiler, &link_args);
+    let (exit_code, link_stderr) = run_passthrough_capturing_stderr(compiler, &link_args);
     if exit_code != 0 {
+        if let Some(hint) = link_failure_hint(&link_stderr) {
+            eprintln!("{hint}");
+        }
         return Ok(exit_code);
     }
 
@@ -1067,6 +1070,51 @@ pub fn run_compiler_driver(
     }
     stamp_abi_contract(&output, abi_contract)?;
     Ok(0)
+}
+
+/// Guidance for a link that failed on a symbol Kandelo deliberately leaves
+/// out of libc.a, naming the opt-in library and why it is not the default.
+pub fn link_failure_hint(linker_stderr: &str) -> Option<&'static str> {
+    let undefined = |symbol: &str| {
+        linker_stderr.lines().any(|line| {
+            line.split("undefined symbol: ").skip(1).any(|rest| {
+                rest.strip_prefix(symbol).is_some_and(|after| {
+                    !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+        })
+    };
+    undefined("mprotect").then_some(MPROTECT_LINK_HINT)
+}
+
+const MPROTECT_LINK_HINT: &str = "kandelo: mprotect() is not linked by default. \
+WebAssembly memory has no page protection, so Kandelo cannot make memory read-only, \
+inaccessible or executable. If this program only uses mprotect() to make memory \
+readable and writable (for example to commit a PROT_NONE reservation), link \
+-lkandelo-mprotect: its mprotect() accepts PROT_READ|PROT_WRITE (with or without \
+PROT_EXEC) and fails with ENOTSUP for a request that would remove read or write \
+access. See \"Opt-in libraries for unsupported APIs\" in docs/sdk-guide.md.";
+
+#[cfg(test)]
+mod link_hint_tests {
+    use super::link_failure_hint;
+
+    #[test]
+    fn names_the_mprotect_opt_in_for_an_undefined_mprotect() {
+        let stderr = "wasm-ld: error: /tmp/a.o: undefined symbol: mprotect\n\
+            clang: error: linker command failed with exit code 1\n";
+        let hint = link_failure_hint(stderr).expect("hint");
+        assert!(hint.contains("-lkandelo-mprotect"));
+        assert!(hint.contains("ENOTSUP"));
+    }
+
+    #[test]
+    fn stays_quiet_for_other_symbols() {
+        assert_eq!(link_failure_hint("wasm-ld: error: a.o: undefined symbol: mprotect_all\n"), None);
+        assert_eq!(link_failure_hint("wasm-ld: error: a.o: undefined symbol: __mprotect\n"), None);
+        assert_eq!(link_failure_hint("wasm-ld: error: a.o: undefined symbol: getcontext\n"), None);
+        assert_eq!(link_failure_hint(""), None);
+    }
 }
 
 /// Append the SDK's `kandelo.abi.contract` digest to a linked program, after

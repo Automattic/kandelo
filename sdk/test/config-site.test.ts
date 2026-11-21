@@ -236,8 +236,9 @@ describe('config.site answers that agree with the sysroot and kernel', () => {
     expect(siteFacts(['ac_cv_func_clock_nanosleep', 'ac_cv_func_pthread_create'])).toEqual(['yes', 'yes']);
   });
 
-  // close_range is not in musl's libc.a; mprotect links but cannot enforce
-  // page protection in Wasm, so it stays absent for configure.
+  // close_range is not in musl's libc.a; mprotect is not in libc.a either (it
+  // is opt-in through -lkandelo-mprotect, because Wasm cannot enforce page
+  // protection), so both stay absent for configure.
   it('keeps close_range and mprotect absent', () => {
     expect(siteFacts(['ac_cv_func_close_range', 'ac_cv_func_mprotect'])).toEqual(['no', 'no']);
   });

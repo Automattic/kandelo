@@ -1850,8 +1850,8 @@ every shell to a single worktree's SDK.
 
 ### Sysroot libraries are not packages
 
-The opt-in `libkandelo-ucontext-unsupported.a` is also a sysroot artifact,
-not a package. Bootstrap checks required core outputs and installed-byte
+The opt-in `libkandelo-ucontext-unsupported.a` and `libkandelo-mprotect.a` are also sysroot artifacts,
+not packages. Bootstrap checks required core outputs and installed-byte
 receipts against the current musl, overlay, glue, build-script, and
 toolchain inputs. Missing archives, stale input stamps, or altered outputs
 trigger `scripts/build-musl.sh --ensure`, including sysroots provisioned
