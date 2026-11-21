@@ -10,6 +10,11 @@
 # prefix and its runtime under lib/, the program imports the plugin
 # class with Q_IMPORT_QML_PLUGIN, and every plugin archive precedes the
 # module libraries it registers into.
+#
+# Qt6Qml and Qt6Core call mprotect() and list -lkandelo-mprotect in their
+# link interface, so the line names it after them. V4's heap decommit also
+# asks for PROT_NONE and crashes when refused; like quickshell's package
+# declaration, the link selects the mprotect fiction for that class.
 
 set -euo pipefail
 
@@ -76,6 +81,7 @@ wasm32posix-c++ \
     "$QTBASE/plugins/platforms/libqoffscreen.a" \
     "$QTBASE/lib/libQt6Gui.a" \
     "$QTBASE/lib/libQt6Core.a" \
+    -lkandelo-mprotect \
     "$QTBASE/lib/libQt6BundledPcre2.a" \
     "$FONTCONFIG/lib/libfontconfig.a" \
     "$FREETYPE/lib/libfreetype.a" \
@@ -87,6 +93,7 @@ wasm32posix-c++ \
     "$ZLIB/lib/libz.a" \
     "$LIBCXX/lib/libc++.a" \
     "$LIBCXX/lib/libc++abi.a" \
+    --kandelo-fiction=mprotect:prot_none=accept-unenforced \
     -o "$RAW"
 
 # The link fails on any symbol no archive defines (the SDK leaves only the

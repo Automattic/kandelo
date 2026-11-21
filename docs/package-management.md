@@ -2847,11 +2847,32 @@ Declarations in the registry:
 |---|---|---|
 | ruby | `prot_none = "accept-unenforced"`, `prot_none_max = 65536` | `cont.c` fiber stack guard pages (fibers themselves still fail with `ENOSYS`: the Kandelo coroutine backend has no context switch). GC compaction, whose read barrier would need real protection and uses requests of the same size, is compiled out (`GC.compact` raises `NotImplementedError`). See `packages/registry/ruby/README.md`. |
 | quickshell | `prot_none = "accept-unenforced"` | Qt QML's V4 `OSAllocator::decommit` makes released JS heap pages `PROT_NONE` after `MADV_DONTNEED` and crashes if that fails. Its executable-memory probe (`PROT_READ\|PROT_EXEC`) stays `ENOTSUP`, which keeps the QML JIT off. |
+| file | `read_only = "accept-unenforced"` | libmagic's `apprentice_map` seals a loaded compiled magic database (`.mgc`) with `PROT_READ` as hardening and refuses the database if that fails. Nothing writes the map afterwards. Text databases, such as the shipped `/usr/share/misc/magic`, never reach the call. |
 
 Packages whose `mprotect` callers only widen access link `-lkandelo-mprotect`
 and declare nothing. PHP links it too: Zend's fiber stack guard gets
 `ENOTSUP`, and `Fiber::start()` throws a catchable exception ("Fiber stack
 protect failed") instead of reaching `makecontext()`.
+
+A library package cannot declare a fiction, so a library's `mprotect` callers
+reach its consumers one of three ways:
+
+- **Compiled out.** OpenSSL is built `no-secure-memory`: its secure heap,
+  whose arena has `PROT_NONE` guard pages, reports itself unavailable and the
+  secure allocators use the ordinary heap (`packages/registry/openssl/README.md`).
+- **Truthful library in the link interface.** Qt6Core (`qresource.cpp`, makes
+  a remapped resource writable) and Qt6Qml (V4 heap commit) list
+  `kandelo-mprotect` as a private library, which a static Qt exports in its
+  CMake link interface, so every consumer links it without naming it.
+- **Declared by each program.** Qt6Qml's V4 `decommit()` also asks for
+  `PROT_NONE` and crashes when refused. Every program that links Qt6Qml
+  declares the fiction for it, as quickshell does; one that does not still
+  links (through the truthful library above) and crashes at its first heap
+  decommit.
+
+SpiderMonkey links `-lkandelo-mprotect` for `ArrayBuffer` and Wasm buffer
+commits; its read-only and `PROT_NONE` callers are DEBUG-only GC checks or
+JIT code paths, neither of which its release, JIT-less build runs.
 
 ## Packages that are not real upstream builds yet
 

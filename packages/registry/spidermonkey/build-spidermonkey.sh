@@ -382,7 +382,15 @@ PROBE
 fi
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"
+# -lkandelo-mprotect: libc.a has no mprotect(). The live callers in this
+# release, JIT-less build are vm/ArrayBufferObject.cpp's MapBufferMemory and
+# CommitBufferMemory, which commit reserved buffer memory read/write; the
+# SDK's opt-in library carries those out. The callers that would remove
+# access are DEBUG-only (gc/Memory.cpp ProtectPages and MakePagesReadOnly,
+# from LifoAlloc chunk protection and compacting-GC arena poisoning) or
+# JIT-only (jit/ProcessExecutableMemory.cpp ReprotectRegion); if one ran it
+# would get ENOTSUP and fail its MOZ_RELEASE_ASSERT. No fiction is declared.
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -lkandelo-mprotect -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||

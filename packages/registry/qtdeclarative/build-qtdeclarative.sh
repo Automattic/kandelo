@@ -49,6 +49,16 @@
 # headers read __linux__ and QT_LINUXBASE, and a module built with a
 # different answer disagrees with libQt6Core.a about the futex.
 #
+# src/qml-link-kandelo-mprotect-on-wasm.patch puts the SDK's
+# -lkandelo-mprotect in Qt6Qml's link interface: V4's OSAllocator
+# commits heap pages with mprotect(PROT_READ|PROT_WRITE) and libc.a has
+# no mprotect(). Its decommit() also asks for PROT_NONE, which that
+# library refuses and V4 answers with CRASH(). A library package cannot
+# declare the mprotect fiction, so each program that links Qt6Qml
+# declares it (quickshell does). The target apps built here (tools/qml,
+# qmleasing, qmlpreview) are not package outputs and declare nothing;
+# they keep the truthful library.
+#
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
 # `cargo xtask build-deps resolve qtdeclarative`, env vars are set by
@@ -131,6 +141,7 @@ if [ ! -d "$SRC_DIR" ]; then
         "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
         "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qv4-stack-bounds-on-wasm.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qml-link-kandelo-mprotect-on-wasm.patch"
 fi
 
 rm -rf "$BUILD_DIR"
