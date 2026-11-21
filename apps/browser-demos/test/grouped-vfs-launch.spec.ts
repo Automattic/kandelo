@@ -17,7 +17,7 @@ test.beforeAll(async () => {
     try {
         image.mkdir('/tmp', 0o1777);
         image.mkdir('/bin', 0o755);
-        for (const name of ['fork', 'pthread', 'executable-identity', 'dri-mapping-fork', 'dri-direct']) {
+        for (const name of ['fork', 'pthread', 'executable-identity', 'dri-mapping-fork', 'dri-direct', 'admission']) {
             const fixture = compileSdkFixture(new URL(`../../../host/test/fixtures/${name === 'dri-mapping-fork' ? 'dri-mapping-fork.c' : `grouped-sdk-${name}.c`}`, import.meta.url), [], { forkInstrument: true });
             fixtures.push(fixture);
             const grouped = fixture.programPath + '.grouped.wasm';
@@ -40,6 +40,46 @@ test.beforeAll(async () => {
     finally {
         image.reset();
     }
+});
+
+test('admits live process and pthread cohorts without default count quotas', async ({ page }, info) => {
+    test.setTimeout(120000);
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await page.goto(`/@fs${out}/index.html`);
+    const result = await page.evaluate(async ({ root, out }) => {
+        const { BrowserKernel } = await import(`/@fs${root}/host/src/browser-kernel-host.ts`);
+        let stdout = '', stderr = '';
+        const diagnostics: unknown[] = [];
+        const rows: Array<{ arm: string; code: number; stdout: string }> = [];
+        const host = new BrowserKernel({ maxMemoryPages: 2048, kernelMaxPages: 1024,
+            // Match the normal preview: the held child cohort exceeds 128 MiB.
+            experimentalMemoryGroup: { maximumPages: 8192 },
+            onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
+            onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
+            onHostDiagnostic: (event: unknown) => diagnostics.push(event) });
+        try {
+            const [kernel, image] = await Promise.all(['kernel.wasm', 'rootfs.vfs']
+                .map(path => fetch(`/@fs${out}/${path}`).then(response => response.arrayBuffer())));
+            await host.initFromOwnedImage({ kernelWasm: kernel, vfsImage: image });
+            for (const arm of ['ordinary', 'grouped']) {
+                const start = stdout.length;
+                const path = `/bin/admission-${arm}`;
+                const child = await host.spawnFromVfs(path, [path], { stdin: new Uint8Array() });
+                const code = await child.exit;
+                rows.push({ arm, code, stdout: stdout.slice(start) });
+                if (arm === 'grouped' && await host.readFileFromVfs(`/proc/${child.pid}/stat`) !== null)
+                    throw Error('Completed grouped admission root retained');
+            }
+            return { rows, stderr, diagnostics };
+        } finally { await host.destroy(); }
+    }, { root, out });
+    writeFileSync(info.outputPath('result.json'), JSON.stringify({ engine: info.project.name, inputs, result, pageErrors }, null, 2) + '\n');
+    expect(result.rows.map(row => [row.arm, row.code])).toEqual([['ordinary', 0], ['grouped', 0]]);
+    for (const row of result.rows) expect(row.stdout).toContain('grouped-sdk-admission PASS 26-live-children 66-live-pthreads');
+    expect(result.stderr).toBe('');
+    expect(result.diagnostics).toEqual([]);
+    expect(pageErrors).toEqual([]);
 });
 test.afterAll(() => {
     for (const fixture of fixtures)

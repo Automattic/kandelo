@@ -125,7 +125,7 @@ void (async () => {
       .then(({ createLiveHost }) => createLiveHost({
         managedComputers: !sharedMemoryPreview && experimentalPersistenceName === null,
         experimentalMemoryGroup: sharedMemoryPreview
-          ? { maximumPages: 8192, maximumProcesses: 24, maximumTasks: 64 } : undefined,
+          ? { maximumPages: 8192 } : undefined,
         computerId: qs.get(COMPUTER_QUERY_PARAM),
         profile: bootQuery.profileId,
         vfsUrl: bootQuery.vfsImageUrl ?? (sharedMemoryPreview

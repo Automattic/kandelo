@@ -13,6 +13,7 @@ const publicLaunchCases = [
   ['dri-mapping-fork', true], ['dri-mapping-fork', false], ['dri-direct', true],
   ['fork', false], ['pthread', false],
   ['sigchld-wnohang', true], ['sigchld-wnohang', false],
+  ['admission', true], ['admission', false],
 ] as const;
 it.each([
   ...publicLaunchCases.flatMap(([name, compatible]) =>
@@ -36,7 +37,10 @@ it.each([
     let stdout = '', stderr = '';
     const diagnostics: unknown[] = [];
     host = new NodeKernelHost({ maxPages: 2048, kernelMaxPages: 1024, rootfsImage,
-      experimentalMemoryGroup: { maximumPages: 2048, maximumProcesses: 8, maximumTasks: 16 },
+      // The held child cohort needs more than 128 MiB; use the normal preview's
+      // 512 MiB budget so this checks count admission rather than backing OOM.
+      experimentalMemoryGroup: name === 'admission' ? { maximumPages: 8192 }
+        : { maximumPages: 2048, maximumProcesses: 8, maximumTasks: 16 },
       onStdout: (_pid, bytes) => { stdout += new TextDecoder().decode(bytes); },
       onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
       onHostDiagnostic: event => diagnostics.push(event),

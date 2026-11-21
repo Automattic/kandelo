@@ -12,8 +12,8 @@ if (!/^https?:$/.test(url.protocol) || url.search || url.hash || url.username ||
 }
 export default defineConfig({
   ...base,
-  testMatch: "kandelo-sway.spec.ts",
-  grep: /Kandelo sway tiles/,
+  testMatch: ["kandelo-sway.spec.ts", "trusted-desktop-capacity.check.ts"],
+  grep: /Kandelo sway tiles|trusted desktop keeps/,
   outputDir: "../../.scratch/trusted-desktop-app-playwright",
   use: { ...base.use, baseURL: target, viewport: { width: 1499, height: 1000 }, screenshot: "only-on-failure" },
   webServer: undefined,
