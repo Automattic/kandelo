@@ -68,11 +68,11 @@ pure-Go modules whose dependencies support this target. Modules with
 OS-specific code can require a Kandelo port. The Go toolchain stays on the
 development machine. Use Kandelo to execute the output of `go build`.
 
-The target uses cooperative preemption. The intended initial coverage is
-desktop Node.js and desktop browsers with the runtime's default
-`GOMAXPROCS=1`. Treat constrained-memory profiles and larger workloads
-as unverified. Rebuild programs with the matching SDK after a program ABI
-change.
+The target uses cooperative preemption. The SDK smoke test on macOS ran
+the same module on Node.js, Chromium, Firefox, and WebKit with the runtime's
+default `GOMAXPROCS=1`. Constrained-memory profiles and larger workloads
+remain unverified. Rebuild programs with the matching SDK after a program
+ABI change.
 
 ## Validation
 
