@@ -623,6 +623,16 @@ gets `ENOTSUP` from it and must handle that or use another strategy.
 `config.site` reports `mprotect` absent, and build systems that probe by linking
 (Meson, CMake) find it absent too unless the library is added to their link.
 
+A static library that calls `mprotect()` fails the link of every program that
+pulls in the calling archive member, including programs that never reach the
+call. Prefer a build option that compiles the protection-dependent feature out
+(OpenSSL is built `no-secure-memory`, so its secure heap is unavailable rather
+than unguarded). When the library's calls only make memory readable and
+writable, record `-lkandelo-mprotect` in the library's own link metadata
+(pkg-config `Libs.private`, the CMake link interface, libtool `.la`) so
+consumers link it without naming it: Qt6Core and Qt6Qml carry it in their
+CMake link interface.
+
 Software that cannot run unless such a request reports success (a fiber pool
 that refuses to work without a guard page, an allocator that crashes when
 decommit fails) can declare the `mprotect` fiction instead: the request
