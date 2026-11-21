@@ -8,6 +8,7 @@ pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod kms_cursor;
+pub mod memory_group;
 pub mod process_layout;
 
 // The program ABI is owned separately so host-only edits do not rebuild
@@ -2343,7 +2344,9 @@ pub mod abi {
     ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
     /// 7: bounded entropy continuations, process-range validation, and private
     ///    guest-address I/O transport.
-    pub const HOST_ADAPTER_VERSION: u32 = 7;
+    /// 8: opt-in memory-group admission metadata, exact execution receipts
+    ///    and image custody. No ready execution/stop backend is advertised.
+    pub const HOST_ADAPTER_VERSION: u32 = 8;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2529,6 +2532,17 @@ pub mod abi {
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
+        HostAdapterKernelExport::optional("kernel_memory_group_capabilities"),
+        HostAdapterKernelExport::optional("kernel_memory_group_configure"),
+        HostAdapterKernelExport::optional("kernel_memory_group_create"),
+        HostAdapterKernelExport::optional("kernel_memory_group_prepare_process"),
+        HostAdapterKernelExport::optional("kernel_memory_group_protocol_version"),
+        HostAdapterKernelExport::optional("kernel_memory_group_remove"),
+        HostAdapterKernelExport::optional("kernel_memory_group_retire_image"),
+        HostAdapterKernelExport::optional("kernel_memory_group_seal"),
+        HostAdapterKernelExport::optional("kernel_memory_group_snapshot"),
+        HostAdapterKernelExport::optional("kernel_memory_group_task_action"),
+        HostAdapterKernelExport::optional("kernel_memory_group_task_receipt"),
         HostAdapterKernelExport::optional("kernel_owned_mapping_finish"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),

@@ -58,6 +58,7 @@ pub mod kmsg;
 pub mod kmsg_device;
 pub mod lock;
 pub mod memory;
+pub mod memory_group;
 pub mod mouse;
 pub mod mqueue;
 pub mod msghdr;

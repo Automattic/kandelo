@@ -1163,6 +1163,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "apps/browser-demos/test/fixtures/process-address-space-worker.ts::runProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This disposable browser test Worker owns a synthetic two-MiB-maximum group backing to check address access and actual engine wait settlement. Only scalar verdicts leave the Worker; it is not kernel memory or a guest launch.",
+  },
+  {
+    key: "apps/browser-demos/test/fixtures/process-address-space-worker.ts::runProbe::wasm-memory-authority::new WebAssembly.Memory({ initial: 3, maximum: 4, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The same disposable browser test Worker owns this bounded native control memory. No Memory or view reaches the page, and the fixture closes the Worker after the actual native wait settles.",
+  },
+  {
     key: "host/src/dri/byte-snapshot.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "Captures only the native buffer getter for authenticating the original mapped process Memory and the independent device baseline; no Memory or buffer is captured at module scope.",
@@ -1178,6 +1190,80 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory:limitedMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Bounded standalone compiled-C translator fixture in a disposable Worker. This instance controls only its test process-group storage; no Rust kernel or persistent page/audio realm receives it.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 3,
+    why: "The independent copy oracle, primary fixture and thread-attach fixture each instantiate the compiled C program inside a disposable Worker. They use only Worker-owned test group storage; no Rust kernel or persistent page/audio realm receives it.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{env:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Negative translator fixture deliberately attempts the ordinary env.memory import and requires instantiation refusal. No instance is admitted and no Rust kernel memory participates.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:2,maximum:5,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone compiled-C translator fixture creates a bounded shared process-group memory (at most128pages; the OOM control5pages). It is created inside a disposable Worker, never the Rust kernel or a persistent browser/audio realm.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 2,
+    why: "The independent large-copy oracle and primary compiled-C fixture each own a separate bounded shared test memory of at most128pages inside a disposable Worker. Only copied check metadata leaves that realm; neither allocation is Rust kernel memory.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-memory-authority::new WebAssembly.Memory({initial:3,maximum:32,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The native Wasm initialization oracle owns this bounded ordinary test memory inside a disposable Worker. It is independent of grouped storage and Rust kernel memory; only copied check names are returned.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The translated initialization fixture owns this bounded shared test backing inside a disposable Worker. No kernel, persistent page or audio realm receives the memory or its views; the result contains only copied check metadata.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(ordinaryBytes,{env:{memory:plainMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The native initialization oracle imports only its Worker-local ordinary test memory. Its exports remain local to synchronous comparisons against the translated fixture; no Rust kernel participates.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(groupedBytes,{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The translated initialization fixture imports only its independent Worker-owned group backing. Its exports and views remain in that disposable realm; only copied check names leave it.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(activeOrdinaryBytes,{env:{memory:plainMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The active-data native oracle reuses its Worker-local ordinary memory and requires the original start function to trap. No accepted instance, export or kernel memory escapes this negative control.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(activeGroupedBytes,{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The active-data translated oracle reuses its Worker-owned group backing to test data-drop/start ordering. The instance and exports stay local and only copied result metadata is returned; no Rust kernel participates.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/pool-peer.mjs::runPeer::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "A disposable child Worker instantiates the same compiled C fixture over its parent Worker-owned group storage. It owns a distinct virtual root/scratch and tests concurrent allocation; no kernel or persistent realm receives the backing.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
@@ -1199,6 +1285,16 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/dri/registry.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "The GBM registry captures only the native buffer getter to authenticate each mapping's original process Memory before copying mapped bytes; no kernel Memory or view is retained.",
+  },
+  {
+    key: "host/src/process-memory-views.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "Module initialization captures only the native buffer getter to authenticate caller process Memory. It retains no Memory instance or buffer; explicit grouped roots take the virtual path and cannot masquerade as native buffer objects.",
+  },
+  {
+    key: "host/src/process-atomic-word.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The Worker-local atomic accessor captures only the native buffer getter to authenticate each ordinary process Memory before constructing one fresh word view. The capture retains no Memory instance or buffer; grouped roots use checked virtual operations and cannot enter the native branch as fabricated Memory values.",
   },
   {
     key: "host/src/process-snapshot-comparator.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
