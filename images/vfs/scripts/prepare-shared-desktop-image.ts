@@ -8,13 +8,17 @@ import { resolveLazyAssetPath } from '../../../host/src/binary-resolver';
 import { KandeloImageFs } from '../lib/kandelo-image-fs';
 import { saveImage, writeVfsBinary, type VfsWasmArtifactPolicy } from './vfs-image-helpers';
 import { parseKandeloDemoConfig, validateKandeloDemoConfig, type KandeloDemoConfig } from '../../../web-libs/kandelo-session/src/demo-config';
-import { SHARED_DESKTOP_PROGRAMS, SHARED_DESKTOP_LOGIN_PROGRAMS } from './shared-desktop-contract';
+import { SHARED_DESKTOP_LOGIN_PROGRAMS, sharedDesktopPrograms, type SharedDesktopProfile } from './shared-desktop-contract';
+import { readTrustedDesktopProgram } from './trusted-desktop-program';
 export { SHARED_DESKTOP_PROGRAMS, SHARED_DESKTOP_LOGIN_PROGRAMS } from './shared-desktop-contract';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 type LazyProgram = ReturnType<KandeloImageFs['lazyEntries']>['files'][number];
 
 export async function prepareSharedDesktopImage(input: string, output: string, options: {
+  /** Explicit compatible session closure. Existing callers retain Sway. */
+  desktopProfile?: SharedDesktopProfile;
+  includeFreeciv?: boolean;
   /** Also prepare the normal image-owned login/syslog boot chain. */
   includeLoginSession?: boolean;
   /** Explicit source provider for retained image/package fixtures. Default:
@@ -30,30 +34,49 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
   const fs = KandeloImageFs.create();
   const original = readFileSync(input);
   const sdk = fileURLToPath(new URL('../../../sdk/bin/wasm32posix-shared-memory', import.meta.url));
-  const manifest: { input: string; inputSha256: string; programs: unknown[]; profiles?: unknown; output?: unknown } = {
-    input, inputSha256: hash(original), programs: [],
+  const desktopProfile = options.desktopProfile ?? 'sway';
+  const includeFreeciv = options.includeFreeciv ?? false;
+  const requestedPrograms = sharedDesktopPrograms(desktopProfile, includeFreeciv);
+  const manifest: { input: string; inputSha256: string; desktop: unknown; programs: unknown[]; profiles?: unknown; output?: unknown } = {
+    input, inputSha256: hash(original), desktop: { profile: desktopProfile, freeciv: includeFreeciv }, programs: [],
   };
   let succeeded = false;
   try {
     fs.loadImage(original);
     const demoPath = '/etc/kandelo/demo.json';
     const demo = parseKandeloDemoConfig(new TextDecoder().decode(fs.readFile(demoPath)));
-    const sway = demo?.profiles?.sway;
-    if (!demo || !sway) throw Error('Trusted desktop preview requires an image-owned Sway profile');
-    // The prepared closure supports this desktop. Ordinary profiles still in
-    // the source image must not advertise incompatible applications here.
-    const preview: KandeloDemoConfig = { ...demo, image: { title: 'Trusted desktop preview' }, defaultProfile: 'sway', profiles: {
-      sway: { ...sway, identity: sway.identity === undefined ? undefined : { ...sway.identity, title: 'Sway and Foot preview',
-        summary: 'Temporary desktop preview with Sway and Foot. Other applications are not supported.' },
-        guide: { ...sway.guide, title: 'Sway and Foot preview',
-          summary: 'Temporary preview for compatible, trusted programs. Sway and Foot are the supported applications. '
-            + (sway.guide?.summary ?? '') } },
-    } };
+    const selected = demo?.profiles?.[desktopProfile];
+    if (!demo || !selected) throw Error('Trusted desktop preview requires an image-owned ' + desktopProfile + ' profile');
+    const title = (desktopProfile === 'cage' ? 'Cage and Foot' : 'Sway and Foot')
+      + (includeFreeciv ? ' with Freeciv' : '') + ' preview';
+    // Participant choice is an explicit image/embedding decision. URLs do not
+    // enable the backend, and ordinary image profiles retain their own closure.
+    const profile = { ...selected,
+      requires: [...new Set([...(selected.requires ?? []),
+        ...(desktopProfile === 'cage' ? ['foot'] : []),
+        ...(includeFreeciv ? ['freeciv-browser-bundle'] : [])])],
+      ...(desktopProfile === 'cage' ? { init: { ...selected.init,
+        shellCommand: 'LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini' } } : {}),
+      identity: selected.identity === undefined ? undefined : { ...selected.identity, title,
+        summary: desktopProfile === 'sway' && !includeFreeciv
+          ? 'Temporary desktop preview with Sway and Foot. Other applications are not supported.'
+          : 'Temporary trusted graphical-session experiment.' },
+      guide: { ...selected.guide, title,
+        summary: desktopProfile === 'sway' && !includeFreeciv
+          ? 'Temporary preview for compatible, trusted programs. Sway and Foot are the supported applications. '
+            + (selected.guide?.summary ?? '')
+          : 'Temporary preview for compatible, trusted participants. '
+          + (includeFreeciv ? 'Run freeciv from Foot; quitting the game returns to the terminal. ' : '')
+          + (desktopProfile === 'cage' ? 'Exiting Foot ends the Cage session. ' : '')
+          + (selected.guide?.summary ?? '') },
+    };
+    const preview: KandeloDemoConfig = { ...demo, image: { title: 'Trusted desktop preview' },
+      defaultProfile: desktopProfile, profiles: { [desktopProfile]: profile } };
     validateKandeloDemoConfig(preview);
     fs.writeFile(demoPath, new TextEncoder().encode(JSON.stringify(preview, null, 2) + '\n'));
-    manifest.profiles = { supported: ['sway'], excluded: Object.keys(demo.profiles ?? {}).filter(id => id !== 'sway') };
+    manifest.profiles = { supported: [desktopProfile], excluded: Object.keys(demo.profiles ?? {}).filter(id => id !== desktopProfile) };
     const policies: VfsWasmArtifactPolicy[] = [];
-    const programs = [...SHARED_DESKTOP_PROGRAMS,
+    const programs = [...requestedPrograms,
       ...(options.includeLoginSession ? SHARED_DESKTOP_LOGIN_PROGRAMS : [])];
     for (const requested of programs) {
       let path: string = requested;
@@ -65,8 +88,9 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
       const identity = fs.lstat(path);
       let bytes: Uint8Array;
       if (lazy) {
-        if (lazy.archiveId !== 0) throw Error('Executable in a lazy archive is unsupported: ' + path);
-        bytes = options.readDeferredProgram?.(lazy) ?? new Uint8Array(readFileSync(resolveLazyAssetPath(lazy.uri)));
+        bytes = options.readDeferredProgram?.(lazy)
+          ?? readTrustedDesktopProgram(lazy, fs.lazyEntries().archives,
+            uri => new Uint8Array(readFileSync(resolveLazyAssetPath(uri))));
         if (bytes.length !== lazy.size || lazy.digest.some(byte => byte !== 0)
             && hash(bytes) !== Buffer.from(lazy.digest).toString('hex')) {
           throw Error('Deferred executable differs from its image declaration: ' + path);
@@ -103,8 +127,17 @@ export async function prepareSharedDesktopImage(input: string, output: string, o
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [input, output, ...extra] = process.argv.slice(2);
-  if (!input || !output || extra.length > 1 || extra.length === 1 && extra[0] !== '--login-session') {
-    throw Error('Usage: prepare-shared-desktop-image.ts ORDINARY.vfs.zst GROUPED.vfs.zst [--login-session]');
+  const options: Parameters<typeof prepareSharedDesktopImage>[2] = {};
+  for (let at = 0; at < extra.length; at++) {
+    const flag = extra[at];
+    if (flag === '--login-session' && options.includeLoginSession === undefined) options.includeLoginSession = true;
+    else if (flag === '--freeciv' && options.includeFreeciv === undefined) options.includeFreeciv = true;
+    else if (flag === '--desktop' && options.desktopProfile === undefined) {
+      const profile = extra[++at];
+      if (profile !== 'sway' && profile !== 'cage') throw Error('Select --desktop sway or cage');
+      options.desktopProfile = profile;
+    } else throw Error('Unknown or repeated trusted desktop option: ' + flag);
   }
-  await prepareSharedDesktopImage(input, output, { includeLoginSession: extra.length === 1 });
+  if (!input || !output) throw Error('Usage: prepare-shared-desktop-image.ts ORDINARY.vfs.zst GROUPED.vfs.zst [--login-session] [--desktop sway|cage] [--freeciv]');
+  await prepareSharedDesktopImage(input, output, options);
 }
