@@ -18,7 +18,8 @@ server's root URL. The validated partial shell contains Sway, Swaybg, Foot,
 Wayland desktop data, the Bibata cursor theme and sysklogd. Ordinary app builds
 keep their existing backend. The canonical production build remains pending;
 the serial retry has completed Rust, guest Clang and CMake and is preparing the
-remaining packages, currently FFmpeg.
+remaining packages. This producer uses the earlier integration source; the
+latest runtime still needs its own complete product and memory-gate check.
 
 An explicit 24-process/64-task developer fixture reproduces the user's refusal
 at nine terminals: 23 live non-init processes, about 25 tasks and 299 MiB of
@@ -37,7 +38,7 @@ resources. See [the option contract](../shared-memory-groups.md#desktop-first-op
 | Current bounded validation | Result |
 |---|---|
 | Normal app: clock/input/workspaces/tiling, exit and CPU-renderer restart | Passed on Chromium, Firefox and WebKit |
-| Normal app: twelve actual Foots and shell children, physical close, new-PID reopen, guest Sway exit and cleanup | Passed on all three engines |
+| Normal app: twelve actual Foots and shell children, physical close and new-PID reopen | Passed on all three engines; final zero-process cleanup oracle requires correction below |
 | Public SDK: 26 simultaneously live children followed by 66 simultaneously live pthreads, 512 MiB backing | Passed on Node and all three browser engines |
 | Full Node SDK selection, including copied usage inspection | 63 passed, no skips |
 | Public browser VFS launch/identity/refusal/DRM/inspection selection | 18 passed, no skips |
@@ -64,17 +65,22 @@ The ordinary private-file fixture now checks develop's explicit `EFAULT` on
 unsupported growth and verifies that its original mapping survives; the grouped
 arm still requires successful growth against the retained original file.
 
-The full ordinary Node Open POSIX run completed 174 passes, three expected
-failures and two standard skips, with no failures or timeouts. Libc completed
-305 passes, 17 expected failures, one listed flaky pass and a `raise-race`
-timeout at the unchanged 30-second limit; it is not a passing suite. Isolating
-that case timed out again. The fresh pinned develop baseline passes that same
-test and wrapper at the unchanged limit; its outer job fails only a status
-guard after the runner generates two untracked build files, with tracked
-sources unchanged. A subsequent fixed develop/candidate/candidate/develop
-comparison passes all four runs at the unchanged 30-second limit, with source
-guards unchanged. The candidate therefore has mixed results; the earlier
-timeouts cannot be dismissed as pre-existing or erased by these passes.
+The earlier ordinary Node Open POSIX run completed 174 passes, three expected
+failures and two standard skips, with no failures or timeouts. Its libc run
+completed 305 passes, 17 expected failures, one listed flaky pass and a
+`raise-race` timeout at the unchanged 30-second limit. Isolating that case timed
+out again. A fresh develop baseline passed the same case, followed by a fixed
+develop/candidate/candidate/develop comparison passing all four runs. These
+mixed results remain retained.
+
+A fresh full ordinary Node run on runtime `6ba046c7f9` now passes the unchanged
+default inventories: Open POSIX 174 passes, three expected failures and two
+standard skips; libc 306 passes, 17 expected failures and one listed flaky pass,
+with zero failures or timeouts and `raise-race` passing. The normal SDK/kernel,
+runner and source guards are unchanged. This is current ordinary Node evidence,
+not grouped-all-libc or browser conformance. The passing rerun does not erase
+the earlier timeouts; its complete evidence is retained under
+`.context/shared-desktop-conformance-603/`.
 
 An initial normal-app lifecycle probe stopped after eleven completed iterations
 on an empty cached file preview. A fresh-read control then passed 30 Firefox
@@ -109,9 +115,20 @@ A subsequent fixture waits for the focused new terminal's actually rendered
 Bash prompt before typing. Pixel controls refuse a blank area, an inactive
 window and changed glyphs. Ten physical open/type/PID-file/close cycles pass on
 each WebKit arm, with no page or memory-boundary errors. The unchanged count,
-file-content and cleanup oracles remain; earlier failures are retained. A new
+file-content and close oracles remain; earlier failures are retained. A new
 normal bare-root WebKit sustained run is in progress without the evdev observer
 or derived diagnostic image. Short controls are not sustained acceptance.
+
+A subsequent audit found that the final zero-Foot process check could accept a
+transient empty Inspector table while it was loading. Counts requiring one or
+two Foots, including the extra-terminal failures, do not have that false-zero
+path. Final cleanup claims from that fixture are withdrawn pending a check
+that first requires a real initialized process snapshot. A corrected bounded
+Cage/Foot Chromium check requires init PID 1 and verifies that the known Cage,
+Foot and shell PIDs are absent after exit. This does not establish sustained
+Sway cleanup or whole-machine backing reclamation. Both sustained jobs remain
+live but have stopped advancing at their latest checkpoints; no terminal result
+or cause has been established.
 
 The normal-app captured-glyph latency method now passes on both ordinary and
 grouped Chromium: actual `a`/`b` glyph calibration, three no-input captures,
