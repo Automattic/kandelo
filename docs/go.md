@@ -12,6 +12,7 @@ From a Kandelo checkout with Nix, build the pinned compiler and enter the SDK
 shell:
 
 ```sh
+git submodule update --init --recursive
 scripts/dev-shell.sh scripts/setup-kandelo-go.sh "$PWD/.scratch/go-sdk"
 scripts/dev-shell.sh bash
 export KANDELO_GO_ROOT="$PWD/.scratch/go-sdk/go"

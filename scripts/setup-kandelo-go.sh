@@ -28,6 +28,7 @@ PY
     read -r toolchain_commit
 } <<< "$pins"
 
+mkdir -p -- "$(dirname -- "$1")"
 mkdir -- "$1"
 install_root="$(cd -- "$1" && pwd -P)"
 sources="$(mktemp -d "$install_root/.sources.XXXXXX")"
