@@ -159,14 +159,21 @@ mute system output. Audible playback needs explicit user intent and the
 
 Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
-`scripts/agent-job wait <id> --timeout 0` once with Bash's
-`run_in_background`, then act on its single completion notification.
+`scripts/agent-job wait <id> --timeout 0` with Bash's
+`run_in_background: true` and `timeout: 7200000`. Its 7,000 s window
+leaves time to report before the 7,200,000 ms background cap. On each
+still-running notification, run the printed re-arm command once in the
+background with the same Bash settings, then wait for the next
+notification. Use notifications alone, without manual polls or foreground
+wait loops.
 Headless main sessions repeat foreground `scripts/agent-job wait <id>`
 (up to 9 minutes per call). Subagents use `wait <id> --timeout 240` for
 targeted work, one wait per Bash call; return known long jobs to the parent.
-Repeat only on the still-running wait-window notice; `FAILED (exit 124)` is
-final. Find peer builds with `list --all` and wait on their id (or
-`wait --peer <text>`); after a selector timeout retry by resolved id.
+Repeat only on the still-running wait-window notice. CLI exit 124 means
+the job is still running. A completed job that exits 124 reports
+`FAILED (exit 124)` and returns CLI exit 1. Find peer builds with
+`list --all` and wait on their id (or `wait --peer <text>`). After a
+selector timeout, retry by resolved id.
 Do not poll with Monitor/status-file loops, `sleep` or `pgrep -f`, end a
 headless/subagent turn to wait, or make subagents wait on whole-tree builds.
 See [waiting on long builds](docs/agent-guidance/validation.md#waiting-on-long-builds-and-suites).

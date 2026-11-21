@@ -19,18 +19,18 @@ those choices:
   agent-job wait <id> [--timeout SECONDS]
   agent-job wait --peer <text> [--timeout SECONDS]
       Block until the job ends (keyed on its supervisor PID), then print the
-      result and exit with the job's exit status. The default timeout, 540 s,
-      stays under the Bash tool's 10-minute limit; on timeout it prints status
-      and exits 124. Repeat only when the wait-window notice says the job
-      is still running; a completed job can also exit 124, and its
-      FAILED (exit 124) result is final. One call per
-      9 minutes for headless main sessions. Subagents use --timeout 240
-      for targeted work to stay inside their shorter prompt cache; return
-      known long jobs to the parent. --timeout 0 waits
-      without limit, for an interactive main session that runs it with
-      run_in_background and ends its turn. Never end your turn to wait in a
-      headless (claude -p) session or a subagent: they stop when the turn
-      ends.
+      result and exit with the job's exit status (job exit 124 is printed
+      as FAILED (exit 124) and returned as CLI exit 1). CLI exit 124 is
+      reserved for a still-running job. On window expiry, run the printed
+      re-arm command once, using the same session's waiting method.
+      Headless main sessions use the 540 s foreground default. Subagents
+      use --timeout 240 for targeted work and return known long jobs to
+      the parent. Interactive main sessions use --timeout 0 with Bash
+      run_in_background and tool timeout 7200000 ms. This selects a 7000 s
+      window below the tool cap. KANDELO_AGENT_WAIT_WINDOW_SECONDS can
+      shorten that window to a positive integer from 1 to 7000.
+      Keep the turn open while waiting in a headless (claude -p) session
+      or a subagent.
       Another worktree's job (another Conductor workspace's build) works the
       same way: find it with `list --all` and wait on its id. That is
       supported, and is the right tool instead of a `kill -0` or `pgrep`
@@ -38,7 +38,7 @@ those choices:
       worktree, whose command contains <text> (for example `local-build` or
       `prepare-browser`). If none or several match, it lists them on stderr
       and exits 2 rather than guess. After a selector wait times out, retry
-      by the resolved job id in `waiting on <id>` or `resume with:`, never
+      by the resolved job id in `waiting on <id>` or `re-arm:`, never
       by --peer again: a new job could match instead.
   agent-job status [<id>]
       What is running: elapsed vs the usual duration, log age, local-build
@@ -47,7 +47,7 @@ those choices:
       your HEAD.
   agent-job result <id>
       Exit status, duration, the [suite-health] lines if any, and the last
-      lines of the log.
+      lines of the log. Uses the same CLI exit codes as wait.
   agent-job list [--all]
       Recent jobs in this worktree. --all lists every worktree's jobs on
       this machine, with each job's worktree, commit, and how that commit
@@ -104,6 +104,10 @@ LOCKED = re.compile(r"npx\s+vitest|node_modules/\.bin/vitest|\bvitest\s+run|run\
 # What an agent reads after a run: enough of the log to see how it ended,
 # without pulling a 100k-line build log into the conversation.
 LOG_TAIL = 30
+# Leave time to report and exit before Bash's 7200000 ms background cap.
+BACKGROUND_WAIT_WINDOW = 7000
+BACKGROUND_WAIT_ENV = "KANDELO_AGENT_WAIT_WINDOW_SECONDS"
+STILL_RUNNING = 124
 
 
 def now():
@@ -338,6 +342,11 @@ def state_of(d):
         return "running", meta, None
     if not meta.get("artifact_id") and meta.get("supervisor_pid") and alive(meta["supervisor_pid"]):
         return "running", meta, None
+    # The supervisor can record completion and release its lease between
+    # the first result read and the liveness check.
+    result = read_json(os.path.join(d, "result.json"))
+    if result:
+        return "finished", meta, result
     # The supervisor died without recording an exit status (machine sleep,
     # kill -9). Report that plainly: treating it as "still running" would
     # make an agent wait forever, and treating it as success would be false.
@@ -527,7 +536,7 @@ def cmd_start_locked(args):
           f"scratch: {os.path.join(payload, 'scratch')} (child: $KANDELO_AGENT_SCRATCH_DIR)\n"
           f"wait with (choose your session type; do not poll):\n"
           f"  interactive main: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 0  "
-          f"(Bash run_in_background: true; act on one completion notification)\n"
+          f"(Bash run_in_background: true, timeout: 7200000; re-arm once per still-running notice)\n"
           f"  headless main: {shlex.quote(sys.argv[0])} wait {job_id}  "
           f"(foreground; repeat only if wait reports still running; "
           f"FAILED (exit 124) is final; never end the turn to wait)\n"
@@ -569,6 +578,17 @@ def cmd_wait(args):
     if (args.id is None) == (args.peer is None):
         print("agent-job wait: give either a job id or --peer <text>", file=sys.stderr)
         sys.exit(2)
+    background = args.timeout == 0
+    timeout = args.timeout
+    if background:
+        try:
+            timeout = int(os.environ.get(BACKGROUND_WAIT_ENV, BACKGROUND_WAIT_WINDOW))
+        except ValueError:
+            timeout = 0
+        if not 1 <= timeout <= BACKGROUND_WAIT_WINDOW:
+            sys.exit(f"agent-job wait: {BACKGROUND_WAIT_ENV} must be an integer from 1 to {BACKGROUND_WAIT_WINDOW}")
+    started = time.monotonic()
+    deadline = started + timeout
     if args.peer is not None:
         args.id, d = peer_job(args.peer)
         meta = read_json(os.path.join(d, "meta.json")) or {}
@@ -578,18 +598,25 @@ def cmd_wait(args):
         print(describe_commit(meta, os.getcwd()), flush=True)
     else:
         d = job_dir(args.id)
-    deadline = now() + args.timeout if args.timeout else None
     while True:
-        state, meta, result = state_of(d)
+        state, _, _ = state_of(d)
         if state != "running":
             break
-        if deadline and now() >= deadline:
-            print(f"agent-job: still running after {args.timeout}s of waiting "
-                  f"(wait window expired; exit 124)\n"
-                  f"resume with: {shlex.quote(sys.argv[0])} wait {args.id} --timeout {args.timeout}\n")
-            print_status(args.id, d)
-            sys.exit(124)
-        time.sleep(2)
+        checked = time.monotonic()
+        remaining = deadline - checked
+        if remaining <= 0:
+            last = tail_lines(payload_file(d, "output.log"), 1)
+            last_line = repr(last[0][:200]) if last else "(none yet)"
+            command = f"{shlex.quote(sys.argv[0])} wait {args.id} --timeout {args.timeout}"
+            settings = ""
+            if background:
+                command = f"{BACKGROUND_WAIT_ENV}={timeout} {command}"
+                settings = " (Bash run_in_background: true, timeout: 7200000)"
+            print(f"agent-job: still running {args.id} after {checked - started:.0f}s of waiting "
+                  f"(wait window expired, exit {STILL_RUNNING}), last log line: {last_line}, "
+                  f"re-arm: {command}{settings}")
+            sys.exit(STILL_RUNNING)
+        time.sleep(min(2, remaining))
     sys.exit(print_result(args.id, d))
 
 
@@ -602,7 +629,7 @@ def print_result(job_id, d):
         return 125
     if state == "running":
         print(f"{job_id}: still running ({fmt_secs(now() - meta['started'])}); log: {log}")
-        return 124
+        return STILL_RUNNING
     code = result["exit_code"]
     verdict = "succeeded" if code == 0 else f"FAILED (exit {code}" + (
         f", signal {result['signal']})" if result.get("signal") else ")")
@@ -619,7 +646,7 @@ def print_result(job_id, d):
     print(f"--- last {LOG_TAIL} log lines ({log}) ---")
     for l in lines[-LOG_TAIL:]:
         print(l)
-    return code
+    return 1 if code == STILL_RUNNING else code
 
 
 def print_where(meta):
@@ -648,9 +675,8 @@ def processes():
     # worktree's build, an MCP server) once passed for "the run" because
     # only its name or count was checked.
     #
-    # Inside scripts/dev-shell.sh, PATH has no `ps`, and a crash here turned
-    # `wait`'s exit 124 ("still running") into exit 1. So fall back to the
-    # system's ps, and without one show no process list (None) instead.
+    # Inside scripts/dev-shell.sh, PATH has no `ps`. Fall back to the
+    # system's ps, or show no process list if it is unavailable.
     for ps in ("ps", "/bin/ps", "/usr/bin/ps"):
         try:
             out = subprocess.run([ps, "-axo", "pid=,ppid=,etime=,pcpu=,command="], capture_output=True,
@@ -902,8 +928,9 @@ def main():
     # 540 s keeps one wait inside the Bash tool's 10-minute limit. A wait
     # the tool kills is pushed to the background, and a headless session or
     # subagent that then ends its turn loses the result.
-    p.add_argument("--timeout", type=int, default=540, help="seconds (default 540, under the Bash tool limit); "
-                   "0 waits until the job ends")
+    p.add_argument("--timeout", type=int, default=540, help="seconds (default 540, under the Bash tool limit). "
+                   f"0 selects a bounded {BACKGROUND_WAIT_WINDOW} s background window "
+                   f"(shorten with {BACKGROUND_WAIT_ENV})")
     p = sub.add_parser("status", help="progress, processes, and commit of running jobs")
     p.add_argument("id", nargs="?")
     p = sub.add_parser("result", help="exit status and log tail of a finished job")
