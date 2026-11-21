@@ -1334,3 +1334,79 @@ The cache correction changes no Node, SDK, ABI, kernel or memory ownership
 contract. The full memory and conformance receipts above predate it.
 Quiet resource/latency measurements, target-branch benchmark comparison,
 material-cost treatment and sustained acceptance remain incomplete.
+
+### Built Chromium endurance and resource screens (2026-11-21)
+
+Run 829 completes all 1,200 Chromium cycles against the normal production
+app from build 803 in 48.2 minutes. It retains the original physical-input,
+Foot/shell counts and deadlines, then exits Sway and observes initialized
+PID 1 with no Foot processes. Twenty-six copied group snapshots include
+the initial state, periodic checks and the state after graphics exit.
+The periodic physical extent stays at 2,578 pages (161.125 MiB). After
+graphics exit, the two remaining login/syslog images own 325 pages
+(20.3125 MiB); shared objects/pages/references, quarantine, wait drains,
+native observers, staging bytes and retained mapping references are zero.
+This shows bounded logical reuse in this run. The machine remains live;
+these counters do not prove RSS reduction, backing collection or machine
+destruction. Firefox and WebKit remain pending at this checkpoint.
+
+The independent guest evdev recorder in run 827 reproduces the extra
+terminal after 388 completed Firefox cycles on the development server.
+It records exactly one Enter press/release, 3.74 ms apart, with both read
+by its independent device OFD within 0.94 ms and no dropped records.
+Sway subsequently issues two fork calls; their entry-to-next-observed-
+syscall gaps are 592.26 and 594.60 ms. Sway reads input again only after
+both calls. This narrows the investigation to compositor consumption and
+timer ordering while fork blocks. It does not prove the exact repeat
+branch or split fork time into CPU and waiting. The ordinary-execution
+reproduction above remains relevant; no repeat policy or test count was
+changed.
+
+Two host-only resource candidates were screened on isolated source
+checkouts at `e296c91dd1a1`, using the same normal SDK/kernel/image inputs.
+The first avoids clearing pages newly supplied by the same locked
+`Memory.grow`; it still clears all previously present and reused pages.
+The second also reuses ordinary fork's sparse-copy scanner for disjoint
+private physical pages while the exact parent barrier is held. Neither
+candidate is included in this batch.
+
+| Diagnostic candidate | 12-terminal candidate minus baseline footprint | After graphics exit, machine still live |
+|---|---:|---:|
+| Fresh-growth zeroing only (844) | +7.06 MiB | -42.34 MiB |
+| Fresh-growth zeroing and sparse private copy (852) | +16.84 MiB | -164.77 MiB |
+
+Each desktop screen uses one fresh Chromium parent per arm, exact
+one/two/twelve-terminal input and process checks, fifteen physical shell
+commands with fresh VFS reads at each occupancy, and actual Sway exit.
+Both pass; the second also checks the browser-consumed source response
+bodies for the candidate changes. These runs overlap builds and other
+validation. They do not establish a consistent active-desktop memory
+reduction or qualifying CPU benefit. The combined candidate's diagnostic
+CPU totals are lower in this single pilot, but require a quiet comparison.
+
+Synthetic Node/Bun screens cover 16/128 MiB images with zero, sparse and
+dense data. The combined Node candidate has about 125 MiB lower
+post-preparation RSS for a mostly empty 128 MiB image; its pre-copy RSS
+also differs, so this is a combined-operation result. Bun shows little
+memory benefit and slower zero-page scanning. The combined candidate
+passes the normal host build, 1,629 source checks in 62 files and seven
+synthetic byte/alias/protection/reuse modes on each browser engine. These
+are diagnostic checks, not a combined browser-memory or full performance
+gate. The patches and failed or inconclusive experiments remain retained
+without promotion.
+
+Run 831's lossless, marker-aligned V8 trace is also diagnostic. Matching
+actual SDK hashes, function indices and code offsets identifies seven
+grouped modules. The large repeated Wasm sample counts resolve to
+`vm_wait32`, where native waits may be parked. Sample counts therefore do
+not measure CPU utilization. `imageOwnedPages` is the largest JavaScript
+leaf in this trace; its actual CPU/allocation cost remains to be measured
+before changing retirement checks. Signed negative V8 time deltas are
+preserved rather than clamped.
+
+[Derived review samples](2026-11-21-shared-memory-resource-screens.json)
+record source/report hashes and numerical results. Quiet matched
+memory/CPU/input/presentation measurements, the target-branch benchmark
+comparison and sustained all-engine completion remain open. The resource
+screens introduce no SDK, ABI, kernel, package or PHP-FPM changes into
+this batch.
