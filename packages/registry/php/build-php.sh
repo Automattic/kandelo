@@ -991,8 +991,15 @@ if [ ! -f Makefile ]; then
     # support ucontext and libc defines none of it, so PHP opts in to the
     # SDK's abort-on-call stand-ins: PHP code that never starts a Fiber runs
     # normally, and starting one aborts with a diagnostic naming ucontext.
+    #
+    # Zend's fiber stack allocator also makes a PROT_NONE guard page, so PHP
+    # calls mprotect() and links the SDK's opt-in. That mprotect() refuses
+    # the guard with ENOTSUP (Kandelo has no page protection), and
+    # Fiber::start() throws "Fiber stack protect failed" before it reaches
+    # ucontext. No mprotect fiction is declared: the exception is the truthful
+    # outcome for fibers that could not run anyway.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
-    LIBS="-lkandelo-ucontext-unsupported" \
+    LIBS="-lkandelo-ucontext-unsupported -lkandelo-mprotect" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \

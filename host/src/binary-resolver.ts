@@ -484,6 +484,55 @@ interface ProgramPackageProjection {
   cacheKeys: Record<string, string>;
   dependencyClosures: Record<string, ProgramDependencyIdentity[]>;
   members: ProgramPackageProjectionMember[];
+  /** Declared fictions (sdk/fictions), absent when the package declares none. */
+  fictions?: ProgramFictionDeclaration[];
+}
+
+/**
+ * A package's declared fiction: behaviour Kandelo reports as provided
+ * without providing it, selected by the package for its executable links.
+ * Provenance only; the resolver does not act on it.
+ */
+export interface ProgramFictionDeclaration {
+  name: string;
+  reason: string;
+  /** `name:key=value,...` as declared. */
+  selection: string;
+}
+
+function parseProgramFictionDeclarations(
+  raw: unknown,
+  indexPath: string,
+  packageName: string,
+): ProgramFictionDeclaration[] {
+  const malformed = () => new Error(
+    `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} has malformed fictions`,
+  );
+  if (!Array.isArray(raw) || raw.length === 0) throw malformed();
+  const names = new Set<string>();
+  return raw.map((entry): ProgramFictionDeclaration => {
+    if (
+      typeof entry !== "object"
+      || entry === null
+      || !hasExactObjectKeys(entry, ["name", "reason", "selection"])
+    ) {
+      throw malformed();
+    }
+    const { name, reason, selection } = entry as Record<string, unknown>;
+    if (
+      typeof name !== "string"
+      || !/^[a-z0-9][a-z0-9_-]*$/.test(name)
+      || names.has(name)
+      || typeof reason !== "string"
+      || reason.trim() === ""
+      || typeof selection !== "string"
+      || !selection.startsWith(`${name}:`)
+    ) {
+      throw malformed();
+    }
+    names.add(name);
+    return { name, reason, selection };
+  });
 }
 
 interface ProgramDependencyIdentity {
@@ -982,6 +1031,7 @@ function parseProgramPackageProjection(
         "cacheKeys",
         "dependencyClosures",
         "members",
+        ...(Object.hasOwn(rawPackage, "fictions") ? ["fictions"] : []),
       ])
       || !Array.isArray((rawPackage as { arches?: unknown }).arches)
       || typeof (rawPackage as { cacheKeys?: unknown }).cacheKeys !== "object"
@@ -1241,12 +1291,20 @@ function parseProgramPackageProjection(
         `Invalid program package index ${indexPath}: package ${JSON.stringify(packageName)} does not match its contextual package identity`,
       );
     }
+    const fictions = Object.hasOwn(rawPackage, "fictions")
+      ? parseProgramFictionDeclarations(
+        (rawPackage as { fictions: unknown }).fictions,
+        indexPath,
+        packageName,
+      )
+      : undefined;
     packages.set(packageName, {
       manifestSha256,
       arches: arches as string[],
       cacheKeys: cacheKeys as Record<string, string>,
       dependencyClosures: parsedDependencyClosures,
       members,
+      ...(fictions ? { fictions } : {}),
     });
   }
   const requiredIdentities = new Set(packages.keys());

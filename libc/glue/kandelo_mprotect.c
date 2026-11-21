@@ -15,38 +15,36 @@
  *
  *     LIBS="-lkandelo-mprotect"
  *
- * This mprotect() accepts a request that keeps read and write access
- * (PROT_READ | PROT_WRITE, with or without PROT_EXEC: the execute bit grants
- * or removes nothing for data memory) and passes it to the kernel, which
- * validates the range (ENOMEM for pages that are not mapped) and keeps its
- * side effects, such as making a shared file mapping eligible for writeback.
- * A request that would remove read or write access -- PROT_NONE, read-only,
- * a write barrier, a guard page -- fails with ENOTSUP, POSIX's answer when
- * "the implementation does not support the combination of accesses
- * requested", instead of reporting a protection that would not be enforced.
- * Unknown protection bits are EINVAL.
+ * This mprotect() is the truthful policy: it accepts a request that keeps
+ * read and write access (PROT_READ | PROT_WRITE, with or without PROT_EXEC)
+ * and passes it to the kernel, which validates the range (ENOMEM for pages
+ * that are not mapped) and keeps its side effects, such as making a shared
+ * file mapping eligible for writeback. A request that would remove read or
+ * write access -- PROT_NONE, read-only, a write barrier, a guard page --
+ * fails with ENOTSUP instead of reporting a protection that would not be
+ * enforced. Unknown protection bits are EINVAL.
+ *
+ * A package that must have such a request reported as successful declares
+ * the mprotect fiction (sdk/fictions/mprotect.toml); the SDK driver then
+ * links a generated mprotect() with the declared policy ahead of this one.
+ * Both call __kandelo_mprotect_with_policy() (kandelo_mprotect_policy.c).
  *
  * This library is not linked by default and must stay that way: linking it
  * implicitly would let configure checks and portable code believe page
  * protection exists.
  */
 
-#include <errno.h>
 #include <stddef.h>
-#include <sys/mman.h>
 
-/* libc.a's internal mprotect: page rounding and the SYS_mprotect call. */
-int __mprotect(void *addr, size_t len, int prot);
+#include "kandelo_mprotect_policy.h"
+
+static const struct __kandelo_mprotect_policy truthful = {
+	.version = KANDELO_MPROTECT_POLICY_VERSION,
+	.prot_none = KANDELO_MPROTECT_ENOTSUP,
+	.read_only = KANDELO_MPROTECT_ENOTSUP,
+};
 
 int mprotect(void *addr, size_t len, int prot)
 {
-	if (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) {
-		errno = EINVAL;
-		return -1;
-	}
-	if ((prot & (PROT_READ | PROT_WRITE)) != (PROT_READ | PROT_WRITE)) {
-		errno = ENOTSUP;
-		return -1;
-	}
-	return __mprotect(addr, len, prot);
+	return __kandelo_mprotect_with_policy(addr, len, prot, &truthful);
 }

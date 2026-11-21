@@ -137,6 +137,11 @@ pub struct MemoryManager {
     data_limit: u64,
     /// Program break at process start, used to compute data segment growth.
     initial_brk: usize,
+    /// Whether this process image has made an `mprotect` request Kandelo
+    /// reported as successful without enforcing it (one that removes read or
+    /// write access). Only the first is logged. A new image (exec) and a fork
+    /// child start with a new memory manager, so each logs its own first.
+    unenforced_protection_seen: bool,
 }
 
 /// Why [`MemoryManager::try_mmap_anonymous`] refused a mapping.
@@ -182,7 +187,15 @@ impl MemoryManager {
             brk_limit: Self::DEFAULT_MAX_ADDR,
             data_limit: u64::MAX,
             initial_brk: Self::INITIAL_BRK,
+            unenforced_protection_seen: false,
         }
+    }
+
+    /// True the first time it is called for this process image: whether a
+    /// successful `mprotect` that Kandelo does not enforce is the first, and
+    /// so the one to log.
+    pub fn take_first_unenforced_protection(&mut self) -> bool {
+        !core::mem::replace(&mut self.unenforced_protection_seen, true)
     }
 
     /// Read-only access to the mmap mappings (for fork serialization).
@@ -991,6 +1004,15 @@ mod tests {
 
     fn mapped_region(addr: usize, len: usize) -> MappedRegion {
         MappedRegion::anonymous(addr, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS)
+    }
+
+    #[test]
+    fn only_the_first_unenforced_protection_of_an_image_is_reported() {
+        let mut manager = MemoryManager::new();
+        assert!(manager.take_first_unenforced_protection());
+        assert!(!manager.take_first_unenforced_protection());
+        // A new image (exec) or fork child starts with a new manager.
+        assert!(MemoryManager::new().take_first_unenforced_protection());
     }
 
     #[test]
