@@ -76,7 +76,7 @@
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Plugins/PassPlugin.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/Endian.h"
@@ -370,10 +370,10 @@ struct TagPass : PassInfoMixin<TagPass> {
       }
       F.setMetadata("kandelo.hadtests", MDNode::get(Ctx, {}));
       // Delete the tests: the optimizer must see an ordinary build.
-      std::vector<BranchInst *> checks;
+      std::vector<CondBrInst *> checks;
       for (CallInst *T : dead) {
         for (User *U : T->users())
-          if (auto *BI = dyn_cast<BranchInst>(U); BI && BI->isConditional() && isTrapBlock(BI->getSuccessor(1)))
+          if (auto *BI = dyn_cast<CondBrInst>(U); BI && isTrapBlock(BI->getSuccessor(1)))
             checks.push_back(BI);
         T->replaceAllUsesWith(ConstantInt::getTrue(Ctx));
         T->eraseFromParent();
@@ -382,10 +382,10 @@ struct TagPass : PassInfoMixin<TagPass> {
       // the call's block. Without optimization nothing folds it, so restore
       // the block clang emits without the check (code at -O0 would
       // otherwise keep the dead trap).
-      for (BranchInst *BI : checks) {
+      for (CondBrInst *BI : checks) {
         BasicBlock *Cont = BI->getSuccessor(0), *Trap = BI->getSuccessor(1);
         Trap->removePredecessor(BI->getParent());
-        BranchInst::Create(Cont, BI->getIterator());
+        UncondBrInst::Create(Cont, BI->getIterator());
         BI->eraseFromParent();
         if (pred_empty(Trap)) DeleteDeadBlock(Trap);
         MergeBlockIntoPredecessor(Cont);
@@ -574,7 +574,7 @@ std::set<BasicBlock *> reachable(Function &F, Argument *P, Constant *PV,
     if (!seen.insert(B).second) continue;
     Instruction *T = B->getTerminator();
     if (!T) continue;
-    if (auto *Br = dyn_cast<BranchInst>(T); Br && Br->isConditional()) {
+    if (auto *Br = dyn_cast<CondBrInst>(T)) {
       Value *C = Br->getCondition();
       if (PV) {
         if (auto *K = dyn_cast_or_null<ConstantInt>(evalWith(C, P, PV, DL, memo))) {

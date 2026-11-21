@@ -1,0 +1,37 @@
+# libc++abi portability boundary: __cxa_thread_atexit on a non-Linux musl target
+#
+# The C++ ABI requires __cxa_thread_atexit to register destructors of
+# thread_local objects. musl does not provide it (nor
+# __cxa_thread_atexit_impl), so on musl the C++ ABI library must.
+# libcxxabi's CMake still compiles cxa_thread_atexit.cpp for Kandelo (a
+# Unix that is not Apple, Cygwin or AIX), but LLVM 23 wraps the
+# function definition in defined(__linux__) || defined(__Fuchsia__).
+# Kandelo uses musl but is not Linux, so the object came out empty and
+# every C++ program with a non-trivially destructible thread_local
+# failed to link with an undefined __cxa_thread_atexit (LLVM 21.1.7's
+# libc++abi defined it). Also select the definition by the libc
+# capability that libc++ already records, _LIBCPP_HAS_MUSL_LIBC,
+# instead of defining __linux__. With HAVE___CXA_THREAD_ATEXIT_IMPL
+# unset (the recipe seeds LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF), the
+# definition uses libc++abi's own pthread-key destructor list.
+#
+# Upstream: llvm-project, tag llvmorg-23.1.3 (LLVM 23.1.3).
+# Upstream status: not yet proposed upstream.
+--- a/libcxxabi/src/cxa_thread_atexit.cpp
++++ b/libcxxabi/src/cxa_thread_atexit.cpp
+@@ -106,7 +106,7 @@
+ 
+ #endif // HAVE___CXA_THREAD_ATEXIT_IMPL
+ 
+-#if defined(__linux__) || defined(__Fuchsia__)
++#if defined(__linux__) || defined(__Fuchsia__) || _LIBCPP_HAS_MUSL_LIBC
+ extern "C" {
+ 
+   _LIBCXXABI_FUNC_VIS int __cxa_thread_atexit(Dtor dtor, void* obj, void* dso_symbol) throw() {
+@@ -142,5 +142,5 @@
+ #endif // HAVE___CXA_THREAD_ATEXIT_IMPL
+   }
+ } // extern "C"
+-#endif // defined(__linux__) || defined(__Fuchsia__)
++#endif // defined(__linux__) || defined(__Fuchsia__) || _LIBCPP_HAS_MUSL_LIBC
+ } // namespace __cxxabiv1
