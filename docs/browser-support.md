@@ -3171,6 +3171,15 @@ on fetch, so where the deployment serves a body from is transport, not
 trust. Adding a package to an image needs only the image recipe and the
 package's entry in the supported set.
 
+The production service worker caches complete native responses under the
+deployment's `vfs-groups/` directory for later reuse. If storing a completed
+response fails, including CacheStorage quota exhaustion, it logs a warning
+and returns the original network response with its Content-Length intact.
+Network and body-read failures still reject; failed, truncated and partial
+responses do not become cached successes. The kernel still verifies the
+image-declared size and digest. A completed download does not promise that
+the browser retained a cache entry or that the asset will work offline.
+
 Binaries the browser app imports directly (`@binaries/...`) are the other
 consumer. The Node CLI's literal `optionalBinary` built-ins are consumers
 too, including each alternative entry point. Each must be an output of a package in
