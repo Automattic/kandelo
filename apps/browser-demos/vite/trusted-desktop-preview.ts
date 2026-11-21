@@ -7,6 +7,7 @@ import {
   SHARED_DESKTOP_LOGIN_PROGRAMS,
   sharedDesktopPrograms,
 } from "../../../images/vfs/scripts/shared-desktop-contract";
+import { sharedDesktopPackagePrograms } from "../../../images/vfs/scripts/shared-desktop-package-contract";
 
 /** An explicit embedder build choice, never a capability enabled by a URL. */
 export function trustedDesktopPreview(base: string, imagePath?: string, imageModuleBytes?: Uint8Array): Plugin | null {
@@ -35,17 +36,21 @@ export function trustedDesktopPreview(base: string, imagePath?: string, imageMod
           || !metadata?.partialSelection?.packages?.includes("shared-desktop-programs")) {
         throw Error("Trusted desktop preview requires an explicitly selected SDK package");
       }
-      return { output: { sha256, bytes: image.length }, programs: packaged.programs,
-        desktop: { profile: "cage", freeciv: true, scummvm: true } };
+      return { output: { sha256, bytes: image.length }, programs: packaged.programs };
     })();
   if (report.output?.sha256 !== sha256 || report.output?.bytes !== image.length
       || !Array.isArray(report.programs)) {
     throw Error("Trusted desktop preview image differs from its SDK preparation report");
   }
   const participants = new Set(report.programs.map((program: { requested?: string }) => program.requested));
-  const profile = report.desktop?.profile ?? 'sway';
-  const freeciv = report.desktop?.freeciv ?? false;
-  for (const program of [...sharedDesktopPrograms(profile, freeciv, report.desktop?.scummvm ?? false), ...SHARED_DESKTOP_LOGIN_PROGRAMS]) {
+  // Package-backed images own their profiles. Validate the authored SDK
+  // closure without manufacturing an app-side desktop description. The
+  // adjacent report remains the contract for historical derived images.
+  const requiredPrograms = packaged === undefined
+    ? [...sharedDesktopPrograms(report.desktop?.profile ?? 'sway',
+      report.desktop?.freeciv ?? false, report.desktop?.scummvm ?? false), ...SHARED_DESKTOP_LOGIN_PROGRAMS]
+    : sharedDesktopPackagePrograms.map(program => program.requested ?? program.guestPath);
+  for (const program of requiredPrograms) {
     if (!participants.has(program)) throw Error("Trusted desktop preview is missing participant " + program);
   }
   // Build-machine paths belong in the private SDK report, not the public site.

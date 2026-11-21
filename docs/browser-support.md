@@ -5115,7 +5115,10 @@ launch validates the existing partial image, retains the normal login path and
 defaults to Cage/Foot; Sway/Foot is also offered. It creates no second image.
 Ordinary canonical images keep their ordinary executable paths and memory
 backend. `build-browser --trusted-desktop-preview` also requires this prepared
-partial image after its canonical browser preparation. See
+partial image after its canonical browser preparation. The build validates the
+full authored SDK participant inventory; the image-owned demo metadata selects
+the desktop profile. The app does not manufacture a package-specific machine
+description during packaging. See
 [normal partial-shell preview](shared-memory-groups.md#normal-partial-shell-preview)
 for the exact command, compatibility limits and remaining acceptance.
 The normal trusted preview has a 512 MiB shared backing ceiling without an
