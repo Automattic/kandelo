@@ -29,7 +29,7 @@ describe("quickshell — the QtQuick shell binary on the kernel", () => {
       const dump = `stdout=${result.stdout}\nstderr=${result.stderr}`;
       expect(result.exitCode, dump).toBe(0);
       expect(result.stdout, dump).toContain("Quickshell");
-      expect(result.stdout, dump).toContain("0.3.1");
+      expect(result.stdout, dump).toContain("0.3.2");
     },
     300_000,
   );

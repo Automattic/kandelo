@@ -17,7 +17,7 @@ WORK="$KANDELO_PACKAGE_WORK_DIR"
 OWNER="${WASM_POSIX_DEP_QUICKSHELL_DIR:?quickshell dependency dir required}"
 # The resolver passes the package version; a direct run reads the manifest.
 VERSION="${WASM_POSIX_DEP_VERSION:-$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["version"])' "$HERE/package.toml")}"
-EPOCH="$(kandelo_man_pages_date_epoch "$(kandelo_man_pages_release_date "$VERSION" 0.3.1=2026-08-21)")"
+EPOCH="$(kandelo_man_pages_date_epoch "$(kandelo_man_pages_release_date "$VERSION" 0.3.2=2026-10-08)")"
 
 SPEC="$WORK/help-capture.json"
 cat > "$SPEC" <<EOF
@@ -39,6 +39,6 @@ kandelo_man_pages_capture_help "$SPEC" "$CAP"
 PAGES="$WORK/pages"
 rm -rf "$PAGES"
 SOURCE_DATE_EPOCH="$EPOCH" kandelo_man_pages_help2man "$CAP" quickshell "$PAGES/quickshell.1" \
-    --source="Quickshell 0.3.1" \
+    --source="Quickshell $VERSION" \
     --version-string="quickshell (Quickshell) $(awk '{print $2}' "$CAP/quickshell.version")"
 install_package_man_pages quickshell-docs "$PAGES" quickshell.1

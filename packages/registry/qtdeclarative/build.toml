@@ -9,5 +9,6 @@ revision    = 5
 inputs = [
   "packages/registry/qtdeclarative/build-qtdeclarative.sh",
   "packages/registry/qtdeclarative/src/qv4-stack-bounds-on-wasm.patch",
+  "packages/registry/qtdeclarative/src/include/linux/limits.h",
   "scripts/package-build-roots.sh",
 ]

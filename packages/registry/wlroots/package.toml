@@ -17,7 +17,7 @@ name = "wlroots"
 version = "0.20.2"
 kernel_abi = 56
 depends_on = [
-  "libwayland@1.24.0",
+  "libwayland@1.26.0",
   "wayland-protocols@1.47",
   "libdrm@2.4.134",
   "libxkbcommon@1.13.2",

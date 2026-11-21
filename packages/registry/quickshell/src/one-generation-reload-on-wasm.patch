@@ -12,9 +12,10 @@ old generation down completely, then build the new one from a clean
 event-loop turn. The trade: a config file that fails to load leaves no
 running shell instead of falling back to the old one.
 
-diff -ru a/src/core/rootwrapper.cpp b/src/core/rootwrapper.cpp
---- a/src/core/rootwrapper.cpp	2026-09-02 17:26:26
-+++ b/src/core/rootwrapper.cpp	2026-09-02 17:26:26
+diff --git a/src/core/rootwrapper.cpp b/src/core/rootwrapper.cpp
+index 1e75819..c1523bc 100644
+--- a/src/core/rootwrapper.cpp
++++ b/src/core/rootwrapper.cpp
 @@ -10,6 +10,7 @@
  #include <qqmlcomponent.h>
  #include <qqmlengine.h>
@@ -23,7 +24,7 @@ diff -ru a/src/core/rootwrapper.cpp b/src/core/rootwrapper.cpp
  #include <qtmetamacros.h>
  #include <qurl.h>
  
-@@ -206,7 +207,28 @@
+@@ -206,7 +207,28 @@ void RootWrapper::onWatchFilesChanged() {
  	}
  }
  

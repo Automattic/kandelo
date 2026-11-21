@@ -5,14 +5,18 @@
  * wasm32 musl sysroot actually provides — NOT what a probe against the
  * host (macOS/Linux) would report.
  *
- * Only wayland-os.c and wayland-shm.c consume these macros. The guards
- * are a mix of `#ifdef` (presence-only) and `#if` (needs a 0/1 value):
+ * Only wayland-os.c, wayland-shm.c and connection.c consume these
+ * macros. The guards are a mix of `#ifdef`/`#if defined` (presence-only)
+ * and `#if` (needs a 0/1 value):
  *   - #ifdef HAVE_SYS_UCRED_H   (wayland-os.c)  — absent in our sysroot,
  *                                                 so leave UNDEFINED.
  *   - #if HAVE_XUCRED_CR_PID    (wayland-os.c)  — needs an explicit 0.
  *   - #if HAVE_BROKEN_MSG_CMSG_CLOEXEC (os.c)   — needs an explicit 0.
  *   - #ifdef HAVE_ACCEPT4       (wayland-os.c)  — present, so DEFINE.
  *   - #ifdef HAVE_MEMFD_CREATE  (wayland-shm.c) — present, so DEFINE.
+ *   - #if defined(HAVE_GETTID) (connection.c)  — present, so DEFINE;
+ *                                                 WAYLAND_DEBUG=thread_id
+ *                                                 then prints the TID.
  *
  * The remaining HAVE_* (mkostemp/posix_fallocate/prctl/mremap/strndup)
  * are only referenced by scanner.c, which is a HOST tool we do not build
@@ -28,7 +32,7 @@
 #define WAYLAND_CONFIG_H
 
 #define PACKAGE "wayland"
-#define PACKAGE_VERSION "1.24.0"
+#define PACKAGE_VERSION "1.26.0"
 
 /* Headers: sys/prctl.h is present; sys/procctl.h and sys/ucred.h are not
  * (leaving the latter two undefined keeps their guarded #includes out). */
@@ -42,6 +46,7 @@
 #define HAVE_MEMFD_CREATE 1
 #define HAVE_MREMAP 1
 #define HAVE_STRNDUP 1
+#define HAVE_GETTID 1
 
 /* No struct xucred (BSD) on musl; no FreeBSD MSG_CMSG_CLOEXEC bug. */
 #define HAVE_XUCRED_CR_PID 0

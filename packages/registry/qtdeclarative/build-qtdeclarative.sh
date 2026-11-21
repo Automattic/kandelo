@@ -49,6 +49,11 @@
 # headers read __linux__ and QT_LINUXBASE, and a module built with a
 # different answer disagrees with libQt6Core.a about the futex.
 #
+# src/include supplies <linux/limits.h>, part of the same Linux
+# adaptation: Qt 6.12's bundled WTF includes it under OS(LINUX). It
+# forwards to POSIX <limits.h>, and goes away when the Qt recipes stop
+# defining __linux__ (docs/future-improvements.md).
+#
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
 # `cargo xtask build-deps resolve qtdeclarative`, env vars are set by
@@ -165,7 +170,7 @@ export PKG_CONFIG_LIBDIR
 
 CMAKE_PREFIXES="$(IFS=';'; printf '%s' "${DEP_PREFIXES[*]}")"
 
-TARGET_DEFINES="-D__linux__=1 -DQT_LINUXBASE"
+TARGET_DEFINES="-D__linux__=1 -DQT_LINUXBASE -I$SCRIPT_DIR/src/include"
 
 GUEST_PREFIX="/usr/lib/qt6"
 

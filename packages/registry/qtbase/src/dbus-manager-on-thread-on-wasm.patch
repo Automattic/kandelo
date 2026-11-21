@@ -118,10 +118,10 @@ index ef96231..0f29c7b 100644
  
  QT_END_NAMESPACE
 diff --git a/src/dbus/qdbusintegrator.cpp b/src/dbus/qdbusintegrator.cpp
-index f45a7c3..31c1276 100644
+index 8eb76ca..5b1e373 100644
 --- a/src/dbus/qdbusintegrator.cpp
 +++ b/src/dbus/qdbusintegrator.cpp
-@@ -43,6 +43,16 @@
+@@ -44,6 +44,16 @@
  
  QT_BEGIN_NAMESPACE
  
@@ -138,7 +138,7 @@ index f45a7c3..31c1276 100644
  using namespace Qt::StringLiterals;
  
  QT_IMPL_METATYPE_EXTERN(QDBusSlotCache)
-@@ -2249,8 +2259,12 @@ bool QDBusConnectionPrivate::addSignalHook(const QString &key, const SignalHook
+@@ -2263,8 +2273,12 @@ bool QDBusConnectionPrivate::addSignalHook(const QString &key, const SignalHook
  {
      bool result = false;
  
@@ -151,7 +151,7 @@ index f45a7c3..31c1276 100644
  
      return result;
  }
-@@ -2277,7 +2291,7 @@ bool QDBusConnectionPrivate::addSignalHookImpl(const QString &key, const SignalH
+@@ -2291,7 +2305,7 @@ bool QDBusConnectionPrivate::addSignalHookImpl(const QString &key, const SignalH
  
      signalHooks.insert(key, hook);
      connect(hook.obj, &QObject::destroyed, this, &QDBusConnectionPrivate::objectDestroyed,
@@ -160,7 +160,7 @@ index f45a7c3..31c1276 100644
  
      MatchRefCountHash::iterator mit = matchRefCounts.find(hook.matchRule);
  
-@@ -2354,8 +2368,12 @@ bool QDBusConnectionPrivate::removeSignalHook(const QString &key, const SignalHo
+@@ -2368,8 +2382,12 @@ bool QDBusConnectionPrivate::removeSignalHook(const QString &key, const SignalHo
  {
      bool result = false;
  
@@ -173,7 +173,7 @@ index f45a7c3..31c1276 100644
  
      return result;
  }
-@@ -2435,7 +2453,7 @@ QDBusConnectionPrivate::removeSignalHookNoLock(SignalHookHash::Iterator it)
+@@ -2449,7 +2467,7 @@ QDBusConnectionPrivate::removeSignalHookNoLock(SignalHookHash::Iterator it)
  void QDBusConnectionPrivate::registerObject(const ObjectTreeNode *node)
  {
      connect(node->obj, &QObject::destroyed, this, &QDBusConnectionPrivate::objectDestroyed,
