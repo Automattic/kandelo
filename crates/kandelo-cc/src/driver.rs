@@ -366,13 +366,10 @@ pub struct Glue {
     /// order: the syscall channel and compiler-rt builtins, and the C++
     /// runtime entry (`cxxrt_entry.cpp`) when the link includes libc++abi.
     pub leading: Vec<String>,
-    /// Linked lazily after the leading glue, ahead of crt1.o and the
-    /// caller's inputs: the dlopen loader (`dlopen.c`). A program gets it
-    /// when it calls dlopen, dlsym, dlclose or dlerror, with or without
-    /// -ldl, and gets none of it otherwise. It must come before the caller's
-    /// inputs: a caller's own `-lc` (librsvg's pkg-config file adds one)
-    /// would otherwise offer musl's static stubs first, and the linker
-    /// extracts the first lazy definition of a symbol it sees.
+    /// The dlopen loader (`dlopen.c`), linked lazily ahead of the first
+    /// libc archive: a program gets it when it calls dlopen, dlsym,
+    /// dlclose or dlerror, with or without -ldl, and gets none of it
+    /// otherwise. See `loader_position` for where it goes.
     pub loader: Vec<String>,
     /// Linked lazily after the caller's inputs and the C++ libraries, ahead
     /// of libc.a: the minimal C++ runtime fallback (`cxxrt.c`), used only
@@ -395,6 +392,42 @@ pub fn glue_sources(toolchain: &Toolchain, cxx_runtime: bool) -> Glue {
         loader: ["dlopen.c"].iter().map(path).collect(),
         fallback: ["cxxrt.c"].iter().map(path).collect(),
     }
+}
+
+/// Where the dlopen loader goes among the caller's link inputs: just
+/// before the caller's own libc (`-lc`, `-l c`, `-l:libc.a` or a path to a
+/// `libc.a`), or `None` when the caller does not name libc, in which case
+/// the loader follows the caller's inputs. A caller's libc would otherwise
+/// offer musl's static dlopen stubs first, and the linker extracts the
+/// first lazy definition of a symbol it sees: librsvg's pkg-config file
+/// adds -lc, and cargo's link did the same.
+///
+/// [RUNTIME-WORKAROUND: WASM-LD-LAZY-SIGNATURE-MISMATCH] The loader is not
+/// simply placed ahead of every caller input. When a lazy definition
+/// (archive member or --start-lib object) precedes an undefined reference
+/// with a different signature, wasm-ld 23 extracts it without its
+/// signature check and emits a direct call with the wrong arguments, an
+/// invalid module. Autoconf's `char dlopen (void);` probes make exactly
+/// that reference, so a loader ahead of them broke every dlopen probe.
+/// After the inputs, as libc.a is, wasm-ld reports the mismatch and links
+/// its trapping stub.
+pub fn loader_position(forwarded: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while i < forwarded.len() {
+        let arg = forwarded[i].as_str();
+        let names_libc = match arg {
+            "-lc" | "-l:libc.a" => true,
+            "-l" => forwarded
+                .get(i + 1)
+                .is_some_and(|next| next == "c" || next == ":libc.a"),
+            _ => !arg.starts_with('-') && (arg == "libc.a" || arg.ends_with("/libc.a")),
+        };
+        if names_libc {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn is_cxx_glue(source: &str) -> bool {
@@ -663,16 +696,31 @@ fn build_clang_args_internal(
                 None => glue_sources(toolchain, links_cxx_runtime(language, &filtered)),
             };
             args.extend(glue.leading);
-            // The dlopen loader is lazy like libc's own members, and ahead
-            // of everything that could name libc.a (see Glue::loader).
-            if !glue.loader.is_empty() {
-                args.push("-Wl,--start-lib".into());
-                args.extend(glue.loader);
-                args.push("-Wl,--end-lib".into());
-            }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
-            args.extend(parsed.forwarded_args.iter().cloned());
+            let lazy_group = |members: Vec<String>| -> Vec<String> {
+                if members.is_empty() {
+                    return members;
+                }
+                let mut group = vec!["-Wl,--start-lib".to_string()];
+                group.extend(members);
+                group.push("-Wl,--end-lib".into());
+                group
+            };
+            // The dlopen loader is lazy like libc's own members, and goes
+            // ahead of the first libc archive (see loader_position).
+            let mut late_lazy = glue.fallback;
+            match loader_position(&parsed.forwarded_args) {
+                Some(at) => {
+                    args.extend(parsed.forwarded_args[..at].iter().cloned());
+                    args.extend(lazy_group(glue.loader));
+                    args.extend(parsed.forwarded_args[at..].iter().cloned());
+                }
+                None => {
+                    args.extend(parsed.forwarded_args.iter().cloned());
+                    late_lazy.extend(glue.loader);
+                }
+            }
             args.extend(sdk_compile_args);
             // Where clang puts the C++ library: after the caller's inputs,
             // before libc. Side modules (above) take it from the program
@@ -685,11 +733,9 @@ fn build_clang_args_internal(
             // supplies only what they did not: libc++'s operator new, which
             // throws std::bad_alloc, is weak like the fallback's, so a
             // fallback object linked earlier would win and abort instead.
-            if !glue.fallback.is_empty() {
-                args.push("-Wl,--start-lib".into());
-                args.extend(glue.fallback);
-                args.push("-Wl,--end-lib".into());
-            }
+            // The dlopen loader joins this group unless the caller named
+            // libc itself.
+            args.extend(lazy_group(late_lazy));
             args.push(join(&lib, "libc.a"));
             // LLD 22 made --stack-first the default; LLD 21 neither defaults to
             // it nor accepts --no-stack-first. Preserve Kandelo's established

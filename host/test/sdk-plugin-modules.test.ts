@@ -101,6 +101,18 @@ describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin module
     expect(result.exitCode).toBe(0);
   });
 
+  // Autoconf's AC_CHECK_FUNC declares the function with the wrong
+  // signature. The link must still produce a valid module, or every
+  // configure script decides dlopen is missing.
+  it("an Autoconf-style dlopen probe links to a valid module", { timeout: 60_000 }, () => {
+    const source = join(BUILD_DIR, "probe.c");
+    writeFileSync(source, "char dlopen (void);\nint main (void) { return dlopen (); }\n");
+    for (const flags of [[], ["-ldl"], ["-lc"]]) {
+      const program = link(`probe${flags.join("")}`, source, flags);
+      expect(WebAssembly.validate(readFileSync(program)), `${flags}`).toBe(true);
+    }
+  });
+
   it("exports the program's symbols and the libc it links, but not the platform glue", { timeout: 60_000 }, () => {
     const names = exports(host);
     for (const name of ["host_callback", "host_scale", "printf", "dlopen", "dlsym"]) {

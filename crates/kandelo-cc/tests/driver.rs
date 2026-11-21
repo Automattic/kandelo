@@ -104,27 +104,65 @@ fn compile_and_link_adds_compile_and_link_flags_plus_glue() {
 
 #[test]
 fn every_executable_link_offers_the_dlopen_loader_as_a_lazy_member() {
-    // With or without -ldl, the loader is a lazy member ahead of the
-    // caller's inputs, so a program that calls dlopen gets it instead of
-    // musl's static stub, even when the caller names libc itself, and a
-    // program that never calls dlopen gets none of it.
+    // With or without -ldl, the loader is a lazy member after the caller's
+    // inputs and ahead of libc.a, so a program that calls dlopen gets it
+    // instead of musl's static stub and a program that never calls dlopen
+    // gets none of it.
     for user_args in [
         &["foo.c", "-ldl", "-o", "foo.wasm"][..],
         &["foo.c", "-o", "foo.wasm"][..],
-        &["foo.c", "-lc", "-o", "foo.wasm"][..],
-        &["foo.c", "/tmp/sysroot/lib/libc.a", "-o", "foo.wasm"][..],
     ] {
         let args = build(user_args);
         assert!(!has(&args, "-ldl"));
         let loader = index_of(&args, "/tmp/glue/dlopen.c").unwrap();
-        assert_eq!(args[loader - 1], "-Wl,--start-lib", "{user_args:?}");
-        assert_eq!(args[loader + 1], "-Wl,--end-lib", "{user_args:?}");
-        assert!(loader < index_of(&args, "/tmp/sysroot/lib/crt1.o").unwrap());
-        assert!(loader < index_of(&args, "foo.c").unwrap());
+        assert_eq!(args[loader + 1], "-Wl,--end-lib");
+        let group = args[..loader]
+            .iter()
+            .rposition(|a| a == "-Wl,--start-lib")
+            .unwrap();
+        assert!(index_of(&args, "foo.c").unwrap() < group);
         assert!(loader < index_of(&args, "/tmp/sysroot/lib/libc.a").unwrap());
-        if has(&args, "-lc") {
-            assert!(loader < index_of(&args, "-lc").unwrap());
-        }
+    }
+}
+
+#[test]
+fn the_dlopen_loader_precedes_a_libc_the_caller_names() {
+    // A caller's own libc (librsvg's pkg-config file adds -lc) would offer
+    // musl's stubs first, so the loader goes just before it, still after
+    // the inputs ahead of it.
+    for (user_args, libc) in [
+        (&["foo.c", "-lc", "bar.o", "-o", "foo.wasm"][..], "-lc"),
+        (&["foo.c", "-l", "c", "bar.o", "-o", "foo.wasm"][..], "-l"),
+        (
+            &["foo.c", "-l:libc.a", "bar.o", "-o", "foo.wasm"][..],
+            "-l:libc.a",
+        ),
+        (
+            &[
+                "foo.c",
+                "/tmp/sysroot/lib/libc.a",
+                "bar.o",
+                "-o",
+                "foo.wasm",
+            ][..],
+            "/tmp/sysroot/lib/libc.a",
+        ),
+    ] {
+        let args = build(user_args);
+        let loader = index_of(&args, "/tmp/glue/dlopen.c").unwrap();
+        assert_eq!(
+            args[loader - 1..=loader + 2],
+            strings(&[
+                "-Wl,--start-lib",
+                "/tmp/glue/dlopen.c",
+                "-Wl,--end-lib",
+                libc
+            ])[..],
+            "{user_args:?}"
+        );
+        assert!(index_of(&args, "foo.c").unwrap() < loader, "{user_args:?}");
+        assert!(loader < index_of(&args, "bar.o").unwrap(), "{user_args:?}");
+        assert_eq!(args.iter().filter(|a| a.ends_with("dlopen.c")).count(), 1);
     }
 }
 
@@ -250,17 +288,15 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
     let first = index_of(&args, &objects.leading[0]).unwrap();
     assert_eq!(args[first..first + 2], objects.leading[..]);
     assert!(first < index_of(&args, "/tmp/sysroot/lib/crt1.o").unwrap());
-    let loader = index_of(&args, "/tmp/g/dlopen.o").unwrap();
-    assert_eq!(
-        args[loader - 1..=loader + 1],
-        strings(&["-Wl,--start-lib", "/tmp/g/dlopen.o", "-Wl,--end-lib"])[..]
-    );
-    assert!(first < loader);
-    assert!(loader < index_of(&args, "main.o").unwrap());
     let fallback = index_of(&args, "/tmp/g/cxxrt.o").unwrap();
     assert_eq!(
-        args[fallback - 1..=fallback + 1],
-        strings(&["-Wl,--start-lib", "/tmp/g/cxxrt.o", "-Wl,--end-lib"])[..]
+        args[fallback - 1..=fallback + 2],
+        strings(&[
+            "-Wl,--start-lib",
+            "/tmp/g/cxxrt.o",
+            "/tmp/g/dlopen.o",
+            "-Wl,--end-lib"
+        ])[..]
     );
     assert!(index_of(&args, "main.o").unwrap() < fallback);
     assert!(fallback < index_of(&args, "/tmp/sysroot/lib/libc.a").unwrap());
@@ -369,7 +405,9 @@ fn the_minimal_cxx_runtime_is_a_lazy_member_after_the_cxx_library() {
     let args = build_cxx(&["main.cpp", "-o", "app.wasm"]);
     let cxxrt = position(&args, "/tmp/glue/cxxrt.c");
     assert_eq!(args[cxxrt - 1], "-Wl,--start-lib");
-    assert_eq!(args[cxxrt + 1], "-Wl,--end-lib");
+    // The dlopen loader shares the lazy group.
+    assert_eq!(args[cxxrt + 1], "/tmp/glue/dlopen.c");
+    assert_eq!(args[cxxrt + 2], "-Wl,--end-lib");
     assert!(position(&args, "-lc++abi") < cxxrt);
     assert!(cxxrt < position(&args, "/tmp/sysroot/lib/libc.a"));
 }

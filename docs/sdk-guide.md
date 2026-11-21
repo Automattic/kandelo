@@ -318,9 +318,13 @@ How the SDK makes that work:
 
 - **The loader comes with dlopen.** The SDK links its loader
   (`libc/glue/dlopen.c`) into every executable as a lazy member ahead of
-  the caller's inputs, so it is offered before any `libc.a`, including one
-  the caller names itself (librsvg's pkg-config file adds `-lc`). A
-  program that calls `dlopen`, `dlsym`, `dlclose` or `dlerror` gets it
+  the first `libc.a`: after the caller's inputs, or just before a libc the
+  caller names itself (librsvg's pkg-config file adds `-lc`). It is not
+  placed ahead of every input because wasm-ld links an invalid module when
+  a lazy definition precedes a reference with another signature, which
+  Autoconf's `char dlopen (void);` checks make
+  ([runtime workaround entry](../tests/runtime-workarounds/WASM-LD-LAZY-SIGNATURE-MISMATCH/entry.md)).
+  A program that calls `dlopen`, `dlsym`, `dlclose` or `dlerror` gets it
   instead of musl's static stubs ("Dynamic loading not supported"); a
   program that never calls them gets none of it, and `-ldl` changes
   nothing. Configure probes therefore see working functions in libc:
