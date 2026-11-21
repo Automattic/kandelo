@@ -1082,4 +1082,67 @@ declarations (688); it is retained as a failed check invocation, not a product
 failure. These results still do not establish a canonical build, full memory
 gate, sustained lifecycle or matched performance acceptance.
 
-The current package/image change also passes the normal ABI version check against `origin/develop` (job `lazy-abi-693-1121-014616-e4e4`). The image-builder hard-link export is additive; program ABI 56 and host-adapter 23 remain unchanged. Full canonical and browser-memory acceptance remains pending.
+The current package/image change also passes the normal ABI version check against `origin/develop` (job `lazy-abi-693-1121-014616-e4e4`). The image-builder hard-link export is additive; program ABI 56 and host-adapter 24 remain unchanged. Full canonical and browser-memory acceptance remains pending.
+
+
+### Fixed-size memfd mappings and ScummVM Quit (2026-11-21)
+
+The original shared ScummVM game rendered and responded to movement, but
+native Quit returned 139 (699/704/709/713), versus 0 in the ordinary control
+(703). Debugger evidence identified `free(512)` during
+`wl_cursor_theme_destroy(NULL)`. The pinned Wayland library uses memfd for its
+cursor pool. A public Node reduction (715) confirmed that ordinary memfd
+shared mapping succeeds, while the grouped path refused it with errno 95.
+The observed contents at virtual address zero were retained; their writes
+were not attributed to an engine defect.
+
+The kernel now gives memfds the same fixed, whole-object direct backing
+surface as tmpfs. It retains stable kernel identity, admission, population,
+cancellation and pin lifetime; descriptor reads, sizes and seek cursors stay
+coherent after promotion. Atomic admitted metadata permits the object to be
+retained safely by the synchronized backing table. Abandoned unpublished
+preparations also release their mutation fence for both tmpfs and memfd.
+No application wrapper or Wayland source workaround was added. Descriptor
+writes, growth, truncation and general offset mappings remain incomplete.
+
+Validation 730 passes: 4,804 native workspace tests, zero failures, ignored
+or filtered tests; normal kernel build; ABI check against `origin/develop`
+with program 56/host-adapter 24 and the program contract digest unchanged;
+three selected internal/public Node byte/VFS launch cases; and the shared-file
+SDK case on Chromium, Firefox and WebKit. The maintained C fixture now checks
+both tmpfs and memfd aliases, private copies, fork, descriptor reads, shared
+`dup` cursors and post-close use. The selected Node invocation reports thirty
+unselected public-launch cases as skipped by its name filter; this is a
+targeted result, not a complete host-suite result.
+
+The normal partial build (722) passes and produces the same 119,429-byte
+image with SHA-256 `4b3bb368563d1dbd1e5b9b6aee92fc7351030256961ae7c7a7994eda7b832411`.
+Against that normal app, diagnostic 739 passes all three engines: God of
+Thunder menus and rendered world, no-input movement control, physical
+right/left movement, native Quit/no-save status 0, actual Foot input proof
+and exact Cage cleanup. Each observed kernel response matches SHA-256
+`1630584d60491267bc4c4681d8e00035043eaa2dc5e1b292bf66ee199d77b55d`.
+The live candidate is `http://127.0.0.1:6385/`; the prior user previews remain
+unchanged. Run `scummvm-static-play god-of-thunder` for the normal verified
+download/catalog/game path, or `scummvm-static` for the launcher.
+
+Retained failures are not waived: 721 exhausted local disk during native
+linking; 727 lacked the seven immutable ABI-55 controls; 729 found a missing
+namespace in a new mock-host fixture, subsequently corrected. Both frozen
+ABI cohorts were reproduced/verified through their pinned SDKs. In 723,
+Chromium passed gameplay and Quit; Firefox's scene mask matched during the
+intro fade before the next key was accepted, and WebKit's single directory
+snapshot preceded publication of the shell's exit-status file. Diagnostic
+739 requires full-color story readiness, with a fading-frame negative control,
+and refreshes actual file observations until the exact status is available.
+It preserves the original game/input/status/cleanup assertions. Raw inputs,
+logs and captures are retained under `.context/shared-desktop-memfd-718/`.
+
+The earlier full browser-memory attempt (697) completed the canonical build
+and all 1,574 host ownership regressions, then failed historical ABI-fixture
+provisioning before Node/Bun teardown tests loaded. Its browser legs did not
+run. Provisioning now succeeds, but the full gate must be rerun on the current
+candidate. Canonical 697 is evidence for the preceding packaging revision,
+not a current full-memory pass. Earlier sustained failures, grouped/browser
+conformance gaps and fair memory/CPU/input/presentation measurements remain
+open. No new performance or net-memory claim is made.

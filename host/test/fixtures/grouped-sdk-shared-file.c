@@ -14,9 +14,9 @@ static int spin(_Atomic unsigned *word, unsigned value) {
   for (unsigned n=0;n<100000000u;n++) if(atomic_load_explicit(word,memory_order_acquire)==value)return 0;
   return -1;
 }
-int main(void) {
-  int fd=open("/tmp/grouped-shared-file",O_CREAT|O_EXCL|O_RDWR,0600); CHECK(fd>=0);
-  CHECK(unlink("/tmp/grouped-shared-file")==0);
+static int one(int memfd) {
+  int fd=memfd?memfd_create("grouped-shared-file",MFD_CLOEXEC|MFD_ALLOW_SEALING):open("/tmp/grouped-shared-file",O_CREAT|O_EXCL|O_RDWR,0600); CHECK(fd>=0);
+  if(!memfd)CHECK(unlink("/tmp/grouped-shared-file")==0);
   CHECK(ftruncate(fd,2*P-17)==0);
   CHECK(pwrite(fd,"initial",7,P)==7);
   _Atomic unsigned *a=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0); CHECK(a!=MAP_FAILED);
@@ -24,6 +24,13 @@ int main(void) {
   _Atomic unsigned *b=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0); CHECK(b!=MAP_FAILED&&b!=a);
   memcpy((char*)a+P,"current",7); CHECK(!memcmp((char*)b+P,"current",7));
   char bytes[8]={0}; CHECK(pread(fd,bytes,7,P)==7&&!memcmp(bytes,"current",7));
+  CHECK(lseek(fd,P,SEEK_SET)==P); CHECK(read(fd,bytes,2)==2&&!memcmp(bytes,"cu",2));
+  int duplicate=dup(fd);CHECK(duplicate>=0);
+  CHECK(pread(duplicate,bytes,7,P)==7&&!memcmp(bytes,"current",7));
+  CHECK(lseek(fd,0,SEEK_CUR)==P+2);
+  CHECK(read(duplicate,bytes,5)==5&&!memcmp(bytes,"rrent",5));
+  CHECK(lseek(fd,0,SEEK_CUR)==P+7&&lseek(fd,0,SEEK_END)==2*P-17);
+  CHECK(close(duplicate)==0);
   char *private=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_PRIVATE,fd,0); CHECK(private!=MAP_FAILED);
   CHECK(!memcmp(private+P,"current",7));private[P]='X';CHECK(((char*)a)[P]=='c');
   pid_t child=fork();CHECK(child>=0);
@@ -42,5 +49,9 @@ int main(void) {
   struct stat st;CHECK(fstat(fd,&st)==0&&st.st_size==2*P-17);
   CHECK(close(fd)==0);CHECK(((char*)a)[P]=='c');
   CHECK(munmap(a,2*P)==0&&munmap(b,2*P)==0&&munmap(private,2*P)==0);
+  return 0;
+}
+int main(void) {
+  CHECK(one(0)==0);CHECK(one(1)==0);
   puts("grouped-sdk-shared-file PASS");return 0;
 }

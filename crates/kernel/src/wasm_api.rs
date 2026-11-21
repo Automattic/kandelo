@@ -4326,7 +4326,7 @@ pub extern "C" fn kernel_group_memory_change_cancel(pid: u32, tid: u32, token_lo
 pub extern "C" fn kernel_group_memory_object_alive(group: u32, object_lo: u32, object_hi: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let object = (object_lo as u64) | ((object_hi as u64) << 32);
-    i32::from(crate::tmpfs::group_storage_alive(group, object)
+    i32::from(crate::kernel_file_mapping::group_storage_alive(group, object)
         || crate::dri::with_registry(|r| r.group_storage_alive(group, object)))
 }
 

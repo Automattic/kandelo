@@ -7283,12 +7283,9 @@ pub fn sys_read(
                 return crate::descriptor_backing::with_memfds(|table| {
                     let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
                     let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
-                    if offset >= backing.data.len() {
-                        return Ok(0);
-                    }
-                    let n = buf.len().min(backing.data.len() - offset);
+                    let n = buf.len().min(backing.len().saturating_sub(offset));
                     let new_offset = checked_offset_advance(backing.offset, n)?;
-                    buf[..n].copy_from_slice(&backing.data[offset..offset + n]);
+                    let n = backing.read_at(offset, &mut buf[..n], host)?;
                     backing.offset = new_offset;
                     Ok(n)
                 });
@@ -7754,7 +7751,7 @@ pub fn sys_write(
                 return crate::descriptor_backing::with_memfds(|table| {
                     let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
                     if writable_len == 0 { return Ok(0); }
-                    let offset = if status_flags & O_APPEND != 0 { backing.data.len() }
+                    let offset = if status_flags & O_APPEND != 0 { backing.len() }
                         else { usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)? };
                     let end = offset.checked_add(writable_len).ok_or(Errno::EFBIG)?;
                     let next_offset = i64::try_from(end).map_err(|_| Errno::EFBIG)?;
@@ -8071,7 +8068,7 @@ pub fn sys_lseek(
         let size = crate::descriptor_backing::with_memfds(|table| {
             table
                 .get(memfd_idx)
-                .map(|backing| backing.data.len() as i64)
+                .map(|backing| backing.len() as i64)
                 .ok_or(Errno::EBADF)
         })?;
         let current =
@@ -8269,12 +8266,7 @@ pub fn sys_pread(
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
-            if start >= backing.data.len() {
-                return Ok(0);
-            }
-            let n = buf.len().min(backing.data.len() - start);
-            buf[..n].copy_from_slice(&backing.data[start..start + n]);
-            Ok(n)
+            backing.read_at(start, buf, host)
         });
     }
 
@@ -8420,7 +8412,7 @@ fn write_operation_plan(
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
             if status_flags & O_APPEND != 0 {
-                u64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)
+                u64::try_from(backing.len()).map_err(|_| Errno::EOVERFLOW)
             } else {
                 u64::try_from(backing.offset).map_err(|_| Errno::EINVAL)
             }
@@ -9306,7 +9298,7 @@ pub(crate) fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -
         let size = crate::descriptor_backing::with_memfds(|table| {
             table
                 .get(memfd_idx)
-                .map(|backing| backing.data.len() as u64)
+                .map(|backing| backing.len() as u64)
                 .ok_or(Errno::EBADF)
         })?;
         Ok(WasmStat {
@@ -13182,7 +13174,8 @@ fn mmap_region_for_ofd(
         // /dev/fb0 and DRI use their ordinary mapping implementation below.
         let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
         if flags & wasm_posix_shared::mmap::MAP_SHARED != 0
-            && (crate::tmpfs::group_storage_committed(ofd.host_handle)
+            && (crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+                    .is_some_and(crate::kernel_file_mapping::group_storage_committed)
                 || crate::rootfs::has_group_read_lease(ofd.host_handle)) {
             // Compatible grouped aliases use their exact staged owner above
             // this legacy dispatcher. A mirrored mapping cannot join them.
@@ -22549,7 +22542,7 @@ pub fn sys_ftruncate(
         let memfd_idx = (-(host_handle + 1)) as usize;
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
-            u64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)
+            u64::try_from(backing.len()).map_err(|_| Errno::EOVERFLOW)
         })?
     } else {
         host.host_fstat(host_handle)?.st_size

@@ -296,6 +296,12 @@ struct Inode {
 }
 
 impl Inode {
+    fn discard_abandoned_group_storage(&mut self) {
+        if self.group_storage.as_ref().is_some_and(|g| !g.committed && g.object.only_inode_hold()) {
+            self.group_storage = None;
+        }
+    }
+
     /// Create an inode, stamping all three timestamps with the current
     /// published wall-clock time (see `set_now`).
     fn new(kind: InodeKind, mode: u32, uid: u32, gid: u32, nlink: u32, st_dev: u64, ino: u64) -> Self {
@@ -831,7 +837,8 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
                     return Err(Errno::EEXIST);
                 }
-                let inode = state.get(existing).ok_or(Errno::ENOENT)?;
+                let inode = state.get_mut(existing).ok_or(Errno::ENOENT)?;
+                inode.discard_abandoned_group_storage();
                 // A socket node cannot be opened as a file; FIFOs are handled by
                 // the fifo path before tmpfs::open is ever reached.
                 if matches!(inode.kind, InodeKind::Special(_)) {
@@ -934,9 +941,7 @@ pub(crate) fn prepare_group_storage(handle: i64, group: u32, id: u64, mapped_len
         let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
         // Destroy/exec can drop an unpublished plan. No file bytes were moved;
         // its last mapping capability disappearing revokes that preparation.
-        if inode.group_storage.as_ref().is_some_and(|g| !g.committed && g.object.only_inode_hold()) {
-            inode.group_storage = None;
-        }
+        inode.discard_abandoned_group_storage();
         if let Some(storage) = &inode.group_storage {
             if storage.object.group() != group { return Err(Errno::EACCES); }
             if !storage.committed { return Err(Errno::EBUSY); }
@@ -1246,7 +1251,8 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     }
     TMPFS.with(|state| {
         let (st_dev, growth) = {
-            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.discard_abandoned_group_storage();
             if inode.group_storage.is_some() { return Err(Errno::EOPNOTSUPP); }
             let end = (offset as usize).checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             let current = match &inode.kind {
@@ -1378,7 +1384,8 @@ fn truncate_handle_inner(handle: i64, length: i64) -> Result<(), Errno> {
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     TMPFS.with(|state| {
         let (st_dev, old_len) = {
-            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.discard_abandoned_group_storage();
             inode.check_mutable()?;
             if let Some(group) = &inode.group_storage {
                 return if group.committed && new_len == group.length { Ok(()) } else { Err(Errno::EOPNOTSUPP) };

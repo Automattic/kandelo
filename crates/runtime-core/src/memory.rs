@@ -42,7 +42,7 @@ pub struct MappingFile {
 /// Its identity and bounds are kernel authority; host physical offsets never
 /// enter this record. Clones share the admitted metadata and object lifetime.
 #[derive(Debug, Clone)]
-pub(crate) struct GroupSharedMapping(crate::io_owner::IoRc<GroupSharedObject>);
+pub(crate) struct GroupSharedMapping(crate::io_owner::IoArc<GroupSharedObject>);
 struct GroupSharedObject {
     group: u32,
     id: u64,
@@ -64,7 +64,7 @@ impl GroupSharedMapping {
         let bytes = core::mem::size_of::<MappingFile>().checked_add(64)
             .and_then(|n| n.checked_mul(2)).ok_or(Errno::ENOMEM)?;
         let metadata = crate::io_buffer::IO_MEMORY.reserve(bytes)?;
-        Ok(Self(crate::io_owner::IoRc::try_new(GroupSharedObject { group, id, length, _metadata: metadata })?))
+        Ok(Self(crate::io_owner::IoArc::try_new(GroupSharedObject { group, id, length, _metadata: metadata })?))
     }
     pub(crate) fn group(&self) -> u32 { self.0.group }
     pub(crate) fn id(&self) -> u64 { self.0.id }

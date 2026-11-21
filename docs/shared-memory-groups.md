@@ -332,13 +332,17 @@ full release gates remain required before promotion.
 
 ## Accounting and acceptance
 
-The desktop-first integration currently implements whole fixed-size tmpfs
-objects with shared mappings and coherent descriptor reads. The inode and
-mapping owners retain one physical backing through close, unlink and fork.
-Promotion refuses pre-existing legacy mapping holds; ordinary or cross-group
-shared attachment is refused. Descriptor writes and size changes after
-promotion remain unsupported and return an error. This bounded surface does
-not complete the target shared-object contract above or desktop acceptance.
+The desktop-first integration currently implements whole, fixed-size tmpfs
+and memfd objects with shared mappings and coherent descriptor reads. Kernel
+backing and mapping owners retain one physical object through descriptor
+close, unlink where applicable, and fork. Descriptor reads, positioned reads,
+file sizes and shared seek cursors continue to name that object after its
+bytes leave kernel staging storage. Promotion refuses pre-existing legacy
+mapping holds; ordinary or cross-group shared attachment is refused. An
+unpublished preparation abandoned during cleanup releases its mutation fence.
+Descriptor writes and size changes after promotion remain unsupported and
+return an error. This bounded surface does not complete the target
+shared-object contract above or desktop acceptance.
 
 The desktop integration also admits read-only `MAP_SHARED` mappings of
 ephemeral rootfs files under a kernel-held immutable read lease. Their VMA
