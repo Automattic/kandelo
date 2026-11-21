@@ -3,37 +3,42 @@ Make QBasicMutex::FutexAlwaysAvailable honour QT_LINUXBASE.
 qfutex_p.h:41 selects the raw-syscall Linux futex on
 `defined(Q_OS_LINUX) && !defined(QT_LINUXBASE)`, so QT_LINUXBASE is Qt's
 own lever for a Linux userland without the futex syscall. Two places
-forgot it and test Q_OS_LINUX alone:
+forgot it and test Q_OS_LINUX alone (lines as of Qt 6.12.0):
 
   qmutex.h:27    FutexAlwaysAvailable is hardcoded true
-  qmutex.cpp:846 unlockInternal() is declared Q_UNREACHABLE()
+  qmutex.cpp:850 unlockInternal() is declared Q_UNREACHABLE()
 
 Defining QT_LINUXBASE on Linux is therefore self-contradictory upstream:
 qfutex_p.h hands out QtDummyFutex while qmutex.h still claims futexes are
-always present, and qmutex.cpp:858 static-asserts the two against each
-other.
+always present, and qmutex.cpp:862 static-asserts the two against each
+other. Qt 6.12 added Q_OS_APPLE to the qmutex.h list; the guard wraps
+the whole list, as it did before.
 
 Kandelo has no futex syscall, so `false` is the truthful value here.
 
---- a/src/corelib/thread/qmutex.h
-+++ b/src/corelib/thread/qmutex.h
-@@ -25,7 +25,7 @@
-     Q_DISABLE_COPY_MOVE(QBasicMutex)
- protected:
-     static constexpr bool FutexAlwaysAvailable =
--#if defined(Q_OS_FREEBSD) || defined(Q_OS_LINUX) || defined(Q_OS_WIN) // these platforms use futex
-+#if (defined(Q_OS_FREEBSD) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)) && !defined(QT_LINUXBASE) // these platforms use futex
-             true
- #else
-             false
+diff --git a/src/corelib/thread/qmutex.cpp b/src/corelib/thread/qmutex.cpp
+index 5f92022..e295959 100644
 --- a/src/corelib/thread/qmutex.cpp
 +++ b/src/corelib/thread/qmutex.cpp
-@@ -843,7 +843,7 @@
+@@ -847,7 +847,7 @@ void QBasicMutex::unlockInternal(void *copy) noexcept
      Q_ASSERT(copy); //we must be locked
      Q_ASSERT(copy != dummyLocked()); // testAndSetRelease(dummyLocked(), 0) failed
-
+ 
 -#  if defined(Q_OS_FREEBSD) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
 +#  if (defined(Q_OS_FREEBSD) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)) && !defined(QT_LINUXBASE)
      // these platforms always have futex and have never called this function
      // from inline code
      Q_UNREACHABLE();
+diff --git a/src/corelib/thread/qmutex.h b/src/corelib/thread/qmutex.h
+index f76cc48..2bb00b2 100644
+--- a/src/corelib/thread/qmutex.h
++++ b/src/corelib/thread/qmutex.h
+@@ -25,7 +25,7 @@ class QT6_ONLY(Q_CORE_EXPORT) QBasicMutex
+     Q_DISABLE_COPY_MOVE(QBasicMutex)
+ protected:
+     static constexpr bool FutexAlwaysAvailable =
+-#if defined(Q_OS_FREEBSD) || defined(Q_OS_LINUX) || defined(Q_OS_WIN) || defined(Q_OS_APPLE) // these platforms use futex
++#if (defined(Q_OS_FREEBSD) || defined(Q_OS_LINUX) || defined(Q_OS_WIN) || defined(Q_OS_APPLE)) && !defined(QT_LINUXBASE) // these platforms use futex
+             true
+ #else
+             false

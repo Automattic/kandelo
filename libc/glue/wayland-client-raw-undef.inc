@@ -25,8 +25,10 @@
 #undef wl_display_dispatch_timeout
 #undef wl_display_dispatch_queue
 #undef wl_display_dispatch_queue_pending
+#undef wl_display_dispatch_queue_pending_single
 #undef wl_display_dispatch
 #undef wl_display_dispatch_pending
+#undef wl_display_dispatch_pending_single
 #undef wl_display_get_error
 #undef wl_display_get_protocol_error
 #undef wl_display_flush
@@ -104,8 +106,11 @@ WL_EXPORT int wl_display_dispatch_queue(struct wl_display *display,
 			  struct wl_event_queue *queue);
 WL_EXPORT int wl_display_dispatch_queue_pending(struct wl_display *display,
 				  struct wl_event_queue *queue);
+WL_EXPORT int wl_display_dispatch_queue_pending_single(struct wl_display *display,
+					 struct wl_event_queue *queue);
 WL_EXPORT int wl_display_dispatch(struct wl_display *display);
 WL_EXPORT int wl_display_dispatch_pending(struct wl_display *display);
+WL_EXPORT int wl_display_dispatch_pending_single(struct wl_display *display);
 WL_EXPORT int wl_display_get_error(struct wl_display *display);
 WL_EXPORT uint32_t wl_display_get_protocol_error(struct wl_display *display,
 			      const struct wl_interface **interface,

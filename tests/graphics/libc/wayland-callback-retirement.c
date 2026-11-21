@@ -119,6 +119,59 @@ static void callback_user(struct wl_proxy *target,struct wl_proxy *argument,int 
 static void callback_listener(void *data,struct wl_proxy *target,struct wl_proxy *argument,int fd){
     assert(data==&callback_count);callback_user(target,argument,fd);
 }
+/* wl_display_dispatch_pending_single and its queue variant (wayland
+ * 1.25+) enter dispatch_event through their own raw guards. Each call
+ * must run exactly one queued listener, outside the display mutex, and
+ * leave the rest queued. */
+static const struct wl_message single_events[]={{"ping","",NULL}};
+static const struct wl_interface single_interface={"single_callback",1,0,NULL,1,single_events};
+static int single_count;
+static void single_listener(void *data,struct wl_proxy *target){
+    assert(data==&single_count&&target);single_count++;
+    assert(!pthread_mutex_trylock(&callback_display->mutex));pthread_mutex_unlock(&callback_display->mutex);
+}
+static void single_send(struct wl_proxy *target,int count){
+    for(int i=0;i<count;i++){
+        uint32_t wire[2]={target->object.id,8u<<16};
+        assert(write(callback_pair[1],wire,sizeof wire)==sizeof wire);
+    }
+}
+/* Read through an empty queue: prepare_read refuses a non-empty one. */
+static void single_read_until(struct wl_event_queue *reader,struct wl_event_queue *defaults,struct wl_event_queue *queue){
+    while(wl_list_length(&defaults->event_list)<3||wl_list_length(&queue->event_list)<2){
+        assert(!wl_display_prepare_read_queue(callback_display,reader));assert(!wl_display_read_events(callback_display));
+    }
+}
+static int single_dispatch_case(void){
+    assert(!socketpair(AF_UNIX,SOCK_STREAM,0,callback_pair));
+    callback_display=wl_display_connect_to_fd(callback_pair[0]);assert(callback_display);
+    static void (*listener[])(void)={(void(*)(void))single_listener};
+    struct wl_proxy *on_default=wl_proxy_create((void*)callback_display,&single_interface);assert(on_default);
+    assert(!wl_proxy_add_listener(on_default,listener,&single_count));
+    struct wl_event_queue *queue=wl_display_create_queue_with_name(callback_display,"single");assert(queue);
+    struct wl_proxy *on_queue=wl_proxy_create((void*)callback_display,&single_interface);assert(on_queue);
+    wl_proxy_set_queue(on_queue,queue);assert(!wl_proxy_add_listener(on_queue,listener,&single_count));
+    struct wl_event_queue *defaults=&callback_display->default_queue;
+    single_send(on_default,3);single_send(on_queue,2);
+    struct wl_event_queue *reader=wl_display_create_queue(callback_display);assert(reader);
+    single_read_until(reader,defaults,queue);
+    assert(wl_display_dispatch_pending_single(callback_display)==1&&single_count==1);
+    assert(wl_list_length(&defaults->event_list)==2&&wl_list_length(&queue->event_list)==2);
+    assert(wl_display_dispatch_queue_pending_single(callback_display,queue)==1&&single_count==2);
+    assert(wl_list_length(&defaults->event_list)==2&&wl_list_length(&queue->event_list)==1);
+    assert(wl_display_dispatch_pending_single(callback_display)==1&&single_count==3);
+    assert(wl_display_dispatch_pending_single(callback_display)==1&&single_count==4);
+    assert(wl_display_dispatch_pending_single(callback_display)==0&&single_count==4);
+    assert(wl_display_dispatch_queue_pending_single(callback_display,queue)==1&&single_count==5);
+    assert(wl_display_dispatch_queue_pending_single(callback_display,queue)==0&&single_count==5);
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+    assert(!wpk_wl_callbacks&&!wpk_wl_raw_retirements&&!wpk_wl_find(callback_display)->users);
+#endif
+    wl_proxy_destroy(on_queue);wl_proxy_destroy(on_default);wl_event_queue_destroy(queue);wl_event_queue_destroy(reader);
+    wl_display_disconnect(callback_display);assert(fcntl(callback_pair[0],F_GETFD)<0&&errno==EBADF);
+    close(callback_pair[1]);
+    puts("PASS dispatch_pending_single and its queue variant each run exactly one listener");return 0;
+}
 static int callback_dispatch(const void *implementation,void *target,uint32_t opcode,const struct wl_message *message,union wl_argument *arguments){
     assert(implementation==&callback_count&&opcode==0&&message==&callback_events[0]);
     union wl_argument *prior=callback_live_arguments;callback_live_arguments=arguments;
@@ -142,7 +195,9 @@ static void callback_send(struct wl_proxy *target){
     assert(sendmsg(callback_pair[1],&message,0)==sizeof wire);
 }
 int main(int argc,char **argv){
-    assert(argc==2);alarm(20);callback_dispatcher=strstr(argv[1],"dispatcher")!=NULL;
+    assert(argc==2);alarm(20);
+    if(!strcmp(argv[1],"dispatch-single"))return single_dispatch_case();
+    callback_dispatcher=strstr(argv[1],"dispatcher")!=NULL;
     callback_pre_destroy=strstr(argv[1],"pre-destroy")!=NULL;callback_nested=strstr(argv[1],"nested")!=NULL;callback_mutate=strstr(argv[1],"mutate")!=NULL;callback_second_cancel=strstr(argv[1],"second-cancel")!=NULL;callback_pending_restore=strstr(argv[1],"pending-restore")!=NULL;callback_disabled_mask=strstr(argv[1],"disabled-mask")!=NULL;
     callback_first_discard=callback_second_cancel||callback_pending_restore||callback_disabled_mask;
     callback_explicit_capture=strstr(argv[1],"explicit-capture")!=NULL;callback_disconnect_adopt=strstr(argv[1],"disconnect-adopt")!=NULL;

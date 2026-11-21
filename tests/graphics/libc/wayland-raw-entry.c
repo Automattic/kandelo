@@ -34,8 +34,10 @@ static void check_all_poison_entries(void *poison){
     errno=0;assert(wl_display_dispatch_timeout(poison,NULL)==-1);assert(errno==ECHILD);
     errno=0;assert(wl_display_dispatch_queue(poison,NULL)==-1);assert(errno==ECHILD);
     errno=0;assert(wl_display_dispatch_queue_pending(poison,NULL)==-1);assert(errno==ECHILD);
+    errno=0;assert(wl_display_dispatch_queue_pending_single(poison,NULL)==-1);assert(errno==ECHILD);
     errno=0;assert(wl_display_dispatch(poison)==-1);assert(errno==ECHILD);
     errno=0;assert(wl_display_dispatch_pending(poison)==-1);assert(errno==ECHILD);
+    errno=0;assert(wl_display_dispatch_pending_single(poison)==-1);assert(errno==ECHILD);
     errno=0;assert(wl_display_get_error(poison)==ECHILD);assert(errno==ECHILD);
     errno=0;assert(wl_display_get_protocol_error(poison,NULL,NULL)==0);assert(errno==ECHILD);
     errno=0;assert(wl_display_flush(poison)==-1);assert(errno==ECHILD);
@@ -69,6 +71,7 @@ int main(void){
         struct wl_proxy *proxy=wl_proxy_create((void*)display,&wl_surface_interface);assert(proxy);
         assert(wl_proxy_get_version(proxy)==0&&wl_proxy_get_id(proxy)>0&&wl_proxy_get_display(proxy)==display);
         errno=0;assert(wl_display_dispatch_queue_pending(display,poison)==-1&&errno==ECHILD);
+        errno=0;assert(wl_display_dispatch_queue_pending_single(display,poison)==-1&&errno==ECHILD);
         struct wl_event_queue *before=wl_proxy_get_queue(proxy);errno=0;wl_proxy_set_queue(proxy,poison);
         assert(errno==ECHILD&&wl_proxy_get_queue(proxy)==before);
         /* Fresh primary is proven before reading its native signature, then
@@ -87,5 +90,5 @@ int main(void){
     char c;assert(write(pair[1],"a",1)==1&&read(pair[0],&c,1)==1&&c=='a');
     assert(write(pair[0],"b",1)==1&&read(pair[1],&c,1)==1&&c=='b');
     assert(!wpk_wl_native_ranges);wl_display_disconnect(parent);close(pair[1]);
-    puts("PASS actual 47 raw guards before poison dereference, secondary queue/object, fresh child and parent transport");return 0;
+    puts("PASS actual 49 raw guards before poison dereference, secondary queue/object, fresh child and parent transport");return 0;
 }

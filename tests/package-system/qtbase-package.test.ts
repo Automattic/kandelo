@@ -13,9 +13,9 @@ describe("qtbase package contract", () => {
     const manifest = source("packages/registry/qtbase/package.toml");
     const build = source("packages/registry/qtbase/build-qtbase.sh");
 
-    expect(manifest).toContain('version = "6.10.2"');
+    expect(manifest).toContain('version = "6.12.0"');
     expect(manifest).toContain(
-      'sha256 = "aeb78d29291a2b5fd53cb55950f8f5065b4978c25fb1d77f627d695ab9adf21e"',
+      'sha256 = "a951bd163c7b80fc6b8c88d7668fb56abf91c152373e13c10666763238131307"',
     );
     // The recipe stages its source through the shared verifying helper,
     // and a standalone run checks the same digest the manifest pins.
@@ -29,7 +29,7 @@ describe("qtbase package contract", () => {
   it("declares the three target adaptations the wasm32 build needs", () => {
     const build = source("packages/registry/qtbase/build-qtbase.sh");
 
-    // qsystemdetection.h:134 errors out without a known OS macro; this
+    // qsystemdetection.h:138 errors out without a known OS macro; this
     // toolchain defines __unix__ but not __linux__.
     expect(build).toContain("-D__linux__=1");
     // Qt's own lever for a Linux userland with no futex syscall.
@@ -53,6 +53,22 @@ describe("qtbase package contract", () => {
     expect(
       patch.match(/^\+.*&& !defined\(QT_LINUXBASE\)/gm)?.length,
     ).toBe(2);
+  });
+
+  it("restores the thread-name QT_LINUXBASE guard Qt 6.12 dropped", () => {
+    const build = source("packages/registry/qtbase/build-qtbase.sh");
+    const patch = source(
+      "packages/registry/qtbase/src/qthread-name-honour-qt-linuxbase.patch",
+    );
+
+    expect(build).toContain(
+      'patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qthread-name-honour-qt-linuxbase.patch"',
+    );
+    expect(patch).toContain("a/src/corelib/thread/qthread_unix.cpp");
+    // The call site takes the guard <sys/prctl.h> is already included under.
+    expect(patch).toMatch(
+      /^\+#  if defined\(Q_OS_LINUX\) && !defined\(QT_LINUXBASE\)$/m,
+    );
   });
 
   it("keeps the resolver staging path out of the shipped library", () => {
@@ -98,7 +114,7 @@ describe("qtbase package contract", () => {
     // The resolver understands only `>=`, so the exact match CMake needs
     // is enforced by the recipe itself.
     expect(manifest).toContain('name = "qmake"');
-    expect(manifest).toContain('version_constraint = ">=6.10.2"');
+    expect(manifest).toContain('version_constraint = ">=6.12.0"');
     expect(build).toContain(
       'if [ "$HOST_QT_VERSION" != "$QTBASE_VERSION" ]; then',
     );
@@ -114,6 +130,7 @@ describe("qtbase package contract", () => {
     for (const input of [
       "packages/registry/qtbase/build-qtbase.sh",
       "packages/registry/qtbase/src/qmutex-honour-qt-linuxbase.patch",
+      "packages/registry/qtbase/src/qthread-name-honour-qt-linuxbase.patch",
       "packages/registry/qtbase/src/include/linux/fs.h",
       "scripts/package-build-roots.sh",
     ]) {
@@ -138,14 +155,14 @@ describe("qtbase package contract", () => {
     // registry; PCRE2 stays bundled because QRegularExpression needs the
     // 16-bit build and the registry package ships only libpcre2-8.a.
     for (const dep of [
-      "libcxx@21.1.7",
+      "libcxx@23.1.3",
       "zlib@1.3.1",
       "freetype@2.13.3",
       "fontconfig@2.15.0",
       "harfbuzz@10.1.0",
       "libpng@1.6.43",
       "libxkbcommon@1.13.2",
-      "libwayland@1.24.0",
+      "libwayland@1.26.0",
     ]) {
       expect(manifest).toContain(`"${dep}"`);
     }
@@ -166,7 +183,7 @@ describe("qtbase package contract", () => {
     // only truthful default.
     expect(build).toContain("-DQT_QPA_DEFAULT_PLATFORM=wayland");
     // OpenGL is refused through Qt's own input, not FEATURE_opengl:
-    // gui/configure.cmake:1753 raises an error unless INPUT_opengl reads
+    // gui/configure.cmake:1777 raises an error unless INPUT_opengl reads
     // exactly 'no'.
     expect(build).toContain("-DINPUT_opengl=no");
   });

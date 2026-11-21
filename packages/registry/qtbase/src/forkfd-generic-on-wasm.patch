@@ -1,6 +1,8 @@
---- a/src/3rdparty/forkfd/forkfd.c	2026-08-31 11:28:05
-+++ b/src/3rdparty/forkfd/forkfd.c	2026-08-31 11:28:13
-@@ -928,7 +928,7 @@
+diff --git a/src/3rdparty/forkfd/forkfd.c b/src/3rdparty/forkfd/forkfd.c
+index 465258e..d7e9dba 100644
+--- a/src/3rdparty/forkfd/forkfd.c
++++ b/src/3rdparty/forkfd/forkfd.c
+@@ -928,7 +928,7 @@ int forkfd_close(int ffd)
  
  #if defined(__FreeBSD__) && __FreeBSD__ >= 9
  #  include "forkfd_freebsd.c"

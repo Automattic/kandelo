@@ -1,8 +1,8 @@
 kind = "program"
 name = "quickshell-docs"
-version = "0.3.1"
+version = "0.3.2"
 kernel_abi = 56
-depends_on = ["quickshell@0.3.1", "kernel@0.1.0", "rootfs@0.1.0"]
+depends_on = ["quickshell@0.3.2", "kernel@0.1.0", "rootfs@0.1.0"]
 
 # Manual pages for quickshell, which Quickshell ships without a manual page, generated from what each prints for --help and
 # --version while running inside Kandelo. The recipe is this repository's,
@@ -14,7 +14,7 @@ provider = "repository"
 
 [license]
 spdx = "LGPL-3.0-only"
-url = "https://github.com/quickshell-mirror/quickshell/blob/v0.3.1/LICENSE"
+url = "https://github.com/quickshell-mirror/quickshell/blob/v0.3.2/LICENSE"
 
 [build]
 script_path = "packages/registry/quickshell-docs/build-quickshell-docs.sh"

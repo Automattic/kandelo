@@ -5,43 +5,51 @@ the whole 82 MB quickshell module again for each worker (hundreds of MB of
 machine code per thread — see
 docs/browser-support.md#quickshell-qml-limits). The logger thread exists
 upstream to keep log I/O off the UI thread; here it buys no parallelism
-(one-CPU kernel) and costs a full compiled copy of the module. The
-logMessage -> ThreadLogging::onMessage connection is already direct, so
-only the proxy's home thread and the two blocking init calls change.
+(one-CPU kernel) and costs a full compiled copy of the module.
 
-diff -ru a/src/core/logging.cpp b/src/core/logging.cpp
---- a/src/core/logging.cpp	2026-09-02 14:11:30
-+++ b/src/core/logging.cpp	2026-09-02 14:11:30
-@@ -335,17 +335,9 @@
+Since 0.3.2, LogManager::init() creates ThreadLogging on the main thread
+and LogManager::initThreadLogging() later moves it to a new QThread. That
+move is dropped here, so the logger stays where it was created, and
+initFs() calls ThreadLogging::initFs() directly: a
+BlockingQueuedConnection to an object on the calling thread deadlocks.
+After initFs(), log-file writes queue on the main loop, so disk logs
+from the initial QML load (before exec()) are delayed and can be lost
+if the program crashes during that load; console output is unaffected.
+The 0.3.1 form of this patch behaved the same way.
+
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index 1dc4a56..2a5c266 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -342,29 +342,14 @@ void LogManager::init(
+ }
  
- 	qInstallMessageHandler(&LogManager::messageHandler);
- 
--	qCDebug(logLogging) << "Creating offthread logger...";
--	auto* thread = new QThread();
--	instance->threadProxy.moveToThread(thread);
--	thread->start();
-+	qCDebug(logLogging) << "Creating on-thread logger...";
-+	instance->threadProxy.initInThread();
- 
--	QMetaObject::invokeMethod(
--	    &instance->threadProxy,
--	    &LoggingThreadProxy::initInThread,
--	    Qt::BlockingQueuedConnection
--	);
+ void LogManager::initThreadLogging() {
+-	auto* instance = LogManager::instance();
 -
- 	qCDebug(logLogging) << "Logger initialized.";
+-	qCDebug(logLogging) << "Moving logger to dedicated thread...";
+-
+-	auto* thread = new QThread();
+-	instance->threadLogging->setParent(nullptr);
+-	instance->threadLogging->moveToThread(thread);
+-	thread->start();
+-
+-	qCDebug(logLogging) << "Logger thread initialized.";
++	qCDebug(logLogging) << "Keeping logger on the main thread.";
  }
  
-@@ -354,11 +346,7 @@
+ void initLogCategoryLevel(const char* name, QtMsgType defaultLevel) {
+ 	LogManager::instance()->defaultLevels.insert(QLatin1StringView(name), defaultLevel);
  }
  
- void LogManager::initFs() {
+-void LogManager::initFs() {
 -	QMetaObject::invokeMethod(
--	    &LogManager::instance()->threadProxy,
--	    "initFs",
+-	    LogManager::instance()->threadLogging,
+-	    &ThreadLogging::initFs,
 -	    Qt::BlockingQueuedConnection
 -	);
-+	LogManager::instance()->threadProxy.initFs();
- }
+-}
++void LogManager::initFs() { LogManager::instance()->threadLogging->initFs(); }
  
  QString LogManager::rulesString() const { return this->mRulesString; }
+ QtMsgType LogManager::defaultLevel() const { return this->mDefaultLevel; }

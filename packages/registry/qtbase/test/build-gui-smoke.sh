@@ -10,7 +10,7 @@
 #   -D__linux__=1 -DQT_LINUXBASE   The same two defines build-qtbase.sh
 #                                  configures with. Qt's public headers
 #                                  read them: without the first,
-#                                  qsystemdetection.h:134 errors out;
+#                                  qsystemdetection.h:138 errors out;
 #                                  without the second the headers and
 #                                  the archives disagree about the futex.
 #

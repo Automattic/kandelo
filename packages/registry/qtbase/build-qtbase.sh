@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build Qt 6.10.2 QtCore, QtGui, QtWidgets, QtWaylandClient, QtConcurrent
+# Build Qt 6.12.0 QtCore, QtGui, QtWidgets, QtWaylandClient, QtConcurrent
 # and QtXml (static) for wasm32-posix-kernel.
 #
 # Qt 6.10 moved the Wayland client platform plugin out of qtwayland and
@@ -22,7 +22,7 @@
 #
 # Three target adaptations, each for a stated reason:
 #
-#   -D__linux__=1   qsystemdetection.h:134 has no wasm branch and errors
+#   -D__linux__=1   qsystemdetection.h:138 has no wasm branch and errors
 #                   out. CMAKE_SYSTEM_NAME only settles the build
 #                   system; the headers read preprocessor macros, and
 #                   this toolchain defines __unix__ but not __linux__.
@@ -34,9 +34,11 @@
 #                   futex syscall (qfutex_p.h:41), which this kernel is.
 #                   It also steers Qt off glibc-only paths — backtrace,
 #                   inotify syscall stubs, sched_getaffinity — toward
-#                   the portable ones. Two upstream sites forgot to
-#                   honour it; src/qmutex-honour-qt-linuxbase.patch
-#                   fixes those.
+#                   the portable ones. Three upstream sites forgot to
+#                   honour it: src/qmutex-honour-qt-linuxbase.patch
+#                   fixes the two in QMutex, and
+#                   src/qthread-name-honour-qt-linuxbase.patch restores
+#                   the thread-name guard Qt 6.12 dropped.
 #
 #   src/include     supplies the empty <linux/fs.h> QtCore includes.
 #
@@ -144,6 +146,7 @@ if [ ! -d "$SRC_DIR" ]; then
         "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
         "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qmutex-honour-qt-linuxbase.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qthread-name-honour-qt-linuxbase.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-fd-notifier-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/dbus-manager-on-thread-on-wasm.patch"
