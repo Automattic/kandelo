@@ -546,8 +546,12 @@ The pinned LLD 23.1.3 accepts the lld forms `-z stack-size=<bytes>` and
 decimal, leading-zero or `0o` octal, `0x`/`0X` hexadecimal, and `0b`/`0B`
 binary.
 
-Clang expands its response files when producing the trace. The SDK expands any
-remaining lld response files, including nested `@file` references, using LLVM's
+The SDK expands compiler `@file` arguments before applying its normal target,
+flag and glue policy, so Meson/Ninja response-file links obey the same contract
+as command-line links. Caller files remain unchanged. Long normalized Clang
+commands use a private temporary response file, removed after the invocation,
+to stay below host argument-size limits. The SDK also expands any remaining
+lld response files, including nested `@file` references, using LLVM's
 POSIX response-file tokenization rules. Expansion uses an iterative work stack,
 not a nesting cutoff: the driver inspects chains accepted by LLVM and rejects
 missing or recursive response files before the real link. To bound hostile or
@@ -557,7 +561,7 @@ explicit resource limits; exhausting one never falls back to the 8 MiB floor.
 This keeps quoted or escaped paths distinct from linker options and prevents
 object filenames containing `stack-size=` from changing the stack. Bare
 `stack-size=<bytes>` tokens, `-z=stack-size=<bytes>`, and options after `--` are
-not stack requests. Response-file contents are never rewritten.
+not stack requests. Caller response-file contents are never rewritten.
 The SDK accepts LLVM's UTF-8, UTF-16LE-BOM, and UTF-16BE-BOM response
 encodings, inside Kandelo as on the build machine.
 Invalid spellings stay visible to LLVM so it can reject them; a valid stack
