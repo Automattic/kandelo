@@ -222,9 +222,9 @@ test("Kandelo Dark defaults consistently and saved theme choices survive reload"
   await expect(root).toHaveAttribute("data-k-mode", "dark");
   await expect(root).toHaveAttribute("data-k-mode-preference", "dark");
   await expect(root).toHaveAttribute("data-test-initial-theme", "kandelo/dark/dark");
-  await clickDockTool(page, "About Kandelo");
-  const about = page.getByRole("dialog", { name: "About Kandelo", exact: true });
-  await expect(about.locator("p").first()).toHaveText(/^Kandelo runs real programs in your browser\. It is based on POSIX and aims to be POSIX-compatible\./);
+  await clickDockTool(page, "Help");
+  const about = page.getByRole("dialog", { name: "Welcome to Kandelo", exact: true });
+  await expect(about.locator("p").first()).toHaveText(/^Kandelo is an experimental computer that runs in your browser\./);
   if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/about-real-programs-dark.png"), animations: "disabled" });
   await about.getByRole("button", { name: "Close", exact: true }).click();
   await clickDockTool(page, "Appearance");
@@ -286,24 +286,24 @@ test("More exposes secondary tools and community links with keyboard dismissal",
   await clickDockTool(page, "Appearance");
   await page.getByRole("button", { name: "Dark", exact: true }).click();
   await clickDockTool(page, "Appearance");
-  await clickDockTool(page, "About Kandelo");
-  const about = page.getByRole("dialog", { name: "About Kandelo", exact: true });
+  await clickDockTool(page, "Help");
+  const about = page.getByRole("dialog", { name: "Welcome to Kandelo", exact: true });
   await expect(about).toBeVisible();
-  await expect(about.locator("p")).toHaveCount(2);
-  await expect(about.locator("p").first()).toHaveText(/^Kandelo runs real programs in your browser\. It is based on POSIX and aims to be POSIX-compatible\./);
+  await expect(about.getByRole("heading", { name: "Get files out", exact: true })).toBeVisible();
+  await expect(about.locator("p").first()).toHaveText(/^Kandelo is an experimental computer that runs in your browser\./);
   await expect(about).not.toContainText("Linux");
   await expect(about.getByRole("link", { name: "GitHub repository", exact: true })).toHaveAttribute("href", "https://github.com/Automattic/kandelo");
   await about.getByRole("button", { name: "Close", exact: true }).click();
   await expect(moreButton).toBeFocused();
   await clickDockTool(page, "Share setup…");
-  await expect(page.getByText("Shares the starting image, not this computer’s saved files. Use an image export to transfer your changes.")).toBeVisible();
+  await expect(page.getByText("Shares the starting image, not this computer’s saved files. Use More → Export files… to download your files.")).toBeVisible();
 });
 
 test("popin dialogs use icon close controls and dismiss only on outside clicks", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   await shell(page);
-  await clickDockTool(page, "About Kandelo");
-  const about = page.getByRole("dialog", { name: "About Kandelo", exact: true });
+  await clickDockTool(page, "Help");
+  const about = page.getByRole("dialog", { name: "Welcome to Kandelo", exact: true });
   await expect(about.getByRole("button", { name: "Close", exact: true })).toHaveText("×");
   await about.click({ position: { x: 4, y: 4 } });
   await expect(about).toBeVisible();

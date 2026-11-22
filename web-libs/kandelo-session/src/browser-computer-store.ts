@@ -57,7 +57,9 @@ export class BrowserComputerStore {
       || (record.retention === "saved" ? record.expiresAt !== null
         : !Number.isSafeInteger(record.expiresAt) || record.expiresAt! < record.lastOpenedAt)
       || (record.partialImageSha256 !== undefined
-        && (typeof record.partialImageSha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.partialImageSha256)))) {
+        && (typeof record.partialImageSha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.partialImageSha256)))
+      || (record.referenceImageIdentity !== undefined
+        && (typeof record.referenceImageIdentity !== "string" || !/^(vfs|download)-sha256:[0-9a-f]{64}$/.test(record.referenceImageIdentity)))) {
       throw new Error(`Computer ${id} has invalid metadata`);
     }
     validateBootDescriptor(record.descriptor);
@@ -132,9 +134,13 @@ export class BrowserComputerStore {
     });
   }
 
-  update(id: string, change: { title?: string; retention?: "saved"; opened?: boolean; profileId?: string; partialImageSha256?: string }): Promise<StoredComputer> {
+  update(id: string, change: { title?: string; retention?: "saved"; opened?: boolean; profileId?: string; partialImageSha256?: string; referenceImageIdentity?: string }): Promise<StoredComputer> {
     return this.locked(async () => {
       const record = await this.readUnlocked(id);
+      if (change.referenceImageIdentity !== undefined) {
+        if (!/^(vfs|download)-sha256:[0-9a-f]{64}$/.test(change.referenceImageIdentity)) throw new Error("Invalid reference image identity");
+        record.referenceImageIdentity = change.referenceImageIdentity;
+      }
       if (change.partialImageSha256 !== undefined) {
         if (!/^[0-9a-f]{64}$/.test(change.partialImageSha256)) throw new Error("Invalid partial image digest");
         record.partialImageSha256 = change.partialImageSha256;

@@ -144,7 +144,8 @@ export const Dock: React.FC<{
   onToggleInternals: () => void;
   onToggleTheme: () => void;
   onOpenShare: () => void;
-  onOpenAbout: () => void;
+  onOpenHelp: () => void;
+  onExportFiles: () => void;
   onOpenCredits: () => void;
   servicesAvailable?: boolean;
   onOpenServices?: () => void;
@@ -182,7 +183,8 @@ export const Dock: React.FC<{
   onToggleInternals,
   onToggleTheme,
   onOpenShare,
-  onOpenAbout,
+  onOpenHelp,
+  onExportFiles,
   onOpenCredits,
   servicesAvailable = false,
   onOpenServices,
@@ -590,10 +592,11 @@ export const Dock: React.FC<{
                 </button>
                 <div id={moreId} ref={moreRef} popover="auto" className="kdock-more-popover" role="dialog" aria-label="More tools and help" onBeforeToggle={event => { if (event.newState === "open") flushSync(() => setMoreOpen(true)); else setMoreOpen(false); }} style={popoverStyle(moreAnchor, 260)}>
                   <button type="button" autoFocus={shareAvailable} disabled={!shareAvailable} onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenShare(); }}><span className="kdock-menu-icon" aria-hidden="true">{SHARE_ITEM.icon}</span>Share setup…</button>
+                  <button type="button" disabled={status !== "running"} onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onExportFiles(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M8 2v8m-3-3 3 3 3-3M3 11v3h10v-3" /></svg></span>Export files…</button>
                   {servicesAvailable && <button type="button" onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenServices?.(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M2 4h12M2 8h12M2 12h12" /><circle cx="5" cy="4" r="1.5" fill="var(--k-surface)" /><circle cx="10" cy="8" r="1.5" fill="var(--k-surface)" /><circle cx="6" cy="12" r="1.5" fill="var(--k-surface)" /></svg></span>Services</button>}
                   <button type="button" autoFocus={!shareAvailable && internalsAvailable} disabled={!internalsAvailable} aria-pressed={internalsOpen} onClick={() => { moreRef.current?.hidePopover(); onToggleInternals(); }}><span className="kdock-menu-icon" aria-hidden="true">{INTERNALS_ITEM.icon}</span>{INTERNALS_ITEM.label}</button>
                   <button type="button" autoFocus={!shareAvailable && !internalsAvailable} aria-pressed={themeOpen} onClick={() => { moreRef.current?.hidePopover(); onToggleTheme(); }}><span className="kdock-menu-icon" aria-hidden="true">{THEME_ITEM.icon}</span>{THEME_ITEM.label}</button>
-                  <button type="button" onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenAbout(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="6" /><path d="M8 7v5M8 4v1" /></svg></span>About Kandelo</button>
+                  <button type="button" onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenHelp(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="6" /><path d="M8 7v5M8 4v1" /></svg></span>Help</button>
                   <button type="button" data-testid="open-credits" onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenCredits(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M8 4.5C6.6 3.4 4.7 3 2.5 3v9c2.2 0 4.1.4 5.5 1.5 1.4-1.1 3.3-1.5 5.5-1.5V3c-2.2 0-4.1.4-5.5 1.5Z" /><path d="M8 4.5v9" /></svg></span>Credits</button>
                   <h3>Help &amp; About</h3>
                   <CommunityLinks />

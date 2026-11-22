@@ -19,7 +19,8 @@ import type { ComputerRetention } from "../../../../../web-libs/kandelo-session/
 import { DEFAULT_COMPUTER_RETENTION } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { OpenWebsiteDialog } from "./OpenWebsiteDialog";
 import type { WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
-import { AboutDialog } from "./AboutDialog";
+import { HelpDialog } from "./HelpDialog";
+import { ExportFilesDialog } from "./ExportFilesDialog";
 import { CreditsDialog } from "./CreditsDialog";
 import { PersistenceWarningDialog } from "./PersistenceReleaseWarning";
 import { isMachineProgressBlocking } from "../panes/machine-progress-format";
@@ -120,7 +121,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
-  const [aboutOpen, setAboutOpen] = React.useState(false);
+  const [helpOpen, setHelpOpen] = React.useState(false);
+  const [exportFilesOpen, setExportFilesOpen] = React.useState(false);
   const [openWebsite, setOpenWebsite] = React.useState(false);
   const [websiteTarget, setWebsiteTarget] = React.useState<WebPreviewTarget | undefined>();
   const changeWebTarget = React.useCallback((target?: WebPreviewTarget) => {
@@ -682,7 +684,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onToggleInternals={toggleInternals}
           onToggleTheme={toggleTheme}
           onOpenShare={() => setShareOpen(true)}
-          onOpenAbout={() => setAboutOpen(true)}
+          onOpenHelp={() => setHelpOpen(true)}
+          onExportFiles={() => setExportFilesOpen(true)}
           servicesAvailable={services.entries.length > 0 || services.starting || services.error !== null}
           onOpenServices={() => setServicesOpen(true)}
           onOpenCredits={() => setCreditsOpen(true)}
@@ -697,7 +700,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       <MachineProgressOverlay />
       {persistenceDialog && library.current && <PersistenceWarningDialog title={library.current.title} onKeep={persistenceDialog === "keep" ? () => void keepCurrentComputer() : undefined} onClose={() => setPersistenceDialog(null)} />}
       {openWebsite && <OpenWebsiteDialog session={networkSession.state.snapshot} initialTarget={websiteTarget} onClose={() => setOpenWebsite(false)} />}
-      {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
+      {exportFilesOpen && <ExportFilesDialog onClose={() => setExportFilesOpen(false)} />}
       {creditsOpen && <CreditsDialog onClose={() => setCreditsOpen(false)} />}
       {servicesOpen && <ServicesPanel controls={services} onClose={() => setServicesOpen(false)} onStarted={service => {
         const preview = host.getWebPreview();

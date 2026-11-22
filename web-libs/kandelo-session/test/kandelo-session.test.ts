@@ -429,6 +429,28 @@ describe("LiveKernelHost: worker-owned VFS", () => {
 });
 
 describe("LiveKernelHost: raw VFS surface", () => {
+  it("pins bounded export reads to one attachment, including pending reads and same-object reattachment", async () => {
+    let finish!: (value: Uint8Array) => void;
+    const range = vi.fn(async (_path: string, _offset: number, _length: number): Promise<Uint8Array> => new Uint8Array([7]));
+    const kernel = { readDirFromVfs: vi.fn(async () => []), readFileRangeFromVfs: range } as unknown as KernelLike;
+    const host = new LiveKernelHost({ kernel });
+    const reader = host.captureVfsReader();
+    expect(await reader.readDir("/")).toEqual([]);
+    expect(await reader.readRange("/file", 2, 1)).toEqual(new Uint8Array([7]));
+    expect(range).toHaveBeenCalledWith("/file", 2, 1);
+    for (const [offset, length] of [[-1, 1], [0.5, 1], [0, 0], [0, 262145]]) await expect(reader.readRange("/file", offset, length)).rejects.toThrow("Invalid export read range");
+    range.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = reader.readRange("/file", 0, 1);
+    host.attachKernel(kernel);
+    finish(new Uint8Array([1]));
+    await expect(pending).rejects.toThrow("computer changed");
+    await expect(reader.readDir("/")).rejects.toThrow("computer changed");
+    const next = host.captureVfsReader();
+    host.detachKernel();
+    await expect(next.readRange("/file", 0, 1)).rejects.toThrow("computer changed");
+    expect(() => host.captureVfsReader()).toThrow("cannot export");
+  });
+
   it("reports a missing path as null rather than an error", async () => {
     const host = new LiveKernelHost({
       kernel: {

@@ -4,6 +4,42 @@
 
 ## Overview
 
+**More → Help** opens a short README-style introduction to Kandelo, including
+getting started, file import/export, storage basics, and links to the user
+guide and community. The same dialog is available from initial setup and
+setup errors, without a running guest. Its copy lives in `HelpDialog.tsx`.
+
+**More → Export files…** downloads the running computer's files as a ZIP,
+optionally limited to a selected folder. The browser UI uses
+`KernelHost.captureVfsReader()` for directory metadata and bounded range
+reads through the existing kernel-worker APIs. The reader is pinned to an
+attachment generation and fails if the computer is detached or replaced,
+including while a read is pending. Only copied bytes reach the UI, without
+guest `WebAssembly.Memory` objects or shared VFS buffers.
+ZIP generation writes sequentially with backpressure to a browser save
+picker, or buffers up to 256 MB for a normal download. Cancellation aborts
+the writer; read failures fail the archive. The live traversal does not freeze
+the guest or produce a bootable image. See the [user guide](../docs-site/guide/moving-files.md#download-files-as-a-zip)
+for exclusions, metadata, and ZIP limits. Node uses the same captured reader;
+the download controls are browser-only.
+
+New computers default to **Added and changed files**, which compares the live
+tree with a separately opened reference image through `KernelHost.referenceFiles`.
+The reference reader uses the normal `BrowserKernel` directory/range-read
+surface, including lazy resource resolution, without starting guest apps or
+attaching persistence. Its worker is retired before its staged source is
+removed. The comparison streams bytes rather than retaining entire files;
+unchanged directories are omitted unless needed to contain changed entries.
+**All files** does not open a reference reader. File contents, mode, uid/gid,
+entry types, and link targets are compared; timestamps are not.
+
+`StoredComputer.referenceImageIdentity` pins the initial source identity in
+`computer.json`: `vfs-sha256:` for decoded positioned sources or
+`download-sha256:` for byte-backed downloads. Restored computers retain that
+identity rather than adopting the current template. Legacy computers without
+it retain full export but disable comparison. These are optional app metadata
+and session-reader additions, with no filesystem format or guest ABI change.
+
 Kandelo uses SharedArrayBuffer, workers, `Atomics.waitAsync`, and WebAssembly
 features whose availability varies by browser engine and guest architecture.
 SharedArrayBuffer support alone does not establish support for a browser

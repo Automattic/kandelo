@@ -1,6 +1,8 @@
 import { waitForHttpPreview } from "../../../lib/init/http-preview-readiness";
 import { WebPreviewConnection } from "./web-preview-connection";
 import { BrowserComputerStore } from "../../../../../web-libs/kandelo-session/src/browser-computer-store";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { openReferenceFiles } from "./reference-files";
 import type { ComputerLibrarySnapshot, ComputerRetention, StoredComputer } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { DEFAULT_COMPUTER_RETENTION, filesystemProfileId, JOURNALED_OPFS_IMAGE_STORAGE_FORMAT } from "../../../../../web-libs/kandelo-session/src/computer-library";
 import { browserComputerIdForStorageName, browserComputerStorageName, browserPersistenceDirectory } from "../../../../../host/src/browser-computer-storage";
@@ -1118,6 +1120,8 @@ async function createLiveHostWithLease(
           persistenceName, persistenceMode, persistenceLease ?? undefined, preferred, opts.experimentalPersistenceIntegrity, deferActivityLaunch,
           requireExistingFilesystem, managedComputerId === undefined ? undefined : () => computerStore!.markFilesystemInitialized(managedComputerId),
           computer === null ? undefined : filesystemProfileId(computer),
+          computer?.referenceImageIdentity,
+          managedComputerId === undefined ? undefined : async identity => { await computerStore!.update(managedComputerId, { referenceImageIdentity: identity }); },
         );
         let booted: Awaited<ReturnType<typeof boot>>;
         try {
@@ -1598,6 +1602,8 @@ async function bootProfile(
   requireExistingFilesystem = false,
   markFilesystemInitialized?: () => Promise<void>,
   storageProfileId?: string | null,
+  referenceImageIdentity?: string,
+  recordReferenceIdentity?: (identity: string) => Promise<void>,
 ): Promise<{
   kernel: BrowserKernel;
   persistenceIdentity: string | null;
@@ -1774,6 +1780,13 @@ async function bootProfile(
         lazyAssets: restoredHandle.lazyAssets,
       } as LoadedVfsImage),
   ]);
+  if (restoredHandle === null) {
+    try {
+      referenceImageIdentity = referenceIdentity(loadedVfs);
+      await recordReferenceIdentity?.(referenceImageIdentity);
+    }
+    catch (error) { await loadedVfs.positionedSource?.remove(); throw error; }
+  }
   try {
     assertCurrent();
   } catch (error) {
@@ -2079,6 +2092,44 @@ async function bootProfile(
     await markFilesystemInitialized?.();
     assertCurrent();
     host.attachKernel(kernel);
+    const referenceIdentityAtBoot = referenceImageIdentity;
+    const referenceUnavailable = referenceIdentityAtBoot === undefined
+      ? "The original reference image is not known for this computer. You can still export All files."
+      : undefined;
+    host.referenceFiles = {
+      unavailableReason: referenceUnavailable,
+      open: async signal => {
+        if (referenceUnavailable) throw new Error(referenceUnavailable);
+        signal.throwIfAborted();
+        assertCurrent();
+        const reference = await loadVfsImage(profile, () => {}, persistence?.name);
+        let readerOwnsSource = false;
+        try {
+          signal.throwIfAborted();
+          assertCurrent();
+          if (referenceIdentity(reference) !== referenceIdentityAtBoot) throw new Error("The reference image has changed or is unavailable. Choose All files to export without comparison.");
+          readerOwnsSource = true;
+          return await openReferenceFiles(
+            () => new BrowserKernel({ kernelOwnedFs: true, memoryProfile: memoryProfileOverride(), corsProxy: BROWSER_CORS_PROXY, maxWorkers: 1 }),
+            async reader => {
+              const source = reference.positionedSource;
+              // Retain the URL policy rather than the initial boot image's bytes.
+              const referenceLazyAssetDirectory = reference.lazyAssets ? imageOwnedLazyAssetDirectory(reference.lazyAssets) : lazyAssetDirectory;
+              if (source) await reader.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: source.file, integrity: source.integrity,
+                lazyAssetDirectory: referenceLazyAssetDirectory });
+              else await reader.initFromImage({ kernelWasm: kernelBytes, vfsImage: new Uint8Array(reference.imageBytes),
+                lazyAssetDirectory: referenceLazyAssetDirectory });
+            },
+            signal, assertCurrent, async () => { await reference.positionedSource?.remove(); },
+          );
+        } catch (error) {
+          // openReferenceFiles owns a started reader's source until proven
+          // retirement. A pre-initialization refusal has no worker to retire.
+          if (!readerOwnsSource) await reference.positionedSource?.remove();
+          throw error;
+        }
+      },
+    };
     host.services = createServiceControls(host, agentIdentity(), assertCurrent);
     const storageId = persistence === null ? null : browserComputerIdForStorageName(persistence.name);
     host.setFilesystemConfiguration(opfsImage && persistence ? {
@@ -2580,6 +2631,16 @@ interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
   positionedSource?: StagedSourceImage;
+}
+
+function referenceIdentity(image: LoadedVfsImage): string {
+  if (image.positionedSource) {
+    const digest = image.positionedSource.integrity.imageSha256;
+    if (!digest) throw new Error("The reference image lacks a whole-image identity");
+    return `vfs-sha256:${digest}`;
+  }
+  const digest = Array.from(sha256(new Uint8Array(image.imageBytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+  return `download-sha256:${digest}`;
 }
 
 /**
