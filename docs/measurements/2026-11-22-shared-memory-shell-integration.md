@@ -2,6 +2,8 @@
 
 This record covers the normal-shell integration at `e8bb698bc2ce73db44bb5d3babffaa082441da49`, following the historical dedicated desktop preview. It does not promote the entire original shared-memory plan or claim a performance improvement.
 
+The subsequent [cleanup receipt](2026-11-22-shared-memory-cleanup.md) records removal of the separate recipe and preview paths, current artifacts/checks, and newly observed browser failures. The results below remain historical evidence for the revision named above.
+
 ## Resulting contract
 
 The normal shell owns Cage/Foot, Sway/Foot and Sway/SFWBar profiles and Activities. Ordinary executables, executable identity and default execution stay ordinary. An explicit desktop root selects a formal SDK alternative; compatible descendants inherit its kernel-owned memory group. Other terminals keep their selected backend. The normal computer's file persistence applies to both kinds of process. Persistent writable shared mappings remain unsupported.

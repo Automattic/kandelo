@@ -7,8 +7,7 @@ import { typePhysicalText } from './support/physical-typing';
 
 test.use({ headless: true, deviceScaleFactor: 1, viewport: { width: 1440, height: 1000 } });
 
-// Requires the canonical product and the ordinary app's gallery policy, with
-// the older global trusted-preview environment flag unset. Existing Sway,
+// Requires the canonical product and the ordinary app's gallery policy. Sway,
 // Cage and SFWBar suites own deeper rendering, input and lifecycle checks.
 test('shared-desktop-browser-startup: the normal gallery runs a shared desktop from the shell image', async ({ page }, info) => {
   test.setTimeout(300_000);

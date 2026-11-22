@@ -239,7 +239,10 @@ The maintained canonical consumers described below cover the normal shell
 profiles. Earlier standalone desktop pages, global build flags and derived
 image recipes were removed after this integration. Their source and failed
 experiments remain available in the [pinned pre-cleanup revision](https://github.com/Automattic/kandelo/tree/84f6213ee030300ce27e5a1de7aedaca078b924b)
-and retained worktree evidence; they are not supported launch paths.
+and retained worktree evidence; they are not supported launch paths. The
+[cleanup validation receipt](measurements/2026-11-22-shared-memory-cleanup.md)
+records the current normal-app checks and observed failures, including the
+WebKit admission-stress timeout and mixed Freeciv gameplay results.
 
 They cover physical input, workspace changes, exit and CPU-renderer restart
 on Chromium, Firefox and WebKit. These bounded checks are separate from
