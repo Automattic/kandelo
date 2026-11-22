@@ -119,8 +119,9 @@ async function expectCleanCageExit(page: Page, marker: string, children: number[
   await openSurface(page, "Internals");
   await page.getByRole("tab", { name: "Procs", exact: true }).click();
   // Loading/empty tables cannot establish that the graphical processes retired.
-  await expect(page.locator(".ktable tbody tr").filter({ has: page.locator("td:first-child", { hasText: /^1(?:\s|$)/ }) }))
-    .toHaveCount(1, { timeout: 30_000 });
+  await expect.poll(async () => page.locator(".ktable tbody tr td:first-child").evaluateAll(
+    cells => cells.filter(cell => Number(cell.textContent?.match(/\d+/)?.[0]) === 1).length,
+  ), { timeout: 30_000 }).toBe(1);
   await expect(page.locator(".ktable tbody tr > td:last-child").filter({ hasText: /^(?:\/\S*\/)?(?:cage|foot)(?:\s|$)/ }))
     .toHaveCount(0, { timeout: 60_000 });
   await expect.poll(async () => page.locator(".ktable tbody tr td:first-child").evaluateAll(
@@ -204,8 +205,8 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
   });
   await gotoMachine(page, "cage", { search: { memoryProfile: "constrained" } });
   await waitForMachineBootInput(page);
-  const id = new URL(page.url()).searchParams.get("computer");
-  expect(id, "shared desktop sessions are in-memory").toBeNull();
+  let id = new URL(page.url()).searchParams.get("computer");
+  expect(id, "desktop uses the normal computer store").toMatch(/^[0-9a-f-]{36}$/);
   const realm = await memoryBoundaryRealmId(page);
   const display = page.locator(".kmachine-primary .kmodeset-surface");
   const owner = async () => Number(await display.getAttribute("data-kms-owner-pid"));
@@ -218,6 +219,11 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
       // starts. Observe this restart before accepting the next Running state.
       await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
       await waitForMachineBootInput(page);
+      await expect.poll(() => {
+        const next = new URL(page.url()).searchParams.get("computer");
+        return next !== id && /^[0-9a-f-]{36}$/.test(next ?? "");
+      }, { timeout: 240_000 }).toBe(true);
+      id = new URL(page.url()).searchParams.get("computer");
     }
     const children = await waitForFoot(page);
     await openSurface(page, "Graphics");

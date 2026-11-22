@@ -628,13 +628,19 @@ for (const compositor of ["sway", "labwc"] as const) {
     // keyboard on this click (see hoverBar).
     await hoverBar(page, panel, panel.start!);
     await clickRect(page, panel, panel.start!);
-    await expect.poll(async () => (await paint(page)).menus.some(r => r.textRows === 3),
+    // Keep the bar's keyboard interactivity while moving the guest cursor
+    // off Start's glyphs; an overlaid cursor can hide the pixel anchor used
+    // to distinguish native popup rectangles from terminal output.
+    const panelBox = (await scene(page).boundingBox())!;
+    await page.mouse.move(panelBox.x + 400 * panelBox.width / panel.width,
+      panelBox.y + (panel.start!.y + panel.start!.height / 2) * panelBox.height / panel.height);
+    await expect.poll(async () => (await paint(page)).menus.some(r => r.textRows === 2),
       { timeout: 60_000, intervals: [500, 1_000] }).toBe(true);
-    const categories = (await paint(page)).menus.find(r => r.textRows === 3)!;
+    const categories = (await paint(page)).menus.find(r => r.textRows === 2)!;
     await screenshot(page, `${compositor}-sfwbar-native-appmenu`, await paint(page));
 
-    // Upstream appmenu's sorted category labels are Games, Graphics and
-    // System Tools for the guarded three entries. GTK End/Right selects
+    // Upstream appmenu's sorted category labels are Games and System Tools
+    // for the guarded two entries. GTK End/Right selects
     // System Tools and opens its genuine one-entry Terminal submenu.
     await page.keyboard.press("End"); await page.keyboard.press("ArrowRight");
     const terminalMenu = (p: Paint) => p.menus.find(r => r.textRows === 1

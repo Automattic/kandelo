@@ -9,6 +9,8 @@ import { typePhysicalText } from './support/physical-typing';
 import { setInternalsOpen } from './support/dock';
 import { gotScenes, gotReadyColors, type GotSceneName, type GotSceneMask } from './fixtures/scummvm-got-scenes';
 
+test.use({ headless: true, deviceScaleFactor: 1, viewport: { width: 1280, height: 840 } });
+
 interface Pixels { width: number; height: number; data: Uint8Array }
 const { PNG } = createRequire(import.meta.url)('playwright-core/lib/utilsBundle') as {
   PNG: { sync: { read(bytes: Buffer): Pixels } };
@@ -36,8 +38,8 @@ function foreground(pixels: Pixels, x: number, y: number, kind: GotSceneMask['ki
 
 function sceneScore(bytes: Buffer, name: GotSceneName): number {
   const pixels = PNG.sync.read(bytes), scene = gotScenes[name];
-  if (pixels.width !== 1280 || scene.x + scene.w > pixels.width || scene.y + scene.h > pixels.height) {
-    throw new Error('God of Thunder scene fixtures require the unscaled 1280-wide Cage viewport');
+  if (pixels.width !== 1280 || pixels.height !== 840 || scene.x + scene.w > pixels.width || scene.y + scene.h > pixels.height) {
+    throw new Error('God of Thunder scene fixtures require the unscaled 1280×840 Cage viewport');
   }
   // Text already matches its mask during fade-in, before the next key is
   // accepted. These static full-color pixels distinguish the ready story.

@@ -20,7 +20,7 @@ async function showDemo(page: Page) {
   await expect(canvas(page)).toBeVisible();
 }
 
-test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
+test.describe("ScummVM's static Wayland GLES launcher inside shared Sway", () => {
   test.use({ deviceScaleFactor: 1, viewport: { width: 1440, height: 1000 } });
 
   test("paints the launcher, handles its dialog and quits without taking the compositor's DRM master", async ({ page }) => {
@@ -35,14 +35,14 @@ test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
     const swayOwner = await owner(page);
     expect(swayOwner).toBeGreaterThan(0);
 
-    // Ordinary wrapper chooses Wayland from the actual inherited compositor
+    // The static wrapper chooses Wayland from the inherited compositor
     // socket. No SDL/GL driver overrides or test-created theme/config files.
     // This real interactive shell waits for the exact wrapper PID, then saves
     // its exit status and the post-wait process table. Echoed input cannot
     // manufacture these files. Existing bug: failed graphics setup exits 0,
     // which is why rendered launcher/dialog assertions precede status checks.
     await canvas(page).click({ position: { x: 100, y: 140 } });
-    await typePhysicalText(page, "/usr/bin/scummvm & launch=$!; wait $launch; result=$?; "
+    await typePhysicalText(page, "/usr/bin/scummvm-static & launch=$!; wait $launch; result=$?; "
       + "printf '%s\\n' $result > /tmp/scumm-sway-result; "
       + "test ! -d /proc/$launch && echo reaped > /tmp/scumm-sway-wrapper; "
       + "ps -A -o pid,comm > /tmp/scumm-sway-processes\n", { delay: 30 });

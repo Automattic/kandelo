@@ -1,12 +1,12 @@
 import { test } from './support/persistent-page';
 import { expect, type Page } from '../playwright-test';
-import { waitForMachineBootInput } from './support/kandelo-machine';
+import { gotoMachine, waitForMachineBootInput } from './support/kandelo-machine';
 import { setInternalsOpen } from './support/dock';
 import { typePhysicalText } from './support/physical-typing';
 import { waitForSwayFootPrompt } from './support/sway-foot-prompt';
 
-// Selected only by the explicit trusted-preview config, never ordinary builds.
-test.use({ headless: true });
+// Exercise the normal gallery unless an explicit app URL is supplied.
+test.use({ headless: true, viewport: { width: 1499, height: 1000 }, deviceScaleFactor: 1 });
 const canvas = (page: Page) => page.locator('.kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas').first();
 async function surface(page: Page, internals: boolean) {
   if (internals) await waitForMachineBootInput(page);
@@ -46,12 +46,12 @@ async function footPids(page: Page, count: number, samples: unknown[]) {
 test('trusted desktop keeps twelve terminals usable and reuses closed capacity', async ({ page }, info) => {
   test.setTimeout(420_000);
   const url = process.env.KANDELO_TEST_SWAY_PREVIEW_URL;
-  if (!url) throw Error('This check requires the normal trusted preview app URL');
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.stack ?? error.message));
   const samples: unknown[] = [];
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    if (url) await page.goto(url, { waitUntil: 'domcontentloaded' });
+    else await gotoMachine(page, 'sway');
     await surface(page, true);
     await expect.poll(async () => (await page.locator('.ksys-line').allInnerTexts()).join('\n'),
       { timeout: 180_000 }).toMatch(/running .*\/usr\/bin\/sway/);
@@ -93,7 +93,6 @@ test.describe('high-resolution desktop', () => {
   test('trusted desktop keeps two terminals through high-resolution workspace changes', async ({ page }, info) => {
     test.setTimeout(420_000);
     const url = process.env.KANDELO_TEST_SWAY_PREVIEW_URL;
-    if (!url) throw Error('This check requires the normal trusted preview app URL');
     const errors: string[] = [], proofs: Array<{ cycle: number; workspace: number; content: string }> = [];
     const samples: unknown[] = [];
     page.on('pageerror', error => errors.push(error.stack ?? error.message));
@@ -121,7 +120,8 @@ test.describe('high-resolution desktop', () => {
       await surface(page, false);
     };
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      if (url) await page.goto(url, { waitUntil: 'domcontentloaded' });
+      else await gotoMachine(page, 'sway');
       await surface(page, true);
       await expect.poll(async () => (await page.locator('.ksys-line').allInnerTexts()).join('\n'),
         { timeout: 180_000 }).toMatch(/running .*\/usr\/bin\/sway/);

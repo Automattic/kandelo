@@ -122,7 +122,8 @@ export class CageSession {
     this.record({ stage: "boot" });
     await installBrowserMemoryBoundaryProbe(this.page);
     if (canonicalProfile) {
-      this.record({ imageSource: "canonical browser-shared-desktop product" });
+      this.record({ imageSource: process.env.KANDELO_TEST_MACHINE_URLS
+        ? "explicit prepared shell-image selection" : "canonical browser-main-shell product" });
       await gotoMachine(this.page, canonicalProfile);
     } else await this.page.goto("./", { waitUntil: "domcontentloaded" });
     await waitForMachineBootInput(this.page);
@@ -153,6 +154,7 @@ export class CageSession {
   private async openTmp() {
     await setInternalsOpen(this.page, true);
     await this.page.getByRole("tab", { name: "VFS", exact: true }).click();
+    await this.page.getByRole("button", { name: "/", exact: true }).click();
     await this.page.locator(".ktable tbody tr").filter({
       has: this.page.locator("td:first-child", { hasText: /^tmp\/$/ }),
     }).first().click();

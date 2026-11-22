@@ -517,13 +517,16 @@ test("Sway gallery launch preserves the shell, tiles another Foot and exits clea
   const shellId = new URL(page.url()).searchParams.get("computer");
   expect(shellId).not.toBeNull();
   await runTerminalCommand(page,
-    "printf 'ordinary-shell-proof\\n' > /home/projects/desktop-gallery-proof; echo DESKTOP_GALLERY_WRITTEN", "DESKTOP_GALLERY_WRITTEN");
+    "printf 'ordinary-shell-proof\\n' > /home/projects/desktop-gallery-proof && sync && echo DESKTOP_GALLERY_WRITTEN", "DESKTOP_GALLERY_WRITTEN");
   await configureNewComputer(page, "sway");
   await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
   await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
   await waitForMachineBootInput(page);
-  expect(new URL(page.url()).searchParams.get("computer"), "desktop preview runs in RAM").toBeNull();
+  const desktopId = new URL(page.url()).searchParams.get("computer");
+  expect(desktopId, "desktop uses the normal computer store").toMatch(/^[0-9a-f-]{36}$/);
+  expect(desktopId).not.toBe(shellId);
+  await expect(page.getByRole("button", { name: "Library", exact: true })).toBeEnabled();
 
   await openSurface(page, "Graphics");
   await expect(canvasLocator(page)).toBeVisible({ timeout: 30_000 });
@@ -586,7 +589,13 @@ test("Sway gallery launch preserves the shell, tiles another Foot and exits clea
   expect(await displayOwner(page)).toBe(0);
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await bootStoredComputer(page, shellId!);
+  // The old computer can still say Running while the asynchronous switch
+  // starts. Do not send this command to its soon-to-be-retired terminal.
+  await expect.poll(() => new URL(page.url()).searchParams.get("computer"),
+    { timeout: 240_000 }).toBe(shellId);
   await waitForMachineBootInput(page);
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/maker@[^\r\n]*[$]\s*$/);
   await runTerminalCommand(page,
     "test \"$(cat /home/projects/desktop-gallery-proof)\" = ordinary-shell-proof && echo DESKTOP_GALLERY_RESTORED", "DESKTOP_GALLERY_RESTORED");
 });

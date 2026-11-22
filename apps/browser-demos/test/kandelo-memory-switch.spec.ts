@@ -3,7 +3,7 @@ import { cageShellTextColumns } from "./support/cage-shell-frame";
 import { typePhysicalText } from "./support/physical-typing";
 import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
-import { gotoMachine, gotoMachineOrSkip, previewFrame, galleryProductForProfile } from "./support/kandelo-machine";
+import { gotoMachine, gotoMachineOrSkip, previewFrame } from "./support/kandelo-machine";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
 import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
 import { expectRunningMachineAudio } from "./support/machine-audio";
@@ -21,21 +21,14 @@ async function launch(page: Page, title: string, profile: string): Promise<void>
   await configureNewComputer(page, profile);
   await page.getByLabel("Computer name", { exact: true }).fill(title);
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
-  // Observe this boot before accepting a URL or a status left by the old
-  // machine. Shared desktop products intentionally have no stored computer ID.
+  // Observe this boot before accepting a URL or status from the old machine.
+  // Desktop profiles are normal shell computers with the same storage policy.
   await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
-  if (galleryProductForProfile(profile) === "browser-shared-desktop") {
-    await expect.poll(() => {
-      const params = new URL(page.url()).searchParams;
-      return params.get("computer") === null && params.get("profile") === profile;
-    }, { timeout: 240_000 }).toBe(true);
-  } else {
-    await expect.poll(() => {
-      const id = new URL(page.url()).searchParams.get("computer");
-      return id !== previousId && /^[0-9a-f-]{36}$/.test(id ?? "");
-    }, { timeout: 240_000 }).toBe(true);
-    await expect.poll(async () => (await currentComputerMetadata(page)).profileId, { timeout: 240_000 }).toBe(profile);
-  }
+  await expect.poll(() => {
+    const id = new URL(page.url()).searchParams.get("computer");
+    return id !== previousId && /^[0-9a-f-]{36}$/.test(id ?? "");
+  }, { timeout: 240_000 }).toBe(true);
+  await expect.poll(async () => (await currentComputerMetadata(page)).profileId, { timeout: 240_000 }).toBe(profile);
   expect(new URL(page.url()).searchParams.get("memoryProfile")).toBe("constrained");
   await expect(page.locator(".kmprogress-card")).toHaveCount(0, { timeout: 240_000 });
 }

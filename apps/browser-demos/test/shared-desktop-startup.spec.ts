@@ -10,7 +10,7 @@ test.use({ headless: true, deviceScaleFactor: 1, viewport: { width: 1440, height
 // Requires the canonical product and the ordinary app's gallery policy, with
 // the older global trusted-preview environment flag unset. Existing Sway,
 // Cage and SFWBar suites own deeper rendering, input and lifecycle checks.
-test('shared-desktop-browser-startup: the normal gallery runs a temporary shared desktop', async ({ page }, info) => {
+test('shared-desktop-browser-startup: the normal gallery runs a shared desktop from the shell image', async ({ page }, info) => {
   test.setTimeout(300_000);
   const errors: string[] = [], images: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -25,11 +25,10 @@ test('shared-desktop-browser-startup: the normal gallery runs a temporary shared
   // Initial boot includes cold lazy program delivery and worker module loading.
   // The rendered prompt, followed by real typing, is the readiness contract.
   await waitForSwayFootPrompt(page, canvas, 1, 180_000);
-  // The authored desktop is RAM-only while the ordinary computer library
-  // remains available. A global development-preview boot cannot satisfy both.
-  expect(new URL(page.url()).searchParams.get('computer')).toBeNull();
+  // The shell desktop follows the ordinary computer-library storage policy.
+  expect(new URL(page.url()).searchParams.get('computer')).not.toBeNull();
   await expect(page.getByRole('button', { name: 'Library', exact: true })).toBeEnabled();
-  const expectedImage = await vfsImageUrlForProduct(page, 'browser-shared-desktop');
+  const expectedImage = await vfsImageUrlForProduct(page, 'browser-main-shell');
   expect(images).toContain(new URL(expectedImage, page.url()).href);
 
   await canvas.focus();
