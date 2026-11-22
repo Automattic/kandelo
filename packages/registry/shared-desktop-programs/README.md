@@ -28,11 +28,10 @@ Select the ordinary application/data packages too:
 
 Add `cage-docs sway-docs foot-docs freeciv-docs scummvm-docs` for upstream manuals.
 The normal partial manifest and image are the only image outputs; prepared
-program ZIPs remain package-owned lazy references. The separate historical
-image-preparation tool remains available for reproducing earlier experiments.
+program ZIPs remain package-owned lazy references. The obsolete derived-image tools are archived with the earlier experiment;
+normal launches use this package and the shell image.
 
 The shell owns the Cage, Sway and Sway/SFWBar profiles. Each requests the
 memory-group backend explicitly; other shell activities remain ordinary.
 Normal filesystem persistence is separate from the unsupported persistent
-writable shared-mapping operation. The historical separate image remains
-available during migration and is not needed by the shell profiles.
+writable shared-mapping operation. The shell profiles need no separate desktop image.

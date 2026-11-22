@@ -25,8 +25,7 @@ import {
 
 export type ShellSelection =
   | { kind: "canonical" }
-  | { kind: "partial"; packages: ReadonlySet<string> }
-  | { kind: "desktop"; packages: ReadonlySet<string> };
+  | { kind: "partial"; packages: ReadonlySet<string> };
 
 export const CANONICAL_SHELL_SELECTION: ShellSelection = Object.freeze({
   kind: "canonical",

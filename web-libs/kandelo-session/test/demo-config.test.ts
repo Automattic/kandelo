@@ -559,7 +559,7 @@ describe("profile-only schema", () => {
 
 describe("tracked demo-config sources", () => {
   it("declares every tracked source", () => {
-    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(13);
+    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(12);
   });
 
   it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s parses and validates", (relPath) => {

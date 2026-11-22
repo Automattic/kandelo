@@ -48,7 +48,6 @@ import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedResolverFiles, devLazyAssets } from "./vite/dev-lazy-assets";
 import { devPartialImage } from "./vite/dev-partial-image";
-import { trustedDesktopPreview } from "./vite/trusted-desktop-preview";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -1014,12 +1013,6 @@ export default defineConfig(() => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
-      trustedDesktopPreview(base, process.env.KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE,
-        process.env.KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE === undefined ? undefined : (() => {
-          const file = tryResolveBinary("kandelo_image_module32.wasm");
-          if (!file) throw Error("Trusted partial preview needs the normal image-reader module; run ./run.sh setup");
-          return new Uint8Array(fs.readFileSync(file));
-        })()),
       vfsProductsPlugin(base),
       devPartialImage({ partialDir: path.resolve(repoRoot, "local-binaries/partial") }),
       react(),

@@ -15,8 +15,7 @@
     "id": "bash",
     "dependency": "bash",
     "artifact": "bash.wasm",
-    "guestPath": "/bin/bash",
-    "requested": "/bin/sh"
+    "guestPath": "/bin/bash"
   },
   {
     "id": "coreutils",

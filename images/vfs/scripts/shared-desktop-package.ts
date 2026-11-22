@@ -1,4 +1,4 @@
-/** Explicit partial-image activation of normal SDK/package-owned lazy artifacts. */
+/** Install validated SDK alternatives alongside ordinary image executables. */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -13,7 +13,7 @@ import type { ShellLazyArchiveResolver } from './shell-lazy-archives';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 export interface SharedDesktopPackageActivation {
-  schema: 1; package: string; selection?: "variants"; programs: { requested: string; path: string; ordinarySha256: string; groupedSha256: string; uri: string; bytes: number; artifactPath: string; aliases: string[] }[];
+  programs: { path: string; ordinarySha256: string; artifactPath: string }[];
 }
 
 /** Resolve a file's actual path while retaining its original symlink topology. */
@@ -25,29 +25,12 @@ function realPath(fs: KandeloImageFs, requested: string): string {
   }
   return path;
 }
-function regularAliases(fs: KandeloImageFs, inode: number | bigint): string[] {
-  const aliases: string[] = [];
-  const walk = (dir: string) => {
-    const handle = fs.opendir(dir);
-    try {
-      for (let entry = fs.readdir(handle); entry; entry = fs.readdir(handle)) {
-        if (entry.name === '.' || entry.name === '..') continue;
-        const path = posix.join(dir, entry.name), stat = fs.lstat(path);
-        if ((stat.mode & 0o170000) === 0o040000 && !stat.deferred) walk(path);
-        else if ((stat.mode & 0o170000) === 0o100000 && BigInt(stat.ino) === BigInt(inode)) aliases.push(path);
-      }
-    } finally { fs.closedir(handle); }
-  };
-  walk('/');
-  return aliases;
-}
-
-export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact: ShellLazyArchiveResolver, replaceOrdinaryPrograms = true): SharedDesktopPackageActivation {
+export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact: ShellLazyArchiveResolver): SharedDesktopPackageActivation {
   const manifest = JSON.parse(readFileSync(resolveArtifact(`programs/${SHARED_DESKTOP_PACKAGE}/programs.json`, SHARED_DESKTOP_PACKAGE), 'utf8'));
   if (manifest.schema !== 1 || manifest.memoryGroup !== 'trusted-v1' || !Array.isArray(manifest.programs)
       || manifest.programs.length !== sharedDesktopPackagePrograms.length) throw Error('Invalid shared desktop SDK package manifest');
   const lazy = fs.lazyEntries();
-  // Validate the complete closure before changing any executable or alias.
+  // Validate the complete closure before granting variant execute permissions.
   const plan = sharedDesktopPackagePrograms.map(row => {
     const records = manifest.programs.filter((entry: { id: string }) => entry.id === row.id);
     if (records.length !== 1) throw Error('Missing or duplicate shared SDK program: ' + row.id);
@@ -80,24 +63,11 @@ export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact
     const metadata = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(section));
     if (failures.length || metadata.version !== G.MEMORY_GROUP_VERSION || metadata.layout !== G.MEMORY_GROUP_LAYOUT
         || metadata.sourceSha256 !== ordinarySha256) throw Error('Shared SDK artifact policy failed: ' + row.id + ': ' + failures.join('; '));
-    const aliases = regularAliases(fs, stat.ino);
-    if (!aliases.includes(path)) throw Error('Shared SDK target is not a regular file: ' + path);
-    return { row, path, preparedPath, stat, backing, archive, aliases, ordinarySha256, groupedSha256: record.groupedSha256 as string };
+    if ((stat.mode & 0o170000) !== 0o100000) throw Error('Shared SDK target is not a regular file: ' + path);
+    return { path, artifactPath: preparedPath, ordinarySha256 };
   });
-  for (const { path, preparedPath, stat, aliases } of plan) {
-    if (!replaceOrdinaryPrograms) { fs.chmod(preparedPath, 0o755); continue; }
-    for (const alias of aliases) fs.unlink(alias);
-    // One real inode owns the prepared bytes, including the package path.
-    // Separate deferred inodes could materialize the same program twice.
-    fs.link(preparedPath, path);
-    fs.chown(path, stat.uid, stat.gid);
-    fs.chmod(path, stat.mode & 0o7777);
-    for (const alias of aliases) if (alias !== path) fs.link(path, alias);
-  }
-  const activation: SharedDesktopPackageActivation = { schema: 1, package: SHARED_DESKTOP_PACKAGE, ...(replaceOrdinaryPrograms ? {} : { selection: "variants" as const }), programs: plan.map(entry => ({
-    requested: entry.row.requested ?? entry.row.guestPath, path: entry.path, ordinarySha256: entry.ordinarySha256, groupedSha256: entry.groupedSha256,
-    uri: entry.archive.uri, bytes: entry.backing.size, artifactPath: entry.preparedPath, aliases: entry.aliases,
-  })) };
+  for (const { artifactPath } of plan) fs.chmod(artifactPath, 0o755);
+  const activation: SharedDesktopPackageActivation = { programs: plan };
   assertSharedDesktopPackageActivation(fs, activation);
   return activation;
 }
@@ -106,37 +76,9 @@ export function assertSharedDesktopPackageActivation(fs: KandeloImageFs, activat
   const lazy = fs.lazyEntries();
   for (const program of activation.programs) {
     const stat = fs.stat(program.path);
-    if (activation.selection === "variants") {
-      const variant = fs.stat(program.artifactPath);
-      if (BigInt(variant.ino) === BigInt(stat.ino) || (variant.mode & 0o111) === 0) throw Error("SDK variant replaced or lost execute permission: " + program.path);
-      const source = lazy.files.find(file => file.path === program.path) ?? lazy.files.find(file => file.ino === BigInt(stat.ino));
-      if (source && source.archiveId === 0 && source.digest.some(Boolean) && Buffer.from(source.digest).toString("hex") !== program.ordinarySha256) throw Error("Ordinary program identity changed: " + program.path);
-      continue;
-    }
-    if (fs.stat(program.artifactPath).ino !== stat.ino) throw Error("Shared SDK package path duplicates program storage: " + program.path);
-    for (const path of program.aliases) {
-      const alias = fs.stat(path), entry = lazy.files.find(file => file.path === path) ?? lazy.files.find(file => file.ino === BigInt(alias.ino));
-      const archive = entry && lazy.archives.find(archive => archive.archiveId === entry.archiveId);
-      if (!alias.deferred || BigInt(alias.ino) !== BigInt(stat.ino) || alias.mode !== stat.mode
-          || alias.uid !== stat.uid || alias.gid !== stat.gid || entry?.size !== program.bytes || archive?.uri !== program.uri) {
-        throw Error('Shared SDK program alias lost its lazy identity: ' + path);
-      }
-    }
+    const variant = fs.stat(program.artifactPath);
+    if (BigInt(variant.ino) === BigInt(stat.ino) || (variant.mode & 0o111) === 0) throw Error("SDK variant replaced or lost execute permission: " + program.path);
+    const source = lazy.files.find(file => file.path === program.path) ?? lazy.files.find(file => file.ino === BigInt(stat.ino));
+    if (source && source.archiveId === 0 && source.digest.some(Boolean) && Buffer.from(source.digest).toString("hex") !== program.ordinarySha256) throw Error("Ordinary program identity changed: " + program.path);
   }
-}
-
-/** The opt-in partial preview advertises only the prepared graphical sessions. */
-export function sharedDesktopPackageDemo(config: import('../../../web-libs/kandelo-session/src/demo-config').KandeloDemoConfig) {
-  const profiles = Object.fromEntries(['cage', 'sway', 'sway-sfwbar'].map(id => {
-    const original = config.profiles?.[id];
-    if (!original) throw Error('Shared desktop package needs the normal ' + id + ' profile');
-    const title = id === 'cage' ? 'Shared-memory Cage desktop' : id === 'sway' ? 'Shared-memory Sway desktop' : 'Shared-memory Sway with SFWBar';
-    return [id, { ...original,
-      requires: [...new Set([...(original.requires ?? []), SHARED_DESKTOP_PACKAGE, 'foot'])],
-      ...(id === 'cage' ? { init: { ...original.init, shellCommand: 'LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini' } } : {}),
-      ...(original.identity ? { identity: { ...original.identity, title, summary: 'Experimental trusted shared-memory desktop.' } } : {}),
-      guide: { ...original.guide, title, summary: 'Experimental compatible, trusted participants. Run freeciv, scummvm-static or scummvm-static-play god-of-thunder from Foot. ' + (original.guide?.summary ?? '') },
-    }];
-  }));
-  return { ...config, defaultProfile: 'cage', profiles };
 }

@@ -118,14 +118,12 @@ export class CageSession {
     }, { timeout: 30_000 }).toBe(true);
   }
 
-  async boot(canonicalProfile?: "cage") {
+  async boot() {
     this.record({ stage: "boot" });
     await installBrowserMemoryBoundaryProbe(this.page);
-    if (canonicalProfile) {
-      this.record({ imageSource: process.env.KANDELO_TEST_MACHINE_URLS
-        ? "explicit prepared shell-image selection" : "canonical browser-main-shell product" });
-      await gotoMachine(this.page, canonicalProfile);
-    } else await this.page.goto("./", { waitUntil: "domcontentloaded" });
+    this.record({ imageSource: process.env.KANDELO_TEST_MACHINE_URLS
+      ? "explicit prepared shell-image selection" : "canonical browser-main-shell product" });
+    await gotoMachine(this.page, "cage");
     await waitForMachineBootInput(this.page);
     await setInternalsOpen(this.page, true);
     await expect.poll(async () => (await this.page.locator(".ksys-line").allInnerTexts()).join("\n"),

@@ -1449,7 +1449,3 @@ reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain
 [[exclusions]]
 name = "wlr-protocols"
 reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
-
-[[exclusions]]
-name = "shared-desktop"
-reason = "historical separate desktop image; normal shell owns Cage, Sway and Sway/SFWBar"

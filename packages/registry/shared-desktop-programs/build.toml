@@ -1,7 +1,7 @@
 script_path = "packages/registry/shared-desktop-programs/build-shared-desktop-programs.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 4
 inputs = [
   "packages/registry/shared-desktop-programs/build-shared-desktop-programs.sh",
   "packages/registry/shared-desktop-programs/prepare.ts",

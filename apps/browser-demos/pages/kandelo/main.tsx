@@ -118,18 +118,12 @@ void (async () => {
     // WHY: the restored image owns its shell and optional runtime entries.
     // Keeping every demo on one assembler prevents a demo-specific overlay
     // from replacing immutable bottle-backed lazy files before serialization.
-    // This build-time embedder choice is deliberately absent from boot links
-    // and image metadata. Only compatible, mutually trusted programs may join.
-    const sharedMemoryPreview = import.meta.env.VITE_KANDELO_TRUSTED_MEMORY_GROUP === "1";
     const host = await import("./kernel-host/live-setup")
       .then(({ createLiveHost }) => createLiveHost({
-        managedComputers: !sharedMemoryPreview && experimentalPersistenceName === null,
-        experimentalMemoryGroup: sharedMemoryPreview
-          ? { maximumPages: 8192 } : undefined,
+        managedComputers: experimentalPersistenceName === null,
         computerId: qs.get(COMPUTER_QUERY_PARAM),
         profile: bootQuery.profileId,
-        vfsUrl: bootQuery.vfsImageUrl ?? (sharedMemoryPreview
-          ? import.meta.env.VITE_KANDELO_TRUSTED_DESKTOP_IMAGE_URL ?? null : null),
+        vfsUrl: bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
         inputs: linkDescriptor?.boot.inputs ?? null,
         parameters: linkDescriptor?.boot.parameters ?? null,

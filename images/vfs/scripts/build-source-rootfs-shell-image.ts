@@ -1,5 +1,5 @@
 import { activateSharedDesktopPackage, assertSharedDesktopPackageActivation } from './shared-desktop-package';
-import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_IMAGE_PACKAGES, SHARED_DESKTOP_PARTIAL_COMMAND, SHARED_DESKTOP_DEMO_CONFIG_PATH } from './shared-desktop-package-contract';
+import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_IMAGE_PACKAGES, SHARED_DESKTOP_PARTIAL_COMMAND } from './shared-desktop-package-contract';
 /** Compose the canonical browser shell from resolver-owned package outputs. */
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1764,16 +1764,13 @@ export async function buildSourceRootfsShellImage(
   // The rootfs owns its own eager programs (login); only what this composer
   // adds is held to the lazy default.
   const sourceEagerPrograms = eagerWasmPrograms(fs);
-  const useSharedDesktop = selection.kind === "desktop";
   const installSharedVariants = includes(SHARED_DESKTOP_PACKAGE);
   if (installSharedVariants) {
     const missing = SHARED_DESKTOP_IMAGE_PACKAGES.filter(pkg => !includes(pkg));
     if (missing.length) throw Error('Shared SDK artifacts need their ordinary image packages: ' + missing.join(', ') + '. Build: ' + SHARED_DESKTOP_PARTIAL_COMMAND);
   }
-  const composedDemo = useSharedDesktop
-    ? new Uint8Array(readFileSync(SHARED_DESKTOP_DEMO_CONFIG_PATH))
-    : composeSourceRootfsDemoConfig(inputs.demoConfigPath,
-      requiredInput(inputs.demoProfileOverlayPath, 'demo profile overlay'));
+  const composedDemo = composeSourceRootfsDemoConfig(inputs.demoConfigPath,
+    requiredInput(inputs.demoProfileOverlayPath, 'demo profile overlay'));
   const demoSelection = selectDemoConfig(composedDemo, selection);
   const demo = demoSelection.bytes;
   const includedProfiles = new Set(demoSelection.included);
@@ -1988,13 +1985,6 @@ export async function buildSourceRootfsShellImage(
     fs.chmod(path, 0o755);
   }
   if (includes("sdl2-demo")) writeSdl2ShaderPresets(fs);
-  // The trusted desktop exposes the standard command through the real static
-  // engine variant. Its package data/launcher stay authoritative; grouped
-  // execution cannot instantiate ScummVM's dynamic engine side modules.
-  if (useSharedDesktop && includes("scummvm-static") && !includes("scummvm")) {
-    fs.symlink("/usr/bin/scummvm-static", "/usr/bin/scummvm");
-    fs.symlink("/usr/bin/scummvm-static-play", "/usr/bin/scummvm-play");
-  }
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
@@ -2007,9 +1997,9 @@ export async function buildSourceRootfsShellImage(
   // same layout contract as saveImage before publishing deferred archives.
   assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
-  // Normal composition and source-preservation checks above run first. Only
-  // an explicitly selected desktop composition may replace the validated executable closure.
-  const sharedDesktop = installSharedVariants ? activateSharedDesktopPackage(fs, inputs.resolveArtifact, useSharedDesktop) : null;
+  // Normal composition and source-preservation checks run first; SDK variants
+  // receive execute permissions only after their complete closure validates.
+  const sharedDesktop = installSharedVariants ? activateSharedDesktopPackage(fs, inputs.resolveArtifact) : null;
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
   // WHY: every visitor downloads and decompresses the eager content before
@@ -2033,7 +2023,6 @@ export async function buildSourceRootfsShellImage(
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
       shellComposition: PACKAGE_ROOTFS_SHELL_COMPOSITION,
-      ...(sharedDesktop ? { trustedMemoryGroup: sharedDesktop } : {}),
       // Only a partial shell says so: canonical metadata stays unchanged.
       ...(selection.kind === "partial"
         ? {

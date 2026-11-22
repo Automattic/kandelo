@@ -1322,15 +1322,13 @@ when explicitly configured with `experimentalMemoryGroup`; an ordinary launch
 refuses the required `kandelo.memory-group.v3.memory` import. Path launch keeps
 the kernel's retained executable descriptor and credentials. Compatible
 `posix_spawn` children of grouped parents use the same checked admission.
-The normal browser app has an explicit `--trusted-desktop-preview` development
-and production build choice for a temporary normal partial shell. The
-`shared-desktop-programs` package prepares compatible programs through the SDK,
-each in its own lazy archive. Explicit partial selection activates those
-variants at ordinary guest paths; canonical ordinary paths stay unchanged.
-See [the desktop launch contract](shared-memory-groups.md#normal-partial-shell-preview). This is an
-experimental path; further lifecycle and browser-memory validation remains
-required before promotion. Ordinary programs, including PHP-FPM, keep their existing build
-and launch behavior.
+The normal shell image includes the `shared-desktop-programs` package, with
+separate lazy SDK alternatives alongside ordinary executables. Cage, Sway
+and Sway/SFWBar profiles and Activities explicitly select the memory-group
+backend. Other shell launches keep ordinary execution, and normal computer
+file persistence applies. See [the desktop launch contract](shared-memory-groups.md#shell-desktops-and-partial-development-images).
+Ordinary programs, including PHP-FPM, keep their existing build and launch
+behavior. Persistent writable shared mappings remain unsupported.
 
 `NodeKernelHost.getMemoryGroupUsage()` and `BrowserKernel.getMemoryGroupUsage()`
 provide copied admission and backing accounting without creating a group or

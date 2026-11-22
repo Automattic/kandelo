@@ -1021,7 +1021,14 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 
 The supported desktop selection is Cage with Foot, Sway with its native bar, and the Sway configuration using SFWBar. The gallery no longer exposes labwc, Omarchy or the custom Wayland desktop. Their recipes and sources are retained for explicit follow-up builds, while the normal supported build excludes their exclusive dependencies, including Quickshell/Qt and the custom compositor. The `desktop-data` package supplies shared fonts, keymaps, Foot and Sway configuration without compiling those retired programs.
 
-The retained gallery profiles now select the authored `browser-shared-desktop` product, a small rootfs image with package-owned lazy program/data references. The browser enables its trusted memory group for a temporary machine; ordinary shell and PHP products keep their own execution and storage behavior. Custom images cannot request this host capability through metadata. Canonical builds and real gallery execution remain validation gates for this migration. SFWBar now packages its real application-menu implementation in the main executable to avoid unsupported grouped side modules. Its rendered menu and application-launch checks remain integration requirements; retaining a profile in the source does not establish successful grouped execution.
+The retained gallery profiles use `browser-main-shell`. Desktop Activities
+select the shared backend for their own process family in the same computer;
+ordinary shell programs keep ordinary execution and normal files retain the
+computer's storage policy. The shell supplies independently lazy SDK
+alternatives without replacing ordinary executable identities. Custom image
+metadata cannot grant the host capability. SFWBar links its application-menu
+implementation into its executable because grouped side modules remain
+unsupported. See [the shell desktop contract](shared-memory-groups.md#ordinary-shell-image-integration).
 
 ### Wayland desktop demo (retired from the default build)
 
@@ -5077,41 +5084,12 @@ standalone forms. The reproduction is retained for checking released
 Firefox versions before removing the workaround.
 
 
-### Opt-in grouped desktop display transport
+### Shared desktop display transport
 
-The developer preview is a separate opt-in build. From the repository root,
-prepare the normal canonical products, install the normal structural decoder,
-then derive a compatible desktop image through the SDK:
-
-```bash
-scripts/dev-shell.sh bash -c '
-  set -euo pipefail
-  ./run.sh build-browser --out "$PWD/.scratch/kandelo-browser"
-  bash scripts/build-fork-instrument-tool.sh
-  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
-  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
-  ordinary="$(bash scripts/resolve-binary.sh programs/wasm32/shell.vfs.zst)"
-  mkdir -p .scratch/shared-desktop-images
-  export KANDELO_GROUPED_DESKTOP_IMAGE="$PWD/.scratch/shared-desktop-images/grouped.vfs.zst"
-  node --import tsx images/vfs/scripts/prepare-shared-desktop-image.ts \
-    "$ordinary" "$KANDELO_GROUPED_DESKTOP_IMAGE"
-  apps/browser-demos/node_modules/.bin/vite build \
-    --config apps/browser-demos/vite.grouped-desktop.config.ts \
-    --outDir "$PWD/.scratch/shared-desktop-preview"
-  apps/browser-demos/node_modules/.bin/vite preview \
-    --config apps/browser-demos/vite.grouped-desktop.config.ts \
-    --outDir "$PWD/.scratch/shared-desktop-preview" \
-    --host 127.0.0.1 --port 6209 --strictPort
-'
-```
-
-Use an unused port, then open `/grouped-desktop.html` and select **Start shared
-desktop**. Stop releases that temporary machine; another Start creates a fresh
-filesystem. The separately built full app still uses ordinary execution. This
-preview does not enable persistent writable sharing or arbitrary graphical
-clients. Initial preparation can be a long build; use the repository's
-[`agent-job` workflow](agent-guidance/validation.md#waiting-on-long-builds-and-suites)
-when running it unattended.
+Cage, Sway and Sway/SFWBar run through the normal shell profiles and Activities.
+Use `./run.sh browser` for the canonical image, or `./run.sh browser --partial`
+with the [desktop package selection](shared-memory-groups.md#shell-desktops-and-partial-development-images).
+No additional preview build flag or derived desktop image is needed.
 
 Grouped byte launches on Node and browser publish completion only after exact
 execution-image retirement and the existing Rust-owned root reap. Rust checks
@@ -5121,26 +5099,12 @@ reap deferred by a busy kernel entry, even after its execution image leaves the
 live map. The live process list omits zombies; use the actual `/proc/PID/stat`
 record when verifying root reclamation.
 
-The experimental `grouped-desktop.html` page consumes its freshly fetched boot
-image with `BrowserKernel.initFromOwnedImage`, transferring the decoded bytes
-to the kernel Worker rather than preserving a main-thread restart copy. Stop
-aborts a pending image fetch, awaits machine destruction and outstanding session
-operations, drops the closed host and enables Start for a fresh temporary
-machine. Repeated starts use the same loaded page; they do not reload or import
-another entry module. Controls and late callbacks remain bound to their owning
-session. It selects
-`BrowserKernel.kmsAttachBitmapRelay` for its Sway/Foot display. This is a browser
-device transport: the kernel Worker renders to detached canvases, and a separate
-disposable display Worker owns the visible `bitmaprenderer` canvases. Independent
-`ImageBitmap` objects cross a private port; guest memories, their backing buffers
-and views do not enter the display Worker or browser main. Ordinary
-`kmsAttachCanvas` consumers and Node retain their existing presentation path.
-
-The page reports startup readiness after its image's normal window decorations
-have reached Sway's current scene state. A visible IPC node can describe pending
-layout before the first click can target that terminal. This preset check does
-not establish client-buffer completion for later window resizes, and does not
-change Sway's transaction timeout or the platform's input behavior.
+The shell configures `BrowserKernel.kmsAttachBitmapRelay` through its normal
+KMS attachment API. This device transport renders into detached canvases in
+the kernel worker and presents independent `ImageBitmap` objects in a
+disposable display worker. Guest memories, their backing buffers and views
+never enter the display worker or browser main. Embedders without this group
+configuration and the Node host retain their existing presentation paths.
 
 At most one bundle of up to two changed planes is captured or awaiting an exact
 sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capture
@@ -5158,23 +5122,9 @@ do not establish a net memory saving, and their results do not validate the new
 snapshot path's memory or performance. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
 for the workload, response endpoints, limitations and remaining acceptance.
 
-The normal browser app explicitly enables this temporary trusted desktop with
-`browser --partial --trusted-desktop-preview`. Build the normal partial shell
-with the `shared-desktop-programs` SDK package and its ordinary application/data
-packages first. Each prepared program remains a separate lazy archive. The
-launch validates the existing partial image, retains the normal login path and
-defaults to Cage/Foot; Sway/Foot is also offered. It creates no second image.
-Ordinary canonical images keep their ordinary executable paths and memory
-backend. `build-browser --trusted-desktop-preview` also requires this prepared
-partial image after its canonical browser preparation. The build validates the
-full authored SDK participant inventory; the image-owned demo metadata selects
-the desktop profile. The app does not manufacture a package-specific machine
-description during packaging. See
-[normal partial-shell preview](shared-memory-groups.md#normal-partial-shell-preview)
-for the exact command, compatibility limits and remaining acceptance.
-The normal trusted preview has a 512 MiB shared backing ceiling without an
-additional small process/task quota. Embedders may supply explicit count quotas;
-kernel metadata, backing allocation and host Workers remain finite resources.
+The shell's group has a 512 MiB backing ceiling without an additional small
+process/task quota. Embedders can supply explicit count quotas; kernel
+metadata, backing allocation and host workers remain finite resources.
 
 Shutdown stops frame admission synchronously, waits for any pending capture,
 and closes late images. It sends an ordered retirement request naming the last

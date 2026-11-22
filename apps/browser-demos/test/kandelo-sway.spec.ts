@@ -367,9 +367,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
 
   const startupErrors: string[] = [];
   page.on("pageerror", error => startupErrors.push(error.stack ?? error.message));
-  const previewUrl = process.env.KANDELO_TEST_SWAY_PREVIEW_URL;
-  if (previewUrl === undefined) await gotoMachine(page, "sway");
-  else await page.goto(previewUrl, { waitUntil: "domcontentloaded" });
+  await gotoMachine(page, "sway");
 
   await openSurface(page, "Internals");
   await expect

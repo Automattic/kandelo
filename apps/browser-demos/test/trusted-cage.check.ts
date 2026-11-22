@@ -30,7 +30,7 @@ async function inspectGroup(page: Page) {
 async function check(page: Page, info: TestInfo, run: (session: CageSession) => Promise<void>) {
   const session = new CageSession(page, info);
   try {
-    await session.boot(process.env.KANDELO_TEST_CANONICAL_DESKTOP === "1" ? "cage" : undefined);
+    await session.boot();
     await run(session);
     await session.assertQuiet();
     session.record({ passed: true, stage: "complete" });

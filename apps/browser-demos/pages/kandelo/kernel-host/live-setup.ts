@@ -644,9 +644,6 @@ const FBTEST_ENV: string[] = [
 export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
-  /** Trusted embedder opt-in only; never decoded from an image or boot link.
-   * Participants share an address space. Persistent machines are unsupported. */
-  experimentalMemoryGroup?: TrustedMemoryGroupOptions;
   managedComputers?: boolean;
   computerId?: string | null;
   experimentalPersistenceName?: string | null;
@@ -679,12 +676,6 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(
   opts: CreateLiveHostOptions = {},
 ): Promise<LiveKernelHost> {
-  if (opts.experimentalMemoryGroup !== undefined) {
-    if (opts.managedComputers || opts.computerId || opts.experimentalPersistenceName) {
-      throw new Error("Trusted shared-memory preview requires a temporary machine");
-    }
-    opts = { ...opts, experimentalMemoryGroup: { ...opts.experimentalMemoryGroup } };
-  }
   const initialLease = opts.computerId
     ? await acquireFixedPersistenceRuntimeLease(browserComputerStorageName(opts.computerId))
     : null;
@@ -1133,7 +1124,6 @@ async function createLiveHostWithLease(
           computer === null ? undefined : filesystemProfileId(computer),
           computer?.referenceImageIdentity,
           managedComputerId === undefined ? undefined : async identity => { await computerStore!.update(managedComputerId, { referenceImageIdentity: identity }); },
-          opts.experimentalMemoryGroup,
         );
         let booted: Awaited<ReturnType<typeof boot>>;
         try {
@@ -1616,7 +1606,6 @@ async function bootProfile(
   storageProfileId?: string | null,
   referenceImageIdentity?: string,
   recordReferenceIdentity?: (identity: string) => Promise<void>,
-  experimentalMemoryGroup?: TrustedMemoryGroupOptions,
 ): Promise<{
   kernel: BrowserKernel;
   persistenceIdentity: string | null;
@@ -1735,11 +1724,12 @@ async function bootProfile(
   profile = await bindVfsProduct(profile);
   assertCurrent();
 
+  let experimentalMemoryGroup: TrustedMemoryGroupOptions | undefined;
   // Authored shell images may select SDK alternatives per desktop launch.
   // Ordinary roots keep their normal backend and filesystem persistence policy.
   if (profile.productId === "browser-main-shell"
       || (isPartialImageUrl(profile.vfsUrl) && PARTIAL_IMAGE?.manifest.productId === "browser-main-shell")) {
-    experimentalMemoryGroup ??= { maximumPages: 8192, preparedPrograms: {
+    experimentalMemoryGroup = { maximumPages: 8192, preparedPrograms: {
       catalogPath: "/usr/share/kandelo/shared-desktop/programs.json",
       artifactRoot: "/usr/libexec/kandelo/shared-desktop/",
     } };

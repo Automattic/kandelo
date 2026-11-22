@@ -4795,11 +4795,6 @@ function sendThreadExit(
   channel.publishAndWait();
 }
 
-/** @internal Actual worker channel operations for Node/browser contract checks. */
-export const __testWorkerContinuationIPC = Object.freeze({
-  mmap: continuationMmap, munmap: continuationMunmap, fork: sendForkSyscall, threadExit: sendThreadExit,
-});
-
 /**
  * Patch a Wasm binary for use in a thread instance (shared memory).
  *

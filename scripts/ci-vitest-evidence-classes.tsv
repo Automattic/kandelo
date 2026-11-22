@@ -216,7 +216,6 @@ host/test/gles-surfaceless-default.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
-host/test/grouped-desktop-output.test.ts	source-only
 host/test/grouped-fork-launch.test.ts	source-only
 host/test/grouped-root-launch.test.ts	prepared-product
 host/test/grouped-sdk-execution.test.ts	prepared-product
