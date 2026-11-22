@@ -1,5 +1,8 @@
 {
   "abi_surfaces": {
+    "frozen_baseline_record": [
+      "program_legacy_requests"
+    ],
     "kernel_host": [
       "dri_cleanup_status",
       "entropy_read_wire",
@@ -10089,6 +10092,133 @@
         "i64"
       ]
     }
+  },
+  "program_legacy_requests": {
+    "baseline_abi_version": 56,
+    "issuer": "libc/musl-overlay/src/thread/wasm32posix (PTHREAD_PROCESS_SHARED mutex, condition and barrier)",
+    "requests": [
+      {
+        "args": [
+          "mutex_type"
+        ],
+        "name": "SYS_PSHARED_MUTEX_INIT",
+        "number": 400,
+        "result": "new nonzero object id, or -errno"
+      },
+      {
+        "args": [
+          "mutex_id"
+        ],
+        "name": "SYS_PSHARED_MUTEX_LOCK",
+        "number": 401,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "mutex_id"
+        ],
+        "name": "SYS_PSHARED_MUTEX_TRYLOCK",
+        "number": 402,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "mutex_id"
+        ],
+        "name": "SYS_PSHARED_MUTEX_UNLOCK",
+        "number": 403,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "mutex_id"
+        ],
+        "name": "SYS_PSHARED_MUTEX_DESTROY",
+        "number": 404,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [],
+        "name": "SYS_PSHARED_COND_INIT",
+        "number": 405,
+        "result": "new nonzero object id, or -errno"
+      },
+      {
+        "args": [
+          "cond_id",
+          "mutex_id"
+        ],
+        "name": "SYS_PSHARED_COND_WAIT_BEGIN",
+        "number": 406,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "cond_id",
+          "mutex_id"
+        ],
+        "name": "SYS_PSHARED_COND_WAIT_CHECK",
+        "number": 407,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "cond_id"
+        ],
+        "name": "SYS_PSHARED_COND_SIGNAL",
+        "number": 408,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "cond_id"
+        ],
+        "name": "SYS_PSHARED_COND_BROADCAST",
+        "number": 409,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "cond_id"
+        ],
+        "name": "SYS_PSHARED_COND_DESTROY",
+        "number": 410,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "count"
+        ],
+        "name": "SYS_PSHARED_BARRIER_INIT",
+        "number": 411,
+        "result": "new nonzero object id, or -errno"
+      },
+      {
+        "args": [
+          "barrier_id"
+        ],
+        "name": "SYS_PSHARED_BARRIER_WAIT",
+        "number": 412,
+        "result": "PTHREAD_BARRIER_SERIAL_THREAD (-1) for one waiter per round, 0 for the others, or -errno"
+      },
+      {
+        "args": [
+          "barrier_id"
+        ],
+        "name": "SYS_PSHARED_BARRIER_DESTROY",
+        "number": 413,
+        "result": "0, or -errno"
+      },
+      {
+        "args": [
+          "cond_id"
+        ],
+        "name": "SYS_PSHARED_COND_WAIT_ABORT",
+        "number": 414,
+        "result": "0"
+      }
+    ],
+    "transport": "ordinary syscall channel; arguments are 32-bit object ids or counts"
   },
   "spawn_contract": {
     "action_record": {

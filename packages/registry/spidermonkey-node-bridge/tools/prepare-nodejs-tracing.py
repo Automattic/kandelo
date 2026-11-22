@@ -12,32 +12,6 @@ def prepare(manifest, output):
     records = {row['path']: row for row in document['files']}
     if output.resolve().is_relative_to(manifest.parent.resolve()):
         raise ValueError('output must be outside immutable import')
-    names = sorted(name for name in records if name.startswith('src/tracing/'))
-    names += ['src/node_mutex.h', 'src/node_version.h', 'src/node_trace_events.cc']
-    for name in names:
-        data = (manifest.parent / 'upstream' / name).read_bytes()
-        record = records[name]
-        if len(data) != record['bytes'] or hashlib.sha256(data).hexdigest() != record['sha256']:
-            raise ValueError('native tracing source identity mismatch: ' + name)
-        destination = output / name.removeprefix('src/')
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
-
-    # Only declarations/primitive adapters are supplied by the embedding. All
-    # agent, buffering, writer, path expansion and serializer bodies stay whole.
-    include = '#include "shell/node-upstream/trace-agent-native-api.h"\n'
-    for name in ['node.h', 'node_internals.h', 'util.h', 'util-inl.h',
-                 'env-inl.h', 'debug_utils-inl.h', 'node_metadata.h', 'node_options.h']:
-        (output / name).write_text(include)
-    binding = output.parent / 'trace-binding-upstream'
-    binding.mkdir(parents=True, exist_ok=True)
-    (binding / 'node_trace_events.cc').write_bytes((output / 'node_trace_events.cc').read_bytes())
-    for name in ['base_object-inl.h', 'env-inl.h', 'memory_tracker-inl.h', 'node.h',
-                 'node_external_reference.h', 'node_internals.h', 'node_v8_platform-inl.h',
-                 'util-inl.h', 'permission/permission.h']:
-        destination = binding / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text('#include "shell/node-upstream/trace-binding-native-api.h"\n')
     builtins = output.parent / 'trace-builtins-upstream'
     originals = ['deps/v8/src/builtins/builtins-trace.cc',
                  'deps/v8/src/common/message-template.h',
@@ -58,12 +32,12 @@ def prepare(manifest, output):
                  'src/tracing/traced-value.h']:
         destination = builtins / name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text('#include "shell/node-upstream/trace-builtin-native-api.h"\n')
+        destination.write_text('#include "kandelo-node/trace-builtin-native-api.h"\n')
     for name in ['src/base/bit-field.h', 'src/base/vector.h', 'src/base/logging.h',
                  'src/common/globals.h', 'src/utils/utils.h']:
         destination = builtins / name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text('#include "shell/node-upstream/trace-unicode-native-api.h"\n')
+        destination.write_text('#include "kandelo-node/trace-unicode-native-api.h"\n')
     messages = (builtins / 'src/common/message-template.h').read_text().replace('\\\n','')
     expected = {
         'TraceEventCategoryError': 'Trace event category must be a string.',
@@ -81,7 +55,7 @@ def prepare(manifest, output):
     header += ''.join('case MessageTemplate::k'+key+': return '+json.dumps(text)+';\n' for key,text in expected.items())
     header += '}\nreturn nullptr;\n}\n}\n'
     (builtins / 'messages.generated.h').write_text(header)
-    return {'completeNativeFiles': len(names), 'functionBodiesExtracted': False,
+    return {'completeNativeFiles': len(originals), 'functionBodiesExtracted': False,
             'javascriptGenerated': False}
 
 

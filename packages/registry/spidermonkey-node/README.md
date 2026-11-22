@@ -52,9 +52,10 @@ Normal-app JS/default TypeScript, REPL/await, Fetch and npm checks passed on all
 three browser engines. Exact artifacts and full receipts remain in the preserved
 local shipping checkpoint; these are bounded results, not module conformance.
 
-The package-source-layout cleanup needs fresh qualification. Prior results are
-not relabelled as results for rebuilt artifacts. Historical research, probes and
-reports are preserved locally, outside the port's maintained source/test surface.
+The current simplification and develop reconciliation are unbuilt and untested,
+at the user's request, for source review before further qualification. Prior
+results are not results for this source update. Historical research, probes and
+reports remain preserved locally. The older frontend is absent from the port.
 
 All 19 core families remain required and unfinished. The B6 complete catalog and
 roadmap review still gates later activation. RSS reporting currently reaches

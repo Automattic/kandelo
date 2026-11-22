@@ -1,0 +1,16 @@
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -2220,7 +2220,12 @@
+ @depends(target, build_environment)
+ def visibility_flags(target, env):
+     if target.os != "WINNT":
+-        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD"):
++        # Kandelo: wasm32 builds against libc++, like the BSDs, and produces a
++        # static executable with no dynamic symbol table, so use the flag-based
++        # scheme rather than the gcc_hidden.h pragma. wrap_system_includes()
++        # below still returns True, so dist/system_wrappers is generated, but
++        # only the pragma flags put it on the include path.
++        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD") or target.cpu == "wasm32":
+             return ("-fvisibility=hidden", "-fvisibility-inlines-hidden")
+         return (
+             "-I%s/system_wrappers" % os.path.join(env.dist),

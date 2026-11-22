@@ -62,9 +62,10 @@ choice:
 - **Shared-memory coherence.** `mmap` `MAP_SHARED` mappings and
   `shared_memory` blocks converge between processes at syscall
   boundaries, not on each store (the same `docs/posix-status.md` entry).
-- **`mmap.resize()` and `mmap.madvise()`.** The SDK's `config.site`
-  reports `mremap()` and `madvise()` absent, so `resize()` raises
-  `SystemError` and `madvise()` is not defined.
+- **`mmap.madvise()`** passes advice to the kernel's `madvise()`:
+  `MADV_DONTNEED` zero-fills private anonymous pages, and advice Kandelo
+  cannot carry out raises `OSError` (`docs/posix-status.md`,
+  `posix_madvise()` / `madvise()`). `resize()` uses `mremap()`.
 - **`resource.getrusage()`** returns zeros: Wasm hosts expose no process
   accounting (`docs/posix-status.md`, `getrusage()`).
 

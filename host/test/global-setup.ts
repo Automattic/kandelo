@@ -151,6 +151,7 @@ const TEST_PROGRAMS = [
   "mqueue_test.c",
   "epoll_semantics_test.c",
   "mmap_file_test.c",
+  "mremap_madvise_test.c",
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
   "select_signal_test.c",
@@ -215,6 +216,7 @@ const TEST_PROGRAMS = [
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
+  "psync_semantics_test.c",
 ];
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
@@ -248,6 +250,8 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "unix_dgram_cross_process_test.c",
   // Forks a client so the daemon half is a different process.
   "syslog_client_test.c",
+  // Runs every case in a forked child, and most cases fork a peer.
+  "psync_semantics_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */

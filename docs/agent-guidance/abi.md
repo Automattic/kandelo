@@ -51,6 +51,13 @@ Treat these as ABI surface:
 - Generated TypeScript ABI constants under `host/src/generated/abi.ts`.
 - VFS image metadata that binds images carrying Wasm programs to a kernel ABI.
 
+A third surface, `frozen_baseline_record`, records program-observable
+behavior that the frozen ABI-56 baseline already depends on but never
+digested (today: process-shared pthread requests 400–414). It is checked
+and frozen but not hashed, so recording it leaves existing programs
+valid. Never put a new interface there. See docs/abi-versioning.md,
+"Frozen baseline records".
+
 Programs bind to the program surface only. Every built program carries a
 `kandelo.abi.contract` digest of `ABI_VERSION` plus the snapshot sections
 `xtask dump-abi` marks `Surface::Program`, and the host refuses a program

@@ -184,7 +184,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
         )}
 
         <div className="kshare-body">
-          {host.computers?.getSnapshot().current && <p>Shares the starting image, not this computer’s saved files. Use an image export to transfer your changes.</p>}
+          {host.computers?.getSnapshot().current && <p>Shares the starting image, not this computer’s saved files. Use More → Export files… to download your files.</p>}
           {/* Script */}
           <div className="kshare-script">
             <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>

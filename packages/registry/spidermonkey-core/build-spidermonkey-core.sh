@@ -19,31 +19,7 @@ source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot spidermonkey-core "$REPO_ROOT/sysroot" libcxx libuv v8-tracing)"
 kandelo_package_stage_primary_source spidermonkey-core "$SOURCE" "$WORK_DIR"
 python3 "$SCRIPT_DIR/apply-engine-patches.py" --source "$SOURCE" \
-    --patch-directory "$REPO_ROOT/packages/registry/spidermonkey/patches" \
-    --manifest "$SCRIPT_DIR/engine-patches.json" --receipt "$WORK_DIR/engine-patches-applied.json"
-# Producer patches follow the verified target chain. Reject offsets here as in
-# the base projection; an unnoticed earlier edit must not change their context.
-python3 - "$SOURCE" "$SCRIPT_DIR/patches" <<'PY'
-from pathlib import Path
-import re, subprocess, sys
-failed = []
-for patch in sorted(Path(sys.argv[2]).glob('*.patch')):
-    result = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', sys.argv[1]],
-                            input=patch.read_bytes(), capture_output=True)
-    diagnostic = (result.stdout + result.stderr).decode()
-    print(diagnostic, end='', flush=True)
-    if result.returncode or re.search(r'fuzz|offset', diagnostic, re.I):
-        failed.append(patch.name)
-if failed:
-    raise SystemExit('Producer engine patch pass failed: ' + ', '.join(failed))
-PY
-
-# Resolve every Rust executable through the declared dev shell, never rustup's
-# unrelated default toolchain or the user's Cargo home.
-for item in rustc:RUSTC cargo:CARGO rustdoc:RUSTDOC rustfmt:RUSTFMT cbindgen:CBINDGEN; do
-    executable="$(command -v "${item%%:*}")"
-    export "${item##*:}=$executable"
-done
+    --package "$SCRIPT_DIR" --receipt "$WORK_DIR/engine-patches-applied.json"
 export CC='wasm32posix-cc -D__kandelo__=1'
 export CXX='wasm32posix-c++ -D__kandelo__=1'
 export AS='wasm32posix-cc -D__kandelo__=1'

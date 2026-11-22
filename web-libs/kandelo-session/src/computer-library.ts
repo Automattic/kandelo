@@ -42,6 +42,8 @@ export interface StoredComputer {
    * different build resets the filesystem instead of booting on stale state.
    */
   partialImageSha256?: string;
+  /** SHA-256 identity of the original reference; retained across restarts. */
+  referenceImageIdentity?: string;
 }
 
 export interface ComputerLibrarySnapshot {

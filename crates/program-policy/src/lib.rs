@@ -184,7 +184,6 @@ mod tests {
     #[test]
     fn inspection_round_trips_exact_source_policy_and_limits() {
         let inspection = Inspection::read(SOURCE, limits()).unwrap();
-        // SOURCE is the sealed v56 fixture, independent of the live ABI epoch.
         assert_eq!(inspection.surface().abi_version, Some(56));
         assert_eq!(inspection.source(), identity(SOURCE));
         assert_eq!(inspection.original(), None);

@@ -442,22 +442,23 @@ and the rest ran outside the dev shell from the repo root. If a vitest job
 log's ` RUN  v… <path>` line names the repo root instead of `.../host`, the
 run used the wrong config and toolchain, and its results are invalid.
 
-- **Waiting:** choose by session type. An interactive main session runs
-  `scripts/agent-job wait <id> --timeout 0` once with the Bash tool's
-  `run_in_background` and acts on its single completion notification.
-  Never write Monitor, `until`, or `sleep` loops over status files or
-  `agent-job list`; expiring waiters create re-arm turns. A headless
-  main session repeats foreground `agent-job wait <id>` (540 s default).
-  A subagent waiting on targeted work uses foreground
-  `agent-job wait <id> --timeout 240`, one wait per Bash call, until it
-  returns the job's status. Keep the explicit timeout on retries, including
-  waits by peer id. Repeat only when the wait-window notice says
-  `agent-job: still running`. Exit 124 alone is ambiguous: a finished
-  command can itself exit 124 (for example, when killed by `timeout`).
-  `FAILED (exit 124)` is a completed failure, not a retry. It must not end
-  its turn while waiting: it stops there, and the result is lost. If an
-  agent client yields a running terminal session, resume that session to
-  collect the result.
+- **Interactive main sessions** start one `scripts/agent-job wait <id> --timeout 0`
+  with Bash's `run_in_background: true` and `timeout: 7200000`. The
+  7,000 s window leaves 200 s of margin below the 7,200,000 ms Bash
+  background cap. Set `KANDELO_AGENT_WAIT_WINDOW_SECONDS` to an integer
+  from 1 to 7000 to shorten the window. On a still-running notification,
+  execute the printed `re-arm:` command exactly once with the printed
+  Bash settings, then wait for the next notification. Use notifications
+  alone, without manual polls or foreground wait loops.
+- **Headless main sessions** repeat foreground `agent-job wait <id>`
+  (540 s default). A subagent waiting on targeted work uses foreground
+  `agent-job wait <id> --timeout 240`, one wait per Bash call, until the
+  job finishes. Keep the explicit timeout on retries, including waits by
+  peer id. Repeat only on the `agent-job: still running` wait-window
+  notice. Keep the turn open while waiting. If an agent client yields a
+  running terminal session, resume that session to collect the result.
+  Use `agent-job wait` in place of Monitor, `until`, or `sleep` loops
+  over status files or `agent-job list`.
 - **Subagents** must not wait on whole-tree builds or full suites. A
   subagent's prompt cache was observed to expire after about 5 minutes,
   so long blocking calls can rewrite its whole context. Return other known
@@ -553,7 +554,7 @@ run used the wrong config and toolchain, and its results are invalid.
     stderr and exits 2; then wait on one by id. A job that itself exits
     2 also makes `wait` exit 2, so read the output.
   - **Pin retries to the resolved job id.** If a selector wait times out,
-    use the id printed in `waiting on <id>` or the `resume with:` command.
+    use the id printed in `waiting on <id>` or run the `re-arm:` command.
     Never repeat `--peer`: the original can finish before the next call,
     so the selector can match a replacement job or miss the original's
     recorded result. Wait by id to retain that job's outcome.
@@ -563,10 +564,12 @@ run used the wrong config and toolchain, and its results are invalid.
   any program package whose artifact closure would fail to resolve with
   "Package artifact closure is incomplete". It takes about 3 s once warm, and
   saves the minutes a suite would spend reaching the same error.
-- **Results:** `agent-job result <id>` gives the final exit status, log
-  tail and `[suite-health]` lines. A LOST result means the run failed to
-  record completion; it is not a pass. Search the saved log around
-  relevant errors rather than reading it whole.
+- **Results:** both `agent-job wait <id>` and `agent-job result <id>`
+  report a completed job's exit status, log tail and `[suite-health]`
+  lines. CLI exit 124 is reserved for a still-running job. When the job
+  itself exits 124, both commands print `FAILED (exit 124)` and return
+  CLI exit 1. A LOST result means the run failed to record completion.
+  Search the saved log around relevant errors to diagnose a failure.
 - **Every Vitest run** ends with a `[suite-health]` line. When many files
   fail to load, it groups them by the missing thing, so one line replaces
   scrolling hundreds of failure blocks. `WARN` means part of the suite did

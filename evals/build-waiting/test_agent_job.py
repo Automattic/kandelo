@@ -97,7 +97,8 @@ class AgentJobTest(JobsDirCase):
         self.assertEqual(set(hints), {"interactive main", "headless main", "subagent"}, started)
         self.assertIn("run_in_background: true", hints["interactive main"])
         self.assertIn("--timeout 0", hints["interactive main"])
-        self.assertIn("one completion notification", hints["interactive main"])
+        self.assertIn("timeout: 7200000", hints["interactive main"])
+        self.assertIn("re-arm once per still-running notice", hints["interactive main"])
         self.assertIn("foreground", hints["headless main"])
         self.assertIn("repeat only if wait reports still running", hints["headless main"])
         self.assertIn("FAILED (exit 124) is final", hints["headless main"])
@@ -158,17 +159,18 @@ class AgentJobTest(JobsDirCase):
         self.assertEqual(code, 7)
 
     def test_finished_exit_124_is_a_final_failure_not_a_wait_timeout(self):
-        job_id = self.agent_job("start", "--", "exit 124").stdout.splitlines()[0]
+        job_id = self.agent_job("start", "--", "echo command-timed-out; exit 124").stdout.splitlines()[0]
         for timeout in ("30", "0"):
             with self.subTest(timeout=timeout):
                 waited = self.agent_job("wait", job_id, "--timeout", timeout, check=False)
-                self.assertEqual(waited.returncode, 124, waited.stdout + waited.stderr)
+                self.assertEqual(waited.returncode, 1, waited.stdout + waited.stderr)
                 self.assertIn(f"{job_id}: FAILED (exit 124)", waited.stdout)
+                self.assertIn("command-timed-out", waited.stdout)
                 self.assertNotIn("agent-job: still running", waited.stdout)
-                self.assertNotIn("resume with:", waited.stdout)
+                self.assertNotIn("re-arm:", waited.stdout)
         result = self.agent_job("result", job_id, check=False)
-        self.assertEqual(result.returncode, 124)
-        self.assertIn(f"{job_id}: FAILED (exit 124)", result.stdout)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, waited.stdout)
 
     def test_job_key_unchanged_for_common_commands(self):
         # Timing history ("usually takes 18m") is keyed by job_key. The same
@@ -608,10 +610,7 @@ class PeerJobTest(JobsDirCase):
         self.assertEqual(timed_out.returncode, 124, timed_out.stdout + timed_out.stderr)
         self.assertIn(f"waiting on {original}", timed_out.stdout)
         self.assertIn("agent-job: still running", timed_out.stdout)
-        resume = [line.removeprefix("resume with: ") for line in timed_out.stdout.splitlines()
-                  if line.startswith("resume with: ")]
-        self.assertEqual(len(resume), 1, timed_out.stdout)
-        command = shlex.split(resume[0])
+        command = shlex.split(timed_out.stdout.strip().rsplit(", re-arm: ", 1)[1])
         self.assertNotIn("--peer", command)
         self.assertEqual(command[-2:], ["--timeout", "1"])
 
@@ -630,9 +629,40 @@ class PeerJobTest(JobsDirCase):
         self.assertIn(f"{original}: FAILED (exit 7)", retried.stdout)
         self.assertNotIn(replacement, retried.stdout)
 
-    def test_wait_timeout_exits_124_without_ps_on_path(self):
-        # scripts/dev-shell.sh's PATH has no `ps`. A timed-out wait prints
-        # status, which lists processes; it must still exit 124.
+    def test_background_wait_rearms_with_the_same_window_and_job(self):
+        release = pathlib.Path(self.tmp.name, "release-background")
+        job_id = self.start_running(self.main, "echo waiting-for-release; "
+                                    f"while [ ! -e {shlex.quote(str(release))} ]; do sleep 0.05; done; "
+                                    "echo background-finished; exit 7")
+        window_env = "KANDELO_AGENT_WAIT_WINDOW_SECONDS"
+        self.env[window_env] = "7200"
+        invalid = self.agent_job("wait", job_id, "--timeout", "0", cwd=self.main, check=False)
+        self.assertEqual(invalid.returncode, 1)
+        self.assertIn(f"{window_env} must be an integer from 1 to 7000", invalid.stderr)
+
+        self.env[window_env] = "2"
+        expired = self.agent_job("wait", job_id, "--timeout", "0", cwd=self.main, check=False)
+        self.assertEqual(expired.returncode, 124, expired.stdout + expired.stderr)
+        self.assertEqual(len(expired.stdout.splitlines()), 1)
+        self.assertIn(f"agent-job: still running {job_id} after ", expired.stdout)
+        self.assertIn("last log line: 'waiting-for-release'", expired.stdout)
+        self.assertTrue(expired.stdout.rstrip().endswith(" (Bash run_in_background: true, timeout: 7200000)"))
+        command = expired.stdout.rsplit(", re-arm: ", 1)[1].rsplit(" (Bash ", 1)[0]
+        self.assertEqual(shlex.split(command), [f"{window_env}=2", str(AGENT_JOB), "wait", job_id, "--timeout", "0"])
+
+        # Execute the printed command from a fresh shell with no override.
+        del self.env[window_env]
+        with subprocess.Popen(["bash", "-c", command], cwd=self.main, env=self.env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as waiter:
+            release.touch()
+            stdout, stderr = waiter.communicate(timeout=10)
+        self.assertEqual(waiter.returncode, 7, stdout + stderr)
+        self.assertIn(f"{job_id}: FAILED (exit 7)", stdout)
+        self.assertIn("background-finished", stdout)
+
+    def test_wait_timeout_and_status_work_without_ps_on_path(self):
+        # scripts/dev-shell.sh's PATH has no `ps`. Status can still show
+        # processes using the system ps, and wait needs no process listing.
         job_id = self.start_running(self.main, "sleep 60")
         bare = os.path.join(self.tmp.name, "bare-bin")
         os.makedirs(bare)
@@ -641,7 +671,7 @@ class PeerJobTest(JobsDirCase):
         self.env["PATH"] = bare
         r = self.agent_job("wait", job_id, "--timeout", "1", cwd=self.main, check=False)
         self.assertEqual(r.returncode, 124, r.stdout + r.stderr)
-        self.assertIn(f"{job_id}: running", r.stdout)
+        self.assertIn(f"agent-job: still running {job_id}", r.stdout)
         self.assertEqual(self.agent_job("status", job_id, cwd=self.main, check=False).returncode, 0)
 
     def test_wait_needs_exactly_one_of_id_and_peer(self):

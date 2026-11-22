@@ -6,6 +6,7 @@ import * as ReactDOM from "react-dom/client";
 import { initializeTheme } from "./app/theme";
 import { SessionInvitationPreview } from "./app/SessionInvitationPreview";
 import { App } from "./app/App";
+import { SetupStatus } from "./app/SetupStatus";
 import { PERSISTENCE_RELEASE_WARNING } from "./app/PersistenceReleaseWarning";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
@@ -48,10 +49,8 @@ const mount = (host: KernelHost, invitation: ReturnType<typeof sessionInvitation
 void (async () => {
   let invitation: ReturnType<typeof sessionInvitation> = null;
   let setupError: string | undefined;
-  const renderStatus = () => root.render(<div style={{ padding: 32, maxWidth: 780 }}>
-    <strong>{setupError ? "LiveKernelHost setup failed" : "Preparing this computer…"}</strong>
-    {setupError && <pre role="alert" style={{ whiteSpace: "pre-wrap" }}>{setupError}</pre>}
-  </div>);
+  const renderStatus = () => root.render(<SetupStatus error={setupError} />);
+  renderStatus();
   const closePreview = () => { invitationOpen = false; renderStatus(); };
   const dismissPreview = () => { invitationDismissed = true; closePreview(); };
   try {

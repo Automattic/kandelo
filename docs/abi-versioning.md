@@ -179,6 +179,45 @@ unchanged. The kernel now answers 304 with `ENOSYS` rather than the old
 fake success. Together these are kernel-host changes, so
 `HOST_ADAPTER_VERSION` advances from 5 to 6.
 
+### Frozen baseline records
+
+A program can depend on behavior that a frozen supported baseline never
+digested. The ABI-56 libc overlay issues process-shared pthread requests
+400–414 (`libc/musl-overlay/src/thread/wasm32posix/pthread_*.c`), but the
+digested `syscalls` section does not list them. Adding them there would
+change the ABI-56 program digest and refuse every existing program. That
+would turn a missing record into a mass rebuild.
+
+`xtask dump-abi` therefore has a third surface, `frozen_baseline_record`
+(`abi_surfaces.frozen_baseline_record`), beside `program` and
+`kernel_host`. A section on it is:
+
+- **observable by programs:** existing binaries issue or read what it
+  describes;
+- **checked:** `dump-abi --check` regenerates it from its source and
+  fails on drift. Its producer also verifies the record against the code
+  that uses it. `program_legacy_requests` comes from
+  `shared::legacy_pshared`, which the kernel's dispatch arms use. The
+  producer also checks it against the overlay's `#define SYS_PSHARED_*`
+  lines;
+- **not hashed:** `local_abi_identity` leaves it out of the program
+  digest, so recording it keeps every existing program valid;
+- **frozen:** its first appearance is additive. Any later change to it
+  is classified like a program-surface change and needs an `ABI_VERSION`
+  bump. Its meaning can only change with a new baseline.
+
+At the next program baseline, a frozen record either joins the digested
+surface (for example, `program_legacy_requests` folded into `syscalls`)
+or is removed with the behavior it describes. Do not use this surface
+for new interfaces. New interfaces belong in the digested surface under
+a new baseline, or in a [program extension](program-extensions.md).
+
+Recording a request's numbers and argument meanings does not freeze its
+semantics. Requests 400–414 may move toward POSIX behavior for ABI-56
+programs, as the maintainer decided in
+`docs/plans/2026-11-15-process-shared-synchronization-design.md`. Such a
+change is documented where it lands and in `docs/posix-status.md`.
+
 ### Scheduled optional kernel exports
 
 `shared::abi::HOST_ADAPTER_KERNEL_EXPORTS` declares host-facing kernel
@@ -2853,10 +2892,15 @@ captures:
 
 - `abi_version` — the integer [`ABI_VERSION`](../crates/program-abi/src/lib.rs).
 - `abi_surfaces` — which surface each other section belongs to:
-  `program` (bound into every program's `kandelo.abi.contract` digest) or
-  `kernel_host` (checked only between the kernel and the host). See
+  `program` (bound into every program's `kandelo.abi.contract` digest),
+  `kernel_host` (checked only between the kernel and the host) or
+  `frozen_baseline_record` (checked and frozen, but outside the digest;
+  see [Frozen baseline records](#frozen-baseline-records)). See
   [Which changes force a program
   rebuild](#which-changes-force-a-program-rebuild).
+- `program_legacy_requests` — the process-shared pthread requests 400–414
+  that ABI-56 programs issue, with their arguments and result
+  conventions. It is a frozen baseline record.
 - `platform_limits` — the advertised `ARG_MAX`, `PATH_MAX`, and `IOV_MAX`
   values plus defensive process-startup argv/environment count caps generated
   into the TypeScript host and public musl headers.

@@ -9,7 +9,7 @@ inputs = [
   "packages/registry/spidermonkey-node/prepare-native-undici.py",
   "packages/registry/spidermonkey-node/node_undici_llhttp.cc",
   "packages/registry/spidermonkey-node/patches",
-  "packages/registry/spidermonkey/node-upstream/native-source-patches",
+  "packages/registry/spidermonkey-node-bridge/native-source-patches",
   "scripts/package-build-roots.sh",
   "sdk/activate.sh",
   "sdk/cmake",
@@ -18,4 +18,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 22
+revision = 23

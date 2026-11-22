@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 /// Shared with the snapshot writer and build-time SDK consumers.
 pub(crate) const SURFACES_KEY: &str = "abi_surfaces";
 
+// Kept in this standalone module because SDK build scripts include it directly.
+pub(crate) const FROZEN_BASELINE_RECORD_KEY: &str = "frozen_baseline_record";
+
 pub(crate) fn local_abi_contract_digest(
     repo_root: &Path,
     expected_abi_version: u32,
@@ -70,6 +73,8 @@ fn program_sections(object: &serde_json::Map<String, Value>) -> Result<Vec<&str>
     let names = |surface: &str| -> Result<Vec<&str>, String> {
         match object.get(SURFACES_KEY).map(|surfaces| &surfaces[surface]) {
             None => Ok(Vec::new()),
+            // Snapshots that predate frozen baseline records have no list.
+            Some(Value::Null) if surface == FROZEN_BASELINE_RECORD_KEY => Ok(Vec::new()),
             Some(Value::Array(items)) => items
                 .iter()
                 .map(|item| {
@@ -82,8 +87,11 @@ fn program_sections(object: &serde_json::Map<String, Value>) -> Result<Vec<&str>
     };
     let program = names("program")?;
     let kernel_host = names("kernel_host")?;
+    // Frozen baseline records are checked sections that the digest leaves
+    // out by design (docs/abi-versioning.md, "Frozen baseline records").
+    let frozen = names(FROZEN_BASELINE_RECORD_KEY)?;
     let mut seen = std::collections::BTreeSet::new();
-    for name in program.iter().chain(&kernel_host) {
+    for name in program.iter().chain(&kernel_host).chain(&frozen) {
         if !seen.insert(*name) {
             return Err(format!(
                 "section {name:?} is listed under more than one ABI surface"
@@ -228,6 +236,51 @@ mod tests {
         assert_ne!(digest(&baseline), digest(&program_changed));
         assert_eq!(digest(&baseline), digest(&kernel_host_changed));
         assert_ne!(digest(&baseline), digest(&next_epoch));
+    }
+
+    /// A frozen baseline record is a classified section, but recording one
+    /// (or changing it) must not move the digest existing programs carry.
+    #[test]
+    fn frozen_baseline_records_are_classified_but_not_hashed() {
+        let baseline = json!({
+            "abi_version": 4,
+            "layout": {"bytes": 32},
+            "abi_surfaces": {"program": ["layout"], "kernel_host": []},
+        });
+        let mut recorded = baseline.clone();
+        recorded["legacy"] = json!({"requests": [{"number": 400}]});
+        recorded["abi_surfaces"]["frozen_baseline_record"] = json!(["legacy"]);
+        let mut changed = recorded.clone();
+        changed["legacy"]["requests"][0]["number"] = json!(401);
+
+        assert_eq!(digest(&baseline), digest(&recorded));
+        assert_eq!(digest(&recorded), digest(&changed));
+
+        let unlisted = json!({
+            "abi_version": 4,
+            "layout": {},
+            "legacy": {},
+            "abi_surfaces": {"program": ["layout"], "kernel_host": []},
+        });
+        assert!(
+            program_contract_digest(&unlisted, 4)
+                .unwrap_err()
+                .contains("has no ABI surface")
+        );
+        let twice = json!({
+            "abi_version": 4,
+            "layout": {},
+            "abi_surfaces": {
+                "program": ["layout"],
+                "kernel_host": [],
+                "frozen_baseline_record": ["layout"],
+            },
+        });
+        assert!(
+            program_contract_digest(&twice, 4)
+                .unwrap_err()
+                .contains("more than one ABI surface")
+        );
     }
 
     #[test]

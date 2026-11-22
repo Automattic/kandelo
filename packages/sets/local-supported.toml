@@ -48,13 +48,7 @@ class = "platform"
 name = "libuv"
 class = "platform"
 
-[[packages]]
-name = "nbytes"
-class = "platform"
 
-[[packages]]
-name = "simdutf"
-class = "platform"
 
 [[packages]]
 name = "spidermonkey-core"

@@ -403,8 +403,6 @@ mod tests {
         handle: i64,
     ) -> (u32, usize) {
         let proc = table.get_mut(pid).unwrap();
-        // Dependency unit-test conveniences are not available in this crate;
-        // retain the real OFD reservation/publication path in the fixture.
         let prepared = proc
             .ofd_table
             .prepare(FileType::Regular, O_RDONLY, b"/program")

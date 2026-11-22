@@ -60,6 +60,11 @@ pub enum RetryOp {
         token: i64,
         restartable: bool,
     },
+    /// A blocking legacy process-shared request (`crate::pshared`): mutex
+    /// lock (`id` is the mutex), condition wait check (`id` the condition,
+    /// `mutex` its mutex), or barrier wait (`id` the barrier). It holds no
+    /// descriptor binding.
+    Pshared { request: u32, id: u32, mutex: u32 },
 }
 
 /// The syscalls a transfer park re-executes.
@@ -91,6 +96,41 @@ impl RetryOp {
                 crate::wait_queue::WakeSource::AdvisoryLock
             }
             RetryOp::Transfer { pipe, .. } => crate::wait_queue::WakeSource::Pipe(*pipe),
+            RetryOp::Pshared { id, .. } => crate::wait_queue::WakeSource::PShared { id: *id },
+        }
+    }
+
+    /// Whether the call pins a descriptor through `crate::blocked_retry`.
+    pub fn pins_descriptor(&self) -> bool {
+        !matches!(self, RetryOp::Pshared { .. })
+    }
+
+    /// Whether a caught signal ends the park.
+    ///
+    /// The ABI-56 libc issues the legacy mutex-lock and barrier-wait
+    /// requests with a plain syscall and returns any error to the caller,
+    /// and its syscall glue never restarts them. Ending those parks with
+    /// `EINTR` would make `pthread_mutex_lock` and `pthread_barrier_wait`
+    /// fail with `EINTR`, which POSIX forbids. They therefore keep waiting;
+    /// a signal stays pending and its handler runs once the call returns.
+    pub fn signal_interrupts(&self) -> bool {
+        match *self {
+            RetryOp::Pshared { request, .. } => {
+                request == wasm_posix_shared::legacy_pshared::COND_WAIT_CHECK
+            }
+            _ => true,
+        }
+    }
+
+    /// The result a caught signal ends the park with.
+    ///
+    /// The legacy condition-wait check answers `EAGAIN`: the ABI-56
+    /// `pthread_cond_wait` loop re-issues the check on `EAGAIN`, so the
+    /// handler runs and the wait resumes, as POSIX requires.
+    pub fn interrupted_value(&self) -> i32 {
+        match self {
+            RetryOp::Pshared { .. } => -(Errno::EAGAIN as i32),
+            _ => -(Errno::EINTR as i32),
         }
     }
 
@@ -99,6 +139,8 @@ impl RetryOp {
         match *self {
             RetryOp::Transfer { restartable, .. } => restartable,
             RetryOp::FcntlLock { .. } | RetryOp::Flock { .. } => true,
+            // The legacy requests are never restarted by the glue.
+            RetryOp::Pshared { .. } => false,
         }
     }
 
@@ -108,6 +150,7 @@ impl RetryOp {
             RetryOp::FcntlLock { token, .. }
             | RetryOp::Flock { token, .. }
             | RetryOp::Transfer { token, .. } => token,
+            RetryOp::Pshared { .. } => 0,
         }
     }
 
@@ -117,6 +160,7 @@ impl RetryOp {
             RetryOp::Flock { .. } => BlockingRetryOperation::Flock,
             RetryOp::Transfer { syscall, .. } => BlockingRetryOperation::from_syscall(*syscall)
                 .unwrap_or(BlockingRetryOperation::Read),
+            RetryOp::Pshared { .. } => unreachable!("process-shared requests pin no descriptor"),
         }
     }
 
@@ -129,6 +173,10 @@ impl RetryOp {
         host: &mut dyn HostIO,
         tid: u32,
     ) -> Result<i32, Errno> {
+        if let RetryOp::Pshared { request, id, mutex } = *self {
+            let (result, _wakes) = attempt_pshared(request, id, mutex, proc.pid, tid);
+            return result;
+        }
         proc.blocked_retries.activate(tid, self.token(), self.operation())?;
         let result = match *self {
             RetryOp::FcntlLock { fd, cmd, mut flock, .. } => {
@@ -140,9 +188,46 @@ impl RetryOp {
             RetryOp::Transfer { syscall, fd, buf, count, flags, .. } => {
                 transfer_once(proc, host, syscall, fd, buf, count, flags)
             }
+            RetryOp::Pshared { .. } => unreachable!("handled above"),
         };
         proc.blocked_retries.clear_active();
         result
+    }
+}
+
+/// Run one blocking legacy process-shared request for task `(pid, tid)`.
+///
+/// `Err(EAGAIN)` means it would still block. The second value lists the
+/// objects whose parked waiters the call may have unblocked: a barrier's
+/// last arrival releases its round. (A successful lock or condition check
+/// only takes state, so it wakes no one.)
+pub fn attempt_pshared(
+    request: u32,
+    id: u32,
+    mutex: u32,
+    pid: u32,
+    tid: u32,
+) -> (Result<i32, Errno>, crate::pshared::WakeIds) {
+    use wasm_posix_shared::legacy_pshared as req;
+    let table = unsafe { crate::pshared::global_pshared_table() };
+    let who = crate::pshared::Owner { pid, tid };
+    match request {
+        req::MUTEX_LOCK => (table.mutex_lock(id, who).map(|()| 0), alloc::vec::Vec::new()),
+        req::COND_WAIT_CHECK => (
+            table.cond_wait_check(id, mutex, who).map(|()| 0),
+            alloc::vec::Vec::new(),
+        ),
+        req::BARRIER_WAIT => {
+            let result = table.barrier_wait(id, who);
+            // Only the last arrival (not a collecting re-execution) gets
+            // the serial result without having parked first.
+            let wakes = match result {
+                Ok(crate::pshared::PTHREAD_BARRIER_SERIAL_THREAD) => alloc::vec![id],
+                _ => alloc::vec::Vec::new(),
+            };
+            (result, wakes)
+        }
+        _ => (Err(Errno::EINVAL), alloc::vec::Vec::new()),
     }
 }
 
@@ -283,6 +368,39 @@ mod tests {
         assert_eq!(done[0].value, -(Errno::EAGAIN as i32), "SO_RCVTIMEO is EAGAIN");
         assert!(!timed.restartable());
         assert!(transfer(true, 7).restartable());
+    }
+
+    #[test]
+    fn a_parked_legacy_pshared_call_is_offered_only_when_its_object_changes() {
+        use wasm_posix_shared::legacy_pshared as req;
+        let mut parks = Parks::new();
+        let op = RetryOp::Pshared { request: req::MUTEX_LOCK, id: 7, mutex: 0 };
+        parks
+            .park(4, 5, WaitKind::Futex, vec![op.source()], None, Resume::Retry(op))
+            .unwrap();
+        parks.note_source_ready(WakeSource::PShared { id: 8 });
+        assert!(parks.take_dirty_retry_waiters().is_empty(), "another object");
+        parks.note_source_ready(WakeSource::PShared { id: 7 });
+        let (id, pid, tid, offered) = parks.take_dirty_retry_waiters()[0];
+        assert_eq!((pid, tid, offered), (4, 5, op));
+        assert!(parks.finish_retry_waiter(id, op, 0));
+        assert!(parks.take_released_retry_bindings().is_empty(), "pins no descriptor");
+    }
+
+    #[test]
+    fn legacy_lock_and_barrier_waits_ignore_signals_and_a_cond_check_answers_eagain() {
+        use wasm_posix_shared::legacy_pshared as req;
+        let lock = RetryOp::Pshared { request: req::MUTEX_LOCK, id: 1, mutex: 0 };
+        let barrier = RetryOp::Pshared { request: req::BARRIER_WAIT, id: 1, mutex: 0 };
+        let check = RetryOp::Pshared { request: req::COND_WAIT_CHECK, id: 1, mutex: 2 };
+        assert!(!lock.signal_interrupts());
+        assert!(!barrier.signal_interrupts());
+        assert!(check.signal_interrupts());
+        assert_eq!(check.interrupted_value(), -(Errno::EAGAIN as i32));
+        assert!(!check.restartable());
+        let flock = RetryOp::Flock { fd: 3, operation: 2, token: 1 };
+        assert!(flock.signal_interrupts());
+        assert_eq!(flock.interrupted_value(), -(Errno::EINTR as i32));
     }
 
     #[test]

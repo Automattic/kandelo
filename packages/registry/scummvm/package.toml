@@ -43,7 +43,7 @@ script_path = "packages/registry/scummvm/build-scummvm.sh"
 
 [[host_tools]]
 name = "make"
-version_constraint = ">=3.81"
+version_constraint = ">=3.80"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

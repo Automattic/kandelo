@@ -60,8 +60,8 @@ def build(args):
         if digest(core / row['path']) != row['sha256']:
             raise ValueError('engine archive changed: ' + row['path'])
 
-    sources = root / 'packages/registry/spidermonkey/node-upstream'
-    staged = work / 'include/shell/node-upstream'
+    sources = root / 'packages/registry/spidermonkey-node-bridge/src'
+    staged = work / 'include/kandelo-node'
     staged.mkdir(parents=True)
     names = [
         'native-engine.cpp', 'codecs.cpp', 'engine-native-api.h', 'engine-state.h',
@@ -100,8 +100,7 @@ def build(args):
     preparation = ['packages/registry/spidermonkey-node-bridge/build-bridge.py',
                    'packages/registry/spidermonkey-node-bridge/build-bridge.sh',
                    'packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py',
-                   'packages/registry/node-core-source/sources.json',
-                   'packages/registry/node-core-source/target.json',
+                   'packages/registry/node-core-source/package.toml',
                    'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-string-metadata.py',
                    'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-maybe-api.py',
                    'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-fast-call-metadata.py',
@@ -141,7 +140,7 @@ def build(args):
     memory_target = memory_root / memory_path
     memory_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(memory_source, memory_target)
-    memory_patch = sources / 'native-source-patches/0002-native-memory-measurement.patch'
+    memory_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0002-native-memory-measurement.patch'
     patched = subprocess.run(['patch','--batch','-p1','-F0','-d',str(memory_root)],
                              input=memory_patch.read_bytes(),capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -155,7 +154,7 @@ def build(args):
     extras_target = extras_root / extras_path
     extras_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(extras_source, extras_target)
-    extras_patch = sources / 'native-source-patches/0003-native-extras-tracing.patch'
+    extras_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0003-native-extras-tracing.patch'
     patched = subprocess.run(['patch','--batch','-p1','-F0','-d',str(extras_root)],
                              input=extras_patch.read_bytes(),capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -175,7 +174,7 @@ def build(args):
         target = cpu_root / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-    cpu_patch = sources / 'native-source-patches/0004-native-cpu-profile-json.patch'
+    cpu_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0004-native-cpu-profile-json.patch'
     patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(cpu_root)],
                              input=cpu_patch.read_bytes(), capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -189,7 +188,7 @@ def build(args):
     heap_target = heap_root / heap_path
     heap_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(heap_source, heap_target)
-    heap_patch = sources / 'native-source-patches/0005-native-heap-profiler-registry.patch'
+    heap_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0005-native-heap-profiler-registry.patch'
     patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(heap_root)],
                              input=heap_patch.read_bytes(), capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -208,7 +207,7 @@ def build(args):
         target = snapshot_root / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-    snapshot_patch = sources / 'native-source-patches/0006-native-heap-snapshot-json.patch'
+    snapshot_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0006-native-heap-snapshot-json.patch'
     patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(snapshot_root)],
                              input=snapshot_patch.read_bytes(), capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -222,7 +221,7 @@ def build(args):
     conveyor_target = conveyor_root / conveyor_path
     conveyor_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(conveyor_source, conveyor_target)
-    conveyor_patch = sources / 'native-source-patches/0007-native-shared-conveyor-lifetime.patch'
+    conveyor_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0007-native-shared-conveyor-lifetime.patch'
     patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(conveyor_root)],
                              input=conveyor_patch.read_bytes(), capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -236,7 +235,7 @@ def build(args):
     sampling_target = sampling_root / sampling_path
     sampling_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(sampling_source, sampling_target)
-    sampling_patch = sources / 'native-source-patches/0008-native-heap-sampling-math.patch'
+    sampling_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0008-native-heap-sampling-math.patch'
     patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(sampling_root)],
                              input=sampling_patch.read_bytes(), capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -250,7 +249,7 @@ def build(args):
     unicode_target = unicode_root / unicode_path
     unicode_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(unicode_source, unicode_target)
-    unicode_patch = sources / 'native-source-patches/0009-native-utf8-scalar-decoder.patch'
+    unicode_patch = root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0009-native-utf8-scalar-decoder.patch'
     patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(unicode_root)],
                              input=unicode_patch.read_bytes(), capture_output=True)
     diagnostic = (patched.stdout + patched.stderr).decode()
@@ -260,7 +259,7 @@ def build(args):
     subprocess.run([
         'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py'),
         '--source', str(args.node_source),
-        '--manifest', str(root / 'packages/registry/node-core-source/sources.json'),
+        '--package', str(root / 'packages/registry/node-core-source/package.toml'),
         '--output', str(source_inputs),
     ], check=True)
     manifest = source_inputs / 'sources.json'
@@ -284,7 +283,7 @@ def build(args):
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     for script, destination, extra in [
         ('prepare-nodejs-native-interrupts.py', 'native-interrupt-upstream',
-         ['--patch', str(sources / 'native-source-patches/0001-native-interrupt-transport.patch')]),
+         ['--patch', str(root / 'packages/registry/spidermonkey-node-bridge/native-source-patches/0001-native-interrupt-transport.patch')]),
         ('prepare-nodejs-tracing.py', 'tracing-upstream', []),
     ]:
         subprocess.run(['python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools' / script), '--manifest',

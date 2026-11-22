@@ -53,6 +53,21 @@ export interface KernelVfsDirEntry extends KernelVfsPathStat {
   target?: string;
 }
 
+/** Bounded reads pinned to one attached computer; replacement invalidates them. */
+export interface KernelVfsReader {
+  readDir(path: string): Promise<KernelVfsDirEntry[] | null>;
+  readRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+}
+
+export interface ReferenceVfsReader extends KernelVfsReader {
+  dispose(): Promise<void>;
+}
+
+export interface ReferenceFiles {
+  unavailableReason?: string;
+  open(signal: AbortSignal): Promise<ReferenceVfsReader>;
+}
+
 /**
  * Snapshot record returned by `KernelLike.enumProcs`. Mirrors
  * `host/src/kernel-worker.ts: ProcessSnapshot`. Duplicated as a local
@@ -971,6 +986,8 @@ export interface GalleryQuery {
 // ── The interface ──────────────────────────────────────────────────────────
 
 export interface KernelHost {
+  /** Original reference image, independent of the current writable filesystem. */
+  referenceFiles?: ReferenceFiles;
   captureOwnedJobs?(): KernelOwnedJobScope;
   services?: import("./computer-services").ComputerServiceController;
   readonly computers?: import("./computer-library").ComputerLibrary;
@@ -1074,6 +1091,7 @@ export interface KernelHost {
   // numbers to a program want these.
   readVfsFile(path: string, maxBytes?: number): Promise<Uint8Array | null>;
   readVfsDir(path: string): Promise<KernelVfsDirEntry[] | null>;
+  captureVfsReader(): KernelVfsReader;
 
   // owned jobs
   /**
@@ -1449,6 +1467,7 @@ const NOT_IMPLEMENTED = (m: string) =>
   );
 
 export class LiveKernelHost implements KernelHost {
+  referenceFiles?: ReferenceFiles;
   services?: import("./computer-services").ComputerServiceController;
   private filesystemConfiguration: Readonly<FilesystemConfiguration> | null = null;
   computers?: import("./computer-library").ComputerLibrary;
@@ -1514,6 +1533,7 @@ export class LiveKernelHost implements KernelHost {
   private offAudioActivity: (() => void) | null = null;
 
   private kernel?: KernelLike;
+  private vfsReadGeneration = 0;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
   private terminalSessions?: TerminalSessionPolicy;
   private ptySessions = new Map<string, LivePtySession>();
@@ -1600,6 +1620,8 @@ export class LiveKernelHost implements KernelHost {
 
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
+    this.referenceFiles = undefined;
+    this.vfsReadGeneration++;
     this.services = undefined;
     this.filesystemConfiguration = null;
     const previousKernel = this.kernel;
@@ -1649,6 +1671,8 @@ export class LiveKernelHost implements KernelHost {
 
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
+    this.referenceFiles = undefined;
+    this.vfsReadGeneration++;
     const detachedKernel = this.kernel;
     this.imageActivities = undefined;
     this.kmsOwnerStats.clear();
@@ -2671,6 +2695,32 @@ export class LiveKernelHost implements KernelHost {
       throw new Error("LiveKernelHost.readVfsDir: the attached kernel has no VFS surface.");
     }
     return this.kernel.readDirFromVfs(path);
+  }
+
+  captureVfsReader(): KernelVfsReader {
+    const kernel = this.kernel;
+    const generation = this.vfsReadGeneration;
+    if (!kernel?.readDirFromVfs || !kernel.readFileRangeFromVfs) throw new Error("This computer cannot export files.");
+    const check = () => {
+      // A reboot must not splice two computers' contents into one archive.
+      if (this.kernel !== kernel || this.vfsReadGeneration !== generation) throw new Error("The computer changed during export. Start a new export.");
+    };
+    return {
+      readDir: async path => {
+        check();
+        const entries = await kernel.readDirFromVfs!(path);
+        check();
+        return entries;
+      },
+      readRange: async (path, offset, length) => {
+        check();
+        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 262144) throw new Error("Invalid export read range.");
+        const bytes = await kernel.readFileRangeFromVfs!(path, offset, length);
+        check();
+        if (bytes && bytes.byteLength > length) throw new Error("Export read exceeded its requested size.");
+        return bytes;
+      },
+    };
   }
 
   // ── KernelHost: owned jobs ──────────────────────────────────────────────

@@ -1,30 +1,10 @@
 #!/usr/bin/env bash
 # Build Mozilla SpiderMonkey's JS shell for the Kandelo wasm32 POSIX target.
 #
-# This package supplies only js.wasm. Node packages build original Node startup
-# separately; the legacy shell frontend must never be installed as Node.
+# It produces `js.wasm` plus `node.wasm`, a Node-compatible shell entry point
+# that runs the Kandelo CommonJS bootstrap when invoked as node.
 
 set -euo pipefail
-
-UPSTREAM_OBJECT_CHECK=0
-NATIVE_OWNER_CHECK=0
-if [ "$#" -eq 1 ] && [ "$1" = "--check-upstream-compiler" ]; then
-    # A diagnostic must never satisfy a resolver request for a linked package.
-    if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        echo "ERROR: --check-upstream-compiler requires a private WASM_POSIX_DEP_WORK_DIR and no output directory." >&2
-        exit 2
-    fi
-    UPSTREAM_OBJECT_CHECK=1
-elif [ "$#" -eq 1 ] && [ "$1" = "--check-native-owners" ]; then
-    if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        echo "ERROR: --check-native-owners requires a private WASM_POSIX_DEP_WORK_DIR and no output directory." >&2
-        exit 2
-    fi
-    NATIVE_OWNER_CHECK=1
-elif [ "$#" -ne 0 ]; then
-    echo "usage: build-spidermonkey.sh [--check-upstream-compiler|--check-native-owners]" >&2
-    exit 2
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -114,7 +94,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-for required_tool in python3 rustc cargo cbindgen node curl make clang++; do
+for required_tool in python3 rustc cargo cbindgen node curl make; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "ERROR: required host tool '$required_tool' not found in PATH." >&2
         exit 1
@@ -209,38 +189,6 @@ fi
 }
 export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
 
-LIBUV_PREFIX="${WASM_POSIX_DEP_LIBUV_DIR:-}"
-if [ -z "$LIBUV_PREFIX" ]; then
-    echo "==> Resolving libuv via cargo xtask build-deps..."
-    LIBUV_PREFIX="$(resolve_dep libuv)"
-fi
-[ -f "$LIBUV_PREFIX/lib/libuv.a" ] && [ -f "$LIBUV_PREFIX/include/uv.h" ] || {
-    echo "ERROR: libuv resolve missing archive/headers at $LIBUV_PREFIX" >&2
-    exit 1
-}
-export WASM_POSIX_DEP_LIBUV_DIR="$LIBUV_PREFIX"
-
-V8_TRACING_PREFIX="${WASM_POSIX_DEP_V8_TRACING_DIR:-}"
-if [ -z "$V8_TRACING_PREFIX" ]; then
-    echo "==> Resolving standalone V8 tracing via cargo xtask build-deps..."
-    V8_TRACING_PREFIX="$(resolve_dep v8-tracing)"
-fi
-[ -f "$V8_TRACING_PREFIX/lib/libv8-tracing.a" ] && [ -f "$V8_TRACING_PREFIX/include/libplatform/v8-tracing.h" ] && [ -f "$V8_TRACING_PREFIX/include/kandelo/v8-native-fatal.h" ] || {
-    echo "ERROR: standalone V8 tracing resolve missing archive/headers at $V8_TRACING_PREFIX" >&2
-    exit 1
-}
-export WASM_POSIX_DEP_V8_TRACING_DIR="$V8_TRACING_PREFIX"
-
-NBYTES_PREFIX="${WASM_POSIX_DEP_NBYTES_DIR:-}"
-if [ -z "$NBYTES_PREFIX" ]; then NBYTES_PREFIX="$(resolve_dep nbytes)"; fi
-SIMDUTF_PREFIX="${WASM_POSIX_DEP_SIMDUTF_DIR:-}"
-if [ -z "$SIMDUTF_PREFIX" ]; then SIMDUTF_PREFIX="$(resolve_dep simdutf)"; fi
-for codec_prefix in "$NBYTES_PREFIX" "$SIMDUTF_PREFIX"; do
-    [ -d "$codec_prefix/include" ] || { echo "ERROR: missing codec headers at $codec_prefix" >&2; exit 1; }
-done
-export WASM_POSIX_DEP_NBYTES_DIR="$NBYTES_PREFIX"
-export WASM_POSIX_DEP_SIMDUTF_DIR="$SIMDUTF_PREFIX"
-
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
     export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
@@ -249,7 +197,7 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib libzstd libuv nbytes simdutf v8-tracing
+            libcxx openssl zlib libzstd
     )"
     export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
@@ -355,7 +303,7 @@ fi
 cat > "$MOZCONFIG_PATH" <<EOF
 export RUSTFLAGS="\${RUSTFLAGS:+\$RUSTFLAGS }$WASM_RUSTFLAGS"
 ac_add_options --enable-project=js
-ac_add_options --target=wasm32-unknown-kandelo
+ac_add_options --target=wasm32-unknown-linux-musl
 ac_add_options --disable-debug
 ac_add_options --enable-optimize="-O2"
 ac_add_options --disable-jit
@@ -379,13 +327,7 @@ export MOZCONFIG="$MOZCONFIG_PATH"
 export MOZBUILD_STATE_PATH
 export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
 
-TARGET_OS_DEFINES="${WASM_POSIX_TARGET_OS_DEFINES:--D__kandelo__=1}"
-case "$TARGET_OS_DEFINES" in
-    *__linux__*)
-        echo "ERROR: SpiderMonkey's Kandelo profile must not define Linux identity." >&2
-        exit 2
-        ;;
-esac
+TARGET_OS_DEFINES="${WASM_POSIX_TARGET_OS_DEFINES:--D__linux__=1 -D__unix__=1}"
 export CC="${WASM_POSIX_TARGET_CC:-wasm32posix-cc} $TARGET_OS_DEFINES"
 export CXX="${WASM_POSIX_TARGET_CXX:-wasm32posix-c++} $TARGET_OS_DEFINES"
 export AS="${WASM_POSIX_TARGET_AS:-wasm32posix-cc} $TARGET_OS_DEFINES"
@@ -457,41 +399,9 @@ PROBE
     fi
     rm -rf "$PREFLIGHT_DIR"
 fi
-# Compile the new upstream builtin compiler in the real Mozilla shell build.
-# It remains inactive until the genuine per-realm/native binding owner exists.
-NODE_SOURCE="$WASM_POSIX_DEP_WORK_DIR/node-source"
-kandelo_package_stage_source_dependency node-core-source "$NODE_SOURCE" "$WASM_POSIX_DEP_WORK_DIR"
-NODE_SOURCE_INPUTS="$WASM_POSIX_DEP_WORK_DIR/node-source-inputs"
-python3 "$REPO_ROOT/packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py" \
-    --source "$NODE_SOURCE" --manifest "$REPO_ROOT/packages/registry/node-core-source/sources.json" \
-    --output "$NODE_SOURCE_INPUTS"
-bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
-    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include" "$NODE_SOURCE_INPUTS"
-
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -I$V8_TRACING_PREFIX/include -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $V8_TRACING_PREFIX/lib/libv8-tracing.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216 -Wl,--error-limit=0"
-
-
-# Record this recipe's actual flags without executing a host layout probe.
-if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
-    # This private diagnostic intentionally cannot initialize process_methods.
-    # It must never publish or satisfy a normal package resolver request.
-    export CXXFLAGS="$CXXFLAGS -DKANDELO_NATIVE_OWNER_PROBE=1"
-fi
-
-python3 "$REPO_ROOT/packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-build-settings.py" \
-    --mozconfig "$MOZCONFIG_PATH" \
-    --path-map "$WORK_DIR=/usr/src/kandelo-build/spidermonkey" \
-    --path-map "$REPO_ROOT=/usr/src/kandelo" \
-    --path-map "$OPENSSL_PREFIX=/deps/openssl" \
-    --path-map "$ZLIB_PREFIX=/deps/zlib" \
-    --path-map "$ZSTD_PREFIX=/deps/zstd" \
-    --path-map "$LIBUV_PREFIX=/deps/libuv" \
-    --path-map "$NBYTES_PREFIX=/deps/nbytes" \
-    --path-map "$SIMDUTF_PREFIX=/deps/simdutf" \
-    --path-map "$V8_TRACING_PREFIX=/deps/v8-tracing" \
-    --output "$SRC_DIR/js/src/shell/node-upstream/node-build-settings.generated.h"
+export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||
@@ -531,23 +441,6 @@ fi
 # the caller's Cargo home.
 MACH_CARGO_HOME="$WORK_DIR/mach-cargo-home"
 mkdir -p "$MACH_CARGO_HOME"
-if [ "$UPSTREAM_OBJECT_CHECK" -eq 1 ]; then
-    echo "==> Configuring/exporting SpiderMonkey and compiling upstream Node objects only..."
-    (
-        cd "$SRC_DIR"
-        CARGO_HOME="$MACH_CARGO_HOME" ./mach --no-interactive configure
-        # pre-export installs the real public headers; export alone only runs
-        # generators and leaves dist/include incomplete for selected objects.
-        CARGO_HOME="$MACH_CARGO_HOME" ./mach --no-interactive build pre-export export
-        CARGO_HOME="$MACH_CARGO_HOME" ./mach --no-interactive build js/src/shell/builtin-compiler.o \
-            js/src/shell/builtin-source-registry.o js/src/shell/per-context.o \
-            js/src/shell/private-key-test-api.o js/src/shell/module-wrap.o \
-            js/src/shell/error-stack.o js/src/shell/realm.o js/src/shell/timers.o
-    )
-    echo "==> Upstream Node object check complete; no package linked or installed."
-    exit 0
-fi
-
 echo "==> Building SpiderMonkey JS shell for wasm32..."
 (cd "$SRC_DIR" && CARGO_HOME="$MACH_CARGO_HOME" ./mach --no-interactive build)
 
@@ -569,25 +462,22 @@ cp "$JS_BIN" "$BIN_DIR/js.wasm"
 WASM_OPT="${WASM_OPT:-wasm-opt}"
 if command -v "$WASM_OPT" >/dev/null 2>&1; then
     echo "==> Optimizing js.wasm with wasm-opt -O2..."
-    "$WASM_OPT" -O2 -g "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
+    "$WASM_OPT" -O2 "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
 else
     echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
 fi
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation to js.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" --keep-names -o "$BIN_DIR/js.wasm.instr"
+"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
 mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"
 
-if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
-    mv "$BIN_DIR/js.wasm" "$BIN_DIR/native-owner-probe.wasm"
-    echo "==> Private native-owner diagnostic only: $BIN_DIR/native-owner-probe.wasm"
-    echo "==> process_methods unavailable; no package, node alias or image installed."
-    exit 0
-fi
+cp "$BIN_DIR/js.wasm" "$BIN_DIR/node.wasm"
+NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
+echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
@@ -598,4 +488,8 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 else
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        install_local_binary node "$BIN_DIR/node.wasm" node.wasm
 fi

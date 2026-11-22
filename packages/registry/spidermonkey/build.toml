@@ -4,28 +4,6 @@ inputs = [
   "packages/registry/spidermonkey/node-compat/adapter.js",
   "packages/registry/spidermonkey/node-compat/suffix.js",
   "packages/registry/spidermonkey/patches",
-  "packages/registry/spidermonkey/node-upstream",
-  "packages/registry/node-core-source/sources.json",
-  "packages/registry/node-core-source/target.json",
-  "packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py",
-  "packages/registry/spidermonkey-node-bridge/native-registry",
-  "packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-source-registry.py",
-  "packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-build-settings.py",
-  "packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-async-metadata.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-constants.py",
-  "packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-types.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-options.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-codecs.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-native-interrupts.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-string-metadata.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-maybe-api.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-fast-call-metadata.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-profiler-metadata.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-regexp-property-api.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-value-wire-api.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-tracing.py",
-  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-continuation.py",
-  "packages/registry/spidermonkey-node-bridge/tools/nodejs-builtin-metadata.cpp",
   "packages/registry/node-compat/bootstrap.js",
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",
@@ -34,4 +12,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 116
+revision    = 15

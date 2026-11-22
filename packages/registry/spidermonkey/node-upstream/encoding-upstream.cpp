@@ -1,4 +1,0 @@
-// Keep the original encoding parser and helpers together, without excerpts.
-#include "shell/node-upstream/codec-native-api.h"
-#define node kandelo_node_codec_impl
-#include "shell/node-upstream/codecs-upstream/encoding.cc"

@@ -1,0 +1,313 @@
+--- a/deps/v8/src/profiler/profile-generator.h
++++ b/deps/v8/src/profiler/profile-generator.h
+@@ -14,6 +14,9 @@
+ #include <utility>
+ #include <vector>
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "kandelo-node/engine-cpu-profiler-data.h"
++#else
+ #include "include/v8-profiler.h"
+ #include "src/base/hashing.h"
+ #include "src/base/platform/time.h"
+@@ -24,8 +27,15 @@
+ #include "src/profiler/strings-storage.h"
+ #include "src/utils/allocation.h"
+ 
++#endif
+ namespace v8 {
+ namespace internal {
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++using ProfileEngineIsolate = v8::Isolate;
++#else
++using ProfileEngineIsolate = Isolate;
++#endif
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ 
+ struct TickSample;
+ 
+@@ -263,6 +273,7 @@
+   Address* heap_object_location_ = nullptr;
+ };
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ struct CodeEntryAndPosition {
+   CodeEntry* code_entry;
+   LineAndColumn line_and_column;
+@@ -270,6 +281,7 @@
+ 
+ using ProfileStackTrace = std::vector<CodeEntryAndPosition>;
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ // Filters stack frames from sources other than a target native context.
+ class ContextFilter {
+  public:
+@@ -295,6 +307,7 @@
+   Address native_context_address_;
+ };
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ class ProfileTree;
+ 
+ class V8_EXPORT_PRIVATE ProfileNode {
+@@ -331,7 +344,7 @@
+   const std::vector<CpuProfileDeoptInfo>& deopt_infos() const {
+     return deopt_infos_;
+   }
+-  Isolate* isolate() const;
++  ProfileEngineIsolate* isolate() const;
+ 
+   void Print(int indent) const;
+ 
+@@ -372,7 +385,7 @@
+ 
+ class V8_EXPORT_PRIVATE ProfileTree {
+  public:
+-  explicit ProfileTree(Isolate* isolate, CodeEntryStorage* storage = nullptr);
++  explicit ProfileTree(ProfileEngineIsolate* isolate, CodeEntryStorage* storage = nullptr);
+   ~ProfileTree();
+   ProfileTree(const ProfileTree&) = delete;
+   ProfileTree& operator=(const ProfileTree&) = delete;
+@@ -391,7 +404,7 @@
+ 
+   void Print() const { root_->Print(0); }
+ 
+-  Isolate* isolate() const { return isolate_; }
++  ProfileEngineIsolate* isolate() const { return isolate_; }
+ 
+   void EnqueueNode(const ProfileNode* node) { pending_nodes_.push_back(node); }
+   size_t pending_nodes_count() const { return pending_nodes_.size(); }
+@@ -408,11 +421,12 @@
+   std::vector<const ProfileNode*> pending_nodes_;
+ 
+   unsigned next_node_id_;
+-  Isolate* isolate_;
++  ProfileEngineIsolate* isolate_;
+   CodeEntryStorage* const code_entries_;
+   ProfileNode* root_;
+ };
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ class CpuProfiler;
+ 
+ class CpuProfile {
+@@ -552,7 +566,7 @@
+ 
+ class V8_EXPORT_PRIVATE CpuProfilesCollection {
+  public:
+-  explicit CpuProfilesCollection(Isolate* isolate);
++  explicit CpuProfilesCollection(ProfileEngineIsolate* isolate);
+   CpuProfilesCollection(const CpuProfilesCollection&) = delete;
+   CpuProfilesCollection& operator=(const CpuProfilesCollection&) = delete;
+ 
+@@ -609,9 +623,10 @@
+   std::vector<std::unique_ptr<CpuProfile>> current_profiles_;
+   base::RecursiveMutex current_profiles_mutex_;
+   static std::atomic<ProfilerId> last_id_;
+-  Isolate* isolate_;
+-};
+-
++  ProfileEngineIsolate* isolate_;
++};
++
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ class CpuProfileJSONSerializer {
+  public:
+   explicit CpuProfileJSONSerializer(CpuProfile* profile)
+--- a/deps/v8/src/profiler/profile-generator.cc
++++ b/deps/v8/src/profiler/profile-generator.cc
+@@ -2,6 +2,11 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "profile-generator.h"
++#include "profile-generator-inl.h"
++#include "output-stream-writer.h"
++#else
+ #include "src/profiler/profile-generator.h"
+ 
+ #include <algorithm>
+@@ -20,8 +25,10 @@
+ #include "src/tracing/trace-event.h"
+ #include "src/tracing/traced-value.h"
+ 
++#endif
+ namespace v8 {
+ namespace internal {
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ 
+ void SourcePositionTable::SetPosition(int pc_offset, LineAndColumn pos,
+                                       int inlining_id) {
+@@ -335,11 +342,20 @@
+   base::OS::Print("\n");
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
++
+ ProfileNode::~ProfileNode() {
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+   if (tree_->code_entries()) tree_->code_entries()->DecRef(entry_);
++#else
++  CHECK_NULL(tree_->code_entries());  // Entries belong to the native profile.
++#endif
+ }
+ 
+ CpuProfileNode::SourceType ProfileNode::source_type() const {
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++  return entry_->frame.source;
++#else
+   // Handle metadata and VM state code entry types.
+   if (entry_ == CodeEntry::program_entry() ||
+       entry_ == CodeEntry::idle_entry() || entry_ == CodeEntry::gc_entry() ||
+@@ -370,6 +386,7 @@
+   }
+   return CpuProfileNode::kInternal;
+   UNREACHABLE();
++#endif
+ }
+ 
+ void ProfileNode::CollectDeoptInfo(CodeEntry* entry) {
+@@ -424,6 +441,7 @@
+   return true;
+ }
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ void ProfileNode::Print(int indent) const {
+   LineAndColumn line_and_column = this->line_and_column();
+   base::OS::Print("%5u %*s %s:%d:%d %d %d #%d", self_ticks_, indent, "",
+@@ -456,6 +474,7 @@
+   }
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ class DeleteNodesCallback {
+  public:
+   void BeforeTraversingChild(ProfileNode*, ProfileNode*) { }
+@@ -465,11 +484,15 @@
+   void AfterChildTraversed(ProfileNode*, ProfileNode*) { }
+ };
+ 
+-ProfileTree::ProfileTree(Isolate* isolate, CodeEntryStorage* storage)
++ProfileTree::ProfileTree(ProfileEngineIsolate* isolate, CodeEntryStorage* storage)
+     : next_node_id_(1),
+       isolate_(isolate),
+       code_entries_(storage),
+-      root_(new ProfileNode(this, CodeEntry::root_entry(), nullptr)) {}
++      root_(new ProfileNode(this, CodeEntry::root_entry(), nullptr)) {
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++  CHECK_NULL(storage);  // No borrowed V8 code-entry store in this engine.
++#endif
++}
+ 
+ ProfileTree::~ProfileTree() {
+   DeleteNodesCallback cb;
+@@ -563,6 +586,7 @@
+   }
+ }
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ void ContextFilter::OnMoveEvent(Address from_address, Address to_address) {
+   if (native_context_address() != from_address) return;
+ 
+@@ -808,6 +832,8 @@
+                               "ProfileChunk", id_, "data", std::move(value));
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
++
+ namespace {
+ 
+ void FlattenNodesTree(const v8::CpuProfileNode* node,
+@@ -962,6 +988,7 @@
+   writer_->Finalize();
+ }
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ void CpuProfile::Print() const {
+   base::OS::Print("[Top down]:\n");
+   top_down_.Print();
+@@ -1266,5 +1293,6 @@
+   }
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ }  // namespace internal
+ }  // namespace v8
+--- a/deps/v8/src/profiler/output-stream-writer.h
++++ b/deps/v8/src/profiler/output-stream-writer.h
+@@ -10,12 +10,16 @@
+ #include <string>
+ #include <system_error>
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "kandelo-node/engine-profiler-stream-support.h"
++#else
+ #include "include/v8-profiler.h"
+ #include "include/v8config.h"
+ #include "src/base/logging.h"
+ #include "src/base/vector.h"
+ #include "src/utils/memcopy.h"
+ 
++#endif
+ namespace v8 {
+ namespace internal {
+ 
+@@ -93,7 +97,11 @@
+ 
+   v8::OutputStream* stream_;
+   int chunk_size_;
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++  NativeProfileChunk chunk_;
++#else
+   base::ScopedVector<char> chunk_;
++#endif
+   int chunk_pos_;
+   bool aborted_;
+ };
+--- a/deps/v8/src/profiler/profile-generator-inl.h
++++ b/deps/v8/src/profiler/profile-generator-inl.h
+@@ -5,7 +5,11 @@
+ #ifndef V8_PROFILER_PROFILE_GENERATOR_INL_H_
+ #define V8_PROFILER_PROFILE_GENERATOR_INL_H_
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "profile-generator.h"
++#else
+ #include "src/profiler/profile-generator.h"
++#endif
+ // Include the non-inl header before the rest of the headers.
+ 
+ #include <memory>
+@@ -13,6 +17,7 @@
+ namespace v8 {
+ namespace internal {
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ CodeEntry::CodeEntry(LogEventListener::CodeTag tag, const char* name,
+                      const char* resource_name, LineAndColumn line_and_column,
+                      std::unique_ptr<SourcePositionTable> line_info,
+@@ -28,6 +33,7 @@
+       position_(0),
+       line_info_(std::move(line_info)) {}
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ ProfileNode::ProfileNode(ProfileTree* tree, CodeEntry* entry,
+                          ProfileNode* parent, LineAndColumn line_and_column)
+     : tree_(tree),
+@@ -37,10 +43,14 @@
+       parent_(parent),
+       id_(tree->next_node_id()) {
+   tree_->EnqueueNode(this);
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+   if (tree_->code_entries()) tree_->code_entries()->AddRef(entry_);
++#else
++  CHECK_NULL(tree_->code_entries());  // Native profile retains every entry.
++#endif
+ }
+ 
+-inline Isolate* ProfileNode::isolate() const { return tree_->isolate(); }
++inline ProfileEngineIsolate* ProfileNode::isolate() const { return tree_->isolate(); }
+ 
+ }  // namespace internal
+ }  // namespace v8

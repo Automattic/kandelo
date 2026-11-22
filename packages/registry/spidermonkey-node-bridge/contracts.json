@@ -99,7 +99,7 @@
       "protectingContracts": ["complete default and feature compilation/linkage", "verified engine/archive/header/ABI preflight", "installed CLI metadata and startup"],
       "testLimit": "Build admission and initial startup do not prove all provider APIs, target variants or full OS behavior.",
       "members": {
-        "base-engine-section-projection": ["0001-allow-static-cxx-runtime-for-wasm-linux.patch", "0002-map-kandelo-wasm-linux-rust-target.patch", "0003-jsonprinter-size-t-wasm32.patch", "0007-skip-elf-network-check-for-wasm-target.patch", "0010-use-wasm-icu-data-section-syntax.patch", "0014-disable-mozglue-interposers-on-wasm32.patch", "0023-use-flag-visibility-on-wasm32.patch", "0074-kandelo-posix-target-profile.patch"],
+        "base-engine": ["0001-allow-static-cxx-runtime-for-wasm-linux.patch", "0002-map-kandelo-wasm-linux-rust-target.patch", "0003-jsonprinter-size-t-wasm32.patch", "0007-skip-elf-network-check-for-wasm-target.patch", "0010-use-wasm-icu-data-section-syntax.patch", "0014-disable-mozglue-interposers-on-wasm32.patch", "0023-use-flag-visibility-on-wasm32.patch", "0074-kandelo-posix-target-profile.patch"],
         "producer-engine": ["0001-static-engine-closure.patch", "0002-core-fatal-header-style.patch"],
         "normal-node": ["0001-kandelo-configure-target.patch", "0002-retain-node-simdutf-with-external-engine.patch", "0003-kandelo-posix-build-settings.patch", "0004-kandelo-provider-targets.patch", "0005-kandelo-host-toolsets.patch", "0006-external-engine-header-selection.patch"]
       }
@@ -110,7 +110,7 @@
       "protectingContracts": ["native execution scopes/failure/GC/root/callback/shared-loop cleanup", "fatal before Environment, after disposal and OOM controls", "CLI asynchronous drain and exit", "VM and helper GC/Worker retirement"],
       "testLimit": "The selected controls do not inject every entropy/allocation failure or qualify all Promise hooks, observers and engine-service variants. Base adaptations are interpreted with the later producer patches; the selected guest-libc abort path supersedes the earlier trap adaptation for this runtime.",
       "members": {
-        "base-engine-section-projection": ["0004-disable-wasm32-return-address-stackwalk.patch", "0005-getrandom-custom-backend-wasm32.patch", "0006-randomnum-use-sys-random-on-wasm32.patch", "0008-use-wasm-trap-for-moz-crash.patch", "0009-use-wasm-frame-address-for-native-stack-base.patch", "0011-heap-autorunparallel-task-on-wasm32.patch", "0045-kandelo-continuation-data.patch", "0059-kandelo-native-catch-state.patch", "0073-kandelo-native-execution-scopes.patch"],
+        "base-engine": ["0004-disable-wasm32-return-address-stackwalk.patch", "0005-getrandom-custom-backend-wasm32.patch", "0006-randomnum-use-sys-random-on-wasm32.patch", "0008-use-wasm-trap-for-moz-crash.patch", "0009-use-wasm-frame-address-for-native-stack-base.patch", "0011-heap-autorunparallel-task-on-wasm32.patch", "0045-kandelo-continuation-data.patch", "0059-kandelo-native-catch-state.patch", "0073-kandelo-native-execution-scopes.patch"],
         "producer-engine": ["0002-native-entropy-source.patch", "0003-native-microtask-queue-routing.patch", "0004-native-promise-lifecycle.patch", "0005-native-finalization-queue-access.patch", "0010-native-cell-limit-and-gc-observer.patch", "0012-retain-guest-libc-abort.patch", "0015-native-allocation-counters-and-hash-seed.patch", "0016-native-promise-debug-silence.patch", "0017-native-cell-allocation-observer.patch", "0023-native-thread-stack-base.patch"],
         "normal-node": ["0008-spidermonkey-native-collector-process.patch"],
         "native-source": ["0001-native-interrupt-transport.patch"]
@@ -122,7 +122,7 @@
       "protectingContracts": ["VM18 global/property/descriptor/error/GC cases", "native handle/field/backing and parser lifetime controls", "normal REPL and installed JS/TS/HTTP consumers"],
       "testLimit": "Selected VM and byte consumers do not qualify every private-name, buffer, template, descriptor, Unicode or resizable-store operation. Full-family API and failure variants remain required.",
       "members": {
-        "base-engine-section-projection": ["0024-kandelo-embedding-private-keys.patch", "0040-kandelo-resizable-buffer-stabilization.patch", "0046-kandelo-arraybuffer-detach-key.patch", "0048-kandelo-node-buffer.patch", "0050-kandelo-native-lazy-data-properties.patch", "0052-kandelo-live-native-data-properties.patch", "0067-kandelo-constructor-identity.patch", "0068-kandelo-native-constructor-origin.patch"],
+        "base-engine": ["0024-kandelo-embedding-private-keys.patch", "0040-kandelo-resizable-buffer-stabilization.patch", "0046-kandelo-arraybuffer-detach-key.patch", "0048-kandelo-node-buffer.patch", "0050-kandelo-native-lazy-data-properties.patch", "0052-kandelo-live-native-data-properties.patch", "0067-kandelo-constructor-identity.patch", "0068-kandelo-native-constructor-origin.patch"],
         "producer-engine": ["0006-native-property-interceptors.patch", "0011-transactional-native-backing-owner.patch", "0013-native-resizable-backing-owner.patch", "0021-native-global-interceptors.patch", "0022-native-resolving-property-lookups.patch", "0024-native-property-error-mode.patch", "0025-native-proxy-property-presence.patch"],
         "native-source": ["0009-native-utf8-scalar-decoder.patch"]
       }
@@ -133,7 +133,7 @@
       "protectingContracts": ["native parser decision/report ownership/module metadata/function body/hashbang controls", "installed CLI", "separate CJS and ESM file gates", "VM errors and normal REPL"],
       "testLimit": "Current cases are not full loader/vm/cache/import-attribute/source-position conformance. Report-copy allocation-failure injection and general guest-Wasm frame metadata require their own qualification.",
       "members": {
-        "base-engine-section-projection": ["0019-kandelo-link-evaluating-cycle.patch", "0027-kandelo-synthetic-modules.patch", "0028-kandelo-node-module-wrap.patch", "0029-kandelo-node-dynamic-import.patch", "0030-kandelo-node-error-stack.patch", "0064-kandelo-saved-frame-provenance.patch", "0065-kandelo-saved-frame-source-ownership.patch"],
+        "base-engine": ["0019-kandelo-link-evaluating-cycle.patch", "0027-kandelo-synthetic-modules.patch", "0028-kandelo-node-module-wrap.patch", "0029-kandelo-node-dynamic-import.patch", "0030-kandelo-node-error-stack.patch", "0064-kandelo-saved-frame-provenance.patch", "0065-kandelo-saved-frame-source-ownership.patch"],
         "producer-engine": ["0007-native-function-stencils.patch", "0008-decoded-stencil-origins.patch", "0009-native-error-factory.patch", "0010-native-parser-diagnostic-metadata.patch", "0011-native-identifier-diagnostic-metadata.patch", "0018-native-import-attribute-source-offsets.patch", "0019-native-function-body-locations.patch", "0020-native-function-hashbang.patch"],
         "normal-node": ["0014-native-cjs-module-diagnostic-predicates.patch"]
       }

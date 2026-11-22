@@ -860,16 +860,6 @@ generic POSIX Unix instead of Linux").
 
 **Files:** `libc/glue/channel_syscall.c`
 
-### Reject invalid `madvise` advice
-
-`sys_madvise` returns success for every advice value and range.
-`docs/posix-status.md` (the `madvise()` / `posix_madvise()` row)
-describes the gap: `posix_madvise()` must fail with `EINVAL` for invalid
-advice, and Linux `madvise()` also returns `ENOMEM` for an unmapped range.
-Changing the return value is an ABI-visible change.
-
-**Files:** `crates/runtime-core/src/syscalls.rs` (`sys_madvise`)
-
 ## Graphics
 
 D-64 approves one combined foundation/B1 shipment through #1594 and closes

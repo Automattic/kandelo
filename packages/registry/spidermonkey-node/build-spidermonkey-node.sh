@@ -20,7 +20,7 @@ PROFILE=default
 OUTPUT_NAME=node.wasm
 PROFILE_FLAGS=()
 case "$PACKAGE_NAME" in
-    node|spidermonkey-node) ;;
+    spidermonkey-node) ;;
     spidermonkey-node-features)
         PROFILE=features
         OUTPUT_NAME=node-features.wasm
@@ -50,7 +50,7 @@ kandelo_package_stage_source_dependency node-core-source "$NODE_SOURCE" "$WASM_P
 for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
     patch --batch -p1 -F0 -d "$NODE_SOURCE" < "$patch_file"
 done
-for patch_file in "$REPO_ROOT/packages/registry/spidermonkey/node-upstream/native-source-patches"/*.patch; do
+for patch_file in "$REPO_ROOT/packages/registry/spidermonkey-node-bridge/native-source-patches"/*.patch; do
     patch --batch -p1 -F0 -d "$NODE_SOURCE" < "$patch_file"
 done
 python3 "$SCRIPT_DIR/prepare-native-providers.py" --repository "$REPO_ROOT" \

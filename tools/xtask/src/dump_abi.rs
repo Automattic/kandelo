@@ -4369,15 +4369,23 @@ enum Surface {
     Program,
     /// Seen only by the kernel Wasm and the host runtime, which ship together.
     KernelHost,
+    /// Observable by programs of a frozen supported baseline that already
+    /// depend on it, but absent from that baseline's digest. Recording it in
+    /// a `Program` section would change the frozen digest and refuse every
+    /// existing program. It is checked like any section and classified like
+    /// `Program` (a change needs an `ABI_VERSION` bump), but never hashed.
+    /// See docs/abi-versioning.md, "Frozen baseline records".
+    FrozenBaselineRecord,
 }
 
-/// Snapshot key that records each section's [`Surface`].
-pub(crate) use crate::local_abi_identity::SURFACES_KEY;
+/// Shared snapshot keys, also consumed by the standalone SDK build helper.
+pub(crate) use crate::local_abi_identity::{FROZEN_BASELINE_RECORD_KEY, SURFACES_KEY};
 
 struct Sections {
     root: JsonMap,
     program: Vec<&'static str>,
     kernel_host: Vec<&'static str>,
+    frozen_baseline_record: Vec<&'static str>,
 }
 
 impl Sections {
@@ -4389,22 +4397,28 @@ impl Sections {
         match surface {
             Surface::Program => self.program.push(name),
             Surface::KernelHost => self.kernel_host.push(name),
+            Surface::FrozenBaselineRecord => self.frozen_baseline_record.push(name),
         }
     }
 
     fn finish(mut self) -> JsonMap {
         self.program.sort_unstable();
         self.kernel_host.sort_unstable();
+        self.frozen_baseline_record.sort_unstable();
         self.root.insert(
             SURFACES_KEY.into(),
-            json!({ "program": self.program, "kernel_host": self.kernel_host }),
+            json!({
+                "program": self.program,
+                "kernel_host": self.kernel_host,
+                FROZEN_BASELINE_RECORD_KEY: self.frozen_baseline_record,
+            }),
         );
         self.root
     }
 }
 
 fn declared_snapshot_sections() -> Sections {
-    use Surface::{KernelHost, Program};
+    use Surface::{FrozenBaselineRecord, KernelHost, Program};
     let mut root: JsonMap = BTreeMap::new();
     // The ABI epoch is hashed into every digest separately; it is not a section.
     root.insert("abi_version".into(), json!(shared::ABI_VERSION));
@@ -4412,9 +4426,11 @@ fn declared_snapshot_sections() -> Sections {
         root,
         program: Vec::new(),
         kernel_host: Vec::new(),
+        frozen_baseline_record: Vec::new(),
     };
 
     s.add(Program, "platform_limits", platform_limits());
+    s.add(FrozenBaselineRecord, "program_legacy_requests", program_legacy_requests());
     // Argument kinds of the host's process-metadata export.
     s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
     // The process table the kernel hands the host (ps, the inspector).
@@ -4854,7 +4870,84 @@ pub(crate) fn source_program_contract_digest() -> Result<[u8; 32], String> {
     )
 }
 
+/// The ABI-56 process-shared pthread requests (`shared::legacy_pshared`).
+fn program_legacy_requests() -> Value {
+    let requests: Vec<Value> = shared::legacy_pshared::REQUESTS
+        .iter()
+        .map(|request| {
+            json!({
+                "number": request.number,
+                "name": request.name,
+                "args": request.args,
+                "result": request.result,
+            })
+        })
+        .collect();
+    json!({
+        "baseline_abi_version": 56,
+        "issuer": "libc/musl-overlay/src/thread/wasm32posix (PTHREAD_PROCESS_SHARED mutex, condition and barrier)",
+        "transport": "ordinary syscall channel; arguments are 32-bit object ids or counts",
+        "requests": requests,
+    })
+}
+
+/// Prove the libc overlay still issues exactly the recorded legacy requests.
+///
+/// WHY: the overlay spells the numbers as its own `#define SYS_PSHARED_*`
+/// lines (changing libc sources would rebuild every package), so nothing
+/// else ties them to `shared::legacy_pshared`. A drift in either direction
+/// would leave the record describing requests no program issues.
+fn check_legacy_pshared_overlay(repo: &std::path::Path) -> Result<(), String> {
+    let dir = repo.join("libc/musl-overlay/src/thread/wasm32posix");
+    let mut found: BTreeMap<String, u32> = BTreeMap::new();
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|error| format!("read {}: {error}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
+        .collect();
+    entries.sort();
+    for path in entries {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            if words.next() != Some("#define") {
+                continue;
+            }
+            let (Some(name), Some(value)) = (words.next(), words.next()) else {
+                continue;
+            };
+            if !name.starts_with("SYS_PSHARED_") {
+                continue;
+            }
+            let number: u32 = value.parse().map_err(|_| {
+                format!("{}: {name} is not a decimal request number", path.display())
+            })?;
+            if let Some(previous) = found.insert(name.to_owned(), number) {
+                if previous != number {
+                    return Err(format!(
+                        "{name} is defined as both {previous} and {number} in the libc overlay"
+                    ));
+                }
+            }
+        }
+    }
+    let recorded: BTreeMap<String, u32> = shared::legacy_pshared::REQUESTS
+        .iter()
+        .map(|request| (request.name.to_owned(), request.number))
+        .collect();
+    if found != recorded {
+        return Err(format!(
+            "libc overlay SYS_PSHARED_* requests {found:?} differ from \
+             shared::legacy_pshared {recorded:?}; these numbers are frozen for ABI-56 programs"
+        ));
+    }
+    Ok(())
+}
+
 fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
+    check_legacy_pshared_overlay(&repo_root())?;
     let mut s = declared_snapshot_sections();
     let wasm =
         std::fs::read(kernel_wasm).map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
@@ -8843,11 +8936,19 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             // section between surfaces changes what programs bind to, so it is
             // a removal from one list and stays breaking.
             k if k == SURFACES_KEY => {
-                for surface in ["program", "kernel_host"] {
+                for surface in ["program", "kernel_host", FROZEN_BASELINE_RECORD_KEY] {
+                    // The record surface is newer than older snapshots; an
+                    // absent list is an empty one.
+                    let empty = json!([]);
+                    let absent = |value: &Value| {
+                        surface == FROZEN_BASELINE_RECORD_KEY && value[surface].is_null()
+                    };
+                    let old_list = if absent(old_value) { &empty } else { &old_value[surface] };
+                    let new_list = if absent(new_value) { &empty } else { &new_value[surface] };
                     classify_additive_array(
                         &format!("{SURFACES_KEY}.{surface}"),
-                        &old_value[surface],
-                        &new_value[surface],
+                        old_list,
+                        new_list,
                         &mut report,
                         |entry| {
                             entry.as_str().map(ToOwned::to_owned).ok_or_else(|| {
@@ -8891,6 +8992,9 @@ fn additive_top_level_section(section: &str) -> bool {
         // Its one-time metadata introduction is additive; established field
         // changes still use the ordinary exact-match breaking classifier.
         "dri_owned_resource"
+            // Its first appearance records requests ABI-56 programs already
+            // issue; it describes, rather than changes, their behavior.
+            | "program_legacy_requests"
             | "dri_owned_exact_mappings"
             | "gl_context_reset_scope"
             | "gl_shader_program_creation"
@@ -9247,7 +9351,7 @@ mod tests {
         let snapshot = |include| {
             let mut root = JsonMap::new();
             root.insert("abi_version".into(), json!(shared::ABI_VERSION));
-            let mut sections = Sections {root, program: Vec::new(), kernel_host: Vec::new()};
+            let mut sections = Sections {root, program: Vec::new(), kernel_host: Vec::new(), frozen_baseline_record: Vec::new()};
             sections.add(Surface::Program, "control", json!(1));
             if include { sections.add(Surface::KernelHost, "kms_cursor_transport", wire.clone()); }
             Value::Object(sections.finish().into_iter().collect())
@@ -9311,6 +9415,7 @@ mod tests {
                 root,
                 program: Vec::new(),
                 kernel_host: Vec::new(),
+                frozen_baseline_record: Vec::new(),
             };
             if include_receipt {
                 sections.add(
@@ -10810,6 +10915,37 @@ mod tests {
         moved[SURFACES_KEY] = json!({"program": [], "kernel_host": ["kernel_exports", "syscalls"]});
         let report = classify_compat_change(&old, &moved).unwrap();
         assert!(!report.breaking.is_empty(), "{report:?}");
+    }
+
+    /// The ABI-56 libc overlay issues exactly the recorded legacy requests.
+    #[test]
+    fn legacy_pshared_overlay_matches_the_record() {
+        check_legacy_pshared_overlay(&crate::repo_root()).unwrap();
+        let numbers: Vec<u32> =
+            shared::legacy_pshared::REQUESTS.iter().map(|r| r.number).collect();
+        assert_eq!(numbers, (400..=414).collect::<Vec<u32>>());
+    }
+
+    /// Recording a frozen baseline record is additive; changing one later is
+    /// a program-surface break (it needs an ABI_VERSION bump), although the
+    /// program digest never covers it.
+    #[test]
+    fn frozen_baseline_records_add_compatibly_and_change_only_with_abi_version() {
+        let old = with_surfaces(base_snapshot());
+        let mut recorded = old.clone();
+        recorded["program_legacy_requests"] =
+            json!({"requests": [{"number": 400, "name": "SYS_PSHARED_MUTEX_INIT"}]});
+        recorded[SURFACES_KEY][FROZEN_BASELINE_RECORD_KEY] = json!(["program_legacy_requests"]);
+        let report = classify_compat_change(&old, &recorded).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        compat_verdict(&old, &recorded, &report).unwrap();
+
+        let mut changed = recorded.clone();
+        changed["program_legacy_requests"]["requests"][0]["number"] = json!(430);
+        bump_kernel_host_version(&mut changed);
+        let report = classify_compat_change(&recorded, &changed).unwrap();
+        let error = compat_verdict(&recorded, &changed, &report).unwrap_err();
+        assert!(error.contains("ABI_VERSION bump"), "{error}");
     }
 
     #[test]
