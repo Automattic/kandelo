@@ -87,6 +87,8 @@ pub(super) fn finalize(
             "not produced",
             true,
         )?;
+        let destination = root.join(&output.wasm);
+        ensure_generation_member_parent(root, &destination)?;
         let staging = root.join(format!(
             ".shared-memory-{}-{}",
             output.name,
@@ -113,10 +115,6 @@ pub(super) fn finalize(
             }
             let bytes = std::fs::read(&program_path)
                 .map_err(|error| format!("read transformed output: {error}"))?;
-            let destination = root.join(&output.wasm);
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            }
             let staged_archive = staging.join("output.zip");
             let file = std::fs::OpenOptions::new()
                 .write(true)
@@ -400,6 +398,17 @@ fork_instrumentation = "disabled"
             }
             archive.finish().unwrap();
             assert!(validate(&manifest, &manifest.program_outputs[1], &output_root).is_err());
+        }
+        #[cfg(unix)]
+        {
+            let outside = root.join("outside");
+            std::fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, output_root.join("nested")).unwrap();
+            let mut nested = manifest.clone();
+            nested.program_outputs[1].wasm = "nested/shared.zip".into();
+            let error = finalize(&nested, &output_root, TargetArch::Wasm32, false).unwrap_err();
+            assert!(error.contains("symlink"), "{error}");
+            assert!(std::fs::read_dir(outside).unwrap().next().is_none());
         }
         std::fs::remove_dir_all(root).unwrap();
     }
