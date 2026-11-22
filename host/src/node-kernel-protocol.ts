@@ -218,6 +218,8 @@ export interface OwnedJobMessage {
 }
 
 export interface SpawnMessage {
+  /** Explicit SDK variant selection; descendants inherit kernel group membership. */
+  executionBackend?: "ordinary" | "memory-group";
   type: "spawn";
   requestId: number;
   /** Own this process and its descendants as one cancellable command family. */

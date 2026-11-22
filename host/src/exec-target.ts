@@ -277,6 +277,9 @@ export interface PreparedExecLaunchOptions {
   /** Only the shared launcher sees the retained token. Backend preparation
    * returns an opaque context, never commit/target authority to callbacks. */
   readonly prepareBackend?: (target: number, bytes: ArrayBuffer) => PreparedExecBackend;
+  /** Bind a descriptor-backed SDK implementation before final admission. */
+  readonly prepareImage?: (target: number, bytes: ArrayBuffer,
+    prepareImageTarget: (path: string) => number) => Promise<boolean>;
   /** Initial launch only: Rust independently validates the exact target under
    * its explicitly selected group. This grants no allocation or commit. */
   readonly supportedProgramExtensions?: ReadonlySet<string>;
@@ -375,6 +378,10 @@ export async function launchPreparedExecTarget(
           ENOEXEC,
         );
       }
+    }
+    if (options.prepareImage && await options.prepareImage(target, exactArrayBuffer(bytes), options.prepareInterpreterTarget)) {
+      bytes = await readPreparedExecTarget(options.kernel, options.ownerPid, target);
+      admission = await admit();
     }
     const targetBytes = exactArrayBuffer(bytes);
     if (admission.kind !== "refused" && options.prepareBackend) {

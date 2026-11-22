@@ -16,6 +16,10 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Descriptor-backed SDK group variants
+
+Host-adapter 26 adds optional `kernel_group_exec_target_bind_image(pid, target, imageTarget, group)`. Both retained targets must have the same live execution owner. Rust admits the ordinary source and grouped implementation, verifies the SDK declaration’s source SHA-256 against the retained source, and verifies the implementation has not changed since observation. The derived executable retains the source inode, permissions, credentials and diagnostic path while holding its implementation OFD independently of the temporary target. Binding creates no group membership; initial, spawn and exec commit keep their existing authority. Program ABI 56 and its frozen contract remain unchanged.
+
 ## Optional initial grouped path validation
 
 `kernel_initial_group_exec_target_admit(pid, target, expectedAbi, out, capacity,

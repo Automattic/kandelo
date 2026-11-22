@@ -14,6 +14,7 @@ use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
 
 mod prepared_image;
+pub(crate) use prepared_image::bind_memory_group_image;
 mod host_program;
 pub use host_program::prepare_host_program;
 

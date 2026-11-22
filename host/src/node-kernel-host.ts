@@ -258,6 +258,8 @@ export interface NodeKernelHostOptions {
 }
 
 export interface SpawnOptions {
+  /** Explicit SDK variant selection; descendants inherit kernel group membership. */
+  executionBackend?: "ordinary" | "memory-group";
   /** Own this process and its descendants as one cancellable command family. */
   ownedJob?: { id: string; timeoutMs: number };
   env?: string[];
@@ -640,6 +642,7 @@ export class NodeKernelHost {
     const pid = await this.request(requestId, {
       type: "spawn",
       ownedJob: options?.ownedJob,
+      executionBackend: options?.executionBackend,
       requestId,
       ...program,
       // Avoid forwarding externally compiled WebAssembly.Module objects through

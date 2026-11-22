@@ -267,6 +267,8 @@ export interface OwnedJobMessage {
 }
 
 export interface SpawnMessage {
+  /** Explicit SDK variant selection; descendants inherit kernel group membership. */
+  executionBackend?: "ordinary" | "memory-group";
   ownedJob?: { id: string; timeoutMs: number };
   type: "spawn";
   requestId: number;

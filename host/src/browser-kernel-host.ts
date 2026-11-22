@@ -1011,6 +1011,7 @@ export class BrowserKernel {
     programBytes: ArrayBuffer,
     argv: string[],
     options?: {
+      executionBackend?: "ordinary" | "memory-group";
       env?: string[];
       cwd?: string;
       stdin?: Uint8Array;
@@ -1033,6 +1034,7 @@ export class BrowserKernel {
 
     const pid = await this.request(requestId, {
       type: "spawn",
+      executionBackend: options?.executionBackend,
       requestId,
       programBytes: bytesToSend,
       argv,
@@ -1080,6 +1082,7 @@ export class BrowserKernel {
     programPath: string,
     argv: string[],
     options?: {
+      executionBackend?: "ordinary" | "memory-group";
       ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
@@ -1096,6 +1099,7 @@ export class BrowserKernel {
     const pid = await this.request(requestId, {
       type: "spawn",
       ownedJob: options?.ownedJob,
+      executionBackend: options?.executionBackend,
       requestId,
       programPath,
       argv,

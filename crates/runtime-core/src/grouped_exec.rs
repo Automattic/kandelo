@@ -8,6 +8,32 @@ use crate::{
 use wasm_posix_shared::Errno;
 
 impl ProcessTable {
+    /// Host-selected executable derivation only. Existing group members prove
+    /// their live task; fresh roots/spawn children use the same admission
+    /// authority as initial grouped exec. This creates no group membership.
+    pub fn bind_memory_group_exec_image(
+        &mut self, host: &mut dyn crate::process::HostIO, group: u32,
+        pid: u32, target: u32, image: u32,
+    ) -> Result<(), Errno> {
+        let id = self.memory_groups().resolve_group(group)?;
+        if self.get(pid).ok_or(Errno::ESRCH)?.pending_grouped_exec.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        if let Some(current) = self.process_memory_group(pid)? {
+            if current != id { return Err(Errno::EPERM); }
+            let proc = self.get(pid).ok_or(Errno::ESRCH)?;
+            let PreparedExecOwner::Process { caller_tid, .. } = proc.prepared_exec_targets.get(target)?.owner()
+                else { return Err(Errno::EINVAL); };
+            self.validate_task(pid, caller_tid)?;
+            let receipt = self.memory_group_task(pid, caller_tid)?.ok_or(Errno::ESRCH)?;
+            self.memory_group_running_admission(receipt)?;
+        } else if !matches!(self.admit_initial_group_exec_target(group, pid, target, wasm_posix_shared::ABI_VERSION)?, Admission::Program) {
+            return Err(Errno::ENOEXEC);
+        }
+        let (proc, locks) = self.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
+        exec_target::bind_memory_group_image(proc, locks, host, pid, target, image)
+    }
+
     pub fn admit_exec_target(
         &self,
         owner_pid: u32,
@@ -321,7 +347,7 @@ impl ProcessTable {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{memory_group::MemoryGroupLimits, process::test_host::NoopHost, syscalls::*};
     use alloc::{format, vec, vec::Vec};
@@ -421,7 +447,7 @@ mod tests {
             crate::tmpfs::set_enabled(self.enabled.1);
         }
     }
-    pub(super) fn grouped(version: u32) -> Vec<u8> {
+    pub(crate) fn grouped(version: u32) -> Vec<u8> {
         let mut bytes = wat::parse_str(format!(
             r#"(module
             (import "kandelo.memory-group.v3" "memory" (memory 1 65536 shared))

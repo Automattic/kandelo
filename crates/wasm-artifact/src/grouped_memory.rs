@@ -16,6 +16,7 @@ const SUPPORTED: &[&str] = &[stack_v1::MODULE, klog_v1::MODULE, G::MODULE];
 pub struct GroupedMemoryLayout {
     pub initial_pages: u32,
     pub maximum_pages: u32,
+    pub source_sha256: [u8; 32],
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,7 +116,13 @@ pub fn read_layout(bytes: &[u8]) -> Result<GroupedMemoryLayout, String> {
     {
         return Err("incompatible grouped artifact layout or virtual limits".into());
     }
+    let mut source_sha256 = [0u8; 32];
+    for (index, byte) in source_sha256.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&d.source_sha256[index * 2..index * 2 + 2], 16)
+            .map_err(|_| String::from("invalid grouped source digest"))?;
+    }
     Ok(GroupedMemoryLayout {
+        source_sha256,
         initial_pages: d.initial_pages,
         maximum_pages: d.maximum_pages,
     })
@@ -261,7 +268,8 @@ mod tests {
             read_layout(&bytes),
             Ok(GroupedMemoryLayout {
                 initial_pages: 149,
-                maximum_pages: 65536
+                maximum_pages: 65536,
+                source_sha256: [0; 32],
             })
         );
         let ordinary = wat::parse_str("(module (memory 1))").unwrap();

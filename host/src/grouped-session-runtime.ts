@@ -21,6 +21,8 @@ import type { CentralizedWorkerInitMessage } from './worker-protocol';
  * ordinary artifacts retain their ordinary path. Membership remains in Rust. */
 export interface TrustedMemoryGroupOptions {
   maximumPages: number;
+  /** SDK alternatives beside ordinary executables in the same image. */
+  preparedPrograms?: import('./prepared-memory-group-programs').PreparedMemoryGroupPrograms;
   /** Optional embedder admission quota; omitted means the protocol's u32 ceiling. */
   maximumProcesses?: number;
   /** Includes pthreads and pending/retiring executions, not just processes. */
@@ -58,12 +60,13 @@ export class GroupedSessionRuntime {
   private closed = false;
   private closing = false;
   private readonly launches = new Set<Promise<void>>();
-  private readonly options: Required<TrustedMemoryGroupOptions>;
+  private readonly options: Required<Pick<TrustedMemoryGroupOptions, 'maximumPages' | 'maximumProcesses' | 'maximumTasks'>>;
   constructor(private readonly kernel: CentralizedKernelWorker, private readonly adapter: WorkerAdapter,
     options: TrustedMemoryGroupOptions, private readonly joins: boolean,
     private readonly onExit: (pid: number, status: number, generation: number) => void,
     private readonly report: (pid: number, error: Error) => void,
     private readonly initialBackingPages = 1) {
+    if (options.preparedPrograms) kernel.configurePreparedMemoryGroupPrograms(options.preparedPrograms);
     // WHY: a shared backing budget is the resource authority. A small default
     // count would refuse otherwise affordable desktops. Keep explicit quotas
     // for embedders/tests without preallocating any task or Worker capacity.

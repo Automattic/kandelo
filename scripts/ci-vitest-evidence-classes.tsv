@@ -131,6 +131,7 @@ host/test/exec-memory-refusal.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	prepared-product
 host/test/exec.test.ts	prepared-product
+host/test/execution-backend.test.ts	source-only
 host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-read-buffer.test.ts	source-only
@@ -427,6 +428,8 @@ host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/positioned-image-targets.test.ts	source-only
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
+host/test/prepared-memory-group-execution.test.ts	prepared-product
+host/test/prepared-memory-group-programs.test.ts	source-only
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
 host/test/process-address-space.test.ts	source-only

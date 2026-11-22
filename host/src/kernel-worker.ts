@@ -1,3 +1,6 @@
+import { assertInitialExecutionBackend, type ExecutionBackend } from './execution-backend';
+import { PreparedMemoryGroupProgramCatalog, memoryGroupSourceDigest, type PreparedMemoryGroupPrograms } from './prepared-memory-group-programs';
+import { readNamespaceFileRangeWithRetry } from './process-lifecycle';
 import { KmsBitmapRelay } from './dri/kms-bitmap-relay';
 import { GROUPED_WORKER_EXTENSIONS } from "./grouped-worker-runtime";
 import { extractHeapBase } from "./constants";
@@ -19,7 +22,7 @@ import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
 import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
 import { MemoryGroupImageStore, type GroupImageLayout, type GroupReplicaLaunch,
   type PreparedGroupReplica, type GroupImageExecutionPause, type PreparedGroupMapping } from "./memory-group-image-store";
-import { MEMORY_GROUP_MAXIMUM_PAGES } from "./generated/program-extensions";
+import { MEMORY_GROUP_MAXIMUM_PAGES, MEMORY_GROUP_SECTION } from "./generated/program-extensions";
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
@@ -130,6 +133,7 @@ import {
 import {
   decodeExecTargetAdmission,
   launchPreparedExecTarget,
+  readPreparedExecTarget,
   PreparedExecTargetError,
   type ExecLaunchCallback,
   type PreparedExecKernel,
@@ -3291,6 +3295,46 @@ export class CentralizedKernelWorker {
   // authority. Retirement removes that registration before exit publication.
   #committedGroupExecs = new Map<number, GroupedExecPreparationState>();
   #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
+  #preparedMemoryGroupPrograms?: PreparedMemoryGroupProgramCatalog;
+
+  configurePreparedMemoryGroupPrograms(options: PreparedMemoryGroupPrograms): void {
+    if (this.#preparedMemoryGroupPrograms) throw Error('SDK memory-group catalog is already configured');
+    this.#preparedMemoryGroupPrograms = new PreparedMemoryGroupProgramCatalog(options,
+      (path, limit) => readNamespaceFileRangeWithRetry(this, path, 0, limit));
+  }
+
+  async #prepareMemoryGroupProgram(ownerPid: number, target: number, bytes: ArrayBuffer,
+    prepareImageTarget: (path: string) => number, group: number): Promise<boolean> {
+    const program = await this.#preparedMemoryGroupPrograms?.select(bytes);
+    if (!program) return false;
+    const image = await retryKernelEntryResult(() => prepareImageTarget(program.path));
+    if (image <= 0) throw new PreparedExecTargetError('Cannot retain SDK program variant', image < 0 ? -image : EIO);
+    try {
+      const candidate = await readPreparedExecTarget(this as PreparedExecKernel, ownerPid, image);
+      if (candidate.byteLength !== program.bytes || await memoryGroupSourceDigest(candidate.buffer as ArrayBuffer) !== program.sha256) {
+        throw new PreparedExecTargetError('SDK program variant differs from its catalog', ERRNO.ENOEXEC);
+      }
+      const result = await retryKernelEntryResult(() => {
+        let status = -EIO;
+        this.#runImmediateKernelEntry('bind descriptor-backed SDK group image', entry => {
+          const previousPid = this.currentHandlePid;
+          this.currentHandlePid = ownerPid;
+          try {
+            const bind = this.#kernelInstanceForEntry(entry).exports.kernel_group_exec_target_bind_image;
+            if (typeof bind !== 'function') throw new PreparedExecTargetError('Kernel lacks SDK group image binding', ERRNO.EOPNOTSUPP);
+            status = (bind as CallableFunction)(ownerPid, target, image, group) as number;
+          } finally { this.currentHandlePid = previousPid; }
+        });
+        return status;
+      });
+      if (result < 0) throw new PreparedExecTargetError('Kernel refused SDK group image binding', -result);
+      return true;
+    } finally {
+      const cancelled = await retryKernelEntryResult(() => this.execTargetCancel(ownerPid, image));
+      if (cancelled < 0) throw new PreparedExecTargetError('Cannot release SDK image target', -cancelled);
+    }
+  }
+
   #memoryGroupReplicas = new WeakMap<PreparedGroupReplica, MemoryGroupImageStore>();
   #registeredMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
   #observedMemoryGroupReplicas = new WeakSet<PreparedGroupReplica>();
@@ -24699,9 +24743,14 @@ export class CentralizedKernelWorker {
     envp: string[],
     callback: ExecLaunchCallback,
     initialGroup?: number,
+    requestedBackend?: ExecutionBackend,
   ): Promise<number> {
+    if (requestedBackend === "memory-group" && initialGroup === undefined) throw new PreparedExecTargetError("Memory-group backend is not configured", ERRNO.EOPNOTSUPP);
     return launchPreparedExecTarget({
       kernel: this.#execTargetKernelForGroup(initialGroup),
+      prepareImage: requestedBackend === "memory-group" && initialGroup !== undefined
+        ? (target, bytes, prepare) => this.#prepareMemoryGroupProgram(pid, target, bytes, prepare, initialGroup)
+        : undefined,
       supportedProgramExtensions: initialGroup === undefined ? undefined : GROUPED_WORKER_EXTENSIONS,
       ownerPid: pid,
       pid,
@@ -24715,6 +24764,7 @@ export class CentralizedKernelWorker {
       commitTarget: (target, size, consumed) => this.kernelInitialExecCommit(pid, target, size, consumed),
       compileModule: (bytes) => this.wasmModules.programModule(bytes),
     }, async (request) => {
+      assertInitialExecutionBackend(requestedBackend, WebAssembly.Module.customSections(request.targetModule, MEMORY_GROUP_SECTION).length > 0, initialGroup !== undefined);
       const metadata = this.validateExecMetadata(request.argv, request.envp, detectPtrWidth(request.targetBytes));
       return metadata < 0 ? metadata : callback(request);
     });
@@ -24734,6 +24784,8 @@ export class CentralizedKernelWorker {
     try {
       return await launchPreparedExecTarget({
         kernel: this.#execTargetKernelForGroup(group),
+        prepareImage: group === undefined ? undefined
+          : (target, bytes, prepare) => this.#prepareMemoryGroupProgram(childPid, target, bytes, prepare, group),
         supportedProgramExtensions: group === undefined ? undefined : GROUPED_WORKER_EXTENSIONS,
         ownerPid: childPid,
         pid: childPid,
@@ -24836,6 +24888,7 @@ export class CentralizedKernelWorker {
             expectedCaller,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
+        prepareImage: grouped ? (target, bytes, prepare) => this.#prepareMemoryGroupProgram(pid, target, bytes, prepare, registration.grouped!.receipt.group) : undefined,
         prepareBackend: grouped ? (target, bytes) => this.#prepareGroupedExecBackend(expectedCaller, target, bytes) : undefined,
       }, callback);
     } catch (error) {

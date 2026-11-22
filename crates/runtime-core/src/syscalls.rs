@@ -9430,7 +9430,7 @@ pub(crate) fn process_exe_stat(
     }
     let exe = proc.exe.ok_or(Errno::ENOENT)?;
     let host_handle = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?.host_handle;
-    exe_backing_fstat(host, host_handle)
+    exe_backing_fstat(host, crate::executable_backing::visible_executable_handle(host_handle)?)
 }
 
 /// A NEW open file description of the executable the image runs
@@ -9456,6 +9456,12 @@ fn reopen_process_exe(
         let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
         (ofd.file_type, ofd.host_handle, ofd.path.clone(), ofd.file_id)
     };
+    let visible_handle = crate::executable_backing::visible_executable_handle(host_handle)?;
+    let file_id = if visible_handle != host_handle {
+        let stat = exe_backing_fstat(host, visible_handle)?;
+        Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino })
+    } else { file_id };
+    let host_handle = visible_handle;
     let stat = exe_backing_fstat(host, host_handle)?;
     let mut prepared = proc.ofd_table.prepare(file_type, status_flags, &path)?;
     prepared.value_mut().file_id = file_id;

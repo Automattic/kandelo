@@ -808,7 +808,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 25 as const;
+export const HOST_ADAPTER_VERSION = 26 as const;
 export const PROCESS_MEMORY_ACCESS_READ = 1 as const;
 export const PROCESS_MEMORY_ACCESS_WRITE = 2 as const;
 export const MEMORY_GROUP_PROTOCOL = {"capability_admission":1,"exec_preparation":{"actions":{"cancel":2,"finishCancellation":3,"validate":1},"bytes":40,"capability":8,"fields":{"initialPages":32,"maximumPages":36,"receipt":0},"version":1},"layout":{"bytes":96,"capability":4,"fields":{"brkBase":40,"brkLimit":56,"channel":80,"controlBase":64,"controlEnd":72,"initialPages":32,"maximumPages":36,"mmapBase":48,"mode":88,"receipt":0,"reserved":92},"modes":{"fresh":0,"inherited":1},"version":1},"mapping":{"capability":2,"description_bytes":136,"description_fields":{"address":48,"flags":88,"kind":40,"length":56,"oldAddress":64,"oldLength":72,"populationAddress":96,"populationLength":104,"prot":44,"receipt":0,"reserved":92,"result":80,"sharedLength":120,"sharedObject":112,"sharedOffset":128,"token":32},"kinds":{"break":5,"map":1,"protect":3,"remap":4,"unmap":2},"request_bytes":64,"request_fields":{"args":8,"observedPages":56,"reserved":4,"syscall":0,"tailReserved":60},"version":6},"receipt_bytes":32,"receipt_fields":{"generation":24,"group":0,"pid":4,"reserved":12,"serial":16,"tid":8},"snapshot_bytes":40,"snapshot_fields":{"accepting":16,"backings":32,"group":0,"images":36,"maximumPages":4,"maximumProcesses":8,"maximumTasks":12,"processes":20,"quarantinedTasks":28,"tasks":24},"task_actions":{"beginRetirement":2,"cancelUnconstructed":5,"quarantine":4,"retireQuiescent":3,"start":1},"version":1} as const;
@@ -947,6 +947,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
   "kernel_epoll_wait_retry_state",
+  "kernel_group_exec_target_bind_image",
   "kernel_group_memory_break",
   "kernel_group_memory_change_cancel",
   "kernel_group_memory_change_commit",

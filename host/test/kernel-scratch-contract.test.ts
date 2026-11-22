@@ -594,6 +594,11 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareMemoryGroupProgram::kernel-export-direct-use::(bind as CallableFunction)(ownerPid, target, image, group)",
+    disposition: "kernel-control", count: 1,
+    why: "Host26 kernel_group_exec_target_bind_image takes four i32 control identities: owner PID, retained source target, retained implementation target and configured group. Rust validates the same live owner, source digest and implementation admission before binding descriptors. No kernel pointer, byte range or scratch reservation crosses this exact synchronous lexical kernel entry; the return is an i32 status.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#groupMappingAction::kernel-export-direct-use::operation(receipt.pid, receipt.tid, owned.token!, owned.transaction!, cancel ? EIO : 0)",
     disposition: "kernel-control", count: 1,
     why: "The exact live task and its owned-resource token/transaction finish one prepared driver mapping under the image barrier. The final scalar is a construction decision; no kernel pointer or memory reservation crosses this call.",

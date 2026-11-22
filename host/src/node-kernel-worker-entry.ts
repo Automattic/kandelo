@@ -1,3 +1,5 @@
+import { assertInitialExecutionBackend } from './execution-backend';
+import { MEMORY_GROUP_SECTION as INITIAL_GROUP_SECTION } from './generated/program-extensions';
 import { GroupedSessionRuntime } from './grouped-session-runtime';
 import { ProcessGenerationObservations } from "./process-generation-observation";
 import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
@@ -1540,6 +1542,7 @@ async function handleSpawn(msg: SpawnMessage) {
       }
       const module = await compileTopLevelProgram(msg.requestId, msg.programBytes);
       if (!module) return;
+      assertInitialExecutionBackend(msg.executionBackend, WebAssembly.Module.customSections(module, INITIAL_GROUP_SECTION).length > 0, groupedSession !== undefined);
       suppliedProgram = { bytes: msg.programBytes, module };
     }
 
@@ -1709,7 +1712,7 @@ async function handleSpawn(msg: SpawnMessage) {
         onCommitFailure: () => {},
         startAfterCommit: () => startProgram(request.targetBytes, request.targetModule, request.argv,
           kernelWorker.takeCommittedExecSecureExec(pid)),
-      }), await groupedSession?.initialPathGroup());
+      }), await groupedSession?.initialPathGroup(), msg.executionBackend);
       if (result < 0) throw new PreparedExecTargetError("initial program commit failed", -result);
     } else {
       await startProgram(suppliedProgram!.bytes, suppliedProgram!.module, msg.argv);

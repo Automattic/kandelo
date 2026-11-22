@@ -5577,6 +5577,21 @@ pub extern "C" fn kernel_exec_target_read(
     }
 }
 
+/// Select an SDK-prepared group image while keeping the ordinary executable's
+/// descriptor, credentials and generation as the authority. No page or task is
+/// admitted until the subsequent normal group launch/exec transaction.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_exec_target_bind_image(
+    owner_pid: u32, target: u32, image: u32, group: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    match table.bind_memory_group_exec_image(&mut host, group, owner_pid, target, image) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Decide what the retained target is (`exec_target::admit`) and write the
 /// answer to `out`: `[kind: u8]`, then for a script (kind 1)
 /// `[has_arg: u8][interp_len: u32][arg_len: u32][interp][arg]`, or for a
