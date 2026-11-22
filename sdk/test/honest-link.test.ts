@@ -52,6 +52,21 @@ describe('honest executable links', () => {
     expect(rejected.stderr).toContain('undefined symbol: response_undefined');
   });
 
+  it('preserves empty quoted response arguments like direct compiler arguments', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'honest empty response '));
+    const src = join(dir, 't.c'), direct = join(dir, 'direct.wasm'), out = join(dir, 'response.wasm');
+    writeFileSync(src, 'int main(void){return 0;}\n');
+    const argumentsFor = (output: string) => ['-I', '', src, '-o', output];
+    const ordinary = spawnSync(cc, argumentsFor(direct), { encoding: 'utf8' });
+    expect(ordinary.status, ordinary.stderr).toBe(0);
+    const quote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
+    const inner = join(dir, 'inner.rsp'), outer = join(dir, 'outer.rsp');
+    writeFileSync(inner, argumentsFor(out).map(quote).join('\n'));
+    writeFileSync(outer, quote('@' + inner));
+    const response = spawnSync(cc, ['@' + outer], { encoding: 'utf8' });
+    expect(response.status, response.stderr).toBe(ordinary.status);
+  });
+
   it('requires the versioned namespace for stack capture', () => {
     const r = link('int __kandelo_stack_capture_v1(void *, unsigned, unsigned);\nint main(void){char b[48];return __kandelo_stack_capture_v1(b,48,1);}\n');
     expect(r.status).not.toBe(0);

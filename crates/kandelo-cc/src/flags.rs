@@ -257,10 +257,12 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
     let len = chars.len();
     let mut tokens = Vec::new();
     let mut token = String::new();
+    // Quotes can start an empty argument; payload length alone loses it.
+    let mut token_started = false;
 
     let mut i = 0;
     while i < len {
-        if token.is_empty() {
+        if !token_started {
             while i < len && is_gnu_response_whitespace(chars[i]) {
                 i += 1;
             }
@@ -270,6 +272,9 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
         }
 
         let c = chars[i];
+        if !is_gnu_response_whitespace(c) {
+            token_started = true;
+        }
         if c == '\\' && i + 1 < len {
             i += 1;
             token.push(chars[i]);
@@ -295,8 +300,9 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
         }
 
         if is_gnu_response_whitespace(c) {
-            if !token.is_empty() {
+            if token_started {
                 tokens.push(std::mem::take(&mut token));
+                token_started = false;
             }
             i += 1;
             continue;
@@ -306,7 +312,7 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
         i += 1;
     }
 
-    if !token.is_empty() {
+    if token_started {
         tokens.push(token);
     }
     tokens
@@ -1003,6 +1009,16 @@ mod tests {
             strings(&["unterminated"])
         );
         assert_eq!(tokenize_gnu_response_file("x\\"), strings(&["x\\"]));
+    }
+
+    #[test]
+    fn tokenizer_preserves_empty_quoted_arguments() {
+        assert_eq!(
+            tokenize_gnu_response_file(r#"-I "" source.c '' 'a'"" ""b '' ''"#),
+            strings(&["-I", "", "source.c", "", "a", "b", "", ""])
+        );
+        assert_eq!(tokenize_gnu_response_file(r#""""#), strings(&[""]));
+        assert_eq!(tokenize_gnu_response_file("  \n\t"), Vec::<String>::new());
     }
 
     #[test]
