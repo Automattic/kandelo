@@ -50,7 +50,7 @@ test.beforeAll(async () => {
   test.setTimeout(180_000);
   const routes = new Map<string, Uint8Array>([
     ["/kernel.wasm", readFileSync(resolveBinary("kernel.wasm"))],
-    ["/image-module.wasm", readFileSync(join(repository, "local-binaries/kandelo_image_module32.wasm"))],
+    ["/image-module.wasm", readFileSync(resolveBinary("kandelo_image_module32.wasm"))],
   ]);
   for (const probe of probes) {
     const ordinary = compileSdkFixture(new URL(`../../../host/test/fixtures/${probe.source}`, import.meta.url), "oldExecThreads" in probe ? ["-DEXEC_OLD_THREADS"] : [], { forkInstrument: true });
