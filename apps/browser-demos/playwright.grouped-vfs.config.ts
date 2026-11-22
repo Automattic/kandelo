@@ -3,6 +3,8 @@ import base from "./playwright.grouped-sdk.config";
 import { playwrightPort } from "../../tests/playwright-run";
 
 const port = await playwrightPort(process.env.KANDELO_GROUPED_VFS_PORT);
+// Config reloads in workers must use the server selected by the runner.
+process.env.KANDELO_GROUPED_VFS_PORT = String(port);
 
 export default defineConfig({
   ...base,
