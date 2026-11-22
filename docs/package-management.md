@@ -899,6 +899,47 @@ hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
 
+### Shared-memory outputs
+
+An SDK program can declare a separate compatible executable as a normal ZIP
+output. The source name refers to another ordinary output of the same producer:
+
+```toml
+[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+
+[[outputs]]
+name = "probe-shared"
+wasm = "probe-shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+```
+
+The recipe produces `probe.wasm`. Before publication, the normal resolver invokes
+`wasm32posix-shared-memory` and creates a deterministic ZIP containing executable
+`program.wasm`. The derived output must disable ordinary fork instrumentation
+because translation consumes the already instrumented source. Chained outputs,
+side modules, stale ABI contracts and unsupported architectures are rejected;
+this setting currently supports SDK memory32 executables only. The source remains
+ordinary and is never rewritten. Adding an output follows the existing
+multi-output mirror directory rules.
+
+The setting and translator/helper source closure enter the producer's cache key.
+Fresh builds, cache admission and complete local receipts validate the archive,
+source digest, shared-memory layout and current program ABI contract. Standalone
+local installation derives the output when collecting the complete generation.
+
+For image recipes the resolver supplies `WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS`, a
+readonly bounded JSON handoff in the private work directory. It identifies the
+consumer and the reachable declared producer outputs with source SHA-256,
+verified archive path, normal resolver URI, byte length and SHA-256. The shell
+composer registers these through normal lazy archives at
+`/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`. No central program
+list or desktop dependency is required. The runtime retains kernel descriptor
+binding; availability in an image does not opt an ordinary launch into sharing.
+See [shared-memory groups](shared-memory-groups.md) for launch and trust limits.
+
 Optional [package session procedures](package-sessions.md) use this same
 runtime-file contract. Packages declare offer setup forms, participant join
 forms, and launch arguments; images install their manifests for runtime

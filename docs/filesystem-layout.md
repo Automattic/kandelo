@@ -124,4 +124,4 @@ The build runner rejects `/tmp`, `/run`, and the standard `/var/run` and
 would hide those host-backed inputs beneath scratch storage. This validation
 does not resolve arbitrary symlinks in custom images.
 
-SDK-prepared shared-memory implementations live in `/usr/libexec/kandelo/shared-desktop/<id>/program.wasm`. Their static source/implementation catalog lives in `/usr/share/kandelo/shared-desktop/programs.json`. Ordinary command paths retain their original executable identities; explicitly opted-in execution binds a prepared implementation through retained descriptors.
+SDK-prepared shared-memory implementations live in `/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`. Producers declare these through normal package output settings; images install their lazy archives without a guest catalog. Ordinary command paths retain their original executable identities; explicitly opted-in execution binds a compatible implementation through retained descriptors.

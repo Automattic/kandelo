@@ -16,7 +16,7 @@ import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
 import ncWasmUrl from "@binaries/programs/wasm32/netcat/nc.wasm?url";
-import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
+import curlWasmUrl from "@binaries/programs/wasm32/curl/curl.wasm?url";
 import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,

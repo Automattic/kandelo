@@ -58,9 +58,9 @@ test("trusted Cage accepts physical Foot input and retires its graphical process
     expect(Number(after["admission.processes"])).toBeLessThan(Number(before["admission.processes"]));
     expect(Number(after["admission.tasks"])).toBeLessThan(Number(before["admission.tasks"]));
     const names = session.preparedProgramRequests.map(url => new URL(url).pathname.split("/").at(-1));
-    expect(names).toContain("bash.zip"); expect(names).toContain("cage.zip"); expect(names).toContain("foot.zip");
-    expect(names).not.toContain("freeciv-client.zip"); expect(names).not.toContain("freeciv-server.zip");
-    expect(names).not.toContain("scummvm-static.zip");
+    expect(names).toContain("bash-shared.zip"); expect(names).toContain("cage-shared.zip"); expect(names).toContain("foot-shared.zip");
+    expect(names).not.toContain("freeciv-client-shared.zip"); expect(names).not.toContain("freeciv-server-shared.zip");
+    expect(names).not.toContain("scummvm-static-shared.zip");
   });
 });
 

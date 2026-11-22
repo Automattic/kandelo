@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -72,13 +73,14 @@ import {
   assertSourceRootfsShellMetadata,
 } from "../../scripts/assert-source-rootfs-shell-composition";
 
-import { sharedDesktopPackagePrograms, SHARED_DESKTOP_PACKAGE } from "../../images/vfs/scripts/shared-desktop-package-contract";
-import { prepareSharedDesktopSdkFixtures, fixtureDigest, type SdkImageFixture } from "./support/shared-desktop-sdk-fixtures";
-let sdkFixtures: Map<string, SdkImageFixture>;
+import { prepareSharedMemorySdkFixture, fixtureDigest, type SdkImageFixture } from "./support/shared-memory-sdk-fixture";
+import { installSharedMemoryOutputs, loadSharedMemoryOutputs, type SharedMemoryOutput } from "../../images/vfs/scripts/shared-memory-outputs";
+import { sharedMemoryProgramPath } from "../../host/src/shared-memory-program";
+let sdkFixture: SdkImageFixture;
 beforeAll(() => {
-  // Build the genuine SDK closure and initialize the native image reader before
+  // Build one genuine SDK fixture and initialize the native image reader before
   // per-case deadlines; a cold checkout can spend minutes preparing these tools.
-  sdkFixtures = prepareSharedDesktopSdkFixtures();
+  sdkFixture = prepareSharedMemorySdkFixture();
   KandeloImageFs.create().reset();
 }, 600_000);
 
@@ -166,12 +168,12 @@ async function writeRootfs(
   writeVfsBinary(
     fs,
     "/bin/login",
-    sdkFixtures.get("login")!.ordinary,
+    sdkFixture.ordinary,
     0o4755,
   );
   // ps is supplied by the real base rootfs, rather than the shell's lazy
   // overlay table. Use its SDK fixture source for closure verification.
-  writeVfsBinary(fs, "/bin/ps", sdkFixtures.get("ps")!.ordinary, 0o755);
+  writeVfsBinary(fs, "/bin/ps", sdkFixture.ordinary, 0o755);
   writeVfsBinary(
     fs,
     EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -198,9 +200,9 @@ async function writeRootfs(
     fs.registerLazyFile(
       spec.vfsPath,
       `binaries/${spec.resolverPath.replace("programs/", "programs/wasm32/")}`,
-      sdkFixtures.has(spec.id) ? sdkFixtures.get(spec.id)!.ordinary.length : 200_000 + spec.id.length,
+      sdkFixture.ordinary.length,
       0o755,
-      sdkFixtures.has(spec.id) ? fixtureDigest(sdkFixtures.get(spec.id)!.ordinary) : undefined,
+      fixtureDigest(sdkFixture.ordinary),
     );
   }
   const lazyTreeEntry: ZipEntry = {
@@ -288,7 +290,7 @@ function fixturePaths(root: string) {
   );
   writeFileSync(
     bashPath,
-    sdkFixtures.get("bash")!.ordinary,
+    sdkFixture.ordinary,
   );
   writeFileSync(
     desktopDataPath,
@@ -344,8 +346,7 @@ function fixturePaths(root: string) {
         : spec.resolverPath.split("/").at(-1)!,
     );
     mkdirSync(dirname(artifact), { recursive: true });
-    const sdk = sharedDesktopPackagePrograms.find(row => row.guestPath === spec.vfsPath);
-    writeFileSync(artifact, sdk ? sdkFixtures.get(sdk.id)!.ordinary : `${spec.id} fixture`);
+    writeFileSync(artifact, spec.resolverPath.endsWith(".wasm") ? sdkFixture.ordinary : `${spec.id} fixture`);
   }
   for (const name of SHELL_SESSION_PACKAGES) {
     writeFileSync(join(dependencyRoots.get(name)!, "sessions.json"), readFileSync(join(repoRoot, "packages/registry", name, "sessions.json")));
@@ -369,21 +370,11 @@ function fixturePaths(root: string) {
       }),
     );
   }
-  // The source/implementation closure is validated by the canonical composer.
-  // Supply actual SDK-produced pairs even though these tests never execute them.
-  const preparedRoot = dependencyRoots.get(SHARED_DESKTOP_PACKAGE)!;
-  const records = sharedDesktopPackagePrograms.map(row => {
-    const fixture = sdkFixtures.get(row.id)!;
-    writeFileSync(join(preparedRoot, row.id + ".zip"), fixture.zip);
-    return { ...row, ordinarySha256: fixtureDigest(fixture.ordinary), groupedSha256: fixtureDigest(fixture.grouped),
-      bytes: fixture.grouped.length, archiveBytes: fixture.zip.length, archiveSha256: fixtureDigest(fixture.zip) };
-  });
-  writeFileSync(join(preparedRoot, "programs.json"), JSON.stringify({ schema: 1, memoryGroup: "trusted-v1", programs: records }));
   const freeciv = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.id === "freeciv")!;
   writeFileSync(join(dependencyRoots.get(freeciv.dependency)!, basename(freeciv.resolverPath)), zipSync({
     "bin/freeciv-play": [new TextEncoder().encode("freeciv executable"), { os: 3, attrs: 0o100755 << 16 }],
-    "libexec/freeciv/client.wasm": [sdkFixtures.get("freeciv-client")!.ordinary, { os: 3, attrs: 0o100755 << 16 }],
-    "libexec/freeciv/server.wasm": [sdkFixtures.get("freeciv-server")!.ordinary, { os: 3, attrs: 0o100755 << 16 }],
+    "libexec/freeciv/client.wasm": [sdkFixture.ordinary, { os: 3, attrs: 0o100755 << 16 }],
+    "libexec/freeciv/server.wasm": [sdkFixture.ordinary, { os: 3, attrs: 0o100755 << 16 }],
   }));
   // WHY: populateTerminfoDatabase unpacks this eagerly (unlike the lazy
   // archives above) and requires its one declared entry unconditionally.
@@ -667,7 +658,7 @@ describe("canonical source-rootfs shell", () => {
     ).toContain("export PS1='\\u@\\h:\\W\\$ '");
   });
 
-  it("keeps ordinary graphical partials separate from shared desktop activities", async () => {
+  it("selects shared desktop activities from their ordinary producer packages", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
     await writeRootfs(paths.rootfsPath);
@@ -696,7 +687,7 @@ describe("canonical source-rootfs shell", () => {
       "freeciv", "scummvm", "modeset", "sdl2",
     ]));
     expect(config.profiles!.cage).toBeUndefined();
-    expect(config.profiles!.sway).toBeUndefined();
+    expect(config.profiles!.sway?.runtime?.executionBackend).toBe("memory-group");
     expect(config.profiles!.labwc).toBeUndefined();
     expect(config.profiles!["sway-sfwbar"]).toBeUndefined();
   });
@@ -899,8 +890,8 @@ describe("canonical source-rootfs shell", () => {
     expect(
       composed.files.find((file) => file.path === "/bin/grep"),
     ).toMatchObject({
-      uri: "binaries/programs/wasm32/grep.wasm",
-      size: sdkFixtures.get("grep")!.ordinary.length,
+      uri: "binaries/programs/wasm32/grep/grep.wasm",
+      size: sdkFixture.ordinary.length,
     });
     // WHY: every program the shell adds is a lazy file the image itself
     // declares -- path, size, mode and package-relative URL -- so it is
@@ -918,12 +909,12 @@ describe("canonical source-rootfs shell", () => {
       // `getLazyEntry` answers only "is this a URL-backed lazy file"; the
       // address the image records comes from the writer's own inventory.
       expect(fs.getLazyEntry(guest), guest).toMatchObject({
-        size: `${spec!.id} fixture`.length,
+        size: sdkFixture.ordinary.length,
       });
       expect(
         fs.lazyEntries().files.find((file) => file.path === guest),
         guest,
-      ).toMatchObject({ uri: url, size: `${spec!.id} fixture`.length });
+      ).toMatchObject({ uri: url, size: sdkFixture.ordinary.length });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
     // The shared desktop panel must arrive through its one package closure,
@@ -1299,7 +1290,7 @@ describe("canonical source-rootfs shell", () => {
       expect(source.profiles[id].identity.summary).toContain("clock");
     }
     expect(source.profiles.sway.requires).toEqual([
-      "sway", "swaybg", "foot", "desktop-data", "bibata-cursor-theme", "shared-desktop-programs",
+      "sway", "swaybg", "foot", "desktop-data", "bibata-cursor-theme",
     ]);
     expect(new Set(source.profiles["sway-sfwbar"].requires)).toEqual(new Set([
       ...source.profiles.sway.requires, "sfwbar",
@@ -1793,3 +1784,55 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
 function ensureDirRecursiveOnHost(path: string): void {
   mkdirSync(path, { recursive: true });
 }
+
+describe("producer-owned shared-memory image outputs", () => {
+  function handoff() {
+    const root = realpathSync(tempRoot());
+    const archivePath = join(root, "probe-shared.zip");
+    writeFileSync(archivePath, sdkFixture.zip);
+    const output: SharedMemoryOutput = { packageName: "probe", sourceSha256: fixtureDigest(sdkFixture.ordinary),
+      archive: { path: archivePath, resolverPath: "programs/wasm32/probe/probe-shared.zip",
+        bytes: sdkFixture.zip.length, sha256: fixtureDigest(sdkFixture.zip) } };
+    const metadata = { schema: 1, kind: "kandelo-dependency-shared-memory-outputs", consumerPackage: "consumer", outputs: [output] };
+    const path = join(root, "inputs.json");
+    writeFileSync(path, JSON.stringify(metadata));
+    return { output, metadata, path };
+  }
+  it("installs a genuine SDK alternative as a normal lazy archive without desktop dependencies", () => {
+    const { output, path } = handoff();
+    const fs = KandeloImageFs.create();
+    try {
+      const outputs = loadSharedMemoryOutputs(path, "consumer");
+      expect(installSharedMemoryOutputs(fs, [...outputs, ...outputs])).toBe(1);
+      const installed = fs.stat(sharedMemoryProgramPath(output.sourceSha256));
+      expect(installed.deferred).toBe(true);
+      expect(installed.mode & 0o777).toBe(0o755);
+      expect(installed.size).toBe(sdkFixture.grouped.length);
+      expect(installed.archiveId).toBeGreaterThan(0);
+    } finally { fs.reset(); }
+  });
+  it("rejects wrong consumer, unsafe resolver paths and unknown handoff fields", () => {
+    const { path, metadata } = handoff();
+    expect(() => loadSharedMemoryOutputs(path, "another-consumer")).toThrow();
+    for (const resolverPath of ["programs/wasm32/../escape.zip", "https://example.test/file.zip", "programs/wasm64/probe.zip"]) {
+      writeFileSync(path, JSON.stringify({ ...metadata, outputs: [{ ...metadata.outputs[0], archive: { ...metadata.outputs[0].archive, resolverPath } }] }));
+      expect(() => loadSharedMemoryOutputs(path, "consumer")).toThrow();
+    }
+    writeFileSync(path, JSON.stringify({ ...metadata, extra: true }));
+    expect(() => loadSharedMemoryOutputs(path, "consumer")).toThrow();
+    writeFileSync(path, " ".repeat(4 * 1024 * 1024 + 1));
+    expect(() => loadSharedMemoryOutputs(path, "consumer")).toThrow("4 MiB");
+  });
+  it("rejects changed archives, malformed members and conflicting alternatives", () => {
+    const { output } = handoff();
+    const fs = KandeloImageFs.create();
+    try {
+      expect(() => installSharedMemoryOutputs(fs, [{ ...output, archive: { ...output.archive, sha256: "0".repeat(64) } }])).toThrow("changed");
+      const malformed = zipSync({ "wrong.wasm": sdkFixture.grouped });
+      const badPath = join(tempRoot(), "malformed.zip");
+      writeFileSync(badPath, malformed);
+      expect(() => installSharedMemoryOutputs(fs, [{ ...output, archive: { ...output.archive, path: badPath, bytes: malformed.length, sha256: fixtureDigest(malformed) } }])).toThrow("archive");
+      expect(() => installSharedMemoryOutputs(fs, [output, { ...output, archive: { ...output.archive, sha256: "0".repeat(64) } }])).toThrow("Conflicting");
+    } finally { fs.reset(); }
+  });
+});

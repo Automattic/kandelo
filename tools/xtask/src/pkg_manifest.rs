@@ -135,6 +135,10 @@ pub struct ProgramOutput {
     pub fork_instrumentation: ForkInstrumentationPolicy,
     #[serde(default)]
     pub original_wasm: Option<String>,
+    /// Derive this ZIP output from another ordinary executable output using
+    /// the SDK shared-memory transform. The source output stays unchanged.
+    #[serde(default)]
+    pub shared_memory_from: Option<String>,
 }
 
 /// A non-Wasm file that a program package needs at runtime.
@@ -1960,6 +1964,25 @@ impl DepsManifest {
         };
 
         if matches!(raw.kind, ManifestKind::Program) {
+            for output in &program_outputs {
+                if let Some(source_name) = &output.shared_memory_from {
+                    let source = program_outputs.iter().find(|candidate| candidate.name == *source_name)
+                        .ok_or_else(|| format!("shared_memory_from {source_name:?} names no output"))?;
+                    if source.name == output.name || source.shared_memory_from.is_some()
+                        || !source.wasm.ends_with(".wasm") || !output.wasm.ends_with(".zip")
+                        || output.fork_instrumentation != ForkInstrumentationPolicy::Disabled
+                        || output.original_wasm.is_some()
+                    {
+                        return Err("shared_memory_from requires an ordinary Wasm source and a ZIP output with fork_instrumentation = disabled".into());
+                    }
+                    if raw.build.toolchain != PackageToolchain::Sdk {
+                        return Err("shared_memory_from requires the SDK toolchain".into());
+                    }
+                    if raw.arches.iter().any(|arch| *arch != TargetArch::Wasm32) {
+                        return Err("shared_memory_from supports only wasm32 outputs".into());
+                    }
+                }
+            }
             let mut original_artifacts = Vec::<&str>::new();
             for output in &program_outputs {
                 if let Some(original) = &output.original_wasm {
@@ -3483,6 +3506,56 @@ spdx = "TestLicense"
 "#
         );
         DepsManifest::parse(&text, PathBuf::from("/x"))
+    }
+
+    #[test]
+    fn shared_memory_outputs_are_declared_by_their_producer() {
+        let output = r#"[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+
+[[outputs]]
+name = "probe-shared"
+wasm = "probe-shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+"#;
+        let manifest = program_manifest("probe", output);
+        assert_eq!(manifest.program_outputs[1].shared_memory_from.as_deref(), Some("probe"));
+        assert_eq!(manifest.output_dest_rel("probe.wasm").unwrap(), PathBuf::from("probe/probe.wasm"));
+        for changed in [
+            output.replace(r#"shared_memory_from = "probe""#, r#"shared_memory_from = "missing""#),
+            output.replace(r#"shared_memory_from = "probe""#, r#"shared_memory_from = "probe-shared""#),
+            output.replace("probe-shared.zip", "probe-shared.wasm"),
+            output.replace(r#"fork_instrumentation = "disabled""#, r#"fork_instrumentation = "auto""#),
+            output.replace("wasm = \"probe.wasm\"", "wasm = \"probe.zip\""),
+        ] {
+            assert!(try_program_manifest("probe", &changed).is_err(), "{changed}");
+        }
+        assert!(try_program_manifest("probe", &format!(r#"{output}
+[[outputs]]
+name = "chained"
+wasm = "chained.zip"
+shared_memory_from = "probe-shared"
+fork_instrumentation = "disabled"
+"#)).is_err());
+        let unsupported = format!(r#"kind = "program"
+name = "probe"
+version = "1.0"
+arches = ["wasm64"]
+depends_on = []
+[source]
+url = "https://example.test/probe.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+{output}"#);
+        assert!(DepsManifest::parse(&unsupported, PathBuf::from("/x")).is_err());
+        let ordinary = program_manifest("probe", r#"[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+"#);
+        assert!(ordinary.program_outputs[0].shared_memory_from.is_none());
     }
 
     #[test]

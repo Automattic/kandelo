@@ -1,8 +1,8 @@
 import { assertInitialExecutionBackend, type ExecutionBackend } from './execution-backend';
-import { PreparedMemoryGroupProgramCatalog, memoryGroupSourceDigest, type PreparedMemoryGroupPrograms } from './prepared-memory-group-programs';
+import { sharedMemoryProgramPath, memoryGroupSourceDigest } from './shared-memory-program';
 import { readNamespaceFileRangeWithRetry } from './process-lifecycle';
 import { KmsBitmapRelay } from './dri/kms-bitmap-relay';
-import { GROUPED_WORKER_EXTENSIONS } from "./grouped-worker-runtime";
+import { GROUPED_WORKER_EXTENSIONS } from "./program-extensions";
 import { extractHeapBase } from "./constants";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import type { WorkerHandle } from "./worker-adapter";
@@ -3295,25 +3295,16 @@ export class CentralizedKernelWorker {
   // authority. Retirement removes that registration before exit publication.
   #committedGroupExecs = new Map<number, GroupedExecPreparationState>();
   #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
-  #preparedMemoryGroupPrograms?: PreparedMemoryGroupProgramCatalog;
-
-  configurePreparedMemoryGroupPrograms(options: PreparedMemoryGroupPrograms): void {
-    if (this.#preparedMemoryGroupPrograms) throw Error('SDK memory-group catalog is already configured');
-    this.#preparedMemoryGroupPrograms = new PreparedMemoryGroupProgramCatalog(options,
-      (path, limit) => readNamespaceFileRangeWithRetry(this, path, 0, limit));
-  }
-
   async #prepareMemoryGroupProgram(ownerPid: number, target: number, bytes: ArrayBuffer,
     prepareImageTarget: (path: string) => number, group: number): Promise<boolean> {
-    const program = await this.#preparedMemoryGroupPrograms?.select(bytes);
-    if (!program) return false;
-    const image = await retryKernelEntryResult(() => prepareImageTarget(program.path));
+    const path = sharedMemoryProgramPath(await memoryGroupSourceDigest(bytes));
+    const image = await retryKernelEntryResult(() => prepareImageTarget(path));
+    if (image === -ERRNO.ENOENT) return false;
     if (image <= 0) throw new PreparedExecTargetError('Cannot retain SDK program variant', image < 0 ? -image : EIO);
     try {
-      const candidate = await readPreparedExecTarget(this as PreparedExecKernel, ownerPid, image);
-      if (candidate.byteLength !== program.bytes || await memoryGroupSourceDigest(candidate.buffer as ArrayBuffer) !== program.sha256) {
-        throw new PreparedExecTargetError('SDK program variant differs from its catalog', ERRNO.ENOEXEC);
-      }
+      // Populate the retained candidate before Rust checks its exact bytes,
+      // source digest, ABI, permissions and executable binding.
+      await readPreparedExecTarget(this as PreparedExecKernel, ownerPid, image);
       const result = await retryKernelEntryResult(() => {
         let status = -EIO;
         this.#runImmediateKernelEntry('bind descriptor-backed SDK group image', entry => {

@@ -38,7 +38,7 @@ JavaScriptCore provisions the admitted physical extent before participants
 launch, rather than relying on growth after a peer retires. The normal
 SDK/package/image Sway/Foot developer preview remains experimental: full-app
 shared launch, complete shared-object/graphics semantics and release acceptance
-are unfinished. See [current evidence and limits](../../docs/measurements/2026-11-20-shared-memory-desktop-current.md).
+are unfinished. See [current evidence and limits](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md).
 
 Changing the layout,
 thread attachment, stop or wait contract needs a new version and matching host

@@ -34,28 +34,28 @@ export const OPTIONAL_URLS = {
   ...import.meta.glob("../../../../packages/registry/coreutils/bin/coreutils.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/coreutils.wasm", {
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/coreutils/coreutils.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/coreutils.wasm", {
+  ...import.meta.glob("../../../../binaries/programs/wasm32/coreutils/coreutils.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../packages/registry/grep/bin/grep.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/grep.wasm", {
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/grep/grep.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/grep.wasm", {
+  ...import.meta.glob("../../../../binaries/programs/wasm32/grep/grep.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../packages/registry/sed/bin/sed.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../local-binaries/programs/wasm32/sed.wasm", {
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/sed/sed.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../binaries/programs/wasm32/sed.wasm", {
+  ...import.meta.glob("../../../../binaries/programs/wasm32/sed/sed.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm", {

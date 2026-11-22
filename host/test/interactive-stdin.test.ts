@@ -14,8 +14,8 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
 const dashBinary = tryResolveBinary("programs/dash.wasm");
-const bashBinary = tryResolveBinary("programs/bash.wasm");
-const grepBinary = tryResolveBinary("programs/grep.wasm");
+const bashBinary = tryResolveBinary("programs/bash/bash.wasm");
+const grepBinary = tryResolveBinary("programs/grep/grep.wasm");
 
 const hasGrep = !!grepBinary;
 

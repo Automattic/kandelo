@@ -6,7 +6,7 @@ import { resolveBinary } from '../src/binary-resolver';
 import { readWasmCustomSectionPayload } from '../src/constants';
 import * as G from '../src/generated/program-extensions';
 import { parseKandeloDemoConfig } from '../../web-libs/kandelo-session/src/demo-config';
-import { sharedDesktopPackagePrograms } from '../../images/vfs/scripts/shared-desktop-package-contract';
+import { sharedMemoryProgramPath } from '../src/shared-memory-program';
 
 // This is a prepared-product check: absent canonical output must fail. It
 // proves real VFS/SDK shell startup; rendered desktop behavior belongs to the
@@ -16,9 +16,7 @@ it('shared-desktop-node-startup: runs ordinary and grouped commands from the can
   const diagnostics: unknown[] = [];
   const host = new NodeKernelHost({
     rootfsImage: readFileSync(resolveBinary('programs/shell.vfs.zst')),
-    experimentalMemoryGroup: { maximumPages: 8192, preparedPrograms: {
-      catalogPath: '/usr/share/kandelo/shared-desktop/programs.json', artifactRoot: '/usr/libexec/kandelo/shared-desktop/',
-    } },
+    experimentalMemoryGroup: { maximumPages: 8192 },
     onStdout: (_pid, bytes) => { stdout += new TextDecoder().decode(bytes); },
     onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
     onHostDiagnostic: event => diagnostics.push(event),
@@ -31,24 +29,15 @@ it('shared-desktop-node-startup: runs ordinary and grouped commands from the can
     expect(config?.defaultProfile).toBe('shell');
     expect(Object.keys(config?.profiles ?? {})).toEqual(expect.arrayContaining(['cage', 'sway', 'sway-sfwbar']));
 
-    const manifestBytes = await host.readFileFromVfs('/usr/share/kandelo/shared-desktop/programs.json');
-    expect(manifestBytes).not.toBeNull();
-    const manifest = JSON.parse(new TextDecoder().decode(manifestBytes!));
-    expect(manifest.memoryGroup).toBe('trusted-v1');
-    expect(manifest.programs.map((row: { id: string }) => row.id))
-      .toEqual(sharedDesktopPackagePrograms.map(row => row.id));
-
     const bash = await host.readFileFromVfs('/bin/sh');
     expect(bash).not.toBeNull();
     expect(readWasmCustomSectionPayload(Uint8Array.from(bash!).buffer, G.MEMORY_GROUP_SECTION)).toBeNull();
-    const record = manifest.programs.find((row: { id: string }) => row.id === 'bash');
-    expect(createHash('sha256').update(bash!).digest('hex')).toBe(record.ordinarySha256);
-    const variant = await host.readFileFromVfs('/usr/libexec/kandelo/shared-desktop/bash/program.wasm');
+    const sourceSha256 = createHash('sha256').update(bash!).digest('hex');
+    const variant = await host.readFileFromVfs(sharedMemoryProgramPath(sourceSha256));
     expect(variant).not.toBeNull();
     const payload = readWasmCustomSectionPayload(Uint8Array.from(variant!).buffer, G.MEMORY_GROUP_SECTION)!;
     expect(JSON.parse(new TextDecoder().decode(payload))).toMatchObject({ version: G.MEMORY_GROUP_VERSION,
-      layout: G.MEMORY_GROUP_LAYOUT, sourceSha256: record.ordinarySha256 });
-    expect(createHash('sha256').update(variant!).digest('hex')).toBe(record.groupedSha256);
+      layout: G.MEMORY_GROUP_LAYOUT, sourceSha256 });
     // Inspecting or reading a lazy program must not allocate an execution group.
     expect(await host.getMemoryGroupUsage()).toBeNull();
 

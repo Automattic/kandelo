@@ -589,8 +589,7 @@
         "cage",
         "desktop-data",
         "bibata-cursor-theme",
-        "foot",
-        "shared-desktop-programs"
+        "foot"
       ],
       "identity": {
         "title": "Cage",
@@ -638,8 +637,7 @@
         "swaybg",
         "foot",
         "desktop-data",
-        "bibata-cursor-theme",
-        "shared-desktop-programs"
+        "bibata-cursor-theme"
       ],
       "identity": {
         "title": "Sway",
@@ -688,8 +686,7 @@
         "foot",
         "desktop-data",
         "bibata-cursor-theme",
-        "sfwbar",
-        "shared-desktop-programs"
+        "sfwbar"
       ],
       "identity": {
         "title": "Sway with SFWBar",

@@ -212,11 +212,6 @@
       "role": "lazy-file"
     },
     {
-      "name": "shared-desktop-programs",
-      "version": "0.1.0",
-      "role": "lazy-archive"
-    },
-    {
       "name": "dosbox-pure",
       "version": "1.0-preview8",
       "role": "lazy-file"

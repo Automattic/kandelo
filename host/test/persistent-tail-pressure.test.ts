@@ -10,12 +10,12 @@ const artifacts = join(import.meta.dirname, "../../local-binaries/source-only-v1
 it("waits for compaction when uid 1000 copies three random files past the persistent tail bound", async () => {
   const directory = mkdtempSync(join(tmpdir(), "kandelo-tail-pressure-"));
   const output: string[] = [];
-  const coreutils = new Uint8Array(readFileSync(join(artifacts, "programs/wasm32/coreutils.wasm")));
+  const coreutils = new Uint8Array(readFileSync(join(artifacts, "programs/wasm32/coreutils/coreutils.wasm")));
   const options = {
     rootfsImage: new Uint8Array(readFileSync(join(artifacts, "programs/wasm32/shell.vfs.zst"))),
     rootfsLazyUrlBase: "https://kandelo.invalid/",
     rootfsLazyAssets: [{
-      url: "https://kandelo.invalid/binaries/programs/wasm32/coreutils.wasm",
+      url: "https://kandelo.invalid/binaries/programs/wasm32/coreutils/coreutils.wasm",
       sha256: createHash("sha256").update(coreutils).digest("hex"),
       size: coreutils.byteLength,
       bytes: coreutils,

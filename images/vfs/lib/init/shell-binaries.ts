@@ -214,18 +214,18 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "mariadb", dependency: "mariadb", resolverPath: "programs/mariadb/mariadb.wasm", vfsPath: "/usr/bin/mariadb", symlinks: ["/usr/bin/mysql"] },
   {
     id: "coreutils",
-    resolverPath: "programs/coreutils.wasm",
+    resolverPath: "programs/coreutils/coreutils.wasm",
     vfsPath: "/bin/coreutils",
     symlinks: [...COREUTILS_NAMES, "["].map(coreutilsCommandPath),
   },
   {
     id: "grep",
-    resolverPath: "programs/grep.wasm",
+    resolverPath: "programs/grep/grep.wasm",
     vfsPath: "/bin/grep", symlinks: ["/bin/egrep", "/bin/fgrep"],
   },
   {
     id: "sed",
-    resolverPath: "programs/sed.wasm",
+    resolverPath: "programs/sed/sed.wasm",
     vfsPath: "/bin/sed", symlinks: [],
   },
   { id: "bc", resolverPath: "programs/bc.wasm", vfsPath: "/usr/bin/bc", symlinks: [] },
@@ -234,7 +234,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "m4", resolverPath: "programs/m4.wasm", vfsPath: "/usr/bin/m4", symlinks: [] },
   { id: "make", resolverPath: "programs/make.wasm", vfsPath: "/usr/bin/make", symlinks: [] },
   { id: "tar", resolverPath: "programs/tar.wasm", vfsPath: "/bin/tar", symlinks: [] },
-  { id: "curl", resolverPath: "programs/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: [] },
+  { id: "curl", resolverPath: "programs/curl/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: [] },
   {
     id: "netcat",
     resolverPath: "programs/netcat/nc.wasm",
@@ -279,7 +279,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "zip", resolverPath: "programs/zip.wasm", vfsPath: "/usr/bin/zip", symlinks: [] },
   {
     id: "unzip",
-    resolverPath: "programs/unzip.wasm",
+    resolverPath: "programs/unzip/unzip.wasm",
     vfsPath: "/usr/bin/unzip", symlinks: ["/usr/bin/zipinfo", "/usr/bin/funzip"],
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: [] },
@@ -288,7 +288,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "termchat", resolverPath: "programs/termchat/termchat.wasm", vfsPath: "/usr/bin/termchat", symlinks: [] },
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
-  { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },
+  { id: "foot", resolverPath: "programs/foot/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },
   { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/bin/love", symlinks: [] },
   // The cage kiosk compositor (the cage machine's command).
   { id: "cage", resolverPath: "programs/cage/cage.wasm", vfsPath: "/usr/bin/cage", symlinks: [] },
@@ -326,7 +326,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
     mode: 0o644,
   },
   // swaybg draws the wallpaper sway's config names; sway execs it by name.
-  { id: "swaybg", resolverPath: "programs/swaybg.wasm", vfsPath: "/usr/bin/swaybg", symlinks: [] },
+  { id: "swaybg", resolverPath: "programs/swaybg/swaybg.wasm", vfsPath: "/usr/bin/swaybg", symlinks: [] },
   // Shared desktop panel, its real loadable app menu, configuration and
   // launchers. Keep optional desktop bytes lazy in the ordinary shell image.
   { id: "sfwbar", resolverPath: "programs/sfwbar/sfwbar.wasm", vfsPath: "/usr/bin/sfwbar", symlinks: [] },
@@ -407,7 +407,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "game-play", dependency: "game-import", resolverPath: "programs/game-import/game-play", vfsPath: "/usr/bin/game-play", symlinks: [], mode: 0o755 },
   { id: "game-import", dependency: "game-import", resolverPath: "programs/game-import/game-import", vfsPath: "/usr/libexec/kandelo/game-import", symlinks: [], mode: 0o755 },
   { id: "game-import-py", dependency: "game-import", resolverPath: "programs/game-import/game-import.py", vfsPath: "/usr/libexec/kandelo/game-import.py", symlinks: [], mode: 0o644 },
-  { id: "shared-desktop-manifest", dependency: "shared-desktop-programs", resolverPath: "programs/shared-desktop-programs/programs.json", vfsPath: "/usr/share/kandelo/shared-desktop/programs.json", symlinks: [] },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/bin/scummvm is the
   // image's launch wrapper, which execs this engine.

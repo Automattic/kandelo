@@ -16,7 +16,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary } from "../src/binary-resolver";
 
 const dash = resolveBinary("programs/dash.wasm");
-const coreutils = resolveBinary("programs/coreutils.wasm");
+const coreutils = resolveBinary("programs/coreutils/coreutils.wasm");
 
 describe("process group leader POSIX timer", () => {
   it(

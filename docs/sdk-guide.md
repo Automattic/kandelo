@@ -1322,8 +1322,10 @@ when explicitly configured with `experimentalMemoryGroup`; an ordinary launch
 refuses the required `kandelo.memory-group.v3.memory` import. Path launch keeps
 the kernel's retained executable descriptor and credentials. Compatible
 `posix_spawn` children of grouped parents use the same checked admission.
-The normal shell image includes the `shared-desktop-programs` package, with
-separate lazy SDK alternatives alongside ordinary executables. Cage, Sway
+Packages may declare a derived ZIP output with `shared_memory_from` in their
+own `package.toml`. The normal resolver prepares it through this SDK command,
+and the shell installs it as a lazy alternative alongside ordinary executables.
+See [producer-owned shared-memory outputs](package-management.md#shared-memory-outputs). Cage, Sway
 and Sway/SFWBar profiles and Activities explicitly select the memory-group
 backend. Other shell launches keep ordinary execution, and normal computer
 file persistence applies. See [the desktop launch contract](shared-memory-groups.md#shell-desktops-and-partial-development-images).
@@ -1419,4 +1421,4 @@ group's capacity or allocation budget. Other browser engines grow as needed.
 The developer desktop is usable within its bounded contract, but the combined
 release gates, total-browser resource costs and remaining object/graphics
 semantics are not complete. See [the shared-group contract](shared-memory-groups.md)
-and [current validation and limits](measurements/2026-11-20-shared-memory-desktop-current.md).
+and [current validation and limits](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md).

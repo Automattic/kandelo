@@ -3,7 +3,7 @@
 #
 # The curl CLI is a side-output of libcurl's build (libcurl's configure
 # builds both `lib/libcurl.a` and `src/curl`). To keep curl as its own
-# package-management entry — exposing `programs/curl.wasm` to consumers
+# package-management entry — exposing `programs/curl/curl.wasm` to consumers
 # — this script delegates to libcurl's build-libcurl.sh and surfaces
 # the produced binary at the path the resolver expects.
 #

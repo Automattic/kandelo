@@ -1,7 +1,7 @@
 kind = "program"
 name = "freeciv"
 version = "3.2.6"
-kernel_abi = 50
+kernel_abi = 56
 arches = ["wasm32"]
 depends_on = [
   "sdl2@2.32.10",
@@ -77,3 +77,17 @@ wasm = "freeciv-server.wasm"
 [[runtime_files]]
 artifact = "freeciv-data.zip"
 guest_path = "/usr/share/freeciv-data.zip"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "freeciv-client-shared"
+wasm = "freeciv-client-shared.zip"
+shared_memory_from = "freeciv-sdl2"
+fork_instrumentation = "disabled"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "freeciv-server-shared"
+wasm = "freeciv-server-shared.zip"
+shared_memory_from = "freeciv-server"
+fork_instrumentation = "disabled"

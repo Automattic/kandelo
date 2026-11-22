@@ -1,5 +1,4 @@
-import { activateSharedDesktopPackage, assertSharedDesktopPackageActivation } from './shared-desktop-package';
-import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_IMAGE_PACKAGES, SHARED_DESKTOP_PARTIAL_COMMAND } from './shared-desktop-package-contract';
+import { installSharedMemoryOutputs, sharedMemoryOutputsFromEnvironment, type SharedMemoryOutput } from './shared-memory-outputs';
 /** Compose the canonical browser shell from resolver-owned package outputs. */
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -113,6 +112,7 @@ export interface SourceRootfsShellInputs {
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
   resolveOriginal?: ProgramOriginalResolver;
+  sharedMemoryOutputs?: readonly SharedMemoryOutput[];
   sourceDateEpoch?: string;
   /**
    * Which shell packages the image carries. Absent is the canonical shell
@@ -1764,11 +1764,6 @@ export async function buildSourceRootfsShellImage(
   // The rootfs owns its own eager programs (login); only what this composer
   // adds is held to the lazy default.
   const sourceEagerPrograms = eagerWasmPrograms(fs);
-  const installSharedVariants = includes(SHARED_DESKTOP_PACKAGE);
-  if (installSharedVariants) {
-    const missing = SHARED_DESKTOP_IMAGE_PACKAGES.filter(pkg => !includes(pkg));
-    if (missing.length) throw Error('Shared SDK artifacts need their ordinary image packages: ' + missing.join(', ') + '. Build: ' + SHARED_DESKTOP_PARTIAL_COMMAND);
-  }
   const composedDemo = composeSourceRootfsDemoConfig(inputs.demoConfigPath,
     requiredInput(inputs.demoProfileOverlayPath, 'demo profile overlay'));
   const demoSelection = selectDemoConfig(composedDemo, selection);
@@ -1997,9 +1992,8 @@ export async function buildSourceRootfsShellImage(
   // same layout contract as saveImage before publishing deferred archives.
   assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
-  // Normal composition and source-preservation checks run first; SDK variants
-  // receive execute permissions only after their complete closure validates.
-  const sharedDesktop = installSharedVariants ? activateSharedDesktopPackage(fs, inputs.resolveArtifact) : null;
+  // Normal package outputs provide variants without a consumer-specific list.
+  installSharedMemoryOutputs(fs, inputs.sharedMemoryOutputs ?? sharedMemoryOutputsFromEnvironment(process.env));
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
   // WHY: every visitor downloads and decompresses the eager content before
@@ -2064,8 +2058,7 @@ export async function buildSourceRootfsShellImage(
   // wrote them. Loading them back is what authenticates their seals.
   const outputFs = KandeloImageFs.create();
   outputFs.loadImage(image);
-  if (sharedDesktop) assertSharedDesktopPackageActivation(outputFs, sharedDesktop);
-  else requireMaterializedBashIdentity(outputFs, sourceBash, bash);
+  requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(
     composedLazyState,
     outputFs,

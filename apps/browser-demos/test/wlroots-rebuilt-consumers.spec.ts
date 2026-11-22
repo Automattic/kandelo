@@ -19,7 +19,7 @@ for (const compositor of ["cage", "sway"] as const) {
     const files = [
       { path: `/usr/bin/${compositor}`, bytes: program(`programs/${compositor}/${compositor}.wasm`), mode: 0o755 },
       { path: "/usr/bin/wlterm", bytes: program("programs/wayland-demo/wlterm.wasm"), mode: 0o755 },
-      { path: "/bin/bash", bytes: program("programs/bash.wasm"), mode: 0o755 },
+      { path: "/bin/bash", bytes: program("programs/bash/bash.wasm"), mode: 0o755 },
       { path: "/bin/sh", bytes: program("programs/dash.wasm"), mode: 0o755 },
       { path: "/usr/bin/session", bytes: text(shell), mode: 0o755 },
       { path: "/usr/share/fonts/Inconsolata-Regular.ttf", bytes: new Uint8Array(readFileSync(new URL("../../../third_party/Inconsolata-Regular.ttf", import.meta.url))), mode: 0o644 },
@@ -27,8 +27,8 @@ for (const compositor of ["cage", "sway"] as const) {
     ];
     if (compositor === "sway") files.push(
       { path: "/usr/bin/swaymsg", bytes: program("programs/sway/swaymsg.wasm"), mode: 0o755 },
-      { path: "/usr/bin/swaybg", bytes: program("programs/swaybg.wasm"), mode: 0o755 },
-      { path: "/usr/bin/uname", bytes: program("programs/coreutils.wasm"), mode: 0o755 },
+      { path: "/usr/bin/swaybg", bytes: program("programs/swaybg/swaybg.wasm"), mode: 0o755 },
+      { path: "/usr/bin/uname", bytes: program("programs/coreutils/coreutils.wasm"), mode: 0o755 },
       { path: "/etc/sway/config", bytes: text("font pango:monospace 10\nexec /usr/bin/wlterm --watch READY --watch GOT[a] /bin/bash /usr/bin/session\n"), mode: 0o644 },
     );
     const imageBytes = await sessionRootfs(compositor, files);

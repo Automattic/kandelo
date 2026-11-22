@@ -56,8 +56,8 @@ describe("PTY signals versus kernel-owned sleeps", () => {
     const image = KandeloImageFs.create();
     image.mkdir("/bin", 0o755);
     image.mkdir("/tmp", 0o1777);
-    image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
-    image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+    image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash/bash.wasm")), 0o755);
+    image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils/coreutils.wasm")), 0o755);
     rootfsImage = await image.saveImage();
   }, 120_000);
 

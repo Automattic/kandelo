@@ -96,3 +96,10 @@ guest_path = "/usr/share/scummvm-static/gui-icons.dat"
 artifact = "share/scummvm-static/fonts.dat"
 guest_path = "/usr/share/scummvm-static/fonts.dat"
 
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "scummvm-static-shared"
+wasm = "scummvm-static-shared.zip"
+shared_memory_from = "scummvm-static"
+fork_instrumentation = "disabled"

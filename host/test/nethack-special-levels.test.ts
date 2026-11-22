@@ -24,7 +24,7 @@ const shellImagePath = join(programsDir, "shell.vfs.zst");
 const LAZY_URL_BASE = "https://kandelo.invalid/";
 const ASSETS: ReadonlyArray<readonly [url: string, file: string]> = [
   [`${LAZY_URL_BASE}assets/programs/wasm32/nethack.zip`, "nethack.zip"],
-  [`${LAZY_URL_BASE}assets/programs/wasm32/coreutils.wasm`, "coreutils.wasm"],
+  [`${LAZY_URL_BASE}assets/programs/wasm32/coreutils/coreutils.wasm`, "coreutils.wasm"],
 ];
 const available =
   kernelPath !== null &&

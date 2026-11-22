@@ -49,7 +49,7 @@ export class CageSession {
     this.canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas");
     this.surface = page.locator(".kmachine-primary .kmodeset-surface");
     page.on("request", request => {
-      if (request.url().includes("/shared-desktop-programs/")) this.preparedProgramRequests.push(request.url());
+      if (new URL(request.url()).pathname.endsWith("-shared.zip")) this.preparedProgramRequests.push(request.url());
     });
     page.on("pageerror", error => this.errors.push(error.stack ?? error.message));
     page.on("console", message => {

@@ -1,7 +1,7 @@
 kind = "program"
 name = "grep"
 version = "3.11"
-kernel_abi = 7
+kernel_abi = 56
 depends_on = []
 
 [source]
@@ -19,3 +19,10 @@ script_path = "packages/registry/grep/build-grep.sh"
 [[outputs]]
 name = "grep"
 wasm = "grep.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "grep-shared"
+wasm = "grep-shared.zip"
+shared_memory_from = "grep"
+fork_instrumentation = "disabled"

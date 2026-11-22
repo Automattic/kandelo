@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 
-const unzipBinary = tryResolveBinary("programs/unzip.wasm");
+const unzipBinary = tryResolveBinary("programs/unzip/unzip.wasm");
 
 describe.skipIf(!unzipBinary)("unzip", () => {
   it("reports version", async () => {

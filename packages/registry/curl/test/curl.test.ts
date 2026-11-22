@@ -15,7 +15,7 @@ import { NodePlatformIO } from "../../../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const curlBinaryPath =
-  tryResolveBinary("programs/curl.wasm") ??
+  tryResolveBinary("programs/curl/curl.wasm") ??
   join(__dirname, "../bin/curl.wasm");
 const READY = existsSync(curlBinaryPath);
 const scratchDirs: string[] = [];

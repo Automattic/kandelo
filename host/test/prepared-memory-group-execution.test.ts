@@ -7,6 +7,8 @@ import { NodeKernelHost } from '../src/node-kernel-host';
 import { resolveBinary } from '../src/binary-resolver';
 import { KandeloImageFs } from '../../images/vfs/lib/kandelo-image-fs';
 import { compileSdkFixture } from './support/compile-sdk-fixture';
+import { sharedMemoryProgramPath } from '../src/shared-memory-program';
+import { ensureDirRecursive } from '../../images/vfs/scripts/vfs-image-helpers';
 
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 it.each(['identity', 'exec'] as const)('runs ordinary and grouped %s from one unchanged image', async kind => {
@@ -19,23 +21,23 @@ it.each(['identity', 'exec'] as const)('runs ordinary and grouped %s from one un
     const grouped = new Uint8Array(readFileSync(groupedPath));
     const fs = KandeloImageFs.create();
     for (const path of ['/tmp', '/bin', '/sdk']) fs.mkdir(path, 0o755);
-    fs.mkdir('/sdk/probe', 0o755);
     fs.writeFile('/bin/probe', ordinary, 0o755);
     if (kind === 'exec') fs.link('/bin/probe', '/bin/grouped-exec-target');
-    fs.writeFile('/sdk/probe/program.wasm', grouped, 0o755);
-    fs.writeFile('/sdk/programs.json', new TextEncoder().encode(JSON.stringify({ schema: 1, memoryGroup: 'trusted-v1', programs: [{ id: 'probe', ordinarySha256: digest(ordinary), groupedSha256: digest(grouped), bytes: grouped.length }] })), 0o644);
+    const variantPath = sharedMemoryProgramPath(digest(ordinary));
+    ensureDirRecursive(fs, variantPath.slice(0, variantPath.lastIndexOf('/')));
+    fs.writeFile(variantPath, grouped, 0o755);
     const rootfsImage = await fs.saveImage(); fs.reset();
     let stdout = '', stderr = '';
     const diagnostics: unknown[] = [];
     host = new NodeKernelHost({ rootfsImage, maxPages: 2048, kernelMaxPages: 1024,
-      experimentalMemoryGroup: { maximumPages: 2048, preparedPrograms: { catalogPath: '/sdk/programs.json', artifactRoot: '/sdk/' } },
+      experimentalMemoryGroup: { maximumPages: 2048 },
       onStdout: (_pid, bytes) => { stdout += new TextDecoder().decode(bytes); },
       onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
       onHostDiagnostic: event => diagnostics.push(event),
     });
     await host.init(Uint8Array.from(readFileSync(resolveBinary('kernel.wasm'))).buffer);
     await expect(host.spawn(Uint8Array.from(ordinary).buffer, ['probe'], { executionBackend: 'memory-group' })).rejects.toThrow('requested execution backend');
-    await expect(host.spawnFromVfs('/sdk/probe/program.wasm', ['probe'], { executionBackend: 'ordinary' })).rejects.toThrow('requested execution backend');
+    await expect(host.spawnFromVfs(variantPath, ['probe'], { executionBackend: 'ordinary' })).rejects.toThrow('requested execution backend');
     for (const executionBackend of ['ordinary', 'memory-group', 'ordinary'] as const) {
       stdout = ''; stderr = '';
       const launched = await host.spawnFromVfs('/bin/probe', kind === 'identity' ? ['/bin/probe', '/bin/probe'] : ['/bin/probe', 'start', 'fixture'], { executionBackend, env: ['PATH=/bin'] });

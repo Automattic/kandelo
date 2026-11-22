@@ -2,12 +2,12 @@
 
 This records the target contract and the bounded desktop-first implementation
 below. It is not a statement that the complete contract is ready to ship. The
-[baseline record](measurements/2026-11-16-shared-memory-desktop-baseline.md)
+[baseline record](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-16-shared-memory-desktop-baseline.md)
 identifies the isolated experiment and the ordinary failure it addresses.
 Neither the successful demo nor those bounded checks replaces integration and
 release validation.
-The [normal-shell integration record](measurements/2026-11-22-shared-memory-shell-integration.md)
-records the current package/image path. The [earlier integration checkpoint](measurements/2026-11-20-shared-memory-desktop-current.md)
+The [normal-shell integration record](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-22-shared-memory-shell-integration.md)
+records the current package/image path. The [earlier integration checkpoint](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md)
 retains dedicated-preview results and outstanding resource/lifecycle limits.
 
 ## Purpose and trust
@@ -107,7 +107,7 @@ physical capacity monotonically when the released pages are reusable.
 
 ## Ordinary shell image integration
 
-The shell image carries ordinary executables at their normal paths and SDK-prepared alternatives under `/usr/libexec/kandelo/shared-desktop/<id>/program.wasm`, using normal lazy package archives. `/usr/share/kandelo/shared-desktop/programs.json` binds each alternative to its ordinary source digest. The host selects a candidate by retained executable content; the kernel validates and binds the exact source and implementation descriptors. Ordinary shell launches keep ordinary execution. An explicit `executionBackend: "memory-group"` launch selects alternatives for that root; compatible descendants inherit the kernel-owned group. Missing alternatives fail before commit.
+The shell image carries ordinary executables at their normal paths and SDK-prepared alternatives under `/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`, using normal producer-owned lazy package archives. The host selects a candidate by retained executable content; the kernel validates and binds the exact source and implementation descriptors. Ordinary shell launches keep ordinary execution. An explicit `executionBackend: "memory-group"` launch selects alternatives for that root; compatible descendants inherit the kernel-owned group. Missing alternatives fail before commit.
 
 The Cage, Sway and Sway/SFWBar shell profiles request this backend in image-owned runtime metadata. That request does not grant capability to an arbitrary custom image: the embedding host must configure the catalog and group budget. Desktop activities use a fresh PTY with this explicit selection, while unrelated terminals retain ordinary execution. ScummVM inside a desktop uses the static engine’s distinct `scummvm-static` command; ordinary ScummVM remains available separately.
 
@@ -224,7 +224,7 @@ failure stays fatal and charged; stopped and concurrently destroyed initial
 launches retire through their exact receipts. These pass on Node and all three
 browser engines. The pinned integrated runtime also passes the full normal
 browser-memory gate and bounded built-app checks recorded in the
-[current integration checkpoint](measurements/2026-11-20-shared-memory-desktop-current.md).
+[current integration checkpoint](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md).
 Those results do not establish sustained WebKit reliability or a resource benefit.
 The earlier byte-launch controls remain separate from the normal app path below.
 
@@ -267,7 +267,7 @@ Foot processes. It does not treat placeholder canvas dimensions as the guest
 mode or claim that changing the browser viewport switches a live monitor mode.
 These maintained checks pass on all three engines; the separate long WebKit
 failures and resource limits remain in the
-[current measurement record](measurements/2026-11-20-shared-memory-desktop-current.md).
+[current measurement record](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md).
 
 Grouped child exit notification follows the same execution-stop boundary as
 wait status. The kernel keeps SIGCHLD and automatic reaping pending while any
@@ -287,28 +287,29 @@ computer. The Activity requests shared execution for its own process family;
 it does not replace the computer or change other terminals' execution mode.
 All three profiles use the normal computer storage policy.
 
-`shared-desktop-programs` supplies twenty formal SDK alternatives as individual
-lazy ZIPs through the normal package resolver and authenticated asset group.
-The composer verifies every ordinary source identity, archive/member size and
-SHA-256, and SDK declaration. It installs alternatives under
-`/usr/libexec/kandelo/shared-desktop/` and a source-digest catalog, retaining
-ordinary executables and their aliases at their original paths. The host and
-kernel select and bind a compatible implementation only for an explicit
-shared launch. The embedding host must configure this capability and its
-budget; image metadata or URL parameters cannot grant it.
+Programs declare a compatible alternative in their own `package.toml` with
+`[[outputs]].shared_memory_from`, using the normal SDK translator, resolver,
+cache and lazy ZIP machinery. The shell composer installs available alternatives
+at `/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`; it needs no
+separate program list or desktop package. Ordinary executables retain their
+original bytes and guest paths. The host locates a candidate by source digest;
+the kernel validates and binds the retained source and implementation descriptors
+for an explicit shared launch. The embedding host configures the backend and
+budget. Image metadata or URL parameters cannot grant it.
 
 For development, compose a normal partial shell containing the desktop
 closure instead of rebuilding every shell package:
 
 ```sh
-./run.sh partial shell shared-desktop-programs cage foot sway swaybg sfwbar freeciv-browser-bundle scummvm-static curl unzip sysklogd desktop-data bibata-cursor-theme
+./run.sh partial shell cage foot sway swaybg sfwbar freeciv-browser-bundle scummvm-static curl unzip sysklogd desktop-data bibata-cursor-theme
 ./run.sh browser --partial
 ```
 
 Add `cage-docs sway-docs foot-docs freeciv-docs scummvm-docs` for upstream manuals.
 Partial images install named packages; building a dependency does not itself
-install that dependency's application into the image. The composer reports
-missing image packages before activating the SDK closure. This path produces
+install that dependency's application into the image. Compatible outputs follow the selected producers, including base shell tools.
+A minimal `./run.sh partial shell grep` can therefore exercise grouped commands
+without any desktop packages. This path produces
 the normal partial manifest and image, without manufacturing another desktop
 image at launch. The old standalone desktop recipe and eager preparation
 tool are archived at the pinned revision above.
@@ -394,7 +395,7 @@ The reproducible desktop baseline uses Sway and two Foot terminals at
 ordinary arm loses a terminal after a compositor shared mapping is refused.
 The grouped experiment survives visible/hidden workspace movement and retile
 on Chromium, Firefox and WebKit. This establishes capacity value for that
-workload. The lower-resolution [format-4 resource screen](measurements/2026-11-16-shared-group-desktop-cost.md)
+workload. The lower-resolution [format-4 resource screen](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-16-shared-group-desktop-cost.md)
 found faster verified shell response and higher total browser footprint in
 three fresh Chromium launches per arm. It does not measure the integrated feature.
 

@@ -1,6 +1,7 @@
+import { GROUPED_WORKER_EXTENSIONS } from '../src/program-extensions';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryGroupImageStore } from '../src/memory-group-image-store';
-import { GroupedWorkerRuntime, GROUPED_WORKER_EXTENSIONS } from '../src/grouped-worker-runtime';
+import { GroupedWorkerRuntime } from '../src/grouped-worker-runtime';
 import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, receiveGroupedWorkerInitialization, waitForGroupedWorkerReady } from '../src/grouped-worker-initialization';
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from '../src/worker-main';
 import { MockWorkerHandle } from '../src/worker-adapter';

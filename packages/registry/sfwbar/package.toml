@@ -79,3 +79,10 @@ guest_path = "/usr/share/applications/kandelo-terminal.desktop"
 [[runtime_files]]
 artifact = "scummvm.desktop"
 guest_path = "/usr/share/applications/scummvm.desktop"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "sfwbar-shared"
+wasm = "sfwbar-shared.zip"
+shared_memory_from = "sfwbar"
+fork_instrumentation = "disabled"

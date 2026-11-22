@@ -10,7 +10,7 @@
 #   scripts/resolve-binary.sh kernel.wasm
 #   scripts/resolve-binary.sh programs/dash.wasm
 #   scripts/resolve-binary.sh programs/cpython/python.wasm
-#   scripts/resolve-binary.sh programs/dash.wasm programs/bash.wasm
+#   scripts/resolve-binary.sh programs/dash.wasm programs/bash/bash.wasm
 
 set -euo pipefail
 

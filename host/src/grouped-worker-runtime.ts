@@ -9,9 +9,6 @@ import type { GroupedWorkerWait32 } from './worker-channel-ipc';
 import { wasmModuleImports } from './wasm-module-reflection';
 
 function fail(message: string): never { throw new MemoryGroupProtocolFault(message); }
-export const GROUPED_WORKER_EXTENSIONS: ReadonlySet<string> = new Set([
-  G.STACK_MODULE, G.KLOG_MODULE, G.MEMORY_GROUP_MODULE,
-]);
 
 /** Refuse implicit guest execution before thread patching can remove evidence. */
 export function assertDeferredGroupedStart(programBytes: ArrayBuffer): void {

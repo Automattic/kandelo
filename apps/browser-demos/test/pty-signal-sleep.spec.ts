@@ -13,8 +13,8 @@ test("PTY Bash runs external commands after repeated Ctrl-C at its prompt", asyn
   const image = KandeloImageFs.create();
   image.mkdir("/bin", 0o755);
   image.mkdir("/tmp", 0o1777);
-  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
-  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash/bash.wasm")), 0o755);
+  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils/coreutils.wasm")), 0o755);
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const result = await page.evaluate(async ({ moduleUrl, imageBytes }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ moduleUrl);
@@ -77,8 +77,8 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
   const image = KandeloImageFs.create();
   image.mkdir("/bin", 0o755);
   image.mkdir("/tmp", 0o1777);
-  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
-  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash/bash.wasm")), 0o755);
+  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils/coreutils.wasm")), 0o755);
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const result = await page.evaluate(async ({ moduleUrl, imageBytes, sleepCalls }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ moduleUrl);
@@ -150,8 +150,8 @@ test("PTY Ctrl-Z stops a foreground kernel sleep; fg resumes it and kill ends it
   const image = KandeloImageFs.create();
   image.mkdir("/bin", 0o755);
   image.mkdir("/tmp", 0o1777);
-  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
-  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash/bash.wasm")), 0o755);
+  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils/coreutils.wasm")), 0o755);
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const result = await page.evaluate(async ({ moduleUrl, imageBytes, sleepCalls, killCall }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ moduleUrl);

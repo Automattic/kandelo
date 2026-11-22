@@ -45,6 +45,9 @@
 //!                          `--force-source-build` bypasses the selected
 //!                          package's cache/index entry.
 
+#[path = "shared_memory_outputs.rs"]
+mod shared_memory_outputs;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::os::fd::AsFd;
@@ -7497,6 +7500,9 @@ fn compute_sha_with_identity_context_for_platform(
                     h.update(b"|fork_instrumentation=");
                     h.update(out.fork_instrumentation.as_str().as_bytes());
                 }
+                if let Some(source) = &out.shared_memory_from {
+                    h.update(b"|shared_memory_from="); h.update(source.as_bytes());
+                }
                 if let Some(original) = &out.original_wasm {
                     h.update(b"|original_wasm=");
                     h.update((original.len() as u64).to_le_bytes());
@@ -7555,6 +7561,9 @@ fn compute_sha_with_identity_context_for_platform(
             h.update(input.digest);
             h.update(b"\n");
         }
+    }
+    for input in shared_memory_outputs::input_digests(target)? {
+        h.update(b"shared-memory-output-input:\0"); h.update(input.label.as_bytes()); h.update(input.digest);
     }
     if policy == ResolvePolicy::SourceOnlyV1
         && matches!(target.kind, ManifestKind::Library | ManifestKind::Program)
@@ -13296,6 +13305,7 @@ fn validate_source_only_cache_artifacts_from_receipt(
                         failures.join("; ")
                     ));
                 }
+                shared_memory_outputs::validate(target, output, &root.path)?;
                 if let Some(original) = &output.original_wasm {
                     let entry = require_source_only_receipt_entry(target, receipt, original, "original Wasm", true)?;
                     if entry.mode & 0o7111 != 0 {
@@ -14586,6 +14596,7 @@ fn build_into_cache(
         Ok(paths) => paths,
         Err(error) => return Err(error),
     };
+    let dependency_shared_memory_inputs = shared_memory_outputs::dependency_inputs(target, registry, &selected_cache_root, arch, abi_version, policy, &work.recipe_work)?;
     let dependency_original_inputs = write_dependency_original_inputs(target, registry, &dependency_paths,
         arch, abi_version, policy, &work.recipe_work)?;
 
@@ -14643,6 +14654,8 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
+        cmd.env_remove("WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS");
+        if let Some(path) = &dependency_shared_memory_inputs { cmd.env("WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS", path); }
         cmd.env_remove("WASM_POSIX_DEP_ORIGINAL_INPUTS");
         if let Some(path) = &dependency_original_inputs {
             cmd.env("WASM_POSIX_DEP_ORIGINAL_INPUTS", path);
@@ -14799,6 +14812,8 @@ fn build_into_cache(
             status
         ));
     }
+
+    shared_memory_outputs::finalize(target, &tmp, arch, false)?;
 
     // Kind-aware validation. Library and program manifests carry a
     // declared outputs list (libs/headers/pkgconfig/files or program wasms)
@@ -17288,6 +17303,7 @@ pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Res
                     out.fork_instrumentation,
                     required_exports_for_program_output(target, out),
                 )?;
+                shared_memory_outputs::validate(target, out, dir)?;
                 if let Some(original) = &out.original_wasm {
                     let original_path = validate_declared_artifact(target, dir, original,
                         "original Wasm", "missing from cache entry", true)?;
@@ -17431,6 +17447,7 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
                     out.fork_instrumentation,
                     required_exports_for_program_output(target, out),
                 )?;
+                shared_memory_outputs::validate(target, out, out_dir)?;
             }
             for runtime_file in &target.runtime_files {
                 validate_declared_artifact(
@@ -18977,6 +18994,9 @@ fn install_local_artifact(
         session,
     )?;
 
+    if !claimed_before_member {
+        shared_memory_outputs::finalize(manifest, &generation, arch, true)?;
+    }
     let present = validate_local_generation_tree(manifest, &generation, &expected)?;
     if present < expected.len() {
         if claimed_before_member {
@@ -26207,6 +26227,29 @@ spdx = "TestLicense"
             sha_before, sha_after,
             "changing a program output's fork instrumentation policy must invalidate the cache key"
         );
+    }
+
+    #[test]
+    fn shared_memory_source_binding_changes_cache_identity() {
+        let root = tempdir("shared-source-cache-key");
+        write_program_manifest(&root, "probe", "1.0.0", r#"[[outputs]]
+name = "one"
+wasm = "one.wasm"
+[[outputs]]
+name = "two"
+wasm = "two.wasm"
+[[outputs]]
+name = "shared"
+wasm = "shared.zip"
+shared_memory_from = "one"
+fork_instrumentation = "disabled"
+"#);
+        let registry = Registry { roots: vec![root.clone()] };
+        let before = sha_of(&registry, "probe");
+        let path = root.join("probe/package.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace(r#"shared_memory_from = "one""#, r#"shared_memory_from = "two""#)).unwrap();
+        assert_ne!(before, sha_of(&registry, "probe"));
     }
 
     #[test]

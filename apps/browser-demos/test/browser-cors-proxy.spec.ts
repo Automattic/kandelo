@@ -202,7 +202,7 @@ test.describe("lazy artifact proxy authentication", () => {
   });
 });
 
-const curlPath = resolveBinary("programs/curl.wasm");
+const curlPath = resolveBinary("programs/curl/curl.wasm");
 const wgetPath = resolveBinary("programs/wget.wasm");
 const serviceWorkerPath = fileURLToPath(
   new URL("../public/service-worker.js", import.meta.url),

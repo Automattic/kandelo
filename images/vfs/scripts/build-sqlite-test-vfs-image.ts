@@ -110,9 +110,9 @@ async function main(): Promise<void> {
   const tclLibrary = join(repositoryRoot, "packages/registry/tcl/tcl-install/lib/tcl8.6");
   const testfixture = join(sqliteDirectory, "bin/testfixture.wasm");
   const sqlite3 = join(sqliteDirectory, "sqlite-install/bin/sqlite3.wasm");
-  const bash = tryResolveBinary("programs/bash.wasm");
+  const bash = tryResolveBinary("programs/bash/bash.wasm");
   const dash = tryResolveBinary("programs/dash.wasm");
-  const coreutils = tryResolveBinary("programs/coreutils.wasm");
+  const coreutils = tryResolveBinary("programs/coreutils/coreutils.wasm");
   const missing = [
     testfixture,
     sqlite3,
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     tclLibrary,
   ].filter((path) => !existsSync(path));
   // bash backs /bin/sh; building without it would ship an image with no shell.
-  if (bash === null) missing.push("programs/bash.wasm (the image's /bin/sh)");
+  if (bash === null) missing.push("programs/bash/bash.wasm (the image's /bin/sh)");
   if (missing.length > 0) throw new Error(`SQLite test VFS inputs missing:\n${missing.join("\n")}`);
   await buildSqliteTestVfsImage({
     sqlite3: new Uint8Array(readFileSync(sqlite3)),

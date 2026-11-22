@@ -12,8 +12,8 @@ import { NodeKernelHost } from "../src/node-kernel-host";
 const repoRoot = join(import.meta.dirname, "../..");
 const sourceOnly = join(repoRoot, "local-binaries/source-only-v1");
 const shellImage = join(sourceOnly, "programs/wasm32/shell.vfs.zst");
-const coreutils = join(sourceOnly, "programs/wasm32/coreutils.wasm");
-const bash = join(sourceOnly, "programs/wasm32/bash.wasm");
+const coreutils = join(sourceOnly, "programs/wasm32/coreutils/coreutils.wasm");
+const bash = join(sourceOnly, "programs/wasm32/bash/bash.wasm");
 const kernel = join(sourceOnly, "kernel.wasm");
 const mappingProgram = join(repoRoot, "local-binaries/test-fixtures/wasm32/persistence-overwrite.wasm");
 const available = [shellImage, coreutils, bash, kernel, mappingProgram].every(existsSync);
@@ -397,7 +397,7 @@ describe.skipIf(!available)("persistent root filesystem statistics", () => {
       rootfsImage: new Uint8Array(readFileSync(shellImage)),
       rootfsLazyUrlBase: "https://kandelo.invalid/",
       rootfsLazyAssets: [{
-        url: "https://kandelo.invalid/binaries/programs/wasm32/coreutils.wasm",
+        url: "https://kandelo.invalid/binaries/programs/wasm32/coreutils/coreutils.wasm",
         sha256: createHash("sha256").update(coreutilsBytes).digest("hex"),
         size: coreutilsBytes.byteLength,
         bytes: coreutilsBytes,

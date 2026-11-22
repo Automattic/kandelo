@@ -22,7 +22,7 @@ version = "2.8.0"
 # and never runs `make install`. Upstream would have put its header in
 # include/syslog/syslog.h, a subdirectory, so it could not have shadowed
 # musl's <syslog.h> in any case.
-kernel_abi = 55
+kernel_abi = 56
 depends_on = []
 
 [source]
@@ -42,3 +42,10 @@ script_path = "packages/registry/sysklogd/build-sysklogd.sh"
 name = "syslogd"
 wasm = "syslogd.wasm"
 fork_instrumentation = "auto"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "syslogd-shared"
+wasm = "syslogd-shared.zip"
+shared_memory_from = "syslogd"
+fork_instrumentation = "disabled"

@@ -1,7 +1,7 @@
 kind = "program"
 name = "coreutils"
 version = "9.6"
-kernel_abi = 7
+kernel_abi = 56
 depends_on = []
 
 [source]
@@ -19,3 +19,10 @@ script_path = "packages/registry/coreutils/build-coreutils.sh"
 [[outputs]]
 name = "coreutils"
 wasm = "coreutils.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "coreutils-shared"
+wasm = "coreutils-shared.zip"
+shared_memory_from = "coreutils"
+fork_instrumentation = "disabled"

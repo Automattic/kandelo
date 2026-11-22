@@ -61,8 +61,8 @@ describe("lazy deployment URL closure", () => {
 
   it("serves every rootfs lazy output at its package member", () => {
     const addresses = rootfsLazyAddresses();
-    expect(addresses).toContain("binaries/programs/wasm32/bash.wasm");
-    expect(addresses).not.toContain("binaries/programs/wasm32/login.wasm");
+    expect(addresses).toContain("binaries/programs/wasm32/bash/bash.wasm");
+    expect(addresses).not.toContain("binaries/programs/wasm32/login/login.wasm");
     for (const address of addresses) {
       expect(resolveImageOwnedLazyAsset(DIRECTORY, address), address).toBe(
         `${DIRECTORY}assets/${address.slice("binaries/".length)}`,

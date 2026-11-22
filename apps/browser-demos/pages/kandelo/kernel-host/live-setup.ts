@@ -1724,16 +1724,9 @@ async function bootProfile(
   profile = await bindVfsProduct(profile);
   assertCurrent();
 
-  let experimentalMemoryGroup: TrustedMemoryGroupOptions | undefined;
-  // Authored shell images may select SDK alternatives per desktop launch.
-  // Ordinary roots keep their normal backend and filesystem persistence policy.
-  if (profile.productId === "browser-main-shell"
-      || (isPartialImageUrl(profile.vfsUrl) && PARTIAL_IMAGE?.manifest.productId === "browser-main-shell")) {
-    experimentalMemoryGroup = { maximumPages: 8192, preparedPrograms: {
-      catalogPath: "/usr/share/kandelo/shared-desktop/programs.json",
-      artifactRoot: "/usr/libexec/kandelo/shared-desktop/",
-    } };
-  }
+  // The embedder enables a backend, independently of image/product names.
+  // Allocation remains lazy; ordinary launches keep ordinary execution.
+  const experimentalMemoryGroup: TrustedMemoryGroupOptions = { maximumPages: 8192 };
 
   const persistence = experimentalPersistenceName === undefined
     ? null

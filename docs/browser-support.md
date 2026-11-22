@@ -5119,7 +5119,7 @@ that is a payload bound, not a measurement of native graphics memory or total
 browser footprint. The retained producer surface adds a resource cost that
 must be remeasured after this correction. Earlier ordinary/grouped comparisons
 do not establish a net memory saving, and their results do not validate the new
-snapshot path's memory or performance. See the [current resource measurements](measurements/2026-11-20-shared-memory-desktop-current.md)
+snapshot path's memory or performance. See the [current resource measurements](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md)
 for the workload, response endpoints, limitations and remaining acceptance.
 
 The shell's group has a 512 MiB backing ceiling without an additional small
@@ -5139,7 +5139,7 @@ failed fences.
 A missing acknowledgement after three seconds rejects retirement and keeps
 containment visible in host diagnostics; terminating a Worker alone is not
 reported as a successful acknowledgement. See the
-[desktop integration evidence](measurements/2026-11-19-shared-memory-desktop-integration.md)
+[desktop integration evidence](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-19-shared-memory-desktop-integration.md)
 for the bounded validation and remaining gates.
 
 The opt-in grouped bitmap display waits for its disposable Worker to acknowledge initialization before capturing frames. This avoids an unreduced Firefox startup deserialization failure; [the suspected runtime entry](../tests/runtime-workarounds/FIREFOX-BITMAP-PORT-STARTUP/entry.md) records the negative standalone controls and remaining attribution limit. Missing readiness remains a visible failure. The host first waits for the display module to report that its code has loaded, with a separate 30-second load deadline. It then transfers the bounded device canvases and attaches the kernel relay. The existing three-second initialization and retirement acknowledgement deadlines do not include module fetching. Stopping during module loading cancels the unpublished ports and terminates that device worker.

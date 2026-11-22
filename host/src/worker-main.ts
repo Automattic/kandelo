@@ -1,3 +1,4 @@
+import { GROUPED_WORKER_EXTENSIONS } from './program-extensions';
 /**
  * Kernel worker entry points.
  *
@@ -152,7 +153,7 @@ import {
   STACK_IMPORT,
   STACK_MODULE,
 } from "./generated/program-extensions";
-import { GroupedWorkerRuntime, GROUPED_WORKER_EXTENSIONS, assertDeferredGroupedStart } from "./grouped-worker-runtime";
+import { GroupedWorkerRuntime, assertDeferredGroupedStart } from "./grouped-worker-runtime";
 import { WorkerChannelIPC, type GroupedWorkerWait32 } from "./worker-channel-ipc";
 import { ProcessAtomicI32, ProcessAtomicU64 } from "./process-atomic-word";
 import { processDataView, processMemoryByteLength, readProcessBytes, writeProcessBytes, checkProcessWriteRange,

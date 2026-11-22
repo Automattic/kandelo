@@ -22,6 +22,11 @@ const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
 const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set(EXTENSION_IMPORTS.values());
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());
 
+/** Artifact policy for the explicitly selected shared-memory backend. */
+export const GROUPED_WORKER_EXTENSIONS: ReadonlySet<string> = new Set([
+  STACK_MODULE, KLOG_MODULE, MEMORY_GROUP_MODULE,
+]);
+
 /** Whether an import names an extension function, from any module. */
 export function isProgramExtensionImportName(name: string): boolean {
   return EXTENSION_IMPORT_NAMES.has(name);

@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
-const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+const coreutilsBinary = tryResolveBinary("programs/coreutils/coreutils.wasm");
 
 const hasCoreutils = !!coreutilsBinary;
 

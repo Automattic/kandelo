@@ -18,7 +18,7 @@ import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { assertKandeloFilesystemLayout } from "./filesystem-layout";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
-import { GROUPED_WORKER_EXTENSIONS } from "../../../host/src/grouped-worker-runtime";
+import { GROUPED_WORKER_EXTENSIONS } from "../../../host/src/program-extensions";
 import {
   ABI_VERSION,
   KANDELO_REFERENCE_EPOCH_SECONDS,

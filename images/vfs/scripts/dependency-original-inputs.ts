@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { readBuildInputs } from "./read-build-inputs";
 import { isAbsolute, resolve } from "node:path";
 import { readStableArtifactIdentity } from "../../../host/src/native-artifact-identity";
 import type { ResolvedProgramOriginalWasmArtifact } from "../../../host/src/binary-resolver";
@@ -40,31 +40,7 @@ function byteLength(value: unknown): asserts value is number {
 }
 
 export function loadDependencyOriginalInputs(path: string, consumerPackage?: string): readonly DependencyOriginalInput[] {
-  absolutePath(path);
-  if (realpathSync(path) !== path) throw new Error("Dependency original inputs cross a symlink");
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let bytes: Buffer;
-  try {
-    const before = fstatSync(descriptor);
-    if (!before.isFile() || before.size > 4 * 1024 * 1024) throw new Error("Dependency original inputs must be a regular file within 4 MiB");
-    const namedBefore = lstatSync(path);
-    if (namedBefore.isSymbolicLink() || namedBefore.dev !== before.dev || namedBefore.ino !== before.ino) throw new Error("Dependency original inputs changed before read");
-    bytes = Buffer.alloc(before.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
-      if (count === 0) throw new Error("Dependency original inputs ended during read");
-      offset += count;
-    }
-    const after = fstatSync(descriptor);
-    const namedAfter = lstatSync(path);
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
-      before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || bytes.length !== before.size ||
-      namedAfter.isSymbolicLink() || namedAfter.dev !== after.dev || namedAfter.ino !== after.ino || realpathSync(path) !== path) {
-      throw new Error("Dependency original inputs changed during read");
-    }
-  } finally { closeSync(descriptor); }
-  const metadata: unknown = JSON.parse(bytes.toString("utf8"));
+  const metadata = readBuildInputs(path);
   fields(metadata, ["schema", "kind", "consumerPackage", "inputs"]);
   if (metadata.schema !== 1 || metadata.kind !== "kandelo-dependency-original-inputs" ||
     typeof metadata.consumerPackage !== "string" || consumerPackage !== undefined && metadata.consumerPackage !== consumerPackage ||

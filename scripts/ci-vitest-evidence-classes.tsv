@@ -428,7 +428,6 @@ host/test/positioned-image-targets.test.ts	source-only
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
 host/test/prepared-memory-group-execution.test.ts	prepared-product
-host/test/prepared-memory-group-programs.test.ts	source-only
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
 host/test/process-address-space.test.ts	source-only
@@ -522,6 +521,7 @@ host/test/sendmsg-iovec-gather.test.ts	prepared-product
 host/test/service-activities.test.ts	prepared-product
 host/test/shared-desktop-image.test.ts	prepared-product
 host/test/shared-memory-coherence.test.ts	source-only
+host/test/shared-memory-program.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
@@ -578,7 +578,6 @@ host/test/timerfd-wake-latency.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
-host/test/trusted-desktop-program.test.ts	source-only
 host/test/unix-dgram-cross-process.test.ts	prepared-product
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/utf8proc-smoke.test.ts	prepared-product

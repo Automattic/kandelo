@@ -525,7 +525,7 @@ function populateBash(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
-  const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
+  const bashBytes = readFileSync(resolveArtifact("programs/bash/bash.wasm", "bash"));
   installBashAsPosixShell(fs, new Uint8Array(bashBytes));
 }
 
@@ -539,7 +539,7 @@ function populateCoreutils(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
-  const bytes = readFileSync(resolveArtifact("programs/coreutils.wasm", "coreutils"));
+  const bytes = readFileSync(resolveArtifact("programs/coreutils/coreutils.wasm", "coreutils"));
   writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(bytes));
 }
 
@@ -552,7 +552,7 @@ function populateGrep(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
-  const bytes = readFileSync(resolveArtifact("programs/grep.wasm", "grep"));
+  const bytes = readFileSync(resolveArtifact("programs/grep/grep.wasm", "grep"));
   writeVfsBinary(fs, "/bin/grep", new Uint8Array(bytes));
 }
 
@@ -560,7 +560,7 @@ function populateSed(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
-  const bytes = readFileSync(resolveArtifact("programs/sed.wasm", "sed"));
+  const bytes = readFileSync(resolveArtifact("programs/sed/sed.wasm", "sed"));
   writeVfsBinary(fs, "/bin/sed", new Uint8Array(bytes));
 }
 
@@ -626,7 +626,7 @@ function populateDemoExtendedBinaries(
   const extended: Array<{ relPath: string; vfsPath: string }> = [
     { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
     { relPath: "programs/tar.wasm",                  vfsPath: "/bin/tar" },
-    { relPath: "programs/curl.wasm",                 vfsPath: "/usr/bin/curl" },
+    { relPath: "programs/curl/curl.wasm",                 vfsPath: "/usr/bin/curl" },
     { relPath: "programs/netcat/nc.wasm",                   vfsPath: "/usr/bin/nc" },
     { relPath: "programs/wget.wasm",                 vfsPath: "/usr/bin/wget" },
     { relPath: "programs/git/git.wasm",              vfsPath: "/usr/bin/git" },
@@ -636,7 +636,7 @@ function populateDemoExtendedBinaries(
     { relPath: "programs/xz.wasm",                   vfsPath: "/usr/bin/xz" },
     { relPath: "programs/zstd.wasm",                 vfsPath: "/usr/bin/zstd" },
     { relPath: "programs/zip.wasm",                  vfsPath: "/usr/bin/zip" },
-    { relPath: "programs/unzip.wasm",                vfsPath: "/usr/bin/unzip" },
+    { relPath: "programs/unzip/unzip.wasm",                vfsPath: "/usr/bin/unzip" },
     { relPath: "programs/nano.wasm",                 vfsPath: "/usr/bin/nano" },
     { relPath: "programs/lsof.wasm",                 vfsPath: "/usr/bin/lsof" },
   ];
