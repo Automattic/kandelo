@@ -242,7 +242,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: [] },
   { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: [] },
-  { id: "go-hello", resolverPath: "programs/go-hello.wasm", vfsPath: "/usr/bin/go-hello", symlinks: [] },
   { id: "jq", resolverPath: "programs/jq.wasm", vfsPath: "/usr/bin/jq", symlinks: [] },
   // mandoc.db, the man-page index for every docs package (man-index); the
   // shell builder includes it only when all of them are selected.

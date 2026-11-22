@@ -58,8 +58,7 @@ chmod +x hello.wasm
 ./hello.wasm
 ```
 
-Both commands should print `Hello, Kandelo`. The standard shell image also has
-a `go-hello` package built through the same pinned toolchain.
+Both commands should print `Hello, Kandelo`.
 
 ## Scope
 
@@ -76,6 +75,7 @@ ABI change.
 
 ## Validation
 
+`tests/go/hello` is a minimal module for checking a normal `go build`.
 `tests/go/sdk-probe` is a standalone module that exercises goroutines and
 GC, file I/O, loopback TCP, subprocess execution and SIGTERM delivery.
 From the repository root in the SDK shell, prepare the browser products

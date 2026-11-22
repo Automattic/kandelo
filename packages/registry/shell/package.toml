@@ -24,7 +24,6 @@ depends_on = [
   "mariadb@10.5.28",
   "wget@1.25.0",
   "git@2.47.1",
-  "go-hello@0.1.0",
   "jq@1.8.2",
   "wasm-fork-instrument@0.1.0",
   "php@8.5.12",
