@@ -78,10 +78,19 @@ ABI change.
 
 `tests/go/sdk-probe` is a standalone module that exercises goroutines and
 GC, file I/O, loopback TCP, subprocess execution and SIGTERM delivery.
-Build it with the same SDK and pass the absolute artifact path as
-`KANDELO_GO_SDK_PROBE` to `host/test/go-sdk.test.ts` and
-`apps/browser-demos/test/go-sdk.spec.ts`. The browser tests take the same
-file as the Node test.
+From the repository root in the SDK shell, prepare the browser products
+and run the same executable on all four hosts:
+
+```sh
+./run.sh prepare-browser
+export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+export KANDELO_GO_SDK_PROBE="$PWD/.scratch/go-sdk-probe.wasm"
+(cd tests/go/sdk-probe && wasm32posix-go build -trimpath -o "$KANDELO_GO_SDK_PROBE" .)
+(cd host && npx vitest run test/go-sdk.test.ts)
+(cd apps/browser-demos && npx playwright test test/go-sdk.spec.ts \
+    --project=chromium --project=firefox --project=webkit --workers=1)
+```
 
 See [Go tools inside Kandelo](future-improvements.md#go-tools-inside-kandelo)
 for the next milestone.

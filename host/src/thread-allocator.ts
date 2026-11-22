@@ -32,6 +32,8 @@ export interface ThreadPageAllocatorOptions {
   ptrWidth?: 4 | 8;
   /** Maximum concurrent pthread slots for this process. */
   reservedSlots?: number;
+  /** Allocate pthread slots from the preallocated arena. */
+  preallocateThreadSlots?: boolean;
   /** Dynamically reserve a fresh pthread slot start page when no free slot exists. */
   reserveSlotStartPage?: () => number;
 }
@@ -92,7 +94,7 @@ export class ThreadPageAllocator {
         Math.floor((this.maxPageExclusive - this.nextPage) / PAGES_PER_THREAD),
       );
       this.reserveSlotStartPage = options.reserveSlotStartPage;
-      this.preallocatedSlots = this.nextPage < this.maxPageExclusive;
+      this.preallocatedSlots = options.preallocateThreadSlots === true;
     }
   }
 

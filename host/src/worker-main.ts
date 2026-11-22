@@ -361,7 +361,6 @@ function continuationMunmap(
  */
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
-  kernel_thread_exit: (waitPtr: WasmGuestPointer) => void;
   kernel_fork: (mode: number) => number;
 };
 
@@ -499,7 +498,7 @@ function buildKernelImports(
     return encoded.byteLength;
   };
 
-  const imports: KernelImports = {
+  return {
     // CRT argv support
     kernel_get_argc: (): number => metadata.argv.length,
     kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
@@ -569,20 +568,6 @@ function buildKernelImports(
       // This disposable Worker trap also enforces `_Noreturn` for callers
       // without a trailing unreachable; the reusable kernel never traps.
       return trapProcessWorker();
-    },
-    kernel_thread_exit: (waitPtr: WasmGuestPointer): void => {
-      const range = checkedWasmMemoryRange(
-        memory,
-        waitPtr,
-        4,
-        ptrWidth,
-        "kernel_thread_exit",
-      );
-      if (range.offset % 4 !== 0) {
-        throw new RangeError("kernel_thread_exit: unaligned wait pointer");
-      }
-      Atomics.store(new Int32Array(memory.buffer), range.offset / 4, 0);
-      imports.kernel_exit(0);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -657,7 +642,27 @@ function buildKernelImports(
       return result;
     },
   };
-  return imports;
+}
+
+function bindGoThreadExit(
+  module: WebAssembly.Module,
+  kernelImports: KernelImports,
+  memory: WebAssembly.Memory,
+  ptrWidth: 4 | 8,
+): void {
+  if (!wasmModuleImports(module).some((entry) =>
+    entry.module === "kernel" && entry.name === "kernel_thread_exit" && entry.kind === "function"
+  )) return;
+
+  const exit = kernelImports.kernel_exit;
+  kernelImports.kernel_thread_exit = (waitPtr: WasmGuestPointer): void => {
+    const range = checkedWasmMemoryRange(memory, waitPtr, 4, ptrWidth, "kernel_thread_exit");
+    if (range.offset % 4 !== 0) {
+      throw new RangeError("kernel_thread_exit: unaligned wait pointer");
+    }
+    Atomics.store(new Int32Array(memory.buffer, range.offset, 1), 0, 0);
+    exit(0);
+  };
 }
 
 /** @internal Exported for focused startup import contract tests. */
@@ -3184,6 +3189,7 @@ export async function centralizedWorkerMain(
         kernelExitStatus = status;
       },
     );
+    bindGoThreadExit(module, kernelImports, memory, ptrWidth);
 
     // Check if the module has complete wpk_fork_* instrumentation exports,
     // and reject stale legacy fork artifacts before they can run.
@@ -5694,6 +5700,7 @@ export async function centralizedThreadWorkerMain(
         kernelThreadExitStatus = status;
       },
     );
+    bindGoThreadExit(module, kernelImports, memory, ptrWidth);
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (rawMode: number): number => {
         if (!threadInstance || !threadProcessContinuation) return -38; // ENOSYS

@@ -137,7 +137,7 @@ describe("ThreadPageAllocator", () => {
     let reservations = 0;
     const alloc = new ThreadPageAllocator({
       firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
-      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE + 2 * PAGES_PER_THREAD,
       reservedSlots: 2,
       reserveSlotStartPage: () => {
         reservations++;
@@ -191,6 +191,7 @@ describe("ThreadPageAllocator", () => {
       firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
       maxPageExclusive: FIRST_THREAD_SLOT_PAGE + PAGES_PER_THREAD,
       reservedSlots: 1,
+      preallocateThreadSlots: true,
       reserveSlotStartPage: () => 128,
     });
 
