@@ -954,6 +954,10 @@ script that runs `readelf` would conclude a program has no dependencies.
 | `WASM_POSIX_CALLTYPES_PLUGIN` | Use this prebuilt KandeloCallTypes plugin instead of building one; it must be built for the same compiler |
 | `WASM_POSIX_SDK_ROOT` | The SDK directory the native driver keeps its plugin cache and `config.site` in (default: the `sdk/` directory holding `.build/bin/kandelo-cc`) |
 
+## Go Programs
+
+See [Build and run a Go program](go.md) for the experimental pure-Go SDK.
+
 ## Running Programs
 
 ### Node.js

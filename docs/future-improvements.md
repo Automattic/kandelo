@@ -2794,3 +2794,28 @@ queries, B4 program interfaces, B5 native fences and B6 inline arrays;
 then C1 Rust scheduling, C2 executor separation and C3 the GPU worker.
 Land, validate and measure each stage separately in order. All final
 campaign, Freeciv/ScummVM and native-feel acceptance requirements remain.
+
+## Go tools inside Kandelo
+
+Cross-build the upstream-derived Go command and its `compile`, `asm` and
+`link` tools as Kandelo executables. Package the version-matched tools under
+`GOROOT/pkg/tool/kandelo_wasm32` with the standard-library sources under
+`GOROOT/src`. Give the guest writable temporary and build-cache directories,
+and run tool subprocesses through Kandelo's normal executable loading path.
+Measure startup and memory use of the compiler and linker on Node and in
+all three supported desktop browser engines before selecting build
+parallelism or claiming support for constrained profiles.
+
+An initial cross-build with the first SDK pin stopped at two Go source
+gaps: `cmd/go` has no Kandelo implementation selected for its file locks,
+and the mapped I/O path shared by the compiler and linker references
+`syscall.MAP_FILE`, which the Kandelo syscall package does not define.
+Resolve those against the existing Kandelo file locking and mapping
+semantics before testing the tools as guest processes.
+
+The first acceptance test is offline. From a fresh Kandelo shell with the
+toolchain installed, create a small module that imports the standard
+library, run `go build` with an empty build cache and
+`GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off CGO_ENABLED=0`, and execute the
+result from the same shell. Verify that the output has the active program
+ABI and that each build tool runs inside the guest.
