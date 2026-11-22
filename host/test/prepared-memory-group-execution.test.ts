@@ -20,7 +20,7 @@ it.each(['identity', 'exec'] as const)('runs ordinary and grouped %s from one un
     const ordinary = new Uint8Array(readFileSync(fixture.programPath));
     const grouped = new Uint8Array(readFileSync(groupedPath));
     const fs = KandeloImageFs.create();
-    for (const path of ['/tmp', '/bin', '/sdk']) fs.mkdir(path, 0o755);
+    for (const path of ['/tmp', '/bin']) fs.mkdir(path, 0o755);
     fs.writeFile('/bin/probe', ordinary, 0o755);
     if (kind === 'exec') fs.link('/bin/probe', '/bin/grouped-exec-target');
     const variantPath = sharedMemoryProgramPath(digest(ordinary));

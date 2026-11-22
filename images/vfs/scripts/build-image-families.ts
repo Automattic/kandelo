@@ -77,7 +77,7 @@ export async function buildWebStackImage(output: string): Promise<void> {
 
 /** The syslog daemon these images supervise; staged exactly, never ambient. */
 function syslogdBytes(): Uint8Array {
-  return new Uint8Array(readFileSync(resolveVfsArtifact("programs/syslogd.wasm", "sysklogd")));
+  return new Uint8Array(readFileSync(resolveVfsArtifact("programs/sysklogd/syslogd.wasm", "sysklogd")));
 }
 
 export async function buildWordPressFamilyImage(output: string): Promise<void> {

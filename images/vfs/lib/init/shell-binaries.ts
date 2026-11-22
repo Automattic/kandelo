@@ -564,7 +564,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // (packages/registry/shell/eager-budget.json) is what every visitor
   // downloads before the first prompt. The cost is a fetch on the boot path;
   // a machine that cannot fetch it boots without logging and says so.
-  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
+  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/sysklogd/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
   ...LLVM_BINARY_TOOL_SPECS,
   // pkgconf, Bison, gperf, install-info, gettext and CMake
   // (images/vfs/lib/init/dev-tools.ts).
