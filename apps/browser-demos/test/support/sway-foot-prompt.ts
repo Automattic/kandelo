@@ -25,7 +25,7 @@ export function matchesSwayFootPrompt(pixels: Pixels, left: number, top: number,
 }
 
 /** Observe the actual focused tile in Sway's initial horizontal layout. */
-export async function waitForSwayFootPrompt(page: Page, canvas: Locator, windows: number) {
+export async function waitForSwayFootPrompt(page: Page, canvas: Locator, windows: number, timeout = 30_000) {
   if (!Number.isInteger(windows) || windows < 1 || windows > 12) throw Error('Unsupported Sway prompt geometry');
   await expect.poll(async () => {
     const pixels = PNG.sync.read(await page.screenshot({ timeout: 5000 }));
@@ -43,5 +43,5 @@ export async function waitForSwayFootPrompt(page: Page, canvas: Locator, windows
       }
     }
     return false;
-  }, { timeout: 30_000, message: 'Focused Foot must render its Bash prompt before shell input' }).toBe(true);
+  }, { timeout, message: 'Focused Foot must render its Bash prompt before shell input' }).toBe(true);
 }

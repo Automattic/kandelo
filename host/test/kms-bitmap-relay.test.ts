@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KmsBitmapRelay } from '../src/dri/kms-bitmap-relay';
+import { startKmsBitmapDisplay } from '../src/dri/kms-bitmap-display-bootstrap';
 import { attachKmsBitmapDisplay } from '../src/dri/kms-bitmap-display';
 import { createCentralizedKernelWorkerTestDouble } from '../src/kernel-worker';
 function deferred<T>() {
@@ -368,5 +369,66 @@ describe('display consumption and exact retirement', () => {
         for (const frame of frames)
             expect(frame.close).toHaveBeenCalledOnce();
         expect(s.port.postMessage).not.toHaveBeenCalled();
+    });
+});
+
+
+describe('KMS display module bootstrap ownership', () => {
+    function setupBootstrap() {
+        const ports = [{ close: vi.fn() }, { close: vi.fn() }];
+        vi.stubGlobal('MessageChannel', class {
+            port1 = ports[0]; port2 = ports[1];
+        });
+        const worker = { onmessage: null, onerror: null, onmessageerror: null,
+            postMessage: vi.fn(), terminate: vi.fn() } as unknown as Worker;
+        let active = true;
+        const attach = vi.fn(), fail = vi.fn();
+        const canvases = [{ width: 640, height: 480 }] as OffscreenCanvas[];
+        const owned = startKmsBitmapDisplay(worker, canvases, () => active, attach, fail);
+        const receive = worker.onmessage!.bind(worker);
+        return { worker, attach, fail, owned, ports, canvases,
+            deactivate: () => { active = false; },
+            loaded: () => receive({ data: { type: 'loaded' } } as MessageEvent) };
+    }
+    it('does not start the kernel relay while display module loading exceeds its receipt deadline', async () => {
+        const s = setupBootstrap();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(s.attach).not.toHaveBeenCalled();
+        expect(s.worker.postMessage).not.toHaveBeenCalled();
+        expect(s.fail).not.toHaveBeenCalled();
+        s.loaded();
+        expect(s.worker.postMessage).toHaveBeenCalledExactlyOnceWith(
+            { canvases: s.canvases, port: s.ports[0] }, [...s.canvases, s.ports[0]]);
+        expect(s.attach).toHaveBeenCalledExactlyOnceWith(s.ports[1]);
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(s.fail).not.toHaveBeenCalled();
+        s.owned.terminate(); s.owned.terminate();
+        expect(s.worker.terminate).toHaveBeenCalledOnce();
+    });
+    it('cancels a pending or queued bootstrap without publishing device authority after shutdown', () => {
+        const s = setupBootstrap();
+        s.deactivate();
+        s.owned.terminate();
+        s.loaded();
+        expect(s.attach).not.toHaveBeenCalled();
+        expect(s.worker.postMessage).not.toHaveBeenCalled();
+        expect(s.worker.terminate).toHaveBeenCalledOnce();
+        expect(s.ports.every(port => port.close.mock.calls.length === 1)).toBe(true);
+        expect(s.fail).not.toHaveBeenCalled();
+    });
+    it('checks host activity again when module loading completes', () => {
+        const s = setupBootstrap(); s.deactivate(); s.loaded();
+        expect(s.attach).not.toHaveBeenCalled();
+        expect(s.worker.postMessage).not.toHaveBeenCalled();
+        expect(s.worker.terminate).toHaveBeenCalledOnce();
+        expect(s.fail).not.toHaveBeenCalled();
+    });
+    it('bounds failed module loading separately and rejects its late receipt', async () => {
+        const s = setupBootstrap();
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(s.fail).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'KMS bitmap display module did not load' }));
+        s.loaded();
+        expect(s.attach).not.toHaveBeenCalled();
+        expect(s.worker.terminate).toHaveBeenCalledOnce();
     });
 });

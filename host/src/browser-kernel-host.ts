@@ -1,5 +1,6 @@
 import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
 import bitmapDisplayWorkerUrl from "./dri/kms-bitmap-display-worker.ts?worker&url";
+import { startKmsBitmapDisplay } from "./dri/kms-bitmap-display-bootstrap";
 import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import { deliverProcessGenerationEvent, type ProcessGenerationEvent } from "./process-generation-observation";
 export type { ProcessGenerationEvent } from "./process-generation-observation";
@@ -1552,7 +1553,7 @@ export class BrowserKernel {
    * Pass `stats` to receive blit + page-flip telemetry (see
    * `attachKmsStats` for the slot layout).
    */
-  private kmsBitmapWorkers = new Map<number, Worker>();
+  private kmsBitmapWorkers = new Map<number, ReturnType<typeof startKmsBitmapDisplay>>();
 
   /** Opt-in browser presentation relay. Both attached canvases move into a
    * disposable display Worker. The kernel renders into independent detached
@@ -1565,19 +1566,15 @@ export class BrowserKernel {
     if (canvases.some(c => c.width < 1 || c.width > 3840 || c.height < 1 || c.height > 2160)) {
       throw new Error('KMS bitmap display exceeds its device extent');
     }
-    const channel = new MessageChannel();
     const display = new Worker(bitmapDisplayWorkerUrl, { type: 'module' });
     const sources = canvases.map(c => new OffscreenCanvas(c.width, c.height));
-    display.onerror = error => this.options.onHostDiagnostic?.({pid: 0,
-      source: 'kms-bitmap-display', message: error.message});
-    try {
-      display.postMessage({canvases, port: channel.port1}, [...canvases, channel.port1]);
-      this.sendToKernel({type: 'kms_attach_canvas', crtcId, canvas: sources[0], stats,
-        opts: {mode: opts?.mode, cursorCanvas: sources[1], bitmapPort: channel.port2}}, [...sources, channel.port2]);
-      this.kmsBitmapWorkers.set(crtcId, display);
-    } catch (error) {
-      channel.port1.close(); channel.port2.close(); display.terminate(); throw error;
-    }
+    const ownedDisplay = startKmsBitmapDisplay(display, canvases,
+      () => this.initialized && !this.shuttingDown,
+      port => this.sendToKernel({type: 'kms_attach_canvas', crtcId, canvas: sources[0], stats,
+        opts: {mode: opts?.mode, cursorCanvas: sources[1], bitmapPort: port}}, [...sources, port]),
+      error => this.options.onHostDiagnostic?.({pid: 0,
+        source: 'kms-bitmap-display', message: error.message}));
+    this.kmsBitmapWorkers.set(crtcId, ownedDisplay);
   }
 
   kmsAttachCanvas(

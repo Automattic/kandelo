@@ -8,3 +8,6 @@ globalThis.onmessage = (event: MessageEvent) => {
   const { canvases, port } = event.data as { canvases: OffscreenCanvas[]; port: MessagePort };
   attachKmsBitmapDisplay(canvases, port);
 };
+
+// Only loaded module code can accept the transferred device canvases.
+globalThis.postMessage({ type: 'loaded' });

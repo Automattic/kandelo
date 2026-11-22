@@ -22,7 +22,9 @@ test('shared-desktop-browser-startup: the normal gallery runs a temporary shared
   await waitForMachineBootInput(page);
   const canvas = page.locator('.kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas').first();
   await expect(canvas).toBeVisible({ timeout: 180_000 });
-  await waitForSwayFootPrompt(page, canvas, 1);
+  // Initial boot includes cold lazy program delivery and worker module loading.
+  // The rendered prompt, followed by real typing, is the readiness contract.
+  await waitForSwayFootPrompt(page, canvas, 1, 180_000);
   // The authored desktop is RAM-only while the ordinary computer library
   // remains available. A global development-preview boot cannot satisfy both.
   expect(new URL(page.url()).searchParams.get('computer')).toBeNull();
