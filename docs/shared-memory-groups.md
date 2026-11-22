@@ -6,8 +6,9 @@ below. It is not a statement that the complete contract is ready to ship. The
 identifies the isolated experiment and the ordinary failure it addresses.
 Neither the successful demo nor those bounded checks replaces integration and
 release validation.
-The [current integration checkpoint](measurements/2026-11-20-shared-memory-desktop-current.md)
-records the current normal package/image path and its remaining failures.
+The [normal-shell integration record](measurements/2026-11-22-shared-memory-shell-integration.md)
+records the current package/image path. The [earlier integration checkpoint](measurements/2026-11-20-shared-memory-desktop-current.md)
+retains dedicated-preview results and outstanding resource/lifecycle limits.
 
 ## Purpose and trust
 
@@ -293,12 +294,27 @@ keeps the ordinary input, preserves executable credentials and writes an
 adjacent SDK report (including failures). It is not the normal package-backed
 launch path described below.
 
-### Normal partial-shell preview
+### Shell desktops and partial development images
 
-The opt-in preview uses a normal partial shell and the
-`shared-desktop-programs` package. Its formal SDK artifacts are individual lazy
-ZIPs served through the existing package resolver and asset group. Launching a
-preview validates the partial manifest; it does not manufacture another image.
+The canonical shell includes Cage/Foot, Sway/Foot and Sway/SFWBar as profiles
+and Activities. Its default shell keeps ordinary execution. Select a desktop
+profile in the computer library or start its Activity in an existing shell
+computer. The Activity requests shared execution for its own process family;
+it does not replace the computer or change other terminals' execution mode.
+All three profiles use the normal computer storage policy.
+
+`shared-desktop-programs` supplies twenty formal SDK alternatives as individual
+lazy ZIPs through the normal package resolver and authenticated asset group.
+The composer verifies every ordinary source identity, archive/member size and
+SHA-256, and SDK declaration. It installs alternatives under
+`/usr/libexec/kandelo/shared-desktop/` and a source-digest catalog, retaining
+ordinary executables and their aliases at their original paths. The host and
+kernel select and bind a compatible implementation only for an explicit
+shared launch. The embedding host must configure this capability and its
+budget; image metadata or URL parameters cannot grant it.
+
+For development, compose a normal partial shell containing the desktop
+closure instead of rebuilding every shell package:
 
 ```sh
 ./run.sh partial shell shared-desktop-programs cage foot sway swaybg sfwbar freeciv-browser-bundle scummvm-static curl unzip sysklogd desktop-data bibata-cursor-theme
@@ -308,72 +324,40 @@ preview validates the partial manifest; it does not manufacture another image.
 Add `cage-docs sway-docs foot-docs freeciv-docs scummvm-docs` for upstream manuals.
 Partial images install named packages; building a dependency does not itself
 install that dependency's application into the image. The composer reports
-missing image packages before activating the SDK closure.
+missing image packages before activating the SDK closure. This path produces
+the normal partial manifest and image, without manufacturing another desktop
+image at launch. The separate `shared-desktop` recipe and eager preparation
+tool remain manual historical reproduction paths; neither is shipped in the
+normal gallery or default local build.
 
-The partial image retains the shell default and offers Cage/Foot, Sway/Foot
-and Sway/SFWBar as profiles and Activities. Select the profile in the computer
-library or start its Activity in an existing shell computer.
 Run `freeciv` or `scummvm-static` from Foot. `scummvm-static-play GAME` uses the
 existing SHA-256-pinned freeware catalog through guest curl and unzip.
 ScummVM retains the ordinary package's fourteen-engine selection, including
 SCUMM v7/v8, using upstream static engines because grouped dynamic side modules
-remain unsupported. In the earlier dedicated preview, the launcher and God of Thunder gameplay,
-physical movement, native Quit with status 0, return to Foot and Cage cleanup
-passed on Chromium, Firefox and WebKit. Those results require revalidation on
-the normal shell integration. Other games, audio and sustained ScummVM operation
-remain unproven.
-Compatibility is an SDK build requirement, not an app certification gate
-before experiments.
+remain unsupported. Compatibility is an SDK build requirement, not an app
+certification gate before experiments.
 
-The package also registers its variants under
-`/usr/libexec/kandelo/shared-desktop/`. Canonical ordinary images retain their
-ordinary executable paths and default execution mode. Only a partial image
-explicitly selecting this package activates prepared programs at their normal
-paths. Activation verifies every ordinary source identity, archive/member
-size and SHA-256, and SDK artifact declaration before changing any file. It
-preserves credentials and existing symlink/hard-link aliases; active paths and
-package paths share actual inodes, so one program cannot materialize twice.
-The embedding host must still explicitly enable the trusted backend: image
-metadata or URL parameters cannot grant it.
-
-The current machine-wide group covers the prepared boot/login chain, shells,
-compositors and applications. A cold Foot-only session fetches its needed SDK
-archives without fetching the Freeciv or ScummVM variants on all three engines.
-Bounded Freeciv menu quit/relaunch, local server/world/end-turn, in-game
-client/server exit and restored Foot input also pass on all three engines.
-Tests of absolute pointer input release pointer capture; relative input,
-sustained game operation, whole-machine backing reclamation and matched
-resource/performance comparisons remain unproven.
+The maintained canonical consumers use the normal app with no global preview
+flag:
 
 ```sh
-KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6383/ \
-  apps/browser-demos/node_modules/.bin/playwright test \
-  --config apps/browser-demos/playwright.trusted-cage.config.ts
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npx playwright test --config playwright.shell-shared-desktop.config.ts --project chromium --project firefox --project webkit'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npx playwright test --config playwright.canonical-shared-desktop.config.ts --project chromium'
 ```
 
-The separate ScummVM regression runs the actual verified game download,
-menus, movement and native Quit, then proves Foot input and exact Cage cleanup:
+The first selection checks real Foot input, ordinary-file persistence across
+reload, and an ordinary-shell-to-Sway Activity in the same computer. The
+second selects normal-gallery desktop, Freeciv, ScummVM and capacity consumers.
+ScummVM gameplay requires the actual pinned game download and a fixed
+1280×840 unit-scale viewport. A missing download, incomplete gameplay, failed
+native Quit or incomplete process retirement fails the run. Neither command
+proves audio, sustained gameplay, net memory savings or performance.
 
-```sh
-scripts/dev-shell.sh env KANDELO_TEST_CAGE_PREVIEW_URL=http://127.0.0.1:6385/ \
-  apps/browser-demos/node_modules/.bin/playwright test \
-  --config apps/browser-demos/playwright.trusted-scummvm.config.ts
-```
-
-It requires network access to the pinned freeware catalog. Failed downloads,
-missing outputs and incomplete game or exit checks fail this explicit run.
-It checks the consumed kernel response against the normal local resolver,
-uses authored scene masks and full-color readiness to reject intro fades,
-and refreshes actual file contents until the shell publishes status 0.
-This is bounded gameplay evidence, without an audio or performance claim.
-
-This check requires the normal package-backed partial image. It uses a fixed
-1280×840 viewport and unit display scale, validates the rendered prompt before
-typing, checks initialized process-table cleanup and records phase/error
-before bounded screenshots. The direct `prepare-shared-desktop-image.ts` tool
-and older image/report inputs remain available to reproduce historical
-experiments. They are not the normal launch path. Canonical production and
-full release gates remain required before promotion.
+Earlier dedicated-preview results are retained in the dated measurement
+records. They do not establish acceptance of the normal shell integration.
+The current integration record must identify its image and exact test scope;
+canonical production, browser-memory and remaining release gates are still
+required before promotion.
 
 ## Accounting and acceptance
 
