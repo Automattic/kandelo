@@ -5,7 +5,7 @@ use std::io::{Cursor, Read, Write};
 
 const MAX_PROGRAM_BYTES: u64 = 512 * 1024 * 1024;
 
-fn enabled(target: &DepsManifest) -> bool {
+pub(super) fn enabled(target: &DepsManifest) -> bool {
     target
         .program_outputs
         .iter()

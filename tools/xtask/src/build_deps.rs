@@ -14454,6 +14454,127 @@ fn package_build_path(repo: &Path, toolchain: PackageToolchain, inherited: &OsSt
     std::env::join_paths(paths).map_err(|error| format!("package build PATH: {error}"))
 }
 
+/// Final executable identity must exist before deriving a source-bound output.
+fn stamp_program_outputs(target: &DepsManifest, tmp: &Path, repo_root: &Path,
+    abi_version: u32, cache_key_sha: &str) -> Result<(), String> {
+    let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
+        format!(
+            "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
+            target.spec()
+        )
+    })?;
+    // Sibling of the build key: the ABI-contract digest
+    // (the program digest, `local_abi_identity`) this artifact was built
+    // against. Stamped on EVERY program (kernel, userspace, and every
+    // guest) so the host can compare a guest's stamp against the
+    // running kernel's own kandelo.abi.contract stamp at exec and
+    // refuse a stale guest even when the ABI version numbers coincide.
+    // This is the same digest folded into the SourceOnlyV1 cache key,
+    // so it is reliable, not best-effort: propagate errors like the
+    // build-key stamp.
+    let abi_contract_digest =
+        crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
+            .map_err(|error| {
+                format!(
+                    "{}: compute ABI contract digest for stamp: {error}",
+                    target.spec()
+                )
+            })?;
+    for output in target.program_outputs.iter().filter(|output| output.shared_memory_from.is_none()) {
+        let member = tmp.join(&output.wasm);
+        let bytes = std::fs::read(&member).map_err(|error| {
+            format!(
+                "{}: read built wasm output {}: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
+        // Both the build-key and abi-contract stamps are wasm custom
+        // sections: they only apply to a loadable wasm module. Some
+        // `program` packages declare non-wasm outputs (e.g. a lazy VFS
+        // archive `*.zip`/`*.zst` or a data blob) whose bytes have no
+        // wasm magic; there is nothing to stamp on them, and feeding
+        // them to the wasm stamper would fail on a bad magic header.
+        // Skip those members -- they carry no ABI/build identity and
+        // are never loaded as a module (verify-fresh and the belt
+        // check only ever read `.wasm` members).
+        if !bytes.starts_with(b"\0asm") {
+            continue;
+        }
+        let stamped = crate::build_stamp::stamp_program_output(
+            &bytes,
+            &stamp_key,
+            &abi_contract_digest,
+        )
+        .map_err(|error| {
+            format!(
+                "{}: stamp ABI contract digest on wasm output {}: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
+        // The built member may be read-only: a `make install` binary
+        // is commonly mode 0555, the fork-instrument step deliberately
+        // preserves that mode, and the resolver-scratch copy inherits
+        // it. This stamp is the authoritative writer of the final bytes
+        // into the pre-publication build stage, so overwrite in place
+        // (preserving the inode, which some packages hard-link, e.g.
+        // mandoc's `man` -> `mandoc`): temporarily restore owner-write,
+        // then re-apply the original mode so the published artifact
+        // keeps its executable/read-only bits.
+        #[cfg(unix)]
+        let restore_mode = {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&member)
+                .map_err(|error| {
+                    format!(
+                        "{}: stat stamped wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?
+                .permissions()
+                .mode();
+            if mode & 0o200 == 0 {
+                std::fs::set_permissions(
+                    &member,
+                    std::fs::Permissions::from_mode(mode | 0o200),
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: make stamped wasm output writable {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                Some(mode)
+            } else {
+                None
+            }
+        };
+        std::fs::write(&member, stamped).map_err(|error| {
+            format!(
+                "{}: write stamped wasm output {}: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
+        #[cfg(unix)]
+        if let Some(mode) = restore_mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&member, std::fs::Permissions::from_mode(mode))
+                .map_err(|error| {
+                    format!(
+                        "{}: restore stamped wasm output mode {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -14813,6 +14934,12 @@ fn build_into_cache(
         ));
     }
 
+    // Derivatives bind exact installed bytes, including the normal source stamp.
+    // Other packages retain their established later stamping order.
+    if policy == ResolvePolicy::SourceOnlyV1 && target.kind == ManifestKind::Program
+        && shared_memory_outputs::enabled(target) {
+        stamp_program_outputs(target, &tmp, repo_root, abi_version, cache_key_sha)?;
+    }
     shared_memory_outputs::finalize(target, &tmp, arch, false)?;
 
     // Kind-aware validation. Library and program manifests carry a
@@ -14888,123 +15015,10 @@ fn build_into_cache(
         work.cleanup_source_only().map_err(|error| {
             format!("{}: clean package work scratch before publication: {error}", target.spec())
         })?;
-        if target.kind == ManifestKind::Program {
-            let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
-                format!(
-                    "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
-                    target.spec()
-                )
-            })?;
-            // Sibling of the build key: the ABI-contract digest
-            // (the program digest, `local_abi_identity`) this artifact was built
-            // against. Stamped on EVERY program (kernel, userspace, and every
-            // guest) so the host can compare a guest's stamp against the
-            // running kernel's own kandelo.abi.contract stamp at exec and
-            // refuse a stale guest even when the ABI version numbers coincide.
-            // This is the same digest folded into the SourceOnlyV1 cache key,
-            // so it is reliable, not best-effort: propagate errors like the
-            // build-key stamp.
-            let abi_contract_digest =
-                crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
-                    .map_err(|error| {
-                        format!(
-                            "{}: compute ABI contract digest for stamp: {error}",
-                            target.spec()
-                        )
-                    })?;
-            for output in &target.program_outputs {
-                let member = tmp.join(&output.wasm);
-                let bytes = std::fs::read(&member).map_err(|error| {
-                    format!(
-                        "{}: read built wasm output {}: {error}",
-                        target.spec(),
-                        member.display()
-                    )
-                })?;
-                // Both the build-key and abi-contract stamps are wasm custom
-                // sections: they only apply to a loadable wasm module. Some
-                // `program` packages declare non-wasm outputs (e.g. a lazy VFS
-                // archive `*.zip`/`*.zst` or a data blob) whose bytes have no
-                // wasm magic; there is nothing to stamp on them, and feeding
-                // them to the wasm stamper would fail on a bad magic header.
-                // Skip those members -- they carry no ABI/build identity and
-                // are never loaded as a module (verify-fresh and the belt
-                // check only ever read `.wasm` members).
-                if !bytes.starts_with(b"\0asm") {
-                    continue;
-                }
-                let stamped = crate::build_stamp::stamp_program_output(
-                    &bytes,
-                    &stamp_key,
-                    &abi_contract_digest,
-                )
-                .map_err(|error| {
-                    format!(
-                        "{}: stamp ABI contract digest on wasm output {}: {error}",
-                        target.spec(),
-                        member.display()
-                    )
-                })?;
-                // The built member may be read-only: a `make install` binary
-                // is commonly mode 0555, the fork-instrument step deliberately
-                // preserves that mode, and the resolver-scratch copy inherits
-                // it. This stamp is the authoritative writer of the final bytes
-                // into the pre-publication build stage, so overwrite in place
-                // (preserving the inode, which some packages hard-link, e.g.
-                // mandoc's `man` -> `mandoc`): temporarily restore owner-write,
-                // then re-apply the original mode so the published artifact
-                // keeps its executable/read-only bits.
-                #[cfg(unix)]
-                let restore_mode = {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mode = std::fs::metadata(&member)
-                        .map_err(|error| {
-                            format!(
-                                "{}: stat stamped wasm output {}: {error}",
-                                target.spec(),
-                                member.display()
-                            )
-                        })?
-                        .permissions()
-                        .mode();
-                    if mode & 0o200 == 0 {
-                        std::fs::set_permissions(
-                            &member,
-                            std::fs::Permissions::from_mode(mode | 0o200),
-                        )
-                        .map_err(|error| {
-                            format!(
-                                "{}: make stamped wasm output writable {}: {error}",
-                                target.spec(),
-                                member.display()
-                            )
-                        })?;
-                        Some(mode)
-                    } else {
-                        None
-                    }
-                };
-                std::fs::write(&member, stamped).map_err(|error| {
-                    format!(
-                        "{}: write stamped wasm output {}: {error}",
-                        target.spec(),
-                        member.display()
-                    )
-                })?;
-                #[cfg(unix)]
-                if let Some(mode) = restore_mode {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(mode))
-                        .map_err(|error| {
-                            format!(
-                                "{}: restore stamped wasm output mode {}: {error}",
-                                target.spec(),
-                                member.display()
-                            )
-                        })?;
-                }
-            }
+        if target.kind == ManifestKind::Program && !shared_memory_outputs::enabled(target) {
+            stamp_program_outputs(target, &tmp, repo_root, abi_version, cache_key_sha)?;
         }
+
     }
 
     if policy == ResolvePolicy::Default {
@@ -26235,6 +26249,35 @@ spdx = "TestLicense"
             sha_before, sha_after,
             "changing a program output's fork instrumentation policy must invalidate the cache key"
         );
+    }
+
+    #[test]
+    fn shared_memory_sources_receive_final_identity_before_derivation() {
+        let root = tempdir("shared-final-source-identity");
+        write_program_manifest(&root, "probe", "1.0.0", r#"[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+[[outputs]]
+name = "shared"
+wasm = "shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+"#);
+        let registry = Registry { roots: vec![root.clone()] };
+        let target = registry.load("probe").unwrap();
+        let output = root.join("output");
+        std::fs::create_dir(&output).unwrap();
+        let source = output.join("probe.wasm");
+        let raw = minimal_executable_wasm();
+        std::fs::write(&source, &raw).unwrap();
+        let key = "a".repeat(64);
+        stamp_program_outputs(&target, &output, &crate::repo_root(), wasm_posix_shared::ABI_VERSION, &key).unwrap();
+        let finalized = std::fs::read(&source).unwrap();
+        assert_ne!(Sha256::digest(&raw), Sha256::digest(&finalized));
+        assert_eq!(crate::build_stamp::read_build_key(&finalized).unwrap(), Some([0xaa; 32]));
+        stamp_program_outputs(&target, &output, &crate::repo_root(), wasm_posix_shared::ABI_VERSION, &key).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), finalized);
+        assert!(!output.join("shared.zip").exists());
     }
 
     #[test]
