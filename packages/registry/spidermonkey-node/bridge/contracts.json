@@ -5,7 +5,7 @@
   "groups": [
     {
       "id": "source-interfaces",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Let original Node C++ retain its consumed V8-shaped declarations, handles, Maybe results, callback/signature metadata and checks while implementations operate on SpiderMonkey. These declarations supply no V8 heap layout, register ABI or independent Node owner.",
       "protectingContracts": ["complete default and feature compilation/linkage", "native handle identity and failure-state controls"],
       "testLimit": "Compilation protects source compatibility. The named native controls exercise selected handle/error operations, not every declared method or fast-call optimization.",
@@ -13,7 +13,7 @@
     },
     {
       "id": "engine-storage-and-native-lifetime",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Store real rooted values, per-context engine state, native fields and process-level engine initialization/entropy/cache identity. Keep Node Environment, argv/options, scheduling and resource policy with original Node owners; use one engine-thread/root admission and retirement path.",
       "protectingContracts": ["native roots/weak edges/handle identity", "native fields and asynchronous zlib/gunzip consumers", "native callback/stop/error/shared-loop cleanup", "installed CLI and Worker helper retirement"],
       "testLimit": "The actual native and CLI inventories protect their named construction, field, callback and cleanup paths. Object detail formatting without JavaScript effects and other unselected value operations remain explicit full-family work.",
@@ -21,7 +21,7 @@
     },
     {
       "id": "values-and-backing-storage",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Translate actual SpiderMonkey values, byte stores, views, strings and collection values for original Node consumers. Retain real backing-store identity, leases, external-memory credit and deleter ownership rather than copying Node's public Buffer or string policy.",
       "protectingContracts": ["native handle and backing lifetime controls", "parser allocation/GC/cycle retirement", "asynchronous zlib and actual tarball gunzip", "VM and installed application consumers"],
       "testLimit": "These are selected live byte/encoding/collection consumers. Full resizable/shared/detached storage, conversion and collection API variants remain required. trace-codecs-inl.h also contains ordinary value/backing operations; its filename must not be treated as profiling coverage.",
@@ -29,7 +29,7 @@
     },
     {
       "id": "compiler-modules-and-cache",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Use real SpiderMonkey function/script/module compilation, retained source origins and XDR stencils beneath original Node compiler/loaders and their error/retry policy. Bind private cache data to actual engine/bridge inputs and validate it before consumption.",
       "protectingContracts": ["native parser diagnostics/module metadata/function source locations/hashbang", "installed CLI/default TypeScript", "separate CJS and ESM file gates", "VM compiler controls"],
       "testLimit": "The frozen case inventories define the qualified parser/loader/cache consumers. They do not prove every cache format/version, loader hook, import phase or VM API. Private SpiderMonkey cache data is not a claim of V8 heap-snapshot compatibility.",
@@ -37,7 +37,7 @@
     },
     {
       "id": "contexts-templates-and-properties",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Connect original Node contextification and native template callbacks to real realms, object construction/brands, property operations, global identifier/declaration lookup, descriptors and exception modes. Engine hooks preserve original SpiderMonkey object/proxy algorithms.",
       "protectingContracts": ["VM18 sandbox/property/global/error/GC controls", "native handles and fields", "normal application REPL/top-level await/error formatting", "reported interactive HTTPS Fetch command"],
       "testLimit": "VM18 and the application checks protect the reproduced integration failures. Full VM/Proxy/template/RegExp coverage remains required; the source guard rejecting recursive native template creation is not independently qualified by these cases.",
@@ -45,7 +45,7 @@
     },
     {
       "id": "jobs-continuations-and-code-generation",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Expose actual Promise jobs/hooks, embedder continuation data, finalization work and per-realm code-generation callbacks. Original Node remains responsible for nextTick/microtask/async-resource and permission policy; the engine adapter transports its callbacks and values.",
       "protectingContracts": ["CLI asynchronous drain/natural and explicit exit", "CLI/application top-level await", "native execution scopes/error/stop/cleanup"],
       "testLimit": "Named initial async consumers do not qualify complete async_hooks/ALS, finalization, Promise-hook, code-generation-policy or permission variants. General guest WebAssembly remains the agreed later iteration.",
@@ -53,7 +53,7 @@
     },
     {
       "id": "collector-and-memory-services",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Connect Node's existing tracing/cleanup methods to SpiderMonkey reachability and supply actual collector limits, external credit and engine census data. This replaces engine-specific collector machinery while preserving Node's native owners and resource retirement.",
       "protectingContracts": ["native strong/weak/cyclic GC and incremental/shrinking/partial-construction controls", "native parser external-credit retirement", "VM live and unreachable context cycles"],
       "testLimit": "External-credit and GC controls are not full heap-space/census/limit/measurement API conformance. The separately reproduced process.memoryUsage RSS ENOSYS remains a libuv/platform gap; no measurement is fabricated to hide it.",
@@ -61,7 +61,7 @@
     },
     {
       "id": "exceptions-stacks-and-inspection",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Supply real saved-frame provenance, source positions, pending exceptions and native inspection of proxies/collections to Node's original error and inspection code. Preserve error ownership and avoid running user getters where the native interface requires inspection without effects.",
       "protectingContracts": ["native diagnostic ownership and source-coordinate controls", "CLI and CJS/ESM failures", "VM18 error cases", "normal REPL and Fetch response inspection"],
       "testLimit": "Named JavaScript stack/error paths are qualified separately from general inspection APIs. Wasm CallSite/message/stack position branches remain source-identified work for the agreed later guest-Wasm iteration.",
@@ -69,7 +69,7 @@
     },
     {
       "id": "portable-wire-and-shared-values",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Reuse portable upstream value serialization while traversing real SpiderMonkey graphs and retaining actual shared-value/conveyor ownership. Keep Node's messaging/transfer policy with original owners.",
       "protectingContracts": ["complete default and feature compilation/linkage"],
       "testLimit": "No comprehensive current-artifact serialization/transfer/conveyor runtime acceptance is established by the initial gates. Preserve those required worker/value/engine tests for the complete catalog and family roadmap.",
@@ -77,7 +77,7 @@
     },
     {
       "id": "native-extras",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Adapt the complete original tracing/extras routines and their argument/result conventions to real engine callbacks and Node's tracing controller. Construct each realm's native extras eagerly so cleanup does not create new callbacks or replace pending errors.",
       "protectingContracts": ["complete default and feature compilation/linkage", "CLI/context bootstrap and native cleanup", "synchronous no-argument GC controls"],
       "testLimit": "Bootstrap/cleanup and plain gc() do not prove complete tracing. GC option-bag, asynchronous and snapshot extension requests are explicit remaining engine-service work; trace protocol output needs its own family acceptance.",
@@ -85,7 +85,7 @@
     },
     {
       "id": "profiling-and-heap-data",
-      "owner": "spidermonkey-node-bridge",
+      "owner": "spidermonkey-node",
       "why": "Feed original portable profile-tree, sampling and heap JSON algorithms with actual owner-thread SpiderMonkey frames, allocation/weak-edge observations and heap graph data. Native producers must stop/join before their callback records and engine owners retire.",
       "protectingContracts": ["complete default and feature compilation/linkage", "shared native callback/GC/shutdown prerequisites"],
       "testLimit": "Shared prerequisite checks do not exercise every active profiler producer or qualify profiles, snapshots, sampling or trace chunks. Direct current-artifact profiling/heap API acceptance remains required. Initial V8 startup-snapshot and Inspector boundaries retain their separate approved follow-ups.",

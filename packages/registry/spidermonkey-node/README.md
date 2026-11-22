@@ -12,7 +12,7 @@ resolver downloads/verifies it; recipes stage private copies below their work
 roots. No upstream Node checkout or generated execution reports are vendored.
 
 - `spidermonkey-core`: the standalone engine and reviewed engine patches.
-- `spidermonkey-node-bridge`: Kandelo's engine adapter, source preparation tools,
+- `bridge/`: this package's internal engine adapter, source preparation tools,
   source contracts and native lifetime interfaces.
 - This package: Node's original build, target/engine patches, provider setup and
   the approved native Amaro/Undici bindings.
@@ -32,9 +32,11 @@ Run through `scripts/dev-shell.sh`. A focused package/image build is:
 ./run.sh partial shell node-browser-bundle
 ```
 
-The normal canonical build is `./run.sh local-build`. The separate
-`spidermonkey-node-features` recipe builds the enabled experimental feature
-profile; compiling it does not establish feature conformance.
+The normal canonical build is `./run.sh local-build`. This recipe builds both
+`node.wasm` (default) and `node-features.wasm`
+(experimental QUIC/DTLS). The bridge is built once and shared by both internal
+configurations. Normal packaging installs only the default executable; compiling
+the experimental output does not establish feature conformance.
 
 [Maintained npm regressions](../node-browser-bundle/test/README.md) run offline
 and controlled-registry installation, lifecycle execution, CJS/ESM package use,
@@ -52,7 +54,7 @@ Normal-app JS/default TypeScript, REPL/await, Fetch and npm checks passed on all
 three browser engines. Exact artifacts and full receipts remain in the preserved
 local shipping checkpoint; these are bounded results, not module conformance.
 
-The current simplification and develop reconciliation are unbuilt and untested,
+The current consolidation and develop reconciliation are unbuilt and untested,
 at the user's request, for source review before further qualification. Prior
 results are not results for this source update. Historical research, probes and
 reports remain preserved locally. The older frontend is absent from the port.

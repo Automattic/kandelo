@@ -11,7 +11,7 @@ import tomllib
 
 def inventory(root):
     registry = root / 'packages/registry'
-    bridge = registry / 'spidermonkey-node-bridge'
+    bridge = registry / 'spidermonkey-node/bridge'
     def identity(path):
         data = path.read_bytes()
         return {'path': str(path.relative_to(root)), 'bytes': len(data),
@@ -27,7 +27,7 @@ def inventory(root):
     if set(by_name) != set(names) or sum(len(g['files']) for g in groups) != len(names):
         raise ValueError('reconcile maintenance contracts with actual bridge inputs')
     sources = [{**identity(bridge / 'src' / name),
-                'owner': 'spidermonkey-node-bridge',
+                'owner': 'spidermonkey-node',
                 'maintenanceContract': by_name[name]['id'],
                 'why': by_name[name]['why'],
                 'protectingContracts': by_name[name]['protectingContracts'],
@@ -37,13 +37,13 @@ def inventory(root):
         ('spidermonkey-core', registry / 'spidermonkey-core/base-patches'),
         ('spidermonkey-core', registry / 'spidermonkey-core/patches'),
         ('spidermonkey-node', registry / 'spidermonkey-node/patches'),
-        ('spidermonkey-node-bridge', bridge / 'native-source-patches'),
+        ('spidermonkey-node', bridge / 'native-source-patches'),
     ]:
         for path in sorted(directory.glob('*.patch')):
             patches.append({**identity(path), 'owner': owner,
                             'touchedFiles': sorted(set(re.findall(r'^\+\+\+ b/(.+)$', path.read_text(), re.M)))})
     packages = []
-    pending = ['node-browser-bundle', 'spidermonkey-node-features', 'node-native-lifetime-tests']
+    pending = ['node-browser-bundle', 'node-native-lifetime-tests']
     seen = set()
     while pending:
         name = pending.pop()
@@ -65,7 +65,7 @@ def inventory(root):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--repository', type=Path, default=Path(__file__).resolve().parents[4])
+    parser.add_argument('--repository', type=Path, default=Path(__file__).resolve().parents[5])
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     with args.output.open('x') as output:

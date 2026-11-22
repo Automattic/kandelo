@@ -12,8 +12,11 @@ The build rejects patch failures, fuzz and offsets and generates its provenance
 receipt in the private build directory. There is no historical patch-selection
 manifest and no dependency on the standalone shell package's patch chain.
 
-The separate `spidermonkey-node-bridge` library supplies Node's V8-shaped source
-interfaces over this engine. This library alone is not a Node-compatible SDK.
+Node builds its internal bridge in `spidermonkey-node/bridge` over this engine.
+This library alone is not a Node-compatible SDK. Keeping it cached separately
+avoids rebuilding Mozilla for Node adapter changes. The standalone SpiderMonkey
+shell still uses its independent upstream build; it does not yet share this
+library build.
 
 The simplified source tree and develop reconciliation have not been built or
 tested. Earlier receipts describe earlier artifacts, not this review update.

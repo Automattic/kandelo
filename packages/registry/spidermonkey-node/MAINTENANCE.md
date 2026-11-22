@@ -1,6 +1,6 @@
 # Maintaining the Node port
 
-The current simplification and develop reconciliation are unbuilt and untested,
+The current consolidation and develop reconciliation are unbuilt and untested,
 at the user's request. Earlier first-iteration results remain attached to their
 original artifacts. The complete 19-family port and B6 catalog/roadmap review
 remain unfinished. See [current scope](README.md#current-scope).
@@ -11,10 +11,9 @@ remain unfinished. See [current scope](README.md#current-scope).
 | --- | --- |
 | `node-core-source` | Pinned upstream Node archive; no checked-in source tree or generated inventory. |
 | `spidermonkey-core` | Pinned Mozilla archive, complete `base-patches/` then `patches/`, static engine and matching headers. |
-| `spidermonkey-node-bridge` | Production `src/`, source preparation tools and complete portable native source adaptations. Preserve V8-shaped interfaces with real SpiderMonkey values, realms, roots and callbacks. |
-| `spidermonkey-node` | Original Node configure/GYP, full registration lists, Environment, startup, loaders and native policy. Builds the default executable once. |
+| `spidermonkey-node/bridge` | Internal source preparation, V8-shaped interfaces over real SpiderMonkey values, roots and callbacks, and complete native source adaptations. This is part of the Node recipe. |
+| `spidermonkey-node` | Original Node configure/GYP, full registration lists, Environment, startup, loaders and native policy. Builds the internal bridge once, then default and experimental executables as two outputs of this recipe. |
 | `node` | Existing package ID forwarding the already-built executable; no second compile. |
-| `spidermonkey-node-features` | Separate upstream experimental QUIC/DTLS build profile; compilation does not establish feature conformance. |
 | `node-browser-bundle` | Normal installed executable/symlink, unchanged bundled npm and lazy archive. |
 | `node-native-lifetime-tests` | Unshipped native lifetime companion; no production fallback. |
 | Shared libc/kernel/host packages | General guest OS behavior, process/thread/resource retirement and host parity. |
@@ -23,7 +22,7 @@ The standalone SpiderMonkey shell retains develop's implementation. The rejected
 Node frontend, its probes and its private dependencies are preserved in local
 recovery snapshots rather than retained in the production source tree.
 
-The bridge's `contracts.json` assigns roles and protecting consumer contracts to
+The internal bridge's `contracts.json` assigns roles and protecting consumer contracts to
 its actual staged files. The inventory tool records production patch and source
 identities; generated release receipts belong outside maintained source.
 An inventory or source compilation does not certify every method in a file.

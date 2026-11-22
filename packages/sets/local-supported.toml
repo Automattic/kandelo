@@ -54,17 +54,11 @@ class = "platform"
 name = "spidermonkey-core"
 class = "platform"
 
-[[packages]]
-name = "spidermonkey-node-bridge"
-class = "platform"
 
 [[packages]]
 name = "v8-tracing"
 class = "platform"
 
-[[packages]]
-name = "spidermonkey-node-features"
-class = "user-software"
 
 [[packages]]
 name = "service-activity-tools"

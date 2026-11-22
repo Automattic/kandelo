@@ -27,7 +27,7 @@ AUXILIARY="$WASM_POSIX_DEP_OUT_DIR/prepared-native-main"
 mkdir "$AUXILIARY"
 env -u WASM_POSIX_INSTALL_OUTPUT_METADATA \
     WASM_POSIX_DEP_NAME=spidermonkey-node WASM_POSIX_DEP_OUT_DIR="$AUXILIARY" \
-    bash "$REPO_ROOT/packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
+    bash "$REPO_ROOT/packages/registry/spidermonkey-node/build-spidermonkey-node.sh" --native-lifetime-test
 unset -f make
 test -f "$WASM_POSIX_DEP_WORK_DIR/native-main-installed.json"
 mv "$AUXILIARY" "$WASM_POSIX_DEP_WORK_DIR/prepared-native-main"
