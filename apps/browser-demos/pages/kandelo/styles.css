@@ -3938,6 +3938,24 @@
 .kabout-dialog { width: min(580px, calc(100vw - 48px)); max-height: calc(100dvh - 48px); overflow: auto; padding: 24px; color: var(--k-text); background: var(--k-surface); border: 1px solid var(--k-border-strong); border-radius: 12px; }
 .kabout-dialog::backdrop { background: #0006; }
 .kabout-dialog p { font-size: 14px; line-height: 1.6; }
+.khelp-dialog { box-sizing: border-box; width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; color: var(--k-text); background: var(--k-surface); border: 1px solid var(--k-border-strong); border-radius: 12px; }
+.khelp-dialog::backdrop { background: #0006; }
+.khelp-dialog p { font-size: 14px; line-height: 1.6; }
+.khelp-dialog h3 { margin: 22px 0 8px; font-size: 16px; }
+.khelp-dialog h3 + p { margin-top: 0; }
+.khelp-dialog pre { padding: 12px; overflow-x: auto; border: 1px solid var(--k-border-strong); border-radius: 6px; font-size: 13px; }
+.khelp-dialog a { color: var(--k-accent-ink); }
+.kexport-dialog fieldset { min-width: 0; padding: 12px; border: 1px solid var(--k-border-strong); border-radius: 6px; }
+.kexport-mode { display: grid; gap: 10px; }
+.kexport-mode label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.kexport-dialog > .kpopin-heading { position: sticky; top: -24px; padding: 16px 0; margin-top: -16px; background: var(--k-surface); z-index: 1; }
+.kexport-location { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
+.kexport-location code { flex: 1; overflow-wrap: anywhere; }
+.kexport-folders { display: grid; gap: 4px; max-height: 180px; overflow: auto; margin-top: 8px; }
+.kexport-folders button { text-align: left; overflow-wrap: anywhere; padding: 8px; }
+.kexport-path { overflow-wrap: anywhere; font-family: monospace; }
+.kexport-actions { display: flex; justify-content: flex-end; margin-top: 20px; }
+.kexport-actions button { padding: 8px 16px; }
 @media (max-width: 480px) { .kopen-website-address { grid-template-columns: minmax(0, 1fr) 90px; } .kopen-website-address label:nth-child(2) { grid-column: 1 / -1; grid-row: 1; } }
 .kopen-website p { margin: 0; font-size: 13px; line-height: 1.5; }
 .kopen-website .kopen-website-warning { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid color-mix(in oklch, var(--k-warn) 55%, var(--k-border)); border-radius: 6px; background: color-mix(in oklch, var(--k-warn) 12%, var(--k-surface)); color: var(--k-warn-ink); }
