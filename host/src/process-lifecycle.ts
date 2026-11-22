@@ -317,7 +317,6 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
       maxPageExclusive: layout.threadArenaEndPage,
       ptrWidth,
       reservedSlots: layout.threadSlotCount,
-      preallocateThreadSlots: layout.threadArenaEndPage > layout.firstThreadSlotPage,
       reserveSlotStartPage: () =>
         host.reserveThreadSlotStartPage(pid, THREAD_SLOT_BYTES) / WASM_PAGE_SIZE,
     });

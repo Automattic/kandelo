@@ -137,7 +137,7 @@ describe("ThreadPageAllocator", () => {
     let reservations = 0;
     const alloc = new ThreadPageAllocator({
       firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
-      maxPageExclusive: FIRST_THREAD_SLOT_PAGE + 2 * PAGES_PER_THREAD,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
       reservedSlots: 2,
       reserveSlotStartPage: () => {
         reservations++;
@@ -183,23 +183,6 @@ describe("ThreadPageAllocator", () => {
     expect(reused.slotStartPage).toBe(t1.slotStartPage);
     expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
     expect(reservations).toBe(2);
-  });
-
-  it("keeps host control out of a preallocated pthread arena after recycling", () => {
-    const mem = makeMemory();
-    const alloc = new ThreadPageAllocator({
-      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
-      maxPageExclusive: FIRST_THREAD_SLOT_PAGE + PAGES_PER_THREAD,
-      reservedSlots: 1,
-      preallocateThreadSlots: true,
-      reserveSlotStartPage: () => 128,
-    });
-
-    const hostControl = alloc.allocateHostControl(mem);
-    alloc.free(hostControl.slotStartPage);
-    const pthread = alloc.allocate(mem);
-    expect(pthread.slotStartPage).toBe(FIRST_THREAD_SLOT_PAGE);
-    expect(alloc.allocateHostControl(mem).slotStartPage).toBe(hostControl.slotStartPage);
   });
 
   it("reserves vfork host control for a zero-pthread process", () => {

@@ -6,6 +6,10 @@ runtime. The compiler writes the program ABI version and contract digest when
 it links, so build with the toolchain pinned by the Kandelo checkout that will
 run your program.
 
+Go executables use the existing Kandelo process and thread entry points. The
+linker emits passive static data for the process initializer, and new Go threads
+attach to that initialized memory through Kandelo's dynamic thread slots.
+
 ## Quickstart
 
 From a Kandelo checkout with Nix, build the pinned compiler and enter the SDK
@@ -76,8 +80,9 @@ ABI change.
 ## Validation
 
 `tests/go/hello` is a minimal module for checking a normal `go build`.
-`tests/go/sdk-probe` is a standalone module that exercises goroutines and
-GC, file I/O, loopback TCP, subprocess execution and SIGTERM delivery.
+`tests/go/sdk-probe` is a standalone module that exercises goroutines, GC,
+thread startup and retirement, file I/O, loopback TCP, subprocess execution
+and SIGTERM delivery.
 From the repository root in the SDK shell, prepare the browser products
 and run the same executable on all four hosts:
 

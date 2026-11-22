@@ -9,7 +9,7 @@ fi
 readonly bootstrap_url=https://go.dev/dl/go1.26.10.src.tar.gz
 readonly bootstrap_sha=fd63e883ba2f2bfca93c1646b31ebef63e2b1e4d2b317c9789d976a68d81f36f
 readonly toolchain_url=https://github.com/kandelo-dev/go.git
-readonly toolchain_commit=faacee3a3e979eae90c209d9aff212185207a0b4
+readonly toolchain_commit=6552401babd31df06b1b4d22d6f8fb040ccf22ac
 
 mkdir -p -- "$(dirname -- "$1")"
 mkdir -- "$1"

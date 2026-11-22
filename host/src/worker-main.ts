@@ -38,7 +38,6 @@ import {
 import {
   describeWasmArtifactPolicyFailures,
   extractAbiVersion,
-  extractThreadSlotPreallocation,
   readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
@@ -641,27 +640,6 @@ function buildKernelImports(
       if (err) return -err;
       return result;
     },
-  };
-}
-
-function bindGoThreadExit(
-  module: WebAssembly.Module,
-  kernelImports: KernelImports,
-  memory: WebAssembly.Memory,
-  ptrWidth: 4 | 8,
-): void {
-  if (!wasmModuleImports(module).some((entry) =>
-    entry.module === "kernel" && entry.name === "kernel_thread_exit" && entry.kind === "function"
-  )) return;
-
-  const exit = kernelImports.kernel_exit;
-  kernelImports.kernel_thread_exit = (waitPtr: WasmGuestPointer): void => {
-    const range = checkedWasmMemoryRange(memory, waitPtr, 4, ptrWidth, "kernel_thread_exit");
-    if (range.offset % 4 !== 0) {
-      throw new RangeError("kernel_thread_exit: unaligned wait pointer");
-    }
-    Atomics.store(new Int32Array(memory.buffer, range.offset, 1), 0, 0);
-    exit(0);
   };
 }
 
@@ -3189,7 +3167,6 @@ export async function centralizedWorkerMain(
         kernelExitStatus = status;
       },
     );
-    bindGoThreadExit(module, kernelImports, memory, ptrWidth);
 
     // Check if the module has complete wpk_fork_* instrumentation exports,
     // and reject stale legacy fork artifacts before they can run.
@@ -4854,14 +4831,9 @@ function sendForkSyscall(
  *   they would clobber shared global state (e.g. resetting LOGGER::file_log_handler
  *   to NULL in MariaDB).
  *
- * Go's Kandelo modules opt in to a preallocated thread arena, have no Start
- * section, and use active data segments. Their thread instances must omit
- * those segments to avoid overwriting live process memory.
- *
  * This function:
- * 1. Removes all-active data sections for preallocating modules without a Start section.
- * 2. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 3. Finds the constructor function by scanning the known LLVM helper exports
+ * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
+ * 2. Finds the constructor function by scanning the known LLVM helper exports
  *    for their common call target and replaces that function body with a no-op.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
@@ -4919,38 +4891,6 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     });
     if (sectionId === 8) hasStartSection = true;
     offset += totalSize;
-  }
-
-  if (!hasStartSection && extractThreadSlotPreallocation(bytes) === 1) {
-    const dataSection = sections.find((section) => section.id === 11);
-    const dataCountSection = sections.find((section) => section.id === 12);
-    if (dataSection && !dataCountSection) {
-      let position = dataSection.contentOffset;
-      const dataEnd = position + dataSection.contentSize;
-      const [segmentCount, countSize] = readLEB128(src, position);
-      position += countSize;
-      let activeDataOnly = true;
-      for (let index = 0; index < segmentCount && activeDataOnly; index++) {
-        if (src[position++] !== 0 || src[position++] !== 0x41) {
-          activeDataOnly = false;
-          break;
-        }
-        position += readLEB128(src, position)[1];
-        if (src[position++] !== 0x0b) {
-          activeDataOnly = false;
-          break;
-        }
-        const [dataLength, lengthSize] = readLEB128(src, position);
-        position += lengthSize + dataLength;
-        if (position > dataEnd) activeDataOnly = false;
-      }
-      if (activeDataOnly && position === dataEnd) {
-        const patched = new Uint8Array(src.length - dataSection.totalSize);
-        patched.set(src.subarray(0, dataSection.offset));
-        patched.set(src.subarray(dataSection.offset + dataSection.totalSize), dataSection.offset);
-        return patched.buffer;
-      }
-    }
   }
 
   if (!hasStartSection) return bytes;
@@ -5700,7 +5640,6 @@ export async function centralizedThreadWorkerMain(
         kernelThreadExitStatus = status;
       },
     );
-    bindGoThreadExit(module, kernelImports, memory, ptrWidth);
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (rawMode: number): number => {
         if (!threadInstance || !threadProcessContinuation) return -38; // ENOSYS

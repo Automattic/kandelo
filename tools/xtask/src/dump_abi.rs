@@ -3548,10 +3548,6 @@ fn render_ts_module() -> String {
         shared::process_memory::THREAD_SLOT_DECL_EXPORT
     ));
     out.push_str(&format!(
-        "export const PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT = {:?} as const;\n",
-        shared::process_memory::THREAD_SLOT_PREALLOCATE_EXPORT
-    ));
-    out.push_str(&format!(
         "export const PROCESS_MEMORY_LEGACY_MMAP_BASE = {} as const;\n",
         shared::process_memory::LEGACY_MMAP_BASE
     ));
@@ -7116,13 +7112,6 @@ fn host_adapter() -> Value {
 
     let mut m: JsonMap = BTreeMap::new();
     m.insert("version".into(), json!(shared::abi::HOST_ADAPTER_VERSION));
-    // This optional process export changes host placement policy, not the
-    // layout or requirements of programs that omit it. Keep the frozen
-    // program contract unchanged so ABI-56 executables remain admissible.
-    m.insert(
-        "thread_slot_preallocate_export".into(),
-        json!(shared::process_memory::THREAD_SLOT_PREALLOCATE_EXPORT),
-    );
     m.insert(
         "manifest".into(),
         Value::Object(manifest_json.into_iter().collect()),

@@ -10,11 +10,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 const payload = "hello from Kandelo"
+
+var initializedWord uint32 = 0x71b3de42
 
 func must(err error) {
 	if err != nil {
@@ -38,6 +41,38 @@ func checkRuntime() {
 	runtime.ReadMemStats(&after)
 	if after.NumGC <= before.NumGC || string(b[:len(payload)]) != payload {
 		panic("GC did not complete with the live goroutine result intact")
+	}
+}
+
+func checkThreadInitialization() {
+	const changed = 0x8437a12c
+	const threads = 8
+	atomic.StoreUint32(&initializedWord, changed)
+	// Start more runtime threads than the slot limit across several rounds.
+	// Returning while locked retires each worker so its slot can be reused.
+	for range 5 {
+		ready := make(chan struct{}, threads)
+		release := make(chan struct{})
+		done := make(chan struct{}, threads)
+		for range threads {
+			go func() {
+				runtime.LockOSThread()
+				ready <- struct{}{}
+				<-release
+				done <- struct{}{}
+			}()
+		}
+		for range threads {
+			<-ready
+		}
+		runtime.GC()
+		if atomic.LoadUint32(&initializedWord) != changed {
+			panic("thread startup reset initialized process data")
+		}
+		close(release)
+		for range threads {
+			<-done
+		}
 	}
 }
 
@@ -111,6 +146,7 @@ func main() {
 		os.Exit(23)
 	}
 	checkRuntime()
+	checkThreadInitialization()
 	fmt.Println("Go goroutines and GC OK")
 	checkFiles()
 	fmt.Println("Go file I/O OK")
