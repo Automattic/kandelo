@@ -55,8 +55,8 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 24, kernel group protocol 1 and mapping-description
-protocol 5 are separately versioned contracts.
+Program ABI 56, host adapter 25, kernel group protocol 1 and mapping-description
+protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
 normal SDK's executable version or memory namespace. The integrated implementation
@@ -222,10 +222,18 @@ The earlier byte-launch controls remain separate from the normal app path below.
 The app's programmatic `createLiveHost` also carries this trusted embedder
 option to its normal kernel boot. It rejects managed or persistent machines.
 Grouped KMS attachment selects the disposable bitmap display relay through the
-existing display API. The normal browser commands accept an explicit
-`--trusted-desktop-preview` build choice; image metadata and boot links cannot
-enable it. This integration is under validation and is not enabled in ordinary
-app builds.
+existing display API. The normal app's authored `browser-shared-desktop`
+gallery product declares Cage, Sway and Sway with SFWBar profiles. Selecting
+that bound product requests a temporary 512 MiB group with no additional task
+or process quota. The host checks product identity before granting the option;
+custom image metadata and arbitrary boot links cannot grant that capability.
+Ordinary products retain their ordinary backend, and the computer library
+remains available. The canonical `shared-desktop` package keeps compatible
+programs in individual lazy archives. This normal-gallery integration remains
+under validation; it does not establish shipping readiness for every profile.
+
+The explicit `--trusted-desktop-preview` browser command also remains available
+for the preserved partial-shell development preview below.
 
 Use the normal package-backed partial-shell command in
 [Normal partial-shell preview](#normal-partial-shell-preview). It opens Cage by

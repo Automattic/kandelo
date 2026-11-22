@@ -641,7 +641,7 @@ for (const deviceScaleFactor of [1, 2]) {
       test.setTimeout(300_000);
       // These are the normal resolver-owned archive bytes mounted by the
       // shell image at /usr/share/kandelo, not a test-only substitute config.
-      const zip = new Uint8Array(readFileSync(resolveBinary("programs/desktop-data/kandelo-desktop-data.zip")));
+      const zip = new Uint8Array(readFileSync(resolveBinary("programs/desktop-data/desktop-data.zip")));
       const entries = parseZipCentralDirectory(zip);
       const member = (path: string) => {
         const entry = entries.find(entry => entry.fileName === path);

@@ -53,7 +53,7 @@ it('shared-desktop-node-startup: runs the canonical prepared shell and reclaims 
       '  test -x "$p" || exit 17;',
       'done;',
       "printf 'shared-desktop-node-startup PASS\\n' > /tmp/desktop-startup-proof;",
-      '/bin/coreutils cat /tmp/desktop-startup-proof',
+      '/bin/cat /tmp/desktop-startup-proof',
     ].join('\n')], { uid: 1000, gid: 1000, cwd: '/home/maker',
       env: ['PATH=/usr/bin:/bin', 'HOME=/home/maker', 'USER=maker'], stdin: new Uint8Array() });
     expect(await child.exit, stderr).toBe(0);

@@ -325,7 +325,7 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
   {
     id: "desktop-data",
     dependency: "desktop-data",
-    resolverPath: "programs/desktop-data/kandelo-desktop-data.zip",
+    resolverPath: "programs/desktop-data/desktop-data.zip",
     mountPrefix: "/usr/share/kandelo/",
     requiredMember: "sway/config",
   },
