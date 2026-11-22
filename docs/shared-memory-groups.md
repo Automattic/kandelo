@@ -341,8 +341,15 @@ The maintained canonical consumers use the normal app with no global preview
 flag:
 
 ```sh
-scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npx playwright test --config playwright.shell-shared-desktop.config.ts --project chromium --project firefox --project webkit'
-scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npx playwright test --config playwright.canonical-shared-desktop.config.ts --project chromium'
+scripts/dev-shell.sh bash -c '
+  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+  unset KANDELO_TRUSTED_DESKTOP_PREVIEW_IMAGE KANDELO_GROUPED_SDK_PROBE
+  unset KANDELO_TEST_MACHINE_URLS KANDELO_TEST_PARTIAL_LIBRARY_MANIFEST
+  cd apps/browser-demos
+  npx playwright test --config playwright.shell-shared-desktop.config.ts --project chromium --project firefox --project webkit
+  npx playwright test --config playwright.canonical-shared-desktop.config.ts --project chromium
+'
 ```
 
 The first selection checks real Foot input, ordinary-file persistence across

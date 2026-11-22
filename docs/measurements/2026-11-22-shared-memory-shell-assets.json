@@ -1,0 +1,135 @@
+{
+  "sourceCommit": "e8bb698bc2ce73db44bb5d3babffaa082441da49",
+  "assetGroupSha256": "e50578d390eda95a373766f9041da33c8e43abd906a25abcf056b94b7f03ed37",
+  "zipCount": 20,
+  "catalogCount": 1,
+  "bytes": 42788690,
+  "artifacts": [
+    {
+      "bytes": 777896,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/bash.zip",
+      "sha256": "355ef9c6ec65514889bea85e850c49dc7d613590de3cce9f44c7b7d535917581"
+    },
+    {
+      "bytes": 783509,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/cage.zip",
+      "sha256": "c3617530a7da579bb4e6b295b662e68ea36216e16d5e9028f8a4b3da5de8915b"
+    },
+    {
+      "bytes": 694362,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/coreutils.zip",
+      "sha256": "e229fa7b38accd6f848b04af94cf0dbd94b524bc2cf4818b4b84ef23096748ae"
+    },
+    {
+      "bytes": 1142341,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/curl.zip",
+      "sha256": "df2654cc3dc8cb2000b1998975933a728f72a00182f672480509a324345d90e6"
+    },
+    {
+      "bytes": 1712399,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/foot.zip",
+      "sha256": "75454490a27bd6d85e1af53cfd811314eaf212c21f7cfde373f05d5f09c84d1c"
+    },
+    {
+      "bytes": 5462485,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/freeciv-client.zip",
+      "sha256": "b99b9dcd2b5fe59ce5e8bed11c01d2784f4ab1615a531cba5f314681734aa760"
+    },
+    {
+      "bytes": 2992685,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/freeciv-server.zip",
+      "sha256": "fce9aa3c8ebef80bc650ad2b36c3cec930c86776b4aad52b857eb26dfd523f69"
+    },
+    {
+      "bytes": 153654,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/grep.zip",
+      "sha256": "605479733ad56ed92fa040e711840d015c8966fa3f41d4d9c6a007bcd47a118e"
+    },
+    {
+      "bytes": 51960,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/login.zip",
+      "sha256": "24d43daccac19834211f3912cce37303163bb4c7f1a6f56a13f0ed3b6087d2b9"
+    },
+    {
+      "bytes": 42216,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/programs.json",
+      "sha256": "14365ee1d4b6da873b8740f0917aff16f502666b3a783b76c2475036075fb03f"
+    },
+    {
+      "bytes": 70318,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/ps.zip",
+      "sha256": "a49660623947a9d903a1368b98d5b7970358baceae852b5f110344f4d52aa48c"
+    },
+    {
+      "bytes": 8564348,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/scummvm-static.zip",
+      "sha256": "27a770928d6b9acf474b672ae94d832775845fe47ecfbe5119e5c08dbc5175d5"
+    },
+    {
+      "bytes": 130076,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/sed.zip",
+      "sha256": "e13c98af7f520feb5dd375b21c306148892e4b2d2b761493124ff27ef932b41d"
+    },
+    {
+      "bytes": 8716377,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/sfwbar.zip",
+      "sha256": "b0e75679803dd0a341fd27c4da146270ad03fdaeb4a6f69ec5bf07e4993e10ff"
+    },
+    {
+      "bytes": 4422797,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/sway.zip",
+      "sha256": "25ff357c0ea953f0929cf8f136c781f0a590d866f24c41dd628abb2551b44b42"
+    },
+    {
+      "bytes": 2281222,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/swaybar.zip",
+      "sha256": "4ca69140f779d405820457bb46ad36d9d893823b9b6fbcfe9ceef45a7d31e0a8"
+    },
+    {
+      "bytes": 1603011,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/swaybg.zip",
+      "sha256": "26d3896f4b0facd49998110904e9c9893dcafe42ee36786fc882fc37bb3f14ed"
+    },
+    {
+      "bytes": 97405,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/swaymsg.zip",
+      "sha256": "d5c9d6f176e47d26690018aab2e3391223ee0f29beb5c259ad08b76715c88ba5"
+    },
+    {
+      "bytes": 2847855,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/swaynag.zip",
+      "sha256": "2459c702551c59a164c0c47c093069f05e7da009bee66b570152769fdd59cc3e"
+    },
+    {
+      "bytes": 150949,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/syslogd.zip",
+      "sha256": "78d68369a967589be6b68b9c811ea4aa8dc83db93cceb7bc36895af4a3ee8534"
+    },
+    {
+      "bytes": 90825,
+      "group": "programs",
+      "path": "assets/programs/wasm32/shared-desktop-programs/unzip.zip",
+      "sha256": "0be79bb3271d1d4106aaea5af80fe6e499c996cf2200239418462d34ca1218e6"
+    }
+  ]
+}

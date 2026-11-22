@@ -491,9 +491,6 @@ function maxVfsByteLengthForProduct(
     : SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 }
 
-/** Only an authored, bound product opts into trusted shared memory. An image's
- * demo metadata or a custom URL cannot request this host capability. */
-
 /**
  * HOST POLICY ceilings clamped over `runtime.requests` in `demo.json`. The
  * image REQUESTS; the host decides. `demo-config.ts` already rejects values
