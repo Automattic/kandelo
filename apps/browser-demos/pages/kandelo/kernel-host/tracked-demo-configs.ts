@@ -27,8 +27,6 @@ import {
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
-import sharedDesktopSource
-  from "../../../../../images/vfs/config/shared-desktop-demo.json?raw";
 import shellDemoSource
   from "../../../../../packages/registry/shell/source-rootfs-shell-demo.json?raw";
 import shellDemoProfilesSource
@@ -109,7 +107,6 @@ function composeShellDemoConfig(
 export const TRACKED_DEMO_CONFIG_BY_PRODUCT: Readonly<
   Record<string, KandeloDemoConfig>
 > = Object.freeze({
-  "browser-shared-desktop": parseTracked(sharedDesktopSource, "shared-desktop-demo.json"),
   "browser-web-stack": parseTracked(webStackSource, "web-stack-vfs/demo.json"),
   "browser-wordpress-family": parseTracked(wordpressFamilySource, "wordpress-family-vfs/demo.json"),
   "browser-redis": parseTracked(redisDemoSource, "redis-demo.json"),

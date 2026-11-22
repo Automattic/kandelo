@@ -50,7 +50,3 @@ load = "lazy"
 [[products]]
 id = "browser-redis"
 load = "lazy"
-
-[[products]]
-id = "browser-shared-desktop"
-load = "lazy"

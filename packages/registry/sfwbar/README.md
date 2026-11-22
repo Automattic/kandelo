@@ -101,3 +101,5 @@ so its menus should receive keys either way; Sway has no such rule. The
 rebuilt panel's menu keyboard checks have not run yet. `apps/browser-demos/test/kandelo-labwc.spec.ts`
 waits for the painted panel before its first keystroke and requires that
 input to reach Foot.
+
+The desktop ScummVM entry uses `scummvm-static` with `TryExec` so the shared-memory desktop does not launch the unsupported dynamic side-module engine. The ordinary shell’s separate `scummvm` command remains unchanged.

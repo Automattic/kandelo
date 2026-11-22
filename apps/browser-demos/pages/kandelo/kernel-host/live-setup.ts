@@ -172,6 +172,7 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
 export const PARTIAL_IMAGE = partialImageModule as {
   imageUrl: string;
   manifest: {
+    productId: string;
     image: string;
     sha256: string;
     packages: string[];
@@ -183,8 +184,6 @@ export const PARTIAL_IMAGE = partialImageModule as {
 
 
 const OPTIONAL_BINARY_URLS = {
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/shared-desktop.vfs.zst", { query: "?url", import: "default" }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/shared-desktop.vfs.zst", { query: "?url", import: "default" }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/web-stack-vfs.vfs.zst", { query: "?url", import: "default" }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/web-stack-vfs.vfs.zst", { query: "?url", import: "default" }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wordpress-family-vfs.vfs.zst", { query: "?url", import: "default" }),
@@ -366,7 +365,6 @@ class RetryPreviousPersistenceGeneration extends Error {
 type PagesVfsProductId =
   | "platform-rootfs"
   | "browser-main-shell"
-  | "browser-shared-desktop"
   | "browser-web-stack"
   | "browser-wordpress-family"
   | "browser-nginx"
@@ -404,10 +402,6 @@ type VfsProductSource =
   };
 
 const VFS_PRODUCTS: Record<GalleryProductId, VfsProductSource> = {
-  "browser-shared-desktop": {
-    kind: "optional-binary", label: "shared-desktop.vfs.zst", productId: "browser-shared-desktop",
-    relPaths: ["../../../../../local-binaries/programs/wasm32/shared-desktop.vfs.zst", "../../../../../binaries/programs/wasm32/shared-desktop.vfs.zst"],
-  },
   "browser-web-stack": {
     kind: "optional-binary", label: "web-stack-vfs.vfs.zst", productId: "browser-web-stack",
     relPaths: ["../../../../../local-binaries/programs/wasm32/web-stack-vfs.vfs.zst", "../../../../../binaries/programs/wasm32/web-stack-vfs.vfs.zst"],
@@ -499,9 +493,6 @@ function maxVfsByteLengthForProduct(
 
 /** Only an authored, bound product opts into trusted shared memory. An image's
  * demo metadata or a custom URL cannot request this host capability. */
-function isTrustedDesktopProduct(productId: GalleryProductId | null): boolean {
-  return productId === "browser-shared-desktop";
-}
 
 /**
  * HOST POLICY ceilings clamped over `runtime.requests` in `demo.json`. The
@@ -783,13 +774,7 @@ async function createLiveHostWithLease(
       },
     };
   }
-  const initialProduct = computerStore === null ? null : await bindVfsProduct(
-    profileForDescriptor(initialDescriptor, opts.fb, currentComputer?.profileId ?? opts.profile ?? null));
-  const initialTrustedDesktop = isTrustedDesktopProduct(initialProduct?.productId ?? null);
-  if (initialTrustedDesktop && (currentComputer !== null || opts.experimentalPersistenceName)) {
-    throw new Error("The trusted desktop preview is temporary; persistent shared-memory computers are unsupported");
-  }
-  if (!initialTrustedDesktop && computerStore !== null && currentComputer === null && !initialDescriptor.boot.inputs?.length
+  if (computerStore !== null && currentComputer === null && !initialDescriptor.boot.inputs?.length
     && initialDescriptor.boot.parameters?.runScript === undefined) {
     currentComputer = await computerStore.create(initialDescriptor, DEFAULT_COMPUTER_RETENTION, opts.profile ?? null);
   }
@@ -875,12 +860,6 @@ async function createLiveHostWithLease(
 
   async function createComputer(descriptor: BootDescriptor, retention: ComputerRetention = DEFAULT_COMPUTER_RETENTION, title?: string): Promise<void> {
     if (computerStore === null) throw new Error("Computer library is unavailable");
-    const profile = await bindVfsProduct(profileForDescriptor(descriptor, "none", null));
-    if (isTrustedDesktopProduct(profile.productId)) {
-      if (retention === "saved") throw new Error("The trusted desktop preview cannot be saved; persistent shared memory is unsupported");
-      await startBoot(host, profile, descriptor, false, false, null);
-      return;
-    }
     const computer = await computerStore.create(descriptor, retention, descriptor.id, title);
     if (retention === "saved") requestStorageProtection();
     await activateComputer(computer, undefined, false);
@@ -1758,11 +1737,15 @@ async function bootProfile(
   // and the host's capacity policy depends on the same answer.
   profile = await bindVfsProduct(profile);
   assertCurrent();
-  if (isTrustedDesktopProduct(profile.productId)) {
-    if (experimentalPersistenceName !== undefined) {
-      throw new Error("The trusted desktop preview is temporary; persistent shared memory is unsupported");
-    }
-    experimentalMemoryGroup ??= { maximumPages: 8192 };
+
+  // Authored shell images may select SDK alternatives per desktop launch.
+  // Ordinary roots keep their normal backend and filesystem persistence policy.
+  if (profile.productId === "browser-main-shell"
+      || (isPartialImageUrl(profile.vfsUrl) && PARTIAL_IMAGE?.manifest.productId === "browser-main-shell")) {
+    experimentalMemoryGroup ??= { maximumPages: 8192, preparedPrograms: {
+      catalogPath: "/usr/share/kandelo/shared-desktop/programs.json",
+      artifactRoot: "/usr/libexec/kandelo/shared-desktop/",
+    } };
   }
 
   const persistence = experimentalPersistenceName === undefined
@@ -2227,6 +2210,11 @@ async function bootProfile(
       } });
     setWebMcpSession(host, agentIdentity());
     const terminalPolicy = experimentalTerminalSessionPolicy(terminalSession);
+    if (!deferActivityLaunch && machine.runtime.executionBackend === "memory-group") {
+      if (!experimentalMemoryGroup) throw new Error("This host does not allow the requested memory-group backend");
+      terminalPolicy.initial.executionBackend = "memory-group";
+      if (terminalPolicy.afterExit) terminalPolicy.afterExit.executionBackend = "memory-group";
+    }
     const runScriptId = requestedDescriptor.boot.parameters?.runScript;
     const scriptInput = typeof runScriptId === "string"
       ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)
@@ -3225,7 +3213,7 @@ function localProductArtifactExists(source: VfsProductSource): boolean {
 
 function localProductBuildCommand(source: VfsProductSource): string | undefined {
   if (source.kind === "url") return undefined;
-  if (source.productId === "browser-main-shell" || source.productId === "browser-shared-desktop") return "./run.sh local-build";
+  if (source.productId === "browser-main-shell") return "./run.sh local-build";
   return source.kind === "optional-demo"
     ? "./run.sh local-build"
     : "./run.sh build programs";

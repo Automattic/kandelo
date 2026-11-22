@@ -6523,11 +6523,12 @@ pub(crate) fn acquire_group_read_lease(handle: i64) -> Result<(), Errno> {
     let index = file_handle_to_inode(handle)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
-        // Existing writable/shared replicas have no common backing. Refuse
-        // admission rather than silently detach their bytes. Persistent
-        // writable files remain outside this preview's supported surface.
-        if fixed_persistence_enabled() || inode.persistent_size.is_some()
-            || !matches!(inode.kind, InodeKind::BaseRegular { .. } | InodeKind::Regular(_) | InodeKind::LazyMember { .. })
+        // The lease freezes this exact inode, including journal-backed files:
+        // write, truncate and writable shared admission all reject it until
+        // the final lease retires. Existing mappings cannot be frozen this
+        // way, so refuse admission rather than detach their live bytes.
+        // This does not enable writable persistent shared mappings.
+        if !matches!(inode.kind, InodeKind::BaseRegular { .. } | InodeKind::Regular(_) | InodeKind::LazyMember { .. } | InodeKind::PersistentRegular)
             || inode.group_read_leases == 0 && inode.map_pins != 1 {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -9649,6 +9650,68 @@ mod tests {
         let truncated = open(b"/lazy-read-lease", O_RDWR | O_TRUNC, 0, 0, 0).unwrap();
         assert_eq!(size(truncated), Ok(0));
         release_handle(truncated); release_handle(handle);
+    }
+
+    #[test]
+    fn grouped_read_lease_freezes_persistent_content_until_the_last_mapping_retires() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_described().to_vec();
+        let digest: [u8; 32] = Sha256::digest(&image).into();
+        for resizable in [false, true] {
+            reset();
+            let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+            let mut source = image_host(&image);
+            load_image(image.len() as u64, &mut source).unwrap();
+            if resizable {
+                enable_resizable_persistence(Box::new(storage.clone()), digest, &mut source).unwrap();
+            } else {
+                enable_fixed_persistence(Box::new(storage.clone()), digest, &mut source).unwrap();
+            }
+            let writer = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+            assert_eq!(write(writer, 6, b"KIFS", &mut source), Ok(4));
+            let reader = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+            pin_mapping(reader).unwrap();
+            acquire_group_read_lease(reader).unwrap();
+            pin_mapping(reader).unwrap();
+            acquire_group_read_lease(reader).unwrap();
+            release_handle(reader);
+            let mut bytes = [0; 11];
+            assert_eq!(read(reader, 0, &mut bytes, &mut source), Ok(11));
+            assert_eq!(&bytes, b"hello KIFS\n");
+            assert_eq!(write(writer, 0, b"x", &mut source), Err(Errno::EOPNOTSUPP));
+            assert_eq!(truncate_handle(writer, 0, &mut source), Err(Errno::EOPNOTSUPP));
+            assert_eq!(open(b"/hello.txt", O_RDWR | O_TRUNC, 0, 0, 0),
+                Err(if resizable { Errno::EOPNOTSUPP } else { Errno::EROFS }));
+            release_group_read_lease(reader);
+            assert!(unpin_mapping(reader));
+            assert_eq!(write(writer, 0, b"x", &mut source), Err(Errno::EOPNOTSUPP));
+            release_group_read_lease(reader);
+            assert!(unpin_mapping(reader));
+            assert_eq!(write(writer, 6, b"new!", &mut source), Ok(4));
+            release_handle(writer);
+            if resizable {
+                let fresh = open(b"/fresh", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+                assert_eq!(write(fresh, 0, b"created", &mut source), Ok(7));
+                pin_mapping(fresh).unwrap();
+                acquire_group_read_lease(fresh).unwrap();
+                assert_eq!(write(fresh, 0, b"x", &mut source), Err(Errno::EOPNOTSUPP));
+                release_group_read_lease(fresh);
+                assert!(unpin_mapping(fresh));
+                release_handle(fresh);
+            }
+            sync_persistence().unwrap();
+            reset();
+            load_image(image.len() as u64, &mut source).unwrap();
+            if resizable {
+                enable_resizable_persistence(Box::new(storage), digest, &mut source).unwrap();
+            } else {
+                enable_fixed_persistence(Box::new(storage), digest, &mut source).unwrap();
+            }
+            let reopened = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+            assert_eq!(read(reopened, 0, &mut bytes, &mut source), Ok(11));
+            assert_eq!(&bytes, b"hello new!\n");
+            release_handle(reopened);
+        }
     }
 
     struct ReservationObservedStorage {

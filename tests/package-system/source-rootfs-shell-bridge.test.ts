@@ -14,7 +14,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { zipSync } from "fflate";
-import { afterEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
@@ -71,6 +71,16 @@ import {
   assertSourceRootfsShellImage,
   assertSourceRootfsShellMetadata,
 } from "../../scripts/assert-source-rootfs-shell-composition";
+
+import { sharedDesktopPackagePrograms, SHARED_DESKTOP_PACKAGE } from "../../images/vfs/scripts/shared-desktop-package-contract";
+import { prepareSharedDesktopSdkFixtures, fixtureDigest, type SdkImageFixture } from "./support/shared-desktop-sdk-fixtures";
+let sdkFixtures: Map<string, SdkImageFixture>;
+beforeAll(() => {
+  // Build the genuine SDK closure and initialize the native image reader before
+  // per-case deadlines; a cold checkout can spend minutes preparing these tools.
+  sdkFixtures = prepareSharedDesktopSdkFixtures();
+  KandeloImageFs.create().reset();
+}, 600_000);
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 const canonicalPackageRoot = join(repoRoot, "packages/registry/shell");
@@ -156,9 +166,12 @@ async function writeRootfs(
   writeVfsBinary(
     fs,
     "/bin/login",
-    new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
+    sdkFixtures.get("login")!.ordinary,
     0o4755,
   );
+  // ps is supplied by the real base rootfs, rather than the shell's lazy
+  // overlay table. Use its SDK fixture source for closure verification.
+  writeVfsBinary(fs, "/bin/ps", sdkFixtures.get("ps")!.ordinary, 0o755);
   writeVfsBinary(
     fs,
     EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -185,8 +198,9 @@ async function writeRootfs(
     fs.registerLazyFile(
       spec.vfsPath,
       `binaries/${spec.resolverPath.replace("programs/", "programs/wasm32/")}`,
-      spec.id === "grep" ? 412_000 : 200_000 + spec.id.length,
+      sdkFixtures.has(spec.id) ? sdkFixtures.get(spec.id)!.ordinary.length : 200_000 + spec.id.length,
       0o755,
+      sdkFixtures.has(spec.id) ? fixtureDigest(sdkFixtures.get(spec.id)!.ordinary) : undefined,
     );
   }
   const lazyTreeEntry: ZipEntry = {
@@ -274,7 +288,7 @@ function fixturePaths(root: string) {
   );
   writeFileSync(
     bashPath,
-    new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
+    sdkFixtures.get("bash")!.ordinary,
   );
   writeFileSync(
     desktopDataPath,
@@ -330,7 +344,8 @@ function fixturePaths(root: string) {
         : spec.resolverPath.split("/").at(-1)!,
     );
     mkdirSync(dirname(artifact), { recursive: true });
-    writeFileSync(artifact, `${spec.id} fixture`);
+    const sdk = sharedDesktopPackagePrograms.find(row => row.guestPath === spec.vfsPath);
+    writeFileSync(artifact, sdk ? sdkFixtures.get(sdk.id)!.ordinary : `${spec.id} fixture`);
   }
   for (const name of SHELL_SESSION_PACKAGES) {
     writeFileSync(join(dependencyRoots.get(name)!, "sessions.json"), readFileSync(join(repoRoot, "packages/registry", name, "sessions.json")));
@@ -354,6 +369,22 @@ function fixturePaths(root: string) {
       }),
     );
   }
+  // The source/implementation closure is validated by the canonical composer.
+  // Supply actual SDK-produced pairs even though these tests never execute them.
+  const preparedRoot = dependencyRoots.get(SHARED_DESKTOP_PACKAGE)!;
+  const records = sharedDesktopPackagePrograms.map(row => {
+    const fixture = sdkFixtures.get(row.id)!;
+    writeFileSync(join(preparedRoot, row.id + ".zip"), fixture.zip);
+    return { ...row, ordinarySha256: fixtureDigest(fixture.ordinary), groupedSha256: fixtureDigest(fixture.grouped),
+      bytes: fixture.grouped.length, archiveBytes: fixture.zip.length, archiveSha256: fixtureDigest(fixture.zip) };
+  });
+  writeFileSync(join(preparedRoot, "programs.json"), JSON.stringify({ schema: 1, memoryGroup: "trusted-v1", programs: records }));
+  const freeciv = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.id === "freeciv")!;
+  writeFileSync(join(dependencyRoots.get(freeciv.dependency)!, basename(freeciv.resolverPath)), zipSync({
+    "bin/freeciv-play": [new TextEncoder().encode("freeciv executable"), { os: 3, attrs: 0o100755 << 16 }],
+    "libexec/freeciv/client.wasm": [sdkFixtures.get("freeciv-client")!.ordinary, { os: 3, attrs: 0o100755 << 16 }],
+    "libexec/freeciv/server.wasm": [sdkFixtures.get("freeciv-server")!.ordinary, { os: 3, attrs: 0o100755 << 16 }],
+  }));
   // WHY: populateTerminfoDatabase unpacks this eagerly (unlike the lazy
   // archives above) and requires its one declared entry unconditionally.
   writeFileSync(
@@ -869,7 +900,7 @@ describe("canonical source-rootfs shell", () => {
       composed.files.find((file) => file.path === "/bin/grep"),
     ).toMatchObject({
       uri: "binaries/programs/wasm32/grep.wasm",
-      size: 412_000,
+      size: sdkFixtures.get("grep")!.ordinary.length,
     });
     // WHY: every program the shell adds is a lazy file the image itself
     // declares -- path, size, mode and package-relative URL -- so it is
@@ -1248,13 +1279,14 @@ describe("canonical source-rootfs shell", () => {
 
   it("keeps native Swaybar separate from the explicit panel sessions", () => {
     const source = JSON.parse(readFileSync(join(repoRoot,
-      "images/vfs/config/shared-desktop-demo.json"), "utf8"));
+      "packages/registry/shell/source-rootfs-shell-demo-profiles.json"), "utf8"));
     const ordinary = JSON.parse(readFileSync(join(repoRoot,
       "packages/registry/shell/source-rootfs-shell-demo.json"), "utf8"));
     for (const id of ["cage", "sway", "sway-sfwbar", "wayland", "labwc", "omarchy"]) {
       expect(ordinary.profiles[id]).toBeUndefined();
     }
-    expect(Object.keys(source.profiles).sort()).toEqual(["cage", "sway", "sway-sfwbar"]);
+    expect(Object.keys(source.profiles)).toEqual(expect.arrayContaining(["cage", "sway", "sway-sfwbar"]));
+    for (const id of ["cage", "sway", "sway-sfwbar"]) expect(source.profiles[id].runtime.executionBackend).toBe("memory-group");
     const sway = source.profiles.sway.init.shellCommand;
     expect(sway).toContain("/usr/bin/sway -c /usr/share/kandelo/sway/config");
     expect(sway).not.toContain("sfwbar");
@@ -1618,7 +1650,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, dos-games, ffmpeg-fbdev, ffmpeg-video, ffplay, freeciv, love, modeset, quake, scummvm",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: cage, doom, dos-games, ffmpeg-fbdev, ffmpeg-video, ffplay, freeciv, love, modeset, quake, scummvm, sway, sway-sfwbar",
     );
   });
 

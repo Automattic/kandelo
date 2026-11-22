@@ -1905,6 +1905,7 @@ const LOGIN_SESSION_POLICY = {
 } satisfies TerminalSessionPolicy;
 
 type TerminalSpawn = {
+  executionBackend?: "ordinary" | "memory-group";
   pid: number;
   programPath: string;
   argv: string[];
@@ -1938,6 +1939,7 @@ function terminalSessionHarness(
       const pid = nextPid++;
       spawns.push({
         pid,
+        executionBackend: options?.executionBackend,
         programPath,
         argv: argv.slice(),
         uid: options?.uid,
@@ -2013,6 +2015,20 @@ async function settleTerminalSessionWork(): Promise<void> {
 describe("LiveKernelHost: supervised terminal sessions", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("selects grouped execution only for an explicit fresh terminal and keeps it across restart", async () => {
+    vi.useFakeTimers();
+    const harness = terminalSessionHarness();
+    await harness.host.attachPty("/dev/pts/0");
+    await harness.host.attachPty("/dev/pts/1", undefined, undefined, { executionBackend: "memory-group" });
+    expect(harness.spawns.map(s => s.executionBackend)).toEqual([undefined, "memory-group"]);
+    await expect(harness.host.attachPty("/dev/pts/0", undefined, undefined, { executionBackend: "memory-group" })).rejects.toThrow("cannot change");
+    harness.exit(2);
+    await settleTerminalSessionWork();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(harness.spawns[2].executionBackend).toBe("memory-group");
+    harness.host.detachKernel();
   });
 
   it("autologins once per logical PTY and UI reattachment starts no process", async () => {

@@ -25,6 +25,7 @@ export interface SessionWebLaunch {
   path: string;
 }
 export interface SessionProgramLaunch {
+  executionBackend?: "ordinary" | "memory-group";
   executable: string;
   args: SessionArgument[];
   cwd: string;
@@ -173,7 +174,8 @@ function launch(value: unknown, available: Map<string, SessionField>, dependenci
     path(command.path);
     return;
   }
-  keys(command, ["executable", "args", "cwd", "requires", "surface", "display", "displayScale"]);
+  keys(command, ["executable", "args", "cwd", "requires", "surface", "display", "displayScale", "executionBackend"]);
+  if (command.executionBackend !== undefined && command.executionBackend !== "ordinary" && command.executionBackend !== "memory-group") fail("invalid execution backend");
   if (command.displayScale !== undefined && (command.display !== "kms" || typeof command.displayScale !== "number" || !Number.isFinite(command.displayScale) || command.displayScale < 0.5 || command.displayScale > 4)) fail("invalid display scale");
   if (command.surface !== "terminal" && command.surface !== "display") fail("invalid launch surface");
   if (command.display !== undefined && (command.surface !== "display" || !["framebuffer", "kms"].includes(command.display as string))) fail("invalid display requirement");

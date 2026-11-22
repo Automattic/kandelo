@@ -62,15 +62,15 @@
       "profile": "love"
     },
     {
-      "product": "browser-shared-desktop",
+      "product": "browser-main-shell",
       "profile": "cage"
     },
     {
-      "product": "browser-shared-desktop",
+      "product": "browser-main-shell",
       "profile": "sway"
     },
     {
-      "product": "browser-shared-desktop",
+      "product": "browser-main-shell",
       "profile": "sway-sfwbar"
     },
     {

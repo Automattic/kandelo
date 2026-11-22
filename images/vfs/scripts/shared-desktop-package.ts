@@ -13,7 +13,7 @@ import type { ShellLazyArchiveResolver } from './shell-lazy-archives';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 export interface SharedDesktopPackageActivation {
-  schema: 1; package: string; programs: { requested: string; path: string; ordinarySha256: string; groupedSha256: string; uri: string; bytes: number; artifactPath: string; aliases: string[] }[];
+  schema: 1; package: string; selection?: "variants"; programs: { requested: string; path: string; ordinarySha256: string; groupedSha256: string; uri: string; bytes: number; artifactPath: string; aliases: string[] }[];
 }
 
 /** Resolve a file's actual path while retaining its original symlink topology. */
@@ -42,7 +42,7 @@ function regularAliases(fs: KandeloImageFs, inode: number | bigint): string[] {
   return aliases;
 }
 
-export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact: ShellLazyArchiveResolver): SharedDesktopPackageActivation {
+export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact: ShellLazyArchiveResolver, replaceOrdinaryPrograms = true): SharedDesktopPackageActivation {
   const manifest = JSON.parse(readFileSync(resolveArtifact(`programs/${SHARED_DESKTOP_PACKAGE}/programs.json`, SHARED_DESKTOP_PACKAGE), 'utf8'));
   if (manifest.schema !== 1 || manifest.memoryGroup !== 'trusted-v1' || !Array.isArray(manifest.programs)
       || manifest.programs.length !== sharedDesktopPackagePrograms.length) throw Error('Invalid shared desktop SDK package manifest');
@@ -85,6 +85,7 @@ export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact
     return { row, path, preparedPath, stat, backing, archive, aliases, ordinarySha256, groupedSha256: record.groupedSha256 as string };
   });
   for (const { path, preparedPath, stat, aliases } of plan) {
+    if (!replaceOrdinaryPrograms) { fs.chmod(preparedPath, 0o755); continue; }
     for (const alias of aliases) fs.unlink(alias);
     // One real inode owns the prepared bytes, including the package path.
     // Separate deferred inodes could materialize the same program twice.
@@ -93,7 +94,7 @@ export function activateSharedDesktopPackage(fs: KandeloImageFs, resolveArtifact
     fs.chmod(path, stat.mode & 0o7777);
     for (const alias of aliases) if (alias !== path) fs.link(path, alias);
   }
-  const activation: SharedDesktopPackageActivation = { schema: 1, package: SHARED_DESKTOP_PACKAGE, programs: plan.map(entry => ({
+  const activation: SharedDesktopPackageActivation = { schema: 1, package: SHARED_DESKTOP_PACKAGE, ...(replaceOrdinaryPrograms ? {} : { selection: "variants" as const }), programs: plan.map(entry => ({
     requested: entry.row.requested ?? entry.row.guestPath, path: entry.path, ordinarySha256: entry.ordinarySha256, groupedSha256: entry.groupedSha256,
     uri: entry.archive.uri, bytes: entry.backing.size, artifactPath: entry.preparedPath, aliases: entry.aliases,
   })) };
@@ -105,6 +106,13 @@ export function assertSharedDesktopPackageActivation(fs: KandeloImageFs, activat
   const lazy = fs.lazyEntries();
   for (const program of activation.programs) {
     const stat = fs.stat(program.path);
+    if (activation.selection === "variants") {
+      const variant = fs.stat(program.artifactPath);
+      if (BigInt(variant.ino) === BigInt(stat.ino) || (variant.mode & 0o111) === 0) throw Error("SDK variant replaced or lost execute permission: " + program.path);
+      const source = lazy.files.find(file => file.path === program.path) ?? lazy.files.find(file => file.ino === BigInt(stat.ino));
+      if (source && source.archiveId === 0 && source.digest.some(Boolean) && Buffer.from(source.digest).toString("hex") !== program.ordinarySha256) throw Error("Ordinary program identity changed: " + program.path);
+      continue;
+    }
     if (fs.stat(program.artifactPath).ino !== stat.ino) throw Error("Shared SDK package path duplicates program storage: " + program.path);
     for (const path of program.aliases) {
       const alias = fs.stat(path), entry = lazy.files.find(file => file.path === path) ?? lazy.files.find(file => file.ino === BigInt(alias.ino));

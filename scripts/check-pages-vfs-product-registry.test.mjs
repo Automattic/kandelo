@@ -385,11 +385,11 @@ test("keeps canonical resolution ahead of legacy fallback for every Pages produc
       // Move the app's first canonical resolver after its ordinary resolvers.
       // Assert each edit applied: a no-op mutation would leave this test
       // passing only because nothing changed.
-      const canonical = "    plugins: [\n      vfsProductsPlugin(base),\n";
+      const canonical = "      vfsProductsPlugin(base),\n";
       const ordinary =
         "      resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),\n";
       assert.ok(contents.includes(canonical), "vite.config.ts canonical plugin anchor moved");
-      const withoutCanonical = contents.replace(canonical, "    plugins: [\n");
+      const withoutCanonical = contents.replace(canonical, "");
       assert.ok(withoutCanonical.includes(ordinary), "vite.config.ts resolver anchor moved");
       return withoutCanonical.replace(
         ordinary,

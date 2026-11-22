@@ -14,6 +14,7 @@ import {
   parseKandeloDemoConfig,
   resolveDemoDockActions,
   resolveDemoInit,
+  resolveDemoRuntime,
   validateKandeloDemoConfig,
   type DemoDockMenuEntryConfig,
   type KandeloDemoConfig,
@@ -284,6 +285,21 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  "cage": {
+    executable: "/usr/bin/cage",
+    command: "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini",
+    executionBackend: "memory-group",
+  },
+  "sway": {
+    executable: "/usr/bin/sway",
+    command: "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /usr/share/kandelo/sway/config",
+    executionBackend: "memory-group",
+  },
+  "sway-sfwbar": {
+    executable: "/usr/bin/sway",
+    command: "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /etc/xdg/sfwbar/sway.config",
+    executionBackend: "memory-group",
+  },
   "dos-games": {
     executable: "/usr/bin/dos-play",
     command: "/usr/bin/dos-play keen1",
@@ -923,6 +939,11 @@ export function composeSourceRootfsDemoConfig(
       "source-rootfs demo profile overlay must contain exactly the " +
         `image-owned profiles: ${expectedProfileIds.join(", ")}`,
     );
+  }
+  for (const [id, expected] of Object.entries(SOURCE_ROOTFS_DEMO_COMMANDS)) {
+    if ("executionBackend" in expected && resolveDemoRuntime(overlay, id).executionBackend !== expected.executionBackend) {
+      throw new Error(`source-rootfs desktop profile ${id} must request the memory-group backend`);
+    }
   }
   const composedProfiles = { ...baseProfiles };
   for (const profileId of Object.keys(overlayProfiles)) {
@@ -1743,9 +1764,9 @@ export async function buildSourceRootfsShellImage(
   // The rootfs owns its own eager programs (login); only what this composer
   // adds is held to the lazy default.
   const sourceEagerPrograms = eagerWasmPrograms(fs);
-  const useSharedDesktop = selection.kind === "desktop"
-    || (selection.kind === "partial" && includes(SHARED_DESKTOP_PACKAGE));
-  if (useSharedDesktop) {
+  const useSharedDesktop = selection.kind === "desktop";
+  const installSharedVariants = includes(SHARED_DESKTOP_PACKAGE);
+  if (installSharedVariants) {
     const missing = SHARED_DESKTOP_IMAGE_PACKAGES.filter(pkg => !includes(pkg));
     if (missing.length) throw Error('Shared SDK artifacts need their ordinary image packages: ' + missing.join(', ') + '. Build: ' + SHARED_DESKTOP_PARTIAL_COMMAND);
   }
@@ -1988,7 +2009,7 @@ export async function buildSourceRootfsShellImage(
   // Checked before saving so a rejected composition writes no output.
   // Normal composition and source-preservation checks above run first. Only
   // an explicitly selected desktop composition may replace the validated executable closure.
-  const sharedDesktop = useSharedDesktop ? activateSharedDesktopPackage(fs, inputs.resolveArtifact) : null;
+  const sharedDesktop = installSharedVariants ? activateSharedDesktopPackage(fs, inputs.resolveArtifact, useSharedDesktop) : null;
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
   // WHY: every visitor downloads and decompresses the eager content before

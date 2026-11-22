@@ -436,6 +436,7 @@ export interface KernelLike {
     programPath: string,
     argv: string[],
     options?: {
+      executionBackend?: "ordinary" | "memory-group";
       ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
@@ -626,6 +627,10 @@ export interface DmesgProgress {
   status: "loading" | "complete" | "error";
 }
 
+export interface PtyLaunchOptions {
+  executionBackend?: "ordinary" | "memory-group";
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -646,6 +651,7 @@ export interface PtyHandle {
 }
 
 export interface TerminalProgram {
+  executionBackend?: "ordinary" | "memory-group";
   programPath: string;
   programBytes?: ArrayBuffer;
   argv: string[];
@@ -1044,7 +1050,7 @@ export interface KernelHost {
    * descendant then belong to that family. A normal UI attach does not own
    * or cancel the terminal merely by opening/closing a rendering handle.
    */
-  attachPty(path?: string, opts?: PtySize, ownedJob?: { id: string; timeoutMs: number }): Promise<PtyHandle>;
+  attachPty(path?: string, opts?: PtySize, ownedJob?: { id: string; timeoutMs: number }, launch?: PtyLaunchOptions): Promise<PtyHandle>;
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
@@ -1254,6 +1260,7 @@ class ListenerSet<T> {
 }
 
 interface LivePtySession {
+  executionBackend?: "ordinary" | "memory-group";
   path: string;
   pid: number;
   logicalGeneration: number;
@@ -1399,6 +1406,7 @@ export interface LiveKernelHostOptions {
    * to bash; pages that ship dash or another shell should override.
    */
   shell?: {
+    executionBackend?: "ordinary" | "memory-group";
     programPath?: string;
     /**
      * Fallback bytes for kernels that cannot spawn programPath from their VFS.
@@ -2187,6 +2195,7 @@ export class LiveKernelHost implements KernelHost {
     path: string = "/dev/pts/0",
     opts?: PtySize,
     ownedJob?: { id: string; timeoutMs: number },
+    launch?: PtyLaunchOptions,
   ): Promise<PtyHandle> {
     if (!this.kernel) {
       throw new Error(
@@ -2212,6 +2221,7 @@ export class LiveKernelHost implements KernelHost {
         this.terminalSessions,
         opts,
         ownedJob,
+        launch,
       ),
     );
 
@@ -2301,8 +2311,10 @@ export class LiveKernelHost implements KernelHost {
     policy: TerminalSessionPolicy | undefined,
     opts: PtySize | undefined,
     ownedJob?: { id: string; timeoutMs: number },
+    launch?: PtyLaunchOptions,
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
+    if (session && launch?.executionBackend !== undefined && session.executionBackend !== launch.executionBackend) throw new Error("A live terminal cannot change execution backend");
     if (ownedJob && session) throw new Error("An owned terminal must use a fresh PTY path");
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
       if (session.supervised) {
@@ -2324,6 +2336,7 @@ export class LiveKernelHost implements KernelHost {
 
     if (!session) {
       session = {
+        executionBackend: launch?.executionBackend,
         path: sessionKey,
         pid: 0,
         logicalGeneration: 1,
@@ -2381,6 +2394,7 @@ export class LiveKernelHost implements KernelHost {
     let exitPromise: Promise<number>;
     if (program.programPath && kernel.spawnFromVfs) {
       const spawned = await kernel.spawnFromVfs(program.programPath, program.argv, {
+        executionBackend: session.executionBackend ?? program.executionBackend,
         pty: true,
         ...(ownedJob ? { ownedJob } : {}),
         env: program.env,
@@ -2393,7 +2407,7 @@ export class LiveKernelHost implements KernelHost {
       pid = spawned.pid;
       exitPromise = spawned.exit;
     } else {
-      if (ownedJob) throw new Error("Owned terminals require VFS process-family support");
+      if (ownedJob || session.executionBackend === "memory-group" || program.executionBackend === "memory-group") throw new Error("Owned or grouped terminals require VFS process-family support");
       if (!program.programBytes) {
         throw new Error(
           "LiveKernelHost.attachPty: the configured terminal program is VFS-only, " +

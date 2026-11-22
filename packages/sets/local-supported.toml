@@ -1450,11 +1450,6 @@ reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain
 name = "wlr-protocols"
 reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
 
-[[packages]]
+[[exclusions]]
 name = "shared-desktop"
-class = "browser-product"
-
-[[products]]
-id = "browser-shared-desktop"
-package = "shared-desktop"
-manifest = "images/vfs/products/browser-shared-desktop.toml"
+reason = "historical separate desktop image; normal shell owns Cage, Sway and Sway/SFWBar"

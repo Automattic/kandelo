@@ -583,6 +583,153 @@
         "summary": "Sample clip from Big Buck Bunny. © 2008 Blender Foundation / www.bigbuckbunny.org. Creative Commons Attribution 3.0: https://creativecommons.org/licenses/by/3.0/. Original film: https://peach.blender.org/. Clip supplied by MediaElement.js: https://github.com/mediaelement/mediaelement-files. The clip repeats; press Escape to stop.",
         "groups": []
       }
+    },
+    "cage": {
+      "requires": [
+        "cage",
+        "desktop-data",
+        "bibata-cursor-theme",
+        "foot",
+        "shared-desktop-programs"
+      ],
+      "identity": {
+        "title": "Cage",
+        "summary": "Shared-memory desktop for compatible, mutually trusted programs. Upstream Cage with a full-screen Foot terminal on /dev/dri/card0. Exiting the shell ends the session.",
+        "accent": "#5b8c3a",
+        "glyph": "C",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ],
+        "executionBackend": "memory-group"
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "displayScale": 1
+      },
+      "guide": {
+        "title": "Cage",
+        "summary": "Preview for mutually trusted compatible programs. Ordinary files use this computer’s normal storage policy. Persistent writable shared mappings remain unsupported. From Foot, try freeciv, scummvm-static or scummvm-static-play god-of-thunder. "
+      },
+      "activity": {
+        "category": "demos"
+      }
+    },
+    "sway": {
+      "requires": [
+        "sway",
+        "swaybg",
+        "foot",
+        "desktop-data",
+        "bibata-cursor-theme",
+        "shared-desktop-programs"
+      ],
+      "identity": {
+        "title": "Sway",
+        "summary": "Shared-memory desktop for compatible, mutually trusted programs. Upstream Sway with its native workspace bar and readable Foot terminals. Alt (Option on Mac) + 1–0 switches workspaces; Shift moves a window. Alt+Return opens a terminal; Alt+M, release Alt, then Q asks to exit. The Desktop command mode also controls layout, fullscreen and resize.",
+        "accent": "#4a6fa5",
+        "glyph": "S",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ],
+        "executionBackend": "memory-group"
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /usr/share/kandelo/sway/config"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Sway",
+        "summary": "Preview for mutually trusted compatible programs. Ordinary files use this computer’s normal storage policy. Persistent writable shared mappings remain unsupported. From Foot, try freeciv, scummvm-static or scummvm-static-play god-of-thunder. Alt is Option on Mac. Use Alt+Return for a terminal; Alt+1–0 for workspaces; Alt+Shift+1–0 to move windows; Alt+H/J/K/L to focus. Click the native bar to switch workspaces. Alt+M enters Desktop commands: release Alt, then Return opens a terminal, W/S/E changes layout, F toggles fullscreen, V toggles floating, Space changes focus mode, R resizes with H/J/K/L, C reloads and Q asks to exit. Escape leaves a command/resize mode. Applications run from the terminal. Some browser and OS shortcuts remain reserved. Use an ordinary custom Sway config for advanced bindings.",
+        "groups": []
+      },
+      "activity": {
+        "category": "demos"
+      }
+    },
+    "sway-sfwbar": {
+      "requires": [
+        "sway",
+        "swaybg",
+        "foot",
+        "desktop-data",
+        "bibata-cursor-theme",
+        "sfwbar",
+        "shared-desktop-programs"
+      ],
+      "identity": {
+        "title": "Sway with SFWBar",
+        "summary": "Shared-memory desktop for compatible, mutually trusted programs. An explicit Sway preset with SFWBar Start, task list and clock. The compositor uses the same Alt/Option desktop bindings as plain Sway; this preset keeps the GTK panel separate from the native Swaybar demo.",
+        "accent": "#4a6fa5",
+        "glyph": "S",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ],
+        "executionBackend": "memory-group"
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /etc/xdg/sfwbar/sway.config"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Sway with SFWBar",
+        "summary": "Preview for mutually trusted compatible programs. Ordinary files use this computer’s normal storage policy. Persistent writable shared mappings remain unsupported. From Foot, try freeciv, scummvm-static or scummvm-static-play god-of-thunder. Alt is Option on Mac. Use Alt+Return for a terminal; Alt+1–0 for workspaces; Alt+Shift+1–0 to move windows; Alt+H/J/K/L to focus. Use the real SFWBar Start, task list and pager controls. Alt+M enters Desktop commands: release Alt, then Return opens a terminal, W/S/E changes layout, F toggles fullscreen, V toggles floating, Space changes focus mode, R resizes with H/J/K/L, C reloads and Q asks to exit. Escape leaves a command/resize mode. Launch applications from Start or the terminal. Some browser and OS shortcuts remain reserved. Use an ordinary custom Sway config for advanced bindings.",
+        "groups": []
+      },
+      "activity": {
+        "category": "demos"
+      }
     }
   }
 }

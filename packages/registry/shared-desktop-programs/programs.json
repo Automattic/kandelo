@@ -25,6 +25,12 @@
     "guestPath": "/bin/coreutils"
   },
   {
+    "id": "ps",
+    "dependency": "posix-utils-lite",
+    "artifact": "ps.wasm",
+    "guestPath": "/bin/ps"
+  },
+  {
     "id": "freeciv-client",
     "dependency": "freeciv",
     "artifact": "freeciv-sdl2.wasm",

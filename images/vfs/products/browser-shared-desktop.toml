@@ -42,9 +42,3 @@ SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt"
 TERM = "xterm-256color"
 TMPDIR = "/tmp"
 USER = "maker"
-
-[evidence.node]
-test = "shared-desktop-node-startup"
-
-[evidence.browser]
-test = "shared-desktop-browser-startup"

@@ -1536,10 +1536,6 @@ build_redis_vfs() {
     bootstrap_target browser-redis
 }
 
-build_shared_desktop_vfs() {
-    bootstrap_target browser-shared-desktop
-}
-
 build_web_stack_vfs() {
     bootstrap_target browser-web-stack
 }
@@ -1955,7 +1951,6 @@ build_target() {
         python-vfs) build_python_vfs ;;
         perl-vfs)   build_perl_vfs ;;
         shell-vfs)  build_shell_vfs ;;
-        shared-desktop-vfs) build_shared_desktop_vfs ;;
         node)       build_node ;;
         spidermonkey-node) build_spidermonkey_node ;;
         wordpress)  build_wordpress ;;
@@ -2019,7 +2014,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs redis-vfs web-stack-vfs wordpress-family-vfs foot shared-desktop-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs redis-vfs web-stack-vfs wordpress-family-vfs foot)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do

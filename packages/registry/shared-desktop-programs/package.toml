@@ -12,6 +12,7 @@ depends_on = [
   "foot@1.17.2",
   "bash@5.2.37",
   "coreutils@9.6",
+  "posix-utils-lite@0.1.0",
   "freeciv@3.2.6",
   "scummvm-static@2026.3.0",
   "curl@8.11.1",
@@ -60,6 +61,11 @@ fork_instrumentation = "disabled"
 [[outputs]]
 name = "coreutils"
 wasm = "coreutils.zip"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "ps"
+wasm = "ps.zip"
 fork_instrumentation = "disabled"
 
 [[outputs]]

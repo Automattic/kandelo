@@ -55,7 +55,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 25, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 26, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -103,6 +103,14 @@ publication rules. Missing pages below a logical high-water mark still need
 mapping and initialization. Reused payload, scratch and control storage must
 not expose a predecessor's bytes. Sustained growth and release must not consume
 physical capacity monotonically when the released pages are reusable.
+
+## Ordinary shell image integration
+
+The shell image carries ordinary executables at their normal paths and SDK-prepared alternatives under `/usr/libexec/kandelo/shared-desktop/<id>/program.wasm`, using normal lazy package archives. `/usr/share/kandelo/shared-desktop/programs.json` binds each alternative to its ordinary source digest. The host selects a candidate by retained executable content; the kernel validates and binds the exact source and implementation descriptors. Ordinary shell launches keep ordinary execution. An explicit `executionBackend: "memory-group"` launch selects alternatives for that root; compatible descendants inherit the kernel-owned group. Missing alternatives fail before commit.
+
+The Cage, Sway and Sway/SFWBar shell profiles request this backend in image-owned runtime metadata. That request does not grant capability to an arbitrary custom image: the embedding host must configure the catalog and group budget. Desktop activities use a fresh PTY with this explicit selection, while unrelated terminals retain ordinary execution. ScummVM inside a desktop uses the static engine’s distinct `scummvm-static` command; ordinary ScummVM remains available separately.
+
+Filesystem persistence is independent of the process memory backend. Normal shell storage policy remains applicable to ordinary files; persistent writable shared mappings and changing shared-object sizes remain unsupported. As with ordinary computers, use `fsync` or `sync` before relying on an abrupt browser reload to preserve file data. These integration changes require same-image ordinary/grouped Node and browser evidence before delivery.
 
 ## In-memory shared objects and graphics
 
@@ -219,42 +227,22 @@ browser-memory gate and bounded built-app checks recorded in the
 Those results do not establish sustained WebKit reliability or a resource benefit.
 The earlier byte-launch controls remain separate from the normal app path below.
 
-The app's programmatic `createLiveHost` also carries this trusted embedder
-option to its normal kernel boot. It rejects managed or persistent machines.
-Grouped KMS attachment selects the disposable bitmap display relay through the
-existing display API. The normal app's authored `browser-shared-desktop`
-gallery product declares Cage, Sway and Sway with SFWBar profiles. Selecting
-that bound product requests a temporary 512 MiB group with no additional task
-or process quota. The host checks product identity before granting the option;
-custom image metadata and arbitrary boot links cannot grant that capability.
-Ordinary products retain their ordinary backend, and the computer library
-remains available. The canonical `shared-desktop` package keeps compatible
-programs in individual lazy archives. This normal-gallery integration remains
-under validation; it does not establish shipping readiness for every profile.
+The app's programmatic `createLiveHost` carries the explicit trusted embedder
+option for temporary diagnostic machines; that direct option still rejects
+managed or persistent machines. Normal shell images use the catalog-backed
+launch selection described in [Ordinary shell image integration](#ordinary-shell-image-integration)
+and retain the normal computer library and filesystem storage policy. Grouped
+KMS attachment uses the disposable bitmap display relay through the existing
+display API.
 
-The explicit `--trusted-desktop-preview` browser command also remains available
-for the preserved partial-shell development preview below.
-
-Use the normal package-backed partial-shell command in
-[Normal partial-shell preview](#normal-partial-shell-preview). It opens Cage by
-default and offers the prepared Sway profile as well. This is a temporary
-trusted preview with no managed or persistent computers. The normal app sets a
-512 MiB shared backing ceiling and no additional process or task quota. Its
-earlier 24-process/64-task defaults could refuse a desktop at about nine Foot
-windows despite available backing. The developer pressure fixture retains
-explicit quotas to check refusal and recovery; it is not a capacity promise.
-WebKit's longer lifecycle failures remain under investigation.
-
-`./run.sh build-browser --trusted-desktop-preview --out DIR` first performs the
-normal canonical browser preparation and authenticated lazy-asset build. It
-then bundles the previously built, package-backed partial image and public
-provenance, without creating another image. Build that partial image first.
-Public provenance omits build-machine paths; full SDK reports are package
-artifacts in `shared-desktop-programs/programs.json`. The pinned normal
-production build and full browser-memory gate have passed; rerun the applicable
-gates when their production inputs change. Sustained WebKit failures and quiet
-resource/performance comparisons remain open in the current integration record.
-Short desktop checks do not establish sustained support or resident memory.
+The separate desktop image recipe is retained for reproducing historical
+experiments. Its product is excluded from the default supported build and the
+Pages asset projection. Cage, Sway and Sway/SFWBar gallery entries belong to
+`browser-main-shell` and need no `--trusted-desktop-preview` flag. Historical
+successful browser-memory and game runs below concern the pinned experiment
+artifacts. They do not validate the new shell integration, establish sustained
+WebKit reliability, or measure its resource cost. Rerun the applicable gates
+against the delivered shell image before promotion.
 
 The maintained Sway checks use the explicit Sway profile of the same partial
 image. Set `PREVIEW_URL` to that profile URL, then run:
@@ -313,8 +301,8 @@ ZIPs served through the existing package resolver and asset group. Launching a
 preview validates the partial manifest; it does not manufacture another image.
 
 ```sh
-./run.sh partial shell shared-desktop-programs cage foot sway swaybg freeciv-browser-bundle scummvm-static curl unzip sysklogd wayland-demo bibata-cursor-theme
-./run.sh browser --partial --trusted-desktop-preview
+./run.sh partial shell shared-desktop-programs cage foot sway swaybg sfwbar freeciv-browser-bundle scummvm-static curl unzip sysklogd desktop-data bibata-cursor-theme
+./run.sh browser --partial
 ```
 
 Add `cage-docs sway-docs foot-docs freeciv-docs scummvm-docs` for upstream manuals.
@@ -322,15 +310,18 @@ Partial images install named packages; building a dependency does not itself
 install that dependency's application into the image. The composer reports
 missing image packages before activating the SDK closure.
 
-The partial image offers Cage/Foot and Sway/Foot, with Cage as its default.
+The partial image retains the shell default and offers Cage/Foot, Sway/Foot
+and Sway/SFWBar as profiles and Activities. Select the profile in the computer
+library or start its Activity in an existing shell computer.
 Run `freeciv` or `scummvm-static` from Foot. `scummvm-static-play GAME` uses the
 existing SHA-256-pinned freeware catalog through guest curl and unzip.
 ScummVM retains the ordinary package's fourteen-engine selection, including
 SCUMM v7/v8, using upstream static engines because grouped dynamic side modules
-remain unsupported. The launcher and God of Thunder gameplay, physical
-movement, native Quit with status 0, return to Foot and Cage cleanup pass on
-Chromium, Firefox and WebKit.
-Other games, audio and sustained ScummVM operation remain unproven.
+remain unsupported. In the earlier dedicated preview, the launcher and God of Thunder gameplay,
+physical movement, native Quit with status 0, return to Foot and Cage cleanup
+passed on Chromium, Firefox and WebKit. Those results require revalidation on
+the normal shell integration. Other games, audio and sustained ScummVM operation
+remain unproven.
 Compatibility is an SDK build requirement, not an app certification gate
 before experiments.
 
@@ -391,11 +382,11 @@ The desktop-first integration implements fixed-size tmpfs and memfd objects with
 Promotion refuses pre-existing legacy mapping holds; ordinary or cross-group shared attachment is refused. An unpublished preparation abandoned during cleanup releases its mutation fence. Descriptor writes that would extend EOF and size-changing truncation remain unsupported and return an error before modifying content. Growth, truncation and their effects on existing mappings remain an explicit follow-up; the fixed-size surface does not complete that mapped-file contract.
 
 The desktop integration also admits read-only `MAP_SHARED` mappings of
-ephemeral rootfs files under a kernel-held immutable read lease. Their VMA
+rootfs files, including files on a persisted computer, under a kernel-held immutable read lease. Their VMA
 keeps `MAP_SHARED`; physical read copies are independently reclaimable.
 Writes, truncation, writable protection and legacy shared attachment are
 refused while the lease exists. Closing the descriptor does not release the
-lease; the final mapping/source reference does. Persistent writable files and expanding these mappings remain unsupported.
+lease; the final mapping/source reference does. The storage policy does not make a leased file writable: persistent writable shared mappings and expanding these mappings remain unsupported.
 This is a bounded read-only surface, not general writable regular-file sharing.
 
 Host-adapter 23 adds the exact owned-driver mapping bridge. EGL command

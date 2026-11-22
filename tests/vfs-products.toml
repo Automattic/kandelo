@@ -13,11 +13,12 @@ host = "required"
 
 [[registrations]]
 product = "browser-main-shell"
-node = ["main-shell-startup"]
+node = ["main-shell-startup", "shared-desktop-node-startup"]
 browser = [
   "main-shell-basic-e2e",
   "main-shell-fbdoom-e2e",
   "main-shell-modeset-e2e",
+  "shared-desktop-browser-startup",
 ]
 
 [registrations.applicability]
@@ -168,16 +169,6 @@ host = "required"
 product = "test-sqlite"
 node = ["sqlite-suite-node"]
 browser = ["sqlite-suite-browser"]
-
-[registrations.applicability]
-abi = "required"
-kernel = "required"
-host = "required"
-
-[[registrations]]
-product = "browser-shared-desktop"
-node = ["shared-desktop-node-startup"]
-browser = ["shared-desktop-browser-startup"]
 
 [registrations.applicability]
 abi = "required"
