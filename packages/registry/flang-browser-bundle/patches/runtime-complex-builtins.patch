@@ -1,0 +1,34 @@
+--- a/flang/tools/flang-driver/CMakeLists.txt
++++ b/flang/tools/flang-driver/CMakeLists.txt
+@@ -29,6 +29,17 @@
+   clangOptions
+   clangBasic
+ )
++
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  # Flang's intrinsic evaluator uses Clang's complex-arithmetic libcalls.
++  # Build their target implementations from the same LLVM source.
++  set(builtins "${LLVM_MAIN_SRC_DIR}/../compiler-rt/lib/builtins")
++  add_library(flang-complex-builtins STATIC
++    "${builtins}/divsc3.c" "${builtins}/mulsc3.c"
++    "${builtins}/divdc3.c" "${builtins}/muldc3.c"
++    "${builtins}/divtc3.c" "${builtins}/multc3.c")
++  target_link_libraries(flang PRIVATE flang-complex-builtins)
++endif()
+
+ # This creates the executable with a version appended
+ # and creates a symlink to it without the version
+--- a/clang/lib/Driver/ToolChains/WebAssembly.cpp
++++ b/clang/lib/Driver/ToolChains/WebAssembly.cpp
+@@ -322,8 +322,10 @@
+       else if (!Input.isNothing())
+         Input.getInputArg().render(Args, SDKArgs);
+     }
+-    if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs))
++    if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
+       SDKArgs.push_back("/usr/lib/kandelo/fortran/libflang_rt.runtime.a");
++      SDKArgs.push_back("/usr/lib/kandelo/fortran/libflang-complex-builtins.a");
++    }
+     SDKArgs.push_back("-Wl,--fatal-warnings");
+     SDKArgs.push_back("-o");
+     SDKArgs.push_back(Output.getFilename());

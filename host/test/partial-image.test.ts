@@ -33,6 +33,22 @@ const manifest: PartialManifest | null = existsSync(manifestPath)
   ? JSON.parse(readFileSync(manifestPath, "utf8"))
   : null;
 
+function fortranSmokeProbe(): string {
+  const fixtures = join(repoRoot, "packages/registry/flang-browser-bundle/fixtures");
+  return [
+    "flang --version",
+    "cat > interop.c <<'KANDELO_C_SOURCE'",
+    readFileSync(join(fixtures, "interop.c"), "utf8").trimEnd(),
+    "KANDELO_C_SOURCE",
+    "cat > smoke.f90 <<'KANDELO_FORTRAN_SOURCE'",
+    readFileSync(join(fixtures, "smoke.f90"), "utf8").trimEnd(),
+    "KANDELO_FORTRAN_SOURCE",
+    "cc -c interop.c -o interop.o",
+    "flang smoke.f90 interop.o -o fortran-smoke",
+    "./fortran-smoke",
+  ].join("\n");
+}
+
 /** A program each package installs, to prove it runs from the image. */
 const PROBES: Record<string, string> = {
   tmux: "tmux -V",
@@ -109,6 +125,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
 
   it("boots Bash and runs the named packages' programs", async () => {
     const probes = manifest!.packages.filter((name) => name in PROBES).map((name) => PROBES[name]!);
+    if (manifest!.selection.includes("flang-browser-bundle")) {
+      probes.push(fortranSmokeProbe());
+    }
     const script = ["set -eu", "echo partial-boot-ok", ...probes].join("\n");
     let stdout = "";
     let stderr = "";
@@ -126,6 +145,17 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     try {
       const fs = KandeloImageFs.create();
       fs.loadImage(imageBytes());
+      if (manifest!.selection.includes("flang-browser-bundle")) {
+        for (const path of [
+          "/usr/bin/flang",
+          "/usr/lib/kandelo/fortran/libflang_rt.runtime.a",
+          "/usr/lib/kandelo/fortran/mod/iso_c_binding.mod",
+          "/usr/share/man/man1/flang.1",
+        ]) {
+          expect(fs.isPathDeferred(path), path).toBe(true);
+        }
+        expect(lazy.some((event) => event.includes("flang.zip"))).toBe(false);
+      }
       const bash = fs.readFile("/bin/bash");
       const exitCode = await host.spawn(arrayBuffer(bash), ["bash", "-c", script], {
         env: ["PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/maker", "TERM=xterm", "TMPDIR=/tmp"],
@@ -136,6 +166,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       });
       expect(exitCode, `stdout=${stdout}\nstderr=${stderr}\nlazy=${lazy.join("\n")}`).toBe(0);
       expect(stdout).toContain("partial-boot-ok");
+      if (manifest!.selection.includes("flang-browser-bundle")) {
+        expect(stdout).toMatch(/^fortran-spike-ok 42$/m);
+        expect(lazy.some((event) => event.includes("flang.zip"))).toBe(true);
+      }
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");
@@ -183,7 +217,7 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     } finally {
       await host.destroy().catch(() => {});
     }
-  }, 180_000);
+  }, manifest?.selection.includes("flang-browser-bundle") ? 300_000 : 180_000);
 
   it("does not carry programs it was not asked for", () => {
     const fs = KandeloImageFs.create();
@@ -193,6 +227,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     };
     if (!manifest!.selection.includes("ffmpeg")) expect(absent("/usr/bin/ffmpeg")).toBe(true);
     if (!manifest!.selection.includes("scummvm")) expect(absent("/usr/bin/scummvm")).toBe(true);
+    if (!manifest!.selection.includes("flang-browser-bundle")) {
+      expect(absent("/usr/bin/flang")).toBe(true);
+    }
     if (!manifest!.selection.includes("node-browser-bundle")) {
       expect(absent("/etc/profile.d/node.sh")).toBe(true);
     }

@@ -559,6 +559,10 @@ name = "kandelo-sdk-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "flang-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "kernel"
 class = "platform"
 
