@@ -71,18 +71,44 @@ pure-Go modules whose dependencies support this target. Modules with
 OS-specific code can require a Kandelo port. The Go toolchain stays on the
 development machine. Use Kandelo to execute the output of `go build`.
 
-The target uses cooperative preemption. The SDK smoke test on macOS ran
-the same module on Node.js, Chromium, Firefox, and WebKit with the runtime's
-default `GOMAXPROCS=1`. Constrained-memory profiles and larger workloads
-remain unverified. Rebuild programs with the matching SDK after a program
-ABI change.
+The Go scheduler defaults to `GOMAXPROCS=1`. Set `GOMAXPROCS` in the guest
+environment or call `runtime.GOMAXPROCS` to adjust how many threads can run
+Go code at once. The compiler inserts scheduler checks in user loops so a
+call-free loop can yield for a pending scheduling or GC request. The
+runtime still uses cooperative checkpoints. For comparison when profiling,
+build with `GOEXPERIMENT=nopreemptibleloops` to disable the loop checks.
+
+### Parallelism for embeddings
+
+An embedding that has reserved a budget for a Go process can use
+`goRuntimeEnv` from the SDK's `go-runtime-env.js` to prepare the process's
+environment. The helper takes an explicit per-process budget and a host
+hint, uses the smaller value and preserves any existing `GOMAXPROCS` entry.
+With either input unavailable it chooses `1`. The embedding should account
+for other guests and threads blocked in syscalls when setting that budget.
+
+```js
+import { goRuntimeEnv } from "wasm-posix-sdk/go-runtime-env.js";
+
+const env = goRuntimeEnv(guestEnv, {
+  hostHint: navigator.hardwareConcurrency,
+  budget: 2,
+});
+await kernel.spawnFromVfs(programPath, [programPath], { env });
+```
+
+On Node.js, use `availableParallelism()` from `node:os` as the hint. CPU
+hints estimate potential parallelism. Worker and memory limits still apply.
+Rebuild programs with the matching SDK after a program ABI change.
 
 ## Validation
 
 `tests/go/hello` is a minimal module for checking a normal `go build`.
 `tests/go/sdk-probe` is a standalone module that exercises goroutines, GC,
 thread startup and retirement, file I/O, loopback TCP, subprocess execution
-and SIGTERM delivery.
+and SIGTERM delivery. The matrix checks `GOMAXPROCS` values of `1`, `2`, and
+`4`, a budgeted host default, and scheduler and GC progress during a
+call-free loop at `1`.
 From the repository root in the SDK shell, prepare the browser products
 and run the same executable on all four hosts:
 
