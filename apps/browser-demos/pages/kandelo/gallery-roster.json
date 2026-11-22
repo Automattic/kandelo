@@ -62,24 +62,16 @@
       "profile": "love"
     },
     {
-      "product": "browser-main-shell",
+      "product": "browser-shared-desktop",
       "profile": "cage"
     },
     {
-      "product": "browser-main-shell",
+      "product": "browser-shared-desktop",
       "profile": "sway"
     },
     {
-      "product": "browser-main-shell",
+      "product": "browser-shared-desktop",
       "profile": "sway-sfwbar"
-    },
-    {
-      "product": "browser-main-shell",
-      "profile": "labwc"
-    },
-    {
-      "product": "browser-main-shell",
-      "profile": "omarchy"
     },
     {
       "product": "browser-web-stack",

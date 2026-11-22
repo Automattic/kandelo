@@ -518,6 +518,7 @@ host/test/select-signal-guest.test.ts	prepared-product
 host/test/select-signal-outcome.test.ts	source-only
 host/test/sendmsg-iovec-gather.test.ts	prepared-product
 host/test/service-activities.test.ts	prepared-product
+host/test/shared-desktop-image.test.ts	prepared-product
 host/test/shared-memory-coherence.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only

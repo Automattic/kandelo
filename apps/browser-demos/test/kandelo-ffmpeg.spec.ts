@@ -218,6 +218,7 @@ test("ffplay shows video in the KMS pane", async ({ page }) => {
 });
 
 test.describe("in the Omarchy desktop", () => {
+  test.skip(true, "Omarchy is explicitly retired; mixed graphical FFplay clients in the shared desktop remain a follow-up");
   // The desktop machine declares a 1920x1080 minimum display.
   test.use({ viewport: { width: 1920, height: 1200 } });
 

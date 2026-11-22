@@ -261,8 +261,6 @@ function fixturePaths(root: string) {
   // Explicit composer inputs include eager launcher scripts and optional
   // data archives. Their programs are lazy files, registered below with every
   // other SHELL_LAZY_BINARY_SPECS entry.
-  const wldesktopPath = join(root, "wldesktop");
-  const omarchydesktopPath = join(root, "omarchydesktop");
   const desktopDataPath = join(root, "kandelo-desktop-data.zip");
   const libinputQuirksPath = join(root, "libinput-quirks.zip");
   const xkeyboardConfigPath = join(root, "xkeyboard-config.zip");
@@ -278,13 +276,11 @@ function fixturePaths(root: string) {
     bashPath,
     new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
   );
-  writeFileSync(wldesktopPath, "#!/bin/sh\nexec wlterm\n");
-  writeFileSync(omarchydesktopPath, "#!/bin/sh\nexec wlcompositor\n");
   writeFileSync(
     desktopDataPath,
     zipSync({
-      "themes/tokyo-night/theme.conf": new TextEncoder().encode("# Tokyo Night\n"),
-      "apps/terminal.conf": new TextEncoder().encode("name = Terminal\n"),
+      "sway/config": new TextEncoder().encode("# Sway configuration\n"),
+      "fonts/fonts.conf": new TextEncoder().encode("# Font configuration\n"),
     }),
   );
   writeFileSync(
@@ -398,8 +394,6 @@ function fixturePaths(root: string) {
     caBundlePath,
     bashPath,
     espeakNgDataPath,
-    wldesktopPath,
-    omarchydesktopPath,
     desktopDataPath,
     libinputQuirksPath,
     xkeyboardConfigPath,
@@ -502,9 +496,10 @@ describe("canonical source-rootfs shell", () => {
       validateSourceRootfsShellPackageManifest(
         contract,
         canonicalPackageManifest,
-      ),
+      ).sort((a, b) => a.name.localeCompare(b.name)),
     ).toEqual(
-      contract.dependencies.map(({ name, version }) => ({ name, version })),
+      contract.dependencies.map(({ name, version }) => ({ name, version }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
     );
     expect(manifest.match(/^name = "[^"]+"$/gm)).toEqual([
       'name = "shell"',
@@ -641,7 +636,7 @@ describe("canonical source-rootfs shell", () => {
     ).toContain("export PS1='\\u@\\h:\\W\\$ '");
   });
 
-  it("builds graphical partials without installing SFWBar's terminal helper", async () => {
+  it("keeps ordinary graphical partials separate from shared desktop activities", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
     await writeRootfs(paths.rootfsPath);
@@ -649,7 +644,7 @@ describe("canonical source-rootfs shell", () => {
       ...paths,
       selection: partialShellSelection([
         "rootfs", "bash", "ncurses", "ca-certificates", ...ROOTFS_LAZY_IDS,
-        "sdl2-demo", "wayland-demo", "sway", "swaybg", "foot",
+        "sdl2-demo", "desktop-data", "sway", "swaybg", "foot",
         "bibata-cursor-theme", "freeciv-browser-bundle", "modeset",
         "scummvm", "curl", "unzip", "python-browser-bundle",
       ]),
@@ -667,8 +662,10 @@ describe("canonical source-rootfs shell", () => {
       .toContain("application/x-kandelo-terminal-command");
     const config = parseKandeloDemoConfig(text(readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH)))!;
     expect(Object.keys(config.profiles!)).toEqual(expect.arrayContaining([
-      "sway", "freeciv", "scummvm", "modeset", "sdl2",
+      "freeciv", "scummvm", "modeset", "sdl2",
     ]));
+    expect(config.profiles!.cage).toBeUndefined();
+    expect(config.profiles!.sway).toBeUndefined();
     expect(config.profiles!.labwc).toBeUndefined();
     expect(config.profiles!["sway-sfwbar"]).toBeUndefined();
   });
@@ -884,21 +881,6 @@ describe("canonical source-rootfs shell", () => {
       ["/usr/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
       ["/usr/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
       ["/usr/bin/espeak-ng", "kandelo-lazy:programs/espeak-ng/espeak-ng.wasm"],
-      [
-        "/usr/bin/wlcompositor",
-        "kandelo-lazy:programs/wayland-demo/wlcompositor.wasm",
-      ],
-      ["/usr/bin/wlterm", "kandelo-lazy:programs/wayland-demo/wlterm.wasm"],
-      ["/usr/bin/wlclock", "kandelo-lazy:programs/wayland-demo/wlclock.wasm"],
-      ["/usr/bin/wlpaint", "kandelo-lazy:programs/wayland-demo/wlpaint.wasm"],
-      [
-        "/usr/bin/klauncher",
-        "kandelo-lazy:programs/wayland-demo/klauncher.wasm",
-      ],
-      [
-        "/usr/bin/notify-send",
-        "kandelo-lazy:programs/wayland-demo/notify-send.wasm",
-      ],
     ]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((entry) => entry.vfsPath === guest);
       expect(spec, guest).toBeDefined();
@@ -914,10 +896,9 @@ describe("canonical source-rootfs shell", () => {
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
     // The shared desktop panel must arrive through its one package closure,
-    // including a real loadable module and executable terminal helper.
+    // including its built-in menu configuration and executable terminal helper.
     for (const [artifact, guest, mode] of [
       ["sfwbar.wasm", "/usr/bin/sfwbar", 0o755],
-      ["appmenu.so", "/usr/lib/sfwbar/appmenu.so", 0o644],
       ["sfwbar.config", "/etc/xdg/sfwbar/sfwbar.config", 0o644],
       ["sway.config", "/etc/xdg/sfwbar/sway.config", 0o644],
       ["winops.widget", "/etc/xdg/sfwbar/winops.widget", 0o644],
@@ -925,7 +906,6 @@ describe("canonical source-rootfs shell", () => {
       ["kandelo-terminal", "/usr/bin/kandelo-terminal", 0o755],
       ["kandelo-terminal.desktop", "/usr/share/applications/kandelo-terminal.desktop", 0o644],
       ["scummvm.desktop", "/usr/share/applications/scummvm.desktop", 0o644],
-      ["wayland-demo.desktop", "/usr/share/applications/wayland-demo.desktop", 0o644],
     ] as const) {
       const spec = SHELL_LAZY_BINARY_SPECS.find(entry => entry.vfsPath === guest)!;
       expect(spec, guest).toBeDefined();
@@ -942,7 +922,7 @@ describe("canonical source-rootfs shell", () => {
       .toContain("application/x-kandelo-terminal-command");
     // Start-menu entries must name programs actually installed in this image,
     // including a native Wayland client rather than a nonexistent package name.
-    for (const desktop of ["kandelo-terminal", "scummvm", "wayland-demo"]) {
+    for (const desktop of ["kandelo-terminal", "scummvm"]) {
       const source = readFileSync(join(repoRoot,
         `packages/registry/sfwbar/config/${desktop}.desktop`), "utf8");
       const executable = source.match(/^Exec=(\S+)/m)?.[1];
@@ -1060,22 +1040,15 @@ describe("canonical source-rootfs shell", () => {
       expect(readFileSync(join(repoRoot, "packages/registry", wrapper), "utf8"), wrapper)
         .toContain(SUPERVISE_FUNCTION);
     }
-    // The desktops' launchers are eager scripts on PATH (the programs they
-    // exec are the lazy files above), and wlcompositor's statically linked
-    // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.
-    for (const [guest, host] of [
-      ["/usr/bin/wldesktop", paths.wldesktopPath],
-      ["/usr/bin/omarchydesktop", paths.omarchydesktopPath],
-    ]) {
-      expect(readVfsFile(fs, guest), guest).toEqual(
-        new Uint8Array(readFileSync(host)),
-      );
-      expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
+    // Retired desktop programs and launchers are absent, not hidden entries
+    // that retain their build dependencies.
+    for (const name of ["wldesktop", "omarchydesktop", "wlcompositor", "wlterm", "wlclock", "wlpaint", "klauncher", "notify-send", "kclipd", "labwc", "quickshell", "qtgallery", "dbus-daemon"]) {
+      expect(() => fs.lstat("/usr/bin/"+name),name).toThrow(/ENOENT/);
     }
     // Desktop paths exist at boot; their contents wait for the first read.
     for (const [path, content] of [
-      ["/usr/share/kandelo/themes/tokyo-night/theme.conf", "# Tokyo Night\n"],
-      ["/usr/share/kandelo/apps/terminal.conf", "name = Terminal\n"],
+      ["/usr/share/kandelo/sway/config", "# Sway configuration\n"],
+      ["/usr/share/kandelo/fonts/fonts.conf", "# Font configuration\n"],
     ]) {
       expect(fs.isPathDeferred(path), path).toBe(true);
       expect(fs.stat(path).size, path).toBe(content.length);
@@ -1275,31 +1248,30 @@ describe("canonical source-rootfs shell", () => {
 
   it("keeps native Swaybar separate from the explicit panel sessions", () => {
     const source = JSON.parse(readFileSync(join(repoRoot,
+      "images/vfs/config/shared-desktop-demo.json"), "utf8"));
+    const ordinary = JSON.parse(readFileSync(join(repoRoot,
       "packages/registry/shell/source-rootfs-shell-demo.json"), "utf8"));
+    for (const id of ["cage", "sway", "sway-sfwbar", "wayland", "labwc", "omarchy"]) {
+      expect(ordinary.profiles[id]).toBeUndefined();
+    }
+    expect(Object.keys(source.profiles).sort()).toEqual(["cage", "sway", "sway-sfwbar"]);
     const sway = source.profiles.sway.init.shellCommand;
     expect(sway).toContain("/usr/bin/sway -c /usr/share/kandelo/sway/config");
     expect(sway).not.toContain("sfwbar");
     const panel = source.profiles["sway-sfwbar"].init.shellCommand;
     expect(panel).toContain("/usr/bin/sway -c /etc/xdg/sfwbar/sway.config");
-    const labwc = source.profiles.labwc.init.shellCommand;
-    // Labwc parses -s without a shell: the explicit shell is required for
-    // background panel startup followed by the foreground terminal exec.
-    expect(labwc).toContain("/usr/bin/labwc -s '/bin/sh -c \"sfwbar");
-    expect(labwc).toContain("-f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini");
+    for (const retired of ["wayland", "labwc", "omarchy"]) expect(source.profiles[retired]).toBeUndefined();
     for (const id of ["sway-sfwbar"]) {
       expect(source.profiles[id].identity.summary).toContain("Start");
       expect(source.profiles[id].identity.summary).toMatch(/task list/);
       expect(source.profiles[id].identity.summary).toContain("clock");
     }
     expect(source.profiles.sway.requires).toEqual([
-      "sway", "swaybg", "foot", "wayland-demo", "bibata-cursor-theme",
+      "sway", "swaybg", "foot", "desktop-data", "bibata-cursor-theme", "shared-desktop-programs",
     ]);
-    expect(source.profiles["sway-sfwbar"].requires).toEqual([
+    expect(new Set(source.profiles["sway-sfwbar"].requires)).toEqual(new Set([
       ...source.profiles.sway.requires, "sfwbar",
-    ]);
-    expect(source.profiles.labwc.requires).toEqual([
-      "labwc", "foot", "sfwbar", "wayland-demo", "bibata-cursor-theme",
-    ]);
+    ]));
   });
 
   it("treats structurally identical package-owned profiles as one shared contract", () => {
@@ -1496,10 +1468,9 @@ describe("canonical source-rootfs shell", () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
     await writeRootfs(paths.rootfsPath);
-    writeFileSync(
-      paths.wldesktopPath,
-      new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
-    );
+    writeFileSync(paths.libinputQuirksPath,zipSync({
+      "rogue-helper":new Uint8Array([0x00,0x61,0x73,0x6d,0x01,0x00,0x00,0x00]),
+    }));
 
     await expect(
       buildSourceRootfsShellImage({
@@ -1510,7 +1481,7 @@ describe("canonical source-rootfs shell", () => {
     ).rejects.toThrow(
       "source-rootfs shell must add programs as lazy files " +
         "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
-        "/usr/bin/wldesktop",
+        "/usr/share/libinput/rogue-helper",
     );
     expect(existsSync(join(root, "eager-program.vfs.zst"))).toBe(false);
   });
@@ -1542,9 +1513,10 @@ describe("canonical source-rootfs shell", () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
     await writeRootfs(paths.rootfsPath);
-    // An eager launcher script far larger than the fixture's other content
-    // stands in for an optional tree written eagerly.
-    writeFileSync(paths.omarchydesktopPath, `#!/bin/sh\n${"#".repeat(64 * 1024)}\n`);
+    // Real eager device data must still obey the image-wide content budget.
+    writeFileSync(paths.libinputQuirksPath,zipSync({
+      "oversized.quirks":new TextEncoder().encode("#".repeat(64*1024)),
+    }));
     const eagerBudgetPath = join(root, "eager-budget.json");
     const budget = JSON.parse(readFileSync(canonicalEagerBudget, "utf8"));
     writeFileSync(eagerBudgetPath, JSON.stringify({
@@ -1569,7 +1541,7 @@ describe("canonical source-rootfs shell", () => {
       `fixture-shell image exceeds its eager-content budget in ${eagerBudgetPath}`,
     );
     expect(message).toMatch(/eager bytes: [\d,]+ exceeds the budget of 32,768/);
-    expect(message).toMatch(/65,547 +\/usr\/bin\/omarchydesktop/);
+    expect(message).toMatch(/65,536 +\/usr\/share\/libinput\/oversized.quirks/);
     expect(existsSync(join(root, "over-budget.vfs.zst"))).toBe(false);
   });
 
@@ -1669,19 +1641,17 @@ describe("canonical source-rootfs shell", () => {
     // Their programs are lazy files the composer resolves itself; the wrapper
     // threads only the files the composer writes eagerly.
     const espeakNgDir = extendedDependencyDirs.get("espeak-ng")!;
-    const waylandDemoDir = extendedDependencyDirs.get("wayland-demo")!;
+    const desktopDataDir = extendedDependencyDirs.get("desktop-data")!;
     writeFileSync(join(rootfsDir, "rootfs.vfs.zst"), "rootfs");
     writeFileSync(join(extendedDependencyDirs.get("ca-certificates")!, "ca-certificates.zip"), "CA ZIP");
     writeFileSync(join(bashDir, "bash.wasm"), "bash");
     writeFileSync(join(espeakNgDir, "espeak-ng-data.zip"), "espeak-ng-data");
     for (const name of [
-      "wldesktop",
-      "omarchydesktop",
       "kandelo-desktop-data.zip",
       "libinput-quirks.zip",
       "xkeyboard-config.zip",
     ]) {
-      writeFileSync(join(waylandDemoDir, name), name);
+      writeFileSync(join(desktopDataDir, name), name);
     }
     const logPath = join(root, "composer.log");
     const fakeNode = join(toolDir, "node");
@@ -1770,16 +1740,16 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(
       `--espeak-ng-data ${espeakNgDir}/espeak-ng-data.zip`,
     );
-    expect(invocation).toContain(`--wldesktop ${waylandDemoDir}/wldesktop`);
-    expect(invocation).toContain(`--omarchydesktop ${waylandDemoDir}/omarchydesktop`);
+    expect(invocation).not.toContain("--wldesktop");
+    expect(invocation).not.toContain("--omarchydesktop");
     expect(invocation).toContain(
-      `--desktop-data ${waylandDemoDir}/kandelo-desktop-data.zip`,
+      `--desktop-data ${desktopDataDir}/kandelo-desktop-data.zip`,
     );
     expect(invocation).toContain(
-      `--libinput-quirks ${waylandDemoDir}/libinput-quirks.zip`,
+      `--libinput-quirks ${desktopDataDir}/libinput-quirks.zip`,
     );
     expect(invocation).toContain(
-      `--xkeyboard-config ${waylandDemoDir}/xkeyboard-config.zip`,
+      `--xkeyboard-config ${desktopDataDir}/xkeyboard-config.zip`,
     );
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,

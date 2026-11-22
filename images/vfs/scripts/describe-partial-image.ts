@@ -18,6 +18,7 @@ import {
   parseKandeloDemoConfig,
   validateKandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
+import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_DEMO_CONFIG_PATH } from "./shared-desktop-package-contract";
 import { composeSourceRootfsDemoConfig } from "./build-source-rootfs-shell-image";
 import {
   filterDemoConfigForSelection,
@@ -51,10 +52,12 @@ export function describePartialImage(image: Uint8Array): PartialImageDescription
   // The shell activities this selection could not carry. An image derived
   // from the shell bakes its own demo config, so this lists only shell
   // activities whose packages are missing, not every shell profile.
-  const shellConfig = parseKandeloDemoConfig(new TextDecoder().decode(composeSourceRootfsDemoConfig(
-    resolve(SHELL_DIR, "source-rootfs-shell-demo.json"),
-    resolve(SHELL_DIR, "source-rootfs-shell-demo-profiles.json"),
-  )))!;
+  const shellConfig = parseKandeloDemoConfig(new TextDecoder().decode(selection.includes(SHARED_DESKTOP_PACKAGE)
+    ? readFileSync(SHARED_DESKTOP_DEMO_CONFIG_PATH)
+    : composeSourceRootfsDemoConfig(
+      resolve(SHELL_DIR, "source-rootfs-shell-demo.json"),
+      resolve(SHELL_DIR, "source-rootfs-shell-demo-profiles.json"),
+    )))!;
   const { excluded } = filterDemoConfigForSelection(shellConfig, partialShellSelection(selection));
   return { selection, activities, excluded, demoConfig };
 }

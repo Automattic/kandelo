@@ -119,10 +119,10 @@ export function assertSharedDesktopPackageActivation(fs: KandeloImageFs, activat
 
 /** The opt-in partial preview advertises only the prepared graphical sessions. */
 export function sharedDesktopPackageDemo(config: import('../../../web-libs/kandelo-session/src/demo-config').KandeloDemoConfig) {
-  const profiles = Object.fromEntries(['cage', 'sway'].map(id => {
+  const profiles = Object.fromEntries(['cage', 'sway', 'sway-sfwbar'].map(id => {
     const original = config.profiles?.[id];
     if (!original) throw Error('Shared desktop package needs the normal ' + id + ' profile');
-    const title = id === 'cage' ? 'Shared-memory Cage desktop' : 'Shared-memory Sway desktop';
+    const title = id === 'cage' ? 'Shared-memory Cage desktop' : id === 'sway' ? 'Shared-memory Sway desktop' : 'Shared-memory Sway with SFWBar';
     return [id, { ...original,
       requires: [...new Set([...(original.requires ?? []), SHARED_DESKTOP_PACKAGE, 'foot'])],
       ...(id === 'cage' ? { init: { ...original.init, shellCommand: 'LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini' } } : {}),

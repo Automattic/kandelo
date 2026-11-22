@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "../playwright-test";
+import { expect, type Page } from "../playwright-test";
+import { test } from "./support/persistent-page";
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { setInternalsOpen } from "./support/dock";
 import { footFrame, type Rect } from "./support/labwc-frame";
@@ -471,32 +472,49 @@ type WorkspaceEvidence = {
   windows: { workspace: string; id: number; pid: number; name: string; app_id: string; focused: boolean }[];
 };
 
-const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
-
 /** Query ordinary IPC from the actual first Foot. The switch command keeps
  * executing after its window becomes hidden; the return uses only the real
  * painted pager. No observer process or test-only workspace pins are needed.
  */
 async function workspaceRoundTrip(page: Page, initial: Paint) {
   const pager = initial.pager!;
-  const projection = "{phase:$phase,workspaces:[$ws[0][]|{id,num,name,focused,visible}],"
-    + "windows:[..|objects|select(.type?==\"workspace\")|.name as $w|..|objects|"
-    + "select(.app_id?==\"foot\")|{workspace:$w,id,pid,name,app_id,focused}]}";
+  // The native swaymsg client writes real IPC replies in the guest. Read the
+  // completed files through VFS and project them on the test side; jq is not
+  // a runtime dependency of the desktop or its panel.
   const snapshotFunction = "sfw_snap(){ "
     + "swaymsg -r -t get_workspaces > /tmp/sfwbar-$1-workspaces.raw && "
-    + "swaymsg -r -t get_tree > /tmp/sfwbar-$1-tree.raw && "
-    + `jq -c --arg phase \"$1\" --slurpfile ws /tmp/sfwbar-$1-workspaces.raw ${shellQuote(projection)} `
-    + "/tmp/sfwbar-$1-tree.raw > /tmp/sfwbar-$1-summary; }; ";
-  const report = (phase: string, summaries: string[]) => "sfw_rc=$?; { "
-    + `if test \"$sfw_rc\" -eq 0; then cat ${summaries.map(p => `/tmp/sfwbar-${p}-summary`).join(" ")} || sfw_rc=$?; fi; `
-    + `printf 'SFWBAR_IPC:${phase}:%s\\n' \"$sfw_rc\"; } > /tmp/sfwbar-${phase}\n`;
+    + "swaymsg -r -t get_tree > /tmp/sfwbar-$1-tree.raw; }; ";
+  const report = (phase: string) => "sfw_rc=$?; "
+    + `printf 'SFWBAR_IPC:${phase}:%s\\n' \"$sfw_rc\" > /tmp/sfwbar-${phase}\n`;
   const readEvidence = async (phase: string) => {
-    const text = await readTmp(page, `sfwbar-${phase}`, `SFWBAR_IPC:${phase}:`);
-    await test.info().attach(`sway-pager-${phase}-ipc`, { body: text, contentType: "text/plain" });
-    const lines = text.trim().split("\n");
-    expect(lines.pop(), "every actual swaymsg, jq and summary read must succeed").toBe(`SFWBAR_IPC:${phase}:0`);
-    expect(lines, "one complete compact IPC record per requested phase").toHaveLength(phase === "on2" ? 2 : 1);
-    return lines.map(line => JSON.parse(line) as WorkspaceEvidence);
+    const completed = await readTmp(page, `sfwbar-${phase}`, `SFWBAR_IPC:${phase}:`);
+    expect(completed.trim(), "every actual swaymsg command must succeed").toBe(`SFWBAR_IPC:${phase}:0`);
+    const records: WorkspaceEvidence[] = [];
+    for (const name of phase === "on2" ? ["before", "on2"] : [phase]) {
+      const workspaces = JSON.parse(await readTmp(page, `sfwbar-${name}-workspaces.raw`, /^\s*\[/));
+      const tree = JSON.parse(await readTmp(page, `sfwbar-${name}-tree.raw`, /^\s*\{/));
+      expect(Array.isArray(workspaces)).toBe(true);
+      const windows: WorkspaceEvidence["windows"] = [];
+      const visit = (node: Record<string, unknown>, workspace?: string) => {
+        if (node.type === "workspace") workspace = String(node.name);
+        if (node.app_id === "foot") {
+          expect(workspace).toBeDefined();
+          windows.push({ workspace: workspace!, id: Number(node.id), pid: Number(node.pid),
+            name: String(node.name), app_id: "foot", focused: node.focused === true });
+        }
+        for (const child of [...(node.nodes as Record<string, unknown>[] ?? []),
+          ...(node.floating_nodes as Record<string, unknown>[] ?? [])]) visit(child, workspace);
+      };
+      visit(tree);
+      records.push({ phase: name, workspaces, windows });
+    }
+    await test.info().attach(`sway-pager-${phase}-ipc`, { body: JSON.stringify(records), contentType: "application/json" });
+    if (phase === "on2") {
+      const reply = JSON.parse(await readTmp(page, "sfwbar-switch.raw", /^\s*\[/));
+      expect(Array.isArray(reply) && reply.length > 0 && reply.every((row: { success: boolean }) => row.success === true),
+        "the actual workspace-switch IPC response must acknowledge success").toBe(true);
+    }
+    return records;
   };
   const focusedWorkspace = (evidence: WorkspaceEvidence, name: string) => {
     expect(evidence.workspaces.filter(ws => ws.focused).map(ws => ws.name)).toEqual([name]);
@@ -505,8 +523,7 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
   try {
     await typePhysicalText(page, snapshotFunction + "sfw_snap before && "
       + "swaymsg -r 'workspace 2' > /tmp/sfwbar-switch.raw && "
-      + "jq -e 'length > 0 and all(.[]; .success == true)' /tmp/sfwbar-switch.raw > /tmp/sfwbar-switch-checked && "
-      + "sfw_snap on2; " + report("on2", ["before", "on2"]), { delay: 20 });
+      + "sfw_snap on2; " + report("on2"), { delay: 20 });
     const [before, on2] = await readEvidence("on2");
     expect(before.phase).toBe("before"); expect(on2.phase).toBe("on2");
     focusedWorkspace(before, "1"); focusedWorkspace(on2, "2");
@@ -535,7 +552,7 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
     // A query typed into the returned original shell must execute there.
     // Merely seeing a pager repaint or another client cannot satisfy this.
     await scene(page).focus();
-    await typePhysicalText(page, "sfw_snap returned; " + report("returned", ["returned"]), { delay: 20 });
+    await typePhysicalText(page, "sfw_snap returned; " + report("returned"), { delay: 20 });
     const [returned] = await readEvidence("returned");
     expect(returned.phase).toBe("returned"); focusedWorkspace(returned, "1");
     expect(returned.windows).toEqual([original]);
@@ -544,8 +561,8 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
     await screenshot(page, "sway-sfwbar-workspace-1-returned", await paint(page));
     await scene(page).focus();
   } catch (error) {
-    // Keep raw native IPC as failure evidence; normal passes read only the
-    // compact projection. These are actual VFS files, never guest-memory views.
+    // Keep raw native IPC as failure evidence as well as the projected
+    // records. These are actual VFS files, never guest-memory views.
     for (const name of ["before-workspaces", "before-tree", "on2-workspaces", "on2-tree", "returned-workspaces", "returned-tree", "switch"]) {
       try {
         const raw = await readTmp(page, `sfwbar-${name}.raw`, /^\s*[\[{]/, 8_000);
@@ -558,6 +575,7 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
 
 for (const compositor of ["sway", "labwc"] as const) {
   test(`${compositor}: SFWBar native Start launches Terminal, focuses and closes clients, and exits with its compositor`, async ({ page }) => {
+    test.skip(compositor === "labwc", "Labwc desktop is explicitly retired from the supported gallery and default build; its package sources remain available");
     test.setTimeout(600_000);
     // Why: the GTK panel is an explicit preset; plain Sway owns its native bar.
     await gotoMachine(page, compositor === "sway" ? "sway-sfwbar" : compositor);
@@ -597,12 +615,10 @@ for (const compositor of ["sway", "labwc"] as const) {
     expect(inventory).toMatch(/^DATA_HOME=\nDATA_DIRS=\n/);
     expect([...inventory.matchAll(/^FILE:(.+)$/gm)].map(m => m[1]).sort()).toEqual([
       "/usr/share/applications/kandelo-terminal.desktop", "/usr/share/applications/scummvm.desktop",
-      "/usr/share/applications/wayland-demo.desktop",
     ]);
     expect(inventory).toContain("Name=Terminal\n");
     expect(inventory).toContain("Categories=System;TerminalEmulator;");
     expect(inventory).toContain("Categories=Game;");
-    expect(inventory).toContain("Categories=Graphics;");
     await processes(page, 1);
 
     const panel = await paint(page);

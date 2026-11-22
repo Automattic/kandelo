@@ -1,0 +1,40 @@
+kind = "program"
+name = "desktop-data"
+version = "0.1.0"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["libinput@1.28.1", "xkeyboard-config@2.48"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/desktop-data/build-desktop-data.sh"
+toolchain = "none"
+
+# ZIPs are data artifacts; no Wasm instrumentation or compiler is involved.
+[[outputs]]
+name = "desktop-data"
+wasm = "kandelo-desktop-data.zip"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "xkeyboard-config"
+wasm = "xkeyboard-config.zip"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "libinput-quirks"
+wasm = "libinput-quirks.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

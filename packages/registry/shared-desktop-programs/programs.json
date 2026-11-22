@@ -109,5 +109,11 @@
     "dependency": "swaybg",
     "artifact": "swaybg.wasm",
     "guestPath": "/usr/bin/swaybg"
+  },
+  {
+    "id": "sfwbar",
+    "dependency": "sfwbar",
+    "artifact": "sfwbar.wasm",
+    "guestPath": "/usr/bin/sfwbar"
   }
 ]

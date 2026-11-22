@@ -1,27 +1,32 @@
 # SFWBar
 
-Pinned upstream `v1.0_beta17` supplies a shared panel for the Sway and Labwc
-demos. The configuration selects a Start menu, a task list with focus and
-window operations, and a clock. The menu enumerates actual XDG desktop
-entries for Terminal, ScummVM and Paint. It launches ordinary guest programs.
+Pinned upstream `v1.0_beta17` supplies the panel for the Sway configuration.
+The configuration selects a Start menu, a task list with focus and window
+operations, a workspace pager and a clock. The menu enumerates actual XDG
+desktop entries for Terminal and ScummVM and launches guest programs.
+The Labwc recipe remains available for explicit builds but is excluded from
+the supported gallery and default build.
 
 Sway supervises `/usr/bin/kandelo-sfwbar`, which selects the packaged
 configuration and forwards its bar ID and inherited Wayland socket. Sway's
 `swaybar_command` takes an executable pathname, so arguments belong in this
-launcher. Labwc starts SFWBar through its configured shell session.
+launcher.
 
 The recipe uses the normal SDK, dependency resolver and fork instrumenter.
-GTK3 and SFWBar's core link statically; the unchanged `appmenu` implementation
-is a genuine shared WebAssembly module at `/usr/lib/sfwbar/appmenu.so`.
-Its application imports must resolve from the main executable before and
-when checked after instrumentation. Relocation objects come from the real
-dynamic linker; exact versioned fork imports come from each module's process
-activation owner. They are not application exports. The recipe decodes real
-modules with the declared Node runtime, checks symbol kinds and fails on
-malformed artifacts or missing symbols. It avoids linking a second GTK
-object/type registry and preserves upstream module signature, version and
-initialization checks. This symbol check does not instantiate the module or
-establish working runtime activation and menu behavior.
+GTK3, the SFWBar core and the actual upstream `modules/appmenu.c` link in
+one executable. An explicit Meson option retains `module("appmenu")` as the
+configuration entry point and calls its unchanged main-thread initializer.
+This avoids a second GTK object/type registry and supports the intentional
+boundary that grouped programs cannot load dynamic side modules. The recipe
+checks that the initializer is exported, but that alone does not establish
+working runtime menu activation or launch behavior. The static recipe exports
+only the normal SDK surface and its menu initializer: the previous
+`--export-all` was needed for dynamic menu imports and unnecessarily retained
+unreachable GTK functions in the static build. Size and rendered behavior
+still require the rebuilt package. Other module names
+retain upstream loader behavior; the packaged configuration requests only
+the built-in application menu. Ordinary and SDK-prepared shared-memory
+artifacts use the same implementation.
 
 Other optional modules for audio services, networking, Bluetooth,
 notifications, idle protocols and keyboard layout are disabled explicitly.

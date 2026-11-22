@@ -1017,7 +1017,13 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **spawn** — the page calls `kernel.spawn(programBytes, argv)` for each binary on a booted machine, and the Rust kernel allocates the PID before the worker launches it.
 
-### Wayland desktop demo
+### Desktop demo selection
+
+The supported desktop selection is Cage with Foot, Sway with its native bar, and the Sway configuration using SFWBar. The gallery no longer exposes labwc, Omarchy or the custom Wayland desktop. Their recipes and sources are retained for explicit follow-up builds, while the normal supported build excludes their exclusive dependencies, including Quickshell/Qt and the custom compositor. The `desktop-data` package supplies shared fonts, keymaps, Foot and Sway configuration without compiling those retired programs.
+
+The retained gallery profiles now select the authored `browser-shared-desktop` product, a small rootfs image with package-owned lazy program/data references. The browser enables its trusted memory group for a temporary machine; ordinary shell and PHP products keep their own execution and storage behavior. Custom images cannot request this host capability through metadata. Canonical builds and real gallery execution remain validation gates for this migration. SFWBar now packages its real application-menu implementation in the main executable to avoid unsupported grouped side modules. Its rendered menu and application-launch checks remain integration requirements; retaining a profile in the source does not establish successful grouped execution.
+
+### Wayland desktop demo (retired from the default build)
 
 The Wayland desktop machine (launched from the gallery, or directly with
 `?vfs=<shell image>&profile=wayland`) boots four programs:
@@ -1350,7 +1356,7 @@ and in the browser through the Omarchy machine
 (`apps/browser-demos/test/kandelo-omarchy.spec.ts`, including the
 eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
-### Omarchy desktop demo
+### Omarchy desktop demo (retired from the default build)
 
 The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`)
 is the tiling desktop above plus the shell that makes it a desktop: a

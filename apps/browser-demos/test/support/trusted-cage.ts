@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { expect, type Page, type TestInfo } from "../../playwright-test";
 import { cageFootPromptRows } from "../fixtures/cage-foot-prompt";
 import { setInternalsOpen } from "./dock";
-import { waitForMachineBootInput } from "./kandelo-machine";
+import { gotoMachine, waitForMachineBootInput } from "./kandelo-machine";
 import { typePhysicalText } from "./physical-typing";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./browser-memory-boundary";
 
@@ -118,10 +118,13 @@ export class CageSession {
     }, { timeout: 30_000 }).toBe(true);
   }
 
-  async boot() {
+  async boot(canonicalProfile?: "cage") {
     this.record({ stage: "boot" });
     await installBrowserMemoryBoundaryProbe(this.page);
-    await this.page.goto("./", { waitUntil: "domcontentloaded" });
+    if (canonicalProfile) {
+      this.record({ imageSource: "canonical browser-shared-desktop product" });
+      await gotoMachine(this.page, canonicalProfile);
+    } else await this.page.goto("./", { waitUntil: "domcontentloaded" });
     await waitForMachineBootInput(this.page);
     await setInternalsOpen(this.page, true);
     await expect.poll(async () => (await this.page.locator(".ksys-line").allInnerTexts()).join("\n"),

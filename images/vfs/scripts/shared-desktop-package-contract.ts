@@ -15,8 +15,11 @@ export const sharedDesktopPackageArchives = sharedDesktopPackagePrograms.map(pro
 
 /** Partial images deliberately install only named packages, not all build dependencies. */
 export const SHARED_DESKTOP_IMAGE_PACKAGES = [
-  'shared-desktop-programs', 'cage', 'foot', 'sway', 'swaybg',
+  'shared-desktop-programs', 'cage', 'foot', 'sway', 'swaybg', 'sfwbar',
   'freeciv-browser-bundle', 'scummvm-static', 'curl', 'unzip', 'sysklogd',
-  'wayland-demo', 'bibata-cursor-theme',
+  'desktop-data', 'bibata-cursor-theme',
 ] as const;
 export const SHARED_DESKTOP_PARTIAL_COMMAND = './run.sh partial shell ' + SHARED_DESKTOP_IMAGE_PACKAGES.join(' ');
+
+/** Authored metadata for canonical and selected development desktop builds. */
+export const SHARED_DESKTOP_DEMO_CONFIG_PATH = new URL('../config/shared-desktop-demo.json', import.meta.url);

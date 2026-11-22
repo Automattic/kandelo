@@ -5,6 +5,8 @@ import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine"
 import { setInternalsOpen } from "./support/dock";
 import { workspaceButtonPixels } from "./support/sway-workspace-pixels";
 import { typePhysicalText } from "./support/physical-typing";
+import { configureNewComputer, bootStoredComputer } from "./support/computer-library";
+import { runTerminalCommand } from "./support/terminal-command";
 import { waitForSwayFootPrompt } from "./support/sway-foot-prompt";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -505,23 +507,23 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
 });
 
 
-/** Activity launch uses its own login/PTY; it must exercise the same real keys. */
-test("Sway Activity from shell opens another tiled Foot with Alt+Enter and exits cleanly", async ({ page }, testInfo) => {
+/** The gallery changes machines; the ordinary shell keeps its own filesystem. */
+test("Sway gallery launch preserves the shell, tiles another Foot and exits cleanly", async ({ page }, testInfo) => {
   test.setTimeout(420_000);
   await gotoMachine(page, "shell");
   await waitForMachineBootInput(page);
   await expect.poll(() => terminalText(page), { timeout: 120_000 })
     .toMatch(/maker@[^\r\n]*[$]\s*$/);
-  const computerUrl = page.url();
-  await page.getByRole("button", { name: "Activities", exact: true }).click();
-  const activities = page.getByRole("region", { name: "Installed activities" });
-  await activities.getByRole("button", { name: "Apps & Tools", exact: true }).click();
-  const sway = activities.locator('[data-image-activity="sway"]');
-  await expect(sway).toBeVisible({ timeout: 60_000 });
-  await expect(sway.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
-  await sway.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(activities).not.toBeVisible({ timeout: 180_000 });
-  expect(page.url(), "launch the Activity on this shell computer").toBe(computerUrl);
+  const shellId = new URL(page.url()).searchParams.get("computer");
+  expect(shellId).not.toBeNull();
+  await runTerminalCommand(page,
+    "printf 'ordinary-shell-proof\\n' > /home/projects/desktop-gallery-proof; echo DESKTOP_GALLERY_WRITTEN", "DESKTOP_GALLERY_WRITTEN");
+  await configureNewComputer(page, "sway");
+  await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
+  await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
+  await waitForMachineBootInput(page);
+  expect(new URL(page.url()).searchParams.get("computer"), "desktop preview runs in RAM").toBeNull();
 
   await openSurface(page, "Graphics");
   await expect(canvasLocator(page)).toBeVisible({ timeout: 30_000 });
@@ -582,6 +584,11 @@ test("Sway Activity from shell opens another tiled Foot with Alt+Enter and exits
     hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
   })).toHaveCount(0, { timeout: 90_000 });
   expect(await displayOwner(page)).toBe(0);
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await bootStoredComputer(page, shellId!);
+  await waitForMachineBootInput(page);
+  await runTerminalCommand(page,
+    "test \"$(cat /home/projects/desktop-gallery-proof)\" = ordinary-shell-proof && echo DESKTOP_GALLERY_RESTORED", "DESKTOP_GALLERY_RESTORED");
 });
 
 for (const deviceScaleFactor of [1, 2]) {
@@ -634,7 +641,7 @@ for (const deviceScaleFactor of [1, 2]) {
       test.setTimeout(300_000);
       // These are the normal resolver-owned archive bytes mounted by the
       // shell image at /usr/share/kandelo, not a test-only substitute config.
-      const zip = new Uint8Array(readFileSync(resolveBinary("programs/wayland-demo/kandelo-desktop-data.zip")));
+      const zip = new Uint8Array(readFileSync(resolveBinary("programs/desktop-data/kandelo-desktop-data.zip")));
       const entries = parseZipCentralDirectory(zip);
       const member = (path: string) => {
         const entry = entries.find(entry => entry.fileName === path);

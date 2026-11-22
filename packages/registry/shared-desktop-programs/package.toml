@@ -5,8 +5,8 @@ version = "0.1.0"
 kernel_abi = 56
 arches = ["wasm32"]
 depends_on = [
+  "desktop-data@0.1.0",
   "freeciv-browser-bundle@3.2.6",
-  "wayland-demo@0.1.0",
   "bibata-cursor-theme@2.0.7",
   "cage@0.3.1",
   "foot@1.17.2",
@@ -21,7 +21,8 @@ depends_on = [
   "login@0.1.0",
   "sysklogd@2.8.0",
   "sway@1.12",
-  "swaybg@1.2.1"
+  "swaybg@1.2.1",
+  "sfwbar@1.0_beta17"
 ]
 
 [source]
@@ -129,6 +130,11 @@ fork_instrumentation = "disabled"
 [[outputs]]
 name = "swaybg"
 wasm = "swaybg.zip"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "sfwbar"
+wasm = "sfwbar.zip"
 fork_instrumentation = "disabled"
 
 [[runtime_files]]

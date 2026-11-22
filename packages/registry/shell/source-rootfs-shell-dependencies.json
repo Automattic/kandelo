@@ -37,11 +37,6 @@
       "role": "lazy-file"
     },
     {
-      "name": "wayland-demo",
-      "version": "0.1.0",
-      "role": "lazy-file"
-    },
-    {
       "name": "espeak-ng",
       "version": "1.52.0",
       "role": "lazy-file"
@@ -197,11 +192,6 @@
       "role": "lazy-file"
     },
     {
-      "name": "labwc",
-      "version": "0.20.2",
-      "role": "lazy-file"
-    },
-    {
       "name": "sfwbar",
       "version": "1.0_beta17",
       "role": "lazy-file"
@@ -209,21 +199,6 @@
     {
       "name": "swaybg",
       "version": "1.2.1",
-      "role": "lazy-file"
-    },
-    {
-      "name": "dbus",
-      "version": "1.14.10",
-      "role": "lazy-file"
-    },
-    {
-      "name": "qtgallery",
-      "version": "0.1.0",
-      "role": "lazy-file"
-    },
-    {
-      "name": "quickshell",
-      "version": "0.3.2",
       "role": "lazy-file"
     },
     {
@@ -402,11 +377,6 @@
       "role": "lazy-archive"
     },
     {
-      "name": "dbus-docs",
-      "version": "1.14.10",
-      "role": "lazy-archive"
-    },
-    {
       "name": "foot-docs",
       "version": "1.17.2",
       "role": "lazy-archive"
@@ -414,11 +384,6 @@
     {
       "name": "git-docs",
       "version": "2.47.1",
-      "role": "lazy-archive"
-    },
-    {
-      "name": "labwc-docs",
-      "version": "0.20.2",
       "role": "lazy-archive"
     },
     {
@@ -542,22 +507,12 @@
       "role": "lazy-archive"
     },
     {
-      "name": "wayland-demo-docs",
-      "version": "0.1.0",
-      "role": "lazy-archive"
-    },
-    {
       "name": "sdl2-demo-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
     },
     {
       "name": "kandelo-exchange-docs",
-      "version": "0.1.0",
-      "role": "lazy-archive"
-    },
-    {
-      "name": "qtgallery-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
     },
@@ -579,11 +534,6 @@
     {
       "name": "binaryen-docs",
       "version": "133",
-      "role": "lazy-archive"
-    },
-    {
-      "name": "quickshell-docs",
-      "version": "0.3.2",
       "role": "lazy-archive"
     },
     {
@@ -940,6 +890,11 @@
       "name": "sysklogd",
       "version": "2.8.0",
       "role": "lazy-file"
+    },
+    {
+      "name": "desktop-data",
+      "version": "0.1.0",
+      "role": "eager-file"
     }
   ]
 }

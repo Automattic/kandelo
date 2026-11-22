@@ -18,7 +18,7 @@
 // unbuilt product rejects when it is asked for, not at module load, so a
 // worktree with only some images built can still run the specs for those.
 
-import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
+import { CANONICAL_SHELL_IMAGE_URL as shellVfsUrl } from "../../pages/kandelo/kernel-host/canonical-shell-image";
 import {
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
@@ -31,6 +31,8 @@ type OptionalBinaryImporters = Record<string, () => Promise<string>>;
 // rewrites `import.meta.glob` by its literal specifier and importer, so the
 // specifier cannot be shared through a variable or a helper.
 const OPTIONAL_BINARY_VFS_URLS = {
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/shared-desktop.vfs.zst", { query: "?url", import: "default" }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/shared-desktop.vfs.zst", { query: "?url", import: "default" }),
   ...import.meta.glob("../../../../local-binaries/programs/wasm32/web-stack-vfs.vfs.zst", { query: "?url", import: "default" }),
   ...import.meta.glob("../../../../binaries/programs/wasm32/web-stack-vfs.vfs.zst", { query: "?url", import: "default" }),
   ...import.meta.glob("../../../../local-binaries/programs/wasm32/wordpress-family-vfs.vfs.zst", { query: "?url", import: "default" }),
@@ -76,6 +78,7 @@ const OPTIONAL_BINARY_PRODUCTS: Record<
   string,
   { label: string; relPaths: readonly string[] }
 > = {
+  "browser-shared-desktop": { label: "shared-desktop.vfs.zst", relPaths: ["../../../../local-binaries/programs/wasm32/shared-desktop.vfs.zst", "../../../../binaries/programs/wasm32/shared-desktop.vfs.zst"] },
   "browser-web-stack": { label: "web-stack-vfs.vfs.zst", relPaths: ["../../../../local-binaries/programs/wasm32/web-stack-vfs.vfs.zst", "../../../../binaries/programs/wasm32/web-stack-vfs.vfs.zst"] },
   "browser-wordpress-family": { label: "wordpress-family-vfs.vfs.zst", relPaths: ["../../../../local-binaries/programs/wasm32/wordpress-family-vfs.vfs.zst", "../../../../binaries/programs/wasm32/wordpress-family-vfs.vfs.zst"] },
   "browser-redis": { label: "redis-vfs.vfs.zst", relPaths: ["../../../../local-binaries/programs/wasm32/redis-vfs.vfs.zst", "../../../../binaries/programs/wasm32/redis-vfs.vfs.zst"] },
@@ -118,7 +121,10 @@ const OPTIONAL_DEMO_PRODUCTS: Record<string, OptionalDemoVfsImage> = {
 export class VfsProductImageNotBuiltError extends Error {}
 
 export async function vfsProductImageUrl(productId: string): Promise<string> {
-  if (productId === "browser-main-shell") return shellVfsUrl;
+  if (productId === "browser-main-shell") {
+    if (shellVfsUrl === null) throw new VfsProductImageNotBuiltError("shell.vfs.zst is not built. Run: ./run.sh local-build");
+    return shellVfsUrl;
+  }
 
   const optionalDemo = OPTIONAL_DEMO_PRODUCTS[productId];
   if (optionalDemo !== undefined) {

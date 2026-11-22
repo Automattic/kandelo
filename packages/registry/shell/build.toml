@@ -1,5 +1,9 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
+  "packages/registry/rootfs/package.toml",
+  "scripts/source-rootfs-shell-dependency-contract.mjs",
+  "images/vfs/config/shared-desktop-demo.json",
+  "host/src",
   "images/vfs/scripts/shared-desktop-package.ts",
   "images/vfs/scripts/shared-desktop-package-contract.ts",
   "images/vfs/scripts/trusted-desktop-program.ts",
@@ -85,7 +89,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 103
+revision = 104
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

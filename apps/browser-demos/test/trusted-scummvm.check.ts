@@ -119,7 +119,7 @@ test('static ScummVM plays a game and quits cleanly through the normal Cage app'
   };
   try {
     phase('boot');
-    await session.boot();
+    await session.boot(process.env.KANDELO_TEST_CANONICAL_DESKTOP === "1" ? "cage" : undefined);
     await expect.poll(() => kernelResponses.map(response => response.sha256), { timeout: 30_000 }).toContain(expectedKernel);
     phase('launch-game', { expectedKernel, kernelResponses, responseErrors,
       scope: 'Normal SDK/package/image/Cage game, physical input, native exit status and cleanup; no audio or performance claim' });

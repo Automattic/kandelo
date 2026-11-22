@@ -24,7 +24,7 @@ OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"
 ROOTFS_DIR="${WASM_POSIX_DEP_ROOTFS_DIR:-}"
 BASH_DIR="${WASM_POSIX_DEP_BASH_DIR:-}"
-WAYLAND_DEMO_DIR="${WASM_POSIX_DEP_WAYLAND_DEMO_DIR:-}"
+DESKTOP_DATA_DIR="${WASM_POSIX_DEP_DESKTOP_DATA_DIR:-}"
 ESPEAK_NG_DIR="${WASM_POSIX_DEP_ESPEAK_NG_DIR:-}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-}"
@@ -144,14 +144,12 @@ BASH="$BASH_DIR/bash.wasm"
 # device quirks (unpacked at /usr/share/libinput), lazy xkeyboard-config
 # rules at /usr/share/X11/xkb, and the speech data.
 SELECTED_INPUTS=()
-if selected wayland-demo; then
-    [ -n "$WAYLAND_DEMO_DIR" ] || fail "WASM_POSIX_DEP_WAYLAND_DEMO_DIR is required"
-    require_real_directory WASM_POSIX_DEP_WAYLAND_DEMO_DIR "$WAYLAND_DEMO_DIR"
-    for input in wldesktop:wldesktop omarchydesktop:omarchydesktop \
-        desktop-data:kandelo-desktop-data.zip libinput-quirks:libinput-quirks.zip \
-        xkeyboard-config:xkeyboard-config.zip; do
-        require_regular_file "${input%%:*} dependency output" "$WAYLAND_DEMO_DIR/${input#*:}"
-        SELECTED_INPUTS+=("--${input%%:*}" "$WAYLAND_DEMO_DIR/${input#*:}")
+if selected desktop-data; then
+    [ -n "$DESKTOP_DATA_DIR" ] || fail "WASM_POSIX_DEP_DESKTOP_DATA_DIR is required"
+    require_real_directory WASM_POSIX_DEP_DESKTOP_DATA_DIR "$DESKTOP_DATA_DIR"
+    for input in desktop-data:kandelo-desktop-data.zip libinput-quirks:libinput-quirks.zip xkeyboard-config:xkeyboard-config.zip; do
+        require_regular_file "${input%%:*} dependency output" "$DESKTOP_DATA_DIR/${input#*:}"
+        SELECTED_INPUTS+=("--${input%%:*}" "$DESKTOP_DATA_DIR/${input#*:}")
     done
 fi
 if selected espeak-ng; then

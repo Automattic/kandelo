@@ -1,0 +1,50 @@
+schema = 1
+id = "browser-shared-desktop"
+architecture = "wasm32"
+output = "shared-desktop.vfs.zst"
+builder = "packages/registry/shared-desktop/build-shared-desktop.sh"
+
+[[software.package]]
+name = "shared-desktop"
+outputs = ["shared-desktop"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/bin/sh", "/sbin/kandelo-shell-init"]
+cwd = "/home/maker"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/home/maker"
+HISTFILE = "/home/maker/.bash_history"
+LANG = "en_US.UTF-8"
+LOGNAME = "maker"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+PS1 = "kandelo$ "
+SSL_CERT_DIR = "/etc/ssl/certs"
+SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt"
+TERM = "xterm-256color"
+TMPDIR = "/tmp"
+USER = "maker"
+
+[evidence.node]
+test = "shared-desktop-node-startup"
+
+[evidence.browser]
+test = "shared-desktop-browser-startup"

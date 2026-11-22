@@ -252,7 +252,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: [] },
   { id: "ffplay", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffplay.wasm", vfsPath: "/usr/bin/ffplay", symlinks: [] },
   {
-    id: "git-remote-http",
+    id: "git-remote-http", dependency: "git",
     resolverPath: "programs/git/git-remote-http.wasm",
     vfsPath: "/usr/bin/git-remote-http", symlinks: ["/usr/bin/git-remote-https", "/usr/bin/git-remote-ftp", "/usr/bin/git-remote-ftps"],
   },
@@ -339,14 +339,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
     mode: 0o755,
   },
   {
-    id: "sfwbar-appmenu",
-    dependency: "sfwbar",
-    resolverPath: "programs/sfwbar/appmenu.so",
-    vfsPath: "/usr/lib/sfwbar/appmenu.so",
-    symlinks: [],
-    mode: 0o644,
-  },
-  {
     id: "sfwbar-config",
     dependency: "sfwbar",
     resolverPath: "programs/sfwbar/sfwbar.config",
@@ -394,47 +386,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [],
     mode: 0o644,
   },
-  {
-    id: "sfwbar-wayland-demo-desktop",
-    dependency: "sfwbar",
-    resolverPath: "programs/sfwbar/wayland-demo.desktop",
-    vfsPath: "/usr/share/applications/wayland-demo.desktop",
-    symlinks: [],
-    mode: 0o644,
-  },
   // The stacking desktop and its notification client stay lazy like sway.
-  { id: "labwc", resolverPath: "programs/labwc/labwc.wasm", vfsPath: "/usr/bin/labwc", symlinks: [] },
-  {
-    id: "labnag",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labnag.wasm",
-    vfsPath: "/usr/bin/labnag",
-    symlinks: [],
-  },
-  {
-    id: "labwc-config",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labwc-rc.xml",
-    vfsPath: "/etc/xdg/labwc/rc.xml",
-    symlinks: [],
-    mode: 0o644,
-  },
-  {
-    id: "labwc-menu",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labwc-menu.xml",
-    vfsPath: "/etc/xdg/labwc/menu.xml",
-    symlinks: [],
-    mode: 0o644,
-  },
-  {
-    id: "labwc-foot-config",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labwc-foot.ini",
-    vfsPath: "/etc/xdg/labwc/foot.ini",
-    symlinks: [],
-    mode: 0o644,
-  },
   {
     id: "sway-config",
     dependency: "sway",
@@ -568,61 +520,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/share/retro-emulators/roms/240pSuite-snes-1.03.sfc",
     symlinks: [],
     mode: 0o644,
-  },
-  // The Omarchy shell (omarchydesktop starts it) and the Qt client the
-  // launcher offers. quickshell.wasm alone is 82 MB.
-  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/bin/quickshell", symlinks: [] },
-  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/bin/qtgallery", symlinks: [] },
-  {
-    id: "dbus",
-    resolverPath: "programs/dbus/dbus-daemon.wasm",
-    vfsPath: "/usr/bin/dbus-daemon", symlinks: [],
-  },
-  // The Wayland desktops' in-tree programs. The desktops' launchers exec them
-  // by name from PATH; a lazy file is an ordinary executable there, so only a
-  // machine that starts a desktop fetches them. notify-send statically links
-  // glib and gio (~5.8 MB), which alone would outweigh much of the eager image.
-  {
-    id: "wlcompositor",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlcompositor.wasm",
-    vfsPath: "/usr/bin/wlcompositor", symlinks: [],
-  },
-  {
-    id: "wlterm",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlterm.wasm",
-    vfsPath: "/usr/bin/wlterm", symlinks: [],
-  },
-  {
-    id: "wlclock",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlclock.wasm",
-    vfsPath: "/usr/bin/wlclock", symlinks: [],
-  },
-  {
-    id: "wlpaint",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlpaint.wasm",
-    vfsPath: "/usr/bin/wlpaint", symlinks: [],
-  },
-  {
-    id: "klauncher",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/klauncher.wasm",
-    vfsPath: "/usr/bin/klauncher", symlinks: [],
-  },
-  {
-    id: "notify-send",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/notify-send.wasm",
-    vfsPath: "/usr/bin/notify-send", symlinks: [],
-  },
-  {
-    id: "kclipd",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/kclipd.wasm",
-    vfsPath: "/usr/bin/kclipd", symlinks: [],
   },
   // The single-program machines' workloads. Each machine's profile command
   // execs its program, which is the first read of these bytes.

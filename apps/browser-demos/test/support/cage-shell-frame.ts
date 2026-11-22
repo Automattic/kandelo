@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 
 /** Observe shell output in the actual captured cage canvas, not its backing
- * OffscreenCanvas. WLTERM_READY precedes the shell's first PTY output. */
+ * OffscreenCanvas. Foot process creation precedes the shell's first PTY output. */
 export async function cageShellTextColumns(
   page: Page,
   png: Buffer,
@@ -16,13 +16,12 @@ export async function cageShellTextColumns(
       context.drawImage(bitmap, 0, 0);
       const sx = bitmap.width / output.width;
       const sy = bitmap.height / output.height;
-      // libkwl's client-side titlebar is 28 output pixels; wlterm renders
-      // 16px Inconsolata below it, with an 8px cell advance. Exclude the
-      // first cell: the empty grid already has an underline cursor there.
-      // Scale output coordinates to the screenshot, as the sway gate does.
+      // Full-screen Foot has no compositor titlebar. Sample the first text
+      // row in its configured 14pt font, excluding the first cursor cell.
+      // Scale output coordinates to the screenshot, as the Sway gate does.
       const { data, width, height } = context.getImageData(
-        Math.round(8 * sx), Math.round(28 * sy),
-        Math.round(120 * sx), Math.round(16 * sy),
+        Math.round(12 * sx), 0,
+        Math.round(160 * sx), Math.round(32 * sy),
       );
       let columns = 0;
       for (let x = 0; x < width; x++) {

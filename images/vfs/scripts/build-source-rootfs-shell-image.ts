@@ -1,5 +1,5 @@
-import { activateSharedDesktopPackage, assertSharedDesktopPackageActivation, sharedDesktopPackageDemo } from './shared-desktop-package';
-import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_IMAGE_PACKAGES, SHARED_DESKTOP_PARTIAL_COMMAND } from './shared-desktop-package-contract';
+import { activateSharedDesktopPackage, assertSharedDesktopPackageActivation } from './shared-desktop-package';
+import { SHARED_DESKTOP_PACKAGE, SHARED_DESKTOP_IMAGE_PACKAGES, SHARED_DESKTOP_PARTIAL_COMMAND, SHARED_DESKTOP_DEMO_CONFIG_PATH } from './shared-desktop-package-contract';
 /** Compose the canonical browser shell from resolver-owned package outputs. */
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -99,16 +99,14 @@ export interface SourceRootfsShellInputs {
   rootfsPath: string;
   caBundlePath: string;
   bashPath: string;
-  /** The five wayland-demo outputs; required when wayland-demo is selected. */
-  wldesktopPath?: string;
-  omarchydesktopPath?: string;
+  /** Data-only desktop archives, required when desktop-data is selected. */
   desktopDataPath?: string;
   libinputQuirksPath?: string;
   xkeyboardConfigPath?: string;
   /** Required when espeak-ng is selected. */
   espeakNgDataPath?: string;
   demoConfigPath: string;
-  demoProfileOverlayPath: string;
+  demoProfileOverlayPath?: string;
   /** The checked-in eager-content budget (packages/registry/shell/eager-budget.json). */
   eagerBudgetPath: string;
   outFile: string;
@@ -1463,7 +1461,7 @@ function dependencyEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
 }
 
-function strictResolverFromDependencyEnvironment(
+export function strictResolverFromDependencyEnvironment(
   env: NodeJS.ProcessEnv,
   declaredDependencies = SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET,
 ): ShellLazyArchiveResolver {
@@ -1745,19 +1743,19 @@ export async function buildSourceRootfsShellImage(
   // The rootfs owns its own eager programs (login); only what this composer
   // adds is held to the lazy default.
   const sourceEagerPrograms = eagerWasmPrograms(fs);
-  const composedDemo = composeSourceRootfsDemoConfig(
-    inputs.demoConfigPath,
-    inputs.demoProfileOverlayPath,
-  );
-  const useSharedDesktop = selection.kind === "partial" && includes(SHARED_DESKTOP_PACKAGE);
+  const useSharedDesktop = selection.kind === "desktop"
+    || (selection.kind === "partial" && includes(SHARED_DESKTOP_PACKAGE));
   if (useSharedDesktop) {
     const missing = SHARED_DESKTOP_IMAGE_PACKAGES.filter(pkg => !includes(pkg));
     if (missing.length) throw Error('Shared SDK artifacts need their ordinary image packages: ' + missing.join(', ') + '. Build: ' + SHARED_DESKTOP_PARTIAL_COMMAND);
   }
+  const composedDemo = useSharedDesktop
+    ? new Uint8Array(readFileSync(SHARED_DESKTOP_DEMO_CONFIG_PATH))
+    : composeSourceRootfsDemoConfig(inputs.demoConfigPath,
+      requiredInput(inputs.demoProfileOverlayPath, 'demo profile overlay'));
   const demoSelection = selectDemoConfig(composedDemo, selection);
-  const previewConfig = useSharedDesktop ? sharedDesktopPackageDemo(parseKandeloDemoConfig(new TextDecoder().decode(demoSelection.bytes))!) : null;
-  const demo = previewConfig ? new TextEncoder().encode(JSON.stringify(previewConfig, null, 2) + "\n") : demoSelection.bytes;
-  const includedProfiles = new Set(previewConfig ? Object.keys(previewConfig.profiles) : demoSelection.included);
+  const demo = demoSelection.bytes;
+  const includedProfiles = new Set(demoSelection.included);
   const scummvmCatalog = loadScummvmFreewareCatalog();
   // Read first so a malformed budget fails before any composition work.
   const eagerBudget = readImageEagerBudget(inputs.eagerBudgetPath);
@@ -1791,16 +1789,8 @@ export async function buildSourceRootfsShellImage(
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
   const caBundle = readRegularInput(inputs.caBundlePath, "rootfs CA bundle dependency");
-  const desktop = includes("wayland-demo")
+  const desktop = includes("desktop-data")
     ? {
-      wldesktop: readRegularInput(
-        requiredInput(inputs.wldesktopPath, "the wldesktop launcher"),
-        "wldesktop launcher dependency",
-      ),
-      omarchydesktop: readRegularInput(
-        requiredInput(inputs.omarchydesktopPath, "the omarchydesktop launcher"),
-        "omarchydesktop launcher dependency",
-      ),
       dataPath: requiredInput(inputs.desktopDataPath, "the desktop data archive"),
       xkeyboardConfigPath: requiredInput(inputs.xkeyboardConfigPath, "the xkeyboard-config archive"),
       libinputQuirks: readRegularInput(
@@ -1843,14 +1833,6 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(fs, selection);
 
   ensureDirRecursive(fs, "/usr/bin");
-  // The desktops' launchers are small scripts, written eagerly. Every Wasm
-  // program they exec (wlcompositor, wlterm, foot, Quickshell, ...)
-  // is a lazy file registered by the overlay above, so a machine that never
-  // starts a desktop never fetches them.
-  if (desktop !== null) {
-    writeVfsBinary(fs, "/usr/bin/wldesktop", desktop.wldesktop, 0o755);
-    writeVfsBinary(fs, "/usr/bin/omarchydesktop", desktop.omarchydesktop, 0o755);
-  }
   // WHY: CA, speech, cursor, keymap and desktop data need not be fetched to boot a shell.
   // Register the exact package ZIPs at their compiled-in guest paths: normal
   // open/read triggers a verified first-use fetch on both Node and browser.
@@ -1985,6 +1967,13 @@ export async function buildSourceRootfsShellImage(
     fs.chmod(path, 0o755);
   }
   if (includes("sdl2-demo")) writeSdl2ShaderPresets(fs);
+  // The trusted desktop exposes the standard command through the real static
+  // engine variant. Its package data/launcher stay authoritative; grouped
+  // execution cannot instantiate ScummVM's dynamic engine side modules.
+  if (useSharedDesktop && includes("scummvm-static") && !includes("scummvm")) {
+    fs.symlink("/usr/bin/scummvm-static", "/usr/bin/scummvm");
+    fs.symlink("/usr/bin/scummvm-static-play", "/usr/bin/scummvm-play");
+  }
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
@@ -1998,7 +1987,7 @@ export async function buildSourceRootfsShellImage(
   assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
   // Normal composition and source-preservation checks above run first. Only
-  // this explicit partial package may replace the validated executable closure.
+  // an explicitly selected desktop composition may replace the validated executable closure.
   const sharedDesktop = useSharedDesktop ? activateSharedDesktopPackage(fs, inputs.resolveArtifact) : null;
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
@@ -2091,11 +2080,9 @@ const REQUIRED_FLAGS = [
 
 /** Inputs only a selection that includes their package needs. */
 const SELECTED_INPUT_FLAGS: ReadonlyArray<{ flag: string; pkg: string }> = [
-  { flag: "--wldesktop", pkg: "wayland-demo" },
-  { flag: "--omarchydesktop", pkg: "wayland-demo" },
-  { flag: "--desktop-data", pkg: "wayland-demo" },
-  { flag: "--libinput-quirks", pkg: "wayland-demo" },
-  { flag: "--xkeyboard-config", pkg: "wayland-demo" },
+  { flag: "--desktop-data", pkg: "desktop-data" },
+  { flag: "--libinput-quirks", pkg: "desktop-data" },
+  { flag: "--xkeyboard-config", pkg: "desktop-data" },
   { flag: "--espeak-ng-data", pkg: "espeak-ng" },
 ];
 
@@ -2137,8 +2124,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs.zst> --ca-bundle <ca-certificates.zip> --bash <bash.wasm> " +
-          "--wldesktop <wldesktop> " +
-          "--omarchydesktop <omarchydesktop> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
           "--xkeyboard-config <xkeyboard-config.zip> " +
@@ -2180,8 +2165,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     rootfsPath: values.get("--rootfs")!,
     caBundlePath: values.get("--ca-bundle")!,
     bashPath: values.get("--bash")!,
-    wldesktopPath: values.get("--wldesktop"),
-    omarchydesktopPath: values.get("--omarchydesktop"),
     desktopDataPath: values.get("--desktop-data"),
     libinputQuirksPath: values.get("--libinput-quirks"),
     xkeyboardConfigPath: values.get("--xkeyboard-config"),

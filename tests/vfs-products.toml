@@ -173,3 +173,13 @@ browser = ["sqlite-suite-browser"]
 abi = "required"
 kernel = "required"
 host = "required"
+
+[[registrations]]
+product = "browser-shared-desktop"
+node = ["shared-desktop-node-startup"]
+browser = ["shared-desktop-browser-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "required"
+host = "required"
