@@ -223,15 +223,14 @@ pub(super) fn validate(
     if layout.source_sha256 != source_digest {
         return Err("shared-memory output source identity differs".into());
     }
-    let mut failures =
-        wasm_artifact_policy_failures_for(&program, ForkInstrumentationPolicy::Auto, &[]);
-    let facts = wasm_artifact::facts::read_artifact_facts(&program).map_err(|error| error.0)?;
     let mut extensions = wasm_artifact::program_extensions::IMPLEMENTED.to_vec();
     extensions.push(wasm_posix_shared::program_extensions::memory_group_v3::MODULE);
-    failures.extend(wasm_artifact::program_extensions::describe_failures(
-        &facts,
+    let mut failures = wasm_artifact_policy_failures_with_extensions(
+        &program,
+        ForkInstrumentationPolicy::Auto,
+        &[],
         &extensions,
-    ));
+    );
     let digest = crate::local_abi_identity::local_abi_contract_digest(
         &crate::repo_root(),
         wasm_posix_shared::ABI_VERSION,

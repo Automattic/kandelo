@@ -15804,6 +15804,14 @@ fn wasm_artifact_policy_failures_for(
     fork_instrumentation: ForkInstrumentationPolicy,
     required_exports: &[&str],
 ) -> Vec<String> {
+    wasm_artifact_policy_failures_with_extensions(bytes, fork_instrumentation, required_exports,
+        wasm_artifact::program_extensions::IMPLEMENTED)
+}
+
+fn wasm_artifact_policy_failures_with_extensions(
+    bytes: &[u8], fork_instrumentation: ForkInstrumentationPolicy,
+    required_exports: &[&str], supported: &[&str],
+) -> Vec<String> {
     if !is_wasm_bytes(bytes) {
         if required_exports.is_empty() {
             return Vec::new();
@@ -15841,7 +15849,7 @@ fn wasm_artifact_policy_failures_for(
     // executable/side module uses the shared process import audit, including
     // cache admission and direct installation, before publication.
     if required_exports != wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
-        match crate::package_imports::failures(bytes, &crate::repo_root()) {
+        match crate::package_imports::failures_with_extensions(bytes, &crate::repo_root(), supported) {
             Ok(import_failures) => failures.extend(import_failures),
             Err(error) => failures.push(format!("process import audit: {error}")),
         }
@@ -26227,6 +26235,22 @@ spdx = "TestLicense"
             sha_before, sha_after,
             "changing a program output's fork instrumentation policy must invalidate the cache key"
         );
+    }
+
+    #[test]
+    fn shared_memory_import_admission_requires_explicit_backend_policy() {
+        let mut supported = wasm_artifact::program_extensions::IMPLEMENTED.to_vec();
+        supported.push(wasm_posix_shared::program_extensions::memory_group_v3::MODULE);
+        for (name, memory, allowed) in [
+            ("memory", "memory 1 2 shared", true),
+            ("wrong", "memory 1 2 shared", false),
+            ("memory", "memory i64 1 2 shared", false),
+            ("memory", "global i32", false),
+        ] {
+            let bytes = wat::parse_str(format!(r#"(module (import "kandelo.memory-group.v3" "{name}" ({memory})))"#)).unwrap();
+            assert!(!wasm_artifact_policy_failures_for(&bytes, ForkInstrumentationPolicy::Auto, &[]).is_empty());
+            assert_eq!(wasm_artifact_policy_failures_with_extensions(&bytes, ForkInstrumentationPolicy::Auto, &[], &supported).is_empty(), allowed);
+        }
     }
 
     #[test]
