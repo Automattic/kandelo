@@ -38,6 +38,7 @@ import {
 import {
   describeWasmArtifactPolicyFailures,
   extractAbiVersion,
+  extractThreadSlotPreallocation,
   readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
@@ -4847,12 +4848,12 @@ function sendForkSyscall(
  *   they would clobber shared global state (e.g. resetting LOGGER::file_log_handler
  *   to NULL in MariaDB).
  *
- * Go's Kandelo modules instead have no Start section and use active data
- * segments. Thread instances must omit those segments rather than replaying
- * them over the already-running process memory.
+ * Go's Kandelo modules opt in to a preallocated thread arena, have no Start
+ * section, and use active data segments. Their thread instances must omit
+ * those segments to avoid overwriting live process memory.
  *
  * This function:
- * 1. Removes all-active data sections from modules without a Start section.
+ * 1. Removes all-active data sections for preallocating modules without a Start section.
  * 2. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
  * 3. Finds the constructor function by scanning the known LLVM helper exports
  *    for their common call target and replaces that function body with a no-op.
@@ -4914,7 +4915,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     offset += totalSize;
   }
 
-  if (!hasStartSection) {
+  if (!hasStartSection && extractThreadSlotPreallocation(bytes) === 1) {
     const dataSection = sections.find((section) => section.id === 11);
     const dataCountSection = sections.find((section) => section.id === 12);
     if (dataSection && !dataCountSection) {

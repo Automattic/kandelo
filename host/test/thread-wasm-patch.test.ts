@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT } from "../src/generated/abi";
 import { patchWasmForThread } from "../src/worker-main";
 
 function uleb(value: number): number[] {
@@ -86,10 +87,19 @@ const I32_RESULT = { params: [], results: [0x7f] };
 describe("patchWasmForThread", () => {
   it("does not replay active data over live shared memory when starting a thread", async () => {
     // Import the shared memory so both instances observe the same bytes.
+    const header = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    const sharedMemory = section(2, [1, ...name("env"), ...name("memory"), 2, 0x03, 1, 1]);
+    const activeData = section(11, [1, 0, 0x41, 0, 0x0b, 1, 42]);
+    const legacy = Uint8Array.from([...header, ...sharedMemory, ...activeData]).buffer;
+    expect(patchWasmForThread(legacy)).toBe(legacy);
     const importing = Uint8Array.from([
-      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-      ...section(2, [1, ...name("env"), ...name("memory"), 2, 0x03, 1, 1]),
-      ...section(11, [1, 0, 0x41, 0, 0x0b, 1, 42]),
+      ...header,
+      ...section(1, [1, 0x60, 0, 1, 0x7f]),
+      ...sharedMemory,
+      ...section(3, [1, 0]),
+      ...section(7, [1, ...name(PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT), 0, 0]),
+      ...section(10, [1, 4, 0, 0x41, 1, 0x0b]),
+      ...activeData,
     ]).buffer;
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
     await WebAssembly.instantiate(importing, { env: { memory } });
