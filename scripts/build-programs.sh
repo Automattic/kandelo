@@ -1411,6 +1411,9 @@ fi
 echo "Building example programs..."
 for src in "$REPO_ROOT/examples/"*.c; do
     [ -f "$src" ] || continue
+    # Skip mprotect_fiction_test.c — mprotect() does not link by default, so
+    # host/test/mprotect-fiction.test.ts builds it once per fiction selection
+    [ "$(basename "$src")" = "mprotect_fiction_test.c" ] && continue
     build_program "$src" "$REPO_ROOT/examples"
 done
 
