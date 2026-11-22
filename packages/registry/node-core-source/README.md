@@ -1,10 +1,15 @@
 # Pinned upstream Node source
 
-This source-only dependency supplies the complete Node 26.13.0 archive through
-the normal resolver. Its identity must match `third_party/nodejs/sources.json`.
-Consumers stage a private copy with `kandelo_package_stage_source_dependency`;
-the verified source cache remains immutable.
+This source-only package declares the Node.js 26.13.0 archive URL and SHA-256.
+The normal resolver downloads, verifies and caches it. Consumers use
+`kandelo_package_stage_source_dependency` to obtain a private work-directory copy.
+There is no checked-in upstream Node source tree.
 
-The runtime uses the original build inputs and complete native owners. Source
-availability neither selects a feature profile nor establishes runtime support.
-Unused V8 engine/compiler sources in the archive are not runtime requirements.
+`sources.json` and `target.json` describe the pinned release and selected inputs
+used by bridge generators. `spidermonkey-node-bridge/tools/stage-source-inputs.py`
+checks those file identities against the resolver-supplied tree and prepares
+transient generator inputs inside the consuming recipe's work directory.
+
+`generate-source-manifest.py` supports reviewed upstream upgrades. It emits
+identity metadata from an authenticated archive, not copies of upstream code.
+Source availability does not select a runtime profile or prove compatibility.

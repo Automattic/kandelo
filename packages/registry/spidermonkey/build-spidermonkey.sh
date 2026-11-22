@@ -459,8 +459,14 @@ PROBE
 fi
 # Compile the new upstream builtin compiler in the real Mozilla shell build.
 # It remains inactive until the genuine per-realm/native binding owner exists.
+NODE_SOURCE="$WASM_POSIX_DEP_WORK_DIR/node-source"
+kandelo_package_stage_source_dependency node-core-source "$NODE_SOURCE" "$WASM_POSIX_DEP_WORK_DIR"
+NODE_SOURCE_INPUTS="$WASM_POSIX_DEP_WORK_DIR/node-source-inputs"
+python3 "$REPO_ROOT/packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py" \
+    --source "$NODE_SOURCE" --manifest "$REPO_ROOT/packages/registry/node-core-source/sources.json" \
+    --output "$NODE_SOURCE_INPUTS"
 bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
-    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include"
+    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include" "$NODE_SOURCE_INPUTS"
 
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -I$V8_TRACING_PREFIX/include -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1"
@@ -474,7 +480,7 @@ if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
     export CXXFLAGS="$CXXFLAGS -DKANDELO_NATIVE_OWNER_PROBE=1"
 fi
 
-python3 "$REPO_ROOT/scripts/generate-nodejs-build-settings.py" \
+python3 "$REPO_ROOT/packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-build-settings.py" \
     --mozconfig "$MOZCONFIG_PATH" \
     --path-map "$WORK_DIR=/usr/src/kandelo-build/spidermonkey" \
     --path-map "$REPO_ROOT=/usr/src/kandelo" \

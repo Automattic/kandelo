@@ -3,15 +3,15 @@
 # This helper prepares build inputs; it neither activates nor executes Node JS.
 set -euo pipefail
 
-if [ "$#" -ne 6 ]; then
-    echo "usage: prepare-build.sh <repository> <Mozilla-source> <object-dir> <host-SDK-or-empty> <zlib-include> <zstd-include>" >&2
+if [ "$#" -ne 7 ]; then
+    echo "usage: prepare-build.sh <repository> <Mozilla-source> <object-dir> <host-SDK-or-empty> <zlib-include> <zstd-include> <Node-source-inputs>" >&2
     exit 2
 fi
 repo_root="$1"
 mozilla_source="$2"
 object_dir="$3"
 host_sdk="${4:-}"
-node_import="$repo_root/third_party/nodejs"
+node_import="$7"
 node_consumer="$repo_root/packages/registry/spidermonkey/node-upstream"
 shell_sources="$mozilla_source/js/src/shell/node-upstream"
 node_objects="$object_dir/node-upstream"
@@ -20,17 +20,17 @@ mkdir -p "$shell_sources" "$node_objects"
 mkdir -p "$shell_sources/v8-source-api"
 cp "$node_consumer/v8-source-api/v8-microtask.h" \
     "$node_consumer/v8-source-api/LICENSE" "$shell_sources/v8-source-api/"
-python3 "$repo_root/scripts/prepare-nodejs-string-metadata.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-string-metadata.py" \
     --manifest "$node_import/sources.json" --output "$shell_sources"
-python3 "$repo_root/scripts/prepare-nodejs-maybe-api.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-maybe-api.py" \
     --manifest "$node_import/sources.json" --output "$shell_sources"
-python3 "$repo_root/scripts/prepare-nodejs-fast-call-metadata.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-fast-call-metadata.py" \
     --manifest "$node_import/sources.json" --output "$shell_sources"
-python3 "$repo_root/scripts/prepare-nodejs-profiler-metadata.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-profiler-metadata.py" \
     --manifest "$node_import/sources.json" --output "$shell_sources"
-python3 "$repo_root/scripts/prepare-nodejs-regexp-property-api.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-regexp-property-api.py" \
     --manifest "$node_import/sources.json" --output "$shell_sources"
-python3 "$repo_root/scripts/prepare-nodejs-value-wire-api.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-value-wire-api.py" \
     --manifest "$node_import/sources.json" --output "$shell_sources"
 cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/build-profile.h" \
@@ -185,29 +185,29 @@ for name in ['zlib.h', 'zconf.h']:
     print(json.dumps({'resolvedHeader': str(zlib_include/name),
                       'bytes': len(source), 'sha256': hashlib.sha256(source).hexdigest()}))
 PY
-python3 "$repo_root/scripts/generate-nodejs-async-metadata.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-async-metadata.py" \
     --manifest "$node_import/sources.json" \
     --output "$mozilla_source/js/src/node-async-metadata.generated.h"
-python3 "$repo_root/scripts/generate-nodejs-types.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-types.py" \
     --manifest "$node_import/sources.json" \
     --output "$mozilla_source/js/src/node-types.generated.h"
-python3 "$repo_root/scripts/prepare-nodejs-codecs.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-codecs.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/codecs-upstream"
-python3 "$repo_root/scripts/prepare-nodejs-native-interrupts.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-native-interrupts.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/native-interrupt-upstream" \
     --patch "$node_consumer/native-source-patches/0001-native-interrupt-transport.patch"
-python3 "$repo_root/scripts/prepare-nodejs-options.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-options.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/options-upstream"
-python3 "$repo_root/scripts/prepare-nodejs-continuation.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-continuation.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/continuation-upstream"
-python3 "$repo_root/scripts/prepare-nodejs-tracing.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-tracing.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/tracing-upstream"
-python3 "$repo_root/scripts/prepare-nodejs-constants.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-constants.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/constants-upstream" \
     --zlib-include "$5" --zstd-include "$6"
@@ -224,10 +224,10 @@ fi
 # policy; it does not infer target layouts, host state or guest capabilities.
 clang++ -std=c++20 "${host_sdk_flags[@]}" \
     -I "$node_import/upstream/src" \
-    "$repo_root/scripts/nodejs-builtin-metadata.cpp" \
+    "$repo_root/packages/registry/spidermonkey-node-bridge/tools/nodejs-builtin-metadata.cpp" \
     "$node_import/upstream/src/builtin_info.cc" \
     -o "$node_objects/nodejs-builtin-metadata"
-python3 "$repo_root/scripts/generate-nodejs-source-registry.py" \
+python3 "$repo_root/packages/registry/spidermonkey-node-bridge/tools/generate-nodejs-source-registry.py" \
     --manifest "$node_import/sources.json" \
     --metadata-tool "$node_objects/nodejs-builtin-metadata" \
     --output "$mozilla_source/js/src/node-source-registry.generated.h"

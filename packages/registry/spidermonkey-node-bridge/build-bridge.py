@@ -99,14 +99,17 @@ def build(args):
                    for path in sorted(sources.rglob('*')) if path.is_file()]
     preparation = ['packages/registry/spidermonkey-node-bridge/build-bridge.py',
                    'packages/registry/spidermonkey-node-bridge/build-bridge.sh',
-                   'scripts/prepare-nodejs-string-metadata.py',
-                   'scripts/prepare-nodejs-maybe-api.py',
-                   'scripts/prepare-nodejs-fast-call-metadata.py',
-                   'scripts/prepare-nodejs-profiler-metadata.py',
-                   'scripts/prepare-nodejs-regexp-property-api.py',
-                   'scripts/prepare-nodejs-value-wire-api.py',
-                   'scripts/prepare-nodejs-native-interrupts.py',
-                   'scripts/prepare-nodejs-tracing.py']
+                   'packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py',
+                   'packages/registry/node-core-source/sources.json',
+                   'packages/registry/node-core-source/target.json',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-string-metadata.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-maybe-api.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-fast-call-metadata.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-profiler-metadata.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-regexp-property-api.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-value-wire-api.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-native-interrupts.py',
+                   'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-tracing.py']
     source_tree_hash = hashlib.sha256(json.dumps(source_tree, sort_keys=True,
                                                 separators=(',', ':')).encode()).hexdigest()
     cache_contract = {'schema': 1, 'engineIdentitySha256': digest(identity_path),
@@ -253,31 +256,38 @@ def build(args):
     diagnostic = (patched.stdout + patched.stderr).decode()
     if patched.returncode or re.search(r'fuzz|offset', diagnostic, re.I):
         raise ValueError('whole Unicode decoder patch failed: ' + diagnostic)
-    manifest = root / 'third_party/nodejs/sources.json'
+    source_inputs = work / 'node-source-inputs'
+    subprocess.run([
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py'),
+        '--source', str(args.node_source),
+        '--manifest', str(root / 'packages/registry/node-core-source/sources.json'),
+        '--output', str(source_inputs),
+    ], check=True)
+    manifest = source_inputs / 'sources.json'
     string_metadata = json.loads(subprocess.check_output([
-        'python3', str(root / 'scripts/prepare-nodejs-string-metadata.py'),
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-string-metadata.py'),
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     maybe_metadata = json.loads(subprocess.check_output([
-        'python3', str(root / 'scripts/prepare-nodejs-maybe-api.py'),
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-maybe-api.py'),
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     fast_metadata = json.loads(subprocess.check_output([
-        'python3', str(root / 'scripts/prepare-nodejs-fast-call-metadata.py'),
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-fast-call-metadata.py'),
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     profiler_metadata = json.loads(subprocess.check_output([
-        'python3', str(root / 'scripts/prepare-nodejs-profiler-metadata.py'),
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-profiler-metadata.py'),
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     regexp_property_metadata = json.loads(subprocess.check_output([
-        'python3', str(root / 'scripts/prepare-nodejs-regexp-property-api.py'),
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-regexp-property-api.py'),
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     value_wire_metadata = json.loads(subprocess.check_output([
-        'python3', str(root / 'scripts/prepare-nodejs-value-wire-api.py'),
+        'python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-value-wire-api.py'),
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     for script, destination, extra in [
         ('prepare-nodejs-native-interrupts.py', 'native-interrupt-upstream',
          ['--patch', str(sources / 'native-source-patches/0001-native-interrupt-transport.patch')]),
         ('prepare-nodejs-tracing.py', 'tracing-upstream', []),
     ]:
-        subprocess.run(['python3', str(root / 'scripts' / script), '--manifest',
+        subprocess.run(['python3', str(root / 'packages/registry/spidermonkey-node-bridge/tools' / script), '--manifest',
                         str(manifest), '--output', str(staged / destination), *extra], check=True)
 
     cflags = shlex.split(subprocess.check_output(

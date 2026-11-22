@@ -14,4 +14,4 @@ membership is added by this package.
 
 The identified consumer passes seventeen selected nbytes/simdutf controls on
 Node, Chromium, Firefox and WebKit. It links from relocated package copies to
-check the installed metadata. See [the focused evidence](../../../tests/nodejs/upstream/native-codec-engine-check.json).
+check the installed metadata. See the package-owned test sources.

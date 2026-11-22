@@ -15,7 +15,7 @@ posix-hrtime.c for CMAKE_SYSTEM_NAME=Kandelo. It never defines __linux__.
 Revision 4 makes the installed static pkg-config paths relative to the pkg-config
 file. The revision 3 and revision 4 runtime archives are byte-identical; relocated
 CMake and pkg-config tracing consumers pass on Node. See
-[v8-tracing-component-check.json](../../../tests/nodejs/upstream/v8-tracing-component-check.json).
+the package-owned test sources.
 
 Consumers must use the installed CMake target libuv::uv_a or
 pkg-config --cflags --libs libuv-static. Both supply
@@ -41,7 +41,7 @@ Revision 5 also selects the complete unchanged upstream `procfs-exepath.c`.
 `uv_exepath` reads the guest kernel's actual `/proc/self/exe`, including its
 executed-image identity independently of `argv[0]`; it keeps upstream buffer
 validation, truncation and termination behavior. This requires no kernel change.
-See [libuv-exepath-engine-check.json](../../../tests/nodejs/upstream/libuv-exepath-engine-check.json)
+See the package-owned test sources
 for current identified-artifact evidence, separate from the earlier loop receipt.
 
 Revision 6 adds the Kandelo memory API boundary. It is source work pending the
@@ -120,12 +120,12 @@ BrowserKernel, workers, syscalls and image writer.
 
 ```bash
 scripts/dev-shell.sh bash packages/registry/libuv/test/build-controls.sh "$PWD/.scratch/libuv-controls"
-scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-libuv-backend-controls.ts \
+scripts/dev-shell.sh node_modules/.bin/tsx packages/registry/libuv/test/run-controls.ts \
   .scratch/libuv-controls/libuv-backend-controls.wasm .context/libuv-node-controls.json
 scripts/dev-shell.sh bash -c '
   export KANDELO_LIBUV_CONTROLS_WASM="$PWD/.scratch/libuv-controls/libuv-backend-controls.wasm"
   apps/browser-demos/node_modules/.bin/playwright test \
-    --config tests/nodejs/upstream/libuv-browser/playwright.config.ts \
+    --config packages/registry/libuv/test/browser/playwright.config.ts \
     --project chromium --project firefox --project webkit
 '
 ```
@@ -134,7 +134,7 @@ The browser runner needs the normal image-builder helpers. If absent, build
 them with `scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.
 It does not need a canonical rootfs image. Current identified-artifact results,
 failed attempts and limits are in
-[libuv-backend-engine-check.json](../../../tests/nodejs/upstream/libuv-backend-engine-check.json).
+the package-owned test sources.
 
 The next unbuilt batch compiles the complete upstream Linux source under guards
 that select its portable CPU/load procfs readers only, alongside the existing

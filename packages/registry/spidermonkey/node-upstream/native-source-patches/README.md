@@ -1,6 +1,6 @@
 # Native source adaptations
 
-The immutable Node archive remains in `third_party/nodejs/upstream` with its
+The immutable Node archive is supplied by the `node-core-source` package with its
 original hashes. Preparation copies complete verified files to the recipe work
 directory and applies these maintained patches with zero fuzz or offsets. It
 does not search for, extract or generate executable function bodies.

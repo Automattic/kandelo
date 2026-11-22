@@ -13,4 +13,4 @@ pinned through process/TLS retirement. No public addon execution is enabled.
 Restore Undici’s original Wasm factory and retire this package/private binding
 once guest Wasm passes the same real HTTP/HTTPS, body, redirect, stream, cancel,
 error, GC and shutdown cases independently on all four hosts. See
-`docs/nodejs-upstream-maintenance.md`. This draft is not runtime-qualified.
+`packages/registry/spidermonkey-node/MAINTENANCE.md`. This draft is not runtime-qualified.

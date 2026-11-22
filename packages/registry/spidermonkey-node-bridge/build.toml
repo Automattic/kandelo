@@ -1,19 +1,22 @@
 script_path = "packages/registry/spidermonkey-node-bridge/build-bridge.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 82
+revision = 83
 inputs = [
   "packages/registry/spidermonkey-node-bridge",
   "packages/registry/spidermonkey/node-upstream",
-  "third_party/nodejs",
-  "scripts/prepare-nodejs-native-interrupts.py",
-  "scripts/prepare-nodejs-string-metadata.py",
-  "scripts/prepare-nodejs-maybe-api.py",
-  "scripts/prepare-nodejs-fast-call-metadata.py",
-  "scripts/prepare-nodejs-profiler-metadata.py",
-  "scripts/prepare-nodejs-regexp-property-api.py",
-  "scripts/prepare-nodejs-value-wire-api.py",
-  "scripts/prepare-nodejs-tracing.py",
+  "packages/registry/node-core-source/sources.json",
+  "packages/registry/node-core-source/target.json",
+  "packages/registry/spidermonkey-node-bridge/tools/stage-source-inputs.py",
+  "packages/registry/spidermonkey-node-bridge/native-registry",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-native-interrupts.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-string-metadata.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-maybe-api.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-fast-call-metadata.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-profiler-metadata.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-regexp-property-api.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-value-wire-api.py",
+  "packages/registry/spidermonkey-node-bridge/tools/prepare-nodejs-tracing.py",
   "scripts/package-build-roots.sh",
   "sdk/activate.sh",
   "COPYING",

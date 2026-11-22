@@ -48,4 +48,4 @@ The original category arrays are process-global: controller ownership must respe
 that lifetime, including future external JS byte views. Full Node tracing agent
 and streaming-file errors remain unvalidated. Exact inputs, artifacts, attempts,
 source identities and host cleanup warnings are in
-[v8-tracing-component-check.json](../../../tests/nodejs/upstream/v8-tracing-component-check.json).
+the package-owned test sources.

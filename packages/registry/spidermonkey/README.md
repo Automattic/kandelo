@@ -39,7 +39,7 @@ cargo run -p xtask --target "$HOST_TRIPLE" -- build-deps resolve spidermonkey
 ## Upstream Node runtime foundations
 
 The upstream-first restart imports unchanged Node core JavaScript under
-`third_party/nodejs/`. The recipe now stages the immutable registry and native
+the resolver-supplied `node-core-source` archive. The recipe now stages the immutable registry and native
 compiler consumer into the actual Mozilla shell source list. It builds the
 logical wrapper metadata with original Node C++ code and verifies source hashes
 before generating the private include. The new host `clang++` input is declared.
@@ -50,5 +50,5 @@ agent as a prerequisite for the missing `trace_events` binding. The existing
 compatibility bootstrap remains active; genuine upstream startup, complete
 module support and separate user CJS/ESM entrypaths remain incomplete. Full
 products and successor-ABI builds remain deferred. See
-`docs/nodejs-upstream-runtime.md` and the per-family implementation ledger for
+`packages/registry/spidermonkey-node/README.md` and the per-family implementation ledger for
 exact artifacts, validation scope and remaining work.

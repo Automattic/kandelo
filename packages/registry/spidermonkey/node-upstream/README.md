@@ -2,7 +2,7 @@
 
 `builtin-compiler.cpp` supplies separate native compilation paths for complete
 upstream function bodies and real source-text module records. It consumes the
-immutable registry in `third_party/nodejs/native/`. It neither evaluates code
+immutable registry in `packages/registry/spidermonkey-node-bridge/native-registry/`. It neither evaluates code
 nor implements an alternative module cache, bootstrap policy or public API.
 
 The caller must enter the correct realm and immediately root the returned
@@ -48,7 +48,7 @@ Realm bootstrap complete. Unsupported native bindings and missing
 metadata/cache/source-text operations raise explicit implementation errors.
 A compilation-event diagnostic list does not stand in for native cache usage.
 
-See `tests/nodejs/upstream/realm-library-contracts.md` and its engine receipt
+See the preserved local realm-library research and its engine receipt
 for the current boundary. Realm-library readiness is distinct from principal
 bootstrap completion: `internal/bootstrap/node`, web/thread/ownership switches,
 process environment and user CJS/ESM entrypaths still need their real native
@@ -91,4 +91,4 @@ whole original UTF-16 encoder supply owned payloads. One traced environment
 observer follows actual principal and callback-owner admission; full verbose
 exception/fatal routing remains incomplete. Process shutdown removes observers
 before flushing/joining the original agent. See trace-events-contracts.json and
-the tracing binding receipt under tests/nodejs/upstream for bounded evidence.
+the tracing binding receipt in the preserved local research archive for bounded evidence.
