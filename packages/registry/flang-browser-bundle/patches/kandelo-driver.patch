@@ -1,0 +1,71 @@
+--- a/clang/lib/Driver/CMakeLists.txt
++++ b/clang/lib/Driver/CMakeLists.txt
+@@ -120,3 +120,9 @@
+   clangOptions
+   ${system_libs}
+   )
++
++# Flang reuses the Kandelo SDK linker driver on a Kandelo host.
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  set_source_files_properties(ToolChains/Flang.cpp ToolChains/WebAssembly.cpp
++    PROPERTIES COMPILE_DEFINITIONS KANDELO_FLANG_DRIVER)
++endif()
+--- a/clang/lib/Driver/ToolChains/Flang.cpp
++++ b/clang/lib/Driver/ToolChains/Flang.cpp
+@@ -1066,6 +1066,18 @@
+   CmdArgs.push_back("-triple");
+   CmdArgs.push_back(Args.MakeArgString(TripleStr));
+
++#ifdef KANDELO_FLANG_DRIVER
++  if (TripleStr == "wasm32-unknown-unknown") {
++    // Kandelo processes import shared memory even for single-threaded programs.
++    for (const char *Feature :
++         {"+atomics", "+bulk-memory", "+mutable-globals", "+sign-ext"}) {
++      CmdArgs.push_back("-target-feature");
++      CmdArgs.push_back(Feature);
++    }
++    CmdArgs.push_back("-fintrinsic-modules-path=/usr/lib/kandelo/fortran/mod");
++  }
++#endif
++
+   if (isa<PreprocessJobAction>(JA)) {
+     CmdArgs.push_back("-E");
+     if (Args.getLastArg(options::OPT_dM)) {
+--- a/clang/lib/Driver/ToolChains/WebAssembly.cpp
++++ b/clang/lib/Driver/ToolChains/WebAssembly.cpp
+@@ -305,8 +305,35 @@
+                                 const ArgList &Args,
+                                 const char *LinkingOutput) const {
+
+   const ToolChain &ToolChain = getToolChain();
++#ifdef KANDELO_FLANG_DRIVER
++  if (ToolChain.getDriver().IsFlangMode() &&
++      ToolChain.getTriple().str() == "wasm32-unknown-unknown") {
++    // Use the SDK startup files, memory contract, and link policy.
++    ArgStringList SDKArgs;
++    Args.addAllArgs(SDKArgs, {options::OPT_L, options::OPT_u, options::OPT_s,
++                             options::OPT_static, options::OPT_shared,
++                             options::OPT_nostdlib, options::OPT_nodefaultlibs,
++                             options::OPT_nostartfiles, options::OPT_rdynamic,
++                             options::OPT_fopenmp, options::OPT_pthread});
++    for (const auto &Input : Inputs) {
++      if (Input.isFilename())
++        SDKArgs.push_back(Input.getFilename());
++      else if (!Input.isNothing())
++        Input.getInputArg().render(Args, SDKArgs);
++    }
++    if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs))
++      SDKArgs.push_back("/usr/lib/kandelo/fortran/libflang_rt.runtime.a");
++    SDKArgs.push_back("-Wl,--fatal-warnings");
++    SDKArgs.push_back("-o");
++    SDKArgs.push_back(Output.getFilename());
++    C.addCommand(std::make_unique<Command>(
++        JA, *this, ResponseFileSupport::None(), "/usr/bin/c++", SDKArgs, Inputs,
++        Output));
++    return;
++  }
++#endif
+   const char *Linker = Args.MakeArgString(getLinkerPath(Args));
+   ArgStringList CmdArgs;
+
+   CmdArgs.push_back("-m");

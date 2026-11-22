@@ -1,0 +1,83 @@
+# @suggest-upstream
+# When a 64-bit host Flang emits wasm32, the Fortran I/O runtime calls
+# must pass and return 32-bit size_t values. The bundled smoke test
+# exercises scalar and array IOLENGTH, formatted writes, and INQUIRE.
+# Review how to model target C types across all runtimes before proposing
+# the wasm32-specific implementation. Drop this when upstream fixes it.
+--- a/flang/lib/Optimizer/Builder/FIRBuilder.cpp
++++ b/flang/lib/Optimizer/Builder/FIRBuilder.cpp
+@@ -21,15 +21,18 @@
+ #include "flang/Optimizer/Dialect/FIRDialect.h"
+ #include "flang/Optimizer/Dialect/FIROpsSupport.h"
+ #include "flang/Optimizer/Dialect/FIRType.h"
++#include "flang/Optimizer/Dialect/Support/FIRContext.h"
+ #include "flang/Optimizer/Support/DataLayout.h"
+ #include "flang/Optimizer/Support/FatalError.h"
+ #include "flang/Optimizer/Support/InternalNames.h"
+ #include "flang/Optimizer/Support/Utils.h"
++#include "flang/Runtime/entry-names.h"
+ #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+ #include "mlir/Dialect/OpenACC/OpenACC.h"
+ #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+ #include "llvm/ADT/ArrayRef.h"
+ #include "llvm/ADT/StringExtras.h"
++#include "llvm/ADT/StringSwitch.h"
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/ErrorHandling.h"
+ #include "llvm/Support/MD5.h"
+@@ -47,12 +50,55 @@
+                                   llvm::StringRef name, mlir::FunctionType ty,
+                                   mlir::SymbolTable *symbolTable) {
+   return fir::createFuncOp(loc, module, name, ty, /*attrs*/ {}, symbolTable);
++}
++
++// Runtime type models are instantiated with host C++ types. For wasm32 I/O,
++// use the target width at the size_t positions in Runtime/io-api.h. The
++// positions distinguish size_t from fixed-width types such as InquiryKeywordHash,
++// which can be aliases of the same C++ type on the host.
++static mlir::FunctionType getWasm32IoType(llvm::StringRef name,
++                                          mlir::FunctionType type) {
++  if (!name.consume_front(RTNAME_STRING(io)))
++    return type;
++
++  auto sizeType = mlir::IntegerType::get(type.getContext(), 32);
++  if (name == "GetSize" || name == "GetIoLength")
++    return mlir::FunctionType::get(type.getContext(), type.getInputs(), sizeType);
++
++  auto sizeParameters =
++      llvm::StringSwitch<llvm::SmallVector<unsigned, 3>>(name)
++          .Cases({"BeginExternalFormattedInput", "BeginExternalFormattedOutput",
++                  "BeginInquireFile", "SetRecl"}, {1})
++          .Cases({"BeginInternalArrayListInput", "BeginInternalArrayListOutput",
++                  "InputAscii", "InputCharacter", "OutputAscii", "OutputCharacter",
++                  "GetIoMsg", "SetAccess", "SetAction", "SetAdvance",
++                  "SetAsynchronous", "SetBlank", "SetCarriagecontrol", "SetConvert",
++                  "SetDecimal", "SetDelim", "SetEncoding", "SetFile", "SetForm",
++                  "SetLeadingZero", "SetPad", "SetPosition", "SetRound", "SetSign",
++                  "SetStatus"}, {2})
++          .Cases({"CheckUnitNumberInRange64", "CheckUnitNumberInRange128",
++                  "InquireCharacter"}, {3})
++          .Cases({"BeginInternalListInput", "BeginInternalListOutput"}, {1, 3})
++          .Cases({"BeginInternalArrayFormattedInput",
++                  "BeginInternalArrayFormattedOutput"}, {2, 5})
++          .Cases({"BeginInternalFormattedInput", "BeginInternalFormattedOutput"},
++                 {1, 3, 6})
++          .Default({});
++  if (sizeParameters.empty())
++    return type;
++
++  llvm::SmallVector<mlir::Type> inputs(type.getInputs());
++  for (unsigned index : sizeParameters)
++    inputs[index] = sizeType;
++  return mlir::FunctionType::get(type.getContext(), inputs, type.getResults());
+ }
+
+ mlir::func::FuncOp
+ fir::FirOpBuilder::createRuntimeFunction(mlir::Location loc,
+                                          llvm::StringRef name,
+                                          mlir::FunctionType ty, bool isIO) {
++  if (isIO && fir::getTargetTriple(getModule()).getArch() == llvm::Triple::wasm32)
++    ty = getWasm32IoType(name, ty);
+   mlir::func::FuncOp func = createFunction(loc, name, ty);
+   func->setAttr(fir::FIROpsDialect::getFirRuntimeAttrName(), getUnitAttr());
+   if (isIO)
