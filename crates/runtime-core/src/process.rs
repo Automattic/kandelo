@@ -114,6 +114,9 @@ pub trait HostIO {
     fn group_object_read(&mut self, _group: u32, _object: u64, _offset: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno::EOPNOTSUPP)
     }
+    fn group_object_write(&mut self, _group: u32, _object: u64, _offset: u64, _buf: &[u8]) -> Result<usize, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
     /// image this kernel booted from. This is the seam that lets the kernel
     /// parse its own image (`rootfs::load_image`) rather than consume a tree the

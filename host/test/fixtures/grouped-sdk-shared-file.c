@@ -19,6 +19,10 @@ static int one(int memfd) {
   if(!memfd)CHECK(unlink("/tmp/grouped-shared-file")==0);
   CHECK(ftruncate(fd,2*P-17)==0);
   CHECK(pwrite(fd,"initial",7,P)==7);
+  /* The first attachment is a middle/suffix slice. Descriptor reads and
+     later prefix/full aliases must retain bytes outside that first VMA. */
+  char *slice=mmap(0,P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,P);CHECK(slice!=MAP_FAILED);
+  CHECK(!memcmp(slice,"initial",7));
   _Atomic unsigned *a=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0); CHECK(a!=MAP_FAILED);
   CHECK(!memcmp((char*)a+P,"initial",7));
   _Atomic unsigned *b=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0); CHECK(b!=MAP_FAILED&&b!=a);
@@ -44,11 +48,19 @@ static int one(int memfd) {
   CHECK(!memcmp((char*)b+P,"child!!",7)); CHECK(private[P]=='X');
   int status=0;CHECK(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==23);
   CHECK(pread(fd,bytes,7,P)==7&&!memcmp(bytes,"child!!",7));
-  errno=0;CHECK(pwrite(fd,"x",1,0)==-1&&errno==EOPNOTSUPP);
+  off_t cursor=lseek(fd,0,SEEK_CUR);CHECK(cursor==2*P-17);
+  CHECK(pwrite(fd,"descriptor",10,P+11)==10&&lseek(fd,0,SEEK_CUR)==cursor);
+  CHECK(!memcmp((char*)a+P+11,"descriptor",10)&&!memcmp(slice+11,"descriptor",10));
+  CHECK(lseek(fd,P+24,SEEK_SET)==P+24);
+  int writer=dup(fd);CHECK(writer>=0&&write(writer,"seek",4)==4);
+  CHECK(lseek(fd,0,SEEK_CUR)==P+28&&!memcmp((char*)b+P+24,"seek",4));
+  CHECK(close(writer)==0);
+  errno=0;CHECK(pwrite(fd,"xx",2,2*P-18)==-1&&errno==EOPNOTSUPP);
+  CHECK(((char*)a)[2*P-18]==0); /* Refused growth mutates no prefix. */
   errno=0;CHECK(ftruncate(fd,3*P)==-1&&errno==EOPNOTSUPP);
   struct stat st;CHECK(fstat(fd,&st)==0&&st.st_size==2*P-17);
   CHECK(close(fd)==0);CHECK(((char*)a)[P]=='c');
-  CHECK(munmap(a,2*P)==0&&munmap(b,2*P)==0&&munmap(private,2*P)==0);
+  CHECK(munmap(a,2*P)==0&&munmap(b,2*P)==0&&munmap(private,2*P)==0&&munmap(slice,P)==0);
   return 0;
 }
 int main(void) {

@@ -85,7 +85,7 @@ export interface GroupMemoryChangeDescription {
 /** Copied channel scalars only; this packet carries no guest/kernel pointer. */
 export function encodeGroupMemoryChangeRequest(syscall: number, args: readonly bigint[], observedPages: number): Uint8Array {
   const mapping = P.mapping;
-  if (mapping.version !== 5 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
+  if (mapping.version !== 6 || !memoryGroupU32(syscall, observedPages) || observedPages < 1 || observedPages > 65536
       || args.length !== 6 || args.some(value => typeof value !== 'bigint'
       || value < -(1n << 63n) || value > (1n << 63n) - 1n)) {
     throw new MemoryGroupProtocolFault('Invalid grouped mapping request scalars');
@@ -163,7 +163,7 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
         || (kind !== 'map' && result.populationLength !== 0)
         || (kind === 'map' && ((result.flags & 3) !== 1
           || ((result.flags & 0x20) !== 0 && (result.sharedObject !== actualToken || result.populationLength !== 0))
-          || result.sharedOffset !== 0 || ((result.flags & 0x20) !== 0 && result.sharedLength !== result.length))))
+          || ((result.flags & 0x20) !== 0 && (result.sharedOffset !== 0 || result.sharedLength !== result.length)))))
       || (kind === 'map' && (result.flags & 1) !== 0 && result.sharedObject === 0n)
       || (result.prot & ~7) !== 0 || (kind !== 'map' && result.flags !== 0)
       || (kind !== 'break' && badRange(result.address, result.length))
@@ -174,6 +174,9 @@ export function decodeGroupMemoryChangeDescription(bytes: Uint8Array,
       || (kind === 'remap' && (!result.oldLength || badRange(result.oldAddress, result.oldLength)))
       || (kind === 'break' && (result.length !== 0 || result.oldLength !== 0 || result.result !== result.address || result.prot !== 3))
       || (result.populationLength === 0 ? result.populationAddress !== 0 :
+        result.sharedObject !== 0n ?
+          kind !== 'map' || (result.flags & 0x20) !== 0 || result.sharedObject !== actualToken
+          || result.populationAddress !== 0 || result.populationLength !== result.sharedLength :
         badRange(result.populationAddress, result.populationLength)
         || (kind !== 'map' && kind !== 'remap')
         || result.populationAddress !== result.address + (kind === 'remap' ? result.oldLength : 0)

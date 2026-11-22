@@ -7600,7 +7600,7 @@ pub fn sys_write(
                 let writable_len = write_plan.length;
                 checked_offset_advance(start, writable_len)?;
                 tmpfs_stamp_now(host)?;
-                let n = crate::tmpfs::write(host_handle, start, &buf[..writable_len])?;
+                let n = crate::tmpfs::write_with_host(host_handle, start, &buf[..writable_len], host)?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -7755,9 +7755,11 @@ pub fn sys_write(
                         else { usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)? };
                     let end = offset.checked_add(writable_len).ok_or(Errno::EFBIG)?;
                     let next_offset = i64::try_from(end).map_err(|_| Errno::EFBIG)?;
-                    backing.write_at(offset, &buf[..writable_len])?;
-                    backing.offset = next_offset;
-                    Ok(writable_len)
+                    let count = backing.write_at_with_host(offset, &buf[..writable_len], host)?;
+                    backing.offset = if count == writable_len { next_offset } else {
+                        i64::try_from(offset.checked_add(count).ok_or(Errno::EFBIG)?).map_err(|_| Errno::EFBIG)?
+                    };
+                    Ok(count)
                 });
             }
 
@@ -8666,14 +8668,14 @@ pub fn sys_pwrite(
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
-            backing.write_at(start, &buf[..writable_len])
+            backing.write_at_with_host(start, &buf[..writable_len], host)
         });
     }
 
     // In-kernel tmpfs: positioned write into Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::write(host_handle, offset, &buf[..writable_len]);
+        return crate::tmpfs::write_with_host(host_handle, offset, &buf[..writable_len], host);
     }
 
     // In-kernel rootfs overlay: positioned write; first write COWs the base file

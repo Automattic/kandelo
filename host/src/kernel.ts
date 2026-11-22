@@ -2722,6 +2722,16 @@ export class WasmPosixKernel {
             return result;
           } catch { return -5; }
         },
+        host_group_object_write: (group: number, objectLo: number, objectHi: number,
+          offsetLo: number, offsetHi: number, ptr: KernelPointer, len: number): number => {
+          try {
+            // This is an independent bounded copy, never a kernel/guest view
+            // escaping into the backing owner or another realm.
+            const bytes = this.#readKernelBytes(ptr, len);
+            const result = this.#groupObjectWriter?.(group, u64FromWords(objectLo, objectHi), u64FromWords(offsetLo, offsetHi), bytes) ?? -5;
+            return Number.isSafeInteger(result) && result >= -4095 && result <= bytes.length ? result : -5;
+          } catch { return -5; }
+        },
         host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
           const uri = this.#readComponentFromMemory(uriPtr, uriLen);
           this.#rootfsDeferredInvalidator?.(uri);

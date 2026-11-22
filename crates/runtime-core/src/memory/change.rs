@@ -88,7 +88,6 @@ impl PreparedMemoryChange {
                 if self.proposed.grouped_linear.is_none() { return Err(Errno::EOPNOTSUPP); }
                 if flags & mmap::MAP_ANONYMOUS == 0 {
                     let mapping = self.proposed.mappings.iter_mut().find(|m| m.addr == addr).ok_or(Errno::EIO)?;
-                    if mapping.file_offset != 0 { return Err(Errno::EOPNOTSUPP); }
                     let file = mapping.file.as_mut().and_then(alloc::rc::Rc::get_mut).ok_or(Errno::EIO)?;
                     if file.private_source.as_ref().is_some_and(|source| source.is_immutable_shared()) {
                         // Immutable file leases preserve shared-read semantics
@@ -100,7 +99,14 @@ impl PreparedMemoryChange {
                         return Ok(());
                     }
                     let handle = file.private_source.as_ref().and_then(|s| s.kernel_handle()).ok_or(Errno::EOPNOTSUPP)?;
-                    file.group_shared = Some(crate::kernel_file_mapping::prepare_group_storage(handle, group, self.serial, len)?);
+                    let (size, _) = crate::kernel_file_mapping::size_and_mode(handle)?;
+                    let rounded = size.checked_add(65535).ok_or(Errno::ENOMEM)? & !65535;
+                    let object_len = usize::try_from(rounded).map_err(|_| Errno::ENOMEM)?;
+                    if object_len == 0 || mapping.file_offset % 65536 != 0
+                        || mapping.file_offset.checked_add(len as u64).is_none_or(|end| end > rounded) {
+                        return Err(Errno::EOPNOTSUPP);
+                    }
+                    file.group_shared = Some(crate::kernel_file_mapping::prepare_group_storage(handle, group, self.serial, object_len)?);
                 } else {
                 let object = super::GroupSharedMapping::new(group, self.serial, len)?;
                 let mut name = alloc::vec::Vec::new();
@@ -143,7 +149,12 @@ impl PreparedMemoryChange {
         let Some(mapping) = mappings.iter().find(|m| m.addr <= lookup && m.addr + m.len > lookup) else { return Ok(None); };
         let Some(file) = &mapping.file else { return Ok(None); };
         let Some(source) = &file.private_source else { return Ok(None); };
-        if file.group_shared.is_some() && source.kernel_handle().is_some_and(crate::kernel_file_mapping::group_storage_committed) { return Ok(None); }
+        if let Some(object) = &file.group_shared {
+            if source.kernel_handle().is_some_and(crate::kernel_file_mapping::group_storage_committed) { return Ok(None); }
+            // Promotion transfers all authoritative bytes, including portions
+            // outside this first mapping. Zero padding remains newly allocated.
+            return Ok(Some(crate::group_memory_change::Population { address: 0, len: object.length(), offset: 0, source: source.clone() }));
+        }
         let offset = mapping.file_offset.checked_add((lookup - mapping.addr) as u64)
             .and_then(|offset| offset.checked_add(advance as u64)).ok_or(Errno::EOVERFLOW)?;
         if offset.checked_add(len as u64).is_none_or(|end| end > i64::MAX as u64) { return Err(Errno::EOVERFLOW); }

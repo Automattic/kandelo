@@ -84,7 +84,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
         anonymousShared: probe.name === 'anonymous-shared', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
-        execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, kernelPath: resolveBinary("kernel.wasm"),
+        execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, imageModulePath: join(repository, "local-binaries/kandelo_image_module32.wasm"), kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -250,7 +250,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
 if (!selectedProbe || ['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'].includes(selectedProbe)) it.each(['pthread', 'fork', 'forced-exit', 'native-wait-exit', 'anonymous-shared'].filter(name => probes.some(probe => probe.name === name)))('reuses one backing for forty SDK %s cohorts after exact retirement', async probe => {
   const { ordinary, groupedPath } = fixtures.get(probe)!;
   const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
-    eval: true, workerData: { grouped: true, cycles: 40, anonymousShared: probe === "anonymous-shared", forcedLifecycle: probe === "forced-exit", nativeWaitLifecycle: probe === "native-wait-exit", kernelPath: resolveBinary('kernel.wasm'),
+    eval: true, workerData: { grouped: true, cycles: 40, anonymousShared: probe === "anonymous-shared", forcedLifecycle: probe === "forced-exit", nativeWaitLifecycle: probe === "native-wait-exit", imageModulePath: join(repository, 'local-binaries/kandelo_image_module32.wasm'), kernelPath: resolveBinary('kernel.wasm'),
       ordinaryPath: ordinary.programPath, programPath: groupedPath },
   });
   let deadline: ReturnType<typeof setTimeout> | undefined;

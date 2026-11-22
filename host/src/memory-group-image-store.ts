@@ -501,7 +501,7 @@ export class MemoryGroupImageStore {
           || input.sharedOffset < 0 || input.sharedOffset % PAGE !== 0 || input.sharedOffset + input.length > input.sharedLength
           || (input.kind !== 'map' && input.populationLength !== 0)) fault('Invalid shared backing bounds');
       if (input.kind === 'map') {
-        if (input.sharedOffset !== 0 || ((input.flags & 0x20) !== 0 && input.sharedLength !== input.length)
+        if (((input.flags & 0x20) !== 0 && (input.sharedOffset !== 0 || input.sharedLength !== input.length))
             || (input.flags & 3) !== 1
             || (shared ? !shared.fileBacked || !!(input.flags & 0x20) || input.populationLength !== 0
               : input.sharedObject !== input.token || (!!(input.flags & 0x20) && input.populationLength !== 0))) {
@@ -512,6 +512,10 @@ export class MemoryGroupImageStore {
       }
     } else if (input.sharedLength !== 0 || input.sharedOffset !== 0 || (input.kind === 'map' && (input.flags & 1))) {
       fault('Mapping omitted its shared backing identity');
+    }
+    if (input.sharedObject !== 0n && input.populationLength !== 0
+        && (shared || input.populationAddress !== 0 || input.populationLength !== input.sharedLength)) {
+      fault('Population must initialize one complete unpublished descriptor object');
     }
     // A valid descriptor object can exceed this group's physical budget even
     // when its requested prefix fits the virtual space. That is admission
@@ -554,7 +558,7 @@ export class MemoryGroupImageStore {
         newExtent = Math.max(oldExtent, Math.ceil(input.address / PAGE));
       }
       else if (input.kind === 'map') {
-        if (shared) for (let at = 0; at < count; at++) after[start + at] = (shared.pages[at] * PAGE | rights) >>> 0;
+        if (shared) for (let at = 0; at < count; at++) after[start + at] = (shared.pages[input.sharedOffset / PAGE + at] * PAGE | rights) >>> 0;
         else after.fill((fresh | rights) >>> 0, start, start + count);
         newExtent = Math.max(oldExtent, start + count);
       }
@@ -616,6 +620,11 @@ export class MemoryGroupImageStore {
         this.cancelIntroducedShared(mapping); image.mapping = undefined; mapping.image = undefined; mapping.state = 'cancelled'; return status;
       }
       for (let at = 0, next = 0; at < maximum; at++) if ((after[at] >>> 16) === 0xffff) after[at] = (allocated[next++] * PAGE | rights) >>> 0;
+      // Object pages are indexed from file offset zero even when the first
+      // virtual mapping is a middle/suffix slice. Every alias uses that order.
+      if (introducedShared) for (let at = 0; at < count; at++) {
+        after[start + at] = (allocated[input.sharedOffset / PAGE + at] * PAGE | rights) >>> 0;
+      }
       return token;
     } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0, 1); }
   }
@@ -628,13 +637,17 @@ export class MemoryGroupImageStore {
     if (!mapping || !image || mapping.state !== 'prepared' || image.mapping !== mapping
         || !this.imageExecutionPauseAcknowledged(mapping.barrier)) fault('Population has no paused unpublished mapping');
     const { populationAddress, populationLength } = mapping.description;
+    if (mapping.introducedShared?.fileBacked && populationAddress === 0
+        && populationLength !== mapping.description.sharedLength) fault('Incomplete descriptor object population');
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > populationLength || bytes.length > populationLength - offset) {
       fault('Population exceeds its kernel-selected interval');
     }
     let copied = 0;
     while (copied < bytes.length) {
+      const wholeObject = mapping.introducedShared?.fileBacked && populationAddress === 0;
       const address = populationAddress + offset + copied, page = Math.floor(address / PAGE);
-      const physical = mapping.after![page] >>> 16, within = address % PAGE;
+      const physical = wholeObject ? mapping.introducedShared!.pages[page] : mapping.after![page] >>> 16;
+      const within = address % PAGE;
       if (!physical || !mapping.allocated!.includes(physical)) fault('Population attempted to overwrite published storage');
       const count = Math.min(PAGE - within, bytes.length - copied);
       new Uint8Array(this.memory.buffer, physical * PAGE + within, count).set(bytes.subarray(copied, copied + count));

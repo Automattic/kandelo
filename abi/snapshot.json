@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 24,
+      "required_host_adapter_version": 25,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2707,7 +2707,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 24,
+    "version": 25,
     "worker_features": [
       {
         "bit": 2,
@@ -5884,6 +5884,12 @@
     {
       "kind": "func",
       "module": "env",
+      "name": "host_group_object_write",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
       "name": "host_image_read",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -8434,7 +8440,7 @@
         "syscall": 0,
         "tailReserved": 60
       },
-      "version": 5
+      "version": 6
     },
     "receipt_bytes": 32,
     "receipt_fields": {

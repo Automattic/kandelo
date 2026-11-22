@@ -1,7 +1,7 @@
 //! Kernel-host records for one prepared grouped mapping. No guest ABI fields.
 use crate::{Errno, memory_group::ReceiptRecord};
 
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 pub const CAPABILITY: u32 = 2;
 pub const REQUEST_BYTES: usize = 64;
 pub const DESCRIPTION_BYTES: usize = 136;
@@ -56,12 +56,12 @@ impl Description {
                 && self.shared_offset.checked_add(self.length).is_some_and(|end| end <= self.shared_length)
                 && ((self.population_address == 0 && self.population_length == 0)
                     || (self.kind == 1 && self.flags & crate::mmap::MAP_ANONYMOUS == 0
-                        && self.shared_object == self.token && self.population_address == self.address
-                        && self.population_length == self.length))
+                        && self.shared_object == self.token && self.population_address == 0
+                        && self.population_length == self.shared_length))
                 && (self.kind != 1 || (self.flags & 3 == crate::mmap::MAP_SHARED
                     && (self.flags & crate::mmap::MAP_ANONYMOUS == 0 || self.shared_object == self.token)
-                    && self.shared_offset == 0
-                    && (self.flags & crate::mmap::MAP_ANONYMOUS == 0 || self.shared_length == self.length)))
+                    && (self.flags & crate::mmap::MAP_ANONYMOUS == 0
+                        || (self.shared_offset == 0 && self.shared_length == self.length))))
         };
         if out.len() != DESCRIPTION_BYTES || self.token == 0 || !(1..=5).contains(&self.kind)
             || self.prot & !7 != 0 || !valid_shared { return Err(Errno::EINVAL); }
@@ -137,7 +137,7 @@ mod tests {
             old_address: 131072, old_length: 65536, shared_offset: 65536, ..value };
         remap.encode(&mut bytes).unwrap();
         assert_eq!(u64::from_le_bytes(bytes[128..136].try_into().unwrap()), 65536);
-        let file = Description { flags: crate::mmap::MAP_SHARED, population_address: value.address,
+        let file = Description { flags: crate::mmap::MAP_SHARED, population_address: 0,
             population_length: value.length, ..value };
         file.encode(&mut bytes).unwrap();
         Description { token: 23, population_address: 0, population_length: 0, ..file }.encode(&mut bytes).unwrap();

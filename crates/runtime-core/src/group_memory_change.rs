@@ -1107,6 +1107,34 @@ mod tests {
     }
 
     #[test]
+    fn first_descriptor_slice_populates_and_retains_the_complete_object() {
+        use crate::syscalls::*;
+        let (mut table, pid, _) = setup(true);
+        let mut host = crate::process::test_host::NoopHost;
+        let fd = sys_memfd_create(table.get_mut(pid).unwrap(), b"offset-first", 0).unwrap();
+        sys_ftruncate(table.get_mut(pid).unwrap(), &mut host, fd, (3 * P - 17) as i64).unwrap();
+        sys_pwrite(table.get_mut(pid).unwrap(), &mut host, fd, b"prefix", 3).unwrap();
+        sys_pwrite(table.get_mut(pid).unwrap(), &mut host, fd, b"middle", (P + 3) as i64).unwrap();
+        let args = [0, P as u64, 3, mmap::MAP_SHARED as u64, fd as u64, (P / 4096) as u64];
+        let first = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, 4).unwrap();
+        assert_eq!((first.shared_length, first.shared_offset), ((3 * P) as u64, P as u64));
+        assert_eq!((first.population_address, first.population_length), (0, 3 * P));
+        first.record().encode(&mut [0; wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES]).unwrap();
+        let mut bytes = alloc::vec![0; 3 * P];
+        let count = table.read_group_memory_population(pid, pid, first.token, 0, &mut bytes, &mut host).unwrap();
+        assert_eq!(count, 3 * P - 17);
+        assert_eq!(&bytes[3..9], b"prefix"); assert_eq!(&bytes[P + 3..P + 9], b"middle");
+        assert_eq!(table.read_group_memory_population(pid, pid, first.token, count as u64, &mut bytes[..17], &mut host), Ok(0));
+        table.commit_group_memory_change(pid, pid, first.token).unwrap();
+        let extent = table.get(pid).unwrap().memory.group_virtual_extent().unwrap();
+        let alias = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32,
+            [0, (2 * P) as u64, 1, mmap::MAP_SHARED as u64, fd as u64, 0], extent).unwrap();
+        assert_eq!(alias.shared_object, first.shared_object); assert_eq!(alias.shared_offset, 0);
+        assert_eq!(alias.population_length, 0);
+        table.commit_group_memory_change(pid, pid, alias.token).unwrap();
+    }
+
+    #[test]
     fn abandoned_group_file_preparation_does_not_leave_descriptor_mutation_frozen() {
         use crate::syscalls::*;
         for memfd in [false, true] {

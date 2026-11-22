@@ -378,25 +378,16 @@ full release gates remain required before promotion.
 
 ## Accounting and acceptance
 
-The desktop-first integration currently implements whole, fixed-size tmpfs
-and memfd objects with shared mappings and coherent descriptor reads. Kernel
-backing and mapping owners retain one physical object through descriptor
-close, unlink where applicable, and fork. Descriptor reads, positioned reads,
-file sizes and shared seek cursors continue to name that object after its
-bytes leave kernel staging storage. Promotion refuses pre-existing legacy
-mapping holds; ordinary or cross-group shared attachment is refused. An
-unpublished preparation abandoned during cleanup releases its mutation fence.
-Descriptor writes and size changes after promotion remain unsupported and
-return an error. This bounded surface does not complete the target
-shared-object contract above or desktop acceptance.
+The desktop-first integration implements fixed-size tmpfs and memfd objects with shared mappings and coherent descriptor reads and writes within the existing file size. Kernel backing and mapping owners retain one physical object through descriptor close, unlink where applicable, and fork. Positioned I/O preserves the seek cursor; ordinary reads and writes advance the shared open-file-description cursor. Offset mappings use the platform page alignment and may select bounded prefixes, middle slices or suffixes within the object's page-rounded extent. First promotion transfers the complete object's content even when the first mapping covers only a slice, so later aliases and descriptor I/O cannot lose unmapped bytes. The real SDK shared-file probe covers this bounded surface on Node, Chromium, Firefox and WebKit. Broader conformance and sustained desktop acceptance remain required before promotion.
+
+Promotion refuses pre-existing legacy mapping holds; ordinary or cross-group shared attachment is refused. An unpublished preparation abandoned during cleanup releases its mutation fence. Descriptor writes that would extend EOF and size-changing truncation remain unsupported and return an error before modifying content. Growth, truncation and their effects on existing mappings remain an explicit follow-up; the fixed-size surface does not complete that mapped-file contract.
 
 The desktop integration also admits read-only `MAP_SHARED` mappings of
 ephemeral rootfs files under a kernel-held immutable read lease. Their VMA
 keeps `MAP_SHARED`; physical read copies are independently reclaimable.
 Writes, truncation, writable protection and legacy shared attachment are
 refused while the lease exists. Closing the descriptor does not release the
-lease; the final mapping/source reference does. Persistent writable files,
-nonzero mapping offsets and expanding these mappings remain unsupported.
+lease; the final mapping/source reference does. Persistent writable files and expanding these mappings remain unsupported.
 This is a bounded read-only surface, not general writable regular-file sharing.
 
 Host-adapter 23 adds the exact owned-driver mapping bridge. EGL command

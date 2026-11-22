@@ -1243,6 +1243,37 @@ pub fn take_released_sources() -> Vec<u64> {
     TMPFS.with(|state| core::mem::take(&mut state.released_sources))
 }
 
+/// Write through a promoted backing without recreating stale kernel contents.
+/// A pending promotion remains fenced and extending the fixed EOF is refused.
+pub(crate) fn write_with_host(handle: i64, offset: i64, buf: &[u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+    if offset < 0 { return Err(Errno::EINVAL); }
+    let idx = file_handle_to_inode(handle)?;
+    let direct = TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.discard_abandoned_group_storage();
+        if let Some(storage) = &inode.group_storage {
+            if !storage.committed { return Err(Errno::EOPNOTSUPP); }
+            let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+            let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+            if end > storage.length { return Err(Errno::EOPNOTSUPP); }
+            inode.check_mutable()?;
+            return Ok(Some(storage.object.clone()));
+        }
+        Ok(None)
+    })?;
+    let Some(object) = direct else { return write(handle, offset, buf); };
+    if buf.is_empty() { return Ok(0); }
+    let count = host.group_object_write(object.group(), object.id(), offset as u64, buf)?;
+    if count > buf.len() { return Err(Errno::EIO); }
+    if count != 0 {
+        TMPFS.with(|state| {
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.clear_setid_on_modify(); inode.touch_modified(); Ok(())
+        })?;
+    }
+    Ok(count)
+}
+
 /// Write `buf` at `offset`, growing (and zero-filling any gap) as needed.
 pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     let idx = file_handle_to_inode(handle)?;

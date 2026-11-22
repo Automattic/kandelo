@@ -1113,7 +1113,7 @@ describe('descriptor-backed group storage', () => {
   it('aliases attachments without copying and retains file pages after exact image retirement', () => {
     const h = pausedMappingImage(64), id = h.describe().token;
     const first = h.prepare({ flags: 1, length: 2 * P, sharedObject: id, sharedLength: 2 * P,
-      populationAddress: 8 * P, populationLength: 2 * P });
+      populationAddress: 0, populationLength: 2 * P });
     h.store.populateImageMapping(first, P + 9, Uint8Array.of(0x71));
     expect(h.store.commitImageMapping(first, () => true, () => 0)).toBe('committed');
     const charged = h.store.snapshot().allocatedPages;
@@ -1263,4 +1263,29 @@ it('refuses an oversized descriptor object as physical admission exhaustion with
   expect(h.store.snapshot()).toEqual(before);
   const mapping = h.prepare({flags: 1, sharedObject: id, sharedLength: P});
   expect(h.store.commitImageMapping(mapping, () => true, () => 0)).toBe('committed');
+});
+
+it('initializes the complete descriptor object when its first map is a nonzero-offset slice', () => {
+  const h = pausedMappingImage(64), id = h.describe().token;
+  const first = h.prepare({ flags: 1, length: P, sharedObject: id, sharedLength: 3 * P,
+    sharedOffset: P, populationAddress: 0, populationLength: 3 * P });
+  h.store.populateImageMapping(first, 3, Uint8Array.of(17));
+  h.store.populateImageMapping(first, P + 3, Uint8Array.of(29));
+  h.store.populateImageMapping(first, 2 * P + 3, Uint8Array.of(43));
+  expect(h.store.commitImageMapping(first, () => true, () => 0)).toBe('committed');
+  expect(h.leader.source.readBytes(8 * P + 3, 1)).toEqual(Uint8Array.of(29));
+  const charged = h.store.snapshot().allocatedPages;
+  const alias = h.prepare({ token: id + 1n, flags: 1, address: 10 * P, result: 10 * P,
+    length: 2 * P, sharedObject: id, sharedLength: 3 * P, sharedOffset: P });
+  expect(h.store.commitImageMapping(alias, () => true, () => 0)).toBe('committed');
+  expect(h.store.snapshot().allocatedPages).toBe(charged);
+  expect(h.leader.source.readBytes(11 * P + 3, 1)).toEqual(Uint8Array.of(43));
+  h.leader.source.writeBytes(10 * P + 3, Uint8Array.of(59));
+  expect(h.leader.source.readBytes(8 * P + 3, 1)).toEqual(Uint8Array.of(59));
+  const unmapped = new Uint8Array(1);
+  expect(h.store.readFileObject(id, 3n, unmapped)).toBe(1);
+  expect(unmapped).toEqual(Uint8Array.of(17));
+  expect(h.store.writeFileObject(id, BigInt(P + 3), Uint8Array.of(71))).toBe(1);
+  expect(h.leader.source.readBytes(8 * P + 3, 1)).toEqual(Uint8Array.of(71));
+  h.store.resumeImageExecutionPause(h.barrier); h.store.close();
 });

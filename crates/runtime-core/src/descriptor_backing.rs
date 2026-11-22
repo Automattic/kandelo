@@ -330,6 +330,21 @@ impl MemFdBacking {
         self.content_gen = self.content_gen.wrapping_add(1);
     }
 
+    /// Descriptor I/O and mapped stores address the same authoritative pages.
+    /// Extending EOF remains unsupported; refuse before writing any prefix.
+    pub fn write_at_with_host(&mut self, offset: usize, bytes: &[u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+        if bytes.is_empty() { return Ok(0); }
+        self.discard_abandoned_group_storage();
+        let Some(storage) = &self.group_storage else { return self.write_at(offset, bytes); };
+        if !storage.committed { return Err(Errno::EOPNOTSUPP); }
+        let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;
+        if end > storage.length { return Err(Errno::EOPNOTSUPP); }
+        let count = host.group_object_write(storage.object.group(), storage.object.id(), offset as u64, bytes)?;
+        if count > bytes.len() { return Err(Errno::EIO); }
+        if count != 0 { self.touch_modified(); }
+        Ok(count)
+    }
+
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, Errno> {
         if bytes.is_empty() { return Ok(0); }
         self.discard_abandoned_group_storage();

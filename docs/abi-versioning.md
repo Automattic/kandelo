@@ -31,6 +31,12 @@ program ABI 56 and its digest remain unchanged. The regenerated snapshot records
 the new export and optional manifest entry. This does not establish full-app or
 lifecycle acceptance.
 
+## Grouped descriptor I/O and offset mappings
+
+Host-adapter 25 adds `host_group_object_write(group, objectLo, objectHi, offsetLo, offsetHi, pointer, length)`. The kernel lends a read-only source interval; the host copies those bytes before passing them to the worker-local backing owner. Descriptor writes within an existing tmpfs/memfd object update the same storage as live shared mappings. Writes that extend EOF and size-changing truncation remain unsupported.
+
+Mapping-description protocol 6 retains its 136-byte layout. A new descriptor object's population names the complete object: `populationAddress = 0` and `populationLength = sharedLength`. Its first VMA may map a bounded nonzero-offset slice. This initializes bytes outside that first VMA before the kernel releases its original storage; subsequent aliases retain the same backing and offsets. Anonymous shared creation still requires an exact whole-object mapping. Kernel and host must rebuild together; program ABI 56 and executable format4 remain unchanged. These interface changes still require full SDK, browser-memory and conformance acceptance.
+
 ## Grouped CPU graphical buffer bindings
 
 Host-adapter 24 requires `host_gbm_bo_bind_group(pid, bo, address, length,
