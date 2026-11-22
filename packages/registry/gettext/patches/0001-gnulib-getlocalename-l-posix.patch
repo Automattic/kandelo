@@ -1,0 +1,52 @@
+# gnulib reads a locale object's category name through platform-specific
+# branches, and selects musl's only with defined __linux__, so any other
+# platform without a branch stops at "Please port gnulib
+# getlocalename_l-unsafe.c". Use the POSIX.1-2024 getlocalename_l() when
+# configure found it (HAVE_GETLOCALENAME_L), as the branches for illumos and
+# Haiku already do. Kandelo implements it (docs/posix-status.md). Suitable
+# for gnulib upstream; the same three copies of the file are patched.
+--- a/gettext-runtime/gnulib-lib/getlocalename_l-unsafe.c
++++ b/gettext-runtime/gnulib-lib/getlocalename_l-unsafe.c
+@@ -673,6 +673,12 @@
+       };
+       const char *name = ((struct __locale_t *) locale)->mb_cur_max == 4 ? "C.UTF-8" : "C";
+       return (struct string_with_storage) { name, STORAGE_INDEFINITE };
++#elif HAVE_GETLOCALENAME_L
++      /* Any other platform with POSIX.1-2024 getlocalename_l, such as
++         Kandelo (musl libc on WebAssembly).  */
++# undef getlocalename_l
++      const char *name = getlocalename_l (category, locale);
++      return (struct string_with_storage) { name, STORAGE_OBJECT };
+ #else
+  #error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."
+ #endif
+--- a/gettext-runtime/intl/gnulib-lib/getlocalename_l-unsafe.c
++++ b/gettext-runtime/intl/gnulib-lib/getlocalename_l-unsafe.c
+@@ -673,6 +673,12 @@
+       };
+       const char *name = ((struct __locale_t *) locale)->mb_cur_max == 4 ? "C.UTF-8" : "C";
+       return (struct string_with_storage) { name, STORAGE_INDEFINITE };
++#elif HAVE_GETLOCALENAME_L
++      /* Any other platform with POSIX.1-2024 getlocalename_l, such as
++         Kandelo (musl libc on WebAssembly).  */
++# undef getlocalename_l
++      const char *name = getlocalename_l (category, locale);
++      return (struct string_with_storage) { name, STORAGE_OBJECT };
+ #else
+  #error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."
+ #endif
+--- a/gettext-tools/gnulib-lib/getlocalename_l-unsafe.c
++++ b/gettext-tools/gnulib-lib/getlocalename_l-unsafe.c
+@@ -673,6 +673,12 @@
+       };
+       const char *name = ((struct __locale_t *) locale)->mb_cur_max == 4 ? "C.UTF-8" : "C";
+       return (struct string_with_storage) { name, STORAGE_INDEFINITE };
++#elif HAVE_GETLOCALENAME_L
++      /* Any other platform with POSIX.1-2024 getlocalename_l, such as
++         Kandelo (musl libc on WebAssembly).  */
++# undef getlocalename_l
++      const char *name = getlocalename_l (category, locale);
++      return (struct string_with_storage) { name, STORAGE_OBJECT };
+ #else
+  #error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."
+ #endif

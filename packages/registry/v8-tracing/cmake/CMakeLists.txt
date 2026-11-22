@@ -11,9 +11,11 @@ add_library(v8-tracing STATIC
   "${V8_SOURCE_DIR}/src/libplatform/tracing/trace-object.cc"
   "${V8_SOURCE_DIR}/src/libplatform/tracing/trace-writer.cc"
   "${V8_SOURCE_DIR}/src/libplatform/tracing/tracing-controller.cc"
+  "${V8_SOURCE_DIR}/src/libplatform/default-job.cc"
   "${V8_SOURCE_DIR}/src/base/abort-mode.cc"
   "${V8_SOURCE_DIR}/src/base/logging.cc"
-  ../src/platform.cpp)
+  ../src/platform.cpp
+  ../src/native-fatal.cpp)
 target_compile_features(v8-tracing PUBLIC cxx_std_20)
 target_compile_definitions(v8-tracing PUBLIC V8_PLATFORM_KANDELO=1
   PRIVATE _GNU_SOURCE NODE_WANT_INTERNALS=1)
@@ -28,6 +30,7 @@ install(FILES "${V8_SOURCE_DIR}/include/libplatform/v8-tracing.h"
   "${V8_SOURCE_DIR}/include/libplatform/libplatform-export.h" DESTINATION include/libplatform)
 install(FILES "${V8_SOURCE_DIR}/include/v8-platform.h"
   "${V8_SOURCE_DIR}/include/v8-source-location.h" "${V8_SOURCE_DIR}/include/v8config.h" DESTINATION include)
+install(FILES ../src/include/kandelo/v8-native-fatal.h DESTINATION include/kandelo)
 install(EXPORT v8-tracingTargets NAMESPACE v8-tracing:: DESTINATION lib/cmake/v8-tracing)
 configure_package_config_file(v8-tracingConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/v8-tracingConfig.cmake"
   INSTALL_DESTINATION lib/cmake/v8-tracing)

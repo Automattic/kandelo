@@ -433,6 +433,15 @@ JSObject* RuntimePrincipalObject(JSContext* cx, JS::HandleObject runtime, unsign
 JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime, bool required) {
   return RuntimePrincipalObject(cx, runtime, PrincipalRealm, required);
 }
+JSObject* BorrowRuntimePrincipalGlobal(JSObject* runtime) {
+  if(!runtime)return nullptr;
+  runtime=js::UncheckedUnwrapWithoutExpose(runtime);
+  if(JS::GetClass(runtime)!=&kRuntimeClass)return nullptr;
+  const auto value=JS::GetReservedSlot(runtime,PrincipalRealm);
+  if(!value.isObject())return nullptr;
+  JSObject* owner=js::UncheckedUnwrapWithoutExpose(&value.toObject());
+  return JS::GetNonCCWObjectGlobal(owner);
+}
 JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime) {
   return RuntimePrincipalObject(cx, runtime, PrincipalProcess);
 }

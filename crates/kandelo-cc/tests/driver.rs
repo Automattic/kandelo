@@ -4,8 +4,10 @@
 use kandelo_cc::Result;
 use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::driver::{
-    LinkerPreparation, build_clang_args, build_glue_compile_args, decode_llvm_response_file,
-    glue_sources, linker_args_from_clang_trace, working_directory_from_clang_trace,
+    Glue, LinkerPreparation, SKIP_CONSTRAINT_ANALYSIS, TempDir, build_clang_args,
+    build_cxx_glue_compile_args, build_glue_compile_args, decode_llvm_response_file, glue_sources,
+    linker_args_from_clang_trace, post_link_wasm_opt_job, run_compiler_driver,
+    working_directory_from_clang_trace,
 };
 use kandelo_cc::flags::MAX_EXECUTABLE_MEMORY_SIZE;
 use kandelo_cc::toolchain::Toolchain;
@@ -105,6 +107,33 @@ fn ldl_selects_the_functional_dynamic_loading_glue() {
     let args = build(&["foo.c", "-ldl", "-o", "foo.wasm"]);
     assert!(!has(&args, "-ldl"));
     assert!(has(&args, "/tmp/glue/dlopen.c"));
+    assert!(has(&args, "-Wl,--export=fork"));
+    assert!(!has(&build(&["foo.c", "-o", "foo.wasm"]), "-Wl,--export=fork"));
+}
+
+#[test]
+fn shared_library_can_limit_exports_to_its_explicit_abi() {
+    for controls in [
+        vec!["-Wl,--no-export-dynamic"],
+        vec!["-Wl,--no-export-dynamic,--gc-sections"],
+        vec!["-Xlinker", "--no-export-dynamic"],
+    ] {
+        let mut input = vec!["-shared", "libentry.a", "-Wl,--export=entry"];
+        input.extend(controls);
+        let args = build_clang_args(
+            &strings(&input), &toolchain(), WasmArch::Wasm32, Language::C, None, None,
+        ).unwrap();
+        assert!(has(&args, "-nostdlib"));
+        assert!(has(&args, "-Wl,--export=entry"));
+        assert!(!has(&args, "-Wl,--export-all"));
+        assert!(!joined_contains(&args, "crt1.o"));
+        assert!(!joined_contains(&args, "channel_syscall.c"));
+    }
+    let ordinary = build_clang_args(
+        &strings(&["-shared", "libentry.a"]), &toolchain(),
+        WasmArch::Wasm32, Language::C, None, None,
+    ).unwrap();
+    assert!(has(&ordinary, "-Wl,--export-all"));
 }
 
 #[test]
@@ -204,11 +233,10 @@ fn preserves_user_linker_input_order_across_argument_categories() {
 
 #[test]
 fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
-    let objects = strings(&[
-        "/tmp/g/channel_syscall.o",
-        "/tmp/g/compiler_rt.o",
-        "/tmp/g/cxxrt.o",
-    ]);
+    let objects = Glue {
+        leading: strings(&["/tmp/g/channel_syscall.o", "/tmp/g/compiler_rt.o"]),
+        fallback: strings(&["/tmp/g/cxxrt.o"]),
+    };
     let args = build_clang_args(
         &strings(&["main.o", "-o", "out.wasm"]),
         &toolchain(),
@@ -219,28 +247,41 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
     )
     .unwrap();
     assert!(!joined_contains(&args, "channel_syscall.c"));
-    let first = index_of(&args, &objects[0]).unwrap();
-    assert_eq!(args[first..first + 3], objects[..]);
+    let first = index_of(&args, &objects.leading[0]).unwrap();
+    assert_eq!(args[first..first + 2], objects.leading[..]);
     assert!(first < index_of(&args, "/tmp/sysroot/lib/crt1.o").unwrap());
+    let fallback = index_of(&args, "/tmp/g/cxxrt.o").unwrap();
+    assert_eq!(
+        args[fallback - 1..=fallback + 1],
+        strings(&["-Wl,--start-lib", "/tmp/g/cxxrt.o", "-Wl,--end-lib"])[..]
+    );
+    assert!(index_of(&args, "main.o").unwrap() < fallback);
+    assert!(fallback < index_of(&args, "/tmp/sysroot/lib/libc.a").unwrap());
 }
 
 #[test]
 fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     let toolchain = toolchain();
     assert_eq!(
-        glue_sources(&toolchain, false),
-        strings(&[
-            "/tmp/glue/channel_syscall.c",
-            "/tmp/glue/compiler_rt.c",
-            "/tmp/glue/cxxrt.c"
-        ])
+        glue_sources(&toolchain, false, false),
+        Glue {
+            leading: strings(&["/tmp/glue/channel_syscall.c", "/tmp/glue/compiler_rt.c"]),
+            fallback: strings(&["/tmp/glue/cxxrt.c"]),
+        }
     );
     assert_eq!(
-        glue_sources(&toolchain, true).last().map(String::as_str),
+        glue_sources(&toolchain, true, false)
+            .leading
+            .last()
+            .map(String::as_str),
         Some("/tmp/glue/dlopen.c")
     );
     let args = build_glue_compile_args(
-        &glue_sources(&toolchain, false),
+        &strings(&[
+            "/tmp/glue/channel_syscall.c",
+            "/tmp/glue/compiler_rt.c",
+            "/tmp/glue/cxxrt.c",
+        ]),
         &toolchain,
         WasmArch::Wasm32,
         Some("-DSLOTS=4"),
@@ -264,6 +305,70 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
         &args,
         "-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue"
     ));
+}
+
+#[test]
+fn links_with_the_cxx_runtime_get_the_cxx_entry_glue_last_among_the_leading_glue() {
+    let toolchain = toolchain();
+    assert_eq!(
+        glue_sources(&toolchain, true, true).leading,
+        strings(&[
+            "/tmp/glue/channel_syscall.c",
+            "/tmp/glue/compiler_rt.c",
+            "/tmp/glue/dlopen.c",
+            "/tmp/glue/cxxrt_entry.cpp",
+        ])
+    );
+    let args = build_cxx_glue_compile_args(
+        &strings(&["/tmp/glue/cxxrt_entry.cpp"]),
+        &toolchain,
+        WasmArch::Wasm32,
+    );
+    assert!(has(&args, "-fwasm-exceptions"));
+    assert!(has(&args, "-O2"));
+    assert!(has(&args, "--sysroot=/tmp/sysroot"));
+    assert_eq!(
+        args[args.len() - 4..],
+        strings(&["-x", "c++", "-c", "/tmp/glue/cxxrt_entry.cpp"])[..]
+    );
+}
+
+#[test]
+fn cxx_entry_glue_follows_the_cxx_runtime_not_the_driver_language() {
+    let entry = "/tmp/glue/cxxrt_entry.cpp";
+    // The C++ driver adds libc++abi, so its links get the entry glue...
+    assert!(has(&build_cxx(&["main.cpp", "-o", "app.wasm"]), entry));
+    // ...unless the caller opts out of the C++ library.
+    assert!(!has(
+        &build_cxx(&["main.cpp", "-nostdlib++", "-o", "app.wasm"]),
+        entry
+    ));
+    // A C link gets it only when it names libc++abi itself.
+    assert!(!has(&build(&["main.c", "-o", "app.wasm"]), entry));
+    for named in [
+        &["main.o", "-lc++", "-lc++abi", "-o", "app.wasm"][..],
+        &["main.o", "-l", "c++abi", "-o", "app.wasm"][..],
+        &["main.o", "/deps/lib/libc++abi.a", "-o", "app.wasm"][..],
+    ] {
+        let args = build(named);
+        assert!(
+            index_of(&args, entry).unwrap() < index_of(&args, "/tmp/sysroot/lib/crt1.o").unwrap(),
+            "{named:?}"
+        );
+    }
+}
+
+#[test]
+fn the_minimal_cxx_runtime_is_a_lazy_member_after_the_cxx_library() {
+    // libc++'s operator new throws std::bad_alloc. Both it and cxxrt.c's
+    // abort-on-failure fallback are weak definitions, so the fallback must
+    // not be an object linked ahead of libc++.
+    let args = build_cxx(&["main.cpp", "-o", "app.wasm"]);
+    let cxxrt = position(&args, "/tmp/glue/cxxrt.c");
+    assert_eq!(args[cxxrt - 1], "-Wl,--start-lib");
+    assert_eq!(args[cxxrt + 1], "-Wl,--end-lib");
+    assert!(position(&args, "-lc++abi") < cxxrt);
+    assert!(cxxrt < position(&args, "/tmp/sysroot/lib/libc.a"));
 }
 
 #[test]
@@ -616,6 +721,91 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
     assert!(error.contains(inconsistent), "{error}");
 }
 
+// [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] The rerun post-link
+// job keeps clang's command and skips the constraint-analysis pass.
+#[test]
+fn post_link_wasm_opt_skips_constraint_analysis() {
+    assert_eq!(SKIP_CONSTRAINT_ANALYSIS, "--skip-pass=constraint-analysis");
+    let scheduled = strings(&["/opt/bin/wasm-opt", "-Oz", "a.wasm", "-o", "a.wasm"]);
+    assert_eq!(
+        post_link_wasm_opt_job(&scheduled),
+        strings(&[
+            "/opt/bin/wasm-opt",
+            "-Oz",
+            "a.wasm",
+            "-o",
+            "a.wasm",
+            "--skip-pass=constraint-analysis",
+        ])
+    );
+}
+
+// [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] The driver itself
+// runs the post-link job through `post_link_wasm_opt_job`: a fake clang
+// schedules `wasm-opt -Oz` after its link of a module that does not fork,
+// and a fake wasm-opt records the argv the driver gives it.
+#[cfg(unix)]
+#[test]
+fn the_driver_runs_the_post_link_job_without_constraint_analysis() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("kandelo-cc-post-link-").unwrap();
+    let bin = dir.path().to_str().unwrap().to_string();
+    let script = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    // Traces (-###) list a wasm-ld job and, unless --no-wasm-opt holds it
+    // back, a wasm-opt job; a real run writes an empty module to -o.
+    script(
+        "clang",
+        r#"#!/bin/sh
+bin=$(dirname "$0")
+out=; prev=; trace=0; held=0
+for arg in "$@"; do
+  [ "$prev" = -o ] && out=$arg
+  [ "$arg" = "-###" ] && trace=1
+  [ "$arg" = --no-wasm-opt ] && held=1
+  prev=$arg
+done
+if [ "$trace" = 1 ]; then
+  printf ' "%s/wasm-ld" "main.o" "-o" "%s"\n' "$bin" "$out" >&2
+  [ "$held" = 1 ] || printf ' "%s/wasm-opt" "-Oz" "%s" "-o" "%s"\n' "$bin" "$out" "$out" >&2
+  exit 0
+fi
+printf '\000asm\001\000\000\000' > "$out"
+"#,
+    );
+    script(
+        "wasm-opt",
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$(dirname "$0")/wasm-opt.args"
+"#,
+    );
+
+    let output = format!("{bin}/a.wasm");
+    let status = run_compiler_driver(
+        &format!("{bin}/clang"),
+        &strings(&["main.o", "-o", &output]),
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(status, 0);
+    let recorded = std::fs::read_to_string(dir.path().join("wasm-opt.args")).unwrap();
+    assert_eq!(
+        recorded.lines().collect::<Vec<_>>(),
+        vec![
+            "-Oz",
+            output.as_str(),
+            "-o",
+            output.as_str(),
+            SKIP_CONSTRAINT_ANALYSIS
+        ]
+    );
+}
+
 #[test]
 fn preserves_stack_after_data_layout_with_lld_22_and_newer() {
     let lld_22 = Toolchain {
@@ -700,4 +890,73 @@ fn cxx_library_is_not_added_to_c_links_side_modules_or_opted_out_links() {
     )
     .unwrap();
     assert!(!has(&compile, "-lc++"));
+}
+
+fn compile_cxx_driver(user_args: &[&str]) -> Vec<String> {
+    build_clang_args(
+        &strings(user_args),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::Cxx,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn cxx_compiles_get_wasm_exception_handling_without_a_caller_flag() {
+    // Build systems know nothing about Kandelo; the SDK supplies what C++
+    // exceptions need on this target.
+    assert!(has(
+        &compile_cxx_driver(&["-c", "a.cpp"]),
+        "-fwasm-exceptions"
+    ));
+    assert!(has(
+        &build_cxx(&["main.cpp", "-o", "app.wasm"]),
+        "-fwasm-exceptions"
+    ));
+    assert!(has(
+        &compile_cxx_driver(&["-shared", "-fPIC", "lib.cc", "-o", "lib.so"]),
+        "-fwasm-exceptions"
+    ));
+    // The C driver compiles C++ sources as C++, and so does any -x c++.
+    assert!(has(&build(&["-c", "a.cpp"]), "-fwasm-exceptions"));
+    assert!(has(
+        &build(&["-x", "c++", "-c", "a.txt"]),
+        "-fwasm-exceptions"
+    ));
+}
+
+#[test]
+fn c_compiles_and_object_links_keep_their_flags() {
+    for args in [
+        build(&["-c", "a.c"]),
+        build(&["a.c", "-o", "a.wasm"]),
+        build(&["a.o", "b.o", "-o", "a.wasm"]),
+        build_cxx(&["a.o", "-o", "a.wasm"]),
+        compile_cxx_driver(&["-x", "c", "-c", "a.c"]),
+        compile_cxx_driver(&["-c", "start.s"]),
+    ] {
+        assert!(!has(&args, "-fwasm-exceptions"), "{args:?}");
+    }
+}
+
+#[test]
+fn an_explicit_no_exceptions_reaches_clang_after_the_sdk_default() {
+    // The last of -fexceptions/-fno-exceptions wins in clang, and
+    // -fno-exceptions leaves the Wasm EH backend nothing to lower.
+    let args = compile_cxx_driver(&["-fno-exceptions", "-c", "a.cpp"]);
+    assert!(position(&args, "-fwasm-exceptions") < position(&args, "-fno-exceptions"));
+}
+
+#[test]
+fn glue_compiles_stay_c() {
+    let args = build_glue_compile_args(
+        &strings(&["/tmp/glue/channel_syscall.c"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        None,
+    );
+    assert!(!has(&args, "-fwasm-exceptions"));
 }

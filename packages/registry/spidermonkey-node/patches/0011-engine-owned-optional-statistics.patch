@@ -1,0 +1,12 @@
+--- a/src/api/environment.cc
++++ b/src/api/environment.cc
+@@ -1186,7 +1186,9 @@
+   env->set_stopping(true);
+   env->set_can_call_into_js(false);
+   env->stop_sub_worker_contexts();
++#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
+   env->isolate()->DumpAndResetStats();
++#endif
+   // The tracing agent could be in the process of writing data using the
+   // threadpool. Stop it before shutting down libuv. The rest of the tracing
+   // agent disposal will be performed in DisposePlatform().

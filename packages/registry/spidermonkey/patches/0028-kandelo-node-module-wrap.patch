@@ -1,6 +1,6 @@
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -30,6 +30,7 @@
+@@ -29,6 +29,7 @@
  SOURCES += [
      "node-upstream/builtin-compiler.cpp",
      "node-upstream/builtin-source-registry.cpp",
@@ -10,7 +10,7 @@
  ]
 --- a/js/src/shell/jsshell.h
 +++ b/js/src/shell/jsshell.h
-@@ -14,6 +14,7 @@
+@@ -12,6 +12,7 @@
  #include "builtin/MapObject.h"
  #include "js/CompileOptions.h"
  #include "js/GCVector.h"
@@ -18,40 +18,39 @@
  #include "shell/ModuleLoader.h"
  #include "threading/ConditionVariable.h"
  #include "threading/LockGuard.h"
-@@ -213,6 +214,10 @@
+@@ -216,6 +217,9 @@
  
    // External owner root released with this runtime, never by a JS finalizer.
    JS::PersistentRootedObject upstreamNodeRuntime;
 +  bool upstreamModuleHooksInstalled = false;
-+  JS::ModuleResolveHook upstreamPreviousModuleResolve = nullptr;
++  JS::ModuleLoadHook upstreamPreviousModuleLoad = nullptr;
 +  JS::ModuleMetadataHook upstreamPreviousModuleMetadata = nullptr;
-+  JS::ModuleDynamicImportHook upstreamPreviousModuleDynamicImport = nullptr;
  
  #ifdef SINGLESTEP_PROFILING
    Vector<StackChars, 0, SystemAllocPolicy> stacks;
 --- a/js/src/builtin/ModuleObject.h
 +++ b/js/src/builtin/ModuleObject.h
-@@ -70,6 +70,7 @@
+@@ -72,6 +72,7 @@
    enum {
      SpecifierSlot = 0,
      FirstUnsupportedAttributeKeySlot,
 +    AttributesDataSlot,
      ModuleTypeSlot,
+     PhaseSlot,
      SlotCount
-   };
-@@ -84,6 +85,9 @@
-                                                    JS::ModuleType moduleType);
+@@ -88,6 +89,9 @@
+       ImportPhase phase = ImportPhase::Evaluation);
  
    JSAtom* specifier() const;
 +  JSObject* attributesData() const {
 +    return &getReservedSlot(AttributesDataSlot).toObject();
 +  }
    JS::ModuleType moduleType() const;
+   ImportPhase phase() const;
  
-   // We process import attributes earlier in the process, but according to the
 --- a/js/src/builtin/ModuleObject.cpp
 +++ b/js/src/builtin/ModuleObject.cpp
-@@ -18,6 +18,7 @@
+@@ -15,6 +15,7 @@
  #include "frontend/Stencil.h"
  #include "gc/GCContext.h"
  #include "gc/Tracer.h"
@@ -59,15 +58,14 @@
  #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::LimitedColumnNumberOneOrigin
  #include "js/friend/ErrorMessages.h"  // JSMSG_*
  #include "js/Modules.h"  // JS::GetModulePrivate, JS::ModuleDynamicImportHook, JS::ModuleType
-@@ -252,22 +253,40 @@
+@@ -269,7 +270,18 @@
      return nullptr;
    }
  
--  return create(cx, specifier, moduleType);
-+  Rooted<ModuleRequestObject*> self(cx, create(cx, specifier, moduleType));
+-  return create(cx, specifier, moduleType, phase);
++  Rooted<ModuleRequestObject*> self(cx, create(cx, specifier, moduleType, phase));
 +  if (!self) return nullptr;
-+  // Retain exact parser attributes for embedding loaders. ModuleType alone
-+  // loses unknown keys/values and cannot describe an original Node request.
++  // Keep the parser's full attribute list without losing the request phase.
 +  RootedValueVector values(cx);
 +  for (const auto& attribute : maybeAttributes) {
 +    if (!values.append(StringValue(attribute.key())) ||
@@ -80,9 +78,10 @@
  }
  
  /* static */
- ModuleRequestObject* ModuleRequestObject::create(JSContext* cx,
+@@ -277,8 +289,8 @@
                                                   Handle<JSAtom*> specifier,
-                                                  JS::ModuleType moduleType) {
+                                                  JS::ModuleType moduleType,
+                                                  ImportPhase phase) {
 -  ModuleRequestObject* self =
 -      NewObjectWithGivenProto<ModuleRequestObject>(cx, nullptr);
 +  Rooted<ModuleRequestObject*> self(
@@ -90,21 +89,31 @@
    if (!self) {
      return nullptr;
    }
- 
+@@ -286,6 +298,23 @@
    self->initReservedSlot(SpecifierSlot, StringOrNullValue(specifier));
    self->initReservedSlot(ModuleTypeSlot, ModuleTypeToValue(moduleType));
--
+   self->initReservedSlot(PhaseSlot, ImportPhaseToValue(phase));
++  // This overload has a known module type rather than parsed attributes.
++  // Preserve all ESR153 default-export module types; parsed lists replace this
++  // synthesized list in the other overload.
++  JSAtom* type = nullptr;
++  switch (moduleType) {
++    case JS::ModuleType::JSON: type = cx->names().json; break;
++    case JS::ModuleType::CSS: type = cx->names().css; break;
++    case JS::ModuleType::Bytes: type = cx->names().bytes; break;
++    case JS::ModuleType::Text: type = cx->names().text; break;
++    default: break;
++  }
 +  RootedValueVector values(cx);
-+  if (moduleType == JS::ModuleType::JSON &&
-+      (!values.append(StringValue(cx->names().type)) ||
-+       !values.append(StringValue(cx->names().json)))) return nullptr;
++  if (type && (!values.append(StringValue(cx->names().type)) ||
++               !values.append(StringValue(type)))) return nullptr;
 +  RootedObject attributes(cx, JS::NewArrayObject(cx, values));
 +  if (!attributes) return nullptr;
 +  self->initReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
+ 
    return self;
  }
- 
-@@ -1916,19 +1935,18 @@
+@@ -2218,19 +2247,18 @@
      // host hook is deeply unclear, and so right now embedders will not have
      // the ability to alter or extend the set of supported attributes.
      // See https://bugzilla.mozilla.org/show_bug.cgi?id=1840723.

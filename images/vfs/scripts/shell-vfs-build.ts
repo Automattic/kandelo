@@ -27,7 +27,9 @@ import {
   coreutilsCommandPath,
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  displaceBasePlaceholders,
   shellLazySpecDependency,
+  shellLazySpecDisplaces,
   shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import { registerShellRustSdkManifest } from "./shell-rust-sdk-manifest";
@@ -594,6 +596,7 @@ function populateLazyBinaries(
 
 function populateDemoExtendedSymlinks(fs: KandeloImageFs): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    displaceBasePlaceholders(fs, shellLazySpecDisplaces(spec));
     for (const alias of spec.symlinks) symlink(fs, spec.vfsPath, alias);
   }
   symlink(fs, "/usr/bin/vim", "/usr/bin/vi");

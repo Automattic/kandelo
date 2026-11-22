@@ -3,12 +3,12 @@
 //! Ported from sdk/test/flags.test.ts.
 
 use kandelo_cc::Result;
-use kandelo_cc::arch::WasmArch;
+use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::flags::{
     DEFAULT_MAIN_THREAD_STACK_SIZE, MAX_EXECUTABLE_MEMORY_SIZE, MAX_RESPONSE_FILE_EXPANSIONS,
     ResponseFileContents, THREAD_SLOT_NONE, THREAD_SLOT_USE_HOST_DEFAULT, compile_flags,
-    filter_args, infer_thread_slot_declaration, link_flags, main_thread_stack_size, needs_linking,
-    parse_args,
+    compiles_cxx, filter_args, infer_thread_slot_declaration, link_flags, main_thread_stack_size,
+    needs_linking, parse_args,
 };
 use std::collections::HashMap;
 
@@ -286,6 +286,15 @@ fn needs_linking_is_true_for_compile_and_link() {
 #[test]
 fn needs_linking_is_true_for_link_only() {
     assert!(needs_linking(&parsed(&["foo.o", "-o", "out.wasm"])));
+}
+
+#[test]
+fn archive_only_links_require_sdk_link_flags() {
+    assert!(needs_linking(&parsed(&["libmain.a", "-o", "main.wasm"])));
+    assert!(needs_linking(&parsed(&[
+        "-shared", "-Wl,--export=entry", "libentry.a", "-o", "libentry.so",
+    ])));
+    assert!(!needs_linking(&parsed(&["-print-file-name=libc.a"])));
 }
 
 #[test]
@@ -710,4 +719,34 @@ fn thread_slots_use_the_host_default_for_uncertain_thread_or_dynamic_use() {
         ),
         THREAD_SLOT_USE_HOST_DEFAULT
     );
+}
+
+#[test]
+fn compiles_cxx_follows_clang_input_languages() {
+    let cxx = |language: Language, args: &[&str]| compiles_cxx(language, &strings(args));
+    // By suffix, for either driver.
+    for source in [
+        "a.cc", "a.cpp", "a.cxx", "a.C", "a.c++", "a.ii", "a.mm", "a.hpp",
+    ] {
+        assert!(cxx(Language::C, &["-c", source]), "{source}");
+    }
+    assert!(!cxx(Language::C, &["-c", "a.c"]));
+    assert!(!cxx(Language::C, &["-c", "a.s", "-o", "a.o"]));
+    // The C++ driver takes C-family sources as C++, as clang++ does.
+    assert!(cxx(Language::Cxx, &["-c", "a.c"]));
+    // -x decides for the inputs after it, until -x none.
+    assert!(cxx(Language::C, &["-x", "c++", "-c", "-"]));
+    assert!(cxx(Language::C, &["-xc++-header", "a.h"]));
+    assert!(!cxx(Language::Cxx, &["-x", "c", "-c", "a.c"]));
+    assert!(!cxx(Language::Cxx, &["-xc", "a.c"]));
+    assert!(cxx(Language::C, &["-x", "c", "a.c", "-x", "none", "b.cpp"]));
+    // Flag values are not inputs.
+    assert!(!cxx(Language::C, &["-o", "x.cpp", "-c", "a.c"]));
+    assert!(!cxx(Language::C, &["-include", "x.hpp", "-c", "a.c"]));
+    assert!(!cxx(Language::C, &["-Xclang", "y.cpp", "-c", "a.c"]));
+    // Objects alone are a link, with nothing to compile.
+    assert!(!cxx(Language::Cxx, &["a.o", "libb.a", "-o", "app.wasm"]));
+    // Inputs hidden in a response file belong to the driver that runs them.
+    assert!(cxx(Language::Cxx, &["@args.rsp"]));
+    assert!(!cxx(Language::C, &["@args.rsp"]));
 }

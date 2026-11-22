@@ -4039,6 +4039,8 @@ fn finalize_source_only_program_projection(
     // the published authority never references bytes that are not yet on disk.
     let coresident = coresident_side_module_projections(repo)?;
     with_source_only_program_projection_lock(output_root, |authority| {
+        let mut dependency_keys = BTreeMap::new();
+        let mut checked = Vec::with_capacity(expected_receipt_nodes.len());
         for node in expected_receipt_nodes {
             let PlanNodeV1::Package { name, target_arch } = node else {
                 return Err("internal receipt set contains a product node".to_string());
@@ -4069,8 +4071,15 @@ fn finalize_source_only_program_projection(
                 wasm_posix_shared::ABI_VERSION,
                 verify_cache,
                 receipt,
+                &mut dependency_keys,
             )?;
+            checked.push((manifest, arch, receipt));
         }
+        authority.recheck_package_keys(
+            registry,
+            wasm_posix_shared::ABI_VERSION,
+            checked.iter().map(|(manifest, arch, receipt)| (manifest, *arch, *receipt)),
+        )?;
 
         for (_module, projection) in &coresident {
             stage_coresident_side_module_members(repo, output_root, projection)?;
@@ -4232,6 +4241,8 @@ fn finalize_partial_source_only_program_projection(
     let bytes = source_only_program_projection_bytes(&authority)?;
 
     with_source_only_program_projection_lock(output_root, |authority| {
+        let mut dependency_keys = BTreeMap::new();
+        let mut checked = Vec::with_capacity(publishable.len());
         for node in &publishable {
             let PlanNodeV1::Package { name, target_arch } = node else {
                 continue;
@@ -4250,8 +4261,15 @@ fn finalize_partial_source_only_program_projection(
                 wasm_posix_shared::ABI_VERSION,
                 verify_cache,
                 receipt,
+                &mut dependency_keys,
             )?;
+            checked.push((manifest, arch, receipt));
         }
+        authority.recheck_package_keys(
+            registry,
+            wasm_posix_shared::ABI_VERSION,
+            checked.iter().map(|(manifest, arch, receipt)| (manifest, *arch, *receipt)),
+        )?;
         for (_module, projection) in &coresident {
             stage_coresident_side_module_members(repo, output_root, projection)?;
         }

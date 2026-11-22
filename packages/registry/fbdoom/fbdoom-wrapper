@@ -14,6 +14,26 @@
 # Keys missing from the file keep Doom's defaults, and an existing config is
 # never touched. exec keeps the process the display's owner, so the machine's
 # dock and "Load WAD" signal Doom itself.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: fbdoom [DOOM-OPTION]...
+
+Run fbDOOM, the DOOM engine, on the machine's display.
+
+On first launch, write this machine's default settings to a missing
+$HOME/.fdoom.tar/default.cfg: screenblocks 10, the full-width view with the
+status bar. An existing config is never changed. Every argument is passed
+to the engine, /usr/libexec/fbdoom, which takes DOOM's own options, such as
+-iwad FILE to choose the game data.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'fbdoom (Kandelo fbdoom) 0.1.0'; exit 0 ;;
+esac
 if [ -n "${HOME:-}" ] && [ ! -e "$HOME/.fdoom.tar/default.cfg" ]; then
     mkdir -p "$HOME/.fdoom.tar" && printf 'screenblocks 10\n' > "$HOME/.fdoom.tar/default.cfg"
 fi

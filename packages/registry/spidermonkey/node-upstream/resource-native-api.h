@@ -10,11 +10,9 @@
 #include "shell/node-upstream/build-profile.h"
 #include "shell/node-upstream/codec-native-api.h"
 #define node kandelo_node_codec_impl
-#define v8 kandelo_node_codec_api
 #include "shell/node-upstream/codecs-upstream/aliased_buffer.h"
 #include "shell/node-upstream/resource-upstream/async_wrap.h"
 #include "shell/node-upstream/resource-upstream/handle_wrap.h"
-#undef v8
 #undef node
 namespace kandelo_node_codec_impl {
 bool HasSignalJSHandler(int);
@@ -52,14 +50,14 @@ MaybeLocal<Value> InternalMakeCallback(Environment*,Local<Object>,Local<Object>,
 
 }
 namespace kandelo_async_resource_adapter {
-using namespace kandelo_node_codec_api;
+using namespace v8;
 using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 using IsolateInitializer=void(*)(kandelo_node_codec_impl::IsolateData*,Local<ObjectTemplate>);
 extern Initializer initializer;
 extern IsolateInitializer isolate_initializer;
 }
 namespace kandelo_signal_wrap_adapter {
-using namespace kandelo_node_codec_api;
+using namespace v8;
 using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 extern Initializer initializer;
 }

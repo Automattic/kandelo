@@ -82,8 +82,12 @@ export class BrowserProcessMemoryFactory {
           try {
             worker.terminate();
           } catch (terminationError) {
-            error ??= terminationError instanceof Error
+            const failure = terminationError instanceof Error
               ? terminationError : new Error(String(terminationError));
+            // Unproven worker retirement must retain its own failure identity,
+            // including when a closed admission canceled the allocation.
+            error = error ? new AggregateError([error, failure],
+              `${error.message}; memory allocation worker termination failed: ${failure.message}`) : failure;
             retryInOwnerRealm = false;
           }
         }
@@ -138,12 +142,12 @@ export class BrowserProcessMemoryFactory {
     });
   }
 
-  dispose(): void {
+  dispose(cancellation?: Error): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const cancel of this.pending) {
-      cancel(new Error("Process memory factory was destroyed"));
-    }
+    // The destroy owner can carry the closed creator gate's exact refusal.
+    const reason = cancellation ?? new Error("Process memory factory was destroyed");
+    for (const cancel of this.pending) cancel(reason);
     if (this.scriptUrl !== undefined) URL.revokeObjectURL(this.scriptUrl);
     this.scriptUrl = undefined;
   }

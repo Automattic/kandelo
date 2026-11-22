@@ -11,6 +11,13 @@ import {internalFieldCases} from './internal-field-controls';
 import {nativeInternalsCases} from './native-internals-controls';
 import {nativeStateCases} from './native-state-controls';
 import {persistentHandleCases} from './persistent-handle-controls';
+import {weakCallbackCases} from './weak-callback-controls';
+import {baseObjectOwnershipCases} from './base-object-ownership-controls';
+import {dictionaryTemplateCases} from './dictionary-template-controls';
+import {executionScopeCases} from './execution-scope-controls';
+import {backingAccountCases} from './backing-account-controls';
+import {heapStatisticsCases} from './heap-statistics-controls';
+import {cleanupQueueCases} from './cleanup-queue-controls';
 import {scopedCatchCases} from './scoped-catch-controls';
 import {readFileSync} from 'node:fs';
 import {asyncResourcePrimitiveCases} from './async-resource-primitives-controls';
@@ -29,9 +36,23 @@ nativeOwnerSourceFiles.push(...constructorNameFixtureFiles);
 nativeOwnerSourceFiles.push('tests/nodejs/upstream/handle-owner-controls.ts');
 nativeOwnerSourceFiles.push('tests/nodejs/upstream/template-inheritance-controls.ts');
 nativeOwnerSourceFiles.push('tests/nodejs/upstream/internal-field-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/weak-callback-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/base-object-ownership-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/dictionary-template-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/execution-scope-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/backing-account-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/heap-statistics-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/cleanup-queue-controls.ts');
 const source=readFileSync(nativeOwnerFixture,'utf8');
 const setup=`const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm();const op=(name,...args)=>api.nativeOwners(name,...args);`;
 export const nativeOwnerCases=[
+ ...cleanupQueueCases,
+ ...heapStatisticsCases,
+ ...backingAccountCases,
+ ...executionScopeCases,
+ ...dictionaryTemplateCases,
+ ...baseObjectOwnershipCases,
+ ...weakCallbackCases,
  {name:'native-constructor-callback-info-reads-real-call-state-across-reflect-subclass-and-reentry',source:`const api=__kandeloUpstreamTest;api.initializeContext();api.initializeRealm();function assert(value){if(!value)throw Error('native call state')}const factory=api.nativeOwners('constructCallFactory');for(const value of [factory(),factory.call({}),Reflect.apply(factory,{},[])])assert(value.constructCall===false&&value.after===false);class Child extends factory{}for(const value of [new factory(),new Child(),Reflect.construct(factory,[],class Alternate{})])assert(value.constructCall===true&&value.after===true);let nested=false,seen=[];const reentry=api.nativeOwners('constructCallFactory',value=>{seen.push(value);if(value&&!nested){nested=true;const ordinary=reentry();assert(ordinary.constructCall===false&&ordinary.after===false);gc(undefined,'shrinking');nested=false}});const result=new reentry();assert(result.constructCall===true&&result.after===true&&JSON.stringify(seen)==='[true,false]');const marker={same:true},throwing=api.nativeOwners('constructCallFactory',()=>{throw marker});let error;try{new throwing()}catch(caught){error=caught}assert(error===marker);print('CONSTRUCT_CALL_FRAME_OK');`,code:0,stdout:'CONSTRUCT_CALL_FRAME_OK'},
  {name:'original-signal-handler-map-is-empty-before-real-node-signal-producers',source:`const api=__kandeloUpstreamTest;api.initializeContext();api.initializeRealm();for(const signum of [0,1,2,15,31,127])if(api.nativeOwners('signalHasHandler',signum)!==false)throw Error('unexpected original signal handler');print('SIGNAL_MAP_INITIAL_EMPTY');`,code:0,stdout:'SIGNAL_MAP_INITIAL_EMPTY'},
  ...internalFieldCases,

@@ -19,6 +19,8 @@ const expectedCases = [
   "prepare-check-phases", "thread-to-loop-async-wakeup",
   "threadpool-work-and-main-callback", "pipe-readiness-and-poll-close",
   "real-file-async-write-read-and-errors", "process-title-explicit-unsupported",
+  "physical-memory-explicitly-unknown-and-rss-unsupported",
+  "memory-constraints-follow-real-guest-resource-limits",
   "filesystem-watch-explicit-unsupported",
 ];
 function identity(path: string) {

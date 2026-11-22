@@ -1,0 +1,30 @@
+kind = "program"
+name = "texinfo"
+version = "7.3"
+kernel_abi = 56
+depends_on = []
+
+# GNU Texinfo: makeinfo/texi2any (Perl, without its optional XS modules),
+# texindex and texi2dvi, as texinfo.zip mounted at /usr; and install-info,
+# a C program. The info reader is not built (it needs ncurses).
+[source]
+url = "https://ftpmirror.gnu.org/texinfo/texinfo-7.3.tar.xz"
+sha256 = "51f74eb0f51cfa9873b85264dfdd5d46e8957ec95b88f0fb762f63d9e164c72e"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/texinfo.git/tree/COPYING?h=texinfo-7.3"
+
+[build]
+script_path = "packages/registry/texinfo/build-texinfo.sh"
+
+[[outputs]]
+name = "texinfo"
+wasm = "texinfo.zip"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "install-info"
+wasm = "install-info.wasm"
+fork_instrumentation = "auto"

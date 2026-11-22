@@ -1,6 +1,6 @@
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
-@@ -1459,6 +1459,16 @@
+@@ -1551,6 +1551,16 @@
  static bool GetKandeloLazyDataProperty(JSContext* cx, Handle<NativeObject*> obj,
                                         HandleId id, PropertyInfo prop,
                                         MutableHandleValue vp);
@@ -17,7 +17,7 @@
  
  static bool GetExistingDataProperty(JSContext* cx, Handle<NativeObject*> obj,
                                      HandleId id, const PropertyResult& prop,
-@@ -1493,7 +1503,8 @@
+@@ -1585,7 +1595,8 @@
                                        HandleId id, const PropertyResult& prop,
                                        JS::PropertyAttributes attrs,
                                        Handle<PropertyDescriptor> desc,
@@ -27,7 +27,7 @@
    *redundant = false;
  
    if (desc.hasConfigurable() && desc.configurable() != attrs.configurable()) {
-@@ -1512,7 +1523,9 @@
+@@ -1604,7 +1615,9 @@
      if (desc.hasValue()) {
        // Get the current value of the existing property.
        RootedValue currentValue(cx);
@@ -38,7 +38,7 @@
          return false;
        }
  
-@@ -1633,14 +1646,23 @@
+@@ -1725,14 +1738,23 @@
    // ECMAScript descriptor operations observe the actual current data value.
    // Assignment and integrity-level changes have separate native paths which
    // can avoid this read. Re-lookup after arbitrary callback side effects.
@@ -64,7 +64,7 @@
  
    // From this point, the step numbers refer to
    // 10.1.6.3, ValidateAndApplyPropertyDescriptor.
-@@ -1681,10 +1703,15 @@
+@@ -1773,10 +1795,15 @@
    // paper-over that difference.
    JS::PropertyAttributes attrs = GetPropertyAttributes(obj, prop);
    bool redundant;
@@ -81,7 +81,7 @@
      return result.succeed();
    }
  
-@@ -1727,7 +1754,9 @@
+@@ -1819,7 +1846,9 @@
        // Step 5.e.ii.
        if (desc.hasValue()) {
          RootedValue currentValue(cx);
@@ -92,7 +92,7 @@
            return false;
          }
  
-@@ -1758,7 +1787,9 @@
+@@ -1850,7 +1879,9 @@
      if (IsDataDescriptor(prop)) {
        if (!desc.hasValue()) {
          RootedValue currentValue(cx);
@@ -103,7 +103,7 @@
            return false;
          }
  
-@@ -1807,7 +1838,9 @@
+@@ -1899,7 +1930,9 @@
      MOZ_ASSERT(!desc.hasSetter());
      if (IsDataDescriptor(prop)) {
        RootedValue currentValue(cx);
@@ -114,7 +114,7 @@
          return false;
        }
        desc.setValue(currentValue);
-@@ -1820,19 +1853,34 @@
+@@ -1912,19 +1945,34 @@
    }
    desc.assertComplete();
  
@@ -150,7 +150,7 @@
  };
  class KandeloLazyRecord : public NativeObject {
   public:
-@@ -1872,15 +1920,73 @@
+@@ -1964,15 +2012,73 @@
    return NativeDefineProperty(cx, target.as<NativeObject>(), id, desc, result, true);
  }
  
@@ -224,7 +224,7 @@
    if (!callback->getter(cx, obj, id, data, value)) return false;
  
    // The callback may collect, throw, delete or redefine the property. Cache
-@@ -2197,7 +2303,7 @@
+@@ -2290,7 +2396,7 @@
    }
  
    if (prop.isKandeloLazyDataProperty()) {
@@ -233,7 +233,7 @@
    }
    MOZ_ASSERT(prop.isCustomDataProperty());
  
-@@ -2522,6 +2628,10 @@
+@@ -2605,6 +2711,10 @@
    }
  
    if (prop.isKandeloLazyDataProperty()) {
@@ -246,7 +246,7 @@
      uint32_t slot;
 --- a/js/src/vm/NativeObject.h
 +++ b/js/src/vm/NativeObject.h
-@@ -1788,6 +1788,18 @@
+@@ -1860,6 +1860,18 @@
                                            KandeloLazyDataGetter getter,
                                            HandleValue data, unsigned attrs,
                                            ObjectOpResult& result);

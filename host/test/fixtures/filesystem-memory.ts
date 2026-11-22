@@ -47,16 +47,21 @@ export function parseFilesystemMemory(output: string): FilesystemAdmissionMemory
   return { current, peak, owners };
 }
 
+// Namespace transactions and ordinary I/O staging (peer mapping refresh,
+// fork rollback bytes) hold bounded temporary credit; the journal and the
+// reserved writeback owners never do. See docs/architecture.md.
+const temporaryOwners = new Set(["namespace", "io"]);
+
 export function validateFilesystemMemoryBounds(report: FilesystemAdmissionMemory): void {
   let allowance = 0;
   for (const [name, owner] of Object.entries(report.owners)) {
     if (owner.peak_live > owner.limit || owner.peak_temporary > 2 * owner.limit) {
       throw new Error("Filesystem admission peak exceeds the configured phase allowance");
     }
-    if (name !== "namespace" && owner.peak_temporary !== 0) {
-      throw new Error("Unexpected temporary ownership outside namespace admission");
+    if (!temporaryOwners.has(name) && owner.peak_temporary !== 0) {
+      throw new Error(`Unexpected temporary ownership by ${name}`);
     }
-    allowance += owner.limit * (name === "namespace" ? 3 : 1);
+    allowance += owner.limit * (temporaryOwners.has(name) ? 3 : 1);
   }
   if (report.peak > allowance) throw new Error("Aggregate filesystem admission exceeds its combined allowances");
 }

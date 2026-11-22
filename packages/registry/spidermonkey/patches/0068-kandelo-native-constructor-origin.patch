@@ -1,6 +1,15 @@
+Preserve native constructor provenance on ESR153's zone-owned weak map.
+
+Keep the existing native/script entry suppression and actual allocation hooks.
+Use WeakMap<JSObject*, JS::Value, ZoneAllocPolicy> so object constructors and
+prototype-construction markers retain the engine's barriers and ephemerons.
+The template definitions are now in WeakMap-inl.h, already included by
+Realm.cpp; the former out-of-line explicit instantiation is unnecessary.
+No observable constructor-property lookup or separate lifetime collector.
+
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -140,6 +140,7 @@
+@@ -125,6 +125,7 @@
  };
  
  class AutoLockScriptData;
@@ -8,7 +17,7 @@
  
  /* Thread Local Storage slot for storing the context for a thread. */
  extern MOZ_THREAD_LOCAL(JSContext*) TlsContext;
-@@ -192,6 +193,8 @@
+@@ -236,6 +237,8 @@
    mozilla::Atomic<bool, mozilla::ReleaseAcquire> isExecuting_;
  
   public:
@@ -19,7 +28,7 @@
    void setRuntime(JSRuntime* rt);
 --- a/js/src/vm/JSObject.h
 +++ b/js/src/vm/JSObject.h
-@@ -795,6 +795,40 @@
+@@ -822,6 +822,40 @@
  
  namespace js {
  
@@ -60,7 +69,7 @@
  // ES6 9.1.15 GetPrototypeFromConstructor.
  extern bool GetPrototypeFromConstructor(JSContext* cx,
                                          js::HandleObject newTarget,
-@@ -828,14 +862,18 @@
+@@ -855,14 +889,18 @@
        &args.newTarget().toObject() == &args.callee()) {
      MOZ_ASSERT(args.callee().hasSameRealmAs(cx));
      proto.set(nullptr);
@@ -83,50 +92,54 @@
  /* ES6 draft rev 32 (2015 Feb 2) 6.2.4.5 ToPropertyDescriptor(Obj) */
 --- a/js/src/vm/Realm.h
 +++ b/js/src/vm/Realm.h
-@@ -243,7 +243,7 @@
+@@ -250,7 +250,7 @@
  
-   // Construction identity is independent of debugger allocation metadata.
-   // The object key is weak; its actual constructor is live only with that key.
--  js::UniquePtr<js::ObjectWeakMap> constructorIdentity_;
-+  js::UniquePtr<js::ObjectValueWeakMap> constructorIdentity_;
+   // The object's key is weak; its actual constructor is live with that key.
+   // Use ESR153's zone-owned system-map type and barriers.
+-  using ConstructorIdentityMap = WeakMap<JSObject*, JSObject*, ZoneAllocPolicy>;
++  using ConstructorIdentityMap = WeakMap<JSObject*, JS::Value, ZoneAllocPolicy>;
+   js::UniquePtr<ConstructorIdentityMap> constructorIdentity_;
  
-   ObjectRealm(const ObjectRealm&) = delete;
-   void operator=(const ObjectRealm&) = delete;
-@@ -266,8 +266,10 @@
+  public:
+@@ -272,8 +272,10 @@
    explicit ObjectRealm(JS::Zone* zone);
  
    [[nodiscard]] bool recordConstructorIdentity(JSContext* cx, HandleObject obj,
--                                               HandleObject constructor);
+-                                             HandleObject constructor);
 +                                               HandleObject constructor,
 +                                               bool direct = true);
    JSObject* getConstructorIdentity(JSObject* obj);
 +  bool hasPrototypeConstruction(JSObject* obj);
  
-   void finishRoots();
-   void trace(JSTracer* trc);
+   ObjectRealm(const ObjectRealm&) = delete;
+   void operator=(const ObjectRealm&) = delete;
 --- a/js/src/vm/Realm.cpp
 +++ b/js/src/vm/Realm.cpp
-@@ -24,14 +24,19 @@
+@@ -20,6 +20,8 @@
  #include "js/GCVariant.h"
  #include "js/Proxy.h"
  #include "js/RootingAPI.h"
 +#include "js/String.h"
 +#include "js/Symbol.h"
  #include "js/Wrapper.h"
- #include "vm/Compartment.h"
+ #include "util/DefaultLocale.h"
+ #include "util/RandomSeed.h"
+@@ -27,11 +29,14 @@
  #include "vm/DateTime.h"
  #include "vm/Iteration.h"
  #include "vm/JSContext.h"
 +#include "vm/JSFunction.h"
 +#include "vm/ProxyObject.h"
+ #include "wasm/WasmInstance.h"
  
  #include "gc/Marking-inl.h"
+ #include "gc/WeakMap-inl.h"
  #include "vm/JSObject-inl.h"
 +#include "vm/NativeObject-inl.h"
  
  using namespace js;
  
-@@ -257,19 +262,24 @@
+@@ -257,10 +262,11 @@
  }
  
  bool ObjectRealm::recordConstructorIdentity(JSContext* cx, HandleObject obj,
@@ -139,10 +152,9 @@
 +  MOZ_ASSERT(!direct || &ObjectRealm::get(constructor) == this);
 +  cx->check(obj);
    if (!constructorIdentity_) {
--    auto map = cx->make_unique<ObjectWeakMap>(cx);
-+    auto map = cx->make_unique<ObjectValueWeakMap>(cx);
+     auto map = cx->make_unique<ConstructorIdentityMap>(cx->zone());
      if (!map) {
-       return false;
+@@ -268,8 +274,12 @@
      }
      constructorIdentity_ = std::move(map);
    }
@@ -385,7 +397,7 @@
  void ObjectRealm::trace(JSTracer* trc) {
 --- a/js/src/vm/PlainObject-inl.h
 +++ b/js/src/vm/PlainObject-inl.h
-@@ -84,8 +84,8 @@
+@@ -82,8 +82,8 @@
    MOZ_ASSERT(obj->nonCCWRealm() == callee->realm());
    // Record the function that actually allocated this base receiver. Derived
    // construction and returned replacement objects have distinct identities.
@@ -398,7 +410,7 @@
    thisv.setObject(*obj);
 --- a/js/src/vm/NativeObject-inl.h
 +++ b/js/src/vm/NativeObject-inl.h
-@@ -495,6 +495,10 @@
+@@ -504,6 +504,10 @@
  
    if (slotSpan > 0) {
      nobj->initSlots(nfixed, slotSpan);
@@ -411,7 +423,7 @@
    if (MOZ_UNLIKELY(cx->realm()->hasAllocationMetadataBuilder())) {
 --- a/js/src/vm/Interpreter.cpp
 +++ b/js/src/vm/Interpreter.cpp
-@@ -409,6 +409,7 @@
+@@ -407,6 +407,7 @@
  #  pragma optimize("g", off)
  #endif
  bool js::RunScript(JSContext* cx, RunState& state) {
@@ -419,7 +431,7 @@
    AutoCheckRecursionLimit recursion(cx);
    if (!recursion.check(cx)) {
      return false;
-@@ -491,6 +492,7 @@
+@@ -499,6 +500,7 @@
    MOZ_ASSERT(!args.callee().is<ProxyObject>());
  
    AutoRealm ar(cx, &args.callee());
@@ -429,7 +441,7 @@
      cx->check(args.rval());
 --- a/js/src/vm/PortableBaselineInterpret.cpp
 +++ b/js/src/vm/PortableBaselineInterpret.cpp
-@@ -2423,6 +2423,8 @@
+@@ -2388,6 +2388,8 @@
              JSNative native = ignoresRv
                                    ? callee->jitInfo()->ignoresReturnValueMethod
                                    : callee->native();
@@ -440,7 +452,7 @@
              ctx.stack.fp = trampolinePrevFP;
 --- a/js/src/vm/JSFunction.cpp
 +++ b/js/src/vm/JSFunction.cpp
-@@ -1570,6 +1570,10 @@
+@@ -1554,6 +1554,10 @@
      return false;
    }
  
@@ -453,7 +465,7 @@
    return true;
 --- a/js/src/jsapi.cpp
 +++ b/js/src/jsapi.cpp
-@@ -1966,7 +1966,11 @@
+@@ -2022,7 +2022,11 @@
      return nullptr;
    }
  
@@ -468,7 +480,7 @@
  JS_PUBLIC_API bool JS_IsNative(JSObject* obj) {
 --- a/js/src/builtin/Object.cpp
 +++ b/js/src/builtin/Object.cpp
-@@ -76,7 +76,11 @@
+@@ -74,7 +74,11 @@
    if (args.isConstructing() &&
        (&args.newTarget().toObject() != &args.callee())) {
      RootedObject newTarget(cx, &args.newTarget().toObject());
@@ -483,7 +495,7 @@
    } else {
 --- a/js/src/builtin/intl/DisplayNames.cpp
 +++ b/js/src/builtin/intl/DisplayNames.cpp
-@@ -168,6 +168,10 @@
+@@ -295,6 +295,10 @@
    Rooted<DisplayNamesObject*> displayNames(cx);
    displayNames = NewObjectWithClassProto<DisplayNamesObject>(cx, proto);
    if (!displayNames) {
@@ -494,14 +506,6 @@
      return false;
    }
  
---- a/js/src/gc/WeakMap.cpp
-+++ b/js/src/gc/WeakMap.cpp
-@@ -189,4 +189,5 @@
- 
- namespace js {
- template class WeakMap<JSObject*, JSObject*>;
-+template class WeakMap<JSObject*, Value>;
- }  // namespace js
 --- a/js/src/vm/ArrayObject-inl.h
 +++ b/js/src/vm/ArrayObject-inl.h
 @@ -57,6 +57,10 @@

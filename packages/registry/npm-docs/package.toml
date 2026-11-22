@@ -1,0 +1,24 @@
+kind = "program"
+name = "npm-docs"
+version = "11.20.0"
+kernel_abi = 56
+depends_on = []
+
+# Unmodified bundled npm pages from the pinned Node source archive.
+[source]
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "Artistic-2.0"
+url = "https://github.com/npm/cli/blob/v11.20.0/LICENSE"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/npm-docs/build-npm-docs.sh"
+
+[[outputs]]
+name = "npm-docs"
+wasm = "npm-docs.zip"
+fork_instrumentation = "disabled"

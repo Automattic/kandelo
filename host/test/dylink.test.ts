@@ -635,13 +635,17 @@ describe.skipIf(!hasCompiler())("shared library loading", () => {
   });
 
   it("handles function pointers (indirect calls through the table)", async () => {
-    // Use a function pointer array to force table entries (prevents inlining)
+    // An externally visible function-pointer array forces table entries.
+    // It must not be `static`: clang 23 folds a constant two-entry static
+    // array into a `select` between direct calls, which leaves the module
+    // with no table for this test to check. A global array can be changed
+    // from outside this translation unit, so its slots stay in the table.
     const wasmBytes = buildSharedLib(
       `
       typedef int (*op_fn)(int, int);
       static int add(int a, int b) { return a + b; }
       static int sub(int a, int b) { return a - b; }
-      static op_fn ops[] = {add, sub};
+      op_fn ops[] = {add, sub};
       int apply(int which, int a, int b) { return ops[which](a, b); }
       `,
       "funcptr",
@@ -1707,6 +1711,78 @@ describe("side-module fork contract", () => {
     );
 
     expect(options.got.get("main_callback")?.value).toBe(1);
+  });
+
+  it("resolves a self GOT.func cell for a live-process replica", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "side_callback" (global $pointer (mut i32)))
+        (func (export "side_callback") (result i32) i32.const 73)
+        (func (export "__read_self") (result i32) global.get $pointer))
+    `, "side-live-replica-self-got-function");
+    const testOwner = createTestForkActivationOwner(65);
+    const options = createSideForkLoadOptions();
+    options.table.grow(2);
+    const index = options.table.length;
+    options.forkActivationOwner = {
+      prepare(request) {
+        return {
+          ...testOwner.owner.prepare(request),
+          replayImportState: "resolved",
+          savedMutableGlobalImport: () => {
+            throw new Error("a live-process replica has no saved import state");
+          },
+        };
+      },
+    };
+
+    const loaded = loadSharedLibrarySync(
+      "lib-live-replica-self-got-function.so",
+      wasmBytes,
+      options,
+      { memoryBase: 0, tableBase: index, activationId: 65 },
+      false,
+    );
+
+    expect((loaded.exports.__read_self as CallableFunction)()).toBe(index);
+    expect(options.table.get(index)).toBe(loaded.exports.side_callback);
+    expect(options.globalSymbols.has("side_callback")).toBe(false);
+  });
+
+  it("resolves an unresolved shared GOT.func cell for a live-process replica", () => {
+    const callbackModule = new WebAssembly.Module(buildDylinkWat(`
+      (module (func (export "callback") (result i32) i32.const 73))
+    `, "live-replica-shared-got-callback"));
+    const callback = new WebAssembly.Instance(callbackModule).exports.callback as Function;
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "main_callback" (global $pointer (mut i32)))
+        (func (export "__read_shared") (result i32) global.get $pointer))
+    `, "side-live-replica-unresolved-shared-got-function");
+    const testOwner = createTestForkActivationOwner(66);
+    const options = createSideForkLoadOptions();
+    options.table.grow(1);
+    options.table.set(1, callback);
+    options.globalSymbols.set("main_callback", callback);
+    options.got.set("main_callback", new WebAssembly.Global({ value: "i32", mutable: true }, 0));
+    options.forkActivationOwner = {
+      prepare(request) {
+        return { ...testOwner.owner.prepare(request), replayImportState: "resolved" };
+      },
+    };
+
+    const loaded = loadSharedLibrarySync(
+      "lib-live-replica-unresolved-shared-got-function.so",
+      wasmBytes,
+      options,
+      { memoryBase: 0, tableBase: options.table.length, activationId: 66 },
+    );
+
+    expect((loaded.exports.__read_shared as CallableFunction)()).toBe(1);
+    expect(options.got.get("main_callback")?.value).toBe(1);
+    expect(options.table.length).toBe(2);
   });
 
   it("forgets, never unmaps, adopted memory when a replay fails", () => {

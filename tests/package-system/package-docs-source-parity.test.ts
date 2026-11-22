@@ -29,6 +29,14 @@ function archiveIdentity(pkg: string): [string, string, string] | null {
   return fields.length === 3 ? (fields as [string, string, string]) : null;
 }
 
+// These docs are bundled within the pinned Node archive. Their package
+// versions need not equal the enclosing source version; npm's build also
+// validates its declared version against deps/npm/package.json.
+const SOURCE_OWNERS: Record<string, string> = {
+  "npm-docs": "node-core-source",
+  "node-docs": "node-core-source",
+};
+
 const upstreamDocsPackages = readdirSync(registry)
   .filter((name) => name.endsWith("-docs"))
   .filter((name) =>
@@ -46,6 +54,13 @@ describe("upstream man-page packages", () => {
   it.each(upstreamDocsPackages)(
     "%s pins the same version, source URL and SHA-256 as its program",
     (docs) => {
+      const sourceOwner = SOURCE_OWNERS[docs];
+      if (sourceOwner !== undefined) {
+        const [, url, sha256] = archiveIdentity(docs) ?? [];
+        expect(archiveIdentity(sourceOwner)?.slice(1)).toEqual([url, sha256]);
+        expect(url).toContain(`/node-v${archiveIdentity(sourceOwner)?.[0]}.tar.gz`);
+        return;
+      }
       const owner = docs.slice(0, -"-docs".length);
       expect(existsSync(join(registry, owner, "package.toml"))).toBe(true);
       expect(archiveIdentity(docs)).toEqual(archiveIdentity(owner));

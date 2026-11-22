@@ -1,19 +1,30 @@
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -37,2 +37,4 @@
+@@ -34,7 +34,9 @@
+     "node-upstream/constants-upstream/node_constants.cc",
+     "node-upstream/constants.cpp",
      "node-upstream/decoder-upstream.cpp",
 +    "node-upstream/encoding-upstream.cpp",
      "node-upstream/error-stack.cpp",
 +    "node-upstream/icu-upstream.cpp",
-@@ -103 +105,3 @@
+     "node-upstream/module-wrap.cpp",
+     "node-upstream/options-upstream.cpp",
+     "node-upstream/options.cpp",
+@@ -101,3 +103,5 @@
+ SOURCES["node-upstream/decoder-upstream.cpp"].flags += ["-std=c++20"]
+ SOURCES["node-upstream/string-bytes-upstream.cpp"].flags += ["-std=c++20"]
  SOURCES["node-upstream/process-versions.cpp"].flags += ["-std=c++20"]
 +SOURCES["node-upstream/encoding-upstream.cpp"].flags += ["-std=c++20"]
 +SOURCES["node-upstream/icu-upstream.cpp"].flags += ["-std=c++20"]
 --- a/config/check_spidermonkey_style.py
 +++ b/config/check_spidermonkey_style.py
-@@ -59,2 +59,5 @@
-     [
-+        "shell/node-upstream/codecs-upstream/encoding.cc",
-+        "shell/node-upstream/codecs-upstream/node_i18n.cc",
-+        "shell/node-upstream/codecs-upstream/node_i18n.h",
-         "shell/node-upstream/process-versions-deps/zlib.h",
+@@ -58,6 +58,9 @@
+ 
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set([
++    "shell/node-upstream/codecs-upstream/encoding.cc",
++    "shell/node-upstream/codecs-upstream/node_i18n.cc",
++    "shell/node-upstream/codecs-upstream/node_i18n.h",
+     "shell/node-upstream/process-versions-deps/zlib.h",
+     "shell/node-upstream/codecs-upstream/errors.generated.h",
+     "shell/node-upstream/codecs-upstream/string_decoder.cc",

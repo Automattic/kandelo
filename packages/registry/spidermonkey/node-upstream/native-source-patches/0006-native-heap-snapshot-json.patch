@@ -1,0 +1,211 @@
+--- a/deps/v8/src/profiler/heap-snapshot-generator.h
++++ b/deps/v8/src/profiler/heap-snapshot-generator.h
+@@ -13,6 +13,9 @@
+ #include <utility>
+ #include <vector>
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "shell/node-upstream/engine-heap-snapshot-data.h"
++#else
+ #include "include/v8-profiler.h"
+ #include "src/base/platform/time.h"
+ #include "src/execution/isolate.h"
+@@ -32,7 +35,9 @@
+ #include "src/heap/reference-summarizer.h"
+ #endif
+ 
++#endif
+ namespace v8::internal {
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ 
+ class AllocationTraceNode;
+ class HeapEntry;
+@@ -48,6 +53,7 @@
+ class JSPromise;
+ class JSWeakCollection;
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ struct EntrySourceLocation {
+   EntrySourceLocation(int entry_index, int scriptId, int line, int col)
+       : entry_index(entry_index), scriptId(scriptId), line(line), col(col) {}
+@@ -58,6 +64,7 @@
+   const int col;
+ };
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ class HeapGraphEdge {
+  public:
+   enum Type {
+@@ -758,6 +765,7 @@
+ 
+ class OutputStreamWriter;
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ class HeapSnapshotJSONSerializer {
+  public:
+   explicit HeapSnapshotJSONSerializer(HeapSnapshot* snapshot)
+--- a/deps/v8/src/profiler/heap-snapshot-generator.cc
++++ b/deps/v8/src/profiler/heap-snapshot-generator.cc
+@@ -2,6 +2,10 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "heap-snapshot-generator.h"
++#include "heap-snapshot-generator-inl.h"
++#else
+ #include "src/profiler/heap-snapshot-generator.h"
+ 
+ #include <optional>
+@@ -56,7 +60,9 @@
+ #include "src/wasm/wasm-objects.h"
+ #endif  // V8_ENABLE_WEBASSEMBLY
+ 
++#endif
+ namespace v8::internal {
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ 
+ #ifdef V8_ENABLE_HEAP_SNAPSHOT_VERIFY
+ class HeapEntryVerifier {
+@@ -3078,6 +3084,12 @@
+   }
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++using SnapshotGraphValue = JS::Value;
++#else
++using SnapshotGraphValue = Tagged<Object>;
++#endif
+ class EmbedderGraphImpl : public EmbedderGraph {
+  public:
+   struct Edge {
+@@ -3088,8 +3100,8 @@
+ 
+   class V8NodeImpl : public Node {
+    public:
+-    explicit V8NodeImpl(Tagged<Object> object) : object_(object) {}
+-    Tagged<Object> GetObject() { return object_; }
++    explicit V8NodeImpl(SnapshotGraphValue object) : object_(object) {}
++    SnapshotGraphValue GetObject() { return object_; }
+ 
+     // Node overrides.
+     bool IsEmbedderNode() override { return false; }
+@@ -3103,7 +3115,7 @@
+     }
+ 
+    private:
+-    Tagged<Object> object_;
++    SnapshotGraphValue object_;
+   };
+ 
+   Node* V8Node(const v8::Local<v8::Value>& value) final {
+@@ -3112,9 +3124,14 @@
+   }
+ 
+   Node* V8Node(const v8::Local<v8::Data>& data) final {
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++    CHECK(!data.IsEmpty());
++    return AddNode(std::make_unique<V8NodeImpl>(v8::Input(data)));
++#else
+     DirectHandle<Object> object = v8::Utils::OpenDirectHandle(*data);
+     DCHECK(!object.is_null());
+     return AddNode(std::unique_ptr<Node>(new V8NodeImpl(*object)));
++#endif
+   }
+ 
+   Node* AddNode(std::unique_ptr<Node> node) final {
+@@ -3139,6 +3156,7 @@
+   size_t native_size_ = 0;
+ };
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ class EmbedderGraphEntriesAllocator : public HeapEntriesAllocator {
+  public:
+   explicit EmbedderGraphEntriesAllocator(HeapSnapshot* snapshot)
+@@ -3154,6 +3172,7 @@
+   HeapObjectsMap* heap_object_map_;
+ };
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ namespace {
+ 
+ const char* EmbedderGraphNodeName(StringsStorage* names,
+@@ -3180,6 +3199,7 @@
+ 
+ }  // anonymous namespace
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ HeapEntry* EmbedderGraphEntriesAllocator::AllocateEntry(HeapThing ptr) {
+   EmbedderGraphImpl::Node* node =
+       reinterpret_cast<EmbedderGraphImpl::Node*>(ptr);
+@@ -3461,13 +3481,16 @@
+          dom_explorer_.IterateAndExtractReferences(this);
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ // type, name, id, self_size, edge_count, trace_node_id, detachedness.
+ const int HeapSnapshotJSONSerializer::kNodeFieldsCountWithTraceNodeId = 7;
+ const int HeapSnapshotJSONSerializer::kNodeFieldsCountWithoutTraceNodeId = 6;
+ 
+ void HeapSnapshotJSONSerializer::Serialize(v8::OutputStream* stream) {
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+   v8::base::ElapsedTimer timer;
+   timer.Start();
++#endif
+   DCHECK_NULL(writer_);
+   writer_ = new OutputStreamWriter(stream);
+   trace_function_count_ = 0;
+@@ -3480,11 +3503,13 @@
+   delete writer_;
+   writer_ = nullptr;
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+   if (i::v8_flags.profile_heap_snapshot) {
+     base::OS::PrintError("[Serialization of heap snapshot took %0.3f ms]\n",
+                          timer.Elapsed().InMillisecondsF());
+   }
+   timer.Stop();
++#endif  // V8-only optional timing instrumentation
+ }
+ 
+ void HeapSnapshotJSONSerializer::SerializeImpl() {
+--- a/deps/v8/src/profiler/heap-snapshot-generator-inl.h
++++ b/deps/v8/src/profiler/heap-snapshot-generator-inl.h
+@@ -5,15 +5,20 @@
+ #ifndef V8_PROFILER_HEAP_SNAPSHOT_GENERATOR_INL_H_
+ #define V8_PROFILER_HEAP_SNAPSHOT_GENERATOR_INL_H_
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "heap-snapshot-generator.h"
++#else
+ #include "src/profiler/heap-snapshot-generator.h"
+ // Include the non-inl header before the rest of the headers.
+ 
+ #include "src/profiler/heap-profiler.h"
+ #include "src/strings/string-hasher-inl.h"
+ 
++#endif
+ namespace v8 {
+ namespace internal {
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ HeapEntry* HeapGraphEdge::from() const {
+   return &snapshot()->entries()[from_index()];
+ }
+@@ -53,10 +58,15 @@
+ 
+ Isolate* HeapEntry::isolate() const { return snapshot_->profiler()->isolate(); }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ uint32_t HeapSnapshotJSONSerializer::StringHash(const void* string) {
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++  return static_cast<uint32_t>(std::hash<std::string_view>{}(static_cast<const char*>(string)));
++#else
+   const char* s = reinterpret_cast<const char*>(string);
+   int len = static_cast<int>(strlen(s));
+   return StringHasher::HashSequentialString(s, len, HashSeed::Default());
++#endif
+ }
+ 
+ int HeapSnapshotJSONSerializer::to_node_index(const HeapEntry* e) {

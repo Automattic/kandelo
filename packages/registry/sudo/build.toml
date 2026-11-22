@@ -1,6 +1,7 @@
 script_path = "packages/registry/sudo/build-sudo.sh"
 inputs = [
   "packages/registry/sudo/build-sudo.sh",
+  "packages/registry/sudo/configure.sh",
   "packages/registry/sudo/patches/wasm-main-envp.patch",
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",

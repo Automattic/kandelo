@@ -1,0 +1,12 @@
+--- a/src/node.cc
++++ b/src/node.cc
+@@ -920,7 +920,9 @@
+ 
+   // Specify this explicitly to avoid being affected by V8 changes to the
+   // default value.
++#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
+   V8::SetFlagsFromString("--rehash-snapshot");
++#endif
+ 
+   HandleEnvOptions(per_process::cli_options->per_isolate->per_env);
+ 

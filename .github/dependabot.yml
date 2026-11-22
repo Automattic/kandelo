@@ -6,6 +6,7 @@ updates:
     directories:
       - "/"
       - "/.github/actions/**"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -24,25 +25,14 @@ updates:
           - "*"
         update-types:
           - "major"
-      actions-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
     cooldown:
       default-days: 7
 
   - package-ecosystem: "npm"
+    # Discover npm manifests at the root and in new nested projects.
     directories:
-      - "/"
-      - "/apps/browser-demos"
-      - "/host"
-      - "/packages/registry/libxml2"
-      - "/packages/registry/openssl"
-      - "/packages/registry/sqlite"
-      - "/packages/registry/wordpress/demo"
-      - "/packages/registry/zlib"
-      - "/sdk"
-      - "/tools/mkrootfs"
+      - "**/*"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -61,9 +51,33 @@ updates:
           - "*"
         update-types:
           - "major"
+    cooldown:
+      default-days: 7
+
+  # Security updates always target main; preserve their existing grouping.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/**"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Security updates always target main; preserve their existing grouping.
+  - package-ecosystem: "npm"
+    # Discover npm manifests at the root and in new nested projects.
+    directories:
+      - "**/*"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
       npm-security:
         applies-to: security-updates
         patterns:
           - "*"
-    cooldown:
-      default-days: 7

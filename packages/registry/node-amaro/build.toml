@@ -1,0 +1,15 @@
+script_path = "packages/registry/node-amaro/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 3
+inputs = [
+  "packages/registry/node-amaro",
+  "scripts/package-build-roots.sh",
+  "scripts/package-rust-build-env.sh",
+  "scripts/build-rust-sysroot.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "sdk/rust",
+  "sdk/activate.sh",
+  "package.json",
+  "package-lock.json",
+]

@@ -122,11 +122,12 @@ function imagePages(imageBytes: Uint8Array): ManPage[] {
     const match = /^man([1-9])$/.exec(dir);
     if (!match) continue;
     for (const file of fs.readDirNames(`/usr/share/man/${dir}`).sort()) {
-      const name = new RegExp(`^(.+)\\.${match[1]}$`).exec(file)?.[1];
+      // A page may carry a subsection suffix (ncurses' man1/tic.1m).
+      const name = new RegExp(`^(.+)\\.${match[1]}[a-z]*$`).exec(file)?.[1];
       if (!name) continue;
       const path = `/usr/share/man/${dir}/${file}`;
       const isLink = (fs.lstat(path).mode & S_IFMT) === S_IFLNK;
-      const target = isLink ? fs.readlink(path).replace(/\.[1-9]$/, "") : null;
+      const target = isLink ? fs.readlink(path).replace(/\.[1-9][a-z]*$/, "") : null;
       pages.push({ section: match[1], name, target });
     }
   }
@@ -150,17 +151,26 @@ describe.skipIf(!available)(
       expect(pages.length, "no pages under /usr/share/man").toBeGreaterThan(0);
       const indexed = imageHasIndex(imageBytes());
 
-      const script = pages
-        .map(
-          ({ section, name }) =>
-            `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
-            `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
-            `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
-            `printf '\\n@@END %s\\n' "$rc"`,
-        )
-        .join("\n");
-      const { stdout, stderr, exitCode } = await runInShell(imageBytes(), script);
-      expect(exitCode, `stderr:\n${stderr}`).toBe(0);
+      // The commands go to bash as its -c argument, so they run in batches to
+      // stay under the argument-size limit (several hundred pages fail with
+      // E2BIG as one script).
+      const BATCH = 100;
+      let stdout = "";
+      for (let start = 0; start < pages.length; start += BATCH) {
+        const script = pages
+          .slice(start, start + BATCH)
+          .map(
+            ({ section, name }) =>
+              `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
+              `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
+              `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
+              `printf '\\n@@END %s\\n' "$rc"`,
+          )
+          .join("\n");
+        const batch = await runInShell(imageBytes(), script);
+        expect(batch.exitCode, `stderr:\n${batch.stderr}`).toBe(0);
+        stdout += batch.stdout;
+      }
 
       const rendered = new Map<string, string>();
       const failures: string[] = [];
@@ -197,7 +207,9 @@ describe.skipIf(!available)(
           `${page.name}(${page.section}) is an alias of ${page.target}`,
         ).toBe(rendered.get(`${page.section} ${page.target}`));
       }
-    }, 900_000);
+      // About a second per page inside Kandelo, for every page of every
+      // docs archive (around a thousand).
+    }, 1_800_000);
 
     it("renders the text of the program's own manual", async () => {
       const pages = new Set(imagePages(imageBytes()).map((p) => `${p.section} ${p.name}`));
@@ -209,6 +221,73 @@ describe.skipIf(!available)(
         ["1 grep", /print lines that match patterns/],
         ["1 unxz", /Compress or decompress \.xz and\s+\.lzma files/],
         ["1 man", /display manual pages/],
+        ["1 curl", /transfer a URL/],
+        ["1 wget", /The non-interactive network downloader/],
+        ["1 perlfunc", /Perl builtin functions/],
+        ["1 git-commit", /Record changes to the repository/],
+        ["5 gitignore", /Specifies intentionally untracked files to ignore/],
+        ["1 sway", /An i3-compatible Wayland compositor/],
+        ["1 swaymsg", /Send messages to a running instance of sway/],
+        ["1 swaybg", /Background for Wayland/],
+        ["1 cage", /a Wayland kiosk compositor/],
+        ["1 labwc", /a Wayland stacking compositor/],
+        // The TERM default that foot's build fills into the page.
+        ["5 foot.ini", /environment variable TERM to\.\s+Default:\s+foot\b/],
+        ["1 dbus-daemon", /Message bus daemon/],
+        ["1 ffmpeg", /ffmpeg media converter/],
+        ["1 ffmpeg-filters", /FFmpeg filters/],
+        ["8 sudo", /execute a command as another user/],
+        ["5 sudoers", /default sudo security policy plugin/],
+        ["1 tput", /query\s+terminfo database/],
+        // Upstream installs it as man1/tic.1m.
+        ["1 tic", /compile terminal descriptions/],
+        ["5 terminfo", /terminal capability database/],
+        // Pages help2man made from each program's --help inside Kandelo.
+        ["1 redis-cli", /Server\s+hostname\s+\(default:\s+127\.0\.0\.1\)/],
+        ["1 sqlite3", /FILENAME\s+is\s+the\s+name\s+of\s+an\s+SQLite\s+database/],
+        ["1 termchat", /Distributed\s+LAN\s+chat\s+application/],
+        ["1 composer", /The\s+list\s+command\s+lists\s+all\s+commands/],
+        ["1 node", /The\s+SpiderMonkey\s+shell\s+provides/],
+        ["1 npm", /javascript package manager/],
+        ["1 npm-install", /Install a package/],
+        ["1 gem", /GEM\s+commands\s+are/],
+        ["6 freeciv-server", /The\s+server\s+for\s+the\s+Freeciv\s+game/],
+        // A `.so` stub for freeciv-client(6).
+        ["6 freeciv-sdl2", /The\s+clients\s+for\s+the\s+Freeciv\s+game/],
+        ["8 syslogd", /log\s+systems\s+messages/],
+        ["1 test", /Exit\s+with\s+the\s+status\s+determined\s+by\s+EXPRESSION/],
+        ["1 rustfmt", /Format\s+Rust\s+code/],
+        ["1 harper-cli", /debugging\s+tool\s+for\s+the\s+Harper/],
+        ["1 swaybar", /swaybar\s+will\s+be\s+automatically\s+started/],
+        // Kandelo's own commands, from the --help Kandelo writes for them.
+        ["1 fbdoom", /Run\s+fbDOOM,\s+the\s+DOOM\s+engine/],
+        ["1 quake", /Run\s+Quake\s+with\s+the\s+machine's\s+game\s+data/],
+        ["1 wlterm", /terminal\s+emulator\s+window\s+on\s+Wayland/],
+        ["1 login", /Authenticate\s+a\s+user/],
+        ["8 sudo-lite", /checking\s+the\s+caller's\s+password/],
+        ["1 kandelo-publish", /Publish\s+a\s+file\s+or\s+a\s+command's\s+output/],
+        ["1 llvm-cov", /emit\s+coverage\s+information/],
+        ["1 espeak-ng", /multi-lingual\s+software\s+speech\s+synthesizer/],
+        // ar is llvm-ar, so its page is a link to llvm-ar(1).
+        ["1 ar", /LLVM\s+archiver/],
+        ["1 wasm-tools", /Validate\s+a\s+WebAssembly\s+binary/],
+        ["1 dmesg", /Print\s+or\s+control\s+the\s+kernel\s+ring\s+buffer/],
+        ["1 autoreconf", /Update\s+generated\s+configuration\s+files/],
+        // A ".so" page: automake(1) is automake-1.20(1).
+        ["1 automake", /Generate\s+Makefile\.in\s+files\s+for\s+configure/],
+        // Captured inside Kandelo, so it names Kandelo's configuration.
+        ["1 libtool", /wasm32-unknown-linux-musl/],
+        ["1 pkg-config", /pkgconf/],
+        ["1 msgfmt", /compile\s+message\s+catalog\s+to\s+binary\s+format/],
+        ["1 makeinfo", /translate\s+Texinfo\s+documents/],
+        ["1 meson", /a\s+high\s+productivity\s+build\s+system/],
+        // help2man over what ninja --help prints inside Kandelo.
+        ["1 ninja", /run\s+N\s+jobs\s+in\s+parallel/],
+        ["1 cmake", /CMake\s+Command-Line\s+Reference/],
+        ["7 cmake-modules", /CMake\s+Modules\s+Reference/],
+        ["1 cc", /Kandelo\s+SDK\s+driver/],
+        // An alias page: retro-nes is fceumm under a shorter name.
+        ["1 retro-nes", /FCEUmm\s+libretro\s+core/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);
@@ -221,6 +300,24 @@ describe.skipIf(!available)(
         expect(block.split("\n@@BEGIN ")[0], `man ${page}`).toMatch(text);
       }
     }, 300_000);
+
+    it.skipIf(!available || !imagePages(new Uint8Array(readFileSync(shellImagePath)))
+      .some((page) => page.section === "1" && page.name === "npm-install"))(
+      "renders npm's pages from npm's own man directory",
+      async () => {
+        // `npm help` finds a page under npm's root (/usr/lib/npm/man)
+        // and runs man on that path; npm-docs links its pages there. (npm
+        // help itself cannot run yet: it loads node:readline/promises,
+        // which Kandelo's node does not provide.)
+        const { stdout, exitCode } = await runInShell(
+          imageBytes(),
+          "man /usr/lib/npm/man/man1/npm-install.1",
+        );
+        expect(exitCode).toBe(0);
+        expect(stripOverstrike(stdout)).toMatch(/npm-install\s+-\s+Install a package/);
+      },
+      120_000,
+    );
 
     it.skipIf(!available || !imageHasIndex(new Uint8Array(readFileSync(shellImagePath))))(
       "searches the index with whatis and apropos",

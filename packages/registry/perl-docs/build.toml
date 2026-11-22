@@ -1,0 +1,10 @@
+script_path = "packages/registry/perl-docs/build-perl-docs.sh"
+inputs = [
+  "packages/registry/perl-docs/build-perl-docs.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

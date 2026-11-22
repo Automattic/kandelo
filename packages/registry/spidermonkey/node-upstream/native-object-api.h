@@ -1,48 +1,33 @@
 #ifndef KANDELO_NATIVE_OBJECT_API_H
 #define KANDELO_NATIVE_OBJECT_API_H
 
-// Whole upstream metadata/declarations, backed by real engine native owners.
-// Snapshot construction remains unavailable; no snapshot payload is emitted.
+// Original ownership classes and algorithms share the engine's actual
+// persistent handles/internal fields. Only embedding bookkeeping lives here.
+#pragma push_macro("node")
+#undef node
 #define node kandelo_node_codec_impl
-#define v8 kandelo_node_codec_api
+#include "shell/node-upstream/resource-upstream/memory_tracker.h"
+namespace node {
+// This declaration cannot produce a cppgc wrapper. Its implementation remains
+// unavailable while the non-cppgc BaseObject ownership path is integrated.
+class CppgcMixin : public MemoryRetainer {
+ public:virtual Local<Object> object(Isolate*)const=0;
+};
+}
+#include "shell/node-upstream/resource-upstream/base_object.h"
+#include "shell/node-upstream/resource-upstream/base_object-inl.h"
+#include "shell/node-upstream/resource-upstream/memory_tracker-inl.h"
+#include "shell/node-upstream/resource-upstream/cleanup_queue.h"
+#include "shell/node-upstream/resource-upstream/cleanup_queue-inl.h"
 #include "shell/node-upstream/codecs-upstream/base_object_types.h"
 namespace node { enum class SnapshotFlags : uint32_t;struct SnapshotConfig; }
 #include "shell/node-upstream/codecs-upstream/node_snapshotable.h"
-#undef v8
 #undef node
+#pragma pop_macro("node")
 
 namespace kandelo_node_codec_impl {
-template<class T> class BaseObjectPtr;
-template<class T,class... Args> BaseObjectPtr<T> MakeDetachedBaseObject(Args&&...);
-template<class T> class BaseObjectPtr {
-  template<class U> friend class BaseObjectPtr;
-  template<class U,class... Args> friend BaseObjectPtr<U> MakeDetachedBaseObject(Args&&...);
-  std::shared_ptr<T> value_;
- public:
-  BaseObjectPtr()=default;
-  BaseObjectPtr(const BaseObjectPtr&)=default;
-  BaseObjectPtr(BaseObjectPtr&&)=default;
-  BaseObjectPtr& operator=(const BaseObjectPtr&)=default;
-  BaseObjectPtr& operator=(BaseObjectPtr&&)=default;
-  // Alias the canonical native cell; raw acquisition never creates a second
-  // deleting owner and derived/base references share the same lifetime.
-  explicit BaseObjectPtr(T* value) {
-    if(value)value_=std::shared_ptr<T>(value->AcquireNativeReference(),value);
-  }
-  BaseObjectPtr(std::nullptr_t){}
-  template<class U> requires std::is_convertible_v<U*,T*>
-  BaseObjectPtr(const BaseObjectPtr<U>& other):value_(other.value_){}
-  void reset(T* value=nullptr){*this=BaseObjectPtr(value);}
-  T* get()const{return value_.get();}
-  T* operator->()const{return get();}
-  T& operator*()const{return *get();}
-  explicit operator bool()const{return bool(value_);}
-};
-template<class T,class... Args> BaseObjectPtr<T> MakeDetachedBaseObject(Args&&... args) {
-  // A detached native reference owns the native object and its actual wrapper.
-  // The last C++ reference clears the wrapper's native pointer on destruction.
-  BaseObjectPtr<T> result(new T(std::forward<Args>(args)...));
-  result->ClearWeak();result->Detach();return result;
+template<class T> bool Unwrap(T** output,Local<Object> object){
+  *output=static_cast<T*>(UnwrapCodecObject(object));return *output!=nullptr;
 }
 template<class T,class... Args> T* Realm::AddBindingData(Local<Object> target,Args&&... args) {
   auto item=std::make_unique<T>(this,target,std::forward<Args>(args)...);
@@ -51,7 +36,7 @@ template<class T,class... Args> T* Realm::AddBindingData(Local<Object> target,Ar
 }
 }
 namespace kandelo_diagnostics_adapter {
-using namespace kandelo_node_codec_api;
+using namespace v8;
 using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 using IsolateInitializer=void(*)(kandelo_node_codec_impl::IsolateData*,Local<ObjectTemplate>);
 extern Initializer initializer;

@@ -1803,6 +1803,7 @@ function* instantiateSharedLibrarySteps(
           if (
             replay
             && preparedActivation
+            && preparedActivation.replayImportState !== "resolved"
             && entry.value !== resolvedFunctionAddress
           ) {
             throw new Error(
@@ -2162,6 +2163,7 @@ function* instantiateSharedLibrarySteps(
       if (
         replay
         && preparedActivation
+        && preparedActivation.replayImportState !== "resolved"
         && entry.value !== replayedIndex
       ) {
         throw new Error(
@@ -2189,7 +2191,12 @@ function* instantiateSharedLibrarySteps(
         const gotEntry = options.got.get(exportName);
         const replayEntry = localEntry
           ?? (globalVisibility && !alreadyDefined ? gotEntry : undefined);
-        if (replay && preparedActivation && replayEntry) {
+        if (
+          replay
+          && preparedActivation
+          && preparedActivation.replayImportState !== "resolved"
+          && replayEntry
+        ) {
           const savedIndex = requireWasmAddress(
             replayEntry.value as WasmAddress,
             ptrWidth,

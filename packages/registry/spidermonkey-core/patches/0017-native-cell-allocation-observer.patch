@@ -1,0 +1,86 @@
+--- a/js/src/gc/Allocator-inl.h
++++ b/js/src/gc/Allocator-inl.h
+@@ -92,6 +92,7 @@
+   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* string = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
+   MemoryReleaseFence(cx->zone());  // See note above.
++  cx->observeNativeCellAllocation(string, JS::TraceKind::String, sizeof(T));
+   return string;
+ }
+ 
+@@ -106,6 +107,7 @@
+   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* bigInt = new (mozilla::KnownNotNull, ptr) T();
+   MemoryReleaseFence(cx->zone());  // See note above.
++  cx->observeNativeCellAllocation(bigInt, JS::TraceKind::BigInt, sizeof(T));
+   return bigInt;
+ }
+ 
+@@ -122,6 +124,7 @@
+   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* gs = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
+   MemoryReleaseFence(cx->zone());  // See note above.
++  cx->observeNativeCellAllocation(gs, JS::TraceKind::GetterSetter, sizeof(T));
+   return gs;
+ }
+ 
+@@ -142,6 +145,7 @@
+   cx->runtime()->gc.recordManagedAllocation(thingSize);
+   T* object = new (mozilla::KnownNotNull, cell) T();
+   MemoryReleaseFence(cx->zone());  // See note above.
++  cx->observeNativeCellAllocation(object, JS::TraceKind::Object, thingSize);
+   return object;
+ }
+ 
+@@ -157,6 +161,7 @@
+   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* cell = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
+   MemoryReleaseFence(cx->zone());  // See note above.
++  cx->observeNativeCellAllocation(cell, gc::MapAllocToTraceKind(kind), sizeof(T));
+   return cell;
+ }
+ 
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -1096,6 +1096,27 @@
+   bool nativeCellHeapLimitRunning = false;
+   void (*nativeMinorGCObserver)(JSContext*, bool, void*) = nullptr;
+   void* nativeMinorGCObserverData = nullptr;
++  // Owner-thread native profiler observers. Allocation reports a reserved,
++  // constructed cell before caller initialization finishes: observers may record
++  // its address/kind/size and current frames, but MUST NOT inspect that cell,
++  // allocate GC things, run JS or throw. Nursery weak updates run after the
++  // strong fixed point and before forwarding information is discarded.
++  void (*nativeCellAllocationObserver)(JSContext*, void*, JS::TraceKind, size_t,
++                                       void*) = nullptr;
++  void (*nativeNurseryWeakObserver)(JSContext*, void*) = nullptr;
++  void* nativeCellAllocationData = nullptr;
++  bool nativeCellAllocationNotifying = false;
++  void observeNativeCellAllocation(void* cell, JS::TraceKind kind, size_t size) {
++    if (!nativeCellAllocationObserver || nativeCellAllocationNotifying) {
++      return;
++    }
++    nativeCellAllocationNotifying = true;
++    struct Reset {
++      bool& running;
++      ~Reset() { running = false; }
++    } reset{nativeCellAllocationNotifying};
++    nativeCellAllocationObserver(this, cell, kind, size, nativeCellAllocationData);
++  }
+   bool tryNativeCellHeapLimitRecovery() {
+     if (!nativeCellHeapLimitCallback || nativeCellHeapLimitRunning) {
+       return false;
+--- a/js/src/gc/Nursery.cpp
++++ b/js/src/gc/Nursery.cpp
+@@ -1594,6 +1594,11 @@
+ 
+   startProfile(ProfileKey::ObjectsTenuredCallback);
+   gc->callObjectsTenuredCallback();
++  JSContext* nativeContext = rt->mainContextFromOwnThread();
++  if (nativeContext->nativeNurseryWeakObserver) {
++    nativeContext->nativeNurseryWeakObserver(
++        nativeContext, nativeContext->nativeCellAllocationData);
++  }
+   endProfile(ProfileKey::ObjectsTenuredCallback);
+ 
+   // Sweep malloced buffers.

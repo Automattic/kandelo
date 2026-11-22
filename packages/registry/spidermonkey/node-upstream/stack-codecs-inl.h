@@ -1,18 +1,16 @@
 #ifndef KANDELO_NODE_STACK_CODECS_INL_H
 #define KANDELO_NODE_STACK_CODECS_INL_H
 
+#include "shell/node-upstream/native-source-location.h"
+
 // Native stack data comes from the VM's actual captured SavedFrame objects.
-namespace kandelo_node_codec_api {
+namespace v8 {
 namespace {
 JSObject* SavedFrameObject(Frame& frame,const Data& data){
   JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,data.cell().value));CHECK(object&&object->is<js::SavedFrame>());return object;
 }
 int NativeStackNumber(uint32_t value){CHECK_LE(value,uint32_t(INT_MAX));return int(value);}
 }
-const int Message::kNoScriptIdInfo=0;
-const int Message::kNoColumnInfo=0;
-const int Message::kNoLineNumberInfo=0;
-bool Isolate::InContext(){return JS::CurrentGlobalOrNull(Current(this).cx)!=nullptr;}
 namespace {
 Local<StackTrace> NativeSavedStack(Frame& frame,JS::HandleObject input,int count){
   JS::RootedObject cursor(frame.cx,input);JS::RootedValueVector values(frame.cx);
@@ -39,6 +37,14 @@ Local<StackTrace> StackTrace::CurrentStackTrace(Isolate* isolate,int count,Stack
   if(count&&!JS::CaptureCurrentStack(frame.cx,&stack,JS::StackCapture(JS::MaxFrames(uint32_t(count)))))return {};
   return NativeSavedStack(frame,stack,count);
 }
+Local<StackTrace> Exception::GetStackTrace(Local<Value> exception){
+  auto& frame=*Frame::current;NativeNoScriptEntry entry(frame);if(entry.Terminated())return {};
+  if(exception.IsEmpty()||!Input(exception).isObject())return {};
+  JS::RootedObject error(frame.cx,UnwrapObject(frame.cx,Input(exception)));if(!error)return {};
+  if(!error->is<js::ErrorObject>())return {};
+  JS::RootedObject stack(frame.cx,JS::ExceptionStackOrNull(error));if(!stack)return {};
+  return NativeSavedStack(frame,stack,INT_MAX);
+}
 int StackTrace::GetFrameCount(){
   auto& frame=*Frame::current;JS::RootedObject array(frame.cx,UnwrapObject(frame.cx,cell().value));uint32_t count;
   CHECK(array&&JS::GetArrayLength(frame.cx,array,&count));return NativeStackNumber(count);
@@ -54,20 +60,31 @@ Local<String> StackFrame::GetFunctionName(){
   if(!name)return String::Empty(&frame.state->isolate);JS::RootedValue value(frame.cx,JS::StringValue(name));return frame.Own<String>(value);
 }
 Local<String> StackFrame::GetScriptName(){
+  auto& frame=*Frame::current;JS::RootedObject saved(frame.cx,SavedFrameObject(frame,*this));
+  auto* source=saved->as<js::SavedFrame>().getKandeloScriptSource();
+  if(!source||!source->filename())return {};
+  return String::NewFromUtf8(&frame.state->isolate,source->filename()).ToLocalChecked();
+}
+Local<String> StackFrame::GetScriptNameOrSourceURL(){
   auto& frame=*Frame::current;JS::RootedObject saved(frame.cx,SavedFrameObject(frame,*this));JS::RootedString name(frame.cx);
+  auto* source=saved->as<js::SavedFrame>().getKandeloScriptSource();
+  if(source&&!source->hasDisplayURL()&&!source->filename())return {};
   CHECK(JS::GetSavedFrameSource(frame.cx,nullptr,saved,&name)==JS::SavedFrameResult::Ok);CHECK(name);
   JS::RootedValue value(frame.cx,JS::StringValue(name));return frame.Own<String>(value);
 }
 int StackFrame::GetLineNumber(){
   auto& frame=*Frame::current;JS::RootedObject saved(frame.cx,SavedFrameObject(frame,*this));
   if(saved->as<js::SavedFrame>().isWasm())Crash("Native wasm stack position conversion is not implemented");
-  uint32_t line;CHECK(JS::GetSavedFrameLine(frame.cx,nullptr,saved,&line)==JS::SavedFrameResult::Ok);return NativeStackNumber(line);
+  uint32_t line;CHECK(JS::GetSavedFrameLine(frame.cx,nullptr,saved,&line)==JS::SavedFrameResult::Ok);
+  uint32_t column=1;kandelo::node::NativeFunctionBodyLocation(saved->as<js::SavedFrame>().getKandeloScriptSource(),&line,&column);return NativeStackNumber(line);
 }
 int StackFrame::GetColumn(){
   auto& frame=*Frame::current;JS::RootedObject saved(frame.cx,SavedFrameObject(frame,*this));
   if(saved->as<js::SavedFrame>().isWasm())Crash("Native wasm stack position conversion is not implemented");
   JS::TaggedColumnNumberOneOrigin column;
-  CHECK(JS::GetSavedFrameColumn(frame.cx,nullptr,saved,&column)==JS::SavedFrameResult::Ok);return NativeStackNumber(column.oneOriginValue());
+  CHECK(JS::GetSavedFrameColumn(frame.cx,nullptr,saved,&column)==JS::SavedFrameResult::Ok);
+  uint32_t line;CHECK(JS::GetSavedFrameLine(frame.cx,nullptr,saved,&line)==JS::SavedFrameResult::Ok);
+  uint32_t mapped=column.oneOriginValue();kandelo::node::NativeFunctionBodyLocation(saved->as<js::SavedFrame>().getKandeloScriptSource(),&line,&mapped);return NativeStackNumber(mapped);
 }
 bool StackFrame::IsEval(){
   auto& frame=*Frame::current;JS::RootedObject saved(frame.cx,SavedFrameObject(frame,*this));

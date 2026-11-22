@@ -1,6 +1,10 @@
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -42,2 +42,3 @@
+@@ -39,6 +39,7 @@
+     "node-upstream/realm.cpp",
+     "node-upstream/task-queue.cpp",
      "node-upstream/timers.cpp",
 +    "node-upstream/types.cpp",
  ]
+ 
+ if CONFIG["FUZZING_INTERFACES"]:

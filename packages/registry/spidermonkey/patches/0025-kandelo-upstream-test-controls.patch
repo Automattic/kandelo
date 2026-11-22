@@ -36,7 +36,7 @@
            '\0', "no-jit-backend",
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -30,6 +30,7 @@
+@@ -29,6 +29,7 @@
  SOURCES += [
      "node-upstream/builtin-compiler.cpp",
      "node-upstream/builtin-source-registry.cpp",

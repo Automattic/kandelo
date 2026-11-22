@@ -1,0 +1,233 @@
+--- a/src/node_report.cc
++++ b/src/node_report.cc
+@@ -19,12 +19,14 @@
+ #include <dlfcn.h>
+ #endif
+ 
++#include <cstdio>
+ #include <cstring>
+ #include <ctime>
+ #include <cwctype>
+ #include <fstream>
+ #include <ranges>
+ 
++#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
+ constexpr int NODE_REPORT_VERSION = 5;
+ constexpr int NANOS_PER_SEC = 1000 * 1000 * 1000;
+ constexpr double SEC_PER_MICROS = 1e-6;
+@@ -843,6 +845,16 @@
+ }
+ 
+ }  // namespace report
++#else
++namespace node {
++using v8::Isolate;
++using v8::Local;
++using v8::Value;
++// Fatal/native report paths cannot depend on a live Environment or run JS.
++static void ReportUnavailable() {
++  std::fputs("Node.js diagnostic reports are deferred in this runtime.\n", stderr);
++}
++#endif
+ 
+ std::string TriggerNodeReport(Isolate* isolate,
+                               Environment* env,
+@@ -850,6 +862,10 @@
+                               std::string_view trigger,
+                               std::string_view name,
+                               Local<Value> error) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  ReportUnavailable();
++  return {};
++#else
+   std::string filename;
+ 
+   // Determine the required report filename. In order of priority:
+@@ -950,6 +966,7 @@
+     std::cerr << "\nNode.js report completed" << std::endl;
+   }
+   return filename;
++#endif
+ }
+ 
+ // External function to trigger a report, writing to file.
+@@ -958,11 +975,16 @@
+                               std::string_view trigger,
+                               std::string_view name,
+                               Local<Value> error) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  ReportUnavailable();
++  return {};
++#else
+   Environment* env = nullptr;
+   if (isolate != nullptr) {
+     env = Environment::GetCurrent(isolate);
+   }
+   return TriggerNodeReport(isolate, env, message, trigger, name, error);
++#endif
+ }
+ 
+ // External function to trigger a report, writing to file.
+@@ -971,12 +993,17 @@
+                               std::string_view trigger,
+                               std::string_view name,
+                               Local<Value> error) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  ReportUnavailable();
++  return {};
++#else
+   return TriggerNodeReport(env != nullptr ? env->isolate() : nullptr,
+                            env,
+                            message,
+                            trigger,
+                            name,
+                            error);
++#endif
+ }
+ 
+ // External function to trigger a report, writing to a supplied stream.
+@@ -985,6 +1012,10 @@
+                    std::string_view trigger,
+                    Local<Value> error,
+                    std::ostream& out) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  ReportUnavailable();
++  out.setstate(std::ios::failbit);
++#else
+   Environment* env = nullptr;
+   if (isolate != nullptr) {
+     env = Environment::GetCurrent(isolate);
+@@ -1006,6 +1037,7 @@
+                           false,
+                           exclude_network,
+                           exclude_env);
++#endif
+ }
+ 
+ // External function to trigger a report, writing to a supplied stream.
+@@ -1014,6 +1046,10 @@
+                    std::string_view trigger,
+                    Local<Value> error,
+                    std::ostream& out) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  ReportUnavailable();
++  out.setstate(std::ios::failbit);
++#else
+   Isolate* isolate = nullptr;
+   if (env != nullptr) {
+     isolate = env->isolate();
+@@ -1035,6 +1071,7 @@
+                           false,
+                           exclude_network,
+                           exclude_env);
++#endif
+ }
+ 
+ }  // namespace node
+--- a/src/node_report_module.cc
++++ b/src/node_report_module.cc
+@@ -27,6 +27,11 @@
+ using v8::Value;
+ 
+ void WriteReport(const FunctionCallbackInfo<Value>& info) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  THROW_ERR_INVALID_STATE(info.GetIsolate(),
++                          "Node.js diagnostic reports are deferred in this runtime");
++  return;
++#else
+   Environment* env = Environment::GetCurrent(info);
+   Isolate* isolate = env->isolate();
+   HandleScope scope(isolate);
+@@ -50,10 +55,16 @@
+   if (ToV8Value(env->context(), filename, env->isolate()).ToLocal(&ret)) {
+     info.GetReturnValue().Set(ret);
+   }
++#endif
+ }
+ 
+ // External JavaScript API for returning a report
+ void GetReport(const FunctionCallbackInfo<Value>& info) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  THROW_ERR_INVALID_STATE(info.GetIsolate(),
++                          "Node.js diagnostic reports are deferred in this runtime");
++  return;
++#else
+   Environment* env = Environment::GetCurrent(info);
+   Isolate* isolate = env->isolate();
+   HandleScope scope(isolate);
+@@ -73,6 +84,7 @@
+   if (ToV8Value(env->context(), out.str(), env->isolate()).ToLocal(&ret)) {
+     info.GetReturnValue().Set(ret);
+   }
++#endif
+ }
+ 
+ static void GetCompact(const FunctionCallbackInfo<Value>& info) {
+@@ -165,6 +177,13 @@
+ }
+ 
+ static void SetReportOnFatalError(const FunctionCallbackInfo<Value>& info) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  if (info.Length() > 0 && info[0]->IsTrue()) {
++    THROW_ERR_INVALID_STATE(info.GetIsolate(),
++                            "Node.js diagnostic report triggers are deferred in this runtime");
++    return;
++  }
++#endif
+   CHECK(info[0]->IsBoolean());
+   Mutex::ScopedLock lock(per_process::cli_options_mutex);
+   per_process::cli_options->report_on_fatalerror = info[0]->IsTrue();
+@@ -176,6 +195,13 @@
+ }
+ 
+ static void SetReportOnSignal(const FunctionCallbackInfo<Value>& info) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  if (info.Length() > 0 && info[0]->IsTrue()) {
++    THROW_ERR_INVALID_STATE(info.GetIsolate(),
++                            "Node.js diagnostic report triggers are deferred in this runtime");
++    return;
++  }
++#endif
+   Environment* env = Environment::GetCurrent(info);
+   CHECK(info[0]->IsBoolean());
+   env->isolate_data()->options()->report_on_signal = info[0]->IsTrue();
+@@ -190,6 +216,13 @@
+ 
+ static void SetReportOnUncaughtException(
+     const FunctionCallbackInfo<Value>& info) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  if (info.Length() > 0 && info[0]->IsTrue()) {
++    THROW_ERR_INVALID_STATE(info.GetIsolate(),
++                            "Node.js diagnostic report triggers are deferred in this runtime");
++    return;
++  }
++#endif
+   Environment* env = Environment::GetCurrent(info);
+   CHECK(info[0]->IsBoolean());
+   env->isolate_data()->options()->report_uncaught_exception = info[0]->IsTrue();
+--- a/src/node_options.cc
++++ b/src/node_options.cc
+@@ -119,6 +119,11 @@
+ 
+ void PerProcessOptions::CheckOptions(std::vector<std::string>* errors,
+                                      std::vector<std::string>* argv) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  if (report_on_fatalerror || report_on_process_timeout) {
++    errors->push_back("Node.js diagnostic report triggers are deferred in this runtime");
++  }
++#endif
+   if (process_timeout.empty()) {
+     process_timeout_ms = 0;
+   } else if (!ParseDurationMilliseconds(process_timeout, &process_timeout_ms)) {
+@@ -292,6 +297,11 @@
+ 
+ void PerIsolateOptions::CheckOptions(std::vector<std::string>* errors,
+                                      std::vector<std::string>* argv) {
++#if defined(KANDELO_SPIDERMONKEY_ENGINE)
++  if (report_on_signal || report_uncaught_exception) {
++    errors->push_back("Node.js diagnostic report triggers are deferred in this runtime");
++  }
++#endif
+   if (!max_old_space_size_percentage.empty()) {
+     HandleMaxOldSpaceSizePercentage(errors, &max_old_space_size_percentage);
+   }

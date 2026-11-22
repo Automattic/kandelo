@@ -15,14 +15,14 @@ assert payload.is_file() and not payload.is_symlink()
 assert hashlib.sha256(payload.read_bytes()).hexdigest()==manifest['source']['sha256']
 with tarfile.open(payload) as archive:archive.extractall(sys.argv[3],filter='data')
 PY
-source_root="$output_dir/wayland-1.24.0"
+source_root="$output_dir/wayland-1.26.0"
 python3 "$repo_root/libc/glue/check-wayland-client-layout.py" "$source_root/src"
 mkdir -p "$output_dir/include"
-printf '#define PACKAGE_VERSION "1.24.0"\n' > "$source_root/config.h"
+printf '#define PACKAGE_VERSION "1.26.0"\n' > "$source_root/config.h"
 wayland-scanner client-header "$source_root/protocol/wayland.xml" "$output_dir/include/wayland-client-protocol.h"
 wayland-scanner public-code "$source_root/protocol/wayland.xml" "$output_dir/protocol.c"
-sed -e 's/@WAYLAND_VERSION_MAJOR@/1/g' -e 's/@WAYLAND_VERSION_MINOR@/24/g' \
-    -e 's/@WAYLAND_VERSION_MICRO@/0/g' -e 's/@WAYLAND_VERSION@/1.24.0/g' \
+sed -e 's/@WAYLAND_VERSION_MAJOR@/1/g' -e 's/@WAYLAND_VERSION_MINOR@/26/g' \
+    -e 's/@WAYLAND_VERSION_MICRO@/0/g' -e 's/@WAYLAND_VERSION@/1.26.0/g' \
     "$source_root/src/wayland-version.h.in" > "$output_dir/include/wayland-version.h"
 owned_log_source="${KANDELO_WAYLAND_OWNED_LOG_SOURCE:-$repo_root/libc/glue/wayland-owned-log.inc}"
 lifetime_source="${KANDELO_WAYLAND_LIFETIME_SOURCE:-$repo_root/libc/glue/wayland-client-lifetime.inc}"

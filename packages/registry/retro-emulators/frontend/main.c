@@ -924,10 +924,90 @@ static void sram_flush(void)
     }
 }
 
+/* The part of --help that is the same for every core. */
+static const char help_text[] =
+    "\n"
+    "Video is drawn on /dev/fb0 at 640x400 and sound is played on /dev/dsp\n"
+    "(the game runs silently when /dev/dsp cannot be opened). Keys are read\n"
+    "from standard input, switched to raw mode, when it is a terminal, and\n"
+    "otherwise from /dev/input/event0. The arrow keys are the D-pad, Enter is\n"
+    "Start, Right Shift is Select, and Z, X, A, S, Q and W are the B, A, Y, X,\n"
+    "L and R buttons; --keys lists the ones this core uses, with its names\n"
+    "for them, and the same list is written to standard error when a game\n"
+    "starts. F2 saves a state and F4 loads it. Ctrl+C quits, as do SIGTERM\n"
+    "and SIGHUP; the game's save memory is written first.\n"
+    "\n"
+    "Saves are kept per game, named after the ROM's file name without its\n"
+    "extension, under $XDG_DATA_HOME/retro-emulators, by default\n"
+    "~/.local/share/retro-emulators: the cartridge's save memory in\n"
+    "saves/GAME.srm, loaded when the game starts and written back while it\n"
+    "runs and when it quits, and the F2 state in states/GAME.state. Without\n"
+    "HOME or XDG_DATA_HOME nothing is saved. While a game runs, its process\n"
+    "ID is in $XDG_RUNTIME_DIR/retro.pid, by default /run/user/UID/retro.pid.\n"
+    "retro-run(1) chooses the emulator from a ROM's contents.\n"
+    "\n"
+    "Exit status is 0 when the game quits, 1 when the ROM, a state or the\n"
+    "framebuffer cannot be loaded, and 2 for invalid arguments.\n"
+    "\n"
+    "Options:\n"
+    "      --state FILE  start the game from the saved state in FILE\n"
+    "      --info        load ROM, write the core's video size, frame rate and\n"
+    "                    sample rate to standard error, and exit\n"
+    "      --keys        load ROM, print which key is which button, and exit\n"
+    "      --help        display this help and exit\n"
+    "      --version     output version information and exit\n";
+
+/* The core's name, version and ROM extensions come from the core itself;
+ * retro_get_system_info may be called before retro_init and does no I/O. */
+static void print_help(const char *self)
+{
+    struct retro_system_info info;
+    memset(&info, 0, sizeof info);
+    retro_get_system_info(&info);
+    const char *core = info.library_name ? info.library_name : self;
+    printf("Usage: %s ROM [--state FILE | --info | --keys]\n\n", self);
+    printf("Play a game ROM with the %s libretro core.\n\n", core);
+    printf("%s runs ROM in the %s emulator core", self, core);
+    if (info.library_version && info.library_version[0])
+        printf(" (version %s)", info.library_version);
+    fputs(",\nstatically linked with Kandelo's libretro frontend.\n", stdout);
+    if (info.valid_extensions && info.valid_extensions[0]) {
+        /* "nes|fds" -> ".nes, .fds.", wrapped before 76 columns. */
+        static const char lead[] = "It accepts ROM files ending in";
+        int column = (int)sizeof lead - 1;
+        fputs(lead, stdout);
+        for (const char *p = info.valid_extensions; *p;) {
+            size_t len = strcspn(p, "|");
+            if (column + 1 + (int)len + 2 > 76) {
+                fputs("\n", stdout);
+                column = 0;
+            } else {
+                fputs(" ", stdout);
+                column++;
+            }
+            printf(".%.*s%s", (int)len, p, p[len] ? "," : ".");
+            column += (int)len + 2;
+            p += len;
+            if (*p) p++;
+        }
+        fputs("\n", stdout);
+    }
+    fputs(help_text, stdout);
+}
+
 int main(int argc, char **argv)
 {
     const char *state_path = NULL;
     bool info_only = false, keys_only = false;
+    if (argc > 1 && (strcmp(argv[1], "--help") == 0 ||
+                     strcmp(argv[1], "--version") == 0)) {
+        /* The invoked name: fceumm or retro-nes, snes9x or retro-snes, ... */
+        const char *name = strrchr(argv[0], '/');
+        name = name ? name + 1 : argv[0];
+        if (strcmp(argv[1], "--help") == 0) print_help(name);
+        else printf("%s (Kandelo retro-emulators) 0.1.0\n", name);
+        return 0;
+    }
     if (argc == 4 && strcmp(argv[2], "--state") == 0) {
         state_path = argv[3];
     } else if (argc == 3 && strcmp(argv[2], "--info") == 0) {

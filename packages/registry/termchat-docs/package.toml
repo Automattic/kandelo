@@ -1,0 +1,26 @@
+kind = "program"
+name = "termchat-docs"
+version = "1.3.1"
+kernel_abi = 56
+depends_on = ["termchat@1.3.1", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for termchat, generated from what the program
+# prints for --help and --version while running inside Kandelo: the
+# program has no upstream manual page. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/lemunozm/termchat/blob/v1.3.1/LICENSE"
+
+[build]
+script_path = "packages/registry/termchat-docs/build-termchat-docs.sh"
+
+[[outputs]]
+name = "termchat-docs"
+wasm = "termchat-docs.zip"
+fork_instrumentation = "disabled"

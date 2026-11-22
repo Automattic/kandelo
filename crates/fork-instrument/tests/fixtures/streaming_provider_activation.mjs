@@ -44,10 +44,9 @@ function scenario(mode, failAt = 0) {
     assert.equal(frames.committed.length, mode === 'normal' ? 0 : failAt - 1);
     assert.equal(frames.bindings[0].consumed, mode === 'normal' ? 0 : failAt - 1);
     if (scratch) assert(frames.bindings[0].forkStackPointer < 196608, 'wide arguments use virtual scratch');
-    // Replayed prologues reserve below the restored fork-time SP under the
-    // existing ABI. A live abort that reenters the child has the same floor.
-    assert.equal(Number(parent.instance.exports.sp.value), mode === 'fail' && failAt === 2
-      ? frames.bindings[0].forkStackPointer : 196608);
+    // A live abort replays committed inner frames with their saved scratch
+    // bases, so every activation still releases to its caller's SP.
+    assert.equal(Number(parent.instance.exports.sp.value), 196608);
     parent.assertReleased();
     return;
   }
@@ -88,7 +87,9 @@ function scenario(mode, failAt = 0) {
   assert.equal(frames.bindings[1].calls, 1);
   assert.notEqual(child.instance.exports.source_function, parent.instance.exports.source_function);
   assert.throws(() => child.instance.exports.probe_dropped(), WebAssembly.RuntimeError);
-  assert.equal(Number(child.instance.exports.sp.value), replayStackPointer);
+  // Replay keeps the captured fork-time SP and releases to the root's caller.
+  assert.equal(frames.bindings[1].forkStackPointer, frames.bindings[0].forkStackPointer);
+  assert.equal(Number(child.instance.exports.sp.value), 196608);
   child.assertReleased();
 }
 scenario('normal');

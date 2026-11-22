@@ -71,7 +71,7 @@ describe("espeak-ng package contract", () => {
     const manifest = source("packages/registry/espeak-ng/package.toml");
     const build = source("packages/registry/espeak-ng/build-espeak-ng.sh");
 
-    expect(manifest).toMatch(/^depends_on\s*=\s*\[[^\]]*"libcxx@21\.1\.7"/m);
+    expect(manifest).toMatch(/^depends_on\s*=\s*\[[^\]]*"libcxx@23\.1\.3"/m);
     expect(build).toContain("build-deps --arch=wasm32 resolve libcxx");
   });
 

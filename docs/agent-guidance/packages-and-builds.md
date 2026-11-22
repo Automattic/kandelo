@@ -1,5 +1,11 @@
 # Package And Build Contract
 
+Keep port-specific usage, build notes, patches, workarounds, and limits in
+`packages/registry/<name>/README.md`. Follow the
+[package documentation convention](../repository-organization.md#package-layout)
+for the boundary between package notes, shared platform guides, and local
+investigation records.
+
 Packages are consumers of the platform and distribution units for reproducible
 artifacts. A package build should exercise the SDK, libc, resolver, sysroot,
 VFS image tooling, fork instrumentation, and kernel assumptions through the
@@ -107,13 +113,38 @@ test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 `KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
 [Cache garbage collection](../package-management.md#cache-garbage-collection).
 
+## Upstream submission candidates
+
+Mark a package patch that may be suitable for upstream review with this
+standalone line in its leading explanatory text, before the first diff header:
+
+```text
+# @suggest-upstream
+```
+
+Keep the marker outside the diff hunks so it changes no patched source. Explain
+why the change belongs upstream in the preamble or package README, with the
+reproduction/evidence, any review limits, and the condition for dropping it.
+The marker means "review this candidate", not approval or permission to submit.
+
+Find candidates for a batch review with:
+
+```sh
+rg -l '^# @suggest-upstream$' packages/registry -g '*.patch' -g '*.diff'
+```
+
+After submission, record the upstream URL in the package README or patch
+preamble and remove the marker from the review queue. Keep the carried patch
+until the packaged upstream release includes the fix.
+
 ## Man pages for ports
 
 When upstream provides man pages (including its normally generated pages),
 aim to include lazy references for them where possible. The shell's existing
 pattern is a separate `<program>-docs` ZIP package mounted at `/usr/`, with
 pages under `/usr/share/man`; an existing lazy runtime bundle can also carry
-them. Software without man pages needs none invented for now. Follow
+them. Software without man pages needs none invented for now; say why a
+command has no page in a `README.md` in the package that installs it. Follow
 [Shipping man pages](../porting-guide.md#shipping-man-pages) for the package,
 image registration and validation details.
 

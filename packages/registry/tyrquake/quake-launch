@@ -11,6 +11,33 @@
 # The supervise function below is a copy of the shell's shared supervisor
 # (SUPERVISE_FUNCTION in images/vfs/scripts/build-source-rootfs-shell-image.ts,
 # which documents it); a test keeps the copies identical.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: quake [QUAKE-OPTION]...
+
+Run Quake with the machine's game data, and restart it for new data.
+
+The game data is /var/games/quake/id1/pak0.pak. When it is missing and id's
+shareware archive /usr/share/quake/quake106.zip is installed, quake first
+extracts it from that archive with quake-data(1); if the extraction fails,
+quake exits with an error instead of starting the game. The engine,
+/usr/libexec/quake, runs with -basedir /var/games/quake under a supervisor
+that records its process ID in /run/user/1000/quake-launch.pid: SIGHUP to
+this process (sent when a pak0.pak sent to the machine has replaced the
+game data) restarts the engine with it, and SIGINT or SIGTERM stops it.
+Arguments are passed to the engine, which takes Quake's own options, such
+as +map MAP.
+
+The exit status is the engine's, or 130 when SIGINT or SIGTERM stopped it.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'quake (Kandelo tyrquake) 0.71.0'; exit 0 ;;
+esac
 set -e
 BASE=/var/games/quake
 PAK="$BASE/id1/pak0.pak"

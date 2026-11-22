@@ -3,7 +3,9 @@
 use super::{AnalysisLimits, Decision, analyze, metadata};
 use crate::{
     Options,
-    artifact_io::{ArtifactSpool, MappedArtifact, copy_without_custom},
+    artifact_io::{
+        ArtifactSpool, MappedArtifact, SpoolStorage, TemporarySpoolStorage, copy_without_custom,
+    },
     streaming::{EmitReport, PipelineLimits, features},
 };
 use anyhow::{Context, Result, bail};
@@ -34,7 +36,25 @@ pub struct Artifact {
 }
 
 pub fn instrument(input: &[u8], options: &Options, limits: Limits) -> Result<Artifact> {
-    instrument_inner(input, options, limits, None)
+    instrument_inner(input, options, limits, None, None)
+}
+
+/// Instrument a guest side module with invocation-owned private storage.
+///
+/// Requires `dylink.0` and uses the original complete side-module transform.
+/// Main-program compiler-facts analysis and optional source-map generation
+/// are deliberately outside this entry: those paths have additional storage
+/// owners. No tempfile, environment mutation or child process is used here.
+pub fn instrument_side_module_with_storage(
+    input: &[u8],
+    limits: Limits,
+    storage: &dyn SpoolStorage,
+) -> Result<Artifact> {
+    let options = Options {
+        entry_import: "env.fork".into(),
+        ..Default::default()
+    };
+    instrument_inner(input, &options, limits, None, Some(storage))
 }
 
 pub fn instrument_with_debug(
@@ -43,7 +63,7 @@ pub fn instrument_with_debug(
     limits: Limits,
     debug: crate::debug_info::Limits,
 ) -> Result<Artifact> {
-    instrument_inner(input, options, limits, Some((debug, true)))
+    instrument_inner(input, options, limits, Some((debug, true)), None)
 }
 
 /// Preserve available source locations while admitting builds without DWARF.
@@ -54,7 +74,7 @@ pub fn instrument_with_optional_debug(
     limits: Limits,
     debug: crate::debug_info::Limits,
 ) -> Result<Artifact> {
-    instrument_inner(input, options, limits, Some((debug, false)))
+    instrument_inner(input, options, limits, Some((debug, false)), None)
 }
 
 fn instrument_inner(
@@ -62,6 +82,7 @@ fn instrument_inner(
     options: &Options,
     mut limits: Limits,
     debug: Option<(crate::debug_info::Limits, bool)>,
+    side_storage: Option<&dyn SpoolStorage>,
 ) -> Result<Artifact> {
     let lines = debug
         .map(|(debug, required)| {
@@ -77,7 +98,14 @@ fn instrument_inner(
     let progress = crate::progress::Progress::new("transform");
     progress.note(format_args!("analysis, {} input bytes", input.len()));
     let analysis = analyze(input, options, limits.analysis)?;
-    let mut raw = ArtifactSpool::new(limits.output_bytes)?;
+    if side_storage.is_some() {
+        anyhow::ensure!(
+            analysis.scan.custom_data("dylink.0").next().is_some(),
+            "private side-module instrumentation requires dylink.0"
+        );
+    }
+    let storage = side_storage.unwrap_or(&TemporarySpoolStorage);
+    let mut raw = ArtifactSpool::with_storage(limits.output_bytes, storage)?;
     if !analysis.decision.participates {
         copy_without_custom(input, &mut raw, |name| {
             name == crate::facts::SECTION
@@ -109,7 +137,7 @@ fn instrument_inner(
         pipeline.enable_debug(debug.unwrap().0.rows, lines.clone())?;
     }
     progress.note(format_args!("emission"));
-    let emission = pipeline.emit(&mut raw)?;
+    let emission = pipeline.emit_with_storage(&mut raw, storage)?;
     metadata::write(
         pipeline.runtime(),
         &decision,
@@ -121,7 +149,7 @@ fn instrument_inner(
     drop(pipeline);
     let raw = raw.freeze()?;
     progress.note(format_args!("declare features"));
-    let mut declared = ArtifactSpool::new(limits.output_bytes)?;
+    let mut declared = ArtifactSpool::with_storage(limits.output_bytes, storage)?;
     crate::target_features::write_declared_features(
         raw.bytes(),
         &mut declared,

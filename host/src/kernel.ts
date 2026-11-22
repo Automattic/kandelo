@@ -1944,6 +1944,13 @@ export class WasmPosixKernel {
     this.bos.setProcessMemoryResolver((pid) =>
       this.callbacks.getProcessMemory?.(pid),
     );
+    this.bos.setProcessMemoryCoherence(
+      (pid, memory) => this.callbacks.getProcessMemory?.(pid) === memory
+        ? this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n : -1n,
+      (pid, memory) => {
+        if (this.callbacks.getProcessMemory?.(pid) === memory) this.callbacks.onProcessMemoryChanged?.(pid);
+      },
+    );
     if (arguments[3] === wasmPosixKernelTestCapability) {
       intrinsicObjectDefineProperty(this, "testAuthority", {
         configurable: false,
@@ -3057,19 +3064,19 @@ export class WasmPosixKernel {
               bufLen,
               "host_getrandom destination",
             );
-            const random = new IntrinsicUint8Array(destination.capacity);
-            if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
-              // crypto.getRandomValues rejects SharedArrayBuffer-backed views
-              // in browsers. The owned temporary also ensures no host callback
-              // retains a live view of kernel memory.
-              globalThis.crypto.getRandomValues(random);
-            } else {
-              for (let i = 0; i < destination.capacity; i++) {
-                random[i] = (Math.random() * 256) | 0;
-              }
+            if (destination.capacity === 0) return 0;
+            const provider = globalThis.crypto;
+            if (!provider || typeof provider.getRandomValues !== "function") {
+              return -38; // ENOSYS: no cryptographic entropy provider.
             }
+            // Bound the backing allocation, not just the provider view.
+            // Rust owns syscall progress across these private windows.
+            // Publish only after this fill succeeds: a failed provider must
+            // never write uninitialized or partial bytes into kernel memory.
+            const random = new IntrinsicUint8Array(Math.min(destination.capacity, 65_536));
+            intrinsicApply(provider.getRandomValues, provider, [random]);
             this.#writeKernelBytes(destination, random);
-            return destination.capacity;
+            return random.length;
           } catch (error) {
             return negErrno(error);
           }
@@ -3536,7 +3543,7 @@ export class WasmPosixKernel {
                 if (rc !== 0) muxer.invalidateCurrent();
                 return rc;
               }
-              const dimensions = this.bos.dims(copyId), canonical = this.bos.pixelView(copyId);
+              const dimensions = this.bos.dims(copyId), canonical = this.bos.readPixelView(copyId);
               const rowBytes = size.width * 4;
               if (!dimensions || !canonical || (format !== 0x34324241 && format !== 0x34325241) || pitch !== dimensions.stride ||
                   dimensions.w !== size.width || dimensions.h !== size.height ||
@@ -4076,7 +4083,7 @@ export class WasmPosixKernel {
           }
           if (glTarget === WPK_IMAGE_SOURCE_TARGET) return -22;
           const dims = this.bos.dims(boId);
-          const bytes = this.bos.pixelView(boId);
+          const bytes = this.bos.readPixelView(boId);
           if (!dims || !bytes) return -2;                       // ENOENT
           // Publish all writers at this submission boundary. Allocation
           // identity does not tell us which process wrote the pixels.
@@ -4207,6 +4214,15 @@ export class WasmPosixKernel {
         // -1 (never provably quiescent) unless the embedder tracks epochs.
         host_proc_quiescent_epoch: (pid: number): bigint =>
           this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n,
+        host_proc_validate_range: (pid: number, addr: bigint, len: number): number => {
+          const memory = this.callbacks.getProcessMemory?.(pid);
+          if (!memory) return -14;
+          try {
+            checkedWasmImportMemoryRange(memory, addr, len, 8,
+              "host_proc_validate_range process destination", true);
+            return 0;
+          } catch (caught) { rethrowNativeGlFault(caught); return -14; }
+        },
         host_proc_read_bytes: (
           pid: number,
           addr: bigint,

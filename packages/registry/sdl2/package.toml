@@ -3,7 +3,7 @@ kind = "library"
 name = "sdl2"
 version = "2.32.10"
 kernel_abi = 43
-depends_on = ["libdrm@2.4.134", "libwayland@1.24.0", "libxkbcommon@1.13.2"]
+depends_on = ["libdrm@2.4.134", "libwayland@1.26.0", "libxkbcommon@1.13.2"]
 arches = ["wasm32"]
 
 [source]
@@ -20,7 +20,7 @@ script_path = "packages/registry/sdl2/build-sdl2.sh"
 
 [[host_tools]]
 name = "make"
-version_constraint = ">=3.80"
+version_constraint = ">=3.81"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

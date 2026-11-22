@@ -83,7 +83,12 @@ shrink_module() {
   fi
   local before after
   before="$(wc -c < "$wasm" | tr -d ' ')"
-  wasm-opt -Oz --enable-bulk-memory -o "$wasm.opt" "$wasm"
+  # [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] -Oz schedules
+  # Binaryen 133's constraint-analysis pass, which aborts on some LLVM 23
+  # code and measured no worthwhile win; Kandelo skips it everywhere until
+  # a re-measured decision (docs/future-improvements.md) says otherwise.
+  wasm-opt -Oz --skip-pass=constraint-analysis --enable-bulk-memory \
+    -o "$wasm.opt" "$wasm"
   mv "$wasm.opt" "$wasm"
   after="$(wc -c < "$wasm" | tr -d ' ')"
   echo "kandelo-image-module: wasm-opt -Oz ${before} -> ${after} bytes" >&2

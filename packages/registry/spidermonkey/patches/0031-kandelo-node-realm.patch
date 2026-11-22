@@ -1,6 +1,6 @@
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -34,6 +34,7 @@
+@@ -33,6 +33,7 @@
      "node-upstream/module-wrap.cpp",
      "node-upstream/per-context.cpp",
      "node-upstream/private-key-test-api.cpp",

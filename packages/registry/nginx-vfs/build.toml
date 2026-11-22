@@ -24,6 +24,7 @@ inputs = [
   "scripts/package-runtime-file.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/lib/init/dev-tools.ts",
   "images/rootfs/etc/services",
   # The builder reads the shared resolver and VFS format transitively. Track
   # those ownership boundaries without making unrelated host changes rebuild

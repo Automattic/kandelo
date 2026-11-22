@@ -1,0 +1,39 @@
+--- a/deps/undici/undici.js
++++ b/deps/undici/undici.js
+@@ -7272,33 +7272,9 @@
+     var kTypeOfService = /* @__PURE__ */ Symbol("kTypeOfService");
+     var extractBody;
+     function lazyllhttp() {
+-      if (typeof WebAssembly === "undefined") {
+-        throw new WebAssemblyNotSupportedError();
+-      }
+-      const llhttpWasmData = process.env.JEST_WORKER_ID ? require_llhttp_wasm() : void 0;
+-      let mod;
+-      let useWasmSIMD = true;
+-      if (process.arch === "ppc64") {
+-        const [major, minor] = process.versions.node.split(".").map((n) => parseInt(n, 10));
+-        if (major < 24 || major === 24 && minor < 12) {
+-          useWasmSIMD = false;
+-        }
+-      }
+-      if (process.env.UNDICI_NO_WASM_SIMD === "1") {
+-        useWasmSIMD = false;
+-      } else if (process.env.UNDICI_NO_WASM_SIMD === "0") {
+-        useWasmSIMD = true;
+-      }
+-      if (useWasmSIMD) {
+-        try {
+-          mod = new WebAssembly.Module(require_llhttp_simd_wasm());
+-        } catch {
+-        }
+-      }
+-      if (!mod) {
+-        mod = new WebAssembly.Module(llhttpWasmData || require_llhttp_wasm());
+-      }
+-      return new WebAssembly.Instance(mod, {
++      // Temporary native Wasm-helper version; restore the original factory
++      // after guest Wasm qualification (nodejs-upstream-maintenance.md).
++      return internalBinding("undici_llhttp").createInstance({
+         env: {
+           /**
+            * @param {number} p

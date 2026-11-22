@@ -3,13 +3,14 @@
 
 // Native embedding marshalling only. Upstream process callback algorithms stay
 // in their complete original translation units.
-namespace kandelo_node_codec_api {
+namespace v8 {
 namespace {
 struct NativePropertyCallbacks {
   AccessorNameGetterCallback getter;
   AccessorNameSetterCallback setter;
   Domain domain;
   SideEffectType getterEffect, setterEffect;
+  bool lazy=false;
 };
 void FinalizeNativePropertyCallbacks(JS::GCContext*, JSObject* object) {
   auto value=JS::GetReservedSlot(object,0);
@@ -36,11 +37,20 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
   CHECK(JS::GetClass(metadata)==&nativePropertyClass);
   auto* callbacks=static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,0).toPrivate());
   JS::RootedObject realm(cx,&JS::GetReservedSlot(metadata,1).toObject());
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+  auto state=ReadNativeEngineState(cx);
+#else
   if(!kandelo::node::CheckRealmLibraryActive(cx,realm))return false;
   JS::RootedObject runtime(cx,kandelo::node::GetRealmRuntime(cx,realm));if(!runtime)return false;
-  auto state=ReadCodecState(cx,runtime);if(!state)return false;
+  auto state=ReadCodecState(cx,runtime);
+#endif
+  if(!state)return false;
+  NativeCallbackEntry callbackEntry(*state);
   Frame frame(cx,realm,state,nullptr,callbacks->domain);
   frame.binding=holder;frame.receiver=receiver;frame.propertyHolder=holder;
+  auto mode=cx->nativePropertyFailureMode();
+  if(mode)frame.propertyShouldThrow=mode.value();
+  JSContext::AutoNativePropertyFailureMode propertyMode(cx,mozilla::Nothing());
   frame.propertyData=JS::GetReservedSlot(metadata,2);
   frame.propertyReturn=setter?JS::TrueValue():JS::UndefinedValue();
   auto name=NativePropertyName(frame,id);if(name.IsEmpty())return false;
@@ -52,7 +62,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
     PropertyCallbackInfo<Value> info(&state->isolate);
     callbacks->getter(name,info);
   }
-  if(JS_IsExceptionPending(cx)||js::shell::GetShellContext(cx)->upstreamNodeExecutionTerminated)return false;
+  if(JS_IsExceptionPending(cx)||cx->isNativeExecutionTerminating())return false;
   output.set(frame.propertyReturn);return JS_WrapValue(cx,output);
 }
 bool ReadNativeProperty(JSContext* cx,JS::HandleObject holder,
@@ -70,6 +80,69 @@ bool WriteNativeProperty(JSContext* cx,JS::HandleObject holder,JS::HandleId id,
   if(output.isBoolean()&&!output.toBoolean())return result.fail(JSMSG_READ_ONLY);
   return result.succeed();
 }
+bool ReadLazyNativeProperty(JSContext* cx,JS::HandleObject holder,JS::HandleId id,
+                            JS::HandleValue data,JS::MutableHandleValue output){
+  JS::RootedValue receiver(cx,JS::ObjectValue(*holder));
+  return ReadNativeProperty(cx,holder,receiver,id,data,output);
+}
+JSObject* NewNativePropertyRecord(Frame& frame,const NativePropertyCallbacks& callbacks,
+                                 JS::HandleObject owner,JS::HandleValue payload){
+  auto native=std::make_unique<NativePropertyCallbacks>(callbacks);
+  JS::RootedObject record(frame.cx,JS_NewObject(frame.cx,&nativePropertyClass));if(!record)return nullptr;
+  JS::SetReservedSlot(record,0,JS::PrivateValue(native.release()));
+  JS::SetReservedSlot(record,1,JS::ObjectValue(*owner));JS::SetReservedSlot(record,2,payload);
+  return record;
+}
+bool DefineNativePropertyRecord(Frame& frame,JS::HandleObject target,JS::HandleId id,
+                                 JS::HandleObject metadata,unsigned flags,JS::ObjectOpResult& result){
+  CHECK(JS::GetClass(metadata)==&nativePropertyClass);
+  auto& callbacks=*static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,0).toPrivate());
+  JS::RootedValue record(frame.cx,JS::ObjectValue(*metadata));
+  if(callbacks.lazy)return js::DefineKandeloLazyDataProperty(frame.cx,target,id,ReadLazyNativeProperty,record,flags,result);
+  return js::DefineKandeloNativeDataProperty(frame.cx,target,id,ReadNativeProperty,
+      callbacks.setter?WriteNativeProperty:nullptr,record,flags,result);
+}
+Maybe<bool> SetObjectNativeProperty(Local<Object> object,Local<Context> context,
+    Local<Name> name,AccessorNameGetterCallback getter,AccessorNameSetterCallback setter,
+    Local<Value> data,PropertyAttribute attrs,SideEffectType getterEffect,
+    SideEffectType setterEffect,bool lazy){
+  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame,context);if(nativeEntry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  if(!getter||(unsigned(attrs)&~7u)){
+    JS_ReportErrorASCII(frame.cx,"Native data property requires a getter and valid attributes");return {};
+  }
+#ifndef KANDELO_NATIVE_NODE_ENGINE
+  JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));if(!runtime)return {};
+#endif
+  Context::Scope home(context);
+  JS::RootedObject target(frame.cx,UnwrapObject(frame.cx,Input(object)));if(!target)return {};
+  if(JS::GetNonCCWObjectGlobal(target)!=JS::CurrentGlobalOrNull(frame.cx)){
+    JS_ReportErrorASCII(frame.cx,"Native property context must match target creation realm");return {};
+  }
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+  JS::RootedObject owner(frame.cx,JS::CurrentGlobalOrNull(frame.cx));CHECK(owner);
+#else
+  JS::RootedObject owner(frame.cx,kandelo::node::GetCurrentRealmOwner(frame.cx,runtime));if(!owner)return {};
+#endif
+  JS::RootedValue key(frame.cx,Input(name)),payload(frame.cx,data.IsEmpty()?JS::UndefinedValue():Input(data).get());
+  JS::RootedId id(frame.cx);
+  if(!JS_WrapValue(frame.cx,&key)||!JS_WrapValue(frame.cx,&payload)||!JS_ValueToId(frame.cx,key,&id))return {};
+  NativePropertyCallbacks callbacks{getter,setter,frame.domain,getterEffect,setterEffect,lazy};
+  JS::RootedObject metadata(frame.cx,NewNativePropertyRecord(frame,callbacks,owner,payload));if(!metadata)return {};
+  unsigned flags=(attrs&DontEnum)?0:JSPROP_ENUMERATE;
+  if(attrs&ReadOnly)flags|=JSPROP_READONLY;if(attrs&DontDelete)flags|=JSPROP_PERMANENT;
+  JS::ObjectOpResult result;
+  if(!DefineNativePropertyRecord(frame,target,id,metadata,flags,result))return {};
+  return Just(result.ok());
+}
+}
+bool PropertyShouldThrowOnError(Isolate* isolate){
+  auto& frame=Current(isolate);
+  if(frame.propertyShouldThrow.has_value())return *frame.propertyShouldThrow;
+  // Pinned V8 GetShouldThrow infers the nearest JS closure language mode only
+  // when its caller has not supplied an explicit Throw/DontThrow operation.
+  jsbytecode* pc=nullptr;
+  auto* script=frame.cx->currentScript(&pc,JSContext::AllowCrossRealm::Allow);
+  return script&&script->strict();
 }
 Local<Object> PropertyHolder(Isolate* isolate) {
   auto& frame=Current(isolate);CHECK(frame.propertyHolder);
@@ -84,41 +157,23 @@ Maybe<bool> Object::SetNativeDataProperty(
     Local<Context> context,Local<Name> name,AccessorNameGetterCallback getter,
     AccessorNameSetterCallback setter,Local<Value> data,PropertyAttribute attrs,
     SideEffectType getterEffect,SideEffectType setterEffect) {
-  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
-  if(!getter||(unsigned(attrs)&~7u)) {
-    JS_ReportErrorASCII(frame.cx,"Native data property requires a getter and valid attributes");return {};
-  }
-  JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));if(!runtime)return {};
-  Context::Scope home(context);
-  JS::RootedObject target(frame.cx,UnwrapObject(frame.cx,cell().value));if(!target)return {};
-  if(JS::GetNonCCWObjectGlobal(target)!=JS::CurrentGlobalOrNull(frame.cx)) {
-    JS_ReportErrorASCII(frame.cx,"Native property context must match target creation realm");return {};
-  }
-  JS::RootedObject owner(frame.cx,kandelo::node::GetCurrentRealmOwner(frame.cx,runtime));if(!owner)return {};
-  JS::RootedValue key(frame.cx,Input(name)),payload(frame.cx,data.IsEmpty()?JS::UndefinedValue():Input(data).get());
-  JS::RootedId id(frame.cx);
-  if(!JS_WrapValue(frame.cx,&key)||!JS_WrapValue(frame.cx,&payload)||!JS_ValueToId(frame.cx,key,&id))return {};
-  auto callbacks=std::make_unique<NativePropertyCallbacks>(NativePropertyCallbacks{getter,setter,frame.domain,getterEffect,setterEffect});
-  JS::RootedObject metadata(frame.cx,JS_NewObject(frame.cx,&nativePropertyClass));if(!metadata)return {};
-  JS::SetReservedSlot(metadata,0,JS::PrivateValue(callbacks.release()));
-  JS::SetReservedSlot(metadata,1,JS::ObjectValue(*owner));JS::SetReservedSlot(metadata,2,payload);
-  unsigned flags=0;
-  if(!(attrs&DontEnum))flags|=JSPROP_ENUMERATE;
-  if(attrs&ReadOnly)flags|=JSPROP_READONLY;
-  if(attrs&DontDelete)flags|=JSPROP_PERMANENT;
-  JS::RootedValue record(frame.cx,JS::ObjectValue(*metadata));JS::ObjectOpResult result;
-  if(!js::DefineKandeloNativeDataProperty(frame.cx,target,id,ReadNativeProperty,setter?WriteNativeProperty:nullptr,record,flags,result)||!result.checkStrict(frame.cx,target,id))return {};
-  return Just(true);
+  return SetObjectNativeProperty(Local<Object>(this),context,name,getter,setter,data,attrs,getterEffect,setterEffect,false);
 }
-}  // namespace kandelo_node_codec_api
+Maybe<bool> Object::SetLazyDataProperty(Local<Context> context,Local<Name> name,
+    AccessorNameGetterCallback getter,Local<Value> data,PropertyAttribute attrs,
+    SideEffectType getterEffect,SideEffectType setterEffect){
+  return SetObjectNativeProperty(Local<Object>(this),context,name,getter,nullptr,data,attrs,getterEffect,setterEffect,true);
+}
+}  // namespace v8
 
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 namespace kandelo::node {
 namespace {
 const JSClass nativePropertyTestClass={"NodeNativePropertyTest",JSCLASS_HAS_RESERVED_SLOTS(3)};
 // Test callbacks consume the real native PropertyCallbackInfo marshalling.
 void PropertyTestGetter(api::Local<api::Name> key,const api::PropertyCallbackInfo<api::Value>& info) {
   auto* isolate=info.GetIsolate();auto& frame=api::Current(isolate);
-  CHECK(native::Environment::GetCurrent(info)==&frame.state->environment);
+  CHECK(native::Environment::GetCurrent(info)==&frame.state->Legacy().environment);
   JS::RootedObject metadata(frame.cx,&api::Input(info.Data()).toObject());
   CHECK(JS::GetClass(metadata)==&nativePropertyTestClass);
   JS::RootedValue getter(frame.cx,JS::GetReservedSlot(metadata,0)),result(frame.cx);
@@ -136,7 +191,7 @@ void PropertyTestGetter(api::Local<api::Name> key,const api::PropertyCallbackInf
 void PropertyTestSetter(api::Local<api::Name> key,api::Local<api::Value> input,
                         const api::PropertyCallbackInfo<void>& info) {
   auto* isolate=info.GetIsolate();auto& frame=api::Current(isolate);
-  CHECK(native::Environment::GetCurrent(info)==&frame.state->environment);
+  CHECK(native::Environment::GetCurrent(info)==&frame.state->Legacy().environment);
   JS::RootedObject metadata(frame.cx,&api::Input(info.Data()).toObject());
   CHECK(JS::GetClass(metadata)==&nativePropertyTestClass);
   JS::RootedValue setter(frame.cx,JS::GetReservedSlot(metadata,1)),result(frame.cx);
@@ -177,4 +232,5 @@ bool DefineNativePropertyTestAPI(JSContext* cx,JS::HandleObject target) {
   return JS_DefineFunction(cx,target,"defineNativeProperty",DefineNativePropertyForTesting,4,0);
 }
 }
+#endif  // preserved frontend
 #endif

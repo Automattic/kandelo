@@ -5,9 +5,15 @@ run, follow the [README quick start](README.md#quick-start).
 
 ## Development environment
 
-Use Git and Nix with flakes enabled on macOS or Linux (x86-64 or ARM64).
+Use Git and Nix with flakes enabled on macOS on Apple silicon
+(`aarch64-darwin`) or Linux on x86-64 or ARM64 (`x86_64-linux`,
+`aarch64-linux`). The flake has no Intel Mac (`x86_64-darwin`) system because
+the pinned nixpkgs-unstable no longer evaluates `x86_64-darwin`. On an Intel
+Mac, run Linux natively or in a VM and use the `x86_64-linux` shell; open the
+demo in a browser inside that Linux system, or forward port 5401 to the Mac's
+localhost (for example `ssh -L 5401:127.0.0.1:5401 <vm>`).
 `./run.sh setup` enters the repository's Nix development shell and provides
-the pinned Rust nightly, LLVM 21, Node.js 24, and package build tools.
+the pinned Rust nightly, LLVM 23, Node.js 24, and package build tools.
 Installing those tools separately does not replace Nix for this workflow.
 
 To work inside that environment, run from the repository root:
@@ -97,6 +103,10 @@ Older Git history includes built `.wasm` files and may be rewritten to
 remove them.
 
 ## Make a change
+
+Open change PRs against `develop`; `main` receives only daily-tested batches.
+See [Development and daily promotion](docs/development-workflow.md) for PR
+commands, promotion requirements, and the CI transition status.
 
 - Read the reference guide for the area you are changing.
 - Fix platform problems in the layer that owns them. A missing system call

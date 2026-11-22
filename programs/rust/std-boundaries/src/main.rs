@@ -83,10 +83,11 @@ fn main() {
         "Condvar::wait_timeout_while expires without a notification",
     );
 
-    // Kandelo has no unwinder to walk the stack with.
+    // Kandelo has no unwinder, but captures the VM's frames through the
+    // kandelo.stack.v1 extension (docs/program-extensions.md).
     check(
-        Backtrace::force_capture().status() == BacktraceStatus::Unsupported,
-        "Backtrace is Unsupported",
+        Backtrace::force_capture().status() == BacktraceStatus::Captured,
+        "Backtrace is Captured",
     );
 
     println!("{}", if failures == 0 { "STD BOUNDARIES OK" } else { "STD BOUNDARIES FAILED" });

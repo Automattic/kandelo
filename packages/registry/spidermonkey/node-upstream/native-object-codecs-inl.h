@@ -2,18 +2,30 @@
 #define KANDELO_NATIVE_OBJECT_CODECS_INL_H
 
 #include <map>
-#define v8 kandelo_node_codec_api
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/node_diagnostics_channel.h"
 #undef node
-#undef v8
+#endif
 
-namespace kandelo_node_codec_api {
+namespace v8 {
+Data* RebindIntegerHandle(Data* input,bool unsignedInteger){
+  if(!input)return nullptr;
+  CHECK(Frame::current&&input->IsValue());auto& frame=*Frame::current;CheckNativePrimitiveAccess(frame);
+  CHECK(input->cell().context==frame.cx);auto* value=static_cast<Value*>(input);
+  CHECK(unsignedInteger?value->IsUint32():value->IsInt32());
+  const auto factory=unsignedInteger?&CloneWrapper<Uint32>:&CloneWrapper<Int32>;
+  if(input->RootFactoryForStorage()==factory)return input;
+  return unsignedInteger?static_cast<Data*>(frame.OwnTypedView<Uint32>(*input).get()):
+                         static_cast<Data*>(frame.OwnTypedView<Int32>(*input).get());
+}
+int32_t Int32::Value()const{CHECK(IsInt32());return int32_t(cell().value.toNumber());}
 bool GlobalRootIsWeak(const std::shared_ptr<GlobalRoot>& root){return root&&root->weakMode;}
 void MakeGlobalStrong(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
-  if(!root)return;auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->environment.AssertForeground();
+  if(!root)return;auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->AssertForeground();
+  CancelGlobalCallback(root);
   if(!root->weakMode)return;
-  JSContext* cx=state->environment.data().cx;CHECK(cx);
+  JSContext* cx=state->cx;CHECK(cx);
   JS::RootedValue value(cx,JS::ObjectOrNullValue(root->weak));
   // Remove weak tracking before publishing a strong edge. Otherwise stale
   // tracking records can become an unintended strong owner after retirement.
@@ -24,8 +36,8 @@ void MakeGlobalStrong(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
 }
 void MakeGlobalWeakTenured(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
   if(!root||root->weakMode||!root->strong||!root->strong->cell().value.initialized())return;
-  auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->environment.AssertForeground();
-  auto value=root->strong->cell().value.get();CHECK(root->strong->IsValue()&&value.isObject());
+  auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->AssertForeground();
+  auto value=root->strong->cell().value.get();CHECK(value.isObject());
   JSObject* object=&value.toObject();CHECK(!js::gc::IsInsideNursery(object));
   state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong->cell().value.reset();
 }
@@ -34,30 +46,176 @@ struct PersistentCell {
   std::shared_ptr<GlobalRoot> root;
 };
 PersistentCell* NewPersistentCell(Isolate* isolate,Local<Data> value){return new PersistentCell{isolate,NewGlobalRoot(isolate,value)};}
-void DeletePersistentCell(PersistentCell* cell){delete cell;}
+void DeletePersistentCell(PersistentCell* cell){
+  if(cell&&cell->root->weakCallback){
+    // Parameter lifetime is managed by the native owner. Its persistent must
+    // be retired on the foreground thread so a GC callback cannot
+    // race destruction of that raw parameter. Plain weak edges may still be
+    // released from a producer thread, as before.
+    auto& callback=cell->root->weakCallback;
+    auto current=uv_thread_self();CHECK(uv_thread_equal(&current,&callback->foreground));
+    callback->cancelled=true;callback->registered=false;
+  }
+  delete cell;
+}
 Data* BorrowPersistentLocal(const PersistentCell* cell){return PersistentCellIsEmpty(cell)?nullptr:cell->root->strong.get();}
 Local<Data> ReadPersistentCell(Isolate* isolate,const PersistentCell* cell){return cell?ReadGlobalRoot(isolate,cell->root):Local<Data>();}
 bool PersistentCellIsEmpty(const PersistentCell* cell){return !cell||GlobalRootIsEmpty(cell->root);}
 bool PersistentCellIsWeak(const PersistentCell* cell){return cell&&GlobalRootIsWeak(cell->root);}
+
+namespace {
+void ReadPersistentComparisonValue(const PersistentCell* cell, Frame& frame,
+                                  JS::MutableHandleValue output,
+                                  bool* isContext) {
+  const auto& root = cell->root;
+  CHECK(root && root->state.lock() == frame.state && root->strong);
+  frame.state->AssertForeground();
+  *isContext = root->strong->IsContext();
+  // SetWeak unregisters the strong Cell's value. Its native wrapper remains
+  // stable for type/layout, but equality must read the actual live weak edge.
+  // Stack roots protect the comparison without changing persistent liveness.
+  if (root->weakMode) {
+    CHECK(root->weak);
+    output.setObject(*root->weak);
+  } else {
+    CHECK(root->strong->cell().value.initialized());
+    output.set(root->strong->cell().value);
+  }
+}
+bool SamePersistentComparisonValues(Frame& frame, JS::HandleValue left,
+                                    bool leftContext, JS::HandleValue right,
+                                    bool rightContext) {
+  if (leftContext || rightContext) {
+    return leftContext && rightContext && left.get() == right.get();
+  }
+  // The persistent and Local forms share actual cross-zone value identity.
+  JS::RootedValue a(frame.cx,left),b(frame.cx,right);
+  JS::RootedObject global(frame.cx,NativePrimitiveRealm(frame));CHECK(global);
+  JSAutoRealm home(frame.cx,global);bool same;
+  CHECK(JS_WrapValue(frame.cx,&a)&&JS_WrapValue(frame.cx,&b)&&JS::SameValue(frame.cx,a,b,&same));
+  return same;
+}
+}
+bool SamePersistentCellData(const PersistentCell* left, Data* right) {
+  const bool empty = PersistentCellIsEmpty(left);
+  if (empty || !right) return empty && !right;
+  CHECK(Frame::current);
+  auto& frame = *Frame::current;
+  CHECK(right->cell().context == frame.cx && right->cell().value.initialized());
+  JS::RootedValue a(frame.cx), b(frame.cx, right->cell().value);
+  bool leftContext;
+  ReadPersistentComparisonValue(left, frame, &a, &leftContext);
+  return SamePersistentComparisonValues(frame, a, leftContext, b,
+                                       right->IsContext());
+}
+bool SamePersistentCells(const PersistentCell* left,
+                         const PersistentCell* right) {
+  const bool leftEmpty = PersistentCellIsEmpty(left);
+  const bool rightEmpty = PersistentCellIsEmpty(right);
+  if (leftEmpty || rightEmpty) return leftEmpty && rightEmpty;
+  CHECK(Frame::current);
+  auto& frame = *Frame::current;
+  JS::RootedValue a(frame.cx), b(frame.cx);
+  bool leftContext, rightContext;
+  ReadPersistentComparisonValue(left, frame, &a, &leftContext);
+  ReadPersistentComparisonValue(right, frame, &b, &rightContext);
+  return SamePersistentComparisonValues(frame, a, leftContext, b, rightContext);
+}
+
 void WeakenPersistentCell(PersistentCell* cell,bool tenured){
   if(!cell)return;
+  CancelGlobalCallback(cell->root);
   if(tenured)MakeGlobalWeakTenured(cell->isolate,cell->root);else MakeGlobalWeak(cell->isolate,cell->root);
+}
+void WeakenPersistentCell(PersistentCell* cell,std::function<void(Isolate*)> callback){
+  CHECK(cell&&callback);auto state=cell->root->state.lock();CHECK(state);
+  state->AssertForeground();
+  if(Frame::current)CHECK(state==Frame::current->state);
+  auto& root=cell->root;
+  CHECK(!GlobalRootIsEmpty(root));
+  // Promotion can itself collect. Publish the callback only after the target
+  // is tenured, while its persistent still protects it throughout promotion.
+  CancelGlobalCallback(root);
+  if(!root->weakMode){
+    // Dropping another native reference from a GC callback can restore its
+    // weak persistent without a Frame. Marked roots are already tenured;
+    // never request a nested collection or allocate JS metadata here.
+    if(!Frame::current||JS::RuntimeHeapIsCollecting())MakeGlobalWeakTenured(cell->isolate,root);
+    else MakeGlobalWeak(cell->isolate,root);
+  }
+  root->weakCallback=std::make_shared<WeakGlobalCallback>(std::move(callback));
 }
 void StrengthenPersistentCell(PersistentCell* cell){if(cell)MakeGlobalStrong(cell->isolate,cell->root);}
 JSObject* BorrowPersistentObject(const PersistentCell* cell){return cell?BorrowGlobalObject(cell->root):nullptr;}
 
-Isolate* Isolate::GetCurrent(){CHECK(Frame::current);return &Frame::current->state->isolate;}
-Isolate* Isolate::TryGetCurrent(){return Frame::current?&Frame::current->state->isolate:nullptr;}
+void Isolate::TerminateExecution() {
+  auto state = owner.lock();CHECK(state);
+  state->cx->requestNativeTermination();
+}
+bool Isolate::IsExecutionTerminating() {
+  auto state = owner.lock();CHECK(state);
+  return state->cx->isNativeExecutionTerminating();
+}
+void Isolate::CancelTerminateExecution() {
+  auto state = owner.lock();CHECK(state);
+  // No Frame/Realm/Environment access, root mutation or shell job reset here.
+  state->cx->cancelNativeTermination();
+}
+Isolate* Isolate::GetCurrent(){auto* isolate=TryGetCurrent();CHECK(isolate);return isolate;}
+Isolate* Isolate::TryGetCurrent(){
+  if(IsolateScopeData::current)return &IsolateScopeData::current->owner->isolate;
+  return Frame::current?&Frame::current->state->isolate:nullptr;
+}
+bool Isolate::InContext(){
+  auto state=owner.lock();CHECK(state&&state->cx==js::TlsContext.get());
+  return JS::CurrentGlobalOrNull(state->cx)!=nullptr;
+}
+Isolate::DisallowJavascriptExecutionScope::DisallowJavascriptExecutionScope(Isolate* isolate,OnFailure mode){
+  CHECK(isolate);owner_=isolate->owner.lock();CHECK(owner_);CHECK(owner_->cx == js::TlsContext.get());
+  CHECK(mode==CRASH_ON_FAILURE||mode==THROW_ON_FAILURE);
+  mask_=mode==CRASH_ON_FAILURE?JSContext::EmbedderCrashOnExecution:JSContext::EmbedderThrowOnExecution;
+  previous_=owner_->cx->embedderExecutionRestrictions()&mask_;
+  owner_->cx->setEmbedderExecutionRestrictions(uint8_t(owner_->cx->embedderExecutionRestrictions()|mask_));
+}
+Isolate::DisallowJavascriptExecutionScope::~DisallowJavascriptExecutionScope(){
+  CHECK(owner_->cx == js::TlsContext.get());
+  owner_->cx->setEmbedderExecutionRestrictions(uint8_t((owner_->cx->embedderExecutionRestrictions()&~mask_)|previous_));
+}
+Isolate::AllowJavascriptExecutionScope::AllowJavascriptExecutionScope(Isolate* isolate){
+  CHECK(isolate);owner_=isolate->owner.lock();CHECK(owner_);CHECK(owner_->cx == js::TlsContext.get());
+  previous_=owner_->cx->embedderExecutionRestrictions();owner_->cx->setEmbedderExecutionRestrictions(0);
+}
+Isolate::AllowJavascriptExecutionScope::~AllowJavascriptExecutionScope(){
+  CHECK(owner_->cx == js::TlsContext.get());owner_->cx->setEmbedderExecutionRestrictions(previous_);
+}
+uint16_t* Isolate::RegisterEmbedderDataType(const char* name,size_t nativeSize){
+  auto state=owner.lock();CHECK(state);state->AssertForeground();CHECK(name&&*name&&nativeSize);
+  struct Type {uint16_t id;size_t nativeSize;};
+  struct Registry {std::mutex mutex;std::map<std::string,Type> types;uint32_t next=1;};
+  // These tokens identify actual registered native C++ types and must remain
+  // valid after any individual IsolateData is retired. They have process
+  // lifetime, like the engine's native class descriptors, and no JS edges.
+  static auto* registry=new Registry;
+  std::lock_guard lock(registry->mutex);auto found=registry->types.find(name);
+  if(found!=registry->types.end()){CHECK_EQ(found->second.nativeSize,nativeSize);return &found->second.id;}
+  CHECK_LE(registry->next,uint32_t(UINT16_MAX));
+  auto [entry,inserted]=registry->types.emplace(name,Type{uint16_t(registry->next++),nativeSize});CHECK(inserted);
+  return &entry->second.id;
+}
 void Isolate::LowMemoryNotification(){
-  auto& frame=Current(this);frame.state->environment.AssertForeground();
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+  NativeMemoryServices::LowMemory(this);
+#else
+  auto& frame=Current(this);frame.state->AssertForeground();
   // A low-memory notification requests an actual full shrinking collection.
   // Preserve both the pending thrown value and its saved throw stack.
   JS::AutoSaveExceptionState saved(frame.cx);
   JS::PrepareForFullGC(frame.cx);
   JS::NonIncrementalGC(frame.cx,JS::GCOptions::Shrink,JS::GCReason::API);
   saved.restore();
+#endif
 }
-Local<Value> Undefined(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::UndefinedValue());return f.OwnValue(value);}
+Local<Primitive> Undefined(Isolate* isolate){return NativeConstant(isolate,&State::undefinedConstant,JS::UndefinedValue());}
 void Function::SetName(Local<String> name){
   auto& frame=*Frame::current;JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,cell().value));CHECK(object&&object->is<JSFunction>());
   JSAutoRealm home(frame.cx,object);JS::RootedString string(frame.cx,name->cell().value.toString());
@@ -67,25 +225,36 @@ void Function::SetName(Local<String> name){
   object->as<JSFunction>().setAtom(atom);
 }
 MaybeLocal<Value> Function::Call(Local<Context> context,Local<Value> receiver,int argc,Local<Value>* argv) {
-  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);CHECK_GE(argc,0);if(JS_IsExceptionPending(f.cx))return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);CHECK_GE(argc,0);if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedValue callable(f.cx,cell().value),target(f.cx,Input(receiver)),result(f.cx);
   JS::RootedValueVector arguments(f.cx);
   if(!JS_WrapValue(f.cx,&callable)||!JS_WrapValue(f.cx,&target))return {};
   for(int i=0;i<argc;++i){JS::RootedValue value(f.cx,Input(argv[i]));if(!JS_WrapValue(f.cx,&value)||!arguments.append(value))return {};}
   if(!JS::Call(f.cx,target,callable,arguments,&result))return {};return f.OwnValue(result);
 }
-MaybeLocal<Object> Function::NewInstance(Local<Context> context) {
-  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
+MaybeLocal<Object> Function::NewInstance(Local<Context> context){return NewInstance(context,0,nullptr);}
+MaybeLocal<Object> Function::NewInstance(Local<Context> context,int argc,Local<Value> argv[])const {
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedValue constructor(f.cx,cell().value);JS::RootedObject object(f.cx);
-  if(!JS_WrapValue(f.cx,&constructor)||!JS::Construct(f.cx,constructor,JS::HandleValueArray::empty(),&object))return {};
+  CHECK(argc>=0&&(argv||!argc));JS::RootedValueVector arguments(f.cx);
+  for(int index=0;index<argc;++index){JS::RootedValue value(f.cx,Input(argv[index]));if(!JS_WrapValue(f.cx,&value)||!arguments.append(value))return {};}
+  if(!JS_WrapValue(f.cx,&constructor)||!JS::Construct(f.cx,constructor,arguments,&object))return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
 }
+bool Function::IsConstructor()const{return cell().value.isObject()&&JS::IsConstructor(&cell().value.toObject());}
+Local<Value> CallbackNewTarget(Isolate* isolate){
+  auto& frame=Current(isolate);CHECK(frame.arguments);
+  JS::RootedValue value(frame.cx,frame.arguments->isConstructing()?frame.arguments->newTarget().get():JS::UndefinedValue());
+  return frame.OwnValue(value);
+}
+void ReturnNull(Isolate* isolate){ReturnRaw(isolate,JS::NullValue());}
 Local<Uint32> Uint32::New(Isolate* isolate,uint32_t value){return Integer::NewFromUnsigned(isolate,value).As<Uint32>();}
 uint32_t Uint32::Value()const{CHECK(IsUint32());return uint32_t(cell().value.toNumber());}
 Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {
   auto& f=Current(isolate);JS::RootedValue number(f.cx,JS::NumberValue(double(value)));return f.Own<Uint32>(number);
 }
 }
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 namespace kandelo_node_codec_impl {
 const JSClass nativeBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(api::NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 const JSClass nativeChannelClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(api::NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
@@ -93,13 +262,26 @@ struct NativeRealmData {
   Isolate* isolate;
   Global<Object> owner;
   std::map<size_t,BaseObject*> bindings;
-  std::set<BaseObject*> objects;
+  struct ObjectRecord {std::shared_ptr<State> state;bool category=false,converter=false;};
+  std::map<BaseObject*,ObjectRecord> objects;
   explicit NativeRealmData(Isolate* isolate,Local<Object> input):isolate(isolate),owner(isolate,input){owner.SetWeak();}
 };
 Realm::Realm(Isolate* isolate,Local<Object> owner):data_(std::make_unique<NativeRealmData>(isolate,owner)){}
 Realm::~Realm(){CHECK(data_->objects.empty()&&data_->bindings.empty());}
 Isolate* Realm::isolate(){return data_->isolate;}
-Environment* Realm::env(){return &Current(isolate()).state->environment;}
+IsolateData* Realm::isolate_data(){
+  auto state=data_->isolate->owner.lock();CHECK(state);state->AssertForeground();return &state->Legacy().isolateData;
+}
+uint16_t* IsolateData::embedder_id_for_non_cppgc()const{
+  return isolate_->RegisterEmbedderDataType("node.BaseObject",sizeof(BaseObject));
+}
+Environment* Realm::env(){
+  // Original native weak callbacks can destroy an object from a foreground
+  // GC with no marshalling Frame. The isolate owns the same canonical State
+  // throughout callback registration and explicit environment shutdown.
+  auto state=data_->isolate->owner.lock();CHECK(state);
+  state->AssertForeground();return &state->Legacy().environment;
+}
 Local<Object> Realm::owner(){return data_->owner.Get(isolate());}
 Local<Context> Realm::context(){
   auto& f=Current(isolate());auto value=owner();if(value.IsEmpty())return {};
@@ -112,19 +294,19 @@ Realm* Realm::GetCurrent(Local<Context> context){
   JS::RootedObject runtime(f.cx,kandelo::node::GetRealmRuntime(f.cx,f.realm));if(!runtime)return nullptr;
   JS::RootedObject object(f.cx,kandelo::node::GetCurrentRealmOwner(f.cx,runtime));if(!object)return nullptr;
   object=js::CheckedUnwrapDynamic(object,f.cx,false);if(!object)return nullptr;
-  for(auto& realm:f.state->realms){
+  for(auto& realm:f.state->Legacy().realms){
     auto held=realm->owner();if(held.IsEmpty())continue;
     if(UnwrapObject(f.cx,Input(held))==object)return realm.get();
   }
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));
   auto realm=std::make_unique<Realm>(context->isolate,f.Own<Object>(value));auto* result=realm.get();
-  f.state->realms.push_back(std::move(realm));return result;
+  f.state->Legacy().realms.push_back(std::move(realm));return result;
 }
 Realm* Environment::principal_realm(){auto context=this->context();return context.IsEmpty()?nullptr:Realm::GetCurrent(context);}
 bool Environment::can_call_into_js()const{return !data_->stopping&&!data_->closed;}
 namespace {
 Local<Symbol> ReadEnvironmentSymbol(Environment* environment,const char* name){
-  auto& frame=Current(environment->isolate());CHECK(&frame.state->environment==environment);
+  auto& frame=Current(environment->isolate());CHECK(&frame.state->Legacy().environment==environment);
   JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));if(!runtime)return {};
   JS::RootedSymbol symbol(frame.cx,kandelo::node::GetRuntimeSymbol(frame.cx,runtime,name));if(!symbol)return {};
   JS::RootedValue value(frame.cx,JS::SymbolValue(symbol));return frame.Own<Symbol>(value);
@@ -166,93 +348,82 @@ void Realm::set_enhance_fatal_stack_before_inspector(Local<Function> callback){W
 void Realm::set_enhance_fatal_stack_after_inspector(Local<Function> callback){WriteRealmStackCallback(this,kandelo::node::ErrorStackCallback::AfterFatal,callback);}
 BaseObject* Realm::GetBindingRaw(size_t index){env()->AssertForeground();auto it=data_->bindings.find(index);return it==data_->bindings.end()?nullptr:it->second;}
 void Realm::InstallBindingRaw(size_t index,BaseObject* object){env()->AssertForeground();CHECK(!data_->bindings.contains(index)&&data_->objects.contains(object));data_->bindings.emplace(index,object);}
-void Realm::RegisterObject(BaseObject* object){env()->AssertForeground();CHECK(data_->objects.insert(object).second);}
-void Realm::ForgetObject(BaseObject* object){
-  CHECK(data_->objects.erase(object)==1);
+struct NativeBaseObjectAccess {
+  static bool HasReferences(const BaseObject* object){
+    return object->pointer_data_&&object->pointer_data_->strong_ptr_count!=0;
+  }
+  static bool Detached(const BaseObject* object){
+    return object->pointer_data_&&object->pointer_data_->is_detached;
+  }
+};
+bool BaseObjectHasNativeReference(const BaseObject* object){return NativeBaseObjectAccess::HasReferences(object);}
+bool BaseObjectIsDetached(const BaseObject* object){return NativeBaseObjectAccess::Detached(object);}
+void RetireBaseObjectWrapper(BaseObject* object){
+  object->env()->AssertForeground();auto* wrapper=object->persistent().BorrowObject();if(!wrapper)return;
+  JS::SetReservedSlot(wrapper,api::NativeOwnerPointer,JS::UndefinedValue());
+  HandleScope scope(object->env()->isolate());
+  auto& frame=Current(object->env()->isolate());JS::RootedValue value(frame.cx,JS::ObjectValue(*wrapper));
+  frame.Own<Object>(value)->SetAlignedPointerInInternalField(BaseObject::kSlot,nullptr,EmbedderDataTag::kDefault);
+}
+void Realm::TrackBaseObject(BaseObject* object){
+  auto state=data_->isolate->owner.lock();CHECK(state);state->AssertForeground();
+  auto& frame=Current(data_->isolate);CHECK(frame.state==state);
+  JS::RootedObject wrapper(frame.cx,object->persistent().BorrowObject());CHECK(wrapper);
+  CHECK(JS::GetReservedSlot(wrapper,api::NativeOwnerPointer).isUndefined());
+  const JSClass* clasp=JS::GetClass(wrapper);
+  NativeRealmData::ObjectRecord metadata{state,clasp==&categoryClass,clasp==&converterClass};
+  CHECK(data_->objects.emplace(object,std::move(metadata)).second);
+  JS::RootedValue home(frame.cx,Input(owner()));
+  {JSAutoRealm enter(frame.cx,wrapper);CHECK(JS_WrapValue(frame.cx,&home));
+   JS::SetReservedSlot(wrapper,api::NativeOwnerRealm,home);JS::SetReservedSlot(wrapper,api::NativeOwnerPointer,JS::PrivateValue(object));}
+  if(clasp==&categoryClass)state->Legacy().traceCreated.fetch_add(1);
+  if(clasp==&converterClass)state->Legacy().icuCreated.fetch_add(1);
+}
+void Realm::UntrackBaseObject(BaseObject* object){
+  auto found=data_->objects.find(object);CHECK(found!=data_->objects.end());
+  auto metadata=std::move(found->second);metadata.state->AssertForeground();
+  if(auto* wrapper=object->persistent().BorrowObject())JS::SetReservedSlot(wrapper,api::NativeOwnerPointer,JS::UndefinedValue());
+  data_->objects.erase(found);
   for(auto it=data_->bindings.begin();it!=data_->bindings.end();)if(it->second==object)it=data_->bindings.erase(it);else ++it;
+  if(metadata.category)metadata.state->Legacy().traceReleased.fetch_add(1);
+  if(metadata.converter)metadata.state->Legacy().icuReleased.fetch_add(1);
 }
 void Realm::RunCleanup(){
   env()->AssertForeground();
-  // Bindings release their actual detached channel references before remaining
-  // weak wrappers. Destructors unregister each pointer before another visit.
-  while(!data_->bindings.empty()){auto* object=data_->bindings.begin()->second;CHECK(!object->HasNativeReference());object->RetireWrapper();delete object;}
-  // A detached object still present here has an outstanding native owner.
-  // Never free behind that owner's shared reference during retirement.
-  while(!data_->objects.empty()){auto* object=*data_->objects.begin();CHECK(!object->IsDetached()&&!object->HasNativeReference());object->RetireWrapper();delete object;}
-}
-BaseObject::BaseObject(Realm* realm,Local<Object> input){
-  auto& f=Current(realm->isolate());JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
-  CHECK(object&&JS::GetClass(object)==&nativeBindingClass&&JS::GetReservedSlot(object,0).isUndefined());
-  owner_=std::make_unique<NativeObjectOwner>(f,object);owner_->realm=realm;
-  JS::RootedValue actual(f.cx,JS::ObjectValue(*object));owner_->handle.Reset(realm->isolate(),f.Own<Object>(actual));owner_->root.reset();
-  JS::RootedValue home(f.cx,Input(realm->owner()));
-  {JSAutoRealm enter(f.cx,object);CHECK(JS_WrapValue(f.cx,&home));JS::SetReservedSlot(object,1,home);JS::SetReservedSlot(object,0,JS::PrivateValue(this));}
-  realm->RegisterObject(this);
-}
-BaseObject::~BaseObject(){
-  CHECK(!HasNativeReference());
-  if(owner_->realm){
-    // A weak edge is updated by the engine even during a moving collection.
-    auto& handle=owner_->handle;
-    // Destruction can run from a foreground GC finalizer with no native Frame.
-    // The traced wrapper edge is read without allocating or invoking JS.
-    auto object=handle.BorrowObject();
-    if(object)JS::SetReservedSlot(object,0,JS::UndefinedValue());
-    owner_->realm->ForgetObject(this);
-  }else (owner_->category?owner_->state->traceReleased:owner_->state->icuReleased).fetch_add(1);
-}
-void BaseObject::ClearWeak(){owner_->state->environment.AssertForeground();owner_->wantsWeak=false;owner_->handle.ClearWeak();}
-Global<Object>& BaseObject::persistent(){CHECK(owner_->realm);return owner_->handle;}
-bool BaseObject::HasNativeReference()const{return !owner_->nativeReference.expired();}
-bool BaseObject::IsWeakOrDetached()const{return owner_->wantsWeak||owner_->detached||owner_->handle.IsWeak();}
-std::shared_ptr<BaseObject> BaseObject::AcquireNativeReference(){
-  owner_->state->environment.AssertForeground();CHECK(owner_->realm&&!owner_->state->environment.IsClosed());
-  if(Frame::current)CHECK(owner_->state==Frame::current->state);
-  if(auto existing=owner_->nativeReference.lock())return existing;
-  auto result=std::shared_ptr<BaseObject>(this,[](BaseObject* object){object->ReleaseNativeReference();});
-  owner_->nativeReference=result;owner_->handle.ClearWeak();return result;
-}
-void BaseObject::ReleaseNativeReference(){
-  owner_->state->environment.AssertForeground();CHECK(!HasNativeReference());
-  // The resource's collection hook may defer deletion until native close has
-  // completed. The default hook retires the wrapper before derived teardown.
-  if(owner_->detached){OnGCCollect();return;}
-  if(owner_->wantsWeak)owner_->handle.SetWeakTenured();
-}
-void BaseObject::RetireWrapper(){
-  owner_->state->environment.AssertForeground();if(!owner_->realm)return;
-  if(auto* object=owner_->handle.BorrowObject()){
-    auto value=JS::GetReservedSlot(object,0);
-    CHECK(value.isUndefined()||(value.isDouble()&&value.toPrivate()==this));
-    JS::SetReservedSlot(object,0,JS::UndefinedValue());
+  // Binding destructors release detached channel references first. Keep the
+  // existing explicit unsupported-shutdown guard for outstanding references.
+  while(!data_->bindings.empty()){auto* object=data_->bindings.begin()->second;CHECK(!BaseObjectHasNativeReference(object));RetireBaseObjectWrapper(object);delete object;}
+  while(!data_->objects.empty()){
+    auto* object=data_->objects.begin()->first;CHECK(!BaseObjectIsDetached(object)&&!BaseObjectHasNativeReference(object));
+    RetireBaseObjectWrapper(object);delete object;
   }
 }
-void BaseObject::OnGCCollect(){RetireWrapper();delete this;}
-Local<Object> BaseObject::object()const{CHECK(owner_->realm);return owner_->handle.Get(&owner_->state->isolate);}
-Realm* BaseObject::realm()const{CHECK(owner_->realm);return owner_->realm;}
-void BaseObject::Detach(){CHECK(owner_->realm&&HasNativeReference());owner_->detached=true;}
-bool BaseObject::IsDetached()const{return owner_->detached;}
-BaseObject* BaseObject::UnwrapNativeBinding(Local<Object> input) {
-  auto& f=*Frame::current;f.state->environment.AssertForeground();
-  JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
-  if(!object||JS::GetClass(object)!=&nativeBindingClass)return nullptr;
-  auto pointer=JS::GetReservedSlot(object,0);if(pointer.isUndefined())return nullptr;
-  auto* native=static_cast<BaseObject*>(pointer.toPrivate());
-  if(native->owner_->state!=f.state||!native->owner_->realm)return nullptr;
-  JS::RootedObject realm(f.cx,&JS::GetReservedSlot(object,1).toObject());
-  if(!kandelo::node::CheckRealmLibraryActive(f.cx,realm))return nullptr;
-  return native;
+BaseObject* UnwrapCodecObject(Local<Object> input){
+  auto& frame=*Frame::current;frame.state->AssertForeground();
+  JS::RootedObject wrapper(frame.cx,UnwrapObject(frame.cx,Input(input)));if(!wrapper)return nullptr;
+  if(!api::HasNativeFieldStorage(wrapper))return nullptr;
+  auto pointer=JS::GetReservedSlot(wrapper,api::NativeOwnerPointer);if(pointer.isUndefined())return nullptr;
+  JS::RootedValue value(frame.cx,JS::ObjectValue(*wrapper));auto local=frame.Own<Object>(value);
+  if(!BaseObject::IsBaseObject(&frame.state->Legacy().isolateData,local))return nullptr;
+  auto* object=BaseObject::FromJSObject(local);if(!object||pointer.toPrivate()!=object)return nullptr;
+  if(object->env()!=&frame.state->Legacy().environment)return nullptr;
+  JS::RootedObject owner(frame.cx,&JS::GetReservedSlot(wrapper,api::NativeOwnerRealm).toObject());
+  if(!kandelo::node::CheckRealmLibraryActive(frame.cx,owner))return nullptr;
+  return object;
+}
+BaseObject* UnwrapNativeBinding(Local<Object> input){
+  auto& frame=*Frame::current;JS::RootedObject wrapper(frame.cx,UnwrapObject(frame.cx,Input(input)));
+  if(!wrapper||JS::GetClass(wrapper)!=&nativeBindingClass)return nullptr;
+  return UnwrapCodecObject(input);
 }
 BaseObject* UnwrapSnapshotable(Local<Object> input,EmbedderObjectType type) {
-  auto* object=BaseObject::UnwrapNativeBinding(input);
-  if(!object||object->IsDetached()||!object->is_snapshotable())return nullptr;
+  auto* object=UnwrapNativeBinding(input);
+  if(!object||BaseObjectIsDetached(object)||!object->is_snapshotable())return nullptr;
   auto* snapshotable=static_cast<SnapshotableObject*>(object);
   return snapshotable->type()==type?object:nullptr;
 }
 SnapshotableObject::SnapshotableObject(Realm* realm,Local<Object> wrap,EmbedderObjectType type):BaseObject(realm,wrap),type_(type){}
-Local<FunctionTemplate> BaseObject::MakeLazilyInitializedJSTemplate(Environment* environment,int internalFieldCount){
-  return api::CreateNativeWrapperTemplate(environment->isolate(),internalFieldCount);
-}
+
 }
 namespace kandelo::node {
 JSObject* CreateDiagnosticsBinding(JSContext* cx,JS::HandleObject realm){
@@ -287,7 +458,7 @@ bool DiagnosticsNativeControl(JSContext* cx,unsigned argc,JS::Value* vp){
   }
   if(!std::strcmp(operation.get(),"inspect")){
     JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
-    for(auto [key,value]:std::initializer_list<std::pair<const char*,size_t>>{{"capacity",binding->subscribers_.Length()},{"indexes",binding->channel_indices_.size()},{"nextIndex",binding->next_channel_index_},{"nativeSlots",binding->channels_.size()},{"nativeRealms",state->realms.size()}}){
+    for(auto [key,value]:std::initializer_list<std::pair<const char*,size_t>>{{"capacity",binding->subscribers_.Length()},{"indexes",binding->channel_indices_.size()},{"nextIndex",binding->next_channel_index_},{"nativeSlots",binding->channels_.size()},{"nativeRealms",state->Legacy().realms.size()}}){
       JS::RootedValue number(cx,JS::NumberValue(double(value)));if(!JS_DefineProperty(cx,result,key,number,JSPROP_ENUMERATE))return false;
     }
     args.rval().setObject(*result);return true;
@@ -307,16 +478,17 @@ bool DiagnosticsNativeControl(JSContext* cx,unsigned argc,JS::Value* vp){
       USE(function->Call(isolate->GetCurrentContext(),api::Undefined(isolate),1,argv));
     });return !JS_IsExceptionPending(cx);
   }
-  auto channel=native::diagnostics_channel::Channel::Get(&state->environment,key);if(JS_IsExceptionPending(cx))return false;
+  auto channel=native::diagnostics_channel::Channel::Get(&state->Legacy().environment,key);if(JS_IsExceptionPending(cx))return false;
   if(!channel){JS_ReportErrorASCII(cx,"Native diagnostics channel could not be created");return false;}
   if(!std::strcmp(operation.get(),"get")){auto object=channel->object();if(object.IsEmpty())return false;args.rval().set(api::Input(object));return true;}
   if(!std::strcmp(operation.get(),"has")){args.rval().setBoolean(channel->HasSubscribers());return true;}
   if(!std::strcmp(operation.get(),"linked")){args.rval().setBoolean(channel->IsLinked());return true;}
   if(!std::strcmp(operation.get(),"unlink")){channel->Unlink();return true;}
-  if(!std::strcmp(operation.get(),"publish")){JS::RootedValue message(cx,args.get(2));if(!JS_WrapValue(cx,&message))return false;channel->Publish(&state->environment,frame.OwnValue(message));return !JS_IsExceptionPending(cx);}
+  if(!std::strcmp(operation.get(),"publish")){JS::RootedValue message(cx,args.get(2));if(!JS_WrapValue(cx,&message))return false;channel->Publish(&state->Legacy().environment,frame.OwnValue(message));return !JS_IsExceptionPending(cx);}
   JS_ReportErrorASCII(cx,"Unknown native diagnostics operation");return false;
 }
 }
 bool DefineDiagnosticsTestAPI(JSContext* cx,JS::HandleObject target){return JS_DefineFunction(cx,target,"diagnosticsNative",DiagnosticsNativeControl,2,0);}
 }
+#endif  // preserved frontend
 #endif

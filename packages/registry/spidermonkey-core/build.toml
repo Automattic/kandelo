@@ -1,0 +1,14 @@
+script_path = "packages/registry/spidermonkey-core/build-spidermonkey-core.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 27
+inputs = [
+  "packages/registry/spidermonkey-core/build-spidermonkey-core.sh",
+  "packages/registry/spidermonkey-core/apply-engine-patches.py",
+  "packages/registry/spidermonkey-core/install-core.py",
+  "packages/registry/spidermonkey-core/engine-patches.json",
+  "packages/registry/spidermonkey-core/patches",
+  "packages/registry/spidermonkey/patches",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]

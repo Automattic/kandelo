@@ -1,0 +1,548 @@
+--- a/js/public/ErrorReport.h
++++ b/js/public/ErrorReport.h
+@@ -41,6 +41,27 @@
+ class JS_PUBLIC_API JSString;
+ 
+ namespace JS {
++// Native parser facts belong to the actual report, not a last-error singleton.
++// Token numbers identify the matching engine's TokenKind. Strings are canonical
++// parsed names; neither consumers nor copy code need to inspect source/text.
++struct ParserDiagnostic {
++  enum class Origin : uint8_t {
++    None, TokenMismatch, UnexpectedToken, Redeclaration,
++    MetaProperty, SourceImportWithoutCall
++  };
++  Origin origin = Origin::None;
++  uint16_t actualToken = UINT16_MAX;
++  uint16_t expectedToken = UINT16_MAX;
++  bool escaped = false;
++  bool inModule = false;
++  bool callSyntaxAllowed = false;
++  const char* word = nullptr;
++  const char* identifier = nullptr;
++  // Frontend reports own these allocations. A copied ErrorObject report uses
++  // borrowed pointers into its existing single report allocation instead.
++  UniqueChars ownedWord;
++  UniqueChars ownedIdentifier;
++};
+ class ExceptionStack;
+ }
+ namespace js {
+@@ -293,6 +314,9 @@
+   // Associated notes, or nullptr if there's no note.
+   js::UniquePtr<JSErrorNotes> notes;
+ 
++  // Structured facts of the failure that produced this report.
++  JS::ParserDiagnostic parserDiagnostic;
++
+   // One of the JSExnType constants.
+   int16_t exnType;
+ 
+@@ -321,6 +345,7 @@
+         linebufLength_(other.linebufLength_),
+         tokenOffset_(other.tokenOffset_),
+         notes(std::move(other.notes)),
++        parserDiagnostic(std::move(other.parserDiagnostic)),
+         exnType(other.exnType),
+         isMuted(other.isMuted),
+         isWarning_(other.isWarning_),
+--- a/js/src/frontend/ErrorReporter.h
++++ b/js/src/frontend/ErrorReporter.h
+@@ -42,7 +42,25 @@
+ //   * getContext
+ //   * computeErrorMetadata
+ class ErrorReportMixin : public StrictModeGetter {
++  // Only live during one actual parser report callback. No JSContext/global
++  // last-error state is retained; reports take ownership before the scope ends.
++  mutable JS::ParserDiagnostic* reportingParserDiagnostic_ = nullptr;
+  public:
++  class AutoParserDiagnostic {
++    const ErrorReportMixin& reporter_;
++    JS::ParserDiagnostic* previous_;
++   public:
++    AutoParserDiagnostic(const ErrorReportMixin& reporter,
++                         JS::ParserDiagnostic& diagnostic)
++        : reporter_(reporter),
++          previous_(reporter.reportingParserDiagnostic_) {
++      reporter_.reportingParserDiagnostic_ = &diagnostic;
++    }
++    ~AutoParserDiagnostic() {
++      reporter_.reportingParserDiagnostic_ = previous_;
++    }
++  };
++
+   // Returns a compile options (extra warning, warning as error) for current
+   // compilation.
+   virtual const JS::ReadOnlyCompileOptions& options() const = 0;
+@@ -137,10 +155,35 @@
+ 
+     va_end(args);
+   }
++  void errorWithParserDiagnostic(JS::ParserDiagnostic&& diagnostic,
++                                 unsigned errorNumber, ...) const {
++    va_list args;
++    va_start(args, errorNumber);
++    errorWithNotesAtVA(nullptr, mozilla::AsVariant(Current()), errorNumber,
++                       &args, &diagnostic);
++    va_end(args);
++  }
++  void errorWithNotesAndParserDiagnosticAt(
++      UniquePtr<JSErrorNotes> notes, uint32_t offset,
++      JS::ParserDiagnostic&& diagnostic, unsigned errorNumber, ...) const {
++    va_list args;
++    va_start(args, errorNumber);
++    errorWithNotesAtVA(std::move(notes), mozilla::AsVariant(offset),
++                       errorNumber, &args, &diagnostic);
++    va_end(args);
++  }
+   void errorWithNotesAtVA(UniquePtr<JSErrorNotes> notes,
+                           const ErrorOffset& offset, unsigned errorNumber,
+-                          va_list* args) const {
++                          va_list* args,
++                          JS::ParserDiagnostic* diagnostic = nullptr) const {
+     ErrorMetadata metadata;
++    if (!diagnostic) {
++      diagnostic = reportingParserDiagnostic_;
++      reportingParserDiagnostic_ = nullptr;
++    }
++    if (diagnostic) {
++      metadata.parserDiagnostic = std::move(*diagnostic);
++    }
+     if (!computeErrorMetadata(&metadata, offset)) {
+       return;
+     }
+--- a/js/src/frontend/Parser.cpp
++++ b/js/src/frontend/Parser.cpp
+@@ -123,9 +123,61 @@
+ }
+ 
+ template <class ParseHandler, typename Unit>
++bool GeneralParser<ParseHandler, Unit>::fillParserTokenDiagnostic(
++    TokenKind actual, bool lookahead, JS::ParserDiagnostic::Origin origin,
++    TokenKind expected, JS::ParserDiagnostic* output) {
++  auto& diagnostic = *output;
++  diagnostic.origin = origin;
++  diagnostic.actualToken = uint16_t(actual);
++  diagnostic.expectedToken = expected == TokenKind::Limit ? UINT16_MAX
++                                                          : uint16_t(expected);
++  diagnostic.inModule = pc_->atModuleLevel();
++  diagnostic.callSyntaxAllowed =
++      origin == JS::ParserDiagnostic::Origin::SourceImportWithoutCall;
++  const Token& token = lookahead ? anyChars.nextToken() : anyChars.currentToken();
++  MOZ_ASSERT(actual == TokenKind::Eol || actual == token.type);
++  if (actual == TokenKind::Name || actual == TokenKind::PrivateName) {
++    diagnostic.ownedWord = this->parserAtoms().toNewUTF8CharsZ(fc_, token.name());
++    if (!diagnostic.ownedWord) {
++      return false;
++    }
++    diagnostic.escaped =
++        token.pos.end - token.pos.begin != this->parserAtoms().length(token.name());
++  } else if (TokenKindIsPossibleIdentifierName(actual)) {
++    const char* word = ReservedWordToCharZ(actual);
++    const size_t bytes = strlen(word) + 1;
++    diagnostic.ownedWord.reset(js_pod_malloc<char>(bytes));
++    if (!diagnostic.ownedWord) {
++      ReportOutOfMemory(fc_);
++      return false;
++    }
++    memcpy(diagnostic.ownedWord.get(), word, bytes);
++  }
++  diagnostic.word = diagnostic.ownedWord.get();
++  return true;
++}
++
++template <class ParseHandler, typename Unit>
++void GeneralParser<ParseHandler, Unit>::errorWithParserToken(
++    TokenKind actual, bool lookahead, JS::ParserDiagnostic::Origin origin,
++    TokenKind expected, unsigned errorNumber, ...) {
++  JS::ParserDiagnostic diagnostic;
++  if (!fillParserTokenDiagnostic(actual, lookahead, origin, expected,
++                                 &diagnostic)) {
++    return;
++  }
++  va_list args;
++  va_start(args, errorNumber);
++  this->errorWithNotesAtVA(nullptr,
++      mozilla::AsVariant(ErrorReportMixin::Current()), errorNumber, &args,
++      &diagnostic);
++  va_end(args);
++}
++
++template <class ParseHandler, typename Unit>
+ template <typename ConditionT, typename ErrorReportT>
+ bool GeneralParser<ParseHandler, Unit>::mustMatchTokenInternal(
+-    ConditionT condition, ErrorReportT errorReport) {
++    ConditionT condition, ErrorReportT errorReport, TokenKind expected) {
+   MOZ_ASSERT(condition(TokenKind::Div) == false);
+   MOZ_ASSERT(condition(TokenKind::DivAssign) == false);
+   MOZ_ASSERT(condition(TokenKind::RegExp) == false);
+@@ -135,6 +187,12 @@
+     return false;
+   }
+   if (!condition(actual)) {
++    JS::ParserDiagnostic diagnostic;
++    if (!fillParserTokenDiagnostic(actual, false,
++          JS::ParserDiagnostic::Origin::TokenMismatch, expected, &diagnostic)) {
++      return false;
++    }
++    ErrorReportMixin::AutoParserDiagnostic reporting(*this, diagnostic);
+     errorReport(actual);
+     return false;
+   }
+@@ -484,9 +542,17 @@
+     return;
+   }
+ 
++  JS::ParserDiagnostic diagnostic;
++  diagnostic.origin = JS::ParserDiagnostic::Origin::Redeclaration;
++  diagnostic.ownedIdentifier = this->parserAtoms().toNewUTF8CharsZ(fc_, name);
++  if (!diagnostic.ownedIdentifier) {
++    return;
++  }
++  diagnostic.identifier = diagnostic.ownedIdentifier.get();
+   if (prevPos == DeclaredNameInfo::npos) {
+-    errorAt(pos.begin, errorNumber, DeclarationKindString(prevKind),
+-            bytes.get());
++    this->errorWithNotesAndParserDiagnosticAt(nullptr, pos.begin,
++        std::move(diagnostic), errorNumber, DeclarationKindString(prevKind),
++        bytes.get());
+     return;
+   }
+ 
+@@ -513,8 +579,9 @@
+     return;
+   }
+ 
+-  errorWithNotesAt(std::move(notes), pos.begin, errorNumber,
+-                   DeclarationKindString(prevKind), bytes.get());
++  this->errorWithNotesAndParserDiagnosticAt(std::move(notes), pos.begin,
++      std::move(diagnostic), errorNumber, DeclarationKindString(prevKind),
++      bytes.get());
+ }
+ 
+ template <class ParseHandler, typename Unit>
+@@ -993,7 +1060,9 @@
+     return false;
+   }
+   if (tt != TokenKind::Eof) {
+-    error(JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
++    this->errorWithParserToken(tt, true,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
+     return false;
+   }
+   return true;
+@@ -2566,7 +2635,9 @@
+ 
+     /* Advance the scanner for proper error location reporting. */
+     tokenStream.consumeKnownToken(tt, modifier);
+-    error(JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(tt));
++    this->errorWithParserToken(tt, false,
++        JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++        JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(tt));
+     return false;
+   }
+   bool matched;
+@@ -3540,9 +3611,10 @@
+     }
+ 
+     if (tt == TokenKind::Eol) {
+-      error(JSMSG_UNEXPECTED_TOKEN,
+-            "'=>' on the same line after an argument list",
+-            TokenKindToDesc(tt));
++      this->errorWithParserToken(tt, false,
++          JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++          JSMSG_UNEXPECTED_TOKEN,
++          "'=>' on the same line after an argument list", TokenKindToDesc(tt));
+       return false;
+     }
+     if (tt != TokenKind::Arrow) {
+@@ -6640,7 +6712,9 @@
+       if (next != TokenKind::In && next != TokenKind::Of &&
+           TokenKindIsReservedWord(next)) {
+         tokenStream.consumeKnownToken(next);
+-        error(JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
++        this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
+         return false;
+       }
+ 
+@@ -9887,8 +9961,10 @@
+           return errorResult();
+         }
+         if (tt != TokenKind::Arrow) {
+-          error(JSMSG_UNEXPECTED_TOKEN, "expression",
+-                TokenKindToDesc(TokenKind::RightParen));
++          this->errorWithParserToken(TokenKind::RightParen, false,
++              JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++              JSMSG_UNEXPECTED_TOKEN, "expression",
++              TokenKindToDesc(TokenKind::RightParen));
+           return errorResult();
+         }
+ 
+@@ -11931,7 +12007,9 @@
+ 
+     default: {
+       if (!TokenKindIsPossibleIdentifierName(ltok)) {
+-        error(JSMSG_UNEXPECTED_TOKEN, "property name", TokenKindToDesc(ltok));
++        this->errorWithParserToken(ltok, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "property name", TokenKindToDesc(ltok));
+         return errorResult();
+       }
+ 
+@@ -12495,7 +12573,9 @@
+     return false;
+   }
+   if (next != TokenKind::Target) {
+-    error(JSMSG_UNEXPECTED_TOKEN, "target", TokenKindToDesc(next));
++    this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::MetaProperty, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "target", TokenKindToDesc(next));
+     return false;
+   }
+ 
+@@ -12549,7 +12629,9 @@
+ 
+     if (options().sourcePhaseImports()) {
+       if (next != TokenKind::Source) {
+-        error(JSMSG_UNEXPECTED_TOKEN, "meta or source", TokenKindToDesc(next));
++        this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::MetaProperty, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "meta or source", TokenKindToDesc(next));
+         return errorResult();
+       }
+       isSourcePhaseImport = true;
+@@ -12557,7 +12639,9 @@
+         return errorResult();
+       }
+     } else {
+-      error(JSMSG_UNEXPECTED_TOKEN, "meta", TokenKindToDesc(next));
++      this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::MetaProperty, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "meta", TokenKindToDesc(next));
+       return errorResult();
+     }
+   }
+@@ -12615,7 +12699,11 @@
+     return handler_.newCallImport(importHolder, spec, kind);
+   }
+ 
+-  error(JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
++  this->errorWithParserToken(next, false,
++            isSourcePhaseImport && allowCallSyntax
++                ? JS::ParserDiagnostic::Origin::SourceImportWithoutCall
++                : JS::ParserDiagnostic::Origin::UnexpectedToken,
++            TokenKind::Limit, JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
+   return errorResult();
+ }
+ 
+@@ -12670,8 +12758,10 @@
+           return errorResult();
+         }
+         if (next != TokenKind::Arrow) {
+-          error(JSMSG_UNEXPECTED_TOKEN, "expression",
+-                TokenKindToDesc(TokenKind::RightParen));
++          this->errorWithParserToken(TokenKind::RightParen, false,
++              JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++              JSMSG_UNEXPECTED_TOKEN, "expression",
++              TokenKindToDesc(TokenKind::RightParen));
+           return errorResult();
+         }
+ 
+@@ -12701,7 +12791,9 @@
+ 
+     default: {
+       if (!TokenKindIsPossibleIdentifier(tt)) {
+-        error(JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
++        this->errorWithParserToken(tt, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
+         return errorResult();
+       }
+ 
+@@ -12758,7 +12850,9 @@
+       // name, closing parenthesis, and arrow, and allow it only if all are
+       // present.
+       if (tripledotHandling != TripledotAllowed) {
+-        error(JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
++        this->errorWithParserToken(tt, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
+         return errorResult();
+       }
+ 
+@@ -12778,8 +12872,9 @@
+         // or "arguments" should be prohibited.  Argument-parsing code
+         // handles that.
+         if (!TokenKindIsPossibleIdentifier(next)) {
+-          error(JSMSG_UNEXPECTED_TOKEN, "rest argument name",
+-                TokenKindToDesc(next));
++          this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "rest argument name", TokenKindToDesc(next));
+           return errorResult();
+         }
+       }
+@@ -12788,8 +12883,9 @@
+         return errorResult();
+       }
+       if (next != TokenKind::RightParen) {
+-        error(JSMSG_UNEXPECTED_TOKEN, "closing parenthesis",
+-              TokenKindToDesc(next));
++        this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "closing parenthesis", TokenKindToDesc(next));
+         return errorResult();
+       }
+ 
+@@ -12799,8 +12895,9 @@
+       if (next != TokenKind::Arrow) {
+         // Advance the scanner for proper error location reporting.
+         tokenStream.consumeKnownToken(next);
+-        error(JSMSG_UNEXPECTED_TOKEN, "'=>' after argument list",
+-              TokenKindToDesc(next));
++        this->errorWithParserToken(next, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            JSMSG_UNEXPECTED_TOKEN, "'=>' after argument list", TokenKindToDesc(next));
+         return errorResult();
+       }
+ 
+--- a/js/src/frontend/Parser.h
++++ b/js/src/frontend/Parser.h
+@@ -949,7 +949,7 @@
+    */
+   template <typename ConditionT, typename ErrorReportT>
+   [[nodiscard]] bool mustMatchTokenInternal(ConditionT condition,
+-                                            ErrorReportT errorReport);
++                                            ErrorReportT errorReport, TokenKind expected = TokenKind::Limit);
+ 
+  public:
+   /*
+@@ -962,10 +962,20 @@
+    * If error number is passed instead of `errorReport`, it reports an
+    * error with the passed errorNumber.
+    */
++  // `actual` is the token already acquired by the caller. Lookahead selects
++  // existing buffered storage only; this helper never asks the scanner to run.
++  bool fillParserTokenDiagnostic(TokenKind actual, bool lookahead,
++                                 JS::ParserDiagnostic::Origin origin,
++                                 TokenKind expected,
++                                 JS::ParserDiagnostic* diagnostic);
++  void errorWithParserToken(TokenKind actual, bool lookahead,
++                            JS::ParserDiagnostic::Origin origin,
++                            TokenKind expected, unsigned errorNumber, ...);
++
+   [[nodiscard]] bool mustMatchToken(TokenKind expected, JSErrNum errorNumber) {
+     return mustMatchTokenInternal(
+         [expected](TokenKind actual) { return actual == expected; },
+-        [this, errorNumber](TokenKind) { this->error(errorNumber); });
++        [this, errorNumber](TokenKind) { this->error(errorNumber); }, expected);
+   }
+ 
+   template <typename ConditionT>
+@@ -981,7 +991,7 @@
+                                     ErrorReportT errorReport) {
+     return mustMatchTokenInternal(
+         [expected](TokenKind actual) { return actual == expected; },
+-        errorReport);
++        errorReport, expected);
+   }
+ 
+  private:
+--- a/js/src/vm/ErrorObject.cpp
++++ b/js/src/vm/ErrorObject.cpp
+@@ -1160,15 +1160,22 @@
+ }
+ 
+ size_t ExtraMallocSize(JSErrorReport* report) {
++  size_t diagnosticBytes = 0;
++  for (const char* text : {report->parserDiagnostic.word,
++                           report->parserDiagnostic.identifier}) {
++    if (text) {
++      diagnosticBytes += strlen(text) + 1;
++    }
++  }
+   if (report->linebuf()) {
+     /*
+      * Count with null terminator and alignment.
+      * See CopyExtraData for the details about alignment.
+      */
+-    return (report->linebufLength() + 1) * sizeof(char16_t) + 1;
+-  }
+-
+-  return 0;
++    return diagnosticBytes + (report->linebufLength() + 1) * sizeof(char16_t) + 1;
++  }
++
++  return diagnosticBytes;
+ }
+ 
+ size_t ExtraMallocSize(JSErrorNotes::Note* note) { return 0; }
+@@ -1195,6 +1202,29 @@
+                               report->tokenOffset());
+   }
+ 
++  // Canonical strings follow the aligned line buffer in the same allocation.
++  // The copy borrows that storage, so failure destruction frees it only once.
++  auto& diagnostic = copy->parserDiagnostic;
++  const auto& original = report->parserDiagnostic;
++  diagnostic.origin = original.origin;
++  diagnostic.actualToken = original.actualToken;
++  diagnostic.expectedToken = original.expectedToken;
++  diagnostic.escaped = original.escaped;
++  diagnostic.inModule = original.inModule;
++  diagnostic.callSyntaxAllowed = original.callSyntaxAllowed;
++  if (original.word) {
++    const size_t bytes = strlen(original.word) + 1;
++    diagnostic.word = reinterpret_cast<const char*>(*cursor);
++    js_memcpy(*cursor, original.word, bytes);
++    *cursor += bytes;
++  }
++  if (original.identifier) {
++    const size_t bytes = strlen(original.identifier) + 1;
++    diagnostic.identifier = reinterpret_cast<const char*>(*cursor);
++    js_memcpy(*cursor, original.identifier, bytes);
++    *cursor += bytes;
++  }
++
+   /* Copy non-pointer members. */
+   copy->isMuted = report->isMuted;
+   copy->exnType = report->exnType;
+@@ -1229,6 +1259,7 @@
+    *   char array with characters for message_
+    *   char array with characters for filename
+    *   char16_t array with characters for linebuf (only for JSErrorReport)
++   *   char arrays for canonical parser word/identifier (only for JSErrorReport)
+    * Such layout together with the properties enforced by the following
+    * asserts does not need any extra alignment padding.
+    */
+--- a/js/src/vm/ErrorReporting.cpp
++++ b/js/src/vm/ErrorReporting.cpp
+@@ -70,6 +70,7 @@
+   err.lineno = metadata.lineNumber;
+   err.column = metadata.columnNumber;
+   err.isMuted = metadata.isMuted;
++  err.parserDiagnostic = std::move(metadata.parserDiagnostic);
+ 
+   if (UniqueTwoByteChars lineOfContext = std::move(metadata.lineOfContext)) {
+     err.initOwnedLinebuf(lineOfContext.release(), metadata.lineLength,
+@@ -99,6 +100,7 @@
+   err.lineno = metadata.lineNumber;
+   err.column = metadata.columnNumber;
+   err.isMuted = metadata.isMuted;
++  err.parserDiagnostic = std::move(metadata.parserDiagnostic);
+ 
+   if (UniqueTwoByteChars lineOfContext = std::move(metadata.lineOfContext)) {
+     err.initOwnedLinebuf(lineOfContext.release(), metadata.lineLength,
+--- a/js/src/vm/ErrorReporting.h
++++ b/js/src/vm/ErrorReporting.h
+@@ -30,6 +30,7 @@
+  * no offset (i.e. with respect to a script overall).
+  */
+ struct ErrorMetadata {
++  JS::ParserDiagnostic parserDiagnostic;
+   // The file/URL where the error occurred.
+   JS::ConstUTF8CharsZ filename;
+ 

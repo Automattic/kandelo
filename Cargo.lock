@@ -378,6 +378,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fork-instrument-capi"
+version = "0.1.0"
+dependencies = [
+ "fork-instrument",
+ "tempfile",
+ "wasm-encoder 0.247.0",
+ "wat",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -651,6 +661,20 @@ dependencies = [
  "sha2",
  "wasm-artifact",
  "wat",
+]
+
+[[package]]
+name = "kandelo-ffi-adapter"
+version = "0.1.0"
+dependencies = [
+ "fork-instrument",
+ "fork-instrument-capi",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wasm-artifact",
+ "wasm-encoder 0.247.0",
+ "wasm-posix-program-abi",
 ]
 
 [[package]]

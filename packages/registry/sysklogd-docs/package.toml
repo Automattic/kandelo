@@ -1,0 +1,27 @@
+kind = "program"
+name = "sysklogd-docs"
+version = "2.8.0"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `sysklogd` package (syslogd and syslog.conf).
+# The source, SHA-256 and version are the `sysklogd` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/troglobit/sysklogd/releases/download/v2.8.0/sysklogd-2.8.0.tar.gz"
+sha256 = "67f49c6b2e9d75ce15202db815112719f4af0db8901032f0c3a0cec1b9f65551"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/troglobit/sysklogd/blob/master/LICENSE"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/sysklogd-docs/build-sysklogd-docs.sh"
+
+[[outputs]]
+name = "sysklogd-docs"
+wasm = "sysklogd-docs.zip"
+fork_instrumentation = "disabled"

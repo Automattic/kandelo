@@ -317,7 +317,7 @@ pub fn host_handle_ref_count(h: i64) -> u32 {
 /// The set of flags that F_SETFL is allowed to modify (POSIX semantics).
 const SETFL_MODIFIABLE: u32 = O_APPEND | O_NONBLOCK;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileType {
     Regular,
     Directory,
@@ -1663,6 +1663,9 @@ impl OfdTable {
                 !ofd.exec_close_quarantined,
                 "cannot retire uncertain executable OFD without proof"
             );
+            if ofd.shared_state.0.epoll_identity.get().is_some() {
+                crate::epoll::invalidate_authority(ofd.ofd_id);
+            }
             ofd.ref_count -= 1;
             ofd.ref_count == 0
         } else {

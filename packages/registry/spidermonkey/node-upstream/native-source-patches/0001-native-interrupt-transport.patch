@@ -1,0 +1,93 @@
+--- a/deps/v8/src/execution/isolate.cc
++++ b/deps/v8/src/execution/isolate.cc
+@@ -2341,29 +2341,6 @@
+   if (try_catch_handler()) try_catch_handler()->ResetInternal();
+ }
+ 
+-void Isolate::RequestInterrupt(InterruptCallback callback, void* data) {
+-  ExecutionAccess access(this);
+-  api_interrupts_queue_.push(InterruptEntry(callback, data));
+-  stack_guard()->RequestApiInterrupt();
+-}
+-
+-void Isolate::InvokeApiInterruptCallbacks() {
+-  RCS_SCOPE(this, RuntimeCallCounterId::kInvokeApiInterruptCallbacks);
+-  // Note: callback below should be called outside of execution access lock.
+-  while (true) {
+-    InterruptEntry entry;
+-    {
+-      ExecutionAccess access(this);
+-      if (api_interrupts_queue_.empty()) return;
+-      entry = api_interrupts_queue_.front();
+-      api_interrupts_queue_.pop();
+-    }
+-    VMState<EXTERNAL> state(this);
+-    HandleScope handle_scope(this);
+-    entry.first(reinterpret_cast<v8::Isolate*>(this), entry.second);
+-  }
+-}
+-
+ void Isolate::RequestInvalidateNoProfilingProtector() {
+   // This request might be triggered from arbitrary thread but protector
+   // invalidation must happen on the main thread, so use Api interrupt
+--- /dev/null
++++ b/deps/v8/src/execution/kandelo-native-interrupts.inc
+@@ -0,0 +1,28 @@
++// Copyright 2012 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Complete queue methods relocated from isolate.cc for the SpiderMonkey
++// adapter. V8 CPU-profiler/runtime-counter scopes are not imported.
++void Isolate::RequestInterrupt(InterruptCallback callback, void* data) {
++  std::lock_guard access(native_interrupt_mutex_);
++  CHECK(native_interrupts_accepting_);
++  api_interrupts_queue_.push(InterruptEntry(callback, data));
++  JS_RequestInterruptCallback(native_interrupt_context_);
++}
++
++void Isolate::InvokeApiInterruptCallbacks() {
++  // Note: callback below should be called outside of execution access lock.
++  while (true) {
++    InterruptEntry entry;
++    {
++      std::lock_guard access(native_interrupt_mutex_);
++      if (api_interrupts_queue_.empty()) return;
++      entry = api_interrupts_queue_.front();
++      api_interrupts_queue_.pop();
++    }
++    HandleScope handle_scope(this);
++    entry.first(this, entry.second);
++  }
++}
++
+--- a/src/env.cc
++++ b/src/env.cc
+@@ -1211,14 +1211,9 @@
+   Local<Context> ctx = context();
+ 
+   if (Environment** interrupt_data = interrupt_data_.load()) {
+-    // There are pending RequestInterrupt() callbacks. Tell them not to run,
+-    // then force V8 to run interrupts by compiling and running an empty script
+-    // so as not to leak memory.
++    // Retire the engine-owned delivery cookie without running JavaScript.
++    // FreeEnvironment's no-JavaScript scope remains in force during delivery.
+     *interrupt_data = nullptr;
+-
+-    Isolate::AllowJavascriptExecutionScope allow_js_here(isolate());
+-    TryCatch try_catch(isolate());
+-    Context::Scope context_scope(ctx);
+ 
+ #ifdef DEBUG
+     bool consistency_check = false;
+@@ -1227,9 +1222,7 @@
+     }, &consistency_check);
+ #endif
+ 
+-    Local<Script> script;
+-    if (Script::Compile(ctx, String::Empty(isolate())).ToLocal(&script))
+-      USE(script->Run(ctx));
++    isolate()->DrainNativeInterruptsForCleanup();
+ 
+     DCHECK(consistency_check);
+   }

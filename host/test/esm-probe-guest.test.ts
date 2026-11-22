@@ -2,9 +2,11 @@
  * Probe: does spidermonkey-node support REAL native ESM (minified import + export,
  * multi-module graph) — via dynamic import() and via a .mjs main? Settles whether
  * "spidermonkey-node has no real ESM" is accurate. This is the durable regression
- * guard for the three platform patches it exercises: 0015 (bare-specifier
- * resolution), 0016 (import.meta population), and 0017 (`using` / Explicit
- * Resource Management support).
+ * guard for 0015 (bare-specifier resolution) and 0016 (import.meta population),
+ * and later cases cover require(esm) and its cycles (0018, 0019), `vm` (0020)
+ * and zstd (0021). The `using` / Explicit Resource Management case needs no
+ * patch: ESR 153 enables the proposal by default, so 0017 was dropped and the
+ * case now guards that default.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

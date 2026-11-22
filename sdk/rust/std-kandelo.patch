@@ -62,3 +62,13 @@
 +            // A Kandelo frame can own symbols even when its PC is unavailable.
 +            if frame.frame.ip().is_null() && !cfg!(target_os = "kandelo") {
                  continue;
+--- a/std/src/sys/personality/mod.rs
++++ b/std/src/sys/personality/mod.rs
+@@ -24,6 +24,7 @@
+         // personality function that is always used.  Hence this is just an
+         // aborting stub.
+         #[lang = "eh_personality"]
++        #[cfg_attr(target_os = "kandelo", linkage = "weak")]
+         fn rust_eh_personality() {
+             core::intrinsics::abort()
+         }

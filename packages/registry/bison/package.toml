@@ -1,0 +1,30 @@
+kind = "program"
+name = "bison"
+version = "3.8.2"
+kernel_abi = 56
+depends_on = []
+
+# GNU Bison. It runs the guest's /usr/bin/m4 to expand its skeletons, which
+# bison-data.zip installs under /usr/share/bison. /usr/bin/yacc stays Berkeley
+# yacc, so bison's yacc wrapper and liby are not built.
+[source]
+url = "https://ftpmirror.gnu.org/bison/bison-3.8.2.tar.xz"
+sha256 = "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/bison.git/tree/COPYING?h=v3.8.2"
+
+[build]
+script_path = "packages/registry/bison/build-bison.sh"
+
+[[outputs]]
+name = "bison"
+wasm = "bison.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "bison-data"
+wasm = "bison-data.zip"
+fork_instrumentation = "disabled"

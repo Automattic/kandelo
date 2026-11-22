@@ -61,7 +61,7 @@ on reboot. Browser storage is not a backup.
 
 ::: warning Experimental persistence
 Saved computers from this release will not work in the next release.
-Export important files before updating Kandelo. Transactional software
+[Export important files](./moving-files.md) before updating Kandelo. Transactional software
 upgrades are not implemented yet.
 :::
 
@@ -82,6 +82,21 @@ The base shell also has PHP CLI and Composer. Each command downloads its
 deferred executable or archive on first use. Composer enables its required
 PHP extensions for its own invocation; ordinary `php` keeps its usual
 configuration, and these shell commands do not install PHP-FPM.
+
+## Move files into and out of Kandelo
+
+Drop files or folders onto a running computer, or use **Send files**. The
+fallback handler saves them to `~/Downloads/` inside Kandelo.
+
+To copy a file back to your device, run this in the Kandelo terminal:
+
+```sh
+kandelo-publish ./report.pdf
+```
+
+Click **Save** on the output card that appears. See
+[Move files into and out of Kandelo](./moving-files.md) for directories,
+streaming exports, command options, and agent instructions.
 
 ## Direct VFS Links
 
@@ -136,7 +151,7 @@ Doom, Quake and Freeciv offer game activities in the network panel. Doom's
 waiting room shows joined players; the host can press Space to start early
 or Esc to quit. Quake's own multiplayer menus can also discover session
 peers. Freeciv's launcher uses a direct TCP connection to the session host
-rather than depending on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
+rather than depending on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/packages/registry/freeciv/README.md#multiplayer).
 These are LAN links, not arbitrary internet UDP access. The default connection setup
 uses STUN without a TURN relay, so some network layouts cannot connect.
 Current guest-session validation covers Chromium; Firefox/WebKit guest

@@ -1,0 +1,20 @@
+--- a/js/src/frontend/Parser.cpp
++++ b/js/src/frontend/Parser.cpp
+@@ -11461,6 +11461,17 @@
+     return true;
+   }
+   if (TokenKindIsKeyword(tt) || TokenKindIsReservedWordLiteral(tt)) {
++    // The same diagnostic covers a plain keyword in a binding pattern and an
++    // escaped keyword parsed as a Name. Preserve that actual lexical distinction
++    // for native embedders without changing this original rejection/position.
++    JS::ParserDiagnostic diagnostic;
++    if (anyChars.currentToken().pos.begin == offset &&
++        !fillParserTokenDiagnostic(anyChars.currentToken().type, false,
++            JS::ParserDiagnostic::Origin::UnexpectedToken, TokenKind::Limit,
++            &diagnostic)) {
++      return false;
++    }
++    ErrorReportMixin::AutoParserDiagnostic reporting(*this, diagnostic);
+     errorAt(offset, JSMSG_INVALID_ID, ReservedWordToCharZ(tt));
+     return false;
+   }

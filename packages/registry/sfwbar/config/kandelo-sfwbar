@@ -1,3 +1,23 @@
 #!/bin/sh
 # Sway supplies -b and WAYLAND_SOCKET; keep both for its supervised bar.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: kandelo-sfwbar [SFWBAR-OPTION]...
+
+Run the sfwbar panel with the Kandelo desktop's configuration.
+
+Run sfwbar(1) with the configuration file /etc/xdg/sfwbar/sfwbar.config,
+passing every argument to it. Sway, configured by
+/etc/xdg/sfwbar/sway.config, runs this command as its bar command, adding
+-b and the bar's ID, and gives it its Wayland connection in WAYLAND_SOCKET;
+both reach sfwbar.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'kandelo-sfwbar (Kandelo sfwbar) 1.0_beta17'; exit 0 ;;
+esac
 exec /usr/bin/sfwbar -f /etc/xdg/sfwbar/sfwbar.config "$@"

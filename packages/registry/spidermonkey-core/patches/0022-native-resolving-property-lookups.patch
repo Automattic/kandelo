@@ -1,0 +1,22 @@
+Keep raw own-slot lookup available to resolving definitions.
+
+The earlier native-interceptor guard must reject pure public/optimizing lookups
+that cannot call a handler, but NativeLookupOwnPropertyNoResolve is the engine's
+explicit raw-slot operation. It is used by NativeDefineProperty when a builtin
+constructor is installed with JSPROP_RESOLVING. Rejecting that internal lookup
+silently made intercepted global allocation return null without an exception.
+Public pure lookups retain CheckResolve/CheckMayResolve and still decline.
+This corrects our extension; it is not an upstream SpiderMonkey defect.
+
+--- a/js/src/vm/NativeObject-inl.h
++++ b/js/src/vm/NativeObject-inl.h
+@@ -735,7 +735,8 @@
+ static MOZ_ALWAYS_INLINE bool NativeLookupOwnPropertyInline(
+     JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
+     typename MaybeRooted<jsid, allowGC>::HandleType id, PropertyResult* propp) {
+-  if constexpr (allowGC == NoGC) {
++  if constexpr (allowGC == NoGC &&
++                resolveMode != LookupResolveMode::IgnoreResolve) {
+     if (!id.isEmbeddingPrivateName() &&
+         obj->getClass()->getNativePropertyInterceptors()) {
+       return false;

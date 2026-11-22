@@ -122,6 +122,15 @@ impl<'a> NativePipeline<'a> {
     /// failure may leave partial bytes; publication belongs to an atomic file
     /// wrapper. Repeated emission from this frozen plan is deterministic.
     pub fn emit<W: Write>(&mut self, output: &mut W) -> Result<EmitReport> {
+        self.emit_with_storage(output, &crate::artifact_io::TemporarySpoolStorage)
+    }
+
+    /// Keep section spools within this invocation's private storage owner.
+    pub fn emit_with_storage<W: Write>(
+        &mut self,
+        output: &mut W,
+        storage: &dyn crate::artifact_io::SpoolStorage,
+    ) -> Result<EmitReport> {
         if let Some(debug) = &mut self.debug {
             debug.reset()?;
         }
@@ -143,7 +152,7 @@ impl<'a> NativePipeline<'a> {
                 "native pipeline descriptor exceeds emission budget"
             );
         }
-        let report = emit_remapped(
+        let report = emit_remapped_with_storage(
             &self.scan,
             &mut emit::Emitter {
                 scan: &self.scan,
@@ -153,6 +162,7 @@ impl<'a> NativePipeline<'a> {
             },
             output,
             self.limits.emission,
+            storage,
         )?;
         for (name, data) in descriptors {
             let mut section = wasm_encoder::Module::new();

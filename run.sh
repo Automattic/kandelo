@@ -219,6 +219,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process_with_stdio
     kernel_dequeue_signal
     kernel_drain_wait_completions
+    kernel_entropy_read_cancel
+    kernel_entropy_read_step
     kernel_epoll_wait_finish
     kernel_epoll_wait_token
     kernel_exchange_activate
@@ -258,6 +260,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_get_socket_timeout_ms
     kernel_handle_channel
     kernel_handle_channel_record
+    kernel_handle_guest_io
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
@@ -298,6 +301,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_reap_exited_child
     kernel_remove_process
     kernel_reset_tcp_connection
+    kernel_rootfs_take_compaction_request
     kernel_set_current_tid
     kernel_set_cwd
     kernel_set_main_channel_addr
@@ -580,9 +584,13 @@ bootstrap_target() {
         return 1
     }
     local_build_events_env
+    # Package builds share cache keys with `./run.sh setup`, so they must see
+    # its PATH: the declared tool set, without tools that only reach the dev
+    # shell as another package's dependencies (scripts/setup.sh).
     bash "$REPO_ROOT/scripts/dev-shell.sh" \
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
-        "$xtask" bootstrap "$target" "$@"
+        bash -c 'export PATH="$KANDELO_DEV_SHELL_TOOL_PATH" && exec "$@"' \
+        kandelo-bootstrap "$xtask" bootstrap "$target" "$@"
 }
 
 # local_build_events_env: set LOCAL_BUILD_EVENTS_ENV to an `env` prefix that
@@ -2753,9 +2761,11 @@ cmd_partial() {
         exit 1
     fi
     local_build_events_env
+    # The declared tool set, as for setup and bootstrap_target.
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
-        bash -c 'host_target="$(rustc -vV | sed -n "s/^host: //p")" &&
+        bash -c 'export PATH="$KANDELO_DEV_SHELL_TOOL_PATH" &&
+            host_target="$(rustc -vV | sed -n "s/^host: //p")" &&
             exec cargo run -q -p xtask --target "$host_target" -- partial-image "$@"' \
         partial "$@"
 }

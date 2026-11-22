@@ -1,0 +1,36 @@
+--- a/common.gypi
++++ b/common.gypi
+@@ -588,11 +588,11 @@
+           'NOMINMAX',
+         ],
+       }],
+-      [ 'OS in "linux freebsd openbsd solaris aix os400 openharmony zos"', {
++      [ 'OS in "linux freebsd openbsd solaris aix os400 openharmony zos kandelo"', {
+         'cflags': [ '-pthread' ],
+         'ldflags': [ '-pthread' ],
+       }],
+-      [ 'OS in "linux freebsd openbsd solaris android aix os400 cloudabi openharmony zos"', {
++      [ 'OS in "linux freebsd openbsd solaris android aix os400 cloudabi openharmony zos kandelo"', {
+         'cflags': [ '-Wall', '-Wextra', '-Wno-unused-parameter', ],
+         'cflags_cc': [
+           '-fno-rtti',
+--- a/deps/ngtcp2/ngtcp2.gyp
++++ b/deps/ngtcp2/ngtcp2.gyp
+@@ -158,7 +158,7 @@
+             },
+           },
+         }],
+-        ['OS=="linux" or OS=="android" or OS=="openharmony"', {
++        ['OS=="linux" or OS=="android" or OS=="openharmony" or OS=="kandelo"', {
+           'defines': [
+             'HAVE_ARPA_INET_H',
+             'HAVE_NETINET_IN_H',
+@@ -228,7 +228,7 @@
+         ['OS!="win"', {
+           'defines': ['HAVE_UNISTD_H']
+         }],
+-        ['OS=="linux" or OS=="android" or OS=="openharmony"', {
++        ['OS=="linux" or OS=="android" or OS=="openharmony" or OS=="kandelo"', {
+           'defines': [
+             'HAVE_ARPA_INET_H',
+             'HAVE_NETINET_IN_H',

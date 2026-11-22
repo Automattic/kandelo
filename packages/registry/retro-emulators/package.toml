@@ -27,7 +27,7 @@ kernel_abi = 45
 # build script runs.
 depends_on = [
   "zlib@1.3.1",
-  "libcxx@21.1.7",
+  "libcxx@23.1.3",
   "genesis-plus-gx-source@fa4dca561e08d5be9077419f7b255e1da213ed21",
   "snes9x-source@185488cd83aaf274752a742c94d45561cbecb7af",
   "retro-rom-240p-md@1.21",
@@ -52,7 +52,7 @@ script_path = "packages/registry/retro-emulators/build-retro-emulators.sh"
 
 [[host_tools]]
 name = "make"
-version_constraint = ">=3.80"
+version_constraint = ">=3.81"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

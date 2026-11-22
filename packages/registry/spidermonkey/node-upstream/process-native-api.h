@@ -56,7 +56,7 @@ template<class T> T* FromJSObject(Local<Object> object) {
 }
 }
 namespace kandelo_process_methods_adapter {
-using namespace kandelo_node_codec_api;
+using namespace v8;
 using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 using IsolateInitializer=void(*)(kandelo_node_codec_impl::IsolateData*,Local<ObjectTemplate>);
 extern Initializer initializer;
@@ -69,11 +69,9 @@ extern IsolateInitializer isolate_initializer;
 #define NODE_EXTERN_PRIVATE
 #endif
 #include "shell/node-upstream/codecs-upstream/process-support/async-provider-metadata.h"
-#define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/process-support/debug_utils-inl.h"
 #undef node
-#undef v8
 
 #define __POSIX__ 1
 #define THROW_IF_INSUFFICIENT_PERMISSIONS(env,scope,path) \

@@ -1,3 +1,4 @@
+import { ConnectedNamesFile } from "./networking/connected-names-file";
 import { ProcessGenerationObservations } from "./process-generation-observation";
 import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
@@ -97,6 +98,7 @@ import {
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
+  createThreadWorkerReadiness,
   prepareProcessWorkerAbsence,
   sealProcessWorkerAbsence,
   processWorkerRetirementProven,
@@ -110,6 +112,8 @@ import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
+  retireForkReplayWorker,
+  waitForForkReplayRetirement,
 } from "./fork-replay-gate";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
@@ -730,6 +734,7 @@ function acknowledgeMainFramebufferRelease(requestId: number): void {
 }
 
 function terminatePoisonedKernelWorker(error: Error): void {
+  connectedNamesFile?.close(); connectedNamesFile = undefined;
   if (kernelFatalReported) return;
   kernelFatalReported = true;
   const detail = formatError(error);
@@ -925,6 +930,7 @@ async function createFreshProcessMemory(
 // ── Init ──
 
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
+let connectedNamesFile: ConnectedNamesFile | undefined;
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   observeProcessGenerations = msg.observeProcessGenerations === true;
@@ -1454,6 +1460,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
 
   if (msg.experimentalResizablePersistenceName !== undefined) installBrowserCa();
+
+  connectedNamesFile = new ConnectedNamesFile(kernelWorker, io.network, (error) => {
+    post({ type: "host_diagnostic", pid: 0, source: "Connected names", message: `Connected-name publication failed: ${String(error)}` });
+  });
+  await connectedNamesFile.start();
 
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
@@ -2606,6 +2617,7 @@ async function handleOrdinaryFork(
       launchedWorker,
       childPid,
       () => processes.get(childPid)?.worker === launchedWorker,
+      true,
     );
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = await retryKernelEntryResult(() =>
@@ -2650,21 +2662,42 @@ async function handleOrdinaryFork(
       return [];
     }
     await forkReplay.waitUntilReady();
+    forkReplay.throwIfCancelled();
     if (processes.get(childPid)?.worker !== launchedWorker) {
       throw new Error(
         `Fork child ${childPid} changed generation before replay commit`,
       );
     }
-    if (!await retryKernelEntryResult(
+    const mayLaunch = await retryKernelEntryResult(
       () => kernelWorker.shouldLaunchPendingChild(childPid),
-    )) {
-      throw new Error(`Fork child ${childPid} exited before replay commit`);
+    );
+    forkReplay.throwIfCancelled();
+    if (!mayLaunch) {
+      // Rust may deliver a fatal signal after reconstruction but before commit.
+      // Exit retains the waitable child and owns exact-generation retirement.
+      childForkHostImports?.close();
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(childPid),
+      );
+      forkReplay.throwIfCancelled();
+      if (signal < 0) {
+        throw new Error(`Cannot confirm exited fork child ${childPid} before replay commit`);
+      }
+      lifecycleTeardownStarted = true;
+      await awaitFinalizedProcessTeardown(
+        childPid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        launchedWorker,
+        signal > 0 ? signal : undefined,
+      );
+      return [];
     }
     // WHY: keep the child blocked inside its inherited fork import until the
     // exact fresh Worker generation proves reconstruction completed. onFork
     // resolves only after the shared gate is committed.
     forkReplay.commit();
   } catch (error) {
+    if (await waitForForkReplayRetirement(forkReplay, error)) return [];
     if (lifecycleTeardownStarted) throw error;
     const mainNeverCreated = childGeneration
       ? sealProcessWorkerAbsence(childGeneration)
@@ -3566,6 +3599,7 @@ async function handleClone(
       memory,
       kernelWorker.isExecHandoffActive(pid),
     );
+  const readiness = createThreadWorkerReadiness();
   let reclaimed = false;
   const reclaimThread = async () => {
     if (reclaimed) return;
@@ -3591,6 +3625,7 @@ async function handleClone(
     removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
   };
   const terminateThreadEntry = (): Promise<void> => {
+    readiness.retire();
     if (!threadEntry.termination) {
       // Seal before any await: a delayed SIGCONT must never start this slot
       // after absence allowed its channel and allocator page to be reused.
@@ -3630,7 +3665,9 @@ async function handleClone(
 
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "exec_retired" && m.tid === tid) {
+    if (m.type === "thread_ready" && m.pid === pid && m.tid === tid) {
+      readiness.ready();
+    } else if (m.type === "exec_retired" && m.tid === tid) {
       threadEntry.execRetirement.settle();
     } else if (m.type === "thread_exit") {
       if (!isCurrentThreadGeneration()) {
@@ -3701,6 +3738,10 @@ async function handleClone(
     void terminateThreadEntry();
     throw new Error(`Process ${pid} changed generation before thread Worker launch`);
   }
+  // Construction alone does not mean this asynchronous Worker can run yet.
+  // Its exact readiness or retirement settles the existing clone transaction;
+  // no timeout becomes success and no terminal fence is fabricated.
+  await readiness.promise;
 
 }
 
@@ -3844,6 +3885,12 @@ async function finishProcessExit(
     ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
+  if (retireForkReplayWorker(expectedWorker, teardown)) {
+    // Replay cancellation can wake guest glue before the queued Rust
+    // retirement wake sets its marker. Exit already owns this exact child;
+    // keep its fence listeners active without diagnosing a second crash.
+    intentionallyTerminated.add(expectedWorker);
+  }
 
   post({
     type: "exit",
@@ -4561,7 +4608,7 @@ async function performDestroy() {
   try {
     closeKernelRealmStorage([
       () => framebufferMirrors.clear(),
-      () => remoteSegmentRuntime.close(),
+      () => { connectedNamesFile?.close(); connectedNamesFile = undefined; remoteSegmentRuntime.close(); },
       () => { pcmMirror?.close(); pcmMirror = null; },
       () => { pcmAudioActivity?.stop(); pcmAudioActivity = null; },
       () => { pcmConnection?.close(); pcmConnection = null; },
@@ -4612,12 +4659,17 @@ async function handleDestroy(
 ) {
   try {
     initReady = false;
+    connectedNamesFile?.close(); connectedNamesFile = undefined;
     // WHY: browser message and syscall callbacks overlap whenever an async
     // handler yields. The shared gate closes admission synchronously, drains
     // every creator already in flight, and runs this terminal sweep only once.
     // Browser main still terminates this whole worker realm on timeout.
     const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
-    processMemoryFactory?.dispose();
+    // Carry the gate's terminal refusal through pending allocation rollback;
+    // genuine construction or worker-retirement failures keep their diagnostics.
+    processMemoryFactory?.dispose(
+      processMemoryCreators.closedAdmissionCancellation("process memory construction"),
+    );
     deferredByteSpool?.cancelTransfers();
     const result = await destroy;
     respond(msg.requestId, result);
@@ -4828,13 +4880,14 @@ const sw = globalThis as unknown as {
 
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
-  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError, () => connectedNamesFile!.ready())) return;
   switch (msg.type) {
     case "init":
       void processMemoryCreators.run("kernel initialization", () =>
         storageCloseLedger.run(() => handleInit(msg))).catch((err) => {
         if (err instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(err);
         const error = formatError(err);
+        connectedNamesFile?.close(); connectedNamesFile = undefined;
         remoteSegmentRuntime.close();
         initReady = false;
         initFailure = error;

@@ -1,0 +1,18 @@
+[package]
+name = "fork-instrument-capi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Owned C boundary for in-process guest side-module instrumentation"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+fork-instrument = { path = "../fork-instrument" }
+
+[dev-dependencies]
+tempfile = "3"
+wat = "1"
+wasm-encoder = "0.247"

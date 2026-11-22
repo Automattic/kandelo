@@ -1464,7 +1464,10 @@ describe("CentralizedKernelWorker Process Management", () => {
 
   it("does not erase replacement clear-TID metadata from a stale clone completion", async () => {
     const pid = 126;
-    const tid = 79;
+    // Rust task IDs are monotonic identities within a kernel instance, so the
+    // replacement image's clone receives a new TID, never the stale one.
+    const oldTid = 79;
+    const tid = 80;
     const oldCtidPtr = 0x00040000;
     const newCtidPtr = 0x00050000;
     const oldMemory = new WebAssembly.Memory({
@@ -1479,7 +1482,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     });
     const channelOffset = WASM_PAGE_SIZE;
     const threadChannelOffset = 2 * WASM_PAGE_SIZE;
-    new DataView(oldMemory.buffer).setInt32(oldCtidPtr, tid, true);
+    new DataView(oldMemory.buffer).setInt32(oldCtidPtr, oldTid, true);
     new DataView(newMemory.buffer).setInt32(newCtidPtr, tid, true);
     let resolveClone!: () => void;
     let cloneCount = 0;
@@ -1498,17 +1501,28 @@ describe("CentralizedKernelWorker Process Management", () => {
       return Promise.resolve();
     });
     let kernelMemory!: WebAssembly.Memory;
+    let cloneDispatches = 0;
     const handleChannel = vi.fn((rawOffset: number | bigint) => {
       const view = new DataView(
         kernelMemory.buffer,
         Number(rawOffset),
         CH_TOTAL_SIZE,
       );
-      view.setBigInt64(CH_RETURN, BigInt(tid), true);
+      cloneDispatches++;
+      view.setBigInt64(
+        CH_RETURN,
+        BigInt(cloneDispatches === 1 ? oldTid : tid),
+        true,
+      );
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => BigInt(newCtidPtr));
+    // Exec already removed the old image's unlaunched task (ESRCH); only the
+    // replacement thread still owns clear-TID metadata.
+    const threadExit = vi.fn(
+      (_pid: number, exitingTid: number, _threadRan: number) =>
+        exitingTid === oldTid ? -3n : BigInt(newCtidPtr),
+    );
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1559,13 +1573,17 @@ describe("CentralizedKernelWorker Process Management", () => {
     resolveClone();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+    // The stale completion rolls back only its own unlaunched task.
+    expect(threadExit).toHaveBeenCalledExactlyOnceWith(pid, oldTid, 0);
     harness.worker.finalizeThreadExit(
       pid,
       tid,
       threadChannelOffset,
     );
-    expect(threadExit).toHaveBeenCalledTimes(1);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
+    expect(threadExit).toHaveBeenCalledTimes(2);
+    expect(threadExit).toHaveBeenLastCalledWith(pid, tid, 1);
+    expect(threadExit.mock.calls.filter(([, exitingTid]) => exitingTid === tid))
+      .toEqual([[pid, tid, 1]]);
     expect(
       Atomics.load(
         new Int32Array(oldMemory.buffer, channelOffset),

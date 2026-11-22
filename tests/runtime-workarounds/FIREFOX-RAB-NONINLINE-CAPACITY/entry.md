@@ -17,14 +17,24 @@ engine's inline-to-heap path.
 
 ## Workaround and its cost
 
-Patch 0040 allocates the full maximum capacity with the engine's zero-filling
+On the 140 baseline, patch 0040 allocated the full maximum capacity with the engine's zero-filling
 allocator, copies the current bytes and keeps the existing engine ownership,
 view notification and accounting. This preserves growth and shrinking semantics
 and applies to all callers of the engine API. The original Node JavaScript and
-native codec algorithms are unchanged. Memory use matches the original inline
-buffer's maximum capacity; this introduces no new reservation policy.
+native codec algorithms were unchanged. Memory use matched the original inline
+buffer's maximum capacity; this introduced no new reservation policy. On the
+153 baseline, the original upstream helper now supplies this behavior, as
+described below; patch 0040 only marks the tracked case.
 
 ## Evidence
+
+The authenticated 153.7.0esr source now calls its original
+`NewCopiedBufferContents(cx, buffer, nbytes)` with `nbytes = maxByteLength()`.
+That helper allocates the requested capacity, copies current bytes, and zeroes
+the remaining bytes. Patch 0040 now retains that upstream implementation and
+only marks the tracked case; it no longer supplies a replacement allocation and
+copy. This is source evidence only. The classification stays `suspected`, and
+the tag remains until the standalone and guest controls run on the new baseline.
 
 The named revision-33 Kandelo engine traps in `__libc_free` through
 `ArrayBufferObject::releaseData` after the decoder's resizable-buffer control.

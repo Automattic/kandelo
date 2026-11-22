@@ -13,7 +13,7 @@ depends_on = [
   "pixman@0.46.4",
   "tllist@1.1.0",
   "utf8proc@2.9.0",
-  "libwayland@1.24.0",
+  "libwayland@1.26.0",
   "libxkbcommon@1.13.2",
   "libffi@0.1.0",
   "libxml2@2.13.8",

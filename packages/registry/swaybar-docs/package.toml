@@ -1,0 +1,25 @@
+kind = "program"
+name = "swaybar-docs"
+version = "1.12"
+kernel_abi = 56
+depends_on = ["sway@1.12", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for swaybar, which sway ships without a page of its own (sway-bar(5) documents its configuration), generated from what each prints for --help and
+# --version while running inside Kandelo. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/sway/blob/1.12/LICENSE"
+
+[build]
+script_path = "packages/registry/swaybar-docs/build-swaybar-docs.sh"
+
+[[outputs]]
+name = "swaybar-docs"
+wasm = "swaybar-docs.zip"
+fork_instrumentation = "disabled"

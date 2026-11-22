@@ -1,0 +1,11 @@
+script_path = "packages/registry/foot-docs/build-foot-docs.sh"
+inputs = [
+  "packages/registry/foot-docs/build-foot-docs.sh",
+  "packages/registry/foot/build-foot.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

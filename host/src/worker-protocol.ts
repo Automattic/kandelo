@@ -180,6 +180,7 @@ export type WorkerToHostMessage =
   | ForkReplayReadyMessage
   | WorkerExitMessage
   | ThreadExitMessage
+  | ThreadReadyMessage
   | WorkerMemoryQuiescentMessage
   | WorkerExecRetiredMessage
   | WorkerErrorMessage
@@ -202,6 +203,13 @@ export interface WorkerExitMessage {
   type: "exit";
   pid: number;
   status: number;
+}
+
+/** Internal startup acknowledgement; never a memory-retirement fence. */
+export interface ThreadReadyMessage {
+  type: "thread_ready";
+  pid: number;
+  tid: number;
 }
 
 export interface ThreadExitMessage {

@@ -1,10 +1,21 @@
 script_path = "packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
 inputs = [
   "packages/registry/spidermonkey-node/build-spidermonkey-node.sh",
+  "packages/registry/spidermonkey-node/check-engine-sdk.py",
+  "packages/registry/spidermonkey-node/check-native-profile.py",
+  "packages/registry/spidermonkey-node/prepare-native-providers.py",
+  "packages/registry/spidermonkey-node/prepare-native-amaro.py",
+  "packages/registry/spidermonkey-node/node_amaro.cc",
+  "packages/registry/spidermonkey-node/prepare-native-undici.py",
+  "packages/registry/spidermonkey-node/node_undici_llhttp.cc",
+  "packages/registry/spidermonkey-node/patches",
+  "packages/registry/spidermonkey/node-upstream/native-source-patches",
+  "scripts/package-build-roots.sh",
   "sdk/activate.sh",
+  "sdk/cmake",
   "scripts/install-local-binary.sh",
   "scripts/wasm-artifact-guards.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 6
+revision = 22

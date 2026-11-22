@@ -1,0 +1,11 @@
+script_path = "packages/registry/ncurses-docs/build-ncurses-docs.sh"
+inputs = [
+  "packages/registry/ncurses-docs/build-ncurses-docs.sh",
+  "packages/registry/ncurses/build-ncurses.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

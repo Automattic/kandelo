@@ -1,0 +1,46 @@
+kind = "program"
+name = "cmake-docs"
+version = "4.5.0"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "sphinx-build"
+version_constraint = ">=7.2"
+install_hints = { darwin = "provided by flake.nix (pkgs.python3Packages.sphinx); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3Packages.sphinx); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.81"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+# Upstream manual pages for the `cmake` package: cmake(1), ctest(1),
+# cpack(1) and the reference manuals in section 7, built from CMake's
+# reStructuredText with Sphinx as upstream's build does.
+# The source, SHA-256 and version are the `cmake` package's own, so the
+# pages describe the release that built the installed programs;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/Kitware/CMake/releases/download/v4.5.0/cmake-4.5.0.tar.gz"
+sha256 = "424352d6133e8455e020da787008e8dc67abb18820af3532572ab35657e49213"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://gitlab.kitware.com/cmake/cmake/-/blob/v4.5.0/LICENSE.rst"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/cmake-docs/build-cmake-docs.sh"
+
+[[outputs]]
+name = "cmake-docs"
+wasm = "cmake-docs.zip"
+fork_instrumentation = "disabled"

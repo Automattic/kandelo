@@ -1,0 +1,17 @@
+# Link Kandelo native loading through its existing SDK loader.
+# Original Node registration/loading algorithms remain unchanged.
+--- a/node.gyp
++++ b/node.gyp
+@@ -634,6 +634,12 @@
+       'msvs_disabled_warnings!': [4244],
+ 
+       'conditions': [
++        [ 'OS=="kandelo"', {
++          # Select the SDK's real POSIX dynamic loader instead of musl's weak
++          # unsupported-loader stubs. This covers internal libraries and FFI;
++          # it does not enable Node's deferred .node addon execution.
++          'libraries': [ '-ldl' ],
++        }],
+         [ 'node_shared_hdr_histogram=="false"', {
+           'dependencies': [
+             'deps/histogram/histogram.gyp:histogram',

@@ -1,0 +1,288 @@
+--- a/js/src/vm/EnvironmentObject.cpp
++++ b/js/src/vm/EnvironmentObject.cpp
+@@ -3854,6 +3854,7 @@
+     // ES 15.1.11 step 5.b
+     redeclKind = prop->writable() ? "let" : "const";
+   } else if (varObj->is<NativeObject>() &&
++             !varObj->getClass()->getNativePropertyInterceptors() &&
+              (prop = varObj->as<NativeObject>().lookup(cx, name))) {
+     // Faster path for ES 15.1.11 step 5.c-d when the shape can be found
+     // without going through a resolve hook.
+@@ -3876,10 +3877,17 @@
+         // |varObj| is a global object, the NativeObject::lookup call above
+         // ensures this wasn't an existing property (that might require JIT/IC
+         // invalidation) but a new property defined by a resolve hook.
+-        MOZ_ASSERT_IF(varObj->is<GlobalObject>(),
++        if (varObj->is<GlobalObject>() &&
++            varObj->getClass()->getNativePropertyInterceptors()) {
++          // A virtual descriptor need not have a real slot. Retain the
++          // original invalidation when an actual slot is shadowed as well.
++          shadowedExistingProp = varObj->as<NativeObject>().lookup(cx, name);
++        } else {
++          MOZ_ASSERT_IF(varObj->is<GlobalObject>(),
+                       varObj->getClass()->getResolve());
+-        MOZ_ASSERT_IF(varObj->is<GlobalObject>(),
++          MOZ_ASSERT_IF(varObj->is<GlobalObject>(),
+                       varObj->as<GlobalObject>().containsPure(name));
++        }
+       }
+     }
+   }
+@@ -3930,6 +3938,12 @@
+ [[nodiscard]] static bool CheckCanDeclareGlobalBinding(
+     JSContext* cx, Handle<GlobalObject*> global, Handle<PropertyName*> name,
+     bool isFunction) {
++  if (const auto* ops = global->getClass()->getNativePropertyInterceptors();
++      ops && ops->declareGlobal) {
++    // The embedding validates and completes these declarations together.
++    // Querying here would duplicate observable interceptor calls.
++    return true;
++  }
+   RootedId id(cx, NameToId(name));
+   Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
+   if (!GetOwnPropertyDescriptor(cx, global, id, &desc)) {
+@@ -3996,6 +4010,17 @@
+ 
+     switch (bi.kind()) {
+       case BindingKind::Var: {
++        if (varObj->is<GlobalObject>()) {
++          if (const auto* ops = varObj->getClass()->getNativePropertyInterceptors();
++              ops && ops->declareGlobal) {
++            id = NameToId(name);
++            if (!ops->declareGlobal(cx, varObj, id, UndefinedHandleValue,
++                                    attrs, true, script->isForEval())) {
++              return false;
++            }
++            break;
++          }
++        }
+         PropertyResult prop;
+         if (!LookupProperty(cx, varObj, name, &obj2, &prop)) {
+           return false;
+@@ -4070,6 +4095,21 @@
+       return false;
+     }
+     rval = ObjectValue(*clone);
++
++    if (varObj->is<GlobalObject>()) {
++      if (const auto* ops = varObj->getClass()->getNativePropertyInterceptors();
++          ops && ops->declareGlobal) {
++        id = NameToId(name);
++        unsigned attrs = script->isForEval()
++                             ? JSPROP_ENUMERATE
++                             : JSPROP_ENUMERATE | JSPROP_PERMANENT;
++        if (!ops->declareGlobal(cx, varObj, id, rval, attrs, false,
++                                script->isForEval())) {
++          return false;
++        }
++        continue;
++      }
++    }
+ 
+     PropertyResult prop;
+     if (!LookupProperty(cx, varObj, name, &pobj, &prop)) {
+--- a/js/src/vm/Interpreter-inl.h
++++ b/js/src/vm/Interpreter-inl.h
+@@ -92,7 +92,16 @@
+   }
+ 
+   /* Take the slow path if shape was not found in a native object. */
+-  if (!receiver->is<NativeObject>() || !holder->is<NativeObject>() ||
++  if (prop.isNativeInterceptorProperty()) {
++    RootedId id(cx, NameToId(name));
++    if constexpr (mode == GetNameMode::Normal) {
++      if (!GetNameBoundInEnvironment(cx, receiver, id, vp)) {
++        return false;
++      }
++    } else if (!GetProperty(cx, receiver, receiver, id, vp)) {
++      return false;
++    }
++  } else if (!receiver->is<NativeObject>() || !holder->is<NativeObject>() ||
+       (receiver->is<WithEnvironmentObject>() &&
+        receiver->as<WithEnvironmentObject>().supportUnscopables())) {
+     Rooted<jsid> id(cx, NameToId(name));
+--- a/js/src/vm/JSObject.cpp
++++ b/js/src/vm/JSObject.cpp
+@@ -1159,6 +1159,18 @@
+   RootedId id(cx, NameToId(name));
+ 
+   for (RootedObject env(cx, envChain); env; env = env->enclosingEnvironment()) {
++    // Global interceptor reads can find inherited sandbox values even when
++    // their own-property query declines. Read once, with the engine's existing
++    // NameLookup failure behavior, after the lexical environments were checked.
++    if (env->is<GlobalObject>()) {
++      if (const auto* ops = env->getClass()->getNativePropertyInterceptors();
++          ops && ops->get) {
++        objp.set(env);
++        pobjp.set(env);
++        propp->setNativeInterceptorProperty();
++        return true;
++      }
++    }
+     if (!LookupProperty(cx, env, id, pobjp, propp)) {
+       return false;
+     }
+--- a/js/src/vm/NativeObject-inl.h
++++ b/js/src/vm/NativeObject-inl.h
+@@ -735,6 +735,12 @@
+ static MOZ_ALWAYS_INLINE bool NativeLookupOwnPropertyInline(
+     JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
+     typename MaybeRooted<jsid, allowGC>::HandleType id, PropertyResult* propp) {
++  if constexpr (allowGC == NoGC) {
++    if (!id.isEmbeddingPrivateName() &&
++        obj->getClass()->getNativePropertyInterceptors()) {
++      return false;
++    }
++  }
+   // Native objects should should avoid `lookupProperty` hooks, and those that
+   // use them should avoid recursively triggering lookup, and those that still
+   // violate this guidance are the ModuleEnvironmentObject.
+@@ -843,8 +849,30 @@
+         return false;
+       }
+     }
+-    if (!NativeLookupOwnPropertyInline<allowGC, resolveMode>(cx, current, id,
+-                                                             propp)) {
++    bool interceptedAbsent = false;
++    if constexpr (allowGC == CanGC) {
++      if (!id.isEmbeddingPrivateName()) {
++        if (const auto* ops =
++                current->getClass()->getNativePropertyInterceptors();
++            ops && ops->hasOwn) {
++          bool found = false;
++          bool handled = false;
++          if (!ops->hasOwn(cx, current, id, &found, &handled)) {
++            return false;
++          }
++          if (handled && found) {
++            objp.set(current);
++            propp->setNativeInterceptorProperty();
++            return true;
++          }
++          interceptedAbsent = handled;
++        }
++      }
++    }
++    if (interceptedAbsent) {
++      propp->setNotFound();
++    } else if (!NativeLookupOwnPropertyInline<allowGC, resolveMode>(
++                   cx, current, id, propp)) {
+       return false;
+     }
+ 
+--- a/js/src/vm/NativeObject.cpp
++++ b/js/src/vm/NativeObject.cpp
+@@ -1655,10 +1655,13 @@
+ 
+ bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
+                               HandleId id, Handle<PropertyDescriptor> desc_,
+-                              ObjectOpResult& result, bool kandeloLazyData) {
++                              ObjectOpResult& result, bool kandeloLazyData,
++                              NativePropertyInterception interception) {
+   desc_.assertValid();
+ 
+-  if (!kandeloLazyData && !id.isEmbeddingPrivateName()) {
++  if (!kandeloLazyData &&
++      interception == NativePropertyInterception::Allow &&
++      !id.isEmbeddingPrivateName()) {
+     if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
+         ops && ops->defineProperty) {
+       bool handled = false;
+@@ -2916,7 +2919,9 @@
+ 
+   // Pure optimization for the common case. There's no point performing the
+   // lookup in step 2.c again, as our caller just did it for us.
+-  if (IsQualified && receiver.isObject() && obj == &receiver.toObject()) {
++  if (IsQualified && receiver.isObject() && obj == &receiver.toObject() &&
++      (id.isEmbeddingPrivateName() ||
++       !obj->getClass()->getNativePropertyInterceptors())) {
+     if (id.isEmbeddingPrivateName()) {
+       return DefineNonexistentProperty(cx, obj, id, v, result);
+     }
+@@ -3077,6 +3082,27 @@
+ bool js::NativeSetProperty(JSContext* cx, Handle<NativeObject*> obj,
+                            HandleId id, HandleValue v, HandleValue receiver,
+                            ObjectOpResult& result) {
++  if constexpr (!IsQualified) {
++    if (obj->is<GlobalObject>() &&
++        obj->getClass()->getNativePropertyInterceptors()) {
++      jsbytecode* pc;
++      JSScript* script = cx->currentScript(&pc, JSContext::AllowCrossRealm::Allow);
++      if (script && IsStrictSetPC(pc)) {
++        // Strict unresolved names fail before a setter can mutate the sandbox.
++        // A virtual binding that exists must use the ordinary property store,
++        // rather than failing later because it has no real global shape slot.
++        bool found;
++        if (!NativeHasProperty(cx, obj, id, &found)) {
++          return false;
++        }
++        if (!found) {
++          ReportIsNotDefined(cx, id);
++          return false;
++        }
++        return NativeSetProperty<Qualified>(cx, obj, id, v, receiver, result);
++      }
++    }
++  }
+   // We substitute our own names for these names used in the spec:
+   // O -> pobj, P -> id, ownDesc -> prop.
+   PropertyResult prop;
+--- a/js/src/vm/NativeObject.h
++++ b/js/src/vm/NativeObject.h
+@@ -1857,6 +1857,11 @@
+   bool (*deleteProperty)(JSContext*, HandleObject holder, HandleId,
+                          JS::ObjectOpResult&, bool* handled) = nullptr;
+   bool (*preventExtensions)(JSContext*, HandleObject, JS::ObjectOpResult&) = nullptr;
++  // Optional global declaration policy for embeddings whose interceptor
++  // contract distinguishes declarations from ordinary property definitions.
++  // The callback completes the declaration synchronously on the JS thread.
++  bool (*declareGlobal)(JSContext*, HandleObject, HandleId, HandleValue,
++                        unsigned attrs, bool isVar, bool isEval) = nullptr;
+ };
+ 
+ // Bypass is an explicit argument of one engine operation, never ambient state
+@@ -1878,7 +1883,9 @@
+                                  HandleId id,
+                                  Handle<JS::PropertyDescriptor> desc,
+                                  ObjectOpResult& result,
+-                                 bool kandeloLazyData = false);
++                                 bool kandeloLazyData = false,
++                                 NativePropertyInterception interception =
++                                     NativePropertyInterception::Allow);
+ 
+ // Native embedding callback for a lazy DATA property. The record and its data
+ // are traced from the property's real slot; there is no JS getter Function.
+--- a/js/src/vm/PropertyResult.h
++++ b/js/src/vm/PropertyResult.h
+@@ -16,6 +16,7 @@
+     NotFound,
+     NativeProperty,
+     NonNativeProperty,
++    NativeInterceptorProperty,
+     DenseElement,
+     TypedArrayElement,
+   };
+@@ -57,7 +58,12 @@
+   }
+ 
+   bool isFound() const { return kind_ != Kind::NotFound; }
+-  bool isNonNativeProperty() const { return kind_ == Kind::NonNativeProperty; }
++  bool isNonNativeProperty() const {
++    return kind_ == Kind::NonNativeProperty || isNativeInterceptorProperty();
++  }
++  bool isNativeInterceptorProperty() const {
++    return kind_ == Kind::NativeInterceptorProperty;
++  }
+   bool isDenseElement() const { return kind_ == Kind::DenseElement; }
+   bool isTypedArrayElement() const { return kind_ == Kind::TypedArrayElement; }
+   bool isNativeProperty() const { return kind_ == Kind::NativeProperty; }
+@@ -85,6 +91,9 @@
+   }
+ 
+   void setProxyProperty() { kind_ = Kind::NonNativeProperty; }
++  void setNativeInterceptorProperty() {
++    kind_ = Kind::NativeInterceptorProperty;
++  }
+ 
+   void setDenseElement(uint32_t index) {
+     kind_ = Kind::DenseElement;

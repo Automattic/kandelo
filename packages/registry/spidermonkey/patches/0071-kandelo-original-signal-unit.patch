@@ -1,10 +1,10 @@
 --- a/config/check_spidermonkey_style.py
 +++ b/config/check_spidermonkey_style.py
-@@ -93,6 +93,7 @@
-         "shell/node-upstream/resource-upstream/async_wrap.h",
-         "shell/node-upstream/resource-upstream/handle_wrap.h",
-         "shell/node-upstream/resource-upstream/handle_wrap.cc",
-+        "shell/node-upstream/resource-upstream/signal_wrap.cc",
-         "shell/node-upstream/resource-upstream/req_wrap.h",
-         "shell/node-upstream/resource-upstream/req_wrap-inl.h",
-         "shell/node-upstream/resource-upstream/async_wrap-inl.h",
+@@ -67,6 +67,7 @@
+ 
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set([
++    "shell/node-upstream/resource-upstream/signal_wrap.cc",
+     "shell/node-upstream/resource-upstream/handle_wrap.h",
+     "shell/node-upstream/resource-upstream/handle_wrap.cc",
+     "shell/node-upstream/resource-upstream/req_wrap.h",

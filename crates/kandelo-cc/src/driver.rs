@@ -7,16 +7,16 @@ use crate::arch::{Language, WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
-    calltypes_plugin_flags, compile_flags, filter_args, host_imports_allowance,
-    infer_thread_slot_declaration, join, link_flags, main_thread_stack_size, needs_linking,
-    parse_args, read_text_file, requests_cfi, shared_link_flags, thread_slot_declaration_define,
-    tokenize_gnu_response_file,
+    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, filter_args,
+    host_imports_allowance, infer_thread_slot_declaration, join, link_flags,
+    main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
+    shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
-use crate::toolchain::{Toolchain, resolve_lld_major};
+use crate::toolchain::{Toolchain, read_abi_contract_digest, resolve_lld_major};
 use crate::wasm::{
-    CALLTYPES_SECTION, imports_function, is_wasm_module, with_code_hash_section,
-    without_custom_section,
+    CALLTYPES_SECTION, imports_function, is_relocatable, is_wasm_module, with_abi_contract_section,
+    with_code_hash_section, without_custom_section,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -317,7 +317,8 @@ pub fn working_directory_from_clang_trace(
 
     // The provisional argv always adds absolute glue C sources, so an
     // executable link, including an object-only user link, emits cc1 jobs.
-    // Pinned LLVM 21 constructs this exact slot by pushing -resource-dir, its
+    // Clang's driver (Clang::ConstructJob in clang/lib/Driver/ToolChains/
+    // Clang.cpp) constructs this exact slot by pushing -resource-dir, its
     // value, and then Args.AddLastArg(OPT_working_directory), before
     // preprocessing and -Xclang arguments. This is the effective driver cwd
     // even when a config file or CCC_OVERRIDE_OPTIONS supplied it.
@@ -357,19 +358,45 @@ pub fn working_directory_from_clang_trace(
     Ok(traced.into_iter().next().expect("one directory"))
 }
 
-/// Link-time libc glue sources, in link order.
-pub fn glue_sources(toolchain: &Toolchain, link_dl: bool) -> Vec<String> {
-    let mut names = vec!["channel_syscall.c", "compiler_rt.c", "cxxrt.c"];
-    if link_dl {
-        names.push("dlopen.c");
-    }
-    names
-        .iter()
-        .map(|name| join(&toolchain.glue_dir, name))
-        .collect()
+/// The link-time glue of an executable link, as sources or as the objects
+/// compiled from them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Glue {
+    /// Linked as objects ahead of crt1.o and the caller's inputs, in this
+    /// order: the syscall channel and compiler-rt builtins, the dlopen loader
+    /// when the link asks for it, and the C++ runtime entry
+    /// (`cxxrt_entry.cpp`) when the link includes libc++abi.
+    pub leading: Vec<String>,
+    /// The minimal C++ runtime fallback (`cxxrt.c`), linked lazily after the
+    /// caller's inputs and the C++ libraries: a member is used only when
+    /// nothing earlier defines what it provides.
+    pub fallback: Vec<String>,
 }
 
-/// Compile command for the link-time glue sources.
+/// The glue source that installs the C++ runtime's language entries.
+pub const CXX_ENTRY_GLUE: &str = "cxxrt_entry.cpp";
+
+/// Link-time libc glue sources, in link order.
+pub fn glue_sources(toolchain: &Toolchain, link_dl: bool, cxx_runtime: bool) -> Glue {
+    let mut leading = vec!["channel_syscall.c", "compiler_rt.c"];
+    if link_dl {
+        leading.push("dlopen.c");
+    }
+    if cxx_runtime {
+        leading.push(CXX_ENTRY_GLUE);
+    }
+    let path = |name: &&str| join(&toolchain.glue_dir, name);
+    Glue {
+        leading: leading.iter().map(path).collect(),
+        fallback: ["cxxrt.c"].iter().map(path).collect(),
+    }
+}
+
+fn is_cxx_glue(source: &str) -> bool {
+    source.ends_with(".cpp")
+}
+
+/// Compile command for the link-time C glue sources.
 ///
 /// The glue (the syscall channel, compiler-rt builtins, the minimal C++
 /// runtime, the dlopen loader) is platform code linked into every
@@ -382,6 +409,30 @@ pub fn build_glue_compile_args(
     arch: WasmArch,
     thread_slot_define: Option<&str>,
 ) -> Vec<String> {
+    let mut args = glue_compile_base(toolchain, arch);
+    if let Some(define) = thread_slot_define {
+        args.push(define.to_string());
+    }
+    args.extend(["-O2", "-x", "c", "-c"].map(String::from));
+    args.extend(sources.iter().cloned());
+    args
+}
+
+/// Compile command for the C++ glue: the same fixed flags as the C glue,
+/// with the SDK's C++ exception handling, which its catch handlers need.
+pub fn build_cxx_glue_compile_args(
+    sources: &[String],
+    toolchain: &Toolchain,
+    arch: WasmArch,
+) -> Vec<String> {
+    let mut args = glue_compile_base(toolchain, arch);
+    args.extend(cxx_compile_flags());
+    args.extend(["-O2", "-x", "c++", "-c"].map(String::from));
+    args.extend(sources.iter().cloned());
+    args
+}
+
+fn glue_compile_base(toolchain: &Toolchain, arch: WasmArch) -> Vec<String> {
     let mut args = compile_flags(arch);
     // The glue is code of every executable, so its facts must be in the link
     // like any other object's.
@@ -391,11 +442,6 @@ pub fn build_glue_compile_args(
     args.push(format!("--sysroot={}", toolchain.sysroot));
     args.extend(sdk_source_prefix_map_flags(toolchain, arch));
     args.extend(recipe_work_prefix_map_flags());
-    if let Some(define) = thread_slot_define {
-        args.push(define.to_string());
-    }
-    args.extend(["-O2", "-x", "c", "-c"].map(String::from));
-    args.extend(sources.iter().cloned());
     args
 }
 
@@ -431,6 +477,20 @@ fn links_cxx_stdlib(language: Language, filtered: &[String]) -> bool {
             .any(|arg| matches!(arg.as_str(), "-nostdlib" | "-nodefaultlibs" | "-nostdlib++"))
 }
 
+/// Does this executable link include the C++ runtime (libc++abi)?
+///
+/// Either the SDK adds it (`links_cxx_stdlib`) or the caller names it, as a
+/// C program that links a C++ library does with `-lc++ -lc++abi`. Such a
+/// link gets the C++ runtime entry glue (`cxxrt_entry.cpp`).
+fn links_cxx_runtime(language: Language, filtered: &[String]) -> bool {
+    links_cxx_stdlib(language, filtered)
+        || filtered.iter().enumerate().any(|(i, arg)| {
+            arg == "-lc++abi"
+                || (arg == "-l" && filtered.get(i + 1).is_some_and(|next| next == "c++abi"))
+                || basename(arg) == "libc++abi.a"
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_clang_args_internal(
     user_args: &[String],
@@ -440,7 +500,7 @@ fn build_clang_args_internal(
     executable_linker: Option<Preparation>,
     report_warnings: bool,
     classify_link: bool,
-    glue_objects: Option<&[String]>,
+    glue_objects: Option<&Glue>,
 ) -> Result<Vec<String>> {
     let filter = filter_args(user_args, arch);
     if report_warnings {
@@ -468,6 +528,9 @@ fn build_clang_args_internal(
     // that compile glue, and response-hidden compile jobs found by the trace.
     if may_run_compile {
         args.extend(compile_flags(arch));
+        if compiles_cxx(language, &filtered) {
+            args.extend(cxx_compile_flags());
+        }
     }
     // The call-type facts plugin, for invocations that can run a compile job.
     // A link of objects only has none, and clang would warn that the -Xclang
@@ -542,7 +605,19 @@ fn build_clang_args_internal(
         }
         if parsed.shared {
             // Shared library build: no CRT, no libc, no syscall glue.
-            args.extend(shared_link_flags());
+            // A library may explicitly export only its C ABI. Do not turn
+            // the caller's --no-export-dynamic back into an export of every
+            // archive member (including an entire language runtime).
+            let caller_limits_exports = filtered.iter().any(|arg| {
+                arg.strip_prefix("-Wl,").is_some_and(|options| {
+                    options.split(',').any(|option| option == "--no-export-dynamic")
+                })
+            }) || filtered.windows(2).any(|pair| {
+                pair[0] == "-Xlinker" && pair[1] == "--no-export-dynamic"
+            });
+            args.extend(shared_link_flags().into_iter().filter(|flag| {
+                !caller_limits_exports || flag != "-Wl,--export-all"
+            }));
         } else {
             let Some(lld_major) = toolchain.lld_major else {
                 return Err("wasm-ld version is unresolved; call prepare_executable_linker() before building \
@@ -573,9 +648,21 @@ fn build_clang_args_internal(
             if thread_slots != THREAD_SLOT_USE_HOST_DEFAULT {
                 args.push(thread_slot_declaration_define(thread_slots));
             }
-            match glue_objects {
-                Some(objects) => args.extend(objects.iter().cloned()),
-                None => args.extend(glue_sources(toolchain, parsed.link_dl)),
+            let glue = match glue_objects {
+                Some(objects) => objects.clone(),
+                None => glue_sources(
+                    toolchain,
+                    parsed.link_dl,
+                    links_cxx_runtime(language, &filtered),
+                ),
+            };
+            args.extend(glue.leading);
+            if parsed.link_dl {
+                // Fully instrumented side modules need a process activation
+                // owner, even if only their imported callbacks could fork.
+                // Retain the real libc entry so normal instrumentation sees
+                // kernel_fork and supplies that owner; never invent a claim.
+                args.push("-Wl,--export=fork".into());
             }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
@@ -586,6 +673,16 @@ fn build_clang_args_internal(
             // that loads them.
             if links_cxx_stdlib(language, &filtered) {
                 args.extend(["-lc++", "-lc++abi"].map(String::from));
+            }
+            // The minimal C++ runtime is a fallback for C++ code linked
+            // without libc++ and libc++abi. As a lazy member after them it
+            // supplies only what they did not: libc++'s operator new, which
+            // throws std::bad_alloc, is weak like the fallback's, so a
+            // fallback object linked earlier would win and abort instead.
+            if !glue.fallback.is_empty() {
+                args.push("-Wl,--start-lib".into());
+                args.extend(glue.fallback);
+                args.push("-Wl,--end-lib".into());
             }
             args.push(join(&lib, "libc.a"));
             // LLD 22 made --stack-first the default; LLD 21 neither defaults to
@@ -611,7 +708,7 @@ pub fn build_clang_args(
     arch: WasmArch,
     language: Language,
     executable_linker: Option<LinkerPreparation>,
-    glue_objects: Option<&[String]>,
+    glue_objects: Option<&Glue>,
 ) -> Result<Vec<String>> {
     build_clang_args_internal(
         user_args,
@@ -676,52 +773,80 @@ pub fn compile_executable_glue(
     user_args: &[String],
     toolchain: &Toolchain,
     arch: WasmArch,
+    language: Language,
     executable_linker: Option<LinkerPreparation>,
-) -> Result<Option<(Vec<String>, TempDir)>> {
+) -> Result<Option<(Glue, TempDir)>> {
     if !matches!(
         executable_linker,
         Some(LinkerPreparation::ExecutableLink { .. })
     ) {
         return Ok(None);
     }
-    let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
+    let filtered = filter_args(user_args, arch).filtered;
+    let parsed = parse_args(&filtered)?;
     if parsed.shared {
         return Ok(None);
     }
     let define = executable_thread_slot_define(user_args, arch)?;
     let dir = TempDir::new("kandelo-glue-")?;
-    let sources = glue_sources(toolchain, parsed.link_dl);
-    // One compiler process for every glue source: `-c` with several inputs
-    // writes <basename>.o files into the working directory.
-    let args = build_glue_compile_args(&sources, toolchain, arch, define.as_deref());
-    // The glue is the SDK's code, compiled with the SDK's flags: a caller's
-    // CCC_OVERRIDE_OPTIONS edits the caller's own clang jobs, not this one.
-    // (It could also move this compile's working directory, and with it the
-    // objects, out of the directory the link reads them from.)
-    let result = run_without_env(
-        &toolchain.cc,
-        &args,
-        Some(dir.path()),
-        &["CCC_OVERRIDE_OPTIONS"],
+    let sources = glue_sources(
+        toolchain,
+        parsed.link_dl,
+        links_cxx_runtime(language, &filtered),
     );
-    if result.exit_code != 0 {
-        return Err(format!(
-            "compiling SDK glue failed:\n{}",
-            result.stderr.trim()
-        ));
+    let (cxx_sources, c_sources): (Vec<String>, Vec<String>) = sources
+        .leading
+        .iter()
+        .chain(&sources.fallback)
+        .cloned()
+        .partition(|source| is_cxx_glue(source));
+    // One compiler process per glue language: `-c` with several inputs
+    // writes <basename>.o files into the working directory. The C glue must
+    // not get the C++ exception flags, so C++ glue has its own process.
+    let mut compiles = vec![build_glue_compile_args(
+        &c_sources,
+        toolchain,
+        arch,
+        define.as_deref(),
+    )];
+    if !cxx_sources.is_empty() {
+        compiles.push(build_cxx_glue_compile_args(&cxx_sources, toolchain, arch));
+    }
+    for args in &compiles {
+        // The glue is the SDK's code, compiled with the SDK's flags: a
+        // caller's CCC_OVERRIDE_OPTIONS edits the caller's own clang jobs,
+        // not this one. (It could also move this compile's working
+        // directory, and with it the objects, out of the directory the link
+        // reads them from.)
+        let result = run_without_env(
+            &toolchain.cc,
+            args,
+            Some(dir.path()),
+            &["CCC_OVERRIDE_OPTIONS"],
+        );
+        if result.exit_code != 0 {
+            return Err(format!(
+                "compiling SDK glue failed:\n{}",
+                result.stderr.trim()
+            ));
+        }
     }
     let dir_text = dir.path().to_string_lossy().into_owned();
-    let objects = sources
-        .iter()
-        .map(|source| {
-            let name = basename(source);
-            let object = match name.strip_suffix(".c") {
-                Some(stem) => format!("{stem}.o"),
-                None => name.to_string(),
-            };
-            node_path::join(&[&dir_text, &object])
-        })
-        .collect();
+    let object = |source: &String| {
+        let name = basename(source);
+        let object = match name
+            .strip_suffix(".cpp")
+            .or_else(|| name.strip_suffix(".c"))
+        {
+            Some(stem) => format!("{stem}.o"),
+            None => name.to_string(),
+        };
+        node_path::join(&[&dir_text, &object])
+    };
+    let objects = Glue {
+        leading: sources.leading.iter().map(object).collect(),
+        fallback: sources.fallback.iter().map(object).collect(),
+    };
     Ok(Some((objects, dir)))
 }
 
@@ -810,6 +935,31 @@ pub const FORK_ENTRY_IMPORT: (&str, &str) = ("kernel", "kernel_fork");
 
 const KEEP_TARGET_FEATURES: &str = "--keep-section=target_features";
 
+/// [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] Binaryen 133
+/// runs its new `constraint-analysis` pass at -O3, -O4, -Os and -Oz, and the
+/// pass aborts on code LLVM 23 emits (FFmpeg's `ff_spatial_dwt`). The fix,
+/// WebAssembly/binaryen#9258, is in no release yet. The pass also had a run
+/// of wrong-code fixes before 133, and it measured no worthwhile size or
+/// speed win on Kandelo's programs, so Kandelo skips it. Re-enabling it is
+/// a separate, re-measured decision: see
+/// tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md and
+/// "Revisit Binaryen's constraint-analysis pass" in
+/// docs/future-improvements.md. fork-instrument's post-instrumentation
+/// wasm-opt carries the same flag (crates/fork-instrument/src/cli/optimize.rs).
+///
+/// wasm-opt accepts `--skip-pass` with a pass name it does not know, so the
+/// flag is harmless with a Binaryen that lacks the pass and at levels that
+/// do not schedule it.
+pub const SKIP_CONSTRAINT_ANALYSIS: &str = "--skip-pass=constraint-analysis";
+
+/// The post-link wasm-opt job the driver runs for a module that does not
+/// fork: clang's scheduled job, plus `SKIP_CONSTRAINT_ANALYSIS`.
+pub fn post_link_wasm_opt_job(job: &[String]) -> Vec<String> {
+    let mut job = job.to_vec();
+    job.push(SKIP_CONSTRAINT_ANALYSIS.into());
+    job
+}
+
 fn without_one(args: &[String], value: &str) -> Vec<String> {
     let mut out = args.to_vec();
     if let Some(index) = out.iter().position(|a| a == value) {
@@ -851,7 +1001,8 @@ fn comparable_linker(jobs: &[Vec<String>], linker: &[String]) -> Vec<String> {
 /// make those facts describe the wrong functions, so the module must reach
 /// the instrumenter as wasm-ld wrote it. The instrumenter runs wasm-opt
 /// itself after instrumenting. Any other module needs no facts: it loses the
-/// section and gets exactly the optimization clang would have run.
+/// section and gets the optimization clang scheduled, with one Binaryen pass
+/// skipped (`SKIP_CONSTRAINT_ANALYSIS`).
 pub fn is_fork_capable(module: &[u8]) -> Result<bool> {
     imports_function(module, FORK_ENTRY_IMPORT.0, FORK_ENTRY_IMPORT.1)
 }
@@ -862,8 +1013,15 @@ fn is_linker_job(job: &[String]) -> bool {
 
 /// Run the compiler driver. Compile-only invocations pass straight through.
 /// A link is run with clang's post-link wasm-opt (if clang schedules one)
-/// held back, then finished per `is_fork_capable`.
-pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Result<i32> {
+/// held back, then finished per `is_fork_capable`. An executable link passes
+/// its SDK's program ABI-contract digest as `abi_contract`, which the
+/// finished program carries (`stamp_abi_contract`).
+pub fn run_compiler_driver(
+    compiler: &str,
+    args: &[String],
+    linking: bool,
+    abi_contract: Option<&[u8; 32]>,
+) -> Result<i32> {
     if !linking || args.iter().any(|a| a == "-###") {
         return Ok(run_passthrough(compiler, args));
     }
@@ -940,6 +1098,7 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
             if let Some(hashed) = with_code_hash_section(module)? {
                 write_output(&output, &hashed)?;
             }
+            stamp_abi_contract(&output, abi_contract)?;
             return Ok(0);
         }
         if let Some(stripped) = without_custom_section(module, CALLTYPES_SECTION)? {
@@ -947,9 +1106,45 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
         }
     }
     if let Some(job) = wasm_opt.first() {
-        return Ok(run_passthrough(&job[0], &job[1..]));
+        // [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] skip the pass.
+        let job = post_link_wasm_opt_job(job);
+        let exit_code = run_passthrough(&job[0], &job[1..]);
+        if exit_code != 0 {
+            return Ok(exit_code);
+        }
     }
+    stamp_abi_contract(&output, abi_contract)?;
     Ok(0)
+}
+
+/// Append the SDK's `kandelo.abi.contract` digest to a linked program, after
+/// every other post-link edit.
+///
+/// WHY at link time: the host compares this digest with the running kernel's
+/// before it runs a program, and refuses a mismatch, but admits a program
+/// without one unchecked, with a warning. Stamping only where packages are
+/// admitted left every program linked elsewhere unchecked: test programs, ad
+/// hoc builds, and the tools a build compiles and then runs inside Kandelo.
+/// wasm-opt and the fork instrumenter keep the section, and package
+/// admission accepts a stamp equal to its own.
+///
+/// A relocatable object is not a program: a later link would concatenate its
+/// section into the program it ends up in.
+fn stamp_abi_contract(output: &str, abi_contract: Option<&[u8; 32]>) -> Result<()> {
+    let Some(digest) = abi_contract else {
+        return Ok(());
+    };
+    // No readable output (e.g. -o /dev/null on some hosts): nothing to stamp.
+    let Ok(module) = std::fs::read(output) else {
+        return Ok(());
+    };
+    if !is_wasm_module(&module) || is_relocatable(&module)? {
+        return Ok(());
+    }
+    if let Some(stamped) = with_abi_contract_section(&module, digest)? {
+        write_output(output, &stamped)?;
+    }
+    Ok(())
 }
 
 fn write_output(path: &str, bytes: &[u8]) -> Result<()> {
@@ -977,18 +1172,23 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     }
     let executable_linker =
         prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
-    let glue = compile_executable_glue(user_args, &toolchain, arch, executable_linker)?;
+    let glue = compile_executable_glue(user_args, &toolchain, arch, language, executable_linker)?;
+    // An executable link links the glue, and carries the glue's digest.
+    let abi_contract = glue
+        .as_ref()
+        .map(|_| read_abi_contract_digest(&toolchain.glue_dir))
+        .transpose()?;
     let args = build_clang_args(
         user_args,
         &toolchain,
         arch,
         language,
         executable_linker,
-        glue.as_ref().map(|(objects, _)| objects.as_slice()),
+        glue.as_ref().map(|(objects, _)| objects),
     )?;
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
     let linking = needs_linking(&parsed) && executable_linker != Some(LinkerPreparation::NoLink);
-    let result = run_compiler_driver(&compiler, &args, linking);
+    let result = run_compiler_driver(&compiler, &args, linking, abi_contract.as_ref());
     drop(glue);
     result
 }

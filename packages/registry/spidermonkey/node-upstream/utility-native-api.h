@@ -3,16 +3,14 @@
 // Complete original utilities consume these engine declarations. Operations
 // without a real backend remain undefined, including isolate/snapshot creation.
 #pragma push_macro("node")
-#pragma push_macro("v8")
 #undef node
-#undef v8
 namespace v8_inspector {
 class StringView {
  public:bool is8Bit()const;size_t length()const;const uint8_t* characters8()const;const uint16_t* characters16()const;
 };
 }
 namespace kandelo_node_codec_impl {
-using namespace kandelo_node_codec_api;
+using namespace v8;
 class Environment;struct SnapshotData;
 using AbortHandler=void(*)(const char*,const char*);
 }
@@ -52,10 +50,8 @@ using AbortHandler=void(*)(const char*,const char*);
 #undef USE
 #undef MAYBE_FIELD_PTR
 #define node kandelo_node_codec_impl
-#define v8 kandelo_node_codec_api
 #include "shell/node-upstream/utilities-upstream/util.h"
 #include "shell/node-upstream/utilities-upstream/util-inl.h"
-#undef v8
 #undef node
 // Original assertion macros expand namespace tokens at their call sites. Own
 // engine sources use the unaliased namespace; both names reach the same bodies.
@@ -69,6 +65,5 @@ using kandelo_node_codec_impl::AssertionInfo;
 using kandelo_node_codec_impl::Assert;
 using kandelo_node_codec_impl::GetAbortHandler;
 }
-#pragma pop_macro("v8")
 #pragma pop_macro("node")
 #endif

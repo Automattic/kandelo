@@ -1,29 +1,12 @@
 #ifndef KANDELO_NODE_ALIASED_CODECS_INL_H
 #define KANDELO_NODE_ALIASED_CODECS_INL_H
-#define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/aliased_buffer-inl.h"
 #undef node
-#undef v8
 
 // Engine primitives and privileged controls for the complete original
 // AliasedBuffer header pair. Allocation, alias, copy and reserve bodies remain
 // in those authenticated original headers.
-namespace kandelo_node_codec_api {
-size_t TypedArray::Length() const {
-  auto& frame=*Frame::current;auto* view=UnwrapView(frame.cx,cell().value);CHECK(view&&JS_IsTypedArrayObject(view));return JS_GetTypedArrayLength(view);
-}
-#define KANDELO_DEFINE_TYPED_ARRAY(Name,Kind) \
-Local<Name> Name::New(Local<ArrayBuffer> buffer,size_t offset,size_t length) { \
-  auto& frame=*Frame::current;if(JS_IsExceptionPending(frame.cx))return {}; \
-  JS::RootedObject backing(frame.cx,&buffer->cell().value.toObject()); \
-  JS::RootedObject object(frame.cx,JS_New##Name##WithBuffer(frame.cx,backing,offset,length));if(!object)return {}; \
-  if(!RecordApiViewConstruction(frame,object))return {}; \
-  JS::RootedValue value(frame.cx,JS::ObjectValue(*object));return frame.Own<Name>(value); \
-}
-KANDELO_NATIVE_TYPED_ARRAYS(KANDELO_DEFINE_TYPED_ARRAY)
-#undef KANDELO_DEFINE_TYPED_ARRAY
-}
 namespace kandelo_node_codec_impl {
 using namespace api;
 template<class T,class V> class OriginalAliasedControl final:public AliasedControl {
@@ -61,7 +44,7 @@ bool AliasedControlCall(JSContext* cx,unsigned argc,JS::Value* vp) {
   JS::RootedString operationString(cx,args[0].toString());auto operation=JS_EncodeStringToUTF8(cx,operationString);if(!operation)return false;
   JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm||!CheckRealmLibraryActive(cx,realm))return false;
-  api::Frame frame(cx,realm,state,&args,api::Domain::Environment);auto* isolate=&state->isolate;auto& controls=state->aliasedControls;args.rval().setUndefined();
+  api::Frame frame(cx,realm,state,&args,api::Domain::Environment);auto* isolate=&state->isolate;auto& controls=state->Legacy().aliasedControls;args.rval().setUndefined();
   auto count=[&](unsigned index,uint32_t* output){
     if(!args.get(index).isInt32()||args[index].toInt32()<1||args[index].toInt32()>1048576){JS_ReportErrorASCII(cx,"Aliased count must be in 1..1048576");return false;}
     *output=uint32_t(args[index].toInt32());return true;

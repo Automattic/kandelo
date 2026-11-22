@@ -106,7 +106,7 @@ describe("qtbase — QtGui and the Wayland plugin on the kernel", () => {
 
       const dump = `stdout=${result.stdout}\nstderr=${result.stderr}`;
       expect(result.exitCode, dump).toBe(0);
-      expect(result.stdout).toContain("QT_VERSION=6.10.2");
+      expect(result.stdout).toContain("QT_VERSION=6.12.0");
       expect(result.stdout).toContain("PLATFORM=offscreen");
       expect(result.stdout).toContain("WAYLAND_PLUGIN=yes");
       expect(result.stdout).toContain("XDG_SHELL_PLUGIN=yes");

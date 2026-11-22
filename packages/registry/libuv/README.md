@@ -44,19 +44,58 @@ validation, truncation and termination behavior. This requires no kernel change.
 See [libuv-exepath-engine-check.json](../../../tests/nodejs/upstream/libuv-exepath-engine-check.json)
 for current identified-artifact evidence, separate from the earlier loop receipt.
 
+Revision 6 adds the Kandelo memory API boundary. It is source work pending the
+joint startup batch build and runtime validation. `uv_get_constrained_memory`
+uses the complete upstream resource-limit helper and the guest's actual
+`RLIMIT_AS` and `RLIMIT_DATA`; changes to those limits are queried on each call.
+Those allocation constraints do not measure physical free or resident memory.
+The guest currently exposes no genuine physical-memory capacity/free service,
+so `uv_get_total_memory` and `uv_get_free_memory` return libuv's documented
+unknown value, zero. `uv_get_available_memory` follows the free-memory result.
+`uv_resident_set_memory` returns `UV_ENOSYS` without changing its output; a null
+output pointer returns `UV_EINVAL`. The original Node RSS/memoryUsage functions
+therefore retain their error path rather than receive a fabricated measurement.
+Process and thread `uv_getrusage` queries likewise return `UV_ENOSYS` without
+writing their output, instead of forwarding the kernel's simulated zero records.
+The Kandelo guard retains every original statement of the upstream query body
+for other platforms. These errors remain implementation gaps in resource
+accounting; no process CPU/memory measurements are claimed.
+No kernel/libc semantics, ABI, resource limits or host memory service are changed.
+The current `getrusage`, `sysinfo` and procfs RSS placeholders cannot provide
+these measurements, and mapped ranges or file-cache pages are not substitutes.
+See the [libuv memory contract](https://github.com/libuv/libuv/blob/v1.52.1/docs/src/misc.rst)
+and the startup batch's source/runtime evidence distinction.
+
 This is an initial event-loop backend, not complete libuv support. OS-specific
-resource/CPU/network-interface reporting remains incomplete; consumers of missing
-functions fail to link. The revision-4 target-header AST and archive-symbol
+physical-memory/resource/CPU/network-interface reporting remains incomplete.
+The revision-4 target-header AST and archive-symbol
 inventory found 318 declared public functions and ten missing definitions.
-Revision 5 supplies `uv_exepath`; the remaining nine are uv_cpu_info, uv_get_available_memory,
-uv_get_constrained_memory, uv_get_free_memory, uv_get_total_memory,
-uv_interface_addresses, uv_loadavg, uv_resident_set_memory and uv_uptime.
+Revision 5 supplied `uv_exepath`. The five memory declarations have definitions
+staged in revision 6; source presence is not link or runtime evidence.
+`uv_cpu_info`, `uv_interface_addresses`, `uv_loadavg` and `uv_uptime` still lack
+definitions. The previous nine-missing-symbol inventory remains historical until
+the joint batch rebuild repeats the target-header/archive comparison.
 Symbol presence is not runtime conformance evidence. Process spawn,
 signal behavior, socket operations, DNS, cancellation, fork recovery, OOM and
 full teardown still need focused validation. No product image includes this
 library, and it is not in the local-supported build set. No generated upstream
-man pages are shipped; upstream's documentation is Sphinx source, not an
-installed man-page set.
+man pages are shipped; the pinned Node bundle omits libuv's Sphinx API sources,
+which upstream publishes separately.
+
+The next unbuilt link batch adds interface enumeration using the complete
+upstream `bsd-ifaddrs.c`. Its address filtering, allocation and copying remain
+upstream; a Kandelo branch obtains hardware addresses through `SIOCGIFHWADDR`
+instead of BSD `AF_LINK` records. Both IP and hardware addresses come from the
+existing shared libc/kernel interface table. Failures retire the whole output
+allocation. No host or kernel interface is added.
+
+That batch also implements `uv_uptime` through the guest's `CLOCK_BOOTTIME`,
+propagating clock errors and retaining subsecond precision. The platform's
+documented monotonic-equivalent boot-clock boundary still applies: this source
+addition does not establish suspend accounting or a qualified guest boot epoch.
+Neither addition has been built or runtime-qualified. CPU information and load
+averages remain outstanding implementation work; the kernel's current constant
+`sysinfo` records must not be treated as measured data.
 
 The self-judging test/backend-controls.c uses real guest clocks, descriptors,
 threads and files. Executable-path controls compare real procfs bytes, test
@@ -66,6 +105,9 @@ empty loops, timers/ref/close, prepare/check phases, cross-thread async wakeups,
 thread-pool work, pipe polling and async filesystem effects, plus explicit
 unsupported boundaries. Results and artifact identities belong in the upstream
 Node evidence ledger; this source alone is not proof that any host passes.
+The pending memory controls check unavailable physical/RSS results without
+overwriting an RSS sentinel, and real constraint changes through guest
+`getrlimit`/`setrlimit`. They have not yet run for revision 6.
 
 ## Focused checks
 
@@ -93,3 +135,17 @@ them with `scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.
 It does not need a canonical rootfs image. Current identified-artifact results,
 failed attempts and limits are in
 [libuv-backend-engine-check.json](../../../tests/nodejs/upstream/libuv-backend-engine-check.json).
+
+The next unbuilt batch compiles the complete upstream Linux source under guards
+that select its portable CPU/load procfs readers only, alongside the existing
+Kandelo loop. It does not define `__linux__` or add a second event loop. The CPU
+reader's single allocation is paired with its original matching free policy.
+The CPU reader returns the real file/query error when `/proc/stat` is absent;
+unchanged Node maps missing CPU information to an empty array. The load reader
+uses `/proc/loadavg` and preserves the upstream leave-output-unchanged behavior
+when no measurement can be obtained. The simulated `sysinfo` fallback is not a
+measurement source. An unchanged, initially zero Node load-average buffer does
+not prove a measured idle machine. Kandelo currently supplies neither procfs
+statistics file: genuine guest CPU/load accounting remains implementation work
+for the full port. This defines real queries and their failure paths; it does
+not qualify statistics, startup, or module conformance.

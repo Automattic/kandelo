@@ -1,6 +1,21 @@
+Add async subprocesses, pipe fds and real-delay timers to the event loop.
+
+Adds posix_spawn/pipe/waitpid/kill seams on __kandeloNodeNative, Child
+watches that KandeloSocketDispatch reaps with non-blocking waitpid(), and
+drives node-compat's timer wheel from RunShellJobs: after the shell task
+queue and the watch dispatch, KandeloRunDueTimers fires due timers and
+reports the next deadline. Pending timers keep the loop alive, and an idle
+loop sleeps until the next deadline (at most 1 ms). The shell ignores
+SIGPIPE at startup, as Node does, so a write to a closed pipe or socket
+surfaces EPIPE.
+
+ESR 153 rebase: the timer driver now precedes RunShellJobs directly (the
+shell's enqueueJob builtin it used to follow was removed), and the loop
+builds on 0012's MaybeRunShellTasks integration.
+
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -62,6 +62,7 @@
+@@ -59,6 +59,7 @@
  #    include <arpa/inet.h>
  #    include <netdb.h>
  #    include <netinet/in.h>
@@ -8,7 +23,7 @@
  #    include <sys/mman.h>
  #    include <sys/socket.h>
  #    include <sys/wait.h>
-@@ -777,6 +778,7 @@
+@@ -767,6 +768,7 @@
    TlsConnect,
    TlsRead,
    TlsWrite,
@@ -16,7 +31,7 @@
  };
  
  struct KandeloSocketWatch {
-@@ -791,6 +793,7 @@
+@@ -781,6 +783,7 @@
    SSL_CTX* tlsCtx = nullptr;
    int tlsHandle = -1;
    bool closeFdOnCleanup = false;
@@ -24,7 +39,7 @@
    KandeloSocketWatch* next = nullptr;
  
    KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
-@@ -849,16 +852,119 @@
+@@ -839,16 +842,119 @@
    RootedObject array(cx, KandeloNewUint8ArrayCopy(cx, bytes, length));
    if (!array) return false;
    RootedValue resolved(cx, ObjectValue(*array));
@@ -88,8 +103,8 @@
 +  }
 +  RootedValue resolved(cx, ObjectValue(*result));
    return JS::ResolvePromise(cx, promise, resolved);
- }
- 
++}
++
 +// Resolve a __kandeloWaitPid promise from a raw waitpid() status word.
 +static bool KandeloResolveChildFromStatus(JSContext* cx, HandleObject promise,
 +                                          int status) {
@@ -102,8 +117,8 @@
 +  }
 +  // Stopped/continued or otherwise not terminated: report no code yet.
 +  return KandeloResolveChild(cx, promise, true, 0, nullptr);
-+}
-+
+ }
+ 
  static int KandeloSocketDispatch(JSContext* cx) {
 +  int processed = 0;
 +
@@ -145,7 +160,7 @@
  
    std::vector<pollfd> pollfds;
    pollfds.reserve(size_t(count));
-@@ -871,9 +977,8 @@
+@@ -861,9 +967,8 @@
    }
  
    int rc = poll(pollfds.data(), nfds_t(pollfds.size()), 0);
@@ -156,13 +171,10 @@
    KandeloSocketWatch* watch = gKandeloSocketWatches;
    size_t index = 0;
    while (watch && index < pollfds.size()) {
-@@ -1072,6 +1177,370 @@
-     close(fd);
-   }
-   args.rval().setUndefined();
-+  return true;
-+}
-+
+@@ -1065,6 +1170,370 @@
+   return true;
+ }
+ 
 +// ---------------------------------------------------------------------------
 +// Native async subprocess + fd seam (Phase K). Generalizes the socket watch
 +// list / job-queue poll loop above to arbitrary fds (pipes) and child reaping,
@@ -524,9 +536,12 @@
 +    return false;
 +  }
 +  args.rval().setInt32(0);
-   return true;
- }
- 
++  return true;
++}
++
+ struct KandeloTlsHandle {
+   bool active = false;
+   int fd = -1;
 @@ -2034,6 +2503,13 @@
        JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),
        JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),
@@ -541,10 +556,10 @@
        JS_FS_END,
    };
    if (!JS_DefineFunctions(cx, native, funcs)) {
-@@ -3203,6 +3679,52 @@
+@@ -3316,6 +3792,52 @@
+   }
  
-   RootedObject job(cx, &args[0].toObject());
-   return js::EnqueueJob(cx, job);
+   return ranTasks;
 +}
 +
 +// Drive the JS-level real-delay timer wheel that adapter.js installs as
@@ -594,14 +609,26 @@
  }
  
  static void RunShellJobs(JSContext* cx) {
-@@ -3221,11 +3743,32 @@
-     // Run tasks (only finalization registry clean tasks are possible).
-     bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
+@@ -3337,17 +3859,39 @@
+       return;
+     }
+ 
+-    // Kandelo: after the shell's own task queue, poll the native socket/TLS
+-    // watches without blocking. A completed watch settles its promise, which
+-    // queues microtasks for the next turn of this loop. Registered watches keep
+-    // the loop alive; when nothing made progress, sleep briefly instead of
+-    // busy-spinning while a connect/read is still outstanding.
++    // Kandelo: after the shell's own task queue, drive node-compat's event
++    // sources. KandeloSocketDispatch reaps exited children and polls the
++    // socket, TLS and pipe watches without blocking; a completed watch settles
++    // its promise, which queues microtasks for the next turn of this loop.
++    // KandeloRunDueTimers then fires node-compat's due timers and reports when
++    // the next one is due. Registered watches and pending timers keep the loop
++    // alive. When nothing made progress, sleep until the next timer is due (at
++    // most 1 ms) instead of busy-spinning on an outstanding watch.
      int ranNative = KandeloSocketDispatch(cx);
 -    if (!ranTasks && ranNative == 0 && !KandeloSocketHasWatches()) {
 +
-+    // Fire real-delay timers and learn when the next one is due. A pending
-+    // timer keeps the loop alive just like a pending native watch.
 +    int64_t nextTimerDelay = -1;
 +    int ranTimers = KandeloRunDueTimers(cx, &nextTimerDelay);
 +    bool timersPending = nextTimerDelay >= 0;
@@ -630,7 +657,7 @@
      }
    }
  }
-@@ -14211,6 +14754,17 @@
+@@ -14572,6 +15116,17 @@
    int result;
  
    setlocale(LC_ALL, "");

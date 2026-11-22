@@ -1,6 +1,15 @@
+Bridge native lazy data properties through ESR153 property owners.
+
+Retain the original lazy record, callback, descriptor, reentry and GC rules.
+ESR153 invokes addProperty only in the Add branch and preserves DOM wrappers
+there. Keep that branch and its normal data/accessor calls intact; for an
+opaque lazy record preserve the wrapper with the same native helper while
+avoiding the class callback. A lazy record is not the eventual public value.
+This is a native engine interface adaptation, not a public Node algorithm.
+
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
-@@ -1285,7 +1285,8 @@
+@@ -1374,7 +1374,8 @@
  template <IsAddOrChange AddOrChange>
  static MOZ_ALWAYS_INLINE bool AddOrChangeProperty(
      JSContext* cx, Handle<NativeObject*> obj, HandleId id,
@@ -10,7 +19,7 @@
    desc.assertComplete();
  
  #ifdef DEBUG
-@@ -1303,6 +1304,8 @@
+@@ -1392,6 +1393,8 @@
    // integer key with default property attributes and are either adding a new
    // property or changing a dense element.
    PropertyFlags flags = ComputePropertyFlags(desc);
@@ -19,16 +28,22 @@
    if (id.isInt() && flags == PropertyFlags::defaultDataPropFlags &&
        (AddOrChange == IsAddOrChange::Add || existing->isDenseElement())) {
      MOZ_ASSERT(!desc.isAccessorDescriptor());
-@@ -1392,7 +1395,7 @@
-     }
+@@ -1469,7 +1472,13 @@
    }
  
--  if (desc.isDataDescriptor()) {
-+  if (desc.isDataDescriptor() && !kandeloLazyData) {
-     return CallAddPropertyHook(cx, obj, id, desc.value());
-   }
- 
-@@ -1453,6 +1456,9 @@
+   if constexpr (AddOrChange == IsAddOrChange::Add) {
+-    if (desc.isDataDescriptor()) {
++    if (kandeloLazyData) {
++      // Preserve ESR153's wrapper lifetime without exposing the opaque lazy
++      // record to a class addProperty callback.
++      if (!PreserveAnyUnpreservedWrapper(cx, obj)) {
++        return false;
++      }
++    } else if (desc.isDataDescriptor()) {
+       if (!CallAddPropertyHook(cx, obj, id, desc.value())) {
+         return false;
+       }
+@@ -1539,6 +1548,9 @@
  
  static bool GetCustomDataProperty(JSContext* cx, HandleObject obj, HandleId id,
                                    MutableHandleValue vp);
@@ -38,7 +53,7 @@
  
  static bool GetExistingDataProperty(JSContext* cx, Handle<NativeObject*> obj,
                                      HandleId id, const PropertyResult& prop,
-@@ -1472,6 +1478,9 @@
+@@ -1558,6 +1570,9 @@
      return true;
    }
  
@@ -48,7 +63,7 @@
    MOZ_RELEASE_ASSERT(propInfo.isCustomDataProperty());
    return GetCustomDataProperty(cx, obj, id, vp);
  }
-@@ -1541,7 +1550,7 @@
+@@ -1627,7 +1642,7 @@
  
  bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
                                HandleId id, Handle<PropertyDescriptor> desc_,
@@ -57,7 +72,7 @@
    desc_.assertValid();
  
    // Section numbers and step numbers below refer to ES2025, draft rev
-@@ -1556,6 +1565,7 @@
+@@ -1642,6 +1657,7 @@
      // 10.4.2.1 step 1. Redefining an array's length is very special.
      auto arr = HandleObject(obj).as<ArrayObject>();
      if (id == NameToId(cx->names().length)) {
@@ -65,7 +80,7 @@
        // 10.1.6.3 ValidateAndApplyPropertyDescriptor, step 5.c.
        if (desc_.isAccessorDescriptor()) {
          return result.fail(JSMSG_CANT_REDEFINE_PROP);
-@@ -1574,6 +1584,7 @@
+@@ -1660,6 +1676,7 @@
    } else if (obj->is<TypedArrayObject>()) {
      // 10.4.5.3 step 1. Indexed properties of typed arrays are special.
      if (mozilla::Maybe<uint64_t> index = ToTypedArrayIndex(id)) {
@@ -73,7 +88,7 @@
        auto tobj = HandleObject(obj).as<TypedArrayObject>();
        return DefineTypedArrayElement(cx, tobj, index.value(), desc_, result);
      }
-@@ -1619,6 +1630,18 @@
+@@ -1705,6 +1722,18 @@
    }
    MOZ_ASSERT(!prop.isTypedArrayElement());
  
@@ -92,7 +107,7 @@
    // From this point, the step numbers refer to
    // 10.1.6.3, ValidateAndApplyPropertyDescriptor.
    // Step 1 is a redundant assertion.
-@@ -1644,7 +1667,8 @@
+@@ -1730,7 +1759,8 @@
      // Fill in missing desc fields with defaults.
      CompletePropertyDescriptor(&desc);
  
@@ -102,7 +117,7 @@
        return false;
      }
      return result.succeed();
-@@ -1796,12 +1820,87 @@
+@@ -1882,12 +1912,87 @@
    }
    desc.assertComplete();
  
@@ -191,7 +206,7 @@
  }
  
  bool js::NativeDefineDataProperty(JSContext* cx, Handle<NativeObject*> obj,
-@@ -2097,6 +2196,9 @@
+@@ -2184,6 +2289,9 @@
      return js::CallGetter(cx, receiver, getter, vp);
    }
  
@@ -201,7 +216,7 @@
    MOZ_ASSERT(prop.isCustomDataProperty());
  
    return GetCustomDataProperty(cx, obj, id, vp);
-@@ -2115,7 +2217,8 @@
+@@ -2202,7 +2310,8 @@
  
    vp.setUndefined();
  
@@ -211,7 +226,7 @@
      return true;
    }
  
-@@ -2418,6 +2521,14 @@
+@@ -2495,6 +2604,14 @@
      return result.succeed();
    }
  
@@ -228,7 +243,7 @@
  
 --- a/js/src/vm/NativeObject.h
 +++ b/js/src/vm/NativeObject.h
-@@ -1776,7 +1776,18 @@
+@@ -1848,7 +1848,18 @@
  extern bool NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
                                   HandleId id,
                                   Handle<JS::PropertyDescriptor> desc,
@@ -250,7 +265,7 @@
                                       HandleId id, HandleValue value,
 --- a/js/src/vm/PropertyInfo.h
 +++ b/js/src/vm/PropertyInfo.h
-@@ -45,6 +45,10 @@
+@@ -43,6 +43,10 @@
    //
    // This flag is deprecated (we don't want to add more uses).
    CustomDataProperty = 1 << 4,
@@ -261,7 +276,7 @@
  };
  
  class PropertyFlags : public EnumFlags<PropertyFlag> {
-@@ -66,13 +70,17 @@
+@@ -64,13 +68,17 @@
    // Note: this returns true only for plain data properties with a slot. Returns
    // false for custom data properties. See CustomDataProperty flag.
    bool isDataProperty() const {
@@ -280,7 +295,7 @@
    }
  
    // Note: unlike isDataProperty, this returns true also for custom data
-@@ -134,6 +142,9 @@
+@@ -132,6 +140,9 @@
  
    bool isDataProperty() const { return flags().isDataProperty(); }
    bool isCustomDataProperty() const { return flags().isCustomDataProperty(); }
@@ -292,7 +307,7 @@
  
 --- a/js/src/vm/PropMap.cpp
 +++ b/js/src/vm/PropMap.cpp
-@@ -1075,6 +1075,9 @@
+@@ -1041,6 +1041,9 @@
        case PropertyFlag::AccessorProperty:
          known("AccessorProperty");
          break;

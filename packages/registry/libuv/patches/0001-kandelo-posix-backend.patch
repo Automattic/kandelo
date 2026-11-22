@@ -1,6 +1,6 @@
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -324,6 +324,20 @@
+@@ -324,6 +324,23 @@
         src/unix/hurd.c)
  endif()
  
@@ -15,13 +15,16 @@
 +       src/unix/posix-poll.c
 +       src/unix/procfs-exepath.c
 +       src/unix/no-fsevents.c
++       src/unix/bsd-ifaddrs.c
++       src/unix/kandelo-uptime.c
++       src/unix/kandelo-memory.c
 +       src/unix/kandelo-proctitle.c)
 +endif()
 +
  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
    list(APPEND uv_defines _GNU_SOURCE _POSIX_C_SOURCE=200112)
    list(APPEND uv_libraries dl rt)
-@@ -455,6 +469,7 @@
+@@ -455,6 +472,7 @@
  if(LIBUV_BUILD_SHARED)
    add_library(uv SHARED ${uv_sources})
    target_compile_definitions(uv
@@ -29,7 +32,7 @@
      INTERFACE
        USING_UV_SHARED=1
      PRIVATE
-@@ -476,7 +491,7 @@
+@@ -476,7 +494,7 @@
  endif()
  
  add_library(uv_a STATIC ${uv_sources})

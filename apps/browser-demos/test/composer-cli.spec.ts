@@ -56,7 +56,7 @@ test("shell loads Composer on first use and generates a working autoloader", asy
   const firstDownloads = [...downloads];
 
   const alias = await runTerminalCommand(
-    page, "/bin/composer --version --no-ansi", "Composer version 2.10.3", 120_000,
+    page, "/usr/bin/composer --version --no-ansi", "Composer version 2.10.3", 120_000,
   );
   expect(alias.exitCode, alias.output).toBe(0);
   expect(downloads).toEqual(firstDownloads);

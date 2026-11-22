@@ -324,6 +324,9 @@ describe.skipIf(!available)("persistent root filesystem statistics", () => {
     filesystem.registerLazyFile("/verified-reader", verified.url, verified.size, 0o600, verified.sha256);
     filesystem.registerLazyFile("/deferred-orphan", "https://example.invalid/".padEnd(4096, "x"), 1, 0o600);
     filesystem.mkdir("/bin", 0o755);
+    // df reads the kernel's synthetic /etc/mtab, which lives in the image's
+    // /etc directory as on Linux; without /etc there is no mount table.
+    filesystem.mkdir("/etc", 0o755);
     filesystem.writeFile("/bin/bash", readFileSync(bash), 0o755);
     filesystem.writeFile("/bin/coreutils", readFileSync(coreutils), 0o755);
     filesystem.writeFile("/bin/persistence-overwrite", readFileSync(mappingProgram), 0o755);

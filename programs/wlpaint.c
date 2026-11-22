@@ -172,7 +172,37 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
     }
 }
 
-int main(void) {
+static const char help_text[] =
+    "Usage: wlpaint\n"
+    "\n"
+    "Paint with the mouse in a Wayland window.\n"
+    "\n"
+    "wlpaint opens a 640x420 xdg-shell window on the Wayland compositor: a\n"
+    "toolbar of seven colour swatches (the last paints the background colour,\n"
+    "as an eraser) and a clear button, over a canvas. Dragging with the left\n"
+    "button paints in the selected colour, which starts as blue. When the\n"
+    "compositor resizes the window the canvas follows, keeping the painting\n"
+    "that still fits. The painting is not saved.\n"
+    "\n"
+    "wlpaint writes WLPAINT_READY, WLPAINT_RESIZE, WLPAINT_STROKE,\n"
+    "WLPAINT_STROKE_END, WLPAINT_COLOR, WLPAINT_CLEAR and WLPAINT_EXIT lines\n"
+    "on standard output as these events happen. It exits with status 0 when\n"
+    "the window is closed and 1 when the window or canvas cannot be created.\n"
+    "Other arguments are ignored.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("wlpaint (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
     struct kwl_window *win = kwl_window_create("wlpaint", WIN_W, WIN_H);
     if (!win) { fprintf(stderr, "kwl_window_create failed\n"); return 1; }
     struct wpk_font *font = wpk_font_load_default(14);

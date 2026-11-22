@@ -18,16 +18,20 @@ as supported APIs.
 Consumers use `v8-tracing::v8-tracing` from its installed CMake package or
 `pkg-config --cflags --libs --static v8-tracing`. Both propagate the explicit
 target selector; CMake also propagates libuv's public ABI-layout selector. The
-installed header set only declares the tracing/platform interfaces needed by
-that API; it does not provide ordinary V8 engine entrypoints. Licenses from both
+installed header set declares the tracing/platform interfaces needed by that
+API, plus `kandelo/v8-native-fatal.h`. Its narrow C entry uses the complete
+original logger's `GRACEFUL_FATAL` path and the existing guest libc abort
+adapter. It needs no Node Environment or JavaScript callback. It does not
+provide ordinary V8 engine entrypoints. Licenses from both
 the complete Node and V8 source distributions are installed. Upstream provides
 no man pages for these standalone tracing classes.
 
-The library is a prerequisite for the native Node trace-events binding. It is
-not yet linked into SpiderMonkey, has no Node tracing agent/file writer or JS
-intrinsic adapter, and does not establish Node startup or public tracing support.
-No product image or default build set includes it. Component and engine evidence
-must remain separate in the upstream runtime ledger.
+The SpiderMonkey recipe declares and links this foundation. The new fatal entry
+is source implementation awaiting the coordinated native build and actual guest
+signal qualification; a numeric exit status alone does not establish SIGABRT.
+Neither this library nor its component evidence establishes Node startup or
+complete public tracing support. Component and engine evidence remain separate
+in the upstream runtime ledger.
 
 
 Nine focused controls pass on Node, Chromium, Firefox and WebKit with identical

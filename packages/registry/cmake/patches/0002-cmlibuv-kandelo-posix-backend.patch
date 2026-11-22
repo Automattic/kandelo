@@ -1,0 +1,61 @@
+# Build CMake's bundled libuv for Kandelo with libuv's portable POSIX
+# backend: poll(2) for the event loop (posix-poll.c), clock_gettime(2)
+# for time (posix-hrtime.c), /proc/self/exe for uv_exepath(), and no
+# file-system events or process titles; the set QNX and Cygwin use.
+# Without a platform block cmlibuv built only the shared Unix sources,
+# which leave uv__io_poll and the other platform functions undefined.
+#
+# uv/posix.h adds the poll backend's fields to uv_loop_t, so the define
+# that selects it (UV_PLATFORM_KANDELO) is a public compile definition:
+# CMake's own sources include uv.h and must see the same struct layout.
+--- a/Utilities/cmlibuv/CMakeLists.txt
++++ b/Utilities/cmlibuv/CMakeLists.txt
+@@ -337,6 +337,26 @@
+     )
+ endif()
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  # Kandelo, a POSIX environment for WebAssembly, takes libuv's portable
++  # POSIX backend: poll(2) for I/O and clock_gettime(2) for time, as on QNX
++  # and Cygwin. UV_PLATFORM_KANDELO selects uv/posix.h, which adds the poll
++  # backend's fields to uv_loop_t, so every user of uv.h must see it.
++  list(APPEND uv_headers
++    include/uv/posix.h
++    )
++  list(APPEND uv_defines
++    _GNU_SOURCE
++    )
++  list(APPEND uv_sources
++    src/unix/posix-hrtime.c
++    src/unix/posix-poll.c
++    src/unix/no-fsevents.c
++    src/unix/no-proctitle.c
++    src/unix/procfs-exepath.c
++    )
++endif()
++
+ include_directories(
+   ${uv_includes}
+   ${KWSYS_HEADER_ROOT}
+@@ -344,6 +364,9 @@
+ add_library(cmlibuv STATIC ${uv_sources})
+ target_link_libraries(cmlibuv ${uv_libraries})
+ set_property(TARGET cmlibuv PROPERTY COMPILE_DEFINITIONS ${uv_defines})
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  target_compile_definitions(cmlibuv PUBLIC UV_PLATFORM_KANDELO)
++endif()
+ 
+ if(WIN32 AND CMake_BUILD_PCH)
+   target_precompile_headers(cmlibuv PRIVATE "include/uv.h" "src/win/internal.h")
+--- a/Utilities/cmlibuv/include/uv/unix.h
++++ b/Utilities/cmlibuv/include/uv/unix.h
+@@ -73,7 +73,8 @@
+       defined(__MSYS__)   || \
+       defined(__HAIKU__)  || \
+       defined(__QNX__)    || \
+-      defined(__GNU__)
++      defined(__GNU__)    || \
++      defined(UV_PLATFORM_KANDELO)
+ # include "posix.h"
+ #endif
+ 

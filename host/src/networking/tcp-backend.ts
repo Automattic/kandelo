@@ -29,6 +29,27 @@ function mapNetErrnoCode(code: string | undefined): number {
 }
 
 /**
+ * Map a Node.js `dns.lookup` failure to the errno the private getaddrinfo
+ * syscall carries to libc (`libc/musl-overlay/src/network/lookup_name.c`).
+ *
+ * `ENOENT` means the resolver answered that the name has no IPv4 address;
+ * libc reports it as `EAI_NONAME`. Node folds the system resolver's
+ * `EAI_NONAME` and `EAI_NODATA` into `ENOTFOUND`. Every other resolver
+ * failure (`EAI_AGAIN`, `EAI_FAIL`, ...) is `EIO`, which libc reports as
+ * `EAI_FAIL`. Node's negative libuv `errno` values are not kernel errnos and
+ * must not be passed through.
+ */
+export function dnsLookupFailureErrno(err: { code?: unknown } | null | undefined): number {
+  switch (err?.code) {
+    case "ENOTFOUND":
+    case "ENODATA":
+      return 2; // ENOENT
+    default:
+      return 5; // EIO
+  }
+}
+
+/**
  * TcpNetworkBackend — real `net.Socket`-backed networking for the Node host.
  *
  * Crucially, every operation returns synchronously and never blocks via
@@ -260,7 +281,11 @@ export class TcpNetworkBackend implements NetworkIO {
       const e = entry;
       lookup(hostname, 4, (err, address) => {
         if (err || !address) {
-          e.error = err ?? new Error("ENOTFOUND");
+          const errno = dnsLookupFailureErrno(err ?? { code: "ENOTFOUND" });
+          e.error = Object.assign(
+            new Error(`getaddrinfo ${hostname}: ${err?.code ?? "ENOTFOUND"}`),
+            { errno },
+          );
         } else {
           const parts = address.split(".").map(Number);
           e.result = new Uint8Array(parts);

@@ -19,7 +19,7 @@ post-link job is decided by the same code.
 
 1. **Git and Nix with flakes enabled** for the repository build workflow.
    `./run.sh setup` requires Nix and enters the declared dev shell itself.
-   It supplies the pinned Rust nightly, LLVM 21 (including clang and wasm-ld),
+   It supplies the pinned Rust nightly, LLVM 23 (including clang and wasm-ld),
    Node.js 24, and the remaining build tools. See
    [Quick start](../README.md#quick-start) and
    [development environment](../CONTRIBUTING.md#development-environment).
@@ -138,7 +138,7 @@ wasm32posix-cc -O2 program.c -o program.wasm
 wasm32posix-c++ program.cpp -o program.wasm
 ```
 
-### Linking C++ programs (with exceptions)
+### Linking C++ programs
 
 C++ programs link against libc++ + libc++abi. Both are produced by
 the libcxx package (`packages/registry/libcxx/`) and resolved automatically
@@ -150,35 +150,85 @@ this target. `-nostdlib`, `-nodefaultlibs` and `-nostdlib++` turn that
 off; a shared library (`-shared`) takes the C++ library from the program
 that loads it. So the libcxx package must be in the sysroot of any build
 that links with `wasm32posix-c++`, including a configure check. LLVM
-libunwind is statically bundled into `libc++abi.a`, so:
+libunwind is statically bundled into `libc++abi.a`, so `_Unwind_*`
+symbols resolve internally, with no separate `-lunwind`.
+
+### C++ exceptions
+
+C++ exceptions work with no flag from the caller, as with every Unix C++
+compiler:
 
 ```bash
-wasm32posix-c++ -fwasm-exceptions main.cpp -o app.wasm
+wasm32posix-c++ main.cpp -o app.wasm
 ```
 
-works out of the box — `_Unwind_*` symbols resolve internally, no
-separate `-lunwind`.
+Kandelo implements C++ exceptions with WebAssembly exception handling. The
+SDK adds `-fwasm-exceptions` to every compile that has C++ input: any
+compile by `wasm32posix-c++` (which, like `clang++`, treats C sources as
+C++), and any compile by `wasm32posix-cc` of a C++ source or of input after
+`-x c++`. That flag makes clang keep `try`/`catch` handlers and unwinding
+cleanups as `try_table`/`catch_ref` code; without it clang deletes them and
+a `throw` ends the program. CMake, Meson, autotools and plain makefiles
+therefore need no Kandelo-specific flag, and the libcxx package is built
+the same way, so libc++'s own handlers and cleanups run too.
 
-`-fwasm-exceptions` is required for clang to lower C++ `try`/`catch`
-to wasm-EH `try_table` / `catch_ref` instructions. Without it, catch
-handlers are dead-code-eliminated and `throw` hangs at runtime.
+`-fno-exceptions` still turns C++ exceptions off; such a translation unit
+compiles to the same code as before the SDK enabled exceptions. C
+translation units, assembly and links of objects do not get the flag, so C
+code compiles exactly as before, including C compiled with `-fexceptions`.
 
-#### LLVM 21 SjLj and `noexcept` limitation
+An exception that no handler catches calls `std::terminate`, as the C++
+standard requires. The default terminate handler prints `libc++abi:
+terminating due to uncaught exception of type <type>: <what()>` and calls
+`abort()`, so the process is killed by `SIGABRT` and `waitpid` reports
+`WIFSIGNALED` with `WTERMSIG == SIGABRT`; a `std::set_terminate` handler
+runs instead when one is installed. On a native target the unwinder's
+search phase finds that no handler exists and `__cxa_throw` calls
+`std::terminate` itself. WebAssembly exception handling has no search
+phase, so Kandelo puts a handler at the bottom of every guest stack
+instead. libc runs the main thread's constructors, `main` and `exit`
+through `__kandelo_main_entry`, and each thread's start routine and thread
+exit through `__kandelo_pthread_entry` (or `__kandelo_thrd_entry` for C11
+threads). libc's weak definitions just run that code. The SDK links
+`libc/glue/cxxrt_entry.cpp` into every executable whose link includes
+libc++abi; its strong definitions run the same code inside `catch (...)`,
+which catches only C++ exceptions, and call `std::terminate` with the
+exception caught. C programs, and other exceptions such as `longjmp`'s and
+fork instrumentation's, are unaffected.
 
-Kandelo's pinned LLVM 21.1.7 toolchain lowers `longjmp` and `siglongjmp` to an
+One difference from Linux is observable: the C++ standard leaves it
+implementation-defined whether the stack is unwound before `std::terminate`
+is called. Linux's two-phase unwinder does not unwind; Kandelo does, so the
+destructors of the frames the exception left have run when the terminate
+handler starts.
+
+A failed throwing `operator new` calls the `std::new_handler` and, when
+there is none, throws `std::bad_alloc`; the `nothrow` forms return a null
+pointer. These are libc++'s definitions. The SDK's minimal fallback in
+`libc/glue/cxxrt.c` is linked lazily after libc++ (see "Files linked
+automatically"), so it no longer replaces them; it only serves C++ code
+linked without libc++.
+
+#### SjLj and `noexcept` limitation
+
+Kandelo's pinned LLVM 23.1.3 toolchain lowers `longjmp` and `siglongjmp` to an
 internal Wasm exception. If that transfer crosses a C++ `noexcept` frame,
 Clang's generated termination handler can intercept the internal tag before
 the matching `setjmp` or `sigsetjmp` landing consumes it. The process then
-calls `std::terminate()` even when the C control transfer itself is valid.
+calls `std::terminate()` (reported as `libc++abi: terminating`) even when the
+C control transfer itself is valid.
 
 This is a known SDK/toolchain limitation tracked in
 [issue #918](https://github.com/Automattic/kandelo/issues/918), not a change to
-POSIX signal or `longjmp` semantics. It is present in raw clang-linked wasm32
-and wasm64 modules and remains present after Kandelo's wasm32 fork
-instrumentation. Until the pinned compiler is fixed, code that establishes a
-jump landing and calls work that can jump back across the current frame must
-not mark that crossed frame `noexcept`. Keep the workaround scoped to that
-boundary; do not disable C++ exceptions, signal delivery, or child reaping.
+POSIX signal or `longjmp` semantics. On LLVM 21.1.7 it was present in raw
+clang-linked wasm32 and wasm64 modules and remained present after Kandelo's
+wasm32 fork instrumentation. On LLVM 23.1.3 it was re-checked only in a raw
+clang-linked wasm32 C++ module built at `-O1`, where it still reproduces; the
+wasm64 and fork-instrumented cases have not been re-checked. Until the pinned
+compiler is fixed, code that establishes a jump landing and calls work that
+can jump back across the current frame must not mark that crossed frame
+`noexcept`. Keep the workaround scoped to that boundary; do not disable C++
+exceptions, signal delivery, or child reaping.
 
 ### Building static libraries
 
@@ -226,10 +276,11 @@ not currently supported.
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
 -mllvm -wasm-enable-sjlj           # Enable setjmp/longjmp
-# Modern wasm-EH lowering (try_table/catch_ref) is LLVM's default
-# since version ≥17; we no longer override with `-wasm-use-legacy-eh=true`
-# (removed in commit 9 of the fork-instrument mega-PR, 2026-05-14).
+-mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
+                                   # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
+-fwasm-exceptions                  # Compiles with C++ input only (see
+                                   # "C++ exceptions")
 --sysroot=<path>                   # musl sysroot
 -ffile-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
 -fdebug-prefix-map=<glue>=/usr/src/kandelo-sdk/libc/glue
@@ -326,6 +377,15 @@ activating `kandelo-fncasts` also registers the LLVM passes, through
 `-load` alone produces the same object bytes as the normal library with
 `-fpass-plugin`.
 
+**Known gap: precompiled headers.** A translation unit compiled with a
+clang precompiled header (`-include-pch`, CMake's
+`target_precompile_headers`) gets different AST-side facts than the same
+unit compiled from its own includes: some template-related flow facts are
+missing and others are added. The LLVM-side facts match. Missing flow facts
+could make fork analysis unsound, so builds whose objects feed fork
+instrumentation should not use precompiled headers until the plugin handles
+them. The `clang` package disables LLVM's default PCH for this reason.
+
 **Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
 and an optimization level is set. Binaryen inlines and merges functions,
 which would move call sites to other functions and make per-function facts
@@ -334,10 +394,28 @@ linked module:
 
 - A module that imports `kernel.kernel_fork` (it can fork) keeps its
   `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
-  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+  fork-instrumented next; the instrumenter runs `wasm-opt -Os` itself after
   instrumenting.
-- Any other module loses the section and then gets exactly the `wasm-opt`
-  command clang scheduled.
+- Any other module loses the section and then gets the `wasm-opt` command
+  clang scheduled, plus `--skip-pass=constraint-analysis`.
+
+Both `wasm-opt` runs skip Binaryen's `constraint-analysis` pass, which
+Binaryen 133 schedules at `-O3`, `-O4`, `-Os` and `-Oz`. In 133 the pass
+aborts on some LLVM 23 output, and it measured no worthwhile size or speed
+win on Kandelo's programs. The skip is a decision to revisit, not a
+permanent setting: see the registry entry
+[`BINARYEN-133-CONSTRAINT-ANALYSIS`](../tests/runtime-workarounds/BINARYEN-133-CONSTRAINT-ANALYSIS/entry.md)
+and [Revisit Binaryen's constraint-analysis pass](future-improvements.md#revisit-binaryens-constraint-analysis-pass).
+A recipe that runs `wasm-opt` itself at one of those levels must pass the
+same flag.
+
+Last, the SDK stamps every executable it links (not shared libraries)
+with the `kandelo.abi.contract` digest from the glue
+directory's `kandelo-abi-contract.txt`, which the host compares with the
+running kernel's before it runs the program
+([ABI versioning](abi-versioning.md)). `wasm-opt`, the fork instrumenter
+and `strip` keep the section. A link whose output already carries another
+digest fails rather than restamping it.
 
 Facts never ship. `install_local_binary` removes `kandelo.calltypes` and
 `kandelo.calltypes.code-sha256` from every artifact it installs, because a
@@ -463,8 +541,8 @@ slot in the pinned Clang trace and fails before linking if the trace omits or
 contradicts that invariant. Debug, coverage, and file compilation-directory
 options do not affect linker response resolution.
 
-LLVM 21 accepts the lld forms `-z stack-size=<bytes>` and
-`-zstack-size=<bytes>`. Stack sizes follow LLVM 21's radix-0 integer syntax:
+The pinned LLD 23.1.3 accepts the lld forms `-z stack-size=<bytes>` and
+`-zstack-size=<bytes>`. Stack sizes follow LLVM's radix-0 integer syntax:
 decimal, leading-zero or `0o` octal, `0x`/`0X` hexadecimal, and `0b`/`0B`
 binary.
 
@@ -495,7 +573,17 @@ live in `crates/kandelo-cc/src/flags.rs`, shared by both SDK builds.
 When linking an executable (not compile-only), the SDK adds:
 - `libc/glue/channel_syscall.c` — syscall dispatcher
 - `libc/glue/compiler_rt.c` — soft-float and 64-bit builtins
+- `libc/glue/dlopen.c` — the dynamic loader, with `-ldl`
+- `libc/glue/cxxrt_entry.cpp` — the C++ runtime's entries (see "C++
+  exceptions"), when the link includes libc++abi: the C++ driver adds it, or
+  the caller names `-lc++abi` or `libc++abi.a`
 - `sysroot/lib/crt1.o` — C runtime startup
+- `libc/glue/cxxrt.c` — a minimal C++ runtime (`operator new`/`delete`,
+  `__cxa_pure_virtual`) for C++ code linked without libc++ and libc++abi,
+  as a lazy member (`--start-lib`) after the caller's inputs and the C++
+  libraries, so it supplies only what nothing earlier defined. Its throwing
+  `operator new` aborts on failure, since there is no exception runtime to
+  throw `std::bad_alloc`.
 - `sysroot/lib/libc.a` — musl libc
 
 The injected glue and startup objects precede user linker inputs, and the final
@@ -621,6 +709,12 @@ and libc behavior. It is not the compiler code-generation triple and does not
 promise a Linux kernel: `wasm32posix-cc` continues to invoke Clang with
 `--target=wasm32-unknown-unknown`, and Kandelo's documented POSIX surface
 remains authoritative.
+
+The tuple is not the operating system's name. gnulib's host-os module would
+derive "GNU/Linux" from it and bake that into programs at configure time, so
+`sdk/config.site` (below) sets `gl_cv_host_operating_system` to `Kandelo`;
+GNU coreutils prints that value for `uname -o`. The kernel's own name,
+`wasm-posix`, comes from `uname(2)` at run time.
 
 The wrapper also loads `sdk/config.site`. That file is authoritative for
 shared target facts that cross-compilation cannot discover reliably, including
@@ -754,6 +848,9 @@ missing because every executable link is strict: the SDK leaves undefined only
 the imports the host provides (`libc/glue/kandelo-host-imports.txt`), so a bare
 `cc.has_function()` is truthful.
 
+Meson and Ninja also run inside Kandelo, for native builds there without a
+cross file; see [GNU build tools](#gnu-build-tools).
+
 ## Fork instrumentation (`wasm-fork-instrument`)
 
 **Persistence warning:** user-built forking programs cannot currently be
@@ -783,7 +880,7 @@ wasm32posix-cc program.c -o program.wasm
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
+# file needed — then runs wasm-opt -Os over the result. The wrapper builds
 # the tool on demand if tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
@@ -796,6 +893,50 @@ invalid.
 
 See [`docs/fork-instrumentation.md`](fork-instrumentation.md) for the
 exported ABI, save-buffer format, and the dispatch-scheme decisions.
+
+## Inspecting build output
+
+SDK output is WebAssembly, not ELF. The Kandelo shell carries two sets of
+tools for reading it: LLVM's binary tools (`objdump`, `nm`, `ar`, `size`,
+`strip`, `llvm-readobj`, ..., from the `clang` package) and `wasm-tools`.
+On the build machine the dev shell provides the same LLVM tools as
+`llvm-objdump`, `llvm-nm` and so on; `wasm-tools` is only in the Kandelo
+shell. Which to use depends on the file:
+
+| Task | Use | Notes |
+|---|---|---|
+| Symbols and relocations of a `cc -c` object | `objdump -t`, `objdump -r`, `nm` | `wasm-tools dump` decodes the same linking records, but as raw entries |
+| Members of an archive | `ar t`, `nm` | |
+| Section list | `objdump -h` or `wasm-tools objdump` | Both list every custom section, including `kandelo.*` |
+| Disassembly of a program that was not fork-instrumented | `objdump -d` or `wasm-tools print -p` | |
+| Disassembly of a fork-instrumented program | `wasm-tools print -p` | See below |
+| A side module's `dylink.0` (memory and table sizes and its other entries) | `wasm-tools dump` | The LLVM tools name the section but do not decode it |
+| Whether a module is valid | `wasm-tools validate` | |
+| Remove debug information | `strip` | See below |
+
+**`objdump -d` is incomplete on fork-instrumented programs.** LLVM's Wasm
+disassembler knows only the instructions LLVM generates. Fork
+instrumentation runs after the link and adds valid instructions LLVM never
+emits, such as `ref.null noexn`, `ref.as_non_null`, `table.init` and
+`elem.drop`; `objdump -d` prints each as `<unknown>` and continues.
+`bash.wasm`, for example, has 160 of them. The program is valid and runs;
+only the listing is incomplete. `wasm-tools print -p` decodes every
+instruction and prints each one's byte offset as a comment, so the same
+offsets can be compared with `objdump` output. Object files from `cc -c`
+are not instrumented, so `objdump` reads them completely.
+
+**Stripping.** `strip` (`llvm-objcopy` in strip mode) removes debug, `name`
+and `producers` sections and keeps the `kandelo.*` sections, including the
+`kandelo.abi.contract` stamp; a stripped program loads as before.
+`wasm-tools strip` removes every custom section except `name` by default,
+including the ABI stamp and the fork-instrumentation metadata. The kernel
+then runs the program as an unstamped legacy binary, with a warning. Use
+`strip` unless you mean to remove Kandelo's sections.
+
+There is no plain `readelf`. On Wasm, `llvm-readobj` answers ELF questions
+such as `readelf -d` (`NEEDED`, `SONAME`) with empty output and exit 0, so a
+script that runs `readelf` would conclude a program has no dependencies.
+`llvm-readobj` and `llvm-readelf` are installed for explicit use.
 
 ## Environment Variables
 
@@ -849,15 +990,31 @@ references in `shell.vfs.zst`. Opening a compiler or SDK file fetches
 `/usr`. Shell startup does not fetch the ZIP. Its compressed byte count
 and SHA-256 are recorded in the shell image and verified on download.
 
-The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
-It contains the source-built `clang@21.1.7` tools, matching Clang resource
+The ZIP is the declared output of `kandelo-sdk-browser-bundle@23.1.3`.
+It contains the source-built `clang@23.1.3` tools, matching Clang resource
 headers, musl and libc++ sysroot, syscall glue, the SDK driver
 (`kandelo-cc`) and Binaryen's `wasm-opt`. The five
 LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
 under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
 `wasm32posix-ar`, ..., `wasm32posix-configure`) and as `cc`, `c89`, `c99`
-and `c++`. This delivery uses the base shell's existing lazy archive
-mechanism and requires no separate compiler image.
+and `c++`; `ld` runs `wasm-ld` (see [GNU build tools](#gnu-build-tools)).
+This delivery uses the base shell's existing lazy archive mechanism and
+requires no separate compiler image.
+
+The archive's sysroot holds only the SDK's declared content: the files in
+the musl output receipt (checked against their recorded digests), the
+other files `scripts/build-musl.sh` installs, the
+[platform graphics libraries](#sysroot-platform-libraries), and libc++
+from the declared `libcxx` dependency. The build machine's `sysroot/` is
+shared and also holds libraries other tools stage there, such as the
+GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
+fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind.
+The `kandelo-sdk` image's package build stages its sysroot through the
+same script and passes the `libcxx` output separately. Its image builder,
+`images/vfs/scripts/build-kandelo-sdk-vfs-image.sh`, has no default
+sysroot: it requires both inputs and refuses a sysroot that still holds
+the build machine's musl output receipt, other `.kandelo-*` stamps, or
+libc++.
 
 In a shell session:
 
@@ -875,7 +1032,8 @@ SDK driver (`crates/kandelo-cc`) built for Kandelo, so a command runs the
 same compiler, linker and post-link jobs it would on the build machine:
 the Kandelo target flags, the glue compiled into each executable, the
 link layout, the compiler facts, and clang's post-link `wasm-opt` for
-modules that do not fork. Only toolchain discovery differs: inside
+modules that do not fork, which skips the same Binaryen pass (see
+**Links** above). Only toolchain discovery differs: inside
 Kandelo the driver uses the fixed `/usr` layout above (overridable with
 the same `WASM_POSIX_*` variables), and clang has the facts plugin
 compiled in (see [Compiler facts for fork instrumentation](#compiler-facts-for-fork-instrumentation)).
@@ -903,14 +1061,16 @@ the compiler entry point, which prepares Rust executable outputs before
 Cargo runs build scripts or programs. C/C++ links retain their normal
 explicit preparation step.
 
-Programs compiled here, like programs compiled ad hoc with the build
-machine's SDK, lack the `kandelo.abi.contract` digest stamp added by
-package admission. The current host accepts an absent stamp with a
-warning during the digest rollout; a present mismatched digest still
-fails.
+Programs linked here carry the `kandelo.abi.contract` digest, as programs
+linked by the build machine's SDK do: `cc` stamps it on every executable
+it links, from `kandelo-abi-contract.txt` in the SDK's glue directory. The
+host refuses a program whose digest differs from the running kernel's.
+A program built by an SDK that predates link-time stamping lacks the
+digest; the host still accepts it with a warning during the digest
+rollout.
 
 DWARF from `-g` builds records clang's resource directory, which is
-`/usr/lib/llvm/lib/clang/21` here and a different path on the build
+`/usr/lib/llvm/lib/clang/23` here and a different path on the build
 machine, so `-g` outputs are not byte-identical between the two SDKs.
 
 Running the build machine's jobs costs time inside Kandelo: a link runs
@@ -952,3 +1112,177 @@ and `llvm-nm` through the guest wrappers, then links and runs its caller.
 `apps/browser-demos/test/kandelo-compiler.spec.ts` runs the same guest
 programs and checks browser ZIP requests. The `void main` adapter is a
 compatibility extension; portable C programs should return `int`.
+
+## GNU build tools
+
+The shell (and every image built on it) and the build image that package
+builds boot carry the GNU build tools, so a project that ships
+`configure.ac` and `Makefile.am` builds inside Kandelo with the usual
+commands:
+
+```sh
+autoreconf -fi
+./configure
+make
+make check
+```
+
+| Package | Commands |
+|---|---|
+| `autoconf` 2.73 | `autoconf`, `autoreconf`, `autoheader`, `autom4te`, `autoscan`, `autoupdate`, `ifnames` |
+| `automake` 1.20 | `automake`, `aclocal` |
+| `libtool` 2.6.2 | `libtoolize`, `libtool` |
+| `autoconf-archive` | The `AX_*` macros in `/usr/share/aclocal` |
+| `gettext` 1.0 | `autopoint`, `gettextize`, `msgfmt`, `xgettext`, `msgmerge`, the other `msg*` programs, `gettext`, `ngettext`, `envsubst` |
+| `pkgconf` 3.0.10 | `pkgconf`, `pkg-config` |
+| `bison` 3.8.2 | `bison` (`yacc` stays Berkeley yacc) |
+| `gperf` 3.3 | `gperf` |
+| `texinfo` 7.3 | `makeinfo`/`texi2any`, `texindex`, `install-info` |
+| `help2man` 1.49.3 | `help2man` |
+| `meson` 1.12.1 | `meson` |
+| `ninja` 1.13.2 | `ninja` |
+
+The list is `images/vfs/lib/init/dev-tools.ts`. In the shell each tool
+is a lazy file or archive, fetched on first use; the build image holds
+them resident, together with Perl, Python and `tar`, `gzip`, `bzip2` and
+`xz`.
+Autoconf, Automake, help2man and `texi2any` are Perl and m4 programs and
+run `/usr/bin/perl` and `/usr/bin/m4`. Texinfo's Perl runs without its
+optional XS modules: Kandelo's Perl is built without dynamic loading, and a
+package patch keeps Texinfo from requiring `DynaLoader` when XS is off.
+
+Each package's manual pages are a `<package>-docs` lazy archive in the
+shell (`man autoreconf`, `man msgfmt`, `man pkg-config`, `man meson`); the
+build image carries no manual pages. Ninja has no upstream page; its page
+is made with help2man from what `ninja --help` prints inside Kandelo. Libtool's pages are made from what `libtool`,
+`libtoolize` and `libtool-next-version` print running inside Kandelo,
+because upstream's describe the maintainer's x86_64 Linux build. The
+Autoconf Archive installs macros, not commands, and has none.
+`/usr/bin/gettext.sh` is a function library, not a command, so it has no
+page either (`packages/registry/gettext/README.md`).
+
+**Build identity.** Inside Kandelo, `uname` reports `wasm32`,
+`wasm-posix` and `kandelo`, which upstream `config.guess` does not know.
+The `config.guess` that Automake and Libtool install, and `autoreconf -fi`
+copies into a project, is patched to answer `wasm32-unknown-linux-musl`:
+the identity the SDK's `configure` wrapper already gives GNU build systems
+for cross builds (see `sdk/config.site`). It names musl's userland and does
+not claim a Linux kernel or define `__linux__`. Because the build and host
+types match, `configure` runs natively: its run tests execute inside
+Kandelo instead of being answered from a cache. A release tarball whose
+own `config.guess` predates this stops with "unable to guess system type";
+run `autoreconf -fi`, or pass `--build=wasm32-unknown-linux-musl`.
+
+**Meson and Ninja.** A Meson project builds natively with
+`meson setup build`, `ninja -C build` (or `meson compile -C build`),
+`meson test -C build` and `meson install -C build`. Meson is Python: its
+package is in `/usr/lib/meson`, outside Python's own tree, and
+`/usr/bin/meson` runs it with `/usr/bin/python3`.
+It describes the machine as `uname` does: `host_machine.system()` is
+`wasm-posix` and `cpu_family()` is `wasm32`, with no native file; this
+differs from the SDK's cross files, which say `linux` for cross builds.
+Meson would name executables `<name>.js` on a system whose name starts
+with `wasm`, an Emscripten convention, so a package patch keeps Kandelo's
+unsuffixed. As with Libtool, build static libraries: `library()` defaults
+to shared, and linking an executable against a shared library fails, so
+use `static_library()` or `-Ddefault_library=static`. Kandelo reports one
+online processor, so Ninja runs two jobs and `meson test` one test at a
+time unless told otherwise. `packages/registry/meson/README.md` and
+`packages/registry/ninja/README.md` have the detail.
+
+**Libtool** builds static libraries only. A Kandelo executable cannot be
+linked against a shared library (`cc` builds `-shared` side modules for
+`dlopen`, but linking a program against one fails with "attempted static
+link of dynamic object"). Given the `linux-musl` identity, upstream
+libtool would build `libfoo.so` and fail to link programs against it, so
+the shipped `libtool.m4` reports no dynamic linker on Kandelo (a package
+patch), and `libtool` installs `.a` archives whatever `LT_INIT` asks for.
+A release tarball whose bundled `libtool.m4` predates this needs
+`--disable-shared`, or `autoreconf -fi`. Libtool cannot build `dlopen`
+modules (`-module`) on Kandelo; build those with `cc -shared`.
+
+**`ld`** is `/usr/bin/ld`, a script that runs the SDK's `wasm-ld`. It
+is not a symlink because LLD picks which linker to be from the name it
+runs as, and Kandelo's LLD has only the WebAssembly one; the script's
+comment (in `images/vfs/scripts/build-kandelo-sdk-zip.sh`) has the
+detail. Configure scripts look for an `ld` on PATH (libtool's
+`LT_PATH_LD`, and gnulib's `lib-ld.m4` behind gettext and
+`AC_LIB_LINKFLAGS`) and stop without one; they use it only for
+relocatable links (`ld -r`) and to classify the linker. Link programs
+with `cc`: a direct `ld` link does not add the syscall glue, ABI stamp
+and fork instrumentation the SDK driver adds.
+
+**pkg-config** searches `/usr/local/lib/pkgconfig`, `/usr/local/share/pkgconfig`,
+`/usr/lib/pkgconfig`, `/usr/share/pkgconfig` and the guest SDK sysroot's
+`lib/pkgconfig` and `share/pkgconfig`, so it finds what `make install`
+puts under `/usr/local` and the libraries `cc` links against. The SDK's
+`wasm32posix-pkg-config` runs it too.
+
+`host/test/guest-autotools.test.ts` builds a project that uses every one
+of these tools (an Autoconf Archive macro, Libtool, a Bison grammar, a
+gperf table, a Texinfo manual, a help2man page and a pkg-config module)
+with `autoreconf -fi`, `./configure`, `make` and `make check` in the build
+image. `host/test/guest-meson.test.ts` configures a Meson project (header,
+function and size probes, a static library and an executable linked
+against it), builds it with Ninja, and runs `meson test` and
+`meson install` there. In the browser,
+`apps/browser-demos/test/kandelo-build-systems.spec.ts` (tagged `@slow`)
+builds one C project with CMake, Meson and Ninja, and autotools in the
+base shell, each tool fetched on first use, and runs each build's program.
+
+## CMake inside Kandelo
+
+The shell (and every image built on it) and the build image carry CMake
+4.5 (`cmake`, `ctest`, `cpack`; the `cmake` package), so a CMake project
+configures, builds, tests and packages inside Kandelo with the usual
+commands, using the guest `cc`/`c++` and GNU `make`:
+
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build
+```
+
+The programs are in `images/vfs/lib/init/dev-tools.ts` with the GNU build
+tools; `/usr/share/cmake-4.5` (Modules, Templates and the Help files that
+`cmake --help-*` reads) is the lazy archive `cmake-data.zip`, and their
+manual pages, `cmake(1)`, `ctest(1)`, `cpack(1)` and the `cmake-*(7)`
+references, are `cmake-docs`.
+
+**System name.** Kandelo's `uname` reports sysname `wasm-posix`; CMake
+names the machine `Kandelo` (`CMAKE_SYSTEM_NAME` and
+`CMAKE_HOST_SYSTEM_NAME`), the name cross builds with
+`sdk/cmake/kandelo-toolchain.cmake` already use, and
+`CMAKE_SYSTEM_PROCESSOR` is `wasm32`. The build is native
+(`CMAKE_CROSSCOMPILING` is false), so `try_run()` and
+`check_c_source_runs()` run their tests inside Kandelo. Kandelo is not
+Linux to CMake either: projects that branch on `Linux` take their generic
+Unix path.
+
+**Static libraries only.** CMake's `Platform/Kandelo` module says the
+platform has no shared libraries, for the reason Libtool builds none
+above. Under policy CMP0164 (`cmake_minimum_required(VERSION 3.30)` or
+later), `add_library(... SHARED)` and `add_library(... MODULE)` stop with
+"the target platform does not support dynamic linking"; older projects
+get CMake's warning and a static library. `find_library()` finds `.a`
+files only. Build `dlopen` side modules with `cc -shared`.
+
+**C++ exceptions** need no flag: the SDK enables them for every C++
+compile (see [C++ exceptions](#c-exceptions)), so `try`/`catch` works in a
+CMake project as written.
+
+**Packages.** `find_package()` and `pkg_check_modules()` search `/usr/local`
+and `/usr`, and pkg-config finds the guest SDK's libraries (see above).
+`cpack` writes archives (`TGZ` and the other archive generators) through
+CMake's libarchive. `file(DOWNLOAD)`, `FetchContent` and `ExternalProject` use
+the `libcurl` package (with OpenSSL). They need a machine with a network:
+on the Node host that means `enableTcpNetwork`, and without one, name
+lookup fails ("Could not resolve hostname"). Guest package builds
+(`runGuestBuild`) have no network, so a project built there must not
+download at configure time.
+
+`ccmake`, `cmake-gui` and `cmake --debugger` are not built
+(`packages/registry/cmake/README.md`). `host/test/guest-cmake.test.ts`
+configures, builds, tests and packages a C and C++ project with a static
+library, a pkg-config module, configure checks that run, a `SHARED` library
+that falls back to static, `ctest` and `cpack`, in the build image.

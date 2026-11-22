@@ -1,4 +1,4 @@
-import type { NetworkIO, TcpListenTarget, UdpDatagram, UdpReceiveTarget } from "../types";
+import type { ConnectedComputerName, NetworkIO, TcpListenTarget, UdpDatagram, UdpReceiveTarget } from "../types";
 import { isIpv4Multicast, LocalVirtualNetwork, type VirtualNetworkBackend } from "./virtual-network";
 import { IPV4_UDP_MAX_PAYLOAD } from "./remote-udp-codec";
 import { NET_READINESS } from "../generated/abi";
@@ -170,6 +170,21 @@ export class RemoteVirtualNetwork implements NetworkIO {
 
   get localAddress(): Uint8Array | undefined { return this.local?.localAddress; }
   get localNetmask(): Uint8Array | undefined { return this.local?.localNetmask; }
+
+  connectedComputerNames(): { canonicalName: string; hostname: string; address: Uint8Array }[] {
+    if (this.closed) return [];
+    const names = new Map<string, ConnectedComputerName>(
+      (this.fallback?.connectedComputerNames?.() ?? []).map((entry) => [entry.hostname, { ...entry, address: entry.address.slice() }]),
+    );
+    for (const entry of this.network.connectedComputerNames()) names.set(entry.hostname, entry);
+    return [...names.values()];
+  }
+
+  onConnectedComputerNamesChanged(listener: () => void): () => void {
+    const stopLocal = this.network.onConnectedComputerNamesChanged(listener);
+    const stopFallback = this.fallback?.onConnectedComputerNamesChanged?.(listener);
+    return () => { stopLocal(); stopFallback?.(); };
+  }
 
   /** Whether `addr` belongs to this segment's subnet. */
   static routes(addr: Uint8Array): boolean { return inSegment(addr); }

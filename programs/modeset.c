@@ -1393,8 +1393,38 @@ static int egl_startup_failure(const char *operation, int status) {
     return status;
 }
 
+static const char help_text[] =
+    "Usage: modeset\n"
+    "\n"
+    "Run an interactive fluid simulation on the display through DRM/KMS.\n"
+    "\n"
+    "modeset is a GLES2 port of Pavel Dobryakov's WebGL Fluid Simulation,\n"
+    "with bloom, sunrays and shading. It opens /dev/input/mice and\n"
+    "/dev/dri/card0, becomes the DRM master, sets the first connector's first\n"
+    "mode on the first CRTC, and renders with EGL and OpenGL ES 2 into a GBM\n"
+    "surface of that mode's size, presenting each frame with a page flip.\n"
+    "The GL implementation must provide GL_OES_texture_half_float,\n"
+    "GL_OES_texture_half_float_linear and GL_EXT_color_buffer_half_float.\n"
+    "\n"
+    "Two splats of dye start the simulation. Moving the mouse with a button\n"
+    "held pushes the fluid and adds dye, whose colour changes every few\n"
+    "frames. Progress messages are written to standard error. modeset runs\n"
+    "until it is killed or a display operation fails, and exits with a\n"
+    "non-zero status on failure. Other arguments are ignored.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("modeset (Kandelo modeset) 0.1.0\n", stdout);
+        return 0;
+    }
 
     if (atexit(cleanup_display) != 0) {
         fprintf(stderr, "fluid: could not register display cleanup\n");

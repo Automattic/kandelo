@@ -19,6 +19,18 @@ beforeAll(() => {
 }, 120_000);
 afterAll(() => { fixture?.cleanup(); gemFixture?.cleanup(); inheritedFixture?.cleanup(); });
 
+async function ownedOutput(host: NodeKernelHost, id: string) {
+  // Owned command output is deliberately withheld from terminal callbacks.
+  // Read the bounded public stream, including its actual retirement state.
+  const state = await host.readOwnedJob(id, 0, 65536);
+  if (state.expired) throw new Error(`Owned fixture output expired: ${id}`);
+  expect(state.hasMore || state.truncated, "small fixture output is complete").toBe(false);
+  const text = (stream: "stdout" | "stderr") => state.chunks
+    .filter(chunk => chunk.stream === stream)
+    .map(chunk => new TextDecoder().decode(chunk.bytes)).join("");
+  return { ...state, stdout: text("stdout"), stderr: text("stderr") };
+}
+
 // Both guests retain a kernel handle and cursor reference. Mapping the
 // import before allocator exit must not decide whether that handle survives.
 it.each(["unmapped-owner", "mapped-owner", "terminate-owner", "trap-owner"])(
@@ -74,11 +86,8 @@ it.each(["unmapped-owner", "mapped-owner", "terminate-owner", "trap-owner"])(
 );
 
 it.each(["namespace", "prime"])("preserves the guest DRM file contract (%s)", async mode => {
-  let stdout = "", stderr = "";
   const diagnostics: unknown[] = [];
   const host = new NodeKernelHost({
-    onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
-    onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
     onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
   });
   try {
@@ -88,9 +97,16 @@ it.each(["namespace", "prime"])("preserves the guest DRM file contract (%s)", as
         uid: 1000, gid: 1000,
         ownedJob: { id: "gem-namespace", timeoutMs: 15_000 },
       });
-    expect(code, stdout + stderr).toBe(0);
-    expect(stdout).toContain(mode === "prime" ? "prime namespace: ok" : "inherited namespace: ok");
-    expect(stderr).toBe("");
+    let output = await ownedOutput(host, "gem-namespace");
+    expect(code, output.stdout + output.stderr).toBe(0);
+    await expect.poll(async () => {
+      output = await ownedOutput(host, "gem-namespace");
+      return output.terminationObserved;
+    }, { timeout: 15_000, interval: 10 }).toBe(true);
+    expect(output.status).toBe("completed");
+    expect(output.exitCode).toBe(0);
+    expect(output.stdout).toContain(mode === "prime" ? "prime namespace: ok" : "inherited namespace: ok");
+    expect(output.stderr).toBe("");
   } finally {
     await host.destroy();
   }
@@ -100,23 +116,22 @@ it.each(["namespace", "prime"])("preserves the guest DRM file contract (%s)", as
 it.each(["master", "cursor"])("retains the inherited KMS file after opener Worker retirement (%s)", async mode => {
   let stdout = "", stderr = "", openerPid = 0, childPid = 0;
   const diagnostics: unknown[] = [];
-  let resolveReady!: () => void;
-  const ready = new Promise<void>(resolve => { resolveReady = resolve; });
   let resolveChildExit!: (status: number | undefined) => void;
   const childExit = new Promise<number | undefined>(resolve => { resolveChildExit = resolve; });
   const host = new NodeKernelHost({
-    onStdout: (_pid, data) => {
-      stdout += new TextDecoder().decode(data);
-      const match = stdout.match(/kms-inherited-child=(\d+)/);
-      if (match) childPid = Number(match[1]);
-      if (stdout.includes(`inherited ${mode} after opener retirement: ready`)) resolveReady();
-    },
-    onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
     onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
     onProcessEvent: event => {
       if (event.kind === "exit" && event.pid === childPid) resolveChildExit(event.exitStatus);
     },
   });
+  const observeOutput = async () => {
+    const output = await ownedOutput(host, "kms-inherited-file");
+    stdout = output.stdout;
+    stderr = output.stderr;
+    const match = stdout.match(/kms-inherited-child=(\d+)/);
+    if (match) childPid = Number(match[1]);
+    return output;
+  };
   try {
     await host.init();
     const openerExit = await host.spawn(Uint8Array.from(readFileSync(inheritedFixture.programPath)).buffer,
@@ -125,6 +140,7 @@ it.each(["master", "cursor"])("retains the inherited KMS file after opener Worke
         ownedJob: { id: "kms-inherited-file", timeoutMs: 15_000 },
         onStarted: pid => { openerPid = pid; },
       });
+    await observeOutput();
     expect(openerExit, stdout + stderr).toBe(0);
     expect(childPid).toBeGreaterThan(0);
     await host.terminateProcess(openerPid, 0);
@@ -132,12 +148,18 @@ it.each(["master", "cursor"])("retains the inherited KMS file after opener Worke
     // live while the orphaned child retains its read end; PPID no longer
     // identifies its source after the opener has been reaped.
     host.appendStdinData(openerPid, new TextEncoder().encode("g"));
-    await Promise.race([ready, childExit.then(status => {
-      throw new Error(`Child exited before ready (${status}): ${stdout} ${stderr}`);
-    })]);
+    await expect.poll(async () => {
+      const output = await observeOutput();
+      if (output.status !== "running") {
+        throw new Error(`Family ended before ready (${output.status}): ${stdout} ${stderr}`);
+      }
+      return stdout.includes(`inherited ${mode} after opener retirement: ready`);
+    }, { timeout: 15_000, interval: 10 }).toBe(true);
     host.appendStdinData(openerPid, new TextEncoder().encode("q"));
     expect(await childExit, stdout + stderr).toBe(0);
     await host.terminateProcess(childPid, 0);
+    await expect.poll(async () => (await observeOutput()).terminationObserved,
+      { timeout: 15_000, interval: 10 }).toBe(true);
     expect(stdout).toContain("inherited KMS file: ok");
     expect(stderr).toBe("");
   } finally {

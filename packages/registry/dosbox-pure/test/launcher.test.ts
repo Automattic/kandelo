@@ -15,11 +15,12 @@ describe("dos-play in Kandelo", () => {
   let kernel: ArrayBuffer;
   let goodImage: Uint8Array;
   let corruptImage: Uint8Array;
+  let staleLockImage: Uint8Array;
   beforeAll(async () => {
     kernel = Uint8Array.from(readFileSync(resolveBinary("kernel.wasm"))).buffer;
     const archive = zipSync({ "release/SMOKE.COM": dosSmokeCom(false), "release/LICENSE": new TextEncoder().encode("fixture notice") });
     const digest = createHash("sha256").update(archive).digest("hex");
-    const make = async (sha: string) => {
+    const make = async (sha: string, staleLockPid?: string) => {
       const fs = KandeloImageFs.create();
       fs.setImageCapacity(64 * 1024 * 1024);
       for (const dir of ["/bin", "/usr/bin", "/usr/share/dos-play", "/fixtures", "/home/player", "/tmp"])
@@ -39,10 +40,20 @@ describe("dos-play in Kandelo", () => {
       fs.writeFile("/usr/share/dos-play/games.tsv", new TextEncoder().encode(
         `smoke\t${archive.length}\t${sha}\tfile:///fixtures/game.zip\tzip\trelease\tSMOKE.COM\tDOS smoke fixture\tCC0-1.0\n`), 0o644);
       fs.writeFile("/fixtures/game.zip", archive, 0o644);
+      if (staleLockPid !== undefined) {
+        // The lock a download killed outright leaves behind.
+        const lock = "/home/player/.local/share/dos-play/.smoke.lock";
+        ensureDirRecursive(fs, lock);
+        for (const dir of ["/home/player/.local", "/home/player/.local/share", "/home/player/.local/share/dos-play", lock])
+          fs.chown(dir, 1000, 1000);
+        fs.writeFile(`${lock}/pid`, new TextEncoder().encode(`${staleLockPid}\n`), 0o644);
+        fs.chown(`${lock}/pid`, 1000, 1000);
+      }
       return fs.saveImage();
     };
     goodImage = await make(digest);
     corruptImage = await make("0".repeat(64));
+    staleLockImage = await make(digest, "999999");
   }, 600_000);
 
   async function boot(image: Uint8Array) {
@@ -87,4 +98,14 @@ describe("dos-play in Kandelo", () => {
       expect(await host.readFileFromVfs("/home/player/.local/share/dos-play/.smoke.lock/download")).toBeNull();
     } finally { await host.destroy(); }
   }, 90_000);
+
+  it("takes over the lock of a download whose process no longer exists", async () => {
+    const { host, run, log } = await boot(staleLockImage);
+    try {
+      expect(await run("smoke", "--frames", "60"), log()).toBe(0);
+      expect(log()).toContain("Removing the lock of an interrupted download: smoke");
+      expect(log()).toContain("running x86 interpreter");
+      expect(await host.readFileFromVfs("/home/player/.local/share/dos-play/.smoke.lock/pid")).toBeNull();
+    } finally { await host.destroy(); }
+  }, 120_000);
 });

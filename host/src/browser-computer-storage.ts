@@ -16,7 +16,16 @@ export function browserComputerIdForStorageName(name: string): string | null {
 }
 
 export async function browserComputersDirectory(create = true): Promise<FileSystemDirectoryHandle> {
-  const root = await navigator.storage.getDirectory();
+  let root: FileSystemDirectoryHandle;
+  try { root = await navigator.storage.getDirectory(); }
+  catch (cause) {
+    // Why: this runs before a guest exists. Preserve the native error while
+    // identifying storage bootstrap, so a generic UnknownError isn't reported
+    // as a compositor crash or interpreted as proof of memory exhaustion.
+    const detail = cause instanceof Error || cause instanceof DOMException
+      ? `${cause.name}: ${cause.message}` : String(cause);
+    throw new Error(`Opening browser computer storage (navigator.storage.getDirectory) failed: ${detail}`, { cause });
+  }
   const kandelo = await root.getDirectoryHandle("kandelo", { create });
   return kandelo.getDirectoryHandle("computers", { create });
 }

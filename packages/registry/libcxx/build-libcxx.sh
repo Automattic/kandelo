@@ -17,7 +17,7 @@ set -euo pipefail
 # the resolver:
 #
 #     WASM_POSIX_DEP_OUT_DIR        # where to install (lib/, include/c++/v1/)
-#     WASM_POSIX_DEP_VERSION        # exact LLVM version from flake.nix (e.g. "21.1.7")
+#     WASM_POSIX_DEP_VERSION        # exact LLVM version from flake.nix (e.g. "23.1.3")
 #     WASM_POSIX_DEP_TARGET_ARCH    # "wasm32" or "wasm64"
 #
 # Prerequisites:
@@ -92,13 +92,13 @@ if [ ! -f "$NIX_LIBCXX_SOURCE/runtimes/CMakeLists.txt" ] ||
         [ ! -d "$NIX_LIBCXX_SOURCE/libcxx" ] ||
         [ ! -d "$NIX_LIBCXX_SOURCE/libcxxabi" ]; then
     echo "ERROR: Nix libcxx source is incomplete at $NIX_LIBCXX_SOURCE" >&2
-    echo "       Expected runtimes/, libcxx/, and libcxxabi/ from flake.nix's llvmPackages_21.libcxx.src." >&2
+    echo "       Expected runtimes/, libcxx/, and libcxxabi/ from flake.nix's llvmPackages_23.libcxx.src." >&2
     exit 1
 fi
 
 if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
     echo "ERROR: Nix libunwind source is incomplete at $NIX_LIBUNWIND_SOURCE" >&2
-    echo "       Expected libunwind/ from flake.nix's llvmPackages_21.libunwind.src." >&2
+    echo "       Expected libunwind/ from flake.nix's llvmPackages_23.libunwind.src." >&2
     exit 1
 fi
 
@@ -143,6 +143,15 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
 #
+# -fwasm-exceptions makes the backend keep libc++'s own catch handlers and
+# unwinding cleanups. -fexceptions alone only reaches the front end: the
+# SjLj flag selects the Wasm exception model, but without -fwasm-exceptions
+# the backend lowers every invoke to a call and deletes its landing pad, so
+# an exception crossing libc++ code skipped its destructors and handlers
+# (std::call_once never reset its flag after a throwing call). The SDK
+# driver passes the same flag to every compile (docs/sdk-guide.md, "C++
+# exceptions").
+#
 # LLVM records source/compilation paths in archive members. The worktree
 # mapping covers sysroot paths. The assembled sources, both variant build
 # directories, and the generated smoke source live under WORK_DIR: beside this
@@ -155,7 +164,7 @@ REPRODUCIBLE_PREFIX_MAPS="-ffile-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fdebu
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     REPRODUCIBLE_PREFIX_MAPS="${REPRODUCIBLE_PREFIX_MAPS} -ffile-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fdebug-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx -fmacro-prefix-map=${WORK_DIR}=/usr/src/kandelo-build/libcxx"
 fi
-WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
+WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fwasm-exceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
 
 # Start with a fresh source tree so a cache-miss rebuild does not mix old + new
 # artifacts. (Each build dir is cleaned by build_libcxx_variant below.)
@@ -168,7 +177,7 @@ rm -rf "$LLVM_SRC_DIR"
 # CMake checks siblings via runtimes/../libunwind, and if runtimes is a symlink
 # that `..` resolves inside the Nix libcxx source instead of this overlay tree.
 mkdir -p "$LLVM_SRC_DIR"
-for entry in cmake libc libcxx libcxxabi llvm third-party; do
+for entry in cmake libc llvm third-party; do
     if [ -e "$NIX_LIBCXX_SOURCE/$entry" ]; then
         ln -s "$NIX_LIBCXX_SOURCE/$entry" "$LLVM_SRC_DIR/$entry"
     fi
@@ -178,15 +187,36 @@ for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
     [ -e "$entry" ] || continue
     ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
 done
-# This source receives the target-selection patch below. Dereference it into
-# writable private files rather than patching the immutable Nix derivation.
+# libcxx, libcxxabi and libunwind receive the patches below. Dereference
+# them into writable private files rather than patching the immutable Nix
+# derivations. libcxx and libcxxabi are copied whole so CMake's relative
+# paths (src/../include) resolve inside the patched copies. Only their test
+# suites, which this recipe never configures (LIBCXX_INCLUDE_TESTS=OFF,
+# LIBCXXABI_INCLUDE_TESTS=OFF), stay links to the Nix source.
+# Only libcxx/, libcxxabi/ and libunwind/ are private writable copies; a
+# future patch to another tree must copy that tree here too.
+for tree in libcxx libcxxabi; do
+    mkdir -p "$LLVM_SRC_DIR/$tree"
+    for entry in "$NIX_LIBCXX_SOURCE/$tree"/* "$NIX_LIBCXX_SOURCE/$tree"/.[!.]*; do
+        [ -e "$entry" ] || continue
+        if [ "$(basename "$entry")" = test ]; then
+            ln -s "$entry" "$LLVM_SRC_DIR/$tree/test"
+        else
+            cp -RL "$entry" "$LLVM_SRC_DIR/$tree/"
+        fi
+    done
+    chmod -R u+w "$LLVM_SRC_DIR/$tree"
+done
 cp -RL "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
 chmod -R u+w "$LLVM_SRC_DIR/libunwind"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
-# Select the VM unwinder backend without native register assembly. Patch only
-# the private source copy; source derivations and the checkout stay immutable.
+# Select the VM unwinder backend without native register assembly, the
+# musl locale support for libc++ and libc++abi's __cxa_thread_atexit on
+# musl, and keep the PIC build importing __cpp_exception (see
+# patches/README.md). Patch only the private source copies;
+# source derivations and the checkout stay immutable.
 for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
     patch --fuzz=0 -p1 -d "$LLVM_SRC_DIR" < "$patch_file"
 done
@@ -232,6 +262,51 @@ check_libcxx_archive() {
         }
         END { exit (!objects || objects != architectures || invalid) }
     ' "$report"
+}
+
+# libc++abi must define __cxa_thread_atexit, which the C++ ABI calls to
+# register thread_local destructors; musl does not provide it. LLVM 23
+# guards the definition by OS (patches/0003), and a guard that excludes
+# Kandelo still compiles cxa_thread_atexit.cpp into an empty object, so
+# the archive looks complete until a consumer fails to link.
+check_libcxxabi_thread_atexit() {
+    local archive="$1" report="$2"
+    if ! "$LLVM_NM" --defined-only --extern-only "$archive" > "$report" 2>&1; then
+        echo "ERROR: cannot list libc++abi symbols: $archive" >&2
+        cat "$report" >&2
+        return 1
+    fi
+    if ! grep -Eq '^[0-9a-fA-F]* *[TW] __cxa_thread_atexit$' "$report"; then
+        echo "ERROR: $archive does not define __cxa_thread_atexit;" \
+            "thread_local destructors would not link (see patches/0003)" >&2
+        return 1
+    fi
+}
+
+# The C++ exception tag must have one identity per process. Side modules
+# statically link the PIC archives, which both carry libunwind's members,
+# so neither may define __cpp_exception: each side module must import the
+# process's canonical tag. LLVM 23's libunwind defines it unconditionally
+# (patches/0004). The non-PIC libc++abi.a keeps upstream's definition,
+# which gives a C++ main program its tag.
+check_cpp_exception_tag() {
+    local archive="$1" expectation="$2" report="$3"
+    if ! "$LLVM_NM" --defined-only --extern-only "$archive" > "$report" 2>&1; then
+        echo "ERROR: cannot list C++ runtime symbols: $archive" >&2
+        cat "$report" >&2
+        return 1
+    fi
+    if grep -Eq '^[0-9a-fA-F]* *[A-Za-z] __cpp_exception$' "$report"; then
+        if [ "$expectation" = imported ]; then
+            echo "ERROR: $archive defines __cpp_exception; side modules" \
+                "would each get a private C++ exception tag (see patches/0004)" >&2
+            return 1
+        fi
+    elif [ "$expectation" = defined ]; then
+        echo "ERROR: $archive does not define __cpp_exception;" \
+            "C++ main programs would have no exception tag" >&2
+        return 1
+    fi
 }
 
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with
@@ -423,6 +498,17 @@ cp "$LIBCXXABI_PIC_A" "$INSTALL_DIR/lib/libc++abi-pic.a"
 echo "==> Verifying every libc++ archive member targets ${ARCH}..."
 for archive in libc++.a libc++abi.a libc++-pic.a libc++abi-pic.a; do
     check_libcxx_archive "$INSTALL_DIR/lib/$archive" "$ARCH" "$WORK_DIR/$archive.headers.log"
+done
+echo "==> Verifying libc++abi defines __cxa_thread_atexit..."
+for archive in libc++abi.a libc++abi-pic.a; do
+    check_libcxxabi_thread_atexit "$INSTALL_DIR/lib/$archive" "$WORK_DIR/$archive.symbols.log"
+done
+echo "==> Verifying __cpp_exception linkage (defined non-PIC, imported PIC)..."
+check_cpp_exception_tag "$INSTALL_DIR/lib/libc++abi.a" defined \
+    "$WORK_DIR/libc++abi.a.tag-symbols.log"
+for archive in libc++-pic.a libc++abi-pic.a; do
+    check_cpp_exception_tag "$INSTALL_DIR/lib/$archive" imported \
+        "$WORK_DIR/$archive.tag-symbols.log"
 done
 
 echo "==> Done!"

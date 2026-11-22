@@ -12,6 +12,8 @@ const sessions = new Map<string, {
 }>();
 const attachments: string[] = [];
 const inputs: string[] = [];
+const resizes: { path: string; cols: number; rows: number }[] = [];
+let outputOnResize = false;
 const exchange = new ExchangeSession();
 const host = {
   getStatus: () => "running",
@@ -35,7 +37,15 @@ const host = {
         for (const chunk of state.history) callback(chunk);
         return () => { state.listeners.delete(callback); };
       },
-      resize() {},
+      resize(cols: number, rows: number) {
+        resizes.push({ path, cols, rows });
+        // Why: real PTYs can produce output in response to a winsize change.
+        // Exercise that race only in the resize regression.
+        if (outputOnResize) {
+          const bytes = encoder.encode(`RESIZE ${cols} ${rows}\r\n`);
+          for (const listener of state.listeners) listener(bytes);
+        }
+      },
       write(data: string) { inputs.push(`${path}:${data}`); },
       close() {},
     };
@@ -62,7 +72,8 @@ const root = createRoot(document.getElementById("root")!);
 root.render(<Fixture />);
 Object.assign(window, {
   __terminalRepaint: {
-    attachments, inputs,
+    attachments, inputs, resizes,
+    setOutputOnResize(value: boolean) { outputOnResize = value; },
     emit(path: string, data: string) {
       const session = sessions.get(path)!;
       const bytes = encoder.encode(data);

@@ -31,7 +31,7 @@ import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 // non-tmpfs scratch paths to exercise the surviving materialisation machinery.
 const HOST_SCRATCH_MOUNT_SPEC: MountSpec[] = [
   { path: "/", source: "image", readonly: false },
-  { path: "/run", source: "scratch", mode: 0o1777, nosuid: true },
+  { path: "/mnt/session", source: "scratch", mode: 0o1777, nosuid: true },
   { path: "/var/spool", source: "scratch", mode: 0o1777, nosuid: true },
   { path: "/var/cache", source: "scratch", mode: 0o755, nosuid: true },
   {

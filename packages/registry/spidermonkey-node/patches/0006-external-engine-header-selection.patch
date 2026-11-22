@@ -1,0 +1,14 @@
+--- a/node.gyp
++++ b/node.gyp
+@@ -542,6 +542,11 @@
+     },
+ 
+     'conditions': [
++      ['node_use_bundled_v8=="false"', {
++        # Use only the external engine's headers, including for libnode's
++        # ordinary startup/snapshot-stub unit. Keep the target/source lists.
++        'include_dirs!': ['deps/v8/include'],
++      }],
+       ['clang==0 and OS!="win"', {
+         'cflags': [ '-Wno-restrict', ],
+       }],

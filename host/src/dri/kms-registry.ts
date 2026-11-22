@@ -134,7 +134,7 @@ export class KmsRegistry {
       return this.cursor;
     }
     if (gpu === undefined) this.gbm.syncToSab(this.cursorBo, length);
-    const bytes = gpu ?? this.gbm.pixelView(this.cursorBo);
+    const bytes = gpu ?? this.gbm.readPixelView(this.cursorBo);
     if (!bytes || bytes.length < length) {
       throw new Error("KMS cursor BO is unavailable or undersized");
     }
@@ -345,7 +345,7 @@ export class KmsRegistry {
     const fb = this.currentFb(crtc_id);
     if (!fb) return undefined;
     this.gbm.syncFromMemory(fb.bo_id);
-    const pixels = this.gbm.pixelView(fb.bo_id);
+    const pixels = this.gbm.readPixelView(fb.bo_id);
     if (!pixels || fb.offset > pixels.byteLength) return undefined;
     return pixels.subarray(fb.offset);
   }

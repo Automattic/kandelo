@@ -100,7 +100,12 @@ describe("EGL dma-buf import over the GLES stubs", () => {
       const matrices = calls("uniformMatrix3fv");
       expect(matrices).toHaveLength(1);
       expect(matrices[0][0]).toBeInstanceOf(Object);
-      expect(matrices[0].slice(1)).toEqual([false, [1, 2, 3, 4, 5, 6, 7, 8, 9]]);
+      // The CPU shim may pass a reusable scratch array with WebGL2's
+      // srcOffset/srcLength; compare the range actually uploaded.
+      const [, transpose, data, srcOffset = 0, srcLength] = matrices[0] as [
+        unknown, boolean, ArrayLike<number>, number?, number?];
+      expect([transpose, Array.from(data).slice(srcOffset, srcOffset + (srcLength ?? data.length))])
+        .toEqual([false, [1, 2, 3, 4, 5, 6, 7, 8, 9]]);
 
       const attachments = calls("framebufferTexture2D");
       const gpuBoTexture = allocatedTexture(log, 64, 64);

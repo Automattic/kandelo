@@ -1,9 +1,7 @@
 #ifndef KANDELO_NODE_INTERNALS_NATIVE_API_H
 #define KANDELO_NODE_INTERNALS_NATIVE_API_H
 #pragma push_macro("node")
-#pragma push_macro("v8")
 #undef node
-#undef v8
 // Whole node_internals.h owns the Buffer/allocator/helper bodies. These are
 // declarations for its unactivated embedding/serialization dependencies only;
 // activating an unavailable operation still requires an actual implementation.
@@ -18,7 +16,7 @@
 #ifndef __POSIX__
 #define __POSIX__ 1
 #endif
-namespace kandelo_node_codec_api {
+namespace v8 {
 class IsolateGroup;class HeapSnapshot;
 class HeapProfiler {public:struct HeapSnapshotOptions;};
 }
@@ -48,10 +46,7 @@ class TickInfo {public:struct SerializeInfo;};
 namespace performance {class PerformanceState {public:struct SerializeInfo;};}
 }
 #define node kandelo_node_codec_impl
-#define v8 kandelo_node_codec_api
 #include "shell/node-upstream/internals-upstream/node_internals.h"
-#undef v8
 #undef node
-#pragma pop_macro("v8")
 #pragma pop_macro("node")
 #endif

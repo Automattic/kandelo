@@ -17,6 +17,21 @@ shell_sources="$mozilla_source/js/src/shell/node-upstream"
 node_objects="$object_dir/node-upstream"
 
 mkdir -p "$shell_sources" "$node_objects"
+mkdir -p "$shell_sources/v8-source-api"
+cp "$node_consumer/v8-source-api/v8-microtask.h" \
+    "$node_consumer/v8-source-api/LICENSE" "$shell_sources/v8-source-api/"
+python3 "$repo_root/scripts/prepare-nodejs-string-metadata.py" \
+    --manifest "$node_import/sources.json" --output "$shell_sources"
+python3 "$repo_root/scripts/prepare-nodejs-maybe-api.py" \
+    --manifest "$node_import/sources.json" --output "$shell_sources"
+python3 "$repo_root/scripts/prepare-nodejs-fast-call-metadata.py" \
+    --manifest "$node_import/sources.json" --output "$shell_sources"
+python3 "$repo_root/scripts/prepare-nodejs-profiler-metadata.py" \
+    --manifest "$node_import/sources.json" --output "$shell_sources"
+python3 "$repo_root/scripts/prepare-nodejs-regexp-property-api.py" \
+    --manifest "$node_import/sources.json" --output "$shell_sources"
+python3 "$repo_root/scripts/prepare-nodejs-value-wire-api.py" \
+    --manifest "$node_import/sources.json" --output "$shell_sources"
 cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/build-profile.h" \
     "$node_consumer/build-config-inl.h" \
@@ -44,6 +59,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/resource-native-api.h" \
     "$node_consumer/request-native-api.h" \
     "$node_consumer/request-codecs-inl.h" \
+    "$node_consumer/heap-statistics-codecs-inl.h" \
     "$node_consumer/async-wrap.h" \
     "$node_consumer/constants.cpp" \
     "$node_consumer/constants.h" \
@@ -55,6 +71,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/process-methods-upstream.cpp" \
     "$node_consumer/process-object-upstream.cpp" \
     "$node_consumer/process-native-api.h" \
+    "$node_consumer/permission-native-api.h" \
     "$node_consumer/internals-native-api.h" \
     "$node_consumer/process-files-native-api.h" \
     "$node_consumer/dotenv-upstream.cpp" \
@@ -76,13 +93,34 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/property-codecs-inl.h" \
     "$node_consumer/aliased-codecs-inl.h" \
     "$node_consumer/buffer-codecs-inl.h" \
+    "$node_consumer/value-property-codecs-inl.h" \
+    "$node_consumer/value-services-inl.h" \
+    "$node_consumer/regexp-property-codecs-inl.h" \
+    "$node_consumer/metadata-values-codecs-inl.h" \
+    "$node_consumer/data-array-codecs-inl.h" \
+    "$node_consumer/engine-script-api.h" \
+    "$node_consumer/engine-script-codecs-inl.h" \
+    "$node_consumer/fast-call-metadata.cpp" \
     "$node_consumer/codecs.cpp" \
     "$node_consumer/codecs.h" \
     "$node_consumer/codec-native-api.h" \
+    "$node_consumer/engine-native-api.h" \
+    "$node_consumer/engine-maybe-api.h" \
+    "$node_consumer/engine-memory-services-inl.h" \
+    "$node_consumer/engine-state.h" \
+    "$node_consumer/engine-gc-api.h" \
+    "$node_consumer/engine-gc-codecs-inl.h" \
+    "$node_consumer/engine-isolate-codecs-inl.h" \
+    "$node_consumer/engine-checks.h" \
+    "$node_consumer/engine-process.h" \
+    "$node_consumer/engine-process.cpp" \
+    "$node_consumer/native-engine.cpp" \
+    "$node_consumer/engine-lifetime-codecs-inl.h" \
     "$node_consumer/continuation-native-api.h" \
     "$node_consumer/continuation-upstream.cpp" \
     "$node_consumer/continuation-codecs-inl.h" \
     "$node_consumer/environment-codecs-inl.h" \
+    "$node_consumer/context-codecs-inl.h" \
     "$node_consumer/internal-field-codecs-inl.h" \
     "$node_consumer/snapshot-codecs-inl.h" \
     "$node_consumer/codec-agent-includes.h" \
@@ -109,6 +147,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/trace-utf8-native.h" \
     "$node_consumer/trace-utf8-native.cpp" \
     "$node_consumer/stack-codecs-inl.h" \
+    "$node_consumer/inspection-codecs-inl.h" \
     "$node_consumer/message-codecs-inl.h" \
     "$node_consumer/template-codecs-inl.h" \
     "$node_consumer/trace-codecs-inl.h" \
@@ -155,6 +194,10 @@ python3 "$repo_root/scripts/generate-nodejs-types.py" \
 python3 "$repo_root/scripts/prepare-nodejs-codecs.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/codecs-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-native-interrupts.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/native-interrupt-upstream" \
+    --patch "$node_consumer/native-source-patches/0001-native-interrupt-transport.patch"
 python3 "$repo_root/scripts/prepare-nodejs-options.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/options-upstream"

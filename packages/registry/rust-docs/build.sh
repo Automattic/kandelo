@@ -30,6 +30,11 @@ for page in pages:
     (output / page.name.removesuffix('.gz')).write_bytes(content)
 print(f'Packaged {len(pages)} matching upstream manual pages')
 PY
+# The image installs the compiler as kandelo-rustc and wasm32posix-rustc
+# too: one Kandelo entry point (sdk/guest-rust) that runs rustc with the
+# image's sysroot under each of those names.
+ln -s rustc.1 "$stage/share/man/man1/kandelo-rustc.1"
+ln -s rustc.1 "$stage/share/man/man1/wasm32posix-rustc.1"
 mkdir -p "$stage/share/licenses/rust-docs"
 cp "$repo/sdk/guest-rust/licenses/"* "$stage/share/licenses/rust-docs/"
 bash "$repo/images/vfs/scripts/create-deterministic-zip.sh" "$stage" "$work/rust-docs.zip"

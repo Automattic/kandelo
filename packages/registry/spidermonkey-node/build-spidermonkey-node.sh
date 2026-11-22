@@ -1,65 +1,107 @@
 #!/usr/bin/env bash
-# Stage the SpiderMonkey shell's Node-compatible entry point as an explicit
-# Kandelo program package.
-
+# Build original Node startup and every native component enabled by its profile.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
-
-ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
-PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-spidermonkey-node}"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+: "${WASM_POSIX_DEP_WORK_DIR:?build through the normal package resolver}"
+: "${WASM_POSIX_DEP_OUT_DIR:?build through the normal package resolver}"
+: "${WASM_POSIX_DEP_SPIDERMONKEY_CORE_DIR:?declare the actual SpiderMonkey core}"
+: "${WASM_POSIX_DEP_SPIDERMONKEY_NODE_BRIDGE_DIR:?declare the native source bridge}"
+: "${WASM_POSIX_DEP_V8_TRACING_DIR:?declare portable platform and tracing support}"
+: "${WASM_POSIX_DEP_LIBCXX_DIR:?declare the libcxx dependency}"
+: "${WASM_POSIX_DEP_LIBUV_DIR:?declare the libuv dependency}"
+: "${WASM_POSIX_DEP_NODE_LIBFFI_DIR:?declare the pinned Node libffi target}"
+: "${WASM_POSIX_DEP_KANDELO_FFI_ADAPTER_DIR:?declare typed FFI adapter linkage}"
+: "${WASM_POSIX_DEP_NODE_AMARO_DIR:?declare the actual native Amaro provider}"
+: "${WASM_POSIX_DEP_NODE_UNDICI_LLHTTP_DIR:?declare the exact Undici native parser provider}"
+PACKAGE_NAME="${WASM_POSIX_DEP_NAME:?resolver must identify the package}"
+PROFILE=default
+OUTPUT_NAME=node.wasm
+PROFILE_FLAGS=()
 case "$PACKAGE_NAME" in
     node|spidermonkey-node) ;;
-    *) echo "ERROR: unexpected Node-compatible package '$PACKAGE_NAME'." >&2; exit 1 ;;
+    spidermonkey-node-features)
+        PROFILE=features
+        OUTPUT_NAME=node-features.wasm
+        PROFILE_FLAGS=(--experimental-quic --experimental-dtls)
+        ;;
+    *) echo "ERROR: unexpected Node package: $PACKAGE_NAME" >&2; exit 2;;
 esac
-if [ "$ARCH" != "wasm32" ]; then
-    echo "ERROR: spidermonkey-node currently supports wasm32 only, got '$ARCH'." >&2
+if [ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" != wasm32 ]; then
+    echo "ERROR: the approved initial Node target is wasm32." >&2
+    exit 2
+fi
+
+source "$REPO_ROOT/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot node-core "$REPO_ROOT/sysroot" \
+    libcxx libuv spidermonkey-core spidermonkey-node-bridge v8-tracing node-libffi kandelo-ffi-adapter)"
+# Validate actual archives and source headers, then expose their real build flags
+# to Node's original external-engine configure path. Missing APIs still fail
+# compilation/linking; this does not certify a complete SDK or runtime.
+ENGINE_CONFIGURATION="$WASM_POSIX_DEP_WORK_DIR/node-engine-configuration"
+python3 "$SCRIPT_DIR/check-engine-sdk.py" \
+    --core "$WASM_POSIX_DEP_SPIDERMONKEY_CORE_DIR" \
+    --bridge "$WASM_POSIX_DEP_SPIDERMONKEY_NODE_BRIDGE_DIR" \
+    --tracing "$WASM_POSIX_DEP_V8_TRACING_DIR" \
+    --sysroot "$WASM_POSIX_SYSROOT" --output "$ENGINE_CONFIGURATION"
+NODE_SOURCE="$WASM_POSIX_DEP_WORK_DIR/node-source"
+kandelo_package_stage_source_dependency node-core-source "$NODE_SOURCE" "$WASM_POSIX_DEP_WORK_DIR"
+for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
+    patch --batch -p1 -F0 -d "$NODE_SOURCE" < "$patch_file"
+done
+for patch_file in "$REPO_ROOT/packages/registry/spidermonkey/node-upstream/native-source-patches"/*.patch; do
+    patch --batch -p1 -F0 -d "$NODE_SOURCE" < "$patch_file"
+done
+python3 "$SCRIPT_DIR/prepare-native-providers.py" --repository "$REPO_ROOT" \
+    --source "$NODE_SOURCE" --work "$WASM_POSIX_DEP_WORK_DIR/native-provider-configuration"
+
+AMARO_CONFIGURATION="$WASM_POSIX_DEP_WORK_DIR/native-amaro-configuration"
+python3 "$SCRIPT_DIR/prepare-native-amaro.py" --source "$NODE_SOURCE" \
+    --provider "$WASM_POSIX_DEP_NODE_AMARO_DIR" --adapter "$SCRIPT_DIR/node_amaro.cc" \
+    --output "$AMARO_CONFIGURATION"
+UNDICI_CONFIGURATION="$WASM_POSIX_DEP_WORK_DIR/native-undici-configuration"
+python3 "$SCRIPT_DIR/prepare-native-undici.py" --source "$NODE_SOURCE" \
+    --provider "$WASM_POSIX_DEP_NODE_UNDICI_LLHTTP_DIR" --adapter "$SCRIPT_DIR/node_undici_llhttp.cc" \
+    --output "$UNDICI_CONFIGURATION"
+UNDICI_LINK_FLAGS=""
+while IFS= read -r flag; do UNDICI_LINK_FLAGS+=" $flag"; done < "$UNDICI_CONFIGURATION/link-flags.txt"
+AMARO_LINK_FLAGS=""
+while IFS= read -r flag; do AMARO_LINK_FLAGS+=" $flag"; done < "$AMARO_CONFIGURATION/link-flags.txt"
+
+export CC="wasm32posix-cc -D__kandelo__=1" CXX="wasm32posix-c++ -D__kandelo__=1"
+export AR=wasm32posix-ar RANLIB=wasm32posix-ranlib
+export CC_host="${HOST_CC:-cc}" CXX_host="${HOST_CXX:-c++}"
+export CFLAGS="${CFLAGS:-} -DUV_PLATFORM_KANDELO=1"
+export CXXFLAGS="${CXXFLAGS:-} -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1 -DKANDELO_SPIDERMONKEY_ENGINE=1 -DXP_UNIX=1 -ferror-limit=0 -nostdinc++ -isystem $WASM_POSIX_DEP_LIBCXX_DIR/include/c++/v1 -isystem $WASM_POSIX_SYSROOT/include/kandelo-node-engine -isystem $WASM_POSIX_SYSROOT/include/mozjs-153 -isystem $WASM_POSIX_SYSROOT/include"
+export LDFLAGS="${LDFLAGS:-} -Wl,--error-limit=0$AMARO_LINK_FLAGS$UNDICI_LINK_FLAGS"
+# Search declared target inputs, never ambient host libraries. Other providers
+# retain their original isolated targets inside Node's private build tree.
+export PKG_CONFIG="pkg-config --static"
+export PKG_CONFIG_LIBDIR="$ENGINE_CONFIGURATION:$WASM_POSIX_DEP_LIBUV_DIR/lib/pkgconfig:$WASM_POSIX_DEP_NODE_LIBFFI_DIR/lib/pkgconfig:$WASM_POSIX_DEP_KANDELO_FFI_ADAPTER_DIR/lib/pkgconfig"
+export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
+(
+    cd "$NODE_SOURCE"
+    python3 configure.py --dest-cpu=wasm32 --dest-os=kandelo --cross-compiling \
+        --without-bundled-v8 --without-inspector --without-node-snapshot \
+        --shared-libuv --shared-libuv-includes="$WASM_POSIX_DEP_LIBUV_DIR/include" \
+        --shared-libuv-libpath="$WASM_POSIX_DEP_LIBUV_DIR/lib" --with-intl=full-icu \
+        --shared-ffi --shared-ffi-includes="$WASM_POSIX_DEP_NODE_LIBFFI_DIR/include" \
+        --shared-ffi-libname=ffi,kandelo-ffi-adapter \
+        --openssl-no-asm "${PROFILE_FLAGS[@]}"
+    python3 "$SCRIPT_DIR/check-native-profile.py" "$NODE_SOURCE/config.gypi" "$PROFILE"
+    # -k collects independent compiler/link failures across the entire graph.
+    # Original registration, node_main.cc and node.cc remain authoritative.
+    # The root Makefile's node recipe invokes the generated default 'all'
+    # target, including unconsumed bundled libuv and test-tool targets. Select
+    # the original GYP node target and its complete dependency closure instead.
+    make -C out -k --output-sync=target -j"${WASM_POSIX_BUILD_JOBS:-8}" V=1 BUILDTYPE=Release node
+)
+NODE_PROGRAM="$NODE_SOURCE/out/Release/node"
+if [ ! -f "$NODE_PROGRAM" ] || [ -L "$NODE_PROGRAM" ]; then
+    echo "ERROR: original Node build did not produce out/Release/node." >&2
     exit 1
 fi
-
-SPIDERMONKEY_PREFIX="${WASM_POSIX_DEP_SPIDERMONKEY_DIR:-}"
-if [ -z "$SPIDERMONKEY_PREFIX" ]; then
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        echo "ERROR: resolver did not provide the declared spidermonkey dependency." >&2
-        exit 1
-    fi
-    if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
-        echo "ERROR: rustc/cargo are unavailable for SpiderMonkey dependency resolution." >&2
-        exit 1
-    fi
-
-    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-    resolve_dep() {
-        local name="$1"
-        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
-    }
-
-    echo "==> Resolving spidermonkey via cargo xtask build-deps..."
-    SPIDERMONKEY_PREFIX="$(resolve_dep spidermonkey)"
-fi
-NODE_WASM="$SPIDERMONKEY_PREFIX/js.wasm"
-if [ ! -f "$NODE_WASM" ] || [ -L "$NODE_WASM" ]; then
-    echo "ERROR: spidermonkey dependency did not provide its declared js.wasm at $SPIDERMONKEY_PREFIX." >&2
-    exit 1
-fi
-
-if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    BIN_DIR="$WASM_POSIX_DEP_WORK_DIR/bin"
-else
-    BIN_DIR="$SCRIPT_DIR/bin"
-fi
-mkdir -p "$BIN_DIR"
-cp "$NODE_WASM" "$BIN_DIR/node.wasm"
-
-NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
-echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
-
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-fi
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary "$PACKAGE_NAME" "$BIN_DIR/node.wasm" node.wasm
+export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary "$PACKAGE_NAME" "$NODE_PROGRAM" "$OUTPUT_NAME"

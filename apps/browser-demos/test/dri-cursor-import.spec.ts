@@ -8,7 +8,9 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 test.use({ serviceWorkers: "block", viewport: { width: 800, height: 600 } });
 let fixture: ReturnType<typeof compileSdkFixture>;
 test.beforeAll(() => {
-  fixture = compileSdkFixture(new URL("../../../host/test/fixtures/kms-import-writer.c", import.meta.url), [], {
+  fixture = compileSdkFixture(new URL("../../../host/test/fixtures/kms-import-writer.c", import.meta.url), [
+    `-I${fileURLToPath(new URL("../../../sysroot/include/drm", import.meta.url))}`, "-ldrm",
+  ], {
     forkInstrument: true,
   });
 });

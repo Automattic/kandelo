@@ -3,7 +3,8 @@ inputs = [
   "packages/registry/cpython/build-cpython.sh",
   "packages/registry/cpython/config.site-wasm32-posix",
   "packages/registry/cpython/posix-subprocess.patch",
+  "packages/registry/cpython/posix-libc-modules.patch",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 5
+revision    = 7

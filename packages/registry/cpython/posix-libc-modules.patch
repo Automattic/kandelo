@@ -1,0 +1,122 @@
+--- a/configure
++++ b/configure
+@@ -28763,23 +28763,29 @@ case $ac_sys_system in #(
+ 
+ 
+ 
+-    py_cv_module__curses=n/a
+-    py_cv_module__curses_panel=n/a
+     py_cv_module__dbm=n/a
+     py_cv_module__gdbm=n/a
+-    py_cv_module__multiprocessing=n/a
+-    py_cv_module__posixshmem=n/a
+     py_cv_module__scproxy=n/a
+     py_cv_module__tkinter=n/a
+     py_cv_module__interpreters=n/a
+     py_cv_module__interpchannels=n/a
+     py_cv_module__interpqueues=n/a
+-    py_cv_module_grp=n/a
+-    py_cv_module_pwd=n/a
+-    py_cv_module_resource=n/a
+-    py_cv_module_syslog=n/a
+     py_cv_module_=n/a
+ 
++    # Emscripten provides only stubs for the pwd, grp and resource APIs and
++    # has no curses, syslog or POSIX semaphores. On WASI the usual checks
++    # decide (Kandelo's POSIX libc provides all of them).
++    if test "$ac_sys_system" = Emscripten; then
++      py_cv_module__curses=n/a
++      py_cv_module__curses_panel=n/a
++      py_cv_module__multiprocessing=n/a
++      py_cv_module__posixshmem=n/a
++      py_cv_module_grp=n/a
++      py_cv_module_pwd=n/a
++      py_cv_module_resource=n/a
++      py_cv_module_syslog=n/a
++    fi
++
+     # Kandelo's POSIX libc provides fork/exec despite the WASI target name.
+     if test "$ac_cv_func_fork" != yes || test "$ac_cv_func_execv" != yes; then
+       py_cv_module__posixsubprocess=n/a
+@@ -28807,13 +28813,17 @@ case $ac_sys_system in #(
+     py_cv_module__testimportmultiple=n/a
+     py_cv_module__testmultiphase=n/a
+     py_cv_module__testsinglephase=n/a
+-    py_cv_module_fcntl=n/a
+-    py_cv_module_mmap=n/a
+-    py_cv_module_termios=n/a
+     py_cv_module_xxlimited=n/a
+     py_cv_module_xxlimited_35=n/a
+     py_cv_module_=n/a
+ 
++    # Kandelo's POSIX libc provides file locking, memory mappings and
++    # terminals despite the WASI target name; mmap and termios follow their
++    # usual header checks.
++    if test "$ac_cv_func_flock" != yes; then
++      py_cv_module_fcntl=n/a
++    fi
++
+ 
+      ;; #(
+   *) :
+--- a/configure.ac
++++ b/configure.ac
+@@ -7511,22 +7511,31 @@ AS_CASE([$ac_sys_system],
+     dnl Emscripten and WASI provide only stubs for pwd, grp APIs.
+     dnl resource functions (get/setrusage) are stubs, too.
+     PY_STDLIB_MOD_SET_NA(
+-      [_curses],
+-      [_curses_panel],
+       [_dbm],
+       [_gdbm],
+-      [_multiprocessing],
+-      [_posixshmem],
+       [_scproxy],
+       [_tkinter],
+       [_interpreters],
+       [_interpchannels],
+       [_interpqueues],
+-      [grp],
+-      [pwd],
+-      [resource],
+-      [syslog],
+     )
++    dnl Emscripten provides only stubs for the pwd, grp and resource APIs and
++    dnl has no curses, syslog or POSIX semaphores. On WASI the usual checks
++    dnl decide: a POSIX libc on WebAssembly can provide the password and
++    dnl group databases, resource limits, syslog, named semaphores, shared
++    dnl memory objects and terminals for curses (Kandelo).
++    AS_CASE([$ac_sys_system], [Emscripten], [
++      PY_STDLIB_MOD_SET_NA(
++        [_curses],
++        [_curses_panel],
++        [_multiprocessing],
++        [_posixshmem],
++        [grp],
++        [pwd],
++        [resource],
++        [syslog],
++      )
++    ])
+     dnl A POSIX libc on WebAssembly can provide real fork/exec (Kandelo).
+     AS_IF([test "$ac_cv_func_fork" != yes || test "$ac_cv_func_execv" != yes], [
+       PY_STDLIB_MOD_SET_NA([_posixsubprocess])
+@@ -7551,12 +7560,15 @@ AS_CASE([$ac_sys_system],
+           [_testimportmultiple],
+           [_testmultiphase],
+           [_testsinglephase],
+-          [fcntl],
+-          [mmap],
+-          [termios],
+           [xxlimited],
+           [xxlimited_35],
+         )
++        dnl A POSIX libc on WebAssembly can provide file locking, memory
++        dnl mappings and terminals (Kandelo); mmap and termios follow their
++        dnl usual header checks.
++        AS_IF([test "$ac_cv_func_flock" != yes], [
++          PY_STDLIB_MOD_SET_NA([fcntl])
++        ])
+       ]
+     )
+   ],

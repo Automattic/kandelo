@@ -1,0 +1,26 @@
+--- a/src/unix/core.c
++++ b/src/unix/core.c
+@@ -1095,6 +1095,15 @@
+ 
+ 
+ static int uv__getrusage(int who, uv_rusage_t* rusage) {
++#if defined(UV_PLATFORM_KANDELO)
++  /* The kernel currently has no genuine resource-usage accounting. Do not
++   * publish its simulated zero records as successful libuv measurements.
++   */
++  (void) who;
++  if (rusage == NULL)
++    return UV_EINVAL;
++  return UV_ENOSYS;
++#else
+   struct rusage usage;
+ 
+   if (getrusage(who, &usage))
+@@ -1133,6 +1142,7 @@
+ #endif
+ 
+   return 0;
++#endif
+ }
+ 
+ 

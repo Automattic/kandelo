@@ -1,0 +1,49 @@
+--- a/deps/v8/src/api/api.cc
++++ b/deps/v8/src/api/api.cc
+@@ -2,6 +2,9 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#ifdef KANDELO_NATIVE_NODE_ENGINE
++#include "shell/node-upstream/engine-shared-conveyor-data.h"
++#else
+ #include "src/api/api.h"
+ 
+ #include <algorithm>  // For min
+@@ -193,7 +196,9 @@
+ #endif  // defined(V8_ENABLE_SANDBOX) &&
+         // defined(V8_ENABLE_MEMORY_CORRUPTION_API)
+ 
++#endif
+ namespace v8 {
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ 
+ static_assert(static_cast<uint32_t>(Intercepted::kNo) == i::kInterceptedNo);
+ static_assert(static_cast<uint32_t>(Intercepted::kYes) == i::kInterceptedYes);
+@@ -3415,6 +3420,7 @@
+ 
+ // --- V a l u e   S e r i a l i z a t i o n ---
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ SharedValueConveyor::SharedValueConveyor(SharedValueConveyor&& other) noexcept
+     : private_(std::move(other.private_)) {}
+ 
+@@ -3426,6 +3432,7 @@
+   return *this;
+ }
+ 
++#ifndef KANDELO_NATIVE_NODE_ENGINE
+ SharedValueConveyor::SharedValueConveyor(Isolate* v8_isolate)
+     : private_(std::make_unique<i::SharedObjectConveyorHandles>(
+           reinterpret_cast<i::Isolate*>(v8_isolate))) {}
+@@ -12608,8 +12615,9 @@
+       .str();
+ }
+ 
++#endif  // !KANDELO_NATIVE_NODE_ENGINE
+ }  // namespace v8
+ 
+-#ifdef ENABLE_SLOW_DCHECKS
++#if defined(ENABLE_SLOW_DCHECKS) && !defined(KANDELO_NATIVE_NODE_ENGINE)
+ EXPORT_CONTEXTUAL_VARIABLE(i::StackAllocatedCheck)
+ #endif

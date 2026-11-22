@@ -1,0 +1,101 @@
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -1191,6 +1191,16 @@
+ #else
+   bool hasExecutionTracer() { return false; }
+ #endif
++
++  // Optional native embedder routing. The callback cannot GC or execute JS,
++  // and its selected queue must remain alive through the enqueue operation.
++  // With no callback, original context-wide queue behavior is unchanged.
++  using EmbedderMicroTaskQueueSelector = js::MicroTaskQueueSet* (*)(
++      JSContext*, JSObject*, void*);
++  EmbedderMicroTaskQueueSelector embedderMicroTaskQueueSelector = nullptr;
++  void* embedderMicroTaskQueueData = nullptr;
++  js::MicroTaskQueueSet* embedderMicroTaskQueueForGlobal(JSObject* global);
++  js::MicroTaskQueueSet* embedderMicroTaskQueueFor(const JS::GenericMicroTask&);
+ 
+   JS::PersistentRooted<js::UniquePtr<js::MicroTaskQueueSet>> microTaskQueues;
+ }; /* struct JSContext */
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -1140,25 +1140,48 @@
+   return debugMicroTaskQueue.pushBack(entry);
+ }
+ 
++js::MicroTaskQueueSet* JSContext::embedderMicroTaskQueueForGlobal(
++    JSObject* global) {
++  if (!embedderMicroTaskQueueSelector || !global) {
++    return microTaskQueues.get().get();
++  }
++  auto* queue = embedderMicroTaskQueueSelector(
++      this, global, embedderMicroTaskQueueData);
++  MOZ_RELEASE_ASSERT(queue);
++  return queue;
++}
++
++js::MicroTaskQueueSet* JSContext::embedderMicroTaskQueueFor(
++    const JS::GenericMicroTask& entry) {
++  if (!embedderMicroTaskQueueSelector) {
++    return microTaskQueues.get().get();
++  }
++  JSObject* global = JS::IsJSMicroTask(entry)
++                         ? JS::GetExecutionGlobalFromJSMicroTask(
++                               JS::ToMaybeWrappedJSMicroTask(entry))
++                         : (realm() ? this->global() : nullptr);
++  return embedderMicroTaskQueueForGlobal(global);
++}
++
+ JS_PUBLIC_API bool JS::EnqueueMicroTask(JSContext* cx,
+                                         const JS::GenericMicroTask& entry) {
+   JS_LOG(mtq, Info, "Enqueue of non JS MT");
+ 
+-  return cx->microTaskQueues->enqueueRegularMicroTask(cx, entry);
++  return cx->embedderMicroTaskQueueFor(entry)->enqueueRegularMicroTask(cx, entry);
+ }
+ 
+ JS_PUBLIC_API bool JS::EnqueueDebugMicroTask(
+     JSContext* cx, const JS::GenericMicroTask& entry) {
+   JS_LOG(mtq, Info, "Enqueue of non JS MT");
+ 
+-  return cx->microTaskQueues->enqueueDebugMicroTask(cx, entry);
++  return cx->embedderMicroTaskQueueFor(entry)->enqueueDebugMicroTask(cx, entry);
+ }
+ 
+ JS_PUBLIC_API bool JS::PrependMicroTask(JSContext* cx,
+                                         const JS::GenericMicroTask& entry) {
+   JS_LOG(mtq, Info, "Prepend job to MTQ");
+ 
+-  return cx->microTaskQueues->prependRegularMicroTask(cx, entry);
++  return cx->embedderMicroTaskQueueFor(entry)->prependRegularMicroTask(cx, entry);
+ }
+ 
+ JS_PUBLIC_API JS::GenericMicroTask JS::DequeueNextMicroTask(JSContext* cx) {
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -1658,19 +1658,22 @@
+     }
+   }
+ 
++  auto* queues = cx->embedderMicroTaskQueueForGlobal(
++      JS::GetExecutionGlobalFromJSMicroTask(job));
++
+   // Only check if we need to use the debug queue when we're not on main thread.
+   if (MOZ_LIKELY(cx->runtime()->isMainRuntime())) {
+-    return cx->microTaskQueues->enqueueRegularMicroTask(cx, ObjectValue(*job));
++    return queues->enqueueRegularMicroTask(cx, ObjectValue(*job));
+   }
+ 
+   // We need to root this job because useDebugQueue can GC.
+   Rooted<JS::JSMicroTask*> rootedJob(cx, job);
+   if (MOZ_UNLIKELY(cx->jobQueue->useDebugQueue(cx->global()))) {
+-    return cx->microTaskQueues->enqueueDebugMicroTask(cx,
++    return queues->enqueueDebugMicroTask(cx,
+                                                       ObjectValue(*rootedJob));
+   }
+ 
+-  return cx->microTaskQueues->enqueueRegularMicroTask(cx,
++  return queues->enqueueRegularMicroTask(cx,
+                                                       ObjectValue(*rootedJob));
+ }
+ 

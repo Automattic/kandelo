@@ -1,0 +1,20 @@
+--- a/src/node_binding.cc
++++ b/src/node_binding.cc
+@@ -53,6 +53,7 @@
+ // land even from internal/test/binding module under --expose-internals.
+ #define NODE_BUILTIN_STANDARD_BINDINGS(V)                                      \
+   V(amaro)                                                                    \
++  V(undici_llhttp)                                                           \
+   V(async_context_frame)                                                       \
+   V(async_wrap)                                                                \
+   V(blob)                                                                      \
+--- a/node.gyp
++++ b/node.gyp
+@@ -118,6 +118,7 @@
+       'src/module_wrap.cc',
+       'src/node.cc',
+       'src/node_amaro.cc',
++      'src/node_undici_llhttp.cc',
+       'src/node_api.cc',
+       'src/node_binding.cc',
+       'src/node_blob.cc',

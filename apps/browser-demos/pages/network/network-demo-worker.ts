@@ -1,3 +1,4 @@
+import { ConnectedNamesFile } from "@host/networking/connected-names-file";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "@host/kernel-worker";
 import { installBrowserSetImmediatePolyfill } from "@host/browser-immediate-polyfill";
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
@@ -238,90 +239,97 @@ async function runProgram(
     },
   });
 
-  // The kernel owns `/`: hand it the rootfs image (decoded, since zstd is a
-  // host-side transport codec) and the byte pipe for the deferred files the
-  // image only names, before `init` loads them. This is the same handoff the
-  // browser kernel worker makes for BrowserKernel machines. Relative lazy
-  // addresses resolve against the deployment base at fetch time.
-  const rootfsImage = maybeDecompressImage(artifacts.rootfs);
-  configureRootfsOverlayFromImage(kernelWorker, {
-    imageRead: imageReadFromContainer(rootfsImage),
-    imageLength: rootfsImage.byteLength,
-    foreignPrefixes: [],
-    nosuid: false,
-    lazyFetcher: (url) => fetch(url),
-    lazyUrlBase: import.meta.env.BASE_URL,
+  const connectedNames = new ConnectedNamesFile(kernelWorker, io.network!, (error) => {
+    console.error(`[${options.machine}] connected-name publication failed`, error);
   });
-  await kernelWorker.init(artifacts.kernel);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // The kernel owns `/`: hand it the rootfs image (decoded, since zstd is a
+    // host-side transport codec) and the byte pipe for the deferred files the
+    // image only names, before `init` loads them. This is the same handoff the
+    // browser kernel worker makes for BrowserKernel machines. Relative lazy
+    // addresses resolve against the deployment base at fetch time.
+    const rootfsImage = maybeDecompressImage(artifacts.rootfs);
+    configureRootfsOverlayFromImage(kernelWorker, {
+      imageRead: imageReadFromContainer(rootfsImage),
+      imageLength: rootfsImage.byteLength,
+      foreignPrefixes: [],
+      nosuid: false,
+      lazyFetcher: (url) => fetch(url),
+      lazyUrlBase: import.meta.env.BASE_URL,
+    });
+    await kernelWorker.init(artifacts.kernel);
+    await connectedNames.start();
 
-  const memory = createProcessMemory(ptrWidth);
-  const channelOffset = (MAX_PAGES - 2) * 65536;
-  growToMax(memory, ptrWidth, 17);
-  new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+    const memory = createProcessMemory(ptrWidth);
+    const channelOffset = (MAX_PAGES - 2) * 65536;
+    growToMax(memory, ptrWidth, 17);
+    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-  pid = kernelWorker.createProcess(CAPTURED_STDIO);
-  // WHY: registration replaces argv and environment as one Rust-owned
-  // transaction, so this harness's intentionally empty environment must be
-  // explicit rather than inferred after argv has already been published.
-  const environment: string[] = [];
-  kernelWorker.registerProcess(pid, memory, [channelOffset], {
-    argv: options.argv,
-    env: environment,
-    ptrWidth,
-  });
-  const initialHeapBase = extractHeapBase(options.programBytes);
-  if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);
-  // fd 0 is a kernel pipe the host writes into, as for every spawned
-  // non-PTY process; without stdin it stays open, as it did before.
-  kernelWorker.installHostStdinPipe(pid);
-  if (options.stdin !== undefined) {
-    kernelWorker.setStdinData(pid, encoder.encode(options.stdin));
-  }
+    pid = kernelWorker.createProcess(CAPTURED_STDIO);
+    // WHY: registration replaces argv and environment as one Rust-owned
+    // transaction, so this harness's intentionally empty environment must be
+    // explicit rather than inferred after argv has already been published.
+    const environment: string[] = [];
+    kernelWorker.registerProcess(pid, memory, [channelOffset], {
+      argv: options.argv,
+      env: environment,
+      ptrWidth,
+    });
+    const initialHeapBase = extractHeapBase(options.programBytes);
+    if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);
+    // fd 0 is a kernel pipe the host writes into, as for every spawned
+    // non-PTY process; without stdin it stays open, as it did before.
+    kernelWorker.installHostStdinPipe(pid);
+    if (options.stdin !== undefined) {
+      kernelWorker.setStdinData(pid, encoder.encode(options.stdin));
+    }
 
-  const initData: CentralizedWorkerInitMessage = {
-    type: "centralized_init",
-    pid,
-    programBytes: options.programBytes,
-    memory,
-    channelOffset,
-    argv: options.argv,
-    env: environment,
-    ptrWidth,
-    secureExec: kernelWorker.processSecureExec(pid),
-  };
-  const mainWorker = workerAdapter.createWorker(initData);
-  workers.set(pid, mainWorker);
+    const initData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid,
+      programBytes: options.programBytes,
+      memory,
+      channelOffset,
+      argv: options.argv,
+      env: environment,
+      ptrWidth,
+      secureExec: kernelWorker.processSecureExec(pid),
+    };
+    const mainWorker = workerAdapter.createWorker(initData);
+    workers.set(pid, mainWorker);
 
-  const timeout = options.timeoutMs ?? 15_000;
-  const timer = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    for (const worker of workers.values()) worker.terminate().catch(() => {});
-    workers.clear();
-    rejectExit(new Error(`${options.machine} ${options.programName} timed out after ${timeout}ms`));
-  }, timeout);
+    const timeout = options.timeoutMs ?? 15_000;
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      for (const worker of workers.values()) worker.terminate().catch(() => {});
+      workers.clear();
+      rejectExit(new Error(`${options.machine} ${options.programName} timed out after ${timeout}ms`));
+    }, timeout);
 
-  mainWorker.on("error", (error: Error) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    rejectExit(error);
-  });
-  mainWorker.on("message", (message: unknown) => {
-    const m = message as WorkerToHostMessage;
-    if (m.type === "error" && m.pid === pid && !settled) {
+    mainWorker.on("error", (error: Error) => {
+      if (settled) return;
       settled = true;
       clearTimeout(timer);
-      rejectExit(new Error(m.message));
-    }
-  });
+      rejectExit(error);
+    });
+    mainWorker.on("message", (message: unknown) => {
+      const m = message as WorkerToHostMessage;
+      if (m.type === "error" && m.pid === pid && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        rejectExit(new Error(m.message));
+      }
+    });
 
-  try {
     const exitCode = await exitPromise;
     clearTimeout(timer);
+    await connectedNames.ready();
     machine(options.machine, exitCode === 0 ? "passed" : `failed ${exitCode}`);
     return { exitCode, stdout, stderr };
   } finally {
+    connectedNames.close();
     clearTimeout(timer);
     for (const worker of workers.values()) worker.terminate().catch(() => {});
     workers.clear();

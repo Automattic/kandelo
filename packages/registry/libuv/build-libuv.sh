@@ -16,7 +16,12 @@ SOURCE_DIR="$NODE_SOURCE/deps/uv"
 patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0001-kandelo-posix-backend.patch"
 patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0002-typed-pthread-entry.patch"
 patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0003-relocatable-static-pkgconfig.patch"
+patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0004-kandelo-resource-usage-boundary.patch"
+patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0005-kandelo-interface-enumeration.patch"
+patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0006-kandelo-procfs-cpu-load.patch"
 cp "$SCRIPT_DIR/src/kandelo-proctitle.c" "$SOURCE_DIR/src/unix/kandelo-proctitle.c"
+cp "$SCRIPT_DIR/src/kandelo-memory.c" "$SOURCE_DIR/src/unix/kandelo-memory.c"
+cp "$SCRIPT_DIR/src/kandelo-uptime.c" "$SOURCE_DIR/src/unix/kandelo-uptime.c"
 
 cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake" \

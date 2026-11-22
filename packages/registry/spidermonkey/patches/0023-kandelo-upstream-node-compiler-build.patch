@@ -1,6 +1,6 @@
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -22,6 +22,14 @@
+@@ -21,6 +21,14 @@
      "OSObject.cpp",
      "ShellModuleObjectWrapper.cpp",
      "WasmTesting.cpp",

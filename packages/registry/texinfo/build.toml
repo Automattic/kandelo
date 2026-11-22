@@ -1,0 +1,12 @@
+script_path = "packages/registry/texinfo/build-texinfo.sh"
+inputs = [
+  "packages/registry/texinfo/build-texinfo.sh",
+  "packages/registry/texinfo/patches",
+  "scripts/rewrite-guest-tool-paths.py",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

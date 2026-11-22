@@ -6,10 +6,10 @@
  * ioctl numbers. `struct input_event` uses kandelo's wasm32-musl layout
  * (see crates/shared/src/lib.rs::input::WpkInputEvent).
  *
- * The kernel only *implements* a subset of the evdev surface at runtime
- * (keyboard + pointer, the EVIOCG* queries below); ioctls it does not
- * support return ENOTTY. Force-feedback, MT-slot, and keymap structs are
- * not marshalled here.
+ * The kernel only *implements* a subset of the evdev surface at runtime:
+ * a keyboard and a pointer, and the read-only EVIOCG* queries grouped
+ * below with what each returns. Every other 'E' request returns ENOTTY.
+ * Force-feedback, MT-slot, and keymap structs are not marshalled here.
  *
  * Any change to the struct/ioctl marshalling here is part of the kernel
  * ABI — bump ABI_VERSION.
@@ -92,6 +92,17 @@ struct input_id {
 #define BUS_INTEL_ISHTP		0x1F
 #define BUS_AMD_SFH		0x20
 
+/* MT_TOOL types: the values an ABS_MT_TOOL_TYPE event carries. Verbatim
+ * from <linux/input.h>, where upstream keeps them beside the bus types.
+ * They are data for multitouch consumers (e.g. Qt's evdev touch handler)
+ * to compile against; kandelo's keyboard and pointer devices report no
+ * EV_ABS multitouch axes, so the kernel never emits ABS_MT_TOOL_TYPE. */
+#define MT_TOOL_FINGER		0x00
+#define MT_TOOL_PEN		0x01
+#define MT_TOOL_PALM		0x02
+#define MT_TOOL_DIAL		0x0a
+#define MT_TOOL_MAX		0x0f
+
 /* Returned by EVIOCGABS(axis). Total 24 bytes. The kernel reports
  * `maximum = canvas_dim - 1`, `resolution = 1` unit per pixel; other
  * fields are zero. */
@@ -110,31 +121,46 @@ struct input_absinfo {
  * (bits 16..29) is informational on the userspace side — the kernel
  * re-computes the buffer length from `size` at dispatch time. */
 
-/* Kandelo's kernel implements these queries. */
+/* Kandelo's kernel implements these queries (crates/runtime-core/src/
+ * syscalls.rs, handle_input_ioctl):
+ *   EVIOCGVERSION  0x010001.
+ *   EVIOCGID       BUS_VIRTUAL with the device's vendor/product/version.
+ *   EVIOCGNAME     the device name, NUL-terminated, cut to `len`.
+ *   EVIOCGBIT      the device's capability bitmap for event type `ev`.
+ *   EVIOCGABS      ABS_X/ABS_Y on the pointer only; any other axis, or
+ *                  the keyboard, is ENOTTY.
+ *   EVIOCGKEY      the device's pressed-key bitmap.
+ *   EVIOCGLED, EVIOCGSW, EVIOCGPROP
+ *                  an all-zero bitmap: no LEDs, switches or input
+ *                  properties are modeled.
+ *   EVIOCGPHYS, EVIOCGUNIQ
+ *                  ENOENT (unset), which libevdev accepts. */
 #define EVIOCGVERSION       _IOR('E', 0x01, int)
 #define EVIOCGID            _IOR('E', 0x02, struct input_id)
 #define EVIOCGNAME(len)     _IOC(_IOC_READ, 'E', 0x06, len)
+#define EVIOCGPHYS(len)     _IOC(_IOC_READ, 'E', 0x07, len)
+#define EVIOCGUNIQ(len)     _IOC(_IOC_READ, 'E', 0x08, len)
+#define EVIOCGPROP(len)     _IOC(_IOC_READ, 'E', 0x09, len)
+#define EVIOCGKEY(len)      _IOC(_IOC_READ, 'E', 0x18, len)
+#define EVIOCGLED(len)      _IOC(_IOC_READ, 'E', 0x19, len)
+#define EVIOCGSW(len)       _IOC(_IOC_READ, 'E', 0x1b, len)
 #define EVIOCGBIT(ev, len)  _IOC(_IOC_READ, 'E', 0x20 + (ev), len)
 #define EVIOCGABS(abs)      _IOR('E', 0x40 + (abs), struct input_absinfo)
 
 /* Defined so evdev consumers (e.g. SDL's Linux input backend) compile
  * against the full ioctl vocabulary. Values are Linux UAPI verbatim. The
- * kernel does not implement these yet and returns ENOTTY at runtime; a
- * portable consumer treats ENOTTY as "unsupported" and degrades. (The
- * keymap-v2, force-feedback, and event-mask ioctls that require extra
- * structs are omitted until they are marshalled.) */
+ * kernel does not implement these and returns ENOTTY at runtime; a
+ * portable consumer treats ENOTTY as "unsupported" and degrades.
+ * EVIOCGRAB is refused on purpose: every reader sees every event, so
+ * reporting a grab as held would be false. (The keymap-v2,
+ * force-feedback, and event-mask ioctls that require extra structs are
+ * omitted until they are marshalled.) */
 #define EVIOCGREP           _IOR('E', 0x03, unsigned int[2])
 #define EVIOCSREP           _IOW('E', 0x03, unsigned int[2])
 #define EVIOCGKEYCODE       _IOR('E', 0x04, unsigned int[2])
 #define EVIOCSKEYCODE       _IOW('E', 0x04, unsigned int[2])
-#define EVIOCGPHYS(len)     _IOC(_IOC_READ, 'E', 0x07, len)
-#define EVIOCGUNIQ(len)     _IOC(_IOC_READ, 'E', 0x08, len)
-#define EVIOCGPROP(len)     _IOC(_IOC_READ, 'E', 0x09, len)
 #define EVIOCGMTSLOTS(len)  _IOC(_IOC_READ, 'E', 0x0a, len)
-#define EVIOCGKEY(len)      _IOC(_IOC_READ, 'E', 0x18, len)
-#define EVIOCGLED(len)      _IOC(_IOC_READ, 'E', 0x19, len)
 #define EVIOCGSND(len)      _IOC(_IOC_READ, 'E', 0x1a, len)
-#define EVIOCGSW(len)       _IOC(_IOC_READ, 'E', 0x1b, len)
 #define EVIOCSABS(abs)      _IOW('E', 0xc0 + (abs), struct input_absinfo)
 #define EVIOCRMFF           _IOW('E', 0x81, int)
 #define EVIOCGEFFECTS       _IOR('E', 0x84, int)

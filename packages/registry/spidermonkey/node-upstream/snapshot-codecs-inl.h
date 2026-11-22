@@ -75,7 +75,7 @@ bool NativeContextControl(JSContext* cx,unsigned argc,JS::Value* vp) {
   auto caller=isolate->GetCurrentContext();api::Local<api::Context> context;
   {api::EscapableHandleScope handles(isolate);context=handles.Escape(frame.OwnContext(target));}
   if(!std::strcmp(operation.get(),"inspect")){
-    auto principal=state->environment.context();if(principal.IsEmpty())return false;
+    auto principal=state->Legacy().environment.context();if(principal.IsEmpty())return false;
     JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
     JS::RootedValue current(cx,api::Input(caller->Global())),owner(cx,api::Input(principal->Global())),selected(cx,api::Input(context->Global()));
     if(!JS_DefineProperty(cx,result,"current",current,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,result,"principal",owner,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,result,"target",selected,JSPROP_ENUMERATE))return false;
@@ -107,7 +107,7 @@ bool NativeContextControl(JSContext* cx,unsigned argc,JS::Value* vp) {
     if(!SnapshotCallbackValue(frame,kind,&value))return false;
     if(!std::strcmp(operation.get(),"clearCallback")&&!SetSnapshotCallback(cx,runtime,kind,JS::UndefinedHandleValue))return false;
     if(!std::strcmp(operation.get(),"invokeCallback")&&!value.isUndefined()){
-      auto principal=state->environment.context();if(principal.IsEmpty())return false;
+      auto principal=state->Legacy().environment.context();if(principal.IsEmpty())return false;
       bool ok;
       {api::Context::Scope home(principal);CHECK(principal==isolate->GetCurrentContext());
         if(!JS_WrapValue(cx,&value))return false;

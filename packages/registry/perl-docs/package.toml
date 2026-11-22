@@ -1,0 +1,26 @@
+kind = "program"
+name = "perl-docs"
+version = "5.40.3"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `perl` package (perl), generated
+# with upstream's own documentation tooling from the same pinned source.
+# tests/package-system/package-docs-source-parity.test.ts keeps the source,
+# SHA-256 and version equal to the `perl` package's.
+[source]
+url = "https://www.cpan.org/src/5.0/perl-5.40.3.tar.gz"
+sha256 = "4c155b4e6160682b38919b55ac319081b898db11857cf18a7d9ffed2648ccaff"
+provider = "archive"
+
+[license]
+spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+url = "https://dev.perl.org/licenses/"
+
+[build]
+script_path = "packages/registry/perl-docs/build-perl-docs.sh"
+
+[[outputs]]
+name = "perl-docs"
+wasm = "perl-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,155 @@
+Preserve actual [[Get]] presence through proxy forwarding.
+
+The existing native and scripted-proxy get algorithms optionally report their
+lookup result. Trap lookup, execution, validation and ordering stay original.
+No HasProperty/descriptor preflight or second trap lookup is introduced.
+
+--- a/js/src/vm/NativeObject.cpp
++++ b/js/src/vm/NativeObject.cpp
+@@ -16,6 +16,8 @@
+ #include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
+ #include "js/Printer.h"               // js::GenericPrinter
+ #include "js/Value.h"
++#include "js/Wrapper.h"
++#include "proxy/ScriptedProxyHandler.h"
+ #include "vm/EqualityOperations.h"  // js::SameValue
+ #include "vm/GetterSetter.h"        // js::GetterSetter
+ #include "vm/Interpreter.h"         // js::CallGetter, js::CallSetter
+@@ -2592,7 +2594,9 @@
+     JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
+     typename MaybeRooted<Value, allowGC>::HandleType receiver,
+     typename MaybeRooted<jsid, allowGC>::HandleType id, IsNameLookup nameLookup,
+-    typename MaybeRooted<Value, allowGC>::MutableHandleType vp) {
++    typename MaybeRooted<Value, allowGC>::MutableHandleType vp,
++    bool* found = nullptr) {
++  if (found) *found = false;
+   typename MaybeRooted<NativeObject*, allowGC>::RootType pobj(cx, obj);
+   PropertyResult prop;
+ 
+@@ -2611,6 +2615,7 @@
+               return false;
+             }
+             if (handled) {
++              if (found) *found = true;
+               return true;
+             }
+           }
+@@ -2622,6 +2627,7 @@
+     }
+ 
+     if (prop.isFound()) {
++      if (found) *found = true;
+       // Steps 3-7. Special case for dense elements because
+       // GetExistingProperty doesn't support those.
+       if (prop.isDenseElement()) {
+@@ -2653,6 +2659,9 @@
+     // is non-native, that optimization would be incorrect.
+     if (proto->getOpsGetProperty()) {
+       typename MaybeRooted<JSObject*, allowGC>::RootType protoRoot(cx, proto);
++      if constexpr (allowGC == CanGC) {
++        if (found) return GetPropertyWithFound(cx, protoRoot, receiver, id, vp, found);
++      }
+       return GeneralizedGetProperty<allowGC>(cx, protoRoot, id, receiver,
+                                              nameLookup, vp);
+     }
+@@ -2666,6 +2675,45 @@
+                            MutableHandleValue vp) {
+   return NativeGetPropertyInline<CanGC>(cx, obj, receiver, id, NotNameLookup,
+                                         vp);
++}
++
++bool js::GetPropertyWithFound(JSContext* cx, HandleObject obj,
++                               HandleValue receiver, HandleId id,
++                               MutableHandleValue vp, bool* found) {
++  MOZ_ASSERT(found);
++  AutoCheckRecursionLimit recursion(cx);
++  if (!recursion.check(cx)) return false;
++  if (obj->is<NativeObject>()) {
++    return NativeGetPropertyInline<CanGC>(cx, obj.as<NativeObject>(), receiver,
++                                        id, NotNameLookup, vp, found);
++  }
++  if (IsScriptedProxy(obj)) {
++    return ScriptedProxyHandler::singleton.getWithFound(cx, obj, receiver, id,
++                                                        vp, found);
++  }
++  // Engine wrappers transport the lookup across realms; they must not turn a
++  // missing forwarded property into a found undefined value. Preserve access
++  // checks and wrap both the original receiver and the resulting real value.
++  if (IsWrapper(obj)) {
++    RootedObject target(cx, CheckedUnwrapDynamic(obj, cx, false));
++    if (!target) {
++      ReportAccessDenied(cx);
++      return false;
++    }
++    {
++      AutoRealm realm(cx, target);
++      RootedValue wrappedReceiver(cx, receiver);
++      RootedId wrappedId(cx, id);
++      if (!JS_WrapValue(cx, &wrappedReceiver) || !JS_WrapId(cx, &wrappedId) ||
++          !GetPropertyWithFound(cx, target, wrappedReceiver, wrappedId, vp, found))
++        return false;
++    }
++    return JS_WrapValue(cx, vp);
++  }
++  // Other exotic get operations are already terminal lookup results, as in
++  // the pre-existing embedding path. Their own algorithm remains authoritative.
++  *found = true;
++  return GetProperty(cx, obj, receiver, id, vp);
+ }
+ 
+ bool js::NativeGetPropertyBypassingInterceptors(
+--- a/js/src/vm/NativeObject.h
++++ b/js/src/vm/NativeObject.h
+@@ -1940,6 +1940,12 @@
+                               HandleValue receiver, HandleId id,
+                               MutableHandleValue vp);
+ 
++// Original [[Get]] algorithms with an additional presence result, used by
++// embedders that distinguish absence from a getter/trap returning undefined.
++extern bool GetPropertyWithFound(JSContext* cx, HandleObject obj,
++                                HandleValue receiver, HandleId id,
++                                MutableHandleValue vp, bool* found);
++
+ extern bool NativeGetPropertyBypassingInterceptors(
+     JSContext* cx, Handle<NativeObject*> obj, HandleValue receiver, HandleId id,
+     MutableHandleValue vp);
+--- a/js/src/proxy/ScriptedProxyHandler.cpp
++++ b/js/src/proxy/ScriptedProxyHandler.cpp
+@@ -1108,6 +1108,13 @@
+ bool ScriptedProxyHandler::get(JSContext* cx, HandleObject proxy,
+                                HandleValue receiver, HandleId id,
+                                MutableHandleValue vp) const {
++  return getWithFound(cx, proxy, receiver, id, vp, nullptr);
++}
++
++bool ScriptedProxyHandler::getWithFound(JSContext* cx, HandleObject proxy,
++                                        HandleValue receiver, HandleId id,
++                                        MutableHandleValue vp, bool* found) const {
++  if (found) *found = true;
+   // Steps 2-4.
+   RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
+   if (!handler) {
+@@ -1128,7 +1135,8 @@
+ 
+   // Step 7.
+   if (trap.isUndefined()) {
+-    return GetProperty(cx, target, receiver, id, vp);
++    return found ? GetPropertyWithFound(cx, target, receiver, id, vp, found)
++                 : GetProperty(cx, target, receiver, id, vp);
+   }
+ 
+   // Step 8.
+--- a/js/src/proxy/ScriptedProxyHandler.h
++++ b/js/src/proxy/ScriptedProxyHandler.h
+@@ -55,6 +55,11 @@
+ 
+   virtual bool has(JSContext* cx, JS::HandleObject proxy, JS::HandleId id,
+                    bool* bp) const override;
++  // Embedding lookup needs to distinguish a missing forwarded target property
++  // from an explicit get trap returning undefined, without a second lookup.
++  bool getWithFound(JSContext* cx, JS::HandleObject proxy,
++                    JS::HandleValue receiver, JS::HandleId id,
++                    JS::MutableHandleValue vp, bool* found) const;
+   virtual bool get(JSContext* cx, JS::HandleObject proxy,
+                    JS::HandleValue receiver, JS::HandleId id,
+                    JS::MutableHandleValue vp) const override;

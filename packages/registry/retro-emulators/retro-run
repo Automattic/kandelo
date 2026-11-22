@@ -25,6 +25,47 @@
 # ROM's first 64 KiB once and does everything else with bash builtins. Probing
 # each offset with its own dd|od|tr pipeline took about 25 processes to reach
 # the SNES test, and seconds before a SNES game started.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: retro-run [ROM [EMULATOR-OPTION]...]
+  or:  retro-run --identify [ROM]
+  or:  retro-run --keys [ROM]
+
+Run a game console ROM in the emulator for its system.
+
+Identify ROM's system from the file's contents, not its name, and run it
+in that system's emulator: fceumm(1) for the NES, genesis-plus-gx(1) for
+the Mega Drive, Master System and Game Gear, and snes9x(1) for the SNES.
+A NES ROM is recognised by its iNES header, a Mega
+Drive ROM by "SEGA" at offset 0x100, a Master System or Game Gear ROM by
+its "TMR SEGA" header, and a SNES ROM by its header checksum, with or
+without a 512-byte copier header. A file that matches none of them is
+rejected. Without ROM, the NES 240p test suite,
+/usr/share/retro-emulators/roms/240pee.nes, is run.
+
+The emulators take the system from the file name's extension, so the ROM
+runs through a symbolic link in $XDG_RUNTIME_DIR/retro (by default
+/run/user/UID/retro) named after the ROM, with the detected system's
+extension. Arguments after ROM are passed to the emulator, which accepts
+--state FILE to start from a saved state.
+
+Options:
+      --identify  print the detected system (nes, md, sms, gg or sfc)
+                  and exit
+      --keys      print which key is which of the emulator's buttons
+                  for ROM, and exit
+      --help      display this help and exit
+      --version   output version information and exit
+
+The exit status is 1 when ROM cannot be read or is not a recognised NES,
+SNES, Mega Drive, Master System or Game Gear ROM. Otherwise it is 0 for
+--identify, and the emulator's own status.
+EOF
+        exit 0
+        ;;
+    --version) echo 'retro-run (Kandelo retro-emulators) 0.1.0'; exit 0 ;;
+esac
 IDENTIFY=""; KEYS=""
 case "${1:-}" in
     --identify) IDENTIFY=1; shift ;;

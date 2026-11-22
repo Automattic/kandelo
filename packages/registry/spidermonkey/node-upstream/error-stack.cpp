@@ -10,10 +10,12 @@
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 #include "jsnum.h"
 #define NODE_WANT_INTERNALS 1
 #include "node-exit-code.h"
 #undef NODE_WANT_INTERNALS
+#endif
 
 #include "js/Array.h"
 #include "js/CallAndConstruct.h"
@@ -31,11 +33,15 @@
 #include "js/Stack.h"
 #include "js/WeakMap.h"
 #include "js/Wrapper.h"
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 #include "shell/jsshell.h"
 #include "shell/node-upstream/per-context.h"
+#endif
 #include "util/StringBuilder.h"
 #include "vm/FrameIter.h"
 #include "vm/JSScript.h"
+#include "vm/SavedFrame.h"
+#include "shell/node-upstream/native-source-location.h"
 #include "vm/Realm.h"
 
 namespace kandelo::node {
@@ -50,10 +56,19 @@ const JSClass kSite = {"CallSite", JSCLASS_HAS_RESERVED_SLOTS(2)};
 constexpr auto kVisible = JS::SavedFrameSelfHosted::Exclude;
 
 JSObject* State(JSContext* cx) {
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+  auto owner=v8::ReadNativeEngineState(cx);auto* global=JS::CurrentGlobalOrNull(cx);
+  if(!owner||!global)return nullptr;
+  auto* fields=v8::ExistingContextEmbedderStorage(*owner,global);
+  if(!fields)return nullptr;
+  const auto state=JS::GetReservedSlot(fields,3);
+  return state.isObject()?&state.toObject():nullptr;
+#else
   auto* shell = js::shell::GetShellContext(cx);
   if (!shell->upstreamNodeRuntime) return nullptr;
   JS::RootedObject runtime(cx, shell->upstreamNodeRuntime);
   return GetCurrentContextErrorStackState(cx, runtime);
+#endif
 }
 bool Throw(JSContext* cx, JSExnType type, const char* code, const char* message) {
   JS::RootedObject stack(cx);
@@ -118,7 +133,12 @@ bool Position(JSContext* cx, JS::HandleObject frame, uint32_t* line, uint32_t* c
     JS_ReportErrorASCII(cx, "Captured frame is not visible in this realm"); return false;
   }
   if (!value.isLimitedColumnNumber()) return Missing(cx, "Wasm CallSite metadata is not implemented");
-  *column = value.oneOriginValue(); return true;
+  *column = value.oneOriginValue();
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+  auto* raw=js::CheckedUnwrapDynamic(frame,cx,false);
+  if(raw&&raw->is<js::SavedFrame>())NativeFunctionBodyLocation(raw->as<js::SavedFrame>().getKandeloScriptSource(),line,column);
+#endif
+  return true;
 }
 JSString* FormatSite(JSContext* cx, JS::HandleObject frame) {
   auto* principals = JS::GetRealmPrincipals(JS::GetCurrentRealmOrNull(cx));
@@ -271,12 +291,23 @@ bool AccessStack(JSContext* cx, const JS::CallArgs& args, bool set) {
     } else {
       JS::RootedObject trace(cx, Trace(cx, state, capture));
       if (!trace) return false;
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+      auto owner=v8::ReadNativeEngineState(cx);MOZ_RELEASE_ASSERT(owner);
+      bool& preparing=owner->nativeStackPreparing;
+#else
       auto* shell = js::shell::GetShellContext(cx);
-      if (shell->upstreamErrorStackPreparing) {
+      bool& preparing=shell->upstreamErrorStackPreparing;
+#endif
+      if (preparing) {
         if (!DefaultPrepare(cx, state, key, trace, &result)) return false;
       } else {
-        shell->upstreamErrorStackPreparing = true;
-        auto clear = mozilla::MakeScopeExit([&] { shell->upstreamErrorStackPreparing = false; });
+        preparing = true;
+        auto clear = mozilla::MakeScopeExit([&] { preparing = false; });
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+        bool handled=false;
+        if(!v8::bridge::PrepareNativeStack(cx,key,trace,&handled,&result))return false;
+        if(!handled){
+#endif
         JS::RootedValue callback(cx, JS::GetReservedSlot(state, PrepareCallback));
         if (callback.isObject()) {
           JS::RootedValueArray<3> values(cx);
@@ -292,6 +323,9 @@ bool AccessStack(JSContext* cx, const JS::CallArgs& args, bool set) {
             if (!JS::Call(cx, receiver, callback, values, &result)) return false;
           } else if (!DefaultPrepare(cx, state, key, trace, &result)) return false;
         }
+#ifdef KANDELO_NATIVE_NODE_ENGINE
+        }
+#endif
       }
       JS::SetReservedSlot(capture, PreparedValue, result);
       JS::SetReservedSlot(capture, Cached, JS::BooleanValue(true));
@@ -362,6 +396,7 @@ bool SetEnhance(JSContext* cx, unsigned argc, JS::Value* vp) {
 
 }  // namespace
 
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 namespace {
 StateSlot NativeCallbackSlot(ErrorStackCallback callback) {
   switch(callback) {
@@ -389,6 +424,8 @@ bool SetCurrentErrorStackCallback(JSContext* cx,JS::HandleObject runtime,
   }
   JS::SetReservedSlot(state,NativeCallbackSlot(callback),value);return true;
 }
+
+#endif
 
 JSObject* CreateErrorStackState(JSContext* cx) {
   JS::RootedObject state(cx, JS_NewObject(cx, &kState));
@@ -421,6 +458,7 @@ JSObject* CreateErrorStackState(JSContext* cx) {
   JS::SetEmbeddingErrorStackHooks(JS_GetRuntime(cx), LimitHook, CreatedHook);
   return state;
 }
+#ifndef KANDELO_NATIVE_NODE_ENGINE
 JSObject* GetErrorStackBinding(JSContext* cx) {
   JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
   if (!runtime) {
@@ -459,5 +497,7 @@ bool EnhanceFatalExceptionStack(JSContext* cx, JS::HandleValue error,
   if (!callback.isObject()) return Missing(cx, "Fatal exception stack enhancer has not been registered");
   return JS::Call(cx, JS::UndefinedHandleValue, callback, JS::HandleValueArray(error), out);
 }
+
+#endif
 
 }  // namespace kandelo::node

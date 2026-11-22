@@ -1,0 +1,138 @@
+--- a/deps/v8/src/heap/memory-measurement.cc
++++ b/deps/v8/src/heap/memory-measurement.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#if !defined(KANDELO_NATIVE_NODE_ENGINE)
+ #include "src/heap/memory-measurement.h"
+ 
+ #include "include/v8-local-handle.h"
+@@ -23,6 +24,8 @@
+ #include "src/wasm/wasm-stack-wrapper-cache.h"
+ #endif
+ 
++#endif
++
+ namespace v8::internal {
+ namespace {
+ // Must only be used from stack.
+@@ -30,6 +33,7 @@
+ // TODO(374253377): This should be implemented purely on the public API and move
+ // to d8. There's no reason V8 would need to provide a default delegate on its
+ // API.
++#if !defined(KANDELO_NATIVE_NODE_ENGINE)
+ class MemoryMeasurementResultBuilder final {
+  public:
+   explicit MemoryMeasurementResultBuilder(v8::Isolate* isolate)
+@@ -106,9 +110,59 @@
+   std::vector<Handle<JSObject>> other_;
+   bool detailed_ = false;
+ };
++#else
++// Same result structure and construction order through the shared public
++// source interface; no V8 heap layout or factory is imported.
++class MemoryMeasurementResultBuilder final {
++ public:
++  explicit MemoryMeasurementResultBuilder(v8::Isolate* isolate)
++      : isolate_(isolate), result_(v8::Object::New(isolate)) {}
++  void AddTotal(size_t estimate,size_t lower,size_t upper) {
++    AddProperty(result_,"total",NewResult(estimate,lower,upper));
++  }
++  void AddCurrent(size_t estimate,size_t lower,size_t upper) {
++    detailed_=true;AddProperty(result_,"current",NewResult(estimate,lower,upper));
++  }
++  void AddOther(size_t estimate,size_t lower,size_t upper) {
++    detailed_=true;other_.push_back(NewResult(estimate,lower,upper));
++  }
++  void AddWasm(size_t code,size_t metadata) {
++    auto wasm=v8::Object::New(isolate_);
++    AddProperty(wasm,"code",v8::Number::New(isolate_,code));
++    AddProperty(wasm,"metadata",v8::Number::New(isolate_,metadata));
++    AddProperty(result_,"WebAssembly",wasm);
++  }
++  v8::Local<v8::Object> Build() {
++    if(detailed_){
++      auto other=v8::Array::New(isolate_,int(other_.size()));
++      for(size_t i=0;i<other_.size();++i)
++        CHECK(other->CreateDataProperty(isolate_->GetCurrentContext(),uint32_t(i),other_[i]).FromMaybe(false));
++      AddProperty(result_,"other",other);
++    }
++    return result_;
++  }
++ private:
++  v8::Local<v8::Object> NewResult(size_t estimate,size_t lower,size_t upper) {
++    auto result=v8::Object::New(isolate_);
++    AddProperty(result,"jsMemoryEstimate",v8::Number::New(isolate_,estimate));
++    auto range=v8::Array::New(isolate_,2);
++    CHECK(range->CreateDataProperty(isolate_->GetCurrentContext(),uint32_t(0),v8::Number::New(isolate_,lower)).FromMaybe(false));
++    CHECK(range->CreateDataProperty(isolate_->GetCurrentContext(),uint32_t(1),v8::Number::New(isolate_,upper)).FromMaybe(false));
++    AddProperty(result,"jsMemoryRange",range);return result;
++  }
++  void AddProperty(v8::Local<v8::Object> object,const char* name,v8::Local<v8::Value> value) {
++    auto key=v8::String::NewFromUtf8(isolate_,name).ToLocalChecked();
++    CHECK(object->CreateDataProperty(isolate_->GetCurrentContext(),key,value).FromMaybe(false));
++  }
++  v8::Isolate* isolate_;
++  v8::Local<v8::Object> result_;
++  std::vector<v8::Local<v8::Object>> other_;
++  bool detailed_=false;
++};
++#endif
+ }  // anonymous namespace
+ 
+-class V8_EXPORT_PRIVATE MeasureMemoryDelegate
++class MeasureMemoryDelegate
+     : public v8::MeasureMemoryDelegate {
+  public:
+   MeasureMemoryDelegate(v8::Isolate* isolate, v8::Local<v8::Context> context,
+@@ -149,7 +203,7 @@
+   v8::Context::Scope scope(v8_context);
+   size_t total_size = 0;
+   size_t current_size = 0;
+-  DCHECK_EQ(result.contexts.size(), result.sizes_in_bytes.size());
++  CHECK_EQ(result.contexts.size(), result.sizes_in_bytes.size());
+   for (size_t i = 0; i < result.contexts.size(); ++i) {
+     total_size += result.sizes_in_bytes[i];
+     if (context_ == result.contexts[i]) {
+@@ -174,13 +228,22 @@
+     }
+   }
+ 
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++  auto v8_result = result_builder.Build();
++#else
+   auto v8_result = ToApiHandle<v8::Object>(result_builder.Build());
++#endif
+   auto v8_promise = promise_.Get(isolate_);
+   if (v8_promise->Resolve(v8_context, v8_result).IsNothing()) {
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++    CHECK(isolate_->IsExecutionTerminating());
++#else
+     CHECK(reinterpret_cast<Isolate*>(isolate_)->is_execution_terminating());
+-  }
+-}
+-
++#endif
++  }
++}
++
++#if !defined(KANDELO_NATIVE_NODE_ENGINE)
+ MemoryMeasurement::MemoryMeasurement(Isolate* isolate)
+     : isolate_(isolate),
+       task_runner_(isolate->heap()->GetForegroundTaskRunner()),
+@@ -395,4 +458,14 @@
+   size_by_context_[context] += external_size;
+ }
+ 
++#endif
+ }  // namespace v8::internal
++
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++namespace v8 {
++std::unique_ptr<MeasureMemoryDelegate> MeasureMemoryDelegate::Default(
++    Isolate* isolate,Local<Context> context,Local<Promise::Resolver> promise,MeasureMemoryMode mode) {
++  return std::make_unique<internal::MeasureMemoryDelegate>(isolate,context,promise,mode);
++}
++}
++#endif

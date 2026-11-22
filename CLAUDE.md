@@ -247,6 +247,12 @@ persistence, service-worker bridges or image metadata. Reusable session
 contracts belong in `web-libs/kandelo-session`; React wiring and page
 fixtures belong in `apps/browser-demos`.
 
+To deliver a guest file to a browser user, run `kandelo-publish FILE` inside
+Kandelo and direct the user to **Save** on its output card. Publication is
+not confirmation of a host download. See the
+[file-transfer guide](docs-site/guide/moving-files.md) for directories,
+streams, command options, and agent instructions.
+
 Treat boot descriptors and shared URLs as untrusted input: version them,
 bound their size/mounts and validate paths/source kinds. Describe persistence,
 privacy and verification accurately. Image-owned demo metadata belongs in
@@ -266,6 +272,11 @@ count tables, syscall classification sets, cached channel `DataView` or
 
 ## Build, Documentation, And PR Contract
 
+Target change PRs at `develop`. Follow
+[development and daily promotion](docs/development-workflow.md) for branch
+policy and the current CI transition limits; `main` is the stable/default
+branch and receives tested daily batches.
+
 Read [build, documentation and PR guidance](docs/agent-guidance/build-docs-and-prs.md)
 before changing these workflows or reporting completion. Build/verification
 claims must run through `scripts/dev-shell.sh`, not undeclared host tools;
@@ -283,8 +294,9 @@ version in a trailing comment. Same-repo `./.github/...` references are the
 only exception. Never restore mutable tag or branch refs.
 
 Use short `Area: Purpose` commit/PR titles. PR descriptions have `## Why`,
-`## What changed` and `## Validation`; state what ran and what did not. Keep
-prose plain and descriptions short. Do not hard-wrap PR prose; wrap commit
+`## What changed` and `## Validation`. What changed opens by saying how the
+Why is resolved: what is true now and how. State what ran and what did not.
+Keep prose plain and descriptions short. Do not hard-wrap PR prose; wrap commit
 bodies at 72 columns except tables, code, generated text and URLs. Preserve
 human contributor authorship when rewriting history and verify it before
 force-pushing. Never credit AI tools in commits or PR descriptions.

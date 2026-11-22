@@ -1,0 +1,27 @@
+kind = "program"
+name = "meson"
+version = "1.12.1"
+kernel_abi = 56
+# The guest Python that runs Meson.
+depends_on = ["python-browser-bundle@3.13.3"]
+
+# Meson, the build system: Python, installed as meson.zip mounted at /usr
+# (bin/meson and the mesonbuild package in /usr/lib/meson). It writes
+# build.ninja files for Ninja.
+[source]
+url = "https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz"
+sha256 = "ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/mesonbuild/meson/blob/1.12.1/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/meson/build-meson.sh"
+
+[[outputs]]
+name = "meson"
+wasm = "meson.zip"
+fork_instrumentation = "disabled"

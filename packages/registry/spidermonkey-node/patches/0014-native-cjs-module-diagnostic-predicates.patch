@@ -1,0 +1,151 @@
+--- a/src/node_contextify.cc
++++ b/src/node_contextify.cc
+@@ -1605,45 +1605,10 @@
+   return result;
+ }
+ 
+-// When compiling as CommonJS source code that contains ESM syntax, the
+-// following error messages are returned:
+-// - `import` statements: "Cannot use import statement outside a module"
+-// - `export` statements: "Unexpected token 'export'"
+-// - `import.meta` references: "Cannot use 'import.meta' outside a module"
+-// Dynamic `import()` is permitted in CommonJS, so it does not error.
+-// While top-level `await` is not permitted in CommonJS, it returns the same
+-// error message as when `await` is used in a sync function, so we don't use it
+-// as a disambiguation.
+-static const auto esm_syntax_error_messages = std::array<std::string_view, 3>{
+-    "Cannot use import statement outside a module",  // `import` statements
+-    "Unexpected token 'export'",                     // `export` statements
+-    "Cannot use 'import.meta' outside a module"};    // `import.meta` references
+-
+-// Another class of error messages that we need to check for are syntax errors
+-// where the syntax throws when parsed as CommonJS but succeeds when parsed as
+-// ESM. So far, the cases we've found are:
+-// - CommonJS module variables (`module`, `exports`, `require`, `__filename`,
+-//   `__dirname`): if the user writes code such as `const module =` in the top
+-//   level of a CommonJS module, it will throw a syntax error; but the same
+-//   code is valid in ESM.
+-// - Top-level `await`: if the user writes `await` at the top level of a
+-//   CommonJS module, it will throw a syntax error; but the same code is valid
+-//   in ESM.
+-static const auto throws_only_in_cjs_error_messages =
+-    std::array<std::string_view, 6>{
+-        "Identifier 'module' has already been declared",
+-        "Identifier 'exports' has already been declared",
+-        "Identifier 'require' has already been declared",
+-        "Identifier '__filename' has already been declared",
+-        "Identifier '__dirname' has already been declared",
+-        "await is only valid in async functions and "
+-        "the top level bodies of modules"};
+-
+-static const auto maybe_top_level_await_errors =
+-    std::array<std::string_view, 2>{
+-        "missing ) after argument list",  // example: `func(await 1);`
+-        "SyntaxError: Unexpected"         // example: `if(await 1)`
+-    };
++// The engine bridge supplies structured parser facts. Keep Node's original
++// wrapper names and its immediate/conditional/no-retry policy here.
++static constexpr std::array<std::string_view, 5> cjs_wrapper_names = {
++    "module", "exports", "require", "__filename", "__dirname"};
+ 
+ // If cached_data is provided, it would be used for the compilation and
+ // the on-disk compilation cache from NODE_COMPILE_CACHE (if configured)
+@@ -1734,7 +1699,7 @@
+ static bool warned_about_require_esm = false;
+ 
+ static bool ShouldRetryAsESM(Realm* realm,
+-                             Local<String> message,
++                             Local<v8::Message> message,
+                              Local<String> code,
+                              Local<String> resource_name);
+ 
+@@ -1816,7 +1781,7 @@
+       return;
+     }
+     can_parse_as_esm = ShouldRetryAsESM(
+-        realm, cjs_message->Get(), code, url_value.As<String>());
++        realm, cjs_message, code, url_value.As<String>());
+     if (!can_parse_as_esm) {
+       // The syntax error is not related to ESM, throw the original error.
+       isolate->ThrowException(cjs_exception);
+@@ -1870,38 +1835,34 @@
+ }
+ 
+ bool ShouldRetryAsESM(Realm* realm,
+-                      Local<String> message,
++                      Local<v8::Message> message,
+                       Local<String> code,
+                       Local<String> resource_name) {
+   Isolate* isolate = realm->isolate();
+ 
+-  Utf8Value message_value(isolate, message);
+-  auto message_view = message_value.ToStringView();
+-
+-  // These indicates that the file contains syntaxes that are only valid in
+-  // ESM. So it must be true.
+-  for (const auto& error_message : esm_syntax_error_messages) {
+-    if (message_view.find(error_message) != std::string_view::npos) {
+-      return true;
+-    }
+-  }
+-
+-  // Check if the error message is allowed in ESM but not in CommonJS. If it
+-  // is the case, let's check if file can be compiled as ESM.
+-  bool maybe_valid_in_esm = false;
+-  for (const auto& error_message : throws_only_in_cjs_error_messages) {
+-    if (message_view.find(error_message) != std::string_view::npos) {
+-      maybe_valid_in_esm = true;
+-      break;
+-    }
+-  }
+-
+-  for (const auto& error_message : maybe_top_level_await_errors) {
+-    if (message_view.find(error_message) != std::string_view::npos) {
+-      // If the error message is related to top-level await, we can try to
+-      // compile it as ESM.
+-      maybe_valid_in_esm = true;
+-      break;
++  const auto diagnostic = message->GetNativeCompileDiagnostic();
++  using Kind = v8::NativeCompileDiagnosticKind;
++  if (diagnostic.kind == Kind::Unclassified) {
++    FPrintF(stderr, "Unclassified native compiler diagnostic: %u\n",
++            diagnostic.engineCode);
++    CHECK(diagnostic.kind != Kind::Unclassified);
++  }
++
++  // Preserve the original immediate ESM branch before conditional compilation.
++  if (diagnostic.kind == Kind::DefiniteModuleSyntax) {
++    return true;
++  }
++
++  bool maybe_valid_in_esm = diagnostic.kind == Kind::ConditionalModule;
++  if (diagnostic.kind == Kind::Redeclaration) {
++    CHECK(!diagnostic.identifier.IsEmpty());
++    Utf8Value identifier(isolate, diagnostic.identifier);
++    const auto identifier_view = identifier.ToStringView();
++    for (const auto& name : cjs_wrapper_names) {
++      if (identifier_view == name) {
++        maybe_valid_in_esm = true;
++        break;
++      }
+     }
+   }
+ 
+@@ -1951,7 +1912,7 @@
+   bool cjs_var = !args[3]->IsString();
+ 
+   bool cache_rejected = false;
+-  Local<String> message;
++  Local<v8::Message> message;
+   {
+     Local<Function> fn;
+     TryCatchScope try_catch(env);
+@@ -1969,7 +1930,7 @@
+       return;
+     }
+     CHECK(try_catch.HasCaught());
+-    message = try_catch.Message()->Get();
++    message = try_catch.Message();
+   }
+ 
+   bool result = ShouldRetryAsESM(realm, message, code, resource_name);

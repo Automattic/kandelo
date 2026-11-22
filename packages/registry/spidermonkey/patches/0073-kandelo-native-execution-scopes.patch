@@ -1,0 +1,163 @@
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -498,6 +498,35 @@
+   //   MOZ_DIAGNOSTIC_ASSERT(!cx->brittleMode, "specific failure");
+   //
+   bool brittleMode = false;
++
++ private:
++  uint8_t embedderExecutionRestrictions_ = 0;
++  using NativeExecutionFatal = void (*)(const char*);
++  NativeExecutionFatal embedderExecutionFatal_ = nullptr;
++  bool onDisallowedEmbedderExecution();
++
++ public:
++  enum EmbedderExecutionRestriction : uint8_t {
++    EmbedderCrashOnExecution = 1,
++    EmbedderThrowOnExecution = 2
++  };
++  uint8_t embedderExecutionRestrictions() const {
++    MOZ_ASSERT(js::TlsContext.get() == this);
++    return embedderExecutionRestrictions_;
++  }
++  void setEmbedderExecutionRestrictions(uint8_t restrictions) {
++    MOZ_RELEASE_ASSERT(js::TlsContext.get() == this);
++    MOZ_RELEASE_ASSERT(!(restrictions &
++        ~(EmbedderCrashOnExecution | EmbedderThrowOnExecution)));
++    MOZ_RELEASE_ASSERT(!(restrictions & EmbedderCrashOnExecution) ||
++                       embedderExecutionFatal_);
++    embedderExecutionRestrictions_ = restrictions;
++  }
++  bool checkEmbedderScriptExecution() {
++    // Match admission ordering: denial scopes precede termination delivery.
++    if (embedderExecutionRestrictions_) return onDisallowedEmbedderExecution();
++    return checkNativeTermination();
++  }
+ 
+  private:
+   // One thread-safe termination record. Low bits are request/active state;
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -14,6 +14,7 @@
+ #include "mozilla/Sprintf.h"
+ #include "mozilla/Utf8.h"  // mozilla::ConvertUtf16ToUtf8
+ 
++#include <cstdlib>
+ #include <string.h>
+ #ifdef ANDROID
+ #  include <android/log.h>
+@@ -37,6 +38,7 @@
+ #include "jit/Simulator.h"
+ #include "js/CallAndConstruct.h"  // JS::Call
+ #include "js/CharacterEncoding.h"
++#include "js/Context.h"
+ #include "js/ContextOptions.h"        // JS::ContextOptions
+ #include "js/ErrorInterceptor.h"      // JSErrorInterceptor
+ #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+@@ -47,6 +49,8 @@
+ #include "js/Printf.h"
+ #include "js/PropertyAndElement.h"  // JS_GetProperty
+ #include "js/Stack.h"  // JS::NativeStackSize, JS::NativeStackLimit, JS::NativeStackLimitMin
++#include "kandelo/v8-native-fatal.h"
++
+ #include "util/DiagnosticAssertions.h"
+ #include "util/DifferentialTesting.h"
+ #include "util/DoubleToString.h"
+@@ -159,8 +163,31 @@
+   }
+ }
+ 
++bool JSContext::onDisallowedEmbedderExecution() {
++  MOZ_RELEASE_ASSERT(js::TlsContext.get() == this);
++  if (embedderExecutionRestrictions_ & EmbedderCrashOnExecution) {
++    MOZ_RELEASE_ASSERT(embedderExecutionFatal_);
++    embedderExecutionFatal_("Invoke in DisallowJavascriptExecutionScope");
++    // A returning handler is invalid; never continue or substitute a Wasm trap.
++    std::abort();
++  }
++  MOZ_RELEASE_ASSERT(embedderExecutionRestrictions_ & EmbedderThrowOnExecution);
++  if (!isNativeExecutionTerminating() && !isExceptionPending() &&
++      !isPropagatingForcedReturn()) {
++    js::AssertHeapIsIdle();
++    JS::RootedValue denied(this, JS::StringValue(names().kandeloIllegalAccess));
++    // Restore the native state directly: no allocation, stack capture,
++    // optional error interception or Error constructor during denial.
++    restorePendingExceptionState(JS::ExceptionStatus::Throwing, denied, nullptr);
++  }
++  return false;
++}
++
+ bool JSContext::init() {
+   TlsContext.set(this);
++  // The resident callback uses the existing complete logger and guest abort.
++  // It requires no Realm/Environment and survives their construction/disposal.
++  embedderExecutionFatal_ = &kandelo_v8_graceful_fatal;
+   nativeStackBase_.emplace(GetNativeStackBase());
+ 
+   if (!fx.initInstance()) {
+--- a/js/src/vm/Interpreter.cpp
++++ b/js/src/vm/Interpreter.cpp
+@@ -407,6 +407,10 @@
+ #  pragma optimize("g", off)
+ #endif
+ bool js::RunScript(JSContext* cx, RunState& state) {
++  if (!cx->checkEmbedderScriptExecution()) {
++    return false;
++  }
++
+   AutoSuppressConstructorOrigin constructionScope(cx);
+   AutoCheckRecursionLimit recursion(cx);
+   if (!recursion.check(cx)) {
+@@ -483,6 +487,10 @@
+ STATIC_PRECONDITION_ASSUME(ubound(args.argv_) >= argc)
+ MOZ_ALWAYS_INLINE bool CallJSNative(JSContext* cx, Native native,
+                                     CallReason reason, const CallArgs& args) {
++  if (!cx->checkEmbedderScriptExecution()) {
++    return false;
++  }
++
+   AutoCheckRecursionLimit recursion(cx);
+   if (!recursion.check(cx)) {
+     return false;
+@@ -560,6 +568,10 @@
+ bool js::InternalCallOrConstruct(JSContext* cx, const CallArgs& args,
+                                  MaybeConstruct construct,
+                                  CallReason reason /* = CallReason::Call */) {
++  if (!cx->checkEmbedderScriptExecution()) {
++    return false;
++  }
++
+   MOZ_ASSERT(args.length() <= ARGS_LENGTH_MAX);
+ 
+   unsigned skipForCallee = args.length() + 1 + (construct == CONSTRUCT);
+@@ -706,6 +718,10 @@
+ 
+ static bool InternalConstruct(JSContext* cx, const AnyConstructArgs& args,
+                               CallReason reason = CallReason::Call) {
++  if (!cx->checkEmbedderScriptExecution()) {
++    return false;
++  }
++
+   MOZ_ASSERT(args.array() + args.length() + 1 == args.end(),
+              "must pass constructing arguments to a construction attempt");
+   MOZ_ASSERT(!FunctionClass.getConstruct());
+--- a/js/src/vm/CommonPropertyNames.h
++++ b/js/src/vm/CommonPropertyNames.h
+@@ -281,6 +281,7 @@
+   MACRO_(jsTag, "JSTag")                                                       \
+   MACRO_(jsStringModule, "js-string")                                          \
+   MACRO_(json, "json")                                                         \
++  MACRO_(kandeloIllegalAccess, "illegal access")                               \
+   MACRO_(keys, "keys")                                                         \
+   IF_DECORATORS(MACRO_(kind, "kind"))                                          \
+   MACRO_(label, "label")                                                       \
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -67,6 +67,7 @@
+ 
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set([
++    "kandelo/v8-native-fatal.h",
+     "shell/node-upstream/resource-upstream/base_object.cc",
+     "shell/node-upstream/resource-upstream/base_object.h",
+     "shell/node-upstream/resource-upstream/base_object-inl.h",

@@ -1,3 +1,4 @@
+import { nodeNativeSourceMemoryAllowances } from "./fixtures/node-native-source-memory-authorities";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -593,6 +594,12 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireChannelHostWaits::kernel-export-direct-use::cancel(channel.pid, entropy.tid, entropy.token)",
+    disposition: "kernel-control",
+    why: "Retires only the exact PID/TID and opaque entropy cursor token during channel teardown. It accesses no guest memory or kernel scratch and is safe after image retirement.",
+  },
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",
@@ -1156,6 +1163,24 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 ];
 
 const auditAllowances: AuditAllowance[] = [
+  ...nodeNativeSourceMemoryAllowances,
+  {
+    key: "host/src/dri/byte-snapshot.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "Captures only the native buffer getter for authenticating the original mapped process Memory and the independent device baseline; no Memory or buffer is captured at module scope.",
+  },
+  {
+    key: "host/src/dri/byte-snapshot.ts::allocateByteSnapshot::wasm-memory-authority::new Memory({ initial: pages, maximum: pages })",
+    disposition: "non-kernel",
+    authorityOwner: "framebuffer",
+    why: "This self-contained constructor allocates only an independent nonshared GBM comparison baseline. Initial and maximum pages both equal the admitted mapping's rounded byte length. The returned record contains no guest or kernel Memory, and survives only with its mapping's device bookkeeping.",
+  },
+  {
+    key: "host/src/dri/byte-snapshot.ts::publishMappedBytes::wasm-instance-authority::new Instance(module, {env: {kernel: baseline.snapshotMemory!, process: memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
+  },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
     disposition: "rust-lent",

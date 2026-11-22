@@ -1,6 +1,6 @@
 --- a/js/src/vm/SavedFrame.h
 +++ b/js/src/vm/SavedFrame.h
-@@ -49,6 +49,10 @@
+@@ -47,6 +47,10 @@
    // Convenient getters for SavedFrame's reserved slots for use from C++.
    JSAtom* getSource();
    uint32_t getSourceId();
@@ -11,7 +11,7 @@
    // Line number (1-origin).
    uint32_t getLine();
    // Column number in UTF-16 code units.
-@@ -123,6 +127,7 @@
+@@ -121,6 +125,7 @@
    void initFromLookup(JSContext* cx, Handle<Lookup> lookup);
    void initSource(JSAtom* source);
    void initSourceId(uint32_t id);
@@ -19,7 +19,7 @@
    void initLine(uint32_t line);
    void initColumn(JS::TaggedColumnNumberOneOrigin column);
    void initFunctionDisplayName(JSAtom* maybeName);
-@@ -136,6 +141,7 @@
+@@ -134,6 +139,7 @@
      // The reserved slots in the SavedFrame class.
      JSSLOT_SOURCE,
      JSSLOT_SOURCEID,
@@ -29,7 +29,7 @@
      JSSLOT_FUNCTIONDISPLAYNAME,
 --- a/js/src/vm/SavedStacks.cpp
 +++ b/js/src/vm/SavedStacks.cpp
-@@ -178,9 +178,11 @@
+@@ -176,9 +176,11 @@
           JSAtom* asyncCause, SavedFrame* parent, JSPrincipals* principals,
           bool mutedErrors,
           const Maybe<LiveSavedFrameCache::FramePtr>& framePtr = Nothing(),
@@ -42,7 +42,7 @@
          line(line),
          column(column),
          functionDisplayName(functionDisplayName),
-@@ -201,6 +203,7 @@
+@@ -199,6 +201,7 @@
    explicit Lookup(SavedFrame& savedFrame)
        : source(savedFrame.getSource()),
          sourceId(savedFrame.getSourceId()),
@@ -50,15 +50,15 @@
          line(savedFrame.getLine()),
          column(savedFrame.getColumn()),
          functionDisplayName(savedFrame.getFunctionDisplayName()),
-@@ -216,6 +219,7 @@
-
+@@ -214,6 +217,7 @@
+ 
    JSAtom* source;
    uint32_t sourceId;
 +  KandeloSourceKind sourceKind;
-
+ 
    // Line number (1-origin).
    uint32_t line;
-@@ -256,6 +260,7 @@
+@@ -254,6 +258,7 @@
   public:
    JSAtom* source() { return value().source; }
    uint32_t sourceId() { return value().sourceId; }
@@ -66,7 +66,7 @@
    uint32_t line() { return value().line; }
    JS::TaggedColumnNumberOneOrigin column() { return value().column; }
    JSAtom* functionDisplayName() { return value().functionDisplayName; }
-@@ -314,7 +319,8 @@
+@@ -312,7 +317,8 @@
    // Assume that we can take line mod 2^32 without losing anything of
    // interest.  If that assumption changes, we'll just need to start with 0
    // and add another overload of AddToHash with more arguments.
@@ -76,7 +76,7 @@
                     lookup.functionDisplayName, lookup.asyncCause,
                     lookup.mutedErrors, parentHash,
                     JSPrincipalsPtrHasher::hash(lookup.principals));
-@@ -323,6 +329,12 @@
+@@ -321,6 +327,12 @@
  /* static */
  bool SavedFrame::HashPolicy::match(SavedFrame* existing, const Lookup& lookup) {
    MOZ_ASSERT(existing);
@@ -86,13 +86,13 @@
 +      existing->getKandeloSourceKind() != lookup.sourceKind) {
 +    return false;
 +  }
-
+ 
    if (existing->getLine() != lookup.line) {
      return false;
-@@ -448,6 +460,12 @@
+@@ -441,6 +453,12 @@
    return &s->asAtom();
  }
-
+ 
 +SavedFrame::KandeloSourceKind SavedFrame::getKandeloSourceKind() {
 +  auto value = getReservedSlot(JSSLOT_KANDELO_SOURCE_KIND);
 +  return value.isUndefined() ? KandeloSourceKind::Unknown
@@ -102,8 +102,8 @@
  uint32_t SavedFrame::getSourceId() {
    const Value& v = getReservedSlot(JSSLOT_SOURCEID);
    return v.toPrivateUint32();
-@@ -509,6 +527,10 @@
-
+@@ -502,6 +520,10 @@
+ 
  void SavedFrame::initSourceId(uint32_t sourceId) {
    initReservedSlot(JSSLOT_SOURCEID, PrivateUint32Value(sourceId));
 +}
@@ -111,20 +111,20 @@
 +void SavedFrame::initKandeloSourceKind(KandeloSourceKind kind) {
 +  initReservedSlot(JSSLOT_KANDELO_SOURCE_KIND, PrivateUint32Value(uint32_t(kind)));
  }
-
+ 
  void SavedFrame::initLine(uint32_t line) {
-@@ -570,6 +592,7 @@
-
+@@ -563,6 +585,7 @@
+ 
    initSource(lookup.source());
    initSourceId(lookup.sourceId());
 +  initKandeloSourceKind(lookup.sourceKind());
    initLine(lookup.line());
    initColumn(lookup.column());
    initFunctionDisplayName(lookup.functionDisplayName());
-@@ -1587,13 +1610,32 @@
-     // If we haven't yet seen the start, then don't add anything to the stack
+@@ -1591,13 +1614,32 @@
      // chain.
      if (seenStartAt) {
+       framePushed = true;
 +      auto sourceKind = SavedFrame::KandeloSourceKind::Script;
 +      if (iter.isWasm()) {
 +        sourceKind = SavedFrame::KandeloSourceKind::Wasm;

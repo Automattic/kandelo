@@ -111,7 +111,7 @@
      if (!result && !sc->exitCode) {
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -35,6 +35,7 @@
+@@ -34,6 +34,7 @@
      "node-upstream/per-context.cpp",
      "node-upstream/private-key-test-api.cpp",
      "node-upstream/realm.cpp",

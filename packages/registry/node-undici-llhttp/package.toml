@@ -1,0 +1,23 @@
+kind = "library"
+name = "node-undici-llhttp"
+version = "9.3.1"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["node-core-source@26.13.0"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/nodejs/node/blob/v26.13.0/LICENSE"
+
+[build]
+script_path = "packages/registry/node-undici-llhttp/build.sh"
+
+[outputs]
+libs = ["lib/libnode-undici-llhttp.so"]
+headers = ["include/kandelo_undici_llhttp.h"]
+files = ["share/kandelo/undici-llhttp/native-imports.json", "share/kandelo/undici-llhttp/SOURCE.json", "share/licenses/node-undici-llhttp/LICENSE.node"]

@@ -1,0 +1,22 @@
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -68,6 +68,19 @@
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set([
+     "kandelo/v8-native-fatal.h",
++    "engine-native-api.h",
++    "engine-gc-api.h",
++    "shell/node-upstream/engine-gc-codecs-inl.h",
++    "shell/node-upstream/engine-isolate-codecs-inl.h",
++    "shell/node-upstream/engine-checks.h",
++    "shell/node-upstream/engine-process.h",
++    "shell/node-upstream/codecs.cpp",
++    "shell/node-upstream/engine-native-api.h",
++    "shell/node-upstream/engine-state.h",
++    "shell/node-upstream/engine-lifetime-codecs-inl.h",
++    "v8-source-api/v8-microtask.h",
++    "shell/node-upstream/v8-source-api/v8-microtask.h",
++    "shell/node-upstream/native-interrupt-upstream/deps/v8/src/execution/kandelo-native-interrupts.inc",
+     "shell/node-upstream/resource-upstream/base_object.cc",
+     "shell/node-upstream/resource-upstream/base_object.h",
+     "shell/node-upstream/resource-upstream/base_object-inl.h",

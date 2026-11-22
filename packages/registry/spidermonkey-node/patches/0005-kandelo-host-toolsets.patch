@@ -1,0 +1,84 @@
+--- a/configure.py
++++ b/configure.py
+@@ -27,7 +27,7 @@
+ tools_path = Path('tools')
+ 
+ sys.path.insert(0, str(tools_path / 'gyp' / 'pylib'))
+-from gyp.common import GetFlavor
++from gyp.common import GetFlavor, GetFlavorByPlatform
+ from packaging.version import Version
+ 
+ # imports in tools/configure.d
+@@ -3030,6 +3030,20 @@
+ else:
+   make_global_settings = False
+ 
++# Kandelo's external libraries and includes belong to the guest target. Build
++# tools run on the actual host and obtain their own original dependencies.
++if flavor == 'kandelo' and options.cross_compiling:
++  variables['host_os'] = GetFlavorByPlatform()
++  output.setdefault('target_conditions', []).append([
++    '_toolset=="target"', {
++      'libraries': output.pop('libraries'),
++      'include_dirs': output.pop('include_dirs'),
++    }])
++  # Darwin's native linker cannot consume GNU thin archives. Use the original
++  # standalone archive rule for build tools, independently of guest libraries.
++  output['target_conditions'].append([
++    '_toolset=="host" and _type=="static_library"', {'standalone_static_library': 1}])
++
+ # Add configurations to target defaults
+ output['configurations'] = configurations
+ 
+--- a/tools/gyp/pylib/gyp/generator/make.py
++++ b/tools/gyp/pylib/gyp/generator/make.py
+@@ -2469,7 +2469,7 @@
+ 
+     # wasm-ld doesn't support --start-group/--end-group
+     link_commands = LINK_COMMANDS_LINUX
+-    if flavor in ["wasi", "wasm"]:
++    if flavor in ["wasi", "wasm", "kandelo"]:
+         link_commands = link_commands.replace(" -Wl,--start-group", "").replace(
+             " -Wl,--end-group", ""
+         )
+--- a/node.gyp
++++ b/node.gyp
+@@ -1629,6 +1629,13 @@
+     }, # nop
+     {
+       'target_name': 'node_js2c',
++      'variables': {
++        'conditions': [
++          ['_toolset=="host" and OS=="kandelo"', {
++            'OS': '<(host_os)',
++          }],
++        ],
++      },
+       'type': 'executable',
+       'toolsets': ['host'],
+       'include_dirs': [
+@@ -1650,7 +1657,7 @@
+         [ 'node_shared_simdutf=="false"', {
+           'dependencies': [ 'tools/v8_gypfiles/simdutf.gyp:simdutf#host' ],
+         }],
+-        [ 'node_shared_libuv=="false"', {
++        [ 'node_shared_libuv=="false" or target_arch=="wasm32"', {
+           'dependencies': [ 'deps/uv/uv.gyp:libuv#host' ],
+         }],
+         [ 'OS in "linux mac openharmony"', {
+--- a/deps/uv/uv.gyp
++++ b/deps/uv/uv.gyp
+@@ -153,6 +153,13 @@
+   'targets': [
+     {
+       'target_name': 'libuv',
++      'variables': {
++        'conditions': [
++          ['_toolset=="host" and OS=="kandelo"', {
++            'OS': '<(host_os)',
++          }],
++        ],
++      },
+       'toolsets': ['host', 'target'],
+       'type': '<(uv_library)',
+       'include_dirs': [

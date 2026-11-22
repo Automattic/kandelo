@@ -1,0 +1,32 @@
+# Preserve actual parser positions for Node ModuleRequest import attributes.
+# The original request identity/loader algorithms remain unchanged; XDR already
+# serializes the complete attribute vector. Cache identities bind actual core inputs.
+--- a/js/src/frontend/Stencil.h
++++ b/js/src/frontend/Stencil.h
+@@ -530,11 +530,13 @@
+  public:
+   TaggedParserAtomIndex key;
+   TaggedParserAtomIndex value;
++  // Parser UTF-16 position; retained by XDRVectorContent, not part of request identity.
++  uint32_t sourceOffset = 0;
+ 
+   StencilModuleImportAttribute() = default;
+   StencilModuleImportAttribute(TaggedParserAtomIndex key,
+-                               TaggedParserAtomIndex value)
+-      : key(key), value(value) {}
++                               TaggedParserAtomIndex value, uint32_t sourceOffset)
++      : key(key), value(value), sourceOffset(sourceOffset) {}
+ 
+   bool operator!=(const StencilModuleImportAttribute& rhs) const {
+     return key != rhs.key || value != rhs.value;
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -2251,7 +2251,7 @@
+     // the engine's unsupported-key marker and its normal evaluation error.
+     auto value = attribute->right()->as<NameNode>().atom();
+     markUsedByStencil(value);
+-    StencilModuleImportAttribute attributeStencil(key, value);
++    StencilModuleImportAttribute attributeStencil(key, value, attribute->left()->pn_pos.begin);
+     if (!request.attributes.append(attributeStencil)) {
+       js::ReportOutOfMemory(fc_);
+       return false;

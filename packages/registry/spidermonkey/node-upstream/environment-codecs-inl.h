@@ -6,64 +6,7 @@
 
 #include "shell/node-upstream/timers.h"
 
-namespace kandelo_node_codec_api {
-struct GlobalRoot {
-  std::weak_ptr<State> state;
-  // The C++ wrapper remains stable across weak/strong transitions. Only its
-  // PersistentRootedValue registration changes, so borrowing the native Local
-  // never exposes a moving JS pointer or accidentally keeps a weak target alive.
-  std::unique_ptr<Data> strong;
-  JS::Heap<JSObject*> weak{nullptr};
-  bool weakMode=false;
-};
-std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate* isolate,Local<Data> value) {
-  auto& frame=Current(isolate);CHECK(!value.IsEmpty());
-  auto root=std::make_shared<GlobalRoot>();root->state=frame.state;root->strong=RetainRoot(isolate,value);return root;
-}
-Local<Data> ReadGlobalRoot(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
-  auto& frame=Current(isolate);if(!root)return {};
-  CHECK(root->state.lock()==frame.state);frame.state->environment.AssertForeground();
-  JS::RootedValue value(frame.cx);
-  if(root->weakMode){if(!root->weak)return {};value.setObject(*root->weak);}
-  else {if(!root->strong||!root->strong->cell().value.initialized())return {};value=root->strong->cell().value;}
-  if(root->strong->IsValue()&&!JS_WrapValue(frame.cx,&value))return {};return frame.OwnClone(*root->strong,value);
-}
-bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>& root) {
-  if(!root)return true;
-  if(auto state=root->state.lock())state->environment.AssertForeground();
-  return root->weakMode?!root->weak:!root->strong||!root->strong->cell().value.initialized();
-}
-JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>& root) {
-  if(!root)return nullptr;
-  if(root->weakMode)return root->weak;
-  if(!root->strong||!root->strong->cell().value.initialized())return nullptr;
-  const auto value=root->strong->cell().value.get();CHECK(root->strong->IsValue()&&value.isObject());return &value.toObject();
-}
-void MakeGlobalWeak(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
-  auto& frame=Current(isolate);CHECK(root&&root->state.lock()==frame.state&&!root->weakMode&&root->strong);
-  frame.state->environment.AssertForeground();
-  CHECK(root->strong->IsValue());JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,root->strong->cell().value));CHECK(object);
-  // Weak-zone callbacks update tenured edges. Promote a nursery target while
-  // its actual strong root is still installed, before publishing a weak edge.
-  // This avoids treating a nursery post-barrier as a strong weak-handle root.
-  if(js::gc::IsInsideNursery(object)){
-    JS::PrepareForFullGC(frame.cx);JS::NonIncrementalGC(frame.cx,JS::GCOptions::Normal,JS::GCReason::API);
-    CHECK(!js::gc::IsInsideNursery(object));
-  }
-  // The registry retains only native records. These edges are deliberately
-  // weak and are updated by the engine's weak-zone callback, never traced.
-  frame.state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong->cell().value.reset();
-}
-inline thread_local std::vector<std::shared_ptr<State>> environmentOwners;
-void UpdateEnvironmentWeakEdges(JSTracer* tracer,void* raw) {
-  auto* state=static_cast<State*>(raw);
-  for(auto it=state->weakGlobals.begin();it!=state->weakGlobals.end();){
-    auto& root=*it;
-    if(root.use_count()==1){root->weak=nullptr;it=state->weakGlobals.erase(it);}
-    else {if(root->weak)JS_UpdateWeakPointerAfterGC(tracer,&root->weak);++it;}
-  }
-}
-}
+namespace v8 { inline thread_local std::vector<std::shared_ptr<State>> environmentOwners; }
 namespace kandelo_node_codec_impl {
 class EnvironmentCleanupProbe final : public Cleanable {
   Environment* environment_;
@@ -75,6 +18,7 @@ class EnvironmentCleanupProbe final : public Cleanable {
   EnvironmentCleanupProbe(Environment*,size_t,bool,bool);
 };
 struct EnvironmentData {
+  CleanupQueue cleanupHooks;
   uv_thread_t foreground=uv_thread_self();
   JSContext* cx=nullptr;
   std::unique_ptr<JS::PersistentRootedObject> runtime;
@@ -83,7 +27,6 @@ struct EnvironmentData {
   mutable std::mutex mutex;
   std::deque<std::unique_ptr<NativeImmediate>> pending;
   bool initialized=false,closed=false,stopping=false,draining=false;
-  bool weakRegistered=false;
   bool ownsProcessState=false,processInvocationReady=false;
   bool sourceMapsEnabled=false,printedError=false;
   const std::vector<std::string>* arguments=nullptr;
@@ -104,8 +47,14 @@ struct EnvironmentData {
   explicit EnvironmentData(Environment* environment):cleanables(environment),immediate(environment) {}
 };
 Environment::Environment(Isolate* isolate):isolate_(isolate),data_(std::make_unique<EnvironmentData>(this)) {}
-Environment::~Environment() { CHECK((!data_->initialized||data_->closed)&&data_->cleanables.IsEmpty()&&data_->pending.empty()); }
+Environment::~Environment() { CHECK((!data_->initialized||data_->closed)&&data_->cleanupHooks.empty()&&data_->cleanables.IsEmpty()&&data_->pending.empty()); }
 void Environment::AssertForeground() const { auto current=uv_thread_self();CHECK(uv_thread_equal(&current,&data_->foreground)); }
+void Environment::AddCleanupHook(void(*callback)(void*),void* argument){
+  AssertForeground();CHECK(callback&&!data_->closed);data_->cleanupHooks.Add(callback,argument);
+}
+void Environment::RemoveCleanupHook(void(*callback)(void*),void* argument){
+  AssertForeground();data_->cleanupHooks.Remove(callback,argument);
+}
 CleanableLink::~CleanableLink() { Remove(); }
 void CleanableLink::Remove() { if(queue_)queue_->Remove(this); }
 void CleanableQueue::Remove(CleanableLink* link) {
@@ -241,10 +190,7 @@ bool Environment::Initialize(JSContext* cx,JS::HandleObject runtime) {
       [](void* owner){return static_cast<Environment*>(owner)->HasPending();});
   if(!data_->wake){data_->runtime.reset();return false;}
   auto state=isolate_->owner.lock();CHECK(state);
-  if(!JS_AddWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges,state.get())){
-    kandelo::node::DetachRuntimeForeground(cx,runtime,this);data_->wake=nullptr;data_->runtime.reset();return false;
-  }
-  data_->weakRegistered=true;data_->initialized=true;
+  data_->initialized=true;
   data_->executablePath=std::move(executablePath);
   data_->ownsProcessState=shell->isWorker==js::shell::ShellContext::MainThread;
   // One genuine context owner keeps Environment addresses and the canonical
@@ -286,17 +232,32 @@ void Environment::Shutdown(JSContext* cx) {
   auto state=isolate_->owner.lock();CHECK(state);
   JS::RootedObject runtime(cx,*data_->runtime);
   JSAutoRealm runtimeHome(cx,runtime);
-  if(!data_->cleanables.IsEmpty()||HasPending()){
+  auto drainOwnedCleanup=[&]{
+    if(data_->cleanupHooks.empty()&&data_->cleanables.IsEmpty()&&!HasPending())return;
     JS::RootedObject realm(cx,kandelo::node::GetRuntimePrincipalRealm(cx,runtime));CHECK(realm);
     realm=js::CheckedUnwrapDynamic(realm,cx,false);CHECK(realm);
     JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,nullptr,api::Domain::Environment);
-    do {data_->cleanables.CleanAll();CHECK(Drain(cx));}while(!data_->cleanables.IsEmpty()||HasPending());
-  }
+    do {
+      data_->cleanables.CleanAll();
+      if(!data_->cleanupHooks.empty()){
+        Isolate::DisallowJavascriptExecutionScope noJavascript(isolate_,Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
+        data_->cleanupHooks.Drain();
+      }
+      CHECK(Drain(cx));
+    }while(!data_->cleanupHooks.empty()||!data_->cleanables.IsEmpty()||HasPending());
+  };
+  drainOwnedCleanup();
   {
     JS::RootedObject realm(cx,kandelo::node::GetRuntimePrincipalRealm(cx,runtime));CHECK(realm);
     realm=js::CheckedUnwrapDynamic(realm,cx,false);CHECK(realm);
     JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,nullptr,api::Domain::Environment);
-    for(auto& owner:state->realms)owner->RunCleanup();
+    for(auto& owner:state->Legacy().realms)owner->RunCleanup();
+  }
+  {
+    // Native object retirement may register final native cleanup work. Keep
+    // its real owner/loop alive until that work is consumed, with JS disabled.
+    Isolate::DisallowJavascriptExecutionScope noJavascript(isolate_,Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
+    drainOwnedCleanup();
   }
   {
     std::lock_guard lock(data_->mutex);CHECK(data_->pending.empty());data_->closed=true;
@@ -306,11 +267,10 @@ void Environment::Shutdown(JSContext* cx) {
   CHECK(kandelo::node::ClearMessagingDeserializer(cx,runtime));data_->embedderPreload=nullptr;
   data_->processEmitWarningSync.Reset();
   data_->sourceMapErrorSource.Reset();data_->cacheGeneratedSourceMap.Reset();data_->sourceMapsEnabled=false;
-  state->aliasedControls.clear();
-  if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
-  for(auto& root:state->weakGlobals){CHECK(root->strong&&!root->strong->cell().value.initialized());root->weak=nullptr;}
+  state->Legacy().aliasedControls.clear();
+  for(auto& root:state->weakGlobals){CHECK(root->strong&&!root->strong->cell().value.initialized());api::CancelGlobalCallback(root);root->weak=nullptr;}
   state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();
-  state->asyncWrapTemplate.Reset();state->handleWrapTemplate.Reset();state->templateRealm.reset();
+  state->Legacy().asyncWrapTemplate.Reset();state->Legacy().handleWrapTemplate.Reset();state->Legacy().permissionDiagnosticsTemplate.Reset();state->templateRealm.reset();
   data_->arguments=nullptr;data_->execArguments=nullptr;data_->processInvocationReady=false;
   data_->ownsProcessState=false;data_->executablePath.clear();data_->runtime.reset();
   preserve.restore();
@@ -335,17 +295,28 @@ void EnvironmentCleanupProbe::Clean() {
   }
 }
 }
+namespace v8 {
+static std::shared_ptr<State> AcquireLegacyEngineState(JSContext* cx){
+  CHECK(cx==js::TlsContext.get());
+  auto it=nativeEngineOwners.find(cx);
+  if(it!=nativeEngineOwners.end()){CHECK(it->second->IsPreservedShell());return it->second;}
+  auto state=std::make_shared<LegacyNodeState>(cx);
+  if(!RegisterNativeEngineState(state))return {};
+  return state;
+}
+}
 namespace kandelo::node {
 void ShutdownRuntimeCodecs(JSContext* cx) {
   // Called by every ShellContext before it unregisters its JSContext data.
   for(auto it=api::environmentOwners.begin();it!=api::environmentOwners.end();){
-    auto state=*it;if(state->environment.data().cx!=cx){++it;continue;}
-    state->environment.Shutdown(cx);it=api::environmentOwners.erase(it);
+    auto state=*it;if(state->Legacy().environment.data().cx!=cx){++it;continue;}
+    state->Legacy().environment.Shutdown(cx);it=api::environmentOwners.erase(it);
   }
+  api::RetireNativeEngineState(cx);
 }
 namespace {
 JSObject* EnvironmentSnapshot(JSContext* cx,const std::shared_ptr<api::State>& state) {
-  auto& environment=state->environment;auto& data=environment.data();JS::RootedObject object(cx,JS_NewPlainObject(cx));if(!object)return nullptr;
+  auto& environment=state->Legacy().environment;auto& data=environment.data();JS::RootedObject object(cx,JS_NewPlainObject(cx));if(!object)return nullptr;
   size_t pending;{std::lock_guard lock(data.mutex);pending=data.pending.size();}
   for(auto field:std::initializer_list<std::pair<const char*,size_t>>{
       {"posted",data.posted.load()},{"executed",data.executed.load()},{"ownerChecks",data.ownerChecks.load()},
@@ -371,7 +342,7 @@ bool EnvironmentControl(JSContext* cx,unsigned argc,JS::Value* vp) {
   JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;
   realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm)return false;
-  api::Frame frame(cx,realm,state,&args,api::Domain::Environment);auto& environment=state->environment;auto& data=environment.data();
+  api::Frame frame(cx,realm,state,&args,api::Domain::Environment);auto& environment=state->Legacy().environment;auto& data=environment.data();
   args.rval().setUndefined();
   if(!std::strcmp(operation.get(),"inspect")){
     JS::RootedObject snapshot(cx,EnvironmentSnapshot(cx,state));if(!snapshot)return false;args.rval().setObject(*snapshot);return true;

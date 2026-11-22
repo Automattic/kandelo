@@ -1,0 +1,24 @@
+[package]
+name = "kandelo-ffi-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed guest Wasm adapters for Kandelo's libffi target backend"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+wasm-encoder = "0.247"
+fork-instrument-capi = { path = "../fork-instrument-capi" }
+wasm-artifact = { path = "../wasm-artifact" }
+
+[build-dependencies]
+serde_json = "1"
+sha2 = "0.10"
+wasm-posix-program-abi = { path = "../program-abi" }
+
+[dev-dependencies]
+fork-instrument = { path = "../fork-instrument" }
+tempfile = "3"

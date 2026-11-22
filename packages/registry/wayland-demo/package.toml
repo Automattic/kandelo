@@ -11,7 +11,7 @@ name = "wayland-demo"
 version = "0.1.0"
 kernel_abi = 45
 depends_on = [
-  "libwayland@1.24.0",
+  "libwayland@1.26.0",
   "libxkbcommon@1.13.2",
   "libinput@1.28.1",
   "libevdev@1.13.3",

@@ -1,6 +1,6 @@
 --- a/js/src/vm/ArrayBufferObject.h
 +++ b/js/src/vm/ArrayBufferObject.h
-@@ -8,6 +8,8 @@
+@@ -6,6 +6,8 @@
  #define vm_ArrayBufferObject_h
  
  #include "mozilla/Maybe.h"
@@ -9,7 +9,7 @@
  
  #include <tuple>  // std::tuple
  
-@@ -195,7 +197,8 @@
+@@ -217,7 +219,8 @@
    static const uint8_t FLAGS_SLOT = 3;
  
    static const uint8_t DETACH_KEY_SLOT = 4;
@@ -19,15 +19,23 @@
  
    // Alignment for ArrayBuffer objects. Must match the largest possible
    // TypedArray scalar to ensure TypedArray and Atomics accesses are always
-@@ -275,6 +278,7 @@
-     // The length is temporarily pinned, so it should not be detached. In the
-     // future, this will also prevent GrowableArrayBuffer/ResizeableArrayBuffer
-     // from modifying the length while this is set.
-+    KANDELO_EXTERNAL_CREDIT = 0b1000'0000,
-     PINNED_LENGTH = 0b100'0000
-   };
+@@ -301,7 +304,15 @@
  
-@@ -298,6 +302,7 @@
+     // Immutable ArrayBuffer.
+     IMMUTABLE = 0b1000'0000,
++
++    // Separate from ESR153 immutable-buffer state and all upstream flags.
++    KANDELO_EXTERNAL_CREDIT = 0b1'0000'0000,
+   };
++
++  static_assert((KANDELO_EXTERNAL_CREDIT &
++                 (BUFFER_KIND_MASK | DETACHED | RESIZABLE | FOR_ASMJS |
++                  PINNED_LENGTH | IMMUTABLE)) == 0,
++                "native accounting must not change upstream buffer flags");
+ 
+   static_assert(JS_ARRAYBUFFER_DETACHED_FLAG == DETACHED,
+                 "self-hosted code with burned-in constants must use the "
+@@ -327,6 +338,7 @@
  
   public:
    class BufferContents {
@@ -35,7 +43,7 @@
      uint8_t* data_;
      BufferKind kind_;
      JS::BufferContentsFreeFunc free_;
-@@ -308,8 +313,9 @@
+@@ -338,8 +350,9 @@
  
      BufferContents(uint8_t* data, BufferKind kind,
                     JS::BufferContentsFreeFunc freeFunc = nullptr,
@@ -47,7 +55,7 @@
            kind_(kind),
            free_(freeFunc),
            freeUserData_(freeUserData) {
-@@ -545,11 +551,18 @@
+@@ -590,11 +603,18 @@
    BufferContents contents() const {
      if (isExternal()) {
        return BufferContents(dataPointer(), EXTERNAL, freeInfo()->freeFunc,
@@ -73,7 +81,7 @@
    BufferKind bufferKind() const {
 --- a/js/src/vm/ArrayBufferObject.cpp
 +++ b/js/src/vm/ArrayBufferObject.cpp
-@@ -1654,7 +1654,63 @@
+@@ -1934,7 +1934,63 @@
    return reinterpret_cast<FreeInfo*>(data);
  }
  
@@ -137,7 +145,7 @@
    switch (bufferKind()) {
      case INLINE_DATA:
        // Inline data doesn't require releasing.
-@@ -1695,6 +1751,13 @@
+@@ -1975,6 +2031,13 @@
  }
  
  void ArrayBufferObject::setDataPointer(BufferContents contents) {
@@ -151,19 +159,20 @@
    setFixedSlot(DATA_SLOT, PrivateValue(contents.data()));
    setFlags((flags() & ~KIND_MASK) | contents.kind());
  
-@@ -2294,7 +2357,7 @@
+@@ -2654,7 +2717,7 @@
      if (newByteLength == source->associatedBytes()) {
-       return copyAndDetachSteal(cx, source);
+       return copyAndDetachSteal<ArrayBufferType>(cx, source);
      }
 -    if (source->bufferKind() ==
 +    if (!source->kandeloContentsOwner() && source->bufferKind() ==
          ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA) {
-       return copyAndDetachRealloc(cx, newByteLength, source);
+       return copyAndDetachRealloc<ArrayBufferType>(cx, newByteLength, source);
      }
-@@ -2598,6 +2661,14 @@
+@@ -3019,6 +3082,14 @@
+ /* static */ uint8_t* ArrayBufferObject::stealMallocedContents(
      JSContext* cx, Handle<ArrayBufferObject*> buffer) {
    CheckStealPreconditions(buffer, cx);
- 
++
 +  // A raw malloc result cannot share ownership with a live native span.
 +  if (buffer->kandeloContentsOwner()) {
 +    auto copied = NewCopiedBufferContents(cx, buffer);
@@ -171,11 +180,10 @@
 +    ArrayBufferObject::detach(cx, buffer);
 +    return copied.release();
 +  }
-+
+ 
    switch (buffer->bufferKind()) {
      case MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
-     case MALLOCED_UNKNOWN_ARENA: {
-@@ -2692,6 +2763,14 @@
+@@ -3128,6 +3199,14 @@
    MOZ_ASSERT(!buffer->isResizable(),
               "extracting the contents of resizable buffers not supported");
  
@@ -192,7 +200,7 @@
    switch (contents.kind()) {
 --- a/js/src/shell/moz.build
 +++ b/js/src/shell/moz.build
-@@ -30,6 +30,7 @@
+@@ -29,6 +29,7 @@
  SOURCES += [
      "node-upstream/async-wrap.cpp",
      "node-upstream/buffer-memory.cpp",
@@ -200,7 +208,7 @@
      "node-upstream/builtin-compiler.cpp",
      "node-upstream/builtin-source-registry.cpp",
      "node-upstream/codecs.cpp",
-@@ -192,3 +193,5 @@
+@@ -191,3 +192,5 @@
  SOURCES["node-upstream/continuation-upstream.cpp"].flags += [
      "-std=c++20",
  ]
@@ -208,11 +216,11 @@
 +SOURCES["node-upstream/buffer-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
 --- a/config/check_spidermonkey_style.py
 +++ b/config/check_spidermonkey_style.py
-@@ -87,6 +87,7 @@
-         "shell/node-upstream/tracing-upstream/tracing/trace_event_legacy_inl.h",
-         "shell/node-upstream/tracing-upstream/tracing/traced_value.cc",
-         "shell/node-upstream/tracing-upstream/tracing/traced_value.h",
-+        "shell/node-upstream/codecs-upstream/node_buffer.cc",
-         "shell/node-upstream/codecs-upstream/encoding.cc",
-         "shell/node-upstream/codecs-upstream/node_i18n.cc",
-         "shell/node-upstream/codecs-upstream/node_i18n.h",
+@@ -62,6 +62,7 @@
+ 
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set([
++    "shell/node-upstream/codecs-upstream/node_buffer.cc",
+     "shell/node-upstream/continuation-upstream/async_context_frame.cc",
+     "shell/node-upstream/trace-binding-upstream/node_trace_events.cc",
+     "shell/node-upstream/trace-builtins-upstream/src/builtins/builtins-trace.cc",

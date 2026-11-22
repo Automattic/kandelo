@@ -1,0 +1,31 @@
+--- a/js/src/moz.build
++++ b/js/src/moz.build
+@@ -47,9 +47,11 @@
+ with Files("doc/Debugger/**"):
+     BUG_COMPONENT = component_debugger
+ 
++# The Rust runtime is also required by standalone static embedders.
++DIRS += ["rust"]
++
+ if not CONFIG["JS_DISABLE_SHELL"]:
+     DIRS += [
+-        "rust",
+         "shell",
+     ]
+ 
+--- a/js/src/build/moz.build
++++ b/js/src/build/moz.build
+@@ -48,9 +48,13 @@
+         "icu",
+     ]
+ 
++# Keep the complete static embedding link closure independent of the shell.
++# Rust remains a separate native archive in the installed static interface.
+ USE_LIBS += [
+     "fdlibm",
++    "jsrust",
++    "mozglue",
+     "nspr",
+ ]
+ 
+ if not CONFIG["USE_LIBZ_RS"]:

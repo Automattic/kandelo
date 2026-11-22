@@ -1,0 +1,27 @@
+--- a/generate-headers.py
++++ b/generate-headers.py
+@@ -22,6 +22,9 @@
+ 
+ def get_target(os_name, target_arch):
+     target_arch = normalize_arch(target_arch)
++
++    if os_name == 'kandelo' and target_arch == 'wasm32':
++        return ('KANDELO_WASM32', 'kandelo')
+ 
+     if target_arch == 'arm':
+         return ('ARM_WIN32' if os_name == 'win' else 'ARM', 'arm')
+--- a/include/ffi.h.in
++++ b/include/ffi.h.in
+@@ -256,6 +256,12 @@
+ #endif
+ } ffi_cif;
+ 
++/* Native resource retirement for the Kandelo generated-adapter target. */
++#if defined(FFI_KANDELO_TARGET)
++FFI_API void ffi_kandelo_release_cif (ffi_cif *cif);
++FFI_API const char *ffi_kandelo_last_error (void);
++#endif
++
+ /* ---- Definitions for the raw API -------------------------------------- */
+ 
+ #ifndef FFI_SIZEOF_ARG

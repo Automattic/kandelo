@@ -241,7 +241,8 @@ echo "==> Pre-instrument size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/nu
 # git's fork-path instrumentation to a few dozen functions; a wasm-opt pass
 # first would inline call sites across functions, and the instrumenter would
 # then ignore the facts (their code hash no longer matches). The instrumenter
-# runs wasm-opt -O2 over the whole module afterwards.
+# runs wasm-opt -Os over the whole module afterwards, with Binaryen's
+# constraint-analysis pass skipped (crates/fork-instrument/src/cli/optimize.rs).
 echo "==> Applying fork instrumentation to git.wasm..."
 "$FORK_INSTRUMENT" "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm.instr"
 mv "$BIN_DIR/git.wasm.instr" "$BIN_DIR/git.wasm"

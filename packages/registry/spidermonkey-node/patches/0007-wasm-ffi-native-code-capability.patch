@@ -1,0 +1,22 @@
+--- a/src/ffi/jit_memory.cc
++++ b/src/ffi/jit_memory.cc
+@@ -23,6 +23,11 @@
+ namespace {
+ 
+ bool SelfTest() {
++#if defined(__wasm__)
++  // WebAssembly linear-memory pages do not contain executable CPU code.
++  // The existing architecture check selects non-generated/libffi calls.
++  return false;
++#else
+ #if defined(__aarch64__) || defined(_M_ARM64)
+   // AArch64 BR LR: 0xD65F03C0
+   constexpr uint32_t kInstruction = 0xD65F03C0;
+@@ -123,6 +128,7 @@
+   munmap(page, page_size);
+   return ok;
+ #endif
++#endif  // defined(__wasm__)
+ }
+ 
+ }  // namespace

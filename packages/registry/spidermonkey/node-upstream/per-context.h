@@ -34,6 +34,9 @@ JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool c
 bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
                                    JS::HandleObject realm, JS::HandleObject process);
 JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime, bool required = true);
+// Borrow protected existing state for native handle scopes, including GC
+// retirement. No wrapping, JS calls, root allocation or error reporting.
+JSObject* BorrowRuntimePrincipalGlobal(JSObject* runtime);
 JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime);
 bool ConfigureCurrentOptions(JSContext* cx, JS::HandleObject runtime, JS::HandleObject arguments, JS::HandleString environment);
 JSObject* InspectCurrentOptions(JSContext* cx, JS::HandleObject runtime);

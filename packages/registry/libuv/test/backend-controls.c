@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
   fprintf(stderr, "FAIL line=%d condition=%s\n", __LINE__, #condition); \
@@ -349,6 +350,38 @@ int main(int argc, char** argv) {
   CHECK(strcmp(title, "unchanged") == 0);
   CHECK(uv_get_process_title(NULL, sizeof(title)) == UV_EINVAL);
   passed("process-title-explicit-unsupported");
+
+  size_t resident = 193;
+  CHECK(uv_resident_set_memory(NULL) == UV_EINVAL);
+  CHECK(uv_resident_set_memory(&resident) == UV_ENOSYS && resident == 193);
+  CHECK(uv_get_free_memory() == 0 && uv_get_total_memory() == 0);
+  CHECK(uv_get_available_memory() == uv_get_free_memory());
+  uv_rusage_t usage;
+  unsigned char original_usage[sizeof(usage)];
+  memset(&usage, 0xa5, sizeof(usage));
+  memcpy(original_usage, &usage, sizeof(usage));
+  CHECK(uv_getrusage(NULL) == UV_EINVAL);
+  CHECK(uv_getrusage(&usage) == UV_ENOSYS);
+  CHECK(memcmp(&usage, original_usage, sizeof(usage)) == 0);
+  CHECK(uv_getrusage_thread(&usage) == UV_ENOSYS);
+  CHECK(memcmp(&usage, original_usage, sizeof(usage)) == 0);
+  passed("physical-memory-explicitly-unknown-and-rss-unsupported");
+
+  struct rlimit address_limit, data_limit, reduced_data_limit;
+  CHECK(getrlimit(RLIMIT_AS, &address_limit) == 0);
+  CHECK(getrlimit(RLIMIT_DATA, &data_limit) == 0);
+  /* The normal fixture starts with the real profile's finite AS ceiling and
+   * no DATA limit. A changed guest limit must be observed without caching. */
+  CHECK(address_limit.rlim_cur != RLIM_INFINITY && address_limit.rlim_cur > 1);
+  CHECK(data_limit.rlim_cur == RLIM_INFINITY);
+  CHECK(uv_get_constrained_memory() == (uint64_t) address_limit.rlim_cur);
+  reduced_data_limit = data_limit;
+  reduced_data_limit.rlim_cur = address_limit.rlim_cur / 2;
+  CHECK(setrlimit(RLIMIT_DATA, &reduced_data_limit) == 0);
+  CHECK(uv_get_constrained_memory() == (uint64_t) reduced_data_limit.rlim_cur);
+  CHECK(setrlimit(RLIMIT_DATA, &data_limit) == 0);
+  CHECK(uv_get_constrained_memory() == (uint64_t) address_limit.rlim_cur);
+  passed("memory-constraints-follow-real-guest-resource-limits");
 
   uv_fs_event_t watcher;
   CHECK(uv_loop_init(&loop) == 0);

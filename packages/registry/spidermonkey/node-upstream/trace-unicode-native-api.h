@@ -19,6 +19,7 @@
 #define DCHECK_LE(a,b) CHECK_LE(a,b)
 #define DCHECK_LT(a,b) CHECK((a)<(b))
 #define DCHECK_GE(a,b) CHECK((a)>=(b))
+#define DCHECK_GT(a,b) CHECK((a)>(b))
 #define DCHECK_EQ(a,b) CHECK((a)==(b))
 #define DCHECK_NE(a,b) CHECK((a)!=(b))
 #define DCHECK_NOT_NULL(a) CHECK((a)!=nullptr)

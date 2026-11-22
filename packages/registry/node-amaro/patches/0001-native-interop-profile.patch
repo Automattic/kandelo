@@ -1,0 +1,78 @@
+--- a/deps/swc/bindings/binding_typescript_wasm/src/lib.rs
++++ b/deps/swc/bindings/binding_typescript_wasm/src/lib.rs
+@@ -6,6 +6,7 @@
+ 
+ use anyhow::Error;
+ use error_reporter::SwcReportHandler;
++#[cfg(not(feature = "kandelo-native"))]
+ use js_sys::Uint8Array;
+ use miette::{GraphicalTheme, LabeledSpan, ThemeCharacters, ThemeStyles};
+ use serde::Serialize;
+@@ -16,13 +17,19 @@
+ };
+ use swc_error_reporters::{convert_span, to_pretty_source_code};
+ use swc_ts_fast_strip::{Options, TransformOutput};
++#[cfg(not(feature = "kandelo-native"))]
+ use wasm_bindgen::prelude::*;
++#[cfg(not(feature = "kandelo-native"))]
+ use wasm_bindgen_futures::{future_to_promise, js_sys::Promise};
+ 
+ mod error_reporter;
++
++#[cfg(feature = "kandelo-native")]
++mod kandelo_native;
+ 
+ /// Custom interface definitions for the @swc/wasm's public interface instead of
+ /// auto generated one, which is not reflecting most of types in detail.
++#[cfg(not(feature = "kandelo-native"))]
+ #[wasm_bindgen(typescript_custom_section)]
+ const INTERFACE_DEFINITIONS: &'static str = r#"
+ export declare function transform(src: string | Uint8Array, opts?: Options): Promise<TransformOutput>;
+@@ -30,11 +37,13 @@
+ export type { Options, TransformOutput };
+ "#;
+ 
++#[cfg(not(feature = "kandelo-native"))]
+ #[wasm_bindgen(skip_typescript)]
+ pub fn transform(input: JsValue, options: JsValue) -> Promise {
+     future_to_promise(async move { transform_sync(input, options) })
+ }
+ 
++#[cfg(not(feature = "kandelo-native"))]
+ #[wasm_bindgen(js_name = "transformSync", skip_typescript)]
+ pub fn transform_sync(input: JsValue, options: JsValue) -> Result<JsValue, JsValue> {
+     let options: Options = if options.is_falsy() {
+--- a/deps/swc/bindings/binding_typescript_wasm/Cargo.toml
++++ b/deps/swc/bindings/binding_typescript_wasm/Cargo.toml
+@@ -10,27 +10,23 @@
+ 
+ [lib]
+ bench      = false
+-crate-type = ["cdylib"]
++crate-type = ["staticlib"]
+ 
+ [features]
++kandelo-native = []
+ nightly = ["swc_ts_fast_strip/nightly"]
+ 
+ [dependencies]
+ anyhow = { workspace = true }
+-js-sys = { workspace = true }
+ miette = { workspace = true }
+ owo-colors = { workspace = true }
+ serde = { workspace = true, features = ["derive"] }
+-serde-wasm-bindgen = { workspace = true }
++serde_json = { workspace = true }
+ swc_common = { path = "../../crates/swc_common" }
+ swc_error_reporters = { path = "../../crates/swc_error_reporters" }
+-swc_ts_fast_strip = { path = "../../crates/swc_ts_fast_strip", features = [
+-  "wasm-bindgen",
+-] }
++swc_ts_fast_strip = { path = "../../crates/swc_ts_fast_strip" }
+ tracing = { workspace = true, features = ["max_level_off"] }
+ unicode-width = { workspace = true }
+-wasm-bindgen = { workspace = true, features = ["enable-interning"] }
+-wasm-bindgen-futures = { workspace = true }
+ 
+ [package.metadata.wasm-pack.profile.release]
+ wasm-opt = false

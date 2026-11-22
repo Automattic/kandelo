@@ -1,36 +1,144 @@
---- a/js/src/shell/jsshell.h
-+++ b/js/src/shell/jsshell.h
-@@ -218,2 +218,5 @@
-   bool upstreamErrorStackPreparing = false;
-+  // Set by actual uncatchable shell termination, independently of exit status
-+  // or a pending JavaScript throw. Native catch/reset must not cancel it.
-+  bool upstreamNodeExecutionTerminated = false;
-   JS::ModuleResolveHook upstreamPreviousModuleResolve = nullptr;
---- a/js/src/shell/js.cpp
-+++ b/js/src/shell/js.cpp
-@@ -3447,1 +3447,2 @@
-+  if (!result) sc->upstreamNodeExecutionTerminated = true;
-   if (!result && sc->exitCode == 0) {
-@@ -5098,2 +5099,3 @@
-   sc->quitting = true;
-+  sc->upstreamNodeExecutionTerminated = true;
- }
-@@ -5105,2 +5107,3 @@
-   sc->quitting = false;
-+  sc->upstreamNodeExecutionTerminated = false;
- }
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -759,2 +759,12 @@
-  public:
-+  // The native compatibility layer roots the actual pending value and stack
-+  // while running catch/finally cleanup. Preserve its engine classification
-+  // across rethrow, including OOM/recursion, instead of normalizing to Throwing.
-+  JS::ExceptionStatus kandeloExceptionStatus() const { return status; }
-+  void restoreKandeloExceptionStatus(JS::ExceptionStatus captured) {
-+    MOZ_ASSERT(isExceptionPending());
-+    MOZ_ASSERT(JS::IsCatchableExceptionStatus(captured));
-+    status = captured;
-+  }
+@@ -496,6 +496,35 @@
+   //
+   bool brittleMode = false;
+ 
++ private:
++  // One thread-safe termination record. Low bits are request/active state;
++  // upper bits count active cancellations so native catch scopes can retire
++  // their saved termination on the owning thread, never from a requester.
++  static constexpr uint64_t NativeTerminationMask = 3;
++  static constexpr uint64_t NativeTerminationRequested = 1;
++  static constexpr uint64_t NativeTerminationActive = 2;
++  mozilla::Atomic<uint64_t> nativeTermination_{0};
 +
-   bool isExceptionPending() const {
++ public:
++  struct NativeTerminationSnapshot {
++    uint64_t cancellationEpoch;
++    bool requested;
++    bool active;
++  };
++  NativeTerminationSnapshot nativeTerminationSnapshot() const {
++    uint64_t state = nativeTermination_;
++    return {state >> 2,
++            (state & NativeTerminationMask) == NativeTerminationRequested,
++            (state & NativeTerminationMask) == NativeTerminationActive};
++  }
++  bool isNativeExecutionTerminating() const {
++    return nativeTerminationSnapshot().active;
++  }
++  void requestNativeTermination();
++  void cancelNativeTermination();
++  void markNativeExecutionTerminated();
++  bool checkNativeTermination();
++
+   /*
+    * Stack of debuggers that currently disallow debuggee execution.
+    *
+@@ -718,7 +747,8 @@
+     hadResourceExhaustion_ = true;
+ #endif
+   }
+-  void reportUncatchableException() {
++  void reportUncatchableException(bool recordNativeTermination = true) {
++    if (recordNativeTermination) markNativeExecutionTerminated();
+     // Make sure the context has no pending exception. See also the comment for
+     // JS::ReportUncatchableException.
+     clearPendingException();
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -113,6 +113,52 @@
+   }
+ }
+ 
++void JSContext::requestNativeTermination() {
++  // Publication and cancellation are linearized by the same atomic record.
++  // Notification may outlive a canceled request; it cannot re-activate it.
++  while (true) {
++    uint64_t state = nativeTermination_;
++    if ((state & NativeTerminationMask) != 0) break;
++    if (nativeTermination_.compareExchange(
++            state, state | NativeTerminationRequested)) break;
++  }
++  requestInterrupt(js::InterruptReason::CallbackUrgent);
++}
++
++void JSContext::cancelNativeTermination() {
++  while (true) {
++    uint64_t state = nativeTermination_;
++    uint64_t next = state & ~NativeTerminationMask;
++    if ((state & NativeTerminationMask) == NativeTerminationActive) next += 4;
++    if (nativeTermination_.compareExchange(state, next)) return;
++  }
++}
++
++void JSContext::markNativeExecutionTerminated() {
++  MOZ_ASSERT(js::TlsContext.get() == this);
++  while (true) {
++    uint64_t state = nativeTermination_;
++    uint64_t next = (state & ~NativeTerminationMask) | NativeTerminationActive;
++    if (nativeTermination_.compareExchange(state, next)) return;
++  }
++}
++
++bool JSContext::checkNativeTermination() {
++  MOZ_ASSERT(js::TlsContext.get() == this);
++  while (true) {
++    uint64_t state = nativeTermination_;
++    if ((state & NativeTerminationMask) == NativeTerminationActive) return false;
++    if ((state & NativeTerminationMask) != NativeTerminationRequested) return true;
++    uint64_t next = (state & ~NativeTerminationMask) | NativeTerminationActive;
++    if (nativeTermination_.compareExchange(state, next)) {
++      // Already published active: do not publish it again if another thread
++      // cancels during this native unwind. Ordinary exceptions are separate.
++      reportUncatchableException(false);
++      return false;
++    }
++  }
++}
++
+ bool JSContext::init() {
+   TlsContext.set(this);
+   nativeStackBase_.emplace(GetNativeStackBase());
+--- a/js/src/vm/Runtime.cpp
++++ b/js/src/vm/Runtime.cpp
+@@ -495,9 +495,9 @@
+     bool oomStackTrace = hasPendingInterrupt(InterruptReason::OOMStackTrace);
+     interruptBits_ = 0;
+     resetJitStackLimit();
+-    return HandleInterrupt(this, invokeCallback, oomStackTrace);
+-  }
+-  return true;
++    if (!HandleInterrupt(this, invokeCallback, oomStackTrace)) return false;
++  }
++  return checkNativeTermination();
+ }
+ 
+ bool JSContext::handleInterruptNoCallbacks() {
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3565,6 +3565,7 @@
+     result = false;
+   }
+ 
++  if (!result) cx->markNativeExecutionTerminated();
+   if (!result && sc->exitCode == 0) {
+     static const char msg[] = "Script terminated by interrupt handler.\n";
+     fputs(msg, stderr);
+@@ -5254,6 +5255,7 @@
+ #endif
+   sc->exitCode = code;
+   sc->quitting = true;
++  cx->markNativeExecutionTerminated();
+ }
+ 
+ static void UnsetQuitting(JSContext* cx) {
+@@ -5261,6 +5263,7 @@
+   js::RestartDrainingJobQueue(cx);
+   sc->exitCode = 0;
+   sc->quitting = false;
++  cx->cancelNativeTermination();
+ }
+ 
+ static bool Evaluate(JSContext* cx, unsigned argc, Value* vp) {

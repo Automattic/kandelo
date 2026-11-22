@@ -1,71 +1,947 @@
+The current execution status is recorded under [Current state](#current-state).
+The earlier component notes below describe their implementation-time limits;
+they are not current acceptance results.
+
+## Optional native property hooks in the engine
+
+The current SpiderMonkey source adds native-object callbacks for property reads,
+writes, own-property queries, descriptors, definitions, deletion and extensibility.
+These callbacks use the existing native objects, storage and prototype algorithms.
+Direct `hasOwnProperty`, enumerability and object-copy fast paths fall back to the
+ordinary algorithm for classes that opt into callbacks. The ordinary ObjectOps
+invariant is retained.
+
+Explicit read and descriptor bypass operations support Node's real-property
+interfaces. The bypass applies to that native lookup, while operations entered by
+a getter or proxy keep their own normal behavior. Private names stay outside
+interception. Callback pointers contain no JavaScript edges; the embedding must
+retain data through its existing traced template/wrapper storage and keep the
+class configuration alive. Matching engine and consumer headers are required.
+
+This engine mechanism does not yet activate Node's handlers. Global-name and
+`typeof` lookup, declarations, restricted lexical checks, caller failure policy,
+complete global/proxy layout, callback marshalling and lifetime qualification
+remain required. The bridge still rejects configured-handler instantiation until
+those connections exist. No installed Node CLI or module acceptance is implied.
+
+## Native interceptor configuration and template construction
+
+The shared engine bridge now represents Node's named and indexed property
+handlers with their actual callback types, complete configuration overloads and
+pinned flag values. `SetHandler` stores callbacks on the template's native
+constructor owner. JavaScript payloads live in separately traced template slots;
+the retained native records contain no borrowed `Local` handles. These shared
+interfaces replace the old catch-all declarations, including the incorrect
+zero-valued `kHasNoSideEffect` flag.
+
+`ObjectTemplate::New` can retain a supplied constructor without replacing its
+independent instance template. `NewInstance` allocates the requested template's
+own fields and properties with the materialized constructor prototype and native
+brand; it does not execute that constructor's callback. Templates requiring a
+constructor obtain one lazily. Actual engine construction-identity records remain
+independent of mutable public constructor properties.
+
+This is configuration and construction machinery, not completed interception.
+Instantiation with a configured interceptor currently reports the missing engine
+dispatch explicitly. Global, bare-name, declaration, strictness, enumeration and
+real-property bypass paths still require the complete source integration. The
+engine SDK remains incomplete, original Node owners are not activated, and no
+CLI, image or runtime acceptance follows from a successful library compilation.
+
 # Upstream Node.js runtime restart
 
 ## Current state
 
-The normal guest runtime still uses its existing compatibility bootstrap.
-Through privileged JS-shell controls, the selected SpiderMonkey package now
-executes the complete, unchanged upstream primordials, DOMException,
-messageport and realm library loader on the Node host. A canonical native
-context owns the original symbol inventory and protected primordials; the
-realm owner retains the actual original loader closures. Original JavaScript
-owns builtin caching, exposure policy and moduleLoadList. The eager native
-realm closure uses the real ModuleWrap/Error owners and shared private symbols.
+The complete pinned Node.js 26.13.0 core port remains unfinished. All 19 core
+families and the agreed followups remain required. The first iteration's runtime
+shipping checks have passed; the results below do not establish full module or
+native-lifetime conformance. The complete B6 catalog/roadmap review still gates
+subsequent compatibility work.
 
-The native principal-body entry calls complete `internal/bootstrap/node` with
-protected state. It now executes the original internal tracing helper and
-passes the live `mksnapshot` binding and native lazy data-property setup in
-original `buffer.js`. It now reads real build configuration and the original
-body freezes `process.config` and registers the original messaging constructor
-callback and completes original diagnostics setup, then the last runnable revision stops at missing
-`process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 75 source connects the original process initializer,
-native invocation state, complete original dotenv/environment/path units and
-the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 17 symbols and has no normal runnable artifact.
-Complete original AsyncWrap owner traversal now exposes the original catch-scope
-and exception/reporting dependency closure; its binding is not activated.
-Canonical native reference ownership has separate four-host diagnostic evidence;
-that private profile explicitly rejects process_methods and cannot install a package. The original native tracing agent, binding,
-V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
-Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
-four hosts. Continuation-preserved engine data and the complete original
-async-context native source are also integrated; active JavaScript consumers
-remain guarded until genuine bootstrap completes. Full observer exception/fatal
-routing remains incomplete.
-Engine ArrayBuffers now retain native detach keys and enforce them during
-transfer and serialization. The complete original native Buffer binding is now compiled over real engine
-allocation, retained storage, views, encodings and principal prototypes.
-Its original CallbackInfo cleanup runs on all four hosts. Thirty shared
-native control groups match exactly; a standalone native Node reentry
-discrepancy is retained separately. Full lifecycle/exceptional coverage remains
-incomplete. Original AliasedBuffer headers now compile over real typed/weak
-engine handles with focused four-host controls. The live snapshot interface is
-implemented directly with SpiderMonkey/Kandelo primitives; no V8 bindings or
-heap snapshot format are generated. Earlier
-revision sections below describe their evidence at the time.
-Complete Node startup, empty/simple evaluation,
-user CJS/ESM entrypaths and browser startup remain unachieved. The native process
-and util/builtins bindings remain partial; no complete module compatibility or
-443-source guest payload readback is established. ModuleWrap-owned dynamic
-imports and genuine source/synthetic graphs have focused Node-host controls.
-Owned Error stacks use real saved frames, with partial structured CallSites.
+The installed executable is `/usr/bin/spidermonkey-node`. The standard
+`/usr/bin/node` command is a relative symlink to `spidermonkey-node`, preserving
+existing Node shebangs and npm commands while identifying the engine explicitly.
+The build artifact remains `node.wasm`; the lazy runtime archive owns the
+installed executable name and symlink.
 
-The target remains Node.js 26.13.0, Lithium LTS, source commit
-`18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
-2026 found no target drift: the official release index, release tag and
-source/native archive checksums agree. The retained source tree's 38,413
-regular files match the verified archive. The Darwin arm64 reference
-executable matches SHA-256
-`533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4`.
-Pin verification did not execute it; subsequent native controls are described
-below. Other native reference contents were not
-inspected. Evidence is in `tests/nodejs/upstream/pin-verification.json`.
+Both installed names and the real symlink have been checked on Node, Chromium,
+Firefox and WebKit through the maintained ten-case npm suite, including lifecycle
+scripts, controlled-registry installation, cache-only installation, executable
+links and acknowledged cleanup. The normal web app also passes direct invocation,
+the `node` alias, default TypeScript and npm checks on all three browser engines.
+The runtime binary is unchanged from the qualified first iteration. These checks
+use fresh computers; existing saved computer filesystems are not migrated.
+The retained naming-change receipt is
+`.context/node-upstream-execution/spidermonkey-node-command-20261121/RESULT.json`.
 
-Official references:
+The current SpiderMonkey 153.7 ESR executable has SHA-256
+`2311a162bb0d9c718fcb29edc54fc415ca421c7c20b1fc7a2eff76b7b5347bb9`.
+It has passed these bounded gates independently on Node, Chromium, Firefox and
+WebKit, using unchanged assertions, finite deadlines and zero automatic retries:
 
-- https://nodejs.org/dist/index.json
-- https://nodejs.org/dist/v26.13.0/SHASUMS256.txt
-- https://github.com/nodejs/node/tree/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b
+| Initial gate | Passing cases on each host |
+| --- | --- |
+| Genuine installed CLI, including ordinary JS and default TypeScript | 55/55 |
+| Original path/filesystem/timers slice | 11/11 |
+| CommonJS files | 7/7 |
+| ESM files | 9/9 |
+| Selected native GC/callback/error/shutdown/parser lifetime controls | 20/20 |
+
+Both normal default and experimental-feature packages build and link. The
+feature build is a distinct artifact; default-build results do not establish
+feature-profile module conformance. The native companion initially failed a
+parser allocation assertion whose baseline preceded persistent assertion-module
+initialization. The retained diagnostic established that cause. Warming the same
+module before the baseline corrected the test while preserving every parser,
+GC, cycle and allocation assertion; production runtime bytes did not change.
+Original failures and their exact artifact identities remain retained.
+
+The sandboxed VM-context and interactive REPL failures reported during the
+previous iteration have been fixed through Node's original contextification
+owners and the SpiderMonkey property/identifier/declaration connection. Eighteen
+VM controls now pass separately on all four hosts, including sandbox behavior,
+errors and GC. The regular Kandelo app also passes interactive REPL evaluation,
+top-level await and error checks in Chromium, Firefox and WebKit.
+
+HTTP Fetch now uses the approved lazy native Undici llhttp 9.3.1 helper.
+Eight controlled real guest HTTP/HTTPS cases, five parser callback/error/GC/cleanup
+cases and a Worker helper-retirement case pass independently on all four hosts.
+These are distinct from npm's HTTP parser and data-URL Fetch. The exact reported
+REPL command, `await fetch('https://example.com')`, displays a Response with
+status 200 and returns to the shell after `.exit` in the normal app on all three
+browser engines. This public-network result uses the existing browser Internet
+bridge; it is separate from controlled real guest TLS evidence.
+
+Native Amaro and Undici are temporary versions of upstream Wasm helpers. The
+[native-helper migration record](nodejs-upstream-maintenance.md#temporary-native-versions-of-wasm-helpers)
+tracks their versions, source boundaries, owners, tests and removal steps.
+Restore the original upstream Wasm paths after equivalent guest Wasm and
+lifetime qualification; record every additional native helper there. No general
+guest Wasm backend is selected or qualified by these helpers.
+
+The normal node-browser-bundle contains the current executable, both native
+helper libraries, unchanged bundled npm 11.20 and original npm/npx entrypoints.
+The archive audit checks 1,850 original npm files, executable/link modes and the
+pinned upstream Node manual. The rejected compatibility npm runner is absent.
+The normal local app preview now serves the **canonical shell**. Separate
+Chromium/Firefox/WebKit checks pass ordinary
+JS, asynchronous exit, default TS, sandbox VM/errors, REPL await, real guest HTTP
+Fetch and a cold public is-number 7.0.0 install with installed-package,
+lockfile and integrity assertions as the configured maker account.
+
+Earlier identified executables passed offline, controlled guest-registry and
+public-network npm scenarios on all four hosts. Their evidence stays associated
+with those artifacts. The promoted permanent ten-case offline and controlled
+registry regressions now pass all ten cases independently on Node, Chromium,
+Firefox and WebKit against the current canonical image and kernel. They retain
+lifecycle scripts, installed commands/npm exec, lockfile integrity,
+cache-only npm ci, ESM consumption and process/thread retirement assertions.
+Public Internet installation remains a separately identified network-dependent
+check. Browser public npm traffic uses the existing CORS proxy and TLS/Fetch
+bridge with its installed CA; TLS verification remains enabled. This does not
+establish private registry authentication, arbitrary package compatibility or
+direct end-to-end guest Internet TLS. Native addons remain deferred.
+
+Canonical preparation completed all 338 build nodes and 11 products. The
+production web-app build and complete browser-memory/teardown gate passed:
+300 host memory tests, three Node teardown tests, seven Bun teardown tests,
+and all 18 browser tests across Chromium, Firefox and WebKit. Initial native,
+CLI, filesystem/path/timers, CJS, ESM, VM, Fetch and parser-lifetime results were
+refreshed against the exact canonical kernel. Earlier storage and test-fixture
+failures remain preserved. macOS denied removal of isolated Firefox test-home
+directories; this leaves retained test storage, without changing the passing
+guest process retirement and session-cleanup assertions.
+
+The regular app also passes the originally reported interactive
+`await fetch('https://example.com')` expression and returns to the shell after
+`.exit` on all three browser engines. This is automated Playwright coverage;
+native Safari was not run. The local preview is http://127.0.0.1:5173/.
+A separate observed gap remains: `process.memoryUsage()` fails with ENOSYS from
+`uv_resident_set_memory` on the Node host. This is required process/observability
+work, with no fabricated replacement or approved scope exception.
+
+The mandatory B6 complete catalog/roadmap review must precede later family
+activation. Initial shipping readiness will not establish the full 19-family
+port. Exact artifact identities, per-host results, preserved failures and the
+remaining checks are retained in `.context/node-upstream-execution/`, including
+`shipping-vm-fetch-core27-parser2-20261121/canonical-kernel-qualification/ACCEPTED.json`,
+`runtime-controls-canonical-kernel/ACCEPTED.json`,
+`permanent-npm-canonical-fixed-lazy-assets/ACCEPTED.json` and
+`first-iteration-readiness-20261121/READY-TO-CHECKPOINT.json`. These are bounded
+shipping results. A module-by-module upstream core-test-results ledger does not
+yet exist.
+
+The sections below retain earlier component implementation evidence and
+limitations. Their revision-specific statements are historical.
+
+The native serialization adapter now builds with the complete pinned public
+serializer/deserializer declarations. It uses the original portable V8 wire
+routines and SpiderMonkey objects for graph traversal, rooted identity tables,
+properties, arrays, maps, sets, errors, BigInts, buffers and fixed views. The
+derived wire unit retains the entire original source behind reversible guards;
+the raw source stays unchanged. Buffer-size overflow checks and native exception
+transport are explicit adaptations. The shared `Maybe::Check()` contract now
+accepts present false/zero values, matching upstream.
+
+These mechanisms are not yet complete serialization support. The expanded
+adapter now implements resizable/growable view flags and length tracking,
+cross-realm traversal, delegate failure handling and format13 compatibility.
+Full message/transfer/shutdown lifetime behavior still requires original-owner
+qualification. Guest Wasm transfers remain in the approved later iteration.
+The normal revision48 bridge library over engine revision16 and all31installed
+interface checks pass. The complete native-source scan compiles153of170default
+rows and173of190feature rows. All359distinct commands run with unchanged owner
+sources and profile inventories; no units regress.34commands remain nonpassing
+across91diagnostic groups,384diagnostic occurrences. These are syntax checks,
+not a linked Node executable or runtime acceptance.
+
+Code-memory statistics measure actual live executable/JIT metadata, bytecode and
+script metadata, deduplicated retained source buffers, the uncompressed source
+cache and profiler-owned tables/labels. The existing engine DataReader exposes
+UTF-8, UTF-16 or compressed storage without decompressing it. ScriptSource object
+metadata is separate from its shared immutable text allocations. Multiple scripts
+sharing one allocation count it once. The engine adds a narrow profiler sizing
+method; existing engine and Node algorithms remain intact.
+
+Heap totals now retain notable source-object entries and include profiler
+allocations absent from the ordinary runtime reporter. Physical memory subtracts
+decommitted pages in cached empty chunks as well as the nonempty-chunk pages the
+reporter already subtracts. Current malloc and physical fields use these real
+allocations. Lifetime peaks, cumulative allocation, full heap-space/availability
+and limit semantics, context/global-handle accounting, memory measurement and
+CppHeap statistics remain incomplete; these fields are not fabricated.
+
+Sixteen shared memory-interface observations match pinned native Node on each
+host. Additional target checks exercise actual profiler activation and allocation,
+shared text deduplication, physical page state, pending-error preservation and
+requested/active termination preservation. All prior graph/property/context,
+buffer, thread and fatal controls remain: five cases pass independently on each
+of Node, Chromium, Firefox and WebKit. Initial source-payload failures and the
+corrected stop-state fixture assumption are preserved. Browser build warnings
+and Firefox staging-cleanup permission errors remain recorded separately. These
+private controls use the production Isolate lifecycle with labelled fixture
+platform/entropy dependencies; they do not establish original Node startup,
+NodePlatform or full resource retirement.
+
+Signed and unsigned integer source types now follow the upstream hierarchy and
+return widths: Int32 returns int32_t, Uint32 returns uint32_t and Integer returns
+int64_t. ToInt32 retains its exact result type. Typed integer, proxy and promise
+views share the existing root Cell, with no additional JS root or sealed-scope
+handle allocation. The Cell owns those native views through their actual root
+lifetime, including escaped handles; the views add no GC edge or ownership cycle.
+The string maximum is a compile-time constant from the actual installed engine
+header. Weak callback declarations use upstream's Callback typedef and template
+deduction boundary, preserving the original native callback implementation.
+
+All 99 new observations match pinned native Node on each of the four hosts,
+including numeric boundaries/coercion, sealed casts, escaped/persistent handles,
+moving GC and weak collection/strengthening/rearming/cancellation. A guest check
+also verifies that casts retain the same Cell without adding a root. The same
+binary passes all earlier backing, inspection, graph, thread and fatal controls.
+These are native interface checks; Node's original filesystem, SQLite, crypto
+and BaseObject algorithms were not changed or accepted as complete modules.
+
+Native backing stores now retain real fixed, resizable and shared allocations.
+Resizable stores read an atomic live length from their typed engine allocation
+owner, retain their actual maximum length through detachment, and can create a
+new resizable buffer over that retained storage. Growable shared buffers use the
+engine's real reference count and atomic length. Native worker threads can read
+these metadata fields without entering a JavaScript context. The engine keeps
+its original resize, zeroing and view-notification algorithms. Registry cleanup
+tracks every allocation-owner alias for a store and removes those aliases at
+retirement, without scanning unrelated stores.
+
+All 110 backing observations match pinned native Node separately on Node,
+Chromium, Firefox and WebKit. The same binary retains all earlier inspection,
+graph, property, context, thread and fatal controls: five process cases pass on
+each host. A real post-GC/sweep check confirms the backing registry returns to
+its initial size. This caught and fixed a stale alias after fixed-buffer
+reattachment. The fixture now uses production Isolate construction, allocator
+ownership and retirement; its platform transport and OS entropy callback are
+explicit test dependencies. Original NodePlatform, Node crypto startup and full
+Node resource retirement remain unqualified. Initial style, fixture-owner and
+registry failures are preserved; guards, assertions and timeouts were retained.
+
+The inspection adapter reads real proxy targets and handlers without invoking
+traps, including revoked and callable proxies. Callable proxy handles are
+explicitly retyped onto the same rooted value rather than cast between unrelated
+C++ wrapper classes. Collection previews use SpiderMonkey's native iterator
+algorithms on a separate cursor, preserving position and the original empty
+iterator exhaustion behavior. Weak collections use actual traced engine entries.
+Stack frames distinguish the retained script filename from its sourceURL; the
+locale interface reads the engine's current setting. No Inspector backend or
+new engine patch is introduced by these interfaces.
+
+All52inspection observations match an authenticated pinned native Node reference
+on Node, Chromium, Firefox and WebKit, including a real GC between stack capture
+and filename access. The same guest binary also passes all prior graph/context/
+property/thread checks and the four expected native-fatal controls on each host.
+The initial locale fixture compile failure remains preserved; it passed a context
+where SpiderMonkey's setter requires its runtime. These are private native API
+checks, not installed Node CLI or complete native-owner acceptance. Heap lifetime
+peaks, cumulative allocation, complete space/realm attribution and other memory
+services remain required implementation work; a heap census cannot substitute
+for those metrics.
+
+The same expanded guest binary now passes separately on Node, Chromium, Firefox
+and WebKit. It exercises all prior graph/golden-byte cases, RAB and GSAB views,
+cross-realm cyclic graphs and transferred replacement buffers, nested native
+host delegates, failure propagation, malformed/truncated/oversized input,
+format13 compatibility and detached/out-of-bounds rejection. It also checks
+nested context scopes, realm restoration and GC during/after scope lifetime.
+It owns a real SpiderMonkey context directly; full Isolate construction,
+original Node owners, worker/IPC resource retirement and CLI/module gates remain
+unqualified. This is private backend coverage, not full serialization acceptance.
+
+Expanding the adapter exposed an existing shared bridge lifetime error:
+heap-owned `ContextScopeData::previous` used `RootedObject`, which violated
+stack-root ordering when the constructor's local root retired. The existing
+field now uses `PersistentRootedObject`; Node startup/loader policy is unchanged.
+The serializer also explicitly includes the definitions for buffer metadata
+access; the expanded unit has no undefined-inline warnings. The prior revision33
+GC failures and diagnostic timeout remain preserved. No engine/toolchain defect,
+optimizer workaround, assertion removal or timeout widening was introduced.
+
+The context source interface now follows upstream's `Context : Data` hierarchy.
+A context uses one rooted Cell for its global. Cloning, persistent handles,
+opaque data arrays and traced native edges pass the owning isolate explicitly;
+context clones cannot infer ownership from an unrelated current frame. Generic
+context identity remains distinct from the JavaScript global object. The bridge
+also uses the complete pinned upstream `Maybe` header and portable stack/type
+traits instead of a reduced optional-value implementation; original algorithms
+are preserved with reversible include-edge changes and the existing native fatal
+boundary. No V8 collector or heap implementation is imported.
+
+Revision37 builds and24installed consumers pass. The same expanded guest binary
+passes separately on Node, Chromium, Firefox and WebKit. It checks persistent/data
+context clones, generic escapes, realm restoration, context/global distinction
+and actual collection of an unreachable cross-realm context/data-array cycle.
+Host wire tests also pass with ASan/UBSan, including move-only Maybe ownership
+and fatal empty Maybe behavior. The full original-owner compiler inventory is
+revision36; all49installed headers other than the private code-cache identity
+are identical in37. Original Contextify/native-wrapper cycles and full
+Isolate/Environment lifetimes remain unqualified; this does not close the
+complete GC contract.
+
+The value/property bridge now reuses the original portable Unicode encoder and
+the pinned upstream string-write flag values. It supports loose equality with
+real exception propagation, stable string/symbol identity hashes, numeric
+property operations, own-only private presence/deletion and real-property
+lookup/attributes through SpiderMonkey's native bypass operations. Promise and
+resolver handle casts create correctly typed wrappers around the same real
+promise, including casts through Data/Value; they do not rely on invalid C++
+sibling casts. Known external strings return their original native resource.
+The identity registry holds no JavaScript roots or independent resource owner.
+
+The expanded private guest unit passes separately on Node, Chromium, Firefox
+and WebKit. It retains the earlier graph/context assertions and adds 90 exact
+UTF-8 flag/capacity comparisons against the authenticated pinned native Node
+binary, private/frozen/proxy/descriptor cases, exception identity and Promise
+retyping/resolution. External one- and two-byte resources retain their exact
+native identities through GC, then dispose once after their scoped roots are
+released; their registry entries also retire. This does not qualify complete
+Node external-resource shutdown or guarantee foreground disposal. Callback
+strictness, full interceptor dispatch, integrated owner lifetimes and native
+startup remain incomplete. No original Node JavaScript was changed by this work.
+
+Object and Template lazy/native property interfaces now share the existing
+SpiderMonkey native-data and lazy-data primitives. Template configuration stores
+the payload in traced slots and materializes a separate callback record in each
+instance's creation realm. Lazy values become ordinary data properties after
+their first successful read; there is no JavaScript getter function or alternate
+module loader. The same C++ cases produce 60 matching observations on pinned
+native Node and the private guest unit, separately on all four hosts. They cover
+write/delete before first read, caching, frozen lazy properties, exception retry,
+independent instances, repeated native reads and inherited writes. The original
+module_wrap.cc and node_builtins.cc now compile in both profiles. Full native
+interceptor dispatch and strictness remain incomplete, as do original Node
+startup and owner integration; these checks do not establish loader acceptance.
+The expanded unit also verifies that installed native/lazy metadata retains an
+otherwise unrooted object payload through GC, that payload/instance cycles are
+collected after their last root is released, and that a template instantiated
+in another realm invokes its callback with that creation context. These checks
+pass separately on all four hosts; full original Node owner lifetime acceptance
+remains required.
+
+The bridge now supplies real recursive `Locker` scopes with thread-local lock
+queries and explicit owner-thread checks. SpiderMonkey contexts remain on their
+owning threads, matching Node's main/worker creation paths; a lock does not
+migrate a context. `SealHandleScope` prevents fresh local Value, Data and Context
+roots at the sealed level, allows nested handle scopes and restores prior seals.
+Escapable scopes check the parent before entering. Engine retirement checks that
+no lock, handle scope or seal still owns its state. These are consumed Node source
+interfaces, not general V8 thread-migration compatibility.
+
+The normal engine build keeps libc's process-wide `abort` symbol rather than
+Mozilla's optional Unix override. A target guard around that override preserves
+all function bodies and Mozilla's explicit crash routines. This corrects an
+observed link interaction: the native fatal logger previously reached
+`mozalloc_abort` and a Wasm trap instead of the guest SIGABRT contract. All16
+initial failures are retained; their assertions and timeouts are unchanged.
+
+The current private unit passes five cases per host on Node, Chromium, Firefox
+and WebKit: its complete earlier regression program plus three sealed-scope
+misuses and a wrong-thread lock attempt. The regression includes a real guest
+pthread with its own SpiderMonkey context, scoped locks and GC; no JavaScript
+objects cross the thread boundary. Fifteen positive scalar observations match
+pinned native Node. The three seal misuses abort native Node with SIGABRT and
+all four guest misuse controls terminate with guest status134, without host trap
+diagnostics. Full Node Isolate/Environment, worker, cleanup and module acceptance
+remain required; these tests directly own their engine contexts.
+
+The shared native bridge builds engine-owned Eternal roots, separate API-symbol
+and private-name registries, real BigInt creation/conversion and primitive
+value wrappers. Primitive/name creation follows the upstream no-script source
+boundary: it does not enter the general automatic-checkpoint guard. Eternal
+roots and private registries retire while the engine context is alive; they
+are distinct from Contextify's collectible graph edges. Twenty-two installed-header
+consumer fixtures pass, including the original Node property/template lists,
+and the archive has no unresolved references to its engine namespaces. These
+are build/source checks; movement, failure, cross-realm behavior and cleanup
+remain unqualified in the integrated runtime. The adapter currently inherits
+SpiderMonkey's BigInt size limit; large-value parity remains open.
+
+The bridge stages the whole pinned `v8-fast-api-calls.h`, changing only its
+engine include boundary. Its signature builders, type/flag rules and signature
+tables remain upstream; the native adapter stores actual function addresses and
+metadata. This does not implement V8 JIT fast calls: Node's ordinary native
+callbacks remain the execution path. The raw source import now contains 976
+verified files; the previous 970 records and all 443 JavaScript files are
+unchanged.
+
+The bridge also stages the whole pinned profiler header, changing only its
+engine includes, and reuses the complete upstream GC enums and callback types.
+The older abbreviated OutputStream and EmbedderGraph declarations are removed.
+These contracts do not implement heap or CPU profiling: the real SpiderMonkey
+services and original Node profiler owners remain unfinished.
+
+Native error factories now call SpiderMonkey's complete intrinsic error factory
+with the requested error type, message and optional cause options. The original
+factory body is unchanged. Captured exception stacks use actual ErrorObject and
+SavedFrame data. GC callback registration and retirement, a recovery hook at the
+existing GC-cell limit, and an outer minor-GC observer also build in the engine
+and bridge. Low-memory collection retains native-resource retirement and any
+existing failure. Matching public/private engine headers and archives are
+required. This is not complete Node memory accounting: managed/malloc limits,
+default sizing, worker recovery, all GC phases and incremental-collection timing
+remain required. Error/cause/stack behavior and callback/GC/shutdown lifetimes
+have not been qualified through a running Node executable.
+
+The shared value adapter now builds native class/tag checks for boxed values,
+collections, iterators, async/generator functions, proxies, module namespaces and
+typed arrays. Numeric/boolean conversions and `instanceof` use actual engine
+operations. Function creation and construction retain real callback data,
+arguments and `new.target`. Template properties retain accessor templates in
+traced slots, preserve attributes/private keys, and use native template ancestry
+for instance checks. Readonly prototypes and function lengths use that same
+template owner. The common typed-array constructors are shared by both source
+profiles; they no longer depend on the preserved frontend's aliased controls.
+
+Fixed ArrayBuffer/SharedArrayBuffer backing stores retain the engine allocation
+and its real deleter/reference count. Native identity metadata holds weak
+references, while byte ownership can outlive a JS object or context. Shared views
+dispatch to the shared owner even through the upstream ArrayBuffer-shaped view
+interface. Native byte-owner adoption now commits only after all metadata
+allocations succeed; failure leaves the original buffer responsible for its
+bytes. Resizable/growable stores still have explicit failure guards: completing
+their identity, size/address and transfer/resize semantics remains required.
+Lazy/native template properties, naming/reconfiguration/global behavior and
+runtime/OOM/GC/worker/shutdown qualification also remain unfinished. No complete
+engine SDK or Node runtime acceptance follows from these library checks.
+
+The original URLPattern owner can now use a real rooted RegExp wrapper. Pinned
+regexp flags translate explicitly to SpiderMonkey's different flag values;
+creation, matching, source escaping and flag reads use the engine's existing
+implementations. Execution observes a replaced `exec` method, preserves match
+results or null, and uses the engine's lastIndex/error behavior. The whole
+portable regexp header is retained with engine includes and rooted constructor
+inheritance adapted. Experimental linear/backtrack entrypoints are not supplied
+by this bounded consumer connection; their scope must not be inferred from the
+header's presence.
+
+Property-name collection now implements own/prototype selection, attribute and
+index filters, numeric/string conversion, symbols and shadowing without reading
+ordinary property values. The pinned proxy filtering path and prototype traversal
+ceiling are retained. Signed external-memory updates use the existing account's
+real credit/debit path; complete pressure/limit integration remains unfinished.
+Source inspection also corrected Array::New negative lengths to produce an empty
+array, matching the original upstream implementation. These mechanisms build,
+but regexp/proxy/GC/failure/realm/pressure behavior has not been qualified through
+a running Node executable.
+
+The callback-based Array factory and array iteration use real engine values,
+scoped callback handles, exception/termination propagation and the pinned
+continue/break/exception results. The factory builds its result after every
+callback succeeds. The complete original URLPattern C++ unit now passes syntax
+checks in both build profiles; this is not runtime URLPattern acceptance.
+
+After this batch, the complete native-source syntax scan runs 359 distinct
+compiler commands across both original build profiles. The default profile has
+129 compiled rows and 41 failures; the feature profile has 147 compiled rows and
+43 failures. The preceding value/template batch compiled 126 and 143 rows.
+The remaining 175 diagnostic groups include additional value/template operations,
+serialization, native memory statistics and other engine services. No reduced
+registration lists or substitute headers are used to omit these failures.
+This scan is not a normal Node build or link, and passing rows are not module
+acceptance results.
+
+External-pointer carriers use actual opaque engine objects with checked tags
+and borrowed native pointers. They are not resource owners or ordinary
+JavaScript receivers. DataView creation uses real SpiderMonkey views and checks
+the underlying buffer bounds and detached state. PrimitiveArray host options
+use traced engine storage rather than borrowed native Local handles; wrapper
+factories retain their actual primitive types when read through FixedArray.
+Strings are wrapped into the storage realm before the write. These mechanisms
+build, but runtime GC, exception, realm and shutdown equivalence remain unproven.
+
+Fresh startup remains the approved profile. StartupData provides only borrowed
+blob transport, and snapshot serialization/restoration entrypoints explicitly
+reject V8 heap operations. This is not a successful empty snapshot or code-cache
+implementation. Original Node startup and snapshot-request routing still need
+integration and acceptance.
+
+The shared compiler/module adapter now builds real SpiderMonkey stencil
+compilation, context-bound execution and module records. Opaque source metadata
+retains the actual text, origin, host-option edges and native stencil lifetime.
+Script handles contain a traced script edge; unbound handles retain reusable
+engine stencils instead of borrowing a realm's native stack handles. Native
+no-script API bookkeeping captures failures without invoking the returning-call
+checkpoint. Ordinary evaluation uses the existing execution boundary.
+
+Original Node module resolution callbacks drive SpiderMonkey153's actual
+`LoadRequestedModules`/finish-loading protocol and `ModuleLink`. Module status,
+requests, namespace and evaluation promises come from engine records. Synthetic
+module exports update actual live bindings. Import metadata and dynamic-import
+callbacks connect the original Node callback interfaces to their owning engine
+context; Node still owns the JS callbacks and resolution policy. The bridge
+restores previously installed hooks before retiring that context and retains no
+borrowed callback-frame handles in native fields.
+
+Function compilation now uses SpiderMonkey's original FunctionCompiler and
+standalone frontend. A narrow engine overload accepts full-length parameter
+strings and retains the actual compiled stencil. The adapter preserves native
+parameter admission and reverses context-extension transport to keep Node's
+last-extension precedence. Script-private metadata owns the stencil and traced
+origin/host-option edges; function origins read that metadata and engine source
+comments. Reusing a stencil does not rewrite its parameter-boundary metadata.
+
+Native cache creation calls SpiderMonkey's XDR serializer on the actual retained
+stencil. The generated build ID binds the verified engine, source/configuration
+and native preparation inputs; its callback is installed before engine startup
+and remains resident through shutdown. Cache buffers own their serialized bytes.
+Native compatibility checks validate header bounds, identity, flags, length and
+checksum. Transport unit tests exercise malformed and unaligned byte inputs;
+they do not execute the engine serializer or decoder.
+
+Cache consumption now copies input into aligned storage, decodes an independently
+owned stencil and instantiates the decoded compiled data. Rejected caches use
+fresh compilation; allocation, exception and termination failures stay failures.
+A native engine operation reapplies the current source origin with the original
+source-note reader/writer and immutable-data constructors. Serialized sources
+retain their actual source-map comment separately from a supplied option, and
+standalone functions retain their parameter boundary. These changes have normal
+engine/bridge package-build evidence, not engine XDR or Node runtime acceptance.
+
+This compiler group remains incomplete. Function-body coordinates and lowering
+columns whose full precision was lost to engine saturation remain required
+backend work. Nonempty static import attributes still fail visibly because their
+key positions are not retained by the current engine records. Signed origin offsets,
+embedded-NUL resource mapping, stalled-await diagnostics and complete cross-realm,
+GC, error/stop and shutdown semantics remain open. Dynamic attributes use the
+actual engine key/value records; they need no static source-position triples.
+The general guest-Wasm follow-up does not defer JavaScript `import defer` support.
+No full Node SDK, loader acceptance or successful CLI follows from these library
+builds, and the preserved shell module owner is not an active fallback.
+
+The native Amaro build profile preserves the whole original JavaScript wrapper
+and Rust transform/diagnostic bodies, guarding only the Wasm interop and adding a
+private owned-result C ABI. Its real Rust dependency closure builds and installs
+as a guest shared library through the normal resolver. A standalone C guest
+loads that library, releases each result and unloads it, with descriptor counts
+returning to their initial value. Twelve provider cases independently match the
+pinned published Amaro on Node, Chromium, Firefox and WebKit: nine successful
+transforms and three complete diagnostics, including Unicode and source maps.
+This does not execute TypeScript through the new Node runtime.
+JavaScript option conversion must preserve the original
+backend's behavior before producing the private typed wire representation; it
+must not substitute `JSON.stringify` or its `toJSON` behavior. The Node binding,
+lazy runtime packaging, diagnostic equivalence and full lifetime/failure checks
+remain required. No guest TypeScript or Node CLI acceptance follows from these
+provider builds.
+
+An optional private Rust unwinding profile and shared SDK linking fixes now
+support the initial native failure mechanism. A real shared-library diagnostic
+passes separately on Node, Chromium, Firefox and WebKit: it catches an intentional
+Rust panic, runs its stack destructor, unloads and exits. Seven ordinary Rust std
+tests pass with the default abort profile; 83 compiler-driver tests pass. These
+are bounded mechanism/regression checks, not complete Rust TLS, worker, fork or
+OOM qualification. No new Node-specific kernel or host feature is introduced.
+
+The FFI foundation includes a real isolated libffi 3.8.0 target over its original
+portable C core and header generator. Prepared signatures own shared generated
+call adapters; callback owners retain a stable reservation and a typed callback
+module. Generation uses the existing fork instrumenter and canonical SDK program
+ABI binding. Modules load through ordinary `dlopen` from private memfds and unload
+before their descriptors close. The package declares its static loader/thread
+link requirements, and the guest callback dispatcher is explicitly exported.
+Unexpected Rust panics/OOM remain fatal on the current guest target and are not
+claimed recoverable.
+
+The separate typed adapter emitter now handles Node's scalar type codes with
+signed/narrow argument loads, scalar return storage, callback marshalling and
+per-thread shadow-stack restoration. A callback reservation module keeps the
+address stable before libffi knows the signature. It uses ordinary guest table
+operations, rather than rebinding a borrowed output pointer. Its successful C
+outputs always pass through original fork instrumentation. A standalone C guest
+diagnostic now passes independently on Node, Chromium, Firefox and WebKit with the
+same identified executable. It exercises actual generated calls and a callback,
+shared-signature retirement, discarded results and unsigned 64-bit values. Live
+descriptor assertions check ownership during the run and a return to the initial
+count after cleanup. This is native-backend evidence, not Node's FFI API or CLI
+acceptance. Node GC/callback/error/permission behavior, concurrent threads, fork
+replicas, resource failures and full native accounting still need qualification.
+Maintained target guards add CIF retirement to Node's original native owners;
+those original C++ owners have not yet been activated in the complete executable.
+
+The development compiler intake now evaluates the complete upstream Node
+executable dependency graph for both Kandelo profiles. It attempts all native
+Node C/C++ sources present in the authenticated reference inventories, including
+the original startup, registration and loader owners, and their target C/C++
+dependency commands. This is a syntax-only diagnostic scan: no dependency
+archives or Node executable are produced or qualified by it. Driver errors,
+missing generated sources and compiler errors all remain nonpassing.
+
+The first scan exposes shared configuration failures before complete API
+diagnostics: Kandelo was absent from Node's C++20/POSIX build-settings selectors;
+OpenSSL selected an x64 fallback; c-ares lacked a target configuration; FFI lacked
+its target provider; and an ICU generated source was absent. Source patches now
+select Node's original C++20/thread settings and the protocol libraries' real
+POSIX socket headers for Kandelo. These first-pass failures remain preserved;
+the subsequent provider work and open integration gaps are described below.
+The original GYP compilation
+database also quotes compound OpenSSL flag strings differently from Make, so its
+driver failures must be distinguished from actual source errors.
+
+The native bridge exports standard include names that forward to its actual
+SpiderMonkey-backed declarations, plus complete original portable Inspector and
+platform declaration headers. Node's utility header consumes Inspector's
+string-view type even in the inspector-disabled profile; including its original
+declarations does not enable Inspector. Missing engine interfaces remain compiler
+errors. The bridge still does not advertise a complete engine SDK.
+
+The subsequent provider configuration/build batch uses a real wasm32/Kandelo
+OpenSSL target and the original Node generators, preserving their core/helper/FIPS
+source partitions, threads and dlfcn behavior. Target compilation checks confirm
+32-bit OpenSSL limbs and the existing musl-compatible `ASYNC_NULL` backend;
+Node's separate asynchronous crypto scheduling is unchanged. c-ares now has a
+generated target header from SDK link checks, retaining thread safety.
+
+Native build tools now obtain their own dependencies instead of guest include
+and library flags. The host linker uses supported archive/group settings, and
+build-tool libuv selects the native platform while guest Node keeps Kandelo's
+declared libuv. The original `genccode`, `icupkg` and `node_js2c` tools build.
+Original ICU data actions and the original JavaScript embedding action have
+produced their real data sources for the private feature-profile build.
+
+A 23-target static-provider cohort builds through the original GYP graph with
+the normal private SDK sysroot. It includes OpenSSL/ncrypto, c-ares, ICU, parser,
+codec, SQLite and other native dependencies. These are unpublished private
+artifacts, with no Node module runtime acceptance. Separate default-profile
+artifact qualification, FFI, native Amaro, remaining engine interfaces, live Node
+owners and complete executable linkage are still unfinished. The original
+compilation-database generator also omits some action-generated C++ sources;
+future diagnostic inventories must account for those outputs and preserve each
+profile's embedded configuration separately.
+
+The coordinated SpiderMonkey 153.7.0 ESR/LLVM and libc++ 23.1.3 upgrade from PR1744
+is source-integrated through commit `c070c0845d3e83aa83392bd870ddeee77fd4450c`,
+including its newer merged development baseline. The import preserves the Node
+work and reconciles shared C++ exception handling, executable ABI stamping and
+bounded entropy transport. Entropy still rejects unavailable cryptographic
+providers without substituting weak random bytes. The program ABI remains56;
+the coordinated kernel/host adapter version is7.
+
+Both normal musl cores, the native Rust workspace and package-system suites,
+the rebuilt kernel ABI check, package-index checks and the production-source
+memory-ownership audit pass. The registry retains55 inherited host-tool
+declaration findings and introduces none. Core13 and Bridge30 have now rebuilt
+through the normal SourceOnly package graph with libc++ revision13. All22
+installed native consumers compile without diagnostics, required bridge
+definitions are present, and its checked engine-namespace references resolve.
+These are native library/interface checks; prepared guest/browser regressions,
+complete Node-owner/provider aggregates and runtime qualification remain required.
+Earlier full native-owner compiler results describe the previous `0709362`
+input set. No complete Node executable or CLI/module acceptance follows from
+these checks.
+
+Two real prerequisites now build through the normal package resolver:
+
+- `spidermonkey-core` builds the actual engine and Rust archives without a shell
+  or substitute Node owners. Mozilla's three build checks pass. The package
+  provides 646 public/generated headers, Unix compiler flags and 1,077 exact
+  private/generated headers bound by hashes to its archives and configuration.
+- `spidermonkey-node-bridge` builds the ordinary V8-shaped source interfaces,
+  buffer-memory primitives, retained complete V8 UTF-8 encoder and native
+  process initialization over that engine. All four source groups compile.
+  Its own V8-shaped references resolve in the provider closure.
+  Symbol/dependency checks find no substitute Node-owner or shell-runtime
+  references. This is source/library evidence, not runtime qualification.
+
+The process interface connects Node's original entropy callback to an atomic
+native MFBT provider before `JS_Init`, preserves fatal entropy failures, and
+implements actual `JS_Init`/`JS_ShutDown` calls with process/thread preconditions.
+It retains the original Node platform by reference and does not require a realm,
+Environment or JavaScript callback. Physical contexts and registered engine
+owners have distinct shutdown counts. Actual per-thread `JSContext` creation,
+self-hosted initialization and destruction now compile, preserving Node's
+register-before-initialize and deinitialize/unregister/free address ordering.
+Those counts do not prove producer retirement or runtime correctness.
+The complete engine patch sequence applies without fuzz or offsets, and producer
+patches and final source hashes are recorded with the installed archives.
+
+The bridge also compiles a bounded native allocation service for the two
+Contextify GC consumers. Existing wrapper classes have a separate typed GC
+association and trace/finalize hooks; ordinary BaseObject ownership stays
+separate. Construction leases, conditional traced edges with cross-compartment
+wrappers, weak-death invalidation, native destruction and heap termination use
+real SpiderMonkey services. Tracing needs no ordinary frame or Environment;
+destruction stays on the owning JS thread and runs no user JavaScript. A target
+compile fixture checks the source interfaces with exceptions and RTTI disabled.
+The original contextify owners have not been linked to this service, and moving,
+incremental, cyclic, failure and shutdown behavior remain unqualified.
+
+Physical isolate storage now adopts that native heap and the provided raw or
+shared ArrayBuffer allocator. Standalone backing stores retain the provided
+shared allocator through their final release; adopting an existing store does
+not require a current JS frame. This does not yet route SpiderMonkey-created
+ArrayBuffers through Node's accounting or complete GC pressure/OOM handlers.
+
+The native isolate now stores the original fatal/OOM callbacks supplied by
+CreateParams and Node's later handler setters. Engine OOM notification and fatal
+standalone-store allocation failures enter those callbacks without a realm or
+Environment lookup. The fatal callback runs under the shared no-JavaScript gate;
+if it returns, the existing native logger/guest abort remains the final fallback.
+Returning-null backing-store requests release their allocation on metadata OOM.
+Neither allocating nor adopting standalone storage requires a JS frame.
+
+Consumed explicit old/young/stack constraint fields now connect to actual
+SpiderMonkey cell-heap, nursery and native-stack parameters. The private fallible
+GC setter is checked; the public setter silently ignores invalid values. A young
+ceiling only lowers the existing nursery ceiling and retains engine allocation
+granularity. These are partial backend caps: they do not cover all managed malloc
+storage, and default sizing remains undefined. SpiderMonkey's OOM notification is
+too late for Node's recoverable near-heap-limit callback. Worker limit/recovery,
+complete memory accounting and Node option mapping remain required before SDK
+completion. No memory-limit equivalence or runtime OOM acceptance is claimed.
+
+Heap statistics now expose the real cell-heap cap and measured executable
+allocation, and native queries leave an existing exception/termination visible
+through the shared preservation scope. The remaining Node statistics fields and
+their actual accounting still need implementation.
+
+Context creation now compiles against real SpiderMonkey globals and standard
+classes, with ordinary property-only template application. It does not place
+generic wrapper fields over SpiderMonkey global slots. Full global/proxy
+interceptors and the context options they require remain unfinished.
+
+Shared property interfaces now compile over actual SpiderMonkey descriptors,
+rooted values/accessors, own-property queries, deletion, prototype operations and
+freeze/seal. They preserve absent fields, explicit undefined and false flags,
+wrap cross-realm descriptors, and distinguish ordinary rejected definitions from
+thrown failures. Attribute queries read native flags without invoking live/lazy
+getters, retain typed-array stop conditions and stop at a scripted proxy's own
+descriptor. Original Node environment-store, Storage, SQLite and contextify
+callback bodies remain unchanged. Native interceptor dispatch, global layout and
+security-token enforcement are still unfinished, and none of these property
+operations has runtime qualification yet.
+
+Object creation-context interfaces now compile using actual SpiderMonkey realm
+identity. Each native handle cell records its owning JSContext; lookup checks
+the owning thread/context and strips engine transport wrappers without reading
+mutable constructor/prototype properties or invoking user proxy traps. A dead
+transport wrapper returns no context; checked lookup retains native fatal error
+handling. Metadata reads preserve pending errors and do not drain jobs. Full
+global-proxy detachment still needs its own engine integration.
+
+Function, property, Promise and compilation callbacks now share a native entry
+guard. It keeps nested C++ API calls from handing an error to an enclosing native
+catch before JavaScript catch/finally runs. It neither clears existing failure
+state nor performs a checkpoint on callback exit. Reentry, moving GC, thread and
+shutdown behavior remain unqualified until the integrated runtime tests run.
+
+Context compilation admission now connects SpiderMonkey's existing security
+callback to the original Node handlers supplied by its isolate setup. The
+per-context allow flag lives in existing metadata; Node's original runtime
+initializer clears it to delegate policy and source-map work to its handler.
+Direct/indirect eval and the Function constructor family retain SpiderMonkey's
+original conversion and parsing paths. Callback frames preserve pending errors,
+termination and JavaScript catch/finally ordering without running jobs. The
+native security table is installed before globals and restored before deleting
+its engine owner. These interfaces compile, but the original Node callers and
+runtime behavior remain unqualified. CLI engine-flag mapping, API CodeLike
+objects and custom callbacks that replace source still need compiler/template
+integration; replacement currently fails visibly rather than executing the old
+source. Registering Wasm admission does not implement guest Wasm execution.
+
+The default microtask adapter uses SpiderMonkey's actual traced queue set and
+original JS-job execution. It inherits the engine's complete async-context host
+data methods, without activating the shell drainer or its separate async loop.
+Node's explicit checkpoint interface, native callbacks and function tasks now
+compile. Explicit native entries retain traced function/context/continuation
+edges, root those edges after dequeue, preserve the caller's continuation value,
+and keep API call depth active so native catches cannot intercept intervening JS
+catch/finally. Unhandled job errors enter supplied native message listeners;
+Node retains its original error policy. Automatic checkpoint entry observes the
+no-JavaScript gate. Native retirement drops queued roots/metadata without running
+user callbacks and leaves original Node responsible for callback-target cleanup.
+The adapter outlives JSContext destruction. Moving GC, exceptions, ordering,
+reentry, cancellation and saved-queue behavior remain runtime-unqualified.
+
+Separate `vm` queues now compile with their own original SpiderMonkey queue sets
+and registered roots. A narrow private engine selector routes the original
+promise and public enqueue paths by execution global. Existing enqueue branches
+and queue algorithms remain intact; other embeddings retain the original path
+when no selector is installed. The shared native dispatcher is installed once
+per JSContext. Creating a VM queue neither replaces it nor creates another
+JSContext. Explicit native callbacks enqueue directly into their selected queue.
+
+The existing context metadata records a weak native queue association without
+running property hooks. Context creation installs it before the new-global hook;
+the values array is created lazily, so association needs no standard-class
+initialization. A retired associated queue fails visibly. Weak child registration
+adds no JS roots or permanent owner cycle. VM retirement drops queued jobs and
+unregisters their roots on the owning thread; isolate disposal also retires any
+remaining child queues before destroying its JSContext. Queue-empty optimization
+checks all live queues. These source/library mechanisms remain unqualified for
+cross-realm execution, collection and cleanup.
+
+The native Promise interface now compiles creation/resolver, settlement,
+state/result/handler queries and native Then/Catch against actual SpiderMonkey
+Promises. Then/Catch use the engine's complete intrinsic implementation with a
+fresh native result, bypassing mutable public methods and species lookup.
+Native Resolve/Reject preserve the pinned V8 pending-state checks and call the
+original engine resolution/rejection algorithms directly; the public SM resolver
+functions add an AlreadyResolved latch that would change repeated native calls
+while thenable assimilation is pending. Promise handles keep their actual C++
+wrapper type through ordinary value marshalling and persistent roots.
+
+The isolate's rejection tracker invokes the supplied original Node callback on
+the owning thread in the actual active realm. It carries the real Promise/reason,
+leaves a handled notification's value empty, preserves an existing failure and
+keeps native entry depth active without draining jobs during notification.
+MarkAsHandled updates only the engine handled bit: the public SM marking API
+would also notify the tracker, duplicating Node util's explicit notification for
+an already rejected Promise. Disposal unregisters the tracker before freeing its
+native state. These compiled services have no runtime rejection-policy, reentry,
+cross-realm or GC proof, and original Node task_queue is not yet activated.
+
+Promise lifecycle hooks now compile against real engine creation, resolution and
+reaction/thenable job paths. A private native observer passes rooted Promise and
+parent objects around the original algorithms. Explicit parent arguments preserve
+intrinsic Then and await relationships without leaking a parent into unrelated
+user constructors. When hooks make otherwise omitted capabilities observable,
+the engine creates real Promises and resolves await-only result capabilities
+through its original operations. Job notifications run after continuation-data
+installation, and After runs only after successful execution.
+
+Node can enable hooks after a reaction was registered. Ordinary Then result
+objects therefore remain available for later notification. Optimized thenable
+reactions identify their actual target when no separate child exists, and a
+combinator's borrowed bookkeeping object is not misreported as a result Promise.
+Other embeddings retain the original default behavior.
+
+Context hook functions occupy one additional traced slot in the existing context
+metadata. Native metadata holds a weak State reference and counts live hook-owning
+contexts without rooting them. Foreground collection retires that count, and
+clearing one context cannot disable another's hooks. Context JS hooks run before
+the current isolate-native hook; their errors enter supplied message listeners.
+Teardown unregisters the engine observer before native State release. Seven
+installed-header compile checks cover the accumulated source interfaces. Hook
+ordering, async identity, late enablement, cross-realm behavior, errors, GC and
+shutdown still need runtime qualification with the original Node owners.
+
+Finalization delivery now compiles through the supplied original foreground
+TaskRunner interface. SpiderMonkey notifies the owner thread during collection;
+the adapter roots the actual cleanup function and posts a non-nestable task,
+without allocating JS objects, entering a realm or running user code in GC.
+One registry is cleaned in its own realm by the whole original engine routine.
+Unregister, weak registry death, held values and record removal remain engine
+owned. A typed, provenance-checked private accessor exposes the actual cleanup
+queue, so remaining records can be scheduled again after a callback throws
+without guessing private slot numbers or duplicating the cleanup algorithm.
+
+Queued wrappers hold only native delivery control; the owner ledger holds roots.
+An atomic ticket handles wrappers discarded during termination without letting
+an old wrapper invalidate a later delivery. Existing error/stop/no-JS states
+defer callbacks; a subsequent normal API completion can wake recovered work.
+Disposal unregisters notification and drops roots without calling cleanup before
+releasing State/context references. Original Node platform/Environment activation,
+context-disposal cancellation and real GC/retry/exit behavior remain unqualified.
+
+Run-scope depth and suppression now compile against the real per-context queues.
+Scoped checkpoints wait for the outer run scope; suppression blocks the selected
+queue and automatic call completion without changing native exception-catch
+depth. Suppression exit does not itself run jobs. Automatic completion retains
+the context selected by the API before realm restoration, uses that queue's
+actual policy and does not drain while JavaScript is active. Checkpoints suppress
+nested automatic drains. Default policy storage now belongs to the actual default
+queue. The initializer also clears its success flag on metadata allocation failure
+after heap attachment, so incomplete setup cannot report success.
+
+Debugger-silence integration and remaining context/compiler services still need
+implementation. Finalization, scope/automatic ordering, suppression/error/cancel,
+collection and full retirement still require integrated runtime acceptance.
+MarkAsSilent remains undefined instead of returning a successful no-op.
+Inspector followup must include
+multi-queue debugger isolation. Full global/proxy interceptors, source/compiler
+services and original Node owner activation remain unfinished. No context or
+queue API compilation establishes that the original Node runtime has started.
+
+SpiderMonkey's immediate and delayed asynchronous deliveries now enter the
+original Node platform's foreground TaskRunner interface. Node retains scheduling,
+queue ordering, wakeups, timer and liveness policy. A native ownership ledger
+keeps accepted engine tasks available if Node discards their delivery wrappers.
+Teardown closes admission, cancels undispatched cancellable tasks, runs accepted
+tasks with SpiderMonkey's shutdown mode under the no-JavaScript guard, then uses
+the real engine shutdown barrier to wait for non-cancellable producers. Rejected
+deliveries return to SpiderMonkey for owner-thread destruction. Leftover platform
+wrappers retain neither a context nor engine roots after this retirement. This
+bridge connection compiles against the real provider interfaces; original Node
+platform/Environment integration and race, exit and lifetime behavior remain
+unqualified. It is not proof that every native producer has been stopped.
+
+An explicit native compile selection excludes the preserved frontend's factories,
+Node policy, JS runtime-carrier lookup and private probes. Callbacks, templates
+and properties use the actual context-owner registry and generic engine wrapper
+storage. Engine State, scopes, native callback transport, real backing leases,
+context fields and exception/termination interfaces no longer require a substitute
+Environment. Required memory/deleter accounting remains; the extra legacy observer
+is excluded. The immutable-buffer query reads the real ESR153 flag.
+
+The complete compile resolved the known ESR API errors together: stack capture
+limits, symbol descriptions, locked source readers, heap tracing sessions and the
+new GC-buffer memory fields, plus an include/macro conflict and duplicate context
+query. Failed runs and original source preimages are preserved. All 960 retained
+Node files, including 443 JavaScript files, remain unchanged.
+
+These libraries deliberately do not impersonate the complete Node SDK. They
+provide no `v8.pc` or `node-engine-sdk.json`; the SDK guard rejects them. Actual
+complete global/proxy/realm behavior, full microtask semantics, resource constraints, original
+Environment/Realm/IsolateData and cloned live options, allocator/GC pressure, remaining engine
+APIs, activation/qualification of the native GC service, producer/resource
+retirement and full native providers remain unfinished.
+The compiled process initialization has not been exercised by a Node executable.
+The Node recipes retain original configure/GYP, main and complete default/feature
+source lists, but their legacy engine dependency must be replaced by the genuine
+SDK before building Node. Never build or relabel the old shell as that SDK.
+
+Complete the enabled native integration before runtime qualification. Preserve
+Node's original startup, loaders, registration and policy owners; no rejected
+compatibility frontend fallback or fake successful behavior is permitted. The
+later complete catalog/roadmap review remains mandatory and is not full-port
+completion. Historical pre-cutover bootstrap and diagnostic results below do not
+establish readiness of the new runtime. No image or canonical product is qualified
+by the engine/library builds.
 
 ## Architecture contract
 
@@ -162,9 +1038,11 @@ The syntax index is the start of this catalog, not its completion. Use the
 prior 19-family audit and PR reuse audit as historical evidence and native
 salvage indexes. Do not import the old assembled public frontend wholesale.
 
-Undici's HTTP parser and Amaro's compiler execute embedded WebAssembly.
-Nested guest Wasm remains required for those paths; defer its implementation
-unless startup depends on it. Its absence is an implementation gap.
+Upstream Undici's HTTP parser and Amaro's compiler execute embedded WebAssembly.
+The initial iteration uses native Amaro and an approved native Undici parser
+adaptation while general guest Wasm remains deferred. Their
+[migration record](nodejs-upstream-maintenance.md#temporary-native-versions-of-wasm-helpers)
+preserves the requirement to return to those original upstream Wasm paths.
 
 Deliver the startup evidence, complete contract catalog and ordered
 implementation/validation roadmap for user review before broader backend

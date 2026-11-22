@@ -43,6 +43,12 @@ OUT_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 MYSYS="$OUT_DIR/sysroot"
 WRAP="$OUT_DIR/rustc-kandelo"
 FORK_LIBC="$MYSYS/libc-kandelo"                        # assembled = upstream + patch (not committed)
+PANIC_STRATEGY="${CARGO_PROFILE_RELEASE_PANIC:-abort}"
+case "$PANIC_STRATEGY" in
+  abort) PANIC_CRATE=panic_abort ;;
+  unwind) PANIC_CRATE=panic_unwind ;;
+  *) echo "unsupported Rust panic strategy: $PANIC_STRATEGY" >&2; exit 1 ;;
+esac
 
 # One build per output directory at a time. WHY: callers run this
 # concurrently (rust-std and rust-c-interop are separate Vitest files, and
@@ -86,7 +92,7 @@ input_digest() {
     fi
     "$REAL_RUSTC" -vV
     echo "$REALSYS"
-    printf '%s\n' "${RUSTFLAGS:-}" "${CARGO_ENCODED_RUSTFLAGS:-}"
+    printf '%s\n' "${RUSTFLAGS:-}" "${CARGO_ENCODED_RUSTFLAGS:-}" "$PANIC_STRATEGY"
   } | shasum -a 256 | cut -d' ' -f1
 }
 DIGEST="$(input_digest)"
@@ -173,8 +179,9 @@ cat > "$WRAP" <<EOF
 test_flags=()
 for arg in "\$@"; do
   if [ "\$arg" = --test ]; then
-    # The abort-only target uses libtest's subprocess isolation.
-    test_flags=(-Zpanic-abort-tests)
+    # Abort profiles use libtest's subprocess isolation; unwind profiles
+    # retain the ordinary catch_unwind test harness.
+    if [ "$PANIC_STRATEGY" = abort ]; then test_flags=(-Zpanic-abort-tests); fi
     break
   fi
 done
@@ -190,12 +197,19 @@ TARGET="wasm32-unknown-kandelo-std"
 TARGET_DIR="$MYSYS/lib/rustlib/$TARGET"
 mkdir -p "$TARGET_DIR/lib"
 cp "$REPO_ROOT/sdk/rust/$TARGET.json" "$TARGET_DIR/target.json"
+python3 - "$TARGET_DIR/target.json" "$PANIC_STRATEGY" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+target = json.loads(path.read_text())
+target["panic-strategy"] = sys.argv[2]
+path.write_text(json.dumps(target, indent=2) + "\n")
+PY
 
 echo "==> Building std and libtest for $TARGET into the sysroot"
 STD_BUILD="$OUT_DIR/std-build"
 rm -rf "$STD_BUILD"
 mkdir -p "$STD_BUILD/src"
-cat > "$STD_BUILD/Cargo.toml" <<'TOML'
+cat > "$STD_BUILD/Cargo.toml" <<TOML
 [package]
 name = "kandelo-std-build"
 version = "0.0.0"
@@ -203,7 +217,7 @@ edition = "2021"
 publish = false
 
 [profile.release]
-panic = "abort"
+panic = "$PANIC_STRATEGY"
 
 [workspace]
 TOML
@@ -223,7 +237,7 @@ TOML
   fi
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
     cargo build --release --quiet \
-      -Z build-std=std,test,panic_abort \
+      -Z "build-std=std,test,$PANIC_CRATE" \
       --target "$TARGET" \
       --target-dir "$STD_BUILD/target"
 )

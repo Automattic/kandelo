@@ -650,10 +650,11 @@ describe("blocking retry snapshot contract", () => {
     ]) {
       expect(genericSet).toContain(`ABI_SYSCALLS.${syscall}`);
     }
-    // `flattened-transfer` (writev/readv/preadv/pwritev) still needs a
-    // nested-layout-specific plan and is deliberately reviewed outside the
-    // generic channel abstraction.
-    expect(KERNEL_WORKER_SOURCE).toContain('kind: "flattened-transfer"');
+    // Large scalars use a dedicated argument-only plan. Ordinary generic
+    // plans do not choose a transport; Rust retains the payload and OFD.
+    expect(KERNEL_WORKER_SOURCE).not.toContain('kind: "flattened-transfer"');
+    expect(KERNEL_WORKER_SOURCE).not.toContain('readonly guestIo?: boolean');
+    expect(KERNEL_WORKER_SOURCE).toContain('readonly kind: "guest-io"');
     // sendmsg/recvmsg and the SysV messages used to be here too. Their
     // arguments are KernelDereferenced now, so the kernel reads the caller's
     // structures at every dispatch and retains what a retry must not re-read

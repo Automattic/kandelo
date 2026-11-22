@@ -1,0 +1,28 @@
+kind = "program"
+name = "toybox-docs"
+version = "0.8.15"
+kernel_abi = 56
+depends_on = ["toybox@0.8.15", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for the two toybox applets the shell installs, dmesg and
+# logger. Toybox documents each command only through the help built into
+# it (its website's help.html is that same text), so these pages lay out
+# what each applet prints for --help while running inside Kandelo. The
+# recipe is this repository's, so the source is the in-repository
+# sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "0BSD"
+url = "https://github.com/landley/toybox/blob/master/LICENSE"
+
+[build]
+script_path = "packages/registry/toybox-docs/build-toybox-docs.sh"
+
+[[outputs]]
+name = "toybox-docs"
+wasm = "toybox-docs.zip"
+fork_instrumentation = "disabled"

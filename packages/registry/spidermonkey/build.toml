@@ -13,6 +13,13 @@ inputs = [
   "scripts/generate-nodejs-types.py",
   "scripts/prepare-nodejs-options.py",
   "scripts/prepare-nodejs-codecs.py",
+  "scripts/prepare-nodejs-native-interrupts.py",
+  "scripts/prepare-nodejs-string-metadata.py",
+  "scripts/prepare-nodejs-maybe-api.py",
+  "scripts/prepare-nodejs-fast-call-metadata.py",
+  "scripts/prepare-nodejs-profiler-metadata.py",
+  "scripts/prepare-nodejs-regexp-property-api.py",
+  "scripts/prepare-nodejs-value-wire-api.py",
   "scripts/prepare-nodejs-tracing.py",
   "scripts/prepare-nodejs-continuation.py",
   "scripts/nodejs-builtin-metadata.cpp",
@@ -24,4 +31,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 75
+revision    = 115

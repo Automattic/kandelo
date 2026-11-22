@@ -11,6 +11,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-fork-tool-cwd.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+# A fresh target directory forces cc-rs dependencies to compile. Reproduce the
+# guest-recipe environment that previously passed Wasm flags to native SQLite.
+export CARGO_TARGET_DIR="$SCRATCH/target"
+export CC=wasm32posix-cc CXX=wasm32posix-c++
+export AR=wasm32posix-ar RANLIB=wasm32posix-ranlib
+export CFLAGS=-matomics CXXFLAGS=-matomics CPPFLAGS=-D__kandelo__=1 LDFLAGS=-Wl,--shared-memory
+
 (
     cd "$SCRATCH"
     "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
@@ -35,4 +42,4 @@ IFS= read -r installed_hash < \
     "$REPO_ROOT/tools/bin/wasm-fork-instrument.input-hash"
 test "$installed_hash" = "$expected_hash"
 
-echo "fork-instrument builder is cwd-independent and rejects stale tools"
+echo "fork-instrument builder is cwd-independent, isolates guest compiler flags, and rejects stale tools"

@@ -12,7 +12,9 @@ import {
   SHELL_LAZY_BINARY_SPECS,
   SHELL_SYSLOGD_PATH,
   shellLazyPlaceholderUrl,
+  displaceBasePlaceholders,
   shellLazySpecDependency,
+  shellLazySpecDisplaces,
   shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import {
@@ -80,6 +82,7 @@ export function populateSourceRootfsShellOverlay(
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     const dependency = shellLazySpecDependency(spec);
     if (!includes(dependency)) continue;
+    displaceBasePlaceholders(fs, shellLazySpecDisplaces(spec));
     const existing = imageFileStat(fs, spec.vfsPath);
     if (existing !== null && !options.existingProgramDependencies?.has(dependency)) continue;
     const source = resolveArtifact(spec.resolverPath, dependency);

@@ -1,0 +1,9 @@
+script_path = "packages/registry/node-libffi/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 3
+inputs = [
+  "packages/registry/node-libffi",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]

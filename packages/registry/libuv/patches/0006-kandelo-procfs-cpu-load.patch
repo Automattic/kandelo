@@ -1,0 +1,99 @@
+--- a/src/unix/linux.c
++++ b/src/unix/linux.c
+@@ -26,6 +26,13 @@
+ #include "uv.h"
+ #include "internal.h"
+ 
++#if defined(UV_PLATFORM_KANDELO)
++/* Portable procfs queries only. This is not a Linux target or event loop. */
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#else
+ #include <inttypes.h>
+ #include <stdatomic.h>
+ #include <stddef.h>  /* offsetof */
+@@ -1691,6 +1698,8 @@
+   return 0;
+ }
+ 
++
++#endif  /* !UV_PLATFORM_KANDELO */
+ 
+ int uv_cpu_info(uv_cpu_info_t** ci, int* count) {
+ #if defined(__PPC__)
+@@ -1921,6 +1930,7 @@
+ }
+ 
+ 
++#if !defined(UV_PLATFORM_KANDELO)
+ static int uv__ifaddr_exclude(struct ifaddrs *ent, int exclude_type) {
+   if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)))
+     return 1;
+@@ -2448,23 +2458,34 @@
+ }
+ 
+ 
++#endif  /* !UV_PLATFORM_KANDELO */
+ void uv_loadavg(double avg[3]) {
++#if !defined(UV_PLATFORM_KANDELO)
+   struct sysinfo info;
++#endif
+   char buf[128];  /* Large enough to hold all of /proc/loadavg. */
+ 
+   if (0 == uv__slurp("/proc/loadavg", buf, sizeof(buf)))
+     if (3 == sscanf(buf, "%lf %lf %lf", &avg[0], &avg[1], &avg[2]))
+       return;
+ 
++#if !defined(UV_PLATFORM_KANDELO)
+   if (sysinfo(&info) < 0)
+     return;
+ 
+   avg[0] = (double) info.loads[0] / 65536.0;
+   avg[1] = (double) info.loads[1] / 65536.0;
+   avg[2] = (double) info.loads[2] / 65536.0;
+-}
+-
+-
++#else
++  /* The current kernel sysinfo record is a documented placeholder, not a
++   * measurement. Preserve the upstream failed-query path (leave output
++   * unchanged) until the shared OS supplies real procfs/accounting data.
++   * Do not turn its fixed zeroes into successful resource measurements. */
++#endif
++}
++
++
++#if !defined(UV_PLATFORM_KANDELO)
+ static int compare_watchers(const struct watcher_list* a,
+                             const struct watcher_list* b) {
+   if (a->wd < b->wd) return -1;
+@@ -2742,3 +2763,5 @@
+ void uv__fs_event_close(uv_fs_event_t* handle) {
+   uv_fs_event_stop(handle);
+ }
++
++#endif  /* !UV_PLATFORM_KANDELO */
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -337,6 +337,7 @@
+        src/unix/no-fsevents.c
+        src/unix/bsd-ifaddrs.c
+        src/unix/kandelo-uptime.c
++       src/unix/linux.c
+        src/unix/kandelo-memory.c
+        src/unix/kandelo-proctitle.c)
+ endif()
+--- a/src/uv-common.c
++++ b/src/uv-common.c
+@@ -950,7 +950,8 @@
+ 
+ 
+ void uv_free_cpu_info(uv_cpu_info_t* cpu_infos, int count) {
+-#ifdef __linux__
++/* The portable CPU reader uses one allocation for the array and models. */
++#if defined(__linux__) || defined(UV_PLATFORM_KANDELO)
+   (void) &count;
+   uv__free(cpu_infos);
+ #else

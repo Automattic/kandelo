@@ -45,7 +45,7 @@ impl FunctionTransform for ScratchFunction {
             Instruction::I32Sub
         });
         f.instruction(&Instruction::GlobalSet(0));
-        l.emit_scratch_reseed(&mut f, limit)?;
+        l.emit_scratch_reseed(2, &mut f, limit)?;
         l.emit_scratch_restore(FrameAddress::Buffer(1), &mut f, limit)?;
         l.emit_get(self.values[0], &mut f, limit)?;
         l.emit_scratch_release(&mut f, limit)?;
@@ -63,6 +63,7 @@ fn native_virtual_spills_bulk_snapshot_and_stack_discipline_execute_for_both_wid
             r#"(module (memory (export "memory") {mem} 2)
           (global $__stack_pointer (export "sp") (mut {pointer}) ({pointer}.const 65536))
           (global (mut {pointer}) ({pointer}.const 0))
+          (global (mut i32) (i32.const 0))
           (func (export "work") (param {pointer}) (result i64) i64.const 0))"#
         ))
         .unwrap();

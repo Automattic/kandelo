@@ -1,0 +1,33 @@
+# Retain the original TypeScript lazy loader and whole dependency wrapper.
+# Recognize the actual native backend; add its complete private native binding.
+--- a/src/node_binding.cc
++++ b/src/node_binding.cc
+@@ -52,6 +52,7 @@
+ // The binding IDs that start with 'internal_only' are not exposed to the user
+ // land even from internal/test/binding module under --expose-internals.
+ #define NODE_BUILTIN_STANDARD_BINDINGS(V)                                      \
++  V(amaro)                                                                    \
+   V(async_context_frame)                                                       \
+   V(async_wrap)                                                                \
+   V(blob)                                                                      \
+--- a/node.gyp
++++ b/node.gyp
+@@ -117,6 +117,7 @@
+       'src/json_utils.cc',
+       'src/module_wrap.cc',
+       'src/node.cc',
++      'src/node_amaro.cc',
+       'src/node_api.cc',
+       'src/node_binding.cc',
+       'src/node_blob.cc',
+--- a/lib/internal/util.js
++++ b/lib/internal/util.js
+@@ -245,7 +245,7 @@
+ function assertTypeScript() {
+   if (noTypeScript)
+     throw new ERR_NO_TYPESCRIPT();
+-  if (globalThis.WebAssembly === undefined)
++  if (globalThis.WebAssembly === undefined && !internalBinding('amaro').hasNative)
+     throw new ERR_WEBASSEMBLY_NOT_SUPPORTED('TypeScript');
+ }
+ 

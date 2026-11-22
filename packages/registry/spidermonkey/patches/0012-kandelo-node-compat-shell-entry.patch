@@ -1,8 +1,33 @@
+Add the Kandelo Node-compatible shell entry and its native surfaces.
+
+When the shell runs as `node` (or spidermonkey-node), it evaluates the
+generated node-compat bootstrap (node-compat/adapter.js + the shared
+packages/registry/node-compat/bootstrap.js) before the user script, answers
+`node --version`, and enables shared memory by default. It adds POSIX
+file/fd/env helpers to `os` / `os.file`, native crypto (OpenSSL), zlib and
+TCP/TLS hooks on `__kandeloNodeNative`, and a non-blocking socket watch list.
+
+Event loop: RunShellJobs runs microtasks, then the shell task queue
+(MaybeRunShellTasks), then polls the socket watches with
+KandeloSocketDispatch. Registered watches keep the loop alive; when nothing
+made progress it sleeps 1 ms instead of spinning.
+
+setTimeout: in node mode, node-compat's Node-shaped setTimeout is the only
+one. The shell's own setTimeout builtin is removed from the global before the
+bootstrap runs, because it treats every delay as zero and has no handle or
+clearTimeout.
+
+ESR 153 rebase: 153 replaced MaybeRunFinalizationRegistryCleanupTasks with
+the general MaybeRunShellTasks queue (FinalizationRegistry cleanup plus the
+new shell setTimeout). Kandelo dispatch now follows that queue, and returns
+early if a task called quit(). OSObject.cpp's non-WASI include block gained
+<signal.h>.
+
 --- a/js/src/shell/OSObject.cpp
 +++ b/js/src/shell/OSObject.cpp
-@@ -13,7 +13,11 @@
+@@ -10,7 +10,11 @@
  #include "mozilla/TextUtils.h"
-
+ 
  #include <errno.h>
 +#include <fcntl.h>
 +#include <limits.h>
@@ -12,7 +37,7 @@
  #ifdef XP_WIN
  #  include <direct.h>
  #  include <process.h>
-@@ -22,10 +26,12 @@
+@@ -19,11 +23,13 @@
  #  include "util/WindowsWrapper.h"
  #elif __wasi__
  #  include <dirent.h>
@@ -21,21 +46,22 @@
  #  include <unistd.h>
  #else
  #  include <dirent.h>
+ #  include <signal.h>
 +#  include <sys/stat.h>
  #  include <sys/types.h>
  #  include <sys/wait.h>
  #  include <unistd.h>
-@@ -36,6 +42,7 @@
+@@ -34,6 +40,7 @@
  #include "jsfriendapi.h"
-
+ 
  #include "gc/GCContext.h"
 +#include "js/ArrayBuffer.h"
  #include "js/CharacterEncoding.h"
  #include "js/Conversions.h"
  #include "js/experimental/TypedData.h"  // JS_NewUint8Array
-@@ -591,9 +598,296 @@
+@@ -623,9 +630,296 @@
    }
-
+ 
    args.rval().setUndefined();
 +  return true;
 +}
@@ -223,7 +249,7 @@
 +#endif
    return true;
  }
-
+ 
 +static bool osfile_readlink(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
 +
@@ -330,7 +356,7 @@
  /* static */
  RCFile* RCFile::create(JSContext* cx, const char* filename, const char* mode) {
    FILE* fp = OpenFile(cx, filename, mode);
-@@ -839,6 +1133,42 @@
+@@ -862,6 +1156,42 @@
      JS_FN_HELP("writeTypedArrayToFile", osfile_writeTypedArrayToFile, 2, 0,
  "writeTypedArrayToFile(filename, data)",
  "  Write the contents of a typed array to the named file."),
@@ -370,10 +396,10 @@
 +    JS_FN_HELP("utimes", osfile_utimes, 3, 0,
 +"utimes(path, atime, mtime)",
 +"  Change access and modification times. Returns 0 on success or -errno on failure."),
-
+ 
      JS_FN_HELP("redirect", osfile_redirectOutput, 1, 0,
  "redirect([path-or-object])",
-@@ -978,9 +1308,375 @@
+@@ -1001,9 +1331,375 @@
      return false;
    }
    args.rval().setInt32(getpid());
@@ -428,7 +454,7 @@
 +  args.rval().setInt32(rc == 0 ? 0 : -errno);
    return true;
  }
-
+ 
 +static bool os_setenv(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
 +  if (args.length() != 2) {
@@ -747,9 +773,9 @@
 +}
 +
  #if !defined(XP_WIN)
-
+ 
  // There are two possible definitions of strerror_r floating around. The GNU
-@@ -1201,11 +1897,59 @@
+@@ -1224,11 +1920,59 @@
      JS_FN_HELP("getenv", os_getenv, 1, 0,
  "getenv(variable)",
  "  Get the value of an environment variable."),
@@ -757,7 +783,7 @@
 +    JS_FN_HELP("setenv", os_setenv, 2, 0,
 +"setenv(variable, value)",
 +"  Set an environment variable. Returns 0 on success or -errno on failure."),
-
+ 
 +    JS_FN_HELP("unsetenv", os_unsetenv, 1, 0,
 +"unsetenv(variable)",
 +"  Unset an environment variable. Returns 0 on success or -errno on failure."),
@@ -765,7 +791,7 @@
      JS_FN_HELP("getpid", os_getpid, 0, 0,
  "getpid()",
  "  Return the current process id."),
-
+ 
 +    JS_FN_HELP("getcwd", os_getcwd, 0, 0,
 +"getcwd()",
 +"  Return the current working directory."),
@@ -811,7 +837,7 @@
  "system(command)",
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -44,6 +44,7 @@
+@@ -41,6 +41,7 @@
  #endif
  #include <ctime>
  #include <math.h>
@@ -819,7 +845,7 @@
  #ifndef __wasi__
  #  include <signal.h>
  #endif
-@@ -53,14 +54,26 @@
+@@ -50,14 +51,26 @@
  #include <sys/stat.h>
  #include <sys/types.h>
  #include <utility>
@@ -846,7 +872,7 @@
  #ifdef XP_LINUX
  #  include <sys/prctl.h>
  #endif
-@@ -170,6 +183,7 @@
+@@ -159,6 +172,7 @@
  #include "proxy/DeadObjectProxy.h"  // js::IsDeadProxyObject
  #include "shell/jsoptparse.h"
  #include "shell/jsshell.h"
@@ -854,7 +880,7 @@
  #include "shell/OSObject.h"
  #include "shell/ShellModuleObjectWrapper.h"
  #include "shell/WasmTesting.h"
-@@ -236,6 +250,1214 @@
+@@ -226,6 +240,1214 @@
  using mozilla::TimeDuration;
  using mozilla::TimeStamp;
  using mozilla::Utf8Unit;
@@ -2067,13 +2093,22 @@
 +  return JS_DefineProperty(cx, cx->global(), "__kandeloNodeNative", native, 0);
 +}
  using mozilla::Variant;
-
+ 
  bool InitOptionParser(OptionParser& op);
-@@ -1415,9 +2493,13 @@
-
-     // Run tasks (only finalization registry clean tasks are possible).
-     bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
+@@ -1518,9 +2740,22 @@
+ 
+     // Run tasks.
+     bool ranTasks = MaybeRunShellTasks(cx);
 -    if (!ranTasks) {
++    if (sc->quitting) {
++      return;
++    }
++
++    // Kandelo: after the shell's own task queue, poll the native socket/TLS
++    // watches without blocking. A completed watch settles its promise, which
++    // queues microtasks for the next turn of this loop. Registered watches keep
++    // the loop alive; when nothing made progress, sleep briefly instead of
++    // busy-spinning while a connect/read is still outstanding.
 +    int ranNative = KandeloSocketDispatch(cx);
 +    if (!ranTasks && ranNative == 0 && !KandeloSocketHasWatches()) {
        break;
@@ -2083,9 +2118,9 @@
 +    }
    }
  }
-
-@@ -6876,7 +7958,43 @@
-
+ 
+@@ -7022,7 +8257,56 @@
+ 
  int shell::sArgc;
  char** shell::sArgv;
 +
@@ -2099,13 +2134,26 @@
 +         strcmp(base, "spidermonkey-node") == 0 ||
 +         strcmp(base, "spidermonkey-node.wasm") == 0;
 +}
-
++
 +static bool IsKandeloNodeMode() {
 +  return sArgc > 0 && sArgv && IsKandeloNodeProgramName(sArgv[0]);
 +}
 +
 +static bool RunKandeloNodeBootstrap(JSContext* cx) {
 +  if (!DefineKandeloNodeNative(cx)) {
++    return false;
++  }
++
++  // Node mode has exactly one setTimeout: the Node-shaped timers the
++  // node-compat bootstrap installs on the global, backed by the adapter's
++  // timer wheel that RunShellJobs drives. The shell's own setTimeout builtin
++  // only queues zero-delay callbacks (it treats any other delay as zero and
++  // has no handle or clearTimeout), so it cannot stand in for Node's. Remove
++  // it before the bootstrap runs; if the bootstrap ever stops installing
++  // setTimeout, node mode then fails visibly instead of silently ignoring
++  // delays.
++  RootedObject global(cx, cx->global());
++  if (!JS_DeleteProperty(cx, global, "setTimeout")) {
 +    return false;
 +  }
 +
@@ -2120,7 +2168,7 @@
 +                   JS::SourceOwnership::Borrowed)) {
 +    return false;
 +  }
-+
+ 
 +  RootedValue rval(cx);
 +  return JS::Evaluate(cx, opts, srcBuf, &rval);
 +}
@@ -2128,8 +2176,8 @@
  #ifndef __wasi__
  static const char sWasmCompileAndSerializeFlag[] =
      "--wasm-compile-and-serialize";
-@@ -11703,6 +12821,10 @@
-
+@@ -12032,6 +13316,10 @@
+ 
    /* |scriptArgs| gets bound on the global before any code is run. */
    if (!BindScriptArgs(cx, op)) {
 +    return false;
@@ -2138,10 +2186,10 @@
 +  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
      return false;
    }
-
-@@ -12321,6 +13443,12 @@
+ 
+@@ -12650,6 +13938,12 @@
    int result;
-
+ 
    setlocale(LC_ALL, "");
 +
 +  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
@@ -2149,15 +2197,15 @@
 +    puts("v22.0.0");
 +    return EXIT_SUCCESS;
 +  }
-
+ 
    // Special-case stdout and stderr. We bump their refcounts to prevent them
    // from getting closed and then having some printf fail somewhere.
-@@ -13315,6 +14443,8 @@
+@@ -13764,6 +15058,8 @@
      } else {
        return OptionFailure("shared-memory", str);
      }
 +  } else if (IsKandeloNodeMode()) {
 +    enableSharedMemory = true;
    }
-
+ 
    reportWarnings = op.getBoolOption('w');

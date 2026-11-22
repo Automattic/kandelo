@@ -44,6 +44,12 @@ def select_sources(members, prefix):
     selection = {name: ('library' if name.endswith(('.js', '.mjs')) else 'library-support')
                  for name in library}
     selection.update({name: 'dependency' for name in dependencies})
+    # Native owners share Environment, allocator, report, permission and loader
+    # headers. Preserve the whole source/header set so batch integration does
+    # not acquire isolated function bodies or imply that an import is support.
+    selection.update({name[len(prefix):]: 'provenance' for name in members
+                      if name.startswith(prefix + 'src/') and
+                      name.endswith(('.cc', '.h'))})
     selection.update({name: 'provenance' for name in
                       ['LICENSE', 'README.md', 'node.gyp', 'configure.py',
                        'tools/js2c.cc', 'src/node_builtins.cc', 'src/node_builtins.h',
@@ -89,6 +95,35 @@ def select_sources(members, prefix):
                        'src/tracing/trace_event_helper.cc',
                        'src/tracing/trace_event.h',
                        'src/tracing/trace_event_legacy_inl.h',
+                       'deps/v8/src/execution/isolate.cc',
+                       'deps/v8/include/v8-fast-api-calls.h',
+                       'deps/v8/include/v8-profiler.h',
+                       'deps/v8/include/v8-regexp.h',
+                       'deps/v8/include/v8-value-serializer.h',
+                       'deps/v8/include/v8-value-serializer-version.h',
+                       'deps/v8/include/v8-maybe.h',
+                       'deps/v8/include/v8-primitive.h',
+                       'deps/v8/include/v8-function-callback.h',
+                       'deps/v8/include/v8-promise.h',
+                       'deps/v8/include/v8-context.h',
+                       'deps/v8/include/v8-data.h',
+                       'deps/v8/include/v8-local-handle.h',
+                       'deps/v8/include/v8-persistent-handle.h',
+                       'deps/v8/include/v8config.h',
+                       'deps/v8/include/cppgc/internal/conditional-stack-allocated.h',
+                       'deps/v8/include/cppgc/macros.h',
+                       'deps/v8/include/cppgc/type-traits.h',
+                       'deps/v8/include/cppgc/internal/compiler-specific.h',
+                       'deps/v8/src/objects/value-serializer.h',
+                       'deps/v8/src/objects/value-serializer.cc',
+                       'deps/v8/src/api/api.cc',
+                       'deps/v8/include/v8-object.h',
+                       'deps/v8/src/objects/js-proxy.h',
+                       'deps/v8/include/v8-external-memory-accounter.h',
+                       'deps/v8/include/cppgc/common.h',
+                       'deps/v8/include/v8-callbacks.h',
+                       'deps/v8/include/v8-exception.h',
+                       'deps/v8/include/v8-internal.h',
                        'deps/v8/src/builtins/builtins-trace.cc',
                        'deps/v8/src/common/message-template.h',
                        'deps/v8/src/strings/unicode.h',

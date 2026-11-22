@@ -1,0 +1,17 @@
+--- a/memory/mozalloc/mozalloc_abort.cpp
++++ b/memory/mozalloc/mozalloc_abort.cpp
+@@ -54,6 +54,9 @@
+ }
+ #endif
+ 
++// Embedded Kandelo libraries retain the guest libc abort contract. Explicit
++// mozalloc_abort calls keep their original engine crash behavior.
++#if !defined(__kandelo__)
+ #if defined(XP_UNIX) && !defined(MOZ_ASAN) && !defined(MOZ_TSAN) &&    \
+     !defined(MOZ_UBSAN) && !defined(LIBFUZZER) && !defined(AFLFUZZ) && \
+     !defined(FUZZING_JS_FUZZILLI)
+@@ -93,3 +96,4 @@
+   MOZ_ASSUME_UNREACHABLE_MARKER();
+ }
+ #endif
++#endif  // !defined(__kandelo__)

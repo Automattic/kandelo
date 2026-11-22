@@ -31,6 +31,7 @@ missing platform capabilities to claim full-system FHS conformance.
 | `/var/log` | Logs; MariaDB logs use `/var/log/mysql` |
 | `/var/cache` | Regenerable application caches |
 | `/run` | Boot-lifetime state, sockets and PID files; `/var/run` links here and `/var/lock` links to `/run/lock` |
+| `/run/kandelo/hosts-connected` | Generated live computer names and aliases; root-owned directory 0755 and file 0644, atomically replaced by the kernel-worker network owner |
 | `/tmp`, `/var/tmp` | Temporary files, with mode 1777; MariaDB's private temporary directory is `/var/tmp/mysql` |
 | `/home/maker`, `/root` | User and administrator homes |
 | `/dev`, `/proc` | Kernel-provided devices and process information; no fake on-disk substitutes |
@@ -52,6 +53,10 @@ was built from a package. The coreutils multicall implementation lives at
 `chroot` is administrative and lives in `/usr/sbin`. Semantic aliases such
 as `awk`, `vi`, `gunzip`, `mysql` and `/bin/sh` remain; they are different
 command names, not duplicate installations of the same name.
+
+The Node runtime is installed once as `/usr/bin/spidermonkey-node`.
+`/usr/bin/node` is a relative symlink to `spidermonkey-node`, so standard Node
+shebangs and npm commands keep working while the executable names its engine.
 
 The installed `more`, `ed`, `tar`, `gzip`, `gunzip` and `zcat` commands use
 `/bin` as specified by FHS sections 3.4.2–3.4.3. Minimal images may omit
@@ -117,6 +122,11 @@ kernel copies the image's directory layout and uid/gid/mode beneath `/run`
 into its fresh scratch filesystem; files, sockets and symlinks are omitted.
 This preserves user and service runtime directories without restoring stale
 PID files. Image inspection and composition do not perform boot initialization.
+The native scratch layout also creates `/run/kandelo` for OS-managed runtime
+state, including image-less boots. Connected-computer names belong here because
+they expire with the network session and boot; administrator overrides remain
+in `/etc/hosts`. Publication alone does not configure libc lookup order; see
+the [worker publication contract](architecture.md).
 Guest-build input mounts must use canonical paths outside scratch filesystems.
 The build runner rejects `/tmp`, `/run`, and the standard `/var/run` and
 `/var/lock` aliases, including their descendants, because guest path resolution

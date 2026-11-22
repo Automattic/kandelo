@@ -97,7 +97,7 @@ describe("qtdeclarative — QML and the software scenegraph on the kernel", () =
 
       const dump = `stdout=${result.stdout}\nstderr=${result.stderr}`;
       expect(result.exitCode, dump).toBe(0);
-      expect(result.stdout).toContain("QT_VERSION=6.10.2");
+      expect(result.stdout).toContain("QT_VERSION=6.12.0");
       expect(result.stdout).toContain("PLATFORM=offscreen");
       expect(result.stdout).toContain("QML_WINDOW=yes");
       expect(result.stdout).toContain("SCENEGRAPH_SOFTWARE=yes");

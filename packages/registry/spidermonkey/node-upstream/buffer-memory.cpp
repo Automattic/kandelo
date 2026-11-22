@@ -104,6 +104,11 @@ bool DetachBufferWithKey(JSContext* cx, JS::HandleObject input,
                               JSMSG_WASM_NO_TRANSFER);
     return false;
   }
+  if (buffer->isImmutable()) {
+    JS_ReportErrorNumberASCII(cx, js::GetErrorMessage, nullptr,
+                              JSMSG_ARRAYBUFFER_IMMUTABLE);
+    return false;
+  }
   if (buffer->isLengthPinned()) {
     JS_ReportErrorNumberASCII(cx, js::GetErrorMessage, nullptr,
                               JSMSG_ARRAYBUFFER_LENGTH_PINNED);

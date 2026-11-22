@@ -1,0 +1,70 @@
+# Upstream portability defect: libgit2 picks size_t overflow builtins by width
+#
+# libgit2's src/util/integer.h implements git__add_sizet_overflow and
+# git__multiply_sizet_overflow with the width-specific builtins
+# __builtin_uadd_overflow / __builtin_uaddl_overflow /
+# __builtin_uaddll_overflow (and the umul family), choosing one by
+# comparing SIZE_MAX with UINT_MAX, ULONG_MAX and ULLONG_MAX. Those
+# builtins take an `unsigned int *`, `unsigned long *` or
+# `unsigned long long *` result pointer, so the choice must match the type
+# of size_t, not just its width. On wasm32 clang's size_t is
+# `unsigned long` while SIZE_MAX == UINT_MAX, so the first branch passes a
+# `size_t *` where `unsigned int *` is expected. Clang 21 warned; clang 23
+# makes -Wincompatible-pointer-types an error by default, and
+# libgit2-sys's vendored build failed with
+#
+#   libgit2/src/util/array.h:55:35: error: incompatible pointer types
+#   passing 'size_t *' (aka 'unsigned long *') to parameter of type
+#   'unsigned int *' [-Wincompatible-pointer-types]
+#
+# Use the type-generic __builtin_add_overflow / __builtin_mul_overflow,
+# which every compiler that passes the enclosing #if (clang with
+# __has_builtin(__builtin_add_overflow), GCC >= 5) provides. They take the
+# result type from `out`, so no SIZE_MAX comparison is needed. The
+# operands are converted to size_t first, which keeps exactly the
+# arithmetic of the width-specific builtins and of the portable size_t
+# fallback functions later in the same file. Not specific to Kandelo: any
+# ILP32 target whose size_t is `unsigned long` hits the same error.
+#
+# Upstream: libgit2 1.9.2 as vendored by the libgit2-sys 0.18.3+1.9.2
+# crate; libgit2 main still has the SIZE_MAX selection.
+# Upstream status: upstreamable, not yet proposed upstream.
+--- a/libgit2/src/util/integer.h
++++ b/libgit2/src/util/integer.h
+@@ -53,24 +53,18 @@
+ #if (__has_builtin(__builtin_add_overflow) || \
+      (defined(__GNUC__) && (__GNUC__ >= 5)))
+ 
+-# if (SIZE_MAX == UINT_MAX)
+-#  define git__add_sizet_overflow(out, one, two) \
+-     __builtin_uadd_overflow(one, two, out)
+-#  define git__multiply_sizet_overflow(out, one, two) \
+-     __builtin_umul_overflow(one, two, out)
+-# elif (SIZE_MAX == ULONG_MAX)
+-#  define git__add_sizet_overflow(out, one, two) \
+-     __builtin_uaddl_overflow(one, two, out)
+-#  define git__multiply_sizet_overflow(out, one, two) \
+-     __builtin_umull_overflow(one, two, out)
+-# elif (SIZE_MAX == ULLONG_MAX)
+-#  define git__add_sizet_overflow(out, one, two) \
+-     __builtin_uaddll_overflow(one, two, out)
+-#  define git__multiply_sizet_overflow(out, one, two) \
+-     __builtin_umulll_overflow(one, two, out)
+-# else
+-#  error compiler has add with overflow intrinsics but SIZE_MAX is unknown
+-# endif
++/*
++ * size_t may be unsigned int, unsigned long or unsigned long long even
++ * when two of those have the same width (wasm32 and some other ILP32
++ * targets use unsigned long), so select no width-specific builtin by
++ * comparing SIZE_MAX. The type-generic builtins take the type from `out`;
++ * converting the operands to size_t keeps the arithmetic of the portable
++ * fallback below.
++ */
++# define git__add_sizet_overflow(out, one, two) \
++    __builtin_add_overflow((size_t)(one), (size_t)(two), out)
++# define git__multiply_sizet_overflow(out, one, two) \
++    __builtin_mul_overflow((size_t)(one), (size_t)(two), out)
+ 
+ # define git__add_int_overflow(out, one, two) \
+     __builtin_sadd_overflow(one, two, out)

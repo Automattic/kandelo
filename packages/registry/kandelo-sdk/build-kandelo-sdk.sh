@@ -16,9 +16,9 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] || \
   kandelo_package_prepare_build_roots "$SCRIPT_DIR/kandelo-sdk-work" wasm32
 fi
 
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-if [[ ! -f "$SYSROOT/lib/libc.a" ]]; then
-  echo "ERROR: sysroot not found at $SYSROOT. Run: bash scripts/build-musl.sh" >&2
+SOURCE_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+if [[ ! -f "$SOURCE_SYSROOT/lib/libc.a" ]]; then
+  echo "ERROR: sysroot not found at $SOURCE_SYSROOT. Run: bash scripts/build-musl.sh" >&2
   exit 1
 fi
 
@@ -33,9 +33,11 @@ if [ "$RESOLVER_BUILD" -eq 0 ]; then
   resolve_dep() {
     (cd "$REPO_ROOT" && cargo run -q -p xtask --target "$HOST_TARGET" -- build-deps resolve "$1" --arch wasm32)
   }
+  [ -n "$LIBCXX_DIR" ] || LIBCXX_DIR="$(resolve_dep libcxx)"
   [ -n "$KANDELO_CC_DIR" ] || KANDELO_CC_DIR="$(resolve_dep kandelo-cc)"
   [ -n "$BINARYEN_DIR" ] || BINARYEN_DIR="$(resolve_dep binaryen)"
 fi
+[[ -f "$LIBCXX_DIR/lib/libc++.a" ]] || { echo "ERROR: libcxx dependency missing" >&2; exit 1; }
 [[ -f "$KANDELO_CC_DIR/kandelo-cc.wasm" ]] || { echo "ERROR: kandelo-cc dependency missing" >&2; exit 1; }
 [[ -f "$BINARYEN_DIR/wasm-opt.wasm" ]] || { echo "ERROR: binaryen dependency missing" >&2; exit 1; }
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
@@ -44,40 +46,48 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     echo "ERROR: kandelo-sdk resolver build requires WASM_POSIX_DEP_OUT_DIR" >&2
     exit 1
   fi
-  SYSROOT="$(
-    kandelo_package_prepare_private_sysroot kandelo-sdk "$SYSROOT"
-  )"
-  export WASM_POSIX_SYSROOT="$SYSROOT"
+  # The shared sysroot is read-only input: it must be a canonical real
+  # directory outside every resolver-owned root, so staging can neither read
+  # this build's own work or output nor write into the source it reads.
+  SOURCE_SYSROOT_REAL="$(
+    kandelo_package_require_existing_real_dir "SDK sysroot" "$SOURCE_SYSROOT"
+  )" || exit 2
+  if [ "$SOURCE_SYSROOT_REAL" != "$SOURCE_SYSROOT" ]; then
+    echo "ERROR: SDK sysroot must use its canonical path: $SOURCE_SYSROOT" >&2
+    exit 2
+  fi
+  kandelo_package_require_disjoint_paths "SDK sysroot" "$SOURCE_SYSROOT" \
+    WASM_POSIX_DEP_WORK_DIR "$KANDELO_PACKAGE_WORK_DIR" || exit 2
+  kandelo_package_require_disjoint_paths "SDK sysroot" "$SOURCE_SYSROOT" \
+    WASM_POSIX_DEP_OUT_DIR "$KANDELO_PACKAGE_OUT_DIR" || exit 2
+  if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+    SOURCE_ROOT="$(
+      kandelo_package_require_existing_real_dir \
+        WASM_POSIX_DEP_SOURCE_DIR "$WASM_POSIX_DEP_SOURCE_DIR"
+    )" || exit 2
+    if [ "$SOURCE_ROOT" != "$WASM_POSIX_DEP_SOURCE_DIR" ]; then
+      echo "ERROR: WASM_POSIX_DEP_SOURCE_DIR must use its canonical path: $WASM_POSIX_DEP_SOURCE_DIR" >&2
+      exit 2
+    fi
+    kandelo_package_require_disjoint_paths "SDK sysroot" "$SOURCE_SYSROOT" \
+      WASM_POSIX_DEP_SOURCE_DIR "$SOURCE_ROOT" || exit 2
+  fi
+  SYSROOT="$(mktemp -d "$KANDELO_PACKAGE_WORK_DIR/.kandelo-kandelo-sdk-sysroot.XXXXXX")"
   VFS="$KANDELO_PACKAGE_OUT_DIR/kandelo-sdk.vfs.zst"
 else
+  SYSROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-sdk-sysroot.XXXXXX")"
+  trap 'rm -rf -- "$SYSROOT"' EXIT
   VFS="$SCRIPT_DIR/kandelo-sdk.vfs.zst"
 fi
-if [[ -n "$LIBCXX_DIR" ]]; then
-  copy_if_changed() {
-    local src="$1"
-    local dst="$2"
-
-    if [[ -e "$dst" && ! -L "$dst" ]] && cmp -s "$src" "$dst"; then
-      return
-    fi
-
-    rm -f "$dst"
-    cp "$src" "$dst"
-  }
-
-  mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-  copy_if_changed "$LIBCXX_DIR/lib/libc++.a" "$SYSROOT/lib/libc++.a"
-  copy_if_changed "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-
-  LIBCXX_INCLUDE_SRC="$LIBCXX_DIR/include/c++/v1"
-  LIBCXX_INCLUDE_DST="$SYSROOT/include/c++/v1"
-  if [[ ! -d "$LIBCXX_INCLUDE_DST" ]] \
-    || [[ "$(cd "$LIBCXX_INCLUDE_SRC" && pwd -P)" != "$(cd "$LIBCXX_INCLUDE_DST" && pwd -P)" ]]; then
-    rm -rf "$LIBCXX_INCLUDE_DST"
-    cp -RL "$LIBCXX_INCLUDE_SRC" "$LIBCXX_INCLUDE_DST"
-  fi
-fi
-
+# Copy only the SDK's declared sysroot content into a private tree. The
+# shared sysroot also holds what other tools staged there
+# (scripts/build-programs.sh copies GTK, glib, SDL2 and other fixture
+# libraries into it), which is not an input of this image. The image
+# builder refuses an unstaged sysroot and takes libc++ from the declared
+# libcxx dependency itself.
+bash "$REPO_ROOT/images/vfs/scripts/stage-sdk-sysroot.sh" "$SOURCE_SYSROOT" "$SYSROOT"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+export KANDELO_SDK_LIBCXX_DIR="$LIBCXX_DIR"
 export KANDELO_SDK_DRIVER="$KANDELO_CC_DIR/kandelo-cc.wasm"
 export KANDELO_SDK_WASM_OPT="$BINARYEN_DIR/wasm-opt.wasm"
 export KANDELO_SDK_VFS_OUT="$VFS"

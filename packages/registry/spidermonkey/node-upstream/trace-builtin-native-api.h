@@ -6,7 +6,7 @@
 #include "shell/node-upstream/codec-native-api.h"
 #include "shell/node-upstream/trace-builtins-upstream/messages.generated.h"
 namespace kandelo_trace_builtin_api::internal {
-using namespace kandelo_node_codec_api;
+using namespace v8;
 using Object=Value;
 using JSAny=Value;
 using ConvertableToTraceFormat=::v8::ConvertableToTraceFormat;
