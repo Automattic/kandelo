@@ -1,6 +1,6 @@
 # Shared desktop cleanup — 2026-11-22
 
-This follows the [normal-shell integration](2026-11-22-shared-memory-shell-integration.md). The complete 416-file pre-cleanup PR inventory was reviewed for obsolete development paths using source scans, module references and manual inspection of suspected remnants. This cleanup audit does not replace a semantic review of the feature.
+This follows the [normal-shell integration](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-22-shared-memory-shell-integration.md). The complete 416-file pre-cleanup PR inventory was reviewed for obsolete development paths using source scans, module references and manual inspection of suspected remnants. This cleanup audit does not replace a semantic review of the feature.
 
 ## Changes
 
@@ -37,7 +37,7 @@ The five-case host count reduction is exactly the removed diagnostic helper's te
 
 Canonical eager content remains 2,383,879 bytes/145 files, within unchanged budgets of 2,436,000 eager bytes, 147 files and 1,208,000 compressed bytes. The partial command and packages are the same as in the earlier integration receipt.
 
-The actual authenticated SDK assets match group manifest `96e0fd809bea80805d989154e3fef53f34b1bc0f782982c1a02589c0883f4d1f`: twenty ZIPs plus one catalog, totaling 42,788,660 bytes. All twenty ZIPs are byte-identical to the [earlier inventory](2026-11-22-shared-memory-shell-assets.json). Only the catalog changed: 42,186 bytes, SHA-256 `580a34c48c2bdad1ef3c12527bd7542bc8625478aea587af101d7e285ebd050f`, thirty unused bytes smaller. Distribution sizes do not measure browser memory.
+The actual authenticated SDK assets match group manifest `96e0fd809bea80805d989154e3fef53f34b1bc0f782982c1a02589c0883f4d1f`: twenty ZIPs plus one catalog, totaling 42,788,660 bytes. All twenty ZIPs are byte-identical to the [earlier inventory](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-22-shared-memory-shell-assets.json). Only the catalog changed: 42,186 bytes, SHA-256 `580a34c48c2bdad1ef3c12527bd7542bc8625478aea587af101d7e285ebd050f`, thirty unused bytes smaller. Distribution sizes do not measure browser memory.
 
 ## Failures and limits
 
