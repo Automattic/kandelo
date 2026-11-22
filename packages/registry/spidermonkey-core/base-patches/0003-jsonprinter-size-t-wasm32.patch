@@ -3,7 +3,7 @@
 @@ -197,7 +197,7 @@
    out_.printf("%" PRIu64, value);
  }
- 
+
 -#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__)
 +#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__) || defined(__wasm32__)
  void JSONPrinter::property(const char* name, size_t value) {

@@ -1,9 +1,6 @@
 --- a/build/rust/getrandom/lib.rs
 +++ b/build/rust/getrandom/lib.rs
-@@ -2,4 +2,38 @@
-  * License, v. 2.0. If a copy of the MPL was not distributed with this
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
- 
+@@ -5 +5,35 @@
 +#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 +use core::ffi::c_void;
 +

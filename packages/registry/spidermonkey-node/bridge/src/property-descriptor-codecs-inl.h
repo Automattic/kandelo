@@ -103,7 +103,6 @@ bool ReadApiPropertyAttributes(Frame& frame,JS::HandleObject object,JS::HandleId
       // Pinned V8 attribute lookup asks a JSProxy for its own descriptor and
       // stops if absent. It must not invoke that proxy's getPrototypeOf trap.
       if(js::IsProxy(actual)&&js::GetProxyHandler(actual)->isScripted())return true;
-      if(localKey.isEmbeddingPrivateName())return true;
       if(!JS_GetPrototype(frame.cx,actual,&cursor))return false;
     }
   }

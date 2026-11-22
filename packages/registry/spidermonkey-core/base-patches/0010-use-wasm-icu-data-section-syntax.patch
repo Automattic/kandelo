@@ -9,8 +9,7 @@
  .section .rodata,"",@
  #else
  .section .rodata
-@@ -27,6 +27,6 @@
- .balign 16
+@@ -28,5 +28,5 @@
  ICU_DATA_SYMBOL:
  .incbin ICU_DATA_FILE
 -#ifdef __wasi__

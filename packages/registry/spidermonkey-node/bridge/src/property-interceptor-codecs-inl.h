@@ -226,7 +226,6 @@ bool EnumerateNativeTemplate(JSContext* cx,JS::HandleObject object,
     if(!JS::GetArrayLength(cx,array,&length))return false;
     for(uint32_t offset=0;offset<length;++offset){
       if(!JS_GetElement(cx,array,offset,&value)||!JS_ValueToId(cx,value,&key))return false;
-      if(key.isEmbeddingPrivateName())continue;
       if(enumerableOnly){
         int32_t attributes=None;bool queried=false;
         if(!TemplateInterceptorAttributes(cx,object,key,&attributes,&queried))return false;

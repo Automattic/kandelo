@@ -1,6 +1,6 @@
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -1191,6 +1191,16 @@
+@@ -1173,6 +1173,16 @@
  #else
    bool hasExecutionTracer() { return false; }
  #endif
@@ -14,15 +14,15 @@
 +  void* embedderMicroTaskQueueData = nullptr;
 +  js::MicroTaskQueueSet* embedderMicroTaskQueueForGlobal(JSObject* global);
 +  js::MicroTaskQueueSet* embedderMicroTaskQueueFor(const JS::GenericMicroTask&);
- 
+
    JS::PersistentRooted<js::UniquePtr<js::MicroTaskQueueSet>> microTaskQueues;
  }; /* struct JSContext */
 --- a/js/src/vm/JSContext.cpp
 +++ b/js/src/vm/JSContext.cpp
-@@ -1140,25 +1140,48 @@
+@@ -1106,25 +1106,48 @@
    return debugMicroTaskQueue.pushBack(entry);
  }
- 
+
 +js::MicroTaskQueueSet* JSContext::embedderMicroTaskQueueForGlobal(
 +    JSObject* global) {
 +  if (!embedderMicroTaskQueueSelector || !global) {
@@ -49,34 +49,33 @@
  JS_PUBLIC_API bool JS::EnqueueMicroTask(JSContext* cx,
                                          const JS::GenericMicroTask& entry) {
    JS_LOG(mtq, Info, "Enqueue of non JS MT");
- 
+
 -  return cx->microTaskQueues->enqueueRegularMicroTask(cx, entry);
 +  return cx->embedderMicroTaskQueueFor(entry)->enqueueRegularMicroTask(cx, entry);
  }
- 
+
  JS_PUBLIC_API bool JS::EnqueueDebugMicroTask(
      JSContext* cx, const JS::GenericMicroTask& entry) {
    JS_LOG(mtq, Info, "Enqueue of non JS MT");
- 
+
 -  return cx->microTaskQueues->enqueueDebugMicroTask(cx, entry);
 +  return cx->embedderMicroTaskQueueFor(entry)->enqueueDebugMicroTask(cx, entry);
  }
- 
+
  JS_PUBLIC_API bool JS::PrependMicroTask(JSContext* cx,
                                          const JS::GenericMicroTask& entry) {
    JS_LOG(mtq, Info, "Prepend job to MTQ");
- 
+
 -  return cx->microTaskQueues->prependRegularMicroTask(cx, entry);
 +  return cx->embedderMicroTaskQueueFor(entry)->prependRegularMicroTask(cx, entry);
  }
- 
+
  JS_PUBLIC_API JS::GenericMicroTask JS::DequeueNextMicroTask(JSContext* cx) {
 --- a/js/src/builtin/Promise.cpp
 +++ b/js/src/builtin/Promise.cpp
-@@ -1658,19 +1658,22 @@
-     }
+@@ -1658,17 +1658,20 @@
    }
- 
+
 +  auto* queues = cx->embedderMicroTaskQueueForGlobal(
 +      JS::GetExecutionGlobalFromJSMicroTask(job));
 +
@@ -85,7 +84,7 @@
 -    return cx->microTaskQueues->enqueueRegularMicroTask(cx, ObjectValue(*job));
 +    return queues->enqueueRegularMicroTask(cx, ObjectValue(*job));
    }
- 
+
    // We need to root this job because useDebugQueue can GC.
    Rooted<JS::JSMicroTask*> rootedJob(cx, job);
    if (MOZ_UNLIKELY(cx->jobQueue->useDebugQueue(cx->global()))) {
@@ -93,9 +92,8 @@
 +    return queues->enqueueDebugMicroTask(cx,
                                                        ObjectValue(*rootedJob));
    }
- 
+
 -  return cx->microTaskQueues->enqueueRegularMicroTask(cx,
 +  return queues->enqueueRegularMicroTask(cx,
                                                        ObjectValue(*rootedJob));
  }
- 

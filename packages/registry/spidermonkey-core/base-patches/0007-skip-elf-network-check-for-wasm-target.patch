@@ -1,19 +1,19 @@
 --- a/python/mozbuild/mozbuild/action/check_binary.py
 +++ b/python/mozbuild/mozbuild/action/check_binary.py
-@@ -59,6 +59,10 @@
+@@ -57,6 +57,10 @@
+         yield item
+     if not saw_one:
          raise Empty()
- 
- 
++
++
 +def is_wasm_target():
 +    return str(buildconfig.substs.get("TARGET_CPU", "")) in ("wasm32", "wasm64")
-+
-+
+
+
  # Iterates the symbol table on ELF binaries.
- def iter_elf_symbols(binary, all=False):
-     ty = get_type(binary)
 @@ -206,6 +210,9 @@
- 
- 
+
+
  def check_networking(binary):
 +    if is_wasm_target():
 +        return 0

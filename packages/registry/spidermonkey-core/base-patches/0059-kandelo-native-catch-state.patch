@@ -3,7 +3,7 @@
 @@ -496,6 +496,35 @@
    //
    bool brittleMode = false;
- 
+
 + private:
 +  // One thread-safe termination record. Low bits are request/active state;
 +  // upper bits count active cancellations so native catch scopes can retire
@@ -36,7 +36,7 @@
    /*
     * Stack of debuggers that currently disallow debuggee execution.
     *
-@@ -718,7 +747,8 @@
+@@ -700,7 +729,8 @@
      hadResourceExhaustion_ = true;
  #endif
    }
@@ -51,7 +51,7 @@
 @@ -113,6 +113,52 @@
    }
  }
- 
+
 +void JSContext::requestNativeTermination() {
 +  // Publication and cancellation are linearized by the same atomic record.
 +  // Notification may outlive a canceled request; it cannot re-activate it.
@@ -114,5 +114,5 @@
 +  }
 +  return checkNativeTermination();
  }
- 
+
  bool JSContext::handleInterruptNoCallbacks() {

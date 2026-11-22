@@ -1,7 +1,7 @@
 --- a/js/src/vm/Modules.cpp
 +++ b/js/src/vm/Modules.cpp
 @@ -1910,8 +1910,20 @@
- 
+
    // Step 2. If module.[[Status]] is linking, linked, evaluating-async, or
    //         evaluated, then:
 +  //
@@ -21,10 +21,11 @@
        module->status() == ModuleStatus::EvaluatingAsync ||
        module->status() == ModuleStatus::Evaluated) {
      // Step 2.a. Return index.
-@@ -2278,6 +2290,19 @@
+@@ -2277,6 +2289,19 @@
+       MOZ_ASSERT(requiredModule->status() == ModuleStatus::Evaluating ||
                   requiredModule->status() == ModuleStatus::EvaluatingAsync ||
                   requiredModule->status() == ModuleStatus::Evaluated);
- 
++
 +      // Kandelo: an `evaluating` module that is NOT in |stack| is an ancestor
 +      // on an outer evaluation that is suspended inside its own body, because
 +      // node-compat require()s or imports a fresh module graph from there (the
@@ -37,7 +38,6 @@
 +          !ContainsElement(stack, requiredModule)) {
 +        continue;
 +      }
-+
+
        // Step 11.b.ii.2. Assert: requiredModule.[[Status]] is evaluating if
        // and only if requiredModule is in stack.
-       if ((requiredModule->status() == ModuleStatus::Evaluating) !=

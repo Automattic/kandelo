@@ -10,7 +10,7 @@
  #include "vm/BigIntType.h"
 @@ -227,12 +228,37 @@
    runtime->gc.attemptLastDitchGC();
- 
+
    void* ptr = AllocTenuredCellUnchecked<NoGC>(zone, kind);
 +  JSContext* cx = runtime->mainContextFromOwnThread();
 +  if (!ptr && runtime->gc.heapSize.bytes() >= runtime->gc.tunables.gcMaxBytes() &&
@@ -27,7 +27,7 @@
      ReportOutOfMemory(runtime->mainContextFromOwnThread());
      return nullptr;
    }
- 
+
    return ptr;
 +}
 +
@@ -44,14 +44,14 @@
 +  cx->nativeMinorGCObserver = observer;
 +  cx->nativeMinorGCObserverData = observer ? data : nullptr;
  }
- 
+
  void GCRuntime::attemptLastDitchGC() {
 --- a/js/src/gc/GC.cpp
 +++ b/js/src/gc/GC.cpp
 @@ -5516,6 +5516,23 @@
                                 gcstats::PhaseKind phase) {
    AutoMaybeLeaveAtomsZone leaveAtomsZone(rt->mainContextFromOwnThread());
- 
+
 +  JSContext* cx = rt->mainContextFromOwnThread();
 +  auto observer = !JS::RuntimeHeapIsBusy() && nursery().isEnabled()
 +                      ? cx->nativeMinorGCObserver
@@ -77,7 +77,7 @@
 @@ -41,6 +41,22 @@
                                                   OutOfMemoryCallback cb,
                                                   void* data);
- 
+
 +// Owner-thread embedding recovery after the original last-ditch GC/retry hits
 +// the GC-cell heap cap. A true result requests one ordinary allocation retry.
 +// The callback may collect or raise the real cap, must not run JS, and cannot
@@ -95,11 +95,11 @@
 +    JSContext* cx, NativeMinorGCObserver observer, void* data);
 +
  }  // namespace JS
- 
+
  #endif  // js_MemoryCallbacks_h
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -1091,6 +1091,22 @@
+@@ -1073,6 +1073,22 @@
    // Set by an embedding before creating realms. Ordinary Then results remain
    // real objects so a hook enabled after registration can observe their jobs.
    bool embedderPromiseLifecycleCapable = false;

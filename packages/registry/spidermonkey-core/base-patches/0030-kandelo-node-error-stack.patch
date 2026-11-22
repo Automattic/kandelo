@@ -3,7 +3,7 @@
 @@ -145,6 +145,25 @@
      StackCapture&& capture = StackCapture(AllFrames()),
      HandleObject startAfter = nullptr);
- 
+
 +
 +/**
 + * Optional embedding policy for Error stacks. A limit hook sets handled only
@@ -29,20 +29,20 @@
 --- a/js/src/vm/Runtime.h
 +++ b/js/src/vm/Runtime.h
 @@ -1079,6 +1079,8 @@
- 
+
    // A hook that implements the abstract operations
    // HostGetImportMetaProperties and HostFinalizeImportMeta.
 +  js::MainThreadData<JS::ErrorStackLimitHook> embeddingErrorStackLimit{nullptr};
 +  js::MainThreadData<JS::ErrorStackCreatedHook> embeddingErrorStackCreated{nullptr};
    js::MainThreadData<JS::ModuleMetadataHook> moduleMetadataHook;
- 
+
    // Hooks called when script private references are created and destroyed.
 --- a/js/src/vm/SavedStacks.cpp
 +++ b/js/src/vm/SavedStacks.cpp
 @@ -1039,6 +1039,39 @@
           (lastFrame || sb.append('\n'));
  }
- 
+
 +JS_PUBLIC_API void SetEmbeddingErrorStackHooks(
 +    JSRuntime* rt, ErrorStackLimitHook limit, ErrorStackCreatedHook created) {
 +  js::AssertHeapIsIdle();
@@ -81,18 +81,16 @@
                                      MutableHandleString stringp, size_t indent,
 --- a/js/src/vm/ErrorObject.cpp
 +++ b/js/src/vm/ErrorObject.cpp
-@@ -690,6 +690,8 @@
-     return nullptr;
+@@ -691,4 +691,6 @@
    }
- 
+
 +  bool handled;
 +  if (!JS::InitEmbeddingErrorStack(cx, errObject, stack, &handled)) return nullptr;
    return errObject;
  }
- 
 @@ -1111,6 +1113,11 @@
    }
- 
+
    mozilla::Maybe<uint32_t> limit = GetStackTraceLimit(cx);
 +  bool embeddingHandled = false;
 +  uint32_t embeddingLimit = MAX_REPORTED_STACK_DEPTH;
@@ -102,8 +100,7 @@
    RootedValue stackVal(cx, UndefinedValue());
    if (limit.isSome()) {
      RootedObject stack(cx);
-@@ -1118,6 +1125,15 @@
-       if (!CaptureCurrentStack(
+@@ -1119,4 +1126,13 @@
                cx, &stack, JS::StackCapture(JS::MaxFrames(*limit)), caller)) {
          return false;
 +      }
@@ -117,9 +114,8 @@
 +        return true;
        }
      }
- 
 @@ -1295,10 +1311,7 @@
- 
+
  bool js::CaptureStack(JSContext* cx, MutableHandleObject stack,
                        uint32_t limit) {
 -  if (limit == 0) {
@@ -128,5 +124,5 @@
 -  return CaptureCurrentStack(cx, stack, JS::StackCapture(JS::MaxFrames(limit)));
 +  return JS::CaptureCurrentStackForError(cx, stack, limit);
  }
- 
+
  JSString* js::ComputeStackString(JSContext* cx) {

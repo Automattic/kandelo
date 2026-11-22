@@ -3,7 +3,7 @@
 @@ -101,6 +101,27 @@
   */
  extern JS_PUBLIC_API void SetModuleLoadHook(JSRuntime* rt, ModuleLoadHook func);
- 
+
 +/**
 + * Optional callback-value dynamic import for embedding-owned script records.
 + * The owner predicate must not allocate or execute JavaScript. Only owned
@@ -31,14 +31,14 @@
 --- a/js/src/vm/Runtime.h
 +++ b/js/src/vm/Runtime.h
 @@ -1072,6 +1072,10 @@
- 
+
    // The implementation-defined abstract operation HostLoadImportedModule.
    js::MainThreadData<JS::ModuleLoadHook> moduleLoadHook;
 +  js::MainThreadData<JS::ModuleDynamicImportValueOwner>
 +      moduleDynamicImportValueOwner{nullptr};
 +  js::MainThreadData<JS::ModuleDynamicImportValueHook>
 +      moduleDynamicImportValueHook{nullptr};
- 
+
    // A hook that implements the abstract operations
    // HostGetImportMetaProperties and HostFinalizeImportMeta.
 --- a/js/src/vm/Modules.cpp
@@ -63,7 +63,7 @@
                                    Handle<ModuleObject*> module,
 @@ -92,6 +94,48 @@
    AssertHeapIsIdle();
- 
+
    rt->moduleLoadHook = func;
 +}
 +
@@ -108,7 +108,7 @@
 +  if (!fulfilled || !rejected) return false;
 +  return JS::AddPromiseReactions(cx, adopted, fulfilled, rejected);
  }
- 
+
  JS_PUBLIC_API JS::ModuleMetadataHook JS::GetModuleMetadataHook(JSRuntime* rt) {
 @@ -2890,7 +2934,8 @@
  // NOTE: The caller needs to handle the promise.
@@ -132,7 +132,7 @@
 @@ -3041,8 +3086,10 @@
      return nullptr;
    }
- 
+
 +  bool nativeCallbackFailed = false;
    if (!TryStartDynamicModuleImport(cx, script, specifierArg, optionsArg,
 -                                   promise, phase)) {
@@ -156,8 +156,7 @@
    RootedString specifier(cx, ToString(cx, specifierArg));
    if (!specifier) {
      return false;
-@@ -3077,7 +3130,8 @@
-   } else {
+@@ -3078,5 +3131,6 @@
      MOZ_ASSERT(phase == ImportPhase::Evaluation);
      Rooted<ImportAttributeVector> attributes(cx);
 -    if (!EvaluateDynamicImportOptions(cx, optionsArg, &attributes)) {
@@ -165,7 +164,6 @@
 +                                      callbackValueImport)) {
        return false;
      }
- 
 @@ -3088,6 +3142,15 @@
    }
    if (!moduleRequest) {
@@ -180,5 +178,5 @@
 +    }
 +    return true;
    }
- 
+
    // Step 13. Perform HostLoadImportedModule(referrer, moduleRequest, empty,

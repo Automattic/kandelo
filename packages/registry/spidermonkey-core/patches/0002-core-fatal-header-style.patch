@@ -1,7 +1,7 @@
 --- a/config/check_spidermonkey_style.py
 +++ b/config/check_spidermonkey_style.py
 @@ -54,6 +54,7 @@
- 
+
  # We ignore #includes of these files, because they don't follow the usual rules.
  included_inclnames_to_ignore = set([
 +    "kandelo/v8-native-fatal.h",  # declared native fatal logger dependency

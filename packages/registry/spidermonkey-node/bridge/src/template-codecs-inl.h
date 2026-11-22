@@ -9,7 +9,7 @@ JSObject* UnwrapTemplateObject(JSContext* cx,const JS::Value& input){
   JS::RootedValue value(cx,input);return UnwrapObject(cx,value);
 }
 enum NativeTemplateSlot {TemplateConfig,TemplatePayload,TemplateReceiver,
-  TemplatePrototype,TemplateInstance,TemplateProperties,TemplateCache,TemplateName,TemplateConstructor,TemplateParent,TemplateNamedHandlerData,TemplateIndexedHandlerData,TemplateSlotCount};
+  TemplatePrototype,TemplateInstance,TemplateProperties,TemplateCache,TemplateName,TemplateConstructor,TemplateParent,TemplateNamedHandlerData,TemplateIndexedHandlerData,TemplatePrivateProperties,TemplateSlotCount};
 enum class NativeTemplateKind {Function,Object,Dictionary};
 enum class NativeObjectRole {Standalone,Prototype,Instance};
 struct NativeTemplateInfo {
@@ -70,7 +70,9 @@ JSObject* NewTemplateRecord(Frame& frame,NativeTemplateKind kind,NativeObjectRol
   JS::SetReservedSlot(object,TemplateConfig,JS::PrivateValue(info.release()));
   JS::RootedObject properties(frame.cx,JS_NewObjectWithGivenProto(frame.cx,nullptr,nullptr));
   JS::RootedObject cache(frame.cx,JS::NewWeakMapObject(frame.cx));
-  if(!properties||!cache)return nullptr;
+  JS::RootedObject privateProperties(frame.cx,JS_NewObjectWithGivenProto(frame.cx,nullptr,nullptr));
+  if(!properties||!cache||!privateProperties)return nullptr;
+  JS::SetReservedSlot(object,TemplatePrivateProperties,JS::ObjectValue(*privateProperties));
   JS::SetReservedSlot(object,TemplateProperties,JS::ObjectValue(*properties));
   JS::SetReservedSlot(object,TemplateCache,JS::ObjectValue(*cache));return object;
 }
@@ -195,7 +197,7 @@ bool ApplyTemplateProperties(Frame& frame,JS::HandleObject record,JS::HandleObje
      !AdmitNativeTemplateInstantiation(frame,record,target))return false;
   TemplateInfo(record).used=true;JS::RootedObject properties(frame.cx,&JS::GetReservedSlot(record,TemplateProperties).toObject());
   JS::RootedIdVector keys(frame.cx);
-  {JSAutoRealm home(frame.cx,properties);if(!js::GetPropertyKeys(frame.cx,properties,JSITER_OWNONLY|JSITER_HIDDEN|JSITER_SYMBOLS|JSITER_PRIVATE,&keys))return false;}
+  {JSAutoRealm home(frame.cx,properties);if(!js::GetPropertyKeys(frame.cx,properties,JSITER_OWNONLY|JSITER_HIDDEN|JSITER_SYMBOLS,&keys))return false;}
   for(size_t i=0;i<keys.length();++i){
     JS::RootedId key(frame.cx,keys[i]);JS::RootedValue source(frame.cx),value(frame.cx),name(frame.cx);
     JS::Rooted<mozilla::Maybe<JS::PropertyDescriptor>> stored(frame.cx);
@@ -235,6 +237,20 @@ bool ApplyTemplateProperties(Frame& frame,JS::HandleObject record,JS::HandleObje
       JS::Rooted<JS::PropertyDescriptor> descriptor(frame.cx,JS::PropertyDescriptor::Accessor(getter,setter,flags&~JSPROP_READONLY));
       if(!JS_DefinePropertyById(frame.cx,target,key,descriptor))return false;
     }else if(!JS_WrapValue(frame.cx,&value)||!JS_DefinePropertyById(frame.cx,target,key,value,flags))return false;
+  }
+  // Private entries are installed separately and never become public keys.
+  properties=&JS::GetReservedSlot(record,TemplatePrivateProperties).toObject();
+  keys.clear();
+  {JSAutoRealm home(frame.cx,properties);if(!js::GetPropertyKeys(frame.cx,properties,JSITER_OWNONLY|JSITER_HIDDEN|JSITER_SYMBOLS,&keys))return false;}
+  for(size_t i=0;i<keys.length();++i){
+    JS::RootedId key(frame.cx,keys[i]);JS::RootedValue source(frame.cx),value(frame.cx);
+    JS::Rooted<mozilla::Maybe<JS::PropertyDescriptor>> stored(frame.cx);
+    {JSAutoRealm home(frame.cx,properties);if(!JS_GetOwnPropertyDescriptorById(frame.cx,properties,key,&stored))return false;}
+    CHECK(stored.isSome()&&stored.get().ref().isDataDescriptor());
+    const auto& descriptor=stored.get().ref();source=descriptor.value();
+    unsigned flags=descriptor.enumerable()?JSPROP_ENUMERATE:0;
+    if(!descriptor.writable())flags|=JSPROP_READONLY;if(!descriptor.configurable())flags|=JSPROP_PERMANENT;
+    if(!MaterializeTemplateValue(frame,source,context,&value)||!DefinePrivateEntry(frame,target,key,value,flags))return false;
   }
   return true;
 }
@@ -380,10 +396,12 @@ Local<Object> DictionaryTemplate::NewInstance(Local<Context> context,MemorySpan<
   }
   JS::RootedValue value(frame.cx,JS::ObjectValue(*object));return frame.Own<Object>(value);
 }
-void Template::Set(Local<Name> name,Local<Data> data,PropertyAttribute attrs){
-  auto& frame=*Frame::current;JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<Template>(this)));CHECK(!TemplateInfo(record).used);
-  JSAutoRealm home(frame.cx,record);JS::RootedObject properties(frame.cx,&JS::GetReservedSlot(record,TemplateProperties).toObject());
-  JS::RootedValue key(frame.cx,Input(name)),value(frame.cx,Input(data));JS::RootedId id(frame.cx);
+namespace {
+void StoreTemplateProperty(Template* receiver,JS::HandleValue name,Local<Data> data,
+                           PropertyAttribute attrs,NativeTemplateSlot slot){
+  auto& frame=*Frame::current;JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<Template>(receiver)));CHECK(!TemplateInfo(record).used);
+  JSAutoRealm home(frame.cx,record);JS::RootedObject properties(frame.cx,&JS::GetReservedSlot(record,slot).toObject());
+  JS::RootedValue key(frame.cx,name),value(frame.cx,Input(data));JS::RootedId id(frame.cx);
   if(!data->IsValue()&&!data->IsPrivate())CHECK(JS::GetClass(UnwrapTemplateObject(frame.cx,value))==&templateClass);
   CHECK(JS_WrapValue(frame.cx,&key)&&JS_WrapValue(frame.cx,&value)&&JS_ValueToId(frame.cx,key,&id));
   if(!data->IsValue()&&!data->IsPrivate()){
@@ -397,14 +415,17 @@ void Template::Set(Local<Name> name,Local<Data> data,PropertyAttribute attrs){
   if(attrs&ReadOnly)flags|=JSPROP_READONLY;if(attrs&DontDelete)flags|=JSPROP_PERMANENT;
   CHECK(JS_DefinePropertyById(frame.cx,properties,id,value,flags));
 }
+}
+void Template::Set(Local<Name> name,Local<Data> data,PropertyAttribute attrs){
+  auto& frame=*Frame::current;JS::RootedValue key(frame.cx,Input(name));
+  StoreTemplateProperty(this,key,data,attrs,TemplateProperties);
+}
 void Template::Set(Isolate* isolate,const char* name,Local<Data> data,PropertyAttribute attrs){
   auto key=String::NewFromUtf8(isolate,name).ToLocalChecked();Set(key,data,attrs);
 }
 void Template::SetPrivate(Local<Private> name,Local<Data> data,PropertyAttribute attrs){
-  auto& frame=*Frame::current;JS::RootedValue value(frame.cx,Input(name));
-  CHECK(value.isSymbol());JS::RootedSymbol symbol(frame.cx,value.toSymbol());
-  CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
-  Set(frame.Own<Symbol>(value),data,attrs);
+  auto& frame=*Frame::current;JS::RootedValue key(frame.cx,Input(name));CHECK(key.isSymbol());
+  StoreTemplateProperty(this,key,data,attrs,TemplatePrivateProperties);
 }
 namespace {
 void SetTemplateNativeProperty(Template* templ,Local<Name> name,

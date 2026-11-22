@@ -8,16 +8,14 @@
      ModuleTypeSlot,
      PhaseSlot,
      SlotCount
-@@ -88,6 +89,9 @@
-       ImportPhase phase = ImportPhase::Evaluation);
- 
+@@ -89,4 +90,7 @@
+
    JSAtom* specifier() const;
 +  JSObject* attributesData() const {
 +    return &getReservedSlot(AttributesDataSlot).toObject();
 +  }
    JS::ModuleType moduleType() const;
    ImportPhase phase() const;
- 
 --- a/js/src/builtin/ModuleObject.cpp
 +++ b/js/src/builtin/ModuleObject.cpp
 @@ -15,6 +15,7 @@
@@ -31,7 +29,7 @@
 @@ -269,7 +270,18 @@
      return nullptr;
    }
- 
+
 -  return create(cx, specifier, moduleType, phase);
 +  Rooted<ModuleRequestObject*> self(cx, create(cx, specifier, moduleType, phase));
 +  if (!self) return nullptr;
@@ -46,7 +44,7 @@
 +  self->setReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
 +  return self;
  }
- 
+
  /* static */
 @@ -277,8 +289,8 @@
                                                   Handle<JSAtom*> specifier,
@@ -80,11 +78,10 @@
 +  RootedObject attributes(cx, JS::NewArrayObject(cx, values));
 +  if (!attributes) return nullptr;
 +  self->initReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
- 
+
    return self;
  }
-@@ -2218,19 +2247,18 @@
-     // host hook is deeply unclear, and so right now embedders will not have
+@@ -2219,17 +2248,16 @@
      // the ability to alter or extend the set of supported attributes.
      // See https://bugzilla.mozilla.org/show_bug.cgi?id=1840723.
 -    if (key == TaggedParserAtomIndex::WellKnown::type()) {
@@ -104,7 +101,7 @@
 +    // the engine's unsupported-key marker and its normal evaluation error.
 +    auto value = attribute->right()->as<NameNode>().atom();
 +    markUsedByStencil(value);
-+    StencilModuleImportAttribute attributeStencil(key, value);
++    StencilModuleImportAttribute attributeStencil(key, value, attribute->left()->pn_pos.begin);
 +    if (!request.attributes.append(attributeStencil)) {
 +      js::ReportOutOfMemory(fc_);
 +      return false;
@@ -114,4 +111,21 @@
 +      request.firstUnsupportedAttributeKey = key;
      }
    }
- 
+--- a/js/src/frontend/Stencil.h
++++ b/js/src/frontend/Stencil.h
+@@ -530,11 +530,13 @@
+  public:
+   TaggedParserAtomIndex key;
+   TaggedParserAtomIndex value;
++  // Parser UTF-16 position; retained by XDRVectorContent, not part of request identity.
++  uint32_t sourceOffset = 0;
+
+   StencilModuleImportAttribute() = default;
+   StencilModuleImportAttribute(TaggedParserAtomIndex key,
+-                               TaggedParserAtomIndex value)
+-      : key(key), value(value) {}
++                               TaggedParserAtomIndex value, uint32_t sourceOffset)
++      : key(key), value(value), sourceOffset(sourceOffset) {}
+
+   bool operator!=(const StencilModuleImportAttribute& rhs) const {
+     return key != rhs.key || value != rhs.value;

@@ -20,3 +20,22 @@ library build.
 
 The simplified source tree and develop reconciliation have not been built or
 tested. Earlier receipts describe earlier artifacts, not this review update.
+
+## Maintained embedding boundary
+
+Node context fields use SpiderMonkey's global application slots. Ordinary
+private entries use a bridge-owned weak map, not a new language property or
+symbol kind. Async-context snapshots use the original job host-data APIs; the
+small `preservesHostDefinedData` option retains that data for observable
+optimized reactions. The engine owns its original queues and dispatch.
+
+Corrections to buffer ownership, saved sources, parser metadata and compiler
+locations are folded into their final capability patches. The direct Rust
+target mapping describes Kandelo without a temporary Linux profile. The
+standalone shell's independent patch selection is unchanged.
+
+These source reductions are unbuilt and untested. Dynamic-import completion
+still uses the previous extension. Node can supply cross-compartment namespaces
+and controls whether to evaluate returned modules and how to validate import
+attributes. A plain replacement with engine module completion changes those
+contracts; a complete replacement needs further review.

@@ -6,13 +6,13 @@
    JSFunction* doCleanupFunction() const;
 +  static FinalizationQueueObject* fromCleanupFunction(JSFunction* function);
    bool hasRegistry() const;
- 
+
    void queueRecordToBeCleanedUp(FinalizationRecordObject* record);
 --- a/js/src/builtin/FinalizationRegistryObject.cpp
 +++ b/js/src/builtin/FinalizationRegistryObject.cpp
 @@ -792,6 +792,17 @@
  }
- 
+
  /* static */
 +FinalizationQueueObject* FinalizationQueueObject::fromCleanupFunction(
 +    JSFunction* function) {

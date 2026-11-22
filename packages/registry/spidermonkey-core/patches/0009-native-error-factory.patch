@@ -3,7 +3,7 @@
 @@ -1930,6 +1930,35 @@
    return copy;
  }
- 
+
 +JS_PUBLIC_API bool JS::CreateErrorFromOptions(JSContext* cx, JSExnType type,
 +                                             HandleString message,
 +                                             HandleValue options,
@@ -41,7 +41,7 @@
 @@ -561,6 +561,13 @@
      JSErrorReport* report, HandleString message,
      Handle<mozilla::Maybe<Value>> cause, MutableHandleValue rval);
- 
+
 +// Native embedding entry to the original ordinary Error factory. Primitive
 +// options are ignored; an object supplies the standard optional cause. This
 +// does not invoke a replaceable global constructor or a JS return checkpoint.

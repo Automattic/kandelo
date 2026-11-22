@@ -6,12 +6,12 @@
  #include "mozilla/DebugOnly.h"
 +#include "mozilla/MemoryReporting.h"
  #include "mozilla/TimeStamp.h"
- 
+
  #include <stddef.h>
 @@ -170,6 +171,10 @@
        const char* markerName, uint64_t flowId,
        JS::ProfilingCategoryPair jsPair = JS::ProfilingCategoryPair::JS);
- 
+
 +  // Native memory reporting; counts owned tables and labels, not retained
 +  // ScriptSource payloads already covered by the runtime source reporter.
 +  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
@@ -43,5 +43,5 @@
 +  }
 +  return bytes;
  }
- 
+
  size_t GeckoProfilerRuntime::stringsCount() {

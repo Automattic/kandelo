@@ -15,8 +15,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
  #include "vm/EqualityOperations.h"  // js::SameValue
  #include "vm/GetterSetter.h"        // js::GetterSetter
  #include "vm/Interpreter.h"         // js::CallGetter, js::CallSetter
-@@ -2592,7 +2594,9 @@
-     JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
+@@ -2576,5 +2578,7 @@
      typename MaybeRooted<Value, allowGC>::HandleType receiver,
      typename MaybeRooted<jsid, allowGC>::HandleType id, IsNameLookup nameLookup,
 -    typename MaybeRooted<Value, allowGC>::MutableHandleType vp) {
@@ -25,24 +24,23 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
 +  if (found) *found = false;
    typename MaybeRooted<NativeObject*, allowGC>::RootType pobj(cx, obj);
    PropertyResult prop;
- 
-@@ -2611,6 +2615,7 @@
-               return false;
-             }
-             if (handled) {
-+              if (found) *found = true;
-               return true;
-             }
+@@ -2593,6 +2597,7 @@
+             return false;
            }
-@@ -2622,6 +2627,7 @@
+           if (handled) {
++            if (found) *found = true;
+             return true;
+           }
+         }
+@@ -2603,6 +2608,7 @@
      }
- 
+
      if (prop.isFound()) {
 +      if (found) *found = true;
        // Steps 3-7. Special case for dense elements because
        // GetExistingProperty doesn't support those.
        if (prop.isDenseElement()) {
-@@ -2653,6 +2659,9 @@
+@@ -2634,6 +2640,9 @@
      // is non-native, that optimization would be incorrect.
      if (proto->getOpsGetProperty()) {
        typename MaybeRooted<JSObject*, allowGC>::RootType protoRoot(cx, proto);
@@ -52,7 +50,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
        return GeneralizedGetProperty<allowGC>(cx, protoRoot, id, receiver,
                                               nameLookup, vp);
      }
-@@ -2666,6 +2675,45 @@
+@@ -2647,6 +2656,45 @@
                             MutableHandleValue vp) {
    return NativeGetPropertyInline<CanGC>(cx, obj, receiver, id, NotNameLookup,
                                          vp);
@@ -96,14 +94,14 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
 +  *found = true;
 +  return GetProperty(cx, obj, receiver, id, vp);
  }
- 
+
  bool js::NativeGetPropertyBypassingInterceptors(
 --- a/js/src/vm/NativeObject.h
 +++ b/js/src/vm/NativeObject.h
 @@ -1940,6 +1940,12 @@
                                HandleValue receiver, HandleId id,
                                MutableHandleValue vp);
- 
+
 +// Original [[Get]] algorithms with an additional presence result, used by
 +// embedders that distinguish absence from a getter/trap returning undefined.
 +extern bool GetPropertyWithFound(JSContext* cx, HandleObject obj,
@@ -130,19 +128,19 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
    RootedObject handler(cx, ScriptedProxyHandler::handlerObject(proxy));
    if (!handler) {
 @@ -1128,7 +1135,8 @@
- 
+
    // Step 7.
    if (trap.isUndefined()) {
 -    return GetProperty(cx, target, receiver, id, vp);
 +    return found ? GetPropertyWithFound(cx, target, receiver, id, vp, found)
 +                 : GetProperty(cx, target, receiver, id, vp);
    }
- 
+
    // Step 8.
 --- a/js/src/proxy/ScriptedProxyHandler.h
 +++ b/js/src/proxy/ScriptedProxyHandler.h
 @@ -55,6 +55,11 @@
- 
+
    virtual bool has(JSContext* cx, JS::HandleObject proxy, JS::HandleId id,
                     bool* bp) const override;
 +  // Embedding lookup needs to distinguish a missing forwarded target property

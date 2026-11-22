@@ -63,7 +63,7 @@ bool Value::IsNativeError() const {
 }
 Local<Value> Private::Name()const {
   auto& frame=*Frame::current;JS::RootedValue key(frame.cx,cell().value);CHECK(key.isSymbol());
-  JS::RootedSymbol symbol(frame.cx,key.toSymbol());CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
+  JS::RootedSymbol symbol(frame.cx,key.toSymbol());CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::UniqueSymbol);
   JS::RootedString description(frame.cx,JS::GetSymbolDescription(frame.cx,symbol));
   JS::RootedValue value(frame.cx,description?JS::StringValue(description):JS::UndefinedValue());return frame.OwnValue(value);
 }
@@ -95,7 +95,7 @@ Local<Private> Private::New(Isolate* isolate,Local<String> description){
   JS::RootedObject global(frame.cx,NativePrimitiveRealm(frame));if(!global)return {};
   JSAutoRealm home(frame.cx,global);
   JS::RootedString text(frame.cx);if(!NativeSymbolDescription(frame,description,&text))return {};
-  JS::RootedSymbol symbol(frame.cx,JS::NewEmbeddingPrivateSymbol(frame.cx,text));if(!symbol)return {};
+  JS::RootedSymbol symbol(frame.cx,JS::NewSymbol(frame.cx,text));if(!symbol)return {};
   JS::RootedValue value(frame.cx,JS::SymbolValue(symbol));return frame.Own<Private>(value);
 }
 namespace {
@@ -243,20 +243,67 @@ Local<Context> HandleScope::EscapeRoot(Local<Context> input) {
   frame_->contexts.insert(frame_->contexts.begin()+previousContexts_,std::move(owned));++previousContexts_;
   return output;
 }
-Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Private> property,Local<Value> input) {
-  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
-  JS::RootedValue key(frame.cx,Input(property)),value(frame.cx,Input(input));CHECK(key.isSymbol());
-  JS::RootedSymbol symbol(frame.cx,key.toSymbol());
-  CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
-  JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(key.toSymbol()));
-  if(!JS_WrapObject(frame.cx,&object)||!JS_WrapValue(frame.cx,&value)||!JS_DefinePropertyById(frame.cx,object,id,value,0))return {};return Just(true);
+namespace {
+// The table is rooted, but its object keys are weak. A private value may point
+// back to its key without retaining an otherwise unreachable object cycle.
+// Only compartment wrappers are normalized; a scripted Proxy is its own key.
+bool PrivateEntryBag(Frame& frame,JS::HandleObject target,bool create,
+                     JS::MutableHandleObject bag){
+  bag.set(nullptr);
+  if(!frame.state->privateEntries&&!create)return true;
+  JS::RootedObject identity(frame.cx,js::CheckedUnwrapDynamic(target,frame.cx,false));
+  if(!identity)return false;
+  JS::RootedObject global(frame.cx,NativeTemplateRealm(frame));if(!global)return false;
+  JSAutoRealm home(frame.cx,global);
+  if(!frame.state->privateEntries){
+    JS::RootedObject map(frame.cx,JS::NewWeakMapObject(frame.cx));if(!map)return false;
+    try {frame.state->privateEntries=std::make_unique<JS::PersistentRootedObject>(frame.cx,map);}
+    catch(const std::bad_alloc&){bridge::FatalOutOfMemory(&frame.state->isolate,"Native private-entry root",false);}
+  }
+  JS::RootedObject map(frame.cx,frame.state->privateEntries->get());
+  JS::RootedValue key(frame.cx,JS::ObjectValue(*identity)),value(frame.cx);
+  if(!JS_WrapValue(frame.cx,&key)||!JS::GetWeakMapEntry(frame.cx,map,key,&value))return false;
+  if(value.isObject()){bag.set(&value.toObject());return true;}
+  if(!create)return true;
+  JS::RootedObject entries(frame.cx,JS_NewObjectWithGivenProto(frame.cx,nullptr,nullptr));
+  if(!entries)return false;
+  value.setObject(*entries);
+  if(!JS::SetWeakMapEntry(frame.cx,map,key,value))return false;
+  bag.set(entries);return true;
 }
-MaybeLocal<Value> Object::GetPrivate(Local<Context> context,Local<Private> property) {
-  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);
-  JS::RootedObject object(frame.cx,&cell().value.toObject());JS::RootedValue key(frame.cx,Input(property)),value(frame.cx);
-  CHECK(key.isSymbol());JS::RootedSymbol symbol(frame.cx,key.toSymbol());CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
-  JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(symbol));
-  if(!JS_WrapObject(frame.cx,&object)||!JS_GetPropertyById(frame.cx,object,id,&value))return {};
+bool DefinePrivateEntry(Frame& frame,JS::HandleObject target,JS::HandleId key,
+                        JS::HandleValue input,unsigned flags){
+  JS::RootedObject bag(frame.cx);
+  if(!PrivateEntryBag(frame,target,true,&bag))return false;
+  JSAutoRealm home(frame.cx,bag);
+  JS::RootedValue name(frame.cx),value(frame.cx,input);JS::RootedId id(frame.cx);
+  if(!JS_IdToValue(frame.cx,key,&name)||!JS_WrapValue(frame.cx,&name)||
+     !JS_ValueToId(frame.cx,name,&id)||!JS_WrapValue(frame.cx,&value))return false;
+  return JS_DefinePropertyById(frame.cx,bag,id,value,flags);
+}
+}
+Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Private> property,Local<Value> input){
+  auto& frame=Current(context->isolate);NativeEntry entry(frame,context);
+  if(entry.Terminated())return {};
+  Context::Scope home(context);
+  JS::RootedObject object(frame.cx,&cell().value.toObject());
+  JS::RootedValue key(frame.cx,Input(property)),value(frame.cx,Input(input));
+  CHECK(key.isSymbol());JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(key.toSymbol()));
+  if(!DefinePrivateEntry(frame,object,id,value,0))return {};
+  return Just(true);
+}
+MaybeLocal<Value> Object::GetPrivate(Local<Context> context,Local<Private> property){
+  auto& frame=Current(context->isolate);NativeEntry entry(frame,context);
+  if(entry.Terminated())return {};
+  Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject()),bag(frame.cx);
+  JS::RootedValue key(frame.cx,Input(property)),value(frame.cx);
+  if(!PrivateEntryBag(frame,object,false,&bag))return {};
+  if(bag){
+    JSAutoRealm realm(frame.cx,bag);JS::RootedId id(frame.cx);
+    if(!JS_WrapValue(frame.cx,&key)||!JS_ValueToId(frame.cx,key,&id)||
+       !JS_GetPropertyById(frame.cx,bag,id,&value))return {};
+  }
+  if(!JS_WrapValue(frame.cx,&value))return {};
   return frame.OwnValue(value);
 }
 size_t ArrayBuffer::ByteLength() const {

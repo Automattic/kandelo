@@ -1,0 +1,29 @@
+# Preserve registration-time host data through the generic job-queue API.
+--- a/js/public/Promise.h
++++ b/js/public/Promise.h
+@@ -32,6 +32,12 @@
+ class JS_PUBLIC_API JobQueue {
+  public:
+   virtual ~JobQueue() = default;
++
++  // An embedding can observe registration-time host data even when the
++  // engine eliminates an unused result Promise. Keep upstream optimization
++  // behavior unless that embedding explicitly requests the data.
++  virtual bool preservesHostDefinedData() const { return false; }
++
+
+   /**
+    * Ask the embedding for the host defined data.
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -6435,7 +6435,9 @@
+   // Currently the APIs we have are basically "GetBoth" or "GetIncumbent",
+   // hence the else branch here. We can potentially clean this up
+   // in the future.
+-  if (hostDefinedDataObjectOption == HostDefinedDataObjectOption::Allocate) {
++  if (hostDefinedDataObjectOption == HostDefinedDataObjectOption::Allocate ||
++      (hostDefinedDataObjectOption == HostDefinedDataObjectOption::OptimizeOut &&
++       cx->jobQueue && cx->jobQueue->preservesHostDefinedData())) {
+     // Get incumbent global and optional host defined data
+     if (!GetObjectFromHostDefinedData(cx, &incumbentGlobalRepresentative,
+                                       &optionalHostDefinedData)) {

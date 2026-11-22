@@ -2,31 +2,31 @@
 +++ b/mfbt/RandomNum.h
 @@ -11,6 +11,11 @@
  #include "mozilla/Types.h"
- 
+
  namespace mozilla {
 +
 +// Process-resident native entropy source. Install before engine initialization.
 +// A false result is propagated; callers retain their own failure policy.
 +using RandomBytesSource = bool (*)(unsigned char*, size_t);
 +MFBT_API void SetRandomBytesSource(RandomBytesSource source);
- 
+
  /**
   *  Generate cryptographically secure random bytes using the best facilities
 --- a/mfbt/RandomNum.cpp
 +++ b/mfbt/RandomNum.cpp
 @@ -3,6 +3,8 @@
   * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
- 
+
  #include "mozilla/RandomNum.h"
 +
 +#include <atomic>
- 
+
  #ifdef XP_UNIX
  #  include <fcntl.h>
-@@ -87,9 +89,19 @@
- 
+@@ -83,9 +85,19 @@
+
  namespace mozilla {
- 
+
 +static std::atomic<RandomBytesSource> sRandomBytesSource{nullptr};
 +
 +MFBT_API void SetRandomBytesSource(RandomBytesSource source) {
@@ -40,6 +40,6 @@
 +  if (auto source = sRandomBytesSource.load(std::memory_order_acquire)) {
 +    return source(static_cast<unsigned char*>(aBuffer), aLength);
 +  }
- 
+
  #if defined(XP_WIN)
    return !!RtlGenRandom(aBuffer, aLength);

@@ -8,7 +8,7 @@ the mode for reentrant user code. The context owns no JS edges here.
 +++ b/js/src/builtin/Object.cpp
 @@ -1113,6 +1113,7 @@
      }
- 
+
      ObjectOpResult result;
 +    JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
      if (MOZ_UNLIKELY(
@@ -25,20 +25,20 @@ the mode for reentrant user code. The context owns no JS edges here.
 --- a/js/src/builtin/Reflect.cpp
 +++ b/js/src/builtin/Reflect.cpp
 @@ -24,6 +24,7 @@
- 
+
  /* ES6 26.1.4 Reflect.deleteProperty (target, propertyKey) */
  static bool Reflect_deleteProperty(JSContext* cx, unsigned argc, Value* vp) {
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    CallArgs args = CallArgsFromVp(argc, vp);
- 
+
    // Step 1.
 @@ -133,6 +134,7 @@
- 
+
  /* ES6 26.1.13 Reflect.set(target, propertyKey, V [, receiver]) */
  static bool Reflect_set(JSContext* cx, unsigned argc, Value* vp) {
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    CallArgs args = CallArgsFromVp(argc, vp);
- 
+
    // Step 1.
 --- a/js/src/vm/Interpreter.cpp
 +++ b/js/src/vm/Interpreter.cpp
@@ -54,7 +54,7 @@ the mode for reentrant user code. The context owns no JS edges here.
 +++ b/js/src/vm/JSContext.h
 @@ -500,6 +500,7 @@
    bool brittleMode = false;
- 
+
   private:
 +  mozilla::Maybe<bool> nativePropertyFailureMode_;
    uint8_t embedderExecutionRestrictions_ = 0;
@@ -88,7 +88,7 @@ the mode for reentrant user code. The context owns no JS edges here.
      return embedderExecutionRestrictions_;
 --- a/js/src/vm/JSObject.cpp
 +++ b/js/src/vm/JSObject.cpp
-@@ -1658,6 +1658,7 @@
+@@ -1649,6 +1649,7 @@
  bool js::DefineProperty(JSContext* cx, HandleObject obj, HandleId id,
                          Handle<PropertyDescriptor> desc) {
    ObjectOpResult result;
@@ -98,7 +98,7 @@ the mode for reentrant user code. The context owns no JS edges here.
  }
 --- a/js/src/vm/ObjectOperations-inl.h
 +++ b/js/src/vm/ObjectOperations-inl.h
-@@ -301,6 +301,7 @@
+@@ -294,6 +294,7 @@
                          JS::Handle<jsid> id, JS::Handle<JS::Value> v) {
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult result;
@@ -106,7 +106,7 @@ the mode for reentrant user code. The context owns no JS edges here.
    return SetProperty(cx, obj, id, v, receiver, result) &&
           result.checkStrict(cx, obj, id);
  }
-@@ -318,6 +319,7 @@
+@@ -311,6 +312,7 @@
    JS::Rooted<jsid> id(cx, NameToId(name));
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult result;
@@ -114,7 +114,7 @@ the mode for reentrant user code. The context owns no JS edges here.
    return SetProperty(cx, obj, id, v, receiver, result) &&
           result.checkStrict(cx, obj, id);
  }
-@@ -343,6 +345,7 @@
+@@ -336,6 +338,7 @@
                          bool strict) {
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult result;
@@ -124,14 +124,12 @@ the mode for reentrant user code. The context owns no JS edges here.
  }
 --- a/js/src/vm/PropertyAndElement.cpp
 +++ b/js/src/vm/PropertyAndElement.cpp
-@@ -52,6 +52,7 @@
- JS_PUBLIC_API bool JS_DefinePropertyById(
+@@ -53,4 +53,5 @@
      JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
      JS::Handle<JS::PropertyDescriptor> desc, JS::ObjectOpResult& result) {
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result);
  }
- 
 @@ -59,6 +60,7 @@
      JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
      JS::Handle<JS::PropertyDescriptor> desc) {
@@ -140,14 +138,12 @@ the mode for reentrant user code. The context owns no JS edges here.
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result) &&
           result.checkStrict(cx, obj, id);
  }
-@@ -313,6 +315,7 @@
-     return false;
+@@ -314,4 +316,5 @@
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result);
  }
- 
 @@ -325,6 +328,7 @@
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
@@ -156,67 +152,53 @@ the mode for reentrant user code. The context owns no JS edges here.
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result) &&
           result.checkStrict(cx, obj, id);
  }
-@@ -653,6 +657,7 @@
-   CHECK_THREAD(cx);
+@@ -654,4 +658,5 @@
    cx->check(obj, id, v, receiver);
- 
+
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::SetProperty(cx, obj, id, v, receiver, result);
  }
- 
-@@ -665,6 +670,7 @@
- 
+@@ -666,4 +671,5 @@
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult ignored;
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::SetProperty(cx, obj, id, v, receiver, ignored);
  }
- 
-@@ -697,6 +703,7 @@
- 
+@@ -698,4 +704,5 @@
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult ignored;
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::SetElement(cx, obj, index, v, receiver, ignored);
  }
- 
-@@ -743,6 +750,7 @@
-   CHECK_THREAD(cx);
+@@ -744,4 +751,5 @@
    cx->check(obj, id);
- 
+
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteProperty(cx, obj, id, result);
  }
- 
-@@ -757,6 +765,7 @@
-     return false;
+@@ -758,4 +766,5 @@
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteProperty(cx, obj, id, result);
  }
- 
-@@ -771,6 +780,7 @@
-     return false;
+@@ -772,4 +781,5 @@
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteProperty(cx, obj, id, result);
  }
- 
-@@ -781,6 +791,7 @@
-   CHECK_THREAD(cx);
+@@ -782,4 +792,5 @@
    cx->check(obj);
- 
+
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteElement(cx, obj, index, result);
  }
- 
 --- a/js/src/vm/SelfHosting.cpp
 +++ b/js/src/vm/SelfHosting.cpp
 @@ -572,6 +572,7 @@
    desc.assertValid();
- 
+
    ObjectOpResult result;
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(args[5].toBoolean()));
    if (!DefineProperty(cx, obj, id, desc, result)) {

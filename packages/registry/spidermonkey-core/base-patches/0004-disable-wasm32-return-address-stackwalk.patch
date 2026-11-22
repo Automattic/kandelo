@@ -2,7 +2,7 @@
 +++ b/mfbt/Assertions.h
 @@ -14,7 +14,7 @@
  #endif
- 
+
  #if (defined(MOZ_HAS_MOZGLUE) || defined(MOZILLA_INTERNAL_API)) && \
 -    !defined(__wasi__)
 +    !defined(__wasi__) && !defined(__wasm32__)
@@ -20,6 +20,6 @@
 +#else
  #define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
 +#endif
- 
+
  /**
   * The callback for MozStackWalk and MozStackWalkThread.

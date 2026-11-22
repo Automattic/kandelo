@@ -62,7 +62,7 @@
            'dependencies': [ 'tools/v8_gypfiles/simdutf.gyp:simdutf#host' ],
          }],
 -        [ 'node_shared_libuv=="false"', {
-+        [ 'node_shared_libuv=="false" or target_arch=="wasm32"', {
++        [ 'node_shared_libuv=="false" or (_toolset=="host" and target_arch=="wasm32")', {
            'dependencies': [ 'deps/uv/uv.gyp:libuv#host' ],
          }],
          [ 'OS in "linux mac openharmony"', {

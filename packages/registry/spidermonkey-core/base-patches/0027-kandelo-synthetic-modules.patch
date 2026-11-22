@@ -6,11 +6,11 @@
  #include "js/Value.h"           // JS::Value
 +#include "js/ValueArray.h"      // JS::HandleValueArray
  #include "js/Vector.h"          // js::Vector
- 
+
  struct JS_PUBLIC_API JSContext;
 @@ -230,7 +231,27 @@
      js::Vector<uint8_t, 0, js::MallocAllocPolicy>& srcBuf);
- 
+
  /**
 - * Set a private value associated with a source text module record.
 + * Create a genuine callback-backed synthetic module in the current realm.
@@ -39,8 +39,7 @@
                                             const Value& value);
 --- a/js/src/builtin/ModuleObject.h
 +++ b/js/src/builtin/ModuleObject.h
-@@ -458,6 +458,18 @@
-   mozilla::Span<const ExportEntry> indirectExportEntries() const;
+@@ -459,4 +459,16 @@
    mozilla::Span<const ExportEntry> starExportEntries() const;
    const ExportNameVector& syntheticExportNames() const;
 +  const ExportNameVector& syntheticBindingNames() const;
@@ -55,9 +54,8 @@
 +  void setSyntheticEvaluationPromise(PromiseObject* promise);
 +  bool syntheticEvaluationAborted() const;
 +  void setSyntheticEvaluationAborted();
- 
+
    IndirectBindingMap& importBindings();
- 
 --- a/js/src/builtin/ModuleObject.cpp
 +++ b/js/src/builtin/ModuleObject.cpp
 @@ -861,12 +861,23 @@
@@ -70,11 +68,11 @@
 +  HeapPtr<PromiseObject*> evaluationPromise;
 +  ModuleStatus status = ModuleStatus::Evaluated;  // Existing default-export behavior.
 +  bool evaluationAborted = false;
- 
+
   public:
    void trace(JSTracer* trc);
  };
- 
+
 -void SyntheticModuleFields::trace(JSTracer* trc) { exportNames.trace(trc); }
 +void SyntheticModuleFields::trace(JSTracer* trc) {
 +  exportNames.trace(trc);
@@ -82,13 +80,13 @@
 +  TraceEdge(trc, &privateValue, "SyntheticModuleFields::privateValue");
 +  TraceEdge(trc, &evaluationPromise, "SyntheticModuleFields::evaluationPromise");
 +}
- 
+
  ///////////////////////////////////////////////////////////////////////////
  // CyclicModuleFields
 @@ -1061,6 +1072,56 @@
    return syntheticModuleFields()->exportNames;
  }
- 
+
 +const ExportNameVector& ModuleObject::syntheticBindingNames() const {
 +  return hasSyntheticEvaluationSteps() ? syntheticModuleFields()->bindingNames
 +                                       : syntheticExportNames();
@@ -143,7 +141,7 @@
      UniquePtr<FunctionDeclarationVector> decls) {
    cyclicModuleFields()->functionDeclarations = std::move(decls);
 @@ -1241,7 +1302,7 @@
- 
+
    // TODO: Bug 1885483: Provide filename for JSON modules
    if (!hasCyclicModuleFields()) {
 -    return "(JSON module)";
@@ -153,7 +151,7 @@
    if (!sso->hasSource()) {
 @@ -1258,11 +1319,8 @@
  }
- 
+
  ModuleStatus ModuleObject::status() const {
 -  // Always return `ModuleStatus::Evaluated` so we can assert a module's status
 -  // without checking which kind it is, even though synthetic modules don't have
@@ -162,12 +160,11 @@
 -    return ModuleStatus::Evaluated;
 +    return syntheticModuleFields()->status;
    }
- 
+
    ModuleStatus status = cyclicModuleFields()->status;
-@@ -1286,10 +1344,15 @@
-                  newStatus > status(),
+@@ -1287,8 +1345,13 @@
               "New module status inconsistent with current status");
- 
+
 -  cyclicModuleFields()->status = newStatus;
 +  if (hasSyntheticModuleFields()) {
 +    syntheticModuleFields()->status = newStatus;
@@ -175,39 +172,35 @@
 +    cyclicModuleFields()->status = newStatus;
 +  }
  }
- 
+
  bool ModuleObject::hasTopLevelAwait() const {
 +  if (hasSyntheticModuleFields()) return false;
    return cyclicModuleFields()->hasTopLevelAwait;
  }
- 
-@@ -1318,6 +1381,7 @@
- }
- 
+@@ -1319,4 +1382,5 @@
+
  PromiseObject* ModuleObject::maybeTopLevelCapability() const {
 +  if (hasSyntheticModuleFields()) return syntheticEvaluationPromise();
    return cyclicModuleFields()->topLevelCapability;
  }
- 
 @@ -1407,12 +1471,14 @@
  }
- 
+
  bool ModuleObject::hasTopLevelCapability() const {
 +  if (hasSyntheticModuleFields()) return syntheticEvaluationPromise();
    return cyclicModuleFields()->topLevelCapability;
  }
- 
+
  bool ModuleObject::hadEvaluationError() const {
    if (hasSyntheticModuleFields()) {
 -    return false;
 +    auto* promise = syntheticEvaluationPromise();
 +    return promise && promise->state() == JS::PromiseState::Rejected;
    }
- 
+
    ModuleStatus fullStatus = cyclicModuleFields()->status;
-@@ -1432,6 +1498,10 @@
- }
- 
+@@ -1433,4 +1499,8 @@
+
  Value ModuleObject::maybeEvaluationError() const {
 +  if (hasSyntheticModuleFields()) {
 +    return hadEvaluationError() ? syntheticEvaluationPromise()->reason()
@@ -215,17 +208,14 @@
 +  }
    return cyclicModuleFields()->evaluationError;
  }
- 
 --- a/js/src/vm/Modules.cpp
 +++ b/js/src/vm/Modules.cpp
-@@ -11,6 +11,7 @@
- #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
- 
+@@ -12,4 +12,5 @@
+
  #include <stdint.h>  // uint32_t
 +#include <stdio.h>   // snprintf
- 
+
  #include "jstypes.h"  // JS_PUBLIC_API
- 
 @@ -28,6 +29,7 @@
  #include "js/RootingAPI.h"              // JS::MutableHandle
  #include "js/Value.h"                   // JS::Value
@@ -240,7 +230,7 @@
  #include "vm/Runtime.h"                 // JSRuntime
 +#include "vm/SavedFrame.h"              // SavedFrame
  #include "wasm/WasmCompile.h"
- 
+
  #include "builtin/HandlerFunction-inl.h"  // js::ExtraValueFromHandler, js::NewHandler{,WithExtraValue}, js::TargetFromHandler
 +#include "vm/EnvironmentObject-inl.h"  // setAliasedBinding
  #include "vm/JSAtomUtils-inl.h"           // AtomToId
@@ -254,10 +244,9 @@
  static bool ContinueModuleLoading(JSContext* cx,
                                    Handle<GraphLoadingStateRecordObject*> state,
                                    Handle<ModuleObject*> moduleCompletion,
-@@ -374,18 +379,106 @@
-   return moduleObject;
+@@ -375,16 +380,104 @@
  }
- 
+
 +JS_PUBLIC_API JSObject* JS::CreateSyntheticModule(
 +    JSContext* cx, const HandleValueArray& names,
 +    SyntheticModuleEvaluationSteps steps, HandleValue privateValue) {
@@ -343,7 +332,7 @@
    JSRuntime* rt = module->zone()->runtimeFromMainThread();
    module->as<ModuleObject>().scriptSourceObject()->setPrivate(rt, value);
  }
- 
+
  JS_PUBLIC_API void JS::ClearModulePrivate(JSObject* module) {
    // |module| may be gray, be careful not to create edges to it.
 +  if (module->as<ModuleObject>().hasSyntheticModuleFields()) {
@@ -353,16 +342,15 @@
    JSRuntime* rt = module->zone()->runtimeFromMainThread();
    module->as<ModuleObject>().scriptSourceObject()->clearPrivate(rt);
  }
- 
+
  JS_PUBLIC_API JS::Value JS::GetModulePrivate(JSObject* module) {
 +  if (module->as<ModuleObject>().hasSyntheticModuleFields()) {
 +    return module->as<ModuleObject>().syntheticPrivate();
 +  }
    return module->as<ModuleObject>().scriptSourceObject()->getPrivate();
  }
- 
 @@ -1151,7 +1244,10 @@
- 
+
    // Step 3. Return ResolvedBinding Record { [[Module]]: module,
    // [[BindingName]]: exportName }.
 -  return CreateResolvedBindingObject(cx, module, exportName, result);
@@ -371,10 +359,9 @@
 +  Rooted<JSAtom*> binding(cx, module->syntheticBindingNames()[index]);
 +  return CreateResolvedBindingObject(cx, module, binding, result);
  }
- 
+
  // https://tc39.es/ecma262/#sec-getmodulenamespace
-@@ -1844,6 +1940,9 @@
- // ES2023 16.2.1.5.1 Link
+@@ -1845,4 +1941,7 @@
  static bool ModuleLink(JSContext* cx, Handle<ModuleObject*> module) {
    if (!module->hasCyclicModuleFields()) {
 +    if (module->status() == ModuleStatus::Unlinked) {
@@ -382,7 +369,6 @@
 +    }
      return true;
    }
- 
 @@ -1902,7 +2001,9 @@
    // Step 1. If module is not a Cyclic Module Record, then
    if (!module->hasCyclicModuleFields()) {
@@ -438,11 +424,11 @@
 +    return true;
 +  }
 +  // Existing default-export synthetic modules have no evaluation steps.
- 
+
    // Step 13. Let pc be ! NewPromiseCapability(%Promise%).
    Rooted<PromiseObject*> resultPromise(cx, CreatePromiseObjectForAsync(cx));
 @@ -2203,10 +2342,22 @@
- 
+
    // Step 1: If module is not a Cyclic Module Record, then
    if (!module->hasCyclicModuleFields()) {
 -    // Step 1.a. Let promise be ! module.Evaluate(). (Skipped)
@@ -472,7 +458,7 @@
 +++ b/js/src/vm/Scope.cpp
 @@ -174,7 +174,7 @@
    slotIndex++;
- 
+
    // Add synthetic exports.
 -  for (JSAtom* exportName : module->syntheticExportNames()) {
 +  for (JSAtom* exportName : module->syntheticBindingNames()) {

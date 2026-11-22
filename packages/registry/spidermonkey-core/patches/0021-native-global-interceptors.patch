@@ -42,7 +42,7 @@
    Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
    if (!GetOwnPropertyDescriptor(cx, global, id, &desc)) {
 @@ -3996,6 +4010,17 @@
- 
+
      switch (bi.kind()) {
        case BindingKind::Var: {
 +        if (varObj->is<GlobalObject>()) {
@@ -78,14 +78,14 @@
 +        continue;
 +      }
 +    }
- 
+
      PropertyResult prop;
      if (!LookupProperty(cx, varObj, name, &pobj, &prop)) {
 --- a/js/src/vm/Interpreter-inl.h
 +++ b/js/src/vm/Interpreter-inl.h
 @@ -92,7 +92,16 @@
    }
- 
+
    /* Take the slow path if shape was not found in a native object. */
 -  if (!receiver->is<NativeObject>() || !holder->is<NativeObject>() ||
 +  if (prop.isNativeInterceptorProperty()) {
@@ -105,7 +105,7 @@
 +++ b/js/src/vm/JSObject.cpp
 @@ -1159,6 +1159,18 @@
    RootedId id(cx, NameToId(name));
- 
+
    for (RootedObject env(cx, envChain); env; env = env->enclosingEnvironment()) {
 +    // Global interceptor reads can find inherited sandbox values even when
 +    // their own-property query declines. Read once, with the engine's existing
@@ -128,39 +128,36 @@
  static MOZ_ALWAYS_INLINE bool NativeLookupOwnPropertyInline(
      JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
      typename MaybeRooted<jsid, allowGC>::HandleType id, PropertyResult* propp) {
-+  if constexpr (allowGC == NoGC) {
-+    if (!id.isEmbeddingPrivateName() &&
-+        obj->getClass()->getNativePropertyInterceptors()) {
++  if constexpr (allowGC == NoGC &&
++                resolveMode != LookupResolveMode::IgnoreResolve) {
++    if (obj->getClass()->getNativePropertyInterceptors()) {
 +      return false;
 +    }
 +  }
    // Native objects should should avoid `lookupProperty` hooks, and those that
    // use them should avoid recursively triggering lookup, and those that still
    // violate this guidance are the ModuleEnvironmentObject.
-@@ -843,8 +849,30 @@
-         return false;
+@@ -836,6 +842,26 @@
        }
      }
 -    if (!NativeLookupOwnPropertyInline<allowGC, resolveMode>(cx, current, id,
 -                                                             propp)) {
 +    bool interceptedAbsent = false;
 +    if constexpr (allowGC == CanGC) {
-+      if (!id.isEmbeddingPrivateName()) {
-+        if (const auto* ops =
-+                current->getClass()->getNativePropertyInterceptors();
-+            ops && ops->hasOwn) {
-+          bool found = false;
-+          bool handled = false;
-+          if (!ops->hasOwn(cx, current, id, &found, &handled)) {
-+            return false;
-+          }
-+          if (handled && found) {
-+            objp.set(current);
-+            propp->setNativeInterceptorProperty();
-+            return true;
-+          }
-+          interceptedAbsent = handled;
++      if (const auto* ops =
++              current->getClass()->getNativePropertyInterceptors();
++          ops && ops->hasOwn) {
++        bool found = false;
++        bool handled = false;
++        if (!ops->hasOwn(cx, current, id, &found, &handled)) {
++          return false;
 +        }
++        if (handled && found) {
++          objp.set(current);
++          propp->setNativeInterceptorProperty();
++          return true;
++        }
++        interceptedAbsent = handled;
 +      }
 +    }
 +    if (interceptedAbsent) {
@@ -169,37 +166,34 @@
 +                   cx, current, id, propp)) {
        return false;
      }
- 
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
-@@ -1655,10 +1655,13 @@
- 
+@@ -1646,10 +1646,12 @@
+
  bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
                                HandleId id, Handle<PropertyDescriptor> desc_,
 -                              ObjectOpResult& result, bool kandeloLazyData) {
 +                              ObjectOpResult& result, bool kandeloLazyData,
 +                              NativePropertyInterception interception) {
    desc_.assertValid();
- 
--  if (!kandeloLazyData && !id.isEmbeddingPrivateName()) {
+
+-  if (!kandeloLazyData) {
 +  if (!kandeloLazyData &&
-+      interception == NativePropertyInterception::Allow &&
-+      !id.isEmbeddingPrivateName()) {
++      interception == NativePropertyInterception::Allow) {
      if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
          ops && ops->defineProperty) {
        bool handled = false;
-@@ -2916,7 +2919,9 @@
- 
+@@ -2898,7 +2900,8 @@
+
    // Pure optimization for the common case. There's no point performing the
    // lookup in step 2.c again, as our caller just did it for us.
 -  if (IsQualified && receiver.isObject() && obj == &receiver.toObject()) {
 +  if (IsQualified && receiver.isObject() && obj == &receiver.toObject() &&
-+      (id.isEmbeddingPrivateName() ||
-+       !obj->getClass()->getNativePropertyInterceptors())) {
-     if (id.isEmbeddingPrivateName()) {
-       return DefineNonexistentProperty(cx, obj, id, v, result);
-     }
-@@ -3077,6 +3082,27 @@
++      !obj->getClass()->getNativePropertyInterceptors()) {
+     // Ensure that a custom GetOwnPropertyOp, if present, doesn't
+     // introduce additional properties which weren't previously found by
+     // LookupOwnProperty.
+@@ -3056,6 +3059,27 @@
  bool js::NativeSetProperty(JSContext* cx, Handle<NativeObject*> obj,
                             HandleId id, HandleValue v, HandleValue receiver,
                             ObjectOpResult& result) {
@@ -239,7 +233,7 @@
 +  bool (*declareGlobal)(JSContext*, HandleObject, HandleId, HandleValue,
 +                        unsigned attrs, bool isVar, bool isEval) = nullptr;
  };
- 
+
  // Bypass is an explicit argument of one engine operation, never ambient state
 @@ -1878,7 +1883,9 @@
                                   HandleId id,
@@ -249,7 +243,7 @@
 +                                 bool kandeloLazyData = false,
 +                                 NativePropertyInterception interception =
 +                                     NativePropertyInterception::Allow);
- 
+
  // Native embedding callback for a lazy DATA property. The record and its data
  // are traced from the property's real slot; there is no JS getter Function.
 --- a/js/src/vm/PropertyResult.h
@@ -262,9 +256,9 @@
      DenseElement,
      TypedArrayElement,
    };
-@@ -57,7 +58,12 @@
+@@ -55,7 +56,12 @@
    }
- 
+
    bool isFound() const { return kind_ != Kind::NotFound; }
 -  bool isNonNativeProperty() const { return kind_ == Kind::NonNativeProperty; }
 +  bool isNonNativeProperty() const {
@@ -276,13 +270,13 @@
    bool isDenseElement() const { return kind_ == Kind::DenseElement; }
    bool isTypedArrayElement() const { return kind_ == Kind::TypedArrayElement; }
    bool isNativeProperty() const { return kind_ == Kind::NativeProperty; }
-@@ -85,6 +91,9 @@
+@@ -83,6 +89,9 @@
    }
- 
+
    void setProxyProperty() { kind_ = Kind::NonNativeProperty; }
 +  void setNativeInterceptorProperty() {
 +    kind_ = Kind::NativeInterceptorProperty;
 +  }
- 
+
    void setDenseElement(uint32_t index) {
      kind_ = Kind::DenseElement;

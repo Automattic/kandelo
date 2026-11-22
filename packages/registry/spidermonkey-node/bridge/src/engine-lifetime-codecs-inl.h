@@ -344,7 +344,7 @@ static void RetireNativeEngineState(JSContext* cx){
   state->emptyStringConstant.reset();
   JS_RemoveFinalizeCallback(cx,FinalizeEngineWeakCallbacks);
   JS_RemoveWeakPointerZonesCallback(cx,UpdateEngineWeakEdges);
-  state->contextEmbedderDataKey.reset();state->compilationOrigins.reset();
+  state->privateEntries.reset();state->continuationData.reset();state->compilationOrigins.reset();
   nativeEngineOwners.erase(it);
   bridge::RetireProcessContext();
 }

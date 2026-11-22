@@ -257,10 +257,11 @@ void Promise::MarkAsHandled(){
 }
 void Promise::MarkAsSilent(){
   auto& frame=*Frame::current;frame.state->AssertForeground();
-  JS::Rooted<js::PromiseObject*> promise(frame.cx,NativePromise(frame,cell().value));
-  // The engine checks this bit only for debugger rejection delivery. Node's
-  // rejection tracker and the Promise's handled state remain independent.
-  promise->setEmbedderSilent();
+  CHECK(NativePromise(frame,cell().value));
+  // Both supported profiles disable Inspector and never expose a Debugger.
+  // Silence only affects debugger delivery, so it has no observable action in
+  // this profile. The Inspector follow-up must implement it before activation.
+  // Never change the handled bit or Node's unhandled-rejection tracker here.
 }
 PromiseRejectMessage::PromiseRejectMessage(Local<Promise> promise,PromiseRejectEvent event,Local<Value> value)
     :promise_(promise),event_(event),value_(value){}

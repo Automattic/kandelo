@@ -3,7 +3,7 @@
 @@ -444,6 +444,8 @@
    }
  };
- 
+
 +struct NativePropertyInterceptorOps;
 +
  struct MOZ_STATIC_CLASS ClassExtension {
@@ -19,17 +19,17 @@
 +  // Classes without this extension retain their existing paths unchanged.
 +  const NativePropertyInterceptorOps* nativePropertyInterceptors = nullptr;
  };
- 
+
  struct MOZ_STATIC_CLASS ObjectOps {
 @@ -628,6 +635,10 @@
    const js::ObjectOps* oOps;
- 
+
    // Public accessors:
 +
 +  const js::NativePropertyInterceptorOps* getNativePropertyInterceptors() const {
 +    return ext ? ext->nativePropertyInterceptors : nullptr;
 +  }
- 
+
    JSAddPropertyOp getAddProperty() const {
      return cOps ? cOps->addProperty : nullptr;
 --- a/js/src/vm/NativeObject.h
@@ -37,7 +37,7 @@
 @@ -1834,6 +1834,35 @@
    }
  }
- 
+
 +// Embedding hooks for actual native objects. All JS edges remain in traced
 +// object storage owned by the embedding; this vtable holds native code only.
 +// A false return propagates the existing engine failure. A true return with
@@ -68,16 +68,16 @@
 +enum class NativePropertyInterception { Allow, Bypass };
 +
  /*** Standard internal methods **********************************************/
- 
+
  /*
 @@ -1897,11 +1926,16 @@
- 
+
  extern bool NativeGetOwnPropertyDescriptor(
      JSContext* cx, Handle<NativeObject*> obj, HandleId id,
 -    MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> desc);
 +    MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> desc,
 +    NativePropertyInterception interception = NativePropertyInterception::Allow);
- 
+
  extern bool NativeGetProperty(JSContext* cx, Handle<NativeObject*> obj,
                                HandleValue receiver, HandleId id,
                                MutableHandleValue vp);
@@ -85,16 +85,16 @@
 +extern bool NativeGetPropertyBypassingInterceptors(
 +    JSContext* cx, Handle<NativeObject*> obj, HandleValue receiver, HandleId id,
 +    MutableHandleValue vp);
- 
+
  extern bool NativeGetPropertyNoGC(JSContext* cx, NativeObject* obj,
                                    const Value& receiver, jsid id, Value* vp);
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
-@@ -1658,6 +1658,19 @@
+@@ -1649,6 +1649,19 @@
                                ObjectOpResult& result, bool kandeloLazyData) {
    desc_.assertValid();
- 
-+  if (!kandeloLazyData && !id.isEmbeddingPrivateName()) {
+
++  if (!kandeloLazyData) {
 +    if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
 +        ops && ops->defineProperty) {
 +      bool handled = false;
@@ -110,19 +110,16 @@
    // Section numbers and step numbers below refer to ES2025, draft rev
    // ac21460fedf4b926520b06c9820bdbebad596a8b.
    //
-@@ -2289,7 +2302,23 @@
-   // 4.a. below.
+@@ -2277,5 +2290,19 @@
    for (;;) {
      // Step 1.
 -    if (!NativeLookupOwnPropertyInline<CanGC>(cx, pobj, id, &prop)) {
 +    bool handled = false;
 +    bool found = false;
-+    if (!id.isEmbeddingPrivateName()) {
-+      if (const auto* ops = pobj->getClass()->getNativePropertyInterceptors();
-+          ops && ops->hasOwn) {
-+        if (!ops->hasOwn(cx, pobj, id, &found, &handled)) {
-+          return false;
-+        }
++    if (const auto* ops = pobj->getClass()->getNativePropertyInterceptors();
++        ops && ops->hasOwn) {
++      if (!ops->hasOwn(cx, pobj, id, &found, &handled)) {
++        return false;
 +      }
 +    }
 +    if (handled) {
@@ -134,16 +131,14 @@
 +    } else if (!NativeLookupOwnPropertyInline<CanGC>(cx, pobj, id, &prop)) {
        return false;
      }
- 
-@@ -2331,7 +2360,24 @@
- 
+@@ -2318,7 +2345,23 @@
+
  bool js::NativeGetOwnPropertyDescriptor(
      JSContext* cx, Handle<NativeObject*> obj, HandleId id,
 -    MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc) {
 +    MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc,
 +    NativePropertyInterception interception) {
-+  if (interception == NativePropertyInterception::Allow &&
-+      !id.isEmbeddingPrivateName()) {
++  if (interception == NativePropertyInterception::Allow) {
 +    if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
 +        ops && ops->getOwnPropertyDescriptor) {
 +      bool handled = false;
@@ -161,7 +156,7 @@
    PropertyResult prop;
    if (!NativeLookupOwnProperty<CanGC>(cx, obj, id, &prop)) {
      return false;
-@@ -2537,7 +2583,8 @@
+@@ -2524,7 +2567,8 @@
   *
   * ES2025 draft rev ac21460fedf4b926520b06c9820bdbebad596a8b
   */
@@ -171,23 +166,21 @@
  static MOZ_ALWAYS_INLINE bool NativeGetPropertyInline(
      JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
      typename MaybeRooted<Value, allowGC>::HandleType receiver,
-@@ -2550,6 +2597,23 @@
+@@ -2537,6 +2581,21 @@
    // 2.c below.
    for (;;) {
      // Step 1.
 +    if constexpr (interception == NativePropertyInterception::Allow) {
-+      if (!id.isEmbeddingPrivateName()) {
-+        if (const auto* ops = pobj->getClass()->getNativePropertyInterceptors()) {
-+          if constexpr (allowGC == NoGC) {
++      if (const auto* ops = pobj->getClass()->getNativePropertyInterceptors()) {
++        if constexpr (allowGC == NoGC) {
++          return false;
++        } else if (ops->get) {
++          bool handled = false;
++          if (!ops->get(cx, pobj, receiver, id, vp, &handled)) {
 +            return false;
-+          } else if (ops->get) {
-+            bool handled = false;
-+            if (!ops->get(cx, pobj, receiver, id, vp, &handled)) {
-+              return false;
-+            }
-+            if (handled) {
-+              return true;
-+            }
++          }
++          if (handled) {
++            return true;
 +          }
 +        }
 +      }
@@ -195,7 +188,7 @@
      if (!NativeLookupOwnPropertyInline<allowGC>(cx, pobj, id, &prop)) {
        return false;
      }
-@@ -2599,6 +2663,13 @@
+@@ -2586,6 +2645,13 @@
                             MutableHandleValue vp) {
    return NativeGetPropertyInline<CanGC>(cx, obj, receiver, id, NotNameLookup,
                                          vp);
@@ -207,41 +200,37 @@
 +  return NativeGetPropertyInline<CanGC, NativePropertyInterception::Bypass>(
 +      cx, obj, receiver, id, NotNameLookup, vp);
  }
- 
+
  bool js::NativeGetPropertyNoGC(JSContext* cx, NativeObject* obj,
-@@ -3016,6 +3087,18 @@
+@@ -3000,6 +3066,16 @@
    // implementation, but unfortunately not similar enough to common up.)
    for (;;) {
      // OrdinarySet, step 1.
-+    if (!id.isEmbeddingPrivateName()) {
-+      if (const auto* ops = pobj->getClass()->getNativePropertyInterceptors();
-+          ops && ops->set) {
-+        bool handled = false;
-+        if (!ops->set(cx, pobj, receiver, id, v, result, &handled)) {
-+          return false;
-+        }
-+        if (handled) {
-+          return true;
-+        }
-+      }
-+    }
-     if (!NativeLookupOwnPropertyInline<CanGC>(cx, pobj, id, &prop)) {
-       return false;
-     }
-@@ -3112,6 +3195,18 @@
-  */
- bool js::NativeDeleteProperty(JSContext* cx, Handle<NativeObject*> obj,
-                               HandleId id, ObjectOpResult& result) {
-+  if (!id.isEmbeddingPrivateName()) {
-+    if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
-+        ops && ops->deleteProperty) {
++    if (const auto* ops = pobj->getClass()->getNativePropertyInterceptors();
++        ops && ops->set) {
 +      bool handled = false;
-+      if (!ops->deleteProperty(cx, obj, id, result, &handled)) {
++      if (!ops->set(cx, pobj, receiver, id, v, result, &handled)) {
 +        return false;
 +      }
 +      if (handled) {
 +        return true;
 +      }
++    }
+     if (!NativeLookupOwnPropertyInline<CanGC>(cx, pobj, id, &prop)) {
+       return false;
+     }
+@@ -3096,6 +3172,16 @@
+  */
+ bool js::NativeDeleteProperty(JSContext* cx, Handle<NativeObject*> obj,
+                               HandleId id, ObjectOpResult& result) {
++  if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
++      ops && ops->deleteProperty) {
++    bool handled = false;
++    if (!ops->deleteProperty(cx, obj, id, result, &handled)) {
++      return false;
++    }
++    if (handled) {
++      return true;
 +    }
 +  }
    // Step 1.
@@ -249,13 +238,12 @@
    if (!NativeLookupOwnProperty<CanGC>(cx, obj, id, &prop)) {
 --- a/js/src/vm/NativeObject-inl.h
 +++ b/js/src/vm/NativeObject-inl.h
-@@ -837,6 +837,12 @@
+@@ -830,6 +830,11 @@
    typename MaybeRooted<NativeObject*, allowGC>::RootType current(cx, obj);
- 
+
    while (true) {
 +    if constexpr (allowGC == NoGC) {
-+      if (!id.isEmbeddingPrivateName() &&
-+          current->getClass()->getNativePropertyInterceptors()) {
++      if (current->getClass()->getNativePropertyInterceptors()) {
 +        return false;
 +      }
 +    }
@@ -264,41 +252,38 @@
        return false;
 --- a/js/src/vm/JSObject.cpp
 +++ b/js/src/vm/JSObject.cpp
-@@ -1329,6 +1329,20 @@
+@@ -1326,6 +1326,18 @@
      return true;
    }
- 
-+  if (!id.isEmbeddingPrivateName()) {
-+    if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
-+        ops && ops->hasOwn) {
-+      bool handled = false;
-+      bool found = false;
-+      if (!ops->hasOwn(cx, obj, id, &found, &handled)) {
-+        return false;
-+      }
-+      if (handled) {
-+        *result = found;
-+        return true;
-+      }
+
++  if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
++      ops && ops->hasOwn) {
++    bool handled = false;
++    bool found = false;
++    if (!ops->hasOwn(cx, obj, id, &found, &handled)) {
++      return false;
++    }
++    if (handled) {
++      *result = found;
++      return true;
 +    }
 +  }
    PropertyResult prop;
    if (!NativeLookupOwnProperty<CanGC>(cx, obj.as<NativeObject>(), id, &prop)) {
      return false;
-@@ -1348,7 +1362,9 @@
- 
+@@ -1345,7 +1357,8 @@
+
  bool js::LookupOwnPropertyPure(JSContext* cx, JSObject* obj, jsid id,
                                 PropertyResult* propp) {
 -  if (obj->getOpsLookupProperty()) {
 +  if (obj->getOpsLookupProperty() ||
-+      (!id.isEmbeddingPrivateName() &&
-+       obj->getClass()->getNativePropertyInterceptors())) {
++      (obj->getClass()->getNativePropertyInterceptors())) {
      return false;
    }
    return NativeLookupOwnPropertyInline<NoGC,
-@@ -1575,6 +1591,11 @@
+@@ -1572,6 +1585,11 @@
                        obj->as<NativeObject>().getDenseCapacity());
- 
+
      return result.succeed();
 +  }
 +
@@ -306,7 +291,7 @@
 +      ops && ops->preventExtensions) {
 +    return ops->preventExtensions(cx, obj, result);
    }
- 
+
    if (obj->is<NativeObject>()) {
 --- a/js/src/builtin/Object.cpp
 +++ b/js/src/builtin/Object.cpp
@@ -326,16 +311,14 @@
        NativeLookupOwnProperty<NoGC>(cx, &obj->as<NativeObject>(), id, &prop)) {
      if (prop.isNotFound()) {
        *enumerable = false;
-@@ -1046,7 +1048,8 @@
-                             bool* optimized) {
+@@ -1047,5 +1049,6 @@
    MOZ_ASSERT(*optimized == false);
- 
+
 -  if (!from->is<NativeObject>() || !to->is<NativeObject>()) {
 +  if (!from->is<NativeObject>() || !to->is<NativeObject>() ||
 +      from->getClass()->getNativePropertyInterceptors()) {
      return true;
    }
- 
 @@ -1518,6 +1521,7 @@
    // because their enumerate hook is slowish, it's more performant to
    // exclude them directly instead of executing the hook first.
@@ -346,7 +329,7 @@
    }
 @@ -1857,7 +1861,8 @@
      }
- 
+
      // Step 4.a.i.
 -    if (obj->is<NativeObject>()) {
 +    if (obj->is<NativeObject>() &&

@@ -3,7 +3,7 @@
 @@ -248,6 +248,11 @@
    js::UniquePtr<NonSyntacticLexialEnvironmentsMap>
        nonSyntacticLexicalEnvironments_;
- 
+
 +  // The object's key is weak; its actual constructor is live with that key.
 +  // Use ESR153's zone-owned system-map type and barriers.
 +  using ConstructorIdentityMap = WeakMap<JSObject*, JSObject*, ZoneAllocPolicy>;
@@ -14,13 +14,13 @@
    JS::WeakCache<js::InnerViewTable> innerViews;
 @@ -265,6 +270,10 @@
    static inline ObjectRealm& get(const JSObject* obj);
- 
+
    explicit ObjectRealm(JS::Zone* zone);
 +
 +  [[nodiscard]] bool recordConstructorIdentity(JSContext* cx, HandleObject obj,
 +                                             HandleObject constructor);
 +  JSObject* getConstructorIdentity(JSObject* obj);
- 
+
    ObjectRealm(const ObjectRealm&) = delete;
    void operator=(const ObjectRealm&) = delete;
 --- a/js/src/vm/Realm.cpp
@@ -28,7 +28,7 @@
 @@ -256,7 +256,36 @@
    }
  }
- 
+
 +bool ObjectRealm::recordConstructorIdentity(JSContext* cx, HandleObject obj,
 +                                            HandleObject constructor) {
 +  MOZ_ASSERT(&ObjectRealm::get(obj) == this);
@@ -64,7 +64,7 @@
    }
 @@ -306,6 +335,10 @@
  }
- 
+
  void ObjectRealm::finishRoots() {
 +  if (constructorIdentity_) {
 +    constructorIdentity_->clear();
@@ -76,7 +76,7 @@
 @@ -613,6 +646,12 @@
      size_t* nonSyntacticLexicalEnvironmentsArg) {
    *innerViewsArg += innerViews.sizeOfExcludingThis(mallocSizeOf);
- 
+
 +  if (constructorIdentity_) {
 +    *objectMetadataTablesArg +=
 +        mallocSizeOf(constructorIdentity_.get()) +
@@ -94,18 +94,18 @@
  #include "vm/NativeObject.h"  // js::NativeObject::create
 +#include "vm/Realm.h"         // js::ObjectRealm
  #include "vm/Shape.h"         // js::Shape
- 
+
  #include "gc/ObjectKind-inl.h"  // js::gc::GetGCObjectKind
 @@ -73,12 +74,18 @@
      return false;
    }
- 
+
 -  PlainObject* obj = PlainObject::createWithShape(cx, shape, newKind);
 +  Rooted<PlainObject*> obj(cx, PlainObject::createWithShape(cx, shape, newKind));
    if (!obj) {
      return false;
    }
- 
+
    MOZ_ASSERT(obj->nonCCWRealm() == callee->realm());
 +  // Record the function that actually allocated this base receiver. Derived
 +  // construction and returned replacement objects have distinct identities.

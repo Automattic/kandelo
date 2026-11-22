@@ -63,8 +63,10 @@ struct State {
   std::map<std::u16string,std::unique_ptr<Data>> apiSymbols,apiPrivateNames;
   std::unique_ptr<JS::PersistentRootedObject> templateRealm;
   std::unique_ptr<JS::PersistentRootedObject> compilationOrigins;
-  // Each actual global owns its fields; the engine roots only their key.
-  std::unique_ptr<JS::PersistentRootedSymbol> contextEmbedderDataKey;
+  // Hidden private entries are ephemerons, never properties on user objects.
+  // Globals keep their GC-sensitive context fields in application slots.
+  std::unique_ptr<JS::PersistentRootedObject> privateEntries;
+  std::unique_ptr<JS::PersistentRootedValue> continuationData;
   struct ExternalStringResourceRecord {
     String::ExternalOneByteStringResource* one=nullptr;
     String::ExternalStringResource* two=nullptr;
@@ -103,6 +105,14 @@ struct State {
       :cx(context),ownedIsolate(external?nullptr:std::make_unique<Isolate>()),
        isolate(external?*external:*ownedIsolate){if(!cx)Crash("Missing engine context");}
   ~State()=default;
+  JS::Value& ContinuationData(){
+    AssertForeground();
+    if(!continuationData){
+      try {continuationData=std::make_unique<JS::PersistentRootedValue>(cx,JS::UndefinedValue());}
+      catch(const std::bad_alloc&){bridge::FatalOutOfMemory(&isolate,"Native continuation root",false);}
+    }
+    return continuationData->get();
+  }
   bool IsForeground()const{return foreground_==std::this_thread::get_id();}
   void AssertForeground()const{if(foreground_!=std::this_thread::get_id())Crash("Wrong engine thread");}
   void CheckLocalHandleAllocation(size_t level)const{

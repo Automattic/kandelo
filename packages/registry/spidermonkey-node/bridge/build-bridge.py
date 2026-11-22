@@ -106,6 +106,7 @@ def build(args):
                    'packages/registry/spidermonkey-node/bridge/tools/prepare-nodejs-profiler-metadata.py',
                    'packages/registry/spidermonkey-node/bridge/tools/prepare-nodejs-regexp-property-api.py',
                    'packages/registry/spidermonkey-node/bridge/tools/prepare-nodejs-value-wire-api.py',
+                   'packages/registry/spidermonkey-node/bridge/native-source-patches/0010-native-value-wire-safety.patch',
                    'packages/registry/spidermonkey-node/bridge/tools/prepare-nodejs-native-interrupts.py',
                    'packages/registry/spidermonkey-node/bridge/tools/prepare-nodejs-tracing.py']
     source_tree_hash = hashlib.sha256(json.dumps(source_tree, sort_keys=True,
@@ -279,7 +280,8 @@ def build(args):
         '--manifest', str(manifest), '--output', str(staged)], text=True))
     value_wire_metadata = json.loads(subprocess.check_output([
         'python3', str(root / 'packages/registry/spidermonkey-node/bridge/tools/prepare-nodejs-value-wire-api.py'),
-        '--manifest', str(manifest), '--output', str(staged)], text=True))
+        '--manifest', str(manifest), '--output', str(staged),
+        '--patch', str(root / 'packages/registry/spidermonkey-node/bridge/native-source-patches/0010-native-value-wire-safety.patch')], text=True))
     for script, destination, extra in [
         ('prepare-nodejs-native-interrupts.py', 'native-interrupt-upstream',
          ['--patch', str(root / 'packages/registry/spidermonkey-node/bridge/native-source-patches/0001-native-interrupt-transport.patch')]),

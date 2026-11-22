@@ -54,24 +54,24 @@ Maybe<bool> Object::Has(Local<Context> context,uint32_t index){
   if(!JS_WrapObject(frame.cx,&object)||!JS_HasElement(frame.cx,object,index,&found))return {};
   return Just(found);
 }
-Maybe<bool> Object::HasPrivate(Local<Context> context,Local<Private> key){
+Maybe<bool> Object::HasPrivate(Local<Context> context,Local<Private> property){
   auto& frame=Current(context->isolate);NativeNoScriptEntry entry(frame);
   if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
-  Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());JS::RootedValue name(frame.cx,Input(key));
-  CHECK(name.isSymbol());JS::RootedSymbol symbol(frame.cx,name.toSymbol());
-  CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
-  JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(name.toSymbol()));bool found;
-  if(!JS_WrapObject(frame.cx,&object)||!JS_HasOwnPropertyById(frame.cx,object,id,&found))return {};
+  Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject()),bag(frame.cx);
+  if(!PrivateEntryBag(frame,object,false,&bag))return {};
+  if(!bag)return Just(false);
+  JSAutoRealm realm(frame.cx,bag);JS::RootedValue key(frame.cx,Input(property));JS::RootedId id(frame.cx);bool found;
+  if(!JS_WrapValue(frame.cx,&key)||!JS_ValueToId(frame.cx,key,&id)||!JS_HasOwnPropertyById(frame.cx,bag,id,&found))return {};
   return Just(found);
 }
-Maybe<bool> Object::DeletePrivate(Local<Context> context,Local<Private> key){
+Maybe<bool> Object::DeletePrivate(Local<Context> context,Local<Private> property){
   auto& frame=Current(context->isolate);NativeNoScriptEntry entry(frame);
   if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
-  Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());JS::RootedValue name(frame.cx,Input(key));
-  CHECK(name.isSymbol());JS::RootedSymbol symbol(frame.cx,name.toSymbol());
-  CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
-  JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(name.toSymbol()));JS::ObjectOpResult result;
-  if(!JS_WrapObject(frame.cx,&object)||!JS_DeletePropertyById(frame.cx,object,id,result))return {};
+  Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject()),bag(frame.cx);
+  if(!PrivateEntryBag(frame,object,false,&bag))return {};
+  if(!bag)return Just(true);
+  JSAutoRealm realm(frame.cx,bag);JS::RootedValue key(frame.cx,Input(property));JS::RootedId id(frame.cx);JS::ObjectOpResult result;
+  if(!JS_WrapValue(frame.cx,&key)||!JS_ValueToId(frame.cx,key,&id)||!JS_DeletePropertyById(frame.cx,bag,id,result))return {};
   return Just(result.ok());
 }
 namespace {

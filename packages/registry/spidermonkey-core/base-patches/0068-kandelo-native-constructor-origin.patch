@@ -2,15 +2,15 @@
 +++ b/js/src/vm/JSContext.h
 @@ -125,6 +125,7 @@
  };
- 
+
  class AutoLockScriptData;
 +class AutoNativeConstructorOrigin;
- 
+
  /* Thread Local Storage slot for storing the context for a thread. */
  extern MOZ_THREAD_LOCAL(JSContext*) TlsContext;
 @@ -236,6 +237,8 @@
    mozilla::Atomic<bool, mozilla::ReleaseAcquire> isExecuting_;
- 
+
   public:
 +  js::AutoNativeConstructorOrigin* nativeConstructorOrigin = nullptr;
 +
@@ -20,9 +20,9 @@
 --- a/js/src/vm/JSObject.h
 +++ b/js/src/vm/JSObject.h
 @@ -822,6 +822,40 @@
- 
+
  namespace js {
- 
+
 +// Actual native-call construction provenance. Nested native calls and script
 +// entries mask their caller's pending allocation record.
 +class MOZ_RAII AutoNativeConstructorOrigin {
@@ -67,7 +67,7 @@
 +    NoteBuiltinConstructorPrototype(cx, args, intrinsicDefaultProto);
      return true;
    }
- 
+
    // We're calling this constructor from a derived class, retrieve the
    // actual prototype from newTarget.
    RootedObject newTarget(cx, &args.newTarget().toObject());
@@ -79,29 +79,29 @@
 +  NoteBuiltinConstructorPrototype(cx, args, intrinsicDefaultProto);
 +  return true;
  }
- 
+
  /* ES6 draft rev 32 (2015 Feb 2) 6.2.4.5 ToPropertyDescriptor(Obj) */
 --- a/js/src/vm/Realm.h
 +++ b/js/src/vm/Realm.h
 @@ -250,7 +250,7 @@
- 
+
    // The object's key is weak; its actual constructor is live with that key.
    // Use ESR153's zone-owned system-map type and barriers.
 -  using ConstructorIdentityMap = WeakMap<JSObject*, JSObject*, ZoneAllocPolicy>;
 +  using ConstructorIdentityMap = WeakMap<JSObject*, JS::Value, ZoneAllocPolicy>;
    js::UniquePtr<ConstructorIdentityMap> constructorIdentity_;
- 
+
   public:
 @@ -272,8 +272,10 @@
    explicit ObjectRealm(JS::Zone* zone);
- 
+
    [[nodiscard]] bool recordConstructorIdentity(JSContext* cx, HandleObject obj,
 -                                             HandleObject constructor);
 +                                               HandleObject constructor,
 +                                               bool direct = true);
    JSObject* getConstructorIdentity(JSObject* obj);
 +  bool hasPrototypeConstruction(JSObject* obj);
- 
+
    ObjectRealm(const ObjectRealm&) = delete;
    void operator=(const ObjectRealm&) = delete;
 --- a/js/src/vm/Realm.cpp
@@ -115,24 +115,22 @@
  #include "js/Wrapper.h"
  #include "util/DefaultLocale.h"
  #include "util/RandomSeed.h"
-@@ -27,11 +29,14 @@
- #include "vm/DateTime.h"
+@@ -28,9 +30,12 @@
  #include "vm/Iteration.h"
  #include "vm/JSContext.h"
 +#include "vm/JSFunction.h"
 +#include "vm/ProxyObject.h"
  #include "wasm/WasmInstance.h"
- 
+
  #include "gc/Marking-inl.h"
  #include "gc/WeakMap-inl.h"
  #include "vm/JSObject-inl.h"
 +#include "vm/NativeObject-inl.h"
- 
+
  using namespace js;
- 
 @@ -257,10 +262,11 @@
  }
- 
+
  bool ObjectRealm::recordConstructorIdentity(JSContext* cx, HandleObject obj,
 -                                            HandleObject constructor) {
 +                                            HandleObject constructor,
@@ -161,7 +159,7 @@
      return false;
    }
 @@ -278,7 +288,224 @@
- 
+
  JSObject* ObjectRealm::getConstructorIdentity(JSObject* obj) {
    MOZ_ASSERT(&ObjectRealm::get(obj) == this);
 -  return constructorIdentity_ ? constructorIdentity_->get(obj) : nullptr;
@@ -384,7 +382,7 @@
 +  }
 +  return JS_NewStringCopyZ(cx, receiver->getClass()->name);
  }
- 
+
  void ObjectRealm::trace(JSTracer* trc) {
 --- a/js/src/vm/PlainObject-inl.h
 +++ b/js/src/vm/PlainObject-inl.h
@@ -402,7 +400,7 @@
 --- a/js/src/vm/NativeObject-inl.h
 +++ b/js/src/vm/NativeObject-inl.h
 @@ -504,6 +504,10 @@
- 
+
    if (slotSpan > 0) {
      nobj->initSlots(nfixed, slotSpan);
 +  }
@@ -410,7 +408,7 @@
 +  if (!RecordPendingConstructorIdentity(cx, nobj)) {
 +    return nullptr;
    }
- 
+
    if (MOZ_UNLIKELY(cx->realm()->hasAllocationMetadataBuilder())) {
 --- a/js/src/vm/Interpreter.cpp
 +++ b/js/src/vm/Interpreter.cpp
@@ -424,7 +422,7 @@
      return false;
 @@ -499,6 +500,7 @@
    MOZ_ASSERT(!args.callee().is<ProxyObject>());
- 
+
    AutoRealm ar(cx, &args.callee());
 +  AutoNativeConstructorOrigin constructionScope(cx, args);
    bool ok = native(cx, args.length(), args.base());
@@ -439,14 +437,14 @@
 +            CallArgs constructionArgs = CallArgsFromVp(argc, args);
 +            AutoNativeConstructorOrigin constructionScope(cx, constructionArgs);
              bool success = native(cx, argc, args);
- 
+
              ctx.stack.fp = trampolinePrevFP;
 --- a/js/src/vm/JSFunction.cpp
 +++ b/js/src/vm/JSFunction.cpp
 @@ -1554,6 +1554,10 @@
      return false;
    }
- 
+
 +  if (!RecordNativeConstructorResult(cx, fun)) {
 +    return false;
 +  }
@@ -459,7 +457,7 @@
 @@ -2022,7 +2022,11 @@
      return nullptr;
    }
- 
+
 -  return NewObjectWithClassProto(cx, clasp, proto);
 +  RootedObject obj(cx, NewObjectWithClassProto(cx, clasp, proto));
 +  if (!obj || !RecordNativeConstructorResult(cx, obj)) {
@@ -467,7 +465,7 @@
 +  }
 +  return obj;
  }
- 
+
  JS_PUBLIC_API bool JS_IsNative(JSObject* obj) {
 --- a/js/src/builtin/Object.cpp
 +++ b/js/src/builtin/Object.cpp
@@ -486,8 +484,7 @@
    } else {
 --- a/js/src/builtin/intl/DisplayNames.cpp
 +++ b/js/src/builtin/intl/DisplayNames.cpp
-@@ -295,6 +295,10 @@
-   Rooted<DisplayNamesObject*> displayNames(cx);
+@@ -296,4 +296,8 @@
    displayNames = NewObjectWithClassProto<DisplayNamesObject>(cx, proto);
    if (!displayNames) {
 +    return false;
@@ -496,17 +493,14 @@
 +  if (!RecordNativeConstructorResult(cx, displayNames)) {
      return false;
    }
- 
 --- a/js/src/vm/ArrayObject-inl.h
 +++ b/js/src/vm/ArrayObject-inl.h
-@@ -57,6 +57,10 @@
-     return nullptr;
+@@ -58,4 +58,8 @@
    }
- 
+
 +  if (!RecordPendingConstructorIdentity(cx, aobj)) {
 +    return nullptr;
 +  }
 +
    MOZ_ASSERT(clasp->shouldDelayMetadataBuilder());
    cx->realm()->setObjectPendingMetadata(aobj);
- 

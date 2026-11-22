@@ -1,6 +1,15 @@
 --- a/js/src/vm/SavedFrame.h
 +++ b/js/src/vm/SavedFrame.h
-@@ -47,6 +47,10 @@
+@@ -15,6 +15,8 @@
+ #include "vm/NativeObject.h"
+
+ namespace js {
++
++class ScriptSource;
+
+ class SavedFrame : public NativeObject {
+   friend class SavedStacks;
+@@ -47,6 +49,11 @@
    // Convenient getters for SavedFrame's reserved slots for use from C++.
    JSAtom* getSource();
    uint32_t getSourceId();
@@ -8,65 +17,81 @@
 +  // without this metadata remain explicitly Unknown.
 +  enum class KandeloSourceKind : uint32_t { Unknown, Script, Eval, Function, Wasm };
 +  KandeloSourceKind getKandeloSourceKind();
++  ScriptSource* getKandeloScriptSource();
    // Line number (1-origin).
    uint32_t getLine();
    // Column number in UTF-16 code units.
-@@ -121,6 +125,7 @@
+@@ -121,6 +128,8 @@
    void initFromLookup(JSContext* cx, Handle<Lookup> lookup);
    void initSource(JSAtom* source);
    void initSourceId(uint32_t id);
 +  void initKandeloSourceKind(KandeloSourceKind);
++  void initKandeloScriptSource(ScriptSource*);
    void initLine(uint32_t line);
    void initColumn(JS::TaggedColumnNumberOneOrigin column);
    void initFunctionDisplayName(JSAtom* maybeName);
-@@ -134,6 +139,7 @@
+@@ -134,6 +143,8 @@
      // The reserved slots in the SavedFrame class.
      JSSLOT_SOURCE,
      JSSLOT_SOURCEID,
 +    JSSLOT_KANDELO_SOURCE_KIND,
++    JSSLOT_KANDELO_SCRIPT_SOURCE,
      JSSLOT_LINE,
      JSSLOT_COLUMN,
      JSSLOT_FUNCTIONDISPLAYNAME,
 --- a/js/src/vm/SavedStacks.cpp
 +++ b/js/src/vm/SavedStacks.cpp
-@@ -176,9 +176,11 @@
+@@ -6,6 +6,7 @@
+
+ #include "mozilla/Attributes.h"
+ #include "mozilla/DebugOnly.h"
++#include "mozilla/RefPtr.h"
+
+ #include <algorithm>
+ #include <utility>
+@@ -176,9 +177,13 @@
           JSAtom* asyncCause, SavedFrame* parent, JSPrincipals* principals,
           bool mutedErrors,
           const Maybe<LiveSavedFrameCache::FramePtr>& framePtr = Nothing(),
 -         jsbytecode* pc = nullptr, Activation* activation = nullptr)
 +         jsbytecode* pc = nullptr, Activation* activation = nullptr,
-+         KandeloSourceKind sourceKind = KandeloSourceKind::Unknown)
++         KandeloSourceKind sourceKind = KandeloSourceKind::Unknown,
++         ScriptSource* scriptSource = nullptr)
        : source(source),
          sourceId(sourceId),
 +        sourceKind(sourceKind),
++        scriptSource(scriptSource),
          line(line),
          column(column),
          functionDisplayName(functionDisplayName),
-@@ -199,6 +201,7 @@
+@@ -199,6 +204,8 @@
    explicit Lookup(SavedFrame& savedFrame)
        : source(savedFrame.getSource()),
          sourceId(savedFrame.getSourceId()),
 +        sourceKind(savedFrame.getKandeloSourceKind()),
++        scriptSource(savedFrame.getKandeloScriptSource()),
          line(savedFrame.getLine()),
          column(savedFrame.getColumn()),
          functionDisplayName(savedFrame.getFunctionDisplayName()),
-@@ -214,6 +217,7 @@
- 
+@@ -214,6 +221,8 @@
+
    JSAtom* source;
    uint32_t sourceId;
 +  KandeloSourceKind sourceKind;
- 
++  RefPtr<ScriptSource> scriptSource;
+
    // Line number (1-origin).
    uint32_t line;
-@@ -254,6 +258,7 @@
+@@ -254,6 +263,8 @@
   public:
    JSAtom* source() { return value().source; }
    uint32_t sourceId() { return value().sourceId; }
 +  SavedFrame::KandeloSourceKind sourceKind() { return value().sourceKind; }
++  ScriptSource* scriptSource() { return value().scriptSource; }
    uint32_t line() { return value().line; }
    JS::TaggedColumnNumberOneOrigin column() { return value().column; }
    JSAtom* functionDisplayName() { return value().functionDisplayName; }
-@@ -312,7 +317,8 @@
+@@ -312,7 +323,8 @@
    // Assume that we can take line mod 2^32 without losing anything of
    // interest.  If that assumption changes, we'll just need to start with 0
    // and add another overload of AddToHash with more arguments.
@@ -76,7 +101,7 @@
                     lookup.functionDisplayName, lookup.asyncCause,
                     lookup.mutedErrors, parentHash,
                     JSPrincipalsPtrHasher::hash(lookup.principals));
-@@ -321,6 +327,12 @@
+@@ -321,6 +333,12 @@
  /* static */
  bool SavedFrame::HashPolicy::match(SavedFrame* existing, const Lookup& lookup) {
    MOZ_ASSERT(existing);
@@ -86,42 +111,65 @@
 +      existing->getKandeloSourceKind() != lookup.sourceKind) {
 +    return false;
 +  }
- 
+
    if (existing->getLine() != lookup.line) {
      return false;
-@@ -441,6 +453,12 @@
+@@ -428,6 +446,9 @@
+ /* static */
+ void SavedFrame::finalize(JS::GCContext* gcx, JSObject* obj) {
+   MOZ_ASSERT(gcx->onMainThread());
++  if (auto* source = obj->as<SavedFrame>().getKandeloScriptSource()) {
++    source->Release();
++  }
+   JSPrincipals* p = obj->as<SavedFrame>().getPrincipals();
+   if (p) {
+     JSRuntime* rt = obj->runtimeFromMainThread();
+@@ -441,6 +462,18 @@
    return &s->asAtom();
  }
- 
+
 +SavedFrame::KandeloSourceKind SavedFrame::getKandeloSourceKind() {
 +  auto value = getReservedSlot(JSSLOT_KANDELO_SOURCE_KIND);
 +  return value.isUndefined() ? KandeloSourceKind::Unknown
 +                             : KandeloSourceKind(value.toPrivateUint32());
 +}
 +
++ScriptSource* SavedFrame::getKandeloScriptSource() {
++  auto value = getReservedSlot(JSSLOT_KANDELO_SCRIPT_SOURCE);
++  return value.isUndefined() ? nullptr
++                             : static_cast<ScriptSource*>(value.toPrivate());
++}
++
  uint32_t SavedFrame::getSourceId() {
    const Value& v = getReservedSlot(JSSLOT_SOURCEID);
    return v.toPrivateUint32();
-@@ -502,6 +520,10 @@
- 
+@@ -502,6 +535,16 @@
+
  void SavedFrame::initSourceId(uint32_t sourceId) {
    initReservedSlot(JSSLOT_SOURCEID, PrivateUint32Value(sourceId));
 +}
 +
 +void SavedFrame::initKandeloSourceKind(KandeloSourceKind kind) {
 +  initReservedSlot(JSSLOT_KANDELO_SOURCE_KIND, PrivateUint32Value(uint32_t(kind)));
++}
++
++void SavedFrame::initKandeloScriptSource(ScriptSource* source) {
++  // Retain immutable source ownership without retaining a script or its realm.
++  if (source) source->AddRef();
++  initReservedSlot(JSSLOT_KANDELO_SCRIPT_SOURCE, PrivateValue(source));
  }
- 
+
  void SavedFrame::initLine(uint32_t line) {
-@@ -563,6 +585,7 @@
- 
+@@ -563,6 +606,8 @@
+
    initSource(lookup.source());
    initSourceId(lookup.sourceId());
 +  initKandeloSourceKind(lookup.sourceKind());
++  initKandeloScriptSource(lookup.scriptSource());
    initLine(lookup.line());
    initColumn(lookup.column());
    initFunctionDisplayName(lookup.functionDisplayName());
-@@ -1591,13 +1614,32 @@
+@@ -1591,13 +1636,33 @@
      // chain.
      if (seenStartAt) {
        framePushed = true;
@@ -151,7 +199,8 @@
                                    nullptr,  // parent (not known yet)
                                    principals, iter.mutedErrors(), framePtr,
 -                                  iter.pc(), &activation)) {
-+                                  iter.pc(), &activation, sourceKind)) {
++                                  iter.pc(), &activation, sourceKind,
++                                  iter.isWasm() ? nullptr : iter.script()->scriptSource())) {
          return false;
        }
      }

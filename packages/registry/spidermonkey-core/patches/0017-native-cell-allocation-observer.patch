@@ -1,48 +1,38 @@
 --- a/js/src/gc/Allocator-inl.h
 +++ b/js/src/gc/Allocator-inl.h
-@@ -92,6 +92,7 @@
-   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+@@ -93,4 +93,5 @@
    T* string = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
    MemoryReleaseFence(cx->zone());  // See note above.
 +  cx->observeNativeCellAllocation(string, JS::TraceKind::String, sizeof(T));
    return string;
  }
- 
-@@ -106,6 +107,7 @@
-   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+@@ -107,4 +108,5 @@
    T* bigInt = new (mozilla::KnownNotNull, ptr) T();
    MemoryReleaseFence(cx->zone());  // See note above.
 +  cx->observeNativeCellAllocation(bigInt, JS::TraceKind::BigInt, sizeof(T));
    return bigInt;
  }
- 
-@@ -122,6 +124,7 @@
-   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+@@ -123,4 +125,5 @@
    T* gs = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
    MemoryReleaseFence(cx->zone());  // See note above.
 +  cx->observeNativeCellAllocation(gs, JS::TraceKind::GetterSetter, sizeof(T));
    return gs;
  }
- 
-@@ -142,6 +145,7 @@
-   cx->runtime()->gc.recordManagedAllocation(thingSize);
+@@ -143,4 +146,5 @@
    T* object = new (mozilla::KnownNotNull, cell) T();
    MemoryReleaseFence(cx->zone());  // See note above.
 +  cx->observeNativeCellAllocation(object, JS::TraceKind::Object, thingSize);
    return object;
  }
- 
-@@ -157,6 +161,7 @@
-   cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+@@ -158,4 +162,5 @@
    T* cell = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
    MemoryReleaseFence(cx->zone());  // See note above.
 +  cx->observeNativeCellAllocation(cell, gc::MapAllocToTraceKind(kind), sizeof(T));
    return cell;
  }
- 
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -1096,6 +1096,27 @@
+@@ -1078,6 +1078,27 @@
    bool nativeCellHeapLimitRunning = false;
    void (*nativeMinorGCObserver)(JSContext*, bool, void*) = nullptr;
    void* nativeMinorGCObserverData = nullptr;
@@ -73,7 +63,7 @@
 --- a/js/src/gc/Nursery.cpp
 +++ b/js/src/gc/Nursery.cpp
 @@ -1594,6 +1594,11 @@
- 
+
    startProfile(ProfileKey::ObjectsTenuredCallback);
    gc->callObjectsTenuredCallback();
 +  JSContext* nativeContext = rt->mainContextFromOwnThread();
@@ -82,5 +72,5 @@
 +        nativeContext, nativeContext->nativeCellAllocationData);
 +  }
    endProfile(ProfileKey::ObjectsTenuredCallback);
- 
+
    // Sweep malloced buffers.

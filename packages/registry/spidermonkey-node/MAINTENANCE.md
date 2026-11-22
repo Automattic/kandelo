@@ -27,6 +27,46 @@ its actual staged files. The inventory tool records production patch and source
 identities; generated release receipts belong outside maintained source.
 An inventory or source compilation does not certify every method in a file.
 
+## Reduced private-data and job boundary
+
+Context metadata lives in a global application slot, so GC-sensitive native
+lookups need no property resolution, allocation or user JavaScript. Private
+object entries live in an engine-owner weak map; their bags may refer back to
+the object without rooting an otherwise unreachable cycle. Proxy identity stays
+separate from its target. Template-private entries are installed separately
+from public properties. Native fields and Node cleanup retain their owners.
+
+The bridge owns the continuation value and captures/restores it through the
+original job host-data API. A small generic engine option retains host data for
+optimized reactions. Retire its native roots before destroying the JSContext;
+never run a second Environment shutdown from a GC finalizer.
+
+Both profiles continue to disable Inspector and expose no SpiderMonkey
+Debugger. `Promise::MarkAsSilent` therefore has no debugger action in this
+profile; it must never mark a rejection handled. Inspector activation must
+restore debugger-silence semantics alongside its debugging adapter.
+
+Serializer buffer-growth/version-error adaptations are explicit in
+`bridge/native-source-patches/0010-native-value-wire-safety.patch`. Preparation
+still selects portable parts of the complete original unit and validates the
+raw source and reversible patch. Source extraction or receipt generation is
+not runtime qualification.
+
+This review revision has not been built or tested. The existing dynamic-import
+extension remains: ordinary engine completion cannot directly preserve
+cross-compartment namespaces, Node-owned evaluation and attribute validation.
+The proposed namespace API alone is insufficient. Any replacement needs a
+complete review; earlier shipping results refer to earlier artifact identities.
+
+Reconsider removing `0029-kandelo-node-dynamic-import.patch` on engine upgrades
+if supported SpiderMonkey interfaces can preserve these contracts with less
+maintained code. A replacement must preserve cross-context results, Node's
+control over evaluation, import-attribute validation, promise/error behavior
+and callback lifetimes without rewriting Node's JavaScript or relying on
+engine internals through undocumented casts. Retaining the extension for this
+cleanup does not make it a permanent requirement. Review the source boundary
+and qualify affected imports on all four hosts before replacing it.
+
 ## Temporary native versions of Wasm helpers
 
 Here, native means a guest C/Rust library loaded through normal `dlopen`. The

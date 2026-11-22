@@ -11,7 +11,7 @@
 @@ -114,16 +115,58 @@
    ~AutoUpdateLiveCompartments();
  };
- 
+
 -class MOZ_RAII AutoRunParallelTask : public GCParallelTask {
 +class MOZ_RAII AutoRunParallelTask
 +#if !(defined(__wasm32__) && !defined(__EMSCRIPTEN__))
@@ -20,7 +20,7 @@
 +{
    // This class takes a pointer to a member function of GCRuntime.
    using TaskFunc = JS_MEMBER_FN_PTR_TYPE(GCRuntime, void);
-+
+
 +#if defined(__wasm32__) && !defined(__EMSCRIPTEN__)
 +  class Task : public GCParallelTask {
 +    TaskFunc func_;
@@ -40,7 +40,7 @@
 +      JS_CALL_MEMBER_FN_PTR(gc, func_);
 +    }
 +  };
- 
++
 +  UniquePtr<Task> task_;
 +  GCRuntime* gc_;
 +  AutoLockHelperThreadState& lock_;
@@ -49,7 +49,7 @@
    TaskFunc func_;
    AutoLockHelperThreadState& lock_;
 +#endif
- 
+
   public:
    AutoRunParallelTask(GCRuntime* gc, TaskFunc func, gcstats::PhaseKind phase,
                        GCUse use, AutoLockHelperThreadState& lock)
@@ -74,5 +74,5 @@
    }
 +#endif
  };
- 
+
  #ifdef JS_GC_ZEAL

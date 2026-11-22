@@ -1,19 +1,19 @@
 --- a/js/public/CompilationAndEvaluation.h
 +++ b/js/public/CompilationAndEvaluation.h
 @@ -12,8 +12,10 @@
- 
+
  #include "jstypes.h"  // JS_PUBLIC_API
- 
+
 +#include "js/experimental/JSStencil.h"
  #include "js/RootingAPI.h"  // JS::Handle, JS::MutableHandle
  #include "js/TypeDecls.h"
 +#include "js/ValueArray.h"
- 
+
  struct JS_PUBLIC_API JSContext;
  class JS_PUBLIC_API JSFunction;
 @@ -191,6 +193,21 @@
      const char* const* argnames, SourceText<mozilla::Utf8Unit>& srcBuf);
- 
+
  /**
 + * Length-aware parameter strings and optional retained compiled data. The
 + * original FunctionCompiler builds the signature and environment chain. On
@@ -36,7 +36,7 @@
 --- a/js/src/vm/CompilationAndEvaluation.cpp
 +++ b/js/src/vm/CompilationAndEvaluation.cpp
 @@ -310,6 +310,22 @@
- 
+
    [[nodiscard]] bool init(const char* name, unsigned nargs,
                            const char* const* argnames) {
 +    return initWithArguments(name, nargs, [&](StringBuilder& target, size_t i) {
@@ -61,7 +61,7 @@
 @@ -340,13 +356,13 @@
        return false;
      }
- 
+
 -    for (unsigned i = 0; i < nargs; i++) {
 +    for (size_t i = 0; i < nargs; i++) {
        if (i != 0) {
@@ -74,19 +74,31 @@
          return false;
        }
      }
-@@ -365,7 +381,9 @@
+@@ -365,7 +381,10 @@
    }
- 
+
    JSFunction* finish(const JS::EnvironmentChain& envChain,
 -                     const ReadOnlyCompileOptions& optionsArg) {
 +                     const ReadOnlyCompileOptions& optionsArg,
 +                     JS::Stencil** stencilOut = nullptr,
-+                     JS::Stencil* cachedStencil = nullptr) {
++                     JS::Stencil* cachedStencil = nullptr,
++                     bool nativeFunctionBody = false) {
      using js::frontend::FunctionSyntaxKind;
- 
+
      if (!funStr_.append(FunctionConstructorFinalBrace.data(),
-@@ -421,11 +439,11 @@
- 
+@@ -409,6 +428,10 @@
+
+     CompileOptions options(cx_, optionsArg);
+     options.setNonSyntacticScope(kind == ScopeKind::NonSyntactic);
++    options.kandeloNativeFunctionBodyStart =
++        nativeFunctionBody
++            ? parameterListEnd_ + uint32_t(FunctionConstructorMedialSigils.length())
++            : 0;
+
+     FunctionSyntaxKind syntaxKind = FunctionSyntaxKind::Statement;
+     RootedFunction fun(cx_);
+@@ -421,11 +444,11 @@
+
        fun = js::frontend::CompileStandaloneFunctionInNonSyntacticScope(
            cx_, options, newSrcBuf, mozilla::Some(parameterListEnd_), syntaxKind,
 -          enclosingScope);
@@ -99,8 +111,8 @@
      }
      if (!fun) {
        return nullptr;
-@@ -475,6 +493,24 @@
- 
+@@ -475,6 +498,25 @@
+
    fc.ok();
    return compiler.finish(envChain, options);
 +}
@@ -120,9 +132,10 @@
 +  }
 +
 +  fc.ok();
-+  return compiler.finish(envChain, options, stencilOut, cachedStencil);
++  return compiler.finish(envChain, options, stencilOut, cachedStencil,
++                         /* nativeFunctionBody = */ true);
  }
- 
+
  JS_PUBLIC_API JSFunction* JS::CompileFunctionUtf8(
 --- a/js/src/frontend/BytecodeCompiler.h
 +++ b/js/src/frontend/BytecodeCompiler.h
@@ -134,7 +147,7 @@
 +    frontend::FunctionSyntaxKind syntaxKind,
 +    InitialStencilAndDelazifications** stencilOut = nullptr,
 +    InitialStencilAndDelazifications* cachedStencil = nullptr);
- 
+
  [[nodiscard]] JSFunction* CompileStandaloneGenerator(
      JSContext* cx, const JS::ReadOnlyCompileOptions& options,
 @@ -230,7 +232,9 @@
@@ -145,7 +158,7 @@
 +    frontend::FunctionSyntaxKind syntaxKind, JS::Handle<Scope*> enclosingScope,
 +    InitialStencilAndDelazifications** stencilOut = nullptr,
 +    InitialStencilAndDelazifications* cachedStencil = nullptr);
- 
+
  extern bool DelazifyCanonicalScriptedFunction(JSContext* cx,
                                                FrontendContext* fc,
 --- a/js/src/frontend/BytecodeCompiler.cpp
@@ -167,7 +180,7 @@
 @@ -1696,31 +1701,57 @@
        }
      }
- 
+
 -    LifoAllocScope parserAllocScope(&cx->tempLifoAlloc());
 -    InheritThis inheritThis = (syntaxKind == FunctionSyntaxKind::Arrow)
 -                                  ? InheritThis::Yes
@@ -241,19 +254,17 @@
 +        source = borrowingStencil.source;
 +      }
      }
- 
+
      fun = gcOutput.get().getFunctionNoBaseIndex(
-@@ -1736,7 +1767,7 @@
-     // nullptr. In this case we have compiled to a native function instead of an
+@@ -1737,5 +1768,5 @@
      // interpreted script.
      if (gcOutput.get().script) {
 -      if (parameterListEnd) {
 +      if (parameterListEnd && !cachedStencil) {
          source->setParameterListEnd(*parameterListEnd);
        }
- 
 @@ -1747,16 +1778,21 @@
- 
+
      assertException.reset();
    }
 +  if (stencilOut) {
@@ -261,7 +272,7 @@
 +  }
    return fun;
  }
- 
+
  JSFunction* frontend::CompileStandaloneFunction(
      JSContext* cx, const JS::ReadOnlyCompileOptions& options,
      JS::SourceText<char16_t>& srcBuf, const Maybe<uint32_t>& parameterListEnd,
@@ -274,12 +285,9 @@
 +                                   FunctionAsyncKind::SyncFunction, nullptr,
 +                                   stencilOut, cachedStencil);
  }
- 
+
  JSFunction* frontend::CompileStandaloneGenerator(
-@@ -1789,10 +1825,11 @@
- JSFunction* frontend::CompileStandaloneFunctionInNonSyntacticScope(
-     JSContext* cx, const JS::ReadOnlyCompileOptions& options,
-     JS::SourceText<char16_t>& srcBuf, const Maybe<uint32_t>& parameterListEnd,
+@@ -1792,7 +1828,8 @@
 -    FunctionSyntaxKind syntaxKind, JS::Handle<Scope*> enclosingScope) {
 +    FunctionSyntaxKind syntaxKind, JS::Handle<Scope*> enclosingScope,
 +    JS::Stencil** stencilOut, JS::Stencil* cachedStencil) {
@@ -291,3 +299,77 @@
 -}
 +                                   enclosingScope, stencilOut, cachedStencil);
 +}
+--- a/js/public/CompileOptions.h
++++ b/js/public/CompileOptions.h
+@@ -498,6 +498,11 @@
+   // presented for compilation.
+   unsigned scriptSourceOffset = 0;
+
++  // A native function-body API presents the body as its own source. Only
++  // that API may accept a hashbang at this absolute UTF-16 offset. Zero
++  // keeps ordinary scripts, nested functions and new Function unchanged.
++  uint32_t kandeloNativeFunctionBodyStart = 0;
++
+   // These only apply to non-function scripts.
+   bool isRunOnce = false;
+   bool noScriptRval = false;
+@@ -519,6 +524,7 @@
+     PrintFields_(lineno);
+     print("column", column.oneOriginValue());
+     PrintFields_(scriptSourceOffset);
++    PrintFields_(kandeloNativeFunctionBodyStart);
+     PrintFields_(isRunOnce);
+     PrintFields_(noScriptRval);
+ #  undef PrintFields_
+--- a/js/src/frontend/TokenStream.cpp
++++ b/js/src/frontend/TokenStream.cpp
+@@ -2967,6 +2967,16 @@
+         break;
+
+       case '#': {
++        // V8's native function compiler treats body offset zero as source
++        // offset zero. Preserve that API rule without removing the header or
++        // accepting it in an ordinary Function constructor/nested function.
++        const auto bodyStart =
++            anyCharsAccess().options().kandeloNativeFunctionBodyStart;
++        if (bodyStart && this->sourceUnits.offset() - 1 == bodyStart &&
++            matchCodeUnit('!')) {
++          this->sourceUnits.consumeRestOfSingleLineComment();
++          continue;
++        }
+         TokenStart start(this->sourceUnits, -1);
+         const Unit* identStart = this->sourceUnits.addressOfNextCodeUnit() - 1;
+         IdentifierEscapes sawEscape;
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -2542,6 +2542,7 @@
+   lineno = rhs.lineno;
+   column = rhs.column;
+   scriptSourceOffset = rhs.scriptSourceOffset;
++  kandeloNativeFunctionBodyStart = rhs.kandeloNativeFunctionBodyStart;
+   isRunOnce = rhs.isRunOnce;
+   noScriptRval = rhs.noScriptRval;
+ }
+--- a/js/src/vm/JSScript.h
++++ b/js/src/vm/JSScript.h
+@@ -1154,6 +1154,11 @@
+   // 0 for other cases.
+   uint32_t parameterListEnd_ = 0;
+
++  // Transient embedding classification, set on each native CompileFunction
++  // publication (including decoded stencils). It adds no root or owner and
++  // does not change Function-constructor parsing or the serialized cache.
++  bool kandeloNativeFunctionBody_ = false;
++
+   // Line number within the file where this source starts (1-origin).
+   uint32_t startLine_ = 0;
+   // Column number within the file where this source starts,
+@@ -1233,6 +1238,8 @@
+   }
+
+   bool isFunctionBody() const { return parameterListEnd_ != 0; }
++  void setKandeloNativeFunctionBody() { kandeloNativeFunctionBody_ = true; }
++  bool isKandeloNativeFunctionBody() const { return kandeloNativeFunctionBody_; }
+
+   // Returns true if this source should display only the function body.
+   // In case of DOM event handler like <div onclick="foo()" the JS code is

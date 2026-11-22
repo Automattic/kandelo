@@ -33,7 +33,7 @@
 +    if (embedderExecutionRestrictions_) return onDisallowedEmbedderExecution();
 +    return checkNativeTermination();
 +  }
- 
+
   private:
    // One thread-safe termination record. Low bits are request/active state;
 --- a/js/src/vm/JSContext.cpp
@@ -41,7 +41,7 @@
 @@ -14,6 +14,7 @@
  #include "mozilla/Sprintf.h"
  #include "mozilla/Utf8.h"  // mozilla::ConvertUtf16ToUtf8
- 
+
 +#include <cstdlib>
  #include <string.h>
  #ifdef ANDROID
@@ -66,7 +66,7 @@
 @@ -159,8 +163,31 @@
    }
  }
- 
+
 +bool JSContext::onDisallowedEmbedderExecution() {
 +  MOZ_RELEASE_ASSERT(js::TlsContext.get() == this);
 +  if (embedderExecutionRestrictions_ & EmbedderCrashOnExecution) {
@@ -93,7 +93,7 @@
 +  // It requires no Realm/Environment and survives their construction/disposal.
 +  embedderExecutionFatal_ = &kandelo_v8_graceful_fatal;
    nativeStackBase_.emplace(GetNativeStackBase());
- 
+
    if (!fx.initInstance()) {
 --- a/js/src/vm/Interpreter.cpp
 +++ b/js/src/vm/Interpreter.cpp
@@ -128,10 +128,10 @@
 +  }
 +
    MOZ_ASSERT(args.length() <= ARGS_LENGTH_MAX);
- 
+
    unsigned skipForCallee = args.length() + 1 + (construct == CONSTRUCT);
 @@ -706,6 +718,10 @@
- 
+
  static bool InternalConstruct(JSContext* cx, const AnyConstructArgs& args,
                                CallReason reason = CallReason::Call) {
 +  if (!cx->checkEmbedderScriptExecution()) {

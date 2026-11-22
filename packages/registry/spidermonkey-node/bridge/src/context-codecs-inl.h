@@ -36,16 +36,14 @@ void FinalizeContextEmbedderStorage(JS::GCContext*,JSObject* object){
 }
 const JSClassOps contextEmbedderOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeContextEmbedderStorage};
 const JSClass contextEmbedderClass={"NodeContextEmbedderStorage",JSCLASS_HAS_RESERVED_SLOTS(7)|JSCLASS_FOREGROUND_FINALIZE,&contextEmbedderOps};
+// The first application slot belongs to this embedding, not SpiderMonkey's
+// global implementation. Reads remain valid while GC forbids allocation.
+constexpr uint32_t contextEmbedderSlot=0;
 
-JSObject* ExistingContextEmbedderStorage(State& state,JSObject* global){
-  if(!state.contextEmbedderDataKey)return nullptr;
+JSObject* ExistingContextEmbedderStorage(State&,JSObject* global){
   CHECK(global&&JS_IsGlobalObject(global));
-  // Direct own-slot lookup avoids resolving a missing name, a global/proxy
-  // hook, compartment entry, allocation, or executing JavaScript during GC.
-  auto& native=global->as<js::NativeObject>();
-  auto property=native.lookupPure(JS::PropertyKey::Symbol(state.contextEmbedderDataKey->get()));
-  if(!property)return nullptr;
-  CHECK(property->isDataProperty());auto value=native.getSlot(property->slot());
+  auto value=JS::GetReservedSlot(global,contextEmbedderSlot);
+  if(value.isUndefined())return nullptr;
   CHECK(value.isObject()&&JS::GetClass(&value.toObject())==&contextEmbedderClass);
   return &value.toObject();
 }
@@ -61,16 +59,10 @@ JSObject* EnsureContextEmbedderStorage(Frame& frame,Context& context){
   if(auto* existing=ExistingContextEmbedderStorage(frame,context))return existing;
   js::AssertHeapIsIdle();
   JS::RootedObject global(frame.cx,&context.cell().value.get().toObject());JSAutoRealm home(frame.cx,global);
-  if(!frame.state->contextEmbedderDataKey){
-    JS::RootedSymbol key(frame.cx,JS::NewEmbeddingPrivateSymbol(frame.cx,nullptr));CHECK(key);
-    frame.state->contextEmbedderDataKey=std::make_unique<JS::PersistentRootedSymbol>(frame.cx,key);
-  }
   JS::RootedObject record(frame.cx,JS_NewObjectWithGivenProto(frame.cx,&contextEmbedderClass,nullptr));CHECK(record);
   auto data=std::make_unique<ContextEmbedderStorage>();
   JS::SetReservedSlot(record,0,JS::PrivateValue(data.release()));
-  JS::RootedId key(frame.cx,JS::PropertyKey::Symbol(frame.state->contextEmbedderDataKey->get()));
-  JS::RootedValue value(frame.cx,JS::ObjectValue(*record));
-  CHECK(JS_DefinePropertyById(frame.cx,global,key,value,JSPROP_READONLY|JSPROP_PERMANENT));
+  JS::SetReservedSlot(global,contextEmbedderSlot,JS::ObjectValue(*record));
   return record;
 }
 void GrowContextFields(JSObject* record,int index){
@@ -208,8 +200,9 @@ struct NativeMicrotaskRecord {
 struct NativeJobQueue final:js::InternalJobQueue {
   NativeMicrotaskData& owner;
   NativeJobQueue(JSContext* cx,NativeMicrotaskData& input):js::InternalJobQueue(cx),owner(input){}
-  // Inherit the engine's complete getHostDefinedData/getHostDefinedGlobal:
-  // their real continuation records and wrapping are already implemented.
+  bool getHostDefinedData(JSContext*,JS::MutableHandleObject,JS::MutableHandleObject)const override;
+  bool getHostDefinedGlobal(JSContext*,JS::MutableHandleObject)const override;
+  bool preservesHostDefinedData()const override;
   void runJobs(JSContext*)override;
   bool isDrainingStopped()const override;
   void traceNonGCThingMicroTask(JSTracer* tracer,JS::Value* value)override{
@@ -270,6 +263,30 @@ NativeMicrotaskRecord::NativeMicrotaskRecord(NativeMicrotaskData* data):owner(da
   CHECK(owner->nativeRecords!=SIZE_MAX);++owner->nativeRecords;
 }
 NativeMicrotaskRecord::~NativeMicrotaskRecord(){CHECK(owner->nativeRecords);--owner->nativeRecords;}
+namespace {
+const JSClass continuationSnapshotClass={"NodeContinuationSnapshot",JSCLASS_HAS_RESERVED_SLOTS(1)};
+}
+bool NativeJobQueue::preservesHostDefinedData()const{
+  auto state=owner.state.lock();return state&&bool(state->continuationData);
+}
+bool NativeJobQueue::getHostDefinedGlobal(JSContext* cx,JS::MutableHandleObject global)const{
+  CHECK(cx==owner.cx);
+  global.set(preservesHostDefinedData()?JS::CurrentGlobalOrNull(cx):nullptr);return true;
+}
+bool NativeJobQueue::getHostDefinedData(JSContext* cx,JS::MutableHandleObject global,
+                                       JS::MutableHandleObject hostData)const{
+  global.set(nullptr);hostData.set(nullptr);CHECK(cx==owner.cx);
+  auto state=owner.state.lock();CHECK(state);
+  if(!state->continuationData)return true;
+  JS::RootedValue snapshot(cx,state->ContinuationData());
+  if(!JS_WrapValue(cx,&snapshot))return false;
+  JS::RootedObject record(cx,JS_NewObjectWithGivenProto(cx,&continuationSnapshotClass,nullptr));
+  if(!record)return false;
+  JS::SetReservedSlot(record,0,snapshot);
+  // Even undefined needs a record, or a resolver's frame would leak into a
+  // reaction registered outside that scope. ESR requires an incumbent global.
+  global.set(JS::CurrentGlobalOrNull(cx));hostData.set(record);return true;
+}
 void NativeJobQueue::runJobs(JSContext* cx){CHECK(cx==owner.cx);owner.queue->PerformCheckpoint(owner.isolate);}
 bool NativeJobQueue::isDrainingStopped()const{return owner.closed||owner.cx->isNativeExecutionTerminating();}
 class NativeJobQueue::Saved final:public JS::JobQueue::SavedJobQueue {
@@ -393,9 +410,9 @@ Isolate::SuppressMicrotaskExecutionScope::SuppressMicrotaskExecutionScope(Isolat
 Isolate::SuppressMicrotaskExecutionScope::~SuppressMicrotaskExecutionScope()=default;
 namespace {
 void EnqueueNativeMicrotask(NativeMicrotaskData& data,std::unique_ptr<NativeMicrotaskRecord> task){
-  CHECK(!data.closed);data.Owner();
+  CHECK(!data.closed);auto state=data.Owner();
   task->global=JS::CurrentGlobalOrNull(data.cx);
-  task->continuation=data.cx->hasKandeloContinuationData()?data.cx->kandeloContinuationData():JS::UndefinedValue();
+  task->continuation=state->continuationData?state->ContinuationData():JS::UndefinedValue();
   JS::RootedValue value(data.cx,JS::PrivateValue(task.get()));
   if(!data.Queues()->enqueueRegularMicroTask(data.cx,value))bridge::FatalOutOfMemory(data.isolate,"Native microtask enqueue",true);
   task.release();
@@ -411,9 +428,9 @@ bool RunNativeMicrotask(NativeMicrotaskData& data,NativeMicrotaskRecord& task){
   // before a realm entry, allocation or callback can collect/move anything.
   JS::RootedObject functionObject(cx,task.function),global(cx,task.global);
   JS::RootedValue continuation(cx,task.continuation);
-  JS::RootedValue previous(cx,cx->hasKandeloContinuationData()?cx->kandeloContinuationData():JS::UndefinedValue());
-  auto restore=mozilla::MakeScopeExit([&]{if(cx->hasKandeloContinuationData())cx->kandeloContinuationData()=previous;});
-  cx->kandeloContinuationData()=continuation;
+  JS::RootedValue previous(cx,frame.state->continuationData?frame.state->ContinuationData():JS::UndefinedValue());
+  auto restore=mozilla::MakeScopeExit([&]{if(frame.state->continuationData)frame.state->ContinuationData()=previous;});
+  frame.state->ContinuationData()=continuation;
   std::optional<Context::Scope> home;
   if(global)home.emplace(frame.OwnContext(global));
   if(functionObject){
@@ -440,11 +457,11 @@ void MicrotaskQueue::PerformCheckpoint(Isolate* isolate){
   Isolate::Scope isolateScope(isolate);HandleScope handles(isolate);auto& frame=Current(isolate);
   data.running=true;auto leave=mozilla::MakeScopeExit([&]{data.running=false;});
   Isolate::SuppressMicrotaskExecutionScope suppress(isolate,this);
-  JS::RootedValue callerContinuation(data.cx,data.cx->hasKandeloContinuationData()?data.cx->kandeloContinuationData():JS::UndefinedValue());
+  JS::RootedValue callerContinuation(data.cx,state->continuationData?state->ContinuationData():JS::UndefinedValue());
   auto restoreContinuation=mozilla::MakeScopeExit([&]{
-    if(data.cx->hasKandeloContinuationData())data.cx->kandeloContinuationData()=callerContinuation;
+    if(state->continuationData)state->ContinuationData()=callerContinuation;
   });
-  if(data.cx->hasKandeloContinuationData())data.cx->kandeloContinuationData()=JS::UndefinedValue();
+  if(state->continuationData)state->ContinuationData()=JS::UndefinedValue();
   // Keep this API call active across job execution so an outer native catch
   // cannot steal an error before intervening JS catch/finally blocks run.
   // It retires while running is still true, suppressing recursive auto drains.
@@ -461,7 +478,25 @@ void MicrotaskQueue::PerformCheckpoint(Isolate* isolate){
       JS::RootedObject global(data.cx,JS::GetExecutionGlobalFromJSMicroTask(job));
       if(!global)continue;
       reportingGlobal=global;
-      Context::Scope home(frame.OwnContext(global));success=JS::RunJSMicroTask(data.cx,job);
+      Context::Scope home(frame.OwnContext(global));
+      JS::RootedValue previous(data.cx,state->continuationData?state->ContinuationData():JS::UndefinedValue());
+      auto restoreJobContext=mozilla::MakeScopeExit([&]{
+        if(state->continuationData)state->ContinuationData()=previous;
+      });
+      if(state->continuationData){
+        JS::RootedObject incumbent(data.cx),hostData(data.cx);
+        success=JS::MaybeGetHostDefinedDataFromJSMicroTask(job,&incumbent,&hostData);
+        JS::RootedValue snapshot(data.cx);
+        if(success&&hostData){
+          JS::RootedObject record(data.cx,js::CheckedUnwrapStatic(hostData));
+          if(!record||JS::GetClass(record)!=&continuationSnapshotClass){
+            JS_ReportErrorASCII(data.cx,"Invalid native job host data");success=false;
+          }else {snapshot=JS::GetReservedSlot(record,0);success=JS_WrapValue(data.cx,&snapshot);}
+        }
+        if(success)state->ContinuationData()=snapshot;
+        else if(!JS_IsExceptionPending(data.cx))JS_ReportErrorASCII(data.cx,"Unavailable native job host data");
+      }else success=true;
+      if(success)success=JS::RunJSMicroTask(data.cx,job);
     }else {
       std::unique_ptr<NativeMicrotaskRecord> native(static_cast<NativeMicrotaskRecord*>(task.get().toPrivate()));
       reportingGlobal=native->global;

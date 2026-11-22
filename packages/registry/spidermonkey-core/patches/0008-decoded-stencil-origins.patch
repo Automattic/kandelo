@@ -1,9 +1,9 @@
 --- a/js/public/experimental/JSStencil.h
 +++ b/js/public/experimental/JSStencil.h
 @@ -193,6 +193,15 @@
- 
+
  namespace JS {
- 
+
 +// Consume a freshly decoded, independently owned stencil before any
 +// instantiation or publication. Reapply current compile-origin metadata using
 +// the existing source-note readers/writers and immutable-data constructors.
@@ -19,17 +19,16 @@
 --- a/js/src/vm/JSScript.h
 +++ b/js/src/vm/JSScript.h
 @@ -1136,6 +1136,9 @@
- 
+
    SharedImmutableTwoByteString displayURL_;
    SharedImmutableTwoByteString sourceMapURL_;
 +  // Retain the parser pragma independently when an option overrides it, so
 +  // decoded code can apply a different option without recovering source tokens.
 +  SharedImmutableTwoByteString sourceMapCommentURL_;
- 
+
    // A string indicating how this source code was introduced into the system.
    // This is a constant, statically allocated C string, so does not need memory
-@@ -1293,6 +1296,10 @@
-   [[nodiscard]] bool setSourceMapURL(FrontendContext* fc, const char16_t* url);
+@@ -1301,4 +1304,8 @@
    [[nodiscard]] bool setSourceMapURL(FrontendContext* fc,
                                       UniqueTwoByteChars&& url);
 +  [[nodiscard]] bool setSourceMapCommentURL(FrontendContext* fc,
@@ -38,11 +37,10 @@
 +      FrontendContext* fc, const JS::ReadOnlyCompileOptions& options);
    bool hasSourceMapURL() const { return bool(sourceMapURL_); }
    const char16_t* sourceMapURL() { return sourceMapURL_.chars(); }
- 
 --- a/js/src/vm/JSScript.cpp
 +++ b/js/src/vm/JSScript.cpp
 @@ -2230,6 +2230,34 @@
- 
+
    displayURL_ = getOrCreateStringZ(fc, std::move(url));
    return bool(displayURL_);
 +}
@@ -74,12 +72,12 @@
 +  }
 +  return true;
  }
- 
+
  bool ScriptSource::setSourceMapURL(FrontendContext* fc, const char16_t* url) {
 --- a/js/src/frontend/Parser.cpp
 +++ b/js/src/frontend/Parser.cpp
 @@ -341,7 +341,7 @@
- 
+
    if (anyChars.hasSourceMapURL()) {
      MOZ_ASSERT(!ss->hasSourceMapURL());
 -    if (!ss->setSourceMapURL(fc_, anyChars.sourceMapURL())) {
@@ -94,7 +92,7 @@
    static constexpr uint8_t HasSourceMapURL = 1 << 2;
    static constexpr uint8_t MutedErrors = 1 << 3;
 +  static constexpr uint8_t HasSourceMapCommentURL = 1 << 4;
- 
+
    uint8_t flags = 0;
    if (mode == XDR_ENCODE) {
 @@ -1311,6 +1312,9 @@
@@ -110,7 +108,7 @@
 @@ -1363,7 +1367,24 @@
      }
    }
- 
+
 -  MOZ_ASSERT(source->parameterListEnd_ == 0);
 +  if (flags & HasSourceMapCommentURL) {
 +    XDRTranscodeString<char16_t> chars;
@@ -130,7 +128,7 @@
 +  // Standalone function stencils need their original parameter boundary after
 +  // decode, just as ordinary CompileFunction sets it before publication.
 +  MOZ_TRY(xdr->codeUint32(&source->parameterListEnd_));
- 
+
    if (flags & MutedErrors) {
      if (mode == XDR_DECODE) {
 --- a/js/src/frontend/Stencil.cpp
@@ -148,7 +146,7 @@
 @@ -6205,6 +6207,246 @@
  void JS::StencilAddRef(JS::Stencil* stencil) { stencil->AddRef(); }
  void JS::StencilRelease(JS::Stencil* stencil) { stencil->Release(); }
- 
+
 +namespace {
 +class DecodedOriginMap {
 +  JSContext* cx_;
@@ -396,7 +394,7 @@
 +++ b/js/src/frontend/SourceNotes.h
 @@ -418,6 +418,8 @@
    }
- 
+
   public:
 +  static unsigned arity(const SrcNote* sn) { return sn->arity(); }
 +

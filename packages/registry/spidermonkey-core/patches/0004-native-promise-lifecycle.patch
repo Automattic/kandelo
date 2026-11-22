@@ -1,6 +1,6 @@
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -1081,6 +1081,26 @@
+@@ -1063,6 +1063,26 @@
    js::ContextData<JS::PromiseRejectionTrackerCallback>
        promiseRejectionTrackerCallback;
    js::ContextData<void*> promiseRejectionTrackerCallbackData;
@@ -24,15 +24,15 @@
 +                                   embedderPromiseLifecycleData);
 +    }
 +  }
- 
+
    // Pre-allocated buffer for storing out-of-memory stack traces.
    // This buffer is allocated during context initialization to avoid
 --- a/js/src/builtin/Promise.cpp
 +++ b/js/src/builtin/Promise.cpp
-@@ -45,6 +45,24 @@
- 
+@@ -44,6 +44,24 @@
+
  using namespace js;
- 
+
 +// Observe real engine operations; never replace Promise algorithms or jobs.
 +static bool EmitEmbedderPromiseHook(
 +    JSContext* cx, JSContext::EmbedderPromiseHookKind kind,
@@ -54,7 +54,7 @@
  static double MillisecondsSinceStartup() {
    auto now = mozilla::TimeStamp::Now();
    return (now - mozilla::TimeStamp::FirstTimeStamp()).ToMilliseconds();
-@@ -825,6 +843,10 @@
+@@ -824,6 +842,10 @@
    // Slot::GeneratorOrPromiseToResolveOrAsyncFromSyncIterator slot
    // holds the async-from-sync iterator object.
    static constexpr uint32_t REACTION_FLAG_ASYNC_FROM_SYNC_ITERATOR = 0x80;
@@ -62,13 +62,13 @@
 +  // A combinator borrowed its aggregate solely for native bookkeeping; this
 +  // is not a real result capability observable as a Promise hook resource.
 +  static constexpr uint32_t REACTION_FLAG_EMBEDDER_BORROWED_CAPABILITY = 0x100;
- 
+
   public:
    enum Slots {
-@@ -977,6 +999,18 @@
+@@ -976,6 +998,18 @@
      setFixedSlot(handlerArgSlot(), arg);
    }
- 
+
 +  void setEmbedderBorrowedCapability() {
 +    setFlagOnInitialState(REACTION_FLAG_EMBEDDER_BORROWED_CAPABILITY);
 +  }
@@ -84,16 +84,14 @@
    void setShouldIgnoreUnhandledRejection() {
      setFlagOnInitialState(REACTION_FLAG_IGNORE_UNHANDLED_REJECTION);
    }
-@@ -1490,6 +1524,8 @@
-     JS::Handle<JS::Value> resolutionVal) {
+@@ -1490,4 +1524,6 @@
    cx->check(promise, resolutionVal);
    MOZ_ASSERT(!IsSettledMaybeWrappedPromise(promise));
 +  if (!EmitEmbedderPromiseHook(cx, JSContext::EmbedderPromiseHookKind::Resolve,
 +                               promise)) return false;
- 
+
    RootedTuple<JSObject*, Value, SavedFrame*, Value, Value> roots(cx);
- 
-@@ -1571,7 +1607,8 @@
+@@ -1570,7 +1606,8 @@
    // Additionally we require that |promise| itself is also a built-in
    // Promise object, so the fast path doesn't need to cope with wrappers.
    bool isBuiltinThen = false;
@@ -103,7 +101,7 @@
        IsNativeFunction(thenVal, Promise_then) &&
        thenVal.toObject().as<JSFunction>().realm() == cx->realm()) {
      isBuiltinThen = true;
-@@ -2095,6 +2132,8 @@
+@@ -2094,6 +2131,8 @@
      JSContext* cx, JS::Handle<PromiseObject*> promise,
      JS::Handle<JS::Value> reason,
      JS::Handle<SavedFrame*> unwrappedRejectionStack /* = nullptr */) {
@@ -112,7 +110,7 @@
    return ResolvePromise(cx, promise, reason, JS::PromiseState::Rejected,
                          unwrappedRejectionStack);
  }
-@@ -2149,7 +2188,7 @@
+@@ -2148,7 +2187,7 @@
   * https://tc39.es/ecma262/#sec-promise-executor
   */
  [[nodiscard]] PromiseObject* js::CreatePromiseObjectWithoutResolutionFunctions(
@@ -121,16 +119,16 @@
    // Steps 3-7.
    JS::Rooted<PromiseObject*> promise(cx, CreatePromiseObjectInternal(cx));
    if (!promise) {
-@@ -2158,6 +2197,8 @@
- 
+@@ -2157,6 +2196,8 @@
+
    AddPromiseFlags(*promise,
                    PROMISE_FLAG_DEFAULT_RESOLVING_FUNCTIONS | extraFlags);
 +  if (!EmitEmbedderPromiseHook(cx, JSContext::EmbedderPromiseHookKind::Init,
 +                               promise, parent)) return nullptr;
- 
+
    // Let the Debugger know about this Promise, after we've set
    // flags and slots.
-@@ -2178,7 +2219,8 @@
+@@ -2177,7 +2218,8 @@
   * As if called with GetCapabilitiesExecutor as the executor argument.
   */
  [[nodiscard]] static PromiseObject* CreatePromiseWithDefaultResolutionFunctions(
@@ -140,25 +138,25 @@
    // Steps 3-7.
    Rooted<PromiseObject*> promise(cx, CreatePromiseObjectInternal(cx));
    if (!promise) {
-@@ -2191,6 +2233,8 @@
+@@ -2190,6 +2232,8 @@
    }
- 
+
    promise->setFixedSlot(PromiseSlot_RejectFunction, ObjectValue(*reject));
 +  if (!EmitEmbedderPromiseHook(cx, JSContext::EmbedderPromiseHookKind::Init,
 +                               promise, parent)) return nullptr;
- 
+
    // Let the Debugger know about this Promise. Do this after we've set
    // flags and functions
-@@ -2210,7 +2254,7 @@
+@@ -2209,7 +2253,7 @@
   */
  [[nodiscard]] static bool NewPromiseCapability(
      JSContext* cx, HandleObject C, MutableHandle<PromiseCapability> capability,
 -    bool canOmitResolutionFunctions) {
 +    bool canOmitResolutionFunctions, HandleObject parent = nullptr) {
    RootedValue cVal(cx, ObjectValue(*C));
- 
+
    // Step 1. If IsConstructor(C) is false, throw a TypeError exception.
-@@ -2239,10 +2283,10 @@
+@@ -2238,10 +2282,10 @@
        cVal.toObject().nonCCWRealm() == cx->realm()) {
      PromiseObject* promise;
      if (canOmitResolutionFunctions) {
@@ -171,16 +169,16 @@
      }
      if (!promise) {
        return false;
-@@ -2399,6 +2443,8 @@
+@@ -2398,6 +2442,8 @@
      }
    }
- 
+
 +  if (!EmitEmbedderPromiseHook(cx, JSContext::EmbedderPromiseHookKind::Resolve,
 +                               promise)) return false;
    return ResolvePromise(cx, promise, reason, JS::PromiseState::Rejected,
                          unwrappedRejectionStack);
  }
-@@ -2592,6 +2638,15 @@
+@@ -2591,6 +2637,15 @@
   * JSFunction object, with all information required for the job's
   * execution stored in in a reaction record in its first extended slot.
   */
@@ -196,7 +194,7 @@
  static bool PromiseReactionJob(JSContext* cx, HandleObject reactionObjIn) {
    RootedTuple<JSObject*, PromiseReactionRecord*, Value, AsyncGeneratorObject*,
                Value, Value, SavedFrame*, JSObject*, JSObject*>
-@@ -2630,14 +2685,18 @@
+@@ -2629,14 +2684,18 @@
    if (reaction->isAsyncFunction()) {
      MOZ_RELEASE_ASSERT(reaction->asyncFunctionGenerator()->realm() ==
                         cx->realm());
@@ -217,37 +215,35 @@
    }
    if (reaction->isDebuggerDummy()) {
      return true;
-@@ -3485,6 +3544,9 @@
+@@ -3484,6 +3543,9 @@
    } else {
      promise->initFixedSlot(PromiseSlot_RejectFunction, ObjectValue(*rejectFn));
    }
 +
 +  if (!EmitEmbedderPromiseHook(cx, JSContext::EmbedderPromiseHookKind::Init,
 +                               promiseObj)) return nullptr;
- 
+
    // Step 9. Let completion be
    //         Call(executor, undefined, « resolvingFunctions.[[Resolve]],
-@@ -3820,7 +3882,8 @@
- 
+@@ -3819,7 +3881,8 @@
+
  [[nodiscard]] static bool PerformPromiseThen(
      JSContext* cx, Handle<PromiseObject*> promise, HandleValue onFulfilled_,
 -    HandleValue onRejected_, Handle<PromiseCapability> resultCapability);
 +    HandleValue onRejected_, Handle<PromiseCapability> resultCapability,
 +    bool observePromise = true);
- 
+
  [[nodiscard]] static bool PerformPromiseThenWithoutSettleHandlers(
      JSContext* cx, Handle<PromiseObject*> promise,
-@@ -4155,7 +4218,8 @@
- 
+@@ -4155,5 +4218,6 @@
  [[nodiscard]] static JSObject* CommonStaticResolveImpl(JSContext* cx,
                                                         HandleObject C,
 -                                                       HandleValue argVal);
 +                                                       HandleValue argVal,
 +                                                       HandleObject parent = nullptr);
- 
+
  static bool IsPromiseSpecies(JSContext* cx, JSFunction* species);
- 
-@@ -4389,7 +4453,8 @@
+@@ -4388,7 +4452,8 @@
        // 4. The result promise doesn't use the default resolving functions,
        //    which in turn means Run{Fulfill,Reject}Function when called from
        //    PromiseReactionJob won't try to resolve the promise.
@@ -257,7 +253,7 @@
            resultPromise->is<PromiseObject>() &&
            !IsPromiseWithDefaultResolvingFunction(
                &resultPromise->as<PromiseObject>())) {
-@@ -4398,7 +4463,7 @@
+@@ -4397,7 +4462,7 @@
        } else {
          // Promise.prototype.then
          // Step 4. Let resultCapability be ? NewPromiseCapability(C).
@@ -266,7 +262,7 @@
            return false;
          }
        }
-@@ -4409,7 +4474,7 @@
+@@ -4408,7 +4473,7 @@
        //                            resultCapability).
        Handle<PromiseObject*> promise = nextPromiseObj.as<PromiseObject>();
        if (!PerformPromiseThen(cx, promise, resolveFunVal, rejectFunVal,
@@ -275,7 +271,7 @@
          return false;
        }
      } else {
-@@ -5936,7 +6001,8 @@
+@@ -5935,7 +6000,8 @@
   */
  [[nodiscard]] static JSObject* CommonStaticResolveImpl(JSContext* cx,
                                                         HandleObject C,
@@ -285,16 +281,14 @@
    // Promise.resolve
    // Step 3. Return ? PromiseResolve(C, x).
    //
-@@ -5980,7 +6046,7 @@
-   // PromiseResolve
+@@ -5980,5 +6046,5 @@
    // Step 3. Let promiseCapability be ? NewPromiseCapability(C).
    Rooted<PromiseCapability> capability(cx);
 -  if (!NewPromiseCapability(cx, C, &capability, true)) {
 +  if (!NewPromiseCapability(cx, C, &capability, true, parent)) {
      return nullptr;
    }
- 
-@@ -6121,13 +6187,14 @@
+@@ -6120,13 +6186,14 @@
   * Unforgeable version.
   */
  /* static */
@@ -305,13 +299,13 @@
    if (!promiseCtor) {
      return nullptr;
    }
- 
+
 -  return CommonStaticResolveImpl(cx, promiseCtor, value);
 +  return CommonStaticResolveImpl(cx, promiseCtor, value, parent);
  }
- 
+
  /**
-@@ -6513,7 +6580,8 @@
+@@ -6510,7 +6577,8 @@
  static bool PromiseThenNewPromiseCapability(
      JSContext* cx, HandleObject promiseObj,
      CreateDependentPromise createDependent,
@@ -321,23 +315,21 @@
    // Step 3. Let C be ? SpeciesConstructor(promise, %Promise%).
    RootedObject C(cx, SpeciesConstructor(cx, promiseObj, JSProto_Promise,
                                          IsPromiseSpecies));
-@@ -6522,12 +6590,14 @@
-   }
- 
+@@ -6520,10 +6588,12 @@
+
    if (createDependent != CreateDependentPromise::Always &&
 +      !cx->embedderPromiseLifecycleHook &&
 +      (!cx->embedderPromiseLifecycleCapable || mayOmitForEmbedder) &&
        IsNativeFunction(C, PromiseConstructor)) {
      return true;
    }
- 
+
    // Step 4. Let resultCapability be ? NewPromiseCapability(C).
 -  if (!NewPromiseCapability(cx, C, resultCapability, true)) {
 +  if (!NewPromiseCapability(cx, C, resultCapability, true, promiseObj)) {
      return false;
    }
- 
-@@ -6580,7 +6650,7 @@
+@@ -6577,7 +6647,7 @@
    // Step 3. Let C be ? SpeciesConstructor(promise, %Promise%).
    // Step 4. Let resultCapability be ? NewPromiseCapability(C).
    RootedField<PromiseObject*, 2> newPromise(
@@ -346,26 +338,24 @@
    if (!newPromise) {
      return nullptr;
    }
-@@ -6621,7 +6691,7 @@
-   Rooted<PromiseCapability> resultCapability(cx);
+@@ -6619,5 +6689,5 @@
    if (!PromiseThenNewPromiseCapability(
            cx, promise, CreateDependentPromise::SkipIfCtorUnobservable,
 -          &resultCapability)) {
 +          &resultCapability, true)) {
      return false;
    }
- 
-@@ -6737,7 +6807,8 @@
+@@ -6734,7 +6804,8 @@
    RootedField<PromiseObject*, 0> promise(
        roots, &promiseVal.toObject().as<PromiseObject>());
- 
+
 -  bool rvalUsed = rvalExplicitlyUsed ||
 +  bool rvalUsed = cx->embedderPromiseLifecycleCapable ||
 +                  cx->embedderPromiseLifecycleHook || rvalExplicitlyUsed ||
                    IsPromiseThenOrCatchRetValImplicitlyUsed(cx, promise);
- 
+
    // Step 3. Let C be ? SpeciesConstructor(promise, %Promise%).
-@@ -6745,7 +6816,7 @@
+@@ -6742,7 +6813,7 @@
    RootedField<PromiseCapability, 1> resultCapability(roots);
    if (rvalUsed) {
      PromiseObject* resultPromise =
@@ -374,7 +364,7 @@
      if (!resultPromise) {
        return false;
      }
-@@ -6900,14 +6971,15 @@
+@@ -6897,14 +6968,15 @@
                                          HandleObject resultPromise,
                                          PromiseHandler onFulfilled,
                                          PromiseHandler onRejected,
@@ -384,7 +374,7 @@
    RootedTuple<JSObject*, PromiseObject*, Value, Value, PromiseCapability,
                PromiseReactionRecord*>
        roots(cx);
- 
+
    // Step 2. Let promise be ? PromiseResolve(%Promise%, value).
    RootedField<JSObject*, 0> promise(
 -      roots, PromiseObject::unforgeableResolve(cx, value));
@@ -392,7 +382,7 @@
    if (!promise) {
      return false;
    }
-@@ -6929,6 +7001,14 @@
+@@ -6926,6 +6998,14 @@
    RootedField<Value, 3> onRejectedValue(roots, Int32Value(int32_t(onRejected)));
    RootedField<PromiseCapability, 4> resultCapability(roots);
    resultCapability.promise().set(resultPromise);
@@ -404,10 +394,10 @@
 +    if (!observed) return false;
 +    resultCapability.promise().set(observed);
 +  }
- 
+
    auto hostDefinedDataObjectOption =
        unwrappedPromise->state() == JS::PromiseState::Pending
-@@ -6971,7 +7051,9 @@
+@@ -6968,7 +7048,9 @@
    auto extra = [&](Handle<PromiseReactionRecord*> reaction) {
      reaction->setIsAsyncGenerator(generator);
    };
@@ -416,9 +406,9 @@
 +      : AsyncGeneratorObject::peekRequest(generator)->promise());
 +  return InternalAwait(cx, value, nullptr, onFulfilled, onRejected, extra, parent);
  }
- 
+
  /**
-@@ -6988,9 +7070,10 @@
+@@ -6985,9 +7067,10 @@
      MOZ_ASSERT(genObj->realm() == cx->realm());
      reaction->setIsAsyncFunction(genObj);
    };
@@ -430,7 +420,7 @@
      return nullptr;
    }
    return genObj->promise();
-@@ -7475,7 +7558,8 @@
+@@ -7472,7 +7555,8 @@
   */
  [[nodiscard]] static bool PerformPromiseThen(
      JSContext* cx, Handle<PromiseObject*> promise, HandleValue onFulfilled_,
@@ -440,16 +430,16 @@
    // Step 1. Assert: IsPromise(promise) is true.
    // Step 2. If resultCapability is not present, then
    // Step 2. a. Set resultCapability to undefined.
-@@ -7521,6 +7605,8 @@
+@@ -7518,6 +7602,8 @@
    if (!reaction) {
      return false;
    }
 +
 +  if (!observePromise) reaction->setEmbedderBorrowedCapability();
- 
+
    // Steps 9-14.
    return PerformPromiseThenWithReaction(cx, promise, reaction);
-@@ -8098,6 +8184,9 @@
+@@ -8095,6 +8181,9 @@
          break;
        case REACTION_FLAG_IGNORE_UNHANDLED_REJECTION:
          known("IGNORE_UNHANDLED_REJECTION");
@@ -459,8 +449,8 @@
          break;
        default:
          unknown(i);
-@@ -8405,7 +8494,7 @@
- 
+@@ -8402,7 +8491,7 @@
+
  [[nodiscard]] bool js::CanSkipAwait(JSContext* cx, HandleValue val,
                                      bool* canSkip) {
 -  if (!cx->canSkipEnqueuingJobs) {
@@ -468,7 +458,7 @@
      *canSkip = false;
      return true;
    }
-@@ -8533,7 +8622,11 @@
+@@ -8510,7 +8599,11 @@
      //
      // Note: We pass the (maybe)wrapped task here since PromiseReactionJob will
      // decide what realm to be in based on the wrapper if it exists.
@@ -479,9 +469,9 @@
 +      return PromiseReactionJob(cx, task);
 +    });
    }
- 
+
    if (unwrappedTask->is<ThenableJob>()) {
-@@ -8550,12 +8643,16 @@
+@@ -8527,12 +8620,16 @@
        case ThenableJob::PromiseResolveThenableJob: {
          // MG:XXX: Unify naming: is it `then` or `handler` make up your mind.
          RootedField<JSObject*, 3> then(roots, job->then());
@@ -500,7 +490,7 @@
        }
  #ifdef NIGHTLY_BUILD
        case ThenableJob::DeferredResolveJob: {
-@@ -8564,7 +8661,9 @@
+@@ -8541,7 +8638,9 @@
          if (promiseRooted->state() != JS::PromiseState::Pending) {
            return true;
          }
@@ -514,13 +504,13 @@
 --- a/js/src/builtin/Promise.h
 +++ b/js/src/builtin/Promise.h
 @@ -261,7 +261,8 @@
- 
+
  // This implements "Let promiseCapability be ! NewPromiseCapability(%Promise%)".
  [[nodiscard]] PromiseObject* CreatePromiseObjectWithoutResolutionFunctions(
 -    JSContext* cx, int32_t extraFlags = 0);
 +    JSContext* cx, int32_t extraFlags = 0,
 +    JS::Handle<JSObject*> parent = nullptr);
- 
+
  [[nodiscard]] bool ResolvePromiseInternal(JSContext* cx,
                                            JS::Handle<JSObject*> promise,
 --- a/js/src/vm/PromiseObject.h
@@ -532,6 +522,6 @@
 -                                      JS::Handle<JS::Value> value);
 +                                      JS::Handle<JS::Value> value,
 +                                      JS::Handle<JSObject*> parent = nullptr);
- 
+
    // Create an instance of the original Promise binding, resolved with the given
    // value *that is not a promise* -- from this realm/compartment or from any

@@ -17,7 +17,7 @@ std::unique_ptr<Data> RetainRoot(Isolate* isolate,Local<Data> input) {
   return input->CloneRoot(isolate,std::make_unique<Cell>(frame.cx,value));
 }
 Local<Value> Isolate::GetContinuationPreservedEmbedderDataV2() {
-  auto& frame=Current(this);JS::RootedValue value(frame.cx,frame.cx->kandeloContinuationData());
+  auto& frame=Current(this);JS::RootedValue value(frame.cx,frame.state->ContinuationData());
   if(!JS_WrapValue(frame.cx,&value))return {};
   return frame.OwnValue(value);
 }
@@ -25,7 +25,7 @@ void Isolate::SetContinuationPreservedEmbedderDataV2(Local<Value> value) {
   auto& frame=Current(this);
   // V8 explicitly treats an empty handle as clearing continuation data. Node's
   // ordinary InternalCallbackScope uses that case for its default frame.
-  frame.cx->kandeloContinuationData()=value.IsEmpty()?JS::UndefinedValue():Input(value).get();
+  frame.state->ContinuationData()=value.IsEmpty()?JS::UndefinedValue():Input(value).get();
 }
 }
 #endif
