@@ -287,6 +287,13 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     // A regular file: the SDK tool names are symlinks to the driver.
     requiredMember: "bin/kandelo-cc",
   },
+  {
+    id: "flang",
+    dependency: "flang-browser-bundle",
+    resolverPath: "programs/wasm32/flang.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/flang",
+  },
   // Autoconf, Automake, Libtool and the other build tools' scripts and data
   // (images/vfs/lib/init/dev-tools.ts).
   ...DEV_TOOL_ARCHIVE_SPECS,

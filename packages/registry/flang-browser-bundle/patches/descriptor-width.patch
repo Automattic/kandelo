@@ -1,0 +1,31 @@
+# @suggest-upstream
+# Flang's C descriptor must use the target's size_t and ptrdiff_t widths.
+# The bundled wasm32 smoke test exercises a rank-one IOLENGTH inquiry.
+# This has been tested with the Kandelo runtime. Drop it when upstream
+# derives these fields from the target data layout.
+--- a/flang/lib/Optimizer/CodeGen/TypeConverter.cpp
++++ b/flang/lib/Optimizer/CodeGen/TypeConverter.cpp
+@@ -222,9 +222,11 @@
+   else
+     dataDescFields.push_back(
+         mlir::LLVM::LLVMPointerType::get(eleTy.getContext()));
+-  // elem_len
+-  dataDescFields.push_back(
+-      getDescFieldTypeModel<kElemLenPosInBox>()(&getContext()));
++  // elem_len is size_t and the dimension fields are ptrdiff_t. Derive
++  // their widths from the target pointer layout when cross-compiling.
++  auto descriptorSizeType =
++      mlir::IntegerType::get(&getContext(), getPointerBitwidth());
++  dataDescFields.push_back(descriptorSizeType);
+   // version
+   dataDescFields.push_back(
+       getDescFieldTypeModel<kVersionPosInBox>()(&getContext()));
+@@ -251,7 +253,7 @@
+       rank = 0;
+   }
+   if (rank > 0) {
+-    auto rowTy = getDescFieldTypeModel<kDimsPosInBox>()(&getContext());
++    auto rowTy = mlir::LLVM::LLVMArrayType::get(descriptorSizeType, 3);
+     dataDescFields.push_back(mlir::LLVM::LLVMArrayType::get(rowTy, rank));
+   }
+   // opt-type-ptr: i8* (see fir.tdesc)

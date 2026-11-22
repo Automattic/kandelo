@@ -1,0 +1,129 @@
+--- a/llvm/lib/Support/CMakeLists.txt
++++ b/llvm/lib/Support/CMakeLists.txt
+@@ -141,6 +141,12 @@
+ endif()
+
+ add_subdirectory(BLAKE3)
++
++# The Kandelo Flang driver launches tools through the platform's spawn API.
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  set_source_files_properties(Program.cpp PROPERTIES
++    COMPILE_DEFINITIONS KANDELO_FLANG_USE_SPAWN)
++endif()
+
+ add_llvm_component_library(LLVMSupport
+   ABIBreak.cpp
+--- a/llvm/lib/Support/Unix/Program.inc
++++ b/llvm/lib/Support/Unix/Program.inc
+@@ -87,6 +87,7 @@
+   return errc::no_such_file_or_directory;
+ }
+
++#ifndef KANDELO_FLANG_USE_SPAWN
+ static bool RedirectIO(std::optional<StringRef> Path, int FD, std::string *ErrMsg) {
+   if (!Path) // Noop
+     return false;
+@@ -114,6 +115,8 @@
+   close(InFD); // Close the original FD
+   return false;
+ }
++
++#endif
+
+ #ifdef HAVE_POSIX_SPAWN
+ static bool RedirectIO_PS(const std::string *Path, int FD, std::string *ErrMsg,
+@@ -136,6 +139,7 @@
+
+ static void TimeOutHandler(int Sig) {}
+
++#ifndef KANDELO_FLANG_USE_SPAWN
+ static void SetMemoryLimits(unsigned size) {
+   struct rlimit r;
+   __typeof__(r.rlim_cur) limit = (__typeof__(r.rlim_cur))(size)*1048576;
+@@ -151,6 +155,8 @@
+   setrlimit(RLIMIT_RSS, &r);
+ #endif
+ }
++
++#endif
+
+ static std::vector<const char *>
+ toNullTerminatedCStringArray(ArrayRef<StringRef> Strings, StringSaver &Saver) {
+@@ -185,8 +191,19 @@
+   // If this OS has posix_spawn and there is no memory limit being implied, use
+   // posix_spawn.  It is more efficient than fork/exec.
+ #ifdef HAVE_POSIX_SPAWN
++#ifdef KANDELO_FLANG_USE_SPAWN
++  // Kandelo provides atomic spawn with optional session creation. Its
++  // spawn attributes cannot express LLVM's child-specific memory limit.
++  if (MemoryLimit != 0) {
++    if (ErrMsg)
++      *ErrMsg = "Child process memory limits are unavailable for Kandelo Flang";
++    return false;
++  }
++  {
++#else
+   // Cannot use posix_spawn if you would like to detach the process
+   if (MemoryLimit == 0 && !DetachProcess) {
++#endif
+     posix_spawn_file_actions_t FileActionsStore;
+     posix_spawn_file_actions_t *FileActions = nullptr;
+
+@@ -232,6 +249,21 @@
+       Envp = const_cast<const char **>(*_NSGetEnviron());
+ #endif
+
++    const posix_spawnattr_t *SpawnAttrs = nullptr;
++#ifdef KANDELO_FLANG_USE_SPAWN
++    posix_spawnattr_t Attrs;
++    if (DetachProcess) {
++      posix_spawnattr_init(&Attrs);
++      int Err = posix_spawnattr_setflags(&Attrs, POSIX_SPAWN_SETSID);
++      if (Err) {
++        posix_spawnattr_destroy(&Attrs);
++        if (FileActions)
++          posix_spawn_file_actions_destroy(FileActions);
++        return !MakeErrMsg(ErrMsg, "Cannot set spawn session", Err);
++      }
++      SpawnAttrs = &Attrs;
++    }
++#endif
+     constexpr int maxRetries = 8;
+     int retries = 0;
+     pid_t PID;
+@@ -239,10 +271,14 @@
+     do {
+       PID = 0; // Make Valgrind happy.
+       Err = posix_spawn(&PID, Program.str().c_str(), FileActions,
+-                        /*attrp*/ nullptr, const_cast<char **>(Argv),
++                        SpawnAttrs, const_cast<char **>(Argv),
+                         const_cast<char **>(Envp));
+     } while (Err == EINTR && ++retries < maxRetries);
+
++#ifdef KANDELO_FLANG_USE_SPAWN
++    if (SpawnAttrs)
++      posix_spawnattr_destroy(&Attrs);
++#endif
+     if (FileActions)
+       posix_spawn_file_actions_destroy(FileActions);
+
+@@ -256,6 +292,11 @@
+   }
+ #endif // HAVE_POSIX_SPAWN
+
++#ifdef KANDELO_FLANG_USE_SPAWN
++#ifndef HAVE_POSIX_SPAWN
++#error "The Kandelo Flang build requires posix_spawn"
++#endif
++#else
+   // Create a child process.
+   int child = fork();
+   switch (child) {
+@@ -329,6 +370,7 @@
+   PI.Process = child;
+
+   return true;
++#endif
+ }
+
+ namespace llvm {

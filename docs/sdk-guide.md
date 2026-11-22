@@ -954,6 +954,10 @@ script that runs `readelf` would conclude a program has no dependencies.
 | `WASM_POSIX_CALLTYPES_PLUGIN` | Use this prebuilt KandeloCallTypes plugin instead of building one; it must be built for the same compiler |
 | `WASM_POSIX_SDK_ROOT` | The SDK directory the native driver keeps its plugin cache and `config.site` in (default: the `sdk/` directory holding `.build/bin/kandelo-cc`) |
 
+## Go Programs
+
+See [Build and run a Go program](go.md) for the experimental pure-Go SDK.
+
 ## Running Programs
 
 ### Node.js
@@ -1066,6 +1070,22 @@ program that calls `fork` must be prepared before execution (see
 the compiler entry point, which prepares Rust executable outputs before
 Cargo runs build scripts or programs. C/C++ links retain their normal
 explicit preparation step.
+
+The experimental wasm32 Fortran toolchain uses a second lazy archive,
+`flang.zip`. It contains `/usr/bin/flang`, the `flang(1)` manual, and the
+static runtime and intrinsic modules under `/usr/lib/kandelo/fortran`.
+Flang compiles Fortran source in the guest and delegates the final link
+to the C/C++ SDK, which has its own lazy archive. Select both packages
+to build a partial shell for Fortran.
+
+```sh
+./run.sh partial shell kandelo-sdk-browser-bundle flang-browser-bundle
+```
+
+The guest smoke test in `host/test/partial-image.test.ts` compiles a
+Fortran program and a C helper, links them with `flang` in the guest, and
+checks formatted file I/O, scalar and array record lengths, and
+`BIND(C)` interoperability.
 
 Programs linked here carry the `kandelo.abi.contract` digest, as programs
 linked by the build machine's SDK do: `cc` stamps it on every executable

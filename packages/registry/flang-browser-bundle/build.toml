@@ -1,0 +1,16 @@
+script_path = "packages/registry/flang-browser-bundle/build.sh"
+inputs = [
+  "packages/registry/flang-browser-bundle/patches",
+  "packages/registry/flang-browser-bundle/stage-bundle.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/activate.sh",
+  "sdk/cmake",
+]
+repo_url = "https://github.com/Progate/llvm-project.git"
+commit = "599361caafb0f81262c0cb6a72fab396c43892e2"
+revision = 1

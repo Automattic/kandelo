@@ -125,6 +125,8 @@
             # memory64 on, matching the host Macs the team develops
             # on (system-installed Node 24/25).
             nodePkgs.nodejs_24
+            # Native Go used to build the source-verified Kandelo toolchain.
+            pkgs.go_1_26
             # Bun: a JavaScriptCore-based runtime. We ship it so the host's
             # teardown reclamation path can be exercised on JSC (the same engine
             # as Safari) in addition to V8 (Node): `npm run test:teardown:engines`
