@@ -28,7 +28,8 @@ wasm32posix-cc -O2 -fPIC -I "$work/include" -I "$ffi/include" \
 objects+=("$work/objects/kandelo.o")
 mkdir -p "$out/include" "$out/lib/pkgconfig" "$out/share/licenses/node-libffi"
 llvm-ar crs "$out/lib/libffi.a" "${objects[@]}"
-install -m644 "$work/include/ffi.h" "$work/include/ffitarget.h" "$out/include/"
+install -m644 "$work/include/ffi.h" "$work/include/ffitarget.h" \
+  "$here/src/ffi-kandelo-private.h" "$out/include/"
 install -m644 "$ffi/LICENSE" "$out/share/licenses/node-libffi/LICENSE.libffi"
 cat > "$out/lib/pkgconfig/libffi.pc" <<PC
 prefix=\${pcfiledir}/../..

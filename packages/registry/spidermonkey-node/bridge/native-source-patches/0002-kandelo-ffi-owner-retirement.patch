@@ -1,20 +1,27 @@
 # Kandelo patch rationale (O11)
 #
-# Node's FFI function/callback objects own a prepared call interface. Our
-# Wasm backend allocates generated adapter resources for it, and standard
-# ffi_cif has no automatic cleanup operation. Connect release to the
-# original owner's destructor rather than leak adapters or free them while
-# callbacks can run. The OS cannot infer that C++ ownership. A private RAII
-# wrapper may simplify the interface later, but removing retirement is not
-# equivalent.
+# A generated Kandelo FFI call adapter has a real native owner. Release it
+# when Node's original FFI wrapper is destroyed, using the package's private
+# companion header. Omitting these calls leaks executable adapters; changing
+# only libc or engine GC cannot retire ownership held by this Node object.
+# The original callback and destructor order remain intact.
 #
-# Judgment: Supported. The original Node FFI owner must release the
-# generated resources whose lifetime it controls.
-#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
 --- a/src/node_ffi.h
 +++ b/src/node_ffi.h
-@@ -29,6 +29,9 @@
- 
+@@ -4,6 +4,9 @@
+
+ #include "base_object.h"
+ #include "ffi.h"
++#if defined(FFI_KANDELO_TARGET)
++#include <ffi-kandelo-private.h>
++#endif
+ #include "ffi/fast.h"
+ #include "uv.h"
+
+@@ -29,6 +32,9 @@
+
  struct FFIFunction {
    FFIFunction() = default;
 +#if defined(FFI_KANDELO_TARGET)
@@ -23,7 +30,7 @@
    FFIFunction(const FFIFunction&) = delete;
    FFIFunction& operator=(const FFIFunction&) = delete;
    FFIFunction(FFIFunction&&) = delete;
-@@ -103,6 +106,9 @@
+@@ -103,6 +109,9 @@
        ffi_closure_free(closure);
        closure = nullptr;
      }
@@ -32,4 +39,4 @@
 +#endif
    }
  };
- 
+

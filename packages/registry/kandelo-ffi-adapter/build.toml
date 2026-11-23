@@ -16,7 +16,6 @@ inputs = [
   "tools/xtask/src/local_abi_identity.rs",
   "tools/xtask/src/stamp_abi_contract.rs",
   "scripts/package-build-roots.sh",
-  "scripts/package-fork-library-build.sh",
   "scripts/package-rust-build-env.sh",
   "scripts/build-rust-sysroot.sh",
   "sdk/activate.sh",

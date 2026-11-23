@@ -133,8 +133,9 @@ it does not require a writable directory or change `TMPDIR`. This storage
 entry alone does not supply a C ABI, qualify guest dynamic loading, or
 establish working FFI adapters.
 
-The `fork-instrument-library` package builds `fork-instrument-capi` as a guest
-static library with `kandelo_fork_instrument.h`. Its synchronous C entry takes
+`kandelo-ffi-adapter` includes `fork-instrument-capi` through its Rust library
+dependency and installs `kandelo_fork_instrument.h`. There is no separate unused
+instrumenter-library package/archive build. Its synchronous C entry takes
 immutable input, an output-byte budget and a private-file factory/context.
 The factory transfers each descriptor exclusively to Rust and is never
 retained. An opaque result owns either the mapped output or a NUL-terminated

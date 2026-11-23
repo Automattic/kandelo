@@ -19,5 +19,5 @@ script_path = "packages/registry/node-libffi/build.sh"
 
 [outputs]
 libs = ["lib/libffi.a"]
-headers = ["include/ffi.h", "include/ffitarget.h"]
+headers = ["include/ffi.h", "include/ffitarget.h", "include/ffi-kandelo-private.h"]
 pkgconfig = ["lib/pkgconfig/libffi.pc"]

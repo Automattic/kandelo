@@ -1,34 +1,34 @@
 # Kandelo patch rationale (O25)
 #
-# Node's source generator runs on the build machine, while its executable
-# and libraries target Kandelo. Separate include/link flags, OS settings
-# and archive rules so host tools do not consume guest libraries. A host
-# libuv may be required without building a second guest libuv. The bridge
-# runs too late to repair this graph. Review stock toolset controls and
-# narrow the broad wasm32 dependency condition to the actual generator
-# requirement.
+# Node's js2c generator runs on the build machine; Node itself uses guest
+# libraries. Scope external flags to guest targets and give js2c its real
+# bundled host libuv when that isolation removes the guest dependency. The
+# condition now names this consumer requirement rather than every wasm32
+# build. Keep the original host/target build algorithms and one guest libuv;
+# the runtime bridge cannot repair a compiled dependency graph afterward.
 #
-# Judgment: Mixed. Host tools need native dependencies, but the broad Wasm-
-# specific libuv condition needs a narrower consumer-based review.
-#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
 --- a/configure.py
 +++ b/configure.py
 @@ -27,7 +27,7 @@
  tools_path = Path('tools')
- 
+
  sys.path.insert(0, str(tools_path / 'gyp' / 'pylib'))
 -from gyp.common import GetFlavor
 +from gyp.common import GetFlavor, GetFlavorByPlatform
  from packaging.version import Version
- 
+
  # imports in tools/configure.d
-@@ -3030,6 +3030,20 @@
+@@ -3030,6 +3030,22 @@
  else:
    make_global_settings = False
- 
+
 +# Kandelo's external libraries and includes belong to the guest target. Build
 +# tools run on the actual host and obtain their own original dependencies.
++variables['node_js2c_requires_bundled_host_libuv'] = 0
 +if flavor == 'kandelo' and options.cross_compiling:
++  variables['node_js2c_requires_bundled_host_libuv'] = 1
 +  variables['host_os'] = GetFlavorByPlatform()
 +  output.setdefault('target_conditions', []).append([
 +    '_toolset=="target"', {
@@ -42,11 +42,11 @@
 +
  # Add configurations to target defaults
  output['configurations'] = configurations
- 
+
 --- a/tools/gyp/pylib/gyp/generator/make.py
 +++ b/tools/gyp/pylib/gyp/generator/make.py
 @@ -2469,7 +2469,7 @@
- 
+
      # wasm-ld doesn't support --start-group/--end-group
      link_commands = LINK_COMMANDS_LINUX
 -    if flavor in ["wasi", "wasm"]:
@@ -75,7 +75,7 @@
            'dependencies': [ 'tools/v8_gypfiles/simdutf.gyp:simdutf#host' ],
          }],
 -        [ 'node_shared_libuv=="false"', {
-+        [ 'node_shared_libuv=="false" or (_toolset=="host" and target_arch=="wasm32")', {
++        [ 'node_shared_libuv=="false" or (_toolset=="host" and node_js2c_requires_bundled_host_libuv==1)', {
            'dependencies': [ 'deps/uv/uv.gyp:libuv#host' ],
          }],
          [ 'OS in "linux mac openharmony"', {

@@ -25,10 +25,6 @@ registry_non_roots = [
 ]
 
 [[packages]]
-name = "fork-instrument-library"
-class = "platform"
-
-[[packages]]
 name = "kandelo-ffi-adapter"
 class = "platform"
 

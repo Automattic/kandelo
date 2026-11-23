@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #define _GNU_SOURCE 1
-#include <ffi.h>
+#include "ffi-kandelo-private.h"
 #include <ffi_common.h>
 #include <kandelo_ffi_adapter.h>
 #include <dlfcn.h>
