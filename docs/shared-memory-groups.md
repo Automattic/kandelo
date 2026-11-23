@@ -28,7 +28,7 @@ and defaults are outside this feature's integration scope.
 
 ## Authority and admission
 
-The Rust kernel owns group identity, membership, budgets and backing leases, physical allocation and page custody, image roots, replica scratch, shared objects, mapping publication, barriers and retirement. The owner is part of `ProcessTable`; it is not a separate helper module managed by the host. The host retains the corresponding `WebAssembly.Memory`, Worker and native Promise instances.
+The Rust kernel owns group identity, membership, budgets and backing leases, physical allocation and page custody, image roots, per-task scratch, shared objects, mapping publication, barriers and retirement. The owner is part of `ProcessTable`; it is not a separate helper module managed by the host. The host retains the corresponding `WebAssembly.Memory`, Worker and native Promise instances.
 
 The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. The SDK's private growth path still uses the shared v3 bitmap protocol; Rust synchronizes with its locks and captures its frames from stable page tables for reclamation. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or
@@ -85,9 +85,13 @@ the desktop preview does not promise it implicitly.
 
 Fork within a group preserves virtual pointer values. Private pages become
 independent child state; shared mappings keep their backing identity and live
-visibility. Thread replicas share their process's virtual root but own their
-translation scratch and initialization state. Constructors and active data
-initialization are not replayed into already initialized shared state.
+visibility. Each task has a 64-byte control record and its own translation
+scratch and initialization state. Threads share their process's virtual root.
+The v3 SDK layout calls these task control records `REPLICA_*`; the name refers
+to an execution instance, not a copy of shared memory. For example,
+`REPLICA_GROUP` is the group-ID field at byte offset 40 in that control record.
+Constructors and active data initialization are not replayed into already
+initialized shared state.
 
 Exec preserves POSIX process identity while replacing the execution generation.
 A compatible replacement may retain the explicitly selected group. Leaving a
@@ -374,7 +378,7 @@ lease; the final mapping/source reference does. The storage policy does not make
 This is a bounded read-only surface, not general writable regular-file sharing.
 
 Host-adapter 23 adds the exact owned-driver mapping bridge. EGL command
-streams use private process pages through the same all-replica barrier and
+streams use private process pages through the same barrier acknowledged by every task and
 staged physical allocation as other grouped mappings. Their existing driver
 token and transaction retain authority through construction or rollback.
 Whole-stream exact unmapping retires the driver binding before releasing
