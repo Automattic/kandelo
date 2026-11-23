@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S34)
+# Judgment: Mixed. Cached-origin updates are needed, but our mapping
+# algorithm belongs in maintained bridge code.
+#
+# Node can reuse compiled cache data under a new filename or source offset.
+# The bridge must update real compiler metadata, not just displayed stack
+# strings, without reparsing or silently rejecting usable caches. The OS
+# cannot do that. Move our origin-mapping algorithm into maintained bridge
+# code; retain only necessary private-metadata access and cache facts until
+# a supported engine API covers them. This relocation alone will not remove
+# private dependencies.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/public/experimental/JSStencil.h
 +++ b/js/public/experimental/JSStencil.h
 @@ -193,6 +193,15 @@

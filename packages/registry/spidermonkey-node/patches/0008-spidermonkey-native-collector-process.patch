@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O29)
+#
+# Node startup/shutdown otherwise initializes V8's separate cppgc
+# collector. Under this port SpiderMonkey traces the native wrappers
+# through the approved lifetime hooks. Guard only cppgc process
+# setup/teardown rather than link a second collector or provide successful
+# fake initialization. The guest OS cannot choose JS reachability, and
+# required wrapper tracing and resource cleanup must remain real in the
+# bridge.
+#
+# Judgment: Supported. SpiderMonkey owns collection under the approved
+# design, so V8 cppgc process initialization is inappropriate.
+#
 --- a/src/node.cc
 +++ b/src/node.cc
 @@ -74,7 +74,9 @@

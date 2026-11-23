@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S17)
+# Judgment: Supported. Keep engine enforcement because JavaScript transfer
+# operations do not consult a detach key stored only in the bridge.
+#
+# Node marks some ArrayBuffers as protected from detachment or transfer.
+# JavaScript transfer and structured-clone paths must enforce that
+# protection, not just calls made through the bridge. A bridge-only key
+# table is not consulted by those engine paths, and the OS cannot enforce
+# JS object rules. Keep engine checks; review moving key storage out only
+# with GC-safe access that covers every transfer path without running user
+# JavaScript.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/ArrayBufferObject.h
 +++ b/js/src/vm/ArrayBufferObject.h
 @@ -216,7 +216,8 @@

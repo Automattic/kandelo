@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O14)
+#
+# Node's node_v8.cc and worker profiling APIs call Environment's CPU
+# profiler, not only Inspector. Reuse the original profile tree and JSON
+# serializer with real SpiderMonkey sample data, guarding V8-specific code-
+# entry machinery. The bridge owns native sample records and their
+# lifetime; the OS cannot format JavaScript profile identities. A
+# compatible existing serializer could replace this adaptation, but none
+# has been established by this source review.
+#
+# Judgment: Supported. Node and worker CPU-profile APIs consume the
+# portable profile tree and serializer independently of Inspector.
+#
 --- a/deps/v8/src/profiler/profile-generator.h
 +++ b/deps/v8/src/profiler/profile-generator.h
 @@ -14,6 +14,9 @@

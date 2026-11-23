@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O15)
+#
+# Node's native heap graph callbacks need the upstream HeapProfiler
+# registry and removal rules. Compile that bookkeeping against bridge-owned
+# data while excluding V8's collector implementation. Rewriting a second
+# registry merely to remove guards would duplicate behavior; the OS cannot
+# manage JS heap callback ownership. A smaller maintained owner is worth
+# considering only if it preserves ordering, callback lifetime and teardown
+# with less total code.
+#
+# Judgment: Supported. The reused callback registry preserves upstream
+# registration behavior without importing V8 heap collection.
+#
 --- a/deps/v8/src/profiler/heap-profiler.cc
 +++ b/deps/v8/src/profiler/heap-profiler.cc
 @@ -2,6 +2,9 @@

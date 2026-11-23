@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S22)
+# Judgment: Mixed. Construction history is needed, but its weak table need
+# not remain inside the engine.
+#
+# Node native utilities need an object's original constructor even after
+# its prototype or constructor property changes. Walking today's properties
+# in the bridge cannot recover that history. Keep construction observations
+# where the engine still knows the allocating function, but move the
+# history table and its GC ownership to the bridge after lifetime review.
+# This is JavaScript object history, not information the guest OS can
+# supply.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/Realm.h
 +++ b/js/src/vm/Realm.h
 @@ -248,6 +248,11 @@

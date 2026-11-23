@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S05)
+# Judgment: Weak. The ELF/Wasm mismatch is real, but skipping every
+# networking check is broader than necessary.
+#
+# Mozilla's networking-symbol checker expects ELF binaries, but this build
+# produces Wasm. Its existing inspection cannot be used unchanged; the
+# runtime OS and Node bridge cannot repair a build-time binary-format
+# mismatch. This patch currently skips the check, which is broader than the
+# demonstrated need. Replace the skip with a Wasm-aware check of applicable
+# restrictions; retention does not establish that bypassing validation is
+# necessary.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/python/mozbuild/mozbuild/action/check_binary.py
 +++ b/python/mozbuild/mozbuild/action/check_binary.py
 @@ -57,6 +57,10 @@

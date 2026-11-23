@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S43)
+# Judgment: Supported. Keep operation-mode propagation until the object
+# design replaces it because callback failure policy depends on the actual
+# operation rather than script strictness alone.
+#
+# Node property callbacks ask whether failure should throw before taking
+# action. The answer depends on the operation: Reflect and Object.assign
+# can differ even in the same script. Bridge-entry checks or script
+# strictness miss operations performed entirely inside JS. Keep operation-
+# mode propagation until a native-object redesign provides it faithfully;
+# the OS cannot supply it. Nested user calls must not inherit the wrong
+# caller's failure mode.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 Carry property-operation error policy into native callbacks.
 
 Keep original property algorithms and ordering. Explicit JSAPI/Reflect modes

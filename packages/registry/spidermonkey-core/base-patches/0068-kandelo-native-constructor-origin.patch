@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S23)
+# Judgment: Mixed. Construction events may be needed; constructor-name
+# selection is clearly bridge policy.
+#
+# Node's native object-name API uses both ordinary and builtin construction
+# history. The bridge needs events at native allocation sites that it does
+# not otherwise observe. However, choosing the displayed constructor name
+# is our adapter policy, not an engine algorithm: move that code into the
+# bridge. Retaining this patch provisionally does not justify keeping its
+# name-selection policy or pending metadata permanently inside Mozilla
+# source.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
 @@ -125,6 +125,7 @@

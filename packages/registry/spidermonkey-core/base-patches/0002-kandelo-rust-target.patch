@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S01)
+# Judgment: Supported. Keep the target mapping because Mozilla configure
+# cannot otherwise select Kandelo’s current Rust target without
+# misidentifying the platform.
+#
+# SpiderMonkey's build must pair Kandelo C/C++ code with its current
+# wasm32-unknown-unknown Rust libraries. Mozilla selects Rust targets by OS
+# name and does not otherwise recognize this pairing. This build-time
+# mapping cannot live in the runtime bridge. A unified Kandelo Rust target
+# could replace it after SDK qualification; do not report a false
+# Linux/WASI target.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/build/moz.configure/rust.configure
 +++ b/build/moz.configure/rust.configure
 @@ -264,14 +264,16 @@

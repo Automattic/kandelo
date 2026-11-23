@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O36)
+#
+# Undici's HTTP parser normally runs as guest WebAssembly. Until that is
+# qualified, use the approved native binding built from Undici's exact C
+# parser while leaving the remaining Fetch code upstream. Working npm HTTP
+# or data-URL Fetch is not a substitute for this HTTP parser. The guest OS
+# cannot supply Undici's parser callbacks. Restore the original factory
+# after guest Wasm qualification; migration and lifetime requirements are
+# in MAINTENANCE.md.
+#
+# Judgment: Supported. This is the approved temporary factory boundary for
+# real HTTP Fetch before guest Wasm support.
+#
 --- a/deps/undici/undici.js
 +++ b/deps/undici/undici.js
 @@ -7272,33 +7272,9 @@

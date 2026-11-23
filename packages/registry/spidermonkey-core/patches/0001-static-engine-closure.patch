@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S26)
+# Judgment: Supported. Keep the build correction because Node needs the
+# complete static engine dependency graph rather than a second engine
+# build.
+#
+# Node embeds the engine without building Mozilla's JavaScript shell. That
+# build still needs the Rust archive and complete static dependencies. Keep
+# the dependency correction so the normal engine build produces them; the
+# runtime bridge cannot supply libraries omitted by the build graph.
+# Replace it if Mozilla provides an equivalent supported static-library
+# target.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/moz.build
 +++ b/js/src/moz.build
 @@ -48,7 +48,9 @@

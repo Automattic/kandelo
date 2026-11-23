@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O11)
+#
+# Node's FFI function/callback objects own a prepared call interface. Our
+# Wasm backend allocates generated adapter resources for it, and standard
+# ffi_cif has no automatic cleanup operation. Connect release to the
+# original owner's destructor rather than leak adapters or free them while
+# callbacks can run. The OS cannot infer that C++ ownership. A private RAII
+# wrapper may simplify the interface later, but removing retirement is not
+# equivalent.
+#
+# Judgment: Supported. The original Node FFI owner must release the
+# generated resources whose lifetime it controls.
+#
 --- a/src/node_ffi.h
 +++ b/src/node_ffi.h
 @@ -29,6 +29,9 @@

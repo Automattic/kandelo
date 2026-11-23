@@ -1,3 +1,16 @@
+# Kandelo patch rationale (S15)
+# Judgment: Supported. Keep error-creation hooks because wrapping public
+# Error constructors would miss errors created internally by the engine.
+#
+# Node's stack limits and lazy stack formatting must also apply to Errors
+# created internally by SpiderMonkey. Wrapping the public Error constructor
+# in the bridge misses those errors. Keep engine creation/capture hooks;
+# Node's CallSite formatting, caching and prepareStackTrace policy belong
+# in the bridge. The guest OS cannot observe these internal JavaScript
+# events.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/public/Stack.h
 +++ b/js/public/Stack.h
 @@ -145,6 +145,25 @@

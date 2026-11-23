@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S24)
+# Judgment: Mixed. Engine enforcement is needed; the hard-coded Node fatal
+# logger is not an engine responsibility.
+#
+# Node forbids JavaScript execution during parts of cleanup and fatal
+# reporting. Checks only at bridge entry miss calls that reenter JavaScript
+# inside the engine. Keep enforcement at real engine entry points and
+# preserve nested scopes, existing exceptions and shared stop state. The OS
+# cannot enforce these JS scopes. Replace the hard-coded Node fatal logger
+# connection with a generic embedding callback; logging policy belongs in
+# the bridge.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
 @@ -498,6 +498,35 @@

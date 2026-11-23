@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O10)
+#
+# Node keeps its upstream interrupt callback queue and ordering, but wakes
+# the owning JS thread through SpiderMonkey. During shutdown it drains
+# native callbacks without compiling an empty script or allowing user
+# JavaScript. The OS can wake a thread but cannot own engine callback roots
+# or decide Node cleanup order. The bridge supplies transport and the
+# native-only drain; retain their source connections while preserving
+# stop/error state and retiring posting threads before the engine is freed.
+#
+# Judgment: Supported. Node cleanup must retire queued native callbacks
+# without running an empty JavaScript script.
+#
 --- a/deps/v8/src/execution/isolate.cc
 +++ b/deps/v8/src/execution/isolate.cc
 @@ -2341,29 +2341,6 @@

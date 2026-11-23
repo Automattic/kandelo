@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O09)
+#
+# Node FFI uses typed Wasm adapters, which need an honest Kandelo target
+# and explicit retirement when a call interface is destroyed. Standard
+# libffi has no general destructor for our generated adapters. Keep that
+# ownership contract, but review moving the private release/error
+# declarations into a package-owned companion header instead of upstream
+# ffi.h. This does not establish full FFI conformance or justify retaining
+# every adapter until exit.
+#
+# Judgment: Mixed. Target support is needed, but private backend functions
+# need not expand upstream ffi.h.
+#
 --- a/generate-headers.py
 +++ b/generate-headers.py
 @@ -22,6 +22,9 @@

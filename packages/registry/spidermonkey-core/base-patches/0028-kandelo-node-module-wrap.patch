@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S13)
+# Judgment: Mixed. Missing parser facts are needed; constructing Node-
+# shaped arrays in the engine is avoidable adapter policy.
+#
+# Node's loader needs import attributes and source locations that the stock
+# parser would discard. The bridge cannot faithfully recover discarded
+# parser facts by scanning source, and this is not an OS service. Preserve
+# those facts in the engine, but review moving Node-shaped arrays into the
+# bridge behind a generic metadata accessor. Cached and dynamic requests
+# must retain the same information and observable attribute-evaluation
+# order.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/builtin/ModuleObject.h
 +++ b/js/src/builtin/ModuleObject.h
 @@ -72,6 +72,7 @@

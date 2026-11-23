@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S40)
+# Judgment: Supported. Retain real counters and seed access because
+# current-memory snapshots cannot recover allocation history or the
+# engine’s actual hash seed.
+#
+# Node exposes memory statistics and the engine's actual hash seed. Current
+# memory snapshots cannot reconstruct peak or cumulative allocation, and an
+# unrelated bridge-generated seed would be false data. Keep the required
+# engine counters/accessors while mapping Node fields in the bridge; OS
+# totals lack these categories. Review the three purposes separately and
+# share event infrastructure where possible instead of maintaining
+# duplicate counters.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/gc/Allocator-inl.h
 +++ b/js/src/gc/Allocator-inl.h
 @@ -89,6 +89,7 @@

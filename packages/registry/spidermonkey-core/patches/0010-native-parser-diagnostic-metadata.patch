@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S37)
+# Judgment: Mixed. Parser facts are needed; Node-specific classification
+# and wording belong in the bridge.
+#
+# Node decides whether CommonJS compilation should retry as a module using
+# parser facts, not English error strings. Some required token/identifier
+# context is lost from stock reports. Keep only missing facts with safe
+# copied lifetimes; put Node categories and wording in the bridge.
+# Rescanning source there is not the same parser result, and the OS cannot
+# provide it. Review every added field for a real consumer instead of
+# retaining all diagnostics by default.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/public/ErrorReport.h
 +++ b/js/public/ErrorReport.h
 @@ -41,6 +41,27 @@

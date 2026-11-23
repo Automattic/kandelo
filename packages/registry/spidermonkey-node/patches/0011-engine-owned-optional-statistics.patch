@@ -1,3 +1,15 @@
+# Kandelo patch rationale (O32)
+#
+# Node shutdown calls V8's optional DumpAndResetStats instrumentation.
+# Guard that engine-private call rather than claim a successful dump with
+# no data. This does not remove Node's required memory, performance or
+# tracing APIs; those need their actual bridge/engine measurements. The OS
+# cannot reconstruct V8-private counters. Add a generic dump only when real
+# equivalent statistics and lifecycle behavior are available.
+#
+# Judgment: Supported. A V8-private diagnostic dump has no equivalent data
+# merely because Node is shutting down.
+#
 --- a/src/api/environment.cc
 +++ b/src/api/environment.cc
 @@ -1186,7 +1186,9 @@

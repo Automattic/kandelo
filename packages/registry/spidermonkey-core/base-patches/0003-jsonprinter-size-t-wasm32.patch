@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S02)
+# Judgment: Supported. Keep the overload fix because this target’s size_t
+# is a different C++ type from the integer types already handled by
+# JSONPrinter.
+#
+# The engine's JSON diagnostics print memory sizes using size_t. On this
+# target that is a different C++ type from the existing integer overloads.
+# Enable Mozilla's existing size_t overload rather than change SDK types
+# for all packages or edit every engine caller. The bridge cannot add an
+# overload to this engine class. Prefer an upstream type-based condition
+# when available.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/JSONPrinter.cpp
 +++ b/js/src/vm/JSONPrinter.cpp
 @@ -197,7 +197,7 @@

@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O27)
+#
+# Default TypeScript must work through Node's original lazy Amaro loader
+# and whole JavaScript wrapper. Register the real native binding and
+# recognize its availability without pretending general guest WebAssembly
+# execution exists. The OS should not add a Node-only service or secretly
+# intercept requires. Restore the original availability boundary when
+# Amaro's unchanged Wasm backend is qualified; see MAINTENANCE.md for the
+# migration and required acceptance.
+#
+# Judgment: Supported. This is the approved explicit TypeScript capability
+# boundary for the temporary native provider.
+#
 # Retain the original TypeScript lazy loader and whole dependency wrapper.
 # Recognize the actual native backend; add its complete private native binding.
 --- a/src/node_binding.cc

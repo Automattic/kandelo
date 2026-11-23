@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O05)
+#
+# Node's network-interface API needs real IP and hardware addresses. Reuse
+# getifaddrs for IP entries and Kandelo's existing hardware-address ioctl
+# for the same interfaces; BSD AF_LINK records are not provided by this
+# ABI. The Node bridge should not implement a second network-interface
+# table, nor should libc invent BSD records solely to avoid a port patch.
+# Prefer a small upstream portable/backend interface if it can consume
+# these same OS records.
+#
+# Judgment: Supported. The backend must read Kandelo interface data through
+# its actual ABI rather than BSD AF_LINK.
+#
 --- a/src/unix/bsd-ifaddrs.c
 +++ b/src/unix/bsd-ifaddrs.c
 @@ -27,7 +27,12 @@

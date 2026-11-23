@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S35)
+# Judgment: Supported. Keep the small factory entry until equivalence is
+# established because ordinary JS::Construct introduces native-call
+# admission that may change no-JavaScript error creation.
+#
+# Native Node code needs Errors created by Mozilla's original factory,
+# including cause and stack behavior. Calling a saved Error constructor
+# through ordinary JS::Construct also enters native-call execution checks;
+# equivalence inside no-JavaScript scopes is unproven. Keep the small
+# factory entry rather than copy its algorithm into the bridge. The OS
+# cannot create engine Errors.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/ErrorObject.cpp
 +++ b/js/src/vm/ErrorObject.cpp
 @@ -1930,6 +1930,35 @@

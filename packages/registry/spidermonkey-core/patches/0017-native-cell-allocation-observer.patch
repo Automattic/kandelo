@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S41)
+# Judgment: Supported. Keep low-level observation hooks because public
+# allocation logging omits required cell kinds and moving-GC lifetime
+# information.
+#
+# Node heap profiling needs allocation identity and moving-GC lifetime
+# updates, including non-object cells such as strings. Public object-
+# allocation logging does not cover all required kinds or update timing.
+# Keep low-level engine observations while sampling records and ownership
+# stay in the bridge; the OS cannot see JS cell identity. Review sharing
+# events with memory counters, and never inspect partly initialized cells
+# or run JavaScript from these hooks.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/gc/Allocator-inl.h
 +++ b/js/src/gc/Allocator-inl.h
 @@ -93,4 +93,5 @@

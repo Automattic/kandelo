@@ -1,3 +1,16 @@
+# Kandelo patch rationale (S08)
+# Judgment: Supported. Keep the assembly adjustment because the bundled ICU
+# data uses syntax that must match the Wasm object format.
+#
+# The engine embeds ICU's Unicode data through assembly, and Wasm requires
+# these section and size directives. Reuse Mozilla's existing Wasm syntax
+# instead of changing the data or assembler to accept another object
+# format. The OS and bridge run after this file must assemble. Review a
+# stock ICU packaging option if one can produce the same data symbols and
+# alignment.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/config/external/icu/data/icu_data.S
 +++ b/config/external/icu/data/icu_data.S
 @@ -18,7 +18,7 @@

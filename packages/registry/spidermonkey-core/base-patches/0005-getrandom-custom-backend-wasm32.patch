@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S04)
+# Judgment: Mixed. The Rust backend connection is needed, but its
+# implementation can live in maintained platform code.
+#
+# The engine's Rust dependencies need random bytes through getrandom's
+# custom-backend interface. This implementation calls Kandelo's existing
+# libc getrandom and reports failure instead of supplying weak substitute
+# bytes. The Node C++ bridge cannot implement this Rust crate's backend
+# contract. The fill loop can move to maintained platform code through a
+# small same-crate hook; keeping the whole implementation in this patch is
+# not a permanent need.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/build/rust/getrandom/lib.rs
 +++ b/build/rust/getrandom/lib.rs
 @@ -5 +5,35 @@

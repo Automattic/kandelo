@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O06)
+#
+# Node's CPU/load APIs reuse libuv's existing procfs readers without
+# importing Linux-only event and filesystem machinery. Preserve their
+# matching allocation and free paths. Kandelo is not Linux, so compiling
+# all of linux.c unchanged is not equivalent. The sysinfo fallback is
+# separately avoided because it is not a real measurement in this port. Fix
+# shared accounting at its platform owner and review extracting the
+# portable readers instead of these broad guards.
+#
+# Judgment: Mixed. Portable procfs reuse is defensible, but avoiding
+# placeholder sysinfo is an OS-gap workaround.
+#
 --- a/src/unix/linux.c
 +++ b/src/unix/linux.c
 @@ -26,6 +26,13 @@

@@ -1,3 +1,17 @@
+# Kandelo patch rationale (O12)
+#
+# Node vm.measureMemory needs real SpiderMonkey measurements in Node's
+# expected result structure. The original V8 collector cannot supply those
+# measurements. However, this patch adds another result-builder
+# implementation inside V8 source; that placement is weakly justified and
+# duplicates policy. Review one portable upstream formatter or a clearly
+# owned bridge formatter, including property order, promise failure and GC
+# lifetimes. Neither a guessed measurement nor merely relocating duplicated
+# code establishes an improvement.
+#
+# Judgment: Weak. The native result builder duplicates formatting inside an
+# upstream file instead of establishing one maintained owner.
+#
 --- a/deps/v8/src/heap/memory-measurement.cc
 +++ b/deps/v8/src/heap/memory-measurement.cc
 @@ -2,6 +2,7 @@

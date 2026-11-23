@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O01)
+#
+# Node and other libuv users need a Kandelo backend. Select upstream
+# portable poll/clock code and package-owned platform sources, and give
+# consumers the same loop layout. Claiming Linux support just because epoll
+# exists would select other Linux interfaces too. The Node bridge cannot
+# repair libuv's build or public layout. Review a native event backend as
+# general platform work; this patch is not evidence that polling is the
+# best permanent backend.
+#
+# Judgment: Supported. libuv needs an honest target definition and a
+# consistent public loop layout.
+#
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -324,6 +324,23 @@

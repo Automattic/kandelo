@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O13)
+#
+# Node tracing uses original V8 helper code for argument checks and JSON
+# event formatting. Adapt values and calls to the SpiderMonkey bridge while
+# leaving that portable policy upstream. The OS cannot implement JS
+# argument or JSON semantics. Inspector being deferred does not defer
+# ordinary tracing. Review a cleaner upstream argument interface if
+# available; do not replace this with a second trace policy or claim that
+# compilation proves tracing works.
+#
+# Judgment: Supported. Reusing the original trace validation and formatting
+# avoids a second Node tracing implementation.
+#
 --- a/deps/v8/src/builtins/builtins-trace.cc
 +++ b/deps/v8/src/builtins/builtins-trace.cc
 @@ -2,6 +2,7 @@

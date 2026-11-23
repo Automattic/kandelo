@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O28)
+#
+# Node FFI probes whether it can execute generated CPU instructions. Wasm
+# linear memory is not executable x86/ARM memory, even if an OS memory flag
+# is accepted. Report that real limitation so Node uses its non-
+# generated/libffi path. Typed Kandelo Wasm function adapters remain a
+# separate supported route; this is not permission to disable FFI. Prefer
+# an upstream capability condition covering unsupported machine-code
+# targets.
+#
+# Judgment: Supported. Wasm cannot execute arbitrary CPU instruction bytes
+# stored in linear memory.
+#
 --- a/src/ffi/jit_memory.cc
 +++ b/src/ffi/jit_memory.cc
 @@ -23,6 +23,11 @@

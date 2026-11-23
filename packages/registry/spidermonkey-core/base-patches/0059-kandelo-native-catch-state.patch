@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S20)
+# Judgment: Supported. Keep shared engine stop state because a separate
+# bridge flag can disagree with termination and cancellation during engine
+# reentry.
+#
+# Node cleanup, exception scopes and engine interrupts need one shared
+# record of whether execution was stopped or later allowed again. A
+# separate bridge flag can disagree with engine state during nested calls
+# or cancellation. Keep engine-owned stop state; the bridge owns native
+# save/restore policy. OS interruption alone does not express the
+# JavaScript cancellation contract.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
 @@ -496,6 +496,35 @@

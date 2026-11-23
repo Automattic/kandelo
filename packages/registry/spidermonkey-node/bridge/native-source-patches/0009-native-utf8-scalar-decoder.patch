@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O19)
+#
+# Trace output reuses the scalar UTF-8 decoder without importing unrelated
+# V8 string code. Invalid byte sequences have observable replacement and
+# consumption rules. The OS does not decide those JS string rules, but the
+# bridge already has other Unicode libraries available. Compare simdutf and
+# SpiderMonkey decoding APIs before treating this additional source
+# partition as necessary; matching valid text alone is insufficient
+# evidence.
+#
+# Judgment: Mixed. The exact invalid-input behavior matters, but already-
+# linked decoders may make this extra source adaptation redundant.
+#
 --- a/deps/v8/src/strings/unicode.cc
 +++ b/deps/v8/src/strings/unicode.cc
 @@ -4,6 +4,9 @@

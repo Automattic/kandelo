@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S03)
+# Judgment: Supported. Keep the guard because native return-address stack
+# walking has no working equivalent for guest Wasm execution.
+#
+# Mozilla's assertion diagnostics request native return addresses, which
+# the current guest Wasm toolchain cannot supply through these builtins.
+# Return no address and omit that native stack dump rather than invent one.
+# JavaScript error stacks use a separate engine facility and remain
+# required. Neither the OS nor the bridge can implement a missing compiler
+# builtin; review this guard if a supported Wasm native-stack facility
+# becomes available.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/mfbt/Assertions.h
 +++ b/mfbt/Assertions.h
 @@ -14,7 +14,7 @@

@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S25)
+# Judgment: Supported. Keep the target profile because SpiderMonkey must
+# recognize Kandelo’s actual operating-system capabilities without
+# pretending it is Linux or WASI.
+#
+# Mozilla configure must recognize Kandelo's actual OS and wasm32 target
+# before it can select platform code. The runtime bridge cannot change
+# target detection, and pretending Kandelo is Linux or WASI misstates its
+# capabilities. Keep the honest target profile until upstream supports it
+# or a supported configuration supplies the same identity without changing
+# engine algorithms.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/python/mozbuild/mozbuild/configure/constants.py
 +++ b/python/mozbuild/mozbuild/configure/constants.py
 @@ -37,6 +37,7 @@

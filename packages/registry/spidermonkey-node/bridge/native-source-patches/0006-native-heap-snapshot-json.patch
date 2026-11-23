@@ -1,3 +1,17 @@
+# Kandelo patch rationale (O16)
+#
+# Node heap APIs need heap-graph JSON with upstream field and streaming
+# rules. Reuse V8's portable serializer and native graph callbacks with
+# SpiderMonkey values, rather than reuse its heap-layout algorithms or
+# write another format. The bridge owns traversal and roots; the OS cannot
+# supply JS graph identity. These diagnostic heap snapshots are distinct
+# from deferred startup snapshots and JSON process reports. Keep exact
+# output, interruption and lifetime checks when reviewing a future stock
+# serializer alternative.
+#
+# Judgment: Supported. Node heap snapshots need the upstream output format
+# populated from the actual SpiderMonkey graph.
+#
 --- a/deps/v8/src/profiler/heap-snapshot-generator.h
 +++ b/deps/v8/src/profiler/heap-snapshot-generator.h
 @@ -13,6 +13,9 @@

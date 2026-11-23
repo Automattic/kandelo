@@ -27,6 +27,13 @@ its actual staged files. The inventory tool records production patch and source
 identities; generated release receipts belong outside maintained source.
 An inventory or source compilation does not certify every method in a file.
 
+For the reviewed cleanup designs, Node and reused upstream algorithms must use
+the maintained bridge abstraction. SpiderMonkey object hooks, concrete engine
+types and engine-specific lifetime operations belong in the bridge implementation,
+not direct calls from Node policy code. Generic engine hooks must remain free of
+Node-specific policy. This is the required design boundary, not a claim that every
+current adaptation has already been brought into alignment.
+
 ## Reduced private-data and job boundary
 
 Context metadata lives in a global application slot, so GC-sensitive native
@@ -82,6 +89,45 @@ Record any additional native helper's exact archive identity, source boundary,
 dependency/lifetime owner, protecting tests and removal steps. These adaptations
 do not establish general guest Wasm support. Shared platform fixes retain their
 own owners when a helper is retired. Dependency consolidation is a later review.
+
+## Engine patch follow-up
+
+Track the retained engine patches through the
+[platform-omission review](../spidermonkey-core/README.md#future-work-platform-omissions).
+Each patch carries its own plain-language rationale. Provisional retention is
+not proof that every hunk belongs permanently in SpiderMonkey.
+
+## Review all retained port patches
+
+Every added or modified patch file in this port carries a plain-language
+justification and a source-review judgment. For the two existing Rust SDK patch
+files, the judgment covers only this PR's changes, not their older hunks.
+`Supported` means a concrete consumer and source contract justify the adaptation;
+it does not prove minimality or runtime correctness. `Mixed` means the behavior
+is needed but some placement or additional purpose is weakly justified. `Weak`
+means the current patch's necessity or ownership is not adequately established.
+
+- [ ] Extend the engine's platform-omission review to every retained Node,
+  reused-native-source, libuv, Amaro, libffi, tracing and Rust SDK patch. Trace
+  consumers and shared platform alternatives, and discuss every weak or mixed
+  justification before adopting a cleanup. Correct OS/SDK omissions at their
+  owner; keep Node policy in Node or its maintained bridge. Retain required
+  behavior and review exact artifacts on all four hosts when validation is
+  separately authorized.
+
+This source review neither qualifies current artifacts nor authorizes removals,
+behavior changes or a reduced compatibility scope. The complete 19-family port,
+full conformance work and B6 review remain required.
+
+- [ ] Design and qualify actual shared-GC value transfer as a separate capability
+  follow-up. Cleaning up `SharedValueConveyor` move/destruction methods does not
+  provide that support. Preserve its ownership interface for a future backend;
+  the current bridge has no payload producer. A maintainable implementation is
+  not yet established: review shared identity and mutation, worker concurrency,
+  cross-runtime references and cycles, in-flight message roots, and collection
+  when either worker exits. Do not substitute ordinary cloning or pass raw GC
+  pointers between independent SpiderMonkey runtimes. Retaining this gap in the
+  roadmap is not approval to exclude it from the complete compatibility review.
 
 ## Upgrade procedure
 

@@ -1,3 +1,17 @@
+# Kandelo patch rationale (O40)
+#
+# Scope: this PR's unwind-selection changes and explanation; the rest of
+# this existing standard-library overlay predates the Node port. Kandelo's
+# Unix identity otherwise selects an inappropriate native unwinder. Keep
+# the original Wasm path and avoid external libgcc_s/libunwind
+# requirements. This is shared SDK target configuration, which the Node
+# bridge cannot replace. Review a unified upstream target definition while
+# preserving real Rust panic/unwind behavior across all guest Rust
+# consumers.
+#
+# Judgment: Supported. Kandelo being Unix-like must not select a native CPU
+# unwinder for Wasm.
+#
 --- a/library/unwind/src/libunwind.rs
 +++ b/library/unwind/src/libunwind.rs
 @@ -75,7 +75,7 @@

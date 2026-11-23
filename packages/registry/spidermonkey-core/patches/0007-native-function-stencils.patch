@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S33)
+# Judgment: Mixed. Compiler facts need an engine interface; transient
+# adapter classification can move to the bridge.
+#
+# Node's CommonJS compiler and vm.compileFunction need length-aware
+# parameter strings, reusable compiled stencils and exact body/hashbang
+# locations. Stock CompileFunction does not expose the complete contract.
+# Keep an entry into the original compiler rather than wrap/reparse source
+# in the bridge; this is not an OS service. Move adapter-only function
+# classification into bridge metadata once its source and GC lifetime are
+# preserved.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/public/CompilationAndEvaluation.h
 +++ b/js/public/CompilationAndEvaluation.h
 @@ -12,8 +12,10 @@

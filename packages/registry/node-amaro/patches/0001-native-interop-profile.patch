@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O07)
+#
+# Node's default TypeScript loading needs Amaro even before general guest
+# Wasm execution is available. Build a guest-native backend while retaining
+# the complete upstream transform_sync body and JavaScript wrapper. Native
+# JS-value conversion preserves getters, undefined values and exceptions; a
+# JSON-only substitute would change behavior. This is not a new kernel or
+# host service. Restore the original backend after guest Wasm
+# qualification, as recorded in spidermonkey-node/MAINTENANCE.md.
+#
+# Judgment: Supported. This is the approved temporary route for default
+# TypeScript without guest Wasm execution.
+#
 # Native JS-value profile; retain the complete upstream transform_sync body.
 --- a/deps/swc/bindings/binding_typescript_wasm/src/lib.rs
 +++ b/deps/swc/bindings/binding_typescript_wasm/src/lib.rs

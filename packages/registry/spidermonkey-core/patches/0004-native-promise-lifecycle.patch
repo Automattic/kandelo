@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S30)
+# Judgment: Mixed. Promise events are needed; changes to creation and
+# optimization require separate event-by-event evidence.
+#
+# Node async_hooks needs Promise creation, resolution and callback events
+# with the correct parent and resource identities. Stock interfaces
+# inspected so far do not expose that complete sequence. Keep generic event
+# hooks with Node IDs and bookkeeping in the bridge; the OS cannot observe
+# Promise events. This patch also changes Promise creation/optimization
+# paths, which require separate justification rather than blanket
+# acceptance as mere notifications.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
 @@ -1063,6 +1063,26 @@

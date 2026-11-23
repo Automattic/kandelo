@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O20)
+#
+# Node serialization reuses the original wire tags and graph routines with
+# bridge-owned buffers and exceptions. Check capacity arithmetic and empty
+# buffer access, and report version errors through the bridge rather than a
+# V8-private factory. The OS cannot validate serializer sizes or create
+# engine exceptions. These are explicit adaptations of reused routines, not
+# a claim of a confirmed upstream defect; review equivalent upstream checks
+# on upgrades.
+#
+# Judgment: Supported. The bridge needs checked buffer arithmetic and its
+# own error transport around the original wire algorithm.
+#
 # Portable wire routines: native version-error transport and checked buffer
 # growth/empty-buffer access. No wire tags or graph algorithms are replaced.
 --- a/deps/v8/src/objects/value-serializer.cc

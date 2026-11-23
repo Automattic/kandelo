@@ -1,3 +1,15 @@
+# Kandelo patch rationale (O31)
+#
+# Node normally sets V8's rehash-snapshot flag during startup. This runtime
+# starts fresh under the approved snapshot deferral, so that engine-
+# specific flag has no implementation to invoke. Guard the call rather than
+# teach the bridge to accept an ignored success flag. The OS cannot provide
+# startup heap serialization. Review this boundary when real startup
+# snapshots are designed.
+#
+# Judgment: Supported. The agreed fresh-start profile must not send a
+# V8-only snapshot flag to SpiderMonkey.
+#
 --- a/src/node.cc
 +++ b/src/node.cc
 @@ -920,7 +920,9 @@

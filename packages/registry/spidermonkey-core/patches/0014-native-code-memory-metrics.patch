@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S39)
+# Judgment: Supported. Keep the measurement accessor because the inspected
+# stock statistics omit the profiler-owned memory that Node’s API must
+# report.
+#
+# Node's engine statistics need actual profiler-label and source-table
+# memory usage. The inspected stock statistics do not expose this complete
+# quantity. Keep a small engine measurement instead of a guessed or
+# constant bridge value; the OS cannot distinguish these internal owners.
+# Prefer adding the same measurement to a standard engine statistics API
+# when possible.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/GeckoProfiler.h
 +++ b/js/src/vm/GeckoProfiler.h
 @@ -8,6 +8,7 @@

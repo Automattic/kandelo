@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S32)
+# Judgment: Mixed. Interception behavior is needed; stock native object
+# APIs may replace part of this invasive dispatch path.
+#
+# Node VM callbacks intercept native object operations. The current bridge
+# uses these engine dispatch points; replacing them must preserve
+# receivers, property order, exceptions and GC ownership. Stock JSClass
+# operations and native proxy handlers are plausible bridge replacements
+# for objects we own, but that replacement is not yet qualified. Keep
+# provisionally, not as proof that all these engine edits are necessary;
+# the OS cannot implement JS dispatch.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/public/Class.h
 +++ b/js/public/Class.h
 @@ -444,6 +444,8 @@

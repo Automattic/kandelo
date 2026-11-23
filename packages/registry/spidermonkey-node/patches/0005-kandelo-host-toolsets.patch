@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O25)
+#
+# Node's source generator runs on the build machine, while its executable
+# and libraries target Kandelo. Separate include/link flags, OS settings
+# and archive rules so host tools do not consume guest libraries. A host
+# libuv may be required without building a second guest libuv. The bridge
+# runs too late to repair this graph. Review stock toolset controls and
+# narrow the broad wasm32 dependency condition to the actual generator
+# requirement.
+#
+# Judgment: Mixed. Host tools need native dependencies, but the broad Wasm-
+# specific libuv condition needs a narrower consumer-based review.
+#
 --- a/configure.py
 +++ b/configure.py
 @@ -27,7 +27,7 @@

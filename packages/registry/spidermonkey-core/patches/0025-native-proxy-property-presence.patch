@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S44)
+# Judgment: Supported. Keep the single-lookup presence result because a
+# separate existence check adds observable proxy traps and cannot preserve
+# the original lookup behavior.
+#
+# Node VM forwarding must distinguish a missing property from a present
+# property whose value is undefined. Checking has before get adds
+# observable proxy traps; treating both results alike changes fallback
+# behavior. Keep a presence result from the original lookup rather than
+# copy the lookup algorithm into the bridge. The OS cannot observe JS
+# property presence. Review remaining calls after any native-object
+# redesign without adding a second lookup.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 Preserve actual [[Get]] presence through proxy forwarding.
 
 The existing native and scripted-proxy get algorithms optionally report their

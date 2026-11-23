@@ -1,3 +1,16 @@
+# Kandelo patch rationale (S06)
+# Judgment: Mixed. The Wasm trap is justified; the added release
+# diagnostics need separate justification.
+#
+# Engine assertions need a terminating Wasm instruction, including before
+# Node's bridge is initialized. This branch supplies a trap where Mozilla's
+# native crash path is unsuitable. It must not replace Node's separate
+# fatal logger and guest libc abort behavior. The added release-build
+# messages are a separate diagnostic choice, not a prerequisite for Wasm
+# execution; review them independently when reducing this patch.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/mfbt/Assertions.h
 +++ b/mfbt/Assertions.h
 @@ -248,4 +248,18 @@

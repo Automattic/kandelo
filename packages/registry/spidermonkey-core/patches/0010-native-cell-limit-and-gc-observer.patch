@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S36)
+# Judgment: Supported. Keep precisely timed allocator and GC hooks because
+# the stock callbacks do not provide the required retry opportunity and
+# heap-idle notification.
+#
+# Node memory policy needs a retry at the real heap-limit failure and GC
+# notifications when the heap is safe for native callbacks. Stock OOM
+# callbacks do not provide that retry protocol, and nursery callbacks occur
+# at a different GC phase. The bridge cannot recreate those opportunities
+# after they pass; the OS only sees memory, not JS collector phases. Keep
+# narrowly timed hooks, with callback lists, reentry rules and cleanup
+# owned by the bridge.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/gc/Allocator.cpp
 +++ b/js/src/gc/Allocator.cpp
 @@ -12,6 +12,7 @@

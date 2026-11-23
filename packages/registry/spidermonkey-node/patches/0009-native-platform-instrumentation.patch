@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O30)
+#
+# Node startup must not configure V8's private Abseil deadlock detector
+# when that engine is absent. Kandelo also lacks the native execinfo stack
+# interface selected by other Unix targets. These guards avoid unrelated
+# private machinery and an unavailable native header; they do not disable
+# Node's platform or JS error stacks. Review real build-capability
+# conditions and general native-stack support if the platform gains an
+# equivalent interface.
+#
+# Judgment: Supported. V8-private mutex instrumentation and unsupported
+# native stack headers do not describe this engine or target.
+#
 --- a/src/node.cc
 +++ b/src/node.cc
 @@ -127,7 +127,9 @@

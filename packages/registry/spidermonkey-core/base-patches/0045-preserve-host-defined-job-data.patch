@@ -1,3 +1,16 @@
+# Kandelo patch rationale (S16)
+# Judgment: Supported. Keep the opt-in hook because optimized Promise
+# reactions otherwise discard async-context data before the bridge can
+# preserve it.
+#
+# Node AsyncLocalStorage must retain the async context captured when a
+# Promise reaction is registered. Some optimized reactions otherwise
+# discard host data before the bridge can preserve it. Keep the small
+# engine opt-in; the bridge already owns capture, storage and restoration.
+# An OS facility cannot recover context that the engine has optimized away.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 # Preserve registration-time host data through the generic job-queue API.
 --- a/js/public/Promise.h
 +++ b/js/public/Promise.h

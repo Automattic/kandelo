@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O02)
+#
+# libuv's void-returning callback does not match pthread's pointer-
+# returning entry type. A correctly typed wrapper carries the callback and
+# argument, frees that storage in the child, and handles creation failure
+# in the parent. Wasm indirect calls require the right function type. The
+# OS or Node bridge should not emulate incompatible calls. Prefer an
+# equivalent portable upstream wrapper when available; this does not
+# establish a compiler defect.
+#
+# Judgment: Supported. The callback must match the actual pthread entry
+# type enforced by Wasm.
+#
 --- a/src/unix/thread.c
 +++ b/src/unix/thread.c
 @@ -135,6 +135,25 @@

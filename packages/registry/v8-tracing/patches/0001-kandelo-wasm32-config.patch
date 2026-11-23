@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O38)
+#
+# The port reuses portable V8 tracing/configuration code, not V8 execution.
+# Its target macros must describe Kandelo and wasm32, including pointer
+# width, instead of the Mac/Linux build machine or an unrelated native CPU.
+# The runtime bridge cannot fix a header compiled with wrong target
+# definitions. Prefer an upstream generic Wasm/POSIX branch; review each
+# macro against actual guest and compiler behavior rather than treating
+# this as a V8 runtime port.
+#
+# Judgment: Supported. Reused portable V8 components must describe the
+# guest OS and CPU rather than the build machine.
+#
 --- a/include/v8config.h
 +++ b/include/v8config.h
 @@ -96,7 +96,12 @@

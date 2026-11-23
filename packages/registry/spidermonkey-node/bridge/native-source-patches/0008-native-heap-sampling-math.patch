@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O18)
+#
+# The bridge's heap sampler uses V8's portable sample-interval and size-
+# scaling formulas with SpiderMonkey allocation observations. Guard V8 heap
+# internals rather than rewrite the arithmetic or change its probability
+# distribution. The OS sees memory pages, not JavaScript allocations. Keep
+# the engine-specific observer separate; review an upstream portable
+# extraction if one becomes available, retaining real sampling and
+# allocation-failure behavior.
+#
+# Judgment: Supported. Reusing the upstream probability formulas avoids
+# changing Node heap-sampling behavior.
+#
 --- a/deps/v8/src/profiler/sampling-heap-profiler.cc
 +++ b/deps/v8/src/profiler/sampling-heap-profiler.cc
 @@ -2,6 +2,9 @@

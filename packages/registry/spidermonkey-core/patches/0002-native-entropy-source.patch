@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S28)
+# Judgment: Supported. Keep the agreed entropy hook because it connects
+# engine startup to Node’s existing randomness policy and fatal failure
+# handling.
+#
+# SpiderMonkey startup needs secure random bytes before Node's Environment
+# exists. This hook lets the bridge connect Node's original native
+# randomness policy, including fatal failure handling, before engine
+# initialization. The OS still supplies the entropy and must be correct
+# independently; it does not own Node's failure policy. Keep this agreed
+# small callback boundary and review a stock equivalent when upgrading the
+# engine.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/mfbt/RandomNum.h
 +++ b/mfbt/RandomNum.h
 @@ -11,6 +11,11 @@

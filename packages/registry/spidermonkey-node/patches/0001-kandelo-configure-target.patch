@@ -1,3 +1,14 @@
+# Kandelo patch rationale (O21)
+#
+# Normal Node configure must recognize Kandelo and wasm32 before generating
+# the build. The runtime bridge cannot fix a target rejected before
+# compilation. Keep the truthful target entries instead of imitating Linux
+# or hand-writing Node's generated configuration. Prefer upstream target
+# support when available.
+#
+# Judgment: Supported. Node configure must accept the actual Kandelo OS and
+# Wasm architecture.
+#
 --- a/configure.py
 +++ b/configure.py
 @@ -45,9 +45,9 @@

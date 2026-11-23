@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S29)
+# Judgment: Supported. Keep queue routing until an equivalent design is
+# proven because Node VM contexts require independently drained queues
+# rather than one context-wide queue.
+#
+# Node VM contexts can have independently drained microtask queues.
+# SpiderMonkey creates opaque jobs internally, so the bridge must select
+# their destination before the engine enqueues them. A single context-wide
+# queue does not by itself preserve Node's ordering, and OS scheduling
+# cannot route JS jobs. Keep a generic routing hook until a proven stock-
+# queue design replaces it; queue ownership, checkpoints and retirement
+# belong in the bridge.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
 @@ -1173,6 +1173,16 @@

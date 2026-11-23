@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S42)
+# Judgment: Mixed. VM global semantics are needed; stock environment APIs
+# may allow a narrower engine change.
+#
+# Node VM sandboxes must affect bare identifier lookup and var/function
+# declarations, not just accesses through globalThis. A forwarding proxy
+# alone does not change those global-language rules, and an added with
+# environment changes other semantics. The OS has no role. Keep the current
+# behavior while investigating stock object/environment APIs plus a smaller
+# declaration hook; a faithful bridge replacement for the whole patch is
+# not yet established.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/EnvironmentObject.cpp
 +++ b/js/src/vm/EnvironmentObject.cpp
 @@ -3854,6 +3854,7 @@

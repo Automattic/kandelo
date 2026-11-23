@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S18)
+# Judgment: Mixed. Some buffer mechanics need engine cooperation, but
+# shared ownership policy should move into the bridge.
+#
+# Node Buffer and native asynchronous operations may retain bytes after a
+# JavaScript wrapper dies or detaches. Stock external-buffer APIs do not
+# cover all engine-created or resizable storage, and stealing contents
+# detaches it. The OS cannot manage JavaScript buffer ownership. Keep
+# engine cooperation, but move our shared ownership and release policy into
+# the bridge; use stock buffer APIs only where their thread, transfer and
+# lifetime rules match.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/ArrayBufferObject.h
 +++ b/js/src/vm/ArrayBufferObject.h
 @@ -7,4 +7,7 @@

@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S11)
+# Judgment: Supported. Keep the target selector because Mozilla’s selected
+# header-wrapper visibility mechanism does not fit this wasm32 libc++
+# build.
+#
+# Mozilla's generated system-header wrappers do not fit this wasm32 libc++
+# build. Select its flag-based visibility path instead of changing Node
+# code or making the SDK imitate another operating system. The bridge
+# cannot fix how engine headers are compiled. Replace this selector if a
+# supported build option or a general header-wrapper fix supplies the same
+# visibility rules.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/build/moz.configure/toolchain.configure
 +++ b/build/moz.configure/toolchain.configure
 @@ -2220,7 +2220,12 @@

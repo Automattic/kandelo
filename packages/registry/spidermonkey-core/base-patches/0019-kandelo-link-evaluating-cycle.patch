@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S10)
+# Judgment: Weak. The rejected frontend motivated this broad cycle change;
+# a remaining need under Node loaders is unproven.
+#
+# This changes module-cycle bookkeeping for reentrant linking/evaluation.
+# It was introduced for the old compatibility frontend, which is no longer
+# an accepted runtime path. A remaining need under Node's original loaders
+# has NOT been established. Keep it only until cycle behavior can be
+# checked and the bridge's module-state handling reviewed; prefer removing
+# this broad algorithm change over treating it as a permanent missing
+# engine capability.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/Modules.cpp
 +++ b/js/src/vm/Modules.cpp
 @@ -1910,8 +1910,20 @@

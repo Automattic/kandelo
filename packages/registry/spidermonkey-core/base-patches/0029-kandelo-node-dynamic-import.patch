@@ -1,3 +1,18 @@
+# Kandelo patch rationale (S14)
+# Judgment: Supported. Keep the agreed extension because the stock dynamic-
+# import completion path does not provide all of Node’s evaluation,
+# attribute-validation and cross-context controls.
+#
+# Node owns dynamic-import evaluation and attribute validation, and may
+# return a module namespace from another context. Stock engine completion
+# does not provide all these controls together. The bridge cannot simply
+# substitute that completion call without changing loader behavior; the OS
+# has no role here. Keep this agreed extension until a reviewed replacement
+# preserves evaluation, cross-context results, promises, errors and
+# lifetimes.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/public/Modules.h
 +++ b/js/public/Modules.h
 @@ -101,6 +101,27 @@

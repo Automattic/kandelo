@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O34)
+#
+# Node's internal native libraries and FFI need Kandelo's real dynamic
+# loader, not libc's unsupported-loader stubs. This adds -ldl without
+# changing Node's loading algorithm or enabling deferred .node addons. The
+# dependency itself is justified; the need for a Node source patch is not
+# established. Review an explicit recipe/SDK link input that preserves
+# archive order and both build profiles before retaining this as a
+# permanent upstream edit.
+#
+# Judgment: Weak. The real loader is needed, but this link dependency can
+# plausibly be declared by the recipe or SDK instead of patching Node.
+#
 # Link Kandelo native loading through its existing SDK loader.
 # Original Node registration/loading algorithms remain unchanged.
 --- a/node.gyp

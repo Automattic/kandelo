@@ -1,3 +1,18 @@
+# Kandelo patch rationale (O35)
+#
+# Node's original retry branches must use real SpiderMonkey parser
+# categories instead of comparing private V8 error strings. Keep Node's
+# wrapper names, conditional module compilation, warnings and rethrows. The
+# bridge supplies parser facts; the OS cannot classify JS syntax.
+# Separately review the CHECK on an unclassified category: if reached, it
+# aborts instead of returning an ordinary syntax error. The selected
+# category design alone does not justify that fatal fallback or establish
+# complete parser coverage.
+#
+# Judgment: Mixed. Structured categories are approved, but the fatal
+# fallback for an unclassified parser error needs its own failure-policy
+# review.
+#
 --- a/src/node_contextify.cc
 +++ b/src/node_contextify.cc
 @@ -1605,45 +1605,10 @@

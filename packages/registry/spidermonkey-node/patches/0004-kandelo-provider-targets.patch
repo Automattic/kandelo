@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O24)
+#
+# Node crypto/TLS and DNS need OpenSSL and c-ares configured for Kandelo's
+# headers, threads and dynamic loader. Keep honest provider target
+# definitions; these are build concerns the runtime bridge cannot repair.
+# This patch also changes documentation selection, no-assembly tool checks
+# and source-archive cleanup assumptions. Those separate changes may have
+# stock build options or smaller recipe solutions; review each rather than
+# defend the whole patch just because OpenSSL target support is necessary.
+#
+# Judgment: Mixed. True target support is needed, but documentation,
+# assembler and archive-generator changes require separate justification.
+#
 --- /dev/null
 +++ b/deps/openssl/openssl/Configurations/50-kandelo.conf
 @@ -0,0 +1,19 @@

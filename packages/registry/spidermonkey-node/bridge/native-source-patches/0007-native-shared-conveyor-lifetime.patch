@@ -1,3 +1,17 @@
+# Kandelo patch rationale (O17)
+#
+# Node's message objects contain an optional SharedValueConveyor and
+# require its move/destruction methods to link. The current bridge cannot
+# construct its experimental V8 shared-GC payload and rejects such
+# transfers; ordinary SharedArrayBuffer storage uses a separate real owner.
+# This patch therefore does not implement shared-GC transfer. Review
+# simpler bridge-owned wrapper lifetime definitions instead of guarding
+# most of api.cc for these methods; preserve explicit transfer failures and
+# separately track the capability gap.
+#
+# Judgment: Weak. Broadly adapting api.cc for trivial wrapper methods is
+# weakly justified when this engine has no payload producer.
+#
 --- a/deps/v8/src/api/api.cc
 +++ b/deps/v8/src/api/api.cc
 @@ -2,6 +2,9 @@

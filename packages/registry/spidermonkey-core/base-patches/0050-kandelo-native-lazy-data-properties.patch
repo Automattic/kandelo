@@ -1,3 +1,17 @@
+# Kandelo patch rationale (S19)
+# Judgment: Mixed. Existing-object semantics need support, but bridge
+# callback storage and dispatch may be separated from it.
+#
+# Node installs native lazy/live data properties on existing objects.
+# Replacing those objects with proxies changes identity; using ordinary
+# accessors changes their property descriptors. The bridge therefore cannot
+# replace every use with those mechanisms, and the OS cannot supply JS
+# property semantics. Keep support for existing objects; move callback
+# ownership into the bridge and investigate stock handlers for bridge-
+# created objects only.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
 @@ -1368,7 +1368,8 @@

@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O33)
+#
+# JSON diagnostic reports are explicitly deferred, not implemented by empty
+# successful output. Keep native entrypoints registered, reject JS requests
+# and enabling triggers, and report unavailability on fatal/native paths
+# without requiring a live Environment. Preserve ordinary errors, stacks
+# and exit policy. The OS cannot generate the missing engine report fields.
+# This boundary must be retired when real report generation is implemented;
+# it is not a scope cut.
+#
+# Judgment: Supported. The approved initial deferral requires truthful
+# errors while retaining report entrypoints and later implementation scope.
+#
 --- a/src/node_report.cc
 +++ b/src/node_report.cc
 @@ -19,12 +19,14 @@

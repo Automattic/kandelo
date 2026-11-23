@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O03)
+#
+# Package consumers resolve libuv through pkg-config after installation in
+# a resolver-owned directory. Build-machine paths would point at the wrong
+# headers and archive. This makes paths relative to the installed metadata.
+# It affects packaging, not event-loop algorithms. A recipe-owned metadata
+# file or stock relocatable installation may replace the patch; review the
+# complete flags and maintenance cost rather than hide substitutions in a
+# script.
+#
+# Judgment: Mixed. Relocatable paths are needed, but an upstream template
+# edit is not the only packaging solution.
+#
 --- a/libuv-static.pc.in
 +++ b/libuv-static.pc.in
 @@ -1,7 +1,7 @@

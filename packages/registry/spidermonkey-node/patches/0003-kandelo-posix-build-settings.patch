@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O23)
+#
+# Node's ordinary build and QUIC provider targets need POSIX thread flags
+# and the networking headers actually supplied by Kandelo. Extend the
+# existing target conditions rather than claim Linux identity or patch
+# runtime behavior. The bridge cannot fix compiler settings for other
+# native targets. Prefer existing feature/configuration controls where they
+# reach every affected target, preserving host-versus-guest build
+# separation.
+#
+# Judgment: Supported. Kandelo targets need their own truthful POSIX
+# compiler and header selections.
+#
 --- a/common.gypi
 +++ b/common.gypi
 @@ -588,11 +588,11 @@

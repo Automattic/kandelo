@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O04)
+#
+# The current port avoids presenting placeholder resource-usage records as
+# successful measurements. Returning an unsupported error is more honest,
+# but libuv is the wrong permanent owner: Kandelo libc/kernel must supply
+# real getrusage data or truthful failure for every guest program. Keep
+# this guard only until that shared platform correction is reviewed and
+# qualified. It does not complete Node's resource-usage APIs or justify
+# excluding them.
+#
+# Judgment: Weak. This compensates for missing OS accounting and belongs at
+# the shared platform owner.
+#
 --- a/src/unix/core.c
 +++ b/src/unix/core.c
 @@ -1095,6 +1095,15 @@
