@@ -6830,6 +6830,9 @@ pub fn sys_read(
     if buf.is_empty() {
         return Ok(0);
     }
+    if ofd.file_type == FileType::Directory {
+        return Err(Errno::EISDIR);
+    }
 
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
@@ -8212,6 +8215,9 @@ pub fn sys_pread(
     // backing operation is needed.
     if buf.is_empty() {
         return Ok(0);
+    }
+    if ofd.file_type == FileType::Directory {
+        return Err(Errno::EISDIR);
     }
 
     let host_handle = ofd.host_handle;
@@ -23182,18 +23188,36 @@ pub fn sys_faccessat(
 }
 
 /// fchmodat -- change file mode relative to directory fd.
-///
-/// AT_SYMLINK_NOFOLLOW is accepted but not distinguishable from
-/// regular chmod in our host delegation model.
 pub fn sys_fchmodat(
     proc: &mut Process,
     host: &mut dyn HostIO,
     dirfd: i32,
     path: &[u8],
     mode: u32,
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
+    use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
+
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let nofollow = flags & AT_SYMLINK_NOFOLLOW != 0;
+    let options = if nofollow {
+        PathResolveOptions::NOFOLLOW
+    } else {
+        PathResolveOptions::FOLLOW
+    };
+    let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
+    // Symlink modes are fixed. Reject changing the link and preserve its
+    // target's permissions, including on host-backed mounts.
+    if nofollow
+        && resolved
+            .stat
+            .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFLNK)
+    {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let resolved = resolved.path;
     if chmod_pty_path(proc, host, &resolved, mode)?.is_some() {
         return Ok(());
     }

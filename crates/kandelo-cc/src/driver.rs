@@ -527,9 +527,17 @@ fn build_clang_args_internal(
     // Inject compile flags for visible sources and compile-only modes, links
     // that compile glue, and response-hidden compile jobs found by the trace.
     if may_run_compile {
+        // An executable link may have only prebuilt inputs. Mark the SDK's
+        // compile flags as optional in that case, keeping caller diagnostics.
+        if linking {
+            args.push("--start-no-unused-arguments".into());
+        }
         args.extend(compile_flags(arch));
         if compiles_cxx(language, &filtered) {
             args.extend(cxx_compile_flags());
+        }
+        if linking {
+            args.push("--end-no-unused-arguments".into());
         }
     }
     // The call-type facts plugin, for invocations that can run a compile job.
@@ -1144,6 +1152,9 @@ pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.
 pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -> Result<i32> {
     let mut toolchain = crate::toolchain::resolve_toolchain(arch)?;
+    if user_args == ["--print-kandelo-sdk"] {
+        return print_sdk_identity(&toolchain);
+    }
     let compiler = match language {
         Language::C => toolchain.cc.clone(),
         Language::Cxx => toolchain.cxx.clone(),
@@ -1172,4 +1183,55 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     let result = run_compiler_driver(&compiler, &args, linking, abi_contract.as_ref());
     drop(glue);
     result
+}
+
+/// Identify the SDK used by an external compiler that caches linked outputs.
+fn print_sdk_identity(toolchain: &Toolchain) -> Result<i32> {
+    use sha2::{Digest, Sha256};
+
+    let sysroot = std::fs::canonicalize(&toolchain.sysroot)
+        .map_err(|error| format!("cannot resolve sysroot {}: {error}", toolchain.sysroot))?;
+    let sysroot = sysroot
+        .to_str()
+        .filter(|path| !path.contains(['\n', '\r']))
+        .ok_or("SDK identity requires a UTF-8 sysroot path without line breaks")?;
+
+    let mut hash = Sha256::new();
+    hash.update(read_abi_contract_digest(&toolchain.glue_dir)?);
+    hash.update(toolchain.llvm_dir.as_bytes());
+    hash.update([0]);
+    let mut inputs = vec![
+        join(&toolchain.sysroot, "lib/crt1.o"),
+        join(&toolchain.sysroot, "lib/libc.a"),
+        host_imports_allowance(&toolchain.glue_dir),
+    ];
+    let glue = glue_sources(toolchain, true, true);
+    inputs.extend(glue.leading);
+    inputs.extend(glue.fallback);
+    inputs.extend(
+        std::fs::read_dir(&toolchain.glue_dir)
+            .map_err(|error| format!("cannot read SDK glue directory: {error}"))?
+            .filter_map(|entry| match entry {
+                Ok(entry) if entry.path().extension().is_some_and(|ext| ext == "h") => {
+                    Some(Ok(entry.path().to_string_lossy().into_owned()))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(format!("cannot read SDK glue directory: {error}"))),
+            })
+            .collect::<Result<Vec<_>>>()?,
+    );
+    inputs.sort_unstable();
+    let driver =
+        std::env::current_exe().map_err(|error| format!("cannot locate SDK driver: {error}"))?;
+    for path in inputs
+        .iter()
+        .map(std::path::Path::new)
+        .chain([driver.as_path()])
+    {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("cannot read SDK input {}: {error}", path.display()))?;
+        hash.update(Sha256::digest(bytes));
+    }
+    println!("{sysroot}\n{:x}", hash.finalize());
+    Ok(0)
 }

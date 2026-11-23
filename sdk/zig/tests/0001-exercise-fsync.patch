@@ -1,0 +1,9 @@
+--- a/lib/std/posix/test.zig
++++ b/lib/std/posix/test.zig
+@@ -304,5 +304,5 @@
+ test "fsync" {
+     switch (native_os) {
+-        .linux, .illumos => {},
++        .linux, .illumos, .kandelo => {},
+         else => return error.SkipZigTest,
+     }

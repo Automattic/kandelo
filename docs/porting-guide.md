@@ -1,6 +1,6 @@
 # Porting Guide
 
-This guide covers how to port C/C++ software to Kandelo, create Node.js runners, and prepare browser-facing package images.
+This guide covers how to port C, C++, and Zig software to Kandelo, create Node.js runners, and prepare browser-facing package images.
 
 ## Overview
 
@@ -258,6 +258,23 @@ ioctl sequence, complete drain, and zero discarded data.
 ```bash
 npx tsx examples/run-example.ts /path/to/program.wasm [args]
 ```
+
+## Porting Zig software
+
+Use the patched Zig from the Kandelo dev shell. Programs built with Zig's
+standard target options select the guest with `zig build -Dtarget=wasm32-kandelo-musl`.
+Build scripts that assemble their own target query can set the OS tag to
+`.kandelo` and the ABI to `.musl`. Select the portable POSIX or libc paths
+when reviewing an application's OS checks.
+
+Zig delegates the executable link to `wasm32posix-cc` so Kandelo's startup,
+ABI stamp and link policy stay in the SDK driver. The delegation and its
+revisit criteria are described in the [Zig SDK guide](sdk-guide.md#zig-programs).
+Install executables through the usual package helpers so the declared fork
+policy is applied. Zig objects lack `kandelo.calltypes` facts, and the
+instrumenter has the same function-pointer conversion gap as for Rust.
+Record test failures as platform feedback and trace missing POSIX behavior
+through the SDK, libc and kernel.
 
 ## Shipping man pages
 
