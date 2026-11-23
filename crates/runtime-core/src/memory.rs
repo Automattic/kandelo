@@ -42,11 +42,12 @@ pub struct MappingFile {
 /// Its identity and bounds are kernel authority; host physical offsets never
 /// enter this record. Clones share the admitted metadata and object lifetime.
 #[derive(Debug, Clone)]
-pub(crate) struct GroupSharedMapping(crate::io_owner::IoArc<GroupSharedObject>);
+pub struct GroupSharedMapping(crate::io_owner::IoArc<GroupSharedObject>);
 struct GroupSharedObject {
     group: u32,
     id: u64,
     length: usize,
+    physical: spin::Mutex<Option<crate::io_owner::IoArc<crate::memory_group::object::SharedPages>>>,
     _metadata: crate::metadata_budget::MetadataReservation<'static>,
 }
 impl core::fmt::Debug for GroupSharedObject {
@@ -64,12 +65,36 @@ impl GroupSharedMapping {
         let bytes = core::mem::size_of::<MappingFile>().checked_add(64)
             .and_then(|n| n.checked_mul(2)).ok_or(Errno::ENOMEM)?;
         let metadata = crate::io_buffer::IO_MEMORY.reserve(bytes)?;
-        Ok(Self(crate::io_owner::IoArc::try_new(GroupSharedObject { group, id, length, _metadata: metadata })?))
+        Ok(Self(crate::io_owner::IoArc::try_new(GroupSharedObject { group, id, length,
+            physical: spin::Mutex::new(None), _metadata: metadata })?))
     }
-    pub(crate) fn group(&self) -> u32 { self.0.group }
+    pub fn group(&self) -> u32 { self.0.group }
     pub(crate) fn id(&self) -> u64 { self.0.id }
-    pub(crate) fn length(&self) -> usize { self.0.length }
+    pub fn length(&self) -> usize { self.0.length }
+    /// Lend a bounded physical transport descriptor during one synchronous
+    /// host operation. No logical name lookup or ProcessTable re-entry is
+    /// needed by the adapter; the model continues to own page lifetime.
+    pub fn with_physical_pages<T>(&self, work: impl FnOnce(u64, &[u32]) -> T) -> Result<T, Errno> {
+        self.physical()?.with_pages(work)
+    }
     pub(crate) fn only_inode_hold(&self) -> bool { self.0.strong_count() == 1 }
+    pub(crate) fn install_physical(&self, pages: crate::io_owner::IoArc<crate::memory_group::object::SharedPages>) -> Result<(), Errno> {
+        if pages.group() != self.group() || pages.object() != self.id() || pages.byte_length() != self.length() || !pages.allocated() {
+            return Err(Errno::EINVAL);
+        }
+        let mut physical = self.0.physical.lock();
+        if physical.is_some() { return Err(Errno::EALREADY); }
+        *physical = Some(pages);
+        Ok(())
+    }
+    pub(crate) fn physical(&self) -> Result<crate::io_owner::IoArc<crate::memory_group::object::SharedPages>, Errno> {
+        self.0.physical.lock().as_ref().cloned().ok_or(Errno::EAGAIN)
+    }
+    pub(crate) fn cancel_physical(&self, pages: &crate::io_owner::IoArc<crate::memory_group::object::SharedPages>) -> Result<(), Errno> {
+        let mut binding = self.0.physical.lock();
+        if binding.as_ref().is_none_or(|bound| bound.identity() != pages.identity()) { return Err(Errno::ESRCH); }
+        *binding = None; Ok(())
+    }
 }
 
 /// Rust-owned identity and resource authority for one opt-in device mapping.

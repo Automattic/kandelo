@@ -92,7 +92,7 @@ export async function execute(options: {
                     throw error;
             }
             await retry(() => kernel.removeProcessFromKernelTable(rootPid!));
-            rollbacks.push({ kernel: await retry(() => kernel.inspectMemoryGroup(group)), backing: kernel.inspectMemoryGroupBacking(group), receipt: await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) });
+            rollbacks.push({ kernel: await retry(() => kernel.inspectMemoryGroup(group)), backing: await retry(() => kernel.inspectMemoryGroupBacking(group)), receipt: await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) });
         }
         inject = false;
         const exited = new Promise<number>(resolve => { exitResolve = resolve; });
@@ -115,7 +115,16 @@ export async function execute(options: {
         await (destruction ?? session.destroy());
         code = await exited;
     }
-    const result = { stage: options.stage, constructionAttempts, injected, failure, fatal, fatalLedger, code, stdout, stderr, diagnostics, rollbacks, kernel: fatal ? undefined : await retry(() => kernel.inspectMemoryGroup(group)), backing: kernel.inspectMemoryGroupBacking(group), rootReceipt: fatal ? undefined : await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) };
+    let inspectionRefusal: string | undefined;
+    if (fatal) {
+        try { kernel.inspectMemoryGroupBacking(group); }
+        catch (error) { inspectionRefusal = String(error); }
+    }
+    const result = { stage: options.stage, constructionAttempts, injected, failure, fatal, fatalLedger,
+        fatalLedgerObserved: fatalLedger ? 'before-fatal-latch' : undefined, inspectionRefusal,
+        code, stdout, stderr, diagnostics, rollbacks, kernel: fatal ? undefined : await retry(() => kernel.inspectMemoryGroup(group)),
+        backing: fatal ? undefined : await retry(() => kernel.inspectMemoryGroupBacking(group)),
+        rootReceipt: fatal ? undefined : await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) };
     if (!fatal)
         kernel.stopPolling();
     return result;

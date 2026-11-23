@@ -11,6 +11,13 @@ const root = resolve(import.meta.dirname, '../../..');
 let out: string;
 const inputs: Record<string, string> = {};
 const fixtures: ReturnType<typeof compileSdkFixture>[] = [];
+test.afterEach(async ({ page }, info) => {
+    if (!info.title.startsWith('admits live process and pthread cohorts')) return;
+    let progress: unknown;
+    try { progress = await page.evaluate(() => (globalThis as typeof globalThis & { __kandeloAdmissionProgress?: unknown }).__kandeloAdmissionProgress); }
+    catch (error) { progress = { readFailure: String(error) }; }
+    writeFileSync(info.outputPath('progress.json'), JSON.stringify({ engine: info.project.name, inputs, progress }, null, 2) + '\n');
+});
 test.beforeAll(async () => {
     test.setTimeout(180000);
     out = mkdtempSync(join(root, '.scratch/grouped-vfs-launch-'));
@@ -101,33 +108,59 @@ test('admits live process and pthread cohorts without default count quotas', asy
     const pageErrors: string[] = [];
     page.on('pageerror', error => pageErrors.push(error.message));
     await page.goto(`/@fs${out}/index.html`);
-    const result = await page.evaluate(async ({ root, out }) => {
+    const result = await page.evaluate(async ({ root, out, trace }) => {
         const { BrowserKernel } = await import(`/@fs${root}/host/src/browser-kernel-host.ts`);
         let stdout = '', stderr = '';
         const diagnostics: unknown[] = [];
         const rows: Array<{ arm: string; code: number; stdout: string }> = [];
+        const progress = { phase: 'initializing', arm: '', pid: 0, stdout: '', stderr: '', trace: [] as string[],
+            rows: [] as Array<{ arm: string; code: number }>, diagnostics: [] as unknown[], state: undefined as unknown };
+        // Copied progress only: no inspection RPC or polling that could wake
+        // a stalled guest or change the allocator/notification state.
+        (globalThis as typeof globalThis & { __kandeloAdmissionProgress?: unknown }).__kandeloAdmissionProgress = progress;
         const host = new BrowserKernel({ maxMemoryPages: 2048, kernelMaxPages: 1024,
             // Match the normal preview: the held child cohort exceeds 128 MiB.
             experimentalMemoryGroup: { maximumPages: 8192 },
-            onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
-            onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
-            onHostDiagnostic: (event: unknown) => diagnostics.push(event) });
+            onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); progress.stdout = stdout.slice(-8192); },
+            onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); progress.stderr = stderr.slice(-4096); },
+            onHostDiagnostic: (event: unknown) => { diagnostics.push(event); progress.diagnostics = diagnostics.slice(-32); } });
+        let unsubscribeTrace: (() => void) | undefined;
         try {
             const [kernel, image] = await Promise.all(['kernel.wasm', 'rootfs.vfs']
                 .map(path => fetch(`/@fs${out}/${path}`).then(response => response.arrayBuffer())));
             await host.initFromOwnedImage({ kernelWasm: kernel, vfsImage: image });
+            if (trace) unsubscribeTrace = host.subscribeSyscalls(event => {
+                progress.trace.push(`${event.t.toFixed(3)} ${event.decoded ?? `[${event.pid}] syscall ${event.nr}`}`);
+                if (progress.trace.length > 1024) progress.trace.shift();
+            });
             for (const arm of ['ordinary', 'grouped']) {
+                progress.arm = arm; progress.phase = 'spawning';
                 const start = stdout.length;
                 const path = `/bin/admission-${arm}`;
                 const child = await host.spawnFromVfs(path, [path], { stdin: new Uint8Array() });
-                const code = await child.exit;
+                progress.pid = child.pid; progress.phase = 'awaiting exit';
+                const timer = trace ? setTimeout(() => {
+                    // Diagnostic-only, one snapshot after a prolonged arm.
+                    // Inspection acquires a real pool fence and can perturb
+                    // scheduling; a traced pass is not an untraced acceptance.
+                    const state: unknown[] = ['usage', 'processes', 'maps'].map(name => ({ name, status: 'pending' }));
+                    progress.state = state;
+                    [host.getMemoryGroupUsage(), host.enumProcs(), host.readProcMaps(child.pid)].forEach((request, index) => {
+                        void request.then(value => { state[index] = { status: 'fulfilled', value }; },
+                            error => { state[index] = { status: 'rejected', error: String(error) }; });
+                    });
+                }, 60000) : undefined;
+                let code: number;
+                try { code = await child.exit; } finally { if (timer !== undefined) clearTimeout(timer); }
                 rows.push({ arm, code, stdout: stdout.slice(start) });
+                progress.rows = rows.map(row => ({ arm: row.arm, code: row.code }));
                 if (arm === 'grouped' && await host.readFileFromVfs(`/proc/${child.pid}/stat`) !== null)
                     throw Error('Completed grouped admission root retained');
             }
+            progress.phase = 'completed';
             return { rows, stderr, diagnostics };
-        } finally { await host.destroy(); }
-    }, { root, out });
+        } finally { unsubscribeTrace?.(); progress.phase = 'destroying'; await host.destroy(); progress.phase = 'destroyed'; }
+    }, { root, out, trace: process.env.KANDELO_ADMISSION_TRACE === '1' });
     writeFileSync(info.outputPath('result.json'), JSON.stringify({ engine: info.project.name, inputs, result, pageErrors }, null, 2) + '\n');
     expect(result.rows.map(row => [row.arm, row.code])).toEqual([['ordinary', 0], ['grouped', 0]]);
     for (const row of result.rows) expect(row.stdout).toContain('grouped-sdk-admission PASS 26-live-children 66-live-pthreads');

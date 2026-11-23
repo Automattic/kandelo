@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as G from '../src/generated/program-extensions';
-import { MemoryGroupPagePool } from '../src/memory-group-pool';
+import { initializeGroupMemoryMetadata } from './support/group-memory-layout';
 import { MemoryGroupProtocolFault, type MemoryGroupTaskReceipt } from '../src/memory-group-protocol';
 import { GroupProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
 import { encodeProcessMemoryDescriptor, decodeProcessMemoryDescriptor,
@@ -8,7 +8,7 @@ import { encodeProcessMemoryDescriptor, decodeProcessMemoryDescriptor,
 const P = 65536;
 function fixture() {
   const memory = new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true });
-  MemoryGroupPagePool.initialize(memory, 32).allocateContiguous(13);
+  initializeGroupMemoryMetadata(memory, 32);
   const words = new Uint32Array(memory.buffer);
   for (const [root, second] of [[P, 10 * P], [2 * P, 12 * P]]) {
     words[root / 4] = 2; words[root / 4 + 1] = 8; words[root / 4 + 2] = P;

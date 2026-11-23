@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import * as G from "../src/generated/program-extensions";
-import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { groupMemoryObservationFixture } from './support/group-memory-layout';
 import { processDataView, type ProcessMemorySource } from "../src/process-memory-views";
 import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
+import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
@@ -67,14 +68,9 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4, grouped = false, channelOffset
   lifecycle?: { exitSignal?: () => number; state?: () => number; threadExit?: (pid: number, tid: number, ran: number) => bigint }) {
   const pid = 100;
   const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-  const store = grouped ? new MemoryGroupImageStore(7, 32, 32) : undefined;
   const task = { group: 7, pid, tid: pid, serial: 1n, generation: 0n };
-  const owner = store?.prepareImage(task,
-    { initialVirtualPages: 3, maximumVirtualPages: 16, scratchBytes: 65536 });
-  const published = store ? store.publish(owner!, task) : undefined;
-  // Kernel registrations use the owning image source, which can pin exact
-  // native observers. The per-replica launch source grants no such authority.
-  const launch = published ? { ...published, source: store!.imageSource(owner!) } : undefined;
+  const store = grouped ? groupMemoryObservationFixture({ receipt: task, initialPages: 3 }) : undefined;
+  const launch = store ? { ...store.launch, source: store.source } : undefined;
   if (launch) {
     const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
     [ptes[0], ptes[2]] = [ptes[2], ptes[0]];
@@ -108,6 +104,7 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4, grouped = false, channelOffset
       {
         pid,
         memory: processMemory, source: channel.source,
+        grouped: store ? { handle: store.handle, store: store.transport } : undefined,
         channels: [channel],
         ptrWidth,
         explicitMaxAddr: false,
@@ -147,7 +144,7 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
       // Its actual engine observation must settle before its token can end.
       (worker as any).discardStoppedChannelStateForProcess(channel.pid);
       Atomics.store(words, q, 0); Atomics.notify(words, q);
-      await expect.poll(() => store!.snapshot().nativeObservers).toBe(0);
+      await expect.poll(() => store!.pending.size).toBe(0);
       expect((worker as any).pendingChannelNativeObservations.size).toBe(0);
       expect((worker as any).retiredChannelListeners.has(channel)).toBe(false);
       expect(source.atomicLoadI32(CH_STATUS)).toBe(CHANNEL_STATUS_PENDING);
@@ -190,7 +187,7 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
       expect(state.processes.get(channel.pid)!.channels).toEqual([main]);
       expect((worker as any).parkedChannelCompletions.size).toBe(0);
       expect((worker as any).pendingChannelNativeObservations.size).toBe(0);
-      expect(store!.snapshot().nativeObservers).toBe(0);
+      expect(store!.pending.size).toBe(0);
       expect((worker as any).retiredChannelListeners.has(channel)).toBe(false);
       expect(source.atomicLoadI32(main.channelOffset + CH_STATUS)).toBe(0);
     } finally { Atomics.store(words, q, 0); Atomics.notify(words, q); waits.mockRestore(); store!.close(); }
@@ -213,8 +210,8 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
       Atomics.store(peer.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
       state.processes.set(peer.pid, {pid:peer.pid,memory:peerMemory,source:peerMemory,channels:[peer],ptrWidth:4,explicitMaxAddr:false} as any);
       state.activeChannels.push(peer);
-      worker.testAuthority.completeDetachedCopybackForTest({ pid:peer.pid,registrationWitness:peer,
-        operation:'read',fd:0,destination:8192,requestedLength:1,returnValue:1,outputBytes:Uint8Array.of(9) });
+      await retryKernelEntryResult(() => worker.testAuthority.completeDetachedCopybackForTest({ pid:peer.pid,registrationWitness:peer,
+        operation:'read',fd:0,destination:8192,requestedLength:1,returnValue:1,outputBytes:Uint8Array.of(9) }));
       expect(Atomics.load(peer.i32View,CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
       expect(wait).not.toHaveBeenCalled();
       // Outputs were already materialized. Retrying queue publication must
@@ -260,12 +257,12 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
         operation:'read',fd:0,destination:8192,requestedLength:1,returnValue:1,outputBytes:Uint8Array.of(3)});
       await expect.poll(()=>waits.mock.calls.filter(([word])=>word.byteOffset===G.MEMORY_GROUP_WAIT_HEADER).length).toBeGreaterThan(1);
       expect(source.atomicLoadI32(CH_STATUS)).toBe(CHANNEL_STATUS_PENDING);
-      expect(store!.snapshot().nativeObservers).toBe(1);
+      await vi.waitFor(() => expect(store!.pending.size).toBe(1));
       // A competing native observer can consume the unlock notification.
       // Neither that loss nor the finite progress wait may lose this result.
       Atomics.store(words,q,0);
       await expect.poll(()=>source.atomicLoadI32(CH_STATUS)).toBe(CHANNEL_STATUS_COMPLETE);
-      expect(store!.snapshot().nativeObservers).toBe(0);
+      expect(store!.pending.size).toBe(0);
       expect((worker as any).parkedChannelCompletions.size).toBe(0);
     } finally { Atomics.store(words,q,0);Atomics.notify(words,q);waits.mockRestore();store!.close(); }
   });
@@ -338,14 +335,14 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
     try {
       worker.testAuthority.completeDetachedCopybackForTest({pid:channel.pid,registrationWitness:channel,
         operation:'read',fd:0,destination:8192,requestedLength:1,returnValue:1,outputBytes:Uint8Array.of(3)});
-      expect(store!.snapshot().nativeObservers).toBe(1);
+      await vi.waitFor(() => expect(store!.pending.size).toBe(1));
       (worker as any).retireChannelListener(channel);
       expect(()=>worker.settleRetiredChannelListeners(channel.pid,channel.memory,0)).toThrow('exact image source');
       const settled=worker.settleRetiredChannelListeners(channel.pid,channel.memory,0,source);
-      expect(store!.snapshot().nativeObservers).toBe(1);
+      expect(store!.pending.size).toBe(1);
       expect((worker as any).pendingChannelListenerCounts.get(channel)).toBe(1);
       await settled;
-      expect(store!.snapshot().nativeObservers).toBe(0);
+      expect(store!.pending.size).toBe(0);
       expect((worker as any).pendingChannelNativeObservations.size).toBe(0);
       expect((worker as any).pendingChannelListenerCounts.size).toBe(0);
       expect((worker as any).parkedChannelCompletions.size).toBe(0);

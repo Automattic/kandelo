@@ -7093,6 +7093,29 @@ fn memory_group_contract() -> Value {
         "snapshot_bytes":group::SNAPSHOT_BYTES,
         "receipt_fields":fields(group::RECEIPT_FIELDS),
         "snapshot_fields":fields(group::SNAPSHOT_FIELDS),
+        "storage": {
+            "snapshot_bytes": shared::group_storage::SNAPSHOT_BYTES,
+            "snapshot_fields": shared::group_storage::SNAPSHOT_FIELDS,
+            "mapping": {
+                "stage": shared::group_storage::mapping::STAGE,
+                "populate": shared::group_storage::mapping::POPULATE,
+                "commit": shared::group_storage::mapping::COMMIT,
+                "cancel": shared::group_storage::mapping::CANCEL,
+            },
+            "reply_bytes": shared::group_storage::REPLY_BYTES,
+            "reply_fields": fields(shared::group_storage::REPLY_FIELDS),
+            "actions": shared::group_storage::ACTIONS.iter().map(|(name, action)|
+                ((*name).to_string(), json!(*action as u32))).collect::<BTreeMap<_,_>>(),
+            "status": {
+                "prepared": shared::group_storage::status::PREPARED,
+                "stopped": shared::group_storage::status::STOPPED,
+                "imageStopped": shared::group_storage::status::IMAGE_STOPPED,
+                "paused": shared::group_storage::status::PAUSED,
+                "stopping": shared::group_storage::status::STOPPING,
+                "sourceLive": shared::group_storage::status::SOURCE_LIVE,
+                "imageUnexposed": shared::group_storage::status::IMAGE_UNEXPOSED,
+            },
+        },
         "task_actions":group::TASK_ACTIONS.iter().map(|(name,action)|
             ((*name).to_string(),json!(*action as u32))).collect::<BTreeMap<_,_>>(),
         "mapping": {

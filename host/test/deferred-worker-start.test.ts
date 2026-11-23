@@ -1,4 +1,4 @@
-import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { groupMemoryLayout } from './support/group-memory-layout';
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerAbsence, DeferredWorkerHandle } from "../src/deferred-worker-handle";
 import type { WorkerAbsence } from "../src/deferred-worker-handle";
@@ -132,10 +132,9 @@ describe("stopped process Worker launch gate", () => {
   });
 
   it("requires the virtual source and keeps deferred constructors bound to that exact image", async () => {
-    const store = new MemoryGroupImageStore(7, 32, 32);
     const task = { group: 7, pid: 41, tid: 41, serial: 1n, generation: 0n };
-    const owner = store.prepareImage(task, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
-    const launch = store.publish(owner, task), source = store.imageSource(owner), memory = launch.envelope.memory;
+    const fixture = groupMemoryLayout({ receipt: task });
+    const { source, memory } = fixture;
     let state: number = PROCESS_STATE_STOPPED;
     const { worker, channel } = createWorkerHarness(memory, () => state);
     const registration = (worker as any).processes.get(41);
@@ -147,8 +146,7 @@ describe("stopped process Worker launch gate", () => {
       expect(bareCancel).toHaveBeenCalledOnce();
       expect(worker.startProcessWorkerWhenRunnable(41, memory, start, cancel, undefined, source)).toBe("deferred");
       const next = { ...task, serial: 2n, generation: 1n };
-      const nextOwner = store.prepareImage(next, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
-      const nextLaunch = store.publish(nextOwner, next), nextSource = store.imageSource(nextOwner);
+      const { launch: nextLaunch, source: nextSource } = groupMemoryLayout({ receipt: next, memory, rootPage: 2, replicaPage: 5, payloadPage: 16 });
       expect(nextLaunch.envelope.memory).toBe(memory);
       (worker as any).processes.set(41, { ...registration, source: nextSource,
         channels: [{ ...channel, source: nextSource }] });
@@ -156,7 +154,7 @@ describe("stopped process Worker launch gate", () => {
       expect(worker.testAuthority.resumeStoppedProcessForTest(41)).toBe(true);
       await canceled.promise;
       expect(start).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 
   it("holds construction through STOPPED and releases it on SIGCONT", async () => {

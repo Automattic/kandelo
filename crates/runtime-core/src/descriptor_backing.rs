@@ -269,7 +269,7 @@ impl MemFdBacking {
         let count = output.len().min(self.len().saturating_sub(offset));
         if count == 0 { return Ok(0); }
         if let Some(storage) = self.group_storage.as_ref().filter(|g| g.committed) {
-            let read = host.group_object_read(storage.object.group(), storage.object.id(), offset as u64, &mut output[..count])?;
+            let read = storage.object.physical()?.read(offset as u64, &mut output[..count], host)?;
             return if read == count { Ok(read) } else { Err(Errno::EIO) };
         }
         output[..count].copy_from_slice(&self.data[offset..offset + count]);
@@ -339,7 +339,7 @@ impl MemFdBacking {
         if !storage.committed { return Err(Errno::EOPNOTSUPP); }
         let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;
         if end > storage.length { return Err(Errno::EOPNOTSUPP); }
-        let count = host.group_object_write(storage.object.group(), storage.object.id(), offset as u64, bytes)?;
+        let count = storage.object.physical()?.write(offset as u64, bytes, host)?;
         if count > bytes.len() { return Err(Errno::EIO); }
         if count != 0 { self.touch_modified(); }
         Ok(count)

@@ -10,6 +10,7 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
 const availableProbes = [
+  { name: "fork-pool-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   // This internal fixture implements grouped fork; the paired ordinary fork
   // runs through the real BrowserKernel in grouped-vfs-launch.spec.ts.
   { name: "dri-mapping-fork", source: "dri-mapping-fork.c", markers: ["OK inherited DRI mapping survives descriptor and writer retirement", "OK fixed PRIME replacement preserves alias storage across fork"], partial: "", groupedOnly: true },
@@ -115,7 +116,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
       worker.onmessage = event => { clearTimeout(deadline); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(deadline); worker.terminate(); reject(new Error(event.message)); };
       worker.postMessage(request);
-    }), { grouped, probe: probe.name, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-replay-rollback" ? "replay" : "registration", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
+    }), { grouped, probe: probe.name, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-pool-rollback" ? "pool" : probe.name === "fork-replay-rollback" ? "replay" : "registration", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
         anonymousShared: probe.name === 'anonymous-shared', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
         execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : probe.name === 'exec-callback-rollback' ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined,
@@ -171,6 +172,11 @@ for (const probe of probes) for (const grouped of [false, true]) {
     for (const marker of probe.markers) expect(result.stdout).toContain(marker);
     if (probe.name.startsWith('fork-')) {
       expect(result.forkWorkerConstructionAttempts).toBe(probe.name === 'fork-replay-rollback' ? 17 : 1);
+      if (probe.name === 'fork-pool-rollback') {
+        const locks = (result.lifecycleEvidence as any[]).filter(row => row.kind === 'fork-pool-lock-released');
+        expect(locks).toHaveLength(16);
+        expect(locks.every(row => row.admission.processes === 2 && row.admission.tasks === 2 && row.admission.images === 2)).toBe(true);
+      }
       expect(result.injectedForkRefusals).toBe(16);
       const rows = result.rolledBackForks as any[];
       expect(rows).toHaveLength(16);

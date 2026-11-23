@@ -1007,7 +1007,7 @@ pub(crate) fn read_with_host(handle: i64, offset: i64, output: &mut [u8], host: 
         let offset = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         let count = output.len().min(length.saturating_sub(offset));
         if count == 0 { return Ok(0); }
-        let count_read = host.group_object_read(object.group(), object.id(), offset as u64, &mut output[..count])?;
+        let count_read = object.physical()?.read(offset as u64, &mut output[..count], host)?;
         if count_read != count { return Err(Errno::EIO); }
         return Ok(count_read);
     }
@@ -1263,7 +1263,7 @@ pub(crate) fn write_with_host(handle: i64, offset: i64, buf: &[u8], host: &mut d
     })?;
     let Some(object) = direct else { return write(handle, offset, buf); };
     if buf.is_empty() { return Ok(0); }
-    let count = host.group_object_write(object.group(), object.id(), offset as u64, buf)?;
+    let count = object.physical()?.write(offset as u64, buf, host)?;
     if count > buf.len() { return Err(Errno::EIO); }
     if count != 0 {
         TMPFS.with(|state| {

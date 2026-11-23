@@ -1,6 +1,11 @@
 import { MEMORY_GROUP_PROTOCOL as P } from './generated/abi';
+import type { MemoryGroupBackingUsage } from './memory-group-usage';
 
-export class MemoryGroupProtocolFault extends Error {}
+export class MemoryGroupProtocolFault extends Error {
+  constructor(message: string, options?: ErrorOptions, readonly retainedBacking?: MemoryGroupBackingUsage) {
+    super(message, options);
+  }
+}
 export interface MemoryGroupTaskReceipt {
   readonly group: number;
   readonly pid: number;
@@ -31,7 +36,7 @@ function view(bytes: Uint8Array, expected: number): DataView {
  * or execution-fence proof; Rust revalidates every receipt before any action.
  */
 export function decodeMemoryGroupReceipt(bytes: Uint8Array, expected: {
-  readonly pid: number; readonly tid: number; readonly group?: number; readonly generation?: bigint;
+  readonly pid: number; readonly tid: number; readonly group?: number; readonly generation?: bigint; readonly serial?: bigint;
 }): MemoryGroupTaskReceipt {
   const data = view(bytes, P.receipt_bytes), f = P.receipt_fields;
   const receipt = Object.freeze({ group: data.getUint32(f.group, true),
@@ -41,6 +46,7 @@ export function decodeMemoryGroupReceipt(bytes: Uint8Array, expected: {
       || receipt.pid !== expected.pid || receipt.tid !== expected.tid
       || data.getUint32(f.reserved, true) !== 0
       || (expected.group !== undefined && receipt.group !== expected.group)
+      || (expected.serial !== undefined && receipt.serial !== expected.serial)
       || (expected.generation !== undefined && receipt.generation !== expected.generation)) {
     throw new MemoryGroupProtocolFault('Memory-group receipt does not match the admitted task');
   }

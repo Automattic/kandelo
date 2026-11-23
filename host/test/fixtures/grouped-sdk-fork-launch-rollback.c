@@ -12,6 +12,11 @@ int main(void) {
         CHECK(getpid() == original && unchanged == 37);
         errno = 0;
         CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
+        /* Hold the phase while the host takes a fresh Rust-owned snapshot;
+           inspection must not re-enter the kernel from a stdout callback. */
+        printf("fork-rollback-sample %d\n", attempt); fflush(stdout);
+        char acknowledgement;
+        CHECK(read(0, &acknowledgement, 1) == 1 && acknowledgement == 'k');
     }
     const pid_t child = fork();
     CHECK(child >= 0);

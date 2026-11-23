@@ -1025,6 +1025,16 @@ pub(crate) fn prepare_grouped_mapping_backing(proc: &mut Process,
     pending.mapping_plan.as_mut().ok_or(Errno::EIO)?.prepare_group_backing(receipt.group)
 }
 
+/// The caller first validates the exact receipt/transaction through
+/// grouped_mapping_description. Return the actual Rust model, never a host
+/// reconstruction from a serialized mapping effect.
+pub(crate) fn grouped_mapping_backing(proc: &Process, token: u32)
+    -> Result<Option<crate::memory::GroupSharedMapping>, Errno> {
+    let index = proc.owned_resources.index(token, proc.pid, proc.exec_generation)?;
+    proc.owned_resources.resources[index].receipt.as_ref().ok_or(Errno::ENOENT)?
+        .mapping_plan.as_ref().ok_or(Errno::EIO)?.group_backing()
+}
+
 pub(crate) fn mapping_result(proc: &Process, token: u32, transaction: u64) -> Result<i32, Errno> {
     let index = proc.owned_resources.index(token, proc.pid, proc.exec_generation)?;
     let receipt = proc.owned_resources.resources[index].receipt.as_ref().ok_or(Errno::ENOENT)?;

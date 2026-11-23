@@ -697,6 +697,63 @@ impl ProcessTable {
         &mut self.memory_groups
     }
 
+    /// A stopped pthread's scratch and its mapped control-slot authority end
+    /// together under the physical allocator's queue/native-observation fence.
+    pub fn release_group_storage_control(&mut self, record: wasm_posix_shared::memory_group::ReceiptRecord,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        let groups = self.memory_groups();
+        let group = groups.resolve_group(record.group)?;
+        if groups.storage_mut(group)?.resolve(record).is_ok() {
+            self.release_group_storage_thread(record, host)
+        } else {
+            self.release_group_storage_unconstructed_control(record, host)
+        }
+    }
+
+    pub fn release_group_storage_thread(&mut self, record: wasm_posix_shared::memory_group::ReceiptRecord,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        if record.pid == record.tid { return Err(Errno::EINVAL); }
+        if self.memory_groups.resolve_receipt(record).is_ok() {
+            return Err(Errno::EBUSY);
+        }
+        let task_present = self.validate_task(record.pid, record.tid).is_ok();
+        let process = self.processes.get_mut(&record.pid).filter(|process| process.exec_generation == record.generation);
+        let Some(process) = process else {
+            let (store, admission) = self.memory_groups.storage_owner(record)?;
+            return store.release_retired_image_thread(
+                &mut crate::memory_group::physical::HostMemory { resource: store.resource(), host }, admission);
+        };
+        if task_present { return Err(Errno::EBUSY); }
+        let (address, length) = process.memory.group_thread_control_interval(record)?;
+        let (store, admission) = self.memory_groups.storage_owner(record)?;
+        store.release_stopped_thread(&mut crate::memory_group::physical::HostMemory { resource: store.resource(), host },
+            admission, u32::try_from(address).map_err(|_| Errno::EIO)?, u32::try_from(length).map_err(|_| Errno::EIO)?,
+            || process.memory.release_group_thread_control(record))
+    }
+
+    pub fn release_group_storage_unconstructed_control(&mut self, record: wasm_posix_shared::memory_group::ReceiptRecord,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        if record.pid == record.tid { return Err(Errno::EINVAL); }
+        if self.memory_groups.resolve_receipt(record).is_ok() || self.validate_task(record.pid, record.tid).is_ok() {
+            return Err(Errno::EBUSY);
+        }
+        let process = self.processes.get_mut(&record.pid).ok_or(Errno::ESRCH)?;
+        if process.exec_generation != record.generation { return Err(Errno::ESRCH); }
+        let (address, length) = process.memory.group_thread_control_interval(record)?;
+        let group = self.memory_groups.resolve_group(record.group)?;
+        let store = self.memory_groups.storage_mut(group)?;
+        // A failed constructor has no replica, but its exact logical slot
+        // still names this image. The leader's source outlives leader exit.
+        if store.resolve(record).is_ok() { return Err(Errno::EBUSY); }
+        let root = store.root_for_image(record)?;
+        store.release_unconstructed_control(&mut crate::memory_group::physical::HostMemory { resource: store.resource(), host },
+            root, u32::try_from(address).map_err(|_| Errno::EIO)?, u32::try_from(length).map_err(|_| Errno::EIO)?,
+            || process.memory.release_group_thread_control(record))
+    }
+
     /// Validation only for an explicitly selected host group. Initial commit
     /// advances generation, so reserve the execution receipt afterward instead
     /// of minting a stale generation-zero task during artifact inspection.

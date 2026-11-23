@@ -132,10 +132,18 @@ unsafe extern "C" {
         buf_ptr: *mut u8,
         buf_len: u32,
     ) -> i32;
-    fn host_group_object_read(group: u32, object_lo: u32, object_hi: u32,
-        offset_lo: u32, offset_hi: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
-    fn host_group_object_write(group: u32, object_lo: u32, object_hi: u32,
-        offset_lo: u32, offset_hi: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
+    fn host_group_memory_create(resource: u64, initial: u32, maximum: u32) -> i32;
+    fn host_group_memory_drop(resource: u64) -> i32;
+    fn host_group_memory_pages(resource: u64) -> i32;
+    fn host_group_memory_grow(resource: u64, additional: u32) -> i32;
+    fn host_group_memory_read(resource: u64, address: u32, output: *mut u8, length: u32) -> i32;
+    fn host_group_memory_write(resource: u64, address: u32, input: *const u8, length: u32) -> i32;
+    fn host_group_memory_fill(resource: u64, address: u32, length: u32, byte: u32) -> i32;
+    fn host_group_memory_copy(resource: u64, destination: u32, source: u32, length: u32) -> i32;
+    fn host_group_memory_atomic_load(resource: u64, address: u32) -> i64;
+    fn host_group_memory_atomic_store(resource: u64, address: u32, value: u32) -> i32;
+    fn host_group_memory_atomic_compare_exchange(resource: u64, address: u32, expected: u32, replacement: u32) -> i64;
+    fn host_group_memory_atomic_notify(resource: u64, address: u32, count: u32) -> i32;
     // Positioned read of the VFS image's own container bytes, so the kernel can
     // parse the image it booted from instead of consuming a tree the host
     // walked for it (`rootfs::load_image`). There is exactly one image per
@@ -341,7 +349,7 @@ unsafe extern "C" {
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32) -> i32;
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32;
     fn host_gbm_bo_bind_group(pid: i32, bo_id: u32, addr: usize, len: usize,
-        bo_offset: u64, group: u32, object: u64, object_len: usize) -> i32;
+        bo_offset: u64, resource: u64, pages_ptr: *const u32, pages_count: u32, object_len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
     fn host_gl_unbind(pid: i32, session_id: u32) -> i32;
@@ -487,6 +495,13 @@ fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {
     }
 }
 
+fn checked_group_memory_status(status: i32) -> Result<(), Errno> {
+    match checked_host_i64_result(i64::from(status))? { 0 => Ok(()), _ => Err(Errno::EIO) }
+}
+fn checked_group_memory_word(value: i64) -> Result<u32, Errno> {
+    u32::try_from(checked_host_i64_result(value)?).map_err(|_| Errno::EIO)
+}
+
 fn split_i64_words(value: i64) -> (u32, i32) {
     (value as u32, (value >> 32) as i32)
 }
@@ -590,20 +605,44 @@ impl HostIO for WasmHostIO {
         };
         checked_host_transfer_result(result, buf.len())
     }
-    fn group_object_read(&mut self, group: u32, object: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Errno> {
-        let capacity = checked_host_buffer_len(buf.len())?;
-        let result = unsafe { host_group_object_read(group, object as u32, (object >> 32) as u32,
-            offset as u32, (offset >> 32) as u32, buf.as_mut_ptr(), capacity) };
-        checked_host_transfer_result(result, buf.len())
+    fn group_memory_create(&mut self, resource: u64, initial: u32, maximum: u32) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_create(resource, initial, maximum) })
     }
-
-    fn group_object_write(&mut self, group: u32, object: u64, offset: u64, buf: &[u8]) -> Result<usize, Errno> {
-        let capacity = checked_host_buffer_len(buf.len())?;
-        let result = unsafe { host_group_object_write(group, object as u32, (object >> 32) as u32,
-            offset as u32, (offset >> 32) as u32, buf.as_ptr(), capacity) };
-        checked_host_transfer_result(result, buf.len())
+    fn group_memory_drop(&mut self, resource: u64) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_drop(resource) })
     }
-
+    fn group_memory_fill(&mut self, resource: u64, address: u32, length: u32, byte: u8) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_fill(resource, address, length, u32::from(byte)) })
+    }
+    fn group_memory_copy(&mut self, resource: u64, destination: u32, source: u32, length: u32) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_copy(resource, destination, source, length) })
+    }
+    fn group_memory_atomic_store(&mut self, resource: u64, address: u32, value: u32) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_atomic_store(resource, address, value) })
+    }
+    fn group_memory_pages(&self, resource: u64) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_pages(resource) } as i64)
+    }
+    fn group_memory_grow(&mut self, resource: u64, additional: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_grow(resource, additional) } as i64)
+    }
+    fn group_memory_atomic_load(&self, resource: u64, address: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_atomic_load(resource, address) } as i64)
+    }
+    fn group_memory_atomic_compare_exchange(&mut self, resource: u64, address: u32, expected: u32, replacement: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_atomic_compare_exchange(resource, address, expected, replacement) } as i64)
+    }
+    fn group_memory_atomic_notify(&mut self, resource: u64, address: u32, count: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_atomic_notify(resource, address, count) } as i64)
+    }
+    fn group_memory_read(&self, resource: u64, address: u32, output: &mut [u8]) -> Result<(), Errno> {
+        let length = checked_host_buffer_len(output.len())?;
+        checked_group_memory_status(unsafe { host_group_memory_read(resource, address, output.as_mut_ptr(), length) })
+    }
+    fn group_memory_write(&mut self, resource: u64, address: u32, input: &[u8]) -> Result<(), Errno> {
+        let length = checked_host_buffer_len(input.len())?;
+        checked_group_memory_status(unsafe { host_group_memory_write(resource, address, input.as_ptr(), length) })
+    }
     fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
         let capacity = checked_host_buffer_len(buf.len())?;
         let result = unsafe {
@@ -1189,8 +1228,11 @@ impl HostIO for WasmHostIO {
     }
 
     fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
-        bo_offset: u64, group: u32, object: u64, object_len: usize) -> i32 {
-        unsafe { host_gbm_bo_bind_group(pid, bo_id, addr, len, bo_offset, group, object, object_len) }
+        bo_offset: u64, object: &runtime_core::memory::GroupSharedMapping) -> i32 {
+        object.with_physical_pages(|resource, pages| unsafe {
+            host_gbm_bo_bind_group(pid, bo_id, addr, len, bo_offset,
+                resource, pages.as_ptr(), pages.len() as u32, object.length())
+        }).unwrap_or_else(|error| -(error as i32))
     }
 
     fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
@@ -4111,7 +4153,7 @@ pub extern "C" fn kernel_group_memory_exec_action(receipt_ptr: *const u8, receip
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match action {
         group_exec::VALIDATE => table.validate_grouped_exec(receipt),
-        group_exec::CANCEL => table.cancel_grouped_exec(receipt),
+        group_exec::CANCEL => table.cancel_grouped_exec(receipt, &mut WasmHostIO),
         group_exec::FINISH_CANCELLATION => table.finish_grouped_exec_cancellation(receipt),
         _ => Err(Errno::EINVAL),
     }.map(|()| 0).unwrap_or_else(|error| -(error as i32))
@@ -4155,10 +4197,10 @@ pub extern "C" fn kernel_group_memory_fork(group: u32, pid: u32, tid: u32,
     };
     let mut host = WasmHostIO;
     let accepted = table.get(child).unwrap().dri_bindings.iter().all(|binding| {
-        let backing = crate::dri::with_registry(|r| r.group_storage_description(binding.bo_id));
-        backing.is_some_and(|(owner, object, length)| owner == group
+        let backing = crate::dri::with_registry(|r| r.group_storage_binding(binding.bo_id));
+        backing.is_some_and(|object| object.group() == group
             && host.gbm_bo_bind_group(child as i32, binding.bo_id, binding.addr, binding.len,
-                binding.bo_offset, owner, object, length) >= 0)
+                binding.bo_offset, &object) >= 0)
     });
     if !accepted {
         match lifecycle::run(table, &mut host, LifecycleRequest::Remove { pid: child, reap: false }) {
@@ -4209,14 +4251,6 @@ pub extern "C" fn kernel_group_owned_mapping_validate(pid: u32, tid: u32, token:
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_group_owned_mapping_finish(pid: u32, tid: u32, token: u32, transaction: u64, errno: u32) -> i32 {
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.finish_group_owned_mapping(pid, tid, token, transaction, errno, &mut WasmHostIO)
-        .unwrap_or_else(|error| -(error as i32))
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn kernel_group_memory_change_prepare(
     pid: u32, tid: u32, request_ptr: *const u8, request_len: u32,
     out_ptr: *mut u8, out_capacity: u32,
@@ -4260,7 +4294,7 @@ pub extern "C" fn kernel_group_memory_thread_control_release(group: u32, pid: u3
         generation: (u64::from(generation_hi) << 32) | u64::from(generation_lo) };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.release_group_thread_control(receipt).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+    table.release_group_storage_control(receipt, &mut WasmHostIO).map(|()| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
@@ -4302,41 +4336,127 @@ pub extern "C" fn kernel_group_memory_change_validate(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_group_memory_change_read(pid: u32, tid: u32, token_lo: u32, token_hi: u32,
-    offset_lo: u32, offset_hi: u32, out_ptr: *mut u8, out_capacity: u32) -> i32 {
-    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
-    if out_capacity == 0 || out_capacity > 65536 { return -(Errno::EINVAL as i32); }
+pub extern "C" fn kernel_memory_group_storage_create(group: u32, initial_pages: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_capacity as usize) };
-    table.read_group_memory_population(pid, tid, (u64::from(token_hi) << 32) | u64::from(token_lo),
-        (u64::from(offset_hi) << 32) | u64::from(offset_lo), output, &mut WasmHostIO)
-        .map(|count| count as i32).unwrap_or_else(|error| -(error as i32))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_group_memory_change_commit(pid: u32, tid: u32, token_lo: u32, token_hi: u32) -> i32 {
-    let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.commit_group_memory_change_with_io(pid, tid, token, &mut WasmHostIO)
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.create_storage(group, initial_pages, &mut WasmHostIO))
         .map(|_| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_group_memory_change_cancel(pid: u32, tid: u32, token_lo: u32, token_hi: u32) -> i32 {
-    let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
+pub extern "C" fn kernel_memory_group_storage_drop(group: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.cancel_group_memory_change_with_io(pid, tid, token, &mut WasmHostIO).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.drop_storage(group, &mut WasmHostIO))
+        .map(|()| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_group_memory_object_alive(group: u32, object_lo: u32, object_hi: u32) -> i32 {
+pub extern "C" fn kernel_memory_group_storage_prepare(receipt_ptr: *const u8, receipt_len: u32,
+    initial: u32, maximum: u32, scratch: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{memory_group::{ReceiptRecord, RECEIPT_BYTES}, group_storage::REPLY_BYTES};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let record = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
     let _gkl = GklGuard::acquire();
-    let object = (object_lo as u64) | ((object_hi as u64) << 32);
-    i32::from(crate::kernel_file_mapping::group_storage_alive(group, object)
-        || crate::dri::with_registry(|r| r.group_storage_alive(group, object)))
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    let result = (|| {
+        let admission = groups.resolve_receipt(record)?;
+        let descriptor = if record.pid == record.tid {
+            groups.prepare_storage_image(admission, runtime_core::memory_group::ImageLayout {
+                initial_pages: initial, maximum_pages: maximum, scratch_bytes: scratch,
+            }, &mut WasmHostIO)?
+        } else {
+            if initial != 0 || maximum != 0 || scratch != 0 { return Err(Errno::EINVAL); }
+            groups.prepare_storage_thread(admission, &mut WasmHostIO)?
+        };
+        let reply = runtime_core::memory_group::StorageReply { descriptor: Some(descriptor), value: 0, wait: None };
+        reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) })?;
+        Ok(REPLY_BYTES as i32)
+    })();
+    result.unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_action(receipt_ptr: *const u8, receipt_len: u32,
+    action: u32, token: u64, argument: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{memory_group::{ReceiptRecord, RECEIPT_BYTES}, group_storage::{Action, REPLY_BYTES}};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let record = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let action = match Action::try_from(action) { Ok(action) => action, Err(error) => return -(error as i32) };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.memory_groups().storage_action(record, action, token, argument, &mut WasmHostIO)
+        .and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) }))
+        .map(|()| REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_fork(parent_ptr: *const u8, parent_len: u32,
+    child_ptr: *const u8, child_len: u32, epoch: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{memory_group::{ReceiptRecord, RECEIPT_BYTES}, group_storage::REPLY_BYTES};
+    if parent_ptr.is_null() || child_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if parent_len as usize != RECEIPT_BYTES || child_len as usize != RECEIPT_BYTES || capacity as usize != REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let result = (|| {
+        let parent = ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(parent_ptr, RECEIPT_BYTES) })?;
+        let child = ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(child_ptr, RECEIPT_BYTES) })?;
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let descriptor = table.memory_groups().prepare_storage_fork(parent, child, epoch, &mut WasmHostIO)?;
+        runtime_core::memory_group::StorageReply { descriptor: Some(descriptor), value: 0, wait: None }
+            .encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) })?;
+        Ok(REPLY_BYTES as i32)
+    })();
+    result.unwrap_or_else(|error: Errno| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_mapping(receipt_ptr: *const u8, receipt_len: u32,
+    command: u32, token: u64, driver: u32, transaction: u64, argument: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::{ReceiptRecord, RECEIPT_BYTES};
+    if receipt_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.group_storage_mapping_action(receipt, command, token, driver, transaction, argument, &mut WasmHostIO)
+        .map(|value| value as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_snapshot(group: u32, out_ptr: *mut u8, capacity: u32) -> i32 {
+    use wasm_posix_shared::group_storage::SNAPSHOT_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if capacity as usize != SNAPSHOT_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.storage_snapshot(group, &mut WasmHostIO,
+        unsafe { core::slice::from_raw_parts_mut(out_ptr, SNAPSHOT_BYTES) }))
+        .map(|()| SNAPSHOT_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_sweep(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.sweep_storage_objects(group, &mut WasmHostIO))
+        .map(|_| 0).unwrap_or_else(|error| -(error as i32))
 }
 
 #[unsafe(no_mangle)]
@@ -4510,7 +4630,13 @@ pub extern "C" fn kernel_memory_group_task_action(
     };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Err(e) = table.memory_group_task_action(record, action) {
+    let result = if action == TaskAction::CancelUnconstructed {
+        let groups = table.memory_groups();
+        groups.resolve_receipt(record).and_then(|receipt| groups.cancel_unconstructed_with_storage(receipt, &mut WasmHostIO))
+    } else {
+        table.memory_group_task_action(record, action)
+    };
+    if let Err(e) = result {
         return -(e as i32);
     }
     // Init has no waiter to retry a reap which was blocked by execution

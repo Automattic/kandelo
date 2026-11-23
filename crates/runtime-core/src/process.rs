@@ -111,10 +111,43 @@ pub trait HostIO {
     fn exchange_source_read(&mut self, _source: u64, _offset: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno::EIO)
     }
-    fn group_object_read(&mut self, _group: u32, _object: u64, _offset: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
+    /// Foreign WebAssembly memory is a host resource, while its identity,
+    /// extent choices, mappings and lifetime are kernel decisions. These
+    /// primitives carry no guest addresses, object ids or allocation policy.
+    fn group_memory_create(&mut self, _resource: u64, _initial: u32, _maximum: u32) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
-    fn group_object_write(&mut self, _group: u32, _object: u64, _offset: u64, _buf: &[u8]) -> Result<usize, Errno> {
+    fn group_memory_drop(&mut self, _resource: u64) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_pages(&self, _resource: u64) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_grow(&mut self, _resource: u64, _additional: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_read(&self, _resource: u64, _address: u32, _output: &mut [u8]) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_write(&mut self, _resource: u64, _address: u32, _input: &[u8]) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_fill(&mut self, _resource: u64, _address: u32, _length: u32, _byte: u8) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_copy(&mut self, _resource: u64, _destination: u32, _source: u32, _length: u32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_load(&self, _resource: u64, _address: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_store(&mut self, _resource: u64, _address: u32, _value: u32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_compare_exchange(&mut self, _resource: u64, _address: u32, _expected: u32, _value: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_notify(&mut self, _resource: u64, _address: u32, _count: u32) -> Result<u32, Errno> {
         Err(Errno::EOPNOTSUPP)
     }
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
@@ -477,11 +510,12 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
-    /// Register scalar alias metadata for direct grouped storage. The host
-    /// reads/writes the admitted object, never `addr` in a raw Wasm Memory.
+    /// Bind native BO transport to the actual kernel-owned shared object.
+    /// The Wasm adapter lends its physical page descriptor synchronously;
+    /// the host never looks up logical object identity in a second registry.
     #[allow(unused_variables)]
     fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
-        bo_offset: u64, group: u32, object: u64, object_len: usize) -> i32 {
+        bo_offset: u64, object: &crate::memory::GroupSharedMapping) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 

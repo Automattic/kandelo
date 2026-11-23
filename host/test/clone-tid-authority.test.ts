@@ -1,4 +1,4 @@
-import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { groupMemoryLayout } from './support/group-memory-layout';
 import { processDataView, type ProcessMemorySource } from "../src/process-memory-views";
 import { describe, expect, it, vi } from "vitest";
 import { Worker } from "node:worker_threads";
@@ -670,29 +670,28 @@ describe("clone transport with virtual images", () => {
     const callbacks = (h.worker as any).callbacks;
     callbacks.onGroupedClone = callbacks.onClone;
     callbacks.onClone = vi.fn(() => { throw Error('Grouped clone reached the ordinary backend'); });
-    const store = new MemoryGroupImageStore(7, 64, 64);
     const task = { group: 7, pid: PID, tid: PID, serial: 1n, generation: 0n };
-    const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: WASM_PAGE_SIZE });
-    const launch = store.publish(owner, task), source = store.imageSource(owner);
+    const fixture = groupMemoryLayout({ receipt: task, initialPages: 8 });
+    const { launch, source, handle: owner } = fixture;
     const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
     [ptes[1], ptes[6]] = [ptes[6], ptes[1]];
     [ptes[2], ptes[5]] = [ptes[5], ptes[2]];
     Object.assign(h.channel, { memory: launch.envelope.memory, source });
     Object.assign((h.worker as any).processes.get(PID), { memory: launch.envelope.memory, source });
-    return { store, owner, source, memory: launch.envelope.memory };
+    return { fixture, owner, source, memory: launch.envelope.memory };
   }
   const parentTidPointer = 4 * WASM_PAGE_SIZE + 256;
   const args = () => [CLONE_ARGS[0] | 0x00100000, CLONE_ARGS[1], parentTidPointer, CLONE_ARGS[3], CLONE_ARGS[4], 0];
 
   it('refuses grouped clone before allocating a task when only the ordinary backend is present', () => {
-    const h = makeCloneHarness(async () => {}), { store } = group(h);
+    const h = makeCloneHarness(async () => {}), { fixture } = group(h);
     (h.worker as any).callbacks.onGroupedClone = undefined;
     try {
       h.dispatch(args());
       expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 95 });
       expect(h.kernelHandleChannel).not.toHaveBeenCalled();
       expect((h.worker as any).callbacks.onClone).not.toHaveBeenCalled();
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 
   it("attaches through the virtual source but refuses success without a published Worker owner", async () => {
@@ -706,7 +705,7 @@ describe("clone transport with virtual images", () => {
       attached = (h.worker as any).processes.get(PID).channels[1];
       expect(processDataView(attached.source).getInt32(parentTidPointer, true)).toBe(KERNEL_TID);
     }, KERNEL_TID, false);
-    const { store, source } = group(h);
+    const { fixture, source } = group(h);
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       h.dispatch(args());
@@ -717,19 +716,18 @@ describe("clone transport with virtual images", () => {
       expect(h.notifyThreadExit).toHaveBeenCalledExactlyOnceWith(PID, KERNEL_TID, 0);
       expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('without publishing an observed Worker'));
-    } finally { consoleError.mockRestore(); store.close(); }
+    } finally { consoleError.mockRestore(); fixture.close(); }
   });
 
   it.each([false, true])("refuses an old attachment on the same backing and rolls back its own TID (revoked=%s)", async revoke => {
     const started = Promise.withResolvers<any>(), launch = Promise.withResolvers<void>();
     const h = makeCloneHarness(async attachment => { started.resolve(attachment); return launch.promise; }, KERNEL_TID, false);
-    const { store, owner, source, memory } = group(h);
+    const { fixture, owner, source, memory } = group(h);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       h.dispatch(args()); const attachment = await started.promise;
       const nextTask = { group: 7, pid: PID, tid: PID, serial: 2n, generation: 1n };
-      const nextOwner = store.prepareImage(nextTask, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: WASM_PAGE_SIZE });
-      const nextLaunch = store.publish(nextOwner, nextTask), nextSource = store.imageSource(nextOwner);
+      const { launch: nextLaunch, source: nextSource } = groupMemoryLayout({ receipt: nextTask, memory, initialPages: 8, rootPage: 2, replicaPage: 5, payloadPage: 16 });
       expect(nextLaunch.envelope.memory).toBe(memory);
       nextSource.fillBytes(CHANNEL_OFFSET, 64, 0);
       processDataView(nextSource).setInt32(parentTidPointer, 77, true);
@@ -737,7 +735,7 @@ describe("clone transport with virtual images", () => {
       const oldRegistration = (h.worker as any).processes.get(PID);
       (h.worker as any).processes.set(PID, { ...oldRegistration, source: nextSource, channels: [replacement] });
       (h.worker as any).activeChannels = [replacement];
-      if (revoke) store.revokeImageAccess(owner);
+      if (revoke) fixture.close();
       expect(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE)).toThrow("changed memory generation");
       launch.reject(Error("old image launch failed"));
       await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
@@ -746,7 +744,7 @@ describe("clone transport with virtual images", () => {
       expect(processDataView(nextSource, CHANNEL_OFFSET).getUint32(CH_STATUS, true)).toBe(0);
       expect((h.worker as any).processes.get(PID).channels).toEqual([replacement]);
       if (!revoke) expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(0);
-    } finally { consoleError.mockRestore(); store.close(); }
+    } finally { consoleError.mockRestore(); fixture.close(); }
   });
 });
 

@@ -11,6 +11,14 @@ use crate::prepared_map::{MapMemory, PreparedMap, PreparedMapSlot};
 use core::sync::atomic::{AtomicU32, Ordering};
 use wasm_posix_shared::Errno;
 
+pub mod physical;
+pub(crate) mod object;
+pub(crate) mod storage;
+mod backing;
+pub use backing::StorageReply;
+mod wait_queue;
+pub use storage::{ImageLayout, ReplicaDescriptor};
+
 static LAST_GROUP_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Minted by the kernel, not a POSIX pgid or a guest-supplied authority.
@@ -106,6 +114,7 @@ struct Task {
 
 struct Group {
     snapshot: MemoryGroupSnapshot,
+    storage: Option<crate::IoBox<storage::Storage>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -266,7 +275,7 @@ impl MemoryGroups {
             backings: 0,
             images: 0,
         };
-        let entry = slot.finish(raw, Group { snapshot })?;
+        let entry = slot.finish(raw, Group { snapshot, storage: None })?;
         self.groups.publish_io(entry);
         self.reserved_pages = reserved;
         Ok(id)
@@ -675,6 +684,13 @@ impl MemoryGroups {
     /// Only the owner proving a Worker was never constructed may use rollback.
     pub fn cancel_unconstructed(&mut self, receipt: GroupAdmission) -> Result<(), Errno> {
         if self.task(receipt)?.phase != Phase::Prepared {
+            return Err(Errno::EBUSY);
+        }
+        // Callers without HostIO may cancel only reservations that no longer
+        // own physical storage. Busy physical rollback must retain admission.
+        if self.groups.get(&receipt.group.0).and_then(|group| group.storage.as_deref())
+            .is_some_and(|store| store.resolve(receipt.record()).is_ok())
+        {
             return Err(Errno::EBUSY);
         }
         self.release(receipt)

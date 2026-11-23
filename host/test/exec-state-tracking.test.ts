@@ -1,6 +1,6 @@
 import { compileSdkFixture } from "./support/compile-sdk-fixture";
 import { computeProcessMemoryLayout } from "../src/process-memory";
-import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { groupMemoryLayout } from './support/group-memory-layout';
 import { captureProcessRead, processDataView } from "../src/process-memory-views";
 import { readFileSync } from "node:fs";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -87,19 +87,18 @@ function admitProgram(memory: WebAssembly.Memory) {
 }
 
 function groupedExecInput() {
-  const store = new MemoryGroupImageStore(7, 32, 32);
   const task = { group: 7, pid: 7, tid: 7, serial: 1n, generation: 0n };
-  const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: 65536 });
-  const launch = store.publish(owner, task), source = store.imageSource(owner);
+  const fixture = groupMemoryLayout({ receipt: task, initialPages: 8 });
+  const { launch, source } = fixture;
   const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
   [ptes[0], ptes[7]] = [ptes[7], ptes[0]];
   [ptes[1], ptes[4]] = [ptes[4], ptes[1]];
-  return { store, source, ptes, memory: launch.envelope.memory };
+  return { fixture, source, ptes, memory: launch.envelope.memory };
 }
 
 describe("exec metadata through explicit image sources", () => {
   it.each([4, 8] as const)("reads scattered strings and unaligned wasm%s pointer arrays", pointerWidth => {
-    const { store, source } = groupedExecInput(), worker = createWorker({});
+    const { fixture, source } = groupedExecInput(), worker = createWorker({});
     const array = 65536 - 2, string = 2 * 65536 - 3, text = "héllo🙂";
     try {
       source.writeBytes(string, new TextEncoder().encode(text + "\0"));
@@ -110,11 +109,11 @@ describe("exec metadata through explicit image sources", () => {
         view.setUint32(array, string, true); view.setUint32(array + 4, 0, true);
       }
       expect(worker.readStringArrayFromProcess(captureProcessRead(source), array, pointerWidth)).toEqual({ values: [text] });
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 
   it("stops at a NUL before a hole and reports EFAULT when the string reaches it", () => {
-    const { store, source, ptes } = groupedExecInput(), worker = createWorker({});
+    const { fixture, source, ptes } = groupedExecInput(), worker = createWorker({});
     const path = 65536 - 2;
     try {
       source.writeBytes(path, Uint8Array.of(47, 120, 0));
@@ -123,11 +122,11 @@ describe("exec metadata through explicit image sources", () => {
       source.writeBytes(path, Uint8Array.of(47, 0));
       expect(worker.readExecPathFromProcess(captureProcessRead(source), path)).toEqual({ value: "/" });
       ptes[1] = saved;
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 
   it("does not require unrelated image pages while decoding argv", () => {
-    const { store, source, ptes } = groupedExecInput(), worker = createWorker({});
+    const { fixture, source, ptes } = groupedExecInput(), worker = createWorker({});
     const array = 2 * 65536 - 2, string = 3 * 65536 - 2;
     try {
       source.writeBytes(string, new TextEncoder().encode("arg\0"));
@@ -135,7 +134,7 @@ describe("exec metadata through explicit image sources", () => {
       processDataView(source).setUint32(array + 4, 0, true);
       ptes[0] &= ~1;
       expect(worker.readStringArrayFromProcess(captureProcessRead(source), array, 4)).toEqual({ values: ["arg"] });
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 
   it("refuses metadata outside the captured native extent after growth", () => {
@@ -148,7 +147,7 @@ describe("exec metadata through explicit image sources", () => {
   });
 
   it.each([HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT])("refuses inaccessible virtual paths before launching syscall %i", syscall => {
-    const { store, source, ptes, memory } = groupedExecInput();
+    const { fixture, source, ptes, memory } = groupedExecInput();
     const channel = { ...createChannel(7, memory, 6 * 65536), source }, onExec = vi.fn();
     const worker = createWorker({ processes: new Map([[7, { channels: [channel], memory, source }]]), callbacks: { onExec } });
     const path = 65536 - 2;
@@ -163,13 +162,13 @@ describe("exec metadata through explicit image sources", () => {
       expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
       expect(view.getUint32(CH_ERRNO, true)).toBe(14);
       expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 });
 
 describe("exact virtual exec caller identity", () => {
   it.each(["image", "request"] as const)("cancels an old preparation without completing its replacement %s", async replacement => {
-    const { store, source, memory } = groupedExecInput();
+    const { fixture, source, memory } = groupedExecInput();
     const channel = { ...createChannel(7, memory, 6 * 65536), source };
     const registration = { pid: 7, channels: [channel], memory, source, ptrWidth: 4 };
     const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
@@ -191,8 +190,7 @@ describe("exact virtual exec caller identity", () => {
       let replacementView = view;
       if (replacement === "image") {
         const task = { group: 7, pid: 7, tid: 7, serial: 2n, generation: 1n };
-        const owner = store.prepareImage(task, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: 65536 });
-        const launch = store.publish(owner, task), nextSource = store.imageSource(owner);
+        const { source: nextSource } = groupMemoryLayout({ receipt: task, initialPages: 8, memory: fixture.memory, rootPage: 2, replicaPage: 5, payloadPage: 16 });
         const next = { ...channel, source: nextSource };
         worker.processes.set(7, { ...registration, source: nextSource, channels: [next] });
         worker.activeChannels = [next]; replacementView = processDataView(nextSource, next.channelOffset);
@@ -210,11 +208,11 @@ describe("exact virtual exec caller identity", () => {
       expect(exports.kernel_exec_target_cancel).toHaveBeenCalledExactlyOnceWith(7, 31);
       expect(replacementView.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_PENDING);
       expect(replacementView.getBigInt64(CH_RETURN, true)).toBe(0n);
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 
   it("decodes scattered input and completes a failure for the selected virtual request", async () => {
-    const { store, source, memory } = groupedExecInput();
+    const { fixture, source, memory } = groupedExecInput();
     const channel = { ...createChannel(7, memory, 6 * 65536), source };
     const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
     const onExec = vi.fn(async () => -2);
@@ -233,7 +231,7 @@ describe("exact virtual exec caller identity", () => {
       await flushMicrotasksUntil(() => view.getUint32(CH_STATUS, true) === CHANNEL_STATUS_COMPLETE, "virtual exec failure did not complete");
       expect(onExec).toHaveBeenCalledOnce(); expect(onExec.mock.calls[0][0].argv).toEqual(["alpha"]);
       expect(view.getUint32(CH_ERRNO, true)).toBe(2); expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
-    } finally { store.close(); }
+    } finally { fixture.close(); }
   });
 });
 

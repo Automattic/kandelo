@@ -131,7 +131,19 @@ impl PreparedMemoryChange {
     pub(crate) fn shared_backing(&self) -> Result<Option<(&super::GroupSharedMapping, u64, u64)>, Errno> {
         let address = match self.effect { MemoryChangeEffect::Map { addr, .. } => addr,
             MemoryChangeEffect::Remap { new_addr, .. } => new_addr, _ => return Ok(None) };
-        let mapping = self.proposed.mappings.iter().find(|m| m.addr <= address && m.addr + m.len > address).ok_or(Errno::EIO)?;
+        let mapping = self.proposed.mappings.iter().find(|m| m.addr <= address && m.addr + m.len > address);
+        let Some(mapping) = mapping else {
+            // Host control reservations live in the MM's protected control
+            // ledger, rather than its ordinary VMA table. They need private
+            // physical pages and can never supply a shared-object backing.
+            if let MemoryChangeEffect::Map { addr, len, .. } = self.effect {
+                if self.proposed.grouped_linear.as_deref().is_some_and(|linear|
+                    linear.controls.iter().any(|control| control.address == addr && control.length == len && control.owner.is_some())) {
+                    return Ok(None);
+                }
+            }
+            return Err(Errno::EIO);
+        };
         let Some(object) = mapping.file.as_ref().and_then(|file| file.group_shared.as_ref()) else { return Ok(None); };
         Ok(Some((object, object.0.length as u64, mapping.offset_after(address - mapping.addr))))
     }

@@ -378,6 +378,16 @@ function assertKernelScratchPointerRoleContract(
 
 const ownershipSeeds: OwnershipSeed[] = [
   {
+    declaration: 'host/src/group-memory-transport.ts::GroupMemoryTransport.#scratch',
+    target: 'value', owner: 'kernel', form: 'scratch-region',
+    why: 'This private bridge slot accepts only the exact region returned by the allocator ownership validator for its gated kernel generation. Every synchronous call consumes a fresh explicit entry scope.',
+  },
+  {
+    declaration: 'host/src/group-memory-transport.ts::GroupMemoryEntry.instance',
+    target: 'value', owner: 'kernel', form: 'instance',
+    why: 'The bridge receives the same lexical entry and scoped kernel instance as KernelWorker helpers. It never retains this per-call instance or sends it into detached effects.',
+  },
+  {
     declaration: "host/src/kernel.ts::WasmPosixKernel.#memory",
     target: "value",
     owner: "kernel",
@@ -594,20 +604,32 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: 'host/src/kernel-worker.ts::CentralizedKernelWorker.createMemoryGroupBacking::kernel-export-direct-use::create(group, initialPages)',
+    disposition: 'kernel-control', count: 1,
+    why: 'Host27 constructs the one physical resource for an already admitted group. Rust validates initial extent against its budget, retains the backing lease and owns rollback; the host receives only status and stages no kernel pointers.',
+  },
+  {
+    key: 'host/src/kernel-worker.ts::CentralizedKernelWorker.removeEmptyMemoryGroup::kernel-export-direct-use::drop(group)',
+    disposition: 'kernel-control', count: 1,
+    why: 'Host27 requests removal by a Rust-issued group identity. Rust requires no images, replicas, objects or native pins before dropping its foreign resource and backing lease. The result is a scalar status, never a page list or retirement proof supplied by JS.',
+  },
+  {
+    key: 'host/src/group-memory-transport.ts::GroupMemoryTransport.#releaseControl::kernel-export-direct-use::release(receipt.group, receipt.pid, receipt.tid, Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n), Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))',
+    disposition: 'kernel-control', count: 1,
+    why: 'The exact retired receipt selects a Rust MemoryManager control slot. Rust validates SDK/native pins and consumes logical rebind authority before returning scratch under the allocator fence. JS supplies no ranges, pages or commit callback.',
+  },
+  {
+    key: 'host/src/group-memory-transport.ts::GroupMemoryTransport.sweepFileObjects::kernel-export-direct-use::sweep(this.group)',
+    disposition: 'kernel-control', count: 1,
+    why: 'This scalar group identity requests collection of Rust-owned objects. Rust derives last VMA/inode/BO holds and rechecks SDK/native pins under its allocator fence. No host logical-object lookup or page selection is involved.',
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareMemoryGroupProgram::kernel-export-direct-use::(bind as CallableFunction)(ownerPid, target, image, group)",
     disposition: "kernel-control", count: 1,
     why: "Host26 kernel_group_exec_target_bind_image takes four i32 control identities: owner PID, retained source target, retained implementation target and configured group. Rust validates the same live owner, source digest and implementation admission before binding descriptors. No kernel pointer, byte range or scratch reservation crosses this exact synchronous lexical kernel entry; the return is an i32 status.",
   },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#groupMappingAction::kernel-export-direct-use::operation(receipt.pid, receipt.tid, owned.token!, owned.transaction!, cancel ? EIO : 0)",
-    disposition: "kernel-control", count: 1,
-    why: "The exact live task and its owned-resource token/transaction finish one prepared driver mapping under the image barrier. The final scalar is a construction decision; no kernel pointer or memory reservation crosses this call.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#sweepGroupFileObjects::kernel-export-direct-use::alive(group, Number(id & 0xffffffffn), Number(id >> 32n))",
-    disposition: "kernel-control", count: 1,
-    why: "This read-only query checks the exact kernel group/object identity before the host releases an ownerless file backing. It returns only 0 or 1 and grants no pointer, task or allocation authority.",
-  },
+
+
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#isKernelProcessExitPublished::kernel-export-direct-use::readPublished(pid)",
     disposition: "kernel-control",
@@ -1040,9 +1062,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#readGroupMemoryBreak::kernel-export-direct-use::getBreak(pid, tid)",
   ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#groupMappingAction::kernel-export-direct-use::operation(receipt.pid, receipt.tid, Number(token & 0xffffffffn), Number(token >> 32n))",
-  ),
+
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.configureMemoryGroups::kernel-export-direct-use::configure(maximumPages, maximumGroups)",
   ),
@@ -1660,10 +1680,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "The fork transit provider has no imports or linear memory and owns only the process worker's temporary externref table.",
   },
   {
-    key: "host/src/memory-group-notification.ts::queueUnlock::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory } })",
+    key: "host/src/group-memory-resources.ts::GroupMemoryResources.create::wasm-memory-authority::new IntrinsicGroupMemory({ initial, maximum, shared: true })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
-    why: "This closed metadata-store helper imports only the already-admitted group backing in its disposable owning kernel or process Worker, before guest execution. It allocates no Memory and has no host imports. A private weak-key cache exposes only a closure for the generated queue mutex word; it grants no image or retirement authority and cannot retain a backing after its external owners disappear.",
+    why: "The disposable kernel Worker constructs the exact foreign backing resource issued by Rust after its group budget is admitted. This adapter retains only platform Memory/store objects and performs raw byte, growth and atomic operations; Rust owns images, page choice, mappings and retirement. The backing never reaches a persistent or main-thread realm.",
+  },
+  {
+    key: "host/src/memory-group-notification.ts::prepareMemoryGroupPhysicalStore::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This raw atomic-store helper imports only the already-admitted group backing in its disposable owning kernel or process Worker, before guest execution. It allocates no Memory and has no host imports. The queue helper restricts its closure to the queue mutex; the physical resource adapter accepts only synchronous bounded addresses chosen by Rust. Private weak-key caches grant no image or retirement authority.",
   },
   {
     key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/contender.js::<module>::wasm-instance-authority::new WebAssembly.Instance(data.module,{env:{memory:data.memory}})",
@@ -1798,6 +1824,16 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel-scratch.ts::OwnedKernelScratchRegion.reserve::kernel-memory-escape::intrinsicObjectFreeze({ memory, pointerWidth, instance: kernelInstance ?? null, })",
     disposition: "scratch-core",
     why: "This frozen reservation-ownership record is private metadata, not a caller-visible Memory escape; revocation and validation remain bound to the matching token generation.",
+  },
+  {
+    key: 'host/src/group-memory-transport.ts::GroupMemoryTransport.constructor::scratch-address-contract::scratch',
+    disposition: 'scratch-core', count: 1,
+    why: 'This exact constructor argument goes only to validateKernelScratchRegionOwnership before the validated projection enters the private bridge slot. The validator checks the allocator-owned WeakMap identity, actual Memory and matching gated kernel generation; it creates no lease or pointer from the structural input.',
+  },
+  {
+    key: 'host/src/kernel-scratch.ts::validateKernelScratchRegionOwnership::scratch-address-contract::region as object',
+    disposition: 'scratch-core', count: 1,
+    why: 'This type-only object projection is the exact key of the module-private allocator ownership WeakMap. The validator rejects any missing record or different gated generation before returning the nominally proven region; it neither exposes an address nor replaces the region or its methods.',
   },
   {
     key: "host/src/kernel-scratch.ts::OwnedKernelScratchRegion.allocate::scratch-allocator-call::allocator(capacity)",
@@ -1976,10 +2012,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "The host_pread Wasm import binds the untouched Rust pointer and capacity formals before invoking any positioned producer.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, 'host_group_object_read destination')",
-    disposition: "rust-lent", count: 1,
-    why: "The grouped-object read import binds the untouched Rust destination pointer and exact slice capacity before invoking the file reader. The reader fills independent bytes; the import validates its count and copies only that prefix through the authenticated destination.",
+    key: "host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, 'host_group_memory_read destination')",
+    disposition: "rust-lent",
+    why: "The raw foreign-memory read import accepts only the untouched Rust slice pointer/capacity, capped at one 64 KiB page. It reads into independent bytes and copies the complete bounded result through the authenticated destination before returning; the resource adapter retains no kernel view.",
   },
+
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, "host_overlay_read destination")',
     disposition: "rust-lent",
@@ -2114,7 +2151,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "The raw sink runs only after lossless pointer conversion, explicit Rust-lent capacity/current-memory proof, and an intrinsic producer-length check; it publishes once synchronously.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, }, ], )",
+    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource), }, ], )",
     disposition: "kernel-control",
     why: "The package-private WeakMap grants only the dedicated worker access to this wrapper's exact gate, gated instance, and memory; none is exported from the public package surface.",
   },

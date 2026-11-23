@@ -5,6 +5,7 @@ const backingFields = [
   'allocatedPages', 'pendingWaitDrains', 'nativeObservers', 'mappingStagingBytes',
   'retainedMappingReferences', 'sharedObjects', 'sharedPages', 'sharedImageReferences',
   'maximumPages', 'highWaterPages', 'physicalExtentPages',
+  'pausedImages', 'unacknowledgedReplicas', 'waitQueueLock', 'waitQueueNodes',
 ] as const;
 
 /** Independent scalar counters, never a Memory, mapping root or ownership token. */
@@ -50,6 +51,7 @@ export function validateMemoryGroupUsage(value: unknown): MemoryGroupUsage | nul
       || backing.allocatedPages > backing.physicalExtentPages
       || backing.physicalExtentPages > backing.maximumPages || backing.highWaterPages > backing.physicalExtentPages
       || backing.sharedPages > backing.allocatedPages || backing.exposedReplicas > backing.replicas
+      || backing.pausedImages > backing.images || backing.unacknowledgedReplicas > backing.replicas
       || backing.quarantinedReplicas > backing.replicas)) fault();
   return Object.freeze({ admission, backing });
 }

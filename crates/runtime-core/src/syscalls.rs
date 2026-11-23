@@ -26969,8 +26969,8 @@ mod tests {
             self.gbm_bo_bind_rc
         }
         fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
-            offset: u64, group: u32, object: u64, object_len: usize) -> i32 {
-            self.gbm_bo_group_bind_calls.push((pid, bo_id, addr, len, offset, group, object, object_len));
+            offset: u64, object: &crate::memory::GroupSharedMapping) -> i32 {
+            self.gbm_bo_group_bind_calls.push((pid, bo_id, addr, len, offset, object.group(), object.id(), object.length()));
             self.gbm_bo_bind_rc
         }
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {

@@ -1,3 +1,4 @@
+import { GroupMemoryResources, GroupMemoryResourceError } from "./group-memory-resources";
 import {prepareScalarState} from "./webgl/scalar-state.js";
 import {validProgramJournalRequest,validProgramJournalBarrierRequest} from "./webgl/program-journal-query.js";
 import { QOP_GET_ERROR } from "./webgl/ops.js";
@@ -128,6 +129,7 @@ interface WasmPosixKernelRuntimeAccess {
   readonly gate: KernelEntryGate;
   readonly instance: () => WebAssembly.Instance | null;
   readonly memory: () => WebAssembly.Memory | null;
+  readonly groupMemory: (resource: bigint) => WebAssembly.Memory;
 }
 
 interface KernelGraphicsAccess {
@@ -1010,8 +1012,7 @@ export class WasmPosixKernel {
   #exchangeSourceProvider:
     | ((source: bigint, offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
-  #groupObjectReader: ((group: number, object: bigint, offset: bigint, dest: Uint8Array) => number) | undefined;
-  #groupObjectWriter: ((group: number, object: bigint, offset: bigint, input: Uint8Array) => number) | undefined;
+  readonly #groupMemoryResources = new GroupMemoryResources();
   /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
@@ -1856,19 +1857,6 @@ export class WasmPosixKernel {
     this.#rootfsDeferredInvalidator = invalidator;
   }
 
-  /** Install the Kandelo exchange source byte provider. */
-  setGroupObjectReader(reader: (group: number, object: bigint, offset: bigint, dest: Uint8Array) => number): void {
-    this.#groupObjectReader = reader;
-    this.bos.setGroupObjectIO({
-      read: (backing, offset, output) => this.#groupObjectReader?.(backing.group, backing.object, BigInt(offset), output) ?? -5,
-      write: (backing, offset, input) => this.#groupObjectWriter?.(backing.group, backing.object, BigInt(offset), input) ?? -5,
-    });
-  }
-
-  setGroupObjectWriter(writer: (group: number, object: bigint, offset: bigint, input: Uint8Array) => number): void {
-    this.#groupObjectWriter = writer;
-  }
-
   setExchangeSourceProvider(
     provider: ((source: bigint, offset: bigint, dest: Uint8Array) => number) | undefined,
   ): void {
@@ -1902,6 +1890,10 @@ export class WasmPosixKernel {
     this.config = config;
     this.io = io;
     this.callbacks = callbacks ?? {};
+    this.bos.setGroupObjectIO({
+      read: (backing, offset, output) => this.#groupMemoryResources.readPages(backing.resource, backing.pages, offset, output),
+      write: (backing, offset, input) => this.#groupMemoryResources.writePages(backing.resource, backing.pages, offset, input),
+    });
     // A refused native GL deletion or restoration (native-recovery.ts) is a
     // fatal host fault. This kernel owns the renderers of its worker realm.
     setNativeGlFaultReporter(fault => this.callbacks.onHostFault?.(fault));
@@ -1957,6 +1949,7 @@ export class WasmPosixKernel {
           gate: this.#kernelEntryGate,
           instance: () => this.#instance,
           memory: () => this.#memory,
+          groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource),
         },
       ],
     );
@@ -2711,26 +2704,61 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_group_object_read: (group: number, objectLo: number, objectHi: number,
-          offsetLo: number, offsetHi: number, ptr: KernelPointer, len: number): number => {
-          try {
-            const destination = this.#rustLentKernelDestination(ptr, len, 'host_group_object_read destination');
-            const bytes = new IntrinsicUint8Array(destination.capacity);
-            const result = this.#groupObjectReader?.(group, u64FromWords(objectLo, objectHi), u64FromWords(offsetLo, offsetHi), bytes) ?? -5;
-            if (!Number.isSafeInteger(result) || result < -4095 || result > bytes.length) return -5;
-            if (result > 0) this.#writeKernelBytes(destination, subarrayUint8Array(bytes, 0, result));
-            return result;
-          } catch { return -5; }
+        host_group_memory_create: (resource: bigint, initial: number, maximum: number): number => {
+          try { this.#groupMemoryResources.create(BigInt.asUintN(64, resource), initial, maximum); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
         },
-        host_group_object_write: (group: number, objectLo: number, objectHi: number,
-          offsetLo: number, offsetHi: number, ptr: KernelPointer, len: number): number => {
+        host_group_memory_drop: (resource: bigint): number => {
+          try { this.#groupMemoryResources.drop(BigInt.asUintN(64, resource)); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_pages: (resource: bigint): number => {
+          try { return this.#groupMemoryResources.pages(BigInt.asUintN(64, resource)); }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_grow: (resource: bigint, additional: number): number => {
+          try { return this.#groupMemoryResources.grow(BigInt.asUintN(64, resource), additional); }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_fill: (resource: bigint, address: number, length: number, byte: number): number => {
+          try { this.#groupMemoryResources.fill(BigInt.asUintN(64, resource), address >>> 0, length >>> 0, byte >>> 0); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_copy: (resource: bigint, destination: number, source: number, length: number): number => {
+          try { this.#groupMemoryResources.copy(BigInt.asUintN(64, resource), destination >>> 0, source >>> 0, length >>> 0); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_atomic_store: (resource: bigint, address: number, value: number): number => {
+          try { this.#groupMemoryResources.store(BigInt.asUintN(64, resource), address >>> 0, value >>> 0); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_atomic_notify: (resource: bigint, address: number, count: number): number => {
+          try { return this.#groupMemoryResources.notify(BigInt.asUintN(64, resource), address >>> 0, count >>> 0); }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_atomic_load: (resource: bigint, address: number): bigint => {
+          try { return BigInt(this.#groupMemoryResources.load(BigInt.asUintN(64, resource), address >>> 0)); }
+          catch (error) { return BigInt(error instanceof GroupMemoryResourceError ? -error.errno : -5); }
+        },
+        host_group_memory_atomic_compare_exchange: (resource: bigint, address: number, expected: number, replacement: number): bigint => {
+          try { return BigInt(this.#groupMemoryResources.compareExchange(BigInt.asUintN(64, resource), address >>> 0, expected >>> 0, replacement >>> 0)); }
+          catch (error) { return BigInt(error instanceof GroupMemoryResourceError ? -error.errno : -5); }
+        },
+        host_group_memory_read: (resource: bigint, address: number, ptr: KernelPointer, len: number): number => {
           try {
-            // This is an independent bounded copy, never a kernel/guest view
-            // escaping into the backing owner or another realm.
+            if (!Number.isInteger(len) || len < 0 || len > 65536) return -22;
+            const destination = this.#rustLentKernelDestination(ptr, len, 'host_group_memory_read destination');
+            const bytes = new IntrinsicUint8Array(destination.capacity);
+            this.#groupMemoryResources.read(BigInt.asUintN(64, resource), address >>> 0, bytes);
+            this.#writeKernelBytes(destination, bytes); return 0;
+          } catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -14; }
+        },
+        host_group_memory_write: (resource: bigint, address: number, ptr: KernelPointer, len: number): number => {
+          try {
+            if (!Number.isInteger(len) || len < 0 || len > 65536) return -22;
             const bytes = this.#readKernelBytes(ptr, len);
-            const result = this.#groupObjectWriter?.(group, u64FromWords(objectLo, objectHi), u64FromWords(offsetLo, offsetHi), bytes) ?? -5;
-            return Number.isSafeInteger(result) && result >= -4095 && result <= bytes.length ? result : -5;
-          } catch { return -5; }
+            this.#groupMemoryResources.write(BigInt.asUintN(64, resource), address >>> 0, bytes); return 0;
+          } catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -14; }
         },
         host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
           const uri = this.#readComponentFromMemory(uriPtr, uriLen);
@@ -3419,13 +3447,19 @@ export class WasmPosixKernel {
           }
         },
         host_gbm_bo_bind_group: (pid: number, bo: number, addr: KernelPointer, len: KernelPointer,
-          boOffset: bigint, group: number, object: bigint, objectLength: KernelPointer): number => {
+          boOffset: bigint, resource: bigint, pagesPtr: KernelPointer, pagesCount: number, objectLength: KernelPointer): number => {
           try {
             if (typeof boOffset !== "bigint" || boOffset < 0n || boOffset > BigInt(Number.MAX_SAFE_INTEGER)) return -75;
             const span = this.#checkedKernelSpan(addr, len, Number.MAX_SAFE_INTEGER, "group BO virtual mapping");
             const length = this.#checkedKernelIndex(objectLength, "group BO object length");
+            if (!Number.isInteger(pagesCount) || pagesCount < 1 || pagesCount >= 16384 || pagesCount * WASM_PAGE_SIZE !== length) return -22;
+            const bytes = this.#readKernelBytes(pagesPtr, pagesCount * 4);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            const pages = Object.freeze(Array.from({length: pagesCount}, (_, at) => view.getUint32(at * 4, true)));
+            const identity = BigInt.asUintN(64, resource), extent = this.#groupMemoryResources.pages(identity);
+            if (pages.some(page => page === 0 || page >= extent)) return -14;
             return this.bos.bindGroup(pid, bo, span.offset, span.length, Number(boOffset),
-              Math.ceil(span.length / WASM_PAGE_SIZE) * WASM_PAGE_SIZE, {group, object: BigInt.asUintN(64, object), length});
+              Math.ceil(span.length / WASM_PAGE_SIZE) * WASM_PAGE_SIZE, {resource: identity, pages, length});
           } catch (error) {
             if (error instanceof GbmMappingFault || isKernelExportFailure(error)) throw error;
             return -75;

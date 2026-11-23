@@ -127,6 +127,12 @@ impl MemoryManager {
     pub(crate) fn has_group_thread_control(&self, owner: wasm_posix_shared::memory_group::ReceiptRecord) -> bool {
         self.grouped_linear.as_deref().is_some_and(|linear| linear.controls.iter().any(|slot| slot.owner == Some(owner)))
     }
+    pub(crate) fn group_thread_control_interval(&self, owner: wasm_posix_shared::memory_group::ReceiptRecord) -> Result<(usize, usize), Errno> {
+        if self.pending_change.is_some() { return Err(Errno::EBUSY); }
+        let slot = self.grouped_linear.as_deref().ok_or(Errno::EOPNOTSUPP)?.controls.iter()
+            .find(|slot| slot.owner == Some(owner)).ok_or(Errno::ESRCH)?;
+        Ok((slot.address, slot.length))
+    }
     pub(crate) fn claim_group_thread_control(&mut self, owner: wasm_posix_shared::memory_group::ReceiptRecord) -> Result<usize, Errno> {
         if self.pending_change.is_some() { return Err(Errno::EBUSY); }
         if self.has_group_thread_control(owner) { return Err(Errno::EBUSY); }

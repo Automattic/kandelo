@@ -220,9 +220,8 @@ impl BoRegistry {
     pub(crate) fn group_storage(&self, bo: BoId) -> Option<&crate::memory::GroupSharedMapping> {
         self.map.get(&bo)?.group_storage.as_ref().filter(|s| s.committed).map(|s| &s.object)
     }
-
-    pub fn group_storage_description(&self, bo: BoId) -> Option<(u32, u64, usize)> {
-        self.group_storage(bo).map(|s| (s.group(), s.id(), s.length()))
+    pub fn group_storage_binding(&self, bo: BoId) -> Option<crate::memory::GroupSharedMapping> {
+        self.group_storage(bo).cloned()
     }
 
     pub fn incref(&mut self, id: BoId) -> Option<u32> {

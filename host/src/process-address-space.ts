@@ -282,8 +282,9 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
   }
   prepareNativeObservationI32(address: number): NativeI32Observation {
     const { binding, word, physical } = this.atomicWord(address, READ);
-    if (!binding.retainNativeObservation) throw new ProcessAddressFault('metadata');
-    const release = binding.retainNativeObservation(physical);
+    const owner = binding.retainNativeObservation;
+    if (!owner) throw new ProcessAddressFault('metadata');
+    const release = owner(physical);
     try { return new NativeI32Observation(word, release); }
     catch (error) { release(); throw error; }
   }
@@ -314,8 +315,9 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
    * Retirement wakes/joins the actual engine wait before releasing its pin. */
   prepareNotificationQueueObservation(): NativeI32Observation {
     const { binding } = this.current(), address = G.MEMORY_GROUP_WAIT_HEADER;
-    if (!binding.retainNativeObservation) throw new ProcessAddressFault('metadata');
-    const release = binding.retainNativeObservation(address);
+    const owner = binding.retainNativeObservation;
+    if (!owner) throw new ProcessAddressFault('metadata');
+    const release = owner(address);
     try { return new NativeI32Observation(new Int32Array(binding.memory.buffer, address, 1), release); }
     catch (cause) { release(); throw cause; }
   }

@@ -11,6 +11,7 @@ const repository = resolve(import.meta.dirname, "../..");
 const registration = new URL("../node_modules/tsx/dist/esm/api/index.mjs", import.meta.url).href;
 const entry = new URL("./fixtures/grouped-sdk-execution-worker.ts", import.meta.url).href;
 const availableProbes = [
+  { name: "fork-pool-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "fork-registration-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "fork-replay-rollback", source: "grouped-sdk-fork-launch-rollback.c", markers: ["grouped-sdk-fork-launch-rollback PASS 16"], partial: "", groupedOnly: true },
   { name: "shared-file", source: "grouped-sdk-shared-file.c", markers: ["grouped-sdk-shared-file PASS"], partial: "", groupedOnly: true },
@@ -80,7 +81,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
     const { ordinary, groupedPath, execTargetPath } = fixtures.get(probe.name)!;
     const worker = new Worker(`import {register} from ${JSON.stringify(registration)}; register(); await import(${JSON.stringify(entry)});`, {
       eval: true,
-      workerData: { grouped, trace: true, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-replay-rollback" ? "replay" : "registration", forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
+      workerData: { grouped, trace: true, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-pool-rollback" ? "pool" : probe.name === "fork-replay-rollback" ? "replay" : "registration", forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined,
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
         anonymousShared: probe.name === 'anonymous-shared', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : probe.name === 'exec-signal-stopped' ? 'stopped' : undefined,
@@ -109,6 +110,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(result.failedThreadWorkers).toEqual([expect.objectContaining({ executionAbsent: false, quiescent: false, joined: false })]);
         expect(result.threadConstructionAttempts).toBe(1);
         expect(result.memory).toMatchObject({ backing: { images: 1, replicas: 2, quarantinedReplicas: 2 } });
+        expect(result.memory).toMatchObject({ snapshot: 'before-fatal-latch', inspectionError: 'Error: Failed grouped thread has no execution-stop proof' });
         expect(result.retirement).toBeUndefined();
         return;
       }
@@ -148,7 +150,12 @@ for (const probe of probes) for (const grouped of [false, true]) {
       if (grouped) expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
       for (const marker of probe.markers) expect(result.stdout).toContain(marker);
       if (probe.name.startsWith('fork-')) {
-      expect(result.forkWorkerConstructionAttempts).toBe(probe.name === 'fork-replay-rollback' ? 17 : 1);
+        expect(result.forkWorkerConstructionAttempts).toBe(probe.name === 'fork-replay-rollback' ? 17 : 1);
+        if (probe.name === 'fork-pool-rollback') {
+          const locks = (result.lifecycleEvidence as any[]).filter(row => row.kind === 'fork-pool-lock-released');
+          expect(locks).toHaveLength(16);
+          expect(locks.every(row => row.admission.processes === 2 && row.admission.tasks === 2 && row.admission.images === 2)).toBe(true);
+        }
         expect(result.injectedForkRefusals).toBe(16);
         const rows = result.rolledBackForks as any[];
         expect(rows).toHaveLength(16);

@@ -30,6 +30,8 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
                 expect(r.fatal).toBe('Grouped process launch failed; storage retained');
                 expect(r.constructionAttempts).toBe(1);
                 expect(r.fatalLedger.kernel).toMatchObject({ processes: 1, images: 1, tasks: 1 });
+                expect(r.fatalLedgerObserved).toBe('before-fatal-latch');
+                expect(r.inspectionRefusal).toBe('Error: Grouped process launch failed; storage retained');
                 return;
             }
             expect(r.failure, JSON.stringify(r)).toBeUndefined();

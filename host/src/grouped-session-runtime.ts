@@ -6,7 +6,7 @@ import { ERRNO } from './generated/abi';
 import { ThreadPageAllocator } from './thread-allocator';
 import { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
-import type { PreparedGroupReplica, GroupReplicaLaunch } from './memory-group-image-store';
+import type { PreparedGroupReplica, GroupReplicaLaunch } from './group-memory-transport';
 import type { WorkerAdapter } from './worker-adapter';
 import { DeferredWorkerHandle } from './deferred-worker-handle';
 import { GroupedExecWorkerOwnership, prepareGroupedExecWorker } from './grouped-exec-launch';

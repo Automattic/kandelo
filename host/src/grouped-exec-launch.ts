@@ -1,6 +1,6 @@
 import type { CentralizedKernelWorker } from './kernel-worker';
 import type { PreparedExecLaunchPlan, PreparedExecLaunchRequest } from './exec-target';
-import type { PreparedGroupReplica } from './memory-group-image-store';
+import type { PreparedGroupReplica } from './group-memory-transport';
 import type { ForkExternrefGeneration } from './fork-reference-broker';
 import type { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import type { ForkHostImportOwnerRuntime, ForkHostImportOwnerWorker } from './fork-host-import-runtime';
@@ -29,7 +29,7 @@ export interface GroupedExecWorkerOptions {
   /** Both images and old host references retired; kernel owns exit status. */
   readonly onTerminated?: (signal: number) => void;
   readonly retirePreviousReferences: () => void | Promise<void>;
-  readonly onRetired: (previous: PreparedGroupReplica, replacement: PreparedGroupReplica) => void;
+  readonly onRetired: (previous: PreparedGroupReplica, replacement: PreparedGroupReplica) => void | Promise<void>;
   readonly onMessage: (message: any, worker: GroupedExecWorkerOwnership) => void;
   readonly onError: (error: Error, worker: GroupedExecWorkerOwnership) => void;
   readonly onExit: (code: number, worker: GroupedExecWorkerOwnership) => void;
@@ -120,7 +120,8 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
           ...layout, ptrWidth: 4, argv: request.argv, env: request.envp, preserveProcessState: true,
         }));
         await retirePrevious();
-        options.onRetired(handoff.previousImage, handoff.replacementImage);
+        const retired = options.onRetired(handoff.previousImage, handoff.replacementImage);
+        if (retired) await retired;
         const { assertLive: _live, ...expected } = launch.expectation;
         let ownership!: GroupedExecWorkerOwnership;
         let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;

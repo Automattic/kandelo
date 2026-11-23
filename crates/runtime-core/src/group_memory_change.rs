@@ -5,6 +5,7 @@ use crate::memory::change::{MemoryChange, PreparedMemoryChange};
 use crate::process::ProcessState;
 use crate::process_table::ProcessTable;
 use wasm_posix_shared::{Errno, Syscall, memory_group::ReceiptRecord, mmap};
+mod storage;
 
 pub use crate::memory::change::MemoryChangeEffect as Effect;
 
@@ -497,6 +498,8 @@ mod tests {
         let first = table.prepare_group_thread_control(pid, pid, tid, 4).unwrap();
         assert_eq!(table.get(pid).unwrap().memory.reserved_regions(), original);
         assert_eq!(first.population_length, 0);
+        let pending = table.get(pid).unwrap().pending_group_memory_change.as_deref().unwrap().as_ref().unwrap();
+        assert_eq!(pending.plan.shared_record(), Ok((0, 0, 0)), "protected pthread controls are private storage, not a missing ordinary VMA");
         assert!(matches!(first.effect, Effect::Map { len, prot: 3, .. } if len == 4 * P));
         table.cancel_group_memory_change(pid, pid, first.token).unwrap();
         assert_eq!(table.get(pid).unwrap().memory.reserved_regions(), original);
@@ -1087,8 +1090,10 @@ mod tests {
         assert_eq!(sys_lseek(proc, &mut host, fd, 0, wasm_posix_shared::seek::SEEK_END), Ok((2 * P - 17) as i64));
         assert_eq!(sys_ftruncate(proc, &mut host, fd, (2 * P - 17) as i64), Ok(()));
         assert_eq!(sys_ftruncate(proc, &mut host, fd, (3 * P) as i64), Err(Errno::EOPNOTSUPP));
-        assert_eq!(sys_pwrite(proc, &mut host, fd, b"x", 0), Err(Errno::EOPNOTSUPP));
-        assert_eq!(sys_pread(proc, &mut host, fd, &mut bytes[..7], 0), Err(Errno::EOPNOTSUPP), "NoopHost must not return stale kernel bytes");
+        // This test exercises the logical plan without a physical storage owner.
+        // Neither descriptor path may fall back to the discarded kernel bytes.
+        assert_eq!(sys_pwrite(proc, &mut host, fd, b"x", 0), Err(Errno::EAGAIN));
+        assert_eq!(sys_pread(proc, &mut host, fd, &mut bytes[..7], 0), Err(Errno::EAGAIN));
         let extent = proc.memory.group_virtual_extent().unwrap();
         let alias = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, args, extent).unwrap();
         assert_eq!(alias.shared_object, next.shared_object); assert_eq!(alias.population_length, 0);

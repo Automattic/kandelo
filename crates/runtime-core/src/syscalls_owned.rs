@@ -770,6 +770,14 @@ impl OwnedMappingPlan {
         }
         Ok(())
     }
+    pub(crate) fn group_backing(&self) -> Result<Option<crate::memory::GroupSharedMapping>, Errno> {
+        let plan = match self {
+            Self::Bo { allocation, .. } | Self::Commands { allocation, .. } =>
+                allocation.grouped.as_deref().and_then(Option::as_ref).ok_or(Errno::EOPNOTSUPP)?,
+            Self::GroupUnmap(storage) => &storage.as_ref().ok_or(Errno::EIO)?.plan,
+        };
+        Ok(plan.shared_backing()?.map(|(model, _, _)| model.clone()))
+    }
     pub(crate) fn rollback(self, proc: &mut Process) {
         match self {
             Self::Bo { allocation, .. } | Self::Commands { allocation, .. } => {
@@ -804,7 +812,7 @@ impl OwnedMappingPlan {
                 let accepted = if let Some(plan) = allocation.grouped.as_deref().and_then(Option::as_ref) {
                     let (object, _, _) = plan.shared_backing()?.ok_or(Errno::EIO)?;
                     host.gbm_bo_bind_group(proc.pid as i32, bo, mapped, len, 0,
-                        object.group(), object.id(), object.length())
+                        object)
                 } else {
                     host.gbm_bo_bind(proc.pid as i32, bo, mapped, len, 0)
                 };
@@ -895,7 +903,7 @@ impl GroupBoMap {
     pub(crate) fn bind(&self, pid: u32, plan: &crate::memory::change::PreparedMemoryChange, host: &mut dyn HostIO) -> Result<(), Errno> {
         let crate::memory::change::MemoryChangeEffect::Map { addr, .. } = plan.effect() else { return Err(Errno::EIO); };
         let (object, _, _) = plan.shared_backing()?.ok_or(Errno::EIO)?;
-        if host.gbm_bo_bind_group(pid as i32, self.bo, addr, self.len, 0, object.group(), object.id(), object.length()) < 0 {
+        if host.gbm_bo_bind_group(pid as i32, self.bo, addr, self.len, 0, object) < 0 {
             return Err(Errno::ENOMEM);
         }
         Ok(())

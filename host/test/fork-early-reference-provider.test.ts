@@ -1,4 +1,4 @@
-import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { groupMemoryLayout } from './support/group-memory-layout';
 import { describe, expect, it } from "vitest";
 import {
   WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER,
@@ -259,9 +259,8 @@ function nullGraph(): ForkReferenceRecipeGraph {
 
 describe("early child reference provider", () => {
   it("clears virtual scratch and retains a reservation when protected output refuses release", () => {
-    const store = new MemoryGroupImageStore(7, 32, 32), receipt = { group: 7, pid: 100, tid: 100, serial: 1n, generation: 0n };
-    const handle = store.prepareImage(receipt, { initialVirtualPages: 8, maximumVirtualPages: 16, scratchBytes: 65536 });
-    const launch = store.publish(handle, receipt), source = launch.source;
+    const receipt = { group: 7, pid: 100, tid: 100, serial: 1n, generation: 0n };
+    const { source, launch, close } = groupMemoryLayout({ receipt, initialPages: 8 });
     const base = providerOptions(recordsFor(nullGraph(), [1]), [{ activationId: 1 }], externrefs(new Map()).provider, new TestTransit());
     const released: number[] = []; let next = 65536;
     const provider = new ForkEarlyChildReferenceProvider({ ...base, memory: source,
@@ -282,7 +281,7 @@ describe("early child reference provider", () => {
     pte[page] = entry;
     provider.releaseScratch(second, 32);
     expect(source.readBytes(second, 32).every(byte => byte === 0)).toBe(true);
-    provider.abort(); expect(released).toEqual([65536]); store.close();
+    provider.abort(); expect(released).toEqual([65536]); close();
   });
 
   it("materializes funcref, externref, and static-root recipes once", () => {

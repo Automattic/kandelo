@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MemoryGroupImageStore } from "../src/memory-group-image-store";
+import { groupMemoryObservationFixture } from './support/group-memory-layout';
+import { installKernelWorkerTestScratch } from './kernel-worker-test-scratch';
 import { GroupProcessAddressSpace } from "../src/process-address-space";
 import { prepareProcessNativeObservationI32, type ProcessMemorySource } from "../src/process-memory-views";
 import { CH_STATUS } from "../src/generated/abi";
@@ -16,6 +17,7 @@ type ChannelFixture = {
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
+  grouped?: { handle: unknown; store: unknown };
 };
 
 type ListenerHarness = CentralizedKernelWorker & {
@@ -87,13 +89,13 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     } else {
       processes.set(channel.pid, {
         pid: channel.pid,
-        memory: channel.memory, source: channel.source,
+        memory: channel.memory, source: channel.source, grouped: channel.grouped,
         channels: [channel],
       });
     }
   }
 
-  return Object.assign(createCentralizedKernelWorkerTestDouble(), {
+  const worker = Object.assign(createCentralizedKernelWorkerTestDouble(), {
     processes,
     activeChannels: [...channels],
     retiredChannelListeners: new Set<ChannelFixture>(),
@@ -105,6 +107,8 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     relistenBatchSize: 64,
     relistenCount: 0,
   }) as ListenerHarness;
+  if (channels.some(channel => channel.grouped)) installKernelWorkerTestScratch(worker, new WebAssembly.Memory({ initial: 2 }), 128);
+  return worker;
 }
 
 function observeWaits(): WaitObservation[] {
@@ -144,15 +148,15 @@ afterEach(() => {
 });
 
 function groupedChannels() {
-  const store = new MemoryGroupImageStore(7, 32, 32), offset = 128;
+  const offset = 128, pending = new Set<object>();
   const task = { group: 7, pid: 100, tid: 100, serial: 1n, generation: 0n };
-  const a = store.prepareImage(task, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
-  const oldLaunch = store.publish(a, task), oldSource = store.imageSource(a);
-  const next = { ...task, serial: 2n, generation: 1n };
-  const b = store.prepareImage(next, { initialVirtualPages: 2, maximumVirtualPages: 16, scratchBytes: 65536 });
-  const newLaunch = store.publish(b, next), newSource = store.imageSource(b);
-  const old = { ...createChannel(100, oldLaunch.envelope.memory, offset), source: oldSource };
-  const replacement = { ...createChannel(100, newLaunch.envelope.memory, offset), source: newSource };
+  const a = groupMemoryObservationFixture({ receipt: task }, pending);
+  const b = groupMemoryObservationFixture({ receipt: { ...task, serial: 2n, generation: 1n }, memory: a.memory,
+    rootPage: 2, replicaPage: 5, payloadPage: 16 }, pending);
+  const oldLaunch = a.launch, oldSource = a.source, newSource = b.source;
+  const old = { ...createChannel(100, a.memory, offset), source: oldSource, grouped: { handle: a.handle, store: a.transport } };
+  const replacement = { ...createChannel(100, b.memory, offset), source: newSource, grouped: { handle: b.handle, store: b.transport } };
+  const store = { pending, memory: a.memory, close: () => { a.close(); b.close(); } };
   return { store, a, b, old, replacement, oldLaunch, oldSource, newSource };
 }
 
@@ -162,25 +166,25 @@ describe("retired syscall-channel listener reclamation", () => {
     const worker = createHarness([old]), waits = observeWaits();
     try {
       worker.listenOnChannel(old); worker.retireChannelListener(old);
-      store.revokeImageAccess(a);
-      worker.processes.set(100, { pid: 100, memory: replacement.memory, source: newSource, channels: [replacement] } as any);
+      a.close();
+      worker.processes.set(100, { pid: 100, memory: replacement.memory, source: newSource, grouped: replacement.grouped, channels: [replacement] } as any);
       worker.activeChannels = [replacement]; worker.listenOnChannel(replacement);
       expect(old.memory).toBe(replacement.memory); expect(waits).toHaveLength(2);
-      expect(store.snapshot().nativeObservers).toBe(2);
+      expect(store.pending.size).toBe(2);
       expect(() => worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset)).toThrow("exact image source");
       await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, newSource);
       expect(waits.map(wait => wait.settled)).toEqual([false, false]);
-      const charged = store.snapshot().allocatedPages;
+      const charged = store.memory.buffer.byteLength;
       const done = worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
-      expect(store.snapshot().nativeObservers).toBe(2);
+      expect(store.pending.size).toBe(2);
       expect(worker.retiredChannelListeners.has(old)).toBe(true);
       await done;
       expect(waits.map(wait => wait.settled)).toEqual([true, false]);
-      expect(waits).toHaveLength(2); expect(store.snapshot().nativeObservers).toBe(1);
-      expect(store.snapshot().allocatedPages).toBe(charged);
-      worker.retireChannelListener(replacement); store.revokeImageAccess(b);
+      expect(waits).toHaveLength(2); expect(store.pending.size).toBe(1);
+      expect(store.memory.buffer.byteLength).toBe(charged);
+      worker.retireChannelListener(replacement); b.close();
       await worker.settleRetiredChannelListeners(100, replacement.memory, replacement.channelOffset, newSource);
-      expect(store.snapshot().nativeObservers).toBe(0);
+      expect(store.pending.size).toBe(0);
     } finally { store.close(); }
   });
 
@@ -201,7 +205,7 @@ describe("retired syscall-channel listener reclamation", () => {
       control = wait;
       let incorrectlyWoken = false; void wait.value.then(() => { incorrectlyWoken = true; });
       await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
-      expect(incorrectlyWoken).toBe(false); expect(store.snapshot().nativeObservers).toBe(0);
+      expect(incorrectlyWoken).toBe(false); expect(store.pending.size).toBe(0);
     } finally {
       Atomics.notify(originalWord, 0);
       if (fresh) Atomics.notify(fresh, 0);
@@ -218,9 +222,9 @@ describe("retired syscall-channel listener reclamation", () => {
       const notify = vi.spyOn(Atomics, "notify").mockImplementationOnce(() => { throw Error("injected wake failure"); });
       expect(() => worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource)).toThrow("injected wake failure");
       expect(worker.retiredChannelListeners.has(old)).toBe(true);
-      expect(store.snapshot().nativeObservers).toBe(1); notify.mockRestore();
+      expect(store.pending.size).toBe(1); notify.mockRestore();
       await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
-      expect(store.snapshot().nativeObservers).toBe(0);
+      expect(store.pending.size).toBe(0);
     } finally { store.close(); }
   });
 
@@ -232,8 +236,8 @@ describe("retired syscall-channel listener reclamation", () => {
     void worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource).then(() => { acknowledged = true; });
     await waitForMicrotasks();
     expect(acknowledged).toBe(false); expect(worker.retiredChannelListeners.has(old)).toBe(true);
-    expect(store.snapshot().nativeObservers).toBe(1);
-    store.close(); expect(store.snapshot().nativeObservers).toBe(1);
+    expect(store.pending.size).toBe(1);
+    store.close(); expect(store.pending.size).toBe(1);
   });
 
   it("requires kernel image custody and releases unarmed or not-equal observations exactly once", () => {
@@ -241,12 +245,12 @@ describe("retired syscall-channel listener reclamation", () => {
     try {
       expect(() => prepareProcessNativeObservationI32(oldLaunch.source, 0)).toThrow("metadata");
       const unarmed = prepareProcessNativeObservationI32(oldSource, 0);
-      expect(store.snapshot().nativeObservers).toBe(1);
-      unarmed.cancelUnarmed(); expect(store.snapshot().nativeObservers).toBe(0);
+      expect(store.pending.size).toBe(1);
+      unarmed.cancelUnarmed(); expect(store.pending.size).toBe(0);
       expect(() => unarmed.arm(0)).toThrow();
       const mismatch = prepareProcessNativeObservationI32(oldSource, 0);
       expect(mismatch.arm(1)).toEqual({ async: false, value: "not-equal" });
-      expect(mismatch.settled).toBe(true); expect(store.snapshot().nativeObservers).toBe(0);
+      expect(mismatch.settled).toBe(true); expect(store.pending.size).toBe(0);
       mismatch.wake(); expect(() => mismatch.cancelUnarmed()).toThrow();
     } finally { store.close(); }
   });

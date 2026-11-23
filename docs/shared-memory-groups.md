@@ -28,11 +28,17 @@ and defaults are outside this feature's integration scope.
 
 ## Authority and admission
 
-The Rust kernel owns group identity, membership, limits and object lifetime.
-The host owns the corresponding WebAssembly.Memory and Worker instances.
+The Rust kernel owns group identity, membership, budgets and backing leases, physical allocation and page custody, image roots, replica scratch, shared objects, mapping publication, barriers and retirement. The owner is part of `ProcessTable`; it is not a separate helper module managed by the host. The host retains the corresponding `WebAssembly.Memory`, Worker and native Promise instances.
+
+The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. The SDK's private growth path still uses the shared v3 bitmap protocol; Rust synchronizes with its locks and captures its frames from stable page tables for reclamation. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or
 authorize reuse. No persistent browser or audio realm receives the guest
 memory or a view into it.
+
+Unconstructed cancellation returns physical storage and releases task admission
+in one Rust operation. Allocator contention retains the exact receipt and its
+budget for retry. The host drops its platform references only after Rust
+acknowledges cancellation; a failed attempt is not an absence or stop proof.
 
 The embedding launcher explicitly selects a group through the normal host
 contract. A caller cannot join an unrelated group by guessing an identifier.
@@ -56,7 +62,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 26, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 27, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the

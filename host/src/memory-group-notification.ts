@@ -9,6 +9,7 @@ const CAPACITY = (G.MEMORY_GROUP_PAGE_BYTES - FIRST) / STRIDE;
 
 let queueUnlockModule: WebAssembly.Module | undefined;
 const queueUnlocks = new WeakMap<WebAssembly.Memory, () => void>();
+const physicalStores = new WeakMap<WebAssembly.Memory, (address: number, value: number) => void>();
 // Independent scalar scratch only; no group view or authority is cached here.
 const pinnedPageScratch = new WeakMap<WebAssembly.Memory, Uint32Array>();
 
@@ -21,6 +22,18 @@ export function prepareMemoryGroupQueueUnlock(memory: WebAssembly.Memory): void 
 }
 function queueUnlock(memory: WebAssembly.Memory): () => void {
   const cached = queueUnlocks.get(memory);
+  if (cached) return cached;
+  const store = prepareMemoryGroupPhysicalStore(memory);
+  const unlock = () => { store(G.MEMORY_GROUP_WAIT_HEADER, 0); };
+  queueUnlocks.set(memory, unlock);
+  return unlock;
+}
+
+/** Mechanical foreign-memory store for the disposable owning Worker. The
+ * Rust kernel supplies the physical address and retains all ownership policy.
+ * Compile this before publishing a resource or acquiring any shared lock. */
+export function prepareMemoryGroupPhysicalStore(memory: WebAssembly.Memory): (address: number, value: number) => void {
+  const cached = physicalStores.get(memory);
   if (cached) return cached;
   // [RUNTIME-WORKAROUND: JSC-GROUP-MUTEX-STORE-STALL] Suspected JSC boundary:
   // host Atomics.store(lock, 0) stalls under native Wasm contention. Use the
@@ -36,10 +49,9 @@ function queueUnlock(memory: WebAssembly.Memory): () => void {
   const instance = new WebAssembly.Instance(module, { env: { memory } });
   const store = instance.exports.store;
   if (typeof store !== 'function') throw new MemoryGroupProtocolFault('Missing native group queue store');
-  // Only this generated metadata word is reachable through the cached closure.
-  const unlock = () => { store(G.MEMORY_GROUP_WAIT_HEADER, 0); };
-  queueUnlocks.set(memory, unlock);
-  return unlock;
+  const write = (address: number, value: number) => { store(address, value); };
+  physicalStores.set(memory, write);
+  return write;
 }
 
 

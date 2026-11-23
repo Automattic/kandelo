@@ -2510,19 +2510,9 @@ compile one thread module between them.
 
 ## Memory Layout
 
-Opt-in shared-memory groups have an initial kernel-owned admission ledger,
-separate from POSIX process groups. It reserves process/image/task capacity,
-inherits membership through fork, and retains exact execution receipts until
-the host proves retirement. Prepared construction can roll back; live,
-stopping or quarantined Workers prevent process removal. Old exec-image
-custody remains distinct from its successor. Host-adapter 24 additionally
-carries exact BO/group object identities for direct CPU graphical mappings;
-device staging is independent and cannot publish stale copies into their
-canonical group storage. Host-adapter 23 includes the owned
-driver mapping bridge. The public Node/browser byte-launch API selects the
-compatible backend only with the explicit embedder option. See
-[shared-memory groups](shared-memory-groups.md) for the trust boundary,
-unsupported operations and remaining execution/lifecycle gates.
+Opt-in shared-memory groups belong to Rust's `ProcessTable` and `MemoryGroups`, separately from POSIX process groups. The kernel owns admission and budgets, backing resource leases, physical page custody, image roots and replica scratch, shared objects, mapping transactions, barriers and exact retirement. Prepared construction can roll back; live, stopping or quarantined Workers prevent reuse. Old exec-image custody remains distinct from its successor. The SDK's private virtual-memory growth uses the same versioned bitmap and locks; Rust captures those frames from stable page tables when reclaiming or retiring an image.
+
+Host-adapter 27 supplies raw bounded reads, writes, copies, growth and atomics over a kernel-issued backing resource. These imports bridge separate Wasm memories: the kernel's own pointers cannot directly address the group's `WebAssembly.Memory`. TypeScript retains the actual Memory, Worker and native Promise objects, transports kernel-issued descriptors and reports genuine completion. It does not choose physical pages, reconstruct mapping effects or decide when storage can be reused. Graphics mappings retain their Rust BO/object ownership; host device staging is independent. Program ABI 56 is unchanged. The public Node/browser launch API selects this backend only through explicit opt-in. See [shared-memory groups](shared-memory-groups.md) for the trust boundary, scope and validation requirements.
 
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 

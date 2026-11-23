@@ -1,6 +1,5 @@
 import * as G from './generated/program-extensions';
 import { GroupProcessAddressSpace } from './process-address-space';
-import { MemoryGroupPagePool } from './memory-group-pool';
 import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupTaskReceipt } from './memory-group-protocol';
 import type { ProcessMemorySource } from './process-memory-views';
 
@@ -47,6 +46,21 @@ export interface GroupReplicaMemoryLaunchBinding extends GroupReplicaMemoryExpec
 }
 
 function fault(message: string): never { throw new MemoryGroupProtocolFault(message); }
+/** Receiver validation only. Allocation and retirement belong to Rust; a
+ * Worker never attaches a second TypeScript allocator to the shared pool. */
+function validatePoolMetadata(memory: WebAssembly.Memory, maximum: number): void {
+  if (!Number.isInteger(maximum) || maximum < 2 || maximum > G.MEMORY_GROUP_MAXIMUM_PAGES
+      || memory.buffer.byteLength < PAGE || memory.buffer.byteLength % PAGE || memory.buffer.byteLength / PAGE > maximum) {
+    fault('Replica descriptor has incompatible physical pool bounds');
+  }
+  const header = new Uint32Array(memory.buffer, G.MEMORY_GROUP_CONTROL, 4);
+  const highWater = Atomics.load(header, 1);
+  if (Atomics.load(header, 3) !== G.MEMORY_GROUP_MAGIC || Atomics.load(header, 2) !== maximum
+      || highWater < 1 || highWater > maximum
+      || !(Atomics.load(new Uint32Array(memory.buffer, G.MEMORY_GROUP_BITMAP, 1), 0) & 1)) {
+    fault('Replica descriptor has incompatible physical pool metadata');
+  }
+}
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
@@ -122,8 +136,7 @@ function snapshot(value: unknown, owner?: GroupReplicaMemoryExpectation, require
       || (root < replica + replicaBytes && replica < root + controlBytes)) {
     return fault('Replica controls exceed or overlap their admitted physical storage');
   }
-  try { MemoryGroupPagePool.attach(storage.memory, owner.maximumPhysicalPages); }
-  catch { return fault('Replica descriptor has incompatible physical pool metadata'); }
+  validatePoolMetadata(storage.memory, owner.maximumPhysicalPages);
   const header = new Uint32Array(storage.memory.buffer, root, G.MEMORY_GROUP_ROOT_HEADER_BYTES / 4);
   if (Atomics.load(header, 0) > owner.maximumVirtualPages || header[1] !== owner.maximumVirtualPages
       || header[2] !== owner.scratchBytes || Atomics.load(header, 3) > 1) {

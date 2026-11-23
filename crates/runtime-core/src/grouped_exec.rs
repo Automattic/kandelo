@@ -243,13 +243,14 @@ impl ProcessTable {
     pub fn cancel_grouped_exec(
         &mut self,
         record: wasm_posix_shared::memory_group::ReceiptRecord,
+        host: &mut dyn crate::process::HostIO,
     ) -> Result<(), Errno> {
         let pending = self.pending_grouped_exec(record)?;
         if pending.cancelled {
             return Err(Errno::EBUSY);
         }
         let receipt = pending.future.receipt;
-        self.memory_groups().cancel_unconstructed(receipt)?;
+        self.memory_groups().cancel_unconstructed_with_storage(receipt, host)?;
         let pending = self
             .get_mut(record.pid)
             .unwrap()
@@ -645,7 +646,7 @@ mod replacement_tests {
     }
     fn cancel(f: &mut Fixture, future: PreparedGroupedExec) {
         f.table
-            .cancel_grouped_exec(future.receipt.record())
+            .cancel_grouped_exec(future.receipt.record(), &mut NoopHost)
             .unwrap();
         f.table
             .finish_grouped_exec_cancellation(future.receipt.record())
@@ -680,7 +681,7 @@ mod replacement_tests {
             Err(Errno::EBUSY)
         );
         f.table
-            .cancel_grouped_exec(future.receipt.record())
+            .cancel_grouped_exec(future.receipt.record(), &mut NoopHost)
             .unwrap();
         assert_eq!(
             f.table.memory_groups().retire_image(f.pid, 1),
@@ -874,7 +875,7 @@ mod replacement_tests {
                 .is_err()
         );
         f.table
-            .cancel_grouped_exec(future.receipt.record())
+            .cancel_grouped_exec(future.receipt.record(), &mut NoopHost)
             .unwrap();
         f.table
             .memory_group_task_action(old.record(), TaskAction::BeginRetirement)

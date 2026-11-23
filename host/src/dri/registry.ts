@@ -115,7 +115,7 @@ type MappingLineage = {
   memory: WebAssembly.Memory | null;
   fragments: Set<InternalBinding>;
 };
-export type GroupBoBacking = Readonly<{ group: number; object: bigint; length: number }>;
+export type GroupBoBacking = Readonly<{ resource: bigint; pages: readonly number[]; length: number }>;
 export type GroupBoObjectIO = {
   read: (backing: GroupBoBacking, offset: number, output: Uint8Array) => number;
   write: (backing: GroupBoBacking, offset: number, input: Uint8Array) => number;
@@ -324,12 +324,12 @@ export class GbmBoRegistry {
         allocationLength <= 0 || allocationLength < len || !Number.isSafeInteger(addr + allocationLength))) return -1;
 
     if (backing) {
-      if (!this.groupObjectIO || !Number.isInteger(backing.group) || backing.group <= 0 || backing.group > 0xffffffff ||
-          typeof backing.object !== "bigint" || backing.object <= 0n || backing.object > 0xffffffffffffffffn ||
+      if (!this.groupObjectIO || typeof backing.resource !== "bigint" || backing.resource <= 0n || backing.resource > 0xffffffffffffffffn ||
+          backing.pages.length * 65536 !== backing.length || backing.pages.some(page => !Number.isInteger(page) || page <= 0 || page >= 16384) ||
           !Number.isSafeInteger(backing.length) || backing.length !== Math.ceil(entry.size / 65536) * 65536 ||
           boOffset + len > backing.length || entry.ordinaryStorage ||
-          (entry.groupBacking && (entry.groupBacking.group !== backing.group || entry.groupBacking.object !== backing.object ||
-            entry.groupBacking.length !== backing.length))) return -1;
+          (entry.groupBacking && (entry.groupBacking.resource !== backing.resource ||
+            entry.groupBacking.length !== backing.length || entry.groupBacking.pages.some((page, at) => page !== backing.pages[at])))) return -1;
     } else if (entry.groupBacking) return -1;
     const firstGroupMap = backing && !entry.groupBacking;
     const previousBos = this.bos, previousCounts = this.bindingCounts;
@@ -383,7 +383,7 @@ export class GbmBoRegistry {
       }
       const target = cloneEntry(entry);
       target.pids.add(pid);
-      if (backing) target.groupBacking = Object.freeze({...backing});
+      if (backing) target.groupBacking = Object.freeze({...backing, pages: Object.freeze([...backing.pages])});
       else target.ordinaryStorage = true;
       // Same-address admission without a VMA replacement is still a new
       // generation. Publish/detach the old object, never silently overwrite it.

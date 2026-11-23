@@ -32,6 +32,14 @@ function signatures(
   const i32 = "i32" as const;
   const i64 = "i64" as const;
   return {
+    kernel_memory_group_storage_create: { parameters: [i32, i32], result: i32 },
+    kernel_memory_group_storage_drop: { parameters: [i32], result: i32 },
+    kernel_memory_group_storage_prepare: { parameters: [pointer, i32, i32, i32, i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_action: { parameters: [pointer, i32, i32, i64, i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_fork: { parameters: [pointer, i32, pointer, i32, i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_mapping: { parameters: [pointer, i32, i32, i64, i32, i64, i32], result: i32 },
+    kernel_memory_group_storage_snapshot: { parameters: [i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_sweep: { parameters: [i32], result: i32 },
     kernel_alloc_scratch: {
       parameters: [i32],
       result: pointer,

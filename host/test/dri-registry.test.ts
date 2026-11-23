@@ -1048,13 +1048,13 @@ describe("direct grouped BO backing", () => {
   function direct() {
     const bytes = new Uint8Array(65536), resolve = vi.fn(() => { throw new Error("group virtual address is not a raw Memory offset"); });
     const reg = new GbmBoRegistry({getProcessMemory: resolve});
-    const backing = {group: 7, object: 99n, length: bytes.length};
+    const backing = {resource: 7n, pages: [99], length: bytes.length};
     const write = vi.fn((identity: typeof backing, offset: number, input: Uint8Array) => {
-      if (identity.group !== 7 || identity.object !== 99n || offset < 0 || offset + input.length > bytes.length) return -5;
+      if (identity.resource !== 7n || identity.pages[0] !== 99 || offset < 0 || offset + input.length > bytes.length) return -5;
       bytes.set(input, offset); return input.length;
     });
     const read = vi.fn((identity: typeof backing, offset: number, output: Uint8Array) => {
-      if (identity.group !== 7 || identity.object !== 99n || offset < 0 || offset + output.length > bytes.length) return -5;
+      if (identity.resource !== 7n || identity.pages[0] !== 99 || offset < 0 || offset + output.length > bytes.length) return -5;
       output.set(bytes.subarray(offset, offset + output.length)); return output.length;
     });
     reg.setGroupObjectIO({read, write});
@@ -1098,11 +1098,11 @@ describe("direct grouped BO backing", () => {
     expect(h.resolve).not.toHaveBeenCalled();
   });
 
-  it("rejects cross-group, cross-object and ordinary mapping mixtures", () => {
+  it("rejects different physical backings and ordinary mapping mixtures", () => {
     const h = direct();
     expect(h.reg.bindGroup(100, 1, 0, 65536, 0, 65536, h.backing)).toBe(0);
-    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, {...h.backing, group: 8})).toBe(-1);
-    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, {...h.backing, object: 100n})).toBe(-1);
+    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, {...h.backing, resource: 8n})).toBe(-1);
+    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, {...h.backing, pages: [100]})).toBe(-1);
     expect(h.reg.bind(200, 1, 0, BO_SIZE)).toBe(-1);
     h.reg.unbind(100, 1);
     expect(h.reg.bind(200, 1, 0, BO_SIZE)).toBe(-1);

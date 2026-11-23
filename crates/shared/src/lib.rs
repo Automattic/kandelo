@@ -9,6 +9,7 @@ pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod kms_cursor;
 pub mod memory_group;
+pub mod group_storage;
 pub mod group_memory_change;
 pub mod group_memory_layout;
 pub mod group_exec;
@@ -2356,7 +2357,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 26;
+    pub const HOST_ADAPTER_VERSION: u32 = 27;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2524,21 +2525,16 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
         HostAdapterKernelExport::optional("kernel_group_exec_target_bind_image"),
         HostAdapterKernelExport::optional("kernel_group_memory_break"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_cancel"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_commit"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
-        HostAdapterKernelExport::optional("kernel_group_memory_change_read"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_validate"),
         HostAdapterKernelExport::optional("kernel_group_memory_exec_action"),
         HostAdapterKernelExport::optional("kernel_group_memory_exec_layout"),
         HostAdapterKernelExport::optional("kernel_group_memory_exec_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_fork"),
         HostAdapterKernelExport::optional("kernel_group_memory_layout_install"),
-        HostAdapterKernelExport::optional("kernel_group_memory_object_alive"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_release"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_reuse"),
-        HostAdapterKernelExport::optional("kernel_group_owned_mapping_finish"),
         HostAdapterKernelExport::optional("kernel_group_owned_mapping_prepare"),
         HostAdapterKernelExport::optional("kernel_group_owned_mapping_validate"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
@@ -2572,6 +2568,14 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_memory_group_retire_image"),
         HostAdapterKernelExport::optional("kernel_memory_group_seal"),
         HostAdapterKernelExport::optional("kernel_memory_group_snapshot"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_action"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_create"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_drop"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_fork"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_mapping"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_prepare"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_snapshot"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_sweep"),
         HostAdapterKernelExport::optional("kernel_memory_group_task_action"),
         HostAdapterKernelExport::optional("kernel_memory_group_task_receipt"),
         HostAdapterKernelExport::optional("kernel_owned_mapping_finish"),
