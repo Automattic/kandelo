@@ -88,8 +88,11 @@ impl MemoryGroups {
             A::Describe => descriptor = Some(store.descriptor(admission)?),
             A::Publish => unreachable!(),
             A::BeginImagePause => {
-                value = u64::from(store.begin_image_pause(&mut memory, admission)?)
+                value = u64::from(store.begin_operation_pause(&mut memory, admission, token)?)
             }
+            A::BeginImageOperation => value = store.begin_image_operation(admission)?,
+            A::ImageOperationReady => value = u64::from(store.image_operation_ready(admission, token)?),
+            A::FinishImageOperation => store.finish_image_operation(admission, token)?,
             A::ImagePauseAcknowledged | A::ResumeImage => {
                 let epoch = u32::try_from(token).map_err(|_| Errno::EINVAL)?;
                 if action == A::ResumeImage {

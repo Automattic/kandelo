@@ -69,6 +69,9 @@ pub enum Action {
     PinChannel = 23,
     PinQueue = 24,
     ContainImage = 25,
+    BeginImageOperation = 26,
+    ImageOperationReady = 27,
+    FinishImageOperation = 28,
 }
 pub const ACTIONS: &[(&str, Action)] = &[
     ("describe", Action::Describe),
@@ -95,6 +98,9 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("pinChannel", Action::PinChannel),
     ("pinQueue", Action::PinQueue),
     ("containImage", Action::ContainImage),
+    ("beginImageOperation", Action::BeginImageOperation),
+    ("imageOperationReady", Action::ImageOperationReady),
+    ("finishImageOperation", Action::FinishImageOperation),
 ];
 impl TryFrom<u32> for Action {
     type Error = Errno;

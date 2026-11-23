@@ -82,6 +82,18 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
     expect(storage(receipt, 3).status).toBe(-ERRNO.EINVAL);
     expect(task(receipt, P.task_actions.start)).toBe(0);
     expect(storage(receipt, P.storage.actions.publish).status).toBe(P.storage.reply_bytes);
+    const first = storage(receipt, P.storage.actions.beginImageOperation).value;
+    const middle = storage(receipt, P.storage.actions.beginImageOperation).value;
+    const last = storage(receipt, P.storage.actions.beginImageOperation).value;
+    expect(first).toBeGreaterThan(0n);
+    expect(storage(receipt, P.storage.actions.imageOperationReady, first).value).toBe(1n);
+    expect(storage(receipt, P.storage.actions.finishImageOperation, middle).status).toBe(P.storage.reply_bytes);
+    expect(storage(receipt, P.storage.actions.imageOperationReady, last).value).toBe(0n);
+    expect(storage(receipt, P.storage.actions.beginImagePause).status).toBe(-ERRNO.EBUSY);
+    expect(storage(receipt, P.storage.actions.beginImagePause, last).status).toBe(-ERRNO.EAGAIN);
+    expect(storage(receipt, P.storage.actions.finishImageOperation, first).status).toBe(P.storage.reply_bytes);
+    expect(storage(receipt, P.storage.actions.imageOperationReady, last).value).toBe(1n);
+    expect(storage(receipt, P.storage.actions.finishImageOperation, first).status).toBe(-ERRNO.ESRCH);
     expect(task(receipt, P.task_actions.cancelUnconstructed)).toBe(-ERRNO.EBUSY);
     const pin = storage(receipt, P.storage.actions.pinNative, 0n, replica + 8); expect(pin.value).toBeGreaterThan(0n);
     expect(storage(receipt, P.storage.actions.stopImage).status).toBe(P.storage.reply_bytes);
@@ -90,6 +102,8 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
     expect(storage(receipt, P.storage.actions.releaseStoppedImage).status).toBe(-ERRNO.EAGAIN);
     expect(storage(receipt, P.storage.actions.settleNative, pin.value).status).toBe(P.storage.reply_bytes);
     expect(storage(receipt, P.storage.actions.settleNative, pin.value).status).toBe(-ERRNO.ESRCH);
+    expect(storage(receipt, P.storage.actions.releaseStoppedImage).status).toBe(-ERRNO.EAGAIN);
+    expect(storage(receipt, P.storage.actions.finishImageOperation, last).status).toBe(P.storage.reply_bytes);
     expect(storage(receipt, P.storage.actions.releaseStoppedImage).value).toBe(5n);
     expect(task(receipt, P.task_actions.beginRetirement)).toBe(0);
     expect(task(receipt, P.task_actions.retireQuiescent)).toBe(0);

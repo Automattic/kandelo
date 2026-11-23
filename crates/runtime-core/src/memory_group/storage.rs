@@ -28,6 +28,7 @@ mod thread;
 mod reclaim;
 mod progress;
 mod inspection;
+mod operation;
 #[cfg(test)]
 mod contract_tests;
 pub(crate) use progress::ProgressTarget;
@@ -128,6 +129,8 @@ pub(crate) struct Storage {
     next_pin: u64,
     pins: PreparedMap<u64, NativePin>,
     objects: PreparedMap<u64, SharedObject>,
+    operations: PreparedMap<u64, operation::ImageOperation>,
+    next_operation: u64,
 }
 
 impl Storage {
@@ -188,6 +191,8 @@ impl Storage {
             next_pin: 1,
             pins: PreparedMap::new(),
             objects: PreparedMap::new(),
+            operations: PreparedMap::new(),
+            next_operation: 1,
         })
     }
 

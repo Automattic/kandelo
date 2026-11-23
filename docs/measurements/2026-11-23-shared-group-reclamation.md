@@ -42,7 +42,7 @@ Both comparisons used the same method above and three fresh parents per arm. The
 
 Raw runs 1518–1525 and the retired patch are retained in the same workspace evidence directory. Final acceptance returns to the published reclamation implementation; native/browser results for the retired combined implementation do not replace its final gates. The supported contract has no fixed performance threshold: usable interaction permits disclosed overhead, while capacity value, bounded ownership, relevant conformance and release validation remain required.
 
-## Current runtime validation
+## Reclamation runtime validation
 
 The runtime returned to the published reclamation implementation after those experiments were removed. Revision `139318b22938ca2e2e84939aa687caca033af846` has identical runtime source to `65a0f3ed7a9c2aed10ff76659b72d12c48b3847b` and the exact measured `bd9ed02a…` kernel above. Normal kernel/browser preparation passes 315/315 cached nodes and 11/11 products.
 
@@ -61,3 +61,14 @@ The shared-file C probe was then strengthened to seed nonzero data outside its f
 The subsequent relevant conformance run on test-only revision `a84f295f79c519392f8cc49802b40a07aa579db3` passes all six maintained Node/browser commands. Each host runs 63 libc functional cases (62 pass, one expected cancellation timeout), 62 regression cases (two expected failures; Node also records one historically flaky case passing), and 179 POSIX cases (174 pass, three expected failures and two unsupported real-time-priority skips). There are no unexpected failures, unexpected passes, build failures, unresolved results or unexpected timeouts. Existing expected failures concern cancellation, allocation limits, dynamic TLS, `mlock` permission behavior and ordinary Wasm's inability to revoke access after `munmap`. This is the vendored selected inventory, not a claim of complete POSIX support or grouped execution for every conformance case. Raw commands, individual logs and reviewed dispositions are retained as job 1531.
 
 Production-built app, longer sustained desktop, current larger-cohort and broad Node/browser target comparisons remain open. The PR remains draft; nothing merges or deploys automatically.
+
+
+## Subsequent Rust ordering migration
+
+Host adapter 28 moves per-image mapping/fork/control-reservation ordering out of the TypeScript predecessor chain into kernel-owned, exact-task operation tokens. A cancelled middle operation cannot admit its successor before an earlier live operation. Rust refuses pause attempts that bypass the queue, retains image storage while operations remain live, and refuses to finish an operation while its pause is still active. Independent images remain concurrent. Six native regression cases and the real-kernel host boundary test exercise these rules. The program ABI remains 56 and the frozen program baseline is unchanged. Unused TypeScript wait inspection, retirement, pin scanning and stop-control implementations were removed (186 lines).
+
+The full native run passes 3,988 runtime-core tests, one integration test and six doc tests. ABI checks, frozen-baseline checks, the workaround registry, resolver-bundle regeneration/checks, the normal kernel package build, host build and strict types pass. The corrected host memory selection passes 1,424 cases across sixty files; the real-kernel/SDK Node selection passes 174 across seven files. Both host selections have zero skips or unloaded files.
+
+An initial compile visibility error and a later host source-audit failure are retained. The audit rejected starting `Promise.race` inside a synchronous protocol-effect callback; the corrected host only subscribes to existing completion promises and schedules a fresh kernel entry. Raw commands and logs are retained as jobs 1534–1537. The separate production-app attempt 1533 failed before executing tests because its private Playwright server config supplied both `port` and `url`; that config is corrected, with no runtime pass inferred.
+
+The browser, conformance and performance results above apply to the earlier pinned reclamation runtime. They are not validation of host adapter 28. Browser images and those gates need refreshing after the remaining Rust control-flow migration. Launch/mapping/cancellation progression, host virtual translation and active notification selection still contain TypeScript algorithms; the supported contract identifies them as unfinished migration work. The PR remains draft.

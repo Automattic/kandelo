@@ -70,6 +70,7 @@ impl Storage {
             || !image.exposed
             || image.pause.is_some()
             || image.mapping.is_some()
+            || self.image_has_operations(key)
             || self.pins.values().any(|pin| pin.image == key)
             || self
                 .replicas

@@ -2288,7 +2288,7 @@ interface PendingGroupImageOperation {
   readonly registration: ProcessRegistration;
   readonly request: FrozenChannelRequest;
   readonly receipt: MemoryGroupTaskReceipt;
-  predecessor?: PendingGroupImageOperation;
+  operation?: bigint;
   readonly store: GroupMemoryTransport;
   readonly finished: Promise<void>;
   readonly finish: () => void;
@@ -8348,10 +8348,8 @@ export class CentralizedKernelWorker {
       const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
       result = new this.#promiseReceiver<number>(resolve => { complete = resolve; });
       thread.controlPending = result;
-      const predecessor = Array.from(this.pendingGroupImageOperations.values()).reverse()
-        .find(other => other.registration === registration && !other.done);
       const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall: SYS_CLONE,
-        args: Object.freeze([]), store: group.store, finished, finish, predecessor,
+        args: Object.freeze([]), store: group.store, finished, finish,
         cancelling: false, rustCancelled: false, suppressCompletion: false, failure: EIO, scheduled: false,
         done: false, hostControl: { thread, complete } };
       this.pendingGroupImageOperations.set(channel, pending); this.pendingGroupMappings.set(channel, pending);
@@ -22705,11 +22703,52 @@ export class CentralizedKernelWorker {
     let finish!: () => void;
     const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
     const pending: PendingGroupFork = { kind: 'fork', channel, registration, request, receipt, store: grouped.store,
-      args: [...args], launch, finished, finish, predecessor: Array.from(this.pendingGroupImageOperations.values()).reverse().find(other => other.registration === registration && !other.done),
+      args: [...args], launch, finished, finish,
       launching: false, cancelling: false, suppressCompletion: false, failure: EIO, scheduled: false, done: false };
     channel.handling = true;
     this.pendingGroupImageOperations.set(channel, pending);
     this.pendingGroupForks.set(channel, pending); this.#advanceGroupFork(pending, entry);
+  }
+
+  #groupImageOperationReady(pending: PendingGroupMapping | PendingGroupFork, entry: KernelWorkerEntryContext): boolean {
+    if (pending.operation === undefined) {
+      try { pending.operation = pending.store.beginImageOperation(pending.receipt, entry); }
+      catch (error) {
+        if (!(error instanceof GroupMemoryStorageRefusal)) throw error;
+        pending.cancelling = true; pending.failure = error.errno;
+        if (pending.kind === 'fork') this.#cancelGroupFork(pending, entry);
+        else this.#cancelGroupMapping(pending, entry);
+        return false;
+      }
+    }
+    if (pending.store.imageOperationReady(pending.receipt, pending.operation, entry)) return true;
+    if (!pending.scheduled) {
+      // Promises are wake hints only. Rust chooses the head on every entry,
+      // including after cancellation removes an operation from the middle.
+      const wake = [...this.pendingGroupImageOperations.values()]
+        .filter(other => other !== pending && other.registration === pending.registration && !other.done)
+        .map(other => other.finished);
+      if (!wake.length) this.#memoryGroupProtocolError('Kernel image operation lost its platform completion wake');
+      pending.scheduled = true;
+      let signalled = false;
+      const ready = () => {
+        if (signalled) return;
+        signalled = true;
+        if (pending.kind === 'fork') this.#queueGroupForkTurn(pending);
+        else this.#queueGroupMappingTurn(pending);
+      };
+      entry.deferProtocolEffect(() => {
+        for (const completion of wake) completion.then(ready).catch(error => this.#failKernelInstance(error));
+        return undefined;
+      });
+    }
+    return false;
+  }
+
+  #finishGroupImageOperation(pending: PendingGroupImageOperation, entry: KernelWorkerEntryContext): void {
+    if (pending.operation === undefined) return;
+    pending.store.finishImageOperation(pending.receipt, pending.operation, entry);
+    pending.operation = undefined;
   }
 
   #advanceGroupFork(pending: PendingGroupFork, entry: KernelWorkerEntryContext): void {
@@ -22717,17 +22756,8 @@ export class CentralizedKernelWorker {
     if (!this.#groupMappingCallerCurrent(pending, entry)) { pending.cancelling = true; pending.suppressCompletion = true; }
     if (pending.cancelling) { this.#cancelGroupFork(pending, entry); return; }
     if (this.deferChannelWhileStopped(pending.channel)) return;
-    while (pending.predecessor?.done) pending.predecessor = pending.predecessor.predecessor;
-    if (pending.predecessor) {
-      if (!pending.scheduled) {
-        const predecessor = pending.predecessor; pending.scheduled = true;
-        entry.deferProtocolEffect(() => {
-          predecessor.finished.then(() => this.#queueGroupForkTurn(pending)).catch(error => this.#failKernelInstance(error));
-        });
-      }
-      return;
-    }
-    if (!pending.barrier) pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle, entry);
+    if (!this.#groupImageOperationReady(pending, entry)) return;
+    if (!pending.barrier) pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle, entry, { receipt: pending.receipt, token: pending.operation! });
     if (!pending.store.imageExecutionPauseAcknowledged(pending.barrier, entry)) { this.#scheduleGroupFork(pending, 'barrier', entry); return; }
     if (!pending.allocation) {
       const extent = pending.store.virtualExtentAtBarrier(pending.barrier, entry);
@@ -22830,6 +22860,7 @@ export class CentralizedKernelWorker {
     if (this.pendingGroupForks.get(pending.channel) === pending) this.pendingGroupForks.delete(pending.channel);
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     pending.prepared = undefined; pending.childReceipt = undefined; pending.allocation = undefined;
+    this.#finishGroupImageOperation(pending, entry);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
   }
 
@@ -22943,10 +22974,9 @@ export class CentralizedKernelWorker {
     }
     let finish!: () => void;
     const finished = new this.#promiseReceiver<void>(resolve => { finish = resolve; });
-    const predecessor = Array.from(this.pendingGroupImageOperations.values()).reverse().find(other => other.registration === registration && !other.done);
     // Host custody is allocated before asking Rust to retain a metadata plan.
     const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall, args: Object.freeze(copied),
-      store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
+      store: grouped.store, finished, finish, cancelling: false, rustCancelled: false,
       suppressCompletion: false, failure: EIO, scheduled: false, done: false,
       ownedMapping: ownedDispatch ? { dispatch: ownedDispatch } : undefined };
     this.pendingGroupImageOperations.set(channel, pending);
@@ -23048,6 +23078,7 @@ export class CentralizedKernelWorker {
     pending.store.resumeImageExecutionPause(pending.barrier!, entry);
     pending.hostControl!.thread.controlSlot = { address, length };
     const { complete } = pending.hostControl!;
+    this.#finishGroupImageOperation(pending, entry);
     entry.deferProtocolEffect(() => { pending.finish(); complete(address); return undefined; });
   }
 
@@ -23058,22 +23089,9 @@ export class CentralizedKernelWorker {
       pending.cancelling = true; pending.suppressCompletion = true; this.#cancelGroupMapping(pending, entry); return;
     }
     if (this.deferChannelWhileStopped(pending.channel)) return;
-    // Cancellation may finish a queued middle owner before its predecessor.
-    // Follow that dependency rather than letting its successor bypass the
-    // still-live earlier image barrier.
-    while (pending.predecessor?.done) pending.predecessor = pending.predecessor.predecessor;
-    if (pending.predecessor && !pending.predecessor.done) {
-      if (!pending.scheduled) {
-        const predecessor = pending.predecessor;
-        pending.scheduled = true;
-        entry.deferProtocolEffect(() => {
-          predecessor.finished.then(() => this.#queueGroupMappingTurn(pending)).catch(error => this.#failKernelInstance(error));
-        });
-      }
-      return;
-    }
+    if (!this.#groupImageOperationReady(pending, entry)) return;
     if (!pending.barrier) {
-      try { pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle, entry); }
+      try { pending.barrier = pending.store.beginImageExecutionPause(pending.registration.grouped!.handle, entry, { receipt: pending.receipt, token: pending.operation! }); }
       catch (error) {
         const owners = Array.from(this.pendingGroupImageOperations.values())
           .filter(other => other.registration === pending.registration)
@@ -23110,6 +23128,7 @@ export class CentralizedKernelWorker {
           pending.done = true; this.pendingGroupMappings.delete(pending.channel);
           this.pendingGroupImageOperations.delete(pending.channel);
           pending.store.resumeImageExecutionPause(pending.barrier, entry);
+          this.#finishGroupImageOperation(pending, entry);
           entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
           this.#completeGroupOwnedMapping(pending, entry, false); return;
         }
@@ -23175,6 +23194,7 @@ export class CentralizedKernelWorker {
     pending.done = true; this.pendingGroupMappings.delete(pending.channel);
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
     pending.store.resumeImageExecutionPause(pending.barrier, entry);
+    this.#finishGroupImageOperation(pending, entry);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
     if (pending.ownedMapping) this.#completeGroupOwnedMapping(pending, entry, true);
     else this.#completeGroupMemorySyscall(pending.channel, pending.description.result, 0, entry);
@@ -23223,6 +23243,7 @@ export class CentralizedKernelWorker {
     pending.done = true; this.retiringGroupMappings.delete(pending);
     if (this.pendingGroupMappings.get(pending.channel) === pending) this.pendingGroupMappings.delete(pending.channel);
     if (this.pendingGroupImageOperations.get(pending.channel) === pending) this.pendingGroupImageOperations.delete(pending.channel);
+    this.#finishGroupImageOperation(pending, entry);
     entry.deferProtocolEffect(() => { pending.finish(); return undefined; });
     if (pending.hostControl) {
       const { complete } = pending.hostControl;

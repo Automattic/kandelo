@@ -72,7 +72,7 @@ impl Storage {
     ) -> Result<(), Errno> {
         let member = self.owned(admission)?;
         let image = self.images.get(&member.image).ok_or(Errno::ESRCH)?;
-        if image.mapping.is_some() {
+        if image.mapping.is_some() || return_scratch && self.task_has_operations(admission) {
             return Err(Errno::EAGAIN);
         }
         if length % PAGE != 0

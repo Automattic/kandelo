@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 27,
+      "required_host_adapter_version": 28,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2711,7 +2711,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 27,
+    "version": 28,
     "worker_features": [
       {
         "bit": 2,
@@ -8550,9 +8550,12 @@
     },
     "storage": {
       "actions": {
+        "beginImageOperation": 26,
         "beginImagePause": 4,
         "containImage": 25,
         "describe": 1,
+        "finishImageOperation": 28,
+        "imageOperationReady": 27,
         "imagePauseAcknowledged": 5,
         "inspectWait": 22,
         "noteQuiescent": 9,

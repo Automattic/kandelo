@@ -184,8 +184,26 @@ export class GroupMemoryTransport {
   imageStopRequested(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.stopping); }
   replicaExecutionStopped(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.stopped); }
   imageExecutionStopped(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.imageStopped); }
-  beginImageExecutionPause(handle: PreparedGroupReplica, entry: GroupMemoryEntry): GroupImageExecutionPause {
-    const epoch = this.#checked(handle, P.storage.actions.beginImagePause, entry);
+  beginImageOperation(receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): bigint {
+    const result = this.action(receipt, P.storage.actions.beginImageOperation, entry);
+    if (result.status !== 0) throw new GroupMemoryStorageRefusal(-result.status);
+    if (result.value === 0n) this.#fault('Kernel returned an empty image operation');
+    return result.value;
+  }
+  imageOperationReady(receipt: MemoryGroupTaskReceipt, token: bigint, entry: GroupMemoryEntry): boolean {
+    const result = this.action(receipt, P.storage.actions.imageOperationReady, entry, token);
+    if (result.status !== 0 || result.value > 1n) this.#fault('Kernel image operation readiness refused');
+    return result.value === 1n;
+  }
+  finishImageOperation(receipt: MemoryGroupTaskReceipt, token: bigint, entry: GroupMemoryEntry): void {
+    const result = this.action(receipt, P.storage.actions.finishImageOperation, entry, token);
+    if (result.status !== 0) this.#fault('Kernel image operation completion refused');
+  }
+  beginImageExecutionPause(handle: PreparedGroupReplica, entry: GroupMemoryEntry,
+    operation?: { readonly receipt: MemoryGroupTaskReceipt; readonly token: bigint }): GroupImageExecutionPause {
+    const result = this.action(operation?.receipt ?? this.receipt(handle), P.storage.actions.beginImagePause, entry, operation?.token);
+    if (result.status !== 0) this.#fault('Kernel image pause refused');
+    const epoch = result.value;
     const pause = Object.freeze(Object.create(null)) as GroupImageExecutionPause;
     this.#pauses.set(pause, { handle, epoch }); return pause;
   }
