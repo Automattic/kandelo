@@ -2430,6 +2430,16 @@ compile one thread module between them.
 
 ## Memory Layout
 
+Opt-in shared-memory groups have an initial kernel-owned admission ledger,
+separate from POSIX process groups. It reserves process/image/task capacity,
+inherits membership through fork, and retains exact execution receipts until
+the host proves retirement. Prepared construction can roll back; live,
+stopping or quarantined Workers prevent process removal. Old exec-image
+custody remains distinct from its successor. Host-adapter 8 exposes admission
+metadata only: the normal launcher does not yet run grouped programs. See
+[shared-memory groups](shared-memory-groups.md) for the trust boundary,
+unsupported operations and remaining execution/lifecycle gates.
+
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
 ```
@@ -2921,6 +2931,13 @@ before a queued Rust retirement marker is written. Fence listeners remain
 active; an expected cancellation must not become a second crash report.
 This handoff is enabled only for ordinary fork. A vfork borrower's existing
 lifetime completion and address-space containment protocol remains its owner.
+
+The browser construction factory preserves the closed creator owner's private
+cancellation reason for pending allocations and admitted preparation that
+resumes after disposal. Only that private reason is expected shutdown; copied
+error text, constructor failures and failed Worker termination remain visible.
+Allocation failure diagnostics retain the original error alongside context.
+
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space
