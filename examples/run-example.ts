@@ -94,10 +94,9 @@ const xzWasm = optionalBinary("programs/xz.wasm");
 const zstdWasm = optionalBinary("programs/zstd.wasm");
 const zipWasm = optionalBinary("programs/zip.wasm");
 const unzipWasm = optionalBinary("programs/unzip.wasm");
-const nodeWasm = optionalBinary(
-    "programs/node.wasm",
-    "programs/spidermonkey-node.wasm",
-);
+// The node package forwards the canonical SpiderMonkey runtime without a
+// second build; the installed named command is supplied by node-browser-bundle.
+const nodeWasm = optionalBinary("programs/node.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
 const rubyWasm = optionalBinary("programs/ruby/ruby.wasm");
 const vimWasm = optionalBinary("programs/vim.zip");
