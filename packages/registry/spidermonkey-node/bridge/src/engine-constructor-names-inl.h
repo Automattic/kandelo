@@ -11,10 +11,10 @@ namespace {
 // Read an existing native data slot only: no resolving, getters or proxy traps.
 void ConstructorData(JSObject* obj, jsid id, MutableHandleValue value) {
   value.setUndefined();
-  if (!obj->is<NativeObject>()) {
+  if (!obj->is<js::NativeObject>()) {
     return;
   }
-  auto& native = obj->as<NativeObject>();
+  auto& native = obj->as<js::NativeObject>();
   auto property = native.lookupPure(id);
   if (property && property->isDataProperty()) {
     value.set(native.getSlot(property->slot()));
