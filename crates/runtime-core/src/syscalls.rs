@@ -23642,11 +23642,11 @@ pub fn can_query_sched(sender_euid: u32, target_uid: u32, target_euid: u32) -> b
     sender_euid == 0 || sender_euid == target_uid || sender_euid == target_euid
 }
 
-/// getrusage -- get resource usage (simulated).
+/// getrusage -- validate the request and report unavailable accounting.
 ///
-/// Returns mostly zeroed rusage struct. Wasm runtimes don't expose
-/// CPU/memory usage metrics, so we can't track actual resource usage. The wire
-/// size is owned by `wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE`.
+/// Do not publish invented zero measurements to any guest program. Real
+/// SELF/CHILDREN accounting remains required platform work; elapsed time is
+/// not a substitute for CPU time. Preserve the output buffer on failure.
 pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::rusage::{RUSAGE_CHILDREN, RUSAGE_SELF};
     let wire_size = wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize;
@@ -23657,10 +23657,7 @@ pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<()
     if buf.len() < wire_size {
         return Err(Errno::EINVAL);
     }
-    // Zero the entire struct — all fields are 0
-    // In a more complete implementation, ru_utime could track elapsed time
-    buf[..wire_size].fill(0);
-    Ok(())
+    Err(Errno::ENOSYS)
 }
 
 /// getpriority -- get scheduling priority.
@@ -24262,22 +24259,13 @@ pub struct KernelSysinfo {
     pub mem_unit: u32,
 }
 
-/// sysinfo — return width-independent system information.
-pub fn sys_sysinfo() -> KernelSysinfo {
-    KernelSysinfo {
-        uptime: 1,
-        loads: [0; 3],
-        totalram: 512 * 1024 * 1024,
-        freeram: 256 * 1024 * 1024,
-        sharedram: 0,
-        bufferram: 0,
-        totalswap: 0,
-        freeswap: 0,
-        procs: 1,
-        totalhigh: 0,
-        freehigh: 0,
-        mem_unit: 1,
-    }
+/// sysinfo -- real system accounting is not implemented yet.
+///
+/// Returning constant RAM, load and process counts made every consumer believe
+/// a measurement succeeded. Fail at the shared OS owner instead of requiring
+/// per-library guards. No successful record is written on this path.
+pub fn sys_sysinfo() -> Result<KernelSysinfo, Errno> {
+    Err(Errno::ENOSYS)
 }
 
 /// memfd_create — create an anonymous file backed by in-memory storage.
@@ -43715,9 +43703,8 @@ mod tests {
         let mut proc = Process::new(1);
         let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, 0, &mut buf);
-        assert!(result.is_ok());
-        // All fields should be zeroed
-        assert!(buf.iter().all(|&b| b == 0));
+        assert_eq!(result, Err(Errno::ENOSYS));
+        assert!(buf.iter().all(|&b| b == 0xFF));
     }
 
     #[test]
@@ -43725,8 +43712,8 @@ mod tests {
         let mut proc = Process::new(1);
         let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, -1, &mut buf);
-        assert!(result.is_ok());
-        assert!(buf.iter().all(|&b| b == 0));
+        assert_eq!(result, Err(Errno::ENOSYS));
+        assert!(buf.iter().all(|&b| b == 0xFF));
     }
 
     #[test]
@@ -52206,13 +52193,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn test_sysinfo() {
-        let info = sys_sysinfo();
-        assert_eq!(info.uptime, 1);
-        assert_eq!(info.loads, [0; 3]);
-        assert_eq!(info.totalram, 512 * 1024 * 1024);
-        assert_eq!(info.freeram, 256 * 1024 * 1024);
-        assert_eq!(info.procs, 1);
-        assert_eq!(info.mem_unit, 1);
+        assert_eq!(sys_sysinfo(), Err(Errno::ENOSYS));
     }
 
     #[test]

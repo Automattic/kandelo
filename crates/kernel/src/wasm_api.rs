@@ -7810,7 +7810,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             if output_pointer.is_null() {
                 return -(Errno::EFAULT as i32);
             }
-            let info = syscalls::sys_sysinfo();
+            let info = match syscalls::sys_sysinfo() {
+                Ok(info) => info,
+                Err(error) => return -(error as i32),
+            };
             let mut encoded = alloc::vec![0; model.sysinfo_size()];
             if let Err(error) = crate::process_wire::write_sysinfo(&mut encoded, &info, model) {
                 return -(error as i32);

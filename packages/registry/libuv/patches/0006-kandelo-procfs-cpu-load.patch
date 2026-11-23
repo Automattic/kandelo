@@ -1,16 +1,10 @@
 # Kandelo patch rationale (O06)
-#
-# Node's CPU/load APIs reuse libuv's existing procfs readers without
-# importing Linux-only event and filesystem machinery. Preserve their
-# matching allocation and free paths. Kandelo is not Linux, so compiling
-# all of linux.c unchanged is not equivalent. The sysinfo fallback is
-# separately avoided because it is not a real measurement in this port. Fix
-# shared accounting at its platform owner and review extracting the
-# portable readers instead of these broad guards.
-#
-# Judgment: Mixed. Portable procfs reuse is defensible, but avoiding
-# placeholder sysinfo is an OS-gap workaround.
-#
+# Reuse upstream procfs CPU/load readers without selecting Linux-only I/O.
+# The shared OS now reports unsupported accounting instead of invented data,
+# so uv_loadavg keeps its original sysinfo query/failure path unchanged.
+# Preserve the CPU reader's matching allocation/free policy. Target partition
+# cleanup and actual CPU/load measurements still require qualification/work.
+
 --- a/src/unix/linux.c
 +++ b/src/unix/linux.c
 @@ -26,6 +26,13 @@
@@ -44,45 +38,23 @@
  static int uv__ifaddr_exclude(struct ifaddrs *ent, int exclude_type) {
    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)))
      return 1;
-@@ -2448,23 +2458,34 @@
+@@ -2448,6 +2458,7 @@
  }
  
  
 +#endif  /* !UV_PLATFORM_KANDELO */
  void uv_loadavg(double avg[3]) {
-+#if !defined(UV_PLATFORM_KANDELO)
    struct sysinfo info;
-+#endif
    char buf[128];  /* Large enough to hold all of /proc/loadavg. */
+@@ -2465,6 +2476,7 @@
+ }
  
-   if (0 == uv__slurp("/proc/loadavg", buf, sizeof(buf)))
-     if (3 == sscanf(buf, "%lf %lf %lf", &avg[0], &avg[1], &avg[2]))
-       return;
  
-+#if !defined(UV_PLATFORM_KANDELO)
-   if (sysinfo(&info) < 0)
-     return;
- 
-   avg[0] = (double) info.loads[0] / 65536.0;
-   avg[1] = (double) info.loads[1] / 65536.0;
-   avg[2] = (double) info.loads[2] / 65536.0;
--}
--
--
-+#else
-+  /* The current kernel sysinfo record is a documented placeholder, not a
-+   * measurement. Preserve the upstream failed-query path (leave output
-+   * unchanged) until the shared OS supplies real procfs/accounting data.
-+   * Do not turn its fixed zeroes into successful resource measurements. */
-+#endif
-+}
-+
-+
 +#if !defined(UV_PLATFORM_KANDELO)
  static int compare_watchers(const struct watcher_list* a,
                              const struct watcher_list* b) {
    if (a->wd < b->wd) return -1;
-@@ -2742,3 +2763,5 @@
+@@ -2742,3 +2754,5 @@
  void uv__fs_event_close(uv_fs_event_t* handle) {
    uv_fs_event_stop(handle);
  }
