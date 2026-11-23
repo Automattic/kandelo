@@ -8494,22 +8494,14 @@ export class CentralizedKernelWorker {
           backend = { reservation, supportedProgramExtensions: GROUPED_WORKER_EXTENSIONS,
             rollback: outcome => {
               if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-              return retryKernelEntryResult(() => {
-                this.#runImmediateKernelEntry('rollback exact grouped exec replacement', rollbackEntry => {
-                  if (outcome === 'uncertain' || state.phase === 'committed') {
-                    this.#memoryGroupProtocolError('Uncertain grouped exec commit retains replacement storage');
-                  }
-                  this.#cancelGroupedExecPreparationWithinKernelEntry(state, rollbackEntry);
-                  return undefined;
-                });
-              });
+              return this.#cancelGroupedExecPreparation(state, outcome === 'uncertain');
             },
             committed: () => {
               if (state.phase !== 'committed') this.#memoryGroupProtocolError('Grouped exec commit lost its exact reservation');
             },
           };
         } catch (cause) {
-          this.#cancelGroupedExecPreparationWithinKernelEntry(state, entry);
+          if (!this.#cancelGroupedExecPreparationWithinKernelEntry(state, entry)) this.#memoryGroupProtocolError('Grouped exec preparation cleanup remains busy');
           if (cause instanceof GroupMemoryStorageRefusal) throw new PreparedExecTargetError('Group storage is busy preparing replacement pages', cause.errno);
           if (cause instanceof RangeError) throw new PreparedExecTargetError('Unable to reserve grouped replacement pages', ENOMEM);
           throw cause;
@@ -8538,14 +8530,29 @@ export class CentralizedKernelWorker {
     });
   }
 
-  #cancelGroupedExecPreparationWithinKernelEntry(state: GroupedExecPreparationState, entry: KernelWorkerEntryContext): void {
-    if (state.phase === 'cancelled') return;
+  async #cancelGroupedExecPreparation(state: GroupedExecPreparationState, uncertain: boolean): Promise<void> {
+    for (;;) {
+      let cancelled = false;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('rollback exact grouped exec replacement', entry => {
+        if (uncertain || state.phase === 'committed') this.#memoryGroupProtocolError('Uncertain grouped exec commit retains replacement storage');
+        cancelled = this.#cancelGroupedExecPreparationWithinKernelEntry(state, entry);
+        return undefined;
+      }));
+      if (cancelled) return;
+      const group = state.registration.grouped;
+      if (!group) throw new MemoryGroupProtocolFault('Grouped exec cleanup lost its predecessor');
+      await this.#waitForGroupRetirementProgress(state.store, group.handle);
+    }
+  }
+
+  #cancelGroupedExecPreparationWithinKernelEntry(state: GroupedExecPreparationState, entry: KernelWorkerEntryContext): boolean {
+    if (state.phase === 'cancelled') return true;
     if (state.phase !== 'prepared') this.#memoryGroupProtocolError('Published exec cannot use unconstructed rollback');
     const hadImage = state.handle !== undefined;
     if (state.handle && !state.store.isUnexposed(state.handle, entry)) this.#memoryGroupProtocolError('Grouped exec storage already escaped');
-    if (this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.cancel, entry) !== 0) {
-      this.#memoryGroupProtocolError('Cannot cancel exact grouped exec task');
-    }
+    const cancelled = this.#groupExecActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.exec_preparation.actions.cancel, entry);
+    if (cancelled === -ERRNO.EAGAIN) return false;
+    if (cancelled !== 0) this.#memoryGroupProtocolError('Cannot cancel exact grouped exec task');
     if (state.handle) {
       state.store.forgetCancelledReplica(state.handle, entry); this.#memoryGroupReplicas.delete(state.handle);
       this.#groupExecImages.delete(state.handle);
@@ -8558,6 +8565,7 @@ export class CentralizedKernelWorker {
     if (state.reservation) this.#groupExecReservations.delete(state.reservation);
     state.reservation = undefined;
     state.handle = undefined; state.phase = 'cancelled'; this.#preparedGroupExecReservations.delete(state);
+    return true;
   }
 
   /** Called on the successful commit stack, before the embedding yields.
@@ -8629,31 +8637,39 @@ export class CentralizedKernelWorker {
 
   /** A committed future image has never escaped, while the exact old image
    * has stopped. Keep the kernel hold until both scratch and root can retire. */
-  cancelTerminatedMemoryGroupExec(reservation: GroupedExecReservation): void {
-    this.#runImmediateKernelEntry('cancel exact terminated grouped exec future', entry => {
-      const state = this.#groupExecReservations.get(reservation);
-      if (!state || state.phase !== 'handoff' || !state.handle || !state.terminationSignal
-          || this.processes.get(state.receipt.pid) !== state.registration
-          || !state.store.imageExecutionStopped(state.registration.grouped!.handle, entry)
-          || !state.store.isUnexposed(state.handle, entry)) this.#memoryGroupProtocolError('Terminated exec lacks unexposed custody');
-      const generation = this.#processExecGenerationWithinKernelEntry(state.receipt.pid, entry);
-      if (generation !== state.receipt.generation || this.#getProcessExitSignal(state.receipt.pid, entry) !== state.terminationSignal) {
-        this.#memoryGroupProtocolError('Terminated exec changed exact kernel identity');
-      }
-      if (this.#memoryGroupTaskActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry) !== 0) {
-        this.#memoryGroupProtocolError('Cannot cancel held future exec task');
-      }
-      state.store.forgetCancelledReplica(state.handle, entry); this.#memoryGroupReplicas.delete(state.handle);
-      if (!state.store.canReleaseUnexposedImage(state.receipt, entry)) this.#memoryGroupProtocolError('Future exec image retains references');
-      const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
-      if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact future image retirement export');
-      const status = this.#checkedMemoryGroupStatus(retire(state.receipt.pid,
-        Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n)));
-      if (status !== 0) this.#memoryGroupProtocolError('Cannot retire held future exec image');
-      state.store.releaseUnexposedImage(state.receipt);
-      this.#groupExecImages.delete(state.handle); state.handle = undefined; state.phase = 'cancelled';
-      return undefined;
-    });
+  async cancelTerminatedMemoryGroupExec(reservation: GroupedExecReservation): Promise<void> {
+    for (;;) {
+      let waiting: { store: GroupMemoryTransport; handle: PreparedGroupReplica } | undefined;
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('cancel exact terminated grouped exec future', entry => {
+        const state = this.#groupExecReservations.get(reservation);
+        if (!state || state.phase !== 'handoff' || !state.handle || !state.terminationSignal
+            || this.processes.get(state.receipt.pid) !== state.registration
+            || !state.store.imageExecutionStopped(state.registration.grouped!.handle, entry)
+            || !state.store.isUnexposed(state.handle, entry)) this.#memoryGroupProtocolError('Terminated exec lacks unexposed custody');
+        const generation = this.#processExecGenerationWithinKernelEntry(state.receipt.pid, entry);
+        if (generation !== state.receipt.generation || this.#getProcessExitSignal(state.receipt.pid, entry) !== state.terminationSignal) {
+          this.#memoryGroupProtocolError('Terminated exec changed exact kernel identity');
+        }
+        const cancelled = this.#memoryGroupTaskActionWithinKernelEntry(state.receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+        if (cancelled === -ERRNO.EAGAIN) {
+          waiting = { store: state.store, handle: state.registration.grouped!.handle };
+          return undefined;
+        }
+        if (cancelled !== 0) this.#memoryGroupProtocolError('Cannot cancel held future exec task');
+        state.store.forgetCancelledReplica(state.handle, entry); this.#memoryGroupReplicas.delete(state.handle);
+        if (!state.store.canReleaseUnexposedImage(state.receipt, entry)) this.#memoryGroupProtocolError('Future exec image retains references');
+        const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
+        if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact future image retirement export');
+        const status = this.#checkedMemoryGroupStatus(retire(state.receipt.pid,
+          Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n)));
+        if (status !== 0) this.#memoryGroupProtocolError('Cannot retire held future exec image');
+        state.store.releaseUnexposedImage(state.receipt);
+        this.#groupExecImages.delete(state.handle); state.handle = undefined; state.phase = 'cancelled';
+        return undefined;
+      }));
+      if (!waiting) return;
+      await this.#waitForGroupRetirementProgress(waiting.store, waiting.handle);
+    }
   }
 
   finishMemoryGroupExecTermination(reservation: GroupedExecReservation): void {
@@ -11007,7 +11023,7 @@ export class CentralizedKernelWorker {
     if (expectedMemory && registration.memory !== expectedMemory) return false;
     for (const prepared of [...this.#preparedGroupExecReservations]) {
       if (prepared.registration === registration && prepared.phase === 'prepared') {
-        this.#cancelGroupedExecPreparationWithinKernelEntry(prepared, entry);
+        if (!this.#cancelGroupedExecPreparationWithinKernelEntry(prepared, entry)) this.#memoryGroupProtocolError('Grouped exec deactivation cleanup remains busy');
       }
     }
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);

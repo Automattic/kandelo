@@ -41,10 +41,12 @@ export interface SdkExecutionOptions {
   forcedLifecycle?: boolean;
   nativeWaitLifecycle?: boolean;
   execPrecommitFailure?: 'allocation' | 'callback' | 'virtual';
+  execPoolRollback?: boolean;
   execSuccess?: boolean;
   execOldThreads?: boolean;
   anonymousShared?: boolean;
   execSignal?: 'commit' | 'stopped';
+  execTerminationPool?: boolean;
 }
 interface SdkExecutionMachine {
   kernel?: CentralizedKernelWorker;
@@ -303,6 +305,16 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               lifecycleEvidence.push({ kind: 'exec-old-threads-stopped', step: probe.step, returned, busy, after,
                 joined: previousThreads.map(thread => thread.hasJoined) });
               if (options.execSignal === 'stopped') await retryKernelEntryResult(signal);
+              if (options.execTerminationPool) {
+                if (!rollbackPoolMemory) throw Error('Missing actual terminated exec backing');
+                const lock = new Int32Array(rollbackPoolMemory.buffer, MEMORY_GROUP_CONTROL, 1);
+                if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) throw Error('Terminated exec fixture did not acquire its pool lock');
+                setTimeout(() => {
+                  try { lifecycleEvidence.push({ kind: 'terminated-exec-pool-lock-released', admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
+                  catch (error) { reject(error); }
+                  finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+                }, 0);
+              }
             } : undefined,
             onTerminated: signal => {
               if (options.execSignal) {
@@ -366,6 +378,16 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         } : options.execPrecommitFailure ? async request => {
           if (!request.groupedExec) throw Error('Grouped exec lost opaque preparation');
           execPreparations.push({ layout: request.groupedExec.layout, ...await memoryEvidence() });
+          if (options.execPoolRollback) {
+            if (!rollbackPoolMemory) throw Error('Missing actual grouped exec backing');
+            const lock = new Int32Array(rollbackPoolMemory.buffer, MEMORY_GROUP_CONTROL, 1);
+            if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) throw Error('Exec fixture did not acquire its pool lock');
+            setTimeout(() => {
+              try { lifecycleEvidence.push({ kind: 'exec-pool-lock-released', admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
+              catch (error) { reject(error); }
+              finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+            }, 0);
+          }
           return -13; // deliberate embedding refusal after real physical preparation
         } : undefined,
         onThreadExit: (pid, tid, _channelOffset) => {
@@ -690,7 +712,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           imageHandles.set(pid, handle);
           launch = kernel.publishMemoryGroupReplica(handle);
           if (typeof launch === "number") throw new Error(`publish replica: ${launch}`);
-          if (options.rejectForkStage === 'pool' || options.threadPoolRollback) rollbackPoolMemory = launch.envelope.memory;
+          if (options.rejectForkStage === 'pool' || options.threadPoolRollback || options.execPoolRollback || options.execTerminationPool) rollbackPoolMemory = launch.envelope.memory;
           kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], registration);
         } else kernel.registerProcess(pid, createProcessMemory(4, layout), [layout.channelOffset], registration);
         status(await retryKernelEntryResult(() => kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] })), "attach executable");
