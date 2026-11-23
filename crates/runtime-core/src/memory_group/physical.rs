@@ -569,6 +569,122 @@ pub(super) mod tests {
         assert_eq!(pool.snapshot(&mut memory), Err(Errno::EAGAIN));
         assert_eq!(output, [99, 98]);
         assert_eq!(memory.bytes, before);
+        memory.store(LOCK, 0);
+        pool.allocate_pages(&mut memory, &mut output).unwrap();
+        assert_eq!(output, [1, 2]);
+        memory.store(LOCK, 1);
+        let before = memory.bytes.clone();
+        assert_eq!(
+            pool.release_checked(&mut memory, &output, |_| Ok(true)),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(memory.bytes, before);
+        memory.store(LOCK, 0);
+        pool.release_checked(&mut memory, &output, |_| Ok(true))
+            .unwrap();
+        assert_eq!(pool.snapshot(&mut memory).unwrap().allocated_pages, 1);
+    }
+
+    #[test]
+    fn fragmented_reuse_zeroes_selected_pages_without_touching_live_neighbors() {
+        let mut memory = Memory::new(8);
+        let mut pool = PagePool::initialize(&mut memory, 8).unwrap();
+        pool.allocate_contiguous(&mut memory, 7).unwrap();
+        memory.fill(PAGE, 7 * PAGE, 0xa5).unwrap();
+        pool.release_checked(&mut memory, &[1, 3, 5], |_| Ok(true))
+            .unwrap();
+        let mut selected = [99; 3];
+        pool.allocate_pages(&mut memory, &mut selected).unwrap();
+        assert_eq!(selected, [1, 3, 5]);
+        for page in 1..8 {
+            let expected = if selected.contains(&page) { 0 } else { 0xa5 };
+            let mut bytes = [0; PAGE as usize];
+            memory.read(page * PAGE, &mut bytes).unwrap();
+            assert!(bytes.iter().all(|byte| *byte == expected));
+        }
+        let before = memory.bytes.clone();
+        let mut output = [99];
+        assert_eq!(
+            pool.allocate_pages(&mut memory, &mut output),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(output, [99]);
+        assert_eq!(memory.bytes, before);
+    }
+
+    #[test]
+    fn scattered_growth_stops_at_the_last_selected_page_and_preserves_refused_output() {
+        let mut memory = Memory::new(8);
+        let mut pool = PagePool::initialize(&mut memory, 8).unwrap();
+        let mut selected = [99; 4];
+        pool.allocate_pages(&mut memory, &mut selected).unwrap();
+        assert_eq!(selected, [1, 2, 3, 4]);
+        assert_eq!(memory.current_pages().unwrap(), 5);
+        memory.refuse_growth = true;
+        let before = memory.bytes.clone();
+        let mut output = [99; 2];
+        assert_eq!(
+            pool.allocate_pages(&mut memory, &mut output),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(pool.allocate_contiguous(&mut memory, 2), Err(Errno::ENOMEM));
+        assert_eq!(output, [99; 2]);
+        assert_eq!(memory.bytes, before);
+    }
+
+    #[test]
+    fn independent_pools_reserve_their_own_metadata_and_allow_empty_image_payloads() {
+        let mut a = Memory::new(16);
+        let mut b = Memory::new(16);
+        let mut first = PagePool::initialize(&mut a, 16).unwrap();
+        let mut second = PagePool::initialize(&mut b, 16).unwrap();
+        let image = first.allocate_image(&mut a, 3, 2, &mut []).unwrap();
+        assert_eq!(image.controls, Extent { first: 1, pages: 3 });
+        assert_eq!(image.scratch, Extent { first: 4, pages: 2 });
+        a.fill(PAGE, 5 * PAGE, 0xff).unwrap();
+        assert_eq!(second.snapshot(&mut b).unwrap().allocated_pages, 1);
+        assert_eq!(second.allocate_contiguous(&mut b, 1).unwrap().first, 1);
+        assert!(b.bytes[PAGE as usize..].iter().all(|byte| *byte == 0));
+        assert_eq!(first.snapshot(&mut a).unwrap().allocated_pages, 6);
+        assert_eq!(a.current_pages().unwrap(), 6);
+    }
+
+    #[test]
+    fn invalid_capacities_and_extents_refuse_before_lock_or_metadata_mutation() {
+        for maximum in [0, 1, layout::MAXIMUM_PAGES + 1, u32::MAX] {
+            let mut memory = Memory::new(16);
+            let before = memory.bytes.clone();
+            assert!(matches!(
+                PagePool::initialize(&mut memory, maximum),
+                Err(Errno::EINVAL)
+            ));
+            assert_eq!(memory.bytes, before);
+        }
+        let mut memory = Memory::new(8);
+        let mut pool = PagePool::initialize(&mut memory, 8).unwrap();
+        memory.store(LOCK, 1);
+        let before = memory.bytes.clone();
+        assert_eq!(pool.allocate_contiguous(&mut memory, 0), Err(Errno::EINVAL));
+        assert_eq!(
+            pool.allocate_pages(&mut memory, &mut []),
+            Err(Errno::EINVAL)
+        );
+        for (controls, scratch) in [(0, 2), (1, 0)] {
+            assert_eq!(
+                pool.allocate_image(&mut memory, controls, scratch, &mut []),
+                Err(Errno::EINVAL)
+            );
+        }
+        assert_eq!(
+            pool.allocate_image(&mut memory, u32::MAX, 1, &mut []),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(memory.bytes, before);
+        memory.store(LOCK, 0);
+        memory.store(MAXIMUM, 7);
+        let before = memory.bytes.clone();
+        assert_eq!(pool.snapshot(&mut memory), Err(Errno::EIO));
+        assert_eq!(memory.bytes, before);
     }
 
     #[test]
