@@ -1,6 +1,9 @@
 //! Compact module headers and disk-backed sink dependency/table relations.
 
-use std::{cell::Cell, collections::HashMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, HashMap},
+};
 
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
@@ -46,7 +49,8 @@ pub struct FunctionInfo {
 }
 
 /// The exclusive store borrow prevents replacing planning tables while a
-/// program is using them. All edges, table memberships and slots stay on disk.
+/// program is using them. Disk relations remain the source of table and
+/// reference memberships, with a bounded cache for repeated queries.
 /// This is metadata for the native sink planner, not a complete sink plan.
 pub struct Program<'s, 'a> {
     scan: &'s Scan<'a>,
@@ -60,7 +64,15 @@ pub struct Program<'s, 'a> {
     pub dynamic_linking: bool,
     unknown_tables: Vec<bool>,
     unknown_reference_imports: bool,
+    target_groups: RefCell<TargetGroups>,
+    target_group_budget: usize,
     pub(super) limits: ProgramLimits,
+}
+
+#[derive(Default)]
+struct TargetGroups {
+    values: BTreeMap<(Option<u32>, u32), Vec<u32>>,
+    bytes: usize,
 }
 
 const NORETURN: &[&str] = &[
@@ -464,6 +476,8 @@ impl<'s, 'a> Program<'s, 'a> {
             dynamic_linking,
             unknown_tables,
             unknown_reference_imports,
+            target_groups: RefCell::default(),
+            target_group_budget: (limits.metadata_bytes - charge).min(2 * 1024 * 1024),
             limits,
         })
     }
@@ -590,17 +604,41 @@ impl<'s, 'a> Program<'s, 'a> {
     }
 
     pub fn table_targets(&self, table: u32, signature: u32) -> Result<Vec<u32>> {
-        self.indices(
-            "SELECT target FROM sink_member WHERE table_id=? AND signature=? ORDER BY target",
-            params![table, signature],
-        )
+        self.target_group(Some(table), signature)
     }
 
     pub fn reference_targets(&self, signature: u32) -> Result<Vec<u32>> {
-        self.indices(
-            "SELECT c.function FROM sink_compatible c JOIN sink_function f ON f.id=c.function WHERE c.signature=? AND f.escaping ORDER BY c.function",
-            [signature],
-        )
+        self.target_group(None, signature)
+    }
+
+    fn target_group(&self, table: Option<u32>, signature: u32) -> Result<Vec<u32>> {
+        let key = (table, signature);
+        if let Some(targets) = self.target_groups.borrow().values.get(&key) {
+            return Ok(targets.clone());
+        }
+        let targets = if let Some(table) = table {
+            self.indices(
+                "SELECT target FROM sink_member WHERE table_id=? AND signature=? ORDER BY target",
+                params![table, signature],
+            )?
+        } else {
+            self.indices(
+                "SELECT c.function FROM sink_compatible c JOIN sink_function f ON f.id=c.function WHERE c.signature=? AND f.escaping ORDER BY c.function",
+                [signature],
+            )?
+        };
+        // Different caller policies fall back to the same frozen relation.
+        // Charge the copied vector, key and conservative B-tree overhead.
+        let bytes = targets.len().saturating_mul(4).saturating_add(192);
+        if bytes <= self.target_group_budget {
+            let mut groups = self.target_groups.borrow_mut();
+            if bytes > self.target_group_budget - groups.bytes {
+                *groups = TargetGroups::default();
+            }
+            groups.values.insert(key, targets.clone());
+            groups.bytes += bytes;
+        }
+        Ok(targets)
     }
 
     pub fn direct_callers(&self, function: u32) -> Result<Vec<u32>> {

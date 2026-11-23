@@ -3,6 +3,8 @@ use crate::{Analysis, Options, SinkReport, call_graph::FuncEntry, native};
 use anyhow::{Result, ensure};
 
 pub(crate) fn sinks(input: &[u8], options: &Options) -> Result<SinkReport> {
+    let local = crate::streaming::local_continuation::prepare(input, Default::default())?;
+    let input = local.as_ref().map_or(input, |artifact| artifact.bytes());
     let analysis = native::analyze(input, options, Default::default())?;
     let names = |set: &std::collections::BTreeSet<u32>| {
         let mut names: Vec<_> = set
@@ -22,6 +24,8 @@ pub(crate) fn sinks(input: &[u8], options: &Options) -> Result<SinkReport> {
     })
 }
 pub(crate) fn discover(input: &[u8], options: &Options) -> Result<Analysis> {
+    let local = crate::streaming::local_continuation::prepare(input, Default::default())?;
+    let input = local.as_ref().map_or(input, |artifact| artifact.bytes());
     let analysis = native::analyze(
         input,
         &Options {
