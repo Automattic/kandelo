@@ -162,7 +162,9 @@ relocatable-object path, or Zig can consume the SDK link rules without
 duplicating them.
 
 See the [Zig validation guide](../sdk/zig/README.md) for the upstream
-test suites, the Node and browser runners, and known gaps.
+test suites, the Node and browser runners, and known gaps. To compile
+within a running Kandelo guest, see the experimental [guest Zig
+compiler](../sdk/zig/README.md#compiling-zig-programs-inside-kandelo).
 
 ### With optimization
 
