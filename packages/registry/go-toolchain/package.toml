@@ -1,0 +1,28 @@
+kind = "program"
+name = "go-toolchain"
+version = "1.28-devel"
+kernel_abi = 56
+arches = ["wasm32"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://go.dev/LICENSE"
+
+[build]
+script_path = "packages/registry/go-toolchain/build.sh"
+
+[[outputs]]
+name = "go"
+wasm = "go.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "go"
+version_constraint = ">=1.26.0"
+probe = { args = ["version"], version_regex = "go version go(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

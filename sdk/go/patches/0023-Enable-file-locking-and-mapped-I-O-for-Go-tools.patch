@@ -1,0 +1,28 @@
+Go's build cache uses open-file-description locks. Select the existing
+flock implementation for Kandelo, which already provides syscall.Flock.
+Match Kandelo's musl MAP_FILE value so the compiler and linker can use
+their usual file-backed mapping path.
+
+diff --git a/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go b/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go
+--- a/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go
++++ b/src/cmd/go/internal/lockedfile/internal/filelock/filelock_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build darwin || dragonfly || freebsd || illumos || linux || netbsd || openbsd
++//go:build darwin || dragonfly || freebsd || illumos || kandelo || linux || netbsd || openbsd
+ 
+ package filelock
+ 
+diff --git a/src/syscall/mmap_kandelo.go b/src/syscall/mmap_kandelo.go
+--- a/src/syscall/mmap_kandelo.go
++++ b/src/syscall/mmap_kandelo.go
+@@ -11,6 +11,7 @@ const (
+ 	PROT_READ  = 1
+ 	PROT_WRITE = 2
+ 
++	MAP_FILE      = 0
+ 	MAP_SHARED    = 0x01
+ 	MAP_PRIVATE   = 0x02
+ 	MAP_FIXED     = 0x10

@@ -125,6 +125,10 @@ export async function loadShellBaseFileSystemFromImage(
   // window between importing the base and checking its activation cohorts, and
   // no second call for a caller to forget.
   const fs = KandeloImageFs.create();
+  // Package builds export a tree with both the shell's lazy catalogs and the
+  // web application's files. The Go catalog can push LAMP's export plan past
+  // the default 32 MiB I/O budget. Allow 48 MiB for this build-time instance.
+  fs.setIoBudgetBytes(48 * 1024 * 1024);
   fs.loadImage(shellImage);
   const metadata = fs.getImageMetadata();
   const kernelAbi = metadata?.kernelAbi;

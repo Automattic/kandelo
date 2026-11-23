@@ -65,12 +65,50 @@ chmod +x hello.wasm
 
 Both commands should print `Hello, Kandelo`.
 
+## Build inside Kandelo
+
+The Kandelo shell includes the experimental `go` command, its matching
+compiler, assembler, and linker, and the standard-library sources for
+`kandelo/wasm32`. Open the shell from `./run.sh browser`, then run these
+commands at the Kandelo prompt.
+
+```sh
+mkdir -p "$HOME/go-hello"
+cd "$HOME/go-hello"
+export GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off CGO_ENABLED=0
+go telemetry off
+go mod init example.com/hello
+cat > main.go <<'GO'
+package main
+
+import "fmt"
+
+func main() { fmt.Println("Hello, Kandelo") }
+GO
+go build -p 1 -trimpath -o hello.wasm .
+./hello.wasm
+```
+
+`go build` compiles the standard library on the first build. The cold build
+took several minutes with `-p 1` on the development machine. Keep the build
+cache between runs to reuse those outputs. Go needs writable temporary and
+cache directories. Use `-p 1` to limit the number of simultaneous tool
+processes.
+
+The shell host loads the roughly 34 MiB Go archive on first use. For a
+fully offline session, supply the shell image and Go archive to the host
+in advance.
+The example uses only the packaged standard library. An offline module
+with extra dependencies needs those sources vendored or present in its
+module cache. Use the packaged toolchain with `GOTOOLCHAIN=local`.
+
 ## Scope
 
 The SDK selects `GOOS=kandelo GOARCH=wasm32` and disables cgo. Start with
 pure-Go modules whose dependencies support this target. Modules with
-OS-specific code can require a Kandelo port. The Go toolchain stays on the
-development machine. Use Kandelo to execute the output of `go build`.
+OS-specific code can require a Kandelo port. The guest package covers
+in-guest `go build` for `kandelo/wasm32`. Additional Go tools and automatic
+toolchain switching are outside this iteration.
 
 The Go scheduler defaults to `GOMAXPROCS=1`. Set `GOMAXPROCS` in the guest
 environment or call `runtime.GOMAXPROCS` to adjust how many threads can run
@@ -124,5 +162,15 @@ export KANDELO_GO_SDK_PROBE="$PWD/.scratch/go-sdk-probe.wasm"
     --project=chromium --project=firefox --project=webkit --workers=1)
 ```
 
-See [Go tools inside Kandelo](future-improvements.md#go-tools-inside-kandelo)
-for the next milestone.
+The guest build acceptance test starts with an empty Go build cache, runs
+`go build` in the shell, and runs the output in the same guest. It checks
+that the guest invokes the packaged compiler, assembler, and linker and
+that the result carries the kernel's program ABI contract.
+The tests run on Node.js, Chromium, Firefox, and WebKit. With the source-only
+build environment above, run them from the repository root:
+
+```sh
+(cd host && npx vitest run test/go-in-guest.test.ts)
+(cd apps/browser-demos && npx playwright test test/go-in-guest.spec.ts \
+    --project=chromium --project=firefox --project=webkit --workers=1)
+```
