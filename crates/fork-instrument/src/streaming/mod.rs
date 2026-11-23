@@ -53,6 +53,7 @@ pub use reference::*;
 pub(crate) use retention::LexicalRetention;
 pub use roots::*;
 pub use runtime::*;
+pub(crate) mod local_continuation;
 pub use scan::*;
 pub use state::*;
 pub use tables::*;

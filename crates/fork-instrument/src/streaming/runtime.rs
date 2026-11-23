@@ -63,6 +63,49 @@ pub struct RuntimeInputs {
     /// later catalogs may reserve their helpers before imports are frozen.
     /// This avoids a declaration cycle and unused placeholder codec imports.
     pub helper_codecs: NativeCodecOverrides,
+    /// Use guest-local providers, private controls, and a stack-only snapshot.
+    pub local_frames: Option<LocalFrameTransport>,
+}
+
+/// Source indices for frame providers linked into the instrumented module.
+/// Hosts remain responsible for the default process-fork transport.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalFrameTransport {
+    pub reserve: u32,
+    pub commit: u32,
+    pub next: u32,
+    pub peek: u32,
+    pub resume_peek: u32,
+    pub vector_begin: u32,
+    pub vector_append: u32,
+    pub vector_finish: u32,
+    pub vector_get: u32,
+    pub entities: LocalContinuationEntities,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LocalContinuationEntities {
+    Linked { resume_table: u32, unwind_tag: u32 },
+    Generated { resume_slots: u32 },
+}
+
+#[derive(Clone, Copy)]
+enum Provider {
+    Import(u32),
+    Source(u32),
+}
+
+impl Provider {
+    fn resolve(
+        self,
+        imports: &mut FrozenImports,
+        remap: impl FnOnce(&mut FrozenImports, u32) -> Result<u32, Error<ImportIndexError>>,
+    ) -> Result<u32> {
+        match self {
+            Self::Import(ordinal) => imports.index(ordinal).context("unfrozen runtime provider"),
+            Self::Source(index) => Ok(remap(imports, index)?),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -206,47 +249,78 @@ impl NativeRuntime {
         let vv = add_type(&mut inputs.types, base, &[], &[], budget)?;
         let vi = add_type(&mut inputs.types, base, &[], &[ValType::I32], budget)?;
         let module = wasm_posix_program_abi::abi::WPK_FORK_FRAME_IMPORT_MODULE;
-        let mut function = |name, ty| {
-            add_import(
+        let local = inputs.local_frames;
+        let mut provider = |source, module, name, ty| -> Result<Provider> {
+            if let Some(source) = source {
+                return Ok(Provider::Source(source));
+            }
+            Ok(Provider::Import(add_import(
                 &mut inputs.imports,
                 module,
                 name,
-                EntityType::Function(ty),
+                ty,
                 budget,
-            )
+            )?))
         };
-        let reserve = function(names::IMPORT_FRAME_RESERVE, pp)?;
-        let commit = function(names::IMPORT_FRAME_COMMIT, pv)?;
-        let next = function(names::IMPORT_FRAME_NEXT, pp)?;
-        let peek = function(names::IMPORT_FRAME_PEEK, pp)?;
-        let resume_peek = function(names::IMPORT_RESUME_PEEK, ii)?;
-        let vector_begin = function(names::IMPORT_REFERENCE_VECTOR_BEGIN, ii)?;
-        let vector_append = function(names::IMPORT_REFERENCE_VECTOR_APPEND, iiv)?;
-        let vector_finish = function(names::IMPORT_REFERENCE_VECTOR_FINISH, ii)?;
-        let vector_get = function(names::IMPORT_REFERENCE_VECTOR_GET, iii)?;
-        let table = add_import(
-            &mut inputs.imports,
-            module,
-            names::IMPORT_RESUME_TABLE,
-            EntityType::Table(TableType {
-                element_type: RefType::FUNCREF,
-                minimum: 1,
-                maximum: None,
-                table64: false,
-                shared: false,
-            }),
-            budget,
+        let mut function =
+            |source, name, ty| provider(source, module, name, EntityType::Function(ty));
+        let reserve = function(local.map(|p| p.reserve), names::IMPORT_FRAME_RESERVE, pp)?;
+        let commit = function(local.map(|p| p.commit), names::IMPORT_FRAME_COMMIT, pv)?;
+        let next = function(local.map(|p| p.next), names::IMPORT_FRAME_NEXT, pp)?;
+        let peek = function(local.map(|p| p.peek), names::IMPORT_FRAME_PEEK, pp)?;
+        let resume_peek = function(local.map(|p| p.resume_peek), names::IMPORT_RESUME_PEEK, ii)?;
+        let vector_begin = function(
+            local.map(|p| p.vector_begin),
+            names::IMPORT_REFERENCE_VECTOR_BEGIN,
+            ii,
         )?;
-        let tag = add_import(
-            &mut inputs.imports,
-            names::IMPORT_UNWIND_TAG_MODULE,
-            names::IMPORT_UNWIND_TAG,
-            EntityType::Tag(TagType {
-                kind: TagKind::Exception,
-                func_type_idx: vv,
-            }),
-            budget,
+        let vector_append = function(
+            local.map(|p| p.vector_append),
+            names::IMPORT_REFERENCE_VECTOR_APPEND,
+            iiv,
         )?;
+        let vector_finish = function(
+            local.map(|p| p.vector_finish),
+            names::IMPORT_REFERENCE_VECTOR_FINISH,
+            ii,
+        )?;
+        let vector_get = function(
+            local.map(|p| p.vector_get),
+            names::IMPORT_REFERENCE_VECTOR_GET,
+            iii,
+        )?;
+        let tag_type = TagType {
+            kind: TagKind::Exception,
+            func_type_idx: vv,
+        };
+        let table_type = |minimum, maximum| TableType {
+            element_type: RefType::FUNCREF,
+            minimum,
+            maximum,
+            table64: false,
+            shared: false,
+        };
+        let linked = match local.map(|p| p.entities) {
+            Some(LocalContinuationEntities::Linked {
+                resume_table,
+                unwind_tag,
+            }) => Some((Provider::Source(resume_table), Provider::Source(unwind_tag))),
+            Some(LocalContinuationEntities::Generated { .. }) => None,
+            None => Some((
+                provider(
+                    None,
+                    module,
+                    names::IMPORT_RESUME_TABLE,
+                    EntityType::Table(table_type(1, None)),
+                )?,
+                provider(
+                    None,
+                    names::IMPORT_UNWIND_TAG_MODULE,
+                    names::IMPORT_UNWIND_TAG,
+                    EntityType::Tag(tag_type),
+                )?,
+            )),
+        };
         let mut codecs = [None; 4];
         for (i, reference, encode, decode, override_pair, helper_pair) in [
             (
@@ -397,36 +471,57 @@ impl NativeRuntime {
         let buf_global = global(pointer, zero())?;
         let call_index_global = global(ValType::I32, ConstExpr::i32_const(0))?;
         let frame_global = global(pointer, zero())?;
-        for (i, name) in [
-            names::EXPORT_UNWIND_BEGIN,
-            names::EXPORT_UNWIND_END,
-            names::EXPORT_REWIND_BEGIN,
-            names::EXPORT_REWIND_END,
-            names::EXPORT_ABORT_BEGIN,
-            names::EXPORT_ABORT_END,
-            names::EXPORT_STATE,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            declarations.export(name, ExportKind::Func, helper + i as u32)?;
+        if local.is_none() {
+            for (i, name) in [
+                names::EXPORT_UNWIND_BEGIN,
+                names::EXPORT_UNWIND_END,
+                names::EXPORT_REWIND_BEGIN,
+                names::EXPORT_REWIND_END,
+                names::EXPORT_ABORT_BEGIN,
+                names::EXPORT_ABORT_END,
+                names::EXPORT_STATE,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                declarations.export(name, ExportKind::Func, helper + i as u32)?;
+            }
         }
+        let (resume_table, unwind_tag) = if let Some((table, tag)) = linked {
+            (
+                table.resolve(&mut imports, Reencode::table_index)?,
+                tag.resolve(&mut imports, Reencode::tag_index)?,
+            )
+        } else {
+            let Some(LocalContinuationEntities::Generated { resume_slots }) =
+                local.map(|p| p.entities)
+            else {
+                unreachable!("missing local continuation entities")
+            };
+            let slots = u64::from(resume_slots);
+            (
+                declarations.table(table_type(slots, Some(slots)), None)?,
+                declarations.tag(tag_type)?,
+            )
+        };
         let indices = NativeRuntimeIndices {
             state_global,
             buf_global,
             call_index_global,
             frame_global,
-            frame_reserve: index(reserve),
-            frame_commit: index(commit),
-            frame_next: index(next),
-            frame_peek: index(peek),
-            resume_peek: index(resume_peek),
-            resume_table: index(table),
-            unwind_tag: index(tag),
-            reference_vector_begin: index(vector_begin),
-            reference_vector_append: index(vector_append),
-            reference_vector_finish: index(vector_finish),
-            reference_vector_get: index(vector_get),
+            frame_reserve: reserve.resolve(&mut imports, Reencode::function_index)?,
+            frame_commit: commit.resolve(&mut imports, Reencode::function_index)?,
+            frame_next: next.resolve(&mut imports, Reencode::function_index)?,
+            frame_peek: peek.resolve(&mut imports, Reencode::function_index)?,
+            resume_peek: resume_peek.resolve(&mut imports, Reencode::function_index)?,
+            resume_table,
+            unwind_tag,
+            reference_vector_begin: vector_begin.resolve(&mut imports, Reencode::function_index)?,
+            reference_vector_append: vector_append
+                .resolve(&mut imports, Reencode::function_index)?,
+            reference_vector_finish: vector_finish
+                .resolve(&mut imports, Reencode::function_index)?,
+            reference_vector_get: vector_get.resolve(&mut imports, Reencode::function_index)?,
             unwind_begin: helper,
             unwind_end: helper + 1,
             rewind_begin: helper + 2,
@@ -452,7 +547,24 @@ impl NativeRuntime {
             }
         }
         let map = &mut imports;
-        let mut saved = Vec::with_capacity(types.global_count() as usize);
+        let stack_pointer = if local.is_some() {
+            ensure!(
+                types.memory_count() != 0,
+                "local continuation requires primary memory"
+            );
+            Some(
+                super::FrameEnvironment::discover(scan, map, budget)?
+                    .stack_pointer
+                    .context("local continuation requires a mutable stack pointer")?,
+            )
+        } else {
+            None
+        };
+        let mut saved = Vec::with_capacity(if stack_pointer.is_some() {
+            1
+        } else {
+            types.global_count() as usize
+        });
         let mut frames_start = 2 * width;
         for source_global in 0..types.global_count() {
             let ty = types.global_at(source_global);
@@ -462,10 +574,14 @@ impl NativeRuntime {
             {
                 continue;
             }
+            let global = map.global_index(source_global)?;
+            if stack_pointer.is_some_and(|stack| stack != global) {
+                continue;
+            }
             let ty = map.val_type(ty.content_type)?;
             let bytes = scalar_size(ty);
             saved.push(SavedScalar {
-                global: map.global_index(source_global)?,
+                global,
                 ty,
                 offset: frames_start,
             });

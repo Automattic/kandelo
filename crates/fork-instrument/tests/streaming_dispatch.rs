@@ -339,6 +339,18 @@ fn recursive_buckets_drain_boundary_results_and_keep_emitted_nesting_bounded() {
         }
     }
     assert!(max_depth < 128, "bucketed nesting depth {max_depth}");
+    let table_targets: usize = body
+        .instructions
+        .iter()
+        .filter_map(|instruction| match &instruction.operation {
+            wasmparser::Operator::BrTable { targets } => Some(targets.len() as usize + 1),
+            _ => None,
+        })
+        .sum();
+    assert!(
+        table_targets <= 2 * calls,
+        "emitted {table_targets} table targets"
+    );
     execute(&bytes, &output, &[0, 31, 32, 1023, 1024, 4096], 0);
 }
 

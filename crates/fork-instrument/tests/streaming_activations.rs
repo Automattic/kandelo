@@ -203,6 +203,84 @@ fn linked_capture_commit_rewind_live_abort_and_nonlexical_resume_execute_on_both
     }
 }
 
+#[test]
+fn same_instance_continuations_keep_disjoint_stacks_and_shared_globals() {
+    let raw = wat::parse_str(include_str!("fixtures/local_continuation.wat")).unwrap();
+    let bytes = fork_instrument::instrument(&raw, &Default::default()).unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), bytes).unwrap();
+    let result = std::process::Command::new("node")
+        .arg("-e")
+        .arg(r#"
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const program = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+            assert.deepEqual(WebAssembly.Module.imports(program), []);
+            const guest = new WebAssembly.Instance(program).exports;
+            assert.equal(guest.run(4096, 65536, 3, 0), -1);
+            assert.equal(guest.run(6144, 98304, 0, 0), -1);
+            assert.equal(guest.counter.value, 2);
+            assert.equal(guest.run(6144, 0, 0, 1), 12);
+            assert.equal(guest.sp.value, 98304);
+            assert.equal(guest.counter.value, 3);
+            assert.equal(guest.run(4096, 0, 0, 2), -1);
+            assert.equal(guest.counter.value, 4);
+            assert.equal(guest.run(4096, 0, 0, 1), 3);
+            assert.equal(guest.sp.value, 65536);
+            assert.equal(guest.counter.value, 4);
+            assert(!Object.keys(guest).some(name => name.startsWith('__kandelo_local_continuation_')));
+            assert.equal(guest.wpk_fork_state, undefined);
+        "#)
+        .arg(file.path())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn local_linker_symbols_are_consumed_before_fork_instrumentation() {
+    let source = include_str!("fixtures/local_continuation.wat")
+        .replacen(
+            "(module\n",
+            "(module\n(import \"kernel\" \"kernel_fork\" (func $process_fork (param i32) (result i32)))\n",
+            1,
+        )
+        .replacen(
+            "local.get 0 call $child",
+            "i32.const 0 call $process_fork drop\n    local.get 0 call $child",
+            1,
+        );
+    let raw = wat::parse_str(&source).unwrap();
+    assert!(
+        !fork_instrument::analyze(&raw, &Default::default())
+            .unwrap()
+            .fork_path
+            .is_empty()
+    );
+    assert!(
+        !fork_instrument::sink_report(&raw, &Default::default())
+            .unwrap()
+            .instrumented
+            .is_empty()
+    );
+    let instrumented = fork_instrument::instrument(&raw, &Default::default()).unwrap();
+    let scan = scan(&instrumented).unwrap();
+    assert!(
+        scan.exports
+            .iter()
+            .any(|(name, _, _)| name == "wpk_fork_state")
+    );
+    assert!(
+        scan.exports
+            .iter()
+            .all(|(name, _, _)| !name.starts_with("__kandelo_local_continuation_"))
+    );
+}
+
 fn reference_artifact(wide: bool, shared: bool) -> Vec<u8> {
     let p = if wide { "i64" } else { "i32" };
     let memory = if wide { "i64" } else { "" };

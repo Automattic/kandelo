@@ -63,6 +63,43 @@ fn native_sink_plans_preserve_indirect_and_reference_targets() {
 }
 
 #[test]
+fn native_sink_plan_reuses_large_target_groups_across_callers() {
+    let members: String = (0..40).map(|index| format!(" $member{index}")).collect();
+    let functions: String = (0..40)
+        .map(|index| format!("(func $member{index} (type $t) i32.const 0 call $seed)"))
+        .collect();
+    let bytes = wat::parse_str(format!(
+        r#"(module
+          (type $t (func (result i32)))
+          (import "kernel" "kernel_fork" (func $seed (param i32) (result i32)))
+          (table 40 funcref) (elem (i32.const 0) {members})
+          {functions}
+          (func (export "return_child") (param i32) (result i32)
+            local.get 0 call_indirect (type $t))
+          (func (export "trap_child") (param i32)
+            local.get 0 call_indirect (type $t) i32.eqz if unreachable end))"#
+    ))
+    .unwrap();
+    let scan = streaming::scan(&bytes).unwrap();
+    let today = scan.reaching_from_seeds([0], false).unwrap();
+    let plan = |limits| {
+        let mut store = FactsStore::empty(Default::default()).unwrap();
+        let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
+        plan_sinks(&mut program, 0, &today, Default::default(), limits)
+            .unwrap()
+            .unwrap()
+    };
+    let cached = plan(SinkLimits::default());
+    let uncached = plan(SinkLimits {
+        metadata_bytes: scan.functions.len() * 192,
+        ..Default::default()
+    });
+    assert_eq!(cached, uncached);
+    assert!(cached.fork_returning.contains(&41));
+    assert!(cached.boundaries.contains(&42));
+}
+
+#[test]
 fn native_sink_plans_match_signal_policy_and_record_required_guards() {
     let text = r#"(module
       (type $handler (func (param i32)))
