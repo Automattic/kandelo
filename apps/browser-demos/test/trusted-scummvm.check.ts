@@ -142,19 +142,36 @@ test('static ScummVM plays a game and quits cleanly through the normal Cage app'
     await scene('story1'); await key('Enter');
     await scene('story2'); await key('Enter');
     await scene('partTitle'); await scene('world');
+    // The static world mask can match during the player's initial animation.
+    // Settle that animation before the independent no-input control below.
+    let previous = playerPosition(await page.screenshot({ timeout: 10_000 })), stable = 0;
+    await expect.poll(async () => {
+      const current = playerPosition(await page.screenshot({ timeout: 10_000 }));
+      stable = Math.abs(current - previous) < 5 ? stable + 1 : 0;
+      previous = current;
+      return stable;
+    }, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+    phase('world-settled', { stablePlayerCaptures: stable });
     const before = playerPosition(await page.screenshot({ timeout: 10_000 }));
     await page.waitForTimeout(700); // No-input control for the movement oracle.
     const still = playerPosition(await page.screenshot({ timeout: 10_000 }));
     expect(Math.abs(still - before)).toBeLessThan(5);
-    await key('ArrowRight', 700);
+    // Observe movement while physical input is still held. A fixed press
+    // length depends on animation and compositor key-repeat timing.
+    await session.graphics();
+    await page.keyboard.down('ArrowRight');
     let right = 0;
-    await expect.poll(async () => right = playerPosition(await page.screenshot({ timeout: 10_000 })),
-      { timeout: 10_000 }).toBeGreaterThan(before + 15);
+    try {
+      await expect.poll(async () => right = playerPosition(await page.screenshot({ timeout: 10_000 })),
+        { timeout: 10_000 }).toBeGreaterThan(before + 15);
+    } finally { await page.keyboard.up('ArrowRight'); }
     await session.screenshot('move-right');
-    await key('ArrowLeft', 700);
+    await page.keyboard.down('ArrowLeft');
     let left = 0;
-    await expect.poll(async () => left = playerPosition(await page.screenshot({ timeout: 10_000 })),
-      { timeout: 10_000 }).toBeLessThan(right - 15);
+    try {
+      await expect.poll(async () => left = playerPosition(await page.screenshot({ timeout: 10_000 })),
+        { timeout: 10_000 }).toBeLessThan(right - 15);
+    } finally { await page.keyboard.up('ArrowLeft'); }
     await session.screenshot('move-left');
     phase('native-quit', { physicalMovement: { before, still, right, left }, gamePid });
     await key('Escape'); await scene('options');
