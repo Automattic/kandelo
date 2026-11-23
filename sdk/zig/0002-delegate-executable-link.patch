@@ -1,0 +1,222 @@
+diff --git a/src/Compilation.zig b/src/Compilation.zig
+index 46083d98..ca3c70b3 100644
+--- a/src/Compilation.zig
++++ b/src/Compilation.zig
+@@ -1677,6 +1677,7 @@ pub const CreateDiagnostic = union(enum) {
+     emit_h_without_zcu,
+     illegal_zig_import,
+     cross_libc_unavailable,
++    kandelo_sdk: []const u8,
+     find_native_libc: std.zig.LibCInstallation.FindError,
+     libc_installation_missing_cc_dir,
+     libc_installation_missing_crt_dir,
+@@ -1692,6 +1693,7 @@ pub const CreateDiagnostic = union(enum) {
+             .export_table_import_table_conflict => try w.writeAll("'--import-table' and '--export-table' cannot be used together"),
+             .emit_h_without_zcu => try w.writeAll("cannot emit C header with no Zig source files"),
+             .illegal_zig_import => try w.writeAll("this compiler implementation does not support importing the root source file of a provided module"),
++            .kandelo_sdk => |msg| try w.print("cannot query wasm32posix-cc for the Kandelo SDK: {s}", .{msg}),
+             .cross_libc_unavailable => try w.writeAll("unable to provide libc for this target"),
+             .find_native_libc => |err| try w.print("failed to find libc installation: {t}", .{err}),
+             .libc_installation_missing_cc_dir => try w.writeAll("libc installation is missing cc directory"),
+@@ -1765,7 +1767,7 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
+
+         const link_libc = options.config.link_libc;
+
+-        const libc_dirs = std.zig.LibCDirs.detect(
++        var libc_dirs = std.zig.LibCDirs.detect(
+             arena,
+             io,
+             .{ .root_dir = options.dirs.zig_lib },
+@@ -1780,6 +1782,34 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
+             else => |e| return diag.fail(.{ .find_native_libc = e }),
+         };
+
++        const kandelo_sdk_identity = if (target.os.tag == .kandelo and
++            (is_exe_or_dyn_lib or options.c_source_files.len != 0))
++        sdk: {
++            const result = std.process.run(arena, io, .{
++                .argv = &.{ "wasm32posix-cc", "--print-kandelo-sdk" },
++                .stdout_limit = .limited(64 * 1024),
++                .stderr_limit = .limited(64 * 1024),
++            }) catch |err| switch (err) {
++                error.OutOfMemory => |e| return e,
++                else => return diag.fail(.{ .kandelo_sdk = @errorName(err) }),
++            };
++            if (result.term != .exited or result.term.exited != 0)
++                return diag.fail(.{ .kandelo_sdk = result.stderr });
++
++            var lines = std.mem.splitScalar(u8, result.stdout, '\n');
++            const root_dir = lines.next().?;
++            const identity = lines.next() orelse
++                return diag.fail(.{ .kandelo_sdk = "missing SDK identity" });
++            if (!fs.path.isAbsolute(root_dir) or identity.len == 0)
++                return diag.fail(.{ .kandelo_sdk = "invalid SDK identity" });
++
++            libc_dirs.sysroot = root_dir;
++            libc_dirs.libc_include_dir_list = try arena.dupe([]const u8, &.{
++                try fs.path.join(arena, &.{ root_dir, "include" }),
++            });
++            break :sdk result.stdout;
++        } else null;
++
+         const sysroot = options.sysroot orelse libc_dirs.sysroot;
+
+         const compiler_rt_strat: RtStrat = s: {
+@@ -1990,6 +2020,7 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
+
+         // This is shared hasher state common to zig source and all C source files.
+         cache.hash.addBytes(build_options.version);
++        if (kandelo_sdk_identity) |identity| cache.hash.addBytes(identity);
+         cache.hash.add(builtin.zig_backend);
+         cache.hash.add(options.config.pie);
+         cache.hash.add(options.config.lto);
+@@ -2424,7 +2455,7 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
+             // We go through the work queue so that building can be done in parallel.
+             // If linking against host libc installation, instead queue up jobs
+             // for loading those files in the linker.
+-            if (comp.config.link_libc and is_exe_or_dyn_lib) {
++            if (comp.config.link_libc and is_exe_or_dyn_lib and target.os.tag != .kandelo) {
+                 if (comp.libc_installation) |lci| {
+                     const basenames = LibCInstallation.CrtBasenames.get(.{
+                         .target = target,
+diff --git a/src/Compilation/Config.zig b/src/Compilation/Config.zig
+index 3691b1eb..f67324b2 100644
+--- a/src/Compilation/Config.zig
++++ b/src/Compilation/Config.zig
+@@ -152,6 +152,8 @@ pub const ResolveError = error{
+     LldUnavailable,
+     ClangUnavailable,
+     DllExportFnsRequiresWindows,
++    InvalidKandeloTarget,
++    UnsupportedKandeloLinkOptions,
+     NewLinkerIncompatibleWithLld,
+     NewLinkerIncompatibleObjectFormat,
+ };
+@@ -159,6 +161,15 @@ pub const ResolveError = error{
+ pub fn resolve(options: Options) ResolveError!Config {
+     const target = &options.resolved_target.result;
+
++    if (target.os.tag == .kandelo) {
++        if (target.cpu.arch != .wasm32 or target.abi != .musl or target.ofmt != .wasm)
++            return error.InvalidKandeloTarget;
++        if (options.link_libc == false or options.link_libcpp == true or options.link_libunwind == true or
++            options.link_mode == .dynamic or options.use_llvm == false or options.use_lld == false or
++            options.use_new_linker == true or (options.lto orelse .none) != .none)
++            return error.UnsupportedKandeloLinkOptions;
++    }
++
+     // WASI-only. Resolve the optional exec-model option, defaults to command.
+     if (target.os.tag != .wasi and options.wasi_exec_model != null)
+         return error.WasiExecModelRequiresWasi;
+@@ -356,6 +367,9 @@ pub fn resolve(options: Options) ResolveError!Config {
+         // and not an object file or executable.
+         if (!use_lib_llvm and options.emit_bin) break :b false;
+
++        // The SDK consumes relocatable LLVM Wasm objects.
++        if (target.os.tag == .kandelo) break :b true;
++
+         // Prefer LLVM for release builds.
+         if (root_optimize_mode != .debug) break :b true;
+
+@@ -409,6 +423,8 @@ pub fn resolve(options: Options) ResolveError!Config {
+
+         if (options.use_lld) |x| break :b x;
+
++        if (target.os.tag == .kandelo) break :b true;
++
+         // If the user didn't specify whether to use LLD but did specify to use the new linker,
+         // assume no LLD.
+         if (options.use_new_linker == true) break :b false;
+diff --git a/src/link/Lld.zig b/src/link/Lld.zig
+index 2c6b138a..f53228b7 100644
+--- a/src/link/Lld.zig
++++ b/src/link/Lld.zig
+@@ -178,6 +178,7 @@ const Wasm = struct {
+     export_symbol_names: []const []const u8,
+     /// When true, will allow undefined symbols
+     import_symbols: bool,
++    explicit_stack_size: ?u64,
+     fn init(comp: *Compilation, options: link.File.OpenOptions) !Wasm {
+         const default_entry_name: []const u8 = switch (comp.config.wasi_exec_model) {
+             .reactor => "_initialize",
+@@ -198,6 +199,7 @@ const Wasm = struct {
+             .global_base = options.global_base,
+             .export_symbol_names = options.export_symbol_names,
+             .import_symbols = options.import_symbols,
++            .explicit_stack_size = options.stack_size,
+         };
+     }
+ };
+@@ -1441,6 +1443,8 @@ fn wasmLink(lld: *Lld, arena: Allocator) !void {
+             io,
+             .{},
+         );
++    } else if (target.os.tag == .kandelo) {
++        return kandeloLink(lld, arena, full_out_path, zcu_obj_path, compiler_rt_path, ubsan_rt_path);
+     } else {
+         // Create an LLD command line and invoke it.
+         var argv = std.array_list.Managed([]const u8).init(gpa);
+@@ -1644,6 +1648,50 @@ fn wasmLink(lld: *Lld, arena: Allocator) !void {
+     }
+ }
+
++// Use the SDK's executable link, including its CRT, libc, Wasm ABI flags and
++// post-link stamping. Pass the same relocatable inputs as the LLD path.
++fn kandeloLink(
++    lld: *Lld,
++    arena: Allocator,
++    full_out_path: []const u8,
++    zcu_obj_path: ?Cache.Path,
++    compiler_rt_path: ?Cache.Path,
++    ubsan_rt_path: ?Cache.Path,
++) !void {
++    const comp = lld.base.comp;
++    const io = comp.io;
++    const wasm = &lld.ofmt.wasm;
++    var argv: std.ArrayList([]const u8) = .empty;
++    try argv.appendSlice(arena, &.{ "wasm32posix-cc", "-o", full_out_path });
++    if (wasm.explicit_stack_size) |size|
++        try argv.append(arena, try arena.print("-Wl,-z,stack-size={d}", .{size}));
++    for (wasm.export_symbol_names) |name|
++        try argv.append(arena, try arena.print("-Wl,--export={s}", .{name}));
++
++    for (comp.link_inputs) |input| switch (input) {
++        .object, .archive => |obj| {
++            if (obj.must_link) try argv.append(arena, "-Wl,--whole-archive");
++            try argv.append(arena, try obj.path.toString(arena));
++            if (obj.must_link) try argv.append(arena, "-Wl,--no-whole-archive");
++        },
++        else => return comp.link_diags.fail("Kandelo executable links require static archives and objects", .{}),
++    };
++    for (comp.c_objects.items) |obj|
++        try argv.append(arena, try obj.status.success.object_path.toString(arena));
++    for ([_]?Cache.Path{ zcu_obj_path, compiler_rt_path, ubsan_rt_path }) |path| {
++        if (path) |p| try argv.append(arena, try p.toString(arena));
++    }
++
++    if (comp.verbose_link) try Compilation.dumpArgv(io, argv.items);
++    const result = std.process.run(arena, io, .{ .argv = argv.items }) catch |err| switch (err) {
++        error.OutOfMemory, error.Canceled => |e| return e,
++        else => return comp.link_diags.fail("could not run wasm32posix-cc: {t}", .{err}),
++    };
++    if (result.term != .exited or result.term.exited != 0)
++        return comp.link_diags.fail("wasm32posix-cc failed:\n{s}", .{result.stderr});
++    if (result.stderr.len != 0) log.warn("wasm32posix-cc:\n{s}", .{result.stderr});
++}
++
+ fn spawnLld(comp: *Compilation, arena: Allocator, argv: []const []const u8) !void {
+     const io = comp.io;
+
+diff --git a/src/main.zig b/src/main.zig
+index 7d9d7e8e..4c69edba 100644
+--- a/src/main.zig
++++ b/src/main.zig
+@@ -4311,6 +4311,8 @@ fn createModule(
+             error.LlvmLacksTargetSupport => fatal("LLVM lacks support for the specified target", .{}),
+             error.ZigLacksTargetSupport => fatal("compiler backend unavailable for the specified target", .{}),
+             error.EmittingBinaryRequiresLlvmLibrary => fatal("producing machine code via LLVM requires using the LLVM library", .{}),
++            error.InvalidKandeloTarget => fatal("Kandelo requires wasm32-kandelo-musl", .{}),
++            error.UnsupportedKandeloLinkOptions => fatal("Kandelo requires libc and LLVM Wasm object emission and supports static linking without LTO", .{}),
+             error.LldIncompatibleObjectFormat => fatal("using LLD to link {s} files is unsupported", .{@tagName(target.ofmt)}),
+             error.LldIncompatibleWithSelfHostedBackend => fatal("self-hosted backends do not support linking with LLD", .{}),
+             error.LtoRequiresLld => fatal("LTO requires using LLD", .{}),
