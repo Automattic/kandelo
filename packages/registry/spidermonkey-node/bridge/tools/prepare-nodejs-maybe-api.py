@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reuse the whole pinned Maybe and portable stack/type-trait headers."""
+"""Reuse whole pinned portable Maybe, microtask and stack/type-trait headers."""
 import argparse
 import hashlib
 import json
@@ -14,6 +14,7 @@ def prepare(manifest, output):
         raise ValueError('cannot modify the raw Node source import')
     records = {row['path']: row for row in document['files']}
     files = {
+        'v8-microtask.h': [],
         'v8-maybe.h': [(b'#include "v8-internal.h"  // NOLINT(build/include_directory)\n',
                         b'// Maybe is independent of V8 heap/layout internals.\n')],
         'cppgc/internal/conditional-stack-allocated.h': [
