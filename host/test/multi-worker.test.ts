@@ -576,8 +576,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         fnPtr,
         argPtr,
         forkBufAddr: TEST_THREAD_FORK_CONTINUATION,
-        slotStart,
-        slotLen,
+        slot: { address: slotStart, byteLength: slotLen },
       },
     });
     expect(readMailboxResult(memory, threadChannelOffset)).toEqual({

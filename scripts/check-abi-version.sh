@@ -21,6 +21,35 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+new_version="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/program-abi/src/lib.rs)"
+case "$new_version" in
+    ''|*[!0-9]*) echo "abi: cannot determine the program ABI version" >&2; exit 1 ;;
+esac
+
+check_scheduled_program_abi_changes() {
+    # Each scheduled change has an epoch and a verifiable condition. See the
+    # next-program-ABI section in docs/abi-versioning.md for how to add one.
+    if [ "$new_version" -gt 56 ]; then
+        python3 - <<'PYTHON'
+import json
+from pathlib import Path
+
+slot = json.loads(Path("abi/snapshot.json").read_text())["process_memory_layout"]["thread_slot"]
+expected = ["fork_save_scratch", "syscall_channel_primary", "syscall_channel_spill"]
+pages = [(page["name"], page["page_offset"]) for page in slot["pages"]]
+if slot["pages_per_slot"] != len(expected) or pages != list(zip(expected, range(len(expected)))):
+    raise SystemExit(
+        "abi: ABI 57 and later require separate pthread TLS and a three-page control slot. "
+        "See docs/abi-versioning.md#required-changes-for-the-next-program-abi."
+    )
+PYTHON
+    fi
+}
+
+if [ "$MODE" = "check" ]; then
+    check_scheduled_program_abi_changes
+fi
+
 bash scripts/check-sysv-ipc-layouts.sh
 bash scripts/check-process-native-layouts.sh
 bash scripts/check-fixed-process-layouts.sh
@@ -51,6 +80,7 @@ build_kernel
 
 if [ "$MODE" = "update" ]; then
     run_xtask dump-abi --kernel-wasm "$KERNEL_WASM"
+    check_scheduled_program_abi_changes
     echo
     echo "abi/snapshot.json regenerated."
     echo "If the ABI contract actually changed, bump ABI_VERSION in"
@@ -95,7 +125,6 @@ if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
     # Compare values, not added source lines: moving the declaration between
     # crates must not grant an incompatible snapshot change a false bump.
     old_version="$(git show "$base_ref:abi/snapshot.json" | sed -nE 's/^  "abi_version": ([0-9]+),$/\1/p')"
-    new_version="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/program-abi/src/lib.rs)"
     if [ -n "$old_version" ] && [ -n "$new_version" ] && [ "$old_version" != "$new_version" ]; then
         version_bumped=1
     fi
