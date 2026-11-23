@@ -96,8 +96,10 @@ cache directories. Use `-p 1` to limit the number of simultaneous tool
 processes.
 
 The shell host loads the roughly 34 MiB Go archive on first use. For a
-fully offline session, supply the shell image and Go archive to the host
-in advance.
+fully offline session, provide the shell image and the lazy assets the
+commands use ahead of time. This quickstart uses `go.zip` and
+`coreutils.wasm`, which provides `mkdir` and `cat`.
+
 The example uses only the packaged standard library. An offline module
 with extra dependencies needs those sources vendored or present in its
 module cache. Use the packaged toolchain with `GOTOOLCHAIN=local`.
