@@ -1,0 +1,282 @@
+From 06870345eaed75747820402c4c95e95ece18658a Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Sat, 7 Nov 2026 00:36:39 -0500
+Subject: [PATCH 17/22] regexp/syntax: Compile deep expressions without
+ recursion
+
+Simplification of counted repetitions can produce expressions that exhaust
+WebAssembly engines' native call stacks even though Go's goroutine stack
+can grow. Compile with an explicit stack, preserving instruction emission,
+patching order and capture priority in one traversal implementation shared
+by all platforms.
+
+Add deep concatenation and capture regression tests, including shared
+subtrees. Existing regexp/syntax and regexp tests pass on darwin/arm64.
+An evaluation-only recursive oracle produces identical complete programs
+for 2,022 fixed and generated expressions. The previously overflowing URL
+patterns pass both WASI architectures on Chromium, Firefox and WebKit.
+
+This is a candidate for upstream evaluation. Compilation-time and
+allocation measurements remain pending; default package consumers have
+not switched to this branch.
+
+diff --git a/src/regexp/syntax/compile.go b/src/regexp/syntax/compile.go
+index c9f9fa024bf10d0981d5f61f309b1251c64cf756..5c03a2a1b31837d8339a527588d88b0eb3740547 100644
+--- a/src/regexp/syntax/compile.go
++++ b/src/regexp/syntax/compile.go
+@@ -86,76 +86,114 @@ func (c *compiler) init() {
+ var anyRuneNotNL = []rune{0, '\n' - 1, '\n' + 1, unicode.MaxRune}
+ var anyRune = []rune{0, unicode.MaxRune}
+ 
++type compileFrame struct {
++	re   *Regexp
++	next int
++	f    frag
++}
++
+ func (c *compiler) compile(re *Regexp) frag {
+-	switch re.Op {
+-	case OpNoMatch:
+-		return c.fail()
+-	case OpEmptyMatch:
+-		return c.nop()
+-	case OpLiteral:
+-		if len(re.Rune) == 0 {
+-			return c.nop()
+-		}
+-		var f frag
+-		for j := range re.Rune {
+-			f1 := c.rune(re.Rune[j:j+1], re.Flags)
+-			if j == 0 {
+-				f = f1
+-			} else {
+-				f = c.cat(f, f1)
++	// Simplify can create deep expressions from counted repetitions. Use an
++	// explicit stack so compiling them does not require deep call stacks.
++	var inline [8]compileFrame
++	stack := inline[:0]
++	var f frag
++compile:
++	for {
++		switch re.Op {
++		case OpNoMatch:
++			f = c.fail()
++		case OpEmptyMatch:
++			f = c.nop()
++		case OpLiteral:
++			if len(re.Rune) == 0 {
++				f = c.nop()
++				break
+ 			}
+-		}
+-		return f
+-	case OpCharClass:
+-		return c.rune(re.Rune, re.Flags)
+-	case OpAnyCharNotNL:
+-		return c.rune(anyRuneNotNL, 0)
+-	case OpAnyChar:
+-		return c.rune(anyRune, 0)
+-	case OpBeginLine:
+-		return c.empty(EmptyBeginLine)
+-	case OpEndLine:
+-		return c.empty(EmptyEndLine)
+-	case OpBeginText:
+-		return c.empty(EmptyBeginText)
+-	case OpEndText:
+-		return c.empty(EmptyEndText)
+-	case OpWordBoundary:
+-		return c.empty(EmptyWordBoundary)
+-	case OpNoWordBoundary:
+-		return c.empty(EmptyNoWordBoundary)
+-	case OpCapture:
+-		bra := c.cap(uint32(re.Cap << 1))
+-		sub := c.compile(re.Sub[0])
+-		ket := c.cap(uint32(re.Cap<<1 | 1))
+-		return c.cat(c.cat(bra, sub), ket)
+-	case OpStar:
+-		return c.star(c.compile(re.Sub[0]), re.Flags&NonGreedy != 0)
+-	case OpPlus:
+-		return c.plus(c.compile(re.Sub[0]), re.Flags&NonGreedy != 0)
+-	case OpQuest:
+-		return c.quest(c.compile(re.Sub[0]), re.Flags&NonGreedy != 0)
+-	case OpConcat:
+-		if len(re.Sub) == 0 {
+-			return c.nop()
+-		}
+-		var f frag
+-		for i, sub := range re.Sub {
+-			if i == 0 {
+-				f = c.compile(sub)
+-			} else {
+-				f = c.cat(f, c.compile(sub))
++			for j := range re.Rune {
++				f1 := c.rune(re.Rune[j:j+1], re.Flags)
++				if j == 0 {
++					f = f1
++				} else {
++					f = c.cat(f, f1)
++				}
++			}
++		case OpCharClass:
++			f = c.rune(re.Rune, re.Flags)
++		case OpAnyCharNotNL:
++			f = c.rune(anyRuneNotNL, 0)
++		case OpAnyChar:
++			f = c.rune(anyRune, 0)
++		case OpBeginLine:
++			f = c.empty(EmptyBeginLine)
++		case OpEndLine:
++			f = c.empty(EmptyEndLine)
++		case OpBeginText:
++			f = c.empty(EmptyBeginText)
++		case OpEndText:
++			f = c.empty(EmptyEndText)
++		case OpWordBoundary:
++			f = c.empty(EmptyWordBoundary)
++		case OpNoWordBoundary:
++			f = c.empty(EmptyNoWordBoundary)
++		case OpCapture:
++			opening := c.cap(uint32(re.Cap << 1))
++			stack = append(stack, compileFrame{re: re, f: opening})
++			re = re.Sub[0]
++			continue
++		case OpStar, OpPlus, OpQuest:
++			stack = append(stack, compileFrame{re: re})
++			re = re.Sub[0]
++			continue
++		case OpConcat, OpAlternate:
++			if len(re.Sub) == 0 {
++				if re.Op == OpConcat {
++					f = c.nop()
++				} else {
++					f = c.fail()
++				}
++				break
+ 			}
++			stack = append(stack, compileFrame{re: re, next: 1})
++			re = re.Sub[0]
++			continue
++		default:
++			panic("regexp: unhandled case in compile")
+ 		}
+-		return f
+-	case OpAlternate:
+-		var f frag
+-		for _, sub := range re.Sub {
+-			f = c.alt(f, c.compile(sub))
++
++		// f is the completed child. Resume its parent, preserving the
++		// recursive compiler's instruction emission and patching order.
++		for len(stack) > 0 {
++			frame := &stack[len(stack)-1]
++			switch frame.re.Op {
++			case OpCapture:
++				closing := c.cap(uint32(frame.re.Cap<<1 | 1))
++				f = c.cat(c.cat(frame.f, f), closing)
++			case OpStar:
++				f = c.star(f, frame.re.Flags&NonGreedy != 0)
++			case OpPlus:
++				f = c.plus(f, frame.re.Flags&NonGreedy != 0)
++			case OpQuest:
++				f = c.quest(f, frame.re.Flags&NonGreedy != 0)
++			case OpConcat, OpAlternate:
++				if frame.re.Op == OpAlternate {
++					frame.f = c.alt(frame.f, f)
++				} else if frame.next == 1 {
++					frame.f = f
++				} else {
++					frame.f = c.cat(frame.f, f)
++				}
++				if frame.next < len(frame.re.Sub) {
++					re = frame.re.Sub[frame.next]
++					frame.next++
++					continue compile
++				}
++				f = frame.f
++			}
++			stack = stack[:len(stack)-1]
+ 		}
+ 		return f
+ 	}
+-	panic("regexp: unhandled case in compile")
+ }
+ 
+ func (c *compiler) inst(op InstOp) frag {
+diff --git a/src/regexp/syntax/compile_stack_test.go b/src/regexp/syntax/compile_stack_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4b0e7beb5f552494498b030e955943ba7efa63c
+--- /dev/null
++++ b/src/regexp/syntax/compile_stack_test.go
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package syntax
++
++import "testing"
++
++func TestCompileDeepConcat(t *testing.T) {
++	const depth = 10000
++	literal := &Regexp{Op: OpLiteral, Rune: []rune{'a'}}
++	re := literal
++	for i := 0; i < depth; i++ {
++		// Reuse the same leaf to check that a shared subtree is compiled
++		// at each occurrence, rather than being memoized.
++		re = &Regexp{Op: OpConcat, Sub: []*Regexp{re, literal}}
++	}
++	p, err := Compile(re)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.Start != 1 || p.NumCap != 2 || len(p.Inst) != depth+3 {
++		t.Fatalf("start=%d captures=%d instructions=%d", p.Start, p.NumCap, len(p.Inst))
++	}
++	for i := 1; i < len(p.Inst)-1; i++ {
++		inst := &p.Inst[i]
++		if inst.Op != InstRune1 || len(inst.Rune) != 1 || inst.Rune[0] != 'a' || inst.Out != uint32(i+1) {
++			t.Fatalf("instruction %d: %v", i, inst)
++		}
++	}
++	if p.Inst[0].Op != InstFail || p.Inst[len(p.Inst)-1].Op != InstMatch {
++		t.Fatal("incorrect program boundaries")
++	}
++}
++
++func TestCompileDeepCapture(t *testing.T) {
++	const depth = 10000
++	re := &Regexp{Op: OpLiteral, Rune: []rune{'a'}}
++	for i := 0; i < depth; i++ {
++		re = &Regexp{Op: OpCapture, Cap: 1, Sub: []*Regexp{re}}
++	}
++	p, err := Compile(re)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.Start != 1 || p.NumCap != 4 || len(p.Inst) != 2*depth+3 {
++		t.Fatalf("start=%d captures=%d instructions=%d", p.Start, p.NumCap, len(p.Inst))
++	}
++	for i := 1; i < len(p.Inst)-1; i++ {
++		inst := &p.Inst[i]
++		if inst.Out != uint32(i+1) {
++			t.Fatalf("instruction %d: incorrect successor %d", i, inst.Out)
++		}
++		switch {
++		case i <= depth:
++			if inst.Op != InstCapture || inst.Arg != 2 {
++				t.Fatalf("opening instruction %d: %v", i, inst)
++			}
++		case i == depth+1:
++			if inst.Op != InstRune1 {
++				t.Fatalf("literal instruction: %v", inst)
++			}
++		default:
++			if inst.Op != InstCapture || inst.Arg != 3 {
++				t.Fatalf("closing instruction %d: %v", i, inst)
++			}
++		}
++	}
++	if p.Inst[0].Op != InstFail || p.Inst[len(p.Inst)-1].Op != InstMatch {
++		t.Fatal("incorrect program boundaries")
++	}
++}

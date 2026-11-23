@@ -1,0 +1,1923 @@
+From 61944466b27fa4c82c35e96a5c0f686680b198aa Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 20:00:14 +0800
+Subject: [PATCH 05/22] cmd/compile, cmd/internal/obj: add wasm32 code
+ generation
+
+Use the WebAssembly backend for wasm32, with 32-bit pointers and ints
+held in 64-bit locals. Preserve pointer types when masking values to
+32 bits so stack growth can update spilled pointers.
+
+Handle bounds checks for 64-bit indices and add separate relocations
+for function handles and continuations.
+
+Updates #63131
+
+Change-Id: If31fc22346bf6902611e6b56685891f5959066cd
+
+diff --git a/src/cmd/asm/internal/arch/arch.go b/src/cmd/asm/internal/arch/arch.go
+index dd955bd3a87b24d48e9ec7aa0a099c2987335eb3..88f0532b80c76a37a12fcd504c50459c1f152c29 100644
+--- a/src/cmd/asm/internal/arch/arch.go
++++ b/src/cmd/asm/internal/arch/arch.go
+@@ -80,7 +80,9 @@ func Set(GOARCH string, shared bool) *Arch {
+ 	case "s390x":
+ 		return archS390x()
+ 	case "wasm":
+-		return archWasm()
++		return archWasm(&wasm.Linkwasm)
++	case "wasm32":
++		return archWasm(&wasm.Linkwasm32)
+ 	}
+ 	return nil
+ }
+@@ -769,7 +771,7 @@ func archS390x() *Arch {
+ 	}
+ }
+ 
+-func archWasm() *Arch {
++func archWasm(linkArch *obj.LinkArch) *Arch {
+ 	instructions := make(map[string]obj.As)
+ 	for i, s := range obj.Anames {
+ 		instructions[s] = obj.As(i)
+@@ -781,7 +783,7 @@ func archWasm() *Arch {
+ 	}
+ 
+ 	return &Arch{
+-		LinkArch:       &wasm.Linkwasm,
++		LinkArch:       linkArch,
+ 		Instructions:   instructions,
+ 		Register:       wasm.Register,
+ 		RegisterPrefix: nil,
+diff --git a/src/cmd/compile/internal/base/flag.go b/src/cmd/compile/internal/base/flag.go
+index 173083ac5597b49ef379a3d3ce45eadb2ed029a0..84dc03316e6708d9ef5acca12374ab09c84efc6d 100644
+--- a/src/cmd/compile/internal/base/flag.go
++++ b/src/cmd/compile/internal/base/flag.go
+@@ -165,7 +165,7 @@ func ParseFlags() {
+ 	Flag.LowerP = &Ctxt.Pkgpath
+ 	Flag.LowerV = &Ctxt.Debugvlog
+ 
+-	Flag.Dwarf = buildcfg.GOARCH != "wasm"
++	Flag.Dwarf = buildcfg.GOARCH != "wasm" && buildcfg.GOARCH != "wasm32"
+ 	Flag.DwarfBASEntries = &Ctxt.UseBASEntries
+ 	Flag.DwarfLocationLists = &Ctxt.Flag_locationlists
+ 	*Flag.DwarfLocationLists = true
+diff --git a/src/cmd/compile/internal/ir/func.go b/src/cmd/compile/internal/ir/func.go
+index 7f14423d13ed2b71f21e7126a7639f7219509f2e..384f5e8fca5f71525e1b6cc5d11f3f851d1228f6 100644
+--- a/src/cmd/compile/internal/ir/func.go
++++ b/src/cmd/compile/internal/ir/func.go
+@@ -14,6 +14,7 @@ import (
+ 	"cmd/internal/src"
+ 	"encoding/base64"
+ 	"fmt"
++	"internal/buildcfg"
+ 	"unicode/utf8"
+ )
+ 
+@@ -651,6 +652,26 @@ func FuncPC(pos src.XPos, n Node, wantABI obj.ABI) Node {
+ 	e = NewStarExpr(pos, e)
+ 	e.SetType(types.Types[types.TUINTPTR])
+ 	e.SetTypecheck(1)
++	if buildcfg.GOARCH == "wasm32" {
++		// Function values contain call_indirect table handles, whereas
++		// FuncPC returns a logical entry PC. The linker builds this table
++		// with one uint32 entry per handle, including a zero sentinel.
++		typ := types.Types[types.TUINTPTR]
++		table := NewLinksymExpr(pos, base.Ctxt.Lookup("runtime.wasmFuncEntry"), typ)
++		addr := NewConvExpr(pos, OCONVNOP, typ, NewAddrExpr(pos, table))
++		addr.SetTypecheck(1)
++		offset := NewBinaryExpr(pos, OMUL, e, NewUintptr(pos, 4))
++		offset.SetType(typ)
++		offset.SetTypecheck(1)
++		entry := NewBinaryExpr(pos, OADD, addr, offset)
++		entry.SetType(typ)
++		entry.SetTypecheck(1)
++		ptr := NewConvExpr(pos, OCONVNOP, typ.PtrTo(), entry)
++		ptr.SetTypecheck(1)
++		e = NewStarExpr(pos, ptr)
++		e.SetType(typ)
++		e.SetTypecheck(1)
++	}
+ 	return e
+ }
+ 
+diff --git a/src/cmd/compile/internal/noder/linker.go b/src/cmd/compile/internal/noder/linker.go
+index 90e012a5e97558e2515d35faadd8437746f039d1..ef88aa71c37645e32001d5b1f5e8e9b25b7e5693 100644
+--- a/src/cmd/compile/internal/noder/linker.go
++++ b/src/cmd/compile/internal/noder/linker.go
+@@ -269,7 +269,7 @@ func (l *linker) relocFuncExt(w *pkgbits.Encoder, name *ir.Name) {
+ 	l.pragmaFlag(w, name.Func.Pragma)
+ 	l.linkname(w, name)
+ 
+-	if buildcfg.GOARCH == "wasm" {
++	if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 		if name.Func.WasmImport != nil {
+ 			w.String(name.Func.WasmImport.Module)
+ 			w.String(name.Func.WasmImport.Name)
+diff --git a/src/cmd/compile/internal/noder/noder.go b/src/cmd/compile/internal/noder/noder.go
+index 5d33072690f075e52b7b77d5f5d586779c7c1848..6b11c296d54c8ce13c13f0e63a1b01119652aecf 100644
+--- a/src/cmd/compile/internal/noder/noder.go
++++ b/src/cmd/compile/internal/noder/noder.go
+@@ -253,7 +253,7 @@ func (p *noder) pragma(pos syntax.Pos, blankLine bool, text string, old syntax.P
+ 			break
+ 		}
+ 
+-		if buildcfg.GOARCH == "wasm" {
++		if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 			// Only actually use them if we're compiling to WASM though.
+ 			pragma.WasmImport = &WasmImport{
+ 				Pos:    pos,
+@@ -270,7 +270,7 @@ func (p *noder) pragma(pos syntax.Pos, blankLine bool, text string, old syntax.P
+ 			break
+ 		}
+ 
+-		if buildcfg.GOARCH == "wasm" {
++		if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 			// Only actually use them if we're compiling to WASM though.
+ 			pragma.WasmExport = &WasmExport{
+ 				Pos:  pos,
+diff --git a/src/cmd/compile/internal/noder/reader.go b/src/cmd/compile/internal/noder/reader.go
+index 3817877f15263a88e3ddba01cb86e5e3b7ed329b..b4c77cbe4db6bc59acde186db4ccf28065cd6e9f 100644
+--- a/src/cmd/compile/internal/noder/reader.go
++++ b/src/cmd/compile/internal/noder/reader.go
+@@ -1226,7 +1226,7 @@ func (r *reader) funcExt(name *ir.Name, method *types.Sym) {
+ 	fn.Pragma = r.pragmaFlag()
+ 	r.linkname(name)
+ 
+-	if buildcfg.GOARCH == "wasm" {
++	if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 		importmod := r.String()
+ 		importname := r.String()
+ 		exportname := r.String()
+@@ -1543,7 +1543,7 @@ func (pr *pkgReader) dictNameOf(dict *readerDict) *ir.Name {
+ 		rsym := method.FuncName().Linksym()
+ 		assert(rsym.ABI() == obj.ABIInternal) // must be ABIInternal; see ir.OCFUNC in ssagen/ssa.go
+ 
+-		ot = objw.SymPtr(lsym, ot, rsym, 0)
++		ot = objw.SymFuncPtr(lsym, ot, rsym)
+ 	}
+ 
+ 	assertOffset("subdictionaries", dict.subdictsOffset())
+@@ -4297,7 +4297,7 @@ func addTailCall(pos src.XPos, fn *ir.Func, recv ir.Node, method *types.Field) {
+ 
+ 	if recv.Type() != nil && recv.Type().IsPtr() && method.Type.Recv().Type.IsPtr() &&
+ 		method.Embedded != 0 &&
+-		(types.IsInterfaceMethod(method.Type) && base.Ctxt.Arch.Name != "wasm" ||
++		(types.IsInterfaceMethod(method.Type) && base.Ctxt.Arch.Name != "wasm" && base.Ctxt.Arch.Name != "wasm32" ||
+ 			!types.IsInterfaceMethod(method.Type) && !unifiedHaveInlineBody(ir.MethodExprName(dot).Func)) &&
+ 		// TODO: implement wasm indirect tail calls
+ 		// TODO: do we need the ppc64le/dynlink restriction for interface tail calls?
+diff --git a/src/cmd/compile/internal/noder/writer.go b/src/cmd/compile/internal/noder/writer.go
+index 2f0df9c6c65cc5f8945820414c18eae5985196e6..3427ce4cbf62a164eae67fbbbfffd8d43926dbe9 100644
+--- a/src/cmd/compile/internal/noder/writer.go
++++ b/src/cmd/compile/internal/noder/writer.go
+@@ -1210,7 +1210,7 @@ func (w *writer) funcExt(obj *types2.Func) {
+ 	w.pragmaFlag(pragma)
+ 	w.linkname(obj)
+ 
+-	if buildcfg.GOARCH == "wasm" {
++	if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 		if wi != nil {
+ 			w.String(wi.Module)
+ 			w.String(wi.Name)
+diff --git a/src/cmd/compile/internal/objw/objw.go b/src/cmd/compile/internal/objw/objw.go
+index 77744672c197a980e42b990414f4ccc66db86047..b606a20fe7fc85bbad28ee82caed2bcb73bd81ce 100644
+--- a/src/cmd/compile/internal/objw/objw.go
++++ b/src/cmd/compile/internal/objw/objw.go
+@@ -70,6 +70,20 @@ func SymPtrWeak(s *obj.LSym, off int, x *obj.LSym, xoff int) int {
+ 	return off
+ }
+ 
++// SymFuncPtr writes the code word stored in a function value.
++func SymFuncPtr(s *obj.LSym, off int, x *obj.LSym) int {
++	off = int(types.RoundUp(int64(off), int64(types.PtrSize)))
++	s.WriteFuncPtr(base.Ctxt, int64(off), x)
++	return off + types.PtrSize
++}
++
++// SymFuncPtrWeak writes a weak code word stored in a function value or itab.
++func SymFuncPtrWeak(s *obj.LSym, off int, x *obj.LSym) int {
++	off = int(types.RoundUp(int64(off), int64(types.PtrSize)))
++	s.WriteWeakFuncPtr(base.Ctxt, int64(off), x)
++	return off + types.PtrSize
++}
++
+ func SymPtrOff(s *obj.LSym, off int, x *obj.LSym) int {
+ 	s.WriteOff(base.Ctxt, int64(off), x, 0)
+ 	off += 4
+diff --git a/src/cmd/compile/internal/pkginit/init.go b/src/cmd/compile/internal/pkginit/init.go
+index 7159e481c9318ab4ebf7487f1a0a58a5d10ba358..f51cfb8a490c7748a4f42dd807d250139c462d14 100644
+--- a/src/cmd/compile/internal/pkginit/init.go
++++ b/src/cmd/compile/internal/pkginit/init.go
+@@ -127,7 +127,7 @@ func MakeTask() {
+ 	ot = objw.Uint32(lsym, ot, 0) // state: not initialized yet
+ 	ot = objw.Uint32(lsym, ot, uint32(len(fns)))
+ 	for _, f := range fns {
+-		ot = objw.SymPtr(lsym, ot, f, 0)
++		ot = objw.SymFuncPtr(lsym, ot, f)
+ 	}
+ 
+ 	// Add relocations which tell the linker all of the packages
+diff --git a/src/cmd/compile/internal/reflectdata/alg.go b/src/cmd/compile/internal/reflectdata/alg.go
+index 1188a2a466cc38edce1e759b4abb55801b87eb6d..dc9d1fc8ffab5ed82074e8db8bf807a9f88307b0 100644
+--- a/src/cmd/compile/internal/reflectdata/alg.go
++++ b/src/cmd/compile/internal/reflectdata/alg.go
+@@ -71,7 +71,7 @@ func genhashSig(sig string) *obj.LSym {
+ 				memhashvarlen = typecheck.LookupRuntimeFunc("memhash_varlen")
+ 			}
+ 			ot := 0
+-			ot = objw.SymPtr(closure, ot, memhashvarlen, 0)
++			ot = objw.SymFuncPtr(closure, ot, memhashvarlen)
+ 			ot = objw.Uintptr(closure, ot, uint64(n)) // size encoded in closue
+ 			objw.Global(closure, int32(ot), obj.DUPOK|obj.RODATA)
+ 			return closure
+@@ -86,7 +86,7 @@ func genhashSig(sig string) *obj.LSym {
+ 
+ 	// Build closure. It doesn't close over any variables, so
+ 	// it contains just the function pointer.
+-	objw.SymPtr(closure, 0, fn.Linksym(), 0)
++	objw.SymFuncPtr(closure, 0, fn.Linksym())
+ 	objw.Global(closure, int32(types.PtrSize), obj.DUPOK|obj.RODATA)
+ 	return closure
+ }
+@@ -232,7 +232,7 @@ func sysClosure(name string) *obj.LSym {
+ 	s := typecheck.LookupRuntimeVar(name + "·f")
+ 	if len(s.P) == 0 {
+ 		f := typecheck.LookupRuntimeFunc(name)
+-		objw.SymPtr(s, 0, f, 0)
++		objw.SymFuncPtr(s, 0, f)
+ 		objw.Global(s, int32(types.PtrSize), obj.DUPOK|obj.RODATA)
+ 	}
+ 	return s
+@@ -311,7 +311,7 @@ func geneqSig(sig string) *obj.LSym {
+ 				memequalvarlen = typecheck.LookupRuntimeFunc("memequal_varlen")
+ 			}
+ 			ot := 0
+-			ot = objw.SymPtr(closure, ot, memequalvarlen, 0)
++			ot = objw.SymFuncPtr(closure, ot, memequalvarlen)
+ 			ot = objw.Uintptr(closure, ot, uint64(n))
+ 			objw.Global(closure, int32(ot), obj.DUPOK|obj.RODATA)
+ 			return closure
+@@ -325,7 +325,7 @@ func geneqSig(sig string) *obj.LSym {
+ 	fn := eqFunc(sig)
+ 
+ 	// Generate a closure which points at the function we just generated.
+-	objw.SymPtr(closure, 0, fn.Linksym(), 0)
++	objw.SymFuncPtr(closure, 0, fn.Linksym())
+ 	objw.Global(closure, int32(types.PtrSize), obj.DUPOK|obj.RODATA)
+ 	return closure
+ }
+@@ -634,16 +634,16 @@ func EqFor(t *types.Type) (ir.Node, bool) {
+ //
+ // Full signature spec:
+ //
+-//		M%d    = %d bytes of memory that should be compared directly
+-//		K%d    = %d bytes of memory that should not be compared (sKip)
+-//		F      = float32
+-//		G      = float64
+-//		S      = string
+-//		I      = non-empty interface
+-//		E      = empty interface
+-//		[%d%s] = array: repeat signature %s %d times.
+-//	     <%s>   = subroutine: use equality function of signature %s as a subroutine
+-//		A%d    = known alignment of type pointers (defaults to ptrSize)
++//	M%d    = %d bytes of memory that should be compared directly
++//	K%d    = %d bytes of memory that should not be compared (sKip)
++//	F      = float32
++//	G      = float64
++//	S      = string
++//	I      = non-empty interface
++//	E      = empty interface
++//	[%d%s] = array: repeat signature %s %d times.
++//	<%s>   = subroutine: use equality function of signature %s as a subroutine
++//	A%d    = known alignment of type pointers (defaults to ptrSize)
+ //
+ // An alignment directive is only needed on platforms that can't do
+ // unaligned loads.
+diff --git a/src/cmd/compile/internal/reflectdata/reflect.go b/src/cmd/compile/internal/reflectdata/reflect.go
+index 3a8b22907b7a64bdc4955ae1d378792e60db55a5..c7f6ee7bfae143be796ea3fab0b09da64fe639c1 100644
+--- a/src/cmd/compile/internal/reflectdata/reflect.go
++++ b/src/cmd/compile/internal/reflectdata/reflect.go
+@@ -1096,7 +1096,7 @@ func writeITab(lsym *obj.LSym, typ, iface *types.Type, allowNonImplement bool) {
+ 		var a rttype.ArrayCursor
+ 		a, delta = c.ModifyArray(len(entries))
+ 		for i, fn := range entries {
+-			a.Elem(i).WritePtrWeak(fn) // method pointer for each method
++			a.Elem(i).WriteFuncPtrWeak(fn) // method pointer for each method
+ 		}
+ 	}
+ 	// Nothing writes static itabs, so they are read only.
+diff --git a/src/cmd/compile/internal/rttype/rttype.go b/src/cmd/compile/internal/rttype/rttype.go
+index b3fabedffa6348fd63d98496f69c03bbc70fe807..461ea2f8da8460cb639fe8e3ecc66a654737bfe9 100644
+--- a/src/cmd/compile/internal/rttype/rttype.go
++++ b/src/cmd/compile/internal/rttype/rttype.go
+@@ -202,6 +202,14 @@ func (c Cursor) WritePtrWeak(target *obj.LSym) {
+ 	}
+ 	objw.SymPtrWeak(c.lsym, int(c.offset), target, 0)
+ }
++
++// WriteFuncPtrWeak writes a weak function entry into an itab method slot.
++func (c Cursor) WriteFuncPtrWeak(target *obj.LSym) {
++	if c.typ.Kind() != types.TUINTPTR {
++		base.Fatalf("can't write weak func ptr, it has kind %s", c.typ.Kind())
++	}
++	objw.SymFuncPtrWeak(c.lsym, int(c.offset), target)
++}
+ func (c Cursor) WriteUintptr(val uint64) {
+ 	if c.typ.Kind() != types.TUINTPTR {
+ 		base.Fatalf("can't write uintptr, it has kind %s", c.typ.Kind())
+diff --git a/src/cmd/compile/internal/ssa/_gen/Wasm.rules b/src/cmd/compile/internal/ssa/_gen/Wasm.rules
+index 8f0af1ad9883fb3aeee0db2343ad605baa390aa2..375e57061d9a13a0c41bdef2ac9a69d9d768f85a 100644
+--- a/src/cmd/compile/internal/ssa/_gen/Wasm.rules
++++ b/src/cmd/compile/internal/ssa/_gen/Wasm.rules
+@@ -103,6 +103,10 @@
+ (Trunc32to(16|8)    ...) => (Copy ...)
+ (Trunc16to8         ...) => (Copy ...)
+ 
++// Split a 64-bit index for bounds checks on wasm32.
++(Int64Hi x) => (I64ShrU x (I64Const [32]))
++(Int64Lo ...) => (Copy ...)
++
+ // Lowering float <=> int
+ (Cvt32to(64|32)F x) => (F(64|32)ConvertI64S (SignExt32to64 x))
+ (Cvt64to(64|32)F ...) => (F(64|32)ConvertI64S ...)
+@@ -209,7 +213,9 @@
+ (Eq16  x y) => (I64Eq (ZeroExt16to64 x) (ZeroExt16to64 y))
+ (Eq8   x y) => (I64Eq (ZeroExt8to64  x) (ZeroExt8to64  y))
+ (EqB   ...) => (I64Eq ...)
+-(EqPtr ...) => (I64Eq ...)
++// Keep pointer types so stack copying can update pointers spilled across calls.
++(EqPtr x y) && config.PtrSize == 4 => (I64Eq (ZeroExt32to64 <x.Type> x) (ZeroExt32to64 <y.Type> y))
++(EqPtr x y) => (I64Eq x y)
+ (Eq(64|32)F ...) => (F(64|32)Eq ...)
+ 
+ (Neq64  ...) => (I64Ne ...)
+@@ -217,7 +223,8 @@
+ (Neq16  x y) => (I64Ne (ZeroExt16to64 x) (ZeroExt16to64 y))
+ (Neq8   x y) => (I64Ne (ZeroExt8to64  x) (ZeroExt8to64  y))
+ (NeqB   ...) => (I64Ne ...)
+-(NeqPtr ...) => (I64Ne ...)
++(NeqPtr x y) && config.PtrSize == 4 => (I64Ne (ZeroExt32to64 <x.Type> x) (ZeroExt32to64 <y.Type> y))
++(NeqPtr x y) => (I64Ne x y)
+ (Neq(64|32)F ...) => (F(64|32)Ne ...)
+ 
+ // Lowering loads
+@@ -328,12 +335,16 @@
+ (InterCall ...) => (LoweredInterCall ...)
+ (TailCall ...) => (LoweredTailCall ...)
+ (TailCallInter ...) => (LoweredTailCallInter ...)
++(PanicExtend ...) => (LoweredPanicExtend ...)
+ 
+ // Miscellaneous
+ (Convert ...) => (LoweredConvert ...)
++(IsNonNil p) && config.PtrSize == 4 => (I64Eqz (I64Eqz (ZeroExt32to64 <p.Type> p)))
+ (IsNonNil p) => (I64Eqz (I64Eqz p))
+-(IsInBounds ...) => (I64LtU ...)
+-(IsSliceInBounds ...) => (I64LeU ...)
++(IsInBounds idx len) && config.PtrSize == 4 => (I64LtU (ZeroExt32to64 idx) (ZeroExt32to64 len))
++(IsInBounds idx len) => (I64LtU idx len)
++(IsSliceInBounds idx len) && config.PtrSize == 4 => (I64LeU (ZeroExt32to64 idx) (ZeroExt32to64 len))
++(IsSliceInBounds idx len) => (I64LeU idx len)
+ (NilCheck ...) => (LoweredNilCheck ...)
+ (GetClosurePtr ...) => (LoweredGetClosurePtr ...)
+ (GetCallerPC ...) => (LoweredGetCallerPC ...)
+diff --git a/src/cmd/compile/internal/ssa/_gen/WasmOps.go b/src/cmd/compile/internal/ssa/_gen/WasmOps.go
+index 706a2fc3d3abc7dd2e3a4e36f56d9859d0030280..39c7ab73f3d5c0cf39092cff05f50d20df3f17eb 100644
+--- a/src/cmd/compile/internal/ssa/_gen/WasmOps.go
++++ b/src/cmd/compile/internal/ssa/_gen/WasmOps.go
+@@ -163,6 +163,7 @@ func init() {
+ 		{name: "LoweredTailCallInter", argLength: 2, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true, tailCall: true}, // tail call fn by pointer. arg0=codeptr, arg1=mem, auxint=argsize, returns mem
+ 		{name: "LoweredClosureCall", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp, regMask{}}, clobbers: callerSave}, aux: "CallOff", call: true},    // call function via closure. arg0=codeptr, arg1=closure, arg2=mem, auxint=argsize, returns mem
+ 		{name: "LoweredInterCall", argLength: 2, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", call: true},                     // call fn by pointer. arg0=codeptr, arg1=mem, auxint=argsize, returns mem
++		{name: "LoweredPanicExtend", argLength: 4, reg: regInfo{inputs: []regMask{gp, gp, gp}, clobbers: callerSave}, aux: "Int64", typ: "Mem", call: true}, // arg0=idxHi, arg1=idxLo, arg2=len, arg3=mem, auxint=BoundsKind
+ 
+ 		{name: "LoweredAddr", argLength: 1, reg: gp11, aux: "SymOff", rematerializeable: true, symEffect: "Addr", earlyOk: true},           // returns base+aux+auxint, arg0=base
+ 		{name: "LoweredMove", argLength: 3, reg: regInfo{inputs: []regMask{gp, gp}}, aux: "Int64", addrSinkArg0: true, addrSinkArg1: true}, // large move. arg0=dst, arg1=src, arg2=mem, auxint=len, returns mem
+diff --git a/src/cmd/compile/internal/ssa/_gen/divmod.rules b/src/cmd/compile/internal/ssa/_gen/divmod.rules
+index 65c1f865d07beec051176d6b4685833c709d1ae4..fe3d1c12173953ef6672e57ef5abc5d8b055add2 100644
+--- a/src/cmd/compile/internal/ssa/_gen/divmod.rules
++++ b/src/cmd/compile/internal/ssa/_gen/divmod.rules
+@@ -187,7 +187,7 @@
+ // underlying magic is 33-bit (e.g. d=14=2x7 shares the same m as d=7).
+ // When m is even (Case 6), the 32-bit constant path above is preferred to avoid loading
+ // a large 64-bit constant on aarch64/riscv64.
+-(Div32u <t> x (Const32 [c])) && umagicOK32(c) && config.RegSize == 8 && config.Ctxt.Arch.Name != "wasm" && umagic32(c).M&1 != 0 =>
++(Div32u <t> x (Const32 [c])) && umagicOK32(c) && config.RegSize == 8 && !isWasmArch(config) && umagic32(c).M&1 != 0 =>
+   (Trunc64to32 <t>
+     (Hmul64u <typ.UInt64>
+       (ZeroExt32to64 x)
+@@ -231,7 +231,7 @@
+         (Lsh32x64 <typ.UInt32> (ZeroExt16to32 x) (Const64 <typ.UInt64> [16]))
+         (Mul32 <typ.UInt32> (ZeroExt16to32 x) (Const32 <typ.UInt32> [int32(umagic16(c).M)])))
+       (Const64 <typ.UInt64> [16 + umagic16(c).S - 1])))
+-(Div32u <t> x (Const32 [c])) && umagicOK32(c) && config.RegSize == 8 && config.Ctxt.Arch.Name == "wasm" =>
++(Div32u <t> x (Const32 [c])) && umagicOK32(c) && config.RegSize == 8 && isWasmArch(config) =>
+   (Trunc64to32 <t>
+     (Rsh64Ux64 <typ.UInt64>
+       (Avg64u
+diff --git a/src/cmd/compile/internal/ssa/_gen/generic.rules b/src/cmd/compile/internal/ssa/_gen/generic.rules
+index e407a94313aae4619c70f780e678a497e81ea149..4b706f7434b78b0dd3de6464fde76b376f3d629e 100644
+--- a/src/cmd/compile/internal/ssa/_gen/generic.rules
++++ b/src/cmd/compile/internal/ssa/_gen/generic.rules
+@@ -1786,6 +1786,14 @@
+ // De-virtualize late-expanded interface calls into late-expanded static calls.
+ (InterLECall [argsize] {auxCall} (Addr {fn} (SB)) ___) => devirtLECall(v, fn.(*obj.LSym))
+ 
++// Function handles are table indices, so resolve their targets at calls.
++(InterLECall [argsize] {auxCall} (Load (OffPtr [off] (Addr {sym} (SB))) _) ___)
++	&& config.Arch == "wasm32" && funcHandleSym(sym, off) != nil => devirtLECall(v, funcHandleSym(sym, off))
++(InterLECall [argsize] {auxCall} (Load (OffPtr [off] (ITab (IMake (Addr {sym} (SB)) _))) _) ___)
++	&& config.Arch == "wasm32" && funcHandleSym(sym, off) != nil => devirtLECall(v, funcHandleSym(sym, off))
++(InterLECall [argsize] {auxCall} (Load (OffPtr [off] (ITab (IMake (Convert (Addr {sym} (SB)) _) _))) _) ___)
++	&& config.Arch == "wasm32" && funcHandleSym(sym, off) != nil => devirtLECall(v, funcHandleSym(sym, off))
++
+ // Move and Zero optimizations.
+ // Move source and destination may overlap.
+ 
+diff --git a/src/cmd/compile/internal/ssa/rewrite/divmod/divmod_helpers.go b/src/cmd/compile/internal/ssa/rewrite/divmod/divmod_helpers.go
+index d84b90c8236882d1b489cc195c42fe2f1c6b8d87..001a149f418d800103a1fbc50cc1111768fd4719 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/divmod/divmod_helpers.go
++++ b/src/cmd/compile/internal/ssa/rewrite/divmod/divmod_helpers.go
+@@ -4,7 +4,14 @@
+ 
+ package divmod
+ 
+-import "cmd/compile/internal/ssa"
++import (
++	"cmd/compile/internal/ssa"
++	"cmd/internal/sys"
++)
++
++func isWasmArch(config *ssa.Config) bool {
++	return config.Ctxt.Arch.Arch.InFamily(sys.Wasm)
++}
+ 
+ // logX returns logarithm of n base 2.
+ // n must be a positive power of 2 (isPowerOfTwoX returns true).
+diff --git a/src/cmd/compile/internal/ssa/rewrite/divmod/rewritedivmod.go b/src/cmd/compile/internal/ssa/rewrite/divmod/rewritedivmod.go
+index 162ecd135487b66c2e7862c4d0f4ce77aaef8c87..7ab2d51ef213e851e005d6a434a12ea23f0714d0 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/divmod/rewritedivmod.go
++++ b/src/cmd/compile/internal/ssa/rewrite/divmod/rewritedivmod.go
+@@ -490,7 +490,7 @@ func rewriteValue_OpDiv32u(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (Div32u <t> x (Const32 [c]))
+-	// cond: umagicOK32(c) && config.RegSize == 8 && config.Ctxt.Arch.Name != "wasm" && umagic32(c).M&1 != 0
++	// cond: umagicOK32(c) && config.RegSize == 8 && !isWasmArch(config) && umagic32(c).M&1 != 0
+ 	// result: (Trunc64to32 <t> (Hmul64u <typ.UInt64> (ZeroExt32to64 x) (Const64 <typ.UInt64> [int64(umagic32PreShifted(c))])))
+ 	for {
+ 		t := v.Type
+@@ -499,7 +499,7 @@ func rewriteValue_OpDiv32u(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		c := ssa.AuxIntToInt32(v_1.AuxInt)
+-		if !(umagicOK32(c) && config.RegSize == 8 && config.Ctxt.Arch.Name != "wasm" && umagic32(c).M&1 != 0) {
++		if !(umagicOK32(c) && config.RegSize == 8 && !isWasmArch(config) && umagic32(c).M&1 != 0) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpTrunc64to32)
+@@ -574,7 +574,7 @@ func rewriteValue_OpDiv32u(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (Div32u <t> x (Const32 [c]))
+-	// cond: umagicOK32(c) && config.RegSize == 8 && config.Ctxt.Arch.Name == "wasm"
++	// cond: umagicOK32(c) && config.RegSize == 8 && isWasmArch(config)
+ 	// result: (Trunc64to32 <t> (Rsh64Ux64 <typ.UInt64> (Avg64u (Lsh64x64 <typ.UInt64> (ZeroExt32to64 x) (Const64 <typ.UInt64> [32])) (Mul64 <typ.UInt64> (ZeroExt32to64 x) (Const64 <typ.UInt64> [int64(umagic32(c).M)]))) (Const64 <typ.UInt64> [32 + umagic32(c).S - 1])))
+ 	for {
+ 		t := v.Type
+@@ -583,7 +583,7 @@ func rewriteValue_OpDiv32u(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		c := ssa.AuxIntToInt32(v_1.AuxInt)
+-		if !(umagicOK32(c) && config.RegSize == 8 && config.Ctxt.Arch.Name == "wasm") {
++		if !(umagicOK32(c) && config.RegSize == 8 && isWasmArch(config)) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpTrunc64to32)
+diff --git a/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go b/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go
+index 579189e255f4b2312c718ec403e7aaace24d8122..798006cb9b2b9137baaddbcdb64807f656aec03c 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go
++++ b/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go
+@@ -85,7 +85,7 @@ func canRotate(c *ssa.Config, bits int64) bool {
+ 	switch c.Arch {
+ 	case "386", "amd64", "arm64", "loong64", "riscv64":
+ 		return true
+-	case "arm", "s390x", "ppc64", "ppc64le", "wasm":
++	case "arm", "s390x", "ppc64", "ppc64le", "wasm", "wasm32":
+ 		return bits >= 32
+ 	default:
+ 		return false
+@@ -120,6 +120,21 @@ func devirtLECall(v *ssa.Value, sym *obj.LSym) *ssa.Value {
+ 	return v
+ }
+ 
++// funcHandleSym returns the function named by a function-handle relocation
++// at off in sym, or nil if there is no such relocation.
++func funcHandleSym(sym ssa.Sym, off int64) *obj.LSym {
++	lsym := sym.(*obj.LSym)
++	if lsym.Type != objabi.SRODATA {
++		return nil
++	}
++	for _, r := range lsym.R {
++		if r.Type&^objabi.R_WEAK == objabi.R_WASMFCALL && int64(r.Off) == off && r.Add == 0 {
++			return r.Sym
++		}
++	}
++	return nil
++}
++
+ // hasSmallRotate reports whether the architecture has rotate instructions
+ // for sizes < 32-bit.  This is used to decide whether to promote some rotations.
+ func hasSmallRotate(c *ssa.Config) bool {
+diff --git a/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go b/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go
+index 485b7efc6be1cdfe95e1d0e90ae8ff4fcfad864b..29affc940f073bd5cc47832ec68ba99d7c715205 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go
++++ b/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go
+@@ -11708,6 +11708,8 @@ func rewriteValue_OpIMake(v *ssa.Value) bool {
+ 	return false
+ }
+ func rewriteValue_OpInterLECall(v *ssa.Value) bool {
++	b := v.Block
++	config := b.Func.Config
+ 	// match: (InterLECall [argsize] {auxCall} (Addr {fn} (SB)) ___)
+ 	// result: devirtLECall(v, fn.(*obj.LSym))
+ 	for {
+@@ -11726,6 +11728,110 @@ func rewriteValue_OpInterLECall(v *ssa.Value) bool {
+ 		v.CopyOf(devirtLECall(v, fn.(*obj.LSym)))
+ 		return true
+ 	}
++	// match: (InterLECall [argsize] {auxCall} (Load (OffPtr [off] (Addr {sym} (SB))) _) ___)
++	// cond: config.Arch == "wasm32" && funcHandleSym(sym, off) != nil
++	// result: devirtLECall(v, funcHandleSym(sym, off))
++	for {
++		if len(v.Args) < 1 {
++			break
++		}
++		v_0 := v.Args[0]
++		if v_0.Op != ssaop.OpLoad {
++			break
++		}
++		v_0_0 := v_0.Args[0]
++		if v_0_0.Op != ssaop.OpOffPtr {
++			break
++		}
++		off := ssa.AuxIntToInt64(v_0_0.AuxInt)
++		v_0_0_0 := v_0_0.Args[0]
++		if v_0_0_0.Op != ssaop.OpAddr {
++			break
++		}
++		sym := ssa.AuxToSym(v_0_0_0.Aux)
++		v_0_0_0_0 := v_0_0_0.Args[0]
++		if v_0_0_0_0.Op != ssaop.OpSB || !(config.Arch == "wasm32" && funcHandleSym(sym, off) != nil) {
++			break
++		}
++		v.CopyOf(devirtLECall(v, funcHandleSym(sym, off)))
++		return true
++	}
++	// match: (InterLECall [argsize] {auxCall} (Load (OffPtr [off] (ITab (IMake (Addr {sym} (SB)) _))) _) ___)
++	// cond: config.Arch == "wasm32" && funcHandleSym(sym, off) != nil
++	// result: devirtLECall(v, funcHandleSym(sym, off))
++	for {
++		if len(v.Args) < 1 {
++			break
++		}
++		v_0 := v.Args[0]
++		if v_0.Op != ssaop.OpLoad {
++			break
++		}
++		v_0_0 := v_0.Args[0]
++		if v_0_0.Op != ssaop.OpOffPtr {
++			break
++		}
++		off := ssa.AuxIntToInt64(v_0_0.AuxInt)
++		v_0_0_0 := v_0_0.Args[0]
++		if v_0_0_0.Op != ssaop.OpITab {
++			break
++		}
++		v_0_0_0_0 := v_0_0_0.Args[0]
++		if v_0_0_0_0.Op != ssaop.OpIMake {
++			break
++		}
++		v_0_0_0_0_0 := v_0_0_0_0.Args[0]
++		if v_0_0_0_0_0.Op != ssaop.OpAddr {
++			break
++		}
++		sym := ssa.AuxToSym(v_0_0_0_0_0.Aux)
++		v_0_0_0_0_0_0 := v_0_0_0_0_0.Args[0]
++		if v_0_0_0_0_0_0.Op != ssaop.OpSB || !(config.Arch == "wasm32" && funcHandleSym(sym, off) != nil) {
++			break
++		}
++		v.CopyOf(devirtLECall(v, funcHandleSym(sym, off)))
++		return true
++	}
++	// match: (InterLECall [argsize] {auxCall} (Load (OffPtr [off] (ITab (IMake (Convert (Addr {sym} (SB)) _) _))) _) ___)
++	// cond: config.Arch == "wasm32" && funcHandleSym(sym, off) != nil
++	// result: devirtLECall(v, funcHandleSym(sym, off))
++	for {
++		if len(v.Args) < 1 {
++			break
++		}
++		v_0 := v.Args[0]
++		if v_0.Op != ssaop.OpLoad {
++			break
++		}
++		v_0_0 := v_0.Args[0]
++		if v_0_0.Op != ssaop.OpOffPtr {
++			break
++		}
++		off := ssa.AuxIntToInt64(v_0_0.AuxInt)
++		v_0_0_0 := v_0_0.Args[0]
++		if v_0_0_0.Op != ssaop.OpITab {
++			break
++		}
++		v_0_0_0_0 := v_0_0_0.Args[0]
++		if v_0_0_0_0.Op != ssaop.OpIMake {
++			break
++		}
++		v_0_0_0_0_0 := v_0_0_0_0.Args[0]
++		if v_0_0_0_0_0.Op != ssaop.OpConvert {
++			break
++		}
++		v_0_0_0_0_0_0 := v_0_0_0_0_0.Args[0]
++		if v_0_0_0_0_0_0.Op != ssaop.OpAddr {
++			break
++		}
++		sym := ssa.AuxToSym(v_0_0_0_0_0_0.Aux)
++		v_0_0_0_0_0_0_0 := v_0_0_0_0_0_0.Args[0]
++		if v_0_0_0_0_0_0_0.Op != ssaop.OpSB || !(config.Arch == "wasm32" && funcHandleSym(sym, off) != nil) {
++			break
++		}
++		v.CopyOf(devirtLECall(v, funcHandleSym(sym, off)))
++		return true
++	}
+ 	return false
+ }
+ func rewriteValue_OpIsInBounds(v *ssa.Value) bool {
+diff --git a/src/cmd/compile/internal/ssa/rewrite/wasm/rewriteWasm.go b/src/cmd/compile/internal/ssa/rewrite/wasm/rewriteWasm.go
+index cb94eef8413221e2c464b14b1f55b3bde07fba3b..1ccec1d83676e887d22c8719873c9d0f0840fc08 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/wasm/rewriteWasm.go
++++ b/src/cmd/compile/internal/ssa/rewrite/wasm/rewriteWasm.go
+@@ -392,8 +392,7 @@ func RewriteValue(v *ssa.Value) bool {
+ 		v.Op = ssaop.OpWasmI64Eq
+ 		return true
+ 	case ssaop.OpEqPtr:
+-		v.Op = ssaop.OpWasmI64Eq
+-		return true
++		return rewriteValue_OpEqPtr(v)
+ 	case ssaop.OpEqualFloat32x4:
+ 		v.Op = ssaop.OpWasmF32x4Eq
+ 		return true
+@@ -566,17 +565,20 @@ func RewriteValue(v *ssa.Value) bool {
+ 		return rewriteValue_OpHmul64(v)
+ 	case ssaop.OpHmul64u:
+ 		return rewriteValue_OpHmul64u(v)
++	case ssaop.OpInt64Hi:
++		return rewriteValue_OpInt64Hi(v)
++	case ssaop.OpInt64Lo:
++		v.Op = ssaop.OpCopy
++		return true
+ 	case ssaop.OpInterCall:
+ 		v.Op = ssaop.OpWasmLoweredInterCall
+ 		return true
+ 	case ssaop.OpIsInBounds:
+-		v.Op = ssaop.OpWasmI64LtU
+-		return true
++		return rewriteValue_OpIsInBounds(v)
+ 	case ssaop.OpIsNonNil:
+ 		return rewriteValue_OpIsNonNil(v)
+ 	case ssaop.OpIsSliceInBounds:
+-		v.Op = ssaop.OpWasmI64LeU
+-		return true
++		return rewriteValue_OpIsSliceInBounds(v)
+ 	case ssaop.OpLast:
+ 		return rewriteValue_OpLast(v)
+ 	case ssaop.OpLeq16:
+@@ -919,8 +921,7 @@ func RewriteValue(v *ssa.Value) bool {
+ 		v.Op = ssaop.OpWasmI64Ne
+ 		return true
+ 	case ssaop.OpNeqPtr:
+-		v.Op = ssaop.OpWasmI64Ne
+-		return true
++		return rewriteValue_OpNeqPtr(v)
+ 	case ssaop.OpNilCheck:
+ 		v.Op = ssaop.OpWasmLoweredNilCheck
+ 		return true
+@@ -1026,6 +1027,9 @@ func RewriteValue(v *ssa.Value) bool {
+ 	case ssaop.OpOrUint8x16:
+ 		v.Op = ssaop.OpWasmV128Or
+ 		return true
++	case ssaop.OpPanicExtend:
++		v.Op = ssaop.OpWasmLoweredPanicExtend
++		return true
+ 	case ssaop.OpPopCount16:
+ 		return rewriteValue_OpPopCount16(v)
+ 	case ssaop.OpPopCount32:
+@@ -1957,6 +1961,38 @@ func rewriteValue_OpEq8(v *ssa.Value) bool {
+ 		return true
+ 	}
+ }
++func rewriteValue_OpEqPtr(v *ssa.Value) bool {
++	v_1 := v.Args[1]
++	v_0 := v.Args[0]
++	b := v.Block
++	config := b.Func.Config
++	// match: (EqPtr x y)
++	// cond: config.PtrSize == 4
++	// result: (I64Eq (ZeroExt32to64 <x.Type> x) (ZeroExt32to64 <y.Type> y))
++	for {
++		x := v_0
++		y := v_1
++		if !(config.PtrSize == 4) {
++			break
++		}
++		v.Reset(ssaop.OpWasmI64Eq)
++		v0 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, x.Type)
++		v0.AddArg(x)
++		v1 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, y.Type)
++		v1.AddArg(y)
++		v.AddArg2(v0, v1)
++		return true
++	}
++	// match: (EqPtr x y)
++	// result: (I64Eq x y)
++	for {
++		x := v_0
++		y := v_1
++		v.Reset(ssaop.OpWasmI64Eq)
++		v.AddArg2(x, y)
++		return true
++	}
++}
+ func rewriteValue_OpHmul64(v *ssa.Value) bool {
+ 	v_1 := v.Args[1]
+ 	v_0 := v.Args[0]
+@@ -2059,11 +2095,76 @@ func rewriteValue_OpHmul64u(v *ssa.Value) bool {
+ 		return true
+ 	}
+ }
++func rewriteValue_OpInt64Hi(v *ssa.Value) bool {
++	v_0 := v.Args[0]
++	b := v.Block
++	typ := &b.Func.Config.Types
++	// match: (Int64Hi x)
++	// result: (I64ShrU x (I64Const [32]))
++	for {
++		x := v_0
++		v.Reset(ssaop.OpWasmI64ShrU)
++		v0 := b.NewValue0(v.Pos, ssaop.OpWasmI64Const, typ.Int64)
++		v0.AuxInt = ssa.Int64ToAuxInt(32)
++		v.AddArg2(x, v0)
++		return true
++	}
++}
++func rewriteValue_OpIsInBounds(v *ssa.Value) bool {
++	v_1 := v.Args[1]
++	v_0 := v.Args[0]
++	b := v.Block
++	config := b.Func.Config
++	typ := &b.Func.Config.Types
++	// match: (IsInBounds idx len)
++	// cond: config.PtrSize == 4
++	// result: (I64LtU (ZeroExt32to64 idx) (ZeroExt32to64 len))
++	for {
++		idx := v_0
++		len := v_1
++		if !(config.PtrSize == 4) {
++			break
++		}
++		v.Reset(ssaop.OpWasmI64LtU)
++		v0 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, typ.UInt64)
++		v0.AddArg(idx)
++		v1 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, typ.UInt64)
++		v1.AddArg(len)
++		v.AddArg2(v0, v1)
++		return true
++	}
++	// match: (IsInBounds idx len)
++	// result: (I64LtU idx len)
++	for {
++		idx := v_0
++		len := v_1
++		v.Reset(ssaop.OpWasmI64LtU)
++		v.AddArg2(idx, len)
++		return true
++	}
++}
+ func rewriteValue_OpIsNonNil(v *ssa.Value) bool {
+ 	v_0 := v.Args[0]
+ 	b := v.Block
++	config := b.Func.Config
+ 	typ := &b.Func.Config.Types
+ 	// match: (IsNonNil p)
++	// cond: config.PtrSize == 4
++	// result: (I64Eqz (I64Eqz (ZeroExt32to64 <p.Type> p)))
++	for {
++		p := v_0
++		if !(config.PtrSize == 4) {
++			break
++		}
++		v.Reset(ssaop.OpWasmI64Eqz)
++		v0 := b.NewValue0(v.Pos, ssaop.OpWasmI64Eqz, typ.Bool)
++		v1 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, p.Type)
++		v1.AddArg(p)
++		v0.AddArg(v1)
++		v.AddArg(v0)
++		return true
++	}
++	// match: (IsNonNil p)
+ 	// result: (I64Eqz (I64Eqz p))
+ 	for {
+ 		p := v_0
+@@ -2074,6 +2175,39 @@ func rewriteValue_OpIsNonNil(v *ssa.Value) bool {
+ 		return true
+ 	}
+ }
++func rewriteValue_OpIsSliceInBounds(v *ssa.Value) bool {
++	v_1 := v.Args[1]
++	v_0 := v.Args[0]
++	b := v.Block
++	config := b.Func.Config
++	typ := &b.Func.Config.Types
++	// match: (IsSliceInBounds idx len)
++	// cond: config.PtrSize == 4
++	// result: (I64LeU (ZeroExt32to64 idx) (ZeroExt32to64 len))
++	for {
++		idx := v_0
++		len := v_1
++		if !(config.PtrSize == 4) {
++			break
++		}
++		v.Reset(ssaop.OpWasmI64LeU)
++		v0 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, typ.UInt64)
++		v0.AddArg(idx)
++		v1 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, typ.UInt64)
++		v1.AddArg(len)
++		v.AddArg2(v0, v1)
++		return true
++	}
++	// match: (IsSliceInBounds idx len)
++	// result: (I64LeU idx len)
++	for {
++		idx := v_0
++		len := v_1
++		v.Reset(ssaop.OpWasmI64LeU)
++		v.AddArg2(idx, len)
++		return true
++	}
++}
+ func rewriteValue_OpLast(v *ssa.Value) bool {
+ 	// match: (Last ___)
+ 	// result: v.Args[len(v.Args)-1]
+@@ -3270,6 +3404,38 @@ func rewriteValue_OpNeq8(v *ssa.Value) bool {
+ 		return true
+ 	}
+ }
++func rewriteValue_OpNeqPtr(v *ssa.Value) bool {
++	v_1 := v.Args[1]
++	v_0 := v.Args[0]
++	b := v.Block
++	config := b.Func.Config
++	// match: (NeqPtr x y)
++	// cond: config.PtrSize == 4
++	// result: (I64Ne (ZeroExt32to64 <x.Type> x) (ZeroExt32to64 <y.Type> y))
++	for {
++		x := v_0
++		y := v_1
++		if !(config.PtrSize == 4) {
++			break
++		}
++		v.Reset(ssaop.OpWasmI64Ne)
++		v0 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, x.Type)
++		v0.AddArg(x)
++		v1 := b.NewValue0(v.Pos, ssaop.OpZeroExt32to64, y.Type)
++		v1.AddArg(y)
++		v.AddArg2(v0, v1)
++		return true
++	}
++	// match: (NeqPtr x y)
++	// result: (I64Ne x y)
++	for {
++		x := v_0
++		y := v_1
++		v.Reset(ssaop.OpWasmI64Ne)
++		v.AddArg2(x, y)
++		return true
++	}
++}
+ func rewriteValue_OpPopCount16(v *ssa.Value) bool {
+ 	v_0 := v.Args[0]
+ 	b := v.Block
+diff --git a/src/cmd/compile/internal/ssa/sizeof_test.go b/src/cmd/compile/internal/ssa/sizeof_test.go
+index fb83dae57cf5421dfc601ba3122782dbc65f6e75..6b9c085a4433f598d246ae0dca79c8999be12291 100644
+--- a/src/cmd/compile/internal/ssa/sizeof_test.go
++++ b/src/cmd/compile/internal/ssa/sizeof_test.go
+@@ -6,6 +6,7 @@ package ssa
+ 
+ import (
+ 	"reflect"
++	"runtime"
+ 	"testing"
+ 	"unsafe"
+ )
+@@ -16,19 +17,22 @@ func TestSizeof(t *testing.T) {
+ 	const _64bit = unsafe.Sizeof(uintptr(0)) == 8
+ 
+ 	var tests = []struct {
+-		val    any     // type as a value
+-		_32bit uintptr // size on 32bit platforms
+-		_64bit uintptr // size on 64bit platforms
++		val     any     // type as a value
++		_32bit  uintptr // size on 32bit platforms
++		_64bit  uintptr // size on 64bit platforms
++		_wasm32 uintptr // size with 32-bit pointers and 64-bit alignment
+ 	}{
+-		{Value{}, 72, 112},
+-		{Block{}, 168, 312},
+-		{LocalSlot{}, 28, 40},
+-		{ValState{}, 36, 48},
++		{Value{}, 72, 112, 80},
++		{Block{}, 168, 312, 176},
++		{LocalSlot{}, 28, 40, 32},
++		{ValState{}, 36, 48, 40},
+ 	}
+ 
+ 	for _, tt := range tests {
+ 		want := tt._32bit
+-		if _64bit {
++		if runtime.GOARCH == "wasm32" {
++			want = tt._wasm32
++		} else if _64bit {
+ 			want = tt._64bit
+ 		}
+ 		got := reflect.TypeOf(tt.val).Size()
+diff --git a/src/cmd/compile/internal/ssa/ssaop/opGen.go b/src/cmd/compile/internal/ssa/ssaop/opGen.go
+index 86f10d716e8a93b84b5f1d3159067b2241d23144..7d2f22a942e45bc7be528c0eccaeb53416f65733 100644
+--- a/src/cmd/compile/internal/ssa/ssaop/opGen.go
++++ b/src/cmd/compile/internal/ssa/ssaop/opGen.go
+@@ -6570,6 +6570,7 @@ const (
+ 	OpWasmLoweredTailCallInter
+ 	OpWasmLoweredClosureCall
+ 	OpWasmLoweredInterCall
++	OpWasmLoweredPanicExtend
+ 	OpWasmLoweredAddr
+ 	OpWasmLoweredMove
+ 	OpWasmLoweredZero
+@@ -108716,6 +108717,20 @@ var OpcodeTable = [...]OpInfo{
+ 			Clobbers: RegMask{V1: 18446744073709551615, V2: 2}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 F25 F26 F27 F28 F29 F30 F31 V0 V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12 V13 V14 V15 g
+ 		},
+ 	},
++	{
++		Name:    "LoweredPanicExtend",
++		AuxType: AuxTypeInt64,
++		ArgLen:  4,
++		Call:    true,
++		Reg: RegInfo{
++			Inputs: []InputInfo{
++				{0, RegMask{V1: 65535, V2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
++				{1, RegMask{V1: 65535, V2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
++				{2, RegMask{V1: 65535, V2: 0}}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15
++			},
++			Clobbers: RegMask{V1: 18446744073709551615, V2: 2}, // R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 F25 F26 F27 F28 F29 F30 F31 V0 V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12 V13 V14 V15 g
++		},
++	},
+ 	{
+ 		Name:              "LoweredAddr",
+ 		AuxType:           AuxTypeSymOff,
+diff --git a/src/cmd/compile/internal/ssacompile/config.go b/src/cmd/compile/internal/ssacompile/config.go
+index ca041ce75eb0ac316402dc77d7d2f4e4abbedf13..e15b4558190cd2172a966b23df53e594de636dc9 100644
+--- a/src/cmd/compile/internal/ssacompile/config.go
++++ b/src/cmd/compile/internal/ssacompile/config.go
+@@ -225,8 +225,8 @@ func newConfig(arch string, types ssa.Types, ctxt *obj.Link, optimize, softfloat
+ 		c.FloatParamRegs = paramFloatRegRISCV64
+ 		c.FPReg = framepointerRegRISCV64
+ 		c.HasGReg = true
+-	case "wasm":
+-		c.PtrSize = 8
++	case "wasm", "wasm32":
++		c.PtrSize = int64(ctxt.Arch.PtrSize)
+ 		c.RegSize = 8
+ 		c.LowerBlock = wasm.RewriteBlock
+ 		c.LowerValue = wasm.RewriteValue
+diff --git a/src/cmd/compile/internal/ssacompile/regalloc.go b/src/cmd/compile/internal/ssacompile/regalloc.go
+index 47102c01838d08713425e40777e02900313efd03..b71f7e1129db04b21361c5905f2b7cc345a31659 100644
+--- a/src/cmd/compile/internal/ssacompile/regalloc.go
++++ b/src/cmd/compile/internal/ssacompile/regalloc.go
+@@ -425,7 +425,7 @@ func (s *regAllocState) allocReg(mask ssaop.RegMask, v *ssa.Value) ssaop.Registe
+ 		s.f.Fatalf("couldn't find register to spill")
+ 	}
+ 
+-	if s.f.Config.Ctxt.Arch.Arch == sys.ArchWasm {
++	if s.f.Config.Ctxt.Arch.Arch.InFamily(sys.Wasm) {
+ 		// TODO(neelance): In theory this should never happen, because all wasm registers are equal.
+ 		// So if there is still a free register, the allocation should have picked that one in the first place instead of
+ 		// trying to kick some other value out. In practice, this case does happen and it breaks the stack optimization.
+@@ -494,7 +494,7 @@ func (s *regAllocState) makeSpill(v *ssa.Value, b *ssa.Block) *ssa.Value {
+ // undone until the caller allows it by clearing nospill. Returns a
+ // *Value which is either v or a copy of v allocated to the chosen register.
+ func (s *regAllocState) allocValToReg(v *ssa.Value, mask ssaop.RegMask, nospill bool, pos src.XPos) *ssa.Value {
+-	if s.f.Config.Ctxt.Arch.Arch == sys.ArchWasm && v.Rematerializeable() {
++	if s.f.Config.Ctxt.Arch.Arch.InFamily(sys.Wasm) && v.Rematerializeable() {
+ 		c := v.CopyIntoWithXPos(s.curBlock, pos)
+ 		c.OnWasmStack = true
+ 		s.setOrig(c, v)
+@@ -531,7 +531,7 @@ func (s *regAllocState) allocValToReg(v *ssa.Value, mask ssaop.RegMask, nospill
+ 
+ 	var r ssaop.Register
+ 	// If nospill is set, the value is used immediately, so it can live on the WebAssembly stack.
+-	onWasmStack := nospill && s.f.Config.Ctxt.Arch.Arch == sys.ArchWasm
++	onWasmStack := nospill && s.f.Config.Ctxt.Arch.Arch.InFamily(sys.Wasm)
+ 	if !onWasmStack {
+ 		// Allocate a register.
+ 		r = s.allocReg(mask, v)
+@@ -752,7 +752,7 @@ func (s *regAllocState) init(f *ssa.Func) {
+ 	s.sdom = f.Sdom()
+ 
+ 	// wasm: Mark instructions that can be optimized to have their values only on the WebAssembly stack.
+-	if f.Config.Ctxt.Arch.Arch == sys.ArchWasm {
++	if f.Config.Ctxt.Arch.Arch.InFamily(sys.Wasm) {
+ 		canLiveOnStack := f.NewSparseSet(f.NumValues())
+ 		defer f.RetSparseSet(canLiveOnStack)
+ 		for _, b := range f.Blocks {
+@@ -2045,7 +2045,7 @@ func (s *regAllocState) regalloc(f *ssa.Func) {
+ 						continue
+ 					}
+ 				}
+-				if vi.Rematerializeable && s.f.Config.Ctxt.Arch.Arch == sys.ArchWasm {
++				if vi.Rematerializeable && s.f.Config.Ctxt.Arch.Arch.InFamily(sys.Wasm) {
+ 					continue
+ 				}
+ 				// Registers we could load v into.
+diff --git a/src/cmd/compile/internal/ssagen/abi.go b/src/cmd/compile/internal/ssagen/abi.go
+index 5c1d49ceddc1c5a8f59f4f19bfce3e553f3b3b0d..ccff36929dd0efda8ca9b6b072814fd965879362 100644
+--- a/src/cmd/compile/internal/ssagen/abi.go
++++ b/src/cmd/compile/internal/ssagen/abi.go
+@@ -358,7 +358,7 @@ func CreateWasmImportWrapper(fn *ir.Func) bool {
+ 	if fn.WasmImport == nil {
+ 		return false
+ 	}
+-	if buildcfg.GOARCH != "wasm" {
++	if buildcfg.GOARCH != "wasm" && buildcfg.GOARCH != "wasm32" {
+ 		base.FatalfAt(fn.Pos(), "CreateWasmImportWrapper call not supported on %s: func was %v", buildcfg.GOARCH, fn)
+ 	}
+ 
+@@ -381,7 +381,7 @@ func GenWasmExportWrapper(wrapped *ir.Func) {
+ 	if wrapped.WasmExport == nil {
+ 		return
+ 	}
+-	if buildcfg.GOARCH != "wasm" {
++	if buildcfg.GOARCH != "wasm" && buildcfg.GOARCH != "wasm32" {
+ 		base.FatalfAt(wrapped.Pos(), "GenWasmExportWrapper call not supported on %s: func was %v", buildcfg.GOARCH, wrapped)
+ 	}
+ 
+@@ -516,6 +516,9 @@ func wasmElemTypeAllowed(t *types.Type) bool {
+ 		types.TINT32, types.TUINT32, types.TINT64, types.TUINT64,
+ 		types.TFLOAT32, types.TFLOAT64, types.TBOOL:
+ 		return true
++	case types.TPTR, types.TUNSAFEPTR:
++		// Pointer elements must have the same width as host pointers.
++		return types.PtrSize == 4
+ 	case types.TARRAY:
+ 		return wasmElemTypeAllowed(t.Elem())
+ 	case types.TSTRUCT:
+@@ -535,9 +538,6 @@ func wasmElemTypeAllowed(t *types.Type) bool {
+ 		}
+ 		return seenHostLayout
+ 	}
+-	// Pointer, and all pointerful types are not allowed, as pointers have
+-	// different width on the Go side and the host side. (It will be allowed
+-	// on GOARCH=wasm32.)
+ 	return false
+ }
+ 
+diff --git a/src/cmd/compile/internal/ssagen/intrinsics.go b/src/cmd/compile/internal/ssagen/intrinsics.go
+index 95ccf15d97fcbaae1678d613583403f956811f1e..4aad368efd09acfb352442cae2e2ab4c7d5a7559 100644
+--- a/src/cmd/compile/internal/ssagen/intrinsics.go
++++ b/src/cmd/compile/internal/ssagen/intrinsics.go
+@@ -1690,7 +1690,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
+ 	/******** crypto/internal/constanttime ********/
+ 	// We implement a superset of the Select promise:
+ 	// Select returns x if v != 0 and y if v == 0.
+-	hasCMOV := []*sys.Arch{sys.ArchAMD64, sys.ArchARM64, sys.ArchLoong64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchWasm}
++	hasCMOV := []*sys.Arch{sys.ArchAMD64, sys.ArchARM64, sys.ArchLoong64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchWasm, sys.ArchWasm32}
+ 	if cfg.goriscv64 >= 23 {
+ 		hasCMOV = append(hasCMOV, sys.ArchRISCV64)
+ 	}
+diff --git a/src/cmd/compile/internal/ssagen/intrinsics_test.go b/src/cmd/compile/internal/ssagen/intrinsics_test.go
+index 50e71fd3fb4312c09419b256f3eeb9579bb4b1c5..56fdeb330f528d75c2f4ea0cc5834ea2e13b6e3b 100644
+--- a/src/cmd/compile/internal/ssagen/intrinsics_test.go
++++ b/src/cmd/compile/internal/ssagen/intrinsics_test.go
+@@ -1365,6 +1365,42 @@ var wantIntrinsics = map[testIntrinsicKey]struct{}{
+ 	{"wasm", "runtime", "slicebytetostringtmp"}:                        struct{}{},
+ 	{"wasm", "crypto/internal/constanttime", "Select"}:                 struct{}{},
+ 	{"wasm", "crypto/internal/constanttime", "boolToUint8"}:            struct{}{},
++	{"wasm32", "crypto/internal/constanttime", "Select"}:               struct{}{},
++	{"wasm32", "crypto/internal/constanttime", "boolToUint8"}:          struct{}{},
++	{"wasm32", "internal/runtime/sys", "GetCallerPC"}:                  struct{}{},
++	{"wasm32", "internal/runtime/sys", "GetCallerSP"}:                  struct{}{},
++	{"wasm32", "internal/runtime/sys", "GetClosurePtr"}:                struct{}{},
++	{"wasm32", "internal/runtime/sys", "Len64"}:                        struct{}{},
++	{"wasm32", "internal/runtime/sys", "Len8"}:                         struct{}{},
++	{"wasm32", "internal/runtime/sys", "OnesCount64"}:                  struct{}{},
++	{"wasm32", "internal/runtime/sys", "TrailingZeros32"}:              struct{}{},
++	{"wasm32", "internal/runtime/sys", "TrailingZeros64"}:              struct{}{},
++	{"wasm32", "internal/runtime/sys", "TrailingZeros8"}:               struct{}{},
++	{"wasm32", "math", "Abs"}:                                          struct{}{},
++	{"wasm32", "math", "Ceil"}:                                         struct{}{},
++	{"wasm32", "math", "Copysign"}:                                     struct{}{},
++	{"wasm32", "math", "Floor"}:                                        struct{}{},
++	{"wasm32", "math", "RoundToEven"}:                                  struct{}{},
++	{"wasm32", "math", "Trunc"}:                                        struct{}{},
++	{"wasm32", "math", "sqrt"}:                                         struct{}{},
++	{"wasm32", "math/bits", "Len"}:                                     struct{}{},
++	{"wasm32", "math/bits", "Len16"}:                                   struct{}{},
++	{"wasm32", "math/bits", "Len32"}:                                   struct{}{},
++	{"wasm32", "math/bits", "Len64"}:                                   struct{}{},
++	{"wasm32", "math/bits", "Len8"}:                                    struct{}{},
++	{"wasm32", "math/bits", "Mul64"}:                                   struct{}{},
++	{"wasm32", "math/bits", "OnesCount16"}:                             struct{}{},
++	{"wasm32", "math/bits", "OnesCount32"}:                             struct{}{},
++	{"wasm32", "math/bits", "OnesCount64"}:                             struct{}{},
++	{"wasm32", "math/bits", "OnesCount8"}:                              struct{}{},
++	{"wasm32", "math/bits", "RotateLeft32"}:                            struct{}{},
++	{"wasm32", "math/bits", "RotateLeft64"}:                            struct{}{},
++	{"wasm32", "math/bits", "TrailingZeros16"}:                         struct{}{},
++	{"wasm32", "math/bits", "TrailingZeros32"}:                         struct{}{},
++	{"wasm32", "math/bits", "TrailingZeros64"}:                         struct{}{},
++	{"wasm32", "math/bits", "TrailingZeros8"}:                          struct{}{},
++	{"wasm32", "runtime", "KeepAlive"}:                                 struct{}{},
++	{"wasm32", "runtime", "slicebytetostringtmp"}:                      struct{}{},
+ }
+ 
+ func TestIntrinsics(t *testing.T) {
+diff --git a/src/cmd/compile/internal/ssagen/ssa.go b/src/cmd/compile/internal/ssagen/ssa.go
+index 0ab843e66728de677948886baa03022e7310433b..73bce946889f3b85709d4ed27079211a8f32493c 100644
+--- a/src/cmd/compile/internal/ssagen/ssa.go
++++ b/src/cmd/compile/internal/ssagen/ssa.go
+@@ -3093,12 +3093,21 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
+ 		return s.newValue3(ssaop.OpSliceMake, n.Type(), ptr, len, len)
+ 	case ir.OCFUNC:
+ 		n := n.(*ir.UnaryExpr)
+-		aux := n.X.(*ir.Name).Linksym()
++		name := n.X.(*ir.Name)
++		aux := name.Linksym()
+ 		// OCFUNC is used to build function values, which must
+ 		// always reference ABIInternal entry points.
+ 		if aux.ABI() != obj.ABIInternal {
+ 			s.Fatalf("expected ABIInternal: %v", aux.ABI())
+ 		}
++		if buildcfg.GOARCH == "wasm32" {
++			// wasm32 function values store a call_indirect table index.
++			// Read it from the same function-value symbol used by static
++			// data and closures.
++			funcval := staticdata.FuncLinksym(name)
++			addr := s.entryNewValue1A(ssaop.OpAddr, types.NewPtr(n.Type()), funcval, s.sb)
++			return s.load(n.Type(), addr)
++		}
+ 		return s.entryNewValue1A(ssaop.OpAddr, n.Type(), aux, s.sb)
+ 	case ir.ONAME:
+ 		n := n.(*ir.Name)
+diff --git a/src/cmd/compile/internal/staticdata/data.go b/src/cmd/compile/internal/staticdata/data.go
+index 83b7d31265c1c96a797eae18043e84c734da3c9c..e62d80fbdf3a36d9658180899ddb8345892d2cb4 100644
+--- a/src/cmd/compile/internal/staticdata/data.go
++++ b/src/cmd/compile/internal/staticdata/data.go
+@@ -293,7 +293,7 @@ func WriteFuncSyms() {
+ 		if s.Pkg.Path == "reflect" && (s.Name == "Value.Method" || s.Name == "Value.MethodByName") {
+ 			sf.Set(obj.AttrReflectMethod, true)
+ 		}
+-		objw.SymPtr(sf, 0, target, 0)
++		objw.SymFuncPtr(sf, 0, target)
+ 		objw.Global(sf, int32(types.PtrSize), obj.DUPOK|obj.RODATA)
+ 	}
+ }
+diff --git a/src/cmd/compile/internal/types/sizeof_test.go b/src/cmd/compile/internal/types/sizeof_test.go
+index 1b80659c8edb0ba6212144bf76b6c55cc34c6638..7e3b6cd138b03a1fe754f6aa5570ba63dd7b10e8 100644
+--- a/src/cmd/compile/internal/types/sizeof_test.go
++++ b/src/cmd/compile/internal/types/sizeof_test.go
+@@ -6,6 +6,7 @@ package types
+ 
+ import (
+ 	"reflect"
++	"runtime"
+ 	"testing"
+ 	"unsafe"
+ )
+@@ -16,28 +17,31 @@ func TestSizeof(t *testing.T) {
+ 	const _64bit = unsafe.Sizeof(uintptr(0)) == 8
+ 
+ 	var tests = []struct {
+-		val    any     // type as a value
+-		_32bit uintptr // size on 32bit platforms
+-		_64bit uintptr // size on 64bit platforms
++		val     any     // type as a value
++		_32bit  uintptr // size on 32bit platforms
++		_64bit  uintptr // size on 64bit platforms
++		_wasm32 uintptr // size with 32-bit pointers and 64-bit alignment
+ 	}{
+-		{Sym{}, 32, 64},
+-		{Type{}, 60, 96},
+-		{Map{}, 12, 24},
+-		{Forward{}, 20, 32},
+-		{Func{}, 32, 56},
+-		{Struct{}, 12, 24},
+-		{Interface{}, 0, 0},
+-		{Chan{}, 8, 16},
+-		{Array{}, 12, 16},
+-		{FuncArgs{}, 4, 8},
+-		{ChanArgs{}, 4, 8},
+-		{Ptr{}, 4, 8},
+-		{Slice{}, 4, 8},
++		{Sym{}, 32, 64, 32},
++		{Type{}, 60, 96, 64},
++		{Map{}, 12, 24, 12},
++		{Forward{}, 20, 32, 20},
++		{Func{}, 32, 56, 32},
++		{Struct{}, 12, 24, 12},
++		{Interface{}, 0, 0, 0},
++		{Chan{}, 8, 16, 8},
++		{Array{}, 12, 16, 16},
++		{FuncArgs{}, 4, 8, 4},
++		{ChanArgs{}, 4, 8, 4},
++		{Ptr{}, 4, 8, 4},
++		{Slice{}, 4, 8, 4},
+ 	}
+ 
+ 	for _, tt := range tests {
+ 		want := tt._32bit
+-		if _64bit {
++		if runtime.GOARCH == "wasm32" {
++			want = tt._wasm32
++		} else if _64bit {
+ 			want = tt._64bit
+ 		}
+ 		got := reflect.TypeOf(tt.val).Size()
+diff --git a/src/cmd/compile/internal/wasm/ssa.go b/src/cmd/compile/internal/wasm/ssa.go
+index 468f1016f7124bf39c0e2265e4993cb581fa483c..1c7057154dbd7a5f7297378bcd107664fb69e340 100644
+--- a/src/cmd/compile/internal/wasm/ssa.go
++++ b/src/cmd/compile/internal/wasm/ssa.go
+@@ -16,6 +16,8 @@ import (
+ 	"cmd/compile/internal/types"
+ 	"cmd/internal/obj"
+ 	"cmd/internal/obj/wasm"
++	"internal/abi"
++	"internal/buildcfg"
+ )
+ 
+ /*
+@@ -50,8 +52,10 @@ import (
+    are call sites.
+ 
+    Sometimes we encode the function ID and block ID separately. When
+-   recorded together as a single integer, we use the value 1<<63+F<<16+B.
+-   (We also set the highest bit so a PC is distinct from a data address.)
++   recorded together as a single integer, wasm uses 1<<63+F<<16+B.
++   wasm32 instead uses a dense 32-bit logical PC token and carries F in
++   the high word of its 8-byte continuation slot. It recovers B by
++   subtracting the function entry PC from the logical PC.
+ 
+    Threads:
+ 
+@@ -133,7 +137,11 @@ import (
+ */
+ 
+ func Init(arch *ssagen.ArchInfo) {
+-	arch.LinkArch = &wasm.Linkwasm
++	if buildcfg.GOARCH == "wasm32" {
++		arch.LinkArch = &wasm.Linkwasm32
++	} else {
++		arch.LinkArch = &wasm.Linkwasm
++	}
+ 	arch.REGSP = wasm.REG_SP
+ 	arch.MAXWIDTH = 1 << 50
+ 
+@@ -149,15 +157,21 @@ func zeroRange(pp *objw.Progs, p *obj.Prog, off, cnt int64, state *uint32) *obj.
+ 	if cnt == 0 {
+ 		return p
+ 	}
+-	if cnt%8 != 0 {
++	if cnt%int64(types.PtrSize) != 0 {
+ 		base.Fatalf("zerorange count not a multiple of widthptr %d", cnt)
+ 	}
+ 
+-	for i := int64(0); i < cnt; i += 8 {
++	i := int64(0)
++	for ; i+8 <= cnt; i += 8 {
+ 		p = pp.Append(p, wasm.AGet, obj.TYPE_REG, wasm.REG_SP, 0, 0, 0, 0)
+ 		p = pp.Append(p, wasm.AI64Const, obj.TYPE_CONST, 0, 0, 0, 0, 0)
+ 		p = pp.Append(p, wasm.AI64Store, 0, 0, 0, obj.TYPE_CONST, 0, off+i)
+ 	}
++	if i < cnt {
++		p = pp.Append(p, wasm.AGet, obj.TYPE_REG, wasm.REG_SP, 0, 0, 0, 0)
++		p = pp.Append(p, wasm.AI32Const, obj.TYPE_CONST, 0, 0, 0, 0, 0)
++		p = pp.Append(p, wasm.AI32Store, 0, 0, 0, obj.TYPE_CONST, 0, off+i)
++	}
+ 
+ 	return p
+ }
+@@ -251,6 +265,26 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
+ 			}
+ 		}
+ 
++	case ssaop.OpWasmLoweredPanicExtend:
++		// Pass the high word, low word, and bound in stack slots that
++		// runtime.panicExtend copies to registers 0, 1, and 2 of the
++		// save area consumed by runtime.panicBounds32X.
++		for i, arg := range v.Args[:3] {
++			getReg(s, wasm.REG_SP)
++			getValue32(s, arg)
++			p := s.Prog(wasm.AI32Store)
++			p.To = obj.Addr{Type: obj.TYPE_CONST, Offset: int64(i * 4)}
++		}
++		s.UseArgs(3 * 4)
++		code, signed := ssa.BoundsKind(v.AuxInt).Code()
++		const hiReg, loReg, boundReg = 0, 1, 2
++		c := abi.BoundsEncode(code, signed, true, true, hiReg<<2|loReg, boundReg)
++		p := s.Prog(obj.APCDATA)
++		p.From.SetConst(abi.PCDATA_PanicBounds)
++		p.To.SetConst(int64(c))
++		p = s.Prog(obj.ACALL)
++		p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: ir.Syms.PanicExtend}
++
+ 	case ssaop.OpWasmLoweredMove:
+ 		getValue32(s, v.Args[0])
+ 		getValue32(s, v.Args[1])
+@@ -264,8 +298,13 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
+ 		s.Prog(wasm.AMemoryFill)
+ 
+ 	case ssaop.OpWasmLoweredNilCheck:
+-		getValue64(s, v.Args[0])
+-		s.Prog(wasm.AI64Eqz)
++		if types.PtrSize == 4 {
++			getValue32(s, v.Args[0])
++			s.Prog(wasm.AI32Eqz)
++		} else {
++			getValue64(s, v.Args[0])
++			s.Prog(wasm.AI64Eqz)
++		}
+ 		s.Prog(wasm.AIf)
+ 		p := s.Prog(wasm.ACALLNORESUME)
+ 		p.To = obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: ir.Syms.SigPanic}
+@@ -332,7 +371,12 @@ func ssaGenValueOnStack(s *ssagen.State, v *ssa.Value, extend bool) {
+ 		getReg(s, wasm.REG_CTXT)
+ 
+ 	case ssaop.OpWasmLoweredGetCallerPC:
+-		p := s.Prog(wasm.AI64Load)
++		load := wasm.AI64Load
++		if types.PtrSize == 4 {
++			// The high word of a wasm32 continuation is a function handle.
++			load = wasm.AI64Load32U
++		}
++		p := s.Prog(load)
+ 		// Caller PC is stored 8 bytes below first parameter.
+ 		p.From = obj.Addr{
+ 			Type:   obj.TYPE_MEM,
+diff --git a/src/cmd/compile/main.go b/src/cmd/compile/main.go
+index 7d38bea7fa27a8c95338b301e1f8409cf1497856..bb84a832e06276817fc9c535afdd70ed275c1ce7 100644
+--- a/src/cmd/compile/main.go
++++ b/src/cmd/compile/main.go
+@@ -40,6 +40,7 @@ var archInits = map[string]func(*ssagen.ArchInfo){
+ 	"riscv64":  riscv64.Init,
+ 	"s390x":    s390x.Init,
+ 	"wasm":     wasm.Init,
++	"wasm32":   wasm.Init,
+ }
+ 
+ func main() {
+diff --git a/src/cmd/internal/obj/data.go b/src/cmd/internal/obj/data.go
+index 1adcac5e96dd8bfe7d85fcdcd3420adace34d631..17ba127a597ce725e7f15fcc71723eb2e74b63d8 100644
+--- a/src/cmd/internal/obj/data.go
++++ b/src/cmd/internal/obj/data.go
+@@ -33,6 +33,7 @@ package obj
+ 
+ import (
+ 	"cmd/internal/objabi"
++	"cmd/internal/sys"
+ 	"log"
+ 	"math"
+ )
+@@ -148,6 +149,24 @@ func (s *LSym) WriteWeakAddr(ctxt *Link, off int64, siz int, rsym *LSym, roff in
+ 	s.writeAddr(ctxt, off, siz, rsym, roff, objabi.R_WEAKADDR)
+ }
+ 
++// WriteFuncPtr writes the code word stored in a function value.
++func (s *LSym) WriteFuncPtr(ctxt *Link, off int64, rsym *LSym) {
++	rtype := objabi.R_ADDR
++	if ctxt.Arch.Family == sys.Wasm && ctxt.Arch.PtrSize == 4 {
++		rtype = objabi.R_WASMFCALL
++	}
++	s.writeAddr(ctxt, off, ctxt.Arch.PtrSize, rsym, 0, rtype)
++}
++
++// WriteWeakFuncPtr writes a weak code word stored in a function value or itab.
++func (s *LSym) WriteWeakFuncPtr(ctxt *Link, off int64, rsym *LSym) {
++	rtype := objabi.R_WEAKADDR
++	if ctxt.Arch.Family == sys.Wasm && ctxt.Arch.PtrSize == 4 {
++		rtype = objabi.R_WEAK | objabi.R_WASMFCALL
++	}
++	s.writeAddr(ctxt, off, ctxt.Arch.PtrSize, rsym, 0, rtype)
++}
++
+ // WriteCURelativeAddr writes a pointer-sized address into s at offset off.
+ // rsym and roff specify the relocation for the address which will be
+ // resolved by the linker to an offset from the DW_AT_low_pc attribute of
+diff --git a/src/cmd/internal/obj/fips140.go b/src/cmd/internal/obj/fips140.go
+index de7394f8b12037a441e144c0f0c7a8224ccbffac..05329aada06faef955be17ed8190605cc107d33a 100644
+--- a/src/cmd/internal/obj/fips140.go
++++ b/src/cmd/internal/obj/fips140.go
+@@ -178,7 +178,7 @@ func SetFIPSDebugHash(pattern string) {
+ func EnableFIPS() bool {
+ 	// WASM is out of scope; its binaries are too weird.
+ 	// I'm not even sure it can read its own code.
+-	if buildcfg.GOARCH == "wasm" {
++	if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 		return false
+ 	}
+ 
+diff --git a/src/cmd/internal/obj/sizeof_test.go b/src/cmd/internal/obj/sizeof_test.go
+index fdee114f5b45a79e06e86dde40153303273ae995..fde326a0f3d7bbe458c406a4026c4a44cd85a1bf 100644
+--- a/src/cmd/internal/obj/sizeof_test.go
++++ b/src/cmd/internal/obj/sizeof_test.go
+@@ -6,6 +6,7 @@ package obj
+ 
+ import (
+ 	"reflect"
++	"runtime"
+ 	"testing"
+ 	"unsafe"
+ )
+@@ -16,18 +17,21 @@ func TestSizeof(t *testing.T) {
+ 	const _64bit = unsafe.Sizeof(uintptr(0)) == 8
+ 
+ 	var tests = []struct {
+-		val    any     // type as a value
+-		_32bit uintptr // size on 32bit platforms
+-		_64bit uintptr // size on 64bit platforms
++		val     any     // type as a value
++		_32bit  uintptr // size on 32bit platforms
++		_64bit  uintptr // size on 64bit platforms
++		_wasm32 uintptr // size with 32-bit pointers and 64-bit alignment
+ 	}{
+-		{Addr{}, 32, 48},
+-		{LSym{}, 72, 120},
+-		{Prog{}, 132, 200},
++		{Addr{}, 32, 48, 40},
++		{LSym{}, 72, 120, 72},
++		{Prog{}, 132, 200, 160},
+ 	}
+ 
+ 	for _, tt := range tests {
+ 		want := tt._32bit
+-		if _64bit {
++		if runtime.GOARCH == "wasm32" {
++			want = tt._wasm32
++		} else if _64bit {
+ 			want = tt._64bit
+ 		}
+ 		got := reflect.TypeOf(tt.val).Size()
+diff --git a/src/cmd/internal/obj/wasm/wasmobj.go b/src/cmd/internal/obj/wasm/wasmobj.go
+index 1e3d12ef785eba34bdf7c4cc545e4b4a83e82d14..c540801e0576d6d98c534b6f62c8a3d146b9bd11 100644
+--- a/src/cmd/internal/obj/wasm/wasmobj.go
++++ b/src/cmd/internal/obj/wasm/wasmobj.go
+@@ -141,6 +141,15 @@ var Linkwasm = obj.LinkArch{
+ 	UnaryDst:   unaryDst,
+ }
+ 
++// Linkwasm32 uses the wasm backend with 32-bit pointers.
++var Linkwasm32 = obj.LinkArch{
++	Arch:       sys.ArchWasm32,
++	Init:       instinit,
++	Preprocess: preprocess,
++	Assemble:   assemble,
++	UnaryDst:   unaryDst,
++}
++
+ var (
+ 	morestack             *obj.LSym
+ 	morestackNoCtxt       *obj.LSym
+@@ -154,6 +163,18 @@ const (
+ 	WasmImport = 1 << 0
+ )
+ 
++type wasmPCRelocMarker struct{}
++
++func wasmPCAddr(s *obj.LSym, offset int64) obj.Addr {
++	return obj.Addr{
++		Type:   obj.TYPE_ADDR,
++		Name:   obj.NAME_EXTERN,
++		Sym:    s,
++		Offset: offset,
++		Val:    wasmPCRelocMarker{},
++	}
++}
++
+ const (
+ 	// This is a special wasm module name that when used as the module name
+ 	// in //go:wasmimport will cause the generated code to pass the stack pointer
+@@ -198,6 +219,15 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 		}
+ 		return p
+ 	}
++	appendIndirectIndex := func(p *obj.Prog) *obj.Prog {
++		if ctxt.Arch.PtrSize == 4 {
++			// wasm32 function values contain non-zero call_indirect handles.
++			return appendp(p, AI32WrapI64)
++		}
++		p = appendp(p, AI64Const, constAddr(16))
++		p = appendp(p, AI64ShrU)
++		return appendp(p, AI32WrapI64)
++	}
+ 
+ 	framesize := s.Func().Text.To.Offset
+ 	if framesize < 0 {
+@@ -210,7 +240,7 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 	// generate the code to translate from our internal Go-stack
+ 	// based call convention to the native webassembly call convention.
+ 	if s.Func().WasmImport != nil {
+-		genWasmImportWrapper(s, appendp)
++		genWasmImportWrapper(ctxt, s, appendp)
+ 
+ 		// It should be 0 already, but we'll set it to 0 anyway just to be sure
+ 		// that the code below which adds frame expansion code to the function body
+@@ -218,7 +248,7 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 		// body is just the code to translate and call the imported function.
+ 		framesize = 0
+ 	} else if s.Func().WasmExport != nil {
+-		genWasmExportWrapper(s, appendp)
++		genWasmExportWrapper(ctxt, s, appendp)
+ 	}
+ 
+ 	if framesize > 0 && s.Func().WasmExport == nil { // genWasmExportWrapper has its own prologue generation
+@@ -336,6 +366,10 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 	}
+ 	tableIdxs = append(tableIdxs, uint64(numResumePoints))
+ 	s.Size = pc + 1
++	if ctxt.Arch.PtrSize == 4 {
++		// Keep the standard PC-to-function table's minimum function spacing.
++		s.Size = max(s.Size, abi.MINFUNC)
++	}
+ 	if pc >= 1<<16 {
+ 		ctxt.Diag("function too big: %s exceeds 65536 blocks", s)
+ 	}
+@@ -432,13 +466,11 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 
+ 			case obj.TYPE_NONE:
+ 				// (target PC is on stack)
+-				p = appendp(p, AI64Const, constAddr(16)) // only needs PC_F bits (16-47), PC_B bits (0-15) are zero
+-				p = appendp(p, AI64ShrU)
+-				p = appendp(p, AI32WrapI64)
++				p = appendIndirectIndex(p)
+ 
+ 				// Set PC_B parameter to function entry.
+-				// We need to push this before pushing the target PC_F,
+-				// so temporarily pop PC_F, using our REG_PC_B as a
++				// We need to push this before pushing the table index,
++				// so temporarily pop the index, using REG_PC_B as a
+ 				// scratch register, and push it back after pushing 0.
+ 				p = appendp(p, ASet, regAddr(REG_PC_B))
+ 				p = appendp(p, AI32Const, constAddr(0))
+@@ -469,12 +501,7 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 
+ 			// write return address to Go stack
+ 			p = appendp(p, AGet, regAddr(REG_SP))
+-			p = appendp(p, AI64Const, obj.Addr{
+-				Type:   obj.TYPE_ADDR,
+-				Name:   obj.NAME_EXTERN,
+-				Sym:    s,           // PC_F
+-				Offset: pcAfterCall, // PC_B
+-			})
++			p = appendp(p, AI64Const, wasmPCAddr(s, pcAfterCall))
+ 			p = appendp(p, AI64Store, constAddr(0))
+ 
+ 			// low-level WebAssembly call to function
+@@ -488,13 +515,11 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 
+ 			case obj.TYPE_NONE:
+ 				// (target PC is on stack)
+-				p = appendp(p, AI64Const, constAddr(16)) // only needs PC_F bits (16-47), PC_B bits (0-15) are zero
+-				p = appendp(p, AI64ShrU)
+-				p = appendp(p, AI32WrapI64)
++				p = appendIndirectIndex(p)
+ 
+ 				// Set PC_B parameter to function entry.
+-				// We need to push this before pushing the target PC_F,
+-				// so temporarily pop PC_F, using our PC_B as a
++				// We need to push this before pushing the table index,
++				// so temporarily pop the index, using PC_B as a
+ 				// scratch register, and push it back after pushing 0.
+ 				p = appendp(p, ASet, regAddr(REG_PC_B))
+ 				p = appendp(p, AI32Const, constAddr(0))
+@@ -766,7 +791,7 @@ func preprocess(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ }
+ 
+ // Generate function body for wasmimport wrapper function.
+-func genWasmImportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args ...obj.Addr) *obj.Prog) {
++func genWasmImportWrapper(ctxt *obj.Link, s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args ...obj.Addr) *obj.Prog) {
+ 	wi := s.Func().WasmImport
+ 	wi.CreateAuxSym()
+ 	p := s.Func().Text
+@@ -880,6 +905,13 @@ func genWasmImportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ 				p = appendp(p, AGet, regAddr(REG_V0))
+ 				p = appendp(p, AV128Store, constAddr(storeOffset))
+ 			case obj.WasmPtr:
++				if ctxt.Arch.PtrSize == 4 {
++					p = appendp(p, ASet, regAddr(REG_PC_B))
++					p = appendp(p, AGet, regAddr(REG_SP))
++					p = appendp(p, AGet, regAddr(REG_PC_B))
++					p = appendp(p, AI32Store, constAddr(storeOffset))
++					break
++				}
+ 				p = appendp(p, AI64ExtendI32U)
+ 				p = appendp(p, ASet, regAddr(REG_R0))
+ 				p = appendp(p, AGet, regAddr(REG_SP))
+@@ -900,7 +932,7 @@ func genWasmImportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ }
+ 
+ // Generate function body for wasmexport wrapper function.
+-func genWasmExportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args ...obj.Addr) *obj.Prog) {
++func genWasmExportWrapper(ctxt *obj.Link, s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args ...obj.Addr) *obj.Prog) {
+ 	we := s.Func().WasmExport
+ 	we.CreateAuxSym()
+ 	p := s.Func().Text
+@@ -945,8 +977,13 @@ func genWasmExportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ 		case obj.WasmV128:
+ 			p = appendp(p, AV128Store, constAddr(f.Offset))
+ 		case obj.WasmPtr:
+-			p = appendp(p, AI64ExtendI32U)
+-			p = appendp(p, AI64Store, constAddr(f.Offset))
++			if ctxt.Arch.PtrSize == 4 {
++				// On wasm32 a pointer param slot is 4 bytes wide.
++				p = appendp(p, AI32Store, constAddr(f.Offset))
++			} else {
++				p = appendp(p, AI64ExtendI32U)
++				p = appendp(p, AI64Store, constAddr(f.Offset))
++			}
+ 		case obj.WasmBool:
+ 			p = appendp(p, AI32Store8, constAddr(f.Offset))
+ 		default:
+@@ -964,12 +1001,7 @@ func genWasmExportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ 	p = appendp(p, ASet, regAddr(REG_SP))
+ 	// write return address to Go stack
+ 	p = appendp(p, AGet, regAddr(REG_SP))
+-	retAddr := obj.Addr{
+-		Type:   obj.TYPE_ADDR,
+-		Name:   obj.NAME_EXTERN,
+-		Sym:    s, // PC_F
+-		Offset: 1, // PC_B=1, past the prologue, so we have the right SP delta
+-	}
++	retAddr := wasmPCAddr(s, 1) // PC_B=1, past the prologue, so we have the right SP delta
+ 	if framesize == 0 {
+ 		// Frameless function, no prologue.
+ 		retAddr.Offset = 0
+@@ -983,10 +1015,15 @@ func genWasmExportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ 	// In the unwinding case, we call wasm_pc_f_loop_export to handle stack switch and rewinding,
+ 	// until a normal return (non-unwinding) back to this function.
+ 	p = appendp(p, AIf)
+-	p = appendp(p, AI64Const, retAddr)
+-	p = appendp(p, AI64Const, constAddr(16))
+-	p = appendp(p, AI64ShrU)
+-	p = appendp(p, AI32WrapI64)
++	if ctxt.Arch.PtrSize == 4 {
++		// Stop at this exact logical continuation token.
++		p = appendp(p, AI32Const, retAddr)
++	} else {
++		p = appendp(p, AI64Const, retAddr)
++		p = appendp(p, AI64Const, constAddr(16))
++		p = appendp(p, AI64ShrU)
++		p = appendp(p, AI32WrapI64)
++	}
+ 	p = appendp(p, ACall, obj.Addr{Type: obj.TYPE_MEM, Name: obj.NAME_EXTERN, Sym: wasm_pc_f_loop_export})
+ 	p = appendp(p, AEnd)
+ 
+@@ -1041,6 +1078,8 @@ var notUsePC_B = map[string]bool{
+ 	"_rt0_wasm_js":            true,
+ 	"_rt0_wasm_wasip1":        true,
+ 	"_rt0_wasm_wasip1_lib":    true,
++	"_rt0_wasm32_wasip1":      true,
++	"_rt0_wasm32_wasip1_lib":  true,
+ 	"wasm_export_run":         true,
+ 	"wasm_export_resume":      true,
+ 	"wasm_export_getsp":       true,
+@@ -1098,12 +1137,22 @@ func assemble(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 	// Some functions use a special calling convention.
+ 	switch s.Name {
+ 	case "_rt0_wasm_js", "_rt0_wasm_wasip1", "_rt0_wasm_wasip1_lib",
++		"_rt0_wasm32_wasip1", "_rt0_wasm32_wasip1_lib",
+ 		"wasm_export_run", "wasm_export_resume", "wasm_export_getsp",
+-		"wasm_pc_f_loop", "runtime.wasmDiv", "runtime.wasmTruncS", "runtime.wasmTruncU", "memeqbody":
++		"runtime.wasmDiv", "runtime.wasmTruncS", "runtime.wasmTruncU", "memeqbody":
+ 		varDecls = []*varDecl{}
+ 		useAssemblyRegMap()
++	case "wasm_pc_f_loop":
++		varDecls = []*varDecl{}
++		if ctxt.Arch.PtrSize == 4 {
++			varDecls = []*varDecl{{count: 1, typ: i32}}
++		}
++		useAssemblyRegMap()
+ 	case "wasm_pc_f_loop_export":
+ 		varDecls = []*varDecl{{count: 2, typ: i32}}
++		if ctxt.Arch.PtrSize == 4 {
++			varDecls[0].count++
++		}
+ 		useAssemblyRegMap()
+ 	case "memchr", "memcmp":
+ 		varDecls = []*varDecl{{count: 2, typ: i32}}
+@@ -1345,10 +1394,19 @@ func assemble(ctxt *obj.Link, s *obj.LSym, newprog obj.ProgAlloc) {
+ 
+ 		case AI32Const, AI64Const:
+ 			if p.From.Name == obj.NAME_EXTERN {
++				size := uint8(8)
++				if p.As == AI32Const {
++					size = 4
++				}
++				typ := objabi.R_ADDR
++				// Only wasm32 needs to pack a function handle into the continuation.
++				if _, ok := p.From.Val.(wasmPCRelocMarker); ok && ctxt.Arch.PtrSize == 4 {
++					typ = objabi.R_WASMPC
++				}
+ 				s.AddRel(ctxt, obj.Reloc{
+-					Type: objabi.R_ADDR,
++					Type: typ,
+ 					Off:  int32(w.Len()),
+-					Siz:  1, // actually variable sized
++					Siz:  size, // encoded as a variable-sized SLEB by the linker
+ 					Sym:  p.From.Sym,
+ 					Add:  p.From.Offset,
+ 				})
+diff --git a/src/cmd/internal/objabi/reloctype.go b/src/cmd/internal/objabi/reloctype.go
+index 0fafbd4baa6306761a4c02caf15853a41711e166..765c8b54239f7173b0f9f71b0884330d5ff680f8 100644
+--- a/src/cmd/internal/objabi/reloctype.go
++++ b/src/cmd/internal/objabi/reloctype.go
+@@ -438,6 +438,14 @@ const (
+ 	R_DWTXTADDR_U3
+ 	R_DWTXTADDR_U4
+ 
++	// R_WASMPC resolves to a wasm32 continuation. Its low word is a logical
++	// PC token and its high word is a function-table handle.
++	R_WASMPC
++
++	// R_WASMFCALL resolves to a wasm32 call_indirect table index.
++	// This value is not a Go PC.
++	R_WASMFCALL
++
+ 	// R_WEAK marks the relocation as a weak reference.
+ 	// A weak relocation does not make the symbol it refers to reachable,
+ 	// and is only honored by the linker if the symbol is in some other way
+diff --git a/src/cmd/internal/objabi/reloctype_string.go b/src/cmd/internal/objabi/reloctype_string.go
+index c7a5e6c07af72daf339a63b859b62c1c730eaada..9f8638f3f00ac948b94028c816cdedff10e802eb 100644
+--- a/src/cmd/internal/objabi/reloctype_string.go
++++ b/src/cmd/internal/objabi/reloctype_string.go
+@@ -114,11 +114,13 @@ func _() {
+ 	_ = x[R_DWTXTADDR_U2-104]
+ 	_ = x[R_DWTXTADDR_U3-105]
+ 	_ = x[R_DWTXTADDR_U4-106]
++	_ = x[R_WASMPC-107]
++	_ = x[R_WASMFCALL-108]
+ }
+ 
+-const _RelocType_name = "R_ADDRR_ADDRPOWERR_ADDRARM64R_ADDRMIPSR_ADDROFFR_SIZER_CALLR_CALLARMR_CALLARM64R_CALLINDR_CALLPOWERR_CALLMIPSR_CONSTR_PCRELR_TLS_LER_TLS_IER_GOTOFFR_PLT0R_PLT1R_PLT2R_USEFIELDR_USETYPER_USEIFACER_USEIFACEMETHODR_USENAMEDMETHODR_METHODOFFR_KEEPR_POWER_TOCR_GOTPCRELR_JMPMIPSR_DWARFSECREFR_ARM64_TLS_LER_ARM64_TLS_IER_ARM64_GOTPCRELR_ARM64_GOTR_ARM64_PCRELR_ARM64_PCREL_LDST8R_ARM64_PCREL_LDST16R_ARM64_PCREL_LDST32R_ARM64_PCREL_LDST64R_ARM64_LDST8R_ARM64_LDST16R_ARM64_LDST32R_ARM64_LDST64R_ARM64_LDST128R_POWER_TLS_LER_POWER_TLS_IER_POWER_TLSR_POWER_TLS_IE_PCREL34R_POWER_TLS_LE_TPREL34R_ADDRPOWER_DSR_ADDRPOWER_GOTR_ADDRPOWER_GOT_PCREL34R_ADDRPOWER_PCRELR_ADDRPOWER_TOCRELR_ADDRPOWER_TOCREL_DSR_ADDRPOWER_D34R_ADDRPOWER_PCREL34R_RISCV_JALR_RISCV_JAL_TRAMPR_RISCV_CALLR_RISCV_PCREL_ITYPER_RISCV_PCREL_STYPER_RISCV_TLS_IER_RISCV_TLS_LER_RISCV_GOT_HI20R_RISCV_GOT_PCREL_ITYPER_RISCV_PCREL_HI20R_RISCV_PCREL_LO12_IR_RISCV_PCREL_LO12_SR_RISCV_BRANCHR_RISCV_ADD32R_RISCV_SUB32R_RISCV_RVC_BRANCHR_RISCV_RVC_JUMPR_PCRELDBLR_LOONG64_ADDR_HIR_LOONG64_ADDR_LOR_LOONG64_ADDR64_HIR_LOONG64_ADDR64_LOR_LOONG64_ADDR_PCREL20_S2R_LOONG64_TLS_LE_HIR_LOONG64_TLS_LE_LOR_CALLLOONG64R_LOONG64_CALL36R_LOONG64_TLS_IE_HIR_LOONG64_TLS_IE_LOR_LOONG64_GOT_HIR_LOONG64_GOT_LOR_LOONG64_GOT64_HIR_LOONG64_GOT64_LOR_LOONG64_ADD64R_LOONG64_SUB64R_JMP16LOONG64R_JMP21LOONG64R_ADDRMIPSUR_ADDRMIPSTLSR_ADDRCUOFFR_WASMIMPORTR_XCOFFREFR_PEIMAGEOFFR_INITORDERR_DWTXTADDR_U1R_DWTXTADDR_U2R_DWTXTADDR_U3R_DWTXTADDR_U4"
++const _RelocType_name = "R_ADDRR_ADDRPOWERR_ADDRARM64R_ADDRMIPSR_ADDROFFR_SIZER_CALLR_CALLARMR_CALLARM64R_CALLINDR_CALLPOWERR_CALLMIPSR_CONSTR_PCRELR_TLS_LER_TLS_IER_GOTOFFR_PLT0R_PLT1R_PLT2R_USEFIELDR_USETYPER_USEIFACER_USEIFACEMETHODR_USENAMEDMETHODR_METHODOFFR_KEEPR_POWER_TOCR_GOTPCRELR_JMPMIPSR_DWARFSECREFR_ARM64_TLS_LER_ARM64_TLS_IER_ARM64_GOTPCRELR_ARM64_GOTR_ARM64_PCRELR_ARM64_PCREL_LDST8R_ARM64_PCREL_LDST16R_ARM64_PCREL_LDST32R_ARM64_PCREL_LDST64R_ARM64_LDST8R_ARM64_LDST16R_ARM64_LDST32R_ARM64_LDST64R_ARM64_LDST128R_POWER_TLS_LER_POWER_TLS_IER_POWER_TLSR_POWER_TLS_IE_PCREL34R_POWER_TLS_LE_TPREL34R_ADDRPOWER_DSR_ADDRPOWER_GOTR_ADDRPOWER_GOT_PCREL34R_ADDRPOWER_PCRELR_ADDRPOWER_TOCRELR_ADDRPOWER_TOCREL_DSR_ADDRPOWER_D34R_ADDRPOWER_PCREL34R_RISCV_JALR_RISCV_JAL_TRAMPR_RISCV_CALLR_RISCV_PCREL_ITYPER_RISCV_PCREL_STYPER_RISCV_TLS_IER_RISCV_TLS_LER_RISCV_GOT_HI20R_RISCV_GOT_PCREL_ITYPER_RISCV_PCREL_HI20R_RISCV_PCREL_LO12_IR_RISCV_PCREL_LO12_SR_RISCV_BRANCHR_RISCV_ADD32R_RISCV_SUB32R_RISCV_RVC_BRANCHR_RISCV_RVC_JUMPR_PCRELDBLR_LOONG64_ADDR_HIR_LOONG64_ADDR_LOR_LOONG64_ADDR64_HIR_LOONG64_ADDR64_LOR_LOONG64_ADDR_PCREL20_S2R_LOONG64_TLS_LE_HIR_LOONG64_TLS_LE_LOR_CALLLOONG64R_LOONG64_CALL36R_LOONG64_TLS_IE_HIR_LOONG64_TLS_IE_LOR_LOONG64_GOT_HIR_LOONG64_GOT_LOR_LOONG64_GOT64_HIR_LOONG64_GOT64_LOR_LOONG64_ADD64R_LOONG64_SUB64R_JMP16LOONG64R_JMP21LOONG64R_ADDRMIPSUR_ADDRMIPSTLSR_ADDRCUOFFR_WASMIMPORTR_XCOFFREFR_PEIMAGEOFFR_INITORDERR_DWTXTADDR_U1R_DWTXTADDR_U2R_DWTXTADDR_U3R_DWTXTADDR_U4R_WASMPCR_WASMFCALL"
+ 
+-var _RelocType_index = [...]uint16{0, 6, 17, 28, 38, 47, 53, 59, 68, 79, 88, 99, 109, 116, 123, 131, 139, 147, 153, 159, 165, 175, 184, 194, 210, 226, 237, 243, 254, 264, 273, 286, 300, 314, 330, 341, 354, 373, 393, 413, 433, 446, 460, 474, 488, 503, 517, 531, 542, 564, 586, 600, 615, 638, 655, 673, 694, 709, 728, 739, 756, 768, 787, 806, 820, 834, 850, 873, 891, 911, 931, 945, 958, 971, 989, 1005, 1015, 1032, 1049, 1068, 1087, 1112, 1131, 1150, 1163, 1179, 1198, 1217, 1233, 1249, 1267, 1285, 1300, 1315, 1329, 1343, 1354, 1367, 1378, 1390, 1400, 1412, 1423, 1437, 1451, 1465, 1479}
++var _RelocType_index = [...]uint16{0, 6, 17, 28, 38, 47, 53, 59, 68, 79, 88, 99, 109, 116, 123, 131, 139, 147, 153, 159, 165, 175, 184, 194, 210, 226, 237, 243, 254, 264, 273, 286, 300, 314, 330, 341, 354, 373, 393, 413, 433, 446, 460, 474, 488, 503, 517, 531, 542, 564, 586, 600, 615, 638, 655, 673, 694, 709, 728, 739, 756, 768, 787, 806, 820, 834, 850, 873, 891, 911, 931, 945, 958, 971, 989, 1005, 1015, 1032, 1049, 1068, 1087, 1112, 1131, 1150, 1163, 1179, 1198, 1217, 1233, 1249, 1267, 1285, 1300, 1315, 1329, 1343, 1354, 1367, 1378, 1390, 1400, 1412, 1423, 1437, 1451, 1465, 1479, 1487, 1498}
+ 
+ func (i RelocType) String() string {
+ 	idx := int(i) - 1
+diff --git a/src/cmd/internal/sys/arch.go b/src/cmd/internal/sys/arch.go
+index 22671c797c03a7f3f2eef7b3bd0d1b4e0b5f6edd..d43de31cc136e02561aae52fcf299bd34cca2efc 100644
+--- a/src/cmd/internal/sys/arch.go
++++ b/src/cmd/internal/sys/arch.go
+@@ -302,4 +302,5 @@ var Archs = [...]*Arch{
+ 	ArchRISCV64,
+ 	ArchS390X,
+ 	ArchWasm,
++	ArchWasm32,
+ }
+diff --git a/test/internal/runtime/sys/callerpc.go b/test/internal/runtime/sys/callerpc.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..7eb3fa3e2a092850e9e884ffb2df5037a656e932
+--- /dev/null
++++ b/test/internal/runtime/sys/callerpc.go
+@@ -0,0 +1,20 @@
++// asmcheck -gcflags=-+ -gcflags=-p=internal/runtime/sys
++
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package sys
++
++// Calls to this function are replaced by the compiler intrinsic.
++//
++//go:noinline
++func GetCallerPC() uintptr { return 0 }
++
++func callerPC() uintptr {
++	// The continuation slot is 8 bytes on both ports, but wasm32 stores
++	// the logical PC in its low word and the function handle in its high word.
++	// wasm:`I64Load\s` -`I64Load32U`
++	// wasm32:`I64Load32U` -`I64Load\s`
++	return GetCallerPC()
++}
+diff --git a/test/wasm32arith.go b/test/wasm32arith.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..77caa8eadcd4592a01557380f4531326c15126d1
+--- /dev/null
++++ b/test/wasm32arith.go
+@@ -0,0 +1,99 @@
++// run
++
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm32
++
++package main
++
++import "unsafe"
++
++//go:noinline
++func indexAfterAdd(a []int, x uint) int {
++	return a[x+1]
++}
++
++//go:noinline
++func indexAfterMul(a []int, x uint) int {
++	return a[x*2]
++}
++
++//go:noinline
++func indexAfterSignedAdd(a []int, x, y int) int {
++	return a[x+y]
++}
++
++//go:noinline
++func indexAfterShift(a []int, x uint) int {
++	return a[x<<1]
++}
++
++//go:noinline
++func indexAfterComplement(a []int, x uint) int {
++	return a[^x]
++}
++
++//go:noinline
++func indexAfterTruncate(a []int, x uint64) int {
++	return a[uint32(x)]
++}
++
++//go:noinline
++func truncateAndExtend(x uint64) ([3]uint64, [3]int64) {
++	return [3]uint64{uint64(uint8(x)), uint64(uint16(x)), uint64(uint32(x))},
++		[3]int64{int64(int8(x)), int64(int16(x)), int64(int32(x))}
++}
++
++//go:noinline
++func pointerAfterAdd(x uintptr) unsafe.Pointer {
++	return unsafe.Pointer(x + 1)
++}
++
++//go:noinline
++func dereferenceAfterAdd(x uintptr) byte {
++	return *(*byte)(unsafe.Pointer(x + 1))
++}
++
++func mustPanic(f func()) {
++	defer func() {
++		if recover() == nil {
++			panic("wrapped nil dereference did not panic")
++		}
++	}()
++	f()
++}
++
++func main() {
++	a := []int{42}
++	if indexAfterAdd(a, ^uint(0)) != 42 {
++		panic("MaxUint+1 did not wrap")
++	}
++	if indexAfterMul(a, uint(1)<<31) != 42 {
++		panic("uint multiplication did not wrap")
++	}
++	minInt := -int(^uint(0)>>1) - 1
++	if indexAfterSignedAdd(a, minInt, minInt) != 42 {
++		panic("signed addition did not wrap")
++	}
++	if indexAfterShift(a, uint(1)<<31) != 42 {
++		panic("left shift did not wrap")
++	}
++	if indexAfterComplement(a, ^uint(0)) != 42 {
++		panic("complement did not wrap")
++	}
++	if indexAfterTruncate(a, 1<<32) != 42 {
++		panic("index truncation did not discard the high word")
++	}
++	u, s := truncateAndExtend(0x0123456780008080)
++	if u != [3]uint64{0x80, 0x8080, 0x80008080} || s != [3]int64{-128, -32640, -2147450752} {
++		panic("extension after truncation did not preserve the low bits")
++	}
++	if pointerAfterAdd(^uintptr(0)) != nil {
++		panic("pointer arithmetic did not wrap")
++	}
++	mustPanic(func() {
++		dereferenceAfterAdd(^uintptr(0))
++	})
++}

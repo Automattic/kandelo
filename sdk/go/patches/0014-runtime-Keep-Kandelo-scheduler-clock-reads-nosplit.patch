@@ -1,0 +1,40 @@
+From 5954fb3213fc8f1fbc1b1ef4df1f0e2021dffd91 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Fri, 6 Nov 2026 22:36:50 -0500
+Subject: [PATCH 14/22] runtime: Keep Kandelo scheduler clock reads nosplit
+
+casgstatus reads nanotime while exitsyscall forbids growing the
+current goroutine stack. The Kandelo clock path could split or
+reenter signal callbacks at that point during a concurrent GC scan.
+
+Use the existing raw channel primitive without signal dispatch and
+mark nanotime1 nosplit. Ordinary syscalls retain signal delivery.
+The clock still uses real kernel CLOCK_MONOTONIC and per-M storage;
+no scheduler or collector algorithm changes are needed.
+
+The wasm32 cgo blocked-wait probe reproduced stack split at bad
+time before this change. Seventeen Node signal, GC, HTTP drain and
+retirement workflows pass after it; browser validation continues.
+
+diff --git a/src/runtime/os_kandelo.go b/src/runtime/os_kandelo.go
+index 520c07435b0b19bbc263d94d61f5d972e77a2b4a..d379918494e96f67117ed7050292ceca347e2124 100644
+--- a/src/runtime/os_kandelo.go
++++ b/src/runtime/os_kandelo.go
+@@ -167,10 +167,15 @@ func walltime1() (sec int64, nsec int32) {
+ // nanotime reading, and a folded zero would let the compiler prove throw is
+ // always taken and dead-code-eliminate main.main. A real monotonic clock is
+ // nonzero and non-decreasing, which the runtime scheduler/GC/timers require.
++// Scheduler state transitions can read the clock with stack growth disabled.
++// Keep this path nosplit and defer signal dispatch to an ordinary syscall:
++// callbacks cannot run while casgstatus is waiting for a GC scan to finish.
++//
++//go:nosplit
+ func nanotime1() int64 {
+ 	timespec := &getg().m.clockTimespec
+-	_, errno := doSyscall(sysClockGettime, kandeloClockMonotonic,
+-		int64(uintptr(unsafe.Pointer(&timespec[0]))), 0)
++	_, errno := doSyscall6Raw(sysClockGettime, kandeloClockMonotonic,
++		int64(uintptr(unsafe.Pointer(&timespec[0]))), 0, 0, 0, 0)
+ 	if errno != 0 {
+ 		return 0
+ 	}

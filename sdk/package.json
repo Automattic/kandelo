@@ -24,6 +24,8 @@
   },
   "files": [
     "activate.sh",
+    "go-runtime-env.d.ts",
+    "go-runtime-env.js",
     "bin",
     "config.site",
     "glue",

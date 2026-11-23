@@ -1,0 +1,1021 @@
+From 6701952c3c2d9820b71e63d2a5eb0688b4baa4b9 Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 20:00:34 +0800
+Subject: [PATCH 08/22] all: share WebAssembly library implementations with
+ wasm32
+
+Use the existing WebAssembly library implementations on wasm32. Share
+the memchr helper and math assembly between wasm and wasm32, and apply
+the same recursion limits and platform-specific test exclusions.
+
+Updates #63131
+
+Change-Id: I560d380db5d62f91d5d0844d84c6e4f174474c22
+
+diff --git a/src/context/x_test.go b/src/context/x_test.go
+index aeb5470399f4eec82a32533c24079f8c653dd2c9..780a9d1869b3078493f352f856dba9d73e7599f5 100644
+--- a/src/context/x_test.go
++++ b/src/context/x_test.go
+@@ -1185,7 +1185,7 @@ func TestContextErrDoneRace(t *testing.T) {
+ 		donec := ctx.Done()
+ 		go cancel()
+ 		for ctx.Err() == nil {
+-			if runtime.GOARCH == "wasm" {
++			if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 				runtime.Gosched() // need to explicitly yield
+ 			}
+ 		}
+diff --git a/src/crypto/internal/fips140/check/checktest/asm.s b/src/crypto/internal/fips140/check/checktest/asm.s
+index cc74e56f9814b11ff3c16106e34482a44099054b..7a4eedb9df485db2aea03de554c793511d904d02 100644
+--- a/src/crypto/internal/fips140/check/checktest/asm.s
++++ b/src/crypto/internal/fips140/check/checktest/asm.s
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !purego && !wasm
++//go:build !purego && !wasm && !wasm32
+ 
+ #include "textflag.h"
+ 
+diff --git a/src/crypto/internal/fips140/drbg/entropy_fips140.go b/src/crypto/internal/fips140/drbg/entropy_fips140.go
+index 9f936a37b89ec1a077bdf1ad2887eac08d95bdfc..25fd4aa7bb6ea523fe7e744a07c01fca3778546b 100644
+--- a/src/crypto/internal/fips140/drbg/entropy_fips140.go
++++ b/src/crypto/internal/fips140/drbg/entropy_fips140.go
+@@ -9,7 +9,7 @@
+ // that does not support FIPS 140-3 mode, but as the BSS variable doesn't cost
+ // much, don't bother.)
+ //
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ package drbg
+ 
+diff --git a/src/crypto/internal/fips140/drbg/entropy_wasm.go b/src/crypto/internal/fips140/drbg/entropy_wasmx.go
+similarity index 91%
+rename from src/crypto/internal/fips140/drbg/entropy_wasm.go
+rename to src/crypto/internal/fips140/drbg/entropy_wasmx.go
+index 894fda974a43f04ecf530c74dd17952717f5c479..1856e0ad424b136594f065021c6dcfa4369e7d90 100644
+--- a/src/crypto/internal/fips140/drbg/entropy_wasm.go
++++ b/src/crypto/internal/fips140/drbg/entropy_wasmx.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package drbg
+ 
+diff --git a/src/crypto/internal/fips140/fips140.go b/src/crypto/internal/fips140/fips140.go
+index 2f981bf7b1201b83df9d0cba4ddc6f8f83fe99e0..7759d9aa5c8f7d9064a1ce923a26b9822d55d21e 100644
+--- a/src/crypto/internal/fips140/fips140.go
++++ b/src/crypto/internal/fips140/fips140.go
+@@ -52,7 +52,7 @@ func Supported() error {
+ 	// Also, js/wasm and windows/386 don't have good enough timers
+ 	// for the CPU jitter entropy source.
+ 	switch {
+-	case runtime.GOARCH == "wasm",
++	case runtime.GOARCH == "wasm", runtime.GOARCH == "wasm32",
+ 		runtime.GOOS == "windows" && runtime.GOARCH == "386",
+ 		runtime.GOOS == "openbsd", // due to -fexecute-only, see #70880
+ 		runtime.GOOS == "aix":
+diff --git a/src/crypto/x509/root_wasm.go b/src/crypto/x509/root_wasmx.go
+similarity index 93%
+rename from src/crypto/x509/root_wasm.go
+rename to src/crypto/x509/root_wasmx.go
+index 275c9213d9594db6c5742e818a5efdf2057d351c..eb6097626c30700053d9dfad14e3133ef2016fce 100644
+--- a/src/crypto/x509/root_wasm.go
++++ b/src/crypto/x509/root_wasmx.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package x509
+ 
+diff --git a/src/encoding/asn1/asn1.go b/src/encoding/asn1/asn1.go
+index 4e65924c0f1d6f62cc2668b6db74784e82b93a53..1e5e9fd00c2e7ebb5e2cdf8c498031db3f3a545a 100644
+--- a/src/encoding/asn1/asn1.go
++++ b/src/encoding/asn1/asn1.go
+@@ -713,7 +713,7 @@ func parseField(v reflect.Value, bytes []byte, initOffset int, params fieldParam
+ 		maxDecodeDepth     = 10000
+ 		maxDecodeDepthWasm = 5000 // go.dev/issue/56498
+ 	)
+-	if depth > maxDecodeDepth || runtime.GOARCH == "wasm" && depth > maxDecodeDepthWasm {
++	if depth > maxDecodeDepth || (runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32") && depth > maxDecodeDepthWasm {
+ 		return initOffset, StructuralError{"nesting depth exceeded"}
+ 	}
+ 	offset = initOffset
+diff --git a/src/encoding/asn1/asn1_test.go b/src/encoding/asn1/asn1_test.go
+index 1aaab0eb9f7975d01944c683de5bc85a95f22050..f9dcde1d48bc0945ed3042e15084c103f906c723 100644
+--- a/src/encoding/asn1/asn1_test.go
++++ b/src/encoding/asn1/asn1_test.go
+@@ -1259,7 +1259,7 @@ func TestUnmarshalNestingLimitSlice(t *testing.T) {
+ 	type Recursive []Recursive
+ 
+ 	limit := 10000
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		limit = 5000
+ 	}
+ 
+@@ -1305,7 +1305,7 @@ func TestUnmarshalNestingLimitStruct(t *testing.T) {
+ 	}
+ 
+ 	limit := 5000
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		limit = 2500
+ 	}
+ 
+diff --git a/src/encoding/binary/native_endian_little.go b/src/encoding/binary/native_endian_little.go
+index 38d3e9b695eec32b7a52318983f52d9b541558b8..c53b728b4766aba0fb819e7ff69ddb8e288e49e0 100644
+--- a/src/encoding/binary/native_endian_little.go
++++ b/src/encoding/binary/native_endian_little.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build 386 || amd64 || amd64p32 || alpha || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || nios2 || ppc64le || riscv || riscv64 || sh || wasm
++//go:build 386 || amd64 || amd64p32 || alpha || arm || arm64 || loong64 || mipsle || mips64le || mips64p32le || nios2 || ppc64le || riscv || riscv64 || sh || wasm || wasm32
+ 
+ package binary
+ 
+diff --git a/src/encoding/xml/read.go b/src/encoding/xml/read.go
+index bb2302d4610a68f5edd4eb9e6d11af05fe480fc1..0ac25a4785a5af0b3084e1d2441b0e0df7140d3a 100644
+--- a/src/encoding/xml/read.go
++++ b/src/encoding/xml/read.go
+@@ -324,7 +324,7 @@ var errUnmarshalDepth = errors.New("exceeded max depth")
+ 
+ // Unmarshal a single XML element into val.
+ func (d *Decoder) unmarshal(val reflect.Value, start *StartElement) error {
+-	if d.stkDepth > maxUnmarshalDepth || runtime.GOARCH == "wasm" && d.stkDepth > maxUnmarshalDepthWasm {
++	if d.stkDepth > maxUnmarshalDepth || (runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32") && d.stkDepth > maxUnmarshalDepthWasm {
+ 		return errUnmarshalDepth
+ 	}
+ 	// Find start element if we need it.
+diff --git a/src/encoding/xml/read_test.go b/src/encoding/xml/read_test.go
+index 0a5bd58b7f8605bf46200398a57f95e0eefd1859..646e3d30627a4a65bc20b557aa7037e3db562f33 100644
+--- a/src/encoding/xml/read_test.go
++++ b/src/encoding/xml/read_test.go
+@@ -1113,7 +1113,7 @@ func TestCVE202228131(t *testing.T) {
+ }
+ 
+ func TestCVE202230633(t *testing.T) {
+-	if testing.Short() || runtime.GOARCH == "wasm" {
++	if testing.Short() || runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("test requires significant memory")
+ 	}
+ 	defer func() {
+@@ -1151,7 +1151,7 @@ func TestDecodeElementRecursion(t *testing.T) {
+ 		t.Skip("test requires significant memory")
+ 	}
+ 	maxDepth := maxUnmarshalDepth
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		maxDepth = maxUnmarshalDepthWasm
+ 	}
+ 	tests := []struct {
+diff --git a/src/hash/maphash/smhasher_test.go b/src/hash/maphash/smhasher_test.go
+index 86ff7c2cdb98ff78f19d0e18cc880976e254cb7d..b350c7a422398cdce78425bf7f24f606c8097675 100644
+--- a/src/hash/maphash/smhasher_test.go
++++ b/src/hash/maphash/smhasher_test.go
+@@ -169,7 +169,7 @@ func TestSmhasherZeros(t *testing.T) {
+ 
+ // Strings with up to two nonzero bytes all have distinct hashes.
+ func TestSmhasherTwoNonzero(t *testing.T) {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("Too slow on wasm")
+ 	}
+ 	if testing.Short() {
+@@ -242,7 +242,7 @@ func TestSmhasherCyclic(t *testing.T) {
+ 
+ // Test strings with only a few bits set
+ func TestSmhasherSparse(t *testing.T) {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("Too slow on wasm")
+ 	}
+ 	if testing.Short() {
+@@ -282,7 +282,7 @@ func setbits(h *hashSet, b []byte, i int, k int) {
+ // Test all possible combinations of n blocks from the set s.
+ // "permutation" is a bad name here, but it is what Smhasher uses.
+ func TestSmhasherPermutation(t *testing.T) {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("Too slow on wasm")
+ 	}
+ 	if testing.Short() {
+@@ -350,7 +350,7 @@ func (k *bytesKey) name() string {
+ 
+ // Flipping a single bit of a key should flip each output bit with 50% probability.
+ func TestSmhasherAvalanche(t *testing.T) {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("Too slow on wasm")
+ 	}
+ 	if testing.Short() {
+@@ -425,7 +425,7 @@ func TestSmhasherWindowed(t *testing.T) {
+ 	windowed(t, &bytesKey{make([]byte, 128)})
+ }
+ func windowed(t *testing.T, k key) {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("Too slow on wasm")
+ 	}
+ 	if testing.Short() {
+diff --git a/src/internal/bytealg/indexbyte_wasm.s b/src/internal/bytealg/indexbyte_wasm.s
+index d22e90448d43f6077f3b71f6407ad28ee9c599c7..280c96df052528e1e1fca0ad30039eb2cc05ffb5 100644
+--- a/src/internal/bytealg/indexbyte_wasm.s
++++ b/src/internal/bytealg/indexbyte_wasm.s
+@@ -49,147 +49,4 @@ TEXT ·IndexByteString(SB), NOSPLIT, $0-32
+ 
+ 	RET
+ 
+-// initially compiled with emscripten and then modified over time.
+-// params:
+-//   R0: s
+-//   R1: c
+-//   R2: len
+-// ret: index
+-TEXT memchr<>(SB), NOSPLIT, $0
+-	Get R1
+-	Set R4
+-	Block
+-		Block
+-			Get R2
+-			I32Const $0
+-			I32Ne
+-			Tee R3
+-			Get R0
+-			I32Const $3
+-			I32And
+-			I32Const $0
+-			I32Ne
+-			I32And
+-			If
+-				Loop
+-					Get R0
+-					I32Load8U $0
+-					Get R1
+-					I32Eq
+-					BrIf $2
+-					Get R2
+-					I32Const $-1
+-					I32Add
+-					Tee R2
+-					I32Const $0
+-					I32Ne
+-					Tee R3
+-					Get R0
+-					I32Const $1
+-					I32Add
+-					Tee R0
+-					I32Const $3
+-					I32And
+-					I32Const $0
+-					I32Ne
+-					I32And
+-					BrIf $0
+-				End
+-			End
+-			Get R3
+-			BrIf $0
+-			I32Const $0
+-			Set R1
+-			Br $1
+-		End
+-		Get R0
+-		I32Load8U $0
+-		Get R4
+-		Tee R3
+-		I32Eq
+-		If
+-			Get R2
+-			Set R1
+-		Else
+-			Get R4
+-			I32Const $16843009
+-			I32Mul
+-			Set R4
+-			Block
+-				Block
+-					Get R2
+-					I32Const $3
+-					I32GtU
+-					If
+-						Get R2
+-						Set R1
+-						Loop
+-							Get R0
+-							I32Load $0
+-							Get R4
+-							I32Xor
+-							Tee R2
+-							I32Const $-2139062144
+-							I32And
+-							I32Const $-2139062144
+-							I32Xor
+-							Get R2
+-							I32Const $-16843009
+-							I32Add
+-							I32And
+-							I32Eqz
+-							If
+-								Get R0
+-								I32Const $4
+-								I32Add
+-								Set R0
+-								Get R1
+-								I32Const $-4
+-								I32Add
+-								Tee R1
+-								I32Const $3
+-								I32GtU
+-								BrIf $1
+-								Br $3
+-							End
+-						End
+-					Else
+-						Get R2
+-						Set R1
+-						Br $1
+-					End
+-					Br $1
+-				End
+-				Get R1
+-				I32Eqz
+-				If
+-					I32Const $0
+-					Set R1
+-					Br $3
+-				End
+-			End
+-			Loop
+-				Get R0
+-				I32Load8U $0
+-				Get R3
+-				I32Eq
+-				BrIf $2
+-				Get R0
+-				I32Const $1
+-				I32Add
+-				Set R0
+-				Get R1
+-				I32Const $-1
+-				I32Add
+-				Tee R1
+-				BrIf $0
+-				I32Const $0
+-				Set R1
+-			End
+-		End
+-	End
+-	Get R0
+-	I32Const $0
+-	Get R1
+-	Select
+-	Return
++#include "indexbyte_wasmx.h"
+diff --git a/src/internal/bytealg/indexbyte_wasm32.s b/src/internal/bytealg/indexbyte_wasm32.s
+index 595835f3a95885c23e0f3915ece6f744424dd891..76affc2345e5e5b03acb2bcbce9cceb67be7e437 100644
+--- a/src/internal/bytealg/indexbyte_wasm32.s
++++ b/src/internal/bytealg/indexbyte_wasm32.s
+@@ -49,147 +49,4 @@ TEXT ·IndexByteString(SB), NOSPLIT, $0-16
+ 
+ 	RET
+ 
+-// initially compiled with emscripten and then modified over time.
+-// params:
+-//   R0: s
+-//   R1: c
+-//   R2: len
+-// ret: index
+-TEXT memchr<>(SB), NOSPLIT, $0
+-	Get R1
+-	Set R4
+-	Block
+-		Block
+-			Get R2
+-			I32Const $0
+-			I32Ne
+-			Tee R3
+-			Get R0
+-			I32Const $3
+-			I32And
+-			I32Const $0
+-			I32Ne
+-			I32And
+-			If
+-				Loop
+-					Get R0
+-					I32Load8U $0
+-					Get R1
+-					I32Eq
+-					BrIf $2
+-					Get R2
+-					I32Const $-1
+-					I32Add
+-					Tee R2
+-					I32Const $0
+-					I32Ne
+-					Tee R3
+-					Get R0
+-					I32Const $1
+-					I32Add
+-					Tee R0
+-					I32Const $3
+-					I32And
+-					I32Const $0
+-					I32Ne
+-					I32And
+-					BrIf $0
+-				End
+-			End
+-			Get R3
+-			BrIf $0
+-			I32Const $0
+-			Set R1
+-			Br $1
+-		End
+-		Get R0
+-		I32Load8U $0
+-		Get R4
+-		Tee R3
+-		I32Eq
+-		If
+-			Get R2
+-			Set R1
+-		Else
+-			Get R4
+-			I32Const $16843009
+-			I32Mul
+-			Set R4
+-			Block
+-				Block
+-					Get R2
+-					I32Const $3
+-					I32GtU
+-					If
+-						Get R2
+-						Set R1
+-						Loop
+-							Get R0
+-							I32Load $0
+-							Get R4
+-							I32Xor
+-							Tee R2
+-							I32Const $-2139062144
+-							I32And
+-							I32Const $-2139062144
+-							I32Xor
+-							Get R2
+-							I32Const $-16843009
+-							I32Add
+-							I32And
+-							I32Eqz
+-							If
+-								Get R0
+-								I32Const $4
+-								I32Add
+-								Set R0
+-								Get R1
+-								I32Const $-4
+-								I32Add
+-								Tee R1
+-								I32Const $3
+-								I32GtU
+-								BrIf $1
+-								Br $3
+-							End
+-						End
+-					Else
+-						Get R2
+-						Set R1
+-						Br $1
+-					End
+-					Br $1
+-				End
+-				Get R1
+-				I32Eqz
+-				If
+-					I32Const $0
+-					Set R1
+-					Br $3
+-				End
+-			End
+-			Loop
+-				Get R0
+-				I32Load8U $0
+-				Get R3
+-				I32Eq
+-				BrIf $2
+-				Get R0
+-				I32Const $1
+-				I32Add
+-				Set R0
+-				Get R1
+-				I32Const $-1
+-				I32Add
+-				Tee R1
+-				BrIf $0
+-				I32Const $0
+-				Set R1
+-			End
+-		End
+-	End
+-	Get R0
+-	I32Const $0
+-	Get R1
+-	Select
+-	Return
++#include "indexbyte_wasmx.h"
+diff --git a/src/internal/bytealg/indexbyte_wasmx.h b/src/internal/bytealg/indexbyte_wasmx.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d75c0cf00ca891abe3e3edd825d55b034a728655
+--- /dev/null
++++ b/src/internal/bytealg/indexbyte_wasmx.h
+@@ -0,0 +1,148 @@
++// Copyright 2018 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// initially compiled with emscripten and then modified over time.
++// params:
++//   R0: s
++//   R1: c
++//   R2: len
++// ret: index
++TEXT memchr<>(SB), NOSPLIT, $0
++	Get R1
++	Set R4
++	Block
++		Block
++			Get R2
++			I32Const $0
++			I32Ne
++			Tee R3
++			Get R0
++			I32Const $3
++			I32And
++			I32Const $0
++			I32Ne
++			I32And
++			If
++				Loop
++					Get R0
++					I32Load8U $0
++					Get R1
++					I32Eq
++					BrIf $2
++					Get R2
++					I32Const $-1
++					I32Add
++					Tee R2
++					I32Const $0
++					I32Ne
++					Tee R3
++					Get R0
++					I32Const $1
++					I32Add
++					Tee R0
++					I32Const $3
++					I32And
++					I32Const $0
++					I32Ne
++					I32And
++					BrIf $0
++				End
++			End
++			Get R3
++			BrIf $0
++			I32Const $0
++			Set R1
++			Br $1
++		End
++		Get R0
++		I32Load8U $0
++		Get R4
++		Tee R3
++		I32Eq
++		If
++			Get R2
++			Set R1
++		Else
++			Get R4
++			I32Const $16843009
++			I32Mul
++			Set R4
++			Block
++				Block
++					Get R2
++					I32Const $3
++					I32GtU
++					If
++						Get R2
++						Set R1
++						Loop
++							Get R0
++							I32Load $0
++							Get R4
++							I32Xor
++							Tee R2
++							I32Const $-2139062144
++							I32And
++							I32Const $-2139062144
++							I32Xor
++							Get R2
++							I32Const $-16843009
++							I32Add
++							I32And
++							I32Eqz
++							If
++								Get R0
++								I32Const $4
++								I32Add
++								Set R0
++								Get R1
++								I32Const $-4
++								I32Add
++								Tee R1
++								I32Const $3
++								I32GtU
++								BrIf $1
++								Br $3
++							End
++						End
++					Else
++						Get R2
++						Set R1
++						Br $1
++					End
++					Br $1
++				End
++				Get R1
++				I32Eqz
++				If
++					I32Const $0
++					Set R1
++					Br $3
++				End
++			End
++			Loop
++				Get R0
++				I32Load8U $0
++				Get R3
++				I32Eq
++				BrIf $2
++				Get R0
++				I32Const $1
++				I32Add
++				Set R0
++				Get R1
++				I32Const $-1
++				I32Add
++				Tee R1
++				BrIf $0
++				I32Const $0
++				Set R1
++			End
++		End
++	End
++	Get R0
++	I32Const $0
++	Get R1
++	Select
++	Return
+diff --git a/src/internal/runtime/maps/runtime_hash32.go b/src/internal/runtime/maps/runtime_hash32.go
+index 72ab13d1a93c79db98d88b5b9ebbd3b1f6af2396..7b8748175fd9e6ebe4aa3943ee8df8bc18623be4 100644
+--- a/src/internal/runtime/maps/runtime_hash32.go
++++ b/src/internal/runtime/maps/runtime_hash32.go
+@@ -5,7 +5,7 @@
+ // Hashing algorithm inspired by
+ // wyhash: https://github.com/wangyi-fudan/wyhash/blob/ceb019b530e2c1c14d70b79bfa2bc49de7d95bc1/Modern%20Non-Cryptographic%20Hash%20Function%20and%20Pseudorandom%20Number%20Generator.pdf
+ 
+-//go:build 386 || arm || mips || mipsle || wasm || (gccgo && (ppc || s390))
++//go:build 386 || arm || mips || mipsle || wasm || wasm32 || (gccgo && (ppc || s390))
+ 
+ package maps
+ 
+diff --git a/src/internal/testenv/testenv.go b/src/internal/testenv/testenv.go
+index eb52e1954bc1b2ed9d53c307d15b039ba5de138a..4fd968dc00e4539d0acaac8e61c3d984606ddff5 100644
+--- a/src/internal/testenv/testenv.go
++++ b/src/internal/testenv/testenv.go
+@@ -455,7 +455,7 @@ func SkipFlakyNet(t testing.TB) {
+ // CPUIsSlow reports whether the CPU running the test is suspected to be slow.
+ func CPUIsSlow() bool {
+ 	switch runtime.GOARCH {
+-	case "arm", "mips", "mipsle", "mips64", "mips64le", "wasm":
++	case "arm", "mips", "mipsle", "mips64", "mips64le", "wasm", "wasm32":
+ 		return true
+ 	}
+ 	return false
+diff --git a/src/internal/trace/reader_test.go b/src/internal/trace/reader_test.go
+index 264cc51569605f3ba315165d917e223187c21552..c2987821796a8af60ba40233390ce6ddd67fa188 100644
+--- a/src/internal/trace/reader_test.go
++++ b/src/internal/trace/reader_test.go
+@@ -106,7 +106,7 @@ func testReader(t *testing.T, tr io.Reader, v *testtrace.Validator, exp *testtra
+ 			break
+ 		}
+ 		v.GoVersion = r.GoVersion()
+-		if runtime.GOOS == "windows" || runtime.GOARCH == "wasm" {
++		if runtime.GOOS == "windows" || runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 			v.SkipClockSnapshotChecks()
+ 		}
+ 		if err != nil {
+diff --git a/src/math/big/arith_wasm.s b/src/math/big/arith_wasmx.s
+similarity index 90%
+rename from src/math/big/arith_wasm.s
+rename to src/math/big/arith_wasmx.s
+index 3a9aa4ddcb2dca330e6c1e3433f020751e307101..8732957cf754d33e106d704b9c33ac8a18acb8d1 100644
+--- a/src/math/big/arith_wasm.s
++++ b/src/math/big/arith_wasmx.s
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !math_big_pure_go
++//go:build !math_big_pure_go && (wasm || wasm32)
+ 
+ #include "textflag.h"
+ 
+@@ -23,4 +23,3 @@ TEXT ·mulAddVWW(SB),NOSPLIT,$0
+ 
+ TEXT ·addMulVVWW(SB),NOSPLIT,$0
+ 	JMP ·addMulVVWW_g(SB)
+-
+diff --git a/src/math/floor_asm.go b/src/math/floor_asm.go
+index 1b06b8def9c65095e15373f35933499542b283a9..2728cc70401634349cdb6e506c270180615f9635 100644
+--- a/src/math/floor_asm.go
++++ b/src/math/floor_asm.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build 386 || amd64 || arm64 || loong64 || ppc64 || ppc64le || riscv64 || s390x || wasm
++//go:build 386 || amd64 || arm64 || loong64 || ppc64 || ppc64le || riscv64 || s390x || wasm || wasm32
+ 
+ package math
+ 
+diff --git a/src/math/floor_noasm.go b/src/math/floor_noasm.go
+index 34bd292f0e7751db536d61efca8b81230bc98416..0645ca2446c1f21cfd15e097c9e35e5c24e3a021 100644
+--- a/src/math/floor_noasm.go
++++ b/src/math/floor_noasm.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !386 && !amd64 && !arm64 && !loong64 && !ppc64 && !ppc64le && !riscv64 && !s390x && !wasm
++//go:build !386 && !amd64 && !arm64 && !loong64 && !ppc64 && !ppc64le && !riscv64 && !s390x && !wasm && !wasm32
+ 
+ package math
+ 
+diff --git a/src/math/floor_wasm.s b/src/math/floor_wasmx.s
+similarity index 94%
+rename from src/math/floor_wasm.s
+rename to src/math/floor_wasmx.s
+index 3751471574610c5c2c85793b7c8a01f77ef89ffc..4250bee2b591dd0ab44ba354ac737e107fb136d8 100644
+--- a/src/math/floor_wasm.s
++++ b/src/math/floor_wasmx.s
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
++//go:build wasm || wasm32
++
+ #include "textflag.h"
+ 
+ TEXT ·archFloor(SB),NOSPLIT,$0
+diff --git a/src/net/http/transport_default_other.go b/src/net/http/transport_default_other.go
+index 4f6c5c1271144bb5dc01d8b197680457937d7d40..f7f4ed7a6c3f5f846ff0a150ad68e446e4ea5375 100644
+--- a/src/net/http/transport_default_other.go
++++ b/src/net/http/transport_default_other.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ package http
+ 
+diff --git a/src/net/http/transport_default_wasm.go b/src/net/http/transport_default_wasmx.go
+similarity index 100%
+rename from src/net/http/transport_default_wasm.go
+rename to src/net/http/transport_default_wasmx.go
+diff --git a/src/net/main_wasm_test.go b/src/net/main_wasmx_test.go
+similarity index 100%
+rename from src/net/main_wasm_test.go
+rename to src/net/main_wasmx_test.go
+diff --git a/src/os/exec/internal/fdtest/exists_unix.go b/src/os/exec/internal/fdtest/exists_unix.go
+index 472a802d7baa52cfa578bbb9349ebf7ea2b3f654..afe07c54db3619d29186c7c72cd477e860a5e2d7 100644
+--- a/src/os/exec/internal/fdtest/exists_unix.go
++++ b/src/os/exec/internal/fdtest/exists_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build unix || wasm
++//go:build unix || wasm || wasm32
+ 
+ // Package fdtest provides test helpers for working with file descriptors across exec.
+ package fdtest
+diff --git a/src/os/exec/lp_wasm.go b/src/os/exec/lp_wasmx.go
+similarity index 97%
+rename from src/os/exec/lp_wasm.go
+rename to src/os/exec/lp_wasmx.go
+index 1de9076e53b84fd12b2332df1a028563bcc6e791..dce7e0450aaad8013e0c71b10d493e555b5c31e3 100644
+--- a/src/os/exec/lp_wasm.go
++++ b/src/os/exec/lp_wasmx.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package exec
+ 
+diff --git a/src/os/exec_test.go b/src/os/exec_test.go
+index 07a06ec0ff3b2cf3988fdbc282069bbbef472809..ba65c209b59bf7c74f5cdcfe60f505997bc29a29 100644
+--- a/src/os/exec_test.go
++++ b/src/os/exec_test.go
+@@ -18,7 +18,7 @@ func TestProcessLiteral(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+ 		t.Skip("Process literals do not work on Windows. FindProcess/etc must initialize the process handle")
+ 	}
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		t.Skip("Signals send + notify not fully supported om wasm port")
+ 	}
+ 
+diff --git a/src/os/executable_wasm.go b/src/os/executable_wasmx.go
+similarity index 92%
+rename from src/os/executable_wasm.go
+rename to src/os/executable_wasmx.go
+index a88360c16fb9196e31b7a53bed48fbee80a1212b..11660fb9f3ceb213482c736e52276a441d9be7f9 100644
+--- a/src/os/executable_wasm.go
++++ b/src/os/executable_wasmx.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package os
+ 
+diff --git a/src/os/pipe_wasm.go b/src/os/pipe_wasmx.go
+similarity index 94%
+rename from src/os/pipe_wasm.go
+rename to src/os/pipe_wasmx.go
+index 87a29b1f71d97244958f2b9bff9ef00735faecab..ccab09102451ba5ab53b32c4b7471850fc4a20ec 100644
+--- a/src/os/pipe_wasm.go
++++ b/src/os/pipe_wasmx.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package os
+ 
+diff --git a/src/sync/atomic/atomic_test.go b/src/sync/atomic/atomic_test.go
+index 0617b27aca83ec2839f8dc8d6583969d3e0eb978..903853393290887ffb04dc1ad380f0fa1422ef32 100644
+--- a/src/sync/atomic/atomic_test.go
++++ b/src/sync/atomic/atomic_test.go
+@@ -2883,6 +2883,9 @@ func TestUnaligned64(t *testing.T) {
+ 	if !arch32 {
+ 		t.Skip("test only runs on 32-bit systems")
+ 	}
++	if runtime.GOARCH == "wasm32" {
++		t.Skip("wasm32 permits unaligned 64-bit atomic access")
++	}
+ 
+ 	x := make([]uint32, 4)
+ 	p := (*uint64)(unsafe.Pointer(&x[1])) // misaligned
+diff --git a/src/sync/atomic/atomic_wasm32_test.go b/src/sync/atomic/atomic_wasm32_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..fbad9e6cce00926f452117d2d3fbc1ca073c3568
+--- /dev/null
++++ b/src/sync/atomic/atomic_wasm32_test.go
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package atomic_test
++
++import (
++	. "sync/atomic"
++	"testing"
++	"unsafe"
++)
++
++func TestUnaligned64Wasm32(t *testing.T) {
++	x := [5]uint32{magic32, magic32, magic32, magic32, magic32}
++	i := 1
++	if uintptr(unsafe.Pointer(&x[i]))&7 == 0 {
++		i++
++	}
++	p := (*uint64)(unsafe.Pointer(&x[i]))
++	if uintptr(unsafe.Pointer(p))&7 != 4 {
++		t.Fatal("pointer is not misaligned by 4 bytes")
++	}
++	// The two words at p are inside x, with a guard word on either side.
++	t.Cleanup(func() {
++		if x[i-1] != magic32 || x[i+2] != magic32 {
++			t.Fatalf("wrong magic: %#x _ %#x != %#x _ %#x", x[i-1], x[i+2], magic32, magic32)
++		}
++	})
++	check := func(name string, got, want, value uint64) {
++		t.Helper()
++		if got != want || *p != value {
++			t.Fatalf("%s: got %#x, stored %#x; want %#x, %#x", name, got, *p, want, value)
++		}
++	}
++
++	const initial uint64 = 0x12345678ffffffff
++	const next uint64 = 0x89abcdefffffffff
++	StoreUint64(p, initial)
++	check("StoreUint64", *p, initial, initial)
++	check("LoadUint64", LoadUint64(p), initial, initial)
++	if CompareAndSwapUint64(p, initial^(1<<32), next) || *p != initial {
++		t.Fatal("CompareAndSwapUint64 with mismatched old value succeeded or changed the value")
++	}
++	if !CompareAndSwapUint64(p, initial, next) || *p != next {
++		t.Fatal("CompareAndSwapUint64 failed to replace the value")
++	}
++	check("AddUint64", AddUint64(p, 1), next+1, next+1)
++	check("SwapUint64", SwapUint64(p, 0xffffffff00000000), next+1, 0xffffffff00000000)
++	check("AndUint64", AndUint64(p, 0x8000000080000000), 0xffffffff00000000, 0x8000000000000000)
++	check("OrUint64", OrUint64(p, 0x7fffffff00000001), 0x8000000000000000, 0xffffffff00000001)
++
++	q := (*int64)(unsafe.Pointer(p))
++	checkSigned := func(name string, got, want, value int64) {
++		t.Helper()
++		check(name, uint64(got), uint64(want), uint64(value))
++	}
++	const signedInitial int64 = -0x1234567800000001
++	const signedNext int64 = -1 << 32
++	StoreInt64(q, signedInitial)
++	checkSigned("StoreInt64", *q, signedInitial, signedInitial)
++	checkSigned("LoadInt64", LoadInt64(q), signedInitial, signedInitial)
++	if CompareAndSwapInt64(q, signedInitial^(1<<32), signedNext) || *q != signedInitial {
++		t.Fatal("CompareAndSwapInt64 with mismatched old value succeeded or changed the value")
++	}
++	if !CompareAndSwapInt64(q, signedInitial, signedNext) || *q != signedNext {
++		t.Fatal("CompareAndSwapInt64 failed to replace the value")
++	}
++	checkSigned("AddInt64", AddInt64(q, -1), signedNext-1, signedNext-1)
++	checkSigned("SwapInt64", SwapInt64(q, -1), signedNext-1, -1)
++	checkSigned("AndInt64", AndInt64(q, -1<<32), -1, -1<<32)
++	checkSigned("OrInt64", OrInt64(q, 1<<31), -1<<32, -1<<32|1<<31)
++}
+diff --git a/src/testing/run_example_wasm.go b/src/testing/run_example_wasmx.go
+similarity index 98%
+rename from src/testing/run_example_wasm.go
+rename to src/testing/run_example_wasmx.go
+index b815fcdbd75a26fe9cce99756a952592ffb5447e..6d3661cb2acd8a62d5b03f22a224597d3de8b45a 100644
+--- a/src/testing/run_example_wasm.go
++++ b/src/testing/run_example_wasmx.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build js || wasip1
++//go:build (js && wasm) || wasip1
+ 
+ package testing
+ 
+diff --git a/src/text/template/exec.go b/src/text/template/exec.go
+index 6087bfdb6b9451ee6ac677f9093d733bccd5bbce..94da31caaf3e9565b36750dd11ad0bd97039019a 100644
+--- a/src/text/template/exec.go
++++ b/src/text/template/exec.go
+@@ -22,7 +22,7 @@ import (
+ var maxExecDepth = initMaxExecDepth()
+ 
+ func initMaxExecDepth() int {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		return 1000
+ 	}
+ 	return 100000
+diff --git a/src/text/template/parse/parse.go b/src/text/template/parse/parse.go
+index 7acd220e82e6d70785530250eedd8a12bdd22fa8..d74154210803bfbc15ab484d77b62944cbcbf119 100644
+--- a/src/text/template/parse/parse.go
++++ b/src/text/template/parse/parse.go
+@@ -52,7 +52,7 @@ var maxStackDepth = 10000
+ 
+ // init reduces maxStackDepth for WebAssembly due to its smaller stack size.
+ func init() {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		maxStackDepth = 1000
+ 	}
+ }

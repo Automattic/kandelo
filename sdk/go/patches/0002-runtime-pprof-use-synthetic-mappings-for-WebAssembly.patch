@@ -1,0 +1,66 @@
+From 34693ff6ebd8e687cc3cf38e50b082261e760694 Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 19:26:01 +0800
+Subject: [PATCH 02/22] runtime/pprof: use synthetic mappings for WebAssembly
+ profiles
+
+WebAssembly profiles use logical PCs, so /proc/self/maps cannot provide
+useful mappings for them.
+
+Use the synthetic mapping fallback on js and wasip1. Adjust the profile
+tests to expect that mapping, and extend f2 to keep the test PCs within
+its range.
+
+Change-Id: Id279f96417a29df270c035c0ee5dae030eda5206
+
+diff --git a/src/runtime/pprof/proto_other.go b/src/runtime/pprof/proto_other.go
+index 7322e84803396bddb930f394b8189c01704576c9..4ff958c7204c30db86bbe3834e2b48e115ea9ca2 100644
+--- a/src/runtime/pprof/proto_other.go
++++ b/src/runtime/pprof/proto_other.go
+@@ -9,14 +9,18 @@ package pprof
+ import (
+ 	"errors"
+ 	"os"
++	"runtime"
+ )
+ 
+ // readMapping reads /proc/self/maps and writes mappings to b.pb.
+ // It saves the address ranges of the mappings in b.mem for use
+ // when emitting locations.
+ func (b *profileBuilder) readMapping() {
+-	data, _ := os.ReadFile("/proc/self/maps")
+-	parseProcSelfMaps(data, b.addMapping)
++	// /proc/self/maps is not relevant to WebAssembly's logical PCs.
++	if runtime.GOOS != "js" && runtime.GOOS != "wasip1" {
++		data, _ := os.ReadFile("/proc/self/maps")
++		parseProcSelfMaps(data, b.addMapping)
++	}
+ 	if len(b.mem) == 0 { // pprof expects a map entry, so fake one.
+ 		b.addMappingEntry(0, 0, 0, "", "", true)
+ 		// TODO(hyangah): make addMapping return *memMap or
+diff --git a/src/runtime/pprof/proto_test.go b/src/runtime/pprof/proto_test.go
+index b22d6e2b0366c383931a2ec00b20f6777cd477f8..b65e5b457bdea1d927a41ca945db0ad3c0540dbe 100644
+--- a/src/runtime/pprof/proto_test.go
++++ b/src/runtime/pprof/proto_test.go
+@@ -80,7 +80,10 @@ func TestConvertCPUProfileNoSamples(t *testing.T) {
+ func f1() { f1() }
+ 
+ //go:noinline
+-func f2() { f2() }
++func f2() {
++	f2()
++	f2() // Keep f2+3 within the symbolized PCs on WebAssembly.
++}
+ 
+ // testPCs returns two PCs and two corresponding memory mappings
+ // to use in test profiles.
+@@ -139,9 +142,6 @@ func testPCs(t *testing.T) (addr1, addr2 uint64, map1, map2 *profile.Mapping) {
+ 			BuildID:      buildID,
+ 			HasFunctions: true,
+ 		}
+-	case "js", "wasip1":
+-		addr1 = uint64(abi.FuncPCABIInternal(f1))
+-		addr2 = uint64(abi.FuncPCABIInternal(f2))
+ 	default:
+ 		addr1 = uint64(abi.FuncPCABIInternal(f1))
+ 		addr2 = uint64(abi.FuncPCABIInternal(f2))

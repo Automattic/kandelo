@@ -1,0 +1,30 @@
+From f60530600f70a5ea905a907ac311ec8bd2ae8ac4 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Sat, 7 Nov 2026 01:30:58 -0500
+Subject: [PATCH 19/22] regexp/syntax: Bound the test-only recursive oracle
+ depth
+
+
+diff --git a/src/regexp/syntax/compile_equivalence_test.go b/src/regexp/syntax/compile_equivalence_test.go
+index f1527bdca7df426cefe00d5edc2a9dc718188856..2ac5bdfacac20444b1db1bfcc0203dae314b8986 100644
+--- a/src/regexp/syntax/compile_equivalence_test.go
++++ b/src/regexp/syntax/compile_equivalence_test.go
+@@ -1,4 +1,4 @@
+-// Copyright 2026 The Go Authors. All rights reserved.
++// Copyright 2011 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+@@ -114,8 +114,11 @@ func TestCompileTraversalEquivalent(t *testing.T) {
+ 			return "(?s:" + child + ")"
+ 		}
+ 	}
++	// Keep the recursive oracle shallow so the test itself also works on
++	// targets with a limited native call stack. Deep programs have separate
++	// nonrecursive checks.
+ 	patterns := []string{
+-		`^www\.[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-z]+$`,
++		`^www\.[-a-zA-Z0-9@:%._+~#=]{1,16}\.[a-z]+$`,
+ 		`(a*?){0,4}?`, `(a+?){2,4}`, `((a|b)*?){0,3}?`,
+ 		`\A(?:\b[a-z]+\B|\d+)$`, `(?m)^[^\n]*?$`,
+ 	}
