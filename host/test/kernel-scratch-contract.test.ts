@@ -1342,7 +1342,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "Negative translator fixture deliberately attempts the ordinary env.memory import and requires instantiation refusal. No instance is admitted and no Rust kernel memory participates.",
   },
   {
-    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:2,maximum:5,shared:true})",
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:5,maximum:5,shared:true})",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "Standalone compiled-C translator fixture creates a bounded shared process-group memory (at most128pages; the OOM control5pages). It is created inside a disposable Worker, never the Rust kernel or a persistent browser/audio realm.",
@@ -1389,12 +1389,6 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "The active-data translated oracle reuses its Worker-owned group backing to test data-drop/start ordering. The instance and exports stay local and only copied result metadata is returned; no Rust kernel participates.",
-  },
-  {
-    key: "crates/shared-memory-instrument/tests/fixtures/pool-peer.mjs::runPeer::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})",
-    disposition: "non-kernel",
-    authorityOwner: "shared-memory",
-    why: "A disposable child Worker instantiates the same compiled C fixture over its parent Worker-owned group storage. It owns a distinct virtual root/scratch and tests concurrent allocation; no kernel or persistent realm receives the backing.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",

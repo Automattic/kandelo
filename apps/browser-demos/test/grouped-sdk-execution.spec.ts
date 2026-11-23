@@ -10,6 +10,7 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
 const availableProbes = [
+  { name: "grow-churn", source: "grouped-sdk-grow-churn.c", markers: ["grouped-sdk-grow-churn PASS 384 512"], partial: "", groupedOnly: true },
   { name: "exec-precommit-retire", source: "grouped-sdk-exec-rollback.c", markers: [], partial: "", groupedOnly: true },
   { name: "exec-precommit-stop", source: "grouped-sdk-exec-rollback.c", markers: [], partial: "", groupedOnly: true },
   { name: "exec-signal-pool", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
@@ -161,6 +162,14 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(events.filter(row => row.kind === 'precommit-host-references-released')).toHaveLength(probe.name === 'exec-precommit-retire' ? 1 : 0);
         expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
         return;
+      }
+      if (probe.name === 'grow-churn') {
+        expect(result.children).toHaveLength(3);
+        expect((result.children as any[]).every(child => child.kernelExit === 0 && child.processExit === 0 && child.ready && child.quiescent)).toBe(true);
+        // Four images plus a fixed 4 MiB allowance for controls and mapping
+        // work. More cycles must reuse frames within this workload budget.
+        expect((result.retirement as any).after.backing.physicalExtentPages)
+          .toBeLessThanOrEqual(4 * (result.memory as any).initialVirtualPages + 64);
       }
       if (probe.name === 'exec-pool-rollback') {
       const locks = (result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-pool-lock-released');

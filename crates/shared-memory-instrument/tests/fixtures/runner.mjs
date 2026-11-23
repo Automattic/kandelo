@@ -1,7 +1,6 @@
 import * as G from '../../../../host/src/generated/program-extensions.ts';
-import {MemoryGroupPagePool} from '../../../../host/src/memory-group-pool.ts';
 // Run only in a disposable Worker; return copied results, never guest storage.
-export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=true) {
+export async function check(bytes) {
   const checks=[];
   function check(name, condition) {if(!condition)throw Error(name);checks.push(name);}
   function trap(name,fn){let trapped=false;try{fn();}catch(e){trapped=e instanceof WebAssembly.RuntimeError;}check(name,trapped);}
@@ -51,9 +50,12 @@ export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=t
     check('large permission failure leaves all payload intact',payload.subarray(4*P,13*P).every((value,i)=>value===before[i]));
   }
   const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
-  const pool=MemoryGroupPagePool.initialize(memory,128);
-  const reserved=pool.allocateContiguous(15);check('host reserves initial root/scratch/payload pages',reserved.first===1);
   const u32=new Uint32Array(memory.buffer),u8=new Uint8Array(memory.buffer);
+  // Fixed compiler-protocol input, not an allocator. Runtime allocation and
+  // concurrent SDK/kernel reuse are exercised by grouped-sdk-grow-churn.c.
+  const control=G.MEMORY_GROUP_CONTROL/4, bitmap=G.MEMORY_GROUP_BITMAP/4;
+  u32[control+1]=16;u32[control+2]=128;u32[control+3]=G.MEMORY_GROUP_MAGIC;
+  u32[bitmap]=0xffff;
   const {instance}=await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}});
   const e=instance.exports;
   let ordinaryAccepted=false;
@@ -101,64 +103,41 @@ export async function check(bytes,spawnPeer,phase=()=>{},terminateBeforeGrowth=t
   check('logical memory.size is virtualized',e.size()===2);
   check('memory.grow installs new virtual pages',e.grow(1)===2&&e.size()===3&&u32[pte+2]===(16*P|3));
   check('new logical pages start zero',e.read32(2*P)===0);
-  u8.fill(0xef,8*P,9*P);pool.releaseRetiredPages([8]);
-  check('C grow reuses a host-released page',e.grow(1)===3&&u32[pte+3]===(8*P|3));
+  u8.fill(0xef,8*P,9*P);u32[bitmap]&=~(1<<8); // Quiescent synthetic fixture reset only.
+  check('C grow reuses a fixture-reset page',e.grow(1)===3&&u32[pte+3]===(8*P|3));
   check('C grow zeroes reused physical bytes',e.read32(3*P)===0);
-  const hostPage=pool.allocateContiguous(1);check('host allocation sees C page ownership',hostPage.first===17);
-  u8.fill(0xea,17*P,18*P);pool.releaseRetiredPages([17]);
+  check('next C grow observes prior page ownership',e.grow(1)===4&&u32[pte+4]===(17*P|3));
+  u8.fill(0xea,17*P,18*P);u32[pte+4]=0;Atomics.store(u32,root/4,4);u32[bitmap]&=~(1<<17);
   let plateau=true;
   for(let i=0;i<256;i++) {
     if(e.grow(1)!==4||u32[pte+4] !== (17*P|3)||e.read32(4*P)!==0)plateau=false;
     e.write32(4*P,0xffffffff);u32[pte+4]=0;Atomics.store(u32,root/4,4);
     // Synthetic fixture retirement after synchronous calls, with no live user
     // of that page. This is not evidence for the normal lifecycle fences.
-    pool.releaseRetiredPages([17]);
+    u32[bitmap]&=~(1<<17);
   }
-  check('256 C grow/retire cycles reuse the same zeroed page',plateau);
-  check('physical extent plateaus instead of growing per cycle',pool.snapshot().highWaterPages===18&&pool.snapshot().physicalExtentPages===64);
+  check('256 C grow/fixture-reset cycles reuse the same zeroed page',plateau);
+  check('physical extent plateaus instead of growing per cycle',u32[control+1]===18&&memory.buffer.byteLength===64*P);
   check('limit refusal leaves virtual size unchanged',(e.grow(32)>>>0)===0xffffffff&&e.size()===4);
   trap('out-of-bounds addresses trap',()=>e.read32(4*P));
-  if(typeof spawnPeer!=='function')throw Error('Real peer Worker factory is required');
-  const barrier=new SharedArrayBuffer(8),flags=new Int32Array(barrier),peers=[];
-  try {
-    for(let i=0;i<4;i++) {
-      const rootPage=pool.allocateContiguous(1),scratchPage=pool.allocateContiguous(1),payload=pool.allocateContiguous(2);
-      const peerRoot=rootPage.first*P,peerPte=peerRoot/4+16;
-      u32[peerRoot/4]=2;u32[peerRoot/4+1]=32;u32[peerRoot/4+2]=P;u32[peerRoot/4+14]=1;
-      u32[peerPte]=payload.first*P|3;u32[peerPte+1]=(payload.first+1)*P|3;
-      peers.push(spawnPeer({bytes,memory,root:peerRoot,scratch:scratchPage.first*P,replica:replica(memory,5*P+(i+2)*64,peerRoot),barrier,cycles:128,identity:i+1,maximumPages:128}));
-    }
-    phase('peers-constructing');await Promise.all(peers.map(peer=>peer.ready));phase('peers-ready');Atomics.store(flags,0,1);Atomics.notify(flags,0,4);phase('barrier-released');
-    let hostOk=true;
-    for(let i=0;i<512;i++) {
-      const extent=pool.allocateContiguous(1);
-      if(!extent){hostOk=false;break;}
-      if(u32[extent.first*P/4]!==0)hostOk=false;
-      u32[extent.first*P/4]=0xabcdef;pool.releaseRetiredPages([extent.first]);
-    }
-    phase('host-allocation-loop-finished');const results=await Promise.all(peers.map(peer=>peer.done));phase('peers-finished');
-    check('four real C Workers complete 512 grow/retire cycles',results.every(result=>result.passed&&result.cycles===128));
-    check('host allocation reuses zeroed pages during C growth',hostOk);
-    check('concurrent growth retains only roots and live mappings',pool.snapshot().allocatedPages===33);
-    check('concurrent C and host allocation keep a bounded physical extent',pool.snapshot().physicalExtentPages===64&&pool.snapshot().highWaterPages<=64);
-  if(terminateBeforeGrowth){phase('peer-stop-begin');await Promise.all(peers.map(peer=>peer.stop()));phase('peer-stop-ended');}
-  phase('reserve-existing-begin');const temporary=[];
-  while(pool.snapshot().allocatedPages<64)temporary.push(pool.allocateContiguous(1).first);
-  phase('reserve-existing-ended');phase('physical-grow-before');check('C grow extends physical storage when reusable pages are exhausted',e.grow(1)===4&&memory.buffer.byteLength===65*P);
-  phase('physical-grow-returned');check('C grow publishes zeroed storage to another attached instance',second.size()===5&&second.read32(4*P)===0);
-  check('host pool refreshes views after C physical growth',pool.snapshot().physicalExtentPages===65&&pool.snapshot().highWaterPages===65);
-  const grown=u32[pte+4]>>>16;u32[pte+4]=0;Atomics.store(u32,root/4,4);pool.releaseRetiredPages([grown,...temporary]);
-  }finally{phase('final-peer-stop-begin');await Promise.all(peers.map(peer=>peer.stop()));phase('final-peer-stop-ended');}
-  phase('limited-memory-begin');const limitedMemory=new WebAssembly.Memory({initial:2,maximum:5,shared:true});
-  const limitedPool=MemoryGroupPagePool.initialize(limitedMemory,8);limitedPool.allocateContiguous(4);
-  phase('limited-pool-ready');const limitedWords=new Uint32Array(limitedMemory.buffer);limitedWords[root/4]=2;limitedWords[root/4+1]=32;limitedWords[root/4+2]=P;limitedWords[root/4+14]=1;
+  // Exhaust reusable physical pages as an input vector, then let the
+  // emitted helper perform the actual WebAssembly.Memory growth.
+  u32[bitmap]=0xffffffff;u32[bitmap+1]=0xffffffff;u32[control+1]=64;
+  check('C grow extends exhausted physical storage',e.grow(1)===4&&memory.buffer.byteLength===65*P);
+  check('C physical growth is visible to an attached instance',second.size()===5&&second.read32(4*P)===0);
+  check('C physical growth publishes its high-water mark',u32[control+1]===65);
+  const limitedMemory=new WebAssembly.Memory({initial:5,maximum:5,shared:true});
+  const limitedWords=new Uint32Array(limitedMemory.buffer);
+  limitedWords[control+1]=5;limitedWords[control+2]=8;limitedWords[control+3]=G.MEMORY_GROUP_MAGIC;
+  limitedWords[bitmap]=31;
+  limitedWords[root/4]=2;limitedWords[root/4+1]=32;limitedWords[root/4+2]=P;limitedWords[root/4+14]=1;
   limitedWords[pte]=4*P|3;limitedWords[pte+1]=4*P|3;
   const limited=(await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory:limitedMemory}})).instance.exports;
-  phase('limited-instance-ready');limited.__vm_root.value=root;limited.__vm_scratch.value=2*P+64;limited.__vm_replica.value=replica(limitedMemory,2*P,root);limited.__vm_initialize(1);
-  phase('limited-initialized');const refusedBefore=JSON.stringify(limitedPool.snapshot());
+  limited.__vm_root.value=root;limited.__vm_scratch.value=2*P+64;limited.__vm_replica.value=replica(limitedMemory,2*P,root);limited.__vm_initialize(1);
+  const refusedBefore=new Uint8Array(limitedMemory.buffer,0,P).slice();
   check('C physical grow failure preserves logical size',(limited.grow(1)>>>0)===0xffffffff&&limited.size()===2);
-  phase('limited-grow-returned');check('C physical grow failure preserves pool state and releases locks',JSON.stringify(limitedPool.snapshot())===refusedBefore&&limitedWords[root/4+13]===0&&limitedWords[pte+2]===0);
+  check('C physical grow failure preserves metadata and releases locks',new Uint8Array(limitedMemory.buffer,0,P).every((byte,i)=>byte===refusedBefore[i])&&limitedWords[root/4+13]===0&&limitedWords[pte+2]===0);
   u32[root/4+14]=0;trap('stop escapes before source function work',()=>e.write32(60000,1));
   check('stopped instance did not modify guest storage',u32[(4*P+60000)/4]===99);
-  phase('fixture-finished');return {checks,scope:'C translation and page-pool mechanisms with synthetic retirement; no normal grouped launch, lifecycle-fence or sustained desktop claim'};
+  return {checks,scope:'C translation against fixed protocol inputs and quiescent fixture resets; no runtime allocation, lifecycle-fence or sustained desktop claim'};
 }

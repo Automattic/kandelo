@@ -435,6 +435,11 @@ rollback and executable identity. They run through the public Node/browser
 launchers and disposable kernel workers. These bounded checks do not replace
 full conformance, sustained desktop or resource acceptance.
 
+Concurrent allocation checks run three real fork children through 384 SDK
+`memory.grow`/kernel `munmap` cycles alongside 512 parent kernel `mmap`/`munmap`
+cycles. They verify zeroed reuse, live payload stability and exact retirement.
+Compiler-only checks use fixed protocol inputs, with no host allocator model.
+
 The browser-memory gate also exercises the real Rust kernel through its host
 worker boundary. Those checks cover exact Worker receipts, Node joins versus
 browser exit notifications, constructor uncertainty, asynchronous reference
