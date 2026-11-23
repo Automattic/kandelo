@@ -19,6 +19,8 @@ pub const DEFAULT_PIPE_CAPACITY: usize = 65536;
 /// are guaranteed to be atomic.
 pub const PIPE_BUF: usize = 4096;
 
+const UNIX_STREAM_INITIAL_CAPACITY: usize = 4096;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FifoOpenSide {
     Reader,
@@ -572,16 +574,16 @@ pub fn release_deferred_in_flight_resource(
 
 /// A ring buffer backing a pipe.
 ///
-/// Uses a fixed-capacity `Vec<u8>` with head/tail pointers and a length
-/// counter for O(1) read and write operations.
+/// Uses a ring with a fixed logical capacity. Unix streams grow the resident
+/// ring as needed, up to that capacity.
 ///
 /// Endpoints are reference-counted: `read_count` and `write_count` track
 /// how many open file descriptions reference each end. This supports
 /// cross-process pipe sharing (e.g., after fork).
 pub struct PipeBuffer {
-    buf: Vec<u8>,
+    buf: IoBuffer<u8>,
     capacity: usize,
-    fifo_buffer_reservation: Option<MetadataReservation<'static>>,
+    demand_backed: bool,
     #[cfg(test)]
     fail_fifo_buffer_allocation: bool,
     head: usize,
@@ -663,6 +665,7 @@ impl PipeBuffer {
             self.head = 0;
             self.tail = 0;
             self.len = 0;
+            self.release_unix_stream_buffer();
             self.ancillary_fds.clear();
             crate::epoll::notify(
                 crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
@@ -754,6 +757,7 @@ impl PipeBuffer {
         self.head = 0;
         self.tail = 0;
         self.len = 0;
+        self.release_unix_stream_buffer();
         self.ancillary_fds.clear();
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
@@ -786,11 +790,17 @@ impl PipeBuffer {
         Ok(pipe)
     }
 
+    fn new_unix_stream() -> Self {
+        let mut pipe = Self::empty(DEFAULT_PIPE_CAPACITY);
+        pipe.demand_backed = true;
+        pipe
+    }
+
     fn empty(capacity: usize) -> Self {
         PipeBuffer {
-            buf: Vec::new(),
+            buf: IoBuffer::new(),
             capacity,
-            fifo_buffer_reservation: None,
+            demand_backed: false,
             #[cfg(test)]
             fail_fifo_buffer_allocation: false,
             head: 0,
@@ -840,28 +850,36 @@ impl PipeBuffer {
     }
 
     fn prepare_fifo_io_with_budget(&mut self, budget: &'static MetadataBudget) -> Result<(), Errno> {
-        if !self.is_fifo || self.fifo_buffer_reservation.is_some() { return Ok(()); }
+        if !self.is_fifo || self.buf.len() == self.capacity {
+            return Ok(());
+        }
         self.prepare_buffer_with_budget(budget)
     }
 
     fn prepare_buffer_with_budget(&mut self, budget: &'static MetadataBudget) -> Result<(), Errno> {
-        let mut reservation = budget.reserve(self.capacity.checked_mul(2).ok_or(Errno::ENOMEM)?)?;
-        #[cfg(test)]
-        if core::mem::take(&mut self.fail_fifo_buffer_allocation) { return Err(Errno::ENOMEM); }
-        let mut buffer = Vec::new();
-        buffer.try_reserve_exact(self.capacity).map_err(|_| Errno::ENOMEM)?;
+        let mut buffer = IoBuffer::new_in(budget);
+        buffer.reserve_with(self.capacity, |values| {
+            #[cfg(test)]
+            if core::mem::take(&mut self.fail_fifo_buffer_allocation) {
+                return Err(Errno::ENOMEM);
+            }
+            values.try_reserve_exact(self.capacity).map_err(|_| Errno::ENOMEM)
+        })?;
         buffer.resize(self.capacity, 0);
-        reservation.resize(buffer.capacity().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
         self.buf = buffer;
-        self.fifo_buffer_reservation = Some(reservation);
         Ok(())
     }
 
     pub(crate) fn release_fifo_buffer_if_idle(&mut self) {
         if self.is_fifo && self.read_count == 0 && self.write_count == 0 {
             debug_assert_eq!(self.len, 0);
-            self.buf = Vec::new();
-            self.fifo_buffer_reservation = None;
+            self.buf = IoBuffer::new();
+        }
+    }
+
+    fn release_unix_stream_buffer(&mut self) {
+        if self.demand_backed {
+            self.buf = IoBuffer::new();
         }
     }
 
@@ -1242,33 +1260,57 @@ impl PipeBuffer {
         self.len == 0
     }
 
+    /// Admit room for a write before a read/write transfer consumes its input.
+    pub(crate) fn prepare_write(&mut self, requested: usize) -> Result<usize, Errno> {
+        let bytes = requested.min(self.free_space());
+        let needed = self.len + bytes;
+        if self.demand_backed && needed > self.buf.len() {
+            let geometric = (self.buf.len() * 2).max(UNIX_STREAM_INITIAL_CAPACITY);
+            let size = geometric.max(needed).min(self.capacity);
+            let mut replacement = IoBuffer::try_filled(size, 0).or_else(|error| {
+                if size == needed { return Err(error); }
+                IoBuffer::try_filled(needed, 0)
+            })?;
+            self.copy_from_head(&mut replacement, self.len);
+            self.buf = replacement;
+            self.head = 0;
+            self.tail = self.len;
+        }
+        Ok(bytes)
+    }
+
     /// Write data into the ring buffer, returning the number of bytes written.
     ///
     /// Performs a partial write if the buffer does not have enough free space
     /// for all of `data`. Returns 0 if the buffer is full.
-    pub fn write(&mut self, data: &[u8]) -> usize {
+    pub fn try_write(&mut self, data: &[u8]) -> Result<usize, Errno> {
         let previous_len = self.len;
-        let bytes_written = self.write_without_wakeup(data);
+        let bytes_written = self.write_without_wakeup(data)?;
         if self.len != previous_len {
             crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
         }
-        bytes_written
+        Ok(bytes_written)
+    }
+
+    #[cfg(test)]
+    pub fn write(&mut self, data: &[u8]) -> usize {
+        self.try_write(data).unwrap()
     }
 
     /// Mutate buffered bytes without publishing a readable wakeup.
     ///
     /// SCM_RIGHTS uses this so the carrier bytes and their ownership record
     /// become visible as one transaction before a waiter may run.
-    fn write_without_wakeup(&mut self, data: &[u8]) -> usize {
+    fn write_without_wakeup(&mut self, data: &[u8]) -> Result<usize, Errno> {
         if self.read_count == 0 {
-            return if self.orphaned_read { data.len() } else { 0 };
+            return Ok(if self.orphaned_read { data.len() } else { 0 });
         }
-        let cap = self.capacity();
-        let n = data.len().min(self.free_space());
+        let n = self.prepare_write(data.len())?;
         if n == 0 {
-            return 0;
+            return Ok(0);
         }
-        assert_eq!(self.buf.len(), cap, "FIFO I/O must be prepared before an endpoint is published");
+        let cap = self.buf.len();
+        assert!(self.len + n <= cap, "pipe backing must be prepared before writing");
         self.ensure_stream_sequence_room(n);
         let first = cap - self.tail;
         if n <= first {
@@ -1279,7 +1321,7 @@ impl PipeBuffer {
         }
         self.tail = (self.tail + n) % cap;
         self.len += n;
-        n
+        Ok(n)
     }
 
     /// Write stream bytes and attach one retained SCM_RIGHTS batch to the
@@ -1296,7 +1338,7 @@ impl PipeBuffer {
     ) -> Result<usize, Errno> {
         let fds = fds.into_ancillary()?;
         if fds.is_empty() {
-            return Ok(self.write(data));
+            return self.try_write(data);
         }
         if data.is_empty() {
             return Ok(0);
@@ -1305,7 +1347,7 @@ impl PipeBuffer {
             .try_reserve(1)
             .map_err(|_| Errno::ENOMEM)?;
         let previous_len = self.len;
-        let bytes_written = self.write_without_wakeup(data);
+        let bytes_written = self.write_without_wakeup(data)?;
         if bytes_written == 0 {
             return Ok(0);
         }
@@ -1390,7 +1432,7 @@ impl PipeBuffer {
         if bytes == 0 {
             return;
         }
-        let cap = self.capacity();
+        let cap = self.buf.len();
         let first = (cap - self.head).min(bytes);
         buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
         if first < bytes {
@@ -1403,7 +1445,7 @@ impl PipeBuffer {
             return;
         }
         self.ensure_stream_sequence_room(0);
-        self.head = (self.head + bytes) % self.capacity();
+        self.head = (self.head + bytes) % self.buf.len();
         self.len -= bytes;
         self.stream_position = self
             .stream_position
@@ -1521,6 +1563,7 @@ impl PipeBuffer {
             self.head = 0;
             self.tail = 0;
             self.len = 0;
+            self.release_unix_stream_buffer();
             // No process can receive these queued descriptors now. Dropping
             // them only enqueues fixed cleanup metadata; resource tables are
             // drained after this PipeBuffer borrow ends.
@@ -1791,6 +1834,10 @@ impl PipeTable {
     /// The host TCP-bridge code assumes the recv and send pipes for an injected
     /// connection are consecutive (`sendPipeIdx = recvPipeIdx + 1`); this helper
     /// preserves that invariant when reusable slots are fragmented.
+    pub fn try_alloc_unix_stream_pair(&mut self) -> Result<(usize, usize), Errno> {
+        self.try_alloc_pair(PipeBuffer::new_unix_stream(), PipeBuffer::new_unix_stream())
+    }
+
     pub fn try_alloc_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> Result<(usize, usize), Errno> {
         if let Some(offset) = self.pipes[self.first_free..].windows(2)
             .position(|slots| slots[0].is_none() && slots[1].is_none())
@@ -2132,6 +2179,35 @@ mod tests {
         table.get_mut(index).unwrap().close_write_end();
         table.free_if_closed(index);
         assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn unix_stream_growth_preserves_wrapped_bytes_and_ancillary_positions() {
+        let mut pipe = PipeBuffer::new_unix_stream();
+        let mut output = [0; UNIX_STREAM_INITIAL_CAPACITY];
+        let first = [b'A'; UNIX_STREAM_INITIAL_CAPACITY - 1];
+        assert_eq!(pipe.resident_buffer_bytes(), 0);
+        assert_eq!(pipe.free_space(), DEFAULT_PIPE_CAPACITY);
+        assert_eq!(pipe.try_write(&first), Ok(first.len()));
+        assert_eq!(pipe.read(&mut output[..first.len() - 1]), first.len() - 1);
+        assert_eq!(pipe.write_with_ancillary(b"BC", vec![test_ancillary_fd(9)]), Ok(2));
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let extra = [b'D'; UNIX_STREAM_INITIAL_CAPACITY];
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(pipe.try_write(&extra), Err(Errno::ENOMEM));
+            assert_eq!(pipe.available(), 3);
+        }
+        assert_eq!(pipe.try_write(&extra), Ok(extra.len()));
+        for peek in [true, false] {
+            let received = pipe.recv_message(&mut output, peek).unwrap();
+            assert_eq!(&output[..received.bytes_read], b"ABC");
+            assert_eq!(received.ancillary_fds.unwrap()[0].ofd_id, OfdId(9));
+        }
+        assert_eq!(pipe.read(&mut output), extra.len());
+        assert_eq!(output, extra);
+        pipe.close_read_end();
+        assert_eq!(pipe.resident_buffer_bytes(), 0);
     }
 
     #[test]

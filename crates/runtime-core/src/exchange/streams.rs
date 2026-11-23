@@ -195,7 +195,7 @@ pub fn push_input(source: u64, data: &[u8]) -> Result<usize, Errno> {
             return Err(Errno::EPIPE);
         }
         let pipe = pipes().get_mut(pipe_idx).ok_or(Errno::ENOENT)?;
-        Ok(pipe.write(data))
+        pipe.try_write(data)
     })
 }
 

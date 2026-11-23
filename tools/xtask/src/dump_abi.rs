@@ -2977,6 +2977,18 @@ fn render_ts_module() -> String {
         shared::select::FD_SET_BYTES
     ));
     out.push_str(&format!(
+        "export const SELECT_MAX_NFDS = {} as const;\n",
+        shared::select::MAX_NFDS
+    ));
+    out.push_str(&format!(
+        "export const SELECT_RETRY_BITMAP_BUDGET_BYTES = {} as const;\n",
+        shared::platform_limits::LIVE_IO_BUDGET_BYTES
+    ));
+    out.push_str(&format!(
+        "export const MAX_KERNEL_IO_BUDGET_BYTES = {} as const;\n",
+        shared::platform_limits::MAX_KERNEL_IO_BUDGET_BYTES
+    ));
+    out.push_str(&format!(
         "export const PROCESS_IOVEC_WASM32_SIZE = {} as const;\n",
         shared::process_layout::iovec::WASM32_SIZE
     ));
@@ -4448,6 +4460,11 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "kms_cursor_transport", kms_cursor_transport());
     s.add(KernelHost, "dri_cleanup_status", dri_cleanup_status());
     s.add(Program, "io_multiplexing", io_multiplexing());
+    s.add(KernelHost, "select_bitmap_channel", json!({
+        "max_nfds": shared::select::MAX_NFDS,
+        "slot_width": "max(128, ceil(nfds / 64) * 8)",
+        "slots": ["read", "write", "except", "pselect_sigmask"],
+    }));
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());

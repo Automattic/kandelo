@@ -1351,6 +1351,14 @@ decision, clears readiness outputs, and restores any temporary `ppoll()` or
 `pselect6()` signal mask. The host rebuilds the pass from its immutable request
 snapshot; it does not overwrite the caller's original timeout or arguments.
 
+Both select syscalls copy only the word-rounded `nfds` extent of each guest
+bitmap. The public libc `fd_set` stays at 1024 bits. Host-adapter version 8
+admits wider, eight-byte-aligned kernel slots, using the existing token-owned
+channel reservation when the full layout exceeds the fixed mailbox. A wide
+retry retains only the supplied bitmap bytes under the host's shared retry
+bitmap budget. Closing a descriptor leaves subsequent checks against the
+current descriptor table. A failed check publishes no bitmap changes.
+
 `F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
 conflict returns the internal retry result, and the host parks only that lock
 request. Unlock, conversion, close, exit, and other Rust-side changes that may
@@ -3397,11 +3405,15 @@ including inherited and queued `SCM_RIGHTS` references. Last I/O-endpoint
 release discards the volatile data and frees the buffer/credit even if names
 or path-only references retain the inode. Logical pipe capacity remains
 64 KiB, and neither open buffers nor this memory quota count as filesystem
-blocks or OPFS storage. Anonymous and socket stream rings use that same
-fallible I/O admission before allocation. Pipe arena capacity also retains
-I/O credits while slots are free; growth admits old and new backing together.
-Contiguous pair allocation prepares both payloads and arena capacity before
-publishing either pipe, and descriptor reservations roll back on refusal.
+blocks or OPFS storage. Anonymous pipes and TCP stream rings admit their
+backing before publication. Unix stream pairs start with empty rings and
+admit backing as writes need it, up to the same 64 KiB logical capacity in
+each direction. Growth preserves queued bytes and descriptor barriers, and
+read shutdown or final reader close releases the direction's backing.
+Pipe arena capacity retains I/O credits while slots are free. Arena and
+ring growth admit old and new backing together. Contiguous pair allocation
+prepares both slots before publishing either pipe, and descriptor
+reservations roll back on refusal.
 Host-stdin payload/slot preparation precedes closing the original fd 0.
 Impossible descriptor limits fail before that close, and failed later
 installation releases the unclaimed pipe and its payload. Unclaimed buffers

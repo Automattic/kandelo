@@ -223,7 +223,8 @@ import {
   PR_SET_NAME,
   SCHED_AFFINITY_MASK_SIZE,
   SELECT_FD_SET_BYTES,
-  SELECT_FD_SETSIZE,
+  SELECT_MAX_NFDS,
+  SELECT_RETRY_BITMAP_BUDGET_BYTES,
   SIGNAL_ACTION_RESTART,
   SIGNAL_MASK_BYTES,
   SPAWN_WIRE_MAX_BYTES,
@@ -19632,119 +19633,61 @@ export class CentralizedKernelWorker {
     write: Uint8Array | null;
     except: Uint8Array | null;
   } {
-    const scratch = this.#requireMainScratchRegion();
-
-    return scratch.withLease((lease) => {
-      const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-      const fdSetOffset = (index: number) =>
-        CH_DATA + index * SELECT_FD_SET_BYTES;
-      for (
-        const [index, bytes] of [
-          readBytes,
-          writeBytes,
-          exceptBytes,
-        ].entries()
-      ) {
-        if (bytes !== null) {
-          lease.copyFrom(
-            bytes,
-            fdSetOffset(index),
-            0,
-            SELECT_FD_SET_BYTES,
-          );
-        } else {
-          lease.fill(0, fdSetOffset(index), SELECT_FD_SET_BYTES);
+    const inputs = [readBytes, writeBytes, exceptBytes];
+    const kernelNfds = inputs.every(bytes => bytes === null) ? 0 : nfds;
+    const slotBytes = Math.max(SELECT_FD_SET_BYTES, Math.ceil(kernelNfds / 64) * 8);
+    const fdSetOffset = (index: number) => CH_DATA + index * slotBytes;
+    const maskOffset = fdSetOffset(3);
+    const capacity = maskOffset + (maskBytes === null ? 0 : SIGNAL_MASK_BYTES);
+    const attempt = this.#executeCapacityOwnedChannel(
+      channel,
+      capacity,
+      entry,
+      (lease) => {
+        const kernelView = lease.dataView(0, CH_DATA);
+        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+        for (let index = 0; index < CH_ARGS_COUNT; index++) {
+          kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
         }
-      }
-      const maskOffset = fdSetOffset(3);
-      if (maskBytes !== null) {
-        lease.copyFrom(
-          maskBytes,
-          maskOffset,
-          0,
-          SIGNAL_MASK_BYTES,
-        );
-      }
-
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      for (let index = 0; index < CH_ARGS_COUNT; index++) {
-        kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-      }
-      kernelView.setBigInt64(CH_ARGS, BigInt(nfds), true);
-      if (readBytes !== null) {
-        lease.writeAddress(
-          CH_ARGS + CH_ARG_SIZE,
-          fdSetOffset(0),
-          SELECT_FD_SET_BYTES,
-          "u64-le",
-        );
-      }
-      if (writeBytes !== null) {
-        lease.writeAddress(
-          CH_ARGS + 2 * CH_ARG_SIZE,
-          fdSetOffset(1),
-          SELECT_FD_SET_BYTES,
-          "u64-le",
-        );
-      }
-      if (exceptBytes !== null) {
-        lease.writeAddress(
-          CH_ARGS + 3 * CH_ARG_SIZE,
-          fdSetOffset(2),
-          SELECT_FD_SET_BYTES,
-          "u64-le",
-        );
-      }
-      kernelView.setBigInt64(
-        CH_ARGS + 4 * CH_ARG_SIZE,
-        BigInt(timeoutMs),
-        true,
-      );
-      if (syscallNr === SYS_PSELECT6 && maskBytes !== null) {
-        lease.writeAddress(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          maskOffset,
-          SIGNAL_MASK_BYTES,
-          "u64-le",
-        );
-      }
-
-      this.#bindKernelTidForChannel(channel, entry);
-      const previousHandlePid = this.currentHandlePid;
-      this.currentHandlePid = channel.pid;
-      try {
-        this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_handle_channel",
-          [
-            lease.exportPointer(0, CH_TOTAL_SIZE),
-            CH_TOTAL_SIZE,
-            channel.pid,
-            0n,
-          ],
-        );
-      } finally {
-        this.currentHandlePid = previousHandlePid;
-      }
-
-      const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-      const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
-      const errVal = resultView.getUint32(CH_ERRNO, true);
-      return {
-        retVal,
-        errVal,
-        read: retVal >= 0 && readBytes !== null
-          ? lease.copyOut(fdSetOffset(0), SELECT_FD_SET_BYTES)
-          : null,
-        write: retVal >= 0 && writeBytes !== null
-          ? lease.copyOut(fdSetOffset(1), SELECT_FD_SET_BYTES)
-          : null,
-        except: retVal >= 0 && exceptBytes !== null
-          ? lease.copyOut(fdSetOffset(2), SELECT_FD_SET_BYTES)
-          : null,
-      };
-    });
+        kernelView.setBigInt64(CH_ARGS, BigInt(kernelNfds), true);
+        for (const [index, bytes] of inputs.entries()) {
+          if (bytes === null) continue;
+          const offset = fdSetOffset(index);
+          // The kernel validates an aligned slot, but only examines the
+          // bits below nfds. Copy only the caller's word-rounded extent.
+          lease.copyFrom(bytes, offset, 0, bytes.byteLength);
+          lease.writeAddress(CH_ARGS + (index + 1) * CH_ARG_SIZE, offset, slotBytes, "u64-le");
+        }
+        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(timeoutMs), true);
+        if (maskBytes !== null) {
+          lease.copyFrom(maskBytes, maskOffset, 0, SIGNAL_MASK_BYTES);
+          lease.writeAddress(CH_ARGS + 5 * CH_ARG_SIZE, maskOffset, SIGNAL_MASK_BYTES, "u64-le");
+        }
+      },
+      (lease) => {
+        const resultView = lease.dataView(0, CH_DATA);
+        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        const errVal = resultView.getUint32(CH_ERRNO, true);
+        return {
+          retVal,
+          errVal,
+          read: retVal >= 0 && readBytes !== null
+            ? lease.copyOut(fdSetOffset(0), readBytes.byteLength)
+            : null,
+          write: retVal >= 0 && writeBytes !== null
+            ? lease.copyOut(fdSetOffset(1), writeBytes.byteLength)
+            : null,
+          except: retVal >= 0 && exceptBytes !== null
+            ? lease.copyOut(fdSetOffset(2), exceptBytes.byteLength)
+            : null,
+        };
+      },
+      0n,
+    );
+    if (attempt.value === null) {
+      throw new KernelScratchError("select bitmap scratch allocation refused", attempt.errno);
+    }
+    return attempt.value;
   }
 
   /** Capture every select-family scalar and nested byte range exactly once. */
@@ -19757,23 +19700,41 @@ export class CentralizedKernelWorker {
     if (
       !Number.isSafeInteger(nfds)
       || nfds < 0
-      || nfds > SELECT_FD_SETSIZE
+      || nfds > SELECT_MAX_NFDS
     ) {
       throw new KernelScratchError(
-        `${syscallNr === SYS_SELECT ? "select" : "pselect"} nfds must be between 0 and ${SELECT_FD_SETSIZE}`,
+        `${syscallNr === SYS_SELECT ? "select" : "pselect"} nfds must be between 0 and ${SELECT_MAX_NFDS}`,
         EINVAL,
       );
     }
-    const processBytes = new Uint8Array(channel.memory.buffer);
+    const guestWord = this.getPtrWidth(channel.pid);
+    const setBytes = Math.ceil(nfds / (8 * guestWord)) * guestWord;
+    if (setBytes > SELECT_FD_SET_BYTES) {
+      // Wide immutable retry inputs can outlive the kernel scratch lease.
+      // Bound their combined footprint across active channels.
+      let bytes = 0;
+      for (const pointer of origArgs.slice(1, 4)) {
+        if (pointer !== 0) bytes += setBytes;
+      }
+      for (const snapshot of this.blockingRetrySnapshots.values()) {
+        if (snapshot.kind !== "select" || snapshot.nfds <= SELECT_FD_SET_BYTES * 8) continue;
+        bytes += (snapshot.readBytes?.byteLength ?? 0)
+          + (snapshot.writeBytes?.byteLength ?? 0)
+          + (snapshot.exceptBytes?.byteLength ?? 0);
+      }
+      if (bytes > SELECT_RETRY_BITMAP_BUDGET_BYTES) {
+        throw new KernelScratchError("select retry bitmap budget exhausted", ENOMEM);
+      }
+    }
     const captureFdSet = (pointer: number, field: string): Uint8Array | null => {
-      if (pointer === 0) return null;
+      if (pointer === 0 || setBytes === 0) return null;
       const range = this.checkedProcessRange(
         channel,
         pointer,
-        SELECT_FD_SET_BYTES,
+        setBytes,
         field,
       );
-      return processBytes.slice(range.pointer, range.end);
+      return new Uint8Array(channel.memory.buffer, range.pointer, range.length).slice();
     };
     const readPointer = origArgs[1];
     const writePointer = origArgs[2];
@@ -19863,7 +19824,7 @@ export class CentralizedKernelWorker {
           SIGNAL_MASK_BYTES,
           "pselect6 signal mask",
         );
-        maskBytes = processBytes.slice(range.pointer, range.end);
+        maskBytes = new Uint8Array(channel.memory.buffer, range.pointer, range.length).slice();
       }
     }
 
