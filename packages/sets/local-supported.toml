@@ -1283,6 +1283,14 @@ name = "zip"
 class = "user-software"
 
 [[packages]]
+name = "zigcli"
+class = "user-software"
+
+[[packages]]
+name = "zigcli-docs"
+class = "browser-product"
+
+[[packages]]
 name = "zip-docs"
 class = "browser-product"
 

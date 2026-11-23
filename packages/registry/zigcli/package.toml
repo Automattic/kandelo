@@ -1,0 +1,37 @@
+kind = "program"
+name = "zigcli"
+version = "0.7.0-dev.20261009"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = []
+
+[[host_tools]]
+name = "zig"
+version_constraint = ">=0.17.1"
+
+[host_tools.probe]
+args = ["version"]
+
+[source]
+url = "https://github.com/jiacai2050/zigcli/archive/ae972e756c378310b1e737621998d0e7041b7e6e.tar.gz"
+sha256 = "fe1ffbb5900c6d17d6ac94e49d2030e6f8212939f32f2de410d32d93c38c95ba"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/jiacai2050/zigcli/blob/ae972e756c378310b1e737621998d0e7041b7e6e/LICENSE"
+
+[build]
+script_path = "packages/registry/zigcli/build-zigcli.sh"
+
+[[outputs]]
+name = "tree"
+wasm = "tree.wasm"
+
+[[outputs]]
+name = "loc"
+wasm = "loc.wasm"
+
+[[outputs]]
+name = "hexdump"
+wasm = "hexdump.wasm"

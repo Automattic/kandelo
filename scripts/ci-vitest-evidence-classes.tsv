@@ -775,6 +775,7 @@ packages/registry/wordpress/test/wordpress-boot.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-server.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-site-editor.test.ts	prepared-product
 packages/registry/xz/test/xz.test.ts	prepared-product
+packages/registry/zigcli/test/zigcli-package.test.ts	prepared-product
 packages/registry/zip/test/zip.test.ts	prepared-product
 packages/registry/zstd/test/zstd.test.ts	prepared-product
 scripts/check-image-demo-config.test.mjs	prepared-product
