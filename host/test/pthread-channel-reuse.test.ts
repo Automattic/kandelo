@@ -6,7 +6,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("pthread channel reuse", () => {
-  it("runs a second pthread after fork reuses the first thread slot", async () => {
+  it("reuses a slot and preserves over-aligned large TLS across nested pthread forks", async () => {
     const result = await runCentralizedProgram({
       programPath: join(
         __dirname,
@@ -17,7 +17,7 @@ describe("pthread channel reuse", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("PTHREAD_CHANNEL_REUSE_PASS");
+    expect(result.stdout).toContain("PTHREAD_CHANNEL_REUSE_LARGE_TLS_PASS");
     expect(result.stderr).toBe("");
-  });
+  }, 40_000);
 });

@@ -8,7 +8,7 @@ const programPath = resolve(
   "../../../examples/pthread_channel_reuse_test.wasm",
 );
 
-test("a recycled pthread channel dispatches in Chromium", async ({
+test("a recycled pthread channel dispatches and preserves large TLS across forks", async ({
   page,
   baseURL,
   browserName,
@@ -29,7 +29,7 @@ test("a recycled pthread channel dispatches in Chromium", async ({
     }
   });
 
-  await page.goto(new URL("/pages/test-runner/", baseURL).href);
+  await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
   const programUrl = new URL(`/@fs/${programPath}`, baseURL).href;
@@ -45,13 +45,14 @@ test("a recycled pthread channel dispatches in Chromium", async ({
         await response.arrayBuffer(),
         ["pthread-channel-reuse-test"],
         30_000,
+        { seedEtc: false },
       );
     },
     { programUrl },
   );
 
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("PTHREAD_CHANNEL_REUSE_PASS");
+  expect(result.stdout).toContain("PTHREAD_CHANNEL_REUSE_LARGE_TLS_PASS");
   expect(result.stderr).toBe("");
   expect(runtimeErrors).toEqual([]);
 });
