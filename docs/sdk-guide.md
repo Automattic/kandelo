@@ -4,8 +4,10 @@ The Kandelo SDK provides a cross-compilation toolchain for C/C++ programs.
 It wraps LLVM tools for `wasm32-unknown-unknown` and `wasm64-unknown-unknown`
 and links against the corresponding musl sysroot. Rust guest support,
 including `std`, is documented separately in the [Rust SDK guide](../sdk/rust/README.md).
+The [D development SDK](../sdk/d/README.md) cross-compiles with LDC and
+links DRuntime and Phobos against the wasm32 musl sysroot.
 
-Every SDK tool is one program, the SDK driver (`crates/kandelo-cc`), which
+The C/C++ tool entry points share the SDK driver (`crates/kandelo-cc`), which
 decides from the name it runs as whether to be `cc`, `c++`, `ar`, `configure`
 and so on. The same source is built twice: as a native program for the build
 machine (the `sdk/bin` tools run it) and as a Kandelo program for the SDK
