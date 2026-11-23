@@ -1,5 +1,12 @@
 # libuv loop backend
 
+Revision 9 includes musl's `sys/sysinfo.h` in the portable CPU/load source
+partition. The unchanged upstream load-average fallback needs its structure
+and function declarations. The shared OS now returns `ENOSYS` when accounting
+is unavailable; the library preserves the original failure path rather than
+inventing measurements. This fixes the revision-8 compilation failure;
+current runtime qualification remains pending.
+
 This initial wasm32 library builds the exact libuv 1.52.1 sources in the
 verified Node.js 26.13.0 archive through upstream CMake and Kandelo's normal
 SDK/resolver/cache. The SpiderMonkey embedding's native Node timer backend
