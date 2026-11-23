@@ -447,10 +447,14 @@ pub(super) mod tests {
         maximum: u32,
         pub(in crate::memory_group) refuse_growth: bool,
         fail_bitmap_write: bool,
+        fail_atomic_store_at: Option<u32>,
     }
     impl Memory {
         pub(in crate::memory_group) fn fail_bitmap_writes(&mut self, fail: bool) {
             self.fail_bitmap_write = fail;
+        }
+        pub(in crate::memory_group) fn fail_atomic_store_at(&mut self, address: Option<u32>) {
+            self.fail_atomic_store_at = address;
         }
         pub(in crate::memory_group) fn new(maximum: u32) -> Self {
             Self {
@@ -458,6 +462,7 @@ pub(super) mod tests {
                 maximum,
                 refuse_growth: false,
                 fail_bitmap_write: false,
+                fail_atomic_store_at: None,
             }
         }
         fn store(&mut self, address: u32, value: u32) {
@@ -512,7 +517,12 @@ pub(super) mod tests {
             word(self, address)
         }
         fn atomic_store(&mut self, address: u32, value: u32) -> Result<(), Errno> {
-            self.write(address, &value.to_le_bytes())
+            self.write(address, &value.to_le_bytes())?;
+            // A foreign operation can fail after its write became visible.
+            if self.fail_atomic_store_at == Some(address) {
+                return Err(Errno::EIO);
+            }
+            Ok(())
         }
         fn atomic_compare_exchange(
             &mut self,

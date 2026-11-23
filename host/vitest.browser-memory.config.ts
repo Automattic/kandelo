@@ -28,7 +28,6 @@ const include = [
   "test/process-address-space.test.ts",
   "test/process-memory-views.test.ts",
   "test/process-memory-descriptor.test.ts",
-  "test/memory-group-image-store.test.ts",
   "test/memory-group-import-guard.test.ts",
   "test/grouped-worker-initialization.test.ts",
   "test/kms-bitmap-relay.test.ts",

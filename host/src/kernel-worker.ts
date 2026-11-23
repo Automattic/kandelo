@@ -2302,7 +2302,6 @@ interface PendingGroupMapping extends PendingGroupImageOperation {
   description?: GroupMemoryChangeDescription;
   oldBreak?: number;
   physical?: PreparedGroupMapping;
-  populationCursor: number;
   cancelling: boolean;
   rustCancelled: boolean;
   suppressCompletion: boolean;
@@ -8354,7 +8353,7 @@ export class CentralizedKernelWorker {
       const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall: SYS_CLONE,
         args: Object.freeze([]), store: group.store, finished, finish, predecessor,
         cancelling: false, rustCancelled: false, suppressCompletion: false, failure: EIO, scheduled: false,
-        done: false, populationCursor: 0, hostControl: { thread, complete } };
+        done: false, hostControl: { thread, complete } };
       this.pendingGroupImageOperations.set(channel, pending); this.pendingGroupMappings.set(channel, pending);
       this.#advanceGroupMapping(pending, entry);
       return undefined;
@@ -22924,7 +22923,7 @@ export class CentralizedKernelWorker {
     // Host custody is allocated before asking Rust to retain a metadata plan.
     const pending: PendingGroupMapping = { kind: 'mapping', channel, registration, request, receipt, syscall, args: Object.freeze(copied),
       store: grouped.store, finished, finish, predecessor, cancelling: false, rustCancelled: false,
-      suppressCompletion: false, failure: EIO, scheduled: false, done: false, populationCursor: 0,
+      suppressCompletion: false, failure: EIO, scheduled: false, done: false,
       ownedMapping: ownedDispatch ? { dispatch: ownedDispatch } : undefined };
     this.pendingGroupImageOperations.set(channel, pending);
     this.pendingGroupMappings.set(channel, pending); this.#advanceGroupMapping(pending, entry);

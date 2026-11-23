@@ -1432,13 +1432,7 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "kernel-control",
     why: "The Worker-only descriptor codec captures the intrinsic buffer getter to reject fabricated Memory values before binding exact admitted backing/root/scratch identities. This prototype capture retains no Memory instance or buffer and grants no group admission or retirement authority.",
   },
-  {
-    key: "host/src/memory-group-image-store.ts::MemoryGroupImageStore.constructor::wasm-memory-authority::new WebAssembly.Memory({ initial: initialPhysicalPages, maximum: maximumPhysicalPages, shared: true })",
-    disposition: "non-kernel",
-    authorityOwner: "shared-memory",
-    count: 1,
-    why: "The disposable kernel-Worker image owner constructs physical guest-group storage only for the exact capacity already reserved in Rust. It is not the Rust kernel Memory. Opaque unpublished handles contain no backing; published descriptors remain on owned kernel/process-Worker channels, never persistent browser/audio realms. Publication ends rollback and no exposed reuse API exists yet.",
-  },
+
   {
     key: "host/src/process-snapshot-comparator.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",

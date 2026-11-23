@@ -433,6 +433,12 @@ rollback and executable identity. They run through the public Node/browser
 launchers and disposable kernel workers. These bounded checks do not replace
 full conformance, sustained desktop or resource acceptance.
 
+The browser-memory gate also exercises the real Rust kernel through its host
+worker boundary. Those checks cover exact Worker receipts, Node joins versus
+browser exit notifications, constructor uncertainty, asynchronous reference
+retirement and allocator contention. Rust tests own allocation, barrier,
+mapping and reclamation coverage; copied wire replies test transport only.
+
 After normal artifact preparation, run them through `scripts/dev-shell.sh`
 with `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` and
 `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"`:

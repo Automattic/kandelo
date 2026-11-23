@@ -59,6 +59,78 @@ fn corrupt_root_limits_cannot_authorize_retirement() {
 }
 
 #[test]
+fn epoch_exhaustion_refuses_without_wrapping_or_requesting_another_checkpoint() {
+    let (_groups, mut storage, mut memory, root) = image(32);
+    let descriptor = storage.descriptor(root).unwrap();
+    storage.next_epoch = u64::from(u32::MAX);
+    let epoch = storage.begin_image_pause(&mut memory, root).unwrap();
+    assert_eq!(epoch, u32::MAX);
+    memory
+        .atomic_store(descriptor.replica + layout::REPLICA_ACK, epoch)
+        .unwrap();
+    storage.resume_image(&mut memory, root, epoch).unwrap();
+    let before = storage.snapshot(&mut memory).unwrap();
+    assert_eq!(
+        storage.begin_image_pause(&mut memory, root),
+        Err(Errno::EOVERFLOW)
+    );
+    assert_eq!(storage.next_epoch, u64::from(u32::MAX) + 1);
+    assert_eq!(
+        memory
+            .atomic_load(descriptor.replica + layout::REPLICA_REQUEST)
+            .unwrap(),
+        0
+    );
+    assert_eq!(storage.snapshot(&mut memory).unwrap(), before);
+}
+
+#[test]
+fn a_partially_written_barrier_contains_every_member_without_returning_storage() {
+    let (mut groups, mut storage, mut memory, root) = image(32);
+    let thread = groups.prepare_thread(root, 101).unwrap();
+    storage.prepare_thread(&mut memory, thread).unwrap();
+    groups.start(thread).unwrap();
+    storage.publish(thread).unwrap();
+    let descriptors = [
+        storage.descriptor(root).unwrap(),
+        storage.descriptor(thread).unwrap(),
+    ];
+    let before = storage.snapshot(&mut memory).unwrap()[5];
+    memory.fail_atomic_store_at(Some(descriptors[1].replica + layout::REPLICA_REQUEST));
+    assert_eq!(
+        storage.begin_image_pause(&mut memory, root),
+        Err(Errno::EIO)
+    );
+    memory.fail_atomic_store_at(None);
+    let snapshot = storage.snapshot(&mut memory).unwrap();
+    assert_eq!(snapshot[4], 2);
+    assert_eq!(snapshot[5], before);
+    for descriptor in descriptors {
+        assert_eq!(
+            memory
+                .atomic_load(descriptor.replica + layout::REPLICA_RUN)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            memory
+                .atomic_load(descriptor.root + layout::ROOT_RUN)
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(
+        storage.release_stopped_image(&mut memory, root),
+        Err(Errno::EAGAIN)
+    );
+    assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+    assert_eq!(
+        storage.begin_image_pause(&mut memory, root),
+        Err(Errno::EBUSY)
+    );
+}
+
+#[test]
 fn malformed_or_tail_ptes_keep_the_complete_allocation_at_both_root_capacities() {
     for maximum in [32, 65536] {
         for corruption in 0..4 {

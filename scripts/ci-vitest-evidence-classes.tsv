@@ -219,6 +219,7 @@ host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
 host/test/group-memory-kernel.test.ts	prepared-product
 host/test/group-memory-resources.test.ts	source-only
 host/test/group-memory-transport.test.ts	source-only
+host/test/group-memory-worker-boundary.test.ts	prepared-product
 host/test/grouped-fork-launch.test.ts	source-only
 host/test/grouped-root-launch.test.ts	prepared-product
 host/test/grouped-sdk-execution.test.ts	prepared-product
@@ -337,7 +338,6 @@ host/test/mariadb-image-helpers.test.ts	prepared-product
 host/test/mariadb-test-source-copy.test.ts	prepared-product
 host/test/masked-wait-wake.test.ts	prepared-product
 host/test/memory-group-admission.test.ts	source-only
-host/test/memory-group-image-store.test.ts	source-only
 host/test/memory-group-import-guard.test.ts	source-only
 host/test/memory-group-protocol.test.ts	source-only
 host/test/memory-group-usage.test.ts	source-only
