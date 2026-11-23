@@ -181,6 +181,10 @@ pub mod platform_limits {
     /// Largest private host/kernel transfer allocation representable by the
     /// u32 byte-length wire used by tokenized scratch reservations.
     pub const MAX_TRANSFER_ALLOCATION_BYTES: usize = u32::MAX as usize;
+    /// Machine-wide admission budget for retained kernel I/O allocations.
+    pub const LIVE_IO_BUDGET_BYTES: usize = 30 * 1024 * 1024;
+    /// Highest combined I/O budget selected by the supported host profiles.
+    pub const MAX_KERNEL_IO_BUDGET_BYTES: usize = 128 * 1024 * 1024;
     pub const IOV_MAX: usize = 1024;
     /// Largest `msg_controllen` a caller may present to `sendmsg`/`recvmsg`.
     ///
@@ -2047,9 +2051,29 @@ mod wait_abi_tests {
 
 /// select() constants.
 pub mod select {
+    use super::{Errno, platform_limits::MAX_KERNEL_IO_BUDGET_BYTES};
+
     pub const FD_SETSIZE: usize = 1024;
     /// Size of fd_set in bytes (FD_SETSIZE / 8).
     pub const FD_SET_BYTES: usize = FD_SETSIZE / 8;
+
+    /// The descriptor table charges at least this many bytes per heap slot.
+    pub const MIN_FD_SLOT_CHARGE: usize = 16;
+    pub const INLINE_FD_SLOTS: usize = 3;
+    /// A bitmap can address every descriptor physically representable by the
+    /// shared I/O budget, even after a process lowers its open-file limit.
+    pub const MAX_NFDS: usize =
+        INLINE_FD_SLOTS + MAX_KERNEL_IO_BUDGET_BYTES / MIN_FD_SLOT_CHARGE;
+
+    /// Kernel channel slots are eight-byte-aligned for either guest word size.
+    /// Keep the original slot offsets for ordinary fd_set calls.
+    pub fn slot_bytes(nfds: i64) -> Result<usize, Errno> {
+        let nfds = usize::try_from(nfds).map_err(|_| Errno::EINVAL)?;
+        if nfds > MAX_NFDS {
+            return Err(Errno::EINVAL);
+        }
+        Ok(FD_SET_BYTES.max(nfds.div_ceil(64) * 8))
+    }
 }
 
 /// Clock ID constants for clock_gettime/clock_settime.
@@ -2343,7 +2367,8 @@ pub mod abi {
     ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
     /// 7: bounded entropy continuations, process-range validation, and private
     ///    guest-address I/O transport.
-    pub const HOST_ADAPTER_VERSION: u32 = 7;
+    /// 8: length-derived select-family bitmap slots for descriptors above FD_SETSIZE.
+    pub const HOST_ADAPTER_VERSION: u32 = 8;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

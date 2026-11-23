@@ -382,7 +382,7 @@ fn validate_select_layout(
     has_mask: bool,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     let mut validated = ValidatedChannelScratchArgs::new();
-    let fd_set_bytes = wasm_posix_shared::select::FD_SET_BYTES;
+    let fd_set_bytes = wasm_posix_shared::select::slot_bytes(args[0])?;
     for index in 1usize..=3 {
         let offset = (index - 1).checked_mul(fd_set_bytes).ok_or(Errno::EFAULT)?;
         checked_nullable_exact_range(
@@ -687,6 +687,11 @@ unsafe fn prepare_select_record(
     use wasm_posix_shared::channel_record::{SPAN_KIND_IN_OUT_PTR, SPAN_KIND_OUT_PTR};
 
     let fd_set_bytes = wasm_posix_shared::select::FD_SET_BYTES;
+    // The active select-family path is RAW and owns readiness retries. The
+    // record format only carries the original fixed-width fd_set slots.
+    if wasm_posix_shared::select::slot_bytes(decoded.scalars[0])? != fd_set_bytes {
+        return Err(Errno::EINVAL);
+    }
     // The fixed slots (three fd_sets, then the pselect6 sigmask) can end past
     // a record that omits a leading set. Zero that tail before laying out, so
     // the request's scratch holds only its own bytes and zeros, never an
@@ -2393,6 +2398,37 @@ mod tests {
         assert_eq!(validated.pointer(1), Ok(0));
         assert_eq!(validated.pointer(2), Ok(start + fd));
         assert_eq!(validated.pointer(3), Ok(start + 2 * fd));
+    }
+
+    #[test]
+    fn wide_pselect_validates_the_full_slots_and_trailing_mask() {
+        let start = 0x1000;
+        let nfds = 1025;
+        let slot = wasm_posix_shared::select::slot_bytes(nfds).unwrap();
+        let mask = kernel_scratch_wire::SIGNAL_MASK_BYTES as usize;
+        assert_eq!(slot, 136);
+        let capacity = 3 * slot + mask;
+        let args = [
+            nfds,
+            0,
+            pointer_arg(start + slot),
+            pointer_arg(start + 2 * slot),
+            0,
+            pointer_arg(start + 3 * slot),
+        ];
+        let validate = |args: &[i64; 6], length, width| unsafe {
+            validate_channel_scratch_arguments(
+                extended_syscalls::SYS_PSELECT6, args,
+                ChannelScratchRegion::new(start, length).unwrap(), width,
+            )
+        };
+        for width in [4, 8] {
+            assert!(validate(&args, capacity, width).is_ok());
+            assert_eq!(validate(&args, capacity - 1, width), Err(Errno::EFAULT));
+            let mut overlap = args;
+            overlap[3] = overlap[2];
+            assert_eq!(validate(&overlap, capacity, width), Err(Errno::EFAULT));
+        }
     }
 
     #[test]

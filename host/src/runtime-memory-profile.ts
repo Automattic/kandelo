@@ -38,7 +38,7 @@ import {
   DEFAULT_MAX_PAGES,
   WASM_PAGE_SIZE,
 } from "./constants";
-import { MAX_REPORTABLE_TRANSFER_BYTES } from "./generated/abi";
+import { MAX_KERNEL_IO_BUDGET_BYTES, MAX_REPORTABLE_TRANSFER_BYTES } from "./generated/abi";
 
 export interface RuntimeMemoryProfile {
   /** Stable identifier, surfaced in diagnostics so the choice is visible. */
@@ -94,7 +94,7 @@ export function selectRootfsIoBytes(kernelMaxPages?: number): number {
   // WHY: I/O admission owns retained mapping baselines and forked child state,
   // as well as cache/scratch. Bound it by the existing kernel ceiling; this
   // allowance neither allocates memory now nor enlarges a Wasm Memory maximum.
-  return Math.min(128 * 1024 * 1024, Math.floor(selectKernelMaxPages(kernelMaxPages) * WASM_PAGE_SIZE / 8));
+  return Math.min(MAX_KERNEL_IO_BUDGET_BYTES, Math.floor(selectKernelMaxPages(kernelMaxPages) * WASM_PAGE_SIZE / 8));
 }
 
 export function selectRootfsHostMetadataBytes(kernelMaxPages?: number): number {

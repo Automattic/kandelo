@@ -2,6 +2,7 @@ extern crate alloc;
 
 use crate::io_buffer::IoBuffer;
 use wasm_posix_shared::Errno;
+use wasm_posix_shared::select::{INLINE_FD_SLOTS, MIN_FD_SLOT_CHARGE};
 
 /// Reference to an open file description (index into the OFD table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,12 +22,14 @@ enum FdSlot {
     Open(FdEntry),
 }
 
+const _: () = assert!(2 * core::mem::size_of::<FdSlot>() >= MIN_FD_SLOT_CHARGE);
+
 /// Per-process file descriptor table.
 ///
 /// Maps integer file descriptors to open file description references.
 /// Guarantees lowest-available-fd allocation (POSIX requirement).
 pub struct FdTable {
-    inline: [FdSlot; 3],
+    inline: [FdSlot; INLINE_FD_SLOTS],
     slots: IoBuffer<FdSlot>,
     occupied_slots: usize,
     max_fds: usize,
@@ -42,7 +45,7 @@ impl FdTable {
 
     pub fn with_max(max_fds: usize) -> Self {
         FdTable {
-            inline: [FdSlot::Free; 3],
+            inline: [FdSlot::Free; INLINE_FD_SLOTS],
             slots: IoBuffer::new(),
             occupied_slots: 0,
             max_fds,
