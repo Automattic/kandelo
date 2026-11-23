@@ -1,7 +1,7 @@
 //! Ports of the retired host policy's corruption, capacity and heap contracts.
 use super::*;
 use crate::group_memory_change::{Description, Effect};
-use crate::memory_group::{MemoryGroupLimits, MemoryGroups, physical::tests::Memory};
+use crate::memory_group::{physical::tests::Memory, MemoryGroupLimits, MemoryGroups};
 
 fn image(maximum_virtual_pages: u32) -> (MemoryGroups, Storage, Memory, GroupAdmission) {
     let mut groups = MemoryGroups::new();
@@ -94,6 +94,159 @@ fn malformed_or_tail_ptes_keep_the_complete_allocation_at_both_root_capacities()
             assert_eq!(storage.snapshot(&mut memory).unwrap()[5], 1);
         }
     }
+}
+
+#[test]
+fn fork_refuses_malformed_and_tail_ptes_before_reserving_child_storage() {
+    for maximum in [32, 65536] {
+        for corruption in 0..4 {
+            let (mut groups, mut storage, mut memory, parent) = image(maximum);
+            let root = storage.descriptor(parent).unwrap();
+            let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+            memory
+                .atomic_store(root.replica + layout::REPLICA_ACK, epoch)
+                .unwrap();
+            let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+            let pte = root.root + layout::ROOT_HEADER_BYTES;
+            let at = if corruption == 3 {
+                pte + (maximum - 1) * 4
+            } else {
+                pte
+            };
+            let saved = memory.atomic_load(at).unwrap();
+            let invalid = match corruption {
+                0 => memory.current_pages().unwrap() * PAGE | 3,
+                1 => 3,
+                2 => saved | 4,
+                _ => memory.atomic_load(pte).unwrap(),
+            };
+            let before = storage.snapshot(&mut memory).unwrap()[5];
+            memory.atomic_store(at, invalid).unwrap();
+            assert_eq!(
+                storage.prepare_private_fork(&mut memory, parent, epoch, child),
+                Err(Errno::EIO)
+            );
+            assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+            assert_eq!(storage.descriptor(child), Err(Errno::ESRCH));
+            assert_eq!(
+                memory
+                    .atomic_load(root.root + layout::ROOT_GROW_LOCK)
+                    .unwrap(),
+                0
+            );
+            memory.atomic_store(at, saved).unwrap();
+            storage
+                .prepare_private_fork(&mut memory, parent, epoch, child)
+                .unwrap();
+            storage.cancel_unpublished(&mut memory, child).unwrap();
+            assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+        }
+    }
+}
+
+#[test]
+fn fork_contention_and_growth_refusal_preserve_the_parent_and_retryable_child() {
+    let (mut groups, mut storage, mut memory, parent) = image(32);
+    let root = storage.descriptor(parent).unwrap();
+    let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+    let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+    let before = storage.snapshot(&mut memory).unwrap()[5];
+    assert_eq!(
+        storage.prepare_private_fork(&mut memory, parent, epoch, child),
+        Err(Errno::EAGAIN)
+    );
+    memory
+        .atomic_store(root.replica + layout::REPLICA_ACK, epoch)
+        .unwrap();
+    for lock in [root.root + layout::ROOT_GROW_LOCK, layout::CONTROL] {
+        memory.atomic_store(lock, 1).unwrap();
+        assert_eq!(
+            storage.prepare_private_fork(&mut memory, parent, epoch, child),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(memory.atomic_load(lock).unwrap(), 1);
+        memory.atomic_store(lock, 0).unwrap();
+        assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+        assert_eq!(storage.descriptor(child), Err(Errno::ESRCH));
+    }
+    memory.refuse_growth = true;
+    assert_eq!(
+        storage.prepare_private_fork(&mut memory, parent, epoch, child),
+        Err(Errno::ENOMEM)
+    );
+    assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+    assert_eq!(storage.descriptor(child), Err(Errno::ESRCH));
+    memory.refuse_growth = false;
+    storage
+        .prepare_private_fork(&mut memory, parent, epoch, child)
+        .unwrap();
+    storage.cancel_unpublished(&mut memory, child).unwrap();
+    assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+    storage.resume_image(&mut memory, parent, epoch).unwrap();
+}
+
+#[test]
+fn fork_requires_a_current_parent_barrier_without_an_unpublished_mapping() {
+    let (mut groups, mut storage, mut memory, parent) = image(32);
+    let root = storage.descriptor(parent).unwrap();
+    let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+    let thread = groups.prepare_thread(parent, 102).unwrap();
+    let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+    memory
+        .atomic_store(root.replica + layout::REPLICA_ACK, epoch)
+        .unwrap();
+    let change = Description {
+        token: 77,
+        receipt: parent.record(),
+        effect: Effect::Map {
+            addr: 4 * PAGE as usize,
+            len: PAGE as usize,
+            prot: 3,
+            flags: wasm_posix_shared::mmap::MAP_PRIVATE | wasm_posix_shared::mmap::MAP_ANONYMOUS,
+        },
+        population_address: 0,
+        population_length: 0,
+        shared_object: 0,
+        shared_length: 0,
+        shared_offset: 0,
+    };
+    storage
+        .stage_mapping(&mut memory, parent, epoch, change, None)
+        .unwrap();
+    let staged = storage.snapshot(&mut memory).unwrap()[5];
+    assert_eq!(
+        storage.prepare_private_fork(&mut memory, parent, epoch, child),
+        Err(Errno::EBUSY)
+    );
+    assert_eq!(storage.snapshot(&mut memory).unwrap()[5], staged);
+    assert_eq!(storage.descriptor(child), Err(Errno::ESRCH));
+    storage.cancel_mapping(&mut memory, parent, 77).unwrap();
+    let before = storage.snapshot(&mut memory).unwrap()[5];
+    assert_eq!(
+        storage.prepare_private_fork(&mut memory, parent, epoch, thread),
+        Err(Errno::EINVAL)
+    );
+    storage.resume_image(&mut memory, parent, epoch).unwrap();
+    assert_eq!(
+        storage.prepare_private_fork(&mut memory, parent, epoch, child),
+        Err(Errno::EAGAIN)
+    );
+    let next = storage.begin_image_pause(&mut memory, parent).unwrap();
+    assert_ne!(next, epoch);
+    memory
+        .atomic_store(root.replica + layout::REPLICA_ACK, next)
+        .unwrap();
+    assert_eq!(
+        storage.prepare_private_fork(&mut memory, parent, epoch, child),
+        Err(Errno::EAGAIN)
+    );
+    assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+    storage
+        .prepare_private_fork(&mut memory, parent, next, child)
+        .unwrap();
+    storage.cancel_unpublished(&mut memory, child).unwrap();
+    assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+    storage.resume_image(&mut memory, parent, next).unwrap();
 }
 
 fn commit(
