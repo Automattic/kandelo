@@ -155,6 +155,7 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["wayland-demo-docs", "share/man/man1/wlcompositor.1"],
   ["wget-docs", "share/man/man1/wget.1"],
   ["xz-docs", "share/man/man1/xz.1"],
+  ["zigcli-docs", "share/man/man1/tree.1"],
   ["zip-docs", "share/man/man1/zip.1"],
   ["zstd-docs", "share/man/man1/zstd.1"],
 ] as const;

@@ -1,0 +1,12 @@
+script_path = "packages/registry/zigcli/build-zigcli.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/zigcli/build-zigcli.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "sdk/zig/0001-kandelo-target.patch",
+  "sdk/zig/0002-delegate-executable-link.patch",
+  "sdk/zig/0003-stdlib-musl.patch",
+]

@@ -62,3 +62,19 @@ Kandelo does not expose. The failure remains visible in the test suite.
   not expose a `std.posix.memfd_create` binding. The `signalfd` and `sync`
   upstream tests only check declarations. The harness enables the `fsync`
   and `fdatasync` test for Kandelo.
+
+## Testing the zigcli port
+
+```bash
+./run.sh partial shell zigcli zigcli-docs mandoc-browser-bundle --with-tests
+
+export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/partial-image.test.ts'
+KANDELO_ZIGCLI_PARTIAL_IMAGE=1 npx --prefix apps/browser-demos playwright test \
+  -c apps/browser-demos/playwright.config.ts zigcli-shell.spec.ts --project=chromium
+```
+
+The partial-image tests run `tree`, `loc` and `hexdump` over the same
+three-line Zig source fixture. Node renders all three manuals. Chromium
+looks up their paths through the shell's `man` command.
