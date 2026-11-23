@@ -41,3 +41,21 @@ Two subsequent changes were tested locally and removed from the candidate becaus
 Both comparisons used the same method above and three fresh parents per arm. They used different parents from the published reclamation result; these are not paired before/after samples. Tests proved fewer explicit native writes and byte-preserving private copies, including read-error containment. Those mechanism results did not translate into an established desktop memory benefit. The underlying per-process virtual allocations, group backing extent, generated code and browser/graphics heaps remain distinct costs; the native mapping report alone does not identify every Wasm allocation. No causal allocation attribution or net memory-saving claim follows from these experiments.
 
 Raw runs 1518–1525 and the retired patch are retained in the same workspace evidence directory. Final acceptance returns to the published reclamation implementation; native/browser results for the retired combined implementation do not replace its final gates. The supported contract has no fixed performance threshold: usable interaction permits disclosed overhead, while capacity value, bounded ownership, relevant conformance and release validation remain required.
+
+## Current runtime validation
+
+The runtime returned to the published reclamation implementation after those experiments were removed. Revision `139318b22938ca2e2e84939aa687caca033af846` has identical runtime source to `65a0f3ed7a9c2aed10ff76659b72d12c48b3847b` and the exact measured `bd9ed02a…` kernel above. Normal kernel/browser preparation passes 315/315 cached nodes and 11/11 products.
+
+| Gate on that runtime | Result |
+| --- | --- |
+| Native workspace and `xtask` | Pass; runtime-core 3,982 unit tests, `xtask` 915 unit and eleven integration tests |
+| ABI and frozen programs | Program 56/host adapter 27 consistent; frozen baseline unchanged; normal pinned cohort preparation passes |
+| Host and Node | Build/strict types pass; 174 cases across seven files pass, including nine unchanged ABI-56 cases; no skipped or unloaded cases |
+| Real SDK browser suite | 126 pass across Chromium, Firefox and WebKit; no skipped, flaky, unexpected or report errors |
+| Browser-memory gate | 1,424 host, fifteen real-kernel boundary, three Node and seven Bun teardown cases pass; all eighteen browser cases pass, including four same-page constrained-budget full switching cycles per engine |
+
+The browser-memory command took 29m05s. A private Firefox test-home cleanup reported a macOS `Documents` ACL `EACCES`; the raw warning is retained separately from guest/runtime results. This is not a native Safari run or proof that the larger live WebKit cohort is reliable.
+
+The shared-file C probe was then strengthened to seed nonzero data outside its first offset mapping. It verifies descriptor reads immediately after that first slice, before a later full alias could mask lost data. The selected probe passes through the normal SDK on Node and all three browsers, for both unlinked tmpfs and memfd objects. Its Node run intentionally filters the other 37 cases; it is additional targeted evidence, not a rerun of the complete inventory. Runtime source is unchanged. Raw records are retained as jobs 1526–1530.
+
+Relevant libc/POSIX conformance, production-built app, longer sustained desktop, current larger-cohort and broad Node/browser target comparisons remain open. The PR remains draft; nothing merges or deploys automatically.

@@ -19,12 +19,15 @@ static int one(int memfd) {
   if(!memfd)CHECK(unlink("/tmp/grouped-shared-file")==0);
   CHECK(ftruncate(fd,2*P-17)==0);
   CHECK(pwrite(fd,"initial",7,P)==7);
+  CHECK(pwrite(fd,"prefix",6,128)==6);
   /* The first attachment is a middle/suffix slice. Descriptor reads and
      later prefix/full aliases must retain bytes outside that first VMA. */
   char *slice=mmap(0,P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,P);CHECK(slice!=MAP_FAILED);
   CHECK(!memcmp(slice,"initial",7));
+  char prefix[6]; CHECK(pread(fd,prefix,6,128)==6&&!memcmp(prefix,"prefix",6));
   _Atomic unsigned *a=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0); CHECK(a!=MAP_FAILED);
   CHECK(!memcmp((char*)a+P,"initial",7));
+  CHECK(!memcmp((char*)a+128,"prefix",6));
   _Atomic unsigned *b=mmap(0,2*P,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0); CHECK(b!=MAP_FAILED&&b!=a);
   memcpy((char*)a+P,"current",7); CHECK(!memcmp((char*)b+P,"current",7));
   char bytes[8]={0}; CHECK(pread(fd,bytes,7,P)==7&&!memcmp(bytes,"current",7));
