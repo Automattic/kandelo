@@ -1,20 +1,19 @@
 # Kandelo patch rationale (S18)
-# Judgment: Mixed. Some buffer mechanics need engine cooperation, but
-# shared ownership policy should move into the bridge.
 #
-# Node Buffer and native asynchronous operations may retain bytes after a
-# JavaScript wrapper dies or detaches. Stock external-buffer APIs do not
-# cover all engine-created or resizable storage, and stealing contents
-# detaches it. The OS cannot manage JavaScript buffer ownership. Keep
-# engine cooperation, but move our shared ownership and release policy into
-# the bridge; use stock buffer APIs only where their thread, transfer and
-# lifetime rules match.
+# Node can retain native byte spans after a JS wrapper is detached or
+# collected. Stock external-buffer APIs cannot cover every engine-created or
+# resizable allocation. Keep generic engine adoption, resize, detach and
+# allocator operations; the bridge now owns the concrete shared lease and
+# exactly-once release policy. The OS cannot manage JS buffer lifetimes.
+# Lease/deleter code must stay resident until the last native owner retires.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/js/src/vm/ArrayBufferObject.h
 +++ b/js/src/vm/ArrayBufferObject.h
-@@ -7,4 +7,7 @@
+@@ -6,6 +6,9 @@
+ #define vm_ArrayBufferObject_h
 
  #include "mozilla/Maybe.h"
 +
@@ -22,11 +21,12 @@
 +#include <memory>
 
  #include <tuple>  // std::tuple
+
 @@ -28,6 +31,7 @@
  class AutoSetNewObjectMetadata;
  class FixedLengthTypedArrayObject;
  class WasmArrayRawBuffer;
-+struct KandeloArrayBufferContents;
++class NativeArrayBufferOwner;
 
  namespace wasm {
  struct MemoryDesc;
@@ -60,7 +60,7 @@
 
   public:
    class BufferContents {
-+    std::shared_ptr<KandeloArrayBufferContents> kandeloOwner_;
++    std::shared_ptr<NativeArrayBufferOwner> kandeloOwner_;
      uint8_t* data_;
      BufferKind kind_;
      JS::BufferContentsFreeFunc free_;
@@ -71,7 +71,7 @@
 -                   void* freeUserData = nullptr)
 -        : data_(data),
 +                   void* freeUserData = nullptr,
-+                   std::shared_ptr<KandeloArrayBufferContents> owner = {})
++                   std::shared_ptr<NativeArrayBufferOwner> owner = {})
 +        : kandeloOwner_(std::move(owner)), data_(data),
            kind_(kind),
            free_(freeFunc),
@@ -94,56 +94,67 @@
 +  // Native byte spans own allocations independently of the JS buffer/view.
 +  // Detach and resize keep their normal JS semantics while a span is alive.
 +  void accountKandeloExternalBytes();
-+  std::shared_ptr<KandeloArrayBufferContents> kandeloContentsOwner() const;
-+  static std::shared_ptr<KandeloArrayBufferContents> retainKandeloContents(
++  std::shared_ptr<NativeArrayBufferOwner> kandeloContentsOwner() const;
++  static std::shared_ptr<NativeArrayBufferOwner> retainKandeloContents(
 +      JSContext* cx, JS::Handle<ArrayBufferObject*> buffer);
    void releaseData(JS::GCContext* gcx);
 
    BufferKind bufferKind() const {
-@@ -706,6 +728,22 @@
-   void dumpOwnFields(js::JSONPrinter& json) const;
+@@ -707,6 +729,31 @@
    void dumpOwnStringContent(js::GenericPrinter& out) const;
  #endif
-+};
+ };
 +
 +// Native allocation owner. It has no GC edges and may outlive every realm.
-+// Length is atomic because native worker jobs may inspect retained storage.
-+struct KandeloArrayBufferContents {
-+  ArrayBufferObject::BufferContents contents;
-+  const size_t allocationLength;
-+  std::atomic<size_t> byteLength;
-+  const size_t maxByteLength;
-+  const bool resizable;
-+  bool committed = false;
-+  KandeloArrayBufferContents(ArrayBufferObject::BufferContents input,
-+                            size_t length, size_t maximum, bool canResize)
-+      : contents(input), allocationLength(maximum), byteLength(length),
-+        maxByteLength(maximum), resizable(canResize) {}
-+  ~KandeloArrayBufferContents();
- };
++// The embedding owns the concrete native lifetime and release policy. The
++// engine only adopts that lease and notifies it when the real length changes.
++class NativeArrayBufferOwner {
++ public:
++  virtual ~NativeArrayBufferOwner() = default;
++  virtual const ArrayBufferObject::BufferContents& contents() const = 0;
++  virtual size_t allocationLength() const = 0;
++  virtual size_t byteLength() const = 0;
++  virtual size_t maxByteLength() const = 0;
++  virtual bool resizable() const = 0;
++  virtual bool committed() const = 0;
++  virtual void commit() = 0;
++  virtual void resize(size_t length) = 0;
++};
++using NativeArrayBufferOwnerFactory = std::shared_ptr<NativeArrayBufferOwner> (*)(
++    ArrayBufferObject::BufferContents, size_t, size_t, bool);
++// Register before any embedding retains contents. The function and concrete
++// deleter must remain resident until every native lease has retired.
++void SetNativeArrayBufferOwnerFactory(NativeArrayBufferOwnerFactory factory);
++// Release a committed allocation using its actual engine allocator. The
++// caller owns exactly-once policy; this primitive neither runs JS nor a GC.
++void ReleaseNativeArrayBufferContents(
++    const ArrayBufferObject::BufferContents& contents, size_t allocationLength);
 
  /**
-@@ -773,6 +811,9 @@
+  * FixedLengthArrayBufferObject
+@@ -773,6 +820,9 @@
    static ResizableArrayBufferObject* createEmpty(JSContext* cx);
 
   public:
 +  static ResizableArrayBufferObject* createWithKandeloContents(
-+      JSContext* cx, const std::shared_ptr<KandeloArrayBufferContents>& owner);
++      JSContext* cx, const std::shared_ptr<NativeArrayBufferOwner>& owner);
 +
    static ResizableArrayBufferObject* createZeroed(
        JSContext* cx, size_t byteLength, size_t maxByteLength,
        Handle<JSObject*> proto = nullptr);
 --- a/js/src/vm/ArrayBufferObject.cpp
 +++ b/js/src/vm/ArrayBufferObject.cpp
-@@ -1371,4 +1371,7 @@
+@@ -1370,6 +1370,9 @@
+   }
 
    setByteLength(newByteLength);
 +  if (auto owner = kandeloContentsOwner()) {
-+    owner->byteLength.store(newByteLength, std::memory_order_relaxed);
++    owner->resize(newByteLength);
 +  }
    notifyViewsAfterResize();
  }
-@@ -1934,7 +1937,75 @@
+
+@@ -1934,7 +1937,88 @@
    return reinterpret_cast<FreeInfo*>(data);
  }
 
@@ -154,8 +165,16 @@
 +  setFlags(flags() | KANDELO_EXTERNAL_CREDIT);
 +}
 +
-+KandeloArrayBufferContents::~KandeloArrayBufferContents() {
-+  if (!committed) return;
++namespace {
++std::atomic<NativeArrayBufferOwnerFactory> nativeBufferOwnerFactory{nullptr};
++}
++void js::SetNativeArrayBufferOwnerFactory(NativeArrayBufferOwnerFactory factory) {
++  MOZ_RELEASE_ASSERT(factory);
++  nativeBufferOwnerFactory.store(factory, std::memory_order_release);
++}
++
++void js::ReleaseNativeArrayBufferContents(
++    const ArrayBufferObject::BufferContents& contents, size_t allocationLength) {
 +  switch (contents.kind()) {
 +    case ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
 +    case ArrayBufferObject::MALLOCED_UNKNOWN_ARENA: js_free(contents.data()); break;
@@ -171,13 +190,13 @@
 +  }
 +}
 +
-+std::shared_ptr<KandeloArrayBufferContents> ArrayBufferObject::kandeloContentsOwner() const {
++std::shared_ptr<NativeArrayBufferOwner> ArrayBufferObject::kandeloContentsOwner() const {
 +  const auto& slot = getFixedSlot(KANDELO_CONTENTS_SLOT);
 +  if (slot.isUndefined()) return {};
-+  return *static_cast<std::shared_ptr<KandeloArrayBufferContents>*>(slot.toPrivate());
++  return *static_cast<std::shared_ptr<NativeArrayBufferOwner>*>(slot.toPrivate());
 +}
 +
-+/* static */ std::shared_ptr<KandeloArrayBufferContents> ArrayBufferObject::retainKandeloContents(
++/* static */ std::shared_ptr<NativeArrayBufferOwner> ArrayBufferObject::retainKandeloContents(
 +    JSContext* cx, Handle<ArrayBufferObject*> buffer) {
 +  if (auto owner = buffer->kandeloContentsOwner()) return owner;
 +  if (buffer->isDetached()) return {};
@@ -187,11 +206,16 @@
 +  // Allocate both metadata owners before committing byte ownership.
 +  // Resizing updates the shared native length; detachment retains that length.
 +  try {
-+    auto owner = std::make_shared<KandeloArrayBufferContents>(
-+        contents, length, buffer->maxByteLength(), buffer->isResizable());
-+    auto slot = std::make_unique<std::shared_ptr<KandeloArrayBufferContents>>(owner);
++    auto factory = nativeBufferOwnerFactory.load(std::memory_order_acquire);
++    if (!factory) {
++      JS_ReportErrorASCII(cx, "Native buffer owner factory is not installed");
++      return {};
++    }
++    auto owner = factory(contents, length, buffer->maxByteLength(), buffer->isResizable());
++    MOZ_RELEASE_ASSERT(owner);
++    auto slot = std::make_unique<std::shared_ptr<NativeArrayBufferOwner>>(owner);
 +    buffer->setFixedSlot(KANDELO_CONTENTS_SLOT, PrivateValue(slot.release()));
-+    owner->committed = true;
++    owner->commit();
 +    return owner;
 +  } catch (const std::bad_alloc&) {
 +    ReportOutOfMemory(cx);
@@ -210,7 +234,7 @@
 +    } else if (isWasm()) {
 +      gcx->removeCellMemory(this, byteLength(), MemoryUse::ArrayBufferContents);
 +    }
-+    auto* owner = static_cast<std::shared_ptr<KandeloArrayBufferContents>*>(
++    auto* owner = static_cast<std::shared_ptr<NativeArrayBufferOwner>*>(
 +        getFixedSlot(KANDELO_CONTENTS_SLOT).toPrivate());
 +    setFixedSlot(KANDELO_CONTENTS_SLOT, UndefinedValue());
 +    delete owner;
@@ -219,44 +243,46 @@
    switch (bufferKind()) {
      case INLINE_DATA:
        // Inline data doesn't require releasing.
-@@ -1976,4 +2047,11 @@
+@@ -1975,6 +2059,13 @@
+ }
 
  void ArrayBufferObject::setDataPointer(BufferContents contents) {
 +  const auto& slot = getFixedSlot(KANDELO_CONTENTS_SLOT);
 +  auto* previous = slot.isUndefined() ? nullptr :
-+      static_cast<std::shared_ptr<KandeloArrayBufferContents>*>(slot.toPrivate());
++      static_cast<std::shared_ptr<NativeArrayBufferOwner>*>(slot.toPrivate());
 +  setFixedSlot(KANDELO_CONTENTS_SLOT, contents.kandeloOwner_
-+      ? PrivateValue(new std::shared_ptr<KandeloArrayBufferContents>(contents.kandeloOwner_))
++      ? PrivateValue(new std::shared_ptr<NativeArrayBufferOwner>(contents.kandeloOwner_))
 +      : UndefinedValue());
 +  delete previous;
    setFixedSlot(DATA_SLOT, PrivateValue(contents.data()));
    setFlags((flags() & ~KIND_MASK) | contents.kind());
-@@ -2579,6 +2657,36 @@
+
+@@ -2579,6 +2670,36 @@
    return {buffer, data};
  }
 
 +/* static */ ResizableArrayBufferObject*
 +ResizableArrayBufferObject::createWithKandeloContents(
-+    JSContext* cx, const std::shared_ptr<KandeloArrayBufferContents>& owner) {
-+  MOZ_RELEASE_ASSERT(owner && owner->committed && owner->resizable);
++    JSContext* cx, const std::shared_ptr<NativeArrayBufferOwner>& owner) {
++  MOZ_RELEASE_ASSERT(owner && owner->committed() && owner->resizable());
 +  try {
 +    // Prepare the only throwing metadata allocation before publishing a buffer.
-+    auto slot = std::make_unique<std::shared_ptr<KandeloArrayBufferContents>>(owner);
++    auto slot = std::make_unique<std::shared_ptr<NativeArrayBufferOwner>>(owner);
 +    AutoSetNewObjectMetadata metadata(cx);
 +    constexpr auto kind = GetArrayBufferGCObjectKind(RESERVED_SLOTS);
 +    Rooted<ResizableArrayBufferObject*> buffer(
 +        cx, NewArrayBufferObject<ResizableArrayBufferObject>(cx, nullptr, kind));
 +    if (!buffer) return nullptr;
-+    const auto& contents = owner->contents;
++    const auto& contents = owner->contents();
 +    // initialize performs no GC. Attach the preallocated owner slot afterwards
 +    // so setDataPointer does not allocate a second shared-owner metadata cell.
-+    buffer->initialize(owner->byteLength.load(std::memory_order_relaxed),
-+                       owner->maxByteLength,
++    buffer->initialize(owner->byteLength(),
++                       owner->maxByteLength(),
 +                       BufferContents(contents.data(), contents.kind(),
 +                                      contents.freeFunc(), contents.freeUserData()));
 +    buffer->setFixedSlot(KANDELO_CONTENTS_SLOT, PrivateValue(slot.release()));
 +    if (buffer->isMalloced() || buffer->isMapped()) {
-+      AddCellMemory(buffer, owner->allocationLength, MemoryUse::ArrayBufferContents);
++      AddCellMemory(buffer, owner->allocationLength(), MemoryUse::ArrayBufferContents);
 +    }
 +    return buffer;
 +  } catch (const std::bad_alloc&) {
@@ -268,7 +294,7 @@
  template <class ArrayBufferType>
  /* static */ ArrayBufferType* ArrayBufferObject::copy(
      JSContext* cx, size_t newByteLength,
-@@ -2654,7 +2762,7 @@
+@@ -2654,7 +2775,7 @@
      if (newByteLength == source->associatedBytes()) {
        return copyAndDetachSteal<ArrayBufferType>(cx, source);
      }
@@ -277,7 +303,7 @@
          ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA) {
        return copyAndDetachRealloc<ArrayBufferType>(cx, newByteLength, source);
      }
-@@ -3019,6 +3127,14 @@
+@@ -3019,6 +3140,14 @@
  /* static */ uint8_t* ArrayBufferObject::stealMallocedContents(
      JSContext* cx, Handle<ArrayBufferObject*> buffer) {
    CheckStealPreconditions(buffer, cx);
@@ -292,7 +318,7 @@
 
    switch (buffer->bufferKind()) {
      case MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
-@@ -3128,6 +3244,14 @@
+@@ -3128,6 +3257,14 @@
    MOZ_ASSERT(!buffer->isResizable(),
               "extracting the contents of resizable buffers not supported");
 

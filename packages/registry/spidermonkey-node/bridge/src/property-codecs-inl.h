@@ -13,13 +13,13 @@ struct NativePropertyCallbacks {
   bool lazy=false;
 };
 void FinalizeNativePropertyCallbacks(JS::GCContext*, JSObject* object) {
-  auto value=JS::GetReservedSlot(object,0);
+  auto value=JS::GetReservedSlot(object,1);
   if(!value.isUndefined())delete static_cast<NativePropertyCallbacks*>(value.toPrivate());
 }
 const JSClassOps nativePropertyOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeNativePropertyCallbacks};
 // Callback pointers are native-only. Realm and payload are actual traced slots;
 // no hidden persistent JS roots or captured native frame are retained.
-const JSClass nativePropertyClass={"NodeNativeProperty",JSCLASS_HAS_RESERVED_SLOTS(3)|JSCLASS_FOREGROUND_FINALIZE,&nativePropertyOps};
+const JSClass nativePropertyClass={"NodeNativeProperty",JSCLASS_HAS_RESERVED_SLOTS(4)|JSCLASS_FOREGROUND_FINALIZE,&nativePropertyOps};
 Local<Name> NativePropertyName(Frame& frame,JS::HandleId id) {
   JS::RootedValue key(frame.cx);
   if(!JS_IdToValue(frame.cx,id,&key))return {};
@@ -35,8 +35,8 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
                           bool setter,JS::MutableHandleValue output) {
   JS::RootedObject metadata(cx,&data.toObject());
   CHECK(JS::GetClass(metadata)==&nativePropertyClass);
-  auto* callbacks=static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,0).toPrivate());
-  JS::RootedObject realm(cx,&JS::GetReservedSlot(metadata,1).toObject());
+  auto* callbacks=static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,1).toPrivate());
+  JS::RootedObject realm(cx,&JS::GetReservedSlot(metadata,2).toObject());
   auto state=ReadNativeEngineState(cx);
   if(!state)return false;
   NativeCallbackEntry callbackEntry(*state);
@@ -45,7 +45,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
   auto mode=cx->nativePropertyFailureMode();
   if(mode)frame.propertyShouldThrow=mode.value();
   JSContext::AutoNativePropertyFailureMode propertyMode(cx,mozilla::Nothing());
-  frame.propertyData=JS::GetReservedSlot(metadata,2);
+  frame.propertyData=JS::GetReservedSlot(metadata,3);
   frame.propertyReturn=setter?JS::TrueValue():JS::UndefinedValue();
   auto name=NativePropertyName(frame,id);if(name.IsEmpty())return false;
   if(setter) {
@@ -79,22 +79,29 @@ bool ReadLazyNativeProperty(JSContext* cx,JS::HandleObject holder,JS::HandleId i
   JS::RootedValue receiver(cx,JS::ObjectValue(*holder));
   return ReadNativeProperty(cx,holder,receiver,id,data,output);
 }
+// The engine only interprets this immutable dispatch table. Actual callback
+// ownership, realm/payload tracing and retirement belong to this bridge record.
+const js::NativeDataPropertyOperations lazyPropertyOperations{
+    ReadLazyNativeProperty,nullptr,nullptr};
+const js::NativeDataPropertyOperations livePropertyOperations{
+    nullptr,ReadNativeProperty,nullptr};
+const js::NativeDataPropertyOperations writablePropertyOperations{
+    nullptr,ReadNativeProperty,WriteNativeProperty};
 JSObject* NewNativePropertyRecord(Frame& frame,const NativePropertyCallbacks& callbacks,
                                  JS::HandleObject owner,JS::HandleValue payload){
   auto native=std::make_unique<NativePropertyCallbacks>(callbacks);
   JS::RootedObject record(frame.cx,JS_NewObject(frame.cx,&nativePropertyClass));if(!record)return nullptr;
-  JS::SetReservedSlot(record,0,JS::PrivateValue(native.release()));
-  JS::SetReservedSlot(record,1,JS::ObjectValue(*owner));JS::SetReservedSlot(record,2,payload);
+  auto* operations=callbacks.lazy?&lazyPropertyOperations:
+      callbacks.setter?&writablePropertyOperations:&livePropertyOperations;
+  JS::SetReservedSlot(record,0,JS::PrivateValue(const_cast<js::NativeDataPropertyOperations*>(operations)));
+  JS::SetReservedSlot(record,1,JS::PrivateValue(native.release()));
+  JS::SetReservedSlot(record,2,JS::ObjectValue(*owner));JS::SetReservedSlot(record,3,payload);
   return record;
 }
 bool DefineNativePropertyRecord(Frame& frame,JS::HandleObject target,JS::HandleId id,
                                  JS::HandleObject metadata,unsigned flags,JS::ObjectOpResult& result){
   CHECK(JS::GetClass(metadata)==&nativePropertyClass);
-  auto& callbacks=*static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,0).toPrivate());
-  JS::RootedValue record(frame.cx,JS::ObjectValue(*metadata));
-  if(callbacks.lazy)return js::DefineKandeloLazyDataProperty(frame.cx,target,id,ReadLazyNativeProperty,record,flags,result);
-  return js::DefineKandeloNativeDataProperty(frame.cx,target,id,ReadNativeProperty,
-      callbacks.setter?WriteNativeProperty:nullptr,record,flags,result);
+  return js::DefineNativeDataPropertyWithRecord(frame.cx,target,id,metadata,flags,result);
 }
 Maybe<bool> SetObjectNativeProperty(Local<Object> object,Local<Context> context,
     Local<Name> name,AccessorNameGetterCallback getter,AccessorNameSetterCallback setter,

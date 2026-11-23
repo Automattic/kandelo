@@ -4,6 +4,8 @@
 struct JSContext;
 namespace v8::bridge {
 void RegisterProcessContext();
+void RegisterNativeBufferOwnerFactory();
+void InitializeNativeContextMetadata(JSContext*);
 void RetireProcessContext();
 bool ExposedGcEnabled();
 JSContext* NewProcessContext();

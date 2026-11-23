@@ -16,7 +16,7 @@
 @@ -2,6 +2,7 @@
  // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
- 
+
 +#if !defined(KANDELO_NATIVE_NODE_ENGINE)
  #include "src/api/api-inl.h"
  #include "src/builtins/builtins-utils-inl.h"
@@ -24,7 +24,7 @@
 @@ -12,13 +13,24 @@
  #include "src/tracing/perfetto-sdk.h"
  #include "src/tracing/traced-value.h"
- 
+
 +#define NATIVE_TRACE_TYPE_ERROR(isolate,message) NewTypeError(message)
 +#define NATIVE_TRACE_NUMBER_VALUE(value) Object::NumberValue(Cast<Number>(value))
 +#define NATIVE_TRACE_STRING_LENGTH(value) (value)->length()
@@ -37,11 +37,11 @@
  namespace v8 {
  namespace internal {
 +#endif
- 
+
  namespace {
- 
+
  #define MAX_STACK_LENGTH 100
- 
+
 +#if !defined(KANDELO_NATIVE_NODE_ENGINE)
  class MaybeUtf8 {
   public:
@@ -49,7 +49,7 @@
 @@ -50,6 +62,9 @@
    std::unique_ptr<uint8_t[]> allocated_;
  };
- 
+
 +#else
 +using MaybeUtf8=NativeUtf8;
 +#endif
@@ -76,14 +76,14 @@
 @@ -112,14 +129,16 @@
    DirectHandle<Object> id_arg = args.atOrUndefined(isolate, 4);
    Handle<JSAny> data_arg = Cast<JSAny>(args.atOrUndefined(isolate, 5));
- 
+
 +#if !defined(KANDELO_NATIVE_NODE_ENGINE)
    if (v8_flags.fuzzing) {
      // Category handling has many CHECKs we don't want to hit.
      return ReadOnlyRoots(isolate).false_value();
    }
 +#endif
- 
+
    if (!IsString(*category)) {
      THROW_NEW_ERROR_RETURN_FAILURE(
 -        isolate, NewTypeError(MessageTemplate::kTraceEventCategoryError));
@@ -92,7 +92,7 @@
    // Exit early if the category group is not enabled.
  #if defined(V8_USE_PERFETTO)
 @@ -135,13 +154,13 @@
- 
+
    if (!IsNumber(*phase_arg)) {
      THROW_NEW_ERROR_RETURN_FAILURE(
 -        isolate, NewTypeError(MessageTemplate::kTraceEventPhaseError));
@@ -105,7 +105,7 @@
 -        isolate, NewTypeError(MessageTemplate::kTraceEventNameError));
 +        isolate, NATIVE_TRACE_TYPE_ERROR(isolate, MessageTemplate::kTraceEventNameError));
    }
- 
+
    uint32_t flags = TRACE_EVENT_FLAG_COPY;
 @@ -149,16 +168,16 @@
    if (!IsNullOrUndefined(*id_arg, isolate)) {
@@ -117,7 +117,7 @@
      flags |= TRACE_EVENT_FLAG_HAS_ID;
      id = DoubleToInt32(Object::NumberValue(Cast<Number>(*id_arg)));
    }
- 
+
    DirectHandle<String> name_str = Cast<String>(name_arg);
 -  if (name_str->length() == 0) {
 -    THROW_NEW_ERROR_RETURN_FAILURE(
@@ -127,7 +127,7 @@
 +        isolate, NATIVE_TRACE_TYPE_ERROR(isolate, MessageTemplate::kTraceEventNameLengthError));
    }
    MaybeUtf8 name(isolate, name_str);
- 
+
 @@ -173,10 +192,16 @@
      // could have perf costs. It is also subject to all the same
      // limitations as JSON.stringify() as it relates to circular
@@ -144,7 +144,7 @@
 +#endif
      num_args++;
    }
- 
+
 @@ -209,7 +234,7 @@
        break;
      default:
@@ -152,12 +152,12 @@
 -          isolate, NewTypeError(MessageTemplate::kTraceEventPhaseError));
 +          isolate, NATIVE_TRACE_TYPE_ERROR(isolate, MessageTemplate::kTraceEventPhaseError));
    }
- 
+
  #else   // !defined(V8_USE_PERFETTO)
 @@ -229,5 +254,10 @@
    return ReadOnlyRoots(isolate).true_value();
  }
- 
+
 +#if defined(KANDELO_NATIVE_NODE_ENGINE)
 +}  // namespace v8::bridge::extras
 +#include "kandelo-node/engine-extras-runtime-undef.h"

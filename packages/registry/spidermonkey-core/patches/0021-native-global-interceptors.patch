@@ -151,7 +151,8 @@
    // Native objects should should avoid `lookupProperty` hooks, and those that
    // use them should avoid recursively triggering lookup, and those that still
    // violate this guidance are the ModuleEnvironmentObject.
-@@ -836,6 +842,26 @@
+@@ -835,8 +841,28 @@
+         return false;
        }
      }
 -    if (!NativeLookupOwnPropertyInline<allowGC, resolveMode>(cx, current, id,
@@ -180,6 +181,7 @@
 +                   cx, current, id, propp)) {
        return false;
      }
+
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
 @@ -1646,10 +1646,12 @@
@@ -197,7 +199,7 @@
      if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
          ops && ops->defineProperty) {
        bool handled = false;
-@@ -2898,7 +2900,8 @@
+@@ -2849,7 +2851,8 @@
 
    // Pure optimization for the common case. There's no point performing the
    // lookup in step 2.c again, as our caller just did it for us.
@@ -207,7 +209,7 @@
      // Ensure that a custom GetOwnPropertyOp, if present, doesn't
      // introduce additional properties which weren't previously found by
      // LookupOwnProperty.
-@@ -3056,6 +3059,27 @@
+@@ -3007,6 +3010,27 @@
  bool js::NativeSetProperty(JSContext* cx, Handle<NativeObject*> obj,
                             HandleId id, HandleValue v, HandleValue receiver,
                             ObjectOpResult& result) {
@@ -258,8 +260,8 @@
 +                                 NativePropertyInterception interception =
 +                                     NativePropertyInterception::Allow);
 
- // Native embedding callback for a lazy DATA property. The record and its data
- // are traced from the property's real slot; there is no JS getter Function.
+ // Existing-object native DATA semantics. The embedding supplies a native
+ // record object whose first reserved slot is a PrivateValue pointing at these
 --- a/js/src/vm/PropertyResult.h
 +++ b/js/src/vm/PropertyResult.h
 @@ -16,6 +16,7 @@

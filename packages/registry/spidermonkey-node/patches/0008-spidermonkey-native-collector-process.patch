@@ -16,17 +16,17 @@
 @@ -74,7 +74,9 @@
  #endif  // NODE_USE_V8_PLATFORM
  #include "v8-profiler.h"
- 
+
 +#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
  #include "cppgc/platform.h"
 +#endif
- 
+
  #if HAVE_INSPECTOR
  #include "inspector/worker_inspector.h"  // ParentInspectorHandle
 @@ -1372,6 +1374,7 @@
      result->platform_ = per_process::v8_platform.Platform();
    }
- 
+
 +#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      v8::PageAllocator* allocator = nullptr;
@@ -36,18 +36,18 @@
      cppgc::InitializeProcess(allocator);
    }
 +#endif
- 
+
    if (flags & ProcessInitializationFlags::kNoHarvestBuiltinCodeCache) {
      builtins::BuiltinLoader::SetHarvestCodeCache(false);
 @@ -1445,9 +1449,11 @@
      ResetSignalHandlers();
    }
- 
+
 +#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
 +#endif
- 
+
    per_process::v8_initialized = false;
    if (!(flags & ProcessInitializationFlags::kNoInitializeV8)) {

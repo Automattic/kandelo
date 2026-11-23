@@ -1,16 +1,14 @@
 # Kandelo patch rationale (S19)
-# Judgment: Mixed. Existing-object semantics need support, but bridge
-# callback storage and dispatch may be separated from it.
 #
-# Node installs native lazy/live data properties on existing objects.
-# Replacing those objects with proxies changes identity; using ordinary
-# accessors changes their property descriptors. The bridge therefore cannot
-# replace every use with those mechanisms, and the OS cannot supply JS
-# property semantics. Keep support for existing objects; move callback
-# ownership into the bridge and investigate stock handlers for bridge-
-# created objects only.
+# Node installs native data properties on objects that already exist.
+# Replacing an object with a proxy changes identity; replacing a data property
+# with a getter changes its descriptor. Keep those engine semantics. The
+# bridge now owns the callback record, traced realm/payload and finalizer;
+# the engine reads only a generic immutable dispatch table. Its original
+# property algorithms still control caching, reentry and failure behavior.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
@@ -88,7 +86,8 @@
    *redundant = false;
 
    if (desc.hasConfigurable() && desc.configurable() != attrs.configurable()) {
-@@ -1581,5 +1607,7 @@
+@@ -1580,7 +1606,9 @@
+     if (desc.hasValue()) {
        // Get the current value of the existing property.
        RootedValue currentValue(cx);
 -      if (!GetExistingDataProperty(cx, obj, id, prop, &currentValue)) {
@@ -97,6 +96,7 @@
 +      } else if (!GetExistingDataProperty(cx, obj, id, prop, &currentValue)) {
          return false;
        }
+
 @@ -1618,7 +1646,7 @@
 
  bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
@@ -160,7 +160,8 @@
        return false;
      }
      return result.succeed();
-@@ -1731,8 +1783,13 @@
+@@ -1730,10 +1782,15 @@
+   // paper-over that difference.
    JS::PropertyAttributes attrs = GetPropertyAttributes(obj, prop);
    bool redundant;
 -  if (!DefinePropertyIsRedundant(cx, obj, id, prop, attrs, desc, &redundant)) {
@@ -175,7 +176,9 @@
 +    }
      return result.succeed();
    }
-@@ -1777,5 +1834,7 @@
+
+@@ -1776,7 +1833,9 @@
+       // Step 5.e.ii.
        if (desc.hasValue()) {
          RootedValue currentValue(cx);
 -        if (!GetExistingDataProperty(cx, obj, id, prop, &currentValue)) {
@@ -184,7 +187,9 @@
 +        } else if (!GetExistingDataProperty(cx, obj, id, prop, &currentValue)) {
            return false;
          }
-@@ -1808,5 +1867,7 @@
+
+@@ -1807,7 +1866,9 @@
+     if (IsDataDescriptor(prop)) {
        if (!desc.hasValue()) {
          RootedValue currentValue(cx);
 -        if (!GetExistingDataProperty(cx, obj, id, prop, &currentValue)) {
@@ -193,6 +198,7 @@
 +        } else if (!GetExistingDataProperty(cx, obj, id, prop, &currentValue)) {
            return false;
          }
+
 @@ -1856,7 +1917,9 @@
      MOZ_ASSERT(!desc.hasSetter());
      if (IsDataDescriptor(prop)) {
@@ -204,7 +210,7 @@
          return false;
        }
        desc.setValue(currentValue);
-@@ -1869,12 +1932,160 @@
+@@ -1869,12 +1932,111 @@
    }
    desc.assertComplete();
 
@@ -231,71 +237,26 @@
    return result.succeed();
 +}
 +
-+namespace {
-+struct KandeloLazyCallback {
-+  KandeloLazyDataGetter getter = nullptr;
-+  KandeloNativeDataGetter liveGetter = nullptr;
-+  KandeloNativeDataSetter setter = nullptr;
-+  explicit KandeloLazyCallback(KandeloLazyDataGetter input) : getter(input) {}
-+  KandeloLazyCallback(KandeloNativeDataGetter input,
-+                       KandeloNativeDataSetter write)
-+      : liveGetter(input), setter(write) {}
-+};
-+class KandeloLazyRecord : public NativeObject {
-+ public:
-+  static const JSClass class_;
-+  static void finalize(JS::GCContext*, JSObject* object) {
-+    auto value = object->as<KandeloLazyRecord>().getReservedSlot(0);
-+    if (!value.isUndefined()) {
-+      js_delete(static_cast<KandeloLazyCallback*>(value.toPrivate()));
-+    }
-+  }
-+};
-+static const JSClassOps kandeloLazyOps = {
-+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-+    KandeloLazyRecord::finalize, nullptr, nullptr, nullptr};
-+const JSClass KandeloLazyRecord::class_ = {
-+    "KandeloLazyData", JSCLASS_HAS_RESERVED_SLOTS(2), &kandeloLazyOps};
-+}  // namespace
-+
-+bool js::DefineKandeloLazyDataProperty(JSContext* cx, HandleObject target,
-+                                      HandleId id, KandeloLazyDataGetter getter,
-+                                      HandleValue data, unsigned attrs,
-+                                      ObjectOpResult& result) {
-+  cx->check(target, id, data);
-+  if (!target->is<NativeObject>()) {
-+    JS_ReportErrorASCII(cx, "Native lazy data properties require a native target");
-+    return false;
-+  }
-+  auto callback = cx->make_unique<KandeloLazyCallback>(getter);
-+  if (!callback) return false;
-+  Rooted<KandeloLazyRecord*> record(
-+      cx, NewObjectWithGivenProto<KandeloLazyRecord>(cx, nullptr));
-+  if (!record) return false;
-+  record->setReservedSlot(0, PrivateValue(callback.release()));
-+  record->setReservedSlot(1, data);
-+  RootedValue value(cx, ObjectValue(*record));
-+  Rooted<PropertyDescriptor> desc(cx, PropertyDescriptor::Data(value, attrs));
-+  return NativeDefineProperty(cx, target.as<NativeObject>(), id, desc, result, true);
++// The embedding owns the record class, callback storage and finalization.
++// Its first reserved slot points to immutable, process-resident operations;
++// remaining traced slots belong entirely to the embedding.
++static const NativeDataPropertyOperations& NativeDataOperations(JSObject* record) {
++  return *static_cast<const NativeDataPropertyOperations*>(
++      record->as<NativeObject>().getReservedSlot(0).toPrivate());
 +}
 +
-+bool js::DefineKandeloNativeDataProperty(
-+    JSContext* cx, HandleObject target, HandleId id,
-+    KandeloNativeDataGetter getter, KandeloNativeDataSetter setter,
-+    HandleValue data, unsigned attrs, ObjectOpResult& result) {
-+  cx->check(target, id, data);
-+  MOZ_ASSERT(getter);
++bool js::DefineNativeDataPropertyWithRecord(
++    JSContext* cx, HandleObject target, HandleId id, HandleObject record,
++    unsigned attrs, ObjectOpResult& result) {
++  cx->check(target, id, record);
 +  if (!target->is<NativeObject>()) {
 +    JS_ReportErrorASCII(cx, "Native data properties require a native target");
 +    return false;
 +  }
-+  auto callback = cx->make_unique<KandeloLazyCallback>(getter, setter);
-+  if (!callback) return false;
-+  Rooted<KandeloLazyRecord*> record(
-+      cx, NewObjectWithGivenProto<KandeloLazyRecord>(cx, nullptr));
-+  if (!record) return false;
-+  record->setReservedSlot(0, PrivateValue(callback.release()));
-+  record->setReservedSlot(1, data);
++  MOZ_ASSERT(record->is<NativeObject>());
++  MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(record->getClass()) >= 1);
++  const auto& operations = NativeDataOperations(record);
++  MOZ_ASSERT(bool(operations.getter) != bool(operations.liveGetter));
 +  RootedValue value(cx, ObjectValue(*record));
 +  Rooted<PropertyDescriptor> desc(cx, PropertyDescriptor::Data(value, attrs));
 +  return NativeDefineProperty(cx, target.as<NativeObject>(), id, desc, result, true);
@@ -303,15 +264,13 @@
 +
 +static bool IsKandeloLiveDataProperty(NativeObject* obj, PropertyInfo prop) {
 +  MOZ_ASSERT(prop.isKandeloLazyDataProperty());
-+  auto& record = obj->getSlot(prop.slot()).toObject().as<KandeloLazyRecord>();
-+  auto* callback = static_cast<KandeloLazyCallback*>(
-+      record.getReservedSlot(0).toPrivate());
++  auto& record = obj->getSlot(prop.slot()).toObject().as<NativeObject>();
++  const auto* callback = &NativeDataOperations(&record);
 +  return callback->liveGetter != nullptr;
 +}
 +static bool HasKandeloNativeDataSetter(HandleValue value) {
-+  auto& record = value.toObject().as<KandeloLazyRecord>();
-+  auto* callback = static_cast<KandeloLazyCallback*>(
-+      record.getReservedSlot(0).toPrivate());
++  auto& record = value.toObject().as<NativeObject>();
++  const auto* callback = &NativeDataOperations(&record);
 +  return callback->setter != nullptr;
 +}
 +static bool SetKandeloNativeDataProperty(JSContext* cx,
@@ -319,12 +278,11 @@
 +                                         HandleId id, HandleValue value,
 +                                         HandleValue input,
 +                                         ObjectOpResult& result) {
-+  Rooted<KandeloLazyRecord*> record(
-+      cx, &value.toObject().as<KandeloLazyRecord>());
-+  auto* callback = static_cast<KandeloLazyCallback*>(
-+      record->getReservedSlot(0).toPrivate());
++  Rooted<NativeObject*> record(
++      cx, &value.toObject().as<NativeObject>());
++  const auto* callback = &NativeDataOperations(record);
 +  MOZ_ASSERT(callback->setter);
-+  RootedValue data(cx, record->getReservedSlot(1));
++  RootedValue data(cx, ObjectValue(*record));
 +  return callback->setter(cx, obj, id, data, input, result);
 +}
 +static bool GetKandeloLazyDataProperty(JSContext* cx, Handle<NativeObject*> obj,
@@ -338,11 +296,10 @@
 +                                       PropertyInfo prop,
 +                                       MutableHandleValue value) {
 +  MOZ_ASSERT(prop.isKandeloLazyDataProperty());
-+  Rooted<KandeloLazyRecord*> record(
-+      cx, &obj->getSlot(prop.slot()).toObject().as<KandeloLazyRecord>());
-+  auto* callback = static_cast<KandeloLazyCallback*>(
-+      record->getReservedSlot(0).toPrivate());
-+  RootedValue data(cx, record->getReservedSlot(1));
++  Rooted<NativeObject*> record(
++      cx, &obj->getSlot(prop.slot()).toObject().as<NativeObject>());
++  const auto* callback = &NativeDataOperations(record);
++  RootedValue data(cx, ObjectValue(*record));
 +  if (callback->liveGetter) {
 +    return callback->liveGetter(cx, obj, receiver, id, data, value);
 +  }
@@ -369,7 +326,7 @@
  }
 
  bool js::NativeDefineDataProperty(JSContext* cx, Handle<NativeObject*> obj,
-@@ -2171,6 +2382,9 @@
+@@ -2171,6 +2333,9 @@
      return js::CallGetter(cx, receiver, getter, vp);
    }
 
@@ -379,7 +336,8 @@
    MOZ_ASSERT(prop.isCustomDataProperty());
 
    return GetCustomDataProperty(cx, obj, id, vp);
-@@ -2190,5 +2404,6 @@
+@@ -2189,7 +2354,8 @@
+
    vp.setUndefined();
 
 -  if (!prop.isCustomDataProperty() && !obj->hasGetter(prop)) {
@@ -387,7 +345,9 @@
 +      !obj->hasGetter(prop)) {
      return true;
    }
-@@ -2483,4 +2698,16 @@
+
+@@ -2482,6 +2648,18 @@
+     return result.succeed();
    }
 
 +  if (prop.isKandeloLazyDataProperty()) {
@@ -404,9 +364,10 @@
 +  }
    MOZ_ASSERT(prop.isCustomDataProperty());
    MOZ_ASSERT(!obj->is<WithEnvironmentObject>());  // See bug 1128681.
+
 --- a/js/src/vm/NativeObject.h
 +++ b/js/src/vm/NativeObject.h
-@@ -1848,7 +1848,30 @@
+@@ -1848,7 +1848,24 @@
  extern bool NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
                                   HandleId id,
                                   Handle<JS::PropertyDescriptor> desc,
@@ -414,27 +375,21 @@
 +                                 ObjectOpResult& result,
 +                                 bool kandeloLazyData = false);
 +
-+// Native embedding callback for a lazy DATA property. The record and its data
-+// are traced from the property's real slot; there is no JS getter Function.
-+using KandeloLazyDataGetter = bool (*)(JSContext*, HandleObject, HandleId,
-+                                       HandleValue, MutableHandleValue);
-+extern bool DefineKandeloLazyDataProperty(JSContext* cx, HandleObject target,
-+                                          HandleId id,
-+                                          KandeloLazyDataGetter getter,
-+                                          HandleValue data, unsigned attrs,
-+                                          ObjectOpResult& result);
-+
-+// Live native DATA callbacks. No JavaScript getter/setter Functions are exposed.
-+using KandeloNativeDataGetter = bool (*)(JSContext*, HandleObject, HandleValue,
-+                                         HandleId, HandleValue,
-+                                         MutableHandleValue);
-+using KandeloNativeDataSetter = bool (*)(JSContext*, HandleObject, HandleId,
-+                                         HandleValue, HandleValue,
-+                                         ObjectOpResult&);
-+extern bool DefineKandeloNativeDataProperty(
-+    JSContext* cx, HandleObject target, HandleId id,
-+    KandeloNativeDataGetter getter, KandeloNativeDataSetter setter,
-+    HandleValue data, unsigned attrs, ObjectOpResult& result);
++// Existing-object native DATA semantics. The embedding supplies a native
++// record object whose first reserved slot is a PrivateValue pointing at these
++// immutable operations. That object is traced from the real property slot;
++// the embedding owns its remaining slots, callback records and finalizer.
++struct NativeDataPropertyOperations {
++  bool (*getter)(JSContext*, HandleObject, HandleId, HandleValue,
++                 MutableHandleValue);
++  bool (*liveGetter)(JSContext*, HandleObject, HandleValue, HandleId, HandleValue,
++                     MutableHandleValue);
++  bool (*setter)(JSContext*, HandleObject, HandleId, HandleValue, HandleValue,
++                 ObjectOpResult&);
++};
++extern bool DefineNativeDataPropertyWithRecord(
++    JSContext* cx, HandleObject target, HandleId id, HandleObject record,
++    unsigned attrs, ObjectOpResult& result);
 
  extern bool NativeDefineDataProperty(JSContext* cx, Handle<NativeObject*> obj,
                                       HandleId id, HandleValue value,
@@ -470,7 +425,8 @@
    }
 
    // Note: unlike isDataProperty, this returns true also for custom data
-@@ -133,4 +141,7 @@
+@@ -132,6 +140,9 @@
+
    bool isDataProperty() const { return flags().isDataProperty(); }
    bool isCustomDataProperty() const { return flags().isCustomDataProperty(); }
 +  bool isKandeloLazyDataProperty() const {
@@ -478,6 +434,7 @@
 +  }
    bool isAccessorProperty() const { return flags().isAccessorProperty(); }
    bool isDataDescriptor() const { return flags().isDataDescriptor(); }
+
 --- a/js/src/vm/PropMap.cpp
 +++ b/js/src/vm/PropMap.cpp
 @@ -1041,6 +1041,9 @@

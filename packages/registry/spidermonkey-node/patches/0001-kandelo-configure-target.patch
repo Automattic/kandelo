@@ -13,7 +13,7 @@
 +++ b/configure.py
 @@ -45,9 +45,9 @@
  parser = argparse.ArgumentParser()
- 
+
  valid_os = ('win', 'mac', 'solaris', 'freebsd', 'openbsd', 'linux',
 -            'android', 'aix', 'cloudabi', 'os400', 'ios', 'openharmony')
 +            'android', 'aix', 'cloudabi', 'os400', 'ios', 'openharmony', 'kandelo')

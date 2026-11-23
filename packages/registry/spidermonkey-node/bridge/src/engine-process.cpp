@@ -140,6 +140,10 @@ bool V8::Initialize(){
   CHECK(!JS_IsInitialized());
   // Resident before the first runtime and valid through late destruction.
   // SpiderMonkey adds its own pointer-size/endianness/runtime-format bytes.
+  // The generic engine hook owns no Node state. This existing resident native
+  // logger remains valid before Environment creation and after its disposal.
+  JS::SetNativeExecutionFatalHandler(kandelo_v8_graceful_fatal);
+  bridge::RegisterNativeBufferOwnerFactory();
   JS::SetProcessBuildIdOp(NativeBuildId);
   process.phase=ProcessPhase::Starting;process.foreground=std::this_thread::get_id();
   if(const char* diagnostic=JS_InitWithFailureDiagnostic())
@@ -188,6 +192,7 @@ JSContext* NewProcessContext(){
   // Serialize first-runtime and self-hosted initialization. Node's worker
   // platform may already exist, but no second JS constructor may race this.
   JSContext* cx=JS_NewContext(UINT32_MAX);if(!cx)return nullptr;
+  InitializeNativeContextMetadata(cx);
   if(!JS::InitSelfHostedCode(cx)){JS_DestroyContext(cx);return nullptr;}
   process.firstContextCreated=true;CHECK(process.contexts!=SIZE_MAX);++process.contexts;return cx;
 }

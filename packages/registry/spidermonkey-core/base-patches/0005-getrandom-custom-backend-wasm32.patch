@@ -1,52 +1,21 @@
 # Kandelo patch rationale (S04)
-# Judgment: Mixed. The Rust backend connection is needed, but its
-# implementation can live in maintained platform code.
 #
-# The engine's Rust dependencies need random bytes through getrandom's
-# custom-backend interface. This implementation calls Kandelo's existing
-# libc getrandom and reports failure instead of supplying weak substitute
-# bytes. The Node C++ bridge cannot implement this Rust crate's backend
-# contract. The fill loop can move to maintained platform code through a
-# small same-crate hook; keeping the whole implementation in this patch is
-# not a permanent need.
+# Mozilla's Rust entropy crate must use Kandelo libc rather than a browser
+# import. Keep this small same-crate module hook so Rust's Result/Error types
+# match the original shim. The actual byte-filling code lives in platform/
+# getrandom.rs; the runtime bridge cannot configure a Rust crate after it is
+# compiled. Preserve short-read and failure behavior.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/build/rust/getrandom/lib.rs
 +++ b/build/rust/getrandom/lib.rs
-@@ -5 +5,35 @@
-+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-+use core::ffi::c_void;
-+
+@@ -3,3 +3,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
  pub use {getrandom::fill as getrandom, getrandom::Error};
 +
++// The platform owns the implementation; this crate preserves Rust type identity.
 +#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-+#[no_mangle]
-+unsafe extern "Rust" fn __getrandom_v03_custom(
-+    dest: *mut u8,
-+    len: usize,
-+) -> Result<(), getrandom::Error> {
-+    unsafe extern "C" {
-+        #[link_name = "getrandom"]
-+        fn libc_getrandom(buf: *mut c_void, buflen: usize, flags: u32) -> isize;
-+    }
-+
-+    let mut filled = 0;
-+    while filled < len {
-+        let ptr = unsafe { dest.add(filled) }.cast::<c_void>();
-+        let remaining = len - filled;
-+        let result = unsafe { libc_getrandom(ptr, remaining, 0) };
-+
-+        if result < 0 {
-+            return Err(getrandom::Error::new_custom(1));
-+        }
-+
-+        if result == 0 {
-+            return Err(getrandom::Error::new_custom(2));
-+        }
-+
-+        filled += result as usize;
-+    }
-+
-+    Ok(())
-+}
++mod kandelo_getrandom;

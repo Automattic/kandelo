@@ -232,3 +232,10 @@ handling uses `__gxx_wasm_personality_v0`, which this change does not alter.
 Panic strategy, allocation, syscall and exception behavior remain governed by
 the selected original runtimes; this is not a general license to combine
 incompatible Rust ABIs.
+
+The Node-port cleanup keeps that annotation provisionally. A single shared
+Rust standard-library/panic owner has not been established for the engine's
+standard Wasm target and the Kandelo adapter target. Link success does not
+qualify that combination. Retiring the annotation requires a concrete shared
+SDK runtime design, exact panic/exception/allocator ownership and qualification;
+changing the target/sysroot or panic ABI requires separate review.

@@ -1,15 +1,14 @@
 # Kandelo patch rationale (S07)
-# Judgment: Mixed. Per-thread stack identity is needed, but standard
-# pthread bounds may replace this frame-address path.
 #
-# Engine recursion checks need a stack reference from the thread creating
-# the JSContext, not the process startup thread. Each guest pthread has its
-# own linear-memory stack; the bridge separately sets Node's lower limit. A
-# frame address is only a reference, not the full stack bounds. Standard
-# pthread stack queries are a plausible platform replacement, but their use
-# through Mozilla's path has not been qualified. Keep this provisionally.
+# Engine recursion checks need the creating thread's stack reference.
+# Standard pthread bounds may replace this, but musl's inspected main-thread
+# fallback probes around auxv with mremap rather than using established Wasm
+# stack limits; worker stack records alone do not prove the main path.
+# Keep the per-context frame reference until exact standard bounds are
+# qualified. It is not a full stack bound; Node's actual lower limit remains
+# separate, and no host call-stack limit is inferred from linear memory.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only review/cleanup; no build or runtime qualification is claimed.
 
 --- a/js/src/util/NativeStack.cpp
 +++ b/js/src/util/NativeStack.cpp

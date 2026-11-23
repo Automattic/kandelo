@@ -15,7 +15,7 @@
 
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -1173,6 +1173,16 @@
+@@ -1187,6 +1187,16 @@
  #else
    bool hasExecutionTracer() { return false; }
  #endif
@@ -34,7 +34,7 @@
  }; /* struct JSContext */
 --- a/js/src/vm/JSContext.cpp
 +++ b/js/src/vm/JSContext.cpp
-@@ -1106,25 +1106,48 @@
+@@ -1118,25 +1118,48 @@
    return debugMicroTaskQueue.pushBack(entry);
  }
 
@@ -88,7 +88,8 @@
  JS_PUBLIC_API JS::GenericMicroTask JS::DequeueNextMicroTask(JSContext* cx) {
 --- a/js/src/builtin/Promise.cpp
 +++ b/js/src/builtin/Promise.cpp
-@@ -1658,17 +1658,20 @@
+@@ -1657,20 +1657,23 @@
+     }
    }
 
 +  auto* queues = cx->embedderMicroTaskQueueForGlobal(
@@ -112,3 +113,5 @@
 +  return queues->enqueueRegularMicroTask(cx,
                                                        ObjectValue(*rootedJob));
  }
+
+ // This traces the paths in EnqueuePromiseReactionJobCrossRealm where you'd

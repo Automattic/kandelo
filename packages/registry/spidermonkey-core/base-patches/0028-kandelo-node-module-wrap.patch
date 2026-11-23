@@ -1,16 +1,14 @@
 # Kandelo patch rationale (S13)
-# Judgment: Mixed. Missing parser facts are needed; constructing Node-
-# shaped arrays in the engine is avoidable adapter policy.
 #
-# Node's loader needs import attributes and source locations that the stock
-# parser would discard. The bridge cannot faithfully recover discarded
-# parser facts by scanning source, and this is not an OS service. Preserve
-# those facts in the engine, but review moving Node-shaped arrays into the
-# bridge behind a generic metadata accessor. Cached and dynamic requests
-# must retain the same information and observable attribute-evaluation
-# order.
+# Node's loader needs import attributes and source offsets that stock
+# SpiderMonkey discards. Retain generic parser facts in the original traced
+# ImportAttributeVector and stencil metadata; the bridge builds Node's arrays.
+# A bridge cannot recover discarded parser facts without reparsing source,
+# and the OS cannot provide them. Native vector tracing, retirement, dynamic
+# attribute order and cached offsets remain qualification requirements.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/js/src/builtin/ModuleObject.h
 +++ b/js/src/builtin/ModuleObject.h
@@ -22,63 +20,87 @@
      ModuleTypeSlot,
      PhaseSlot,
      SlotCount
-@@ -89,4 +90,7 @@
+@@ -87,7 +88,18 @@
+       JSContext* cx, Handle<JSAtom*> specifier, JS::ModuleType moduleType,
+       ImportPhase phase = ImportPhase::Evaluation);
 
++  // Preserve generic parsed facts. Embeddings choose their own array/layout.
++  [[nodiscard]] static ModuleRequestObject* createWithAttributes(
++      JSContext* cx, Handle<JSAtom*> specifier, JS::ModuleType moduleType,
++      ImportPhase phase, Handle<ImportAttributeVector> attributes);
++
    JSAtom* specifier() const;
-+  JSObject* attributesData() const {
-+    return &getReservedSlot(AttributesDataSlot).toObject();
++  const ImportAttributeVector& attributes() const {
++    return *static_cast<ImportAttributeVector*>(
++        getReservedSlot(AttributesDataSlot).toPrivate());
 +  }
++  static void trace(JSTracer* trc, JSObject* obj);
++  static void finalize(JS::GCContext* gcx, JSObject* obj);
    JS::ModuleType moduleType() const;
    ImportPhase phase() const;
+
 --- a/js/src/builtin/ModuleObject.cpp
 +++ b/js/src/builtin/ModuleObject.cpp
-@@ -15,6 +15,7 @@
- #include "frontend/Stencil.h"
- #include "gc/GCContext.h"
- #include "gc/Tracer.h"
-+#include "js/Array.h"
- #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::LimitedColumnNumberOneOrigin
- #include "js/friend/ErrorMessages.h"  // JSMSG_*
- #include "js/Modules.h"  // JS::GetModulePrivate, JS::ModuleDynamicImportHook, JS::ModuleType
-@@ -269,7 +270,18 @@
+@@ -202,10 +202,39 @@
+
+ ///////////////////////////////////////////////////////////////////////////
+ // ModuleRequestObject
++static const JSClassOps moduleRequestOps = {
++    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
++    ModuleRequestObject::finalize, nullptr, nullptr, ModuleRequestObject::trace};
+ /* static */ const JSClass ModuleRequestObject::class_ = {
+     "ModuleRequest",
+-    JSCLASS_HAS_RESERVED_SLOTS(ModuleRequestObject::SlotCount),
++    JSCLASS_HAS_RESERVED_SLOTS(ModuleRequestObject::SlotCount) |
++        JSCLASS_FOREGROUND_FINALIZE,
++    &moduleRequestOps,
+ };
++
++static size_t ImportAttributesBytes(const ImportAttributeVector& attributes) {
++  return sizeof(ImportAttributeVector) +
++         attributes.capacity() * sizeof(ImportAttribute);
++}
++
++void ModuleRequestObject::trace(JSTracer* trc, JSObject* obj) {
++  auto& self = obj->as<ModuleRequestObject>();
++  const auto& slot = self.getReservedSlot(AttributesDataSlot);
++  if (!slot.isUndefined()) {
++    static_cast<ImportAttributeVector*>(slot.toPrivate())->trace(trc);
++  }
++}
++
++void ModuleRequestObject::finalize(JS::GCContext* gcx, JSObject* obj) {
++  auto& self = obj->as<ModuleRequestObject>();
++  const auto& slot = self.getReservedSlot(AttributesDataSlot);
++  if (!slot.isUndefined()) {
++    auto* attributes = static_cast<ImportAttributeVector*>(slot.toPrivate());
++    gcx->removeCellMemory(obj, ImportAttributesBytes(*attributes),
++                          MemoryUse::Embedding3);
++    js_delete(attributes);
++  }
++}
+
+ DEFINE_ATOM_OR_NULL_ACCESSOR_METHOD(ModuleRequestObject, specifier,
+                                     SpecifierSlot)
+@@ -269,7 +298,7 @@
      return nullptr;
    }
 
 -  return create(cx, specifier, moduleType, phase);
-+  Rooted<ModuleRequestObject*> self(cx, create(cx, specifier, moduleType, phase));
-+  if (!self) return nullptr;
-+  // Keep the parser's full attribute list without losing the request phase.
-+  RootedValueVector values(cx);
-+  for (const auto& attribute : maybeAttributes) {
-+    if (!values.append(StringValue(attribute.key())) ||
-+        !values.append(StringValue(attribute.value()))) return nullptr;
-+  }
-+  RootedObject attributes(cx, JS::NewArrayObject(cx, values));
-+  if (!attributes) return nullptr;
-+  self->setReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
-+  return self;
++  return createWithAttributes(cx, specifier, moduleType, phase, maybeAttributes);
  }
 
  /* static */
-@@ -277,8 +289,8 @@
+@@ -277,16 +306,50 @@
                                                   Handle<JSAtom*> specifier,
                                                   JS::ModuleType moduleType,
                                                   ImportPhase phase) {
 -  ModuleRequestObject* self =
 -      NewObjectWithGivenProto<ModuleRequestObject>(cx, nullptr);
-+  Rooted<ModuleRequestObject*> self(
-+      cx, NewObjectWithGivenProto<ModuleRequestObject>(cx, nullptr));
-   if (!self) {
-     return nullptr;
-   }
-@@ -286,6 +298,23 @@
-   self->initReservedSlot(SpecifierSlot, StringOrNullValue(specifier));
-   self->initReservedSlot(ModuleTypeSlot, ModuleTypeToValue(moduleType));
-   self->initReservedSlot(PhaseSlot, ImportPhaseToValue(phase));
+-  if (!self) {
 +  // This overload has a known module type rather than parsed attributes.
-+  // Preserve all ESR153 default-export module types; parsed lists replace this
-+  // synthesized list in the other overload.
-+  JSAtom* type = nullptr;
++  // Keep ESR153's complete default-export module type set as generic facts.
++  Rooted<JSAtom*> type(cx);
 +  switch (moduleType) {
 +    case JS::ModuleType::JSON: type = cx->names().json; break;
 +    case JS::ModuleType::CSS: type = cx->names().css; break;
@@ -86,16 +108,47 @@
 +    case JS::ModuleType::Text: type = cx->names().text; break;
 +    default: break;
 +  }
-+  RootedValueVector values(cx);
-+  if (type && (!values.append(StringValue(cx->names().type)) ||
-+               !values.append(StringValue(type)))) return nullptr;
-+  RootedObject attributes(cx, JS::NewArrayObject(cx, values));
-+  if (!attributes) return nullptr;
-+  self->initReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
-
++  Rooted<ImportAttributeVector> attributes(cx);
++  if (type) {
++    if (!attributes.reserve(1)) {
++      ReportOutOfMemory(cx);
++      return nullptr;
++    }
++    Rooted<JSAtom*> key(cx, cx->names().type);
++    RootedString value(cx, type);
++    attributes.infallibleEmplaceBack(key, value);
++  }
++  return createWithAttributes(cx, specifier, moduleType, phase, attributes);
++}
++
++/* static */
++ModuleRequestObject* ModuleRequestObject::createWithAttributes(
++    JSContext* cx, Handle<JSAtom*> specifier, JS::ModuleType moduleType,
++    ImportPhase phase, Handle<ImportAttributeVector> attributes) {
++  // Root both the copied facts and the new request across object allocation.
++  // No native pointer into parser or temporary dynamic-import data is borrowed.
++  Rooted<UniquePtr<ImportAttributeVector>> retained(cx);
++  retained = cx->make_unique<ImportAttributeVector>();
++  if (!retained) return nullptr;
++  if (!retained->appendAll(attributes.get())) {
++    ReportOutOfMemory(cx);
+     return nullptr;
+   }
+-
++  Rooted<ModuleRequestObject*> self(
++      cx, NewObjectWithGivenProto<ModuleRequestObject>(cx, nullptr));
++  if (!self) return nullptr;
+   self->initReservedSlot(SpecifierSlot, StringOrNullValue(specifier));
+   self->initReservedSlot(ModuleTypeSlot, ModuleTypeToValue(moduleType));
+   self->initReservedSlot(PhaseSlot, ImportPhaseToValue(phase));
+-
++  AddCellMemory(self, ImportAttributesBytes(*retained), MemoryUse::Embedding3);
++  self->initReservedSlot(AttributesDataSlot, PrivateValue(retained.release()));
    return self;
  }
-@@ -2219,17 +2248,16 @@
+
+@@ -2218,19 +2281,18 @@
+     // host hook is deeply unclear, and so right now embedders will not have
      // the ability to alter or extend the set of supported attributes.
      // See https://bugzilla.mozilla.org/show_bug.cgi?id=1840723.
 -    if (key == TaggedParserAtomIndex::WellKnown::type()) {
@@ -125,6 +178,7 @@
 +      request.firstUnsupportedAttributeKey = key;
      }
    }
+
 --- a/js/src/frontend/Stencil.h
 +++ b/js/src/frontend/Stencil.h
 @@ -530,11 +530,13 @@

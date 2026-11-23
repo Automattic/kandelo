@@ -67,7 +67,7 @@ the mode for reentrant user code. The context owns no JS edges here.
    }
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -500,6 +500,7 @@
+@@ -514,6 +514,7 @@
    bool brittleMode = false;
 
   private:
@@ -75,7 +75,7 @@ the mode for reentrant user code. The context owns no JS edges here.
    uint8_t embedderExecutionRestrictions_ = 0;
    using NativeExecutionFatal = void (*)(const char*);
    NativeExecutionFatal embedderExecutionFatal_ = nullptr;
-@@ -510,6 +511,25 @@
+@@ -524,6 +525,25 @@
      EmbedderCrashOnExecution = 1,
      EmbedderThrowOnExecution = 2
    };
@@ -139,12 +139,14 @@ the mode for reentrant user code. The context owns no JS edges here.
  }
 --- a/js/src/vm/PropertyAndElement.cpp
 +++ b/js/src/vm/PropertyAndElement.cpp
-@@ -53,4 +53,5 @@
+@@ -52,6 +52,7 @@
+ JS_PUBLIC_API bool JS_DefinePropertyById(
      JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
      JS::Handle<JS::PropertyDescriptor> desc, JS::ObjectOpResult& result) {
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result);
  }
+
 @@ -59,6 +60,7 @@
      JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
      JS::Handle<JS::PropertyDescriptor> desc) {
@@ -153,12 +155,14 @@ the mode for reentrant user code. The context owns no JS edges here.
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result) &&
           result.checkStrict(cx, obj, id);
  }
-@@ -314,4 +316,5 @@
+@@ -313,6 +315,7 @@
+     return false;
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result);
  }
+
 @@ -325,6 +328,7 @@
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
@@ -167,48 +171,62 @@ the mode for reentrant user code. The context owns no JS edges here.
    return ::DefinePropertyByDescriptor(cx, obj, id, desc, result) &&
           result.checkStrict(cx, obj, id);
  }
-@@ -654,4 +658,5 @@
+@@ -653,6 +657,7 @@
+   CHECK_THREAD(cx);
    cx->check(obj, id, v, receiver);
 
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::SetProperty(cx, obj, id, v, receiver, result);
  }
-@@ -666,4 +671,5 @@
+
+@@ -665,6 +670,7 @@
+
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult ignored;
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::SetProperty(cx, obj, id, v, receiver, ignored);
  }
-@@ -698,4 +704,5 @@
+
+@@ -697,6 +703,7 @@
+
    JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
    JS::ObjectOpResult ignored;
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::SetElement(cx, obj, index, v, receiver, ignored);
  }
-@@ -744,4 +751,5 @@
+
+@@ -743,6 +750,7 @@
+   CHECK_THREAD(cx);
    cx->check(obj, id);
 
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteProperty(cx, obj, id, result);
  }
-@@ -758,4 +766,5 @@
+
+@@ -757,6 +765,7 @@
+     return false;
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteProperty(cx, obj, id, result);
  }
-@@ -772,4 +781,5 @@
+
+@@ -771,6 +780,7 @@
+     return false;
    }
    JS::Rooted<jsid> id(cx, AtomToId(atom));
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteProperty(cx, obj, id, result);
  }
-@@ -782,4 +792,5 @@
+
+@@ -781,6 +791,7 @@
+   CHECK_THREAD(cx);
    cx->check(obj);
 
 +  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
    return js::DeleteElement(cx, obj, index, result);
  }
+
 --- a/js/src/vm/SelfHosting.cpp
 +++ b/js/src/vm/SelfHosting.cpp
 @@ -572,6 +572,7 @@

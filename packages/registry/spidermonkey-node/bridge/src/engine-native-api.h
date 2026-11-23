@@ -33,7 +33,7 @@
 #include "engine-gc-callback-api.h"
 #include "engine-property-enum-api.h"
 #include "engine-string-flags.h"
-namespace js { struct KandeloArrayBufferContents; class SharedArrayRawBuffer; }
+namespace js { class NativeArrayBufferOwner; class SharedArrayRawBuffer; }
 
 namespace v8 {
 class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;class Array;class Promise;
@@ -665,7 +665,7 @@ struct BackingStore {
   std::shared_ptr<void> lifetime;
   bool shared=false,resizable=false;
   size_t maximum;
-  std::shared_ptr<js::KandeloArrayBufferContents> nativeOwner;
+  std::shared_ptr<js::NativeArrayBufferOwner> nativeOwner;
   js::SharedArrayRawBuffer* sharedOwner=nullptr;
   std::vector<const void*> retainedOwnerKeys;
   bool IsShared()const{return shared;}

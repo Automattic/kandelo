@@ -15,8 +15,15 @@
 #include "vm/DateObject.h"
 #include "vm/PlainObject.h"
 
-#include "kandelo-node/shared-conveyor-upstream/deps/v8/src/api/api.cc"
+#include "kandelo-node/engine-shared-conveyor-data.h"
 namespace v8 {
+// Wrapper ownership belongs to the bridge, independent of the eventual
+// shared-GC backend. These operations do not create or successfully transfer
+// an experimental shared value; ordinary shared buffers have a separate owner.
+SharedValueConveyor::SharedValueConveyor(SharedValueConveyor&&) noexcept = default;
+SharedValueConveyor::~SharedValueConveyor() = default;
+SharedValueConveyor& SharedValueConveyor::operator=(SharedValueConveyor&&) noexcept = default;
+
 // No payload can be created before the deferred backend is selected. The
 // move/destruction interface is needed by Node's original transfer containers.
 struct CompiledWasmModule::Data {Data()=delete;};

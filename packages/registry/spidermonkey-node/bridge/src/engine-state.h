@@ -18,6 +18,7 @@ void RetireNativeHeapProfiler(State&);
 void UpdateNativeHeapWeakEdges(State&,JSTracer*);
 struct CatchScope;
 struct NativeMemoryMeasurements;
+struct NativeSourceRegistry;
 // Storage for one actual SpiderMonkey context. Node policy and native resource
 // ownership belong to original Node objects, never this engine record.
 struct State {
@@ -79,6 +80,7 @@ struct State {
   // rooting a Node realm or callback. Negative credits may arrive from sweep
   // threads; only the owning JS thread changes the collector's owner record.
   std::shared_ptr<NativeMemoryMeasurements> memoryMeasurements;
+  std::shared_ptr<NativeSourceRegistry> sourceRegistry;
   // Borrowed profiler owners. Final engine retirement stops and joins their
   // sampling producers before the canonical native callback queue is drained.
   std::set<internal::CpuProfiler*> cpuProfilers;

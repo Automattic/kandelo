@@ -30,7 +30,8 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
  #include "vm/EqualityOperations.h"  // js::SameValue
  #include "vm/GetterSetter.h"        // js::GetterSetter
  #include "vm/Interpreter.h"         // js::CallGetter, js::CallSetter
-@@ -2576,5 +2578,7 @@
+@@ -2526,7 +2528,9 @@
+     JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
      typename MaybeRooted<Value, allowGC>::HandleType receiver,
      typename MaybeRooted<jsid, allowGC>::HandleType id, IsNameLookup nameLookup,
 -    typename MaybeRooted<Value, allowGC>::MutableHandleType vp) {
@@ -39,7 +40,8 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
 +  if (found) *found = false;
    typename MaybeRooted<NativeObject*, allowGC>::RootType pobj(cx, obj);
    PropertyResult prop;
-@@ -2593,6 +2597,7 @@
+
+@@ -2544,6 +2548,7 @@
              return false;
            }
            if (handled) {
@@ -47,7 +49,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
              return true;
            }
          }
-@@ -2603,6 +2608,7 @@
+@@ -2554,6 +2559,7 @@
      }
 
      if (prop.isFound()) {
@@ -55,7 +57,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
        // Steps 3-7. Special case for dense elements because
        // GetExistingProperty doesn't support those.
        if (prop.isDenseElement()) {
-@@ -2634,6 +2640,9 @@
+@@ -2585,6 +2591,9 @@
      // is non-native, that optimization would be incorrect.
      if (proto->getOpsGetProperty()) {
        typename MaybeRooted<JSObject*, allowGC>::RootType protoRoot(cx, proto);
@@ -65,7 +67,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
        return GeneralizedGetProperty<allowGC>(cx, protoRoot, id, receiver,
                                               nameLookup, vp);
      }
-@@ -2647,6 +2656,45 @@
+@@ -2598,6 +2607,45 @@
                             MutableHandleValue vp) {
    return NativeGetPropertyInline<CanGC>(cx, obj, receiver, id, NotNameLookup,
                                          vp);
@@ -113,7 +115,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
  bool js::NativeGetPropertyBypassingInterceptors(
 --- a/js/src/vm/NativeObject.h
 +++ b/js/src/vm/NativeObject.h
-@@ -1940,6 +1940,12 @@
+@@ -1934,6 +1934,12 @@
                                HandleValue receiver, HandleId id,
                                MutableHandleValue vp);
 

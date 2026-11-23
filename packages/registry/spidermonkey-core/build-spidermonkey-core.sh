@@ -9,26 +9,27 @@ kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 : "${WASM_POSIX_DEP_WORK_DIR:?build through the normal package resolver}"
 : "${WASM_POSIX_DEP_OUT_DIR:?build through the normal package resolver}"
 : "${WASM_POSIX_DEP_LIBCXX_DIR:?declare libcxx}"
-: "${WASM_POSIX_DEP_LIBUV_DIR:?declare libuv}"
-: "${WASM_POSIX_DEP_V8_TRACING_DIR:?declare the native fatal logger}"
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SOURCE="$WORK_DIR/spidermonkey-source"
 OBJECT="$WORK_DIR/obj"
 OUT="$WASM_POSIX_DEP_OUT_DIR"
 source "$REPO_ROOT/sdk/activate.sh"
-export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot spidermonkey-core "$REPO_ROOT/sysroot" libcxx libuv v8-tracing)"
+export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot spidermonkey-core "$REPO_ROOT/sysroot" libcxx)"
 kandelo_package_stage_primary_source spidermonkey-core "$SOURCE" "$WORK_DIR"
 python3 "$SCRIPT_DIR/apply-engine-patches.py" --source "$SOURCE" \
     --package "$SCRIPT_DIR" --receipt "$WORK_DIR/engine-patches-applied.json"
+# Maintained platform implementations use the original upstream build owners.
+install -m644 "$SCRIPT_DIR/platform/getrandom.rs" "$SOURCE/build/rust/getrandom/kandelo_getrandom.rs"
+install -m644 "$SCRIPT_DIR/platform/wasm_binary_symbols.py" "$SOURCE/python/mozbuild/mozbuild/action/wasm_binary_symbols.py"
 export CC='wasm32posix-cc -D__kandelo__=1'
 export CXX='wasm32posix-c++ -D__kandelo__=1'
 export AS='wasm32posix-cc -D__kandelo__=1'
 export AR=wasm32posix-ar RANLIB=wasm32posix-ranlib NM=wasm32posix-nm STRIP=wasm32posix-strip
 export HOST_CC="${HOST_CC:-cc}" HOST_CXX="${HOST_CXX:-c++}"
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -ferror-limit=0 -I$WASM_POSIX_DEP_V8_TRACING_DIR/include"
-export LDFLAGS="${LDFLAGS:-} -L$WASM_POSIX_DEP_V8_TRACING_DIR/lib -lv8-tracing -L$WASM_POSIX_DEP_LIBUV_DIR/lib -luv -lc++ -lc++abi -lpthread -Wl,--error-limit=0"
-export PKG_CONFIG_LIBDIR="$WASM_POSIX_DEP_LIBUV_DIR/lib/pkgconfig:$WASM_POSIX_DEP_LIBCXX_DIR/lib/pkgconfig:$WASM_POSIX_DEP_V8_TRACING_DIR/lib/pkgconfig"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -ferror-limit=0"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi -lpthread -Wl,--error-limit=0"
+export PKG_CONFIG_LIBDIR="$WASM_POSIX_DEP_LIBCXX_DIR/lib/pkgconfig"
 export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
 export MOZCONFIG="$WORK_DIR/mozconfig"
 export MOZBUILD_STATE_PATH="$WORK_DIR/mozbuild-state"

@@ -118,7 +118,7 @@ bool Position(JSContext* cx, JS::HandleObject frame, uint32_t* line, uint32_t* c
   if (!value.isLimitedColumnNumber()) return Missing(cx, "Wasm CallSite metadata is not implemented");
   *column = value.oneOriginValue();
   auto* raw=js::CheckedUnwrapDynamic(frame,cx,false);
-  if(raw&&raw->is<js::SavedFrame>())NativeFunctionBodyLocation(raw->as<js::SavedFrame>().getKandeloScriptSource(),line,column);
+  if(raw&&raw->is<js::SavedFrame>())NativeFunctionBodyLocation(NativeFrameSourceRecord(raw->as<js::SavedFrame>()),line,column);
   return true;
 }
 JSString* FormatSite(JSContext* cx, JS::HandleObject frame) {

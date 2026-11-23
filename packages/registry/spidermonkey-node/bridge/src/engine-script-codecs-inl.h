@@ -56,6 +56,16 @@ js::ScriptSource* StencilSource(JSObject* record){
   auto& info=ScriptInfoFor(record);CHECK(info.stencil);
   return info.stencil->getInitial()->source.get();
 }
+bool IsNativeFunctionBodyScript(JSScript* script){
+  auto value=JS::GetScriptPrivate(script);
+  if(!value.isObject())return false;
+  auto* object=js::UncheckedUnwrapWithoutExpose(&value.toObject());
+  if(JS::GetClass(object)!=&nativeScriptClass)return false;
+  const auto& info=ScriptInfoFor(object);
+  return info.stencil&&info.stencil->getInitial()->source.get()==script->scriptSource()&&
+      info.cache.kind==kandelo::node::cache::Kind::Function;
+}
+
 JSObject* NewScriptRecord(Frame& frame,const ScriptCompiler::Source& source,
     RefPtr<JS::Stencil> stencil,ScriptCompiler::CompileOptions flags=ScriptCompiler::kNoCompileOptions){
   try {
@@ -181,7 +191,7 @@ NativeCachedStencil ReadNativeStencilCache(Frame& frame,ScriptCompiler::Source& 
   auto* initial=decoded->getInitial();
   if(initial->scriptData.empty()||initial->isModule()!=(kind==Kind::Module)||
       initial->scriptData[0].isFunction()!=(kind==Kind::Function))return reject();
-  decoded=JS::RebaseDecodedStencilOrigin(frame.cx,decoded.forget(),compilation.options);
+  decoded=decoded_origin::RebaseDecodedStencilOrigin(frame.cx,decoded.forget(),compilation.options);
   if(!decoded)return {{},true};
   return {std::move(decoded),false};
 }
@@ -321,15 +331,18 @@ Local<Data> NativeHostDefinedOptions(Frame& frame,JS::HandleObject record){
   frame.roots.push_back(std::move(root));return Local<Data>(pointer);
 }
 Local<FixedArray> DynamicImportAttributes(Frame& frame,JS::HandleObject request){
-  JS::RootedObject attributes(frame.cx,request->as<js::ModuleRequestObject>().attributesData());
-  JSAutoRealm home(frame.cx,attributes);uint32_t length;
-  if(!JS::GetArrayLength(frame.cx,attributes,&length))return {};
-  CHECK_EQ(length%2,0u);CHECK_LE(length,uint32_t(INT_MAX));
-  JS::RootedObject array(frame.cx,NewNativeDataArray(frame,int(length)));if(!array)return {};
-  for(uint32_t index=0;index<length;++index){
-    JS::RootedValue value(frame.cx);if(!JS_GetElement(frame.cx,attributes,index,&value))return {};
-    CHECK(value.isString());
-    if(!WriteNativeDataArray(frame,array,int(index),frame.Own<String>(value)))return {};
+  JSAutoRealm home(frame.cx,request);
+  CHECK_LE(request->as<js::ModuleRequestObject>().attributes().length(),size_t(INT_MAX/2));
+  const auto count=request->as<js::ModuleRequestObject>().attributes().length();
+  JS::RootedObject array(frame.cx,NewNativeDataArray(frame,int(count*2)));if(!array)return {};
+  for(size_t index=0;index<count;++index){
+    // Reacquire through the rooted request after allocations; atom/string
+    // pointers are rooted before value construction can trigger collection.
+    const auto& attribute=request->as<js::ModuleRequestObject>().attributes()[index];
+    JS::RootedValue key(frame.cx,JS::StringValue(attribute.key()));
+    JS::RootedValue value(frame.cx,JS::StringValue(attribute.value()));
+    if(!WriteNativeDataArray(frame,array,int(index*2),frame.Own<String>(key))||
+       !WriteNativeDataArray(frame,array,int(index*2+1),frame.Own<String>(value)))return {};
   }
   JS::RootedValue value(frame.cx,JS::ObjectValue(*array));return frame.Own<FixedArray>(value);
 }
@@ -498,17 +511,16 @@ Local<FixedArray> ModuleRequest::GetImportAttributes()const{
   const size_t requestIndex=size_t(JS::GetReservedSlot(record,4).toNumber());
   CHECK_LT(requestIndex,metadata.moduleRequests.length());
   const auto& nativeAttributes=metadata.moduleRequests[requestIndex].attributes;
-  JS::RootedObject attributes(frame.cx,request->as<js::ModuleRequestObject>().attributesData());
-  JSAutoRealm home(frame.cx,attributes);uint32_t length;
-  if(!JS::GetArrayLength(frame.cx,attributes,&length))return {};
-  CHECK_EQ(length,nativeAttributes.length()*2);CHECK_LE(nativeAttributes.length(),size_t(INT_MAX/3));
+  JSAutoRealm home(frame.cx,request);
+  CHECK_EQ(request->as<js::ModuleRequestObject>().attributes().length(),nativeAttributes.length());
+  CHECK_LE(nativeAttributes.length(),size_t(INT_MAX/3));
   JS::RootedObject array(frame.cx,NewNativeDataArray(frame,int(nativeAttributes.length()*3)));if(!array)return {};
   for(size_t index=0;index<nativeAttributes.length();++index){
-    for(uint32_t part=0;part<2;++part){
-      JS::RootedValue value(frame.cx);if(!JS_GetElement(frame.cx,attributes,uint32_t(index*2+part),&value))return {};
-      CHECK(value.isString());
-      if(!WriteNativeDataArray(frame,array,int(index*3+part),frame.Own<String>(value)))return {};
-    }
+    const auto& attribute=request->as<js::ModuleRequestObject>().attributes()[index];
+    JS::RootedValue key(frame.cx,JS::StringValue(attribute.key()));
+    JS::RootedValue value(frame.cx,JS::StringValue(attribute.value()));
+    if(!WriteNativeDataArray(frame,array,int(index*3),frame.Own<String>(key))||
+       !WriteNativeDataArray(frame,array,int(index*3+1),frame.Own<String>(value)))return {};
     const auto offset=nativeAttributes[index].sourceOffset;CHECK_LE(offset,uint32_t(INT_MAX));
     if(!WriteNativeDataArray(frame,array,int(index*3+2),Integer::New(&frame.state->isolate,int(offset))))return {};
   }
@@ -749,10 +761,9 @@ MaybeLocal<Function> ScriptCompiler::CompileFunction(Local<Context> context,Sour
       compilation.options,nullptr,JS::HandleValueArray(parameters),compilation.input,&raw,cached.stencil));
   RefPtr<JS::Stencil> stencil=already_AddRefed<JS::Stencil>(raw);
   if(!function){RecordNativeCompilationFailure(frame,*source,true);return {};}
-  // JS::CompileFunction retains its real synthetic signature and newline.
-  // Mark only this native body API so stack/diagnostic adapters can expose
-  // the caller's body coordinates without changing ordinary new Function().
-  stencil->getInitial()->source->setKandeloNativeFunctionBody();
+  // The bridge script record identifies this native body compilation. Frame
+  // capture retains that identity in the shared bridge source registry; the
+  // engine keeps compiler offsets but no adapter-only classification flag.
   JS::RootedScript script(frame.cx,JS_GetFunctionScript(frame.cx,function));if(!script)return {};
   JS::RootedObject record(frame.cx,NewScriptRecord(frame,*source,std::move(stencil),flags));if(!record)return {};
   auto& cache=ScriptInfoFor(record).cache;cache.kind=kandelo::node::cache::Kind::Function;

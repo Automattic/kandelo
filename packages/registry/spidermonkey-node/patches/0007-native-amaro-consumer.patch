@@ -43,4 +43,4 @@
 +  if (globalThis.WebAssembly === undefined && !internalBinding('amaro').hasNative)
      throw new ERR_WEBASSEMBLY_NOT_SUPPORTED('TypeScript');
  }
- 
+

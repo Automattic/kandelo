@@ -15,7 +15,7 @@
 +++ b/src/ffi/jit_memory.cc
 @@ -23,6 +23,11 @@
  namespace {
- 
+
  bool SelfTest() {
 +#if defined(__wasm__)
 +  // WebAssembly linear-memory pages do not contain executable CPU code.
@@ -31,5 +31,5 @@
  #endif
 +#endif  // defined(__wasm__)
  }
- 
+
  }  // namespace

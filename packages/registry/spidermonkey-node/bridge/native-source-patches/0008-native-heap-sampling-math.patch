@@ -16,21 +16,21 @@
 @@ -2,6 +2,9 @@
  // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
- 
+
 +#ifdef KANDELO_NATIVE_NODE_ENGINE
 +#include "kandelo-node/engine-heap-allocation-data.h"
 +#else
  #include "src/profiler/sampling-heap-profiler.h"
- 
+
  #include <stdint.h>
 @@ -18,6 +21,7 @@
  #include "src/heap/heap.h"
  #include "src/profiler/strings-storage.h"
- 
+
 +#endif
  namespace v8 {
  namespace internal {
- 
+
 @@ -28,8 +32,10 @@
  // Let u be a uniformly distributed random number between 0 and 1, then
  // next_sample = (- ln u) / λ
@@ -45,7 +45,7 @@
 @@ -51,6 +57,7 @@
    return {size, static_cast<unsigned int>(count * scale + 0.5)};
  }
- 
+
 +#ifndef KANDELO_NATIVE_NODE_ENGINE
  SamplingHeapProfiler::SamplingHeapProfiler(
      Heap* heap, StringsStorage* names, uint64_t rate, int stack_depth,
@@ -53,7 +53,7 @@
 @@ -320,5 +327,6 @@
    return samples;
  }
- 
+
 +#endif  // !KANDELO_NATIVE_NODE_ENGINE
  }  // namespace internal
  }  // namespace v8

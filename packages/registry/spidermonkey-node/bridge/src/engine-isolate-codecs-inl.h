@@ -328,6 +328,7 @@ void Isolate::Initialize(Isolate* isolate,const CreateParams& params){
       data.state=std::make_shared<State>(data.cx,isolate);
       if(RegisterNativeEngineState(data.state)){
         data.registered=true;
+        data.cx->embedderFrameMetadataCapture=CaptureNativeFrameMetadata;
         InitializeNativeCodeGeneration(*data.state);
         JS::SetOutOfMemoryCallback(data.cx,NativeEngineOutOfMemory,isolate);
         initialized=!data.cppHeap||data.cppHeap->AttachToIsolate(isolate);
@@ -485,6 +486,8 @@ void Isolate::Deinitialize(){
         data.cx->embedderPromiseLifecycleHook=nullptr;
         data.cx->embedderPromiseLifecycleData=nullptr;
         data.state->promiseHook=nullptr;
+        data.cx->embedderFrameMetadataCapture=nullptr;
+        data.state->sourceRegistry.reset();
         RetireNativeEngineState(data.cx);data.registered=false;
       }
     }else {

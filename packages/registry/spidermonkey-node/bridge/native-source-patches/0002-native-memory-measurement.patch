@@ -1,106 +1,173 @@
 # Kandelo patch rationale (O12)
 #
-# Node vm.measureMemory needs real SpiderMonkey measurements in Node's
-# expected result structure. The original V8 collector cannot supply those
-# measurements. However, this patch adds another result-builder
-# implementation inside V8 source; that placement is weakly justified and
-# duplicates policy. Review one portable upstream formatter or a clearly
-# owned bridge formatter, including property order, promise failure and GC
-# lifetimes. Neither a guessed measurement nor merely relocating duplicated
-# code establishes an improvement.
+# Node's vm.measureMemory needs its original result fields, grouping and
+# ranges with actual SpiderMonkey measurements. Reuse one original V8 result
+# builder and connect only its object/value construction to bridge helpers;
+# the former duplicate formatter is removed. V8's heap sampler cannot read
+# SpiderMonkey, while OS totals cannot substitute for per-context JS usage.
 #
-# Judgment: Weak. The native result builder duplicates formatting inside an
-# upstream file instead of establishing one maintained owner.
-#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
 --- a/deps/v8/src/heap/memory-measurement.cc
 +++ b/deps/v8/src/heap/memory-measurement.cc
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,9 @@
  // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
- 
-+#if !defined(KANDELO_NATIVE_NODE_ENGINE)
+
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++#include "kandelo-node/engine-memory-result-construction.h"
++#else
  #include "src/heap/memory-measurement.h"
- 
+
  #include "include/v8-local-handle.h"
-@@ -23,6 +24,8 @@
+@@ -23,6 +26,8 @@
  #include "src/wasm/wasm-stack-wrapper-cache.h"
  #endif
- 
+
 +#endif
 +
  namespace v8::internal {
  namespace {
  // Must only be used from stack.
-@@ -30,6 +33,7 @@
+@@ -30,11 +35,30 @@
  // TODO(374253377): This should be implemented purely on the public API and move
  // to d8. There's no reason V8 would need to provide a default delegate on its
  // API.
-+#if !defined(KANDELO_NATIVE_NODE_ENGINE)
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++using MemoryObjectHandle = v8::Local<v8::Object>;
++using MemoryDirectObjectHandle = v8::Local<v8::Object>;
++using MemoryValueHandle = v8::Local<v8::Value>;
++using MemoryArrayHandle = v8::Local<v8::Array>;
++using MemoryElementsHandle = v8::Local<v8::Array>;
++using MemoryStringHandle = v8::Local<v8::String>;
++#else
++using MemoryObjectHandle = Handle<JSObject>;
++using MemoryDirectObjectHandle = DirectHandle<JSObject>;
++using MemoryValueHandle = DirectHandle<Object>;
++using MemoryArrayHandle = DirectHandle<JSArray>;
++using MemoryElementsHandle = DirectHandle<FixedArray>;
++using MemoryStringHandle = DirectHandle<String>;
++#endif
  class MemoryMeasurementResultBuilder final {
   public:
    explicit MemoryMeasurementResultBuilder(v8::Isolate* isolate)
-@@ -106,9 +110,59 @@
-   std::vector<Handle<JSObject>> other_;
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++      : isolate_(isolate), native_factory_(isolate), factory_(&native_factory_) {
++#else
+       : isolate_(reinterpret_cast<Isolate*>(isolate)),
+         factory_(isolate_->factory()) {
++#endif
+     result_ = NewJSObject();
+   }
+   void AddTotal(size_t estimate, size_t lower_bound, size_t upper_bound) {
+@@ -51,7 +75,7 @@
+     other_.push_back(NewResult(estimate, lower_bound, upper_bound));
+   }
+   void AddWasm(size_t code, size_t metadata) {
+-    DirectHandle<JSObject> wasm = NewJSObject();
++    MemoryDirectObjectHandle wasm = NewJSObject();
+     AddProperty(wasm, factory_->NewStringFromAsciiChecked("code"),
+                 NewNumber(code));
+     AddProperty(wasm, factory_->NewStringFromAsciiChecked("metadata"),
+@@ -59,12 +83,16 @@
+     AddProperty(result_, factory_->NewStringFromAsciiChecked("WebAssembly"),
+                 wasm);
+   }
+-  DirectHandle<JSObject> Build() {
++  MemoryDirectObjectHandle Build() {
+     if (detailed_) {
+       int length = static_cast<int>(other_.size());
+-      DirectHandle<FixedArray> other = factory_->NewFixedArray(length);
++      MemoryElementsHandle other = factory_->NewFixedArray(length);
+       for (int i = 0; i < length; i++) {
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++        factory_->SetElement(other, i, other_[i]);
++#else
+         other->set(i, *other_[i]);
++#endif
+       }
+       AddProperty(result_, factory_->other_string(),
+                   factory_->NewJSArrayWithElements(other));
+@@ -73,42 +101,61 @@
+   }
+
+  private:
+-  Handle<JSObject> NewResult(size_t estimate, size_t lower_bound,
++  MemoryObjectHandle NewResult(size_t estimate, size_t lower_bound,
+                              size_t upper_bound) {
+-    Handle<JSObject> result = NewJSObject();
+-    DirectHandle<Object> estimate_obj = NewNumber(estimate);
++    MemoryObjectHandle result = NewJSObject();
++    MemoryValueHandle estimate_obj = NewNumber(estimate);
+     AddProperty(result, factory_->jsMemoryEstimate_string(), estimate_obj);
+-    DirectHandle<Object> range = NewRange(lower_bound, upper_bound);
++    MemoryValueHandle range = NewRange(lower_bound, upper_bound);
+     AddProperty(result, factory_->jsMemoryRange_string(), range);
+     return result;
+   }
+-  DirectHandle<Object> NewNumber(size_t value) {
++  MemoryValueHandle NewNumber(size_t value) {
+     return factory_->NewNumberFromSize(value);
+   }
+-  Handle<JSObject> NewJSObject() {
++  MemoryObjectHandle NewJSObject() {
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++    return factory_->NewJSObject();
++#else
+     return factory_->NewJSObject(isolate_->object_function());
+-  }
+-  DirectHandle<JSArray> NewRange(size_t lower_bound, size_t upper_bound) {
+-    DirectHandle<Object> lower = NewNumber(lower_bound);
+-    DirectHandle<Object> upper = NewNumber(upper_bound);
+-    DirectHandle<FixedArray> elements = factory_->NewFixedArray(2);
++#endif
++  }
++  MemoryArrayHandle NewRange(size_t lower_bound, size_t upper_bound) {
++    MemoryValueHandle lower = NewNumber(lower_bound);
++    MemoryValueHandle upper = NewNumber(upper_bound);
++    MemoryElementsHandle elements = factory_->NewFixedArray(2);
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++    factory_->SetElement(elements, 0, lower);
++    factory_->SetElement(elements, 1, upper);
++#else
+     elements->set(0, *lower);
+     elements->set(1, *upper);
++#endif
+     return factory_->NewJSArrayWithElements(elements);
+   }
+-  void AddProperty(DirectHandle<JSObject> object, DirectHandle<String> name,
+-                   DirectHandle<Object> value) {
++  void AddProperty(MemoryDirectObjectHandle object, MemoryStringHandle name,
++                   MemoryValueHandle value) {
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++    factory_->AddProperty(object, name, value);
++#else
+     JSObject::AddProperty(isolate_, object, name, value, NONE);
+-  }
++#endif
++  }
++#if defined(KANDELO_NATIVE_NODE_ENGINE)
++  v8::Isolate* isolate_;
++  v8::bridge::NativeMemoryResultConstruction native_factory_;
++  v8::bridge::NativeMemoryResultConstruction* factory_;
++#else
+   Isolate* isolate_;
+   Factory* factory_;
+-  Handle<JSObject> result_;
+-  std::vector<Handle<JSObject>> other_;
++#endif
++  MemoryObjectHandle result_;
++  std::vector<MemoryObjectHandle> other_;
    bool detailed_ = false;
  };
-+#else
-+// Same result structure and construction order through the shared public
-+// source interface; no V8 heap layout or factory is imported.
-+class MemoryMeasurementResultBuilder final {
-+ public:
-+  explicit MemoryMeasurementResultBuilder(v8::Isolate* isolate)
-+      : isolate_(isolate), result_(v8::Object::New(isolate)) {}
-+  void AddTotal(size_t estimate,size_t lower,size_t upper) {
-+    AddProperty(result_,"total",NewResult(estimate,lower,upper));
-+  }
-+  void AddCurrent(size_t estimate,size_t lower,size_t upper) {
-+    detailed_=true;AddProperty(result_,"current",NewResult(estimate,lower,upper));
-+  }
-+  void AddOther(size_t estimate,size_t lower,size_t upper) {
-+    detailed_=true;other_.push_back(NewResult(estimate,lower,upper));
-+  }
-+  void AddWasm(size_t code,size_t metadata) {
-+    auto wasm=v8::Object::New(isolate_);
-+    AddProperty(wasm,"code",v8::Number::New(isolate_,code));
-+    AddProperty(wasm,"metadata",v8::Number::New(isolate_,metadata));
-+    AddProperty(result_,"WebAssembly",wasm);
-+  }
-+  v8::Local<v8::Object> Build() {
-+    if(detailed_){
-+      auto other=v8::Array::New(isolate_,int(other_.size()));
-+      for(size_t i=0;i<other_.size();++i)
-+        CHECK(other->CreateDataProperty(isolate_->GetCurrentContext(),uint32_t(i),other_[i]).FromMaybe(false));
-+      AddProperty(result_,"other",other);
-+    }
-+    return result_;
-+  }
-+ private:
-+  v8::Local<v8::Object> NewResult(size_t estimate,size_t lower,size_t upper) {
-+    auto result=v8::Object::New(isolate_);
-+    AddProperty(result,"jsMemoryEstimate",v8::Number::New(isolate_,estimate));
-+    auto range=v8::Array::New(isolate_,2);
-+    CHECK(range->CreateDataProperty(isolate_->GetCurrentContext(),uint32_t(0),v8::Number::New(isolate_,lower)).FromMaybe(false));
-+    CHECK(range->CreateDataProperty(isolate_->GetCurrentContext(),uint32_t(1),v8::Number::New(isolate_,upper)).FromMaybe(false));
-+    AddProperty(result,"jsMemoryRange",range);return result;
-+  }
-+  void AddProperty(v8::Local<v8::Object> object,const char* name,v8::Local<v8::Value> value) {
-+    auto key=v8::String::NewFromUtf8(isolate_,name).ToLocalChecked();
-+    CHECK(object->CreateDataProperty(isolate_->GetCurrentContext(),key,value).FromMaybe(false));
-+  }
-+  v8::Isolate* isolate_;
-+  v8::Local<v8::Object> result_;
-+  std::vector<v8::Local<v8::Object>> other_;
-+  bool detailed_=false;
-+};
-+#endif
  }  // anonymous namespace
- 
+
 -class V8_EXPORT_PRIVATE MeasureMemoryDelegate
 +class MeasureMemoryDelegate
      : public v8::MeasureMemoryDelegate {
   public:
    MeasureMemoryDelegate(v8::Isolate* isolate, v8::Local<v8::Context> context,
-@@ -149,7 +203,7 @@
+@@ -149,7 +196,7 @@
    v8::Context::Scope scope(v8_context);
    size_t total_size = 0;
    size_t current_size = 0;
@@ -109,10 +176,10 @@
    for (size_t i = 0; i < result.contexts.size(); ++i) {
      total_size += result.sizes_in_bytes[i];
      if (context_ == result.contexts[i]) {
-@@ -174,13 +228,22 @@
+@@ -174,13 +221,22 @@
      }
    }
- 
+
 +#if defined(KANDELO_NATIVE_NODE_ENGINE)
 +  auto v8_result = result_builder.Build();
 +#else
@@ -135,10 +202,10 @@
  MemoryMeasurement::MemoryMeasurement(Isolate* isolate)
      : isolate_(isolate),
        task_runner_(isolate->heap()->GetForegroundTaskRunner()),
-@@ -395,4 +458,14 @@
+@@ -395,4 +451,14 @@
    size_by_context_[context] += external_size;
  }
- 
+
 +#endif
  }  // namespace v8::internal
 +

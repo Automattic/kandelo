@@ -70,7 +70,7 @@ BackingStore::BackingStore(void* data,size_t size,void(*deleter)(void*,size_t,vo
 }
 size_t BackingStore::ByteLength()const{
   // Native jobs may read these lengths without entering a JavaScript context.
-  if(nativeOwner)return nativeOwner->byteLength.load(std::memory_order_relaxed);
+  if(nativeOwner)return nativeOwner->byteLength();
   if(sharedOwner&&resizable)return sharedOwner->volatileByteLength();
   return size;
 }
@@ -90,7 +90,7 @@ Local<ArrayBuffer> ArrayBuffer::New(Isolate* isolate,std::shared_ptr<BackingStor
   try {
     JS::RootedObject object(f.cx);
     if(store->IsResizableByUserJavaScript()){
-      CHECK(store->nativeOwner&&store->nativeOwner->resizable);
+      CHECK(store->nativeOwner&&store->nativeOwner->resizable());
       object=js::ResizableArrayBufferObject::createWithKandeloContents(f.cx,store->nativeOwner);
     }else if(!store->data){CHECK(store->size==0);object=JS::NewArrayBuffer(f.cx,0);}
     else {
@@ -123,7 +123,7 @@ std::shared_ptr<BackingStore> ArrayBuffer::GetBackingStore(){
     if(!owner){CHECK(JS_IsExceptionPending(frame.cx));return {};}
     if(auto found=RegisteredBacking(owner.get()))return found;
     auto store=std::make_shared<BackingStore>(raw->dataPointer(),raw->byteLength(),[](void*,size_t,void*){},nullptr,owner);
-    store->nativeOwner=owner;store->maximum=owner->maxByteLength;store->resizable=owner->resizable;
+    store->nativeOwner=owner;store->maximum=owner->maxByteLength();store->resizable=owner->resizable();
     return RegisterBacking(owner.get(),std::move(store));
   }catch(const std::bad_alloc&){JS_ReportOutOfMemory(frame.cx);return {};}
 }

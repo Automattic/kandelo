@@ -25,7 +25,7 @@
       "why": "Translate actual SpiderMonkey values, byte stores, views, strings and collection values for original Node consumers. Retain real backing-store identity, leases, external-memory credit and deleter ownership rather than copying Node's public Buffer or string policy.",
       "protectingContracts": ["native handle and backing lifetime controls", "parser allocation/GC/cycle retirement", "asynchronous zlib and actual tarball gunzip", "VM and installed application consumers"],
       "testLimit": "These are selected live byte/encoding/collection consumers. Full resizable/shared/detached storage, conversion and collection API variants remain required. trace-codecs-inl.h also contains ordinary value/backing operations; its filename must not be treated as profiling coverage.",
-      "files": ["buffer-codecs-inl.h", "trace-codecs-inl.h", "trace-utf8-native.cpp", "trace-utf8-native.h", "trace-unicode-native-api.h", "buffer-memory.cpp", "buffer-memory.h", "collection-codecs-inl.h", "value-services-inl.h"]
+      "files": ["engine-buffer-owner-inl.h", "buffer-codecs-inl.h", "trace-codecs-inl.h", "trace-utf8-native.cpp", "trace-utf8-native.h", "trace-unicode-native-api.h", "buffer-memory.cpp", "buffer-memory.h", "collection-codecs-inl.h", "value-services-inl.h"]
     },
     {
       "id": "compiler-modules-and-cache",
@@ -33,7 +33,7 @@
       "why": "Use real SpiderMonkey function/script/module compilation, retained source origins and XDR stencils beneath original Node compiler/loaders and their error/retry policy. Bind private cache data to actual engine/bridge inputs and validate it before consumption.",
       "protectingContracts": ["native parser diagnostics/module metadata/function source locations/hashbang", "installed CLI/default TypeScript", "separate CJS and ESM file gates", "VM compiler controls"],
       "testLimit": "The frozen case inventories define the qualified parser/loader/cache consumers. They do not prove every cache format/version, loader hook, import phase or VM API. Private SpiderMonkey cache data is not a claim of V8 heap-snapshot compatibility.",
-      "files": ["engine-script-codecs-inl.h", "engine-code-cache-codecs-inl.h", "node-stencil-cache-format.h"]
+      "files": ["engine-script-codecs-inl.h", "engine-decoded-origin-inl.h", "engine-code-cache-codecs-inl.h", "node-stencil-cache-format.h"]
     },
     {
       "id": "contexts-templates-and-properties",
@@ -41,7 +41,7 @@
       "why": "Connect original Node contextification and native template callbacks to real realms, object construction/brands, property operations, global identifier/declaration lookup, descriptors and exception modes. Engine hooks preserve original SpiderMonkey object/proxy algorithms.",
       "protectingContracts": ["VM18 sandbox/property/global/error/GC controls", "native handles and fields", "normal application REPL/top-level await/error formatting", "reported interactive HTTPS Fetch command"],
       "testLimit": "VM18 and the application checks protect the reproduced integration failures. Full VM/Proxy/template/RegExp coverage remains required; the source guard rejecting recursive native template creation is not independently qualified by these cases.",
-      "files": ["context-codecs-inl.h", "native-object-codecs-inl.h", "template-codecs-inl.h", "property-codecs-inl.h", "value-property-codecs-inl.h", "regexp-property-codecs-inl.h", "property-descriptor-codecs-inl.h", "property-interceptor-native-api.h", "property-interceptor-codecs-inl.h"]
+      "files": ["engine-constructor-names-inl.h", "engine-construction-history-inl.h", "context-codecs-inl.h", "native-object-codecs-inl.h", "template-codecs-inl.h", "property-codecs-inl.h", "value-property-codecs-inl.h", "regexp-property-codecs-inl.h", "property-descriptor-codecs-inl.h", "property-interceptor-native-api.h", "property-interceptor-codecs-inl.h"]
     },
     {
       "id": "jobs-continuations-and-code-generation",
@@ -57,7 +57,7 @@
       "why": "Connect Node's existing tracing/cleanup methods to SpiderMonkey reachability and supply actual collector limits, external credit and engine census data. This replaces engine-specific collector machinery while preserving Node's native owners and resource retirement.",
       "protectingContracts": ["native strong/weak/cyclic GC and incremental/shrinking/partial-construction controls", "native parser external-credit retirement", "VM live and unreachable context cycles"],
       "testLimit": "External-credit and GC controls are not full heap-space/census/limit/measurement API conformance. The separately reproduced process.memoryUsage RSS ENOSYS remains a libuv/platform gap; no measurement is fabricated to hide it.",
-      "files": ["engine-gc-codecs-inl.h", "engine-memory-services-inl.h", "engine-memory-measurement-inl.h", "heap-statistics-codecs-inl.h"]
+      "files": ["engine-memory-result-construction.h", "engine-gc-codecs-inl.h", "engine-memory-services-inl.h", "engine-memory-measurement-inl.h", "heap-statistics-codecs-inl.h"]
     },
     {
       "id": "exceptions-stacks-and-inspection",
@@ -65,7 +65,7 @@
       "why": "Supply real saved-frame provenance, source positions, pending exceptions and native inspection of proxies/collections to Node's original error and inspection code. Preserve error ownership and avoid running user getters where the native interface requires inspection without effects.",
       "protectingContracts": ["native diagnostic ownership and source-coordinate controls", "CLI and CJS/ESM failures", "VM18 error cases", "normal REPL and Fetch response inspection"],
       "testLimit": "Named JavaScript stack/error paths are qualified separately from general inspection APIs. Wasm CallSite/message/stack position branches remain source-identified work for the agreed later guest-Wasm iteration.",
-      "files": ["error-stack.cpp", "error-stack.h", "native-source-location.h", "message-codecs-inl.h", "stack-codecs-inl.h", "inspection-codecs-inl.h"]
+      "files": ["engine-source-registry-inl.h", "error-stack.cpp", "error-stack.h", "native-source-location.h", "message-codecs-inl.h", "stack-codecs-inl.h", "inspection-codecs-inl.h"]
     },
     {
       "id": "portable-wire-and-shared-values",
@@ -99,8 +99,8 @@
       "protectingContracts": ["complete default and feature compilation/linkage", "verified engine/archive/header/ABI preflight", "installed CLI metadata and startup"],
       "testLimit": "Build admission and initial startup do not prove all provider APIs, target variants or full OS behavior.",
       "members": {
-        "base-engine": ["0002-kandelo-rust-target.patch", "0003-jsonprinter-size-t-wasm32.patch", "0007-skip-elf-network-check-for-wasm-target.patch", "0010-use-wasm-icu-data-section-syntax.patch", "0023-use-flag-visibility-on-wasm32.patch", "0074-kandelo-posix-target-profile.patch"],
-        "producer-engine": ["0001-static-engine-closure.patch", "0002-core-fatal-header-style.patch"],
+        "base-engine": ["0002-kandelo-rust-target.patch", "0003-jsonprinter-size-t-wasm32.patch", "0007-check-wasm-network-imports.patch", "0010-use-wasm-icu-data-section-syntax.patch", "0023-use-flag-visibility-on-wasm32.patch", "0074-kandelo-posix-target-profile.patch"],
+        "producer-engine": ["0001-static-engine-closure.patch"],
         "normal-node": ["0001-kandelo-configure-target.patch", "0002-retain-node-simdutf-with-external-engine.patch", "0003-kandelo-posix-build-settings.patch", "0004-kandelo-provider-targets.patch", "0005-kandelo-host-toolsets.patch", "0006-external-engine-header-selection.patch"]
       }
     },
@@ -156,7 +156,7 @@
       "testLimit": "Amaro/Undici consumer qualification does not qualify all FFI, addon or shared-conveyor operations. Native addon execution and general guest Wasm retain their agreed follow-ups. Migrate the two temporary native helpers back only after equivalent upstream Wasm qualification.",
       "members": {
         "normal-node": ["0007-native-amaro-consumer.patch", "0007-wasm-ffi-native-code-capability.patch", "0013-kandelo-native-dynamic-loader.patch", "0015-native-undici-parser-factory.patch", "0016-native-undici-parser-binding.patch"],
-        "native-source": ["0002-kandelo-ffi-owner-retirement.patch", "0007-native-shared-conveyor-lifetime.patch", "0010-native-value-wire-safety.patch"]
+        "native-source": ["0002-kandelo-ffi-owner-retirement.patch", "0010-native-value-wire-safety.patch"]
       }
     },
     {

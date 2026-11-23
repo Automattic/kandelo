@@ -16,7 +16,7 @@
 @@ -2341,29 +2341,6 @@
    if (try_catch_handler()) try_catch_handler()->ResetInternal();
  }
- 
+
 -void Isolate::RequestInterrupt(InterruptCallback callback, void* data) {
 -  ExecutionAccess access(this);
 -  api_interrupts_queue_.push(InterruptEntry(callback, data));
@@ -78,7 +78,7 @@
 +++ b/src/env.cc
 @@ -1211,14 +1211,9 @@
    Local<Context> ctx = context();
- 
+
    if (Environment** interrupt_data = interrupt_data_.load()) {
 -    // There are pending RequestInterrupt() callbacks. Tell them not to run,
 -    // then force V8 to run interrupts by compiling and running an empty script
@@ -90,17 +90,17 @@
 -    Isolate::AllowJavascriptExecutionScope allow_js_here(isolate());
 -    TryCatch try_catch(isolate());
 -    Context::Scope context_scope(ctx);
- 
+
  #ifdef DEBUG
      bool consistency_check = false;
 @@ -1227,9 +1222,7 @@
      }, &consistency_check);
  #endif
- 
+
 -    Local<Script> script;
 -    if (Script::Compile(ctx, String::Empty(isolate())).ToLocal(&script))
 -      USE(script->Run(ctx));
 +    isolate()->DrainNativeInterruptsForCleanup();
- 
+
      DCHECK(consistency_check);
    }

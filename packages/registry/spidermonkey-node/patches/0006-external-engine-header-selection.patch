@@ -14,7 +14,7 @@
 +++ b/node.gyp
 @@ -542,6 +542,11 @@
      },
- 
+
      'conditions': [
 +      ['node_use_bundled_v8=="false"', {
 +        # Use only the external engine's headers, including for libnode's

@@ -70,7 +70,7 @@ def install(obj, output, source, patch_receipt):
         raise ValueError('unrecognized upstream engine pkg-config compiler flags')
     text = text.replace(cflags, cflags + ' -DXP_UNIX=1 -D__kandelo__=1')
     # These are static link dependencies, not additional runtime services.
-    text += 'Libs.private: -ljsrust -lv8-tracing -luv -lc++ -lc++abi -lpthread -lm\n'
+    text += 'Libs.private: -ljsrust -lc++ -lc++abi -lpthread -lm\n'
     pc.write_text(text)
     license_path = output / 'share/doc/spidermonkey-core/LICENSE'
     license_path.parent.mkdir(parents=True, exist_ok=True)

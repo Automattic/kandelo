@@ -65,12 +65,19 @@ rules, remaining private interfaces, upgrade cost and evidence needed for remova
 A build reference alone does not justify a patch, and an API with a similar name
 does not establish equivalent behavior.
 
-Start with Rust target/entropy integration, pthread stack bounds, binary-format
-checks and abort ownership as platform candidates. Review the unproven parallel-GC
-change and legacy module-cycle relaxation early. Move constructor-name policy and
-the direct Node fatal-logger connection toward the bridge; the logger's include
-checker exemption should disappear with that connection. These are future review
-items, not changes implemented or independently approved by this documentation.
+The current combined source cleanup moves constructor-name selection/history,
+saved-source records, buffer leases, native property callback records and decoded
+cache-origin mapping into the bridge. Engine changes retain generic observation,
+GC/lifetime and compiler operations. The bridge registers the resident fatal
+logger, so this core library no longer depends on Node's logger, libuv or
+v8-tracing. Rust entropy implementation and Wasm symbol inspection live in
+package-owned `platform/` sources. All these changes remain unbuilt/unqualified.
+
+Continue reviewing exact pthread stack bounds, the unproven parallel-GC task
+workaround, legacy module-cycle relaxation and shared Rust runtime/personality
+ownership. The latter remains unresolved; weak linkage is not proof that mixed
+Rust runtimes agree. Preserve their evidence-dependent patches until a faithful
+replacement and its required qualification are established.
 
 Preserve real GC, thread, context, callback, exception and shutdown behavior.
 Keep the agreed dynamic-import extension until a faithful replacement is reviewed.

@@ -1,38 +1,30 @@
 # Kandelo patch rationale (S06)
-# Judgment: Mixed. The Wasm trap is justified; the added release
-# diagnostics need separate justification.
 #
-# Engine assertions need a terminating Wasm instruction, including before
-# Node's bridge is initialized. This branch supplies a trap where Mozilla's
-# native crash path is unsuitable. It must not replace Node's separate
-# fatal logger and guest libc abort behavior. The added release-build
-# messages are a separate diagnostic choice, not a prerequisite for Wasm
-# execution; review them independently when reducing this patch.
+# An engine assertion needs a working terminating instruction before any
+# Node runtime exists. Use the ordinary Wasm trap and keep the original
+# reason/file diagnostics useful in release builds. The extra generic crash
+# marker was redundant and has been removed. This does not replace Node's
+# separate fatal logger or Kandelo libc abort/SIGABRT behavior.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/mfbt/Assertions.h
 +++ b/mfbt/Assertions.h
-@@ -248,4 +248,18 @@
+@@ -246,6 +246,12 @@
 
- #  define MOZ_REALLY_CRASH(line) __builtin_trap()
+ #elif __wasi__
+
++#  define MOZ_REALLY_CRASH(line) __builtin_trap()
 +
 +#elif defined(__wasm32__) && !defined(__EMSCRIPTEN__)
 +
-+static inline void MOZ_WasmCrashWrite(const char* aMsg, size_t aLen) {
-+  write(STDERR_FILENO, aMsg, aLen);
-+}
-+
-+#  define MOZ_REALLY_CRASH(line)                         \
-+    do {                                                 \
-+      const char mozWasmCrash[] = "MOZ_REALLY_CRASH\n";  \
-+      MOZ_WasmCrashWrite(mozWasmCrash,                   \
-+                         sizeof(mozWasmCrash) - 1);      \
-+      __builtin_trap();                                  \
-+    } while (false)
++// Keep the terminating primitive small. MOZ_CRASH/RELEASE_ASSERT report the
++// useful reason and source location through the original diagnostics below.
+ #  define MOZ_REALLY_CRASH(line) __builtin_trap()
 
  #else
-@@ -342,7 +356,8 @@
+@@ -342,7 +348,8 @@
   * in release builds, and it's hard to print to stderr safely when memory might
   * have been corrupted.
   */
@@ -42,7 +34,7 @@
  #  define MOZ_CRASH(...)                                                       \
      do {                                                                       \
        MOZ_FUZZING_HANDLE_CRASH_EVENT4(                                         \
-@@ -395,7 +410,8 @@
+@@ -395,7 +402,8 @@
      const char* aFilename, int aLine, const char* aReason) {
    aFilename = MOZ_StripRelativeComponents(aFilename);
    MOZ_FUZZING_HANDLE_CRASH_EVENT4("MOZ_CRASH", aFilename, aLine, aReason);
@@ -52,7 +44,7 @@
    MOZ_ReportCrash(aReason, aFilename, aLine);
  #endif
    MOZ_CRASH_ANNOTATE(aReason);
-@@ -519,7 +535,8 @@
+@@ -519,7 +527,8 @@
  #  define MOZ_VALIDATE_ASSERT_CONDITION_TYPE(x)
  #endif
 

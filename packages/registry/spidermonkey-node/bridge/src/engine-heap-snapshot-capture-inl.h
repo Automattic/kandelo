@@ -119,7 +119,7 @@ class NativeHeapSnapshotCapture {
     Entry* entry=nullptr;
     if(!node->IsEmbedderNode()){
       auto* engine=static_cast<internal::EmbedderGraphImpl::V8NodeImpl*>(node);
-      entry=EngineValue(engine->GetObject());
+      entry=EngineValue(Input(engine->GetObject().value()));
     }else{
       const void* address=node->GetNativeObject();if(!address)address=node->GetAddress();
       auto id=owner_.FreshIdentity();

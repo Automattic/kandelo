@@ -1,24 +1,19 @@
 # Kandelo patch rationale (O35)
 #
-# Node's original retry branches must use real SpiderMonkey parser
-# categories instead of comparing private V8 error strings. Keep Node's
-# wrapper names, conditional module compilation, warnings and rethrows. The
-# bridge supplies parser facts; the OS cannot classify JS syntax.
-# Separately review the CHECK on an unclassified category: if reached, it
-# aborts instead of returning an ordinary syntax error. The selected
-# category design alone does not justify that fatal fallback or establish
-# complete parser coverage.
+# Node's original CommonJS retry branches compare V8 parser messages.
+# Use the bridge's actual SpiderMonkey diagnostic categories while preserving
+# Node's retry, warning and rethrow policy. An unknown category preserves the
+# original production error instead of aborting or guessing a module retry;
+# that gap must fail qualification. The OS cannot classify an engine parse.
 #
-# Judgment: Mixed. Structured categories are approved, but the fatal
-# fallback for an unclassified parser error needs its own failure-policy
-# review.
-#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
 --- a/src/node_contextify.cc
 +++ b/src/node_contextify.cc
 @@ -1605,45 +1605,10 @@
    return result;
  }
- 
+
 -// When compiling as CommonJS source code that contains ESM syntax, the
 -// following error messages are returned:
 -// - `import` statements: "Cannot use import statement outside a module"
@@ -62,18 +57,18 @@
 +// wrapper names and its immediate/conditional/no-retry policy here.
 +static constexpr std::array<std::string_view, 5> cjs_wrapper_names = {
 +    "module", "exports", "require", "__filename", "__dirname"};
- 
+
  // If cached_data is provided, it would be used for the compilation and
  // the on-disk compilation cache from NODE_COMPILE_CACHE (if configured)
 @@ -1734,7 +1699,7 @@
  static bool warned_about_require_esm = false;
- 
+
  static bool ShouldRetryAsESM(Realm* realm,
 -                             Local<String> message,
 +                             Local<v8::Message> message,
                               Local<String> code,
                               Local<String> resource_name);
- 
+
 @@ -1816,7 +1781,7 @@
        return;
      }
@@ -83,16 +78,16 @@
      if (!can_parse_as_esm) {
        // The syntax error is not related to ESM, throw the original error.
        isolate->ThrowException(cjs_exception);
-@@ -1870,38 +1835,34 @@
+@@ -1870,38 +1835,36 @@
  }
- 
+
  bool ShouldRetryAsESM(Realm* realm,
 -                      Local<String> message,
 +                      Local<v8::Message> message,
                        Local<String> code,
                        Local<String> resource_name) {
    Isolate* isolate = realm->isolate();
- 
+
 -  Utf8Value message_value(isolate, message);
 -  auto message_view = message_value.ToStringView();
 -
@@ -125,7 +120,9 @@
 +  if (diagnostic.kind == Kind::Unclassified) {
 +    FPrintF(stderr, "Unclassified native compiler diagnostic: %u\n",
 +            diagnostic.engineCode);
-+    CHECK(diagnostic.kind != Kind::Unclassified);
++    // Do not guess a module retry or abort on a user syntax error. This
++    // diagnostic remains an explicit nonpassing classification gap.
++    return false;
 +  }
 +
 +  // Preserve the original immediate ESM branch before conditional compilation.
@@ -145,10 +142,10 @@
 +      }
      }
    }
- 
+
 @@ -1951,7 +1912,7 @@
    bool cjs_var = !args[3]->IsString();
- 
+
    bool cache_rejected = false;
 -  Local<String> message;
 +  Local<v8::Message> message;
@@ -162,5 +159,5 @@
 -    message = try_catch.Message()->Get();
 +    message = try_catch.Message();
    }
- 
+
    bool result = ShouldRetryAsESM(realm, message, code, resource_name);

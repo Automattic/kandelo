@@ -16,27 +16,27 @@
 @@ -4,6 +4,9 @@
  //
  // This file was generated at 2014-10-08 15:25:47.940335
- 
+
 +#ifdef KANDELO_NATIVE_UTF8_SCALAR
 +#include "kandelo-node/trace-builtins-upstream/src/strings/unicode-inl.h"
 +#else
  #include "src/strings/unicode.h"
- 
+
  #include <stdio.h>
 @@ -24,7 +27,9 @@
  #include "hwy/highway.h"
  #include "simdutf.h"
- 
+
 +#endif
  namespace unibrow {
 +#ifndef KANDELO_NATIVE_UTF8_SCALAR
- 
+
  template <>
  size_t Utf8::WriteLeadingAscii<uint8_t>(const uint8_t* src, char* dest,
 @@ -238,6 +243,7 @@
  }
  #endif  // !V8_INTL_SUPPORT
- 
+
 +#endif  // !KANDELO_NATIVE_UTF8_SCALAR
  // This method decodes an UTF-8 value according to RFC 3629 and
  // https://encoding.spec.whatwg.org/#utf-8-decoder .
@@ -44,7 +44,7 @@
 @@ -272,6 +278,7 @@
    }
  }
- 
+
 +#ifndef KANDELO_NATIVE_UTF8_SCALAR
  bool Utf8::ValidateEncoding(const uint8_t* bytes, size_t length) {
    return simdutf::validate_utf8(reinterpret_cast<const char*>(bytes), length);
@@ -52,6 +52,6 @@
 @@ -2706,4 +2713,5 @@
  }
  #endif  // !V8_INTL_SUPPORT
- 
+
 +#endif  // !KANDELO_NATIVE_UTF8_SCALAR
  }  // namespace unibrow

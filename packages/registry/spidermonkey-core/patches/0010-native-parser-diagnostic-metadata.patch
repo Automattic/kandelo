@@ -1,20 +1,18 @@
 # Kandelo patch rationale (S37)
-# Judgment: Mixed. Parser facts are needed; Node-specific classification
-# and wording belong in the bridge.
 #
-# Node decides whether CommonJS compilation should retry as a module using
-# parser facts, not English error strings. Some required token/identifier
-# context is lost from stock reports. Keep only missing facts with safe
-# copied lifetimes; put Node categories and wording in the bridge.
-# Rescanning source there is not the same parser result, and the OS cannot
-# provide it. Review every added field for a real consumer instead of
-# retaining all diagnostics by default.
+# Node's CommonJS retry decision needs facts from the actual failed parse,
+# including token kind, escapes and declaration identity. Stock reports lose
+# some of them. Keep owned/copy-safe facts and put Node classification and
+# wording in the bridge. The unused callSyntaxAllowed field was removed;
+# its consumed information already exists in the report origin. Do not
+# replace structured facts with rescanning or English-message matching.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/js/public/ErrorReport.h
 +++ b/js/public/ErrorReport.h
-@@ -41,6 +41,27 @@
+@@ -41,6 +41,26 @@
  class JS_PUBLIC_API JSString;
 
  namespace JS {
@@ -31,7 +29,6 @@
 +  uint16_t expectedToken = UINT16_MAX;
 +  bool escaped = false;
 +  bool inModule = false;
-+  bool callSyntaxAllowed = false;
 +  const char* word = nullptr;
 +  const char* identifier = nullptr;
 +  // Frontend reports own these allocations. A copied ErrorObject report uses
@@ -42,7 +39,8 @@
  class ExceptionStack;
  }
  namespace js {
-@@ -294,4 +315,7 @@
+@@ -293,6 +313,9 @@
+   // Associated notes, or nullptr if there's no note.
    js::UniquePtr<JSErrorNotes> notes;
 
 +  // Structured facts of the failure that produced this report.
@@ -50,7 +48,8 @@
 +
    // One of the JSExnType constants.
    int16_t exnType;
-@@ -321,6 +345,7 @@
+
+@@ -321,6 +344,7 @@
          linebufLength_(other.linebufLength_),
          tokenOffset_(other.tokenOffset_),
          notes(std::move(other.notes)),
@@ -125,7 +124,7 @@
      }
 --- a/js/src/frontend/Parser.cpp
 +++ b/js/src/frontend/Parser.cpp
-@@ -123,9 +123,61 @@
+@@ -123,9 +123,59 @@
  }
 
  template <class ParseHandler, typename Unit>
@@ -138,8 +137,6 @@
 +  diagnostic.expectedToken = expected == TokenKind::Limit ? UINT16_MAX
 +                                                          : uint16_t(expected);
 +  diagnostic.inModule = pc_->atModuleLevel();
-+  diagnostic.callSyntaxAllowed =
-+      origin == JS::ParserDiagnostic::Origin::SourceImportWithoutCall;
 +  const Token& token = lookahead ? anyChars.nextToken() : anyChars.currentToken();
 +  MOZ_ASSERT(actual == TokenKind::Eol || actual == token.type);
 +  if (actual == TokenKind::Name || actual == TokenKind::PrivateName) {
@@ -188,7 +185,7 @@
    MOZ_ASSERT(condition(TokenKind::Div) == false);
    MOZ_ASSERT(condition(TokenKind::DivAssign) == false);
    MOZ_ASSERT(condition(TokenKind::RegExp) == false);
-@@ -135,6 +187,12 @@
+@@ -135,6 +185,12 @@
      return false;
    }
    if (!condition(actual)) {
@@ -201,7 +198,8 @@
      errorReport(actual);
      return false;
    }
-@@ -485,7 +543,15 @@
+@@ -484,9 +540,17 @@
+     return;
    }
 
 +  JS::ParserDiagnostic diagnostic;
@@ -219,7 +217,8 @@
 +        bytes.get());
      return;
    }
-@@ -513,8 +579,9 @@
+
+@@ -513,8 +577,9 @@
      return;
    }
 
@@ -231,7 +230,7 @@
  }
 
  template <class ParseHandler, typename Unit>
-@@ -993,7 +1060,9 @@
+@@ -993,7 +1058,9 @@
      return false;
    }
    if (tt != TokenKind::Eof) {
@@ -242,7 +241,7 @@
      return false;
    }
    return true;
-@@ -2566,7 +2635,9 @@
+@@ -2566,7 +2633,9 @@
 
      /* Advance the scanner for proper error location reporting. */
      tokenStream.consumeKnownToken(tt, modifier);
@@ -253,7 +252,7 @@
      return false;
    }
    bool matched;
-@@ -3540,9 +3611,10 @@
+@@ -3540,9 +3609,10 @@
      }
 
      if (tt == TokenKind::Eol) {
@@ -267,7 +266,8 @@
        return false;
      }
      if (tt != TokenKind::Arrow) {
-@@ -6641,5 +6713,7 @@
+@@ -6640,7 +6710,9 @@
+       if (next != TokenKind::In && next != TokenKind::Of &&
            TokenKindIsReservedWord(next)) {
          tokenStream.consumeKnownToken(next);
 -        error(JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
@@ -276,7 +276,9 @@
 +            JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
          return false;
        }
-@@ -9888,6 +9962,8 @@
+
+@@ -9887,8 +9959,10 @@
+           return errorResult();
          }
          if (tt != TokenKind::Arrow) {
 -          error(JSMSG_UNEXPECTED_TOKEN, "expression",
@@ -287,7 +289,8 @@
 +              TokenKindToDesc(TokenKind::RightParen));
            return errorResult();
          }
-@@ -11385,6 +11461,17 @@
+
+@@ -11385,6 +11459,17 @@
      return true;
    }
    if (TokenKindIsKeyword(tt) || TokenKindIsReservedWordLiteral(tt)) {
@@ -305,7 +308,8 @@
      errorAt(offset, JSMSG_INVALID_ID, ReservedWordToCharZ(tt));
      return false;
    }
-@@ -11932,5 +12019,7 @@
+@@ -11931,7 +12016,9 @@
+
      default: {
        if (!TokenKindIsPossibleIdentifierName(ltok)) {
 -        error(JSMSG_UNEXPECTED_TOKEN, "property name", TokenKindToDesc(ltok));
@@ -314,7 +318,9 @@
 +            JSMSG_UNEXPECTED_TOKEN, "property name", TokenKindToDesc(ltok));
          return errorResult();
        }
-@@ -12496,5 +12585,7 @@
+
+@@ -12495,7 +12582,9 @@
+     return false;
    }
    if (next != TokenKind::Target) {
 -    error(JSMSG_UNEXPECTED_TOKEN, "target", TokenKindToDesc(next));
@@ -323,7 +329,8 @@
 +            JSMSG_UNEXPECTED_TOKEN, "target", TokenKindToDesc(next));
      return false;
    }
-@@ -12549,7 +12640,9 @@
+
+@@ -12549,7 +12638,9 @@
 
      if (options().sourcePhaseImports()) {
        if (next != TokenKind::Source) {
@@ -334,7 +341,7 @@
          return errorResult();
        }
        isSourcePhaseImport = true;
-@@ -12557,7 +12650,9 @@
+@@ -12557,7 +12648,9 @@
          return errorResult();
        }
      } else {
@@ -345,7 +352,8 @@
        return errorResult();
      }
    }
-@@ -12616,5 +12711,9 @@
+@@ -12615,7 +12708,11 @@
+     return handler_.newCallImport(importHolder, spec, kind);
    }
 
 -  error(JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
@@ -356,7 +364,9 @@
 +            TokenKind::Limit, JSMSG_UNEXPECTED_TOKEN_NO_EXPECT, TokenKindToDesc(next));
    return errorResult();
  }
-@@ -12671,6 +12770,8 @@
+
+@@ -12670,8 +12767,10 @@
+           return errorResult();
          }
          if (next != TokenKind::Arrow) {
 -          error(JSMSG_UNEXPECTED_TOKEN, "expression",
@@ -367,7 +377,9 @@
 +              TokenKindToDesc(TokenKind::RightParen));
            return errorResult();
          }
-@@ -12702,5 +12803,7 @@
+
+@@ -12701,7 +12800,9 @@
+
      default: {
        if (!TokenKindIsPossibleIdentifier(tt)) {
 -        error(JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
@@ -376,7 +388,9 @@
 +            JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
          return errorResult();
        }
-@@ -12759,5 +12862,7 @@
+
+@@ -12758,7 +12859,9 @@
+       // name, closing parenthesis, and arrow, and allow it only if all are
        // present.
        if (tripledotHandling != TripledotAllowed) {
 -        error(JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
@@ -385,7 +399,8 @@
 +            JSMSG_UNEXPECTED_TOKEN, "expression", TokenKindToDesc(tt));
          return errorResult();
        }
-@@ -12778,8 +12883,9 @@
+
+@@ -12778,8 +12881,9 @@
          // or "arguments" should be prohibited.  Argument-parsing code
          // handles that.
          if (!TokenKindIsPossibleIdentifier(next)) {
@@ -397,7 +412,8 @@
            return errorResult();
          }
        }
-@@ -12789,6 +12895,7 @@
+@@ -12788,8 +12892,9 @@
+         return errorResult();
        }
        if (next != TokenKind::RightParen) {
 -        error(JSMSG_UNEXPECTED_TOKEN, "closing parenthesis",
@@ -407,7 +423,9 @@
 +            JSMSG_UNEXPECTED_TOKEN, "closing parenthesis", TokenKindToDesc(next));
          return errorResult();
        }
-@@ -12800,6 +12907,7 @@
+
+@@ -12799,8 +12904,9 @@
+       if (next != TokenKind::Arrow) {
          // Advance the scanner for proper error location reporting.
          tokenStream.consumeKnownToken(next);
 -        error(JSMSG_UNEXPECTED_TOKEN, "'=>' after argument list",
@@ -417,6 +435,7 @@
 +            JSMSG_UNEXPECTED_TOKEN, "'=>' after argument list", TokenKindToDesc(next));
          return errorResult();
        }
+
 --- a/js/src/frontend/Parser.h
 +++ b/js/src/frontend/Parser.h
 @@ -949,7 +949,7 @@
@@ -488,7 +507,7 @@
  }
 
  size_t ExtraMallocSize(JSErrorNotes::Note* note) { return 0; }
-@@ -1195,6 +1202,29 @@
+@@ -1195,6 +1202,28 @@
                                report->tokenOffset());
    }
 
@@ -501,7 +520,6 @@
 +  diagnostic.expectedToken = original.expectedToken;
 +  diagnostic.escaped = original.escaped;
 +  diagnostic.inModule = original.inModule;
-+  diagnostic.callSyntaxAllowed = original.callSyntaxAllowed;
 +  if (original.word) {
 +    const size_t bytes = strlen(original.word) + 1;
 +    diagnostic.word = reinterpret_cast<const char*>(*cursor);
@@ -518,7 +536,7 @@
    /* Copy non-pointer members. */
    copy->isMuted = report->isMuted;
    copy->exnType = report->exnType;
-@@ -1229,6 +1259,7 @@
+@@ -1229,6 +1258,7 @@
     *   char array with characters for message_
     *   char array with characters for filename
     *   char16_t array with characters for linebuf (only for JSErrorReport)
@@ -546,9 +564,12 @@
      err.initOwnedLinebuf(lineOfContext.release(), metadata.lineLength,
 --- a/js/src/vm/ErrorReporting.h
 +++ b/js/src/vm/ErrorReporting.h
-@@ -31,4 +31,5 @@
+@@ -30,7 +30,8 @@
+  * no offset (i.e. with respect to a script overall).
   */
  struct ErrorMetadata {
 +  JS::ParserDiagnostic parserDiagnostic;
    // The file/URL where the error occurred.
    JS::ConstUTF8CharsZ filename;
+
+   // The line and column numbers where the error occurred.  If the error

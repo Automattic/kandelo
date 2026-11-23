@@ -108,6 +108,8 @@
 #pragma pop_macro("NO_DATA")
 
 namespace api = v8;
+#include "kandelo-node/engine-construction-history-inl.h"
+
 namespace v8 {
 bool InitializeNativeInternalFields(Frame&,JS::HandleObject,int);
 bool AdmitNativeReceiver(Frame&,JS::HandleValue);
@@ -714,10 +716,12 @@ Local<Object> Object::New(Isolate* isolate) {
   auto& f=Current(isolate);JS::RootedObject object(f.cx,JS_NewPlainObject(f.cx));if(!object)return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
 }
+#include "kandelo-node/engine-constructor-names-inl.h"
+
 Local<String> Object::GetConstructorName() {
   auto& frame=*Frame::current;NativeEntry entry(frame);if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
   JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,cell().value));if(!object)return {};
-  JS::RootedString name(frame.cx,js::GetConstructorName(frame.cx,object));if(!name)return {};
+  JS::RootedString name(frame.cx,constructor_names::GetNativeConstructorName(frame.cx,object));if(!name)return {};
   JS::RootedValue value(frame.cx,JS::StringValue(name));if(!JS_WrapValue(frame.cx,&value))return {};
   return frame.Own<String>(value);
 }
@@ -1013,6 +1017,8 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
 }
 }  // namespace v8
 
+#include "kandelo-node/engine-buffer-owner-inl.h"
+#include "kandelo-node/engine-source-registry-inl.h"
 #include "kandelo-node/buffer-codecs-inl.h"
 #include "kandelo-node/value-property-codecs-inl.h"
 #include "kandelo-node/value-services-inl.h"
@@ -1039,6 +1045,7 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
 #include "kandelo-node/engine-codegen-codecs-inl.h"
 #include "kandelo-node/promise-codecs-inl.h"
 #include "kandelo-node/engine-finalization-codecs-inl.h"
+#include "kandelo-node/engine-decoded-origin-inl.h"
 #include "kandelo-node/engine-script-codecs-inl.h"
 #include "kandelo-node/trace-codecs-inl.h"
 

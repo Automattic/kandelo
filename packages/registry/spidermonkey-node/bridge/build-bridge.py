@@ -64,10 +64,11 @@ def build(args):
     staged = work / 'include/kandelo-node'
     staged.mkdir(parents=True)
     names = [
-        'native-engine.cpp', 'codecs.cpp', 'engine-native-api.h', 'engine-state.h',
+        'native-engine.cpp', 'codecs.cpp', 'engine-native-api.h', 'engine-state.h', 'engine-source-registry-inl.h', 'engine-buffer-owner-inl.h', 'engine-construction-history-inl.h',
+        'engine-constructor-names-inl.h',
         'error-stack.cpp', 'error-stack.h', 'native-source-location.h',
         'engine-maybe-api.h', 'engine-wire-codec.h', 'engine-value-wire-codecs-inl.h', 'engine-serialization-codecs-inl.h',
-        'fast-call-metadata.cpp', 'metadata-values-codecs-inl.h', 'data-array-codecs-inl.h', 'engine-script-api.h', 'engine-script-codecs-inl.h',
+        'fast-call-metadata.cpp', 'metadata-values-codecs-inl.h', 'data-array-codecs-inl.h', 'engine-script-api.h', 'engine-script-codecs-inl.h', 'engine-decoded-origin-inl.h',
         'node-stencil-cache-format.h', 'engine-code-cache-codecs-inl.h',
         'engine-gc-api.h', 'engine-gc-codecs-inl.h', 'engine-isolate-codecs-inl.h',
         'engine-extras-runtime.h', 'engine-extras-runtime-undef.h', 'engine-extras-codecs-inl.h',
@@ -77,6 +78,7 @@ def build(args):
         'engine-heap-snapshot-capture-inl.h', 'engine-shared-conveyor-data.h',
         'engine-heap-allocation-data.h', 'engine-heap-allocation-codecs-inl.h',
         'engine-memory-services-inl.h', 'engine-memory-measurement-inl.h',
+        'engine-memory-result-construction.h',
         'engine-checks.h', 'engine-process.h', 'engine-process.cpp', 'engine-lifetime-codecs-inl.h', 'buffer-codecs-inl.h',
         'continuation-codecs-inl.h', 'context-codecs-inl.h', 'promise-codecs-inl.h',
         'engine-finalization-codecs-inl.h',
@@ -213,20 +215,6 @@ def build(args):
     diagnostic = (patched.stdout + patched.stderr).decode()
     if patched.returncode or re.search(r'fuzz|offset', diagnostic, re.I):
         raise ValueError('whole native heap snapshot patch failed: ' + diagnostic)
-    conveyor_path = 'deps/v8/src/api/api.cc'
-    conveyor_source = args.node_source / conveyor_path
-    if digest(conveyor_source) != '147e419129137728659555cdb7866823e0ee7bc005e81ff5206c9f064e094f86':
-        raise ValueError('pinned whole conveyor source changed')
-    conveyor_root = staged / 'shared-conveyor-upstream'
-    conveyor_target = conveyor_root / conveyor_path
-    conveyor_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(conveyor_source, conveyor_target)
-    conveyor_patch = root / 'packages/registry/spidermonkey-node/bridge/native-source-patches/0007-native-shared-conveyor-lifetime.patch'
-    patched = subprocess.run(['patch', '--batch', '-p1', '-F0', '-d', str(conveyor_root)],
-                             input=conveyor_patch.read_bytes(), capture_output=True)
-    diagnostic = (patched.stdout + patched.stderr).decode()
-    if patched.returncode or re.search(r'fuzz|offset', diagnostic, re.I):
-        raise ValueError('whole conveyor lifetime patch failed: ' + diagnostic)
     sampling_path = 'deps/v8/src/profiler/sampling-heap-profiler.cc'
     sampling_source = args.node_source / sampling_path
     if digest(sampling_source) != 'acbd4be45a8b5681202806f63d48569bf14429e0a77b116e38b5031802610f66':

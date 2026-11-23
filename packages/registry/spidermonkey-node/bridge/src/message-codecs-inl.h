@@ -111,7 +111,7 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   JS::SetReservedSlot(record,MessageDiagnosticActual,JS::Int32Value(diagnostic.actualToken));
   JS::SetReservedSlot(record,MessageDiagnosticExpected,JS::Int32Value(diagnostic.expectedToken));
   JS::SetReservedSlot(record,MessageDiagnosticFlags,JS::Int32Value(
-      (diagnostic.escaped?1:0)|(diagnostic.inModule?2:0)|(diagnostic.callSyntaxAllowed?4:0)));
+      (diagnostic.escaped?1:0)|(diagnostic.inModule?2:0)));
   for(auto item:{std::pair{MessageDiagnosticName,report->errorMessageName},
       std::pair{MessageDiagnosticWord,diagnostic.word},
       std::pair{MessageDiagnosticIdentifier,diagnostic.identifier}}){
@@ -122,6 +122,7 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   uint32_t line=report->lineno,column=report->column.oneOriginValue();
   if(column)--column;
   js::ScriptSource* source=nullptr;
+  NativeSourceRecord* sourceRecord=nullptr;
   if(!location&&report->filename){
     JS::RootedString name(cx,JS_NewStringCopyUTF8Z(cx,report->filename));if(!name)return {};
     JS::SetReservedSlot(record,MessageResource,JS::StringValue(name));
@@ -129,7 +130,8 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   if(location){
     auto& saved=location->as<js::SavedFrame>();line=saved.getLine();
     if(!saved.getColumn().isLimitedColumnNumber())Crash("Native Wasm message positions are not implemented");
-    column=saved.getColumn().oneOriginValue()-1;source=saved.getKandeloScriptSource();
+    column=saved.getColumn().oneOriginValue()-1;sourceRecord=kandelo::node::NativeFrameSourceRecord(saved);
+    source=sourceRecord?sourceRecord->source.get():nullptr;
     JS::SetReservedSlot(record,MessageResource,JS::StringValue(saved.getSource()));
   }
   JS::RootedString sourceLine(cx);
@@ -137,7 +139,7 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
     // Compiler diagnostics own their actual source line independently of the caller stack.
     sourceLine=JS_NewUCStringCopyN(cx,report->linebuf(),report->linebufLength());if(!sourceLine)return {};
     line=report->lineno;column=report->column.oneOriginValue();if(column)--column;
-    if(!source||source->id()!=report->sourceId)source=nullptr;
+    if(!source||source->id()!=report->sourceId){source=nullptr;sourceRecord=nullptr;}
     if(report->filename){JS::RootedString name(cx,JS_NewStringCopyUTF8Z(cx,report->filename));if(!name)return {};JS::SetReservedSlot(record,MessageResource,JS::StringValue(name));}
   }else if(source){
     sourceLine=NativeSourceLine(cx,source,line);if(!sourceLine&&JS_IsExceptionPending(cx))return {};
@@ -146,7 +148,7 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   // line; V8 GetSourceLine returns its empty string for that precise case.
   if(sourceLine)JS::SetReservedSlot(record,MessageSourceLine,JS::StringValue(sourceLine));
   uint32_t mappedColumn=column+1;
-  kandelo::node::NativeFunctionBodyLocation(source,&line,&mappedColumn);
+  kandelo::node::NativeFunctionBodyLocation(sourceRecord,&line,&mappedColumn);
   if(!source&&compilationOrigin&&JS::GetReservedSlot(compilationOrigin,CompilationFunctionBody).toBoolean()){
     const uint32_t first=uint32_t(JS::GetReservedSlot(compilationOrigin,CompilationLine).toInt32())+1;
     if(line>first){if(line==first+1)mappedColumn+=uint32_t(JS::GetReservedSlot(compilationOrigin,CompilationColumn).toInt32());--line;}

@@ -6,6 +6,18 @@
 #include <unordered_map>
 #include <string_view>
 namespace v8::internal {
+// Reused graph algorithms carry an opaque bridge-owned value. The capture
+// implementation is the only place that converts it to a SpiderMonkey value.
+class NativeSnapshotValue final {
+ public:
+  // An embedder callback may close its HandleScope before the graph is read.
+  // Keep one real bridge root for the graph lifetime, not its borrowed Local.
+  explicit NativeSnapshotValue(v8::Local<v8::Data> value)
+      : value_(std::make_shared<v8::Global<v8::Data>>(v8::Isolate::GetCurrent(), value)) {}
+  v8::Local<v8::Data> value() const { return value_->Get(v8::Isolate::GetCurrent()); }
+ private:
+  std::shared_ptr<v8::Global<v8::Data>> value_;
+};
 struct EntrySourceLocation;
 class HeapEntry;
 class HeapGraphEdge {

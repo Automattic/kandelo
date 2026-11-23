@@ -16,13 +16,13 @@
 @@ -127,7 +127,9 @@
  #include <unistd.h>        // STDIN_FILENO, STDERR_FILENO
  #endif
- 
+
 +#if !defined(KANDELO_SPIDERMONKEY_ENGINE)
  #include "absl/synchronization/mutex.h"
 +#endif
- 
+
  // ========== global C++ headers ==========
- 
+
 @@ -1394,7 +1396,9 @@
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
@@ -31,12 +31,12 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
 +#endif
    }
- 
+
  #if NODE_USE_V8_WASM_TRAP_HANDLER
 --- a/src/debug_utils.cc
 +++ b/src/debug_utils.cc
 @@ -14,7 +14,8 @@
- 
+
  #if defined(__linux__) && !defined(__GLIBC__) || \
      defined(__UCLIBC__) || \
 -    defined(_AIX)

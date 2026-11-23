@@ -34,6 +34,38 @@ not direct calls from Node policy code. Generic engine hooks must remain free of
 Node-specific policy. This is the required design boundary, not a claim that every
 current adaptation has already been brought into alignment.
 
+## Current source cleanup: ownership and qualification
+
+The combined cleanup is source-only and has not been rebuilt or runtime-qualified.
+The 19-family objective, full core-module conformance and B6 review remain required.
+
+- Constructor naming and history live in bridge code. The history owner uses the
+  same pinned native WeakMap, barriers and realm trace/finishRoots/destruction order;
+  it does not keep globals alive through an extra persistent JS root.
+- A per-engine bridge source registry shares immutable source leases among captured
+  frames. Entries are non-owning, erase on last release and retain no JS/realm edges.
+  Native-function classification comes from the real bridge script/source identity.
+- The bridge owns native buffer leases and property callback records. Engine hooks
+  supply actual adoption/resize/detach and existing-object data-property semantics.
+  Lease/deleter code stays resident after realms and Node Environment are disposed.
+- Cache-origin mapping openly uses pinned private frontend/source-note interfaces.
+  Moving it out of Mozilla source does not turn those into stable public APIs.
+- Memory results use one original upstream formatter with bridge construction helpers.
+  Reused heap graph code holds an owned bridge root across callback HandleScope exit.
+- Private FFI declarations live in the node-libffi companion header; Node's original
+  native owner retains its adapter-release calls. The unused standalone instrumenter
+  archive is removed; the real instrumenter and C API remain adapter dependencies.
+
+Required qualification includes source identities, GC cycles/weak keys, source
+retention/release across repeated filenames and eval, callback reentry/failure,
+transfer/resize/detach/native spans, source-note/cache positions and exact cleanup.
+Current source returns ENOSYS for unimplemented shared OS accounting instead of
+invented values; this affects non-Node programs too and needs consumer/ABI review.
+Full real accounting remains required. Promise optimization restrictions, global
+interception, GC task lifetime and module-cycle behavior retain their explicit
+unproven/review-dependent parts. Rust personality ownership remains unresolved;
+changing its target/sysroot or panic ABI requires a separate concrete review.
+
 ## Reduced private-data and job boundary
 
 Context metadata lives in a global application slot, so GC-sensitive native

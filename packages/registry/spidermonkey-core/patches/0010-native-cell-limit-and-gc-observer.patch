@@ -114,7 +114,7 @@
  #endif  // js_MemoryCallbacks_h
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -1073,6 +1073,22 @@
+@@ -1087,6 +1087,22 @@
    // Set by an embedding before creating realms. Ordinary Then results remain
    // real objects so a hook enabled after registration can observe their jobs.
    bool embedderPromiseLifecycleCapable = false;

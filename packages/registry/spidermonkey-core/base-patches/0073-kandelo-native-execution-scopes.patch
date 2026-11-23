@@ -1,20 +1,18 @@
 # Kandelo patch rationale (S24)
-# Judgment: Mixed. Engine enforcement is needed; the hard-coded Node fatal
-# logger is not an engine responsibility.
 #
-# Node forbids JavaScript execution during parts of cleanup and fatal
-# reporting. Checks only at bridge entry miss calls that reenter JavaScript
-# inside the engine. Keep enforcement at real engine entry points and
-# preserve nested scopes, existing exceptions and shared stop state. The OS
-# cannot enforce these JS scopes. Replace the hard-coded Node fatal logger
-# connection with a generic embedding callback; logging policy belongs in
-# the bridge.
+# Node forbids JavaScript during parts of cleanup and exit diagnostics.
+# Checking only bridge entrypoints misses engine reentry paths, so retain the
+# engine gate and shared stop state. The bridge installs Node's resident
+# fatal handler through a generic callback before contexts are created; the
+# engine has no Node logger include or dependency. A returning handler still
+# aborts, and the non-Node default aborts without needing a realm or State.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/js/src/vm/JSContext.h
 +++ b/js/src/vm/JSContext.h
-@@ -498,6 +498,35 @@
+@@ -512,6 +512,35 @@
    //   MOZ_DIAGNOSTIC_ASSERT(!cx->brittleMode, "specific failure");
    //
    bool brittleMode = false;
@@ -52,15 +50,16 @@
    // One thread-safe termination record. Low bits are request/active state;
 --- a/js/src/vm/JSContext.cpp
 +++ b/js/src/vm/JSContext.cpp
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,8 @@
  #include "mozilla/Sprintf.h"
  #include "mozilla/Utf8.h"  // mozilla::ConvertUtf16ToUtf8
 
++#include <atomic>
 +#include <cstdlib>
  #include <string.h>
  #ifdef ANDROID
  #  include <android/log.h>
-@@ -37,6 +38,7 @@
+@@ -37,6 +39,7 @@
  #include "jit/Simulator.h"
  #include "js/CallAndConstruct.h"  // JS::Call
  #include "js/CharacterEncoding.h"
@@ -68,19 +67,29 @@
  #include "js/ContextOptions.h"        // JS::ContextOptions
  #include "js/ErrorInterceptor.h"      // JSErrorInterceptor
  #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
-@@ -47,6 +49,8 @@
+@@ -47,6 +50,7 @@
  #include "js/Printf.h"
  #include "js/PropertyAndElement.h"  // JS_GetProperty
  #include "js/Stack.h"  // JS::NativeStackSize, JS::NativeStackLimit, JS::NativeStackLimitMin
-+#include "kandelo/v8-native-fatal.h"
 +
  #include "util/DiagnosticAssertions.h"
  #include "util/DifferentialTesting.h"
  #include "util/DoubleToString.h"
-@@ -159,8 +163,31 @@
+@@ -159,8 +163,43 @@
    }
  }
 
++namespace {
++void DefaultNativeExecutionFatal(const char*) { std::abort(); }
++std::atomic<JS::NativeExecutionFatalHandler> nativeExecutionFatalHandler{
++    DefaultNativeExecutionFatal};
++}  // namespace
++
++void JS::SetNativeExecutionFatalHandler(NativeExecutionFatalHandler handler) {
++  MOZ_RELEASE_ASSERT(handler);
++  nativeExecutionFatalHandler.store(handler, std::memory_order_release);
++}
++
 +bool JSContext::onDisallowedEmbedderExecution() {
 +  MOZ_RELEASE_ASSERT(js::TlsContext.get() == this);
 +  if (embedderExecutionRestrictions_ & EmbedderCrashOnExecution) {
@@ -103,9 +112,10 @@
 +
  bool JSContext::init() {
    TlsContext.set(this);
-+  // The resident callback uses the existing complete logger and guest abort.
-+  // It requires no Realm/Environment and survives their construction/disposal.
-+  embedderExecutionFatal_ = &kandelo_v8_graceful_fatal;
++  // Snapshot the resident embedding handler. There is no Node-specific state
++  // in the engine, and the default remains valid without an embedding logger.
++  embedderExecutionFatal_ =
++      nativeExecutionFatalHandler.load(std::memory_order_acquire);
    nativeStackBase_.emplace(GetNativeStackBase());
 
    if (!fx.initInstance()) {
@@ -165,3 +175,19 @@
    MACRO_(keys, "keys")                                                         \
    IF_DECORATORS(MACRO_(kind, "kind"))                                          \
    MACRO_(label, "label")                                                       \
+--- a/js/public/Context.h
++++ b/js/public/Context.h
+@@ -63,6 +63,13 @@
+
+ namespace JS {
+
++// Register a process-resident native failure handler before creating contexts.
++// It must outlive all contexts and must not enter JS or depend on a realm.
++// A handler that returns is followed by abort; the default simply aborts.
++using NativeExecutionFatalHandler = void (*)(const char*);
++extern JS_PUBLIC_API void SetNativeExecutionFatalHandler(
++    NativeExecutionFatalHandler handler);
++
+ /**
+  * Asserts (in debug and release builds) that `obj` belongs to the current
+  * thread's context.

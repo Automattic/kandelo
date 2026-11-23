@@ -1,16 +1,14 @@
 # Kandelo patch rationale (S33)
-# Judgment: Mixed. Compiler facts need an engine interface; transient
-# adapter classification can move to the bridge.
 #
-# Node's CommonJS compiler and vm.compileFunction need length-aware
-# parameter strings, reusable compiled stencils and exact body/hashbang
-# locations. Stock CompileFunction does not expose the complete contract.
-# Keep an entry into the original compiler rather than wrap/reparse source
-# in the bridge; this is not an OS service. Move adapter-only function
-# classification into bridge metadata once its source and GC lifetime are
-# preserved.
+# CommonJS and vm.compileFunction need exact parameter strings, reusable
+# compiled stencils and body/hashbang locations. Stock CompileFunction does
+# not expose the full contract; keep an entry into the original compiler
+# rather than build another parser. The bridge's script/source registry now
+# owns native-function classification. Only real compiler offsets remain
+# in engine options, and Node never calls SpiderMonkey APIs directly.
 #
-# Retained provisionally; see README.md: Future work: platform omissions.
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
 
 --- a/js/public/CompilationAndEvaluation.h
 +++ b/js/public/CompilationAndEvaluation.h
@@ -270,13 +268,15 @@
      }
 
      fun = gcOutput.get().getFunctionNoBaseIndex(
-@@ -1737,5 +1768,5 @@
+@@ -1736,7 +1767,7 @@
+     // nullptr. In this case we have compiled to a native function instead of an
      // interpreted script.
      if (gcOutput.get().script) {
 -      if (parameterListEnd) {
 +      if (parameterListEnd && !cachedStencil) {
          source->setParameterListEnd(*parameterListEnd);
        }
+
 @@ -1747,16 +1778,21 @@
 
      assertException.reset();
@@ -301,7 +301,10 @@
  }
 
  JSFunction* frontend::CompileStandaloneGenerator(
-@@ -1792,7 +1828,8 @@
+@@ -1789,10 +1825,11 @@
+ JSFunction* frontend::CompileStandaloneFunctionInNonSyntacticScope(
+     JSContext* cx, const JS::ReadOnlyCompileOptions& options,
+     JS::SourceText<char16_t>& srcBuf, const Maybe<uint32_t>& parameterListEnd,
 -    FunctionSyntaxKind syntaxKind, JS::Handle<Scope*> enclosingScope) {
 +    FunctionSyntaxKind syntaxKind, JS::Handle<Scope*> enclosingScope,
 +    JS::Stencil** stencilOut, JS::Stencil* cachedStencil) {
@@ -364,26 +367,3 @@
    isRunOnce = rhs.isRunOnce;
    noScriptRval = rhs.noScriptRval;
  }
---- a/js/src/vm/JSScript.h
-+++ b/js/src/vm/JSScript.h
-@@ -1154,6 +1154,11 @@
-   // 0 for other cases.
-   uint32_t parameterListEnd_ = 0;
-
-+  // Transient embedding classification, set on each native CompileFunction
-+  // publication (including decoded stencils). It adds no root or owner and
-+  // does not change Function-constructor parsing or the serialized cache.
-+  bool kandeloNativeFunctionBody_ = false;
-+
-   // Line number within the file where this source starts (1-origin).
-   uint32_t startLine_ = 0;
-   // Column number within the file where this source starts,
-@@ -1233,6 +1238,8 @@
-   }
-
-   bool isFunctionBody() const { return parameterListEnd_ != 0; }
-+  void setKandeloNativeFunctionBody() { kandeloNativeFunctionBody_ = true; }
-+  bool isKandeloNativeFunctionBody() const { return kandeloNativeFunctionBody_; }
-
-   // Returns true if this source should display only the function body.
-   // In case of DOM event handler like <div onclick="foo()" the JS code is
