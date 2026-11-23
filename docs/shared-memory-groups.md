@@ -178,7 +178,9 @@ The normal browser app also exposes these copied counters under Internals →
 Config → Kernel as `kandelo.memory_group.admission.*` and
 `kandelo.memory_group.backing.*`. Opening or refreshing that view requests a
 new snapshot through `KernelHost.getKernelState()`; it does not enable a group.
-No group rows appear on ordinary machines. `pageBytes` is 65,536, and a
+An ordinary machine can report a configured but unused admission group, with
+zero participants and unallocated backing. Inspection does not opt programs
+into grouped execution. `pageBytes` is 65,536, and a
 `backing` value of `unallocated` means the admitted group has no backing yet.
 A machine replacement during inspection rejects the old response rather than
 showing another machine's counters. Errors remain visible in the Inspector.

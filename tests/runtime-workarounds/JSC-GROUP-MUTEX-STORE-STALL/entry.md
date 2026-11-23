@@ -79,5 +79,5 @@ inspection scratch. Full combined memory, Node/browser and application
 resource/performance gates are required before promotion. This remains an
 unaccepted candidate and is not a broad performance improvement.
 
-Sites: `host/src/memory-group-notification.ts`, `host/src/memory-group-pool.ts`,
+Sites: `host/src/memory-group-notification.ts`, `host/src/group-memory-resources.ts`,
 `host/src/grouped-worker-runtime.ts`.

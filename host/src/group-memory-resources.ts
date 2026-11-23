@@ -1,6 +1,6 @@
 import { ERRNO } from './generated/abi';
 import { MEMORY_GROUP_MAXIMUM_PAGES, MEMORY_GROUP_PAGE_BYTES as PAGE } from './generated/program-extensions';
-import { prepareMemoryGroupPhysicalStore } from './memory-group-notification';
+import { prepareMemoryGroupPhysicalStore, prepareMemoryGroupQueueUnlock } from './memory-group-notification';
 
 export class GroupMemoryResourceError extends Error {
   constructor(readonly errno: number) { super(`Group memory resource operation failed: errno ${errno}`); }
@@ -29,6 +29,7 @@ export class GroupMemoryResources {
     catch (error) { if (error instanceof RangeError) fail(ERRNO.ENOMEM); throw error; }
     // [RUNTIME-WORKAROUND: JSC-GROUP-MUTEX-STORE-STALL] Bind before publication.
     const store = prepareMemoryGroupPhysicalStore(memory);
+    prepareMemoryGroupQueueUnlock(memory);
     this.#resources.set(id, { memory, store });
   }
 

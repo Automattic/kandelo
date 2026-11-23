@@ -1,9 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupMemoryResources, GroupMemoryResourceError } from '../src/group-memory-resources';
 import { ERRNO } from '../src/generated/abi';
+import { tryPublishMemoryGroupNotification } from '../src/memory-group-notification';
 
 const PAGE = 65536;
 describe('kernel-issued foreign memory resources', () => {
+  it('prepares native queue release before publishing foreign memory', () => {
+    const resources = new GroupMemoryResources(); resources.create(1n, 1, 1);
+    const memory = resources.memory(1n);
+    const store = vi.spyOn(Atomics, 'store');
+    try {
+      expect(tryPublishMemoryGroupNotification(memory, PAGE - 4, 1, () => {})).toBe(0);
+      expect(store).not.toHaveBeenCalled();
+    } finally { store.mockRestore(); }
+  });
   it('constructs native group memory even if a host callback replaces the global constructor', () => {
     const resources = new GroupMemoryResources();
     const replacement = vi.spyOn(WebAssembly, 'Memory').mockImplementation(() => { throw Error('replaced constructor'); });
