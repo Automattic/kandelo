@@ -28,3 +28,16 @@ Profiling identified repeated Rust reclamation calls through the foreign-memory 
 Material CPU and memory costs remain open. A separate memory diagnostic's global Chromium dump failed and omitted the largest guest renderer; its partial allocator trace cannot establish complete attribution. A subsequent native mapping diagnostic passed for both arms and retained category/region reports. Neither instrumented run supplies accepted timing results. Large WebKit child/pthread stress remains intermittent (two passes, one timeout); a separate prior full browser-memory gate passed all 18 cases. Those browser-memory results precede this candidate and must be rerun for final acceptance.
 
 Raw commands, reports, controls, source, screenshots and failed experiments are retained in workspace `.context/shared-memory-kernel-migration-1365/`, notably jobs 1502, 1506–1517. Reproduction harnesses are retained there rather than installed as product code. Current conformance, broad Node/browser benchmarks, production-app and longer sustained ownership gates remain outstanding. No merge, deployment, memory-saving or full browser-support claim follows from this receipt.
+
+## Retired allocator and fork experiments
+
+Two subsequent changes were tested locally and removed from the candidate because neither established a material desktop footprint saving. Their patches, source, kernels and failed hypotheses remain retained; they are not product code.
+
+| Experiment | Checks | Grouped extra footprint, one/two tiled terminals | CPU overhead | Ordinary/grouped captured glyph |
+| --- | --- | ---: | ---: | ---: |
+| Skip redundant zero writes only for pages just added by locked Wasm growth | 3,985 runtime tests plus integration/docs, normal kernel/canonical builds, 12 matched Chromium cases pass | +144 / +149 MiB | +21.6% | 32.160 / 32.345 ms |
+| Add bounded sparse private-fork copying to that allocator experiment | Full native workspace, `xtask` (915 unit/11 integration), ABI/frozen baseline, normal kernel/canonical builds and 12 matched Chromium cases pass | +165 / +159 MiB | +18.6% | 32.230 / 32.030 ms |
+
+Both comparisons used the same method above and three fresh parents per arm. They used different parents from the published reclamation result; these are not paired before/after samples. Tests proved fewer explicit native writes and byte-preserving private copies, including read-error containment. Those mechanism results did not translate into an established desktop memory benefit. The underlying per-process virtual allocations, group backing extent, generated code and browser/graphics heaps remain distinct costs; the native mapping report alone does not identify every Wasm allocation. No causal allocation attribution or net memory-saving claim follows from these experiments.
+
+Raw runs 1518–1525 and the retired patch are retained in the same workspace evidence directory. Final acceptance returns to the published reclamation implementation; native/browser results for the retired combined implementation do not replace its final gates. The supported contract has no fixed performance threshold: usable interaction permits disclosed overhead, while capacity value, bounded ownership, relevant conformance and release validation remain required.
