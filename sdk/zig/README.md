@@ -63,6 +63,91 @@ Kandelo does not expose. The failure remains visible in the test suite.
   upstream tests only check declarations. The harness enables the `fsync`
   and `fdatasync` test for Kandelo.
 
+## Compiling Zig programs inside Kandelo
+
+From the Kandelo dev shell with the wasm32 SDK built, use a clean Zig 0.17.1
+release source tree to build the experimental guest compiler.
+
+```bash
+sdk/zig/build-guest-compiler.sh /path/to/zig-0.17.1 .scratch/guest-zig
+```
+
+The output has `bin/zig` and `lib/zig`. Place the tree in the guest, for
+example under `/opt/zig`. The guest also needs the C/C++ SDK with
+`wasm32posix-cc --print-kandelo-sdk` support, `wasm32posix-ar`, and the guest
+`wasm-fork-instrument` on `PATH`. The compiler is currently built and
+installed separately from the Kandelo images.
+
+Zig emits LLVM bitcode in the guest and uses the SDK's Clang to lower it to
+relocatable Wasm objects. The SDK archives `compiler_rt` and performs the
+final executable link. Zig then prepares the executable for fork, including
+the build runner that `zig build` starts. This path compiles Zig sources.
+`zig cc` and Zig build steps that invoke bundled Clang require a full Zig
+compiler. The Kandelo C/C++ SDK is available for separate C and C++ builds.
+
+From a writable guest directory containing the files in [guest/smoke](guest/smoke),
+compile and run the sample.
+
+```bash
+/opt/zig/bin/zig build-exe main.zig -femit-bin=main.wasm
+./main.wasm
+```
+
+To exercise the project's `build.zig`, run the following from the same
+directory. The first build compiles the runner and a configuration
+executable inside the guest, which can take several minutes.
+
+```bash
+/opt/zig/bin/zig build -j1
+./zig-out/bin/guest-zig-smoke.wasm
+```
+
+Keep Zig's global and project caches on guest filesystems when reusing a
+Node host-mounted project across boots. Host mounts keep guest permission
+changes in virtual metadata for the life of the mount, and Zig needs execute
+permission on cached build helpers. A disposable build sandbox can use a
+fresh project directory and `ZIG_GLOBAL_CACHE_DIR=/tmp/zig-cache`.
+[POSIX support matrix](../../docs/posix-status.md)
+
+To reproduce the project build with the Node guest-build runner, use a
+`kandelo-build-image` artifact with the current guest SDK. Place the guest
+fork instrumenter on the writable workspace mount if the image lacks it.
+
+```bash
+workspace=$(mktemp -d "$PWD/.scratch/guest-zig-smoke.XXXXXX")
+cp sdk/zig/guest/smoke/*.zig "$workspace/"
+cp /path/to/wasm-fork-instrument.wasm "$workspace/wasm-fork-instrument"
+chmod +x "$workspace/wasm-fork-instrument"
+npx tsx scripts/guest-build.ts \
+  --kernel target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+  --image /path/to/kandelo-build-image.vfs.zst \
+  --workspace "$workspace" --input "/opt/zig=$PWD/.scratch/guest-zig" \
+  --env ZIG_GLOBAL_CACHE_DIR=/tmp/zig-cache --source-date-epoch 0 \
+  --timeout-ms 900000 -- /bin/bash -ec \
+  'export PATH=/opt/zig/bin:/build:$PATH; zig build -j1; ./zig-out/bin/guest-zig-smoke.wasm'
+```
+
+Both `zig build-exe` and `zig build` compiled and ran the sample on Node and
+Chromium. The executable printed `zig build inside Kandelo passed` and
+exited with status 0 in each case. A second `zig build` in the same Node
+guest also built and ran the sample successfully.
+
+The checked-in smoke suite runs both hosts from the same fixture image and
+checks that Zig reuses cached objects and archives until the SDK identity
+changes. Prepare it from a `kandelo-build-image` artifact in the dev shell.
+For an older build image, pass a current guest `kandelo-cc.wasm` as the
+optional fifth argument.
+
+```bash
+npx tsx sdk/zig/guest/prepare-smoke-image.ts \
+  /path/to/kandelo-build-image.vfs.zst .scratch/guest-zig \
+  /path/to/wasm-fork-instrument.wasm .scratch/guest-zig-smoke.vfs
+zstd -1 -f .scratch/guest-zig-smoke.vfs
+KANDELO_ZIG_GUEST_IMAGE="$PWD/.scratch/guest-zig-smoke.vfs.zst" \
+  npx --prefix apps/browser-demos playwright test \
+  -c sdk/zig/guest/playwright.config.ts --project=chromium
+```
+
 ## Testing the zigcli port
 
 ```bash
