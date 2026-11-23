@@ -14,3 +14,5 @@ The retained records below describe their pinned revisions; they do not establis
 - [2026-11-22-shared-memory-shell-integration.md](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-22-shared-memory-shell-integration.md)
 
 The [subsequent cleanup receipt](2026-11-22-shared-memory-cleanup.md) records the validated pre-refactor build and its known WebKit stress and mixed Freeciv results. Generic build-output validation must be recorded separately. Original-plan performance, conformance and release acceptance remain open; no merge or deployment follows from these historical records.
+
+The [Rust reclamation receipt](2026-11-23-shared-group-reclamation.md) records the current bounded Chromium comparison and remaining resource costs; it does not establish final acceptance.

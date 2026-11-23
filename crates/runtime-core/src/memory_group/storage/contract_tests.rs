@@ -3,7 +3,7 @@ use super::*;
 use crate::group_memory_change::{Description, Effect};
 use crate::memory_group::{physical::tests::Memory, MemoryGroupLimits, MemoryGroups};
 
-fn image(maximum_virtual_pages: u32) -> (MemoryGroups, Storage, Memory, GroupAdmission) {
+pub(super) fn image(maximum_virtual_pages: u32) -> (MemoryGroups, Storage, Memory, GroupAdmission) {
     let mut groups = MemoryGroups::new();
     groups.configure(32, 1).unwrap();
     let group = groups

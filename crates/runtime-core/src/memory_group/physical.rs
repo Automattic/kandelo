@@ -448,8 +448,21 @@ pub(super) mod tests {
         pub(in crate::memory_group) refuse_growth: bool,
         fail_bitmap_write: bool,
         fail_atomic_store_at: Option<u32>,
+        watched_load: Option<u32>,
+        watched_loads: core::cell::Cell<usize>,
+        fail_read_at: Option<u32>,
     }
     impl Memory {
+        pub(in crate::memory_group) fn fail_read_at(&mut self, address: Option<u32>) {
+            self.fail_read_at = address;
+        }
+        pub(in crate::memory_group) fn watch_loads(&mut self, address: u32) {
+            self.watched_load = Some(address);
+            self.watched_loads.set(0);
+        }
+        pub(in crate::memory_group) fn watched_loads(&self) -> usize {
+            self.watched_loads.get()
+        }
         pub(in crate::memory_group) fn fail_bitmap_writes(&mut self, fail: bool) {
             self.fail_bitmap_write = fail;
         }
@@ -463,6 +476,9 @@ pub(super) mod tests {
                 refuse_growth: false,
                 fail_bitmap_write: false,
                 fail_atomic_store_at: None,
+                watched_load: None,
+                watched_loads: core::cell::Cell::new(0),
+                fail_read_at: None,
             }
         }
         fn store(&mut self, address: u32, value: u32) {
@@ -482,6 +498,9 @@ pub(super) mod tests {
             Ok(old)
         }
         fn read(&self, address: u32, output: &mut [u8]) -> Result<(), Errno> {
+            if self.fail_read_at == Some(address) {
+                return Err(Errno::EIO);
+            }
             output.copy_from_slice(
                 self.bytes
                     .get(address as usize..address as usize + output.len())
@@ -514,6 +533,9 @@ pub(super) mod tests {
             Ok(())
         }
         fn atomic_load(&self, address: u32) -> Result<u32, Errno> {
+            if self.watched_load == Some(address) {
+                self.watched_loads.set(self.watched_loads.get() + 1);
+            }
             word(self, address)
         }
         fn atomic_store(&mut self, address: u32, value: u32) -> Result<(), Errno> {

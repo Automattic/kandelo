@@ -48,6 +48,171 @@ mod tests {
         storage.resume_image(memory, admission, epoch).unwrap();
     }
 
+    fn peer(
+        groups: &mut crate::memory_group::MemoryGroups,
+        storage: &mut Storage,
+        memory: &mut Memory,
+        root: GroupAdmission,
+    ) -> GroupAdmission {
+        let peer = groups.prepare_image(root.group(), 200, 1).unwrap();
+        storage
+            .prepare_image(
+                memory,
+                peer,
+                ImageLayout {
+                    initial_pages: 2,
+                    maximum_pages: 32,
+                    scratch_bytes: PAGE,
+                },
+            )
+            .unwrap();
+        groups.start(peer).unwrap();
+        storage.publish(peer).unwrap();
+        peer
+    }
+
+    #[test]
+    fn reclamation_without_removed_frames_does_not_inspect_peer_page_tables() {
+        let (mut groups, mut storage, mut memory, root) = running();
+        let peer = peer(&mut groups, &mut storage, &mut memory, root);
+        let peer_root = storage.descriptor(peer).unwrap().root;
+        let before = storage
+            .pool()
+            .unwrap()
+            .snapshot(&mut memory)
+            .unwrap()
+            .allocated_pages;
+        memory.watch_loads(peer_root);
+        assert_eq!(
+            storage.reclaim_removed_pages(&mut memory, root).unwrap(),
+            Reclaimed {
+                released_pages: 0,
+                retained_pages: 0
+            }
+        );
+        assert_eq!(memory.watched_loads(), 0);
+        assert_eq!(
+            storage
+                .pool()
+                .unwrap()
+                .snapshot(&mut memory)
+                .unwrap()
+                .allocated_pages,
+            before
+        );
+    }
+
+    #[test]
+    fn a_peer_alias_still_prevents_returning_a_removed_private_frame() {
+        let (mut groups, mut storage, mut memory, root) = running();
+        let peer = peer(&mut groups, &mut storage, &mut memory, root);
+        let original = storage.descriptor(root).unwrap();
+        let peer_root = storage.descriptor(peer).unwrap().root;
+        let at = peer_root + layout::ROOT_HEADER_BYTES + 4;
+        let saved = memory.atomic_load(at).unwrap();
+        let aliased = memory
+            .atomic_load(original.root + layout::ROOT_HEADER_BYTES + 4)
+            .unwrap();
+        memory.atomic_store(at, aliased).unwrap();
+        unmap(&mut storage, &mut memory, root, 1, 1);
+        let before = storage
+            .pool()
+            .unwrap()
+            .snapshot(&mut memory)
+            .unwrap()
+            .allocated_pages;
+        assert_eq!(
+            storage.reclaim_removed_pages(&mut memory, root),
+            Err(Errno::EIO)
+        );
+        assert_eq!(
+            storage
+                .pool()
+                .unwrap()
+                .snapshot(&mut memory)
+                .unwrap()
+                .allocated_pages,
+            before
+        );
+        memory.atomic_store(at, saved).unwrap();
+        assert_eq!(
+            storage
+                .reclaim_removed_pages(&mut memory, root)
+                .unwrap()
+                .released_pages,
+            1
+        );
+    }
+
+    #[test]
+    fn locked_table_batches_preserve_an_alias_in_the_final_partial_chunk() {
+        let (_groups, mut storage, mut memory, root) = super::super::contract_tests::image(2065);
+        let descriptor = storage.descriptor(root).unwrap();
+        let first = descriptor.root + layout::ROOT_HEADER_BYTES;
+        let alias = memory.atomic_load(first + 4).unwrap();
+        let tail = first + 2064 * 4;
+        unmap(&mut storage, &mut memory, root, 1, 1);
+        memory.atomic_store(tail, alias).unwrap();
+        memory.watch_loads(first);
+        assert_eq!(
+            storage
+                .reclaim_removed_pages(&mut memory, root)
+                .unwrap()
+                .released_pages,
+            0
+        );
+        memory.atomic_store(tail, 0).unwrap();
+        assert_eq!(
+            storage
+                .reclaim_removed_pages(&mut memory, root)
+                .unwrap()
+                .released_pages,
+            1
+        );
+        assert_eq!(memory.watched_loads(), 0);
+    }
+
+    #[test]
+    fn a_failed_locked_table_read_returns_no_frames_and_releases_the_root_lock() {
+        let (_groups, mut storage, mut memory, root) = super::super::contract_tests::image(2065);
+        let descriptor = storage.descriptor(root).unwrap();
+        unmap(&mut storage, &mut memory, root, 1, 1);
+        let before = storage
+            .pool()
+            .unwrap()
+            .snapshot(&mut memory)
+            .unwrap()
+            .allocated_pages;
+        memory.fail_read_at(Some(descriptor.root + layout::ROOT_HEADER_BYTES + 4096));
+        assert_eq!(
+            storage.reclaim_removed_pages(&mut memory, root),
+            Err(Errno::EIO)
+        );
+        assert_eq!(
+            storage
+                .pool()
+                .unwrap()
+                .snapshot(&mut memory)
+                .unwrap()
+                .allocated_pages,
+            before
+        );
+        assert_eq!(
+            memory
+                .atomic_load(descriptor.root + layout::ROOT_GROW_LOCK)
+                .unwrap(),
+            0
+        );
+        memory.fail_read_at(None);
+        assert_eq!(
+            storage
+                .reclaim_removed_pages(&mut memory, root)
+                .unwrap()
+                .released_pages,
+            1
+        );
+    }
+
     #[test]
     fn removed_frames_return_only_after_native_settlement_and_are_never_claimed_again_by_the_old_image(
     ) {
@@ -171,20 +336,32 @@ impl Storage {
         }
         let result = (|| {
             let image = self.images.get(&key).ok_or(Errno::ESRCH)?;
-            for at in 0..image.layout.maximum_pages {
-                let entry = memory.atomic_load(root + layout::ROOT_HEADER_BYTES + at * 4)?;
-                if entry == 0 {
-                    continue;
+            // Both SDK growth and kernel publication hold this image's root
+            // lock. Read its stable PTEs in bounded chunks, as mapping setup
+            // does, instead of crossing into the host for every unused word.
+            // Peer tables below remain atomic: their locks are not held here.
+            let mut entries = [0; 4096];
+            for first in (0..image.layout.maximum_pages).step_by(entries.len() / 4) {
+                let count = (image.layout.maximum_pages - first).min(1024) as usize;
+                memory.read(
+                    root + layout::ROOT_HEADER_BYTES + first * 4,
+                    &mut entries[..count * 4],
+                )?;
+                for bytes in entries[..count * 4].chunks_exact(4) {
+                    let entry = u32::from_le_bytes(bytes.try_into().unwrap());
+                    if entry == 0 {
+                        continue;
+                    }
+                    let page = entry >> 16;
+                    if entry & 0xfffc != 0
+                        || page == 0
+                        || page >= self.maximum_pages
+                        || page >= memory.current_pages()?
+                    {
+                        return Err(Errno::EIO);
+                    }
+                    current[page as usize] = true;
                 }
-                let page = entry >> 16;
-                if entry & 0xfffc != 0
-                    || page == 0
-                    || page >= self.maximum_pages
-                    || page >= memory.current_pages()?
-                {
-                    return Err(Errno::EIO);
-                }
-                current[page as usize] = true;
             }
             // Controls cannot be candidates even if a damaged private-frame
             // record happens to name one. Refuse it instead of freeing it.
@@ -212,19 +389,24 @@ impl Storage {
                 }
             }
             pages.sort_unstable();
-            for (other, _) in self.images.iter() {
-                if *other == key {
-                    continue;
-                }
-                peer.fill(false);
-                self.image_pages(
-                    memory,
-                    *other,
-                    &mut peer[..self.maximum_pages as usize],
-                    false,
-                )?;
-                if pages.iter().any(|page| peer[*page as usize]) {
-                    return Err(Errno::EIO);
+            // Peer ownership matters only for frames about to be returned.
+            // Add/protect mappings often remove none; scanning every peer's
+            // complete PTE capacity then cannot reject any candidate page.
+            if !pages.is_empty() {
+                for (other, _) in self.images.iter() {
+                    if *other == key {
+                        continue;
+                    }
+                    peer.fill(false);
+                    self.image_pages(
+                        memory,
+                        *other,
+                        &mut peer[..self.maximum_pages as usize],
+                        false,
+                    )?;
+                    if pages.iter().any(|page| peer[*page as usize]) {
+                        return Err(Errno::EIO);
+                    }
                 }
             }
             for id in image.objects.keys() {
