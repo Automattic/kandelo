@@ -9,7 +9,8 @@ export function goRuntimeEnv(env, { hostHint, budget }) {
   if (env.some(entry => entry.startsWith("GOMAXPROCS="))) return [...env];
 
   /** @param {number | undefined} value */
-  const valid = value => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-  const procs = valid(hostHint) && valid(budget) ? Math.min(hostHint, budget) : 1;
+  const positiveIntegerOrOne = value =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
+  const procs = Math.min(positiveIntegerOrOne(hostHint), positiveIntegerOrOne(budget));
   return [...env, `GOMAXPROCS=${procs}`];
 }
