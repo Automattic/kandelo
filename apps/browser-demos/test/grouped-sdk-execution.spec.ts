@@ -10,6 +10,8 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
 const availableProbes = [
+  { name: "exec-precommit-retire", source: "grouped-sdk-exec-rollback.c", markers: [], partial: "", groupedOnly: true },
+  { name: "exec-precommit-stop", source: "grouped-sdk-exec-rollback.c", markers: [], partial: "", groupedOnly: true },
   { name: "exec-signal-pool", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-pool-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 callback"], partial: "", groupedOnly: true },
   { name: "pthread-pool-rollback", source: "grouped-sdk-pthread-launch-rollback.c", markers: ["grouped-sdk-pthread-launch-rollback PASS 16"], partial: "", groupedOnly: true },
@@ -122,7 +124,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
     }), { grouped, probe: probe.name, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-pool-rollback" ? "pool" : probe.name === "fork-replay-rollback" ? "replay" : "registration", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
         maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
         anonymousShared: probe.name === 'anonymous-shared', execTerminationPool: probe.name === 'exec-signal-pool', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : ['exec-signal-stopped', 'exec-signal-pool'].includes(probe.name) ? 'stopped' : undefined,
-        execPoolRollback: probe.name === 'exec-pool-rollback', execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : ['exec-callback-rollback', 'exec-pool-rollback'].includes(probe.name) ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined,
+        execPrecommitStop: probe.name === 'exec-precommit-stop' ? 'deactivate' : probe.name === 'exec-precommit-retire' ? 'retire' : undefined, execPoolRollback: probe.name === 'exec-pool-rollback', execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : ['exec-callback-rollback', 'exec-pool-rollback', 'exec-precommit-stop', 'exec-precommit-retire'].includes(probe.name) ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined,
       rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined, threadPoolRollback: probe.name === "pthread-pool-rollback", uncertainThreadConstructor: probe.name === "pthread-constructor-failure", forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit" });
     writeFileSync(info.outputPath("result.json"), JSON.stringify({ engine: info.project.name,
       version: browser.version(), inputs, result }, null, 2) + "\n");
@@ -141,7 +143,26 @@ for (const probe of probes) for (const grouped of [false, true]) {
     expect(result.failure, JSON.stringify(result)).toBeUndefined();
     expect(result.diagnostics).toEqual([]);
     expect(result.stderr).toBe("");
-    if (probe.name === 'exec-pool-rollback') {
+    if (['exec-precommit-stop', 'exec-precommit-retire'].includes(probe.name)) {
+        expect(result.kernelExit).toBe(137);
+        expect(result.processExit).toBeUndefined();
+        expect(result.quiescent).toBe(true);
+        expect(result.processWorkerConstructionAttempts).toBe(1);
+        expect(result.execReplacementPublications).toBe(0);
+        expect(result.execHandoffs).toEqual([]);
+        expect(result.execReturns).toEqual([]);
+        expect(result.execPreparations).toHaveLength(1);
+        const events = result.lifecycleEvidence as any[];
+        expect(events.filter(row => row.kind === 'precommit-stop-pool-lock-released')).toEqual([
+          expect.objectContaining({ admission: expect.objectContaining({ processes: 1, tasks: 1, images: 2 }) }),
+        ]);
+        expect(events.filter(row => row.kind === 'precommit-stopped-image-deactivated')).toHaveLength(1);
+        expect(events.filter(row => row.kind === 'precommit-live-refused')).toEqual([expect.objectContaining({ backing: expect.objectContaining({ images: 2, replicas: 2, exposedReplicas: 1 }) })]);
+        expect(events.filter(row => row.kind === 'precommit-host-references-released')).toHaveLength(probe.name === 'exec-precommit-retire' ? 1 : 0);
+        expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
+        return;
+      }
+      if (probe.name === 'exec-pool-rollback') {
       const locks = (result.lifecycleEvidence as any[]).filter(row => row.kind === 'exec-pool-lock-released');
       expect(locks).toHaveLength(16);
       expect(locks.every(row => row.admission.processes === 1 && row.admission.tasks === 2 && row.admission.images === 2)).toBe(true);

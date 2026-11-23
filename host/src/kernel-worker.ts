@@ -10890,6 +10890,7 @@ export class CentralizedKernelWorker {
     let record = this.#groupImageRetirements.get(handle);
     if (record?.released) return Promise.resolve(0);
     let refusal = -EBUSY;
+    let cancellations: GroupedExecPreparationState[] = [];
     if (!record) this.#runImmediateKernelEntry('begin exact grouped image retirement', entry => {
       const store = this.#memoryGroupReplicas.get(handle), image = this.#memoryGroupImageRegistrations.get(handle);
       if (!store || !image) { refusal = -EINVAL; return undefined; }
@@ -10909,6 +10910,11 @@ export class CentralizedKernelWorker {
         // fictitious guest exit. Other live images remain refused.
         if (state !== PROCESS_STATE_EXITED && !failedFork && !this.#unstartedGroupLaunchRetirements.has(handle)) return undefined;
       }
+      const registration = this.processes.get(receipt.pid);
+      if (registration?.source === image.source) {
+        cancellations = this.#preparedExecsForRegistration(registration);
+        if (cancellations.length) return undefined;
+      }
       const retire = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_retire_image;
       if (typeof retire !== 'function') this.#memoryGroupProtocolError('Missing exact image retirement export');
       const status = this.#checkedMemoryGroupStatus(retire(receipt.pid,
@@ -10922,7 +10928,6 @@ export class CentralizedKernelWorker {
       }
       for (const clone of this.#pendingGroupClones) if (clone.source === image.source) operations.add(clone.finished!);
       for (const retiring of this.#pendingGroupThreadRetirements) if (retiring.owner?.source === image.source) operations.add(retiring.finished.then(() => undefined));
-      const registration = this.processes.get(receipt.pid);
       if (registration?.source === image.source) {
         if (registration.grouped?.handle !== handle) this.#memoryGroupProtocolError('Retiring image registration changed identity');
         this.#deactivateProcessWithinKernelEntry(receipt.pid, entry, image.memory);
@@ -10939,6 +10944,11 @@ export class CentralizedKernelWorker {
       });
       return undefined;
     });
+    // A stopped predecessor can still own an unexposed exec future. Join
+    // its Rust cancellation before revoking transport or releasing pages;
+    // allocator contention must retain both owners rather than latch fatal.
+    if (cancellations.length) return Promise.all(cancellations.map(state => this.#cancelGroupedExecPreparation(state, false)))
+      .then(async () => await retryKernelEntryResult(() => this.retireMemoryGroupImage(handle, retireHostReferences)));
     if (!record) return Promise.resolve(refusal);
     const ownedRecord = record;
     return ownedRecord.settled.then(() => retryKernelEntryResult(() => this.#releaseGroupImageRetirement(ownedRecord)));
@@ -10972,17 +10982,31 @@ export class CentralizedKernelWorker {
     return result;
   }
 
-  deactivateMemoryGroupProcess(handle: PreparedGroupReplica): boolean {
+  #preparedExecsForRegistration(registration: ProcessRegistration): GroupedExecPreparationState[] {
+    return [...this.#preparedGroupExecReservations].filter(state => state.registration === registration && state.phase === 'prepared');
+  }
+
+  deactivateMemoryGroupProcess(handle: PreparedGroupReplica): boolean | Promise<boolean> {
     let result = false;
+    let cancellations: GroupedExecPreparationState[] = [];
     this.#runImmediateKernelEntry('deactivate exact grouped image', entry => {
       const store = this.#memoryGroupReplicas.get(handle);
       if (!store) return undefined;
       const { pid } = store.receipt(handle), registration = this.processes.get(pid);
       if (!registration) { result = true; return undefined; }
       if (registration.grouped?.handle !== handle) return undefined;
+      const prepared = this.#preparedExecsForRegistration(registration);
+      if (prepared.length) {
+        if (store.imageExecutionStopped(handle, entry)) cancellations = prepared;
+        return undefined;
+      }
       result = this.#deactivateProcessWithinKernelEntry(pid, entry, registration.memory);
       return undefined;
     });
+    // Keep ordinary deactivation synchronous and pre-entry gate refusal
+    // synchronous. Only proven-stopped grouped cleanup needs continuation.
+    if (cancellations.length) return Promise.all(cancellations.map(state => this.#cancelGroupedExecPreparation(state, false)))
+      .then(async () => await retryKernelEntryResult(() => this.deactivateMemoryGroupProcess(handle)));
     return result;
   }
 

@@ -102,8 +102,10 @@ syscall-free loops. A peer waiting on the same physical word must remain live.
 Kernel exit status cannot become visible before the required execution stop.
 Page reuse requires exact execution-generation quiescence and release of every
 remaining alias/object/snapshot owner. Quarantine is containment, not successful
-reclamation. Existing ordinary-pthread gaps, including asynchronous cancellation
-and robust mutexes, are not silently broadened by this preview.
+reclamation. A stopped image with an unexposed exec preparation retains both
+owners until Rust cancellation succeeds; allocator contention delays deactivation
+and retirement. A live predecessor cannot use that cleanup path. Existing
+ordinary-pthread gaps, including asynchronous cancellation and robust mutexes, are not silently broadened by this preview.
 
 Logical growth and host control allocations serialize with the same mapping
 publication rules. Missing pages below a logical high-water mark still need

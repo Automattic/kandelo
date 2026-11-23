@@ -42,6 +42,7 @@ export interface SdkExecutionOptions {
   nativeWaitLifecycle?: boolean;
   execPrecommitFailure?: 'allocation' | 'callback' | 'virtual';
   execPoolRollback?: boolean;
+  execPrecommitStop?: 'deactivate' | 'retire';
   execSuccess?: boolean;
   execOldThreads?: boolean;
   anonymousShared?: boolean;
@@ -105,6 +106,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   let execProbeActive = false;
   let execTermination: { signal: number } | undefined;
   let execReplacementPublications = 0;
+  let execPrecommitStopFinished = false;
   const memoryEvidence = async () => ({ group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
     maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount,
     backing: admittedGroup === undefined ? undefined : await retryKernelEntryResult(() => kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup!)) });
@@ -167,7 +169,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         for (const [tid, thread] of threads) {
           if (logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) retireThread(tid, thread);
         }
-        if (kernelExit === undefined || processExit === undefined && !execTermination || !quiescent || !processReady
+        if (kernelExit === undefined || processExit === undefined && !execTermination && !options.execPrecommitStop || options.execPrecommitStop && !execPrecommitStopFinished || !quiescent || !processReady
             || (options.joinOnExit && !rootJoined) || options.forcedLifecycle && busyReleased && busyStopValue === undefined) return;
         for (const [pid, child] of children) {
           const state = childStates.get(pid);
@@ -378,6 +380,41 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         } : options.execPrecommitFailure ? async request => {
           if (!request.groupedExec) throw Error('Grouped exec lost opaque preparation');
           execPreparations.push({ layout: request.groupedExec.layout, ...await memoryEvidence() });
+          if (options.execPrecommitStop) {
+            const stop = (async () => {
+              if (!rootHandle || !rollbackPoolMemory) throw Error('Missing actual precommit predecessor');
+              const premature = await retryKernelEntryResult(() => options.execPrecommitStop === 'retire'
+                ? kernel.retireMemoryGroupImage(rootHandle!, () => { throw Error('Live predecessor released references'); })
+                : kernel.deactivateMemoryGroupProcess(rootHandle!));
+              if (premature !== (options.execPrecommitStop === 'retire' ? -16 : false)) throw Error('Live precommit predecessor was deactivated');
+              lifecycleEvidence.push({ kind: 'precommit-live-refused', ...await memoryEvidence() });
+              if (!await retryKernelEntryResult(() => kernel.signalProcess(request.pid, 9))) throw Error('Precommit SIGKILL refused');
+              await kernel.waitForMemoryGroupReplicaQuiescence(rootHandle);
+              if (options.joinOnExit && !rootJoined) await new Promise<void>((resolve, fail) => {
+                processWorker!.on('exit', code => code === 0 ? resolve() : fail(Error(`Precommit Worker exit ${code}`)));
+              });
+              const lock = new Int32Array(rollbackPoolMemory.buffer, MEMORY_GROUP_CONTROL, 1);
+              if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) throw Error('Precommit fixture did not acquire pool lock');
+              setTimeout(() => {
+                try { lifecycleEvidence.push({ kind: 'precommit-stop-pool-lock-released', admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
+                catch (error) { reject(error); }
+                finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+              }, 0);
+              if (options.execPrecommitStop === 'retire') {
+                const retired = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(rootHandle!, () => {
+                  importWorker?.close(); if (generation) owner.releaseGeneration(generation);
+                  lifecycleEvidence.push({ kind: 'precommit-host-references-released' });
+                }));
+                if (retired !== 0) throw Error(`Stopped precommit predecessor retirement refused: ${retired}`);
+              } else {
+                const deactivated = await retryKernelEntryResult(() => kernel.deactivateMemoryGroupProcess(rootHandle!));
+                if (!deactivated) throw Error('Stopped precommit predecessor deactivation refused');
+              }
+              lifecycleEvidence.push({ kind: 'precommit-stopped-image-deactivated', ...await memoryEvidence() });
+              execPrecommitStopFinished = true; maybeComplete();
+            })();
+            evidenceWork.push(stop); await stop;
+          }
           if (options.execPoolRollback) {
             if (!rollbackPoolMemory) throw Error('Missing actual grouped exec backing');
             const lock = new Int32Array(rollbackPoolMemory.buffer, MEMORY_GROUP_CONTROL, 1);
@@ -712,7 +749,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           imageHandles.set(pid, handle);
           launch = kernel.publishMemoryGroupReplica(handle);
           if (typeof launch === "number") throw new Error(`publish replica: ${launch}`);
-          if (options.rejectForkStage === 'pool' || options.threadPoolRollback || options.execPoolRollback || options.execTerminationPool) rollbackPoolMemory = launch.envelope.memory;
+          if (options.rejectForkStage === 'pool' || options.threadPoolRollback || options.execPoolRollback || options.execTerminationPool || options.execPrecommitStop) rollbackPoolMemory = launch.envelope.memory;
           kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], registration);
         } else kernel.registerProcess(pid, createProcessMemory(4, layout), [layout.channelOffset], registration);
         status(await retryKernelEntryResult(() => kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] })), "attach executable");
