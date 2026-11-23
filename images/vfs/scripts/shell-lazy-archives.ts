@@ -294,6 +294,13 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     mountPrefix: "/usr/",
     requiredMember: "bin/flang",
   },
+  {
+    id: "go",
+    dependency: "go-toolchain",
+    resolverPath: "programs/wasm32/go.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/go/bin/go",
+  },
   // Autoconf, Automake, Libtool and the other build tools' scripts and data
   // (images/vfs/lib/init/dev-tools.ts).
   ...DEV_TOOL_ARCHIVE_SPECS,

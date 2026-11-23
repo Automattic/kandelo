@@ -18,6 +18,7 @@ missing platform capabilities to claim full-system FHS conformance.
 | `/usr/sbin` | Service daemons and nonessential administration, such as mariadbd, redis-server and php-fpm |
 | `/usr/libexec` | Private executable helpers; game engines, upstream Cargo and the Rust compiler behind their SDK entry points, and the service control helper |
 | `/usr/lib` | Libraries, runtime modules, npm, Erlang and the private Qt installation tree |
+| `/usr/lib/go` | Go installation root. `/usr/bin/go` links to its command so Go can discover the matching tools and source tree relative to its executable. |
 | `/usr/lib/kandelo/wasm32posix` | Guest SDK sysroot, glue and cross-compilation configuration |
 | `/usr/lib/kandelo/fortran` | Target-specific Flang runtime archive and intrinsic modules used by the guest Fortran compiler |
 | `/usr/lib/rustlib` | Matching target specification, prebuilt standard library and profiler runtime for the guest Rust compiler |

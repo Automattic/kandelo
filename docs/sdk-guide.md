@@ -956,7 +956,8 @@ script that runs `readelf` would conclude a program has no dependencies.
 
 ## Go Programs
 
-See [Build and run a Go program](go.md) for the experimental pure-Go SDK.
+See [Build and run a Go program](go.md) for experimental pure-Go
+cross-compilation and in-guest builds.
 
 ## Running Programs
 

@@ -563,6 +563,10 @@ name = "flang-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "go-toolchain"
+class = "browser-product"
+
+[[packages]]
 name = "kernel"
 class = "platform"
 
