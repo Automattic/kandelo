@@ -8405,6 +8405,28 @@ export class CentralizedKernelWorker {
           if (started) this.#quarantineStartedMemoryGroupReplica(group.store, handle, entry);
           else {
             const status = this.#memoryGroupTaskActionWithinKernelEntry(receipt, MEMORY_GROUP_PROTOCOL.task_actions.cancelUnconstructed, entry);
+            if (status === -ERRNO.EAGAIN) {
+              const cancelledHandle = handle, reserved = allocation;
+              const progress = new this.#promiseReceiver<void>((_resolve, reject) => {
+                entry.deferProtocolEffect(() => {
+                  void (async () => {
+                    for (;;) {
+                      await this.#waitForGroupRetirementProgress(group.store, group.handle);
+                      const cancelled = await retryKernelEntryResult(() => this.cancelUnexposedMemoryGroupReplica(cancelledHandle));
+                      if (cancelled === 0) break;
+                      if (cancelled !== -ERRNO.EAGAIN) throw new MemoryGroupProtocolFault(`Unpublished grouped thread cancellation refused: ${cancelled}`);
+                    }
+                    if (reserved) allocator.freeMapped(reserved.slotStartPage);
+                    // Reject the launch only after Rust returned its storage.
+                    // The normal clone rollback still owns virtual controls.
+                    throw error;
+                  })().catch(reject);
+                  return undefined;
+                });
+              });
+              result = { status: 'waiting', progress };
+              return undefined;
+            }
             if (status !== 0) this.#memoryGroupProtocolError('Cannot cancel unpublished grouped thread');
             group.store.forgetCancelledReplica(handle, entry); this.#memoryGroupReplicas.delete(handle);
           }

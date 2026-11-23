@@ -250,7 +250,13 @@ export class GroupedSessionRuntime {
       launchComplete = true;
     } catch (cause) {
       if (!published) {
-        this.number(await retry(() => this.kernel.cancelUnexposedMemoryGroupReplica(handle)), 'cancel grouped root');
+        for (;;) {
+          const cancelled = await retry(() => this.kernel.cancelUnexposedMemoryGroupReplica(handle));
+          if (cancelled !== -ERRNO.EAGAIN) { this.number(cancelled, 'cancel grouped root'); break; }
+          // Keep this exact launch owner until Rust completes cancellation.
+          // A later host turn schedules a retry; it grants no absence proof.
+          await new Promise<void>(resolve => setTimeout(resolve, 0));
+        }
         if (!owner.releaseAfterStop()) this.kernel.containMemoryGroupLaunchFailure(cause);
       } else if (process.retiring) {
         await process.retiring;

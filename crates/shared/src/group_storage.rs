@@ -47,7 +47,6 @@ pub const SNAPSHOT_BYTES: usize = SNAPSHOT_FIELDS.len() * 4;
 pub enum Action {
     Describe = 1,
     Publish = 2,
-    Cancel = 3,
     BeginImagePause = 4,
     ImagePauseAcknowledged = 5,
     ResumeImage = 6,
@@ -74,7 +73,6 @@ pub enum Action {
 pub const ACTIONS: &[(&str, Action)] = &[
     ("describe", Action::Describe),
     ("publish", Action::Publish),
-    ("cancel", Action::Cancel),
     ("beginImagePause", Action::BeginImagePause),
     ("imagePauseAcknowledged", Action::ImagePauseAcknowledged),
     ("resumeImage", Action::ResumeImage),

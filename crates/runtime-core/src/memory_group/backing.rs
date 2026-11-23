@@ -87,7 +87,6 @@ impl MemoryGroups {
         match action {
             A::Describe => descriptor = Some(store.descriptor(admission)?),
             A::Publish => unreachable!(),
-            A::Cancel => store.cancel_unpublished(&mut memory, admission)?,
             A::BeginImagePause => {
                 value = u64::from(store.begin_image_pause(&mut memory, admission)?)
             }

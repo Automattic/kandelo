@@ -34,6 +34,7 @@ export interface SdkExecutionOptions {
   maximumVirtualPages?: number;
   execTargetBytes?: ArrayBuffer;
   rejectThreadLaunchCount?: number;
+  threadPoolRollback?: boolean;
   rejectForkLaunchCount?: number;
   rejectForkStage?: 'registration' | 'replay' | 'pool';
   uncertainThreadConstructor?: boolean;
@@ -121,6 +122,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const diagnostics: string[] = [];
   const rolledBackForks: Record<string, unknown>[] = [];
   let injectedForkRefusals = 0, forkWorkerConstructionAttempts = 0;
+  let threadPreparationAttempts = 0;
   const failedThreadLaunches: Record<string, unknown>[] = [];
   const failedThreadWorkers: Record<string, unknown>[] = [];
   let retainedThreadLaunches = 0, injectedThreadRefusals = 0, threadConstructionAttempts = 0;
@@ -462,7 +464,25 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             threadAllocators.set(attachment.pid, allocator);
           }
           const before = await memoryEvidence();
-          try { await launchGroupedThreadWorker({ kernel, attachment, allocator, adapter: threadAdapter, imports, generation: processGeneration,
+          const failBeforePublication = options.threadPoolRollback && ++threadPreparationAttempts % 2 === 1;
+          const launchAllocator = failBeforePublication ? new Proxy(allocator, { get(target, key) {
+            if (key === 'allocateMapped') return () => {
+              if (!rollbackPoolMemory) throw Error('Missing actual grouped thread backing');
+              const lock = new Int32Array(rollbackPoolMemory.buffer, MEMORY_GROUP_CONTROL, 1);
+              if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) throw Error('Thread fixture did not acquire its pool lock');
+              const attempt = ++injectedThreadRefusals;
+              setTimeout(() => {
+                try { lifecycleEvidence.push({ kind: 'thread-pool-lock-released', attempt,
+                  admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
+                catch (error) { reject(error); }
+                finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+              }, 0);
+              throw new RangeError('fixture grouped thread control refusal');
+            };
+            const value = Reflect.get(target, key, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          } }) : allocator;
+          try { await launchGroupedThreadWorker({ kernel, attachment, allocator: launchAllocator, adapter: threadAdapter, imports, generation: processGeneration,
             programBytes: options.programBytes, terminationProvesQuiescence: options.joinOnExit,
             isCurrent: thread => threads.get(thread.tid) === thread,
             retain: thread => {
@@ -670,7 +690,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           imageHandles.set(pid, handle);
           launch = kernel.publishMemoryGroupReplica(handle);
           if (typeof launch === "number") throw new Error(`publish replica: ${launch}`);
-          if (options.rejectForkStage === 'pool') rollbackPoolMemory = launch.envelope.memory;
+          if (options.rejectForkStage === 'pool' || options.threadPoolRollback) rollbackPoolMemory = launch.envelope.memory;
           kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], registration);
         } else kernel.registerProcess(pid, createProcessMemory(4, layout), [layout.channelOffset], registration);
         status(await retryKernelEntryResult(() => kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] })), "attach executable");

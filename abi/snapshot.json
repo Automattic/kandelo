@@ -8551,7 +8551,6 @@
     "storage": {
       "actions": {
         "beginImagePause": 4,
-        "cancel": 3,
         "containImage": 25,
         "describe": 1,
         "imagePauseAcknowledged": 5,

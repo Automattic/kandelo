@@ -9,6 +9,7 @@ import { resolveBinary } from '../src/binary-resolver';
 import { VirtualPlatformIO } from '../src/vfs/vfs';
 import { NodeTimeProvider } from '../src/vfs/time';
 import { FixedTreeBackend } from './support/fixed-tree-backend';
+import { MEMORY_GROUP_CONTROL } from '../src/generated/program-extensions';
 
 it('uses the real Rust kernel for storage preparation, exposure and exact pinned retirement', async () => {
   const io = new VirtualPlatformIO([{ mountPoint: '/', backend: new FixedTreeBackend({ '/': { mode: 0o040755, ino: 1 } }) }], new NodeTimeProvider());
@@ -71,9 +72,17 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
     expect(Atomics.load(new Uint32Array(memory.buffer), root / 4)).toBe(2);
     expect(view.getUint32(f.maximumPhysicalPages, true)).toBe(32);
     expect(scalar('kernel_memory_group_storage_drop', group)).toBe(-ERRNO.EBUSY);
+    const lock = new Int32Array(memory.buffer, MEMORY_GROUP_CONTROL, 1);
+    expect(Atomics.compareExchange(lock, 0, 0, 1)).toBe(0);
+    try {
+      expect(task(receipt, P.task_actions.cancelUnconstructed)).toBe(-ERRNO.EAGAIN);
+      expect(storage(receipt, P.storage.actions.describe).status).toBe(P.storage.reply_bytes);
+    } finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+    // There is no host-callable physical-only cancellation path anymore.
+    expect(storage(receipt, 3).status).toBe(-ERRNO.EINVAL);
     expect(task(receipt, P.task_actions.start)).toBe(0);
     expect(storage(receipt, P.storage.actions.publish).status).toBe(P.storage.reply_bytes);
-    expect(storage(receipt, P.storage.actions.cancel).status).toBe(-ERRNO.EBUSY);
+    expect(task(receipt, P.task_actions.cancelUnconstructed)).toBe(-ERRNO.EBUSY);
     const pin = storage(receipt, P.storage.actions.pinNative, 0n, replica + 8); expect(pin.value).toBeGreaterThan(0n);
     expect(storage(receipt, P.storage.actions.stopImage).status).toBe(P.storage.reply_bytes);
     expect(storage(receipt, P.storage.actions.noteQuiescent).status).toBe(P.storage.reply_bytes);
