@@ -130,7 +130,9 @@ def build(args):
         f'inline constexpr char kBuildId[] = "kandelo-node-stencil/1/{cache_identity}";\n'
         f'inline constexpr uint32_t kVersionTag = {cache_version}u;\n'
         '}\n')
-    shutil.copytree(sources / 'v8-source-api', staged / 'v8-source-api')
+    # These source interfaces are generated below from the verified Node archive.
+    # The conveyor lifetime methods no longer require maintained files here.
+    (staged / 'v8-source-api').mkdir()
     # Whole portable upstream value type; no V8 allocator or collector code.
     cppgc_statistics = args.node_source / 'deps/v8/include/cppgc/heap-statistics.h'
     shutil.copy2(cppgc_statistics, staged / 'v8-source-api/cppgc-heap-statistics.h')
