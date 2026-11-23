@@ -34,6 +34,14 @@ import { PACKAGE_ROOTFS_SHELL_COMPOSITION } from "./source-rootfs-shell-overlay"
 const SHELL_DERIVED_CREATED_BY =
   "images/vfs/scripts/savePackageShellDerivedVfsImage";
 
+export function createShellDerivedImageFilesystem(): KandeloImageFs {
+  const fs = KandeloImageFs.create();
+  // The inherited lazy catalogs and the web application files can push an
+  // export plan past the default 32 MiB. Allow 48 MiB for the build-time writer.
+  fs.setIoBudgetBytes(48 * 1024 * 1024);
+  return fs;
+}
+
 function depEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
 }
@@ -124,11 +132,7 @@ export async function loadShellBaseFileSystemFromImage(
   // The load AUTHENTICATES, inside the module's `sm_load_image`. There is no
   // window between importing the base and checking its activation cohorts, and
   // no second call for a caller to forget.
-  const fs = KandeloImageFs.create();
-  // Package builds export a tree with both the shell's lazy catalogs and the
-  // web application's files. The Go catalog can push LAMP's export plan past
-  // the default 32 MiB I/O budget. Allow 48 MiB for this build-time instance.
-  fs.setIoBudgetBytes(48 * 1024 * 1024);
+  const fs = createShellDerivedImageFilesystem();
   fs.loadImage(shellImage);
   const metadata = fs.getImageMetadata();
   const kernelAbi = metadata?.kernelAbi;
