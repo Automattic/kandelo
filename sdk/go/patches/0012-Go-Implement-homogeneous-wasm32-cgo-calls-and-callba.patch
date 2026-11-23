@@ -1,0 +1,1240 @@
+From 7ae173a6576a7e795eddab67009f9b0517b3b403 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Fri, 6 Nov 2026 21:31:49 -0500
+Subject: [PATCH 12/22] Go: Implement homogeneous wasm32 cgo calls and
+ callbacks
+
+Use ordinary typed C pointer fields and export frames with four-byte Go
+pointers. Adapt the Kandelo C-call, bootstrap and callback ABI0 assembly,
+preserving both logical PCs and table handles across foreign callbacks.
+Remove the unused mixed-width Kandelo assembly from this prototype.
+
+Parse Wasm objects and passive data in cgo's import scan, rejecting unknown
+import namespaces rather than inventing dynamic-library bindings. Passive
+bytes do not become initialized addressable constants. Keep upstream cgo
+argument/export layouts and pointer types unchanged.
+
+Resolve C function addresses as table handles. Record the exact C frame
+signature so asmcgocall handles void wrappers and errno-returning wrappers
+without an indirect-call type mismatch. Stop rooting references inside
+unused C functions; normal linker reachability must select those callees.
+Register cgo support and keep the existing VFS account lookup in both modes.
+
+Validation: five standard-library builds; host cgo/object-reader/platform
+tests; WASI wasm32/wasm runtime controls; seven Node cases and 21 browser
+cases across Chromium, Firefox and WebKit. Exercise typed struct fields,
+escaping field-address GC roots, by-value aggregates, C function pointers,
+errno, per-M TLS, callbacks, C-created pthread stack growth and callback/GC
+churn. Full Go/cgo conformance and application migration remain pending.
+
+diff --git a/src/cmd/cgo/out.go b/src/cmd/cgo/out.go
+index 10d137211b4bc419ab4f29da3df65f6281ed26e0..ee1d0a191c9a850648da9994b5f36c3b5ef0a44a 100644
+--- a/src/cmd/cgo/out.go
++++ b/src/cmd/cgo/out.go
+@@ -14,6 +14,7 @@ import (
+ 	"go/ast"
+ 	"go/printer"
+ 	"go/token"
++	"internal/buildcfg"
+ 	"internal/xcoff"
+ 	"io"
+ 	"os"
+@@ -434,6 +435,16 @@ func dynimport(obj string) {
+ 		return
+ 	}
+ 
++	if buildcfg.GOOS == "kandelo" && buildcfg.GOARCH == "wasm32" {
++		module, err := readWasmDebugModule(obj)
++		if err != nil {
++			fatalf("cannot parse Kandelo Wasm object %s: %v", obj, err)
++		}
++		if err := module.checkStaticImports(); err != nil {
++			fatalf("%s: %v", obj, err)
++		}
++		return
++	}
+ 	fatalf("cannot parse %s as ELF, Mach-O, PE or XCOFF", obj)
+ }
+ 
+diff --git a/src/cmd/cgo/wasm.go b/src/cmd/cgo/wasm.go
+index a37fd61bbaf76f8b4c0823e1165d7d61afc6be0c..8a50d49249fdaa731a79b2b9a83bf5b1ff5341f1 100644
+--- a/src/cmd/cgo/wasm.go
++++ b/src/cmd/cgo/wasm.go
+@@ -17,6 +17,7 @@ type wasmDataSegment struct {
+ 
+ type wasmDebugModule struct {
+ 	sections        map[string][]byte
++	importModules   []string
+ 	importedGlobals uint64
+ 	globalValues    []uint64
+ 	globalExports   map[string]uint64
+@@ -165,9 +166,11 @@ func (module *wasmDebugModule) readImports(section []byte) error {
+ 		return err
+ 	}
+ 	for range count {
+-		if _, err := wasmBytes(section, &offset); err != nil {
++		name, err := wasmBytes(section, &offset)
++		if err != nil {
+ 			return err
+ 		}
++		module.importModules = append(module.importModules, string(name))
+ 		if _, err := wasmBytes(section, &offset); err != nil {
+ 			return err
+ 		}
+@@ -283,6 +286,14 @@ func (module *wasmDebugModule) readData(section []byte) error {
+ 		if err != nil {
+ 			return err
+ 		}
++		if mode == 1 {
++			// Passive bytes have no address until memory.init executes. Parse
++			// their payload but do not expose them as initialized constants.
++			if _, err := wasmBytes(section, &offset); err != nil {
++				return err
++			}
++			continue
++		}
+ 		if mode == 2 {
+ 			memoryIndex, err := wasmUnsigned(section, &offset)
+ 			if err != nil || memoryIndex != 0 {
+@@ -366,3 +377,14 @@ func (module *wasmDebugModule) constants(count int) ([]int64, []float64, []strin
+ 	}
+ 	return integers, floats, strings, nil
+ }
++
++// checkStaticImports rejects native dynamic-library bindings: Kandelo cgo
++// links C archives into one module and resolves these host namespaces itself.
++func (module *wasmDebugModule) checkStaticImports() error {
++	for _, name := range module.importModules {
++		if name != "env" && name != "kernel" {
++			return fmt.Errorf("unsupported Kandelo Wasm import module %q", name)
++		}
++	}
++	return nil
++}
+diff --git a/src/cmd/cgo/wasm_test.go b/src/cmd/cgo/wasm_test.go
+index 76e71e20cbb1d1ca5b858cf79980cec49e2996f5..0083312d91f455e822cff7de7d776f9749cf0122 100644
+--- a/src/cmd/cgo/wasm_test.go
++++ b/src/cmd/cgo/wasm_test.go
+@@ -118,3 +118,41 @@ func TestReadWasmDebugModuleWithImportedGlobal(t *testing.T) {
+ 		t.Fatalf("memory = %v", contents)
+ 	}
+ }
++
++func TestWasmStaticImportNamespaces(t *testing.T) {
++	for _, name := range []string{"env", "kernel", "native-library"} {
++		payload := []byte{1}
++		payload = binary.AppendUvarint(payload, uint64(len(name)))
++		payload = append(payload, name...)
++		payload = append(payload, 1, 'f', 0, 0) // one function import, type index zero
++		module := new(wasmDebugModule)
++		if err := module.readImports(payload); err != nil {
++			t.Fatal(err)
++		}
++		err := module.checkStaticImports()
++		if name == "native-library" {
++			if err == nil {
++				t.Fatal("unsupported dynamic library import was accepted")
++			}
++		} else if err != nil {
++			t.Fatal(err)
++		}
++	}
++}
++
++func TestWasmPassiveDataIsNotAddressable(t *testing.T) {
++	module := &wasmDebugModule{globalExports: map[string]uint64{"value": 32}}
++	// One passive segment; its contents must not be assigned an invented address.
++	if err := module.readData([]byte{1, 1, 4, 1, 2, 3, 4}); err != nil {
++		t.Fatal(err)
++	}
++	if len(module.dataSegments) != 0 {
++		t.Fatal("passive segment became active")
++	}
++	if _, err := module.memory("value", 4); err == nil {
++		t.Fatal("passive constants were treated as initialized memory")
++	}
++	if err := module.readData([]byte{1, 1, 4, 1}); err == nil {
++		t.Fatal("truncated passive bytes were accepted")
++	}
++}
+diff --git a/src/cmd/dist/build.go b/src/cmd/dist/build.go
+index 049d18fb2fb2abf7bfb3acbd0cd30f9b292e5508..e3d7a002e994ad103c96fa5ec4469b01a8ff8aed 100644
+--- a/src/cmd/dist/build.go
++++ b/src/cmd/dist/build.go
+@@ -1320,7 +1320,7 @@ var cgoEnabled = map[string]bool{
+ 	"js/wasm":         false,
+ 	"wasip1/wasm":     false,
+ 	"wasip1/wasm32":   false,
+-	"kandelo/wasm32":  false,
++	"kandelo/wasm32":  true,
+ 	"netbsd/386":      true,
+ 	"netbsd/amd64":    true,
+ 	"netbsd/arm":      true,
+diff --git a/src/cmd/link/internal/ld/wasmobj.go b/src/cmd/link/internal/ld/wasmobj.go
+index 52e06fc8e572f7a2b6801f1a1fe6d0694abeab9b..b4d2026aaec888e04269bfe31c60c0fe462bc231 100644
+--- a/src/cmd/link/internal/ld/wasmobj.go
++++ b/src/cmd/link/internal/ld/wasmobj.go
+@@ -409,9 +409,8 @@ func loadwasmobj(ctxt *Link, input *bio.Reader, _ string, length int64, name str
+ 			edge.SetOff(int32(relocation.Offset - function.BodyOffset))
+ 			edge.SetSiz(4)
+ 			edge.SetSym(target)
+-			if edgeType == objabi.R_CALL || relocation.Type == 7 && relocation.Symbol.Kind == 0 {
+-				ctxt.loader.SetAttrReachable(target, true)
+-			}
++			// The normal dead-code traversal follows this edge only if its
++			// source is live. A reference in an unused C function is not a root.
+ 		}
+ 	}
+ 	for _, initializer := range object.InitFunctions {
+diff --git a/src/cmd/link/internal/wasm/asm.go b/src/cmd/link/internal/wasm/asm.go
+index fa75f3723c3fda67f9204ea5e304e154f686634d..e94573cccc17ade65de04eb27a5e77363dde0b7b 100644
+--- a/src/cmd/link/internal/wasm/asm.go
++++ b/src/cmd/link/internal/wasm/asm.go
+@@ -53,6 +53,8 @@ const (
+ type wasm32State struct {
+ 	funcIndex         map[loader.Sym]uint32
+ 	funcEntries       loader.Sym
++	cgoSignatures     map[loader.Sym]uint8
++	cgoSignatureTable loader.Sym
+ 	unreachableMethod loader.Sym
+ }
+ 
+@@ -61,6 +63,30 @@ func (st *wasm32State) gentext(ctxt *ld.Link, ldr *loader.Loader) {
+ 		return
+ 	}
+ 
++	// Go's cgo_import_static declarations take addresses of C functions.
++	// Unlike logical Go PCs, these addresses use the C ABI's table handles.
++	// Rewrite before constructing PC metadata, which must retain logical PCs.
++	for source := loader.Sym(1); source < loader.Sym(ldr.NSym()); source++ {
++		relocs := ldr.Relocs(source)
++		var builder *loader.SymbolBuilder
++		for index := 0; index < relocs.Count(); index++ {
++			relocation := relocs.At(index)
++			if relocation.Type() != objabi.R_ADDR {
++				continue
++			}
++			if _, cFunction := ctxt.WasmHostFunctions[relocation.Sym()]; !cFunction {
++				continue
++			}
++			if relocation.Add() != 0 {
++				ldr.Errorf(source, "C function address has a nonzero offset: %s", ldr.SymName(relocation.Sym()))
++				continue
++			}
++			if builder == nil {
++				builder = ldr.MakeSymbolUpdater(source)
++			}
++			builder.SetRelocType(index, objabi.R_WASMFCALL)
++		}
++	}
+ 	st.funcIndex = make(map[loader.Sym]uint32, len(ctxt.Textp))
+ 	abiVersion := sym.SymVerABIInternal
+ 	if !buildcfg.Experiment.RegabiWrappers {
+@@ -76,6 +102,29 @@ func (st *wasm32State) gentext(ctxt *ld.Link, ldr *loader.Loader) {
+ 	entries.Grow(entries.Size())
+ 	st.funcEntries = entries.Sym()
+ 
++	// asmcgocall must use the exact Wasm signature: ordinary cgo wrappers
++	// return void, while the two-result (errno) wrappers return i32.
++	st.cgoSignatures = make(map[loader.Sym]uint8)
++	for function, host := range ctxt.WasmHostFunctions {
++		signature := host.Function.Type
++		if !bytes.Equal(signature.Params, []byte{I32}) {
++			continue
++		}
++		if len(signature.Results) == 0 {
++			st.cgoSignatures[function] = 1
++		} else if bytes.Equal(signature.Results, []byte{I32}) {
++			st.cgoSignatures[function] = 2
++		}
++	}
++	if len(st.cgoSignatures) != 0 {
++		signatures := ldr.CreateSymForUpdate("runtime.wasmCgoCallSignatures", 0)
++		signatures.SetType(sym.SRODATA)
++		signatures.SetAlign(1)
++		signatures.SetSize(int64(len(ctxt.Textp) + 1))
++		signatures.Grow(signatures.Size())
++		st.cgoSignatureTable = signatures.Sym()
++	}
++
+ 	count := ldr.CreateSymForUpdate("runtime.wasmFuncCountData", 0)
+ 	count.SetType(sym.SRODATA)
+ 	count.SetAlign(4)
+@@ -248,6 +297,11 @@ func (st *wasm32State) assignAddress(arch *sys.Arch, ldr *loader.Loader, sect *s
+ 			st.funcIndex[s] = handle
+ 			entries := ldr.MakeSymbolUpdater(st.funcEntries)
+ 			entries.SetAddr(arch, int64(handle)*4, s)
++			if st.cgoSignatureTable != 0 {
++				signatures := ldr.MakeSymbolUpdater(st.cgoSignatureTable)
++				signatures.SetUint8(arch, int64(handle), st.cgoSignatures[s])
++			}
++
+ 		}
+ 	}
+ 	return sect, n, next
+diff --git a/src/internal/platform/zosarch.go b/src/internal/platform/zosarch.go
+index 49183e9fa754fa810dbe9894063b3436fe866b5b..f36a0ea76934afe289e8248a5fa72d692996a759 100644
+--- a/src/internal/platform/zosarch.go
++++ b/src/internal/platform/zosarch.go
+@@ -79,7 +79,7 @@ var distInfo = map[OSArch]osArchInfo{
+ 	{"ios", "amd64"}:       {CgoSupported: true},
+ 	{"ios", "arm64"}:       {CgoSupported: true},
+ 	{"js", "wasm"}:         {},
+-	{"kandelo", "wasm32"}:  {},
++	{"kandelo", "wasm32"}:  {CgoSupported: true},
+ 	{"linux", "386"}:       {CgoSupported: true, FirstClass: true},
+ 	{"linux", "amd64"}:     {CgoSupported: true, FirstClass: true},
+ 	{"linux", "arm"}:       {CgoSupported: true, FirstClass: true},
+diff --git a/src/internal/runtime/atomic/atomic_kandelo.go b/src/internal/runtime/atomic/atomic_kandelo.go
+index 68c68acd77b853b2ae939894d056d8c4a753efc5..b677960e86f2a68f2bb7e9b023f64f24cbc0de54 100644
+--- a/src/internal/runtime/atomic/atomic_kandelo.go
++++ b/src/internal/runtime/atomic/atomic_kandelo.go
+@@ -6,13 +6,13 @@
+ 
+ // Real WebAssembly atomic operations for the kandelo port.
+ //
+-// Unlike the js and wasip1 ports (see atomic_wasm.go), kandelo runs on SHARED
++// Unlike the js and wasip1 ports (see atomic_wasmx.go), kandelo runs on SHARED
+ // linear memory, so it uses the genuine atomic memory instructions from the
+ // WebAssembly threads proposal (0xFE-prefix opcodes) instead of plain memory
+ // access. This makes the exported atomic API sound for a future multi-M
+ // scheduler. The low-level opcodes are emitted by the thin assembly helpers in
+-// atomic_kandelo.s; the wrappers below adapt them to the exact function set and
+-// signatures of atomic_wasm.go.
++// atomic_kandelo_wasm32.s; the wrappers below adapt them to the exact function set and
++// signatures of atomic_wasmx.go.
+ //
+ // Mapping notes:
+ //   - The wasm rmw.add/and/or/xchg ops return the PRIOR value. Xadd* therefore
+@@ -27,7 +27,7 @@ package atomic
+ 
+ import "unsafe"
+ 
+-// Low-level primitives implemented in atomic_kandelo.s. Each emits a single
++// Low-level primitives implemented in atomic_kandelo_wasm32.s. Each emits a single
+ // WebAssembly threads-proposal atomic instruction. rmw primitives return the
+ // prior value; the cmpxchg primitives return the loaded value.
+ 
+diff --git a/src/internal/runtime/atomic/atomic_kandelo.s b/src/internal/runtime/atomic/atomic_kandelo.s
+deleted file mode 100644
+index 50ae4ca5455d0776b2dba98538b87eeba0a5c751..0000000000000000000000000000000000000000
+--- a/src/internal/runtime/atomic/atomic_kandelo.s
++++ /dev/null
+@@ -1,173 +0,0 @@
+-// Copyright 2025 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// Real WebAssembly atomic operations for the kandelo port (shared memory).
+-// Each helper loads its arguments from the Go stack (FP-relative), pushes them
+-// onto the wasm value stack, emits a single WebAssembly threads-proposal atomic
+-// instruction, and stores any result back to the Go stack.
+-//
+-// Value-returning helpers push SP first to provide the base address for the
+-// final I32Store/I64Store of the result. The rmw ops leave the PRIOR value on
+-// the stack; the cmpxchg ops leave the loaded value; and8/or8 discard the
+-// prior value with Drop.
+-
+-//go:build kandelo && wasm
+-
+-#include "textflag.h"
+-
+-// --- loads ---
+-
+-// func atomicLoad32(ptr *uint32) uint32
+-TEXT ·atomicLoad32(SB), NOSPLIT, $0-12
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32AtomicLoad
+-	I32Store ret+8(FP)
+-	RET
+-
+-// func atomicLoad64(ptr *uint64) uint64
+-TEXT ·atomicLoad64(SB), NOSPLIT, $0-16
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I64AtomicLoad
+-	I64Store ret+8(FP)
+-	RET
+-
+-// func atomicLoad8(ptr *uint8) uint32
+-TEXT ·atomicLoad8(SB), NOSPLIT, $0-12
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32AtomicLoad8U
+-	I32Store ret+8(FP)
+-	RET
+-
+-// --- stores ---
+-
+-// func atomicStore32(ptr *uint32, val uint32)
+-TEXT ·atomicStore32(SB), NOSPLIT, $0-12
+-	I32Load ptr+0(FP)
+-	I32Load val+8(FP)
+-	I32AtomicStore
+-	RET
+-
+-// func atomicStore64(ptr *uint64, val uint64)
+-TEXT ·atomicStore64(SB), NOSPLIT, $0-16
+-	I32Load ptr+0(FP)
+-	I64Load val+8(FP)
+-	I64AtomicStore
+-	RET
+-
+-// func atomicStore8(ptr *uint8, val uint32)
+-TEXT ·atomicStore8(SB), NOSPLIT, $0-12
+-	I32Load ptr+0(FP)
+-	I32Load val+8(FP)
+-	I32AtomicStore8
+-	RET
+-
+-// --- rmw add ---
+-
+-// func atomicAdd32(ptr *uint32, delta uint32) uint32
+-TEXT ·atomicAdd32(SB), NOSPLIT, $0-20
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32Load delta+8(FP)
+-	I32AtomicRmwAdd
+-	I32Store ret+16(FP)
+-	RET
+-
+-// func atomicAdd64(ptr *uint64, delta uint64) uint64
+-TEXT ·atomicAdd64(SB), NOSPLIT, $0-24
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I64Load delta+8(FP)
+-	I64AtomicRmwAdd
+-	I64Store ret+16(FP)
+-	RET
+-
+-// --- rmw and/or (32-bit, return prior) ---
+-
+-// func atomicAnd32(ptr *uint32, val uint32) uint32
+-TEXT ·atomicAnd32(SB), NOSPLIT, $0-20
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32Load val+8(FP)
+-	I32AtomicRmwAnd
+-	I32Store ret+16(FP)
+-	RET
+-
+-// func atomicOr32(ptr *uint32, val uint32) uint32
+-TEXT ·atomicOr32(SB), NOSPLIT, $0-20
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32Load val+8(FP)
+-	I32AtomicRmwOr
+-	I32Store ret+16(FP)
+-	RET
+-
+-// --- rmw and/or (8-bit, discard prior) ---
+-
+-// func atomicAnd8(ptr *uint8, val uint32)
+-TEXT ·atomicAnd8(SB), NOSPLIT, $0-12
+-	I32Load ptr+0(FP)
+-	I32Load val+8(FP)
+-	I32AtomicRmw8AndU
+-	Drop
+-	RET
+-
+-// func atomicOr8(ptr *uint8, val uint32)
+-TEXT ·atomicOr8(SB), NOSPLIT, $0-12
+-	I32Load ptr+0(FP)
+-	I32Load val+8(FP)
+-	I32AtomicRmw8OrU
+-	Drop
+-	RET
+-
+-// --- rmw xchg ---
+-
+-// func atomicXchg32(ptr *uint32, new uint32) uint32
+-TEXT ·atomicXchg32(SB), NOSPLIT, $0-20
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32Load new+8(FP)
+-	I32AtomicRmwXchg
+-	I32Store ret+16(FP)
+-	RET
+-
+-// func atomicXchg64(ptr *uint64, new uint64) uint64
+-TEXT ·atomicXchg64(SB), NOSPLIT, $0-24
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I64Load new+8(FP)
+-	I64AtomicRmwXchg
+-	I64Store ret+16(FP)
+-	RET
+-
+-// --- rmw cmpxchg (return loaded value) ---
+-
+-// func atomicCas32(ptr *uint32, old, new uint32) uint32
+-TEXT ·atomicCas32(SB), NOSPLIT, $0-20
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I32Load old+8(FP)
+-	I32Load new+12(FP)
+-	I32AtomicRmwCmpxchg
+-	I32Store ret+16(FP)
+-	RET
+-
+-// func atomicCas64(ptr *uint64, old, new uint64) uint64
+-TEXT ·atomicCas64(SB), NOSPLIT, $0-32
+-	Get SP
+-	I32Load ptr+0(FP)
+-	I64Load old+8(FP)
+-	I64Load new+16(FP)
+-	I64AtomicRmwCmpxchg
+-	I64Store ret+24(FP)
+-	RET
+-
+-// --- fence ---
+-
+-// func atomicFence()
+-TEXT ·atomicFence(SB), NOSPLIT, $0-0
+-	AtomicFence
+-	RET
+diff --git a/src/os/user/cgo_listgroups_unix.go b/src/os/user/cgo_listgroups_unix.go
+index bbf1886b3c0277c206f23d64e29ddaf899de76a0..dff24b55af757403ad8860e889864a9163b52c76 100644
+--- a/src/os/user/cgo_listgroups_unix.go
++++ b/src/os/user/cgo_listgroups_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build (cgo || darwin) && !osusergo && unix && !android && !aix
++//go:build (cgo || darwin) && !osusergo && unix && !android && !aix && !kandelo
+ 
+ package user
+ 
+diff --git a/src/os/user/cgo_lookup_unix_test.go b/src/os/user/cgo_lookup_unix_test.go
+index cd225eb8df4f741005092f79ea907c996037c493..9e00ff1bd8d8973155f2e12fbd7e67c22d61d71c 100644
+--- a/src/os/user/cgo_lookup_unix_test.go
++++ b/src/os/user/cgo_lookup_unix_test.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build (cgo || darwin) && !osusergo && unix && !android
++//go:build (cgo || darwin) && !osusergo && unix && !android && !kandelo
+ 
+ package user
+ 
+diff --git a/src/os/user/getgrouplist_unix.go b/src/os/user/getgrouplist_unix.go
+index 9b033b89815e31f9226a6715b6a75efbcd7c175f..c371ba8167905ce11f0264736e0a138e9dcebd17 100644
+--- a/src/os/user/getgrouplist_unix.go
++++ b/src/os/user/getgrouplist_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build cgo && !osusergo && unix && !android && !aix && !darwin
++//go:build cgo && !osusergo && unix && !android && !aix && !darwin && !kandelo
+ 
+ package user
+ 
+diff --git a/src/runtime/asm_cgo_kandelo_wasm32.s b/src/runtime/asm_cgo_kandelo_wasm32.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..96ced6c8d7176b978753ef21eb9b861d970b843f
+--- /dev/null
++++ b/src/runtime/asm_cgo_kandelo_wasm32.s
+@@ -0,0 +1,74 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build kandelo && cgo
++
++#include "go_asm.h"
++#include "textflag.h"
++
++// func asmcgocall(fn, arg unsafe.Pointer) int32
++TEXT ·asmcgocall(SB), NOSPLIT, $0-12
++	MOVW g_m(g), R2
++	MOVD $runtime·m0(SB), R3
++	Get R2
++	Get R3
++	I64Eq
++	If
++		MOVD $runtime·cgoCStack+(8<<20)(SB), R1
++	Else
++		MOVW m_cgoThread(R2), R1
++	End
++	Get R1
++	I64Eqz
++	If
++		MOVW (m_mOS+mOS_foreignCStackActive)(R2), R1
++		Get R1
++		I64Eqz
++		If
++			UNDEF
++		End
++	End
++	// A function table entry has a fixed Wasm type. cgo's errno wrappers
++	// return i32, ordinary wrappers and runtime hooks return void.
++	I32Const $runtime·wasmCgoCallSignatures(SB)
++	I32Load fn+0(FP)
++	I32Add
++	I32Load8U $0
++	I64ExtendI32U
++	Set R0
++	Get R0
++	I64Const $2
++	I64Eq
++	If
++		Get SP
++		I32Load arg+4(FP)
++		I32Load fn+0(FP)
++		CallIndirect $0
++		I32Store ret+8(FP)
++	Else
++		Get R0
++		I64Const $1
++		I64Ne
++		If
++			UNDEF // not a C argument-frame function
++		End
++		I32Load arg+4(FP)
++		I32Load fn+0(FP)
++		CallIndirect $1
++		MOVW $0, ret+8(FP)
++	End
++	RET
++
++TEXT _cgo_topofstack(SB), NOSPLIT|NOFRAME, $0
++	MOVW g_m(g), R1
++	MOVW m_curg(R1), R2
++	MOVW g_stack+stack_hi(R2), R3
++	Get R3
++	I32WrapI64
++	Return
++
++TEXT runtime·setg(SB), NOSPLIT, $0-4
++	MOVW gg+0(FP), R0
++	MOVD R0, g
++	RET
+diff --git a/src/runtime/asm_nocgo_kandelo_wasm32.s b/src/runtime/asm_nocgo_kandelo_wasm32.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..791f57d2c7eeee9f0066d0bc4c7f0cde5785ff68
+--- /dev/null
++++ b/src/runtime/asm_nocgo_kandelo_wasm32.s
+@@ -0,0 +1,10 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build kandelo && !cgo
++
++#include "textflag.h"
++
++TEXT ·asmcgocall(SB), NOSPLIT, $0-12
++	UNDEF
+diff --git a/src/runtime/asm_wasm.s b/src/runtime/asm_wasm.s
+index e7f2899230c243fce825c1587c45fd3e8768ffcc..0fe91733978c93edc8544474de9185560660139e 100644
+--- a/src/runtime/asm_wasm.s
++++ b/src/runtime/asm_wasm.s
+@@ -273,47 +273,7 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0
+ 	JMP runtime·morestack(SB)
+ 
+ TEXT ·asmcgocall(SB), NOSPLIT, $0-0
+-	MOVD g_m(g), R2
+-	MOVD $runtime·m0(SB), R3
+-	Get R2
+-	Get R3
+-	I64Eq
+-	If
+-		MOVD $runtime·cgoCStack+(8<<20)(SB), R1
+-	Else
+-		MOVD m_cgoThread(R2), R1
+-	End
+-	Get R1
+-	I64Eqz
+-	If
+-		MOVD (m_mOS+mOS_foreignCStackActive)(R2), R1
+-		Get R1
+-		I64Eqz
+-		If
+-			UNDEF
+-		End
+-	End
+-	I64Load fn+0(FP)
+-	I64Const $16
+-	I64ShrU
+-	Set R0
+-	I64Load arg+8(FP)
+-	I32WrapI64
+-	Get R0
+-	I32WrapI64
+-	CallIndirect $1
+-	MOVW $0, ret+16(FP)
+-	RET
+-
+-#ifdef GOOS_kandelo
+-TEXT _cgo_topofstack(SB), NOSPLIT|NOFRAME, $0
+-	MOVD g_m(g), R1
+-	MOVD m_curg(R1), R2
+-	MOVD g_stack+stack_hi(R2), R3
+-	Get R3
+-	I32WrapI64
+-	Return
+-#endif
++	UNDEF
+ 
+ #define DISPATCH(NAME, MAXSIZE) \
+ 	Get R0; \
+@@ -458,12 +418,6 @@ TEXT runtime·goexit(SB), NOSPLIT|TOPFRAME, $0-0
+ TEXT runtime·cgocallback(SB), NOSPLIT, $0-24
+ 	UNDEF
+ 
+-#ifdef GOOS_kandelo
+-TEXT runtime·setg(SB), NOSPLIT, $0-8
+-	MOVD gg+0(FP), g
+-	RET
+-#endif
+-
+ // gcWriteBarrier informs the GC about heap pointer writes.
+ //
+ // gcWriteBarrier does NOT follow the Go ABI. It accepts the
+diff --git a/src/runtime/asm_wasm32.s b/src/runtime/asm_wasm32.s
+index e20c548ef2df25bdd5d545fd0db5ea9e33b83392..9a35ed0626e4b84e5be461a3c13cf589258ecb47 100644
+--- a/src/runtime/asm_wasm32.s
++++ b/src/runtime/asm_wasm32.s
+@@ -292,8 +292,10 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0
+ 	MOVD $0, CTXT
+ 	JMP runtime·morestack(SB)
+ 
++#ifndef GOOS_kandelo
+ TEXT ·asmcgocall(SB), NOSPLIT, $0-0
+ 	UNDEF
++#endif
+ 
+ #define DISPATCH(NAME, MAXSIZE) \
+ 	Get R0; \
+diff --git a/src/runtime/atomic_kandelo.s b/src/runtime/atomic_kandelo.s
+deleted file mode 100644
+index d589ba3c2ecea7bbb9d9f27943762cbaf368d85a..0000000000000000000000000000000000000000
+--- a/src/runtime/atomic_kandelo.s
++++ /dev/null
+@@ -1,86 +0,0 @@
+-// Copyright 2025 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// Hand-written WebAssembly assembly helpers for the Kandelo syscall-channel
+-// handshake. They wrap the three WebAssembly threads-proposal atomic memory
+-// instructions added to the wasm backend (see cmd/internal/obj/wasm). Each
+-// helper loads its arguments from the Go stack (FP-relative), pushes them onto
+-// the wasm value stack, emits the atomic op, and stores any result back.
+-
+-//go:build kandelo && wasm
+-
+-#include "textflag.h"
+-
+-// func atomicStore32(addr *uint32, val uint32)
+-// i32.atomic.store: (i32 addr, i32 value) -> ()
+-TEXT ·atomicStore32(SB), NOSPLIT, $0-12
+-	I32Load addr+0(FP) // push address
+-	I32Load val+8(FP)  // push value
+-	I32AtomicStore     // memarg align=2 offset=0
+-	RET
+-
+-// func atomicNotify(addr *uint32, count uint32) uint32
+-// memory.atomic.notify: (i32 addr, i32 count) -> i32
+-TEXT ·atomicNotify(SB), NOSPLIT, $0-20
+-	Get SP              // result store base
+-	I32Load addr+0(FP)  // push address
+-	I32Load count+8(FP) // push count
+-	MemoryAtomicNotify  // pops (addr,count), pushes woken-count
+-	I32Store ret+16(FP) // store result
+-	RET
+-
+-// func atomicWait32(addr *uint32, expected uint32, timeout int64) uint32
+-// memory.atomic.wait32: (i32 addr, i32 expected, i64 timeout) -> i32
+-TEXT ·atomicWait32(SB), NOSPLIT, $0-28
+-	Get SP                 // result store base
+-	I32Load addr+0(FP)     // push address
+-	I32Load expected+8(FP) // push expected
+-	I64Load timeout+16(FP) // push timeout (i64)
+-	MemoryAtomicWait32     // pops (addr,expected,timeout), pushes status
+-	I32Store ret+24(FP)    // store result
+-	RET
+-
+-// func wasmThreadTramp()
+-//
+-// Fresh-instance thread entry for a second M spawned via kernel_clone. The host
+-// calls table.get(PC_F)() on a brand-new WebAssembly.Instance, so on entry the
+-// g and SP wasm globals are ZERO: no Go stack and no current g exist yet. Before
+-// any Go code runs, install SP and g from the handoff words the parent M wrote
+-// in newosprocKandelo, mirroring how _rt0_wasm_kandelo bootstraps the main
+-// instance. Only after that may Go code (kandeloThreadEntry) run.
+-//
+-// The single i32 parameter every Go wasm function carries is the resume PC_B;
+-// the host passes clone's arg (0) into it, i.e. a fresh entry, which we ignore.
+-TEXT ·wasmThreadTramp(SB), NOSPLIT, $0
+-	// g = handoff g0 pointer. Load the value via an address constant + indirect
+-	// load (the idiom runtime·gogo uses), because a direct MOVD sym(SB) value
+-	// load into a register global is not supported by the wasm assembler.
+-	MOVD $·kandeloThreadHandoffG(SB), R0
+-	MOVD 0(R0), R1
+-	MOVD R1, g
+-
+-	// SP = handoff g0 stack top. SP is the i32 SP global; wrap the i64 handoff
+-	// word the same way runtime·mcall installs a stack pointer.
+-	MOVD $·kandeloThreadHandoffSP(SB), R0
+-	MOVD 0(R0), R1
+-	Get R1
+-	I32WrapI64
+-	Set SP
+-
+-	// Enter Go with a fresh PC_B. wasmThreadTramp carries the default Go wasm
+-	// signature (i32 PC_B) -> (i32 unwind flag): the host calls it as
+-	// table.get(fnPtr)(0) and reads the i32 result as the thread exit status.
+-	// The scheduler may unwind while switching goroutines. Resume the next PC
+-	// from the Go stack, just as _rt0_wasm_kandelo does for the main M.
+-	I32Const $0
+-	Call ·kandeloThreadEntry(SB)
+-	Drop
+-	Call wasm_pc_f_loop(SB)
+-	I32Const $0
+-	Return
+-
+-TEXT ·kandeloStopWasmLoop(SB), NOSPLIT, $0
+-	I32Const $1
+-	Set PAUSE
+-	RET
+diff --git a/src/runtime/atomic_kandelo_wasm32.s b/src/runtime/atomic_kandelo_wasm32.s
+index 9ca849086d5543f21358be25dcef9fadebfe0641..796b7ffa1f5fad1fbc3fb0b7a5e039f1e2f47ae6 100644
+--- a/src/runtime/atomic_kandelo_wasm32.s
++++ b/src/runtime/atomic_kandelo_wasm32.s
+@@ -44,10 +44,10 @@ TEXT ·atomicWait32(SB), NOSPLIT, $0-20
+ // func wasmThreadTramp()
+ //
+ // Fresh-instance thread entry for a second M spawned via kernel_clone. The host
+-// calls table.get(PC_F)() on a brand-new WebAssembly.Instance, so on entry the
++// calls table.get(handle)(0) on a brand-new WebAssembly.Instance, so on entry the
+ // g and SP wasm globals are ZERO: no Go stack and no current g exist yet. Before
+ // any Go code runs, install SP and g from the handoff words the parent M wrote
+-// in newosprocKandelo, mirroring how _rt0_wasm_kandelo bootstraps the main
++// in newosprocKandelo, mirroring how _rt0_wasm32_kandelo bootstraps the main
+ // instance. Only after that may Go code (kandeloThreadEntry) run.
+ //
+ // The single i32 parameter every Go wasm function carries is the resume PC_B;
+@@ -72,7 +72,7 @@ TEXT ·wasmThreadTramp(SB), NOSPLIT, $0
+ 	// signature (i32 PC_B) -> (i32 unwind flag): the host calls it as
+ 	// table.get(fnPtr)(0) and reads the i32 result as the thread exit status.
+ 	// The scheduler may unwind while switching goroutines. Resume the next PC
+-	// from the Go stack, just as _rt0_wasm_kandelo does for the main M.
++	// from the Go stack, just as _rt0_wasm32_kandelo does for the main M.
+ 	I32Const $0
+ 	Call ·kandeloThreadEntry(SB)
+ 	Drop
+diff --git a/src/runtime/cgo/asm_kandelo_wasm32.s b/src/runtime/cgo/asm_kandelo_wasm32.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..43a9d5f2345867f361319c176ccedfa54c956621
+--- /dev/null
++++ b/src/runtime/cgo/asm_kandelo_wasm32.s
+@@ -0,0 +1,14 @@
++//go:build kandelo
++
++// Copyright 2018 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++#include "textflag.h"
++
++TEXT ·set_crosscall2(SB),NOSPLIT,$0-0
++	CALL runtime·kandeloCgoPrepareEnv(SB)
++	I32Const $runtime·kandeloCgoStartupArgs(SB)
++	I32Const $x_cgo_kandelo_init(SB)
++	CallIndirect $1
++	RET
+diff --git a/src/runtime/cgo/asm_wasm.s b/src/runtime/cgo/asm_wasm.s
+index a5dcfb3b8c970891456ded4532a7cd1321ac05e0..e7f01bdc56e804410b1a3c80e9c0a6f1fd7ebe6f 100644
+--- a/src/runtime/cgo/asm_wasm.s
++++ b/src/runtime/cgo/asm_wasm.s
+@@ -5,21 +5,7 @@
+ #include "textflag.h"
+ 
+ TEXT ·set_crosscall2(SB),NOSPLIT,$0-0
+-#ifdef GOOS_kandelo
+-	CALL runtime·kandeloCgoPrepareEnv(SB)
+-	I64Const $runtime·kandeloCgoStartupArgs(SB)
+-	I32WrapI64
+-#else
+-	I32Const $0
+-#endif
+-	I64Const $x_cgo_kandelo_init(SB)
+-	I64Const $16
+-	I64ShrU
+-	I32WrapI64
+-	CallIndirect $1
+-	RET
++	UNDEF
+ 
+-#ifndef GOOS_kandelo
+ TEXT crosscall2(SB), NOSPLIT, $0
+ 	UNDEF
+-#endif
+diff --git a/src/runtime/cgo/crosscall2_kandelo_wasm.go b/src/runtime/cgo/crosscall2_kandelo_wasm32.go
+similarity index 76%
+rename from src/runtime/cgo/crosscall2_kandelo_wasm.go
+rename to src/runtime/cgo/crosscall2_kandelo_wasm32.go
+index cccacd725cbc2dda8e5e8b7ec4611eb916bcd2f0..b02c8a5a56832d9e5315cce79476ff0563379962 100644
+--- a/src/runtime/cgo/crosscall2_kandelo_wasm.go
++++ b/src/runtime/cgo/crosscall2_kandelo_wasm32.go
+@@ -1,4 +1,4 @@
+-//go:build kandelo && wasm
++//go:build kandelo && wasm32
+ 
+ package cgo
+ 
+@@ -10,5 +10,5 @@ func cgoCallbackKandelo(fn, frame unsafe.Pointer, ctxt uintptr)
+ //go:wasmexport crosscall2
+ //go:nosplit
+ func crosscall2(fn uintptr, frame unsafe.Pointer, size int32, ctxt uintptr) {
+-	cgoCallbackKandelo(unsafe.Pointer(fn<<16), frame, ctxt)
++	cgoCallbackKandelo(unsafe.Pointer(fn), frame, ctxt)
+ }
+diff --git a/src/runtime/cgo/gcc_kandelo_wasm.c b/src/runtime/cgo/gcc_kandelo_wasm32.c
+similarity index 96%
+rename from src/runtime/cgo/gcc_kandelo_wasm.c
+rename to src/runtime/cgo/gcc_kandelo_wasm32.c
+index 62e18b97394badbb3e1b46d6839c3195ad39092d..c006faa298d22a8c5ce571f4dc4cd03d022ae5c2 100644
+--- a/src/runtime/cgo/gcc_kandelo_wasm.c
++++ b/src/runtime/cgo/gcc_kandelo_wasm32.c
+@@ -1,4 +1,4 @@
+-//go:build kandelo && wasm
++//go:build kandelo && wasm32
+ 
+ #include <stddef.h>
+ #include <stdint.h>
+@@ -38,12 +38,13 @@ struct kandelo_cgo_startup_args {
+ void x_cgo_kandelo_init(void *arg)
+ {
+ 	struct kandelo_cgo_startup_args *startup = arg;
++	uint32_t index;
+ 	if (!startup)
+ 		__builtin_trap();
+ 	__init_libc((char **)(uintptr_t)startup->envp,
+ 		(char *)(uintptr_t)startup->program_name);
+ 	x_crosscall2_ptr = crosscall2;
+-	for (uint32_t index = 0; index < __kandelo_cgo_ctor_count; ++index)
++	for (index = 0; index < __kandelo_cgo_ctor_count; ++index)
+ 		__kandelo_cgo_ctors[index]();
+ }
+ 
+diff --git a/src/runtime/cgo/kandelo_wasm.go b/src/runtime/cgo/kandelo_wasm32.go
+similarity index 97%
+rename from src/runtime/cgo/kandelo_wasm.go
+rename to src/runtime/cgo/kandelo_wasm32.go
+index 332e58cb4c3d0d258fa4eb2fe1d85558075176aa..4462205d1bd54b15af3eca458f59a49e63724800 100644
+--- a/src/runtime/cgo/kandelo_wasm.go
++++ b/src/runtime/cgo/kandelo_wasm32.go
+@@ -1,4 +1,4 @@
+-//go:build kandelo && wasm
++//go:build kandelo && wasm32
+ 
+ package cgo
+ 
+diff --git a/src/runtime/cgo_bootstrap_kandelo_wasm.s b/src/runtime/cgo_bootstrap_kandelo_wasm.s
+deleted file mode 100644
+index 2d3189602527a17dc8ff18284ab43634d706c0a5..0000000000000000000000000000000000000000
+--- a/src/runtime/cgo_bootstrap_kandelo_wasm.s
++++ /dev/null
+@@ -1,74 +0,0 @@
+-//go:build kandelo && cgo
+-
+-#include "textflag.h"
+-#include "go_asm.h"
+-
+-TEXT wasm_export_cgo_thread_bootstrap(SB), NOSPLIT|NOFRAME, $0
+-	Get R0
+-	I64ExtendI32U
+-	I64Const $1
+-	I64Add
+-	I64Const $32768
+-	I64Mul
+-	Set R2
+-	MOVD $runtime·kandeloCgoBootstrapStackBase(SB), R1
+-	MOVD 0(R1), R3
+-	Get R3
+-	Get R2
+-	I64Add
+-	I64Const $16
+-	I64Sub
+-	I32WrapI64
+-	Set SP
+-	Return
+-
+-TEXT runtime·kandeloCgoReadChannelBase(SB), NOSPLIT, $0-8
+-	I64Load base+0(FP)
+-	I32WrapI64
+-	I64Const $x_cgo_kandelo_get_channel_base(SB)
+-	I64Const $16
+-	I64ShrU
+-	I32WrapI64
+-	CallIndirect $1
+-	RET
+-
+-TEXT runtime·cgoCallbackKandeloForeign(SB), NOSPLIT|TOPFRAME, $0-24
+-	MOVD fn+0(FP), R0
+-	MOVD frame+8(FP), R1
+-	MOVD ctxt+16(FP), R2
+-	MOVD g_m(g), R3
+-	MOVD m_curg(R3), R4
+-	MOVD m_g0(R3), R5
+-	MOVD (g_stack+stack_hi)(R4), R6
+-	Get R6
+-	I64Load (g_sched+gobuf_sp)(R4)
+-	I64Sub
+-	Set R6
+-	MOVD R6, (m_mOS+mOS_callbackCurgStackOffset)(R3)
+-	MOVD (g_sched+gobuf_pc)(R4), R6
+-	MOVD R6, (m_mOS+mOS_callbackCurgPC)(R3)
+-	MOVD (g_sched+gobuf_sp)(R5), R6
+-	MOVD R6, (m_mOS+mOS_callbackG0SP)(R3)
+-	MOVD SP, (g_sched+gobuf_sp)(R5)
+-	MOVD (g_sched+gobuf_sp)(R4), R7
+-	MOVD R4, g
+-	MOVD R7, SP
+-	MOVD R0, 0(SP)
+-	MOVD R1, 8(SP)
+-	MOVD R2, 16(SP)
+-	CALL runtime·cgocallbackg(SB)
+-	MOVD g_m(g), R3
+-	MOVD (g_stack+stack_hi)(g), R6
+-	Get R6
+-	I64Load (m_mOS+mOS_callbackCurgStackOffset)(R3)
+-	I64Sub
+-	Set R6
+-	MOVD R6, (g_sched+gobuf_sp)(g)
+-	MOVD (m_mOS+mOS_callbackCurgPC)(R3), R6
+-	MOVD R6, (g_sched+gobuf_pc)(g)
+-	MOVD m_g0(R3), R5
+-	MOVD R5, g
+-	MOVD (g_sched+gobuf_sp)(R5), SP
+-	MOVD (m_mOS+mOS_callbackG0SP)(R3), R6
+-	MOVD R6, (g_sched+gobuf_sp)(R5)
+-	RET
+diff --git a/src/runtime/cgo_bootstrap_kandelo_wasm32.s b/src/runtime/cgo_bootstrap_kandelo_wasm32.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f10333678f7ff7c67d88d514787ec2530d6cfaa
+--- /dev/null
++++ b/src/runtime/cgo_bootstrap_kandelo_wasm32.s
+@@ -0,0 +1,74 @@
++//go:build kandelo && cgo
++
++#include "textflag.h"
++#include "go_asm.h"
++
++TEXT wasm_export_cgo_thread_bootstrap(SB), NOSPLIT|NOFRAME, $0
++	Get R0
++	I64ExtendI32U
++	I64Const $1
++	I64Add
++	I64Const $32768
++	I64Mul
++	Set R2
++	MOVW $runtime·kandeloCgoBootstrapStackBase(SB), R1
++	MOVW 0(R1), R3
++	Get R3
++	Get R2
++	I64Add
++	I64Const $16
++	I64Sub
++	I32WrapI64
++	Set SP
++	Return
++
++TEXT runtime·kandeloCgoReadChannelBase(SB), NOSPLIT, $0-4
++	I32Load base+0(FP)
++	I32Const $x_cgo_kandelo_get_channel_base(SB)
++	CallIndirect $1
++	RET
++
++TEXT runtime·cgoCallbackKandeloForeign(SB), NOSPLIT|TOPFRAME, $0-12
++	MOVW fn+0(FP), R0
++	MOVW frame+4(FP), R1
++	MOVW ctxt+8(FP), R2
++	MOVW g_m(g), R3
++	MOVW m_curg(R3), R4
++	MOVW m_g0(R3), R5
++	MOVW (g_stack+stack_hi)(R4), R6
++	Get R6
++	I64Load32U (g_sched+gobuf_sp)(R4)
++	I64Sub
++	Set R6
++	MOVW R6, (m_mOS+mOS_callbackCurgStackOffset)(R3)
++	MOVW (g_sched+gobuf_pc)(R4), R6
++	MOVW R6, (m_mOS+mOS_callbackCurgPC)(R3)
++	MOVW (g_sched+gobuf_lr)(R4), R6
++	MOVW R6, (m_mOS+mOS_callbackCurgHandle)(R3)
++	MOVW (g_sched+gobuf_sp)(R5), R6
++	MOVW R6, (m_mOS+mOS_callbackG0SP)(R3)
++	MOVW SP, (g_sched+gobuf_sp)(R5)
++	MOVW (g_sched+gobuf_sp)(R4), R7
++	MOVD R4, g
++	MOVW R7, SP
++	MOVW R0, 0(SP)
++	MOVW R1, 4(SP)
++	MOVW R2, 8(SP)
++	CALL runtime·cgocallbackg(SB)
++	MOVW g_m(g), R3
++	MOVW (g_stack+stack_hi)(g), R6
++	Get R6
++	I64Load32U (m_mOS+mOS_callbackCurgStackOffset)(R3)
++	I64Sub
++	Set R6
++	MOVW R6, (g_sched+gobuf_sp)(g)
++	MOVW (m_mOS+mOS_callbackCurgPC)(R3), R6
++	MOVW R6, (g_sched+gobuf_pc)(g)
++	MOVW (m_mOS+mOS_callbackCurgHandle)(R3), R6
++	MOVW R6, (g_sched+gobuf_lr)(g)
++	MOVW m_g0(R3), R5
++	MOVD R5, g
++	MOVW (g_sched+gobuf_sp)(R5), SP
++	MOVW (m_mOS+mOS_callbackG0SP)(R3), R6
++	MOVW R6, (g_sched+gobuf_sp)(R5)
++	RET
+diff --git a/src/runtime/cgo_callback_kandelo.go b/src/runtime/cgo_callback_kandelo.go
+index 0e41b9831cda2aaa389e716adad9698d83cc645f..36893d24381c9c24d4fa8dddeaef66e0b90d7bc7 100644
+--- a/src/runtime/cgo_callback_kandelo.go
++++ b/src/runtime/cgo_callback_kandelo.go
+@@ -13,7 +13,7 @@ func cgoCallbackKandeloForeign(fn, frame unsafe.Pointer, ctxt uintptr)
+ //go:nosplit
+ func cgoCallbackKandelo(fn, frame unsafe.Pointer, ctxt uintptr) {
+ 	gp := getg()
+-	if gp != nil && uintptr(fn) == abi.FuncPCABIInternal(kandeloSignalCallback) {
++	if gp != nil && uintptr(fn) == funcHandle(abi.FuncPCABIInternal(kandeloSignalCallback)) {
+ 		// A Go-owned signal is runtime notification, not a user callback.
+ 		// Keep the interrupted goroutine in syscall state: C may still hold
+ 		// pointers into its stack, including the syscall completion frame.
+diff --git a/src/runtime/cgo_stack_kandelo.s b/src/runtime/cgo_stack_kandelo.s
+deleted file mode 100644
+index 12b2024cbd7827a2e9758286446de85bfa3c1e44..0000000000000000000000000000000000000000
+--- a/src/runtime/cgo_stack_kandelo.s
++++ /dev/null
+@@ -1,13 +0,0 @@
+-//go:build kandelo && cgo
+-
+-#include "textflag.h"
+-
+-TEXT ·cgoKandeloThreadInit(SB), NOSPLIT, $0-8
+-	I64Load threadPointer+0(FP)
+-	I32WrapI64
+-	I64Const $x_cgo_kandelo_thread_init(SB)
+-	I64Const $16
+-	I64ShrU
+-	I32WrapI64
+-	CallIndirect $1
+-	RET
+diff --git a/src/runtime/cgo_stack_kandelo_wasm32.s b/src/runtime/cgo_stack_kandelo_wasm32.s
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce825e21b0d796234ecb29a3afff27ca2953b319
+--- /dev/null
++++ b/src/runtime/cgo_stack_kandelo_wasm32.s
+@@ -0,0 +1,9 @@
++//go:build kandelo && cgo && wasm32
++
++#include "textflag.h"
++
++TEXT ·cgoKandeloThreadInit(SB), NOSPLIT, $0-4
++	I32Load threadPointer+0(FP)
++	I32Const $x_cgo_kandelo_thread_init(SB)
++	CallIndirect $1
++	RET
+diff --git a/src/runtime/os_kandelo.go b/src/runtime/os_kandelo.go
+index deb60eebdbae3be391e4ceb04a9c95081c1bd963..520c07435b0b19bbc263d94d61f5d972e77a2b4a 100644
+--- a/src/runtime/os_kandelo.go
++++ b/src/runtime/os_kandelo.go
+@@ -176,3 +176,21 @@ func nanotime1() int64 {
+ 	}
+ 	return timespec[0]*1000000000 + timespec[1]
+ }
++
++type mOS struct {
++	// channelBase is this M's base address of the Kandelo syscall channel
++	// region in linear memory. Each M (its own WebAssembly.Instance over the
++	// shared memory) gets its own channel, so the base must be per-M rather
++	// than a single package word. The main M captures it in osinit; a future
++	// thread M captures it in its entry trampoline (see channel_kandelo.go,
++	// kandeloInitChannelBase). Unused on GOOS=js and GOOS=wasip1.
++	channelBase             uintptr
++	cgoChannelBase          uint32
++	callbackCurgStackOffset uintptr
++	callbackCurgPC          uintptr
++	callbackCurgHandle      uintptr
++	callbackG0SP            uintptr
++	foreignCStackActive     uintptr
++	clockTimespec           [2]int64
++	signalDeliveryActive    bool
++}
+diff --git a/src/runtime/os_notkandelo_wasmx.go b/src/runtime/os_notkandelo_wasmx.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..75a1573e4eacd293fe38dc50b2d363bc5d2cc262
+--- /dev/null
++++ b/src/runtime/os_notkandelo_wasmx.go
+@@ -0,0 +1,9 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build (wasm || wasm32) && !kandelo
++
++package runtime
++
++type mOS struct{}
+diff --git a/src/runtime/os_wasmx.go b/src/runtime/os_wasmx.go
+index 8c5c25d8f88ce587042147afdc8ef5007822435d..fa8879d05525f3bc06033a59f1f3728c30dd606f 100644
+--- a/src/runtime/os_wasmx.go
++++ b/src/runtime/os_wasmx.go
+@@ -46,23 +46,6 @@ func sigpanic() {
+ // FIXME: wasm doesn't have atomic yet
+ func exitThread(wait *atomic.Uint32)
+ 
+-type mOS struct {
+-	// channelBase is this M's base address of the Kandelo syscall channel
+-	// region in linear memory. Each M (its own WebAssembly.Instance over the
+-	// shared memory) gets its own channel, so the base must be per-M rather
+-	// than a single package word. The main M captures it in osinit; a future
+-	// thread M captures it in its entry trampoline (see channel_kandelo.go,
+-	// kandeloInitChannelBase). Unused on GOOS=js and GOOS=wasip1.
+-	channelBase             uintptr
+-	cgoChannelBase          uint32
+-	callbackCurgStackOffset uintptr
+-	callbackCurgPC          uintptr
+-	callbackG0SP            uintptr
+-	foreignCStackActive     uintptr
+-	clockTimespec           [2]int64
+-	signalDeliveryActive    bool
+-}
+-
+ func osyield()
+ 
+ //go:nosplit
+diff --git a/src/runtime/rt0_kandelo_wasm.s b/src/runtime/rt0_kandelo_wasm.s
+deleted file mode 100644
+index df429fe87563e710754d904559bc1ad749d2eb88..0000000000000000000000000000000000000000
+--- a/src/runtime/rt0_kandelo_wasm.s
++++ /dev/null
+@@ -1,20 +0,0 @@
+-// Copyright 2025 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-#include "go_asm.h"
+-#include "textflag.h"
+-
+-TEXT _rt0_wasm_kandelo(SB),NOSPLIT,$0
+-	MOVD $runtime·wasmStack+(m0Stack__size-16)(SB), SP
+-
+-	I32Const $0 // entry PC_B
+-	Call runtime·rt0_go(SB)
+-	Drop
+-	Call wasm_pc_f_loop(SB)
+-
+-	Return
+-
+-TEXT _rt0_wasm_kandelo_lib(SB),NOSPLIT,$0
+-	Call _rt0_wasm_kandelo(SB)
+-	Return

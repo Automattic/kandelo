@@ -1,10 +1,11 @@
 # Build and run a Go program
 
 The experimental Go SDK builds pure-Go programs for `kandelo/wasm32` on a
-development machine. It uses Kandelo's port of the upstream Go compiler and
-runtime. The compiler writes the program ABI version and contract digest when
-it links, so build with the toolchain pinned by the Kandelo checkout that will
-run your program.
+development machine. The setup script checks out a pinned revision of upstream
+Go and applies the [Go patches](../sdk/go/patches/) in order. The toolchain
+version identifies the patched source tree. The compiler writes the program
+ABI version and contract digest when it links, so build with the toolchain
+pinned by the Kandelo checkout that will run your program.
 
 Go executables use the existing Kandelo process and thread entry points. The
 linker emits passive static data for the process initializer, and new Go threads

@@ -1,0 +1,770 @@
+From 1eb17cd90907f1ce89ef50d7ec0b99b75cc1e039 Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 19:26:00 +0800
+Subject: [PATCH 01/22] cmd/compile, cmd/link, runtime: distinguish pointer and
+ register widths
+
+Wasm32 uses 4-byte pointers but 8-byte registers and stack alignment.
+Several compiler, linker and runtime paths assume these widths match.
+
+Use PtrSize to align the stack result area and locate allocator results.
+Use RegSize for integer operations, stack alignment, and saved return
+PCs. Give the runtime a separate return-PC slot size and get int64
+alignment from goarch.
+
+Updates #63131
+
+Change-Id: Ib5d5c23648352a92e3d4aaa5cfb25ba9f4897852
+
+diff --git a/src/cmd/compile/internal/abi/abiutils.go b/src/cmd/compile/internal/abi/abiutils.go
+index 0e1cf88757ea21269f0b426b70138cbe1248b330..b05f3b4482384379e8a8267976bec04991a73cb3 100644
+--- a/src/cmd/compile/internal/abi/abiutils.go
++++ b/src/cmd/compile/internal/abi/abiutils.go
+@@ -331,7 +331,8 @@ func (config *ABIConfig) ABIAnalyzeTypes(params, results []*types.Type) *ABIPara
+ 
+ 	// Inputs
+ 	info.inparams = assignParams(params, false)
+-	s.stackOffset = types.RoundUp(s.stackOffset, int64(types.RegSize))
++	// Stack results follow the ABI0 layout.
++	s.stackOffset = types.RoundUp(s.stackOffset, int64(types.PtrSize))
+ 	info.inRegistersUsed = s.rUsed.intRegs + s.rUsed.floatRegs
+ 
+ 	// Outputs
+@@ -373,7 +374,8 @@ func (config *ABIConfig) ABIAnalyzeFuncType(ft *types.Type) *ABIParamResultInfo
+ 
+ 	// Inputs
+ 	info.inparams = assignParams(ft.RecvParams(), false)
+-	s.stackOffset = types.RoundUp(s.stackOffset, int64(types.RegSize))
++	// Stack results follow the ABI0 layout.
++	s.stackOffset = types.RoundUp(s.stackOffset, int64(types.PtrSize))
+ 	info.inRegistersUsed = s.rUsed.intRegs + s.rUsed.floatRegs
+ 
+ 	// Outputs
+diff --git a/src/cmd/compile/internal/dwarfgen/dwarf.go b/src/cmd/compile/internal/dwarfgen/dwarf.go
+index 152b2715227ffca0e3dc10c1fc0b68e4488650d0..e542105ce3fbd9d28b1f193ee916be2d5835cb8f 100644
+--- a/src/cmd/compile/internal/dwarfgen/dwarf.go
++++ b/src/cmd/compile/internal/dwarfgen/dwarf.go
+@@ -454,7 +454,7 @@ func createSimpleVar(fnsym *obj.LSym, n *ir.Name, closureVars map[*ir.Name]int64
+ 	localAutoOffset := func() int64 {
+ 		offs = n.FrameOffset()
+ 		if base.Ctxt.Arch.FixedFrameSize == 0 {
+-			offs -= int64(types.PtrSize)
++			offs -= int64(base.Ctxt.Arch.RegSize)
+ 		}
+ 		if buildcfg.FramePointerEnabled {
+ 			offs -= int64(types.PtrSize)
+@@ -570,7 +570,7 @@ func createHeapDerefLocationList(n *ir.Name, entryID ssa.ID) []ssa.LocListEntry
+ 	// Get the stack offset where the heap pointer is stored
+ 	heapPtrOffset := n.Heapaddr.FrameOffset()
+ 	if base.Ctxt.Arch.FixedFrameSize == 0 {
+-		heapPtrOffset -= int64(types.PtrSize)
++		heapPtrOffset -= int64(base.Ctxt.Arch.RegSize)
+ 	}
+ 	if buildcfg.FramePointerEnabled {
+ 		heapPtrOffset -= int64(types.PtrSize)
+diff --git a/src/cmd/compile/internal/escape/utils.go b/src/cmd/compile/internal/escape/utils.go
+index 2718a7f841817e5f2726b7c892d41443d64aec91..1186e9aca1266b33c0a6c50c35fab357753dfce9 100644
+--- a/src/cmd/compile/internal/escape/utils.go
++++ b/src/cmd/compile/internal/escape/utils.go
+@@ -186,14 +186,14 @@ func HeapAllocReason(n ir.Node) string {
+ 	if n.Type().Size() > ir.MaxStackVarSize {
+ 		return "too large for stack"
+ 	}
+-	if n.Type().Alignment() > int64(types.PtrSize) {
++	if n.Type().Alignment() > int64(types.RegSize) {
+ 		return "too aligned for stack"
+ 	}
+ 
+ 	if (n.Op() == ir.ONEW || n.Op() == ir.OPTRLIT) && n.Type().Elem().Size() > ir.MaxImplicitStackVarSize {
+ 		return "too large for stack"
+ 	}
+-	if (n.Op() == ir.ONEW || n.Op() == ir.OPTRLIT) && n.Type().Elem().Alignment() > int64(types.PtrSize) {
++	if (n.Op() == ir.ONEW || n.Op() == ir.OPTRLIT) && n.Type().Elem().Alignment() > int64(types.RegSize) {
+ 		return "too aligned for stack"
+ 	}
+ 
+diff --git a/src/cmd/compile/internal/ssa/_gen/generic.rules b/src/cmd/compile/internal/ssa/_gen/generic.rules
+index 5c5351f32d1466f01f6942a6fb157e1eb6dac404..e407a94313aae4619c70f780e678a497e81ea149 100644
+--- a/src/cmd/compile/internal/ssa/_gen/generic.rules
++++ b/src/cmd/compile/internal/ssa/_gen/generic.rules
+@@ -1480,13 +1480,13 @@
+ (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const(32|64) [8]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8
++  && canLoadUnaligned(config) && config.RegSize == 8
+   => (MakeResult (Eq64 (Load <typ.Int64> sptr mem) (Const64 <typ.Int64> [int64(ssa.Read64(scon,0,config.Ctxt.Arch.ByteOrder))])) mem)
+ 
+ (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const(32|64) [8]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8
++  && canLoadUnaligned(config) && config.RegSize == 8
+   => (MakeResult (Eq64 (Load <typ.Int64> sptr mem) (Const64 <typ.Int64> [int64(ssa.Read64(scon,0,config.Ctxt.Arch.ByteOrder))])) mem)
+ 
+ (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const(32|64) [3]) mem)
+@@ -1520,7 +1520,7 @@
+ (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const(32|64) [5]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8 =>
++  && canLoadUnaligned(config) && config.RegSize == 8 =>
+   (MakeResult
+     (Eq64
+       (Or64 <typ.Int64>
+@@ -1534,7 +1534,7 @@
+ (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const(32|64) [5]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8 =>
++  && canLoadUnaligned(config) && config.RegSize == 8 =>
+   (MakeResult
+     (Eq64
+       (Or64 <typ.Int64>
+@@ -1548,7 +1548,7 @@
+ (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const(32|64) [6]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8 =>
++  && canLoadUnaligned(config) && config.RegSize == 8 =>
+   (MakeResult
+     (Eq64
+       (Or64 <typ.Int64>
+@@ -1562,7 +1562,7 @@
+ (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const(32|64) [6]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8 =>
++  && canLoadUnaligned(config) && config.RegSize == 8 =>
+   (MakeResult
+     (Eq64
+       (Or64 <typ.Int64>
+@@ -1576,7 +1576,7 @@
+ (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const(32|64) [7]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8 =>
++  && canLoadUnaligned(config) && config.RegSize == 8 =>
+   (MakeResult
+     (Eq64
+       (Or64 <typ.Int64>
+@@ -1590,7 +1590,7 @@
+ (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const(32|64) [7]) mem)
+   && ssa.IsSameCall(callAux, "runtime.memequal")
+   && ssa.SymIsRO(scon)
+-  && canLoadUnaligned(config) && config.PtrSize == 8 =>
++  && canLoadUnaligned(config) && config.RegSize == 8 =>
+   (MakeResult
+     (Eq64
+       (Or64 <typ.Int64>
+@@ -1634,7 +1634,7 @@
+   => (Const32 <typ.Int32> [int32(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))])
+ 
+ (MemEq sptr tptr (Const64 [8]) mem)
+-  && canLoadUnaligned(config) && config.PtrSize == 8
++  && canLoadUnaligned(config) && config.RegSize == 8
+   => (Eq64 (Load <typ.Int64> sptr mem) (Load <typ.Int64> tptr mem))
+ 
+ (Load <typ.Int64> sptr:(Addr {scon} (SB)) mem)
+@@ -2291,7 +2291,7 @@
+ (RotateLeft8  x (Sub(64|32|16|8) (Const(64|32|16|8) [c]) y)) && c&7  == 0 => (RotateLeft8  x (Neg(64|32|16|8) <y.Type> y))
+ 
+ // Ensure we don't do Const64 rotates in a 32-bit system.
+-(RotateLeft(64|32|16|8) x (Const64 [c])) && config.PtrSize == 4 => (RotateLeft(64|32|16|8) x (Const32 <typ.UInt32> [int32(c)]))
++(RotateLeft(64|32|16|8) x (Const64 [c])) && config.RegSize == 4 => (RotateLeft(64|32|16|8) x (Const32 <typ.UInt32> [int32(c)]))
+ 
+ // Rotating by c, then by d, is the same as rotating by c+d.
+ // We're trading a rotate for an add, which seems generally a good choice. It is especially good when c and d are constants.
+diff --git a/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go b/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go
+index 02a9df0da52b59a2e05a1cecf02a1b5ed299ee1d..579189e255f4b2312c718ec403e7aaace24d8122 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go
++++ b/src/cmd/compile/internal/ssa/rewrite/generic/generic_helpers.go
+@@ -78,7 +78,7 @@ func canLoadUnaligned(c *ssa.Config) bool {
+ // canRotate reports whether the architecture supports
+ // rotates of integer registers with the given number of bits.
+ func canRotate(c *ssa.Config, bits int64) bool {
+-	if bits > c.PtrSize*8 {
++	if bits > c.RegSize*8 {
+ 		// Don't rewrite to rotates bigger than the machine word.
+ 		return false
+ 	}
+diff --git a/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go b/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go
+index 6badfb3191e59b6e5ee549de824c2bf6ecb8e44c..485b7efc6be1cdfe95e1d0e90ae8ff4fcfad864b 100644
+--- a/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go
++++ b/src/cmd/compile/internal/ssa/rewrite/generic/rewritegeneric.go
+@@ -17742,7 +17742,7 @@ func rewriteValue_OpMemEq(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (MemEq sptr tptr (Const64 [8]) mem)
+-	// cond: canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (Eq64 (Load <typ.Int64> sptr mem) (Load <typ.Int64> tptr mem))
+ 	for {
+ 		sptr := v_0
+@@ -17751,7 +17751,7 @@ func rewriteValue_OpMemEq(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		mem := v_3
+-		if !(canLoadUnaligned(config) && config.PtrSize == 8) {
++		if !(canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpEq64)
+@@ -29284,7 +29284,7 @@ func rewriteValue_OpRotateLeft16(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (RotateLeft16 x (Const64 [c]))
+-	// cond: config.PtrSize == 4
++	// cond: config.RegSize == 4
+ 	// result: (RotateLeft16 x (Const32 <typ.UInt32> [int32(c)]))
+ 	for {
+ 		x := v_0
+@@ -29292,7 +29292,7 @@ func rewriteValue_OpRotateLeft16(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		c := ssa.AuxIntToInt64(v_1.AuxInt)
+-		if !(config.PtrSize == 4) {
++		if !(config.RegSize == 4) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpRotateLeft16)
+@@ -29859,7 +29859,7 @@ func rewriteValue_OpRotateLeft32(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (RotateLeft32 x (Const64 [c]))
+-	// cond: config.PtrSize == 4
++	// cond: config.RegSize == 4
+ 	// result: (RotateLeft32 x (Const32 <typ.UInt32> [int32(c)]))
+ 	for {
+ 		x := v_0
+@@ -29867,7 +29867,7 @@ func rewriteValue_OpRotateLeft32(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		c := ssa.AuxIntToInt64(v_1.AuxInt)
+-		if !(config.PtrSize == 4) {
++		if !(config.RegSize == 4) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpRotateLeft32)
+@@ -30434,7 +30434,7 @@ func rewriteValue_OpRotateLeft64(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (RotateLeft64 x (Const64 [c]))
+-	// cond: config.PtrSize == 4
++	// cond: config.RegSize == 4
+ 	// result: (RotateLeft64 x (Const32 <typ.UInt32> [int32(c)]))
+ 	for {
+ 		x := v_0
+@@ -30442,7 +30442,7 @@ func rewriteValue_OpRotateLeft64(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		c := ssa.AuxIntToInt64(v_1.AuxInt)
+-		if !(config.PtrSize == 4) {
++		if !(config.RegSize == 4) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpRotateLeft64)
+@@ -31009,7 +31009,7 @@ func rewriteValue_OpRotateLeft8(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (RotateLeft8 x (Const64 [c]))
+-	// cond: config.PtrSize == 4
++	// cond: config.RegSize == 4
+ 	// result: (RotateLeft8 x (Const32 <typ.UInt32> [int32(c)]))
+ 	for {
+ 		x := v_0
+@@ -31017,7 +31017,7 @@ func rewriteValue_OpRotateLeft8(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		c := ssa.AuxIntToInt64(v_1.AuxInt)
+-		if !(config.PtrSize == 4) {
++		if !(config.RegSize == 4) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpRotateLeft8)
+@@ -35218,7 +35218,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const32 [8]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Load <typ.Int64> sptr mem) (Const64 <typ.Int64> [int64(ssa.Read64(scon,0,config.Ctxt.Arch.ByteOrder))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35237,7 +35237,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35251,7 +35251,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const64 [8]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Load <typ.Int64> sptr mem) (Const64 <typ.Int64> [int64(ssa.Read64(scon,0,config.Ctxt.Arch.ByteOrder))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35270,7 +35270,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35284,7 +35284,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const32 [8]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Load <typ.Int64> sptr mem) (Const64 <typ.Int64> [int64(ssa.Read64(scon,0,config.Ctxt.Arch.ByteOrder))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35303,7 +35303,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35317,7 +35317,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const64 [8]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Load <typ.Int64> sptr mem) (Const64 <typ.Int64> [int64(ssa.Read64(scon,0,config.Ctxt.Arch.ByteOrder))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35336,7 +35336,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 8 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35542,7 +35542,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const32 [5]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt8to64 <typ.Int64> (Load <typ.Int8> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read8(scon,4))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35561,7 +35561,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35590,7 +35590,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const64 [5]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt8to64 <typ.Int64> (Load <typ.Int8> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read8(scon,4))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35609,7 +35609,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35638,7 +35638,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const32 [5]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt8to64 <typ.Int64> (Load <typ.Int8> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read8(scon,4))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35657,7 +35657,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35686,7 +35686,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const64 [5]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt8to64 <typ.Int64> (Load <typ.Int8> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read8(scon,4))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35705,7 +35705,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 5 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35734,7 +35734,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const32 [6]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt16to64 <typ.Int64> (Load <typ.Int16> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read16(scon,4,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35753,7 +35753,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35782,7 +35782,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const64 [6]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt16to64 <typ.Int64> (Load <typ.Int16> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read16(scon,4,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35801,7 +35801,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35830,7 +35830,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const32 [6]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt16to64 <typ.Int64> (Load <typ.Int16> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read16(scon,4,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35849,7 +35849,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35878,7 +35878,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const64 [6]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt16to64 <typ.Int64> (Load <typ.Int16> (OffPtr <typ.BytePtr> [4] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read16(scon,4,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35897,7 +35897,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 6 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35926,7 +35926,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const32 [7]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> (OffPtr <typ.BytePtr> [3] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read32(scon,3,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35945,7 +35945,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -35974,7 +35974,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} sptr (Addr {scon} (SB)) (Const64 [7]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> (OffPtr <typ.BytePtr> [3] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read32(scon,3,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -35993,7 +35993,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 			break
+ 		}
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -36022,7 +36022,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const32 [7]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> (OffPtr <typ.BytePtr> [3] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read32(scon,3,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -36041,7 +36041,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst32 || ssa.AuxIntToInt32(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+@@ -36070,7 +36070,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		return true
+ 	}
+ 	// match: (StaticLECall {callAux} (Addr {scon} (SB)) sptr (Const64 [7]) mem)
+-	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8
++	// cond: ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8
+ 	// result: (MakeResult (Eq64 (Or64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> sptr mem)) (Lsh64x64 <typ.Int64> (ZeroExt32to64 <typ.Int64> (Load <typ.Int32> (OffPtr <typ.BytePtr> [3] sptr) mem)) (Const64 <typ.Int64> [32]))) (Const64 <typ.Int64> [int64(uint64(ssa.Read32(scon,0,config.Ctxt.Arch.ByteOrder))|(uint64(ssa.Read32(scon,3,config.Ctxt.Arch.ByteOrder))<<32))])) mem)
+ 	for {
+ 		if len(v.Args) != 4 {
+@@ -36089,7 +36089,7 @@ func rewriteValue_OpStaticLECall(v *ssa.Value) bool {
+ 		}
+ 		sptr := v.Args[1]
+ 		v_2 := v.Args[2]
+-		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.PtrSize == 8) {
++		if v_2.Op != ssaop.OpConst64 || ssa.AuxIntToInt64(v_2.AuxInt) != 7 || !(ssa.IsSameCall(callAux, "runtime.memequal") && ssa.SymIsRO(scon) && canLoadUnaligned(config) && config.RegSize == 8) {
+ 			break
+ 		}
+ 		v.Reset(ssaop.OpMakeResult)
+diff --git a/src/cmd/compile/internal/ssa/writebarrier.go b/src/cmd/compile/internal/ssa/writebarrier.go
+index c2645e369ff34aabd5bf1db5e34079421e2f1092..3e6f9e0f7662f62c2b1b827910f40e0f29b600c4 100644
+--- a/src/cmd/compile/internal/ssa/writebarrier.go
++++ b/src/cmd/compile/internal/ssa/writebarrier.go
+@@ -66,7 +66,7 @@ func IsNewObject(v *Value, select1 []*Value) (mem *Value, ok bool) {
+ 	if v.Args[0].Args[0].Op != ssaop.OpSP {
+ 		return nil, false
+ 	}
+-	if v.Args[0].AuxInt != c.Ctxt.Arch.FixedFrameSize+numParameters*c.RegSize { // offset of return value
++	if v.Args[0].AuxInt != c.Ctxt.Arch.FixedFrameSize+numParameters*c.PtrSize { // offset of return value
+ 		return nil, false
+ 	}
+ 	return mem, true
+diff --git a/src/cmd/compile/internal/ssagen/pgen.go b/src/cmd/compile/internal/ssagen/pgen.go
+index 42fa79e9d8d9b6f4a5d799bbd15d559f70089fad..54e5e34a76ee1ca6d77ef402f78d67ee3bc61298 100644
+--- a/src/cmd/compile/internal/ssagen/pgen.go
++++ b/src/cmd/compile/internal/ssagen/pgen.go
+@@ -395,7 +395,7 @@ func StackOffset(slot ssa.LocalSlot) int32 {
+ 	case ir.PAUTO:
+ 		off = n.FrameOffset()
+ 		if base.Ctxt.Arch.FixedFrameSize == 0 {
+-			off -= int64(types.PtrSize)
++			off -= int64(base.Ctxt.Arch.RegSize)
+ 		}
+ 		if buildcfg.FramePointerEnabled {
+ 			off -= int64(types.PtrSize)
+diff --git a/src/cmd/compile/internal/types/size.go b/src/cmd/compile/internal/types/size.go
+index 4258ebba8b568a5647f9e21620e13b04164f9075..baf1f5060b094b417f4a44ab4d855d1f438d359c 100644
+--- a/src/cmd/compile/internal/types/size.go
++++ b/src/cmd/compile/internal/types/size.go
+@@ -450,9 +450,9 @@ func CalcSize(t *Type) {
+ 		// TODO(mdempsky): Should package abi be responsible for computing argwid?
+ 		w = calcStructOffset(t1, t1.Recvs(), 0)
+ 		w = calcStructOffset(t1, t1.Params(), w)
+-		w = RoundUp(w, int64(RegSize))
++		w = RoundUp(w, int64(PtrSize))
+ 		w = calcStructOffset(t1, t1.Results(), w)
+-		w = RoundUp(w, int64(RegSize))
++		w = RoundUp(w, int64(PtrSize))
+ 		t1.extra.(*Func).Argwid = w
+ 		t.align = 1
+ 	}
+diff --git a/src/cmd/link/internal/ld/dwarf.go b/src/cmd/link/internal/ld/dwarf.go
+index 04921157452adebe962c9264438f1d1c18ccef9b..dec72a4a2df5efb1ec4411e7fab3822beef32f61 100644
+--- a/src/cmd/link/internal/ld/dwarf.go
++++ b/src/cmd/link/internal/ld/dwarf.go
+@@ -1520,6 +1520,7 @@ func (d *dwctxt) writeframes(fs loader.Sym) dwarfSecInfo {
+ 	fsu.SetType(sym.SDWARFSECT)
+ 	isdw64 := isDwarf64(d.linkctxt)
+ 	haslr := d.linkctxt.Arch.HasLR
++	retPCSize := int64(d.arch.RegSize)
+ 
+ 	// Length field is 4 bytes on Dwarf32 and 12 bytes on Dwarf64
+ 	lengthFieldSize := int64(4)
+@@ -1555,11 +1556,11 @@ func (d *dwctxt) writeframes(fs loader.Sym) dwarfSecInfo {
+ 		dwarf.Uleb128put(d, fsd, int64(thearch.Dwarfregsp)) // ...of the platform's SP register...
+ 		dwarf.Uleb128put(d, fsd, int64(0))                  // ...is CFA+0.
+ 	} else {
+-		dwarf.Uleb128put(d, fsd, int64(d.arch.PtrSize)) // ...plus the word size (because the call instruction implicitly adds one word to the frame).
++		dwarf.Uleb128put(d, fsd, retPCSize) // ...plus the return PC slot size.
+ 
+-		fsu.AddUint8(dwarf.DW_CFA_offset_extended)                           // The previous value...
+-		dwarf.Uleb128put(d, fsd, int64(thearch.Dwarfreglr))                  // ...of the return address...
+-		dwarf.Uleb128put(d, fsd, int64(-d.arch.PtrSize)/dataAlignmentFactor) // ...is saved at [CFA - (PtrSize/4)].
++		fsu.AddUint8(dwarf.DW_CFA_offset_extended)               // The previous value...
++		dwarf.Uleb128put(d, fsd, int64(thearch.Dwarfreglr))      // ...of the return address...
++		dwarf.Uleb128put(d, fsd, -retPCSize/dataAlignmentFactor) // ...is saved below the CFA.
+ 	}
+ 
+ 	pad := int64(cieReserve) + lengthFieldSize - int64(len(d.ldr.Data(fs)))
+@@ -1609,7 +1610,7 @@ func (d *dwctxt) writeframes(fs loader.Sym) dwarfSecInfo {
+ 			spdelta := int64(pcsp.Value)
+ 			if !haslr {
+ 				// Return address has been pushed onto stack.
+-				spdelta += int64(d.arch.PtrSize)
++				spdelta += retPCSize
+ 			}
+ 
+ 			if haslr && !fi.TopFrame() {
+diff --git a/src/internal/runtime/sys/consts.go b/src/internal/runtime/sys/consts.go
+index 96e630ed1c3e77a1258f8dec76e9e3649de30df4..dfc4d128460ff81985e14e7094174c8d17c2287c 100644
+--- a/src/internal/runtime/sys/consts.go
++++ b/src/internal/runtime/sys/consts.go
+@@ -21,8 +21,8 @@ const DefaultPhysPageSize = goarch.DefaultPhysPageSize
+ // The various PC tables record PC deltas pre-divided by PCQuantum.
+ const PCQuantum = goarch.PCQuantum
+ 
+-// Int64Align is the required alignment for a 64-bit integer (4 on 32-bit systems, 8 on 64-bit).
+-const Int64Align = goarch.PtrSize
++// Int64Align is the required alignment for a 64-bit integer.
++const Int64Align = goarch.Int64Align
+ 
+ // MinFrameSize is the size of the system-reserved words at the bottom
+ // of a frame (just above the architectural stack pointer).
+diff --git a/src/runtime/stack.go b/src/runtime/stack.go
+index 838090067a1769882948cb8ad0ec79630c81d69e..097b20735b098bf03164879d4ad0b39401e919cd 100644
+--- a/src/runtime/stack.go
++++ b/src/runtime/stack.go
+@@ -1134,8 +1134,8 @@ func newstack() {
+ 	}
+ 	sp := gp.sched.sp
+ 	if goarch.ArchFamily == goarch.AMD64 || goarch.ArchFamily == goarch.I386 || goarch.ArchFamily == goarch.WASM {
+-		// The call to morestack cost a word.
+-		sp -= goarch.PtrSize
++		// The call to morestack pushes one return-PC slot.
++		sp -= retPCSize
+ 	}
+ 	if stackDebug >= 1 || sp < gp.stack.lo {
+ 		print("runtime: newstack sp=", hex(sp), " stack=[", hex(gp.stack.lo), ", ", hex(gp.stack.hi), "]\n",
+diff --git a/src/runtime/stkframe.go b/src/runtime/stkframe.go
+index b63c0b4519337d515e73a03449e99f211166b5db..ff79f0c23ed8d85159c9fa779eb8d7ae53e85dbb 100644
+--- a/src/runtime/stkframe.go
++++ b/src/runtime/stkframe.go
+@@ -107,9 +107,9 @@ func (frame *stkframe) argMapInternal() (argMap bitvector, hasReflectStackObj bo
+ 
+ 		minSP := frame.fp
+ 		if !usesLR {
+-			// The CALL itself pushes a word.
++			// The CALL itself pushes a return PC slot.
+ 			// Undo that adjustment.
+-			minSP -= goarch.PtrSize
++			minSP -= retPCSize
+ 		}
+ 		if arg0 >= minSP {
+ 			// The function hasn't started yet.
+diff --git a/src/runtime/sys_wasm.go b/src/runtime/sys_wasm.go
+index 6b40a8d3e94c96acc27cc65b43c263e285e9afd8..b2d515a241ecb55ee5aeeadfd376797ab0a36f2e 100644
+--- a/src/runtime/sys_wasm.go
++++ b/src/runtime/sys_wasm.go
+@@ -5,7 +5,6 @@
+ package runtime
+ 
+ import (
+-	"internal/goarch"
+ 	"internal/runtime/sys"
+ 	"unsafe"
+ )
+@@ -28,7 +27,7 @@ func wasmExit(code int32)
+ // and then stopped before the first instruction in fn.
+ func gostartcall(buf *gobuf, fn, ctxt unsafe.Pointer) {
+ 	sp := buf.sp
+-	sp -= goarch.PtrSize
++	sp -= retPCSize
+ 	*(*uintptr)(unsafe.Pointer(sp)) = buf.pc
+ 	buf.sp = sp
+ 	buf.pc = uintptr(fn)
+diff --git a/src/runtime/traceback.go b/src/runtime/traceback.go
+index ee91853c5de69555e749a2203d4ba83edbace86e..4e13733a8d79972e140f5994a59416602b8bb1c9 100644
+--- a/src/runtime/traceback.go
++++ b/src/runtime/traceback.go
+@@ -24,6 +24,11 @@ import (
+ 
+ const usesLR = sys.MinFrameSize > 0
+ 
++// retPCSize is the size of the return-PC slot between stack frames on
++// architectures without a link register.
++// The linker describes the same slot using the target's register size.
++const retPCSize = goarch.PtrSize
++
+ const (
+ 	// tracebackInnerFrames is the number of innermost frames to print in a
+ 	// stack trace. The total maximum frames is tracebackInnerFrames +
+@@ -187,7 +192,7 @@ func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
+ 			frame.lr = 0
+ 		} else {
+ 			frame.pc = *(*uintptr)(unsafe.Pointer(frame.sp))
+-			frame.sp += goarch.PtrSize
++			frame.sp += retPCSize
+ 		}
+ 	}
+ 
+@@ -334,7 +339,7 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
+ 		frame.fp = frame.sp + uintptr(funcspdelta(f, frame.pc))
+ 		if !usesLR {
+ 			// On x86, call instruction pushes return PC before entering new function.
+-			frame.fp += goarch.PtrSize
++			frame.fp += retPCSize
+ 		}
+ 	}
+ 
+@@ -382,7 +387,7 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
+ 			}
+ 		} else {
+ 			if frame.lr == 0 {
+-				lrPtr = frame.fp - goarch.PtrSize
++				lrPtr = frame.fp - retPCSize
+ 				frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
+ 			}
+ 		}
+@@ -391,7 +396,7 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
+ 	frame.varp = frame.fp
+ 	if !usesLR {
+ 		// On x86, call instruction pushes return PC before entering new function.
+-		frame.varp -= goarch.PtrSize
++		frame.varp -= retPCSize
+ 	}
+ 
+ 	// For architectures with frame pointers, if there's

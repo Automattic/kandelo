@@ -1,0 +1,39 @@
+From 2ed34c6378c96cac1719d3c8dc1026e1485632e0 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Fri, 6 Nov 2026 23:09:41 -0500
+Subject: [PATCH 15/22] runtime: Preserve signal delivery at clock checkpoints
+
+Keep nanotime1 nosplit for scheduler state transitions, but retain
+its existing channel signal checkpoint. An idle clock-polling M may
+own a pending process signal without making an ordinary syscall.
+The established delivery path queues Go notifications on g0.
+
+The raw-clock variant stalled a browser HTTP drain after the
+request started. Restoring the checkpoint passes five repetitions
+per engine on Chromium, Firefox and WebKit, plus repeated Node
+blocked-wait and signal/GC probes. No collector changes.
+
+diff --git a/src/runtime/os_kandelo.go b/src/runtime/os_kandelo.go
+index d379918494e96f67117ed7050292ceca347e2124..0fdc3a9072879c8cfd3c997ee05eb6feeb6acab0 100644
+--- a/src/runtime/os_kandelo.go
++++ b/src/runtime/os_kandelo.go
+@@ -168,14 +168,15 @@ func walltime1() (sec int64, nsec int32) {
+ // always taken and dead-code-eliminate main.main. A real monotonic clock is
+ // nonzero and non-decreasing, which the runtime scheduler/GC/timers require.
+ // Scheduler state transitions can read the clock with stack growth disabled.
+-// Keep this path nosplit and defer signal dispatch to an ordinary syscall:
+-// callbacks cannot run while casgstatus is waiting for a GC scan to finish.
++// Keep this path nosplit, but preserve the channel's signal checkpoint.
++// A clock-polling M may own a pending signal without making other syscalls;
++// kandeloDeliverSignals already queues Go notifications on the system stack.
+ //
+ //go:nosplit
+ func nanotime1() int64 {
+ 	timespec := &getg().m.clockTimespec
+-	_, errno := doSyscall6Raw(sysClockGettime, kandeloClockMonotonic,
+-		int64(uintptr(unsafe.Pointer(&timespec[0]))), 0, 0, 0, 0)
++	_, errno := doSyscall(sysClockGettime, kandeloClockMonotonic,
++		int64(uintptr(unsafe.Pointer(&timespec[0]))), 0)
+ 	if errno != 0 {
+ 		return 0
+ 	}

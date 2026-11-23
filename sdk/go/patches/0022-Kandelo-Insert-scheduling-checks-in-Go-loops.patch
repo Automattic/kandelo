@@ -1,0 +1,21 @@
+From d15e5b7025956fa2a4d76fe372460681f73a0dc7 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Sun, 22 Nov 2026 18:07:58 -0500
+Subject: [PATCH 22/22] Kandelo: Insert scheduling checks in Go loops
+
+Enable the existing loop rescheduling pass for Kandelo. The Wasm runtime can honor pending scheduler and GC requests at loop backedges using the existing Go scheduler.
+
+diff --git a/src/internal/buildcfg/exp.go b/src/internal/buildcfg/exp.go
+index 0ede05787de83f7e775bbef532a8d9296bd09c2f..22f4df55db59b54aeef1b248e023b53f3975b75a 100644
+--- a/src/internal/buildcfg/exp.go
++++ b/src/internal/buildcfg/exp.go
+@@ -87,6 +87,9 @@ func ParseGOEXPERIMENT(goos, goarch, goexp string) (*ExperimentFlags, error) {
+ 		JSONv2:                true,
+ 		MapSplitGroup:         true,
+ 		GoListExportNewFormat: true,
++		// Kandelo has a scheduler monitor but Wasm cannot asynchronously
++		// interrupt a running worker. Poll on loop backedges for requests.
++		PreemptibleLoops: goos == "kandelo",
+ 	}
+ 	flags := &ExperimentFlags{
+ 		Flags:    baseline,

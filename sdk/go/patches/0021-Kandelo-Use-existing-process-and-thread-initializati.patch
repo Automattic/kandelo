@@ -1,0 +1,285 @@
+From 6552401babd31df06b1b4d22d6f8fb040ccf22ac Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Sun, 22 Nov 2026 16:17:14 -0500
+Subject: [PATCH 21/22] Kandelo: Use existing process and thread initialization
+ paths
+
+Initialize passive data at process instantiation. Kandelo already removes the start function from thread replicas, so each Go worker can use a dynamically placed slot in the existing shared memory.
+
+Move off the retiring Go stack before publishing that it can be reclaimed, then call the existing kernel_exit import. The guest uses Kandelo ABI 56 and needs no new host import or thread layout marker.
+
+diff --git a/src/cmd/link/internal/wasm/asm.go b/src/cmd/link/internal/wasm/asm.go
+index 72c6b96e72f8ef13956d2d5fdda037cdfa9dd048..6ce6fd8b9646cafd2e6a6bc8f047d6bbc1bae32b 100644
+--- a/src/cmd/link/internal/wasm/asm.go
++++ b/src/cmd/link/internal/wasm/asm.go
+@@ -33,19 +33,20 @@ const (
+ )
+ 
+ const (
+-	sectionCustom   = 0
+-	sectionType     = 1
+-	sectionImport   = 2
+-	sectionFunction = 3
+-	sectionTable    = 4
+-	sectionMemory   = 5
+-	sectionGlobal   = 6
+-	sectionExport   = 7
+-	sectionStart    = 8
+-	sectionElement  = 9
+-	sectionCode     = 10
+-	sectionData     = 11
+-	sectionTag      = 13
++	sectionCustom    = 0
++	sectionType      = 1
++	sectionImport    = 2
++	sectionFunction  = 3
++	sectionTable     = 4
++	sectionMemory    = 5
++	sectionGlobal    = 6
++	sectionExport    = 7
++	sectionStart     = 8
++	sectionElement   = 9
++	sectionCode      = 10
++	sectionData      = 11
++	sectionDataCount = 12
++	sectionTag       = 13
+ )
+ 
+ // wasm32State belongs to one linker invocation. assignAddress builds the
+@@ -161,7 +162,7 @@ func (st *wasm32State) archreloc(target *ld.Target, ldr *loader.Loader, _ *ld.Ar
+ 	return int64(handle), 0, true
+ }
+ 
+-var kandeloThreadSlots = flag.Int("kandelothreadslots", 32, "number of preallocated Kandelo pthread slots")
++var kandeloThreadSlots = flag.Int("kandelothreadslots", 32, "maximum concurrent Kandelo thread slots")
+ 
+ func extreloc(_ *ld.Target, _ *loader.Loader, r loader.Reloc, _ loader.Sym) (loader.ExtReloc, bool) {
+ 	if r.Type() == objabi.R_WASMFCALL {
+@@ -887,16 +888,6 @@ func (st *wasm32State) asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 		threadSlotsFuncIdx = uint32(len(hostImports)) + uint32(len(fns))
+ 		fns = append(fns, &wasmFunc{Name: "__wasm_posix_thread_slots", Type: slotsType, Code: body.Bytes()})
+ 	}
+-	var preallocateThreadSlotsFuncIdx uint32
+-	if buildcfg.GOOS == "kandelo" {
+-		markerType := lookupType(&wasmFuncType{Results: []byte{I32}}, &types)
+-		var body bytes.Buffer
+-		writeUleb128(&body, 0)
+-		writeI32Const(&body, 1)
+-		body.WriteByte(0x0b)
+-		preallocateThreadSlotsFuncIdx = uint32(len(hostImports)) + uint32(len(fns))
+-		fns = append(fns, &wasmFunc{Name: "__wasm_posix_preallocate_thread_slots", Type: markerType, Code: body.Bytes()})
+-	}
+ 	var initTLSFuncIdx, startTLSFuncIdx uint32
+ 	if buildcfg.GOOS == "kandelo" && len(ctxt.WasmTLSTemplate) != 0 {
+ 		initTLSFuncIdx = uint32(len(hostImports) + len(fns))
+@@ -941,6 +932,30 @@ func (st *wasm32State) asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 		fns = append(fns, &wasmFunc{Name: "__kandelo_start_tls", Type: startType, Code: startBody.Bytes()})
+ 	}
+ 
++	segments := collectDataSegments()
++	var initMemoryFuncIdx uint32
++	if buildcfg.GOOS == "kandelo" {
++		// The normal Kandelo thread loader strips Start before attaching to
++		// live process memory. Use passive data so instantiation never
++		// replays the initializer when spawning a secondary worker.
++		var body bytes.Buffer
++		writeUleb128(&body, 0) // locals
++		for i, seg := range segments {
++			writeI32Const(&body, seg.offset)
++			writeI32Const(&body, 0)
++			writeI32Const(&body, int32(len(seg.data)))
++			body.Write([]byte{0xfc, 0x08}) // memory.init
++			writeUleb128(&body, uint64(i))
++			writeUleb128(&body, 0)         // memory index
++			body.Write([]byte{0xfc, 0x09}) // data.drop
++			writeUleb128(&body, uint64(i))
++		}
++		body.WriteByte(0x0b)
++		initMemoryFuncIdx = uint32(len(hostImports) + len(fns))
++		typ := lookupType(&wasmFuncType{}, &types)
++		fns = append(fns, &wasmFunc{Name: "__wasm_init_memory", Type: typ, Code: body.Bytes()})
++	}
++
+ 	ctxt.Out.Write([]byte{0x00, 0x61, 0x73, 0x6d}) // magic
+ 	ctxt.Out.Write([]byte{0x01, 0x00, 0x00, 0x00}) // version
+ 
+@@ -960,20 +975,30 @@ func (st *wasm32State) asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 		writeMemorySec(ctxt, ldr)
+ 	}
+ 	writeGlobalSec(ctxt, ldr, hasMemoryBase, hasTableBase, hasStackPointer, hasCTLSBase, hasChannelBase, dataAddressGlobals)
+-	writeExportSec(ctxt, ldr, len(hostImports), funcIndexes, abiVersionFuncIdx, threadSlotsFuncIdx, preallocateThreadSlotsFuncIdx, initTLSFuncIdx, startTLSFuncIdx, hasMemoryBase, hasTableBase, hasStackPointer, hasCTLSBase, hasChannelBase, cExports)
++	writeExportSec(ctxt, ldr, len(hostImports), funcIndexes, abiVersionFuncIdx, threadSlotsFuncIdx, initTLSFuncIdx, startTLSFuncIdx, hasMemoryBase, hasTableBase, hasStackPointer, hasCTLSBase, hasChannelBase, cExports)
++	if buildcfg.GOOS == "kandelo" {
++		sizeOffset := writeSecHeader(ctxt, sectionStart)
++		writeUleb128(ctxt.Out, uint64(initMemoryFuncIdx))
++		writeSecSize(ctxt, sizeOffset)
++	}
+ 	writeElementSec(ctxt, uint64(len(hostImports)), tableOffset, uint64(len(fns)))
++	if buildcfg.GOOS == "kandelo" {
++		sizeOffset := writeSecHeader(ctxt, sectionDataCount)
++		writeUleb128(ctxt.Out, uint64(len(segments)))
++		writeSecSize(ctxt, sizeOffset)
++	}
+ 	writeCodeSec(ctxt, fns)
+-	writeDataSec(ctxt)
++	writeDataSec(ctxt, segments, buildcfg.GOOS == "kandelo")
+ 	writeProducerSec(ctxt)
+ 	if buildcfg.GOOS == "kandelo" {
+ 		// Match libc/glue/kandelo-abi-contract.txt from the ABI-56 SDK.
+ 		// The digest belongs to this linker revision so a newer SDK cannot
+ 		// accidentally label output from an older runtime as compatible.
+ 		digest := [...]byte{
+-		0x54, 0xb1, 0x13, 0xfe, 0x33, 0xc9, 0x1c, 0x5c,
+-		0x45, 0x43, 0xf2, 0x92, 0xd1, 0xee, 0x83, 0x67,
+-		0x8c, 0xc8, 0xd2, 0x7f, 0xb8, 0x91, 0xc0, 0xf6,
+-		0x3d, 0xc9, 0x23, 0x11, 0x8c, 0xc5, 0x8f, 0x43,
++			0x54, 0xb1, 0x13, 0xfe, 0x33, 0xc9, 0x1c, 0x5c,
++			0x45, 0x43, 0xf2, 0x92, 0xd1, 0xee, 0x83, 0x67,
++			0x8c, 0xc8, 0xd2, 0x7f, 0xb8, 0x91, 0xc0, 0xf6,
++			0x3d, 0xc9, 0x23, 0x11, 0x8c, 0xc5, 0x8f, 0x43,
+ 		}
+ 		sizeOffset := writeSecHeader(ctxt, sectionCustom)
+ 		writeName(ctxt.Out, "kandelo.abi.contract")
+@@ -1289,7 +1314,7 @@ func writeGlobalSec(ctxt *ld.Link, ldr *loader.Loader, hasMemoryBase, hasTableBa
+ // writeExportSec writes the section that declares exports.
+ // Exports can be accessed by the WebAssembly host, usually JavaScript.
+ // The wasm_export_* functions and the linear memory get exported.
+-func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int, funcIndexes map[int64]uint32, abiVersionFuncIdx uint32, threadSlotsFuncIdx uint32, preallocateThreadSlotsFuncIdx uint32, initTLSFuncIdx, startTLSFuncIdx uint32, hasMemoryBase, hasTableBase, hasStackPointer, hasCTLSBase, hasChannelBase bool, cExports []wasmCExport) {
++func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int, funcIndexes map[int64]uint32, abiVersionFuncIdx uint32, threadSlotsFuncIdx uint32, initTLSFuncIdx, startTLSFuncIdx uint32, hasMemoryBase, hasTableBase, hasStackPointer, hasCTLSBase, hasChannelBase bool, cExports []wasmCExport) {
+ 	sizeOffset := writeSecHeader(ctxt, sectionExport)
+ 	funcIndex := func(s loader.Sym) uint32 {
+ 		idx, ok := funcIndexes[ldr.SymValue(s)]
+@@ -1336,10 +1361,10 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int, funcI
+ 		// table as __indirect_function_table. Linear memory is NOT exported
+ 		// here; it is imported from env.memory (see writeImportSec).
+ 		// The export count is entry(1) + WasmExports + __abi_version(1) +
+-		// __wasm_posix_thread_slots(1) + preallocation marker(1) +
++		// __wasm_posix_thread_slots(1) +
+ 		// __tls_base(1) + __heap_base(1) +
+ 		// __indirect_function_table(1).
+-		exportCount := 7 + len(ldr.WasmExports) + len(cExports)
++		exportCount := 6 + len(ldr.WasmExports) + len(cExports)
+ 		bootstrap := ldr.Lookup("wasm_export_cgo_thread_bootstrap", 0)
+ 		if bootstrap != 0 && ldr.AttrReachable(bootstrap) {
+ 			exportCount++
+@@ -1407,9 +1432,6 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int, funcI
+ 		writeName(ctxt.Out, "__wasm_posix_thread_slots")   // pthread slot declaration
+ 		ctxt.Out.WriteByte(0x00)                           // func export
+ 		writeUleb128(ctxt.Out, uint64(threadSlotsFuncIdx)) // funcidx
+-		writeName(ctxt.Out, "__wasm_posix_preallocate_thread_slots")
+-		ctxt.Out.WriteByte(0x00)
+-		writeUleb128(ctxt.Out, uint64(preallocateThreadSlotsFuncIdx))
+ 		if initTLSFuncIdx != 0 {
+ 			writeName(ctxt.Out, "__wasm_init_tls")
+ 			ctxt.Out.WriteByte(0x00)
+@@ -1531,14 +1553,12 @@ func writeCodeSec(ctxt *ld.Link, fns []*wasmFunc) {
+ }
+ 
+ // writeDataSec writes the section that provides data that will be used to initialize the linear memory.
+-func writeDataSec(ctxt *ld.Link) {
+-	sizeOffset := writeSecHeader(ctxt, sectionData)
+-
+-	type dataSegment struct {
+-		offset int32
+-		data   []byte
+-	}
++type dataSegment struct {
++	offset int32
++	data   []byte
++}
+ 
++func collectDataSegments() []dataSegment {
+ 	// Omit blocks of zeroes and instead emit data segments with offsets skipping the zeroes.
+ 	// This reduces the size of the WebAssembly binary. We use 8 bytes as an estimate for the
+ 	// overhead of adding a new segment (same as wasm-opt's memory-packing optimization uses).
+@@ -1547,7 +1567,7 @@ func writeDataSec(ctxt *ld.Link) {
+ 	// Generate at most this many segments. A higher number of segments gets rejected by some WebAssembly runtimes.
+ 	const maxNumSegments = 100000
+ 
+-	var segments []*dataSegment
++	var segments []dataSegment
+ 	for secIndex, ds := range dataSects {
+ 		data := ds.data
+ 		offset := int32(ds.sect.Vaddr)
+@@ -1583,7 +1603,7 @@ func writeDataSec(ctxt *ld.Link) {
+ 				}
+ 			}
+ 
+-			segments = append(segments, &dataSegment{
++			segments = append(segments, dataSegment{
+ 				offset: offset,
+ 				data:   data[:segmentEnd],
+ 			})
+@@ -1592,11 +1612,20 @@ func writeDataSec(ctxt *ld.Link) {
+ 		}
+ 	}
+ 
+-	writeUleb128(ctxt.Out, uint64(len(segments))) // number of data entries
++	return segments
++}
++
++func writeDataSec(ctxt *ld.Link, segments []dataSegment, passive bool) {
++	sizeOffset := writeSecHeader(ctxt, sectionData)
++	writeUleb128(ctxt.Out, uint64(len(segments)))
+ 	for _, seg := range segments {
+-		writeUleb128(ctxt.Out, 0) // memidx
+-		writeI32Const(ctxt.Out, seg.offset)
+-		ctxt.Out.WriteByte(0x0b) // end
++		if passive {
++			writeUleb128(ctxt.Out, 1)
++		} else {
++			writeUleb128(ctxt.Out, 0) // active segment for memory 0
++			writeI32Const(ctxt.Out, seg.offset)
++			ctxt.Out.WriteByte(0x0b) // end
++		}
+ 		writeUleb128(ctxt.Out, uint64(len(seg.data)))
+ 		ctxt.Out.Write(seg.data)
+ 	}
+diff --git a/src/runtime/os_kandelo.go b/src/runtime/os_kandelo.go
+index 0fdc3a9072879c8cfd3c997ee05eb6feeb6acab0..cc52fa1e1aeba52bf3d3f347522c7ebd3d4760ca 100644
+--- a/src/runtime/os_kandelo.go
++++ b/src/runtime/os_kandelo.go
+@@ -24,9 +24,6 @@ import "unsafe"
+ //go:wasmimport kernel kernel_exit
+ func kernelExit(code int32)
+ 
+-//go:wasmimport kernel kernel_thread_exit
+-func kernelThreadExit(wait unsafe.Pointer)
+-
+ // exit commits process-wide termination before the non-returning host import.
+ // The loop is defensive if that import ever returns. Do not call throw here.
+ func exit(code int32) {
+diff --git a/src/runtime/sys_wasmx.s b/src/runtime/sys_wasmx.s
+index ed546a6df564efc2d5bab090213f4c434181df6d..c946c4e77fa1c79713cc26824601c7fd4c82e83d 100644
+--- a/src/runtime/sys_wasmx.s
++++ b/src/runtime/sys_wasmx.s
+@@ -24,12 +24,26 @@ TEXT runtime·wasmDiv(SB), NOSPLIT, $0-0
+ 	I64DivS
+ 	Return
+ 
+-TEXT runtime·exitThread(SB), NOSPLIT, $0-0
+ #ifdef GOOS_kandelo
++// kernelExit's Wasm import wrapper reads its status at SP+8. Switch to a
++// permanent zero frame before publishing that the retiring stack is free.
++GLOBL runtime·kandeloThreadExitFrame(SB), RODATA|NOPTR, $16
++
++TEXT runtime·exitThread(SB), NOSPLIT|NOFRAME, $0-4
++	I32Load wait+0(FP)
++	MOVD $runtime·kandeloThreadExitFrame(SB), R0
++	Get R0
++	I32WrapI64
++	Set SP
+ 	I32Const $0
+-	Call runtime·kernelThreadExit(SB)
+-#endif
++	I32AtomicStore
++	I32Const $0
++	Call runtime·kernelExit(SB)
+ 	UNDEF
++#else
++TEXT runtime·exitThread(SB), NOSPLIT, $0-0
++	UNDEF
++#endif
+ 
+ TEXT runtime·osyield(SB), NOSPLIT, $0-0
+ #ifdef GOOS_kandelo
