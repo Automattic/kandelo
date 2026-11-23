@@ -18,7 +18,7 @@
 //! the word is set, so a runtime can stop every store of a process. See the
 //! crate README for the design and known gaps.
 
-use std::{convert::Infallible, str::FromStr};
+use std::{convert::Infallible, mem::discriminant, str::FromStr};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use wasm_encoder::{
@@ -38,11 +38,14 @@ const MAXIMUM_PAGES: u64 = 1 << 16;
 const COW_BIT: i32 = 1;
 const BUSY_BIT: i32 = 2;
 const GROUP_SHARERS: u32 = PAGE_BYTES;
+const GROUP_FREE: u64 = 8;
+const FREE_PAGE: i32 = 1 << 16;
 const TABLE_BASE_EXPORT: &str = "__memory_table_base";
 const GROUP_BASE_EXPORT: &str = "__memory_group_base";
 const STOP_BASE_EXPORT: &str = "__memory_stop_base";
 const STOP_ACKNOWLEDGED: u32 = 4;
 const OFFSET_MASK: i32 = (PAGE_BYTES - 1) as i32;
+const INLINE_LOOP_ACCESSES: u32 = 16;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Crossing {
@@ -147,7 +150,8 @@ fn features() -> WasmFeatures {
 }
 
 #[derive(Default)]
-struct Layout {
+struct Layout<'a> {
+    thunks: Vec<Thunk<'a>>,
     func_params: Vec<Option<u32>>,
     defined_types: Vec<u32>,
     imported_funcs: u32,
@@ -165,8 +169,8 @@ struct HeapBase {
     value: u32,
 }
 
-impl Layout {
-    fn read(input: &[u8], role: Role) -> Result<Self> {
+impl<'a> Layout<'a> {
+    fn read(input: &'a [u8], role: Role) -> Result<Self> {
         let mut layout = Self::default();
         let mut global_inits = Vec::new();
         let mut heap_base_export = None;
@@ -225,6 +229,23 @@ impl Layout {
                     }
                 }
                 Payload::DataCountSection { count, .. } => layout.data_segments = count,
+                Payload::CodeSectionEntry(body) => {
+                    let mut loops = Loops::new(&body)?;
+                    let mut reader = body.get_operators_reader()?;
+                    while !reader.eof() {
+                        let operator = reader.read()?;
+                        loops.step(&operator);
+                        if loops.inline() {
+                            continue;
+                        }
+                        let Some(thunk) = Thunk::new(&operator) else {
+                            continue;
+                        };
+                        if !layout.thunks.iter().any(|known| known.same(&thunk)) {
+                            layout.thunks.push(thunk);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -261,8 +282,20 @@ impl Layout {
         self.func_params.len() as u32 + ty as u32
     }
 
+    fn thunk_type(&self, thunk: u32) -> u32 {
+        self.type_index(HelperType::Stop) + 1 + thunk
+    }
+
     fn helper(&self, helper: Helper) -> u32 {
-        self.imported_funcs + self.defined_types.len() as u32 + helper.offset()
+        self.imported_funcs + self.defined_types.len() as u32 + helper.offset(self.data_segments)
+    }
+
+    fn thunk(&self, operator: &Operator<'_>) -> u32 {
+        let thunk = Thunk::new(operator).expect("a load or a store");
+        self.thunks
+            .iter()
+            .position(|known| known.same(&thunk))
+            .expect("the layout holds every thunk") as u32
     }
 
     fn table_global(&self) -> u32 {
@@ -312,10 +345,11 @@ enum Helper {
     Fill,
     Stop,
     Init(u32),
+    Thunk(u32),
 }
 
 impl Helper {
-    fn offset(self) -> u32 {
+    fn offset(self, data_segments: u32) -> u32 {
         match self {
             Self::TranslateRead => 0,
             Self::TranslateWrite => 1,
@@ -326,6 +360,7 @@ impl Helper {
             Self::Fill => 6,
             Self::Stop => 7,
             Self::Init(segment) => 8 + segment,
+            Self::Thunk(thunk) => 8 + data_segments + thunk,
         }
     }
 }
@@ -345,6 +380,15 @@ impl Scalar {
             Self::I64 => &[Self::I64],
             Self::F32 => &[Self::F32],
             Self::F64 => &[Self::F64],
+        }
+    }
+
+    fn val_type(self) -> ValType {
+        match self {
+            Self::I32 => ValType::I32,
+            Self::I64 => ValType::I64,
+            Self::F32 => ValType::F32,
+            Self::F64 => ValType::F64,
         }
     }
 
@@ -536,6 +580,126 @@ enum Slow {
     Store(Scalar),
 }
 
+/// The loops that enclose the current instruction of one function.
+///
+/// An engine runs a loop of a long activation in the code of its baseline
+/// compiler, where a call per access is slow. So an access gets the
+/// translation inline when its innermost loop holds few accesses. A large
+/// loop keeps the calls: the optimizing compiler needs much more memory for
+/// a large function, and it inlines the helpers itself.
+struct Loops {
+    accesses: Vec<u32>,
+    blocks: Vec<bool>,
+    open: Vec<usize>,
+    entered: usize,
+}
+
+impl Loops {
+    fn new(body: &wasmparser::FunctionBody<'_>) -> Result<Self, wasmparser::BinaryReaderError> {
+        let mut accesses = Vec::new();
+        let mut blocks = Vec::new();
+        let mut total = 0;
+        let mut reader = body.get_operators_reader()?;
+        while !reader.eof() {
+            let operator = reader.read()?;
+            match operator {
+                Operator::Loop { .. } => {
+                    blocks.push(Some(accesses.len()));
+                    accesses.push(total);
+                }
+                Operator::Block { .. }
+                | Operator::If { .. }
+                | Operator::Try { .. }
+                | Operator::TryTable { .. } => blocks.push(None),
+                Operator::End | Operator::Delegate { .. } => {
+                    if let Some(Some(ended)) = blocks.pop() {
+                        accesses[ended] = total - accesses[ended];
+                    }
+                }
+                _ => {}
+            }
+            total += u32::from(matches!(
+                access(&operator),
+                Some(Access::Load(..) | Access::Store(..))
+            ));
+        }
+        Ok(Self {
+            accesses,
+            blocks: Vec::new(),
+            open: Vec::new(),
+            entered: 0,
+        })
+    }
+
+    fn step(&mut self, operator: &Operator<'_>) {
+        match operator {
+            Operator::Loop { .. } => {
+                self.blocks.push(true);
+                self.open.push(self.entered);
+                self.entered += 1;
+            }
+            Operator::Block { .. }
+            | Operator::If { .. }
+            | Operator::Try { .. }
+            | Operator::TryTable { .. } => self.blocks.push(false),
+            Operator::End | Operator::Delegate { .. } => {
+                if self.blocks.pop() == Some(true) {
+                    self.open.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn inline(&self) -> bool {
+        self.open
+            .last()
+            .is_some_and(|innermost| self.accesses[*innermost] <= INLINE_LOOP_ACCESSES)
+    }
+}
+
+/// A helper that holds one kind of load or store, so that an access costs
+/// its caller one call.
+struct Thunk<'a> {
+    operator: Operator<'a>,
+    memarg: MemArg,
+    slow: Slow,
+    offset: bool,
+}
+
+impl<'a> Thunk<'a> {
+    fn new(operator: &Operator<'a>) -> Option<Self> {
+        let (memarg, slow) = match access(operator)? {
+            Access::Load(memarg, widen) => (memarg, Slow::Load(widen)),
+            Access::Store(memarg, value) => (memarg, Slow::Store(value)),
+            _ => return None,
+        };
+        Some(Self {
+            operator: operator.clone(),
+            memarg,
+            slow,
+            offset: matches!(slow, Slow::Store(_)) && memarg.offset != 0,
+        })
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        discriminant(&self.operator) == discriminant(&other.operator)
+            && self.memarg.align == other.memarg.align
+            && self.offset == other.offset
+    }
+
+    fn signature(&self) -> (Vec<ValType>, Vec<ValType>) {
+        match self.slow {
+            Slow::Load(widen) => (vec![ValType::I32], vec![widen.val_type()]),
+            Slow::Store(value) => {
+                let mut params = vec![ValType::I32, value.val_type()];
+                params.extend(self.offset.then_some(ValType::I32));
+                (params, Vec::new())
+            }
+        }
+    }
+}
+
 struct Scratch {
     addr: u32,
     entry: u32,
@@ -579,7 +743,7 @@ impl Scratch {
 }
 
 struct Rewriter<'a> {
-    layout: &'a Layout,
+    layout: &'a Layout<'a>,
     crossing: Crossing,
     table_base: u32,
     heap_base: u32,
@@ -679,24 +843,45 @@ impl Rewriter<'_> {
         function: &mut Function,
         operator: Operator<'_>,
         access: Access,
+        inline: bool,
         scratch: &Scratch,
     ) -> ReencodeResult<()> {
+        let mut sink = function.instructions();
         let (memarg, operands, write, slow) = match access {
-            Access::Copy => return self.emit_call(function, Helper::Copy),
-            Access::Fill => return self.emit_call(function, Helper::Fill),
-            Access::Init(segment) => return self.emit_call(function, Helper::Init(segment)),
-            Access::Load(memarg, widen) => (
-                memarg,
-                &[][..],
-                false,
-                self.crosses(&memarg).then_some(Slow::Load(widen)),
-            ),
-            Access::Store(memarg, value) => (
-                memarg,
-                value.operands(),
-                true,
-                self.crosses(&memarg).then_some(Slow::Store(value)),
-            ),
+            Access::Copy => {
+                sink.call(self.layout.helper(Helper::Copy));
+                return Ok(());
+            }
+            Access::Fill => {
+                sink.call(self.layout.helper(Helper::Fill));
+                return Ok(());
+            }
+            Access::Init(segment) => {
+                sink.call(self.layout.helper(Helper::Init(segment)));
+                return Ok(());
+            }
+            Access::Load(memarg, _) if !inline => {
+                emit_add_offset(&mut sink, &memarg);
+                sink.call(
+                    self.layout
+                        .helper(Helper::Thunk(self.layout.thunk(&operator))),
+                );
+                return Ok(());
+            }
+            Access::Store(memarg, _) if !inline => {
+                if memarg.offset != 0 {
+                    sink.i32_const(memarg.offset as u32 as i32);
+                }
+                sink.call(
+                    self.layout
+                        .helper(Helper::Thunk(self.layout.thunk(&operator))),
+                );
+                return Ok(());
+            }
+            Access::Load(memarg, widen) => (memarg, &[][..], false, Some(Slow::Load(widen))),
+            Access::Store(memarg, value) => {
+                (memarg, value.operands(), true, Some(Slow::Store(value)))
+            }
             Access::Atomic {
                 memarg,
                 operands,
@@ -706,71 +891,96 @@ impl Rewriter<'_> {
         let original = self.instruction(operator)?;
         let slots = scratch.slots(operands);
 
-        let mut sink = function.instructions();
         for slot in slots.iter().rev() {
             sink.local_set(*slot);
         }
+        emit_add_offset(&mut sink, &memarg);
         sink.local_set(scratch.addr);
-
-        let Some(slow) = slow else {
-            self.emit_fast(&mut sink, &memarg, write, &slots, scratch);
-            drop(sink);
-            function.instruction(&original);
-            return Ok(());
-        };
-
-        let size = 1u32 << memarg.max_align;
-        emit_effective_address(&mut sink, &memarg, scratch);
-        sink.i32_const(OFFSET_MASK)
-            .i32_and()
-            .i32_const((PAGE_BYTES - size) as i32)
-            .i32_gt_u();
-        match slow {
-            Slow::Load(widen) => sink.if_(BlockType::Result(widen.val_type())),
-            Slow::Store(_) => sink.if_(BlockType::Empty),
-        };
-        emit_effective_address(&mut sink, &memarg, scratch);
-        sink.i32_const(size as i32);
-        match slow {
-            Slow::Load(widen) => {
-                sink.call(self.layout.helper(Helper::LoadBytes));
-                widen.narrow_from_i64(&mut sink, size);
-            }
-            Slow::Store(value) => {
-                sink.local_get(slots[0]);
-                value.widen_to_i64(&mut sink);
-                sink.call(self.layout.helper(Helper::StoreBytes));
-            }
-        }
-        sink.else_();
-        self.emit_fast(&mut sink, &memarg, write, &slots, scratch);
         drop(sink);
-        function.instruction(&original);
-        function.instructions().end();
+        let slow = slow.filter(|_| self.crosses(&memarg));
+        self.emit_checked(
+            function,
+            &memarg,
+            slow,
+            write,
+            scratch.addr,
+            scratch.entry,
+            &slots,
+            &original,
+        );
         Ok(())
+    }
+
+    /// Emit the access `original` to the address in the local `addr`, with
+    /// its operands in `slots`. `slow` sends an access that crosses a page
+    /// boundary to the byte-wise helper.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_checked(
+        &self,
+        function: &mut Function,
+        memarg: &MemArg,
+        slow: Option<Slow>,
+        write: bool,
+        addr: u32,
+        entry: u32,
+        slots: &[u32],
+        original: &wasm_encoder::Instruction<'_>,
+    ) {
+        let size = 1u32 << memarg.max_align;
+        let mut sink = function.instructions();
+        if let Some(slow) = slow {
+            sink.local_get(addr)
+                .i32_const(OFFSET_MASK)
+                .i32_and()
+                .i32_const((PAGE_BYTES - size) as i32)
+                .i32_gt_u();
+            match slow {
+                Slow::Load(widen) => {
+                    sink.if_(BlockType::Result(widen.val_type()))
+                        .local_get(addr)
+                        .i32_const(size as i32)
+                        .call(self.layout.helper(Helper::LoadBytes));
+                    widen.narrow_from_i64(&mut sink, size);
+                }
+                Slow::Store(value) => {
+                    sink.if_(BlockType::Empty)
+                        .local_get(addr)
+                        .i32_const(size as i32)
+                        .local_get(slots[0]);
+                    value.widen_to_i64(&mut sink);
+                    sink.call(self.layout.helper(Helper::StoreBytes));
+                }
+            }
+            sink.else_();
+        }
+        self.emit_fast(&mut sink, write, addr, entry, slots);
+        drop(sink);
+        function.instruction(original);
+        if slow.is_some() {
+            function.instructions().end();
+        }
     }
 
     fn emit_fast(
         &self,
         sink: &mut InstructionSink<'_>,
-        memarg: &MemArg,
         write: bool,
+        addr: u32,
+        entry: u32,
         slots: &[u32],
-        scratch: &Scratch,
     ) {
-        sink.local_get(scratch.addr);
-        emit_effective_address(sink, memarg, scratch);
+        sink.local_get(addr).local_get(addr);
         self.emit_table_entry(sink, write);
         if write {
-            sink.local_tee(scratch.entry)
+            sink.local_tee(entry)
                 .i32_const(COW_BIT)
                 .i32_and()
-                .if_(BlockType::Empty);
-            emit_effective_address(sink, memarg, scratch);
-            sink.call(self.layout.helper(Helper::CowFault))
-                .local_set(scratch.entry)
+                .if_(BlockType::Empty)
+                .local_get(addr)
+                .call(self.layout.helper(Helper::CowFault))
+                .local_set(entry)
                 .end()
-                .local_get(scratch.entry);
+                .local_get(entry);
         }
         sink.i32_add();
         for slot in slots {
@@ -778,9 +988,34 @@ impl Rewriter<'_> {
         }
     }
 
-    fn emit_call(&self, function: &mut Function, helper: Helper) -> ReencodeResult<()> {
-        function.instructions().call(self.layout.helper(helper));
-        Ok(())
+    fn thunk(&mut self, thunk: &Thunk<'_>) -> ReencodeResult<Function> {
+        let original = self.instruction(thunk.operator.clone())?;
+        let write = matches!(thunk.slow, Slow::Store(_));
+        let entry = 2 + u32::from(thunk.offset);
+        let slots: &[u32] = if write { &[1] } else { &[] };
+
+        let mut function = Function::new(write.then_some((1, ValType::I32)));
+        if thunk.offset {
+            function
+                .instructions()
+                .local_get(0)
+                .local_get(2)
+                .i32_add()
+                .local_set(0);
+        }
+        let slow = Some(thunk.slow).filter(|_| self.crosses(&thunk.memarg));
+        self.emit_checked(
+            &mut function,
+            &thunk.memarg,
+            slow,
+            write,
+            0,
+            entry,
+            slots,
+            &original,
+        );
+        function.instructions().end();
+        Ok(function)
     }
 
     fn helper_bodies(&self) -> Vec<Function> {
@@ -838,9 +1073,9 @@ impl Rewriter<'_> {
     }
 
     fn cow_fault(&self) -> Function {
-        let (addr, slot, delta, physical, fresh, sharers, entry) = (0, 1, 2, 3, 4, 5, 6);
+        let (addr, slot, delta, physical, fresh, sharers, entry, head) = (0, 1, 2, 3, 4, 5, 6, 7);
         let group = self.layout.group_global();
-        let mut function = Function::new([(6, ValType::I32)]);
+        let mut function = Function::new([(6, ValType::I32), (1, ValType::I64)]);
         let mut sink = function.instructions();
 
         sink.local_get(addr);
@@ -904,6 +1139,14 @@ impl Rewriter<'_> {
             .return_()
             .end();
 
+        sink.block(BlockType::Empty).loop_(BlockType::Empty);
+        sink.global_get(group)
+            .i64_atomic_load(free_memarg())
+            .local_tee(head)
+            .i32_wrap_i64()
+            .local_tee(fresh)
+            .i32_eqz()
+            .if_(BlockType::Empty);
         sink.global_get(group)
             .i32_const(1)
             .i32_atomic_rmw_add(word_memarg(0))
@@ -922,6 +1165,33 @@ impl Rewriter<'_> {
             .unreachable()
             .end();
         sink.br(0).end().end();
+        sink.br(2).end();
+        sink.local_get(fresh)
+            .i32_const(OFFSET_MASK)
+            .i32_and()
+            .local_set(fresh);
+        sink.global_get(group).local_get(head).local_get(head);
+        emit_changed_head(&mut sink);
+        sink.local_get(fresh)
+            .i32_const(2)
+            .i32_shl()
+            .global_get(group)
+            .i32_add()
+            .i32_atomic_load(word_memarg(GROUP_SHARERS))
+            .i64_extend_i32_u()
+            .i64_or()
+            .i64_atomic_rmw_cmpxchg(free_memarg())
+            .local_get(head)
+            .i64_ne()
+            .br_if(0);
+        sink.local_get(fresh)
+            .i32_const(2)
+            .i32_shl()
+            .global_get(group)
+            .i32_add()
+            .i32_const(0)
+            .i32_atomic_store(word_memarg(GROUP_SHARERS));
+        sink.end().end();
 
         sink.local_get(fresh)
             .i32_const(16)
@@ -948,7 +1218,28 @@ impl Rewriter<'_> {
         sink.local_get(sharers)
             .i32_const(1)
             .i32_atomic_rmw_sub(word_memarg(GROUP_SHARERS))
-            .drop();
+            .i32_eqz()
+            .if_(BlockType::Empty)
+            .loop_(BlockType::Empty);
+        sink.local_get(sharers)
+            .global_get(group)
+            .i64_atomic_load(free_memarg())
+            .local_tee(head)
+            .i32_wrap_i64()
+            .i32_atomic_store(word_memarg(GROUP_SHARERS));
+        sink.global_get(group).local_get(head).local_get(head);
+        emit_changed_head(&mut sink);
+        sink.local_get(physical)
+            .i32_const(FREE_PAGE)
+            .i32_or()
+            .i64_extend_i32_u()
+            .i64_or()
+            .i64_atomic_rmw_cmpxchg(free_memarg())
+            .local_get(head)
+            .i64_ne()
+            .br_if(0)
+            .end()
+            .end();
         sink.local_get(delta).end();
         function
     }
@@ -1138,6 +1429,25 @@ fn word_memarg(offset: u32) -> EncodedMemArg {
     }
 }
 
+fn free_memarg() -> EncodedMemArg {
+    EncodedMemArg {
+        offset: GROUP_FREE,
+        align: 3,
+        memory_index: 0,
+    }
+}
+
+/// Turn the free-list head on the stack into a head with no page and the
+/// next change count.
+fn emit_changed_head(sink: &mut InstructionSink<'_>) {
+    sink.i64_const(32)
+        .i64_shr_u()
+        .i64_const(1)
+        .i64_add()
+        .i64_const(32)
+        .i64_shl();
+}
+
 fn byte_memarg() -> EncodedMemArg {
     EncodedMemArg {
         offset: 0,
@@ -1146,8 +1456,7 @@ fn byte_memarg() -> EncodedMemArg {
     }
 }
 
-fn emit_effective_address(sink: &mut InstructionSink<'_>, memarg: &MemArg, scratch: &Scratch) {
-    sink.local_get(scratch.addr);
+fn emit_add_offset(sink: &mut InstructionSink<'_>, memarg: &MemArg) {
     if memarg.offset != 0 {
         sink.i32_const(memarg.offset as u32 as i32).i32_add();
     }
@@ -1197,6 +1506,14 @@ fn emit_retreat(sink: &mut InstructionSink<'_>, target: u32, amount: u32) {
 
 impl Reencode for Rewriter<'_> {
     type Error = Infallible;
+
+    fn mem_arg(&mut self, arg: MemArg) -> ReencodeResult<EncodedMemArg> {
+        Ok(EncodedMemArg {
+            offset: 0,
+            align: arg.align.into(),
+            memory_index: arg.memory,
+        })
+    }
 
     fn memory_type(
         &mut self,
@@ -1283,6 +1600,10 @@ impl Reencode for Rewriter<'_> {
             .ty()
             .function([ValType::I32, ValType::I32, ValType::I32], []);
         types.ty().function([], []);
+        for thunk in &self.layout.thunks {
+            let (params, results) = thunk.signature();
+            types.ty().function(params, results);
+        }
         Ok(())
     }
 
@@ -1308,6 +1629,9 @@ impl Reencode for Rewriter<'_> {
         for _ in 0..self.layout.data_segments {
             functions.function(self.layout.type_index(HelperType::Bulk));
         }
+        for thunk in 0..self.layout.thunks.len() as u32 {
+            functions.function(self.layout.thunk_type(thunk));
+        }
         Ok(())
     }
 
@@ -1319,6 +1643,10 @@ impl Reencode for Rewriter<'_> {
         reencode::utils::parse_code_section(self, code, section)?;
         for body in self.helper_bodies() {
             code.function(&body);
+        }
+        let layout = self.layout;
+        for thunk in &layout.thunks {
+            code.function(&self.thunk(thunk)?);
         }
         Ok(())
     }
@@ -1338,22 +1666,33 @@ impl Reencode for Rewriter<'_> {
             declared += count;
             locals.push((count, self.val_type(ty)?));
         }
+        let mut loops = Loops::new(&body)?;
         let mut scan = body.get_operators_reader()?;
-        let mut touches_memory = false;
-        while !scan.eof() && !touches_memory {
-            touches_memory = access(&scan.read()?).is_some();
+        let mut scratched = false;
+        while !scan.eof() && !scratched {
+            let operator = scan.read()?;
+            loops.step(&operator);
+            scratched = match access(&operator) {
+                Some(Access::Atomic { .. }) => true,
+                Some(Access::Load(..) | Access::Store(..)) => loops.inline(),
+                _ => false,
+            };
         }
-        if touches_memory {
+        if scratched {
             locals.extend(Scratch::LOCALS);
         }
         let scratch = Scratch::new(params + declared);
 
+        let mut loops = Loops::new(&body)?;
         let mut function = Function::new(locals);
         let mut reader = body.get_operators_reader()?;
         while !reader.eof() {
             let operator = reader.read()?;
+            loops.step(&operator);
             match access(&operator) {
-                Some(access) => self.emit_access(&mut function, operator, access, &scratch)?,
+                Some(access) => {
+                    self.emit_access(&mut function, operator, access, loops.inline(), &scratch)?
+                }
                 None => {
                     function.instruction(&self.instruction(operator)?);
                 }

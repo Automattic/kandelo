@@ -98,11 +98,15 @@ fn translates_a_load_through_the_table() {
     );
 
     assert!(
-        text.contains("global.get 1\n    i32.add\n    i32.load\n"),
+        text.contains("local.get 0\n    i32.const 8\n    i32.add\n    call 9\n  )"),
+        "{text}"
+    );
+    assert!(
+        text.contains("global.get 1\n    i32.add\n    i32.load\n    i32.add\n    i32.load\n  )"),
         "{text}"
     );
     assert!(!text.contains("i32.const -65536"), "{text}");
-    assert!(text.contains("i32.load offset=8"), "{text}");
+    assert!(!text.contains("i32.load offset=8"), "{text}");
 }
 
 #[test]
@@ -113,9 +117,105 @@ fn checks_copy_on_write_before_a_store() {
     );
 
     assert!(
-        text.contains("global.get 1\n    i32.add\n    i32.load offset=262144\n    local.tee 3\n    i32.const 1\n    i32.and\n    if ;; label = @1\n      local.get 2\n      call 3"),
+        text.contains("local.get 0\n    local.get 1\n    call 9\n  )"),
         "{text}"
     );
+    assert!(
+        text.contains("global.get 1\n    i32.add\n    i32.load offset=262144\n    local.tee 2\n    i32.const 1\n    i32.and\n    if ;; label = @1\n      local.get 0\n      call 3"),
+        "{text}"
+    );
+}
+
+#[test]
+fn passes_the_offset_of_a_store_to_its_helper() {
+    let text = rewrite(
+        &program("(func (param i32 i64) local.get 0 local.get 1 i64.store offset=16)"),
+        Crossing::Aligned,
+    );
+
+    assert!(
+        text.contains("local.get 0\n    local.get 1\n    i32.const 16\n    call 9\n  )"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "(local i32)\n    local.get 0\n    local.get 2\n    i32.add\n    local.set 0\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("offset=16"), "{text}");
+}
+
+#[test]
+fn keeps_the_translation_inline_in_a_loop_with_few_accesses() {
+    let text = rewrite(
+        &program(
+            "(func (param i32 i32)
+                (loop
+                    local.get 0 local.get 1 i32.store
+                    local.get 0 i32.load offset=8
+                    br_if 0))",
+        ),
+        Crossing::Aligned,
+    );
+
+    assert!(
+        text.contains(
+            "global.get 1\n      i32.add\n      i32.load\n      i32.add\n      i32.load\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("call 3\n        local.set 3\n      end\n      local.get 3\n      i32.add\n      local.get 4\n      i32.store\n"),
+        "{text}"
+    );
+    assert_eq!(text.matches("\n  (func ").count(), 9, "{text}");
+}
+
+#[test]
+fn calls_the_helpers_in_a_loop_with_many_accesses() {
+    let loads = "local.get 0 i32.load drop ".repeat(16);
+    let text = rewrite(
+        &program(&format!(
+            "(func (param i32)
+                (loop
+                    {loads}
+                    (loop local.get 0 i32.load br_if 0)
+                    br 0))"
+        )),
+        Crossing::Aligned,
+    );
+
+    assert_eq!(text.matches("call 9\n      drop").count(), 16, "{text}");
+    assert!(
+        text.contains("global.get 1\n        i32.add\n        i32.load\n        i32.add\n        i32.load\n        br_if 0"),
+        "{text}"
+    );
+}
+
+#[test]
+fn shares_one_helper_between_accesses_of_the_same_kind() {
+    let same = rewrite(
+        &program(
+            "(func (param i32) (result i32)
+                local.get 0 i32.load
+                local.get 0 i32.load offset=8
+                i32.add)",
+        ),
+        Crossing::Aligned,
+    );
+    let different = rewrite(
+        &program(
+            "(func (param i32) (result i32)
+                local.get 0 i32.load
+                local.get 0 i32.load align=1
+                i32.add)",
+        ),
+        Crossing::Aligned,
+    );
+
+    assert_eq!(same.matches("\n  (func ").count(), 10, "{same}");
+    assert_eq!(different.matches("\n  (func ").count(), 11, "{different}");
 }
 
 #[test]
@@ -147,13 +247,41 @@ fn copy_on_write_fault_copies_a_shared_page_to_a_new_physical_page() {
     let text = rewrite(&program("(func)"), Crossing::Strict);
 
     assert!(
-        text.contains("global.get 2\n    i32.const 1\n    i32.atomic.rmw.add\n    local.set 4"),
+        text.contains("i32.eqz\n        if ;; label = @3\n          global.get 2\n          i32.const 1\n          i32.atomic.rmw.add\n          local.set 4"),
         "{text}"
     );
     assert!(text.contains("memory.grow"), "{text}");
     assert!(text.contains("i32.const 65536\n    memory.copy"), "{text}");
     assert!(
         text.contains("local.get 1\n    local.get 2\n    i32.atomic.store\n    local.get 1\n    local.get 2\n    i32.atomic.store offset=262144\n    local.get 5\n    i32.const 1\n    i32.atomic.rmw.sub offset=65536"),
+        "{text}"
+    );
+}
+
+#[test]
+fn copy_on_write_fault_takes_a_page_from_the_free_list_first() {
+    let text = rewrite(&program("(func)"), Crossing::Strict);
+
+    assert!(
+        text.contains("global.get 2\n        i64.atomic.load offset=8\n        local.tee 7\n        i32.wrap_i64\n        local.tee 4\n        i32.eqz\n        if ;; label = @3"),
+        "{text}"
+    );
+    assert!(
+        text.contains("i32.atomic.load offset=65536\n        i64.extend_i32_u\n        i64.or\n        i64.atomic.rmw.cmpxchg offset=8\n        local.get 7\n        i64.ne\n        br_if 0 (;@2;)\n        local.get 4\n        i32.const 2\n        i32.shl\n        global.get 2\n        i32.add\n        i32.const 0\n        i32.atomic.store offset=65536"),
+        "{text}"
+    );
+}
+
+#[test]
+fn copy_on_write_fault_frees_the_old_page_when_its_other_owner_left() {
+    let text = rewrite(&program("(func)"), Crossing::Strict);
+
+    assert!(
+        text.contains("i32.atomic.rmw.sub offset=65536\n    i32.eqz\n    if ;; label = @1\n      loop ;; label = @2\n        local.get 5\n        global.get 2\n        i64.atomic.load offset=8\n        local.tee 7\n        i32.wrap_i64\n        i32.atomic.store offset=65536"),
+        "{text}"
+    );
+    assert!(
+        text.contains("local.get 3\n        i32.const 65536\n        i32.or\n        i64.extend_i32_u\n        i64.or\n        i64.atomic.rmw.cmpxchg offset=8\n        local.get 7\n        i64.ne\n        br_if 0 (;@2;)"),
         "{text}"
     );
 }
@@ -184,7 +312,7 @@ fn strict_mode_sends_a_crossing_store_to_the_byte_wise_helper() {
     );
 
     assert!(
-        text.contains("i32.const 65528\n    i32.gt_u\n    if ;; label = @1\n      local.get 2\n      i32.const 8\n      local.get 6\n      call 5\n    else"),
+        text.contains("i32.const 65528\n    i32.gt_u\n    if ;; label = @1\n      local.get 0\n      i32.const 8\n      local.get 1\n      call 5\n    else"),
         "{text}"
     );
 }
@@ -201,11 +329,11 @@ fn strict_mode_widens_a_float_store_for_the_byte_wise_helper() {
     );
 
     assert!(
-        single.contains("i32.const 4\n      local.get 8\n      i32.reinterpret_f32\n      i64.extend_i32_u\n      call 5"),
+        single.contains("i32.const 4\n      local.get 1\n      i32.reinterpret_f32\n      i64.extend_i32_u\n      call 5"),
         "{single}"
     );
     assert!(
-        double.contains("i32.const 8\n      local.get 9\n      i64.reinterpret_f64\n      call 5"),
+        double.contains("i32.const 8\n      local.get 1\n      i64.reinterpret_f64\n      call 5"),
         "{double}"
     );
 }
@@ -350,14 +478,16 @@ fn routes_bulk_memory_through_page_sized_chunks() {
 }
 
 #[test]
-fn adds_no_scratch_locals_to_functions_without_memory_access() {
+fn adds_no_scratch_locals_to_a_function_without_an_atomic_access() {
     let text = rewrite(
-        &program("(func (param i32) (result i32) local.get 0)"),
+        &program("(func (param i32) (result i32) local.get 0 i32.load)"),
         Crossing::Strict,
     );
 
     assert!(
-        text.contains("(func (;0;) (type 0) (param i32) (result i32)\n    local.get 0\n  )"),
+        text.contains(
+            "(func (;0;) (type 0) (param i32) (result i32)\n    local.get 0\n    call 9\n  )"
+        ),
         "{text}"
     );
 }

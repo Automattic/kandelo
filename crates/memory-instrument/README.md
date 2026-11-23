@@ -75,10 +75,15 @@ segment or with a start function other than `__wasm_init_memory`. Without
 Processes that share one memory form a group. The exported mutable global
 `__memory_group_base` holds the physical address of the group header:
 
-- Offset 0: the index of the next free physical page. The allocator only
-  increments it.
+- Offset 0: the index of the next physical page that no process has used.
+  The allocator only increments it.
+- Offset 8: the 8-byte head of the free list. The low half holds the last
+  freed page with bit 16 set, or zero for an empty list. The high half
+  counts the changes of the head, so a compare-exchange fails when another
+  thread took and returned the same page in between.
 - Offset 64 KiB: one 4-byte count per physical page: the number of
-  mappings of that page minus one. Zero means one owner.
+  mappings of that page minus one. Zero means one owner. The count of a
+  free page holds the next entry of the free list.
 
 Fork copies the parent's tables to the child's tables, sets bit 0 in both
 write tables, and increments the count of every shared page. A store to a
@@ -93,12 +98,22 @@ page with bit 0 set calls the copy-on-write helper:
    loads again.
 4. If the count of the physical page is zero, the process is the only
    owner: the helper clears both bits and writes in place.
-5. Otherwise, it allocates a physical page, grows the memory when needed,
-   copies the page, stores the new delta in the read table and then in the
-   write table, and decrements the count of the old page last.
+5. Otherwise, it takes a page from the free list, or a new page when the
+   list is empty, and grows the memory when needed. It copies the page,
+   stores the new delta in the read table and then in the write table, and
+   decrements the count of the old page last.
+6. If the count was already zero, the other owner left during the copy. No
+   process maps the old page, so the helper puts it on the free list.
 
 The count stays above zero while a copy reads the old page, so no other
 process writes that page in place during the copy.
+
+When a fork child exits and its Workers have stopped, the host removes its
+mappings. A page that no process maps goes to the free list. The run that
+holds the tables and the control pages of the child stays whole, and a
+later fork that needs a run of the same size takes it. The host keeps the
+pages of a child whose Worker it terminated by force, because that Worker
+can still write them.
 
 ## Stop words
 
@@ -128,10 +143,20 @@ page.
 
 ## Rewrite
 
-- Load: `addr + read[(addr + offset) >> 16]`, then the original instruction
-  with its original `offset`.
-- Store, atomic read-modify-write and compare-exchange: the same with the
-  write table. A set bit 0 calls the copy-on-write helper first.
+- Load and store: a call to a helper that holds the instruction. The
+  helper adds the table entry of the page to the address: the read table
+  for a load, the write table for a store. A set bit 0 in a write entry
+  calls the copy-on-write helper first. The module gets one helper per
+  instruction and alignment hint, so an access adds only a few bytes to its
+  function. The caller adds the `offset` of a load to the address. A store
+  with an `offset` passes it as the last operand.
+- Load and store in a loop: the same translation, inline, when the
+  innermost loop of the access holds at most 16 loads and stores. An engine
+  runs a loop of a long activation in the code of its baseline compiler,
+  where a call per access is slow.
+- Atomic access: the same translation, inline. An atomic load uses the read
+  table. An atomic store, read-modify-write and compare-exchange use the
+  write table.
 - `memory.atomic.wait*` and `memory.atomic.notify`: translated as reads.
 - `memory.copy`, `memory.fill` and `memory.init`: replaced by helpers that
   split the operation at page boundaries. `memory.copy` keeps memmove order.
@@ -140,9 +165,17 @@ page.
   checks only accesses whose alignment hint is below natural alignment.
   Atomic accesses must be aligned, so they never cross.
 
-## Optimization
+## Cost
 
-Run `wasm-opt -O2` on the output. It removes about half of the added cost.
+The helpers keep the binary small: the rewrite adds 5% to 29% to the six
+package binaries of the trial (`bash`, `nginx`, `php`, `php-fpm`,
+`redis-server`, `redis-cli`). An engine that inlines small functions in its
+optimizing compiler removes the calls from hot code. V8 does: a loop in a
+function that V8 has optimized runs 2.5 times slower than the plain loop.
+A small loop that V8 has not optimized runs 3 times slower. A loop with
+more than 16 loads and stores keeps the calls and runs about 9 times slower
+until V8 optimizes its function.
+
 `aligned` is the recommended mode: clang emits a natural alignment hint only
 for typed accesses that C requires to be aligned, and emits a weaker hint for
 packed and `memcpy`-style accesses, which `aligned` still checks.
@@ -155,10 +188,10 @@ packed and `memcpy`-style accesses, which `aligned` still checks.
   shares, because the host uses its channel at the physical offset.
 - A moving `mremap` copies the bytes. The kernel maps in 4 KiB pages and a
   table entry covers 64 KiB, so the host cannot move the entries instead.
-- The group allocator never frees a page. A later compaction pass is to
-  move live pages into a smaller memory. Two processes that copy the same
-  page at the same time both copy it, and the count of the old page goes
-  below zero; no process maps that page after both copies.
+- The host frees the pages of a fork child only. The pages of the first
+  process of a group, and of a child that the host terminated by force,
+  stay in use until the last process of the group exits. The memory of a
+  group never shrinks.
 - Fork parks the running threads of the process through their stop words
   and then shares the pages. It waits 10 ms. When a thread makes no store
   and no syscall in that time, or while a vfork child borrows the memory,
