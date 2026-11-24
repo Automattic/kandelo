@@ -25,6 +25,11 @@ const availableProbes = [
   { name: "anonymous-shared", source: "grouped-sdk-anonymous-shared.c", markers: ["grouped-sdk-anonymous-shared PASS"], partial: "", groupedOnly: true },
   { name: "exec-signal-commit", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-signal-stopped", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-exit-finish", source: "grouped-sdk-exec-handoff.c", targetSource: "grouped-sdk-exec-exit-target.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-signal-bound", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-signal-constructed", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-signal-ready", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
+  { name: "exec-signal-delivered", source: "grouped-sdk-exec-handoff.c", markers: [], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-handoff-threads", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true, oldExecThreads: true },
   { name: "exec-handoff", source: "grouped-sdk-exec-handoff.c", markers: ["grouped-sdk-exec-handoff PASS 16"], partial: "", groupedOnly: true },
   { name: "exec-virtual-rollback", source: "grouped-sdk-exec-rollback.c", markers: ["grouped-sdk-exec-rollback PASS 16 virtual"], partial: "", groupedOnly: true, targetMinimumPages: 256 },
@@ -56,9 +61,10 @@ beforeAll(() => {
     execFileSync(join(repository, "sdk/bin/wasm32posix-shared-memory"), [
       ordinary.programPath, "-o", groupedPath,
     ], { cwd: repository, stdio: "pipe" });
-    if ('targetMinimumPages' in probe && probe.targetMinimumPages !== undefined) {
-      const target = compileSdkFixture(new URL(`./fixtures/${probe.source}`, import.meta.url),
-        [`-Wl,--initial-memory=${probe.targetMinimumPages * 65536}`], { forkInstrument: true });
+    if ('targetSource' in probe || 'targetMinimumPages' in probe && probe.targetMinimumPages !== undefined) {
+      const targetSource = 'targetSource' in probe ? probe.targetSource : probe.source;
+      const flags = 'targetMinimumPages' in probe && probe.targetMinimumPages !== undefined ? [`-Wl,--initial-memory=${probe.targetMinimumPages * 65536}`] : [];
+      const target = compileSdkFixture(new URL(`./fixtures/${targetSource}`, import.meta.url), flags, { forkInstrument: true });
       const targetPath = `${target.programPath}.grouped.wasm`;
       fixtures.set(`${probe.name}-target`, { ordinary: target, groupedPath: targetPath });
       execFileSync(join(repository, 'sdk/bin/wasm32posix-shared-memory'), [target.programPath, '-o', targetPath],
@@ -91,8 +97,8 @@ for (const probe of probes) for (const grouped of [false, true]) {
       eval: true,
       workerData: { grouped, trace: true, rejectForkLaunchCount: probe.name.startsWith("fork-") ? 16 : undefined, rejectForkStage: probe.name === "fork-pool-rollback" ? "pool" : probe.name === "fork-replay-rollback" ? "replay" : "registration", forcedLifecycle: probe.name === "forced-exit", nativeWaitLifecycle: probe.name === "native-wait-exit", rejectThreadLaunchCount: probe.name === "pthread-launch-rollback" ? 16 : undefined, threadPoolRollback: probe.name === "pthread-pool-rollback",
         uncertainThreadConstructor: probe.name === "pthread-constructor-failure", physicalPages: ["pthread-rollback", "exec-allocation-rollback"].includes(probe.name) ? 196 : undefined,
-        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execSuccess: probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
-        anonymousShared: probe.name === 'anonymous-shared', execTerminationPool: probe.name === 'exec-signal-pool', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : ['exec-signal-stopped', 'exec-signal-pool'].includes(probe.name) ? 'stopped' : undefined,
+        maximumVirtualPages: probe.name === 'exec-virtual-rollback' ? 160 : undefined, execTargetPath, execFinishExit: probe.name === 'exec-exit-finish', execSuccess: probe.name === 'exec-exit-finish' || probe.name === 'exec-handoff' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'), execOldThreads: probe.name === 'exec-exit-finish' || probe.name === 'exec-handoff-threads' || probe.name.startsWith('exec-signal-'),
+        anonymousShared: probe.name === 'anonymous-shared', execTerminationPool: probe.name === 'exec-signal-pool', execSignal: probe.name === 'exec-signal-commit' ? 'commit' : ['exec-signal-stopped', 'exec-signal-pool'].includes(probe.name) ? 'stopped' : probe.name === 'exec-signal-bound' ? 'bound' : probe.name === 'exec-signal-constructed' ? 'constructed' : probe.name === 'exec-signal-ready' ? 'ready' : probe.name === 'exec-signal-delivered' ? 'delivered' : undefined,
         execPrecommitStop: probe.name === 'exec-precommit-stop' ? 'deactivate' : probe.name === 'exec-precommit-retire' ? 'retire' : undefined, execPoolRollback: probe.name === 'exec-pool-rollback', execPrecommitFailure: probe.name === 'exec-allocation-rollback' ? 'allocation' : ['exec-callback-rollback', 'exec-pool-rollback', 'exec-precommit-stop', 'exec-precommit-retire'].includes(probe.name) ? 'callback' : probe.name === 'exec-virtual-rollback' ? 'virtual' : undefined, imageModulePath: join(repository, "local-binaries/kandelo_image_module32.wasm"), kernelPath: resolveBinary("kernel.wasm"),
         ordinaryPath: ordinary!.programPath, programPath: grouped ? groupedPath : ordinary!.programPath },
     });
@@ -169,23 +175,57 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(locks[0].admission).toMatchObject({ processes: 1, images: 2 });
         expect(locks[0].admission.tasks).toBeGreaterThanOrEqual(1);
       }
-      if (probe.name.startsWith('exec-signal-')) {
-        expect(result.kernelExit).toBe(137);
+      if (probe.name === 'exec-exit-finish') {
+        expect(result.kernelExit).toBe(173);
+        // Rust stops the exiting image; its Worker sends a fence, not another exit.
         expect(result.processExit).toBeUndefined();
-        expect(result.execTermination).toEqual({ signal: 9 });
-        expect(result.execReplacementPublications).toBe(0);
-        expect(result.processWorkerConstructionAttempts).toBe(1);
-        expect(result.execHandoffs).toEqual([]);
+        expect((result.trace as string[]).some(line => /exit_group\(173,/.test(line))).toBe(true);
+        expect(result.processReady).toBe(true);
+        expect(result.execTermination).toEqual({ signal: 0 });
+        expect(result.execHandoffResults).toEqual([0]);
+        expect(result.execReplacementPublications).toBe(1);
+        expect(result.processWorkerConstructionAttempts).toBe(2);
+        expect(result.execHandoffs).toHaveLength(1);
         expect(result.quiescent).toBe(true);
         expect(result.threads).toHaveLength(3);
         expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);
         expect(result.execLedger).toMatchObject({ processes: 0, tasks: 0, images: 0 });
         expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
         const events = result.lifecycleEvidence as any[];
+        expect(events.filter(row => row.kind === 'exec-exit-before-finish')).toEqual([
+          expect.objectContaining({ backing: expect.objectContaining({ images: 1, replicas: 1 }) }),
+        ]);
+        expect(events.filter(row => row.kind === 'exec-replacement-joined')).toEqual([
+          expect.objectContaining({ quiescent: true, joined: true }),
+        ]);
+        expect(events.filter(row => row.kind === 'exec-termination-published')).toHaveLength(1);
+        expect(events.filter(row => row.kind === 'exec-late-exit-finished')).toEqual([expect.objectContaining({ code: 173 })]);
+        return;
+      }
+      if (probe.name.startsWith('exec-signal-')) {
+        expect(result.kernelExit).toBe(137);
+        expect(result.processExit).toBeUndefined();
+        expect(result.execTermination).toEqual({ signal: 9 });
+        expect(result.execHandoffResults).toEqual([0]);
+        const installed = ['exec-signal-bound', 'exec-signal-constructed', 'exec-signal-ready', 'exec-signal-delivered'].includes(probe.name);
+        // Cancellation before Memory delivery cannot produce a guest-ready message.
+        if (['exec-signal-bound', 'exec-signal-constructed', 'exec-signal-ready'].includes(probe.name)) expect(result.processReady).toBe(false);
+        expect(result.execReplacementPublications).toBe(installed ? 1 : 0);
+        expect(result.processWorkerConstructionAttempts).toBe(['exec-signal-constructed', 'exec-signal-ready', 'exec-signal-delivered'].includes(probe.name) ? 2 : 1);
+        if (installed) expect(result.execHandoffs).toHaveLength(1); else expect(result.execHandoffs).toEqual([]);
+        expect(result.quiescent).toBe(true);
+        expect(result.threads).toHaveLength(3);
+        expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);
+        expect(result.execLedger).toMatchObject({ processes: 0, tasks: 0, images: 0 });
+        expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, images: 0, replicas: 0, nativeObservers: 0 } } });
+        const events = result.lifecycleEvidence as any[];
+        expect(events.filter(row => row.kind === 'exec-replacement-joined')).toEqual(installed ? [
+          expect.objectContaining({ quiescent: true, joined: ['exec-signal-constructed', 'exec-signal-ready', 'exec-signal-delivered'].includes(probe.name) }),
+        ] : []);
         expect(events.filter(row => row.kind === 'exec-old-threads-observed')).toHaveLength(1);
         expect(events.filter(row => row.kind === 'exec-old-threads-stopped')).toHaveLength(1);
         expect(events.filter(row => row.kind === 'exec-termination-published')).toHaveLength(1);
-        expect(events.filter(row => row.kind === 'exec-late-exit-held')).toEqual([
+        expect(events.filter(row => row.kind === 'exec-late-exit-held')).toEqual(installed ? [] : [
           expect.objectContaining({ signal: 9, repeated: 9, backing: expect.objectContaining({ images: 1 }) }),
         ]);
         expect(events.filter(row => row.kind === 'exec-late-exit-finished')).toEqual([
@@ -221,6 +261,7 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(result.processWorkerConstructionAttempts).toBe(17);
         const samples = result.execHandoffs as any[];
         expect(samples).toHaveLength(16);
+        expect(result.execHandoffResults).toEqual(Array(16).fill(0));
         if (probe.name === 'exec-handoff-threads') {
           expect(result.threads).toHaveLength(48);
           expect((result.threads as any[]).every(thread => thread.quiescent && thread.retired && thread.stoppedWithProcess)).toBe(true);

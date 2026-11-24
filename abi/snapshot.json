@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 33,
+      "required_host_adapter_version": 34,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2716,7 +2716,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 33,
+    "version": 34,
     "worker_features": [
       {
         "bit": 2,
@@ -8736,6 +8736,7 @@
       },
       "effects": {
         "bindReplacement": 18,
+        "cancelPreparation": 27,
         "containFailure": 23,
         "deliverLaunch": 25,
         "detachPrevious": 14,
@@ -8743,11 +8744,20 @@
         "finishHandoff": 22,
         "installReplacement": 16,
         "joinPrevious": 15,
+        "joinReplacement": 29,
         "publishTermination": 21,
         "retirePrevious": 17,
+        "retireReplacement": 30,
+        "sealReplacement": 26,
         "startReplacement": 19,
         "waitReady": 24,
-        "waitWorkers": 13
+        "waitReplacement": 28,
+        "waitWorkers": 13,
+        "wakeReplacement": 31
+      },
+      "exit_status": 152,
+      "flags": {
+        "exitHeld": 128
       },
       "layout_fields": {
         "brkBase": 48,
@@ -8777,6 +8787,7 @@
         "oldStopped": 5,
         "prepared": 2,
         "preparing": 1,
+        "retiringInstalled": 13,
         "terminatedFuture": 9,
         "terminating": 8
       },
@@ -8893,7 +8904,13 @@
       "native_join_capability": 1,
       "publish_exit": 1,
       "stop_accepted": 2,
-      "wait_workers": 16
+      "wait_workers": 16,
+      "worker_messages": {
+        "cancel": "kandelo.memory-group.worker-cancel.v3",
+        "launch": "kandelo.memory-group.worker-launch.v3",
+        "prepare": "kandelo.memory-group.worker-prepare.v3",
+        "ready": "kandelo.memory-group.worker-ready.v3"
+      }
     },
     "root_control": {
       "commands": {

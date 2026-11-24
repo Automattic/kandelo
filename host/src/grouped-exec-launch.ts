@@ -27,7 +27,7 @@ export interface GroupedExecWorkerOptions {
   readonly onCommitted: () => void;
   readonly onStopped?: () => void | Promise<void>;
   /** Both images and old host references retired; kernel owns exit status. */
-  readonly onTerminated?: (signal: number) => void;
+  readonly onTerminated?: (signal: number, status: number) => void;
   readonly retirePreviousReferences: () => void | Promise<void>;
   readonly onRetired?: (previous: PreparedGroupReplica, replacement: PreparedGroupReplica) => void | Promise<void>;
   readonly onMessage: (message: any, worker: GroupedWorkerObjects) => void;
@@ -51,6 +51,7 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
       let replacement!: GroupedWorkerObjects;
       let nativeWorker: WorkerHandle | undefined, readiness: Promise<void> | undefined;
       let deliver: (() => void) | undefined;
+      let replacementExitObserver: ((code: number) => void) | undefined;
       try {
         return await kernel.runMemoryGroupExecHandoff(request, {
           detachPrevious: previous => {
@@ -67,7 +68,7 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
             options.externrefs.releaseGeneration(options.previousGeneration);
           },
           discardFuture: () => options.externrefs.releaseGeneration(generation),
-          publishTermination: signal => options.onTerminated?.(signal),
+          publishTermination: (signal, status) => options.onTerminated?.(signal, status),
           bindReplacement: async (handle, launch, secureExec) => {
             await options.onRetired?.(options.previousImage, handle);
             const { assertLive: _live, ...expected } = launch.expectation;
@@ -104,12 +105,22 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
             };
             const error = (reason: Error) => options.onError(reason, ownership);
             const exit = (code: number) => { ownership.noteExit(); options.onExit(code, ownership); };
+            replacementExitObserver = exit;
             worker.on('message', message); worker.on('error', error); worker.on('exit', exit);
             ownership.attach(endpoint, () => { worker.off('message', message); worker.off('error', error); worker.off('exit', exit); });
             options.retain(ownership);
             await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(handle, worker,
               { terminationProvesQuiescence: options.terminationProvesQuiescence, retireHostReferences: () => ownership.disposeReferences() }));
             replacement = ownership;
+          },
+          finishHandoff: () => kernel.finishProcessExecHandoff(request.pid),
+          joinReplacement: async () => {
+            // Rust requests this native join only after the exact stop fence.
+            // Node terminate() can report 1; the runtime-exit callback must not
+            // reinterpret that intentional native outcome as a guest crash.
+            if (!replacementExitObserver) throw Error('Grouped exec has no bound exit observer');
+            replacement.worker.off('exit', replacementExitObserver);
+            await replacement.contain();
           },
           startReplacement: () => {
             if (!replacement.worker.start()) throw Error('Grouped exec Worker start cancelled');

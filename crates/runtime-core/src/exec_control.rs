@@ -36,6 +36,14 @@ struct Control {
     signal: u32,
     pending_effect: u32,
     entered_effect: u32,
+    exit_recorded: bool,
+    exit_status: i32,
+    replacement_bound: bool,
+    constructor_entered: bool,
+    delivery_entered: bool,
+    replacement_stop_requested: bool,
+    preparation_cancel_sent: bool,
+    handed_off: bool,
 }
 impl MapMemory for Control {
     fn heap_bytes(&self) -> Result<usize, Errno> {
@@ -85,6 +93,14 @@ impl ProcessTable {
             signal: 0,
             pending_effect: 0,
             entered_effect: 0,
+            exit_recorded: false,
+            exit_status: 0,
+            replacement_bound: false,
+            constructor_entered: false,
+            delivery_entered: false,
+            replacement_stop_requested: false,
+            preparation_cancel_sent: false,
+            handed_off: false,
         };
         let entry = slot.finish(Key(record.group, record.serial), control)?;
         self.exec_controls().entries.publish_io(entry);
@@ -190,7 +206,10 @@ impl ProcessTable {
         completed_effect: u32,
         host: &mut dyn HostIO,
     ) -> Result<Reply, Errno> {
-        if matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED | C::ENTER_NATIVE) != (completed_effect != 0)
+        if matches!(
+            command,
+            C::PLATFORM_COMPLETED | C::PLATFORM_FAILED | C::ENTER_NATIVE
+        ) != (completed_effect != 0)
         {
             return Err(Errno::EINVAL);
         }
@@ -232,6 +251,11 @@ impl ProcessTable {
             .expect("retained exec source");
         reply.payload[W::PARENT..W::PARENT + 4].copy_from_slice(&control.parent.to_le_bytes());
         reply.payload[W::SIGNAL..W::SIGNAL + 4].copy_from_slice(&control.signal.to_le_bytes());
+        reply.payload[W::EXIT_STATUS..W::EXIT_STATUS + 4]
+            .copy_from_slice(&control.exit_status.to_le_bytes());
+        if control.exit_recorded {
+            reply.flags |= W::flags::EXIT_HELD;
+        }
         if let Some(descriptor) = control.descriptor {
             StorageReply {
                 descriptor: Some(descriptor),
@@ -282,6 +306,107 @@ impl ProcessTable {
         Ok(reply)
     }
 
+    fn capture_exec_exit(&self, control: &mut Control) {
+        // After successful handoff the normal process-stop owner handles exit.
+        // Retaining it here until transport ACK would suppress that owner.
+        if control.handed_off {
+            return;
+        }
+        let record = control.future.receipt.record();
+        if let Some(process) = self.get(record.pid).filter(|process| {
+            process.exec_generation == record.generation
+                && (process.exit_signal > 0
+                    || matches!(
+                        process.state,
+                        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+                    ))
+        }) {
+            control.exit_recorded = true;
+            control.parent = process.ppid;
+            control.signal = process.exit_signal;
+            control.exit_status = if process.exit_signal > 0 {
+                128 + process.exit_signal as i32
+            } else {
+                process.exit_status
+            };
+        }
+    }
+    fn request_exec_replacement_stop(
+        &mut self,
+        control: &mut Control,
+        host: &mut dyn HostIO,
+    ) -> Result<bool, Errno> {
+        if control.replacement_stop_requested {
+            return Ok(true);
+        }
+        let record = control.future.receipt.record();
+        match self.memory_groups().storage_action(
+            record,
+            wasm_posix_shared::group_storage::Action::StopImage,
+            0,
+            0,
+            host,
+        ) {
+            Ok(_) => {
+                control.replacement_stop_requested = true;
+                Ok(true)
+            }
+            Err(Errno::EAGAIN) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    fn exec_replacement_stop_notification(
+        &mut self,
+        control: &mut Control,
+    ) -> Result<Option<u32>, Errno> {
+        if !control.replacement_bound || !control.constructor_entered {
+            return Ok(None);
+        }
+        let (store, admission) = match self
+            .memory_groups()
+            .storage_owner(control.future.receipt.record())
+        {
+            Ok(owner) => owner,
+            Err(Errno::ESRCH) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if store.accepted_worker_fact(admission)? {
+            return Ok(None);
+        }
+        if control.delivery_entered {
+            return Ok(Some(E::WAKE_REPLACEMENT));
+        }
+        if !control.preparation_cancel_sent {
+            control.preparation_cancel_sent = true;
+            return Ok(Some(E::CANCEL_PREPARATION));
+        }
+        Ok(None)
+    }
+    fn retiring_exec_reply(
+        &mut self,
+        control: &mut Control,
+        host: &mut dyn HostIO,
+    ) -> Result<Reply, Errno> {
+        if !self.request_exec_replacement_stop(control, host)? {
+            let mut reply = Self::exec_control_reply(control, effect::YIELD);
+            reply.delay = 10;
+            return Ok(reply);
+        }
+        let (store, admission) = self
+            .memory_groups()
+            .storage_owner(control.future.receipt.record())?;
+        control.pending_effect = if store.accepted_worker_fact(admission)? {
+            E::WAIT_REPLACEMENT
+        } else if !control.constructor_entered {
+            E::SEAL_REPLACEMENT
+        } else {
+            self.exec_replacement_stop_notification(control)?
+                .unwrap_or(E::WAIT_REPLACEMENT)
+        };
+        control.phase = P::RETIRING_INSTALLED;
+        Ok(Self::exec_control_reply(control, control.pending_effect))
+    }
+
     fn advance_exec_control(
         &mut self,
         control: &mut Control,
@@ -290,6 +415,7 @@ impl ProcessTable {
         host: &mut dyn HostIO,
     ) -> Result<Reply, Errno> {
         let record = control.future.receipt.record();
+        self.capture_exec_exit(control);
         match command {
             C::POLL | C::STATUS => {}
             C::VALIDATE => {
@@ -337,8 +463,10 @@ impl ProcessTable {
                     self.complete_exec_platform_effect(control, completed_effect)?;
                 }
             }
-            C::ENTER_NATIVE if matches!(completed_effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH)
-                && control.pending_effect == completed_effect && control.entered_effect == 0 => {}
+            C::ENTER_NATIVE
+                if matches!(completed_effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH)
+                    && control.pending_effect == completed_effect
+                    && control.entered_effect == 0 => {}
             C::VALIDATE_INSTALL | C::INSTALLED => {
                 if control.phase != P::OLD_STOPPED
                     || control.signal != 0
@@ -363,23 +491,21 @@ impl ProcessTable {
             _ => return Err(Errno::EINVAL),
         }
         if command == C::STATUS {
-            if matches!(
-                control.phase,
-                P::COMMITTED
-                    | P::HANDOFF
-                    | P::OLD_STOPPED
-                    | P::TERMINATING
-                    | P::TERMINATED_FUTURE
-                    | P::INSTALLED
-            ) {
-                if let Some(proc) = self.get(record.pid).filter(|proc| {
-                    proc.exec_generation == record.generation && proc.exit_signal > 0
-                }) {
-                    control.signal = proc.exit_signal;
-                    control.parent = proc.ppid;
+            if control.exit_recorded && control.phase == P::INSTALLED && control.replacement_bound {
+                if !self.request_exec_replacement_stop(control, host)? {
+                    let mut reply = Self::exec_control_reply(control, effect::YIELD);
+                    reply.delay = 10;
+                    return Ok(reply);
                 }
-            }
-            if control.signal > 0 && !matches!(control.phase, P::TERMINATED_FUTURE | P::FINISHED) {
+                if let Some(notification) = self.exec_replacement_stop_notification(control)? {
+                    return Ok(Self::exec_control_reply(control, notification));
+                }
+            } else if control.exit_recorded
+                && !matches!(
+                    control.phase,
+                    P::TERMINATED_FUTURE | P::FINISHED | P::RETIRING_INSTALLED
+                )
+            {
                 match self.memory_groups().storage_action(
                     control.source,
                     wasm_posix_shared::group_storage::Action::StopImage,
@@ -393,22 +519,41 @@ impl ProcessTable {
             }
             return Ok(Self::exec_control_reply(control, effect::COMPLETE));
         }
-        if matches!(control.pending_effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH) && control.entered_effect == 0 {
+        // Bind the real replacement's disposal endpoints even after exit, but
+        // never authorize its constructor/delivery. In-flight callbacks must
+        // report actual settlement before this retained owner changes effects.
+        if control.phase == P::INSTALLED && control.exit_recorded && control.replacement_bound {
+            return self.retiring_exec_reply(control, host);
+        }
+        if matches!(
+            control.pending_effect,
+            E::START_REPLACEMENT | E::DELIVER_LAUNCH
+        ) && control.entered_effect == 0
+        {
             use crate::group_completion::NativeStart;
             match self.group_native_start_permission(record, host)? {
                 NativeStart::Stopped => {
-                    let mut reply = Self::exec_control_reply(control, effect::YIELD); reply.delay = 10; return Ok(reply);
+                    let mut reply = Self::exec_control_reply(control, effect::YIELD);
+                    reply.delay = 10;
+                    return Ok(reply);
                 }
                 NativeStart::Dead => {
-                    // A post-install exit still owes exact future Worker and
-                    // reference retirement. Keep custody visible; do not
-                    // authorize construction or pretend the handoff succeeded.
+                    self.capture_exec_exit(control);
+                    if control.exit_recorded {
+                        return self.retiring_exec_reply(control, host);
+                    }
                     control.failure = Some(Errno::ESRCH);
                     control.phase = P::CONTAINED;
                     control.pending_effect = E::CONTAIN_FAILURE;
                 }
                 NativeStart::Ready if command == C::ENTER_NATIVE => {
                     control.entered_effect = control.pending_effect;
+                    if control.pending_effect == E::START_REPLACEMENT {
+                        control.constructor_entered = true;
+                    }
+                    if control.pending_effect == E::DELIVER_LAUNCH {
+                        control.delivery_entered = true;
+                    }
                     let mut reply = Self::exec_control_reply(control, control.pending_effect);
                     reply.flags |= wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE;
                     return Ok(reply);
@@ -517,7 +662,7 @@ impl ProcessTable {
                 if proc.exec_generation != record.generation {
                     return Err(Errno::ESRCH);
                 }
-                if proc.exit_signal > 0 {
+                if control.exit_recorded {
                     control.signal = proc.exit_signal;
                     control.parent = proc.ppid;
                     control.phase = P::TERMINATING;
@@ -540,19 +685,71 @@ impl ProcessTable {
                     Err(Errno::ESRCH) => {}
                     _ => return Err(Errno::EBUSY),
                 }
-                if control.signal > 0 {
+                if control.phase == P::TERMINATED_FUTURE {
                     E::PUBLISH_TERMINATION
                 } else {
                     E::BIND_REPLACEMENT
                 }
             }
-            E::BIND_REPLACEMENT => E::START_REPLACEMENT,
+            E::BIND_REPLACEMENT => {
+                let (store, admission) = self.memory_groups().storage_owner(record)?;
+                if !store.has_platform_references(admission)? {
+                    return Err(Errno::EBUSY);
+                }
+                control.replacement_bound = true;
+                E::START_REPLACEMENT
+            }
+            E::SEAL_REPLACEMENT => {
+                let (store, admission) = self.memory_groups().storage_owner(record)?;
+                if !store.accepted_worker_fact(admission)? || !store.worker_absence(admission)? {
+                    return Err(Errno::EBUSY);
+                }
+                E::WAIT_REPLACEMENT
+            }
+            E::CANCEL_PREPARATION | E::WAKE_REPLACEMENT => E::WAIT_REPLACEMENT,
+            E::WAIT_REPLACEMENT => {
+                let (store, admission) = self.memory_groups().storage_owner(record)?;
+                if store.status(admission)?
+                    & wasm_posix_shared::group_storage::status::IMAGE_STOPPED
+                    == 0
+                {
+                    return Err(Errno::EBUSY);
+                }
+                E::JOIN_REPLACEMENT
+            }
+            E::JOIN_REPLACEMENT => E::RETIRE_REPLACEMENT,
+            E::RETIRE_REPLACEMENT => {
+                if !matches!(
+                    self.memory_groups().storage_owner(record),
+                    Err(Errno::ESRCH)
+                ) {
+                    return Err(Errno::EBUSY);
+                }
+                control.descriptor = None;
+                E::PUBLISH_TERMINATION
+            }
             E::START_REPLACEMENT | E::DELIVER_LAUNCH => {
-                if control.entered_effect != completed { return Err(Errno::EBUSY); }
-                if completed == E::START_REPLACEMENT { E::WAIT_READY } else { E::FINISH_HANDOFF }
+                if control.entered_effect != completed {
+                    return Err(Errno::EBUSY);
+                }
+                if completed == E::START_REPLACEMENT {
+                    E::WAIT_READY
+                } else {
+                    E::FINISH_HANDOFF
+                }
             }
             E::WAIT_READY => E::DELIVER_LAUNCH,
-            E::FINISH_HANDOFF | E::PUBLISH_TERMINATION => {
+            E::FINISH_HANDOFF => {
+                // Exit can commit while this platform callback is outstanding.
+                // Keep the installed phase so the next continuation selects
+                // exact retirement instead of acknowledging away its event.
+                if !control.exit_recorded {
+                    control.handed_off = true;
+                    control.phase = P::FINISHED;
+                }
+                0
+            }
+            E::PUBLISH_TERMINATION => {
                 control.phase = P::FINISHED;
                 0
             }
@@ -606,7 +803,11 @@ pub(crate) mod tests {
         maximum: u32,
     }
     pub(crate) fn storage_host() -> impl HostIO {
-        Host { bytes: Vec::new(), resource: 0, maximum: 0 }
+        Host {
+            bytes: Vec::new(),
+            resource: 0,
+            maximum: 0,
+        }
     }
     macro_rules! noop {
         ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {$ (
@@ -811,9 +1012,25 @@ pub(crate) mod tests {
         (f, host, old.record(), future, target)
     }
     fn done(f: &mut Fixture, host: &mut Host, future: ReceiptRecord, effect: u32) -> Reply {
+        if effect == E::BIND_REPLACEMENT {
+            f.table
+                .retirement_control(
+                    future,
+                    R::command::BIND_REFERENCES,
+                    R::NATIVE_JOIN_CAPABILITY,
+                    host,
+                )
+                .unwrap();
+        }
         if matches!(effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH) {
-            let permission = f.table.exec_control_effect(future, C::ENTER_NATIVE, effect, host).unwrap();
-            assert_ne!(permission.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
+            let permission = f
+                .table
+                .exec_control_effect(future, C::ENTER_NATIVE, effect, host)
+                .unwrap();
+            assert_ne!(
+                permission.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE,
+                0
+            );
         }
         f.table
             .exec_control_effect(future, C::PLATFORM_COMPLETED, effect, host)
@@ -857,21 +1074,319 @@ pub(crate) mod tests {
         joined
     }
     fn retire(f: &mut Fixture, host: &mut Host, old: ReceiptRecord) {
-        let first = f
+        let mut reply = f
             .table
             .retirement_control(old, R::command::BEGIN_IMAGE, 0, host)
             .unwrap();
-        assert_eq!(first.effect, R::DETACH_PLATFORM);
-        assert_eq!(
-            f.table
-                .retirement_control(old, R::command::PLATFORM_DETACHED, 0, host)
-                .unwrap()
-                .effect,
-            effect::COMPLETE
-        );
+        while reply.effect != effect::COMPLETE {
+            let command = match reply.effect {
+                R::DETACH_PLATFORM => R::command::PLATFORM_DETACHED,
+                R::DETACH_REFERENCES => {
+                    let selected = ReceiptRecord::decode(&reply.payload[..32]).unwrap();
+                    f.table
+                        .retirement_control(selected, R::command::REFERENCES_DETACHED, 0, host)
+                        .unwrap();
+                    R::command::POLL
+                }
+                unexpected => panic!("unexpected native retirement effect {unexpected}"),
+            };
+            reply = f.table.retirement_control(old, command, 0, host).unwrap();
+        }
         f.table
             .retirement_control(old, R::command::ACK, 0, host)
             .unwrap();
+    }
+    fn installed() -> (Fixture, Host, ReceiptRecord) {
+        let (mut f, mut host, old, future, _) = fixture();
+        stopped(&mut f, &mut host, old, future);
+        assert_eq!(
+            done(&mut f, &mut host, future, E::JOIN_PREVIOUS).effect,
+            E::INSTALL_REPLACEMENT
+        );
+        f.table
+            .memory_group_task_action(future, TaskAction::Start)
+            .unwrap();
+        let admission = f.table.memory_groups().resolve_receipt(future).unwrap();
+        f.table.memory_groups().publish_storage(admission).unwrap();
+        f.table
+            .exec_control(future, C::INSTALLED, &mut host)
+            .unwrap();
+        assert_eq!(
+            done(&mut f, &mut host, future, E::INSTALL_REPLACEMENT).effect,
+            E::RETIRE_PREVIOUS
+        );
+        retire(&mut f, &mut host, old);
+        assert_eq!(
+            done(&mut f, &mut host, future, E::RETIRE_PREVIOUS).effect,
+            E::BIND_REPLACEMENT
+        );
+        assert_eq!(
+            done(&mut f, &mut host, future, E::BIND_REPLACEMENT).effect,
+            E::START_REPLACEMENT
+        );
+        (f, host, future)
+    }
+    #[test]
+    fn installed_exec_exit_retires_exact_future_before_publishing_its_rust_status() {
+        for signal in [0, 15] {
+            for stage in [
+                E::START_REPLACEMENT,
+                E::WAIT_READY,
+                E::DELIVER_LAUNCH,
+                E::FINISH_HANDOFF,
+            ] {
+                let (mut f, mut host, future) = installed();
+                if stage != E::START_REPLACEMENT {
+                    done(&mut f, &mut host, future, E::START_REPLACEMENT);
+                }
+                if matches!(stage, E::DELIVER_LAUNCH | E::FINISH_HANDOFF) {
+                    done(&mut f, &mut host, future, E::WAIT_READY);
+                }
+                if stage == E::FINISH_HANDOFF {
+                    done(&mut f, &mut host, future, E::DELIVER_LAUNCH);
+                }
+                if signal == 0 {
+                    assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(173));
+                } else {
+                    assert!(f.table.get_mut(f.pid).unwrap().record_signal_exit(signal));
+                }
+                let status = f.table.exec_control(future, C::STATUS, &mut host).unwrap();
+                assert_ne!(status.flags & W::flags::EXIT_HELD, 0);
+                let expected = if signal == 0 {
+                    173
+                } else {
+                    128 + signal as i32
+                };
+                assert_eq!(
+                    i32::from_le_bytes(
+                        status.payload[W::EXIT_STATUS..W::EXIT_STATUS + 4]
+                            .try_into()
+                            .unwrap()
+                    ),
+                    expected
+                );
+                assert!(matches!(
+                    f.table
+                        .retirement_control(future, R::command::BEGIN_IMAGE, 0, &mut host),
+                    Err(Errno::EBUSY)
+                ));
+                let mut reply = f.table.exec_control(future, C::POLL, &mut host).unwrap();
+                if stage == E::START_REPLACEMENT {
+                    assert_eq!(reply.effect, E::SEAL_REPLACEMENT);
+                    assert!(matches!(
+                        f.table.exec_control_effect(
+                            future,
+                            C::PLATFORM_COMPLETED,
+                            reply.effect,
+                            &mut host
+                        ),
+                        Err(Errno::EBUSY)
+                    ));
+                    f.table
+                        .retirement_control(future, R::command::SEALED_ABSENCE, 0, &mut host)
+                        .unwrap();
+                    reply = done(&mut f, &mut host, future, reply.effect);
+                } else {
+                    assert_eq!(
+                        status.effect,
+                        if stage == E::FINISH_HANDOFF {
+                            E::WAKE_REPLACEMENT
+                        } else {
+                            E::CANCEL_PREPARATION
+                        }
+                    );
+                    assert_eq!(
+                        reply.effect,
+                        if stage == E::FINISH_HANDOFF {
+                            E::WAKE_REPLACEMENT
+                        } else {
+                            E::WAIT_REPLACEMENT
+                        }
+                    );
+                    if reply.effect == E::WAKE_REPLACEMENT {
+                        reply = done(&mut f, &mut host, future, reply.effect);
+                    }
+                    assert!(matches!(
+                        f.table.exec_control_effect(
+                            future,
+                            C::PLATFORM_COMPLETED,
+                            E::WAIT_REPLACEMENT,
+                            &mut host
+                        ),
+                        Err(Errno::EBUSY)
+                    ));
+                    f.table
+                        .retirement_control(future, R::command::WORKER_FENCE, 0, &mut host)
+                        .unwrap();
+                }
+                assert_eq!(reply.effect, E::WAIT_REPLACEMENT);
+                assert_eq!(
+                    done(&mut f, &mut host, future, reply.effect).effect,
+                    E::JOIN_REPLACEMENT
+                );
+                assert_eq!(
+                    done(&mut f, &mut host, future, E::JOIN_REPLACEMENT).effect,
+                    E::RETIRE_REPLACEMENT
+                );
+                assert!(matches!(
+                    f.table.exec_control_effect(
+                        future,
+                        C::PLATFORM_COMPLETED,
+                        E::RETIRE_REPLACEMENT,
+                        &mut host
+                    ),
+                    Err(Errno::EBUSY)
+                ));
+                retire(&mut f, &mut host, future);
+                let publish = done(&mut f, &mut host, future, E::RETIRE_REPLACEMENT);
+                assert_eq!(publish.effect, E::PUBLISH_TERMINATION);
+                assert_eq!(
+                    i32::from_le_bytes(
+                        publish.payload[W::EXIT_STATUS..W::EXIT_STATUS + 4]
+                            .try_into()
+                            .unwrap()
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    done(&mut f, &mut host, future, publish.effect).value,
+                    i64::from(P::FINISHED)
+                );
+                f.table.exec_control(future, C::ACK, &mut host).unwrap();
+                let group = f.table.memory_groups().resolve_group(future.group).unwrap();
+                let usage = f.table.memory_groups().snapshot(group).unwrap();
+                assert_eq!((usage.tasks, usage.images, usage.processes), (0, 0, 0));
+            }
+        }
+    }
+    #[test]
+    fn exec_exit_during_finish_ack_keeps_retirement_with_actual_exec_owner() {
+        for signal in [0, 15] {
+            let (mut f, mut host, future) = installed();
+            done(&mut f, &mut host, future, E::START_REPLACEMENT);
+            done(&mut f, &mut host, future, E::WAIT_READY);
+            done(&mut f, &mut host, future, E::DELIVER_LAUNCH);
+            let expected = if signal == 0 {
+                assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(173));
+                173
+            } else {
+                assert!(f.table.get_mut(f.pid).unwrap().record_signal_exit(signal));
+                128 + signal as i32
+            };
+            let wake = done(&mut f, &mut host, future, E::FINISH_HANDOFF);
+            assert_eq!(wake.effect, E::WAKE_REPLACEMENT);
+            assert_ne!(wake.flags & W::flags::EXIT_HELD, 0);
+            assert!(matches!(
+                f.table.exec_control(future, C::ACK, &mut host),
+                Err(Errno::EBUSY)
+            ));
+            assert_eq!(
+                done(&mut f, &mut host, future, wake.effect).effect,
+                E::WAIT_REPLACEMENT
+            );
+            assert!(matches!(
+                f.table.exec_control_effect(
+                    future,
+                    C::PLATFORM_COMPLETED,
+                    E::WAIT_REPLACEMENT,
+                    &mut host
+                ),
+                Err(Errno::EBUSY)
+            ));
+            f.table
+                .retirement_control(future, R::command::WORKER_FENCE, 0, &mut host)
+                .unwrap();
+            assert_eq!(
+                done(&mut f, &mut host, future, E::WAIT_REPLACEMENT).effect,
+                E::JOIN_REPLACEMENT
+            );
+            assert_eq!(
+                done(&mut f, &mut host, future, E::JOIN_REPLACEMENT).effect,
+                E::RETIRE_REPLACEMENT
+            );
+            retire(&mut f, &mut host, future);
+            let publish = done(&mut f, &mut host, future, E::RETIRE_REPLACEMENT);
+            assert_eq!(publish.effect, E::PUBLISH_TERMINATION);
+            assert_eq!(
+                i32::from_le_bytes(
+                    publish.payload[W::EXIT_STATUS..W::EXIT_STATUS + 4]
+                        .try_into()
+                        .unwrap()
+                ),
+                expected
+            );
+            done(&mut f, &mut host, future, publish.effect);
+            assert_ne!(
+                f.table
+                    .exec_control(future, C::STATUS, &mut host)
+                    .unwrap()
+                    .flags
+                    & W::flags::EXIT_HELD,
+                0
+            );
+            f.table.exec_control(future, C::ACK, &mut host).unwrap();
+            assert!(matches!(
+                f.table.memory_groups().storage_owner(future),
+                Err(Errno::ESRCH)
+            ));
+        }
+    }
+    #[test]
+    fn exec_exit_after_finish_ack_uses_normal_stop_owner() {
+        for signal in [0, 15] {
+            let (mut f, mut host, future) = installed();
+            done(&mut f, &mut host, future, E::START_REPLACEMENT);
+            done(&mut f, &mut host, future, E::WAIT_READY);
+            done(&mut f, &mut host, future, E::DELIVER_LAUNCH);
+            assert_eq!(
+                done(&mut f, &mut host, future, E::FINISH_HANDOFF).value,
+                i64::from(P::FINISHED)
+            );
+            let expected = if signal == 0 {
+                assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(173));
+                173
+            } else {
+                assert!(f.table.get_mut(f.pid).unwrap().record_signal_exit(signal));
+                128 + signal as i32
+            };
+            assert_eq!(
+                f.table
+                    .exec_control(future, C::STATUS, &mut host)
+                    .unwrap()
+                    .flags
+                    & W::flags::EXIT_HELD,
+                0
+            );
+            f.table.exec_control(future, C::ACK, &mut host).unwrap();
+            assert_eq!(
+                f.table
+                    .retirement_control(future, R::command::BEGIN_STOP, 0, &mut host)
+                    .unwrap()
+                    .effect,
+                R::WAIT_WORKERS
+            );
+            assert!(matches!(
+                f.table
+                    .retirement_control(future, R::command::WORKERS_STOPPED, 0, &mut host),
+                Err(Errno::EBUSY)
+            ));
+            f.table
+                .retirement_control(future, R::command::WORKER_FENCE, 0, &mut host)
+                .unwrap();
+            let publish = f
+                .table
+                .retirement_control(future, R::command::WORKERS_STOPPED, 0, &mut host)
+                .unwrap();
+            assert_ne!(publish.flags & R::PUBLISH_EXIT, 0);
+            assert_eq!(publish.value, i64::from(expected));
+            f.table
+                .retirement_control(future, R::command::ACK_STOP, 0, &mut host)
+                .unwrap();
+            retire(&mut f, &mut host, future);
+            let group = f.table.memory_groups().resolve_group(future.group).unwrap();
+            let usage = f.table.memory_groups().snapshot(group).unwrap();
+            assert_eq!((usage.tasks, usage.images, usage.processes), (0, 0, 0));
+        }
     }
     #[test]
     fn kernel_drives_complete_exec_without_host_phase_selection() {
@@ -932,21 +1447,55 @@ pub(crate) mod tests {
             E::START_REPLACEMENT
         );
         f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Stopped;
-        let held = f.table.exec_control_effect(future, C::ENTER_NATIVE, E::START_REPLACEMENT, &mut host).unwrap();
+        let held = f
+            .table
+            .exec_control_effect(future, C::ENTER_NATIVE, E::START_REPLACEMENT, &mut host)
+            .unwrap();
         assert_eq!(held.effect, effect::YIELD);
-        assert_eq!(held.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
-        assert!(matches!(f.table.exec_control_effect(future, C::PLATFORM_COMPLETED, E::START_REPLACEMENT, &mut host), Err(Errno::EBUSY)));
+        assert_eq!(
+            held.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE,
+            0
+        );
+        assert!(matches!(
+            f.table.exec_control_effect(
+                future,
+                C::PLATFORM_COMPLETED,
+                E::START_REPLACEMENT,
+                &mut host
+            ),
+            Err(Errno::EBUSY)
+        ));
         f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Running;
         assert_eq!(
             done(&mut f, &mut host, future, E::START_REPLACEMENT).effect,
             E::WAIT_READY
         );
-        assert_eq!(done(&mut f, &mut host, future, E::WAIT_READY).effect, E::DELIVER_LAUNCH);
+        assert_eq!(
+            done(&mut f, &mut host, future, E::WAIT_READY).effect,
+            E::DELIVER_LAUNCH
+        );
         f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Stopped;
-        assert_eq!(f.table.exec_control_effect(future, C::ENTER_NATIVE, E::DELIVER_LAUNCH, &mut host).unwrap().effect, effect::YIELD);
-        assert!(matches!(f.table.exec_control_effect(future, C::PLATFORM_COMPLETED, E::DELIVER_LAUNCH, &mut host), Err(Errno::EBUSY)));
+        assert_eq!(
+            f.table
+                .exec_control_effect(future, C::ENTER_NATIVE, E::DELIVER_LAUNCH, &mut host)
+                .unwrap()
+                .effect,
+            effect::YIELD
+        );
+        assert!(matches!(
+            f.table.exec_control_effect(
+                future,
+                C::PLATFORM_COMPLETED,
+                E::DELIVER_LAUNCH,
+                &mut host
+            ),
+            Err(Errno::EBUSY)
+        ));
         f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Running;
-        assert_eq!(done(&mut f, &mut host, future, E::DELIVER_LAUNCH).effect, E::FINISH_HANDOFF);
+        assert_eq!(
+            done(&mut f, &mut host, future, E::DELIVER_LAUNCH).effect,
+            E::FINISH_HANDOFF
+        );
         let final_reply = done(&mut f, &mut host, future, E::FINISH_HANDOFF);
         assert_eq!(
             (final_reply.effect, final_reply.value),

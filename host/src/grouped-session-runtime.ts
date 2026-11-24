@@ -306,9 +306,9 @@ export class GroupedSessionRuntime {
         this.processes.set(owner.pid, { pid: owner.pid, owner, handle: owner.handle, bytes: request.targetBytes,
           module: request.targetModule, layout });
       },
-      onTerminated: signal => {
+      onTerminated: (_signal, status) => {
         this.processes.delete(previous.pid);
-        void this.publishRetiredExit(previous.pid, 128 + signal, previous.owner.generation.id)
+        void this.publishRetiredExit(previous.pid, status, previous.owner.generation.id)
           .catch(error => this.report(previous.pid, error instanceof Error ? error : Error(String(error))));
       },
       onMessage: (message, owner) => { const current = this.processes.get(owner.pid); if (current?.owner === owner) this.message(current, message); },

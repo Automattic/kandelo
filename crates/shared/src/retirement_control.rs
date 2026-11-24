@@ -27,3 +27,11 @@ pub const PUBLISH_EXIT: u32 = 1;
 
 pub const NATIVE_JOIN_CAPABILITY: u32 = 1;
 pub const STOP_ACCEPTED: u32 = 2;
+
+/// Scalar-only preparation transport. These messages never carry guest memory.
+pub const WORKER_MESSAGES: &[(&str, &str)] = &[
+    ("prepare", "kandelo.memory-group.worker-prepare.v3"),
+    ("ready", "kandelo.memory-group.worker-ready.v3"),
+    ("launch", "kandelo.memory-group.worker-launch.v3"),
+    ("cancel", "kandelo.memory-group.worker-cancel.v3"),
+];

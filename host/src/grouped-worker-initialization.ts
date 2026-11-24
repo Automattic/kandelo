@@ -1,3 +1,4 @@
+import { HOST_ADAPTER_VERSION, MEMORY_GROUP_PROTOCOL } from './generated/abi';
 import * as G from './generated/program-extensions';
 import { GroupedWorkerRuntime } from './grouped-worker-runtime';
 import { MemoryGroupProtocolFault, memoryGroupU32 } from './memory-group-protocol';
@@ -6,9 +7,7 @@ import type { MemoryGroupTaskReceipt } from './memory-group-protocol';
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from './worker-protocol';
 import type { WorkerHandle } from './worker-adapter';
 
-const PREPARE = 'kandelo.memory-group.worker-prepare.v3';
-const READY = 'kandelo.memory-group.worker-ready.v3';
-const LAUNCH = 'kandelo.memory-group.worker-launch.v3';
+const { prepare: PREPARE, ready: READY, launch: LAUNCH, cancel: CANCEL } = MEMORY_GROUP_PROTOCOL.retirement_control.worker_messages;
 type Expectation = Omit<GroupReplicaMemoryExpectation, 'assertLive'>;
 type Init = CentralizedWorkerInitMessage | CentralizedThreadInitMessage;
 export type GroupedWorkerInit = Omit<CentralizedWorkerInitMessage, 'memory'> | Omit<CentralizedThreadInitMessage, 'memory'>;
@@ -46,7 +45,7 @@ function expectation(value: unknown): Expectation {
   return Object.freeze({ ...data, receipt: Object.freeze(receipt) }) as unknown as Expectation;
 }
 function ready(expected: Expectation) {
-  return { type: READY, receipt: expected.receipt, version: G.MEMORY_GROUP_VERSION,
+  return { type: READY, receipt: expected.receipt, version: G.MEMORY_GROUP_VERSION, hostAdapter: HOST_ADAPTER_VERSION,
     threadAttach: 2, cooperativeStop: 3, executionBarrier: 1, orderedWaitQueue: 2,
     forkReplay: G.MEMORY_GROUP_FORK_REPLAY_VERSION } as const;
 }
@@ -94,6 +93,15 @@ export function createGroupedWorkerLaunch(init: GroupedWorkerInit, envelope: Pro
   return { type: LAUNCH, init: data, envelope };
 }
 
+/** An actual kernel-selected cancellation of a scalar-only prepared realm. */
+export function createGroupedWorkerCancellation(receipt: MemoryGroupTaskReceipt): unknown {
+  return { type: CANCEL, receipt: { ...receipt } };
+}
+
+type ReceivedInitialization =
+  | { init: Init; grouped?: GroupedWorkerRuntime; stopped?: undefined }
+  | { init?: undefined; grouped?: undefined; stopped: MemoryGroupTaskReceipt };
+
 /** One-shot authenticated parent transport shared by Node and browser entries.
  * Ordinary callers retain their existing init contract. A grouped launch must
  * first establish a separate memory-free expectation on this same channel.
@@ -102,7 +110,7 @@ export async function receiveGroupedWorkerInitialization(
   first: unknown,
   receiveNext: () => Promise<unknown>,
   post: (message: unknown) => void,
-): Promise<{ init: Init; grouped?: GroupedWorkerRuntime; stopped?: MemoryGroupTaskReceipt }> {
+): Promise<ReceivedInitialization> {
   const kind = first && typeof first === 'object' ? Object.getOwnPropertyDescriptor(first, 'type') : undefined;
   if (kind?.value !== PREPARE) {
     if (kind?.value === LAUNCH) return fail('Grouped launch arrived without its readiness handshake');
@@ -111,7 +119,18 @@ export async function receiveGroupedWorkerInitialization(
   const prepare = own(first, ['type', 'expected']), expected = expectation(prepare.expected);
   // Install the second listener before acknowledging readiness.
   const next = receiveNext(); post(ready(expected));
-  const launch = own(await next, ['type', 'init', 'envelope']);
+  const value = await next;
+  const type = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'type') : undefined;
+  if (type?.value === CANCEL) {
+    const cancel = own(value, ['type', 'receipt']), receipt = own(cancel.receipt, Object.keys(expected.receipt));
+    if (Object.entries(expected.receipt).some(([key, value]) => receipt[key] !== value)) {
+      return fail('Grouped cancellation names another admission');
+    }
+    // The one launch listener is consumed and no guest storage was received.
+    // The ordinary entry wrapper now publishes its actual terminal fence.
+    return { stopped: expected.receipt };
+  }
+  const launch = own(value, ['type', 'init', 'envelope']);
   if (launch.type !== LAUNCH) return fail('Expected one admitted grouped launch');
   const init = own(launch.init);
   if (Object.hasOwn(init, 'memory') || init.pid !== expected.receipt.pid
@@ -127,7 +146,7 @@ export async function receiveGroupedWorkerInitialization(
     // finish without constructing a guest instance or an address space.
     try {
       const stopped = decodeStoppedGroupedWorkerIdentity(launch.envelope, { ...expected, assertLive: () => {} });
-      return { init: init as unknown as Init, stopped };
+      return { stopped };
     } catch { throw error; }
   }
   return { init: { ...init, memory: grouped.memory } as unknown as Init, grouped };

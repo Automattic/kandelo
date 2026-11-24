@@ -48,7 +48,8 @@ export interface SdkExecutionOptions {
   execSuccess?: boolean;
   execOldThreads?: boolean;
   anonymousShared?: boolean;
-  execSignal?: 'commit' | 'stopped';
+  execFinishExit?: boolean;
+  execSignal?: 'commit' | 'stopped' | 'bound' | 'constructed' | 'ready' | 'delivered';
   execTerminationPool?: boolean;
 }
 interface SdkExecutionMachine {
@@ -132,6 +133,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const stoppedWithProcess = new Set<number>();
   const threadRetirements = new Map<number, Promise<void>>();
   const processDeactivations: Promise<void>[] = [];
+  const execHandoffSettlements: Promise<number>[] = [];
   const retiredThreads = new Set<number>();
   const threadRetirementMemory: Record<string, unknown>[] = [];
   let restoreThreadInitializationFault: (() => void) | undefined;
@@ -180,7 +182,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         for (const [tid, thread] of threads) {
           if (logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) retireThread(tid, thread);
         }
-        if (kernelExit === undefined || processExit === undefined && !execTermination && !options.execPrecommitStop || options.execPrecommitStop && !execPrecommitStopFinished || !quiescent || !processReady
+        if (kernelExit === undefined || processExit === undefined && !execTermination && !options.execPrecommitStop || options.execPrecommitStop && !execPrecommitStopFinished || !quiescent || (!processReady && !execTermination)
             || (options.joinOnExit && !rootJoined) || options.forcedLifecycle && busyReleased && busyStopValue === undefined) return;
         for (const [pid, child] of children) {
           const state = childStates.get(pid);
@@ -295,10 +297,35 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           const signal = () => {
             const stopped = previousThreads.filter(thread => thread.quiescent).length;
             if (options.execSignal === 'commit' && stopped === previousThreads.length) throw Error('Commit signal missed live predecessor');
-            if (!kernel.signalProcess(request.pid, 9)) throw Error('Kernel refused exec signal');
+            if (options.execSignal === 'delivered' || options.execSignal === 'constructed') kernel.notifyHostProcessCrashed(request.pid, 9);
+            else if (!kernel.signalProcess(request.pid, 9)) throw Error('Kernel refused exec signal');
             lifecycleEvidence.push({ kind: 'exec-signal-sent', stage: options.execSignal, stopped });
           };
-          return prepareGroupedExecWorker({ kernel, request, adapter: processAdapter, externrefs: owner, imports,
+          const execKernel = new Proxy(kernel, { get(target, key) {
+            if (key === 'runMemoryGroupExecHandoff') return (input: Parameters<CentralizedKernelWorker['runMemoryGroupExecHandoff']>[0],
+              platform: Parameters<CentralizedKernelWorker['runMemoryGroupExecHandoff']>[1]) => {
+              const handoff = kernel.runMemoryGroupExecHandoff(input, {
+                ...platform,
+                startReplacement: () => { platform.startReplacement(); if (options.execSignal === 'constructed') signal(); },
+                bindReplacement: async (...args) => { await platform.bindReplacement(...args); if (options.execSignal === 'bound') await retryKernelEntryResult(signal); },
+                waitReady: async () => { await platform.waitReady(); if (options.execSignal === 'ready') await retryKernelEntryResult(signal); },
+                deliverLaunch: () => { platform.deliverLaunch(); if (options.execSignal === 'delivered') signal(); },
+                finishHandoff: async () => {
+                  if (options.execFinishExit) {
+                    if (!rootHandle) throw Error('Finish fixture lost its exact replacement');
+                    // The real SDK guest commits SYS_EXIT and its normal Worker
+                    // emits this fence while Rust still owns the finish effect.
+                    await kernel.waitForMemoryGroupReplicaQuiescence(rootHandle);
+                    lifecycleEvidence.push({ kind: 'exec-exit-before-finish', ...await memoryEvidence() });
+                  }
+                  await platform.finishHandoff();
+                },
+              });
+              execHandoffSettlements.push(handoff); return handoff;
+            };
+            const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+          } });
+          return prepareGroupedExecWorker({ kernel: execKernel, request, adapter: processAdapter, externrefs: owner, imports,
             previousImage: rootHandle, previousWorkers: [processWorker, ...previousThreads.map(thread => thread.worker)],
             previousGeneration: generation, terminationProvesQuiescence: options.joinOnExit,
             onCommitted: () => {
@@ -330,12 +357,14 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               }
             } : undefined,
             onTerminated: signal => {
-              if (options.execSignal) {
+              if (options.execSignal || options.execFinishExit) {
                 if (kernel.recordMemoryGroupCrash(previousRoot, 11) !== -3) throw Error('Retired exec accepted a late crash');
                 kernel.finalizeExecHandoffTermination(request.pid);
                 lifecycleEvidence.push({ kind: 'exec-late-exit-finished', code: kernelExit });
               }
               for (const thread of previousThreads) { stoppedWithProcess.add(thread.tid); retiredThreads.add(thread.tid); }
+              if (currentExecWorker) lifecycleEvidence.push({ kind: 'exec-replacement-joined',
+                joined: currentExecWorker.hasJoined, quiescent: currentExecWorker.quiescent });
               execTermination = { signal }; quiescent = true; rootJoined = options.joinOnExit;
               imageHandles.delete(request.pid); rootHandle = undefined; generation = undefined;
               currentExecWorker = undefined; processWorker = undefined; importWorker = undefined;
@@ -345,7 +374,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               // This async closer is joined by physical retirement. Real
               // public ingress runs after deactivation, while old pages are
               // still owned; it must not publish or replace the cached signal.
-              if (options.execSignal) {
+              if (options.execSignal === 'commit' || options.execSignal === 'stopped') {
                 const signal = await retryKernelEntryResult(() => kernel.finalizeExecHandoffTermination(request.pid));
                 kernel.notifyHostProcessCrashed(request.pid, 11);
                 const repeated = await retryKernelEntryResult(() => kernel.finalizeExecHandoffTermination(request.pid));
@@ -448,9 +477,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           queueMicrotask(() => { void advanceLifecycle().catch(reject); });
         } : undefined,
         onExit: (pid, code) => {
+          trace.push(...kernel.drainSyscallTrace().map(event => event.decoded ?? `syscall ${event.nr}`));
           if (pid === rootPid) {
             kernelExit = code;
-            if (options.execSignal) {
+            if (options.execSignal || options.execFinishExit) {
               const sample = (async () => {
                 const backing = (await memoryEvidence()).backing;
                 if (backing?.images !== 0 || [...threads.values()].some(thread => !thread.quiescent)) {
@@ -517,7 +547,6 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               }
             }
           }
-          trace.push(...kernel.drainSyscallTrace().map(event => event.decoded ?? `syscall ${event.nr}`));
           maybeComplete();
         },
         onKernelFatal: error => { kernelFailed = true; reject(error); },
@@ -886,6 +915,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       })().catch(reject);
     });
     await execution;
+    // Observe the actual exec owner ACK, beyond its earlier exit callback.
+    const execHandoffResults = await Promise.all(execHandoffSettlements);
     // An exit callback can precede a deferred exact-image deactivation. Join
     // every owner before releasing images or beginning another cohort.
     await Promise.all(processDeactivations);
@@ -899,7 +930,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     if (options.execPrecommitFailure) {
       await kernelForDiagnostics!.waitForMemoryGroupReplicaQuiescence(rootHandle!);
       execLedger = await retryKernelEntryResult(() => kernelForDiagnostics!.inspectMemoryGroup(admittedGroup!));
-    } else if (options.execSignal) {
+    } else if (options.execSignal || options.execFinishExit) {
       execLedger = await retryKernelEntryResult(() => kernelForDiagnostics!.inspectMemoryGroup(admittedGroup!));
     }
     await Promise.all(evidenceWork);
@@ -921,7 +952,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       }
       retirement = { before, after: await memoryEvidence(), statuses };
     }
-    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execTermination, execReplacementPublications, processWorkerConstructionAttempts, execLedger, memory: await memoryEvidence(),
+    result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execHandoffResults, execTermination, execReplacementPublications, processWorkerConstructionAttempts, execLedger, memory: await memoryEvidence(),
       retirement, threadRetirementMemory, rolledBackForks, injectedForkRefusals, forkWorkerConstructionAttempts, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
       threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
       children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };

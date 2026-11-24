@@ -1,8 +1,9 @@
+import { HOST_ADAPTER_VERSION } from '../src/generated/abi';
 import { GROUPED_WORKER_EXTENSIONS } from '../src/program-extensions';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { groupMemoryLayout } from './support/group-memory-layout';
 import { GroupedWorkerRuntime } from '../src/grouped-worker-runtime';
-import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, receiveGroupedWorkerInitialization, waitForGroupedWorkerReady } from '../src/grouped-worker-initialization';
+import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, receiveGroupedWorkerInitialization, waitForGroupedWorkerReady, createGroupedWorkerCancellation } from '../src/grouped-worker-initialization';
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from '../src/worker-main';
 import { MockWorkerHandle } from '../src/worker-adapter';
 import { runWithProcessWorkerQuiescence } from '../src/worker-quiescence';
@@ -54,14 +55,48 @@ describe('normal grouped Worker initialization', () => {
     worker.simulateMessage(posts[0]); await prepared;
     next(createGroupedWorkerLaunch(f.init, f.launch.envelope));
     const received = await initialization;
-    expect(received.init.memory).toBe(f.launch.envelope.memory);
+    expect(received.init!.memory).toBe(f.launch.envelope.memory);
     expect(received.grouped!.descriptor.receipt).toEqual(f.expected.receipt);
     received.grouped!.detach(); f.close();
+  });
+  it.each([false, true])('cancels an exact scalar-only prepared realm without receiving memory (pthread=%s)', async thread => {
+    const f = fixture();
+    const expected = thread ? { ...f.expected, receipt: { ...f.expected.receipt, tid: 101, serial: 3n } } : f.expected;
+    const posts: unknown[] = [];
+    const result = await receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(expected),
+      async () => createGroupedWorkerCancellation(expected.receipt), message => posts.push(message));
+    expect(result.stopped).toEqual(expected.receipt);
+    expect(result.init).toBeUndefined(); expect(result.grouped).toBeUndefined();
+    expect(posts).toHaveLength(1);
+    const events: unknown[] = [];
+    await runWithProcessWorkerQuiescence({ postMessage: value => events.push(value), close: () => events.push('closed') },
+      { pid: expected.receipt.pid, ...(thread ? { tid: 101 } : {}), memoryGroup: result.stopped }, async () => {}, () => {});
+    expect(events).toEqual([{ type: 'memory_quiescent', pid: expected.receipt.pid, ...(thread ? { tid: 101 } : {}), memoryGroup: expected.receipt }, 'closed']);
+    f.close();
+  });
+  it.each(['serial', 'generation', 'tid'] as const)('refuses a preparation cancellation for another %s', async field => {
+    const f = fixture(), wrong = { ...f.expected.receipt };
+    if (field === 'tid') wrong.tid++; else wrong[field]++;
+    await expect(receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected),
+      async () => createGroupedWorkerCancellation(wrong), () => {})).rejects.toThrow('another admission');
+    f.close();
   });
   it('refuses memory-bearing launch without a preceding expectation', async () => {
     const f = fixture(), receive = vi.fn(), post = vi.fn();
     await expect(receiveGroupedWorkerInitialization(createGroupedWorkerLaunch(f.init, f.launch.envelope), receive, post)).rejects.toThrow('without its readiness');
     expect(receive).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled(); f.close();
+  });
+  it.each([undefined, HOST_ADAPTER_VERSION - 1, HOST_ADAPTER_VERSION + 1])('refuses stale Worker cancellation capability before memory delivery (%s)', async hostAdapter => {
+    const f = fixture(), posts: any[] = [];
+    await expect(receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected),
+      async () => ({ type: 'wrong' }), message => posts.push(message))).rejects.toThrow();
+    const worker = new MockWorkerHandle(), ready = waitForGroupedWorkerReady(worker, f.expected);
+    const message = { ...posts[0], hostAdapter };
+    if (hostAdapter === undefined) delete message.hostAdapter;
+    worker.simulateMessage(message);
+    await expect(ready).rejects.toThrow();
+    expect(worker.sentMessages).toHaveLength(0);
+    f.close();
   });
   it.each([undefined, 0, 2])('refuses a Worker without the exact kernel replay protocol (%s)', async version => {
     const f = fixture(), posts: any[] = [];
@@ -87,7 +122,7 @@ describe('normal grouped Worker initialization', () => {
       expected.replica + G.MEMORY_GROUP_REPLICA_RUN, 1), 0, 0);
     const received = await receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(expected), async () => message, () => {});
     expect(received.stopped).toEqual(expected.receipt);
-    expect(received.grouped).toBeUndefined(); expect(received.init).not.toHaveProperty('memory');
+    expect(received.grouped).toBeUndefined(); expect(received.init).toBeUndefined();
     const events: unknown[] = [];
     await runWithProcessWorkerQuiescence({ postMessage: message => events.push(message), close: () => events.push('closed') },
       { pid: expected.receipt.pid, ...(thread ? { tid: 101 } : {}), memoryGroup: received.stopped }, async () => {}, () => {});

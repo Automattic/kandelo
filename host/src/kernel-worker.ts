@@ -1,3 +1,4 @@
+import { createGroupedWorkerCancellation } from './grouped-worker-initialization';
 import { assertInitialExecutionBackend, type ExecutionBackend } from './execution-backend';
 import { sharedMemoryProgramPath, memoryGroupSourceDigest } from './shared-memory-program';
 import { readNamespaceFileRangeWithRetry } from './process-lifecycle';
@@ -1796,8 +1797,10 @@ export interface GroupedExecPlatformEffects {
   startReplacement(): void;
   waitReady(): Promise<void>;
   deliverLaunch(): void;
+  joinReplacement(): Promise<void>;
+  finishHandoff(): void | Promise<void>;
   discardFuture(): void;
-  publishTermination(signal: number): void;
+  publishTermination(signal: number, status: number): void;
 }
 
 /** Exact caller selected before asynchronous exec preparation yields. */
@@ -8945,6 +8948,14 @@ export class CentralizedKernelWorker {
     let reply!: GroupExecControlEffect;
     this.#runImmediateKernelEntry('report exact exec platform effect', entry => {
       reply = this.#execControlWithinKernelEntry(state, command, entry, completedEffect);
+      if (command === MEMORY_GROUP_PROTOCOL.exec_control.commands.ack) {
+        // Drop this exact transport association before another ingress can
+        // query the Rust owner just consumed by ACK. A subsequent exec may
+        // already have replaced the PID association; never remove that one.
+        if (this.#committedGroupExecs.get(state.receipt.pid) === state) this.#committedGroupExecs.delete(state.receipt.pid);
+        if (state.reservation) this.#groupExecReservations.delete(state.reservation);
+        state.reservation = undefined;
+      }
       if (native && (reply.flags & MEMORY_GROUP_PROTOCOL.driver.flags.nativeExecute)) {
         entry.deferProtocolTransactionStart(() => {
           native();
@@ -9091,6 +9102,31 @@ export class CentralizedKernelWorker {
             break;
           }
           case effects.waitReady: await platform.waitReady(); break;
+          case effects.sealReplacement:
+            await retryKernelEntryResult(() => this.#runImmediateKernelEntry('seal kernel-selected replacement absence', entry => {
+              const binding = this.#memoryGroupWorkerBindings.get(state.handle!);
+              if (binding && DeferredWorkerHandle.sealNeverStarted(binding.worker)) binding.reportAbsent();
+              else if (!state.store.replicaExecutionStopped(state.handle!, entry)) this.#memoryGroupProtocolError('Exec replacement absence is unproven');
+              return undefined;
+            }));
+            break;
+          case effects.cancelPreparation:
+          case effects.wakeReplacement:
+            await retryKernelEntryResult(() => this.#runImmediateKernelEntry('apply kernel-selected exec stop notification', entry => {
+              this.#applyExecStopNotification(state, issued, entry); return undefined;
+            }));
+            break;
+          case effects.waitReplacement:
+            await state.store.waitForImageQuiescence(state.handle!);
+            break;
+          case effects.joinReplacement:
+            await platform.joinReplacement();
+            break;
+          case effects.retireReplacement: {
+            const result = await retryKernelEntryResult(() => this.retireMemoryGroupImage(state.handle!));
+            if (result !== 0) throw Error(`Cannot retire exact exec replacement: errno ${-result}`);
+            break;
+          }
           case effects.discardFuture:
             await retryKernelEntryResult(() => this.#runImmediateKernelEntry('discard kernel-cancelled future platform objects', entry => {
               state.store.forgetCancelledReplica(state.handle!, entry); this.#memoryGroupReplicas.delete(state.handle!);
@@ -9100,18 +9136,20 @@ export class CentralizedKernelWorker {
             platform.discardFuture();
             break;
           case effects.finishHandoff:
-            await retryKernelEntryResult(() => this.finishProcessExecHandoff(state.receipt.pid));
+            await platform.finishHandoff();
             break;
           case effects.publishTermination: {
             const parent = new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength)
               .getUint32(protocol.exec_control.parent, true);
             const signal = reply.length;
+            const status = new DataView(reply.payload.buffer, reply.payload.byteOffset, reply.payload.byteLength)
+              .getInt32(protocol.exec_control.exit_status, true);
             await retryKernelEntryResult(() => this.#runImmediateKernelEntry('publish kernel-selected exec termination', entry => {
               this.notifyParentOfExitedProcess(state.receipt.pid, entry, parent);
-              entry.deferProtocolEffect(() => { this.callbacks.onExit?.(state.receipt.pid, 128 + signal); return undefined; });
+              entry.deferProtocolEffect(() => { this.callbacks.onExit?.(state.receipt.pid, status); return undefined; });
               return undefined;
             }));
-            platform.publishTermination(signal);
+            platform.publishTermination(signal, status);
             break;
           }
           case effects.containFailure:
@@ -9128,15 +9166,35 @@ export class CentralizedKernelWorker {
     }
     if (reply.value !== protocol.exec_control.phases.finished || reply.errno !== 0) this.#memoryGroupProtocolError('Exec driver did not finish');
     await retryKernelEntryResult(() => this.#execControlCall(state, commands.ack));
-    this.#committedGroupExecs.delete(state.receipt.pid); this.#groupExecReservations.delete(reservation!); state.reservation = undefined;
     return 0;
+  }
+
+  #applyExecStopNotification(state: GroupedExecPreparationState, effect: number, entry: KernelWorkerEntryContext): void {
+    const effects = MEMORY_GROUP_PROTOCOL.exec_control.effects;
+    if (effect === effects.cancelPreparation) {
+      const binding = this.#memoryGroupWorkerBindings.get(state.handle!);
+      if (!binding) {
+        if (!state.store.replicaExecutionStopped(state.handle!, entry)) this.#memoryGroupProtocolError('Exec cancellation lost its actual Worker binding');
+        return;
+      }
+      entry.deferProtocolEffect(() => {
+        binding.worker.postMessage(createGroupedWorkerCancellation(state.receipt)); return undefined;
+      });
+    } else if (effect === effects.wakeReplacement) {
+      const registration = this.processes.get(state.receipt.pid);
+      if (registration && state.handle && registration.grouped?.handle === state.handle) {
+        for (const channel of registration.channels) this.wakeExitedChannelForRetirement(channel, entry);
+      }
+    }
   }
 
   #holdCommittedGroupExecTermination(pid: number, entry: KernelWorkerEntryContext, _observedSignal?: number): number | undefined {
     const state = this.#committedGroupExecs.get(pid);
     if (!state) return undefined;
-    const reply = state.store.execControl(state.receipt, MEMORY_GROUP_PROTOCOL.exec_control.commands.status, entry);
-    if (reply.length === 0) return undefined;
+    const protocol = MEMORY_GROUP_PROTOCOL.exec_control;
+    const reply = state.store.execControl(state.receipt, protocol.commands.status, entry);
+    if (!(reply.flags & protocol.flags.exitHeld)) return undefined;
+    this.#applyExecStopNotification(state, reply.effect, entry);
     return reply.length;
   }
 
@@ -13508,10 +13566,10 @@ export class CentralizedKernelWorker {
    * Start a prepared process/thread Worker only when the authoritative kernel
    * Process is runnable. Fork/spawn/exec setup may register memory and return
    * to its caller while stopped; the constructor itself is retained here so
-   * no guest instruction can execute before SIGCONT. Native callers identify
-   * their Memory; virtual callers must also name their exact image source.
-   * Deferred constructors retain the selected registration and source, so a
-   * replacement sharing the backing cannot inherit the old constructor.
+   * no guest instruction can execute before SIGCONT. This gate serves ordinary
+   * execution only; grouped operations require their actual Rust owner.
+   * Deferred constructors retain the selected registration and Memory so a
+   * replacement cannot inherit the old constructor.
    */
   startProcessWorkerWhenRunnable(
     pid: number,
@@ -26586,6 +26644,7 @@ export class CentralizedKernelWorker {
   #beginGroupProcessExit(registration: ProcessRegistration, naturalExitTid: number | undefined, entry: KernelWorkerEntryContext): void {
     const group = registration.grouped!;
     if (this.#groupProcessExits.has(group.handle)) return;
+    if (this.#holdCommittedGroupExecTermination(registration.pid, entry) !== undefined) return;
     const receipt = group.store.receipt(group.handle);
     const initial = group.store.retirementControl(receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.beginStop, entry, naturalExitTid ?? 0);
     let resolve!: () => void, reject!: (cause: unknown) => void;

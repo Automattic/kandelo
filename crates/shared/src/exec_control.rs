@@ -26,6 +26,7 @@ pub mod phase {
     pub const INSTALLED: u32 = 10;
     pub const FINISHED: u32 = 11;
     pub const CONTAINED: u32 = 12;
+    pub const RETIRING_INSTALLED: u32 = 13;
 }
 /// Every effect is issued at most once per exact future receipt. Completion
 /// reports must name the currently outstanding effect; a late duplicate cannot
@@ -44,6 +45,12 @@ pub mod effect {
     pub const CONTAIN_FAILURE: u32 = 23;
     pub const WAIT_READY: u32 = 24;
     pub const DELIVER_LAUNCH: u32 = 25;
+    pub const SEAL_REPLACEMENT: u32 = 26;
+    pub const CANCEL_PREPARATION: u32 = 27;
+    pub const WAIT_REPLACEMENT: u32 = 28;
+    pub const JOIN_REPLACEMENT: u32 = 29;
+    pub const RETIRE_REPLACEMENT: u32 = 30;
+    pub const WAKE_REPLACEMENT: u32 = 31;
 }
 pub const EFFECTS: &[(&str, u32)] = &[
     ("waitWorkers", effect::WAIT_WORKERS),
@@ -59,6 +66,12 @@ pub const EFFECTS: &[(&str, u32)] = &[
     ("containFailure", effect::CONTAIN_FAILURE),
     ("waitReady", effect::WAIT_READY),
     ("deliverLaunch", effect::DELIVER_LAUNCH),
+    ("sealReplacement", effect::SEAL_REPLACEMENT),
+    ("cancelPreparation", effect::CANCEL_PREPARATION),
+    ("waitReplacement", effect::WAIT_REPLACEMENT),
+    ("joinReplacement", effect::JOIN_REPLACEMENT),
+    ("retireReplacement", effect::RETIRE_REPLACEMENT),
+    ("wakeReplacement", effect::WAKE_REPLACEMENT),
 ];
 pub const LAYOUT_FIELDS: &[(&str, usize)] = &[
     ("initialPages", 0),
@@ -79,3 +92,8 @@ pub const LAYOUT_FIELDS: &[(&str, usize)] = &[
 pub const SOURCE: usize = 112;
 pub const PARENT: usize = 144;
 pub const SIGNAL: usize = 148;
+
+pub const EXIT_STATUS: usize = 152;
+pub mod flags {
+    pub const EXIT_HELD: u32 = 128;
+}
