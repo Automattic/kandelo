@@ -4314,6 +4314,9 @@ export class WasmPosixKernel {
           try {
             const addressSpace = this.#resolveProcessAddressSpace(pid);
             if (!addressSpace) return -3;
+            // The actual Rust grouped completion owner must retain and select
+            // this publication. The direct transfer import is ordinary-only.
+            if (addressSpace instanceof GroupProcessAddressSpace) return -3;
             if (addressSpace instanceof IntrinsicWasmMemory) {
               procMem = addressSpace;
             } else {
@@ -4326,12 +4329,9 @@ export class WasmPosixKernel {
               // A nonzero return leaves FLAG_PUBLISHED clear: Rust queues
               // this exact result for the normal host completion owner.
               // Never block a live kernel entry on a participant's queue.
-              const published = addressSpace instanceof GroupProcessAddressSpace
-                ? addressSpace.tryPublishBytes(base + CH_RETURN, bytes,
-                  base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1)
-                : addressSpace.publishBytes(base + CH_RETURN, bytes,
-                  base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1);
-              return published === 'busy' ? -11 : 0;
+              addressSpace.publishBytes(base + CH_RETURN, bytes,
+                base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1);
+              return 0;
             }
           } catch (caught) {
             if (caught instanceof MemoryGroupProtocolFault) {

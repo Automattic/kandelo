@@ -44,9 +44,7 @@ use crate::process_snapshot_wire::{
     process_snapshot_record_bytes, write_process_snapshot_record, ProcessSnapshotHeader,
 };
 use crate::signal::{
-    apply_default_signal_action_with_locks, deliver_pending_signals_for_tid_with_locks,
-    deliver_pending_signals_with_locks, dequeue_signal_for,
-    DefaultSignalOutcome,
+    deliver_pending_signals_for_tid_with_locks, deliver_pending_signals_with_locks,
 };
 use crate::syscalls;
 use crate::lifecycle::{
@@ -4402,7 +4400,12 @@ pub extern "C" fn kernel_memory_group_storage_action(receipt_ptr: *const u8, rec
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if action == wasm_posix_shared::group_storage::Action::ReleaseStoppedImage && (table.exec_control_retains_image(record) || table.retirement_control_retains(record)) { return -(Errno::EAGAIN as i32); }
-    table.memory_groups().storage_action(record, action, token, argument, &mut WasmHostIO)
+    let result = if action == wasm_posix_shared::group_storage::Action::ReleaseStoppedImage {
+        table.release_group_storage_image(record, &mut WasmHostIO)
+    } else {
+        table.memory_groups().storage_action(record, action, token, argument, &mut WasmHostIO)
+    };
+    result
         .and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) }))
         .map(|()| REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
 }
@@ -4425,6 +4428,19 @@ pub extern "C" fn kernel_memory_group_storage_fork(parent_ptr: *const u8, parent
         Ok(REPLY_BYTES as i32)
     })();
     result.unwrap_or_else(|error: Errno| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_completion(input_ptr: *const u8, input_len: u32, out_ptr: *mut u8, capacity: u32) -> i32 {
+    use wasm_posix_shared::group_completion as W;
+    if input_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if input_len as usize != W::REQUEST_BYTES || capacity as usize != W::REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let request=match W::Request::decode(unsafe{core::slice::from_raw_parts(input_ptr,W::REQUEST_BYTES)}) { Ok(request)=>request,Err(error)=>return -(error as i32) };
+    let _gkl=GklGuard::acquire();
+    let table=unsafe{&mut *PROCESS_TABLE.0.get()};
+    table.group_completion_control(request,&mut WasmHostIO)
+        .and_then(|reply|reply.encode(unsafe{core::slice::from_raw_parts_mut(out_ptr,W::REPLY_BYTES)}))
+        .map(|()|W::REPLY_BYTES as i32).unwrap_or_else(|error|-(error as i32))
 }
 
 #[unsafe(no_mangle)]
@@ -5503,126 +5519,31 @@ pub extern "C" fn kernel_dequeue_signal(
     out_ptr: *mut u8,
     out_capacity: u32,
 ) -> i32 {
-    use crate::signal::SignalHandler;
     use wasm_posix_shared::kernel_scratch_wire as signal_wire;
-
-    if let Err(error) = crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity)
-    {
+    if let Err(error) = crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity) {
         return -(error as i32);
     }
-    // A default action applied here can end the process; the guard applies
-    // that exit to the rest of the table before returning.
+    // Default actions can exit the process. Apply the table-wide exit through
+    // this same guard before any caller can publish a prepared signal.
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
-        Some(pair) => pair,
-        None => return -(Errno::ESRCH as i32),
+    if table.memory_group_task(pid, tid).ok().flatten().is_some() {
+        // Grouped caught-signal custody belongs to its retained completion.
+        // The ordinary scratch dequeue may not consume a second signal.
+        return -(Errno::EOPNOTSUPP as i32);
+    }
+    let (proc, locks) = match table.task_and_advisory_locks(pid, tid) {
+        Some(pair) => pair, None => return -(Errno::ESRCH as i32),
     };
-    loop {
-        // Peek at the lowest-numbered deliverable signal for this thread:
-        // directed-pending bits (ThreadInfo.signals.pending) have priority over
-        // shared-pending bits (Process.signals.pending), but we collapse to a
-        // single bitmask here — the actual dequeue routine below picks the
-        // right queue.
-        let Some(signum) = proc.next_deliverable_signal(tid) else {
-            return 0;
-        };
-        let action = proc.signals.get_action(signum);
-        match action.handler {
-            SignalHandler::Handler(idx) => {
-                // A blocking atomic KMS commit past its point of no return
-                // waits uninterruptibly, as Linux's commit tail does: a
-                // caught signal stays pending until the commit returns.
-                if crate::dri::atomic::waits_uninterruptibly(proc, tid)
-                    // GL parked on a buffer's implicit fences: on Linux the
-                    // call never waits, so it never fails with EINTR.
-                    || crate::dri::implicit_sync::waits_uninterruptibly(proc.pid, tid)
-                {
-                    return 0;
-                }
-                let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
-                    dequeue_signal_for(proc, tid, signum);
-                // The handler interrupts a parked DRM_IOCTL_WAIT_VBLANK
-                // (EINTR); its resolved target must not outlive the call.
-                crate::dri::forget_vblank_waits(proc, tid);
-                // Likewise a parked sync-object wait's fence snapshot.
-                crate::dri::syncobj::forget_task(proc.pid, tid);
-                // ppoll, pselect, and sigsuspend keep their replacement mask
-                // installed until the logical wait finally completes. Form
-                // the handler mask from that current mask and place the same
-                // current mask in the delivery record for normal handler
-                // return. The saved pre-wait mask stays Rust-owned across an
-                // SA_RESTART resubmission and is consumed only by terminal
-                // wait completion or exact host-owned cancellation.
-                let old_mask = proc.install_caught_handler_mask_for(tid, action.mask, signum);
-                // If SA_ONSTACK and alt stack is configured (not SS_DISABLE),
-                // mark that we're executing on the alt stack.
-                const SA_ONSTACK: u32 = 0x08000000;
-                const SS_ONSTACK: u32 = 1;
-                const SS_DISABLE: u32 = 2;
-                // Track whether we're transitioning onto the alt stack
-                let mut switch_to_alt_stack = false;
-                if action.flags & SA_ONSTACK != 0
-                    && proc.alt_stack_flags & SS_DISABLE == 0
-                    && proc.alt_stack_sp != 0
-                {
-                    // Only switch stacks when first entering alt stack (depth 0 → 1).
-                    // Nested signals on the alt stack keep the current __stack_pointer.
-                    if proc.alt_stack_depth == 0 {
-                        switch_to_alt_stack = true;
-                    }
-                    proc.alt_stack_depth += 1;
-                    proc.alt_stack_flags |= SS_ONSTACK;
-                }
-                // Encode into owned bytes before touching the destination.
-                // The host publishes this complete record from one exclusive
-                // lease, so no observer can see a partially replaced wire.
-                let encoded = crate::process_wire::encode_signal_delivery_record(
-                    crate::process_wire::SignalDeliveryRecord {
-                        signum,
-                        handler: idx,
-                        flags: action.flags,
-                        si_value_bits: si_value,
-                        old_mask,
-                        si_code,
-                        siginfo_word_1,
-                        siginfo_word_2,
-                        alt_sp: if switch_to_alt_stack {
-                            proc.alt_stack_sp
-                        } else {
-                            0
-                        },
-                        alt_size: if switch_to_alt_stack {
-                            proc.alt_stack_size
-                        } else {
-                            0
-                        },
-                    },
-                );
-                let buf = unsafe {
-                    slice::from_raw_parts_mut(out_ptr, signal_wire::SIGNAL_DELIVERY_BYTES as usize)
-                };
-                buf.copy_from_slice(&encoded);
-                return signum as i32;
-            }
-            SignalHandler::Default => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-                let mut host = WasmHostIO;
-                match apply_default_signal_action_with_locks(
-                    proc,
-                    advisory_locks,
-                    &mut host,
-                    signum,
-                ) {
-                    DefaultSignalOutcome::Continue => continue,
-                    DefaultSignalOutcome::Stopped | DefaultSignalOutcome::Exited => return 0,
-                }
-            }
-            SignalHandler::Ignore => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-                continue;
-            }
+    match crate::signal::dequeue_caught_signal_for_task(proc, locks, &mut WasmHostIO, tid) {
+        Ok(Some(record)) => {
+            let encoded = crate::process_wire::encode_signal_delivery_record(record);
+            unsafe { slice::from_raw_parts_mut(out_ptr, signal_wire::SIGNAL_DELIVERY_BYTES as usize) }
+                .copy_from_slice(&encoded);
+            record.signum as i32
         }
+        Ok(None) => 0,
+        Err(error) => -(error as i32),
     }
 }
 
@@ -17338,6 +17259,9 @@ fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let Some(proc) = table.get(pid) else { return 0 };
     if proc.state != crate::process::ProcessState::Running
+        // Grouped publication has its own retained ProcessTable completion
+        // identity and physical hold. It must finish through that owner.
+        || table.memory_group_task(pid, tid).ok().flatten().is_some()
         || !proc.is_live_explicit_tid(tid)
         || crate::wait_park::signal_targets_task(proc, tid)
         || proc.memory.has_shared_mapping()

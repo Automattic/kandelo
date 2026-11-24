@@ -146,7 +146,7 @@ describe("exec metadata through explicit image sources", () => {
     expect(worker.readExecPathFromProcess(captureProcessRead(memory), 65536 + 16)).toEqual({ value: "/x" });
   });
 
-  it.each([HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT])("refuses inaccessible virtual paths before launching syscall %i", syscall => {
+  it.each([HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT])("refuses an unowned virtual exec transport before launching syscall %i", syscall => {
     const { fixture, source, ptes, memory } = groupedExecInput();
     const channel = { ...createChannel(7, memory, 6 * 65536), source }, onExec = vi.fn();
     const worker = createWorker({ processes: new Map([[7, { channels: [channel], memory, source }]]), callbacks: { onExec } });
@@ -157,16 +157,35 @@ describe("exec metadata through explicit image sources", () => {
       view.setInt32(CH_STATUS, CHANNEL_STATUS_PENDING, true); view.setUint32(CH_SYSCALL, syscall, true);
       const args = syscall === HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE ? [path, 0, 0] : [-100, path, 0, 0, 0];
       args.forEach((arg, i) => view.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(arg), true));
-      worker.handleSyscall(channel);
+      let failure: unknown;
+      try { worker.handleSyscall(channel); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ cause: { message: 'Grouped channel lost its exact platform binding' } });
       expect(onExec).not.toHaveBeenCalled();
-      expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
-      expect(view.getUint32(CH_ERRNO, true)).toBe(14);
-      expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
+      expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_PENDING);
     } finally { fixture.close(); }
   });
 });
 
 describe("exact virtual exec caller identity", () => {
+  // These are unit checks of the prepared-target and native binding guards.
+  // Synthetic virtual sources cannot dispatch: real SDK tests cover kernel
+  // admission and completion publication through the actual ProcessTable.
+  function prepareVirtualTarget(worker: any, registration: any, channel: any,
+    path: string, argv: string[]) {
+    const request = Object.freeze({ syscallNr: HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE });
+    worker.activeChannelRequests.set(channel, request);
+    const caller = { registration, channel, source: channel.source, request, tid: channel.pid };
+    return launchPreparedExecTarget({
+      kernel: worker,
+      compileModule: bytes => WebAssembly.compile(bytes),
+      ownerPid: channel.pid, pid: channel.pid, callerTid: channel.pid,
+      diagnosticPath: path, argv, envp: [], expectedAbi: ABI_VERSION,
+      prepareInitialTarget: () => worker.execTargetPrepare(channel.pid, channel.pid, -100, path, 0),
+      prepareInterpreterTarget: interpreter => worker.execTargetPrepare(channel.pid, channel.pid, -100, interpreter, 0),
+      commitTarget: (target, size, consumed) => worker.kernelExecCommit(
+        channel.pid, channel.pid, target, size, consumed, channel.memory, caller),
+    }, worker.callbacks.onExec);
+  }
   it.each(["image", "request"] as const)("cancels an old preparation without completing its replacement %s", async replacement => {
     const { fixture, source, memory } = groupedExecInput();
     const channel = { ...createChannel(7, memory, 6 * 65536), source };
@@ -185,7 +204,7 @@ describe("exact virtual exec caller identity", () => {
       view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
       view.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
       view.setBigInt64(CH_ARGS, BigInt(path), true);
-      worker.handleSyscall(channel);
+      const pending = prepareVirtualTarget(worker, registration, channel, "/bin/next", []);
       await flushMicrotasksUntil(() => onExec.mock.calls.length === 1, "exec preflight did not start");
       let replacementView = view;
       if (replacement === "image") {
@@ -200,7 +219,8 @@ describe("exact virtual exec caller identity", () => {
         worker.activeChannelRequests.set(channel, Object.freeze({ ...worker.activeChannelRequests.get(channel) }));
       }
       finish({ onCommitFailure: discard, startAfterCommit: start });
-      await flushMicrotasksUntil(() => discard.mock.calls.length === 1, "stale exec preparation was not discarded");
+      expect(await pending).toBe(-3);
+      expect(discard).toHaveBeenCalledOnce();
       // No I/O or compilation remains after this observed commit refusal.
       // Its remaining Promise reactions drain before the next host task.
       await new Promise<void>(resolve => setImmediate(resolve));
@@ -211,12 +231,13 @@ describe("exact virtual exec caller identity", () => {
     } finally { fixture.close(); }
   });
 
-  it("decodes scattered input and completes a failure for the selected virtual request", async () => {
+  it("decodes scattered input and retains the prepared-target refusal", async () => {
     const { fixture, source, memory } = groupedExecInput();
     const channel = { ...createChannel(7, memory, 6 * 65536), source };
     const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
     const onExec = vi.fn(async () => -2);
-    const worker = createWorker({ processes: new Map([[7, { pid: 7, channels: [channel], memory, source }]]),
+    const registration = { pid: 7, channels: [channel], memory, source };
+    const worker = createWorker({ processes: new Map([[7, registration]]),
       callbacks: { onExec }, kernelMemory, kernelAbiVersion: ABI_VERSION,
       kernelInstance: { exports: { ...preparedExecExports(kernelMemory), kernel_get_process_exit_signal: () => -1 } } });
     try {
@@ -227,10 +248,18 @@ describe("exact virtual exec caller identity", () => {
       processDataView(source).setUint32(array, argument, true); processDataView(source).setUint32(array + 4, 0, true);
       view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true); view.setUint32(CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, true);
       view.setBigInt64(CH_ARGS, BigInt(path), true); view.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(array), true);
-      worker.handleSyscall(channel);
-      await flushMicrotasksUntil(() => view.getUint32(CH_STATUS, true) === CHANNEL_STATUS_COMPLETE, "virtual exec failure did not complete");
+      const captured = captureProcessRead(source);
+      const decodedPath = worker.readExecPathFromProcess(captured, path);
+      const decodedArgv = worker.readStringArrayFromProcess(captured, array, 4);
+      expect(decodedPath).toEqual({ value: "/bin/next" });
+      expect(decodedArgv).toEqual({ values: ["alpha"] });
+      expect(await prepareVirtualTarget(worker, registration, channel,
+        decodedPath.value, decodedArgv.values)).toBe(-2);
       expect(onExec).toHaveBeenCalledOnce(); expect(onExec.mock.calls[0][0].argv).toEqual(["alpha"]);
-      expect(view.getUint32(CH_ERRNO, true)).toBe(2); expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
+      // A prepared-target refusal is not permission to publish an unowned
+      // synthetic channel. The real SDK path checks errno publication.
+      expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_PENDING);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(0n);
     } finally { fixture.close(); }
   });
 });

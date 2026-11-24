@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 31,
+      "required_host_adapter_version": 32,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2550,6 +2550,7 @@
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_epoll_wait_retry_state",
+      "kernel_group_completion",
       "kernel_group_exec_control",
       "kernel_group_exec_target_bind_image",
       "kernel_group_memory_break",
@@ -2715,7 +2716,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 31,
+    "version": 32,
     "worker_features": [
       {
         "bit": 2,
@@ -4494,6 +4495,11 @@
       "kind": "func",
       "name": "kernel_getsockopt",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_completion",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -8484,6 +8490,76 @@
       "version": 2
     },
     "capability_admission": 1,
+    "completion": {
+      "commands": {
+        "ack": 7,
+        "bind": 1,
+        "capture": 2,
+        "complete": 3,
+        "detach": 5,
+        "dispatch": 11,
+        "interrupted": 8,
+        "observed": 6,
+        "poll": 4,
+        "resume": 9,
+        "returned": 12,
+        "signal": 10,
+        "terminal": 13
+      },
+      "effects": {
+        "acknowledged": 9,
+        "cancelObservation": 5,
+        "captured": 1,
+        "discarded": 7,
+        "dispatch": 13,
+        "fatal": 8,
+        "interrupt": 2,
+        "observe": 4,
+        "published": 6,
+        "resumed": 10,
+        "retry": 12,
+        "signal": 11,
+        "stopped": 3
+      },
+      "flags": {
+        "automatic": 4,
+        "invalid": 8,
+        "relisten": 1,
+        "terminal": 2
+      },
+      "reply_bytes": 112,
+      "reply_fields": {
+        "address": 80,
+        "channel": 28,
+        "delay": 96,
+        "effect": 0,
+        "errno": 24,
+        "expected": 84,
+        "flags": 4,
+        "observation": 72,
+        "receipt": 32,
+        "requestFlags": 92,
+        "resource": 64,
+        "syscall": 88,
+        "token": 8,
+        "value": 16
+      },
+      "request_bytes": 80,
+      "request_fields": {
+        "argument": 68,
+        "channel": 36,
+        "command": 32,
+        "errno": 64,
+        "observation": 48,
+        "receipt": 0,
+        "token": 40,
+        "value": 56
+      },
+      "retirement_codes": {
+        "exec": 1262835794,
+        "exit": 1262835796
+      }
+    },
     "driver": {
       "commands": {
         "ack": 4,
@@ -8915,7 +8991,7 @@
         "waitAddress": 72,
         "waitExpected": 76
       },
-      "snapshot_bytes": 80,
+      "snapshot_bytes": 84,
       "snapshot_fields": [
         "group",
         "images",
@@ -8936,7 +9012,8 @@
         "pausedImages",
         "unacknowledgedReplicas",
         "waitQueueLock",
-        "waitQueueNodes"
+        "waitQueueNodes",
+        "pendingCompletions"
       ],
       "status": {
         "imageStopped": 4,

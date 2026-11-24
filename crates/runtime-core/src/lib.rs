@@ -90,6 +90,7 @@ pub mod process;
 pub mod process_snapshot_wire;
 pub mod process_table;
 pub mod group_operation;
+pub mod group_completion;
 pub mod process_wire;
 pub mod device_id;
 pub mod program_preparation;

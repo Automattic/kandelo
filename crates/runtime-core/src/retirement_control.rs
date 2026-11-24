@@ -300,8 +300,7 @@ impl ProcessTable {
                 return self.retirement_wait(record, host);
             }
             let release = if control.image {
-                self.memory_groups()
-                    .storage_action(record, Action::ReleaseStoppedImage, 0, 0, host)
+                self.release_group_storage_image(record, host)
                     .map(|_| ())
             } else {
                 self.release_group_storage_thread(record, host)

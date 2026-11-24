@@ -207,7 +207,7 @@ impl ProcessTable {
         proc.memory.observe_group_virtual_growth(observed_pages)?;
         self.fork_process_for_caller_with_mode(receipt.pid, receipt.tid, wasm_posix_shared::fork_contract::Mode::Fork)
     }
-    fn admitted_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
+    pub(crate) fn admitted_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
         let admission = self.memory_group_task(pid, tid)?.ok_or(Errno::EOPNOTSUPP)?;
         self.memory_group_running_admission(admission)?;
         let proc = self.get(pid).ok_or(Errno::ESRCH)?;

@@ -1,12 +1,7 @@
+import { MEMORY_GROUP_PROTOCOL } from './generated/abi';
 import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupSnapshot } from './memory-group-protocol';
 
-const backingFields = [
-  'group', 'images', 'replicas', 'exposedReplicas', 'quarantinedReplicas',
-  'allocatedPages', 'pendingWaitDrains', 'nativeObservers', 'mappingStagingBytes',
-  'retainedMappingReferences', 'sharedObjects', 'sharedPages', 'sharedImageReferences',
-  'maximumPages', 'highWaterPages', 'physicalExtentPages',
-  'pausedImages', 'unacknowledgedReplicas', 'waitQueueLock', 'waitQueueNodes',
-] as const;
+const backingFields = MEMORY_GROUP_PROTOCOL.storage.snapshot_fields;
 
 /** Independent scalar counters, never a Memory, mapping root or ownership token. */
 export type MemoryGroupBackingUsage = Readonly<Record<typeof backingFields[number], number>>;

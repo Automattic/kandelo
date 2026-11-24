@@ -39,6 +39,7 @@ pub const SNAPSHOT_FIELDS: &[&str] = &[
     "retainedMappingReferences", "sharedObjects", "sharedPages", "sharedImageReferences",
     "maximumPages", "highWaterPages", "physicalExtentPages",
     "pausedImages", "unacknowledgedReplicas", "waitQueueLock", "waitQueueNodes",
+    "pendingCompletions",
 ];
 pub const SNAPSHOT_BYTES: usize = SNAPSHOT_FIELDS.len() * 4;
 

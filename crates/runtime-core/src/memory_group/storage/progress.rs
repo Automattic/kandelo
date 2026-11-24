@@ -8,6 +8,7 @@ pub(crate) enum ProgressTarget {
     Barrier(u32),
     Locks(u32),
     Pool,
+    NotificationQueue,
 }
 
 impl Storage {
@@ -26,6 +27,7 @@ impl Storage {
         let mut address = layout::CONTROL;
         match target {
             ProgressTarget::Pool => {}
+            ProgressTarget::NotificationQueue => { address = layout::WAIT_HEADER; }
             ProgressTarget::Locks(epoch) | ProgressTarget::Barrier(epoch) => {
                 if image.pause != Some(epoch) || !image.source_live {
                     return Err(Errno::ESRCH);

@@ -9,7 +9,9 @@ import { resolveBinary } from '../src/binary-resolver';
 import { VirtualPlatformIO } from '../src/vfs/vfs';
 import { NodeTimeProvider } from '../src/vfs/time';
 import { FixedTreeBackend } from './support/fixed-tree-backend';
-import { MEMORY_GROUP_CONTROL, MEMORY_GROUP_REPLICA_REQUEST, MEMORY_GROUP_REPLICA_ACK, MEMORY_GROUP_ROOT_HEADER_BYTES } from '../src/generated/program-extensions';
+import { MEMORY_GROUP_CONTROL, MEMORY_GROUP_REPLICA_REQUEST, MEMORY_GROUP_REPLICA_ACK, MEMORY_GROUP_ROOT_HEADER_BYTES, MEMORY_GROUP_WAIT_HEADER } from '../src/generated/program-extensions';
+import { CH_STATUS, CH_SYSCALL, CH_REQUEST_FLAGS, CH_RETURN, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE } from '../src/generated/abi';
+import { GroupMemoryTransport, GroupMemoryStorageRefusal, type GroupCompletionRequest } from '../src/group-memory-transport';
 
 it('uses the real Rust kernel for storage preparation, exposure and exact pinned retirement', async () => {
   const io = new VirtualPlatformIO([{ mountPoint: '/', backend: new FixedTreeBackend({ '/': { mode: 0o040755, ino: 1 } }) }], new NodeTimeProvider());
@@ -111,6 +113,104 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
       expect(lease.invokeKernelExportScoped(scope, 'kernel_group_memory_layout_install',
         [lease.exportPointer(0, layout.length), layout.length])).toBe(0);
     }));
+    // Exercise the actual production marshaller and compiled ProcessTable
+    // owner. No TypeScript publication/park/retirement model participates.
+    const transport = new GroupMemoryTransport(group, {
+      memory: token => access.groupMemory(token),
+      settleNative: () => { throw Error('Completion observation must settle through its Rust call owner'); },
+    }, scratch, instance);
+    const completion = (command: number, request: GroupCompletionRequest = {}, identity = receipt) => {
+      // Expected Rust refusals are result values at the ingress boundary.
+      // An uncaught callback exception correctly poisons the real kernel gate.
+      const result = enter(scope => {
+        try { return transport.completion(identity, command, { scope, instance }, request); }
+        catch (error) {
+          if (error instanceof GroupMemoryStorageRefusal) return error;
+          throw error;
+        }
+      });
+      if (result instanceof GroupMemoryStorageRefusal) throw result;
+      return result;
+    };
+    const cp = P.completion;
+    const completionWord = (address: number): Int32Array => {
+      const pte = Atomics.load(new Uint32Array(memory.buffer), (root + MEMORY_GROUP_ROOT_HEADER_BYTES + Math.floor(address / 65536) * 4) / 4);
+      return new Int32Array(memory.buffer, (pte & 0xffff0000) + address % 65536, 1);
+    };
+    const mailbox = 65536;
+    const pending = () => {
+      Atomics.store(completionWord(mailbox + CH_SYSCALL), 0, ABI_SYSCALLS.Read);
+      Atomics.store(completionWord(mailbox + CH_REQUEST_FLAGS), 0, 0);
+      Atomics.store(completionWord(mailbox + CH_STATUS), 0, CHANNEL_STATUS_PENDING);
+    };
+    const completionHolds = () => enter(scope => {
+      const snapshot = transport.trySnapshot({ scope, instance });
+      if (snapshot === 'busy') throw Error('Unexpected busy completion inspection');
+      return snapshot.pendingCompletions;
+    });
+    expect(() => completion(cp.commands.bind, { channel: mailbox + 4 })).toThrow(GroupMemoryStorageRefusal);
+    expect(completion(cp.commands.bind, { channel: mailbox }).effect).toBe(cp.effects.acknowledged);
+    pending();
+    const captured = completion(cp.commands.capture);
+    expect(captured.effect).toBe(cp.effects.captured);
+    expect(captured.token).toBeGreaterThan(0n);
+    expect(completionHolds()).toBe(1);
+    expect(() => completion(cp.commands.capture)).toThrow(GroupMemoryStorageRefusal);
+    expect(() => completion(cp.commands.complete, { token: captured.token, value: 1n })).toThrow(GroupMemoryStorageRefusal);
+    expect(completion(cp.commands.dispatch, { token: captured.token }).effect).toBe(cp.effects.dispatch);
+    const fullValue = 0x1234567800000042n;
+    const published = completion(cp.commands.complete, { token: captured.token, value: fullValue });
+    expect(published.effect).toBe(cp.effects.published);
+    expect(published.value).toBe(fullValue);
+    expect(published.flags & cp.flags.relisten).toBe(cp.flags.relisten);
+    const low = Atomics.load(completionWord(mailbox + CH_RETURN), 0) >>> 0;
+    const high = Atomics.load(completionWord(mailbox + CH_RETURN + 4), 0) >>> 0;
+    expect(BigInt(high) << 32n | BigInt(low)).toBe(fullValue);
+    expect(Atomics.load(completionWord(mailbox + CH_STATUS), 0)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(completionHolds()).toBe(1);
+    expect(completion(cp.commands.ack, { token: captured.token }).effect).toBe(cp.effects.acknowledged);
+    expect(completionHolds()).toBe(0);
+    expect(() => completion(cp.commands.poll, { token: captured.token })).toThrow(GroupMemoryStorageRefusal);
+
+    pending();
+    const cancelledCompletion = completion(cp.commands.capture);
+    expect(completion(cp.commands.dispatch, { token: cancelledCompletion.token }).effect).toBe(cp.effects.dispatch);
+    // The queue address below is the canonical generated WAIT_HEADER, not the
+    // allocator lock. It must remain locked until after DETACH selects cancel.
+    const waitHeader = new Int32Array(memory.buffer, MEMORY_GROUP_WAIT_HEADER, 1);
+    Atomics.store(waitHeader, 0, 1);
+    let observed = false;
+    try {
+      const waiting = completion(cp.commands.complete, { token: cancelledCompletion.token, value: -0x1234567800000042n });
+      expect(waiting.effect).toBe(cp.effects.observe);
+      expect(waiting.receipt).toEqual(receipt);
+      expect(waiting.resource).toBe(resource);
+      expect(waiting.observation).toBeGreaterThan(0n);
+      const observation = transport.completionObservation(waiting, () => { observed = true; });
+      const wait = observation.arm(waiting.expected, waiting.delay);
+      expect(wait.async).toBe(true);
+      expect(completion(cp.commands.detach).effect).toBe(cp.effects.acknowledged);
+      expect(completion(cp.commands.poll, { token: cancelledCompletion.token }).effect).toBe(cp.effects.cancelObservation);
+      expect(() => completion(cp.commands.ack, { token: cancelledCompletion.token })).toThrow(GroupMemoryStorageRefusal);
+      expect(() => completion(cp.commands.observed, { token: cancelledCompletion.token, observation: waiting.observation + 1n })).toThrow(GroupMemoryStorageRefusal);
+      expect(completionHolds()).toBe(1);
+      observation.wake();
+      if (wait.async) await wait.value;
+      expect(observed).toBe(true);
+      const discarded = completion(cp.commands.observed, { token: cancelledCompletion.token, observation: waiting.observation });
+      expect(discarded.effect).toBe(cp.effects.discarded);
+      expect(Atomics.load(completionWord(mailbox + CH_STATUS), 0)).toBe(CHANNEL_STATUS_PENDING);
+      expect(completionHolds()).toBe(1);
+      expect(completion(cp.commands.ack, { token: cancelledCompletion.token }).effect).toBe(cp.effects.acknowledged);
+      expect(completionHolds()).toBe(0);
+    } finally {
+      Atomics.store(waitHeader, 0, 0);
+      Atomics.notify(waitHeader, 0);
+    }
+    // Leave an idle binding behind deliberately. Actual physical retirement,
+    // including the normal raw release boundary, must prune it without a host
+    // DETACH callback; otherwise old task metadata accumulates across images.
+    expect(completion(cp.commands.bind, { channel: mailbox }).effect).toBe(cp.effects.acknowledged);
     const driver = (command: number, token = 0n, syscall = ABI_SYSCALLS.Mmap, args: readonly bigint[] = [], argument = 0,
       identity = receipt, requestKind: number = P.driver.kinds.mapping) => enter(scope => scratch.withLease(lease => {
       const WIRE_PAYLOAD = P.driver.payload_bytes;
@@ -282,6 +382,7 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
     expect(storage(receipt, P.storage.actions.status).status).toBe(P.storage.reply_bytes);
     expect(retire(commands.poll).effect).toBe(P.driver.effects.complete);
     expect(storage(receipt, P.storage.actions.status).status).toBe(-ERRNO.ESRCH);
+    expect(() => completion(cp.commands.detach)).toThrow(GroupMemoryStorageRefusal);
     expect(retire(commands.ack).status).toBe(P.driver.reply_bytes);
     expect(retire(commands.ack).status).toBe(-ERRNO.ESRCH);
     expect(scalar('kernel_memory_group_storage_drop', group)).toBe(0);

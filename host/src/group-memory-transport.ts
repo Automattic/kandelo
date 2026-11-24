@@ -37,19 +37,23 @@ interface ImageTransport {
   readonly live: { value: boolean };
   source?: GroupProcessAddressSpace;
 }
-export interface GroupMemoryBackingSnapshot {
-  readonly group: number; readonly images: number; readonly replicas: number;
-  readonly exposedReplicas: number; readonly quarantinedReplicas: number; readonly allocatedPages: number;
-  readonly pendingWaitDrains: number; readonly nativeObservers: number; readonly mappingStagingBytes: number;
-  readonly retainedMappingReferences: number; readonly sharedObjects: number; readonly sharedPages: number;
-  readonly sharedImageReferences: number; readonly maximumPages: number; readonly highWaterPages: number; readonly physicalExtentPages: number;
-  readonly pausedImages: number; readonly unacknowledgedReplicas: number; readonly waitQueueLock: number; readonly waitQueueNodes: number;
-}
+export type GroupMemoryBackingSnapshot = Readonly<Record<typeof P.storage.snapshot_fields[number], number>>;
+
 export interface GroupOperationRequest {
   readonly kind: number; readonly syscall: number; readonly args: readonly bigint[];
   readonly payload?: Uint8Array;
 }
 export interface GroupExecControlEffect extends GroupOperationEffect { readonly receipt: MemoryGroupTaskReceipt }
+export interface GroupCompletionRequest {
+  readonly channel?: number; readonly token?: bigint; readonly observation?: bigint;
+  readonly value?: bigint; readonly errno?: number; readonly argument?: number;
+}
+export interface GroupCompletionEffect {
+  readonly receipt: MemoryGroupTaskReceipt; readonly effect: number; readonly flags: number;
+  readonly token: bigint; readonly value: bigint; readonly errno: number; readonly channel: number;
+  readonly resource: bigint; readonly observation: bigint; readonly address: number;
+  readonly expected: number; readonly syscall: number; readonly requestFlags: number; readonly delay: number;
+}
 export interface GroupOperationEffect {
   readonly effect: number; readonly flags: number; readonly operation: bigint;
   readonly value: number; readonly errno: number; readonly length: number; readonly delay: number;
@@ -185,6 +189,71 @@ export class GroupMemoryTransport {
       return lease.copyOut(P.receipt_bytes, count);
     });
     return this.#operationReply(bytes, receipt, receipt.serial, 'retirement');
+  }
+
+  /** The actual kernel selects completion progression. This adapter copies the
+   * versioned frame and preserves i64 results without a Number conversion. */
+  completion(receipt: MemoryGroupTaskReceipt, command: number, entry: GroupMemoryEntry,
+    request: GroupCompletionRequest = {}): GroupCompletionEffect {
+    // Representation checks only. Rust validates commands, task identity and
+    // every permitted field combination before changing transaction state.
+    if ([command, request.channel ?? 0, request.errno ?? 0, request.argument ?? 0]
+        .some(value => !Number.isSafeInteger(value) || value < 0 || value > 0xffffffff)
+        || [request.token ?? 0n, request.observation ?? 0n]
+          .some(value => typeof value !== 'bigint' || value < 0n || value > 0xffffffffffffffffn)
+        || typeof (request.value ?? 0n) !== 'bigint'
+        || (request.value ?? 0n) < -(1n << 63n) || (request.value ?? 0n) >= 1n << 63n) {
+      this.#fault('Unrepresentable completion frame scalar');
+    }
+    const protocol = P.completion, fields = protocol.request_fields;
+    const wire = new Uint8Array(protocol.request_bytes), input = new DataView(wire.buffer);
+    wire.set(encodeMemoryGroupReceipt(receipt), fields.receipt);
+    input.setUint32(fields.command, command, true);
+    input.setUint32(fields.channel, request.channel ?? 0, true);
+    input.setBigUint64(fields.token, request.token ?? 0n, true);
+    input.setBigUint64(fields.observation, request.observation ?? 0n, true);
+    input.setBigInt64(fields.value, request.value ?? 0n, true);
+    input.setUint32(fields.errno, request.errno ?? 0, true);
+    input.setUint32(fields.argument, request.argument ?? 0, true);
+    const bytes = this.#scratch.withLease(lease => {
+      lease.copyFrom(wire);
+      const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_group_completion', [
+        lease.exportPointer(0, wire.length), wire.length,
+        lease.exportPointer(wire.length, protocol.reply_bytes), protocol.reply_bytes,
+      ]);
+      if (count < 0) throw new GroupMemoryStorageRefusal(-count);
+      if (count !== protocol.reply_bytes) this.#fault('Invalid completion reply extent');
+      return lease.copyOut(wire.length, count);
+    });
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), out = protocol.reply_fields;
+    const effect = view.getUint32(out.effect, true);
+    if (!Object.values(protocol.effects).includes(effect as any)) this.#fault('Invalid completion effect');
+    // A whole-process signal barrier can select another exact thread's native
+    // blocker. The kernel returns that task's receipt, not the caller's TID.
+    const selected = decodeMemoryGroupReceipt(bytes.slice(out.receipt, out.receipt + P.receipt_bytes),
+      effect === protocol.effects.interrupt
+        ? { group: receipt.group, pid: receipt.pid, generation: receipt.generation,
+          tid: view.getUint32(out.receipt + P.receipt_fields.tid, true) } : receipt);
+    const token = view.getBigUint64(out.token, true);
+    if (effect !== protocol.effects.interrupt && request.token !== undefined && request.token !== 0n
+        && token !== request.token) this.#fault('Wrong completion reply token');
+    return Object.freeze({ receipt: selected, effect, flags: view.getUint32(out.flags, true), token,
+      value: view.getBigInt64(out.value, true), errno: view.getUint32(out.errno, true),
+      channel: view.getUint32(out.channel, true), resource: view.getBigUint64(out.resource, true),
+      observation: view.getBigUint64(out.observation, true), address: view.getUint32(out.address, true),
+      expected: view.getUint32(out.expected, true), syscall: view.getUint32(out.syscall, true),
+      requestFlags: view.getUint32(out.requestFlags, true), delay: view.getUint32(out.delay, true) });
+  }
+
+  /** Bind the actual engine observation to the Rust-selected physical word.
+   * Its settlement callback reports a fact; only Rust can release its pin or
+   * authorize a result. Repeated poll replies must reuse the same observation. */
+  completionObservation(effect: GroupCompletionEffect, settled: () => void): NativeI32Observation {
+    if (effect.effect !== P.completion.effects.observe || effect.observation === 0n) {
+      this.#fault('Missing kernel completion observation');
+    }
+    const memory = this.host.memory(effect.resource);
+    return new NativeI32Observation(new Int32Array(memory.buffer, effect.address, 1), settled);
   }
   detachRetiringImage(handle: PreparedGroupReplica): void { this.#detachImage(handle); }
   forgetRetiredExecution(handle: PreparedGroupReplica, image: boolean): readonly PreparedGroupReplica[] {
@@ -357,13 +426,15 @@ export class GroupMemoryTransport {
     for (const [key, replica] of this.#replicas) if (replica.descriptor.root === root) { replicas.push(key); this.#replicas.delete(key); }
     this.#images.delete(root); return { replicas, pages: Number(result.value) };
   }
-  prepareChannelObservation(handle: PreparedGroupReplica, address: number, queue: boolean, entry: GroupMemoryEntry): NativeI32Observation {
-    const result = this.action(this.receipt(handle), queue ? P.storage.actions.pinQueue : P.storage.actions.pinChannel, entry, 0n, address);
+  prepareChannelObservation(handle: PreparedGroupReplica, receipt: MemoryGroupTaskReceipt, address: number, entry: GroupMemoryEntry): NativeI32Observation {
+    const result = this.action(receipt, P.storage.actions.pinChannel, entry, 0n, address);
     if (result.status !== 0) this.#fault(`Kernel channel observation refused: ${result.status}`);
-    return this.#nativeObservation(handle, result);
+    // The handle identifies the actual backing object; the exact task receipt
+    // identifies whose Rust pin must survive until native settlement.
+    return this.#nativeObservation(handle, result, receipt);
   }
-  #nativeObservation(handle: PreparedGroupReplica, result: { bytes: Uint8Array; value: bigint }): NativeI32Observation {
-    const receipt = this.receipt(handle), view = new DataView(result.bytes.buffer, result.bytes.byteOffset, result.bytes.byteLength);
+  #nativeObservation(handle: PreparedGroupReplica, result: { bytes: Uint8Array; value: bigint }, receipt = this.receipt(handle)): NativeI32Observation {
+    const view = new DataView(result.bytes.buffer, result.bytes.byteOffset, result.bytes.byteLength);
     const address = view.getUint32(P.storage.reply_fields.waitAddress, true);
     const memory = this.host.memory(this.#replica(handle).descriptor.resource);
     return new NativeI32Observation(new Int32Array(memory.buffer, address, 1), () => { this.host.settleNative(receipt, result.value); });

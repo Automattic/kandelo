@@ -689,7 +689,12 @@ describe("clone transport with virtual images", () => {
     (h.worker as any).callbacks.onGroupedClone = callback ? grouped : undefined;
     processDataView(source).setInt32(parentTidPointer, 77, true);
     try {
-      expect(() => h.dispatch(args())).toThrow('Grouped mapping has no exact registered image/request');
+      let failure: unknown;
+      try { h.dispatch(args()); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({
+        message: 'void kernel ingress syscall channel pid=47 failed',
+        cause: { message: 'Grouped channel lost its exact platform binding' },
+      });
       expect(h.kernelHandleChannel).not.toHaveBeenCalled();
       expect(grouped).not.toHaveBeenCalled();
       expect((h.worker as any).callbacks.onClone).not.toHaveBeenCalled();

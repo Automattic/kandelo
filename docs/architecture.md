@@ -2514,6 +2514,18 @@ Opt-in shared-memory groups belong to Rust's `ProcessTable` and `MemoryGroups`, 
 
 Host-adapter 29 supplies raw bounded reads, writes, copies, growth and atomics over a kernel-issued backing resource. These imports bridge separate Wasm memories: the kernel's own pointers cannot directly address the group's `WebAssembly.Memory`. TypeScript retains the actual Memory, Worker and native Promise objects, transports kernel-issued descriptors and reports genuine completion. It does not choose physical pages, reconstruct mapping effects or decide when storage can be reused. Graphics mappings retain their Rust BO/object ownership; host device staging is independent. Program ABI 56 is unchanged. The public Node/browser launch API selects this backend only through explicit opt-in. See [shared-memory groups](shared-memory-groups.md) for the trust boundary, scope and validation requirements.
 
+Host-adapter 32 retains grouped syscall completions in the actual
+`ProcessTable`. Rust captures and consumes request flags, permits dispatch,
+retains full-width results and prepared signals, and selects publication,
+stop holds, native queue observations, interruption, terminal unwind and
+discard. A prepared admission can bind its native channel before Worker
+construction; it cannot dispatch until Rust starts the task. Completion holds
+prevent control/image reuse independently of native pins. Actual thread exit,
+process exit and exec commit grant the corresponding terminal authority.
+The host binds real objects, copies detached outputs, executes requested
+platform effects and reports exact observation settlement. An acknowledgement
+releases the completion hold; it proves neither Worker stop nor page reuse.
+
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
 ```
@@ -7689,9 +7701,10 @@ does. The host validates every guest output range before asking the kernel to
 consume a record, so an `EFAULT` cannot lose child status or reap a zombie.
 
 Default stop actions park execution cooperatively at the syscall boundary. The
-kernel emits a process-transition event, and the shared Node/browser host holds
-prepared completions by exact channel identity, including every pthread
-channel, until SIGCONT. SIGCONT changes state immediately even when blocked,
+kernel emits a process-transition event. The shared Node/browser host holds
+ordinary completions by exact channel identity; grouped completions and their
+all-thread resume signal barrier remain in `ProcessTable` until SIGCONT.
+SIGCONT changes state immediately even when blocked,
 ignored, or caught; SIGKILL can terminate a stopped process. Current Wasm
 workers do not provide arbitrary-instruction preemption, so CPU-bound code that
 never reaches a syscall cannot be suspended immediately; that boundary is

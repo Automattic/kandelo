@@ -218,6 +218,7 @@ impl Storage {
                     references: References::Unbound,
                     native_join: false,
                     worker_fact: 0,
+                    pending_completions: 0,
                 },
             )?;
             let allocation = self.pool.as_mut().ok_or(Errno::EAGAIN)?.allocate_image(

@@ -71,6 +71,7 @@ impl Storage {
             || image.pause.is_some()
             || image.mapping.is_some()
             || self.image_has_operations(key)
+            || self.replicas.values().any(|replica| replica.image == key && replica.pending_completions != 0)
             || self.pins.values().any(|pin| pin.image == key)
             || self
                 .replicas

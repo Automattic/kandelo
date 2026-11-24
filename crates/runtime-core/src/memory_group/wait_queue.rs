@@ -188,6 +188,39 @@ pub(crate) fn stop(
     })
 }
 
+/// The actual kernel publishes a retained result while owning Q. A busy lock
+/// is the only retryable outcome; foreign failures after entry are uncertain.
+pub(crate) fn publish<M: PhysicalMemory + ?Sized>(memory: &mut M, address: u32,
+    publication: impl FnOnce(&mut M) -> Result<(), Errno>,
+) -> Result<(), super::storage::completion::PublicationFailure> {
+    use super::storage::completion::PublicationFailure as F;
+    if memory.atomic_compare_exchange(Q, 0, 1).map_err(F::Fault)? != 0 { return Err(F::Busy); }
+    let result = (|| {
+        validate(memory)?;
+        publication(memory)?;
+        let mut previous = 0;
+        let mut at = memory.atomic_load(Q + 4)?;
+        let mut selected = false;
+        while at != 0 {
+            let next = memory.atomic_load(at + 4)?;
+            if !selected && memory.atomic_load(at + 8)? == address {
+                memory.atomic_store(if previous == 0 { Q + 4 } else { previous + 4 }, next)?;
+                if memory.atomic_load(Q + 8)? == at { memory.atomic_store(Q + 8, previous)?; }
+                memory.atomic_store(at, L::WAIT_NOTIFIED)?;
+                memory.atomic_notify(at, 1)?;
+                selected = true;
+            } else { previous = at; }
+            at = next;
+        }
+        Ok(())
+    })();
+    let unlocked = memory.atomic_store(Q, 0).and_then(|()| memory.atomic_notify(Q, 1));
+    result.map_err(F::Fault)?;
+    unlocked.map_err(F::Fault)?;
+    memory.atomic_notify(address, 1).map_err(F::Fault)?;
+    Ok(())
+}
+
 /// Enumerate every allocated node, not just the linked queue: notification
 /// and stop leave native target pins until the waiting SDK call returns.
 pub(crate) fn visit_pins(

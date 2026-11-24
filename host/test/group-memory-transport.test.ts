@@ -115,18 +115,48 @@ describe.each([4, 8] as const)('Rust group storage transport at kernel pointer w
     const h = harness(width), handle = h.prepare();
     h.view.setBigUint64(h.fields.value, (1n << 62n) + 9n, true);
     h.view.setUint32(h.fields.waitAddress, h.fixture.launch.expectation.replica + 8, true);
-    const observation = h.enter(entry => h.store.prepareChannelObservation(handle, 0, false, entry));
+    const observation = h.enter(entry => h.store.prepareChannelObservation(handle, h.receipt, 0, entry));
     expect(h.settleNative).not.toHaveBeenCalled();
     observation.cancelUnarmed();
     expect(h.settleNative).toHaveBeenCalledExactlyOnceWith(h.receipt, (1n << 62n) + 9n);
     expect(() => observation.cancelUnarmed()).toThrow();
   });
 
+  it('binds a pthread observation to its exact task instead of the leader handle', () => {
+    const h = harness(width);
+    const handle = h.prepare();
+    const thread = { ...h.receipt, tid: 101, serial: h.receipt.serial + 1n };
+    h.packet.set(encodeMemoryGroupReceipt(thread));
+    h.view.setBigUint64(h.fields.value, 19n, true);
+    h.view.setUint32(h.fields.waitAddress, h.fixture.launch.expectation.replica + 8, true);
+    h.implementations.kernel_memory_group_storage_action.mockImplementation((input, length, action, _token,
+      argument, output, capacity) => {
+      expect(new Uint8Array(h.memory.buffer, Number(input), length)).toEqual(encodeMemoryGroupReceipt(thread));
+      expect(action).toBe(P.storage.actions.pinChannel);
+      expect(argument).toBe(65536);
+      new Uint8Array(h.memory.buffer, Number(output), capacity).set(h.packet);
+      return capacity;
+    });
+    const observation = h.enter(entry => h.store.prepareChannelObservation(handle, thread, 65536, entry));
+    observation.cancelUnarmed();
+    expect(h.settleNative).toHaveBeenCalledExactlyOnceWith(thread, 19n);
+  });
+
+  it('does not resolve a backing object after Rust refuses the exact task pin', () => {
+    const h = harness(width), handle = h.prepare();
+    const thread = { ...h.receipt, tid: 101, serial: h.receipt.serial + 1n };
+    h.actionStatus(-ERRNO.ESRCH);
+    expect(() => h.enter(entry => h.store.prepareChannelObservation(handle, thread, 65536, entry)))
+      .toThrow('Kernel channel observation refused');
+    expect(h.resources).not.toHaveBeenCalled();
+    expect(h.settleNative).not.toHaveBeenCalled();
+  });
+
   it('holds a real native wait until its actual settlement after transport closure', async () => {
     const h = harness(width), handle = h.prepare();
     h.view.setBigUint64(h.fields.value, 11n, true);
     h.view.setUint32(h.fields.waitAddress, h.fixture.launch.expectation.replica + 8, true);
-    const observation = h.enter(entry => h.store.prepareChannelObservation(handle, 0, false, entry));
+    const observation = h.enter(entry => h.store.prepareChannelObservation(handle, h.receipt, 0, entry));
     const wait = observation.arm(0, 1000); expect(wait.async).toBe(true);
     h.store.close(); expect(h.settleNative).not.toHaveBeenCalled();
     observation.wake(); if (wait.async) await wait.value;

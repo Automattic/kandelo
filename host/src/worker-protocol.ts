@@ -5,7 +5,7 @@ import type {
 import type {
   ForkExternrefImportWake,
 } from "./fork-externref-import-mailbox";
-import type { ProcessForkMode } from "./generated/abi";
+import { MEMORY_GROUP_PROTOCOL, type ProcessForkMode } from "./generated/abi";
 
 export type ForkMemoryOwnership = "copied" | "borrowed";
 
@@ -19,9 +19,9 @@ export type ForkMemoryOwnership = "copied" | "borrowed";
  * consumes it must share one token. A duplicated literal would fail as a
  * silent timeout and lose the exact ownership fence for that old generation.
  */
-export const EXEC_RETIRE_SIGNAL_CODE = 0x4b455852; // "KEXR"
+export const EXEC_RETIRE_SIGNAL_CODE = MEMORY_GROUP_PROTOCOL.completion.retirement_codes.exec;
 /** Host-only unwind after Rust already committed exit; never issue SYS_EXIT. */
-export const EXIT_RETIRE_SIGNAL_CODE = 0x4b455854; // "KEXT"
+export const EXIT_RETIRE_SIGNAL_CODE = MEMORY_GROUP_PROTOCOL.completion.retirement_codes.exit;
 
 export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage

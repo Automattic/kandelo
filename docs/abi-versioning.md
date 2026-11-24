@@ -16,6 +16,26 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Kernel-owned grouped completion control
+
+Host-adapter 32 adds optional `kernel_group_completion(input_ptr, input_len,
+out_ptr, capacity) -> i32`. Rust declares its 80-byte request and 112-byte
+reply, commands, effects and retirement markers. Replies preserve all signed
+64-bit result bits. The host must rebuild with the kernel; program ABI 56
+and its supported digest remain unchanged.
+
+The actual `ProcessTable` retains each grouped request, consumed flags,
+result, prepared signal and exact native observation. Binding a prepared
+task permits transport setup, not request capture or dispatch. Actual Rust
+thread exit, process exit and exec commit grant their distinct terminal
+unwinds. The ordinary signal dequeue refuses grouped tasks, and grouped
+kernel-owned transfers complete through this owner rather than the direct
+host publication import. Copied backing inspection appends
+`pendingCompletions`; physical retirement removes idle completion metadata.
+Native settlement and host acknowledgement remain separate from permission
+to publish or reclaim storage. These interfaces do not establish final
+desktop, browser-memory, conformance or performance acceptance.
+
 ## Descriptor-backed SDK group variants
 
 Host-adapter 26 adds optional `kernel_group_exec_target_bind_image(pid, target, imageTarget, group)`. Both retained targets must have the same live execution owner. Rust admits the ordinary source and grouped implementation, verifies the SDK declaration’s source SHA-256 against the retained source, and verifies the implementation has not changed since observation. The derived executable retains the source inode, permissions, credentials and diagnostic path while holding its implementation OFD independently of the temporary target. Binding creates no group membership; initial, spawn and exec commit keep their existing authority. Program ABI 56 and its frozen contract remain unchanged.

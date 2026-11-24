@@ -28,6 +28,7 @@ mod thread;
 mod reclaim;
 mod progress;
 mod inspection;
+pub(crate) mod completion;
 mod operation;
 #[cfg(test)]
 mod contract_tests;
@@ -92,6 +93,7 @@ struct Replica {
     references: References,
     native_join: bool,
     worker_fact: u32,
+    pending_completions: u32,
 }
 struct NativePin {
     image: ImageKey,
@@ -300,6 +302,7 @@ impl Storage {
                 references: References::Unbound,
                 native_join: false,
                 worker_fact: 0,
+                pending_completions: 0,
             },
         )?;
         // All metadata custody precedes the one physical reservation. Busy and
@@ -364,6 +367,7 @@ impl Storage {
                 references: References::Unbound,
                 native_join: false,
                 worker_fact: 0,
+                pending_completions: 0,
             },
         )?;
         entry.value_mut().scratch = Some(self.pool()?.allocate_contiguous(memory, pages)?);
@@ -449,7 +453,11 @@ impl Storage {
             return Err(Errno::EBUSY);
         }
         let root = admission.record().pid == admission.record().tid;
-        if root && self.image_has_operations(key) { return Err(Errno::EAGAIN); }
+        if self.owned(admission)?.pending_completions != 0
+            || root && (self.image_has_operations(key)
+                || self.replicas.values().any(|replica| replica.image == key && replica.pending_completions != 0)) {
+            return Err(Errno::EAGAIN);
+        }
         if root && (image.exposed || image.replicas.len() != 1) {
             return Err(Errno::EBUSY);
         }

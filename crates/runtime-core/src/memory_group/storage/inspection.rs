@@ -45,6 +45,7 @@ impl Storage {
             // Observed atomics only. Inspection neither takes nor releases Q,
             // and these copied words never authorize storage reclamation.
             memory.atomic_load(layout::WAIT_HEADER)?, memory.atomic_load(layout::WAIT_HEADER + 16)?,
+            count(self.replicas.values().map(|member| member.pending_completions as usize).sum())?,
         ])
     }
     pub(crate) fn status(&self, admission: GroupAdmission) -> Result<u32, Errno> {
@@ -149,14 +150,14 @@ mod tests {
         let descriptor = storage.descriptor(root).unwrap();
         let epoch = storage.begin_image_pause(&mut memory, root).unwrap();
         let snapshot = storage.snapshot(&mut memory).unwrap();
-        assert_eq!(&snapshot[16..], &[1, 1, 0, 0]);
+        assert_eq!(&snapshot[16..], &[1, 1, 0, 0, 0]);
         memory.atomic_store(descriptor.replica + layout::REPLICA_ACK, epoch).unwrap();
         memory.atomic_store(layout::WAIT_HEADER, 1).unwrap();
         let snapshot = storage.snapshot(&mut memory).unwrap();
-        assert_eq!(&snapshot[16..], &[1, 0, 1, 0]);
+        assert_eq!(&snapshot[16..], &[1, 0, 1, 0, 0]);
         assert_eq!(memory.atomic_load(layout::WAIT_HEADER).unwrap(), 1);
         memory.atomic_store(layout::WAIT_HEADER, 0).unwrap();
         storage.resume_image(&mut memory, root, epoch).unwrap();
-        assert_eq!(&storage.snapshot(&mut memory).unwrap()[16..], &[0, 0, 0, 0]);
+        assert_eq!(&storage.snapshot(&mut memory).unwrap()[16..], &[0, 0, 0, 0, 0]);
     }
 }

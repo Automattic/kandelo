@@ -8,7 +8,7 @@ const reply = () => ({
     allocatedPages: 20, pendingWaitDrains: 0, nativeObservers: 0, mappingStagingBytes: 0,
     retainedMappingReferences: 0, sharedObjects: 1, sharedPages: 2, sharedImageReferences: 1,
     maximumPages: 2048, highWaterPages: 20, physicalExtentPages: 32,
-    pausedImages: 0, unacknowledgedReplicas: 0, waitQueueLock: 0, waitQueueNodes: 0 },
+    pausedImages: 0, unacknowledgedReplicas: 0, waitQueueLock: 0, waitQueueNodes: 0, pendingCompletions: 0 },
 });
 
 it('copies and freezes scalar inspection without retaining extra payloads', () => {

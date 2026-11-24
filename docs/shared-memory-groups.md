@@ -44,7 +44,9 @@ Post-construction image and thread retirement also use kernel-owned continuation
 
 Process-exit stopping and publication use a kernel continuation as well. It retains the exit status and parent identity before native reaping, selects stop/progress effects, and requires exact Worker-stop proof before returning the exit event for host notification. A stopped event cannot be consumed by a replacement generation.
 
-The control-flow migration is not complete. Host launch/session wrappers still select some transaction progression, completion-publication and failure outcomes. Artifact/layout rules and group-path execution algorithms also remain outside their intended Rust owners. Host address translation and ordered queue notification now execute shared stateless Rust SDK primitives against the admitted foreign memory; that extraction owns no pages, membership or lifecycle. Its bounded publication callback reports failure as data so Rust releases its own queue lock. The normal generator rejects start/data initialization, memory growth and mutable instance writes. Platform objects and native completion observations remain host responsibilities. The remaining ownership gaps are implementation work, not browser requirements.
+Grouped completion authority also belongs to the actual `ProcessTable`. It retains the exact task/channel/request, full-width result, prepared signal and native observation identity. Rust consumes flags and grants dispatch, publication, stop holds, interruption, discard and the terminal unwind selected by actual thread exit, process exit or exec commit. Native Promise settlement grants no publication or reuse permission. A completion holds physical controls independently of native pins until Rust accepts its final acknowledgement; physical release prunes idle metadata without a later host callback. Ordinary signal dequeue and direct host transfer publication cannot bypass this owner for grouped tasks.
+
+The control-flow migration is not complete. Host launch/session wrappers still select some transaction progression and failure outcomes. Artifact/layout rules and group-path execution algorithms also remain outside their intended Rust owners. Host address translation and ordered queue notification execute shared stateless Rust SDK primitives against the admitted foreign memory; that extraction owns no pages, membership or lifecycle. Its bounded publication callback reports failure as data so Rust releases its own queue lock. The normal generator rejects start/data initialization, memory growth and mutable instance writes. Platform objects and native completion observations remain host responsibilities. The remaining ownership gaps are implementation work, not browser requirements.
 
 Grouped mappings must enter the Rust physical/PTE transaction owner. The ordinary direct/synthetic mmap, munmap, mremap and mprotect entries refuse grouped images; direct brk leaves the break unchanged. SysV attachment to a grouped image is unsupported and is refused by the kernel before attachment accounting, rather than entering the legacy synthetic-mmap and byte-mirror path. Ordinary processes retain that path. This refusal does not add SysV sharing to the grouped preview.
 
@@ -81,7 +83,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 31, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 32, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -488,12 +490,14 @@ current supported surface.
 
 ### Grouped channel publication
 
-The host prepares independent payload bytes and every source/destination view
-before taking the ordered wait-queue mutex or changing a reply buffer. A view
-allocation failure therefore leaves both payload and channel status unchanged,
-including replies that cross noncontiguous physical pages. Queue validation
-precedes payload and status stores; waking a node does not retire the returning
-native waiter or release its physical pin.
+The host materializes detached syscall outputs before asking the actual Rust
+completion owner to publish. Rust retains the result and prepared signal,
+preflights physical destinations and publishes through its ordered wait queue.
+Queue contention selects an exact native observation; its real settlement is
+reported before Rust decides whether to retry, hold, publish or discard.
+Queue validation precedes payload and status stores. Waking a node does not
+retire the returning native waiter or release its physical pin. An uncertain
+foreign write quarantines the image and retains its charges.
 
 
 Private Worker IPC requests wake the kernel's native observer directly. Replies

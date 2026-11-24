@@ -660,6 +660,404 @@ mod tests {
         store.execution_word(&memory, admission, address).unwrap()
     }
 
+    fn completion_capture<H: HostIO>(f: &mut Fixture<H>, syscall: u32, flags: u32)
+        -> crate::group_completion::Captured {
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        f.process.table.bind_group_completion_channel(f.parent, channel).unwrap();
+        for (offset, value) in [(wasm_posix_shared::channel::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (wasm_posix_shared::channel::SYSCALL_OFFSET, syscall),
+            (wasm_posix_shared::channel::REQUEST_FLAGS_OFFSET, flags)] {
+            clone_word(f, channel + offset as u32, Some(value));
+        }
+        let call = f.process.table.capture_group_channel_request(f.parent, &mut f.host).unwrap();
+        if !call.automatic && f.process.table.get(f.parent.pid).unwrap().state == crate::process::ProcessState::Running {
+            assert!(matches!(f.process.table.dispatch_group_channel_request(f.parent, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Dispatch));
+        }
+        call
+    }
+    fn completion_count<H: HostIO>(f: &mut Fixture<H>) -> u32 {
+        let (store, admission) = f.process.table.memory_groups().storage_owner(f.parent).unwrap();
+        store.completion_count(admission).unwrap()
+    }
+    #[test]
+    fn grouped_completion_actual_kernel_publishes_once_and_holds_until_ack() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        assert_eq!(completion_count(&mut f), 1);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 0x1234567800000042, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { relisten: true, terminal: false }));
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        assert_eq!(clone_word(&mut f, channel, None), wasm_posix_shared::ChannelStatus::Complete as u32);
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::RETURN_OFFSET as u32, None), 0x42);
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::RETURN_OFFSET as u32 + 4, None), 0x12345678);
+        assert_eq!(completion_count(&mut f), 1);
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { relisten: true, terminal: false }));
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+        assert_eq!(completion_count(&mut f), 0);
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host), Err(Errno::ESRCH)));
+    }
+    #[test]
+    fn grouped_completion_observation_settlement_never_grants_cancelled_result_publication() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        f.host.group_memory_atomic_store(f.resource, wasm_posix_shared::program_extensions::memory_group_v3::WAIT_HEADER, 1).unwrap();
+        let F::Observe { wait, .. } = f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap() else { panic!("missing native observation"); };
+        assert_eq!(f.process.table.acknowledge_group_channel_completion(f.parent, call.token), Err(Errno::EBUSY));
+        f.process.table.detach_group_completion_channel(f.parent).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::CancelObservation { .. }));
+        assert_eq!(f.process.table.settle_group_completion_observation(f.parent, call.token, wait.token + 1), Err(Errno::ESRCH));
+        assert_eq!(completion_count(&mut f), 1);
+        f.process.table.settle_group_completion_observation(f.parent, call.token, wait.token).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Discarded));
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        assert_eq!(clone_word(&mut f, channel, None), wasm_posix_shared::ChannelStatus::Pending as u32);
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+        f.host.group_memory_atomic_store(f.resource, wasm_posix_shared::program_extensions::memory_group_v3::WAIT_HEADER, 0).unwrap();
+    }
+    #[test]
+    fn grouped_completion_stop_holds_result_and_replacement_discards_it() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        f.process.table.get_mut(f.parent.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::WaitStopped));
+        assert_eq!(completion_count(&mut f), 1);
+        f.process.table.get_mut(f.parent.pid).unwrap().exec_generation += 1;
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Discarded));
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+        assert_eq!(completion_count(&mut f), 0);
+    }
+    #[test]
+    fn grouped_completion_stop_continues_through_actual_rust_selection() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.get_mut(f.parent.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::WaitStopped));
+        f.process.table.get_mut(f.parent.pid).unwrap().state = crate::process::ProcessState::Running;
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+    }
+    #[test]
+    fn grouped_completion_bad_flags_are_retained_guest_einval_not_kernel_fatal() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, wasm_posix_shared::channel::REQUEST_FLAG_OPAQUE_RECORD);
+        assert!(call.invalid);
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::ERRNO_OFFSET as u32, None), Errno::EINVAL as u32);
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+        assert_eq!(completion_count(&mut f), 0);
+    }
+
+    #[test]
+    fn grouped_completion_natural_exit_permit_comes_from_actual_task_removal() {
+        use crate::group_completion::Effect as F;
+        let (mut f, token, child) = bound_clone();
+        thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        f.process.table.poll_group_operation(f.parent, token, None, &mut f.host).unwrap();
+        f.process.table.acknowledge_group_operation(f.parent, token).unwrap();
+        let channel = f.process.table.group_task_channel(child).unwrap();
+        f.process.table.bind_group_completion_channel(child, channel).unwrap();
+        for (offset, value) in [(wasm_posix_shared::channel::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (wasm_posix_shared::channel::SYSCALL_OFFSET, wasm_posix_shared::Syscall::Exit as u32),
+            (wasm_posix_shared::channel::REQUEST_FLAGS_OFFSET, 0)] { clone_word(&mut f, channel + offset as u32, Some(value)); }
+        let call = f.process.table.capture_group_channel_request(child, &mut f.host).unwrap();
+        assert!(matches!(f.process.table.dispatch_group_channel_request(child, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Dispatch));
+        // This early attempted claim cannot mint a natural-exit permit.
+        f.process.table.note_group_completion_thread_exit(child.pid, child.tid, child.generation, true);
+        f.process.table.exit_thread_with_io(child.pid, child.tid, true, &mut f.host).unwrap();
+        assert!(f.process.table.validate_task(child.pid, child.tid).is_err());
+        f.process.table.detach_group_completion_channel(child).unwrap();
+        f.process.table.complete_group_channel_request(child, call.token, -1, Errno::EFAULT as u32).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(child, call.token, &mut f.host).unwrap(), F::Published { relisten: false, terminal: true }));
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::RETURN_OFFSET as u32, None), 0);
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::ERRNO_OFFSET as u32, None), 0);
+        f.process.table.acknowledge_group_channel_completion(child, call.token).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(child, call.token, &mut f.host), Err(Errno::ESRCH)));
+    }
+    #[test]
+    fn grouped_completion_early_exit_claim_cannot_publish_a_detached_live_task() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Exit as u32, 0);
+        f.process.table.note_group_completion_thread_exit(f.parent.pid, f.parent.tid, f.parent.generation, true);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        f.process.table.detach_group_completion_channel(f.parent).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Discarded));
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+    }
+
+    #[test]
+    fn grouped_completion_process_exit_then_reaped_terminal_requests_never_dispatch_again() {
+        use crate::group_completion::Effect as F;
+        use wasm_posix_shared::{channel as C, abi::extended_syscalls::SYS_EXIT_GROUP};
+        for reap in [false, true] {
+            let mut f = clone_fixture();
+            let channel = f.process.table.group_task_channel(f.parent).unwrap();
+            let call = completion_capture(&mut f, SYS_EXIT_GROUP, 0);
+            // The real exit transition grants terminal custody, including
+            // after synthetic init has removed the Process record.
+            f.process.table.get_mut(f.parent.pid).unwrap().ppid = 1;
+            crate::syscalls::sys_exit(f.process.table.get_mut(f.parent.pid).unwrap(), &mut f.host, 7);
+            f.process.table.apply_pending_exits(&mut f.host);
+            if reap {
+                // This native fixture never constructs a Worker. Retire its
+                // exact execution admission before asking init to reap; the
+                // separate physical completion hold must survive that step.
+                f.process.table.memory_group_task_action(f.parent, wasm_posix_shared::memory_group::TaskAction::BeginRetirement).unwrap();
+                f.process.table.memory_group_task_action(f.parent, wasm_posix_shared::memory_group::TaskAction::RetireQuiescent).unwrap();
+                let publication = f.process.table.publish_process_exit_with_io(f.parent.pid, &mut f.host).unwrap();
+                assert!(publication.reaped_by_init.is_some());
+                // A reaped session leader can remain as the kernel's Limbo
+                // group identity while this fixture's fork child still lives.
+                assert!(f.process.table.get(f.parent.pid).is_none_or(|process|
+                    process.state == crate::process::ProcessState::Limbo));
+                assert!(!f.process.table.procfs_pids().unwrap().contains(&f.parent.pid));
+            }
+            f.process.table.complete_group_channel_request(f.parent, call.token, -1, Errno::EFAULT as u32).unwrap();
+            assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { relisten: true, terminal: true }));
+            f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+            for syscall in [wasm_posix_shared::Syscall::Read as u32, wasm_posix_shared::Syscall::Exit as u32] {
+                for (offset, value) in [(C::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+                    (C::SYSCALL_OFFSET, syscall), (C::REQUEST_FLAGS_OFFSET, 0)] {
+                    clone_word(&mut f, channel + offset as u32, Some(value));
+                }
+                let terminal = f.process.table.capture_group_channel_request(f.parent, &mut f.host).unwrap();
+                assert!(terminal.automatic);
+                assert_eq!(f.process.table.complete_group_channel_request(f.parent, terminal.token, 99, 0), Err(Errno::EBUSY));
+                assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, terminal.token, &mut f.host).unwrap(), F::Published { relisten, terminal: true } if relisten == (syscall != wasm_posix_shared::Syscall::Exit as u32)));
+                if syscall == wasm_posix_shared::Syscall::Read as u32 {
+                    assert_eq!(clone_word(&mut f, channel + C::ERRNO_OFFSET as u32, None), Errno::EINTR as u32);
+                    assert_eq!(clone_word(&mut f, channel + C::SIG_SI_CODE as u32, None), 0x4b455854);
+                } else {
+                    assert_eq!(clone_word(&mut f, channel + C::RETURN_OFFSET as u32, None), 0);
+                }
+                f.process.table.acknowledge_group_channel_completion(f.parent, terminal.token).unwrap();
+            }
+            assert_eq!(completion_count(&mut f), 0);
+        }
+    }
+
+    fn completion_running_child() -> (Fixture<impl HostIO>, ReceiptRecord, u32) {
+        let (mut f, token, child) = bound_clone();
+        thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        f.process.table.poll_group_operation(f.parent, token, None, &mut f.host).unwrap();
+        f.process.table.acknowledge_group_operation(f.parent, token).unwrap();
+        let channel = f.process.table.group_task_channel(child).unwrap();
+        f.process.table.bind_group_completion_channel(child, channel).unwrap();
+        (f, child, channel)
+    }
+    #[test]
+    fn grouped_completion_binds_exact_prepared_thread_without_granting_execution() {
+        let (mut f, token, child) = bound_clone();
+        let channel = f.process.table.group_task_channel(child).unwrap();
+        f.process.table.bind_group_completion_channel(child, channel).unwrap();
+        assert!(f.process.table.capture_group_channel_request(child, &mut f.host).is_err());
+        assert_eq!(completion_count(&mut f), 0);
+        thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        f.process.table.poll_group_operation(f.parent, token, None, &mut f.host).unwrap();
+        f.process.table.acknowledge_group_operation(f.parent, token).unwrap();
+        for (offset, value) in [(wasm_posix_shared::channel::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (wasm_posix_shared::channel::SYSCALL_OFFSET, wasm_posix_shared::Syscall::Read as u32),
+            (wasm_posix_shared::channel::REQUEST_FLAGS_OFFSET, 0)] { clone_word(&mut f, channel + offset as u32, Some(value)); }
+        let call = f.process.table.capture_group_channel_request(child, &mut f.host).unwrap();
+        assert_eq!(f.process.table.complete_group_channel_request(child, call.token, 1, 0), Err(Errno::EBUSY));
+        assert!(matches!(f.process.table.dispatch_group_channel_request(child, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Dispatch));
+        f.process.table.complete_group_channel_request(child, call.token, 1, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(child, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Published { .. }));
+        f.process.table.acknowledge_group_channel_completion(child, call.token).unwrap();
+    }
+    #[test]
+    fn grouped_completion_preflights_a_siblings_fatal_signal_before_publishing_any_result() {
+        use crate::group_completion::Effect as F;
+        let (mut f, child, _) = completion_running_child();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        assert!(f.process.table.get_mut(child.pid).unwrap().raise_for_thread(child.tid, 15));
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Discarded));
+        assert_eq!(f.process.table.get(child.pid).unwrap().exit_signal, 15);
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        assert_eq!(clone_word(&mut f, channel, None), wasm_posix_shared::ChannelStatus::Pending as u32);
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+    }
+    #[test]
+    fn grouped_completion_idle_sibling_keeps_caught_signal_until_its_own_completion() {
+        use crate::group_completion::Effect as F;
+        use wasm_posix_shared::channel as C;
+        let (mut f, child, channel) = completion_running_child();
+        let parent = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        let process = f.process.table.get_mut(child.pid).unwrap();
+        process.signals.set_action(10, crate::signal::SignalAction {
+            handler: crate::signal::SignalHandler::Handler(37), flags: 0, mask: 0,
+        }).unwrap();
+        assert!(process.raise_for_thread(child.tid, 10));
+        f.process.table.complete_group_channel_request(f.parent, parent.token, 51, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, parent.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert!(f.process.table.get(child.pid).unwrap().signal_pending_for(child.tid, 10));
+        assert_eq!(clone_word(&mut f, channel + C::SIG_SIGNUM as u32, None), 0);
+        f.process.table.acknowledge_group_channel_completion(f.parent, parent.token).unwrap();
+        for (offset, value) in [(C::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (C::SYSCALL_OFFSET, wasm_posix_shared::Syscall::Read as u32), (C::REQUEST_FLAGS_OFFSET, 0)] {
+            clone_word(&mut f, channel + offset as u32, Some(value));
+        }
+        let call = f.process.table.capture_group_channel_request(child, &mut f.host).unwrap();
+        assert!(matches!(f.process.table.dispatch_group_channel_request(child, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Dispatch));
+        f.process.table.complete_group_channel_request(child, call.token, 52, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(child, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert!(!f.process.table.get(child.pid).unwrap().signal_pending_for(child.tid, 10));
+        assert_eq!(clone_word(&mut f, channel + C::SIG_SIGNUM as u32, None), 10);
+        f.process.table.acknowledge_group_channel_completion(child, call.token).unwrap();
+    }
+
+    #[test]
+    fn grouped_completion_detached_sibling_is_not_selected_for_transport_interrupt() {
+        use crate::group_completion::Effect as F;
+        use wasm_posix_shared::channel as C;
+        let (mut f, child, channel) = completion_running_child();
+        let parent = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        for (offset, value) in [(C::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (C::SYSCALL_OFFSET, wasm_posix_shared::Syscall::Read as u32), (C::REQUEST_FLAGS_OFFSET, 0)] {
+            clone_word(&mut f, channel + offset as u32, Some(value));
+        }
+        let call = f.process.table.capture_group_channel_request(child, &mut f.host).unwrap();
+        assert!(matches!(f.process.table.dispatch_group_channel_request(child, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Dispatch));
+        let process = f.process.table.get_mut(child.pid).unwrap();
+        process.signals.set_action(10, crate::signal::SignalAction {
+            handler: crate::signal::SignalHandler::Handler(37), flags: 0, mask: 0,
+        }).unwrap();
+        assert!(process.raise_for_thread(child.tid, 10));
+        f.process.table.complete_group_channel_request(f.parent, parent.token, 51, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, parent.token, &mut f.host).unwrap(), F::InterruptTransport { receipt, .. } if receipt == child));
+        f.process.table.detach_group_completion_channel(child).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, parent.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert!(matches!(f.process.table.poll_group_channel_completion(child, call.token, &mut f.host).unwrap(), F::Discarded));
+        f.process.table.acknowledge_group_channel_completion(f.parent, parent.token).unwrap();
+        f.process.table.acknowledge_group_channel_completion(child, call.token).unwrap();
+        assert_eq!(completion_count(&mut f), 0);
+    }
+    #[test]
+    fn grouped_completion_prepares_all_signals_and_selects_transport_interruption_in_rust() {
+        use crate::group_completion::Effect as F;
+        let (mut f, child, channel) = completion_running_child();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        for (offset, value) in [(wasm_posix_shared::channel::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (wasm_posix_shared::channel::SYSCALL_OFFSET, wasm_posix_shared::Syscall::Read as u32),
+            (wasm_posix_shared::channel::REQUEST_FLAGS_OFFSET, 0)] { clone_word(&mut f, channel + offset as u32, Some(value)); }
+        let child_call = f.process.table.capture_group_channel_request(child, &mut f.host).unwrap();
+        assert!(matches!(f.process.table.dispatch_group_channel_request(child, child_call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Dispatch));
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        let process = f.process.table.get_mut(child.pid).unwrap();
+        process.signals.set_action(10, crate::signal::SignalAction { handler: crate::signal::SignalHandler::Handler(37), flags: 0, mask: 0 }).unwrap();
+        process.signals.set_action(12, crate::signal::SignalAction { handler: crate::signal::SignalHandler::Handler(38), flags: 0, mask: 0 }).unwrap();
+        assert!(process.raise_for_thread(child.tid, 10));
+        assert!(process.raise_for_thread(child.tid, 12));
+        let interrupt = f.process.table.group_completion_control(wasm_posix_shared::group_completion::Request {
+            receipt: f.parent, command: wasm_posix_shared::group_completion::command::POLL,
+            channel: 0, token: call.token, observation: 0, value: 0, errno: 0, argument: 0,
+        }, &mut f.host).unwrap();
+        assert_eq!(interrupt.effect, wasm_posix_shared::group_completion::effect::INTERRUPT);
+        assert_eq!((interrupt.receipt, interrupt.token, interrupt.channel), (child, child_call.token, channel));
+        let parent_channel = f.process.table.group_task_channel(f.parent).unwrap();
+        assert_eq!(clone_word(&mut f, parent_channel, None), wasm_posix_shared::ChannelStatus::Pending as u32);
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::SIG_SIGNUM as u32, None), 10);
+        f.process.table.report_group_completion_interrupt(child, child_call.token, true).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert!(matches!(f.process.table.poll_group_channel_completion(child, child_call.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::ERRNO_OFFSET as u32, None), Errno::EINTR as u32);
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+        f.process.table.acknowledge_group_channel_completion(child, child_call.token).unwrap();
+        // ACK is a host observation, not proof that the guest has consumed its
+        // first handler record. A sibling cannot overwrite it with SIGUSR2.
+        let next = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, next.token, 52, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, next.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert_eq!(clone_word(&mut f, channel + wasm_posix_shared::channel::SIG_SIGNUM as u32, None), 10);
+        assert!(f.process.table.get(child.pid).unwrap().signal_pending_for(child.tid, 12));
+        f.process.table.acknowledge_group_channel_completion(f.parent, next.token).unwrap();
+    }
+    struct CompletionFaultHost<'a, H>(&'a mut H, u32);
+    macro_rules! required {
+        ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {$ (
+            fn $name(&mut self, $($arg: $ty),*) -> $ret { self.0.$name($($arg),*) }
+        )*};
+    }
+    impl<H: HostIO> HostIO for CompletionFaultHost<'_, H> {
+    required! {
+        fn host_close(h: i64) -> Result<(), Errno>;
+        fn host_read(h: i64, b: &mut [u8]) -> Result<usize, Errno>;
+        fn host_write(h: i64, b: &[u8]) -> Result<usize, Errno>;
+        fn host_seek(h: i64, o: i64, w: u32) -> Result<i64, Errno>;
+        fn host_fstat(h: i64) -> Result<wasm_posix_shared::WasmStat, Errno>;
+        fn host_readdir(h: i64, b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno>;
+        fn host_clock_gettime(c: u32) -> Result<(i64, i64), Errno>;
+        fn host_ftruncate(h: i64, l: i64) -> Result<(), Errno>;
+        fn host_fsync(h: i64) -> Result<(), Errno>;
+        fn host_fchmod(h: i64, m: u32) -> Result<(), Errno>;
+        fn host_fchown(h: i64, u: u32, g: u32) -> Result<(), Errno>;
+        fn host_set_alarm(s: u32) -> Result<(), Errno>;
+        fn host_set_posix_timer(t: i32, s: i32, v: i64, i: i64) -> Result<(), Errno>;
+        fn host_getrandom(b: &mut [u8]) -> Result<usize, Errno>;
+        fn host_net_connect(h: i32, a: &[u8], p: u16) -> Result<(), Errno>;
+        fn host_net_connect_status(h: i32) -> Result<(), Errno>;
+        fn host_net_send(h: i32, d: &[u8], f: u32) -> Result<usize, Errno>;
+        fn host_net_close(h: i32) -> Result<(), Errno>;
+        fn host_net_recv(h: i32, l: u32, f: u32, b: &mut [u8]) -> Result<usize, Errno>;
+        fn host_net_listen(h: i32, p: u16, a: &[u8; 4]) -> Result<(), Errno>;
+        fn host_getaddrinfo(n: &[u8], r: &mut [u8]) -> Result<usize, Errno>;
+        fn bind_framebuffer(p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) -> ();
+        fn unbind_framebuffer(p: i32) -> ();
+        fn fb_write(p: i32, o: usize, b: &[u8]) -> ();
+    }
+        fn group_memory_pages(&self, r: u64) -> Result<u32, Errno> { self.0.group_memory_pages(r) }
+        fn group_memory_atomic_load(&self, r: u64, a: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_load(r,a) }
+        fn group_memory_atomic_store(&mut self, r: u64, a: u32, v: u32) -> Result<(), Errno> {
+            if v == 0xabcd { self.1 += 1; Err(Errno::EAGAIN) } else { self.0.group_memory_atomic_store(r,a,v) }
+        }
+        fn group_memory_atomic_compare_exchange(&mut self, r: u64, a: u32, e: u32, v: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_compare_exchange(r,a,e,v) }
+        fn group_memory_atomic_notify(&mut self, r: u64, a: u32, n: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_notify(r,a,n) }
+    }
+    #[test]
+    fn grouped_completion_foreign_eagain_is_uncertain_and_never_becomes_a_lock_retry() {
+        use crate::group_completion::Effect as F;
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 0xabcd, 0).unwrap();
+        let mut host = CompletionFaultHost(&mut f.host, 0);
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut host).unwrap(), F::Fatal));
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut host).unwrap(), F::Fatal));
+        assert_eq!(host.1, 1);
+        assert_eq!(completion_count(&mut f), 1);
+        assert_eq!(f.process.table.acknowledge_group_channel_completion(f.parent, call.token), Err(Errno::EBUSY));
+        assert_eq!(f.host.group_memory_atomic_load(f.resource, wasm_posix_shared::program_extensions::memory_group_v3::WAIT_HEADER).unwrap(), 0);
+    }
+
+    #[test]
+    fn grouped_completion_failed_signal_copy_retains_first_handler_and_never_dequeues_again() {
+        let mut f = clone_fixture();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        let process = f.process.table.get_mut(f.parent.pid).unwrap();
+        for (signal, handler) in [(10, 0xabcd), (12, 0xabce)] {
+            process.signals.set_action(signal, crate::signal::SignalAction {
+                handler: crate::signal::SignalHandler::Handler(handler), flags: 0, mask: 0,
+            }).unwrap();
+            assert!(process.raise_for_thread(f.parent.tid, signal));
+        }
+        let mut host = CompletionFaultHost(&mut f.host, 0);
+        assert_eq!(f.process.table.prepare_group_completion_signal(f.parent, false, &mut host), Err(Errno::EIO));
+        assert_eq!(f.process.table.prepare_group_completion_signal(f.parent, false, &mut host), Err(Errno::EIO));
+        assert_eq!(host.1, 1);
+        assert!(f.process.table.get(f.parent.pid).unwrap().signal_pending_for(f.parent.tid, 12));
+        assert_eq!(completion_count(&mut f), 1);
+        assert_eq!(f.process.table.acknowledge_group_channel_completion(f.parent, call.token), Err(Errno::EBUSY));
+    }
+
     fn clone_request(flags: u32, parent_tid: u32) -> [u8; W::REQUEST_BYTES] {
         let mut bytes = [0; W::REQUEST_BYTES];
         bytes[..4].copy_from_slice(&kind::CLONE.to_le_bytes());

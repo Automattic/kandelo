@@ -344,6 +344,7 @@ impl ProcessTable {
         self.memory_groups()
             .commit_exec_image(future)
             .expect("committed exec lost exact image custody");
+        self.note_group_completion_exec_retirement(pid, pending.source.execution().exec_generation);
         self.note_exec_control_commit(future.record());
         Ok(())
     }

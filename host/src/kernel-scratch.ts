@@ -182,6 +182,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_kms_cursor_read",
   "kernel_memory_group_snapshot",
   "kernel_memory_group_storage_action",
+  "kernel_group_completion",
   "kernel_group_operation",
   "kernel_group_exec_control",
   "kernel_group_root_control",
@@ -306,6 +307,10 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_group_completion":
+      // Rust decodes the entire request before mutation and copies its reply
+      // before returning; neither scratch pointer is retained by ProcessTable.
+      return REQUIRED_POINTER_0_2;
     case "kernel_group_retirement_control":
       return REQUIRED_POINTER_0_4;
     case "kernel_group_root_control":
@@ -474,6 +479,7 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_group_completion":
     case "kernel_group_retirement_control":
     case "kernel_group_root_control":
     case "kernel_group_exec_control":

@@ -21,7 +21,7 @@ import {
 import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
 import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
 import { GroupMemoryTransport, GroupMemoryStorageRefusal, type GroupImageLayout, type GroupReplicaLaunch,
-  type PreparedGroupReplica, type GroupOperationEffect, type GroupExecControlEffect } from "./group-memory-transport";
+  type PreparedGroupReplica, type GroupOperationEffect, type GroupExecControlEffect, type GroupCompletionEffect } from "./group-memory-transport";
 import { MEMORY_GROUP_MAXIMUM_PAGES, MEMORY_GROUP_SECTION } from "./generated/program-extensions";
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
@@ -2058,6 +2058,16 @@ interface ParkedChannelCompletion {
   relistenRequested: boolean;
 }
 
+/** Exact disposable platform bindings and opaque Rust call/observation IDs.
+ * No result, stop/retry phase, terminal permit or publication policy lives here. */
+interface GroupChannelPlatformBinding {
+  readonly store: GroupMemoryTransport;
+  readonly receipt: MemoryGroupTaskReceipt;
+  token?: bigint;
+  observation?: { readonly id: bigint; readonly call: bigint; native?: NativeI32Observation };
+  timer?: { native?: ReturnType<typeof setTimeout> };
+}
+
 interface OwnedKernelWakeEvent {
   wakeIdx: number;
   wakeType: number;
@@ -3530,6 +3540,7 @@ export class CentralizedKernelWorker {
     ChannelInfo,
     FrozenChannelRequest
   >();
+  readonly #groupChannelBindings = new Map<ChannelInfo, GroupChannelPlatformBinding>();
   /** Pids whose authoritative kernel state is Stopped. Updated only from the
    * kernel wake-event stream, so ordinary syscall completion does not need an
    * extra Wasm state query. */
@@ -9820,6 +9831,11 @@ export class CentralizedKernelWorker {
           );
         }
 
+        if (grouped) for (const channel of channels) {
+          grouped.store.completion(grouped.receipt, MEMORY_GROUP_PROTOCOL.completion.commands.bind, entry,
+            { channel: channel.channelOffset });
+          this.#groupChannelBindings.set(channel, { store: grouped.store, receipt: grouped.receipt });
+        }
         if (preparedExec) preparedExec.store.execControl(preparedExec.receipt, MEMORY_GROUP_PROTOCOL.exec_control.commands.installed, entry);
         entry.deferProtocolEffect(() => {
           // WHY: publish the replacement channel generation only after every
@@ -12933,6 +12949,7 @@ export class CentralizedKernelWorker {
       );
     }
 
+    let completionReceipt: MemoryGroupTaskReceipt | undefined;
     if (source instanceof GroupProcessAddressSpace) {
       if (!memoryGroupU32(channelOffset)) return new ProcessAddressFault('bounds');
       const group = registration.grouped;
@@ -12942,6 +12959,7 @@ export class CentralizedKernelWorker {
       try {
         group.store.operation(receipt, MEMORY_GROUP_PROTOCOL.driver.commands.threadBindingEnter,
           pending.bindingOperation ?? 0n, channelOffset, entry);
+        completionReceipt = receipt;
       } catch (error) {
         if (error instanceof GroupMemoryStorageRefusal) return new Error(`Kernel refused grouped thread binding: errno ${error.errno}`);
         throw error;
@@ -12985,6 +13003,11 @@ export class CentralizedKernelWorker {
         : new Int32Array(source.buffer, channelOffset),
       consecutiveSyscalls: 0,
     };
+    if (completionReceipt) {
+      const store = registration.grouped!.store;
+      store.completion(completionReceipt, MEMORY_GROUP_PROTOCOL.completion.commands.bind, entry, { channel: channelOffset });
+      this.#groupChannelBindings.set(channel, { store, receipt: completionReceipt });
+    }
     entry.deferObserverEffect(() => {
       // WHY: weak target observation may enter arbitrary host code. The
       // channel becomes observable only after attachment completes and the
@@ -13082,6 +13105,14 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
   ): void {
+    const grouped = this.#groupChannelBindings.get(channel);
+    if (grouped) {
+      grouped.store.completion(grouped.receipt, MEMORY_GROUP_PROTOCOL.completion.commands.detach, entry);
+      if (grouped.token === undefined) this.#groupChannelBindings.delete(channel);
+      else this.#driveGroupChannelEffect(channel, grouped,
+        grouped.store.completion(grouped.receipt, MEMORY_GROUP_PROTOCOL.completion.commands.poll, entry,
+          { token: grouped.token }), entry);
+    }
     this.retireChannelListener(channel);
     const retrySnapshot = this.blockingRetrySnapshots.get(channel);
     if (retrySnapshot) {
@@ -13914,12 +13945,12 @@ export class CentralizedKernelWorker {
     // After a syscall completes, the process resets status COMPLETE→IDLE,
     // then on its next syscall sets IDLE→PENDING. We need to handle all
     // transitions, not just IDLE→PENDING.
-    this.#prepareChannelObservation(channel, false, observation => {
+    this.#prepareChannelObservation(channel, observation => {
       this.#armChannelObservation(channel, observation, currentStatus); return undefined;
     });
   }
 
-  #prepareChannelObservation(channel: ChannelInfo, queue: boolean,
+  #prepareChannelObservation(channel: ChannelInfo,
     ready: (observation: NativeI32Observation) => undefined): void {
     this.beginChannelListenerWait(channel);
     const source = channel.source;
@@ -13928,15 +13959,15 @@ export class CentralizedKernelWorker {
     }
     this.#runOrDeferKernelEntry('retain exact native channel target in Rust', entry => {
       const registration = this.processes.get(channel.pid), grouped = registration?.grouped;
-      if (!grouped || registration.source !== source || (!queue && !this.isRegisteredChannel(channel))) {
+      if (!grouped || registration.source !== source || !this.isRegisteredChannel(channel)) {
         entry.deferProtocolEffect(() => {
           this.finishChannelListenerWait(channel);
-          if (queue) this.parkedChannelCompletions.delete(channel);
           this.acknowledgeIdleRetiredCompletionChannel(channel); return undefined;
         });
         return undefined;
       }
-      const observation = grouped.store.prepareChannelObservation(grouped.handle, channel.channelOffset + CH_STATUS, queue, entry);
+      const binding = this.#groupChannelBinding(channel);
+      const observation = binding.store.prepareChannelObservation(grouped.handle, binding.receipt, channel.channelOffset + CH_STATUS, entry);
       entry.deferProtocolEffect(() => ready(observation));
       return undefined;
     });
@@ -14206,10 +14237,190 @@ export class CentralizedKernelWorker {
    * host state. A stale flag can therefore never grant cancellation authority
    * to a later request that reuses this channel.
    */
+  #groupChannelBinding(channel: ChannelInfo): GroupChannelPlatformBinding {
+    const binding = this.#groupChannelBindings.get(channel);
+    if (!binding) throw new MemoryGroupProtocolFault('Grouped channel lost its exact platform binding');
+    return binding;
+  }
+
+  #driveGroupChannelEffect(channel: ChannelInfo, binding: GroupChannelPlatformBinding,
+    initial: GroupCompletionEffect, entry: KernelWorkerEntryContext): void {
+    const protocol = MEMORY_GROUP_PROTOCOL.completion;
+    let reply = initial;
+    for (;;) {
+      if (reply.effect === protocol.effects.interrupt) {
+        const selected = Array.from(this.#groupChannelBindings).find(([target, owner]) =>
+          target.channelOffset === reply.channel && owner.receipt.group === reply.receipt.group
+          && owner.receipt.serial === reply.receipt.serial && owner.receipt.generation === reply.receipt.generation
+          && owner.token === reply.token);
+        if (!selected) throw new MemoryGroupProtocolFault('Kernel-selected completion blocker has no native binding');
+        const [target, owner] = selected;
+        const blocked = this.#disposeGroupChannelBlocker(target, entry);
+        const next = owner.store.completion(owner.receipt, protocol.commands.interrupted, entry,
+          { token: reply.token, argument: blocked ? 1 : 0 });
+        this.#driveGroupChannelEffect(target, owner, next, entry);
+        if (binding.token === undefined) return;
+        reply = binding.store.completion(binding.receipt, protocol.commands.poll, entry, { token: binding.token });
+        continue;
+      }
+      if (reply.effect === protocol.effects.captured || reply.effect === protocol.effects.stopped
+          || reply.effect === protocol.effects.resumed || reply.effect === protocol.effects.acknowledged) return;
+      if (reply.effect === protocol.effects.dispatch) {
+        entry.deferProtocolEffect(() => { this.handleSyscall(channel); return undefined; });
+        return;
+      }
+      if (reply.effect === protocol.effects.fatal) throw new MemoryGroupProtocolFault('Kernel quarantined grouped completion');
+      if (reply.effect === protocol.effects.published || reply.effect === protocol.effects.discarded) {
+        binding.store.completion(binding.receipt, protocol.commands.ack, entry, { token: reply.token });
+        binding.token = undefined;
+        if (binding.timer?.native !== undefined) this.#cancelRegisteredTimeout(binding.timer.native);
+        binding.timer = undefined;
+        this.#finishChannelRequest(channel);
+        const relisten = (reply.flags & protocol.flags.relisten) !== 0;
+        entry.deferProtocolEffect(() => {
+          channel.handling = false;
+          if (relisten) this.relistenChannel(channel);
+          this.acknowledgeIdleRetiredCompletionChannel(channel);
+          if (!this.isRegisteredChannel(channel)) this.#groupChannelBindings.delete(channel);
+          return undefined;
+        });
+        return;
+      }
+      if (reply.effect === protocol.effects.retry) {
+        if (binding.timer === undefined) {
+          const token = reply.token, delay = reply.delay;
+          const timer: NonNullable<GroupChannelPlatformBinding['timer']> = {};
+          // Reserve the exact native timer before deferred effects run. Another
+          // kernel-selected retry can arrive on this entry's deferred ingress.
+          binding.timer = timer;
+          entry.deferProtocolEffect(() => {
+            if (binding.timer !== timer) return undefined;
+            timer.native = this.#registerTimeout(() => {
+              if (binding.timer !== timer) return;
+              binding.timer = undefined;
+              this.#runOrDeferKernelEntry('grouped completion retry', next => {
+                if (binding.token !== token) return undefined;
+                this.#driveGroupChannelEffect(channel, binding,
+                  binding.store.completion(binding.receipt, protocol.commands.poll, next, { token }), next);
+                return undefined;
+              }, binding);
+            }, delay);
+            return undefined;
+          });
+        }
+        return;
+      }
+      if (reply.effect === protocol.effects.observe || reply.effect === protocol.effects.cancelObservation) {
+        if (binding.observation) {
+          if (binding.observation.id !== reply.observation || binding.observation.call !== reply.token) {
+            throw new MemoryGroupProtocolFault('Kernel completion observation identity changed before settlement');
+          }
+          if (reply.effect === protocol.effects.cancelObservation) {
+            entry.deferProtocolEffect(() => { binding.observation?.native?.wake(); return undefined; });
+          }
+          return;
+        }
+        if (reply.effect !== protocol.effects.observe) throw new MemoryGroupProtocolFault('Missing native completion observation');
+        const observation = { id: reply.observation, call: reply.token, native: undefined as NativeI32Observation | undefined };
+        binding.observation = observation;
+        const selected = reply;
+        this.beginChannelListenerWait(channel);
+        entry.deferProtocolEffect(() => {
+          const native = binding.store.completionObservation(selected, () => {
+            const observations = this.pendingChannelNativeObservations.get(channel);
+            observations?.delete(observation.native!);
+            if (!observations?.size) this.pendingChannelNativeObservations.delete(channel);
+            this.finishChannelListenerWait(channel);
+            this.#runOrDeferKernelEntry('grouped completion native settlement', next => {
+              if (binding.observation !== observation) throw new MemoryGroupProtocolFault('Lost completion native observation');
+              binding.observation = undefined;
+              const effect = binding.store.completion(binding.receipt, protocol.commands.observed, next,
+                { token: observation.call, observation: observation.id });
+              this.#driveGroupChannelEffect(channel, binding, effect, next);
+              next.deferProtocolEffect(() => { this.acknowledgeIdleRetiredCompletionChannel(channel); return undefined; });
+              return undefined;
+            }, observation);
+          });
+          observation.native = native;
+          const observations = this.pendingChannelNativeObservations.get(channel) ?? new Set<NativeI32Observation>();
+          this.pendingChannelNativeObservations.set(channel, observations); observations.add(native);
+          const waiting = native.arm(selected.expected, selected.delay);
+          if (waiting.async) this.#continueWaitAsyncListenerRoot(waiting.value,
+            'grouped completion engine observation', () => {});
+          return undefined;
+        });
+        return;
+      }
+      throw new MemoryGroupProtocolFault(`Unexpected grouped completion effect ${reply.effect}`);
+    }
+  }
+
+  #disposeGroupChannelBlocker(channel: ChannelInfo, entry: KernelWorkerEntryContext): boolean {
+    let blocked = this.pendingPollRetries.has(channel) || this.pendingSelectRetries.has(channel);
+    for (const readers of this.pendingPipeReaders.values()) if (readers.some(row => row.channel === channel)) blocked = true;
+    for (const writers of this.pendingPipeWriters.values()) if (writers.some(row => row.channel === channel)) blocked = true;
+    if (!blocked) return false;
+    const poll = this.pendingPollRetries.get(channel), select = this.pendingSelectRetries.get(channel);
+    for (const timer of [poll?.timer, select?.timer]) if (timer !== null && timer !== undefined) {
+      this.#cancelRegisteredTimeout(timer); this.#cancelRegisteredImmediate(timer);
+    }
+    this.pendingPollRetries.delete(channel); this.pendingSelectRetries.delete(channel);
+    this.removePendingPipeReader(channel); this.removePendingPipeWriter(channel);
+    this.clearSocketTimeout(channel); this.clearReadinessWait(channel, entry);
+    this.#releaseBlockingRetrySnapshot(channel, entry);
+    return true;
+  }
+
+  #completeGroupChannel(channel: ChannelInfo, value: ChannelScalarValue, errno: number,
+    entry: KernelWorkerEntryContext, terminal = false): GroupCompletionEffect | undefined {
+    const binding = this.#groupChannelBinding(channel), protocol = MEMORY_GROUP_PROTOCOL.completion;
+    if (terminal) {
+      const reply = binding.store.completion(binding.receipt, protocol.commands.terminal, entry,
+        { token: binding.token ?? 0n });
+      if (reply.token !== 0n) binding.token = reply.token;
+      this.#driveGroupChannelEffect(channel, binding, reply, entry);
+      return reply;
+    }
+    if (binding.token === undefined) {
+      const captured = binding.store.completion(binding.receipt, protocol.commands.capture, entry);
+      binding.token = captured.token;
+      if ((captured.flags & protocol.flags.automatic) !== 0) {
+        this.#driveGroupChannelEffect(channel, binding,
+          binding.store.completion(binding.receipt, protocol.commands.poll, entry, { token: captured.token }), entry);
+        return;
+      }
+      throw new MemoryGroupProtocolFault('Grouped completion has no captured dispatch');
+    }
+    this.#driveGroupChannelEffect(channel, binding,
+      binding.store.completion(binding.receipt, protocol.commands.complete, entry,
+        { token: binding.token, value: BigInt(value), errno }), entry);
+  }
+
   #captureChannelRequest(
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
   ): FrozenChannelRequest | null {
+    let groupRequest: GroupCompletionEffect | undefined;
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      const binding = this.#groupChannelBinding(channel), protocol = MEMORY_GROUP_PROTOCOL.completion;
+      if (binding.token === undefined) {
+        groupRequest = binding.store.completion(binding.receipt, protocol.commands.capture, entry);
+        binding.token = groupRequest.token;
+        if ((groupRequest.flags & protocol.flags.automatic) !== 0 || groupRequest.effect === protocol.effects.fatal) {
+          this.#driveGroupChannelEffect(channel, binding,
+            groupRequest.effect === protocol.effects.fatal ? groupRequest
+              : binding.store.completion(binding.receipt, protocol.commands.poll, entry, { token: binding.token }), entry);
+          return null;
+        }
+      }
+      const selected = binding.store.completion(binding.receipt, protocol.commands.dispatch, entry, { token: binding.token });
+      if (selected.effect !== protocol.effects.dispatch) {
+        this.#driveGroupChannelEffect(channel, binding, selected, entry);
+        this.#finishSignalTermination(channel, entry);
+        return null;
+      }
+      groupRequest ??= selected;
+    }
     const active = this.activeChannelRequests.get(channel);
     if (active) {
       const grouped = this.pendingGroupImageOperations.get(channel);
@@ -14230,9 +14441,9 @@ export class CentralizedKernelWorker {
     }
 
     const processView = processDataView(channel.source, channel.channelOffset);
-    const syscallNr = processView.getUint32(CH_SYSCALL, true);
-    const requestFlags = processView.getUint32(CH_REQUEST_FLAGS, true);
-    processView.setUint32(CH_REQUEST_FLAGS, 0, true);
+    const syscallNr = groupRequest?.syscall ?? processView.getUint32(CH_SYSCALL, true);
+    const requestFlags = groupRequest?.requestFlags ?? processView.getUint32(CH_REQUEST_FLAGS, true);
+    if (!groupRequest) processView.setUint32(CH_REQUEST_FLAGS, 0, true);
 
     const cancellationPoint =
       (
@@ -14250,14 +14461,14 @@ export class CentralizedKernelWorker {
     // opaque-record flag would skip the host work its raw path performs
     // (interception, memory growth, blocking retry); answer it like any other
     // contradictory flag set instead of stopping the shared kernel.
-    if (
+    if (!groupRequest && (
       (requestFlags & ~CHANNEL_REQUEST_FLAGS_KNOWN_MASK) !== 0
       || (cancellationWakeAllowed && !cancellationPoint)
       || (
         (requestFlags & CHANNEL_REQUEST_FLAG_OPAQUE_RECORD) !== 0
         && HOST_RAW_SYSCALLS.has(syscallNr)
       )
-    ) {
+    )) {
       this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
       return null;
     }
@@ -14374,6 +14585,13 @@ export class CentralizedKernelWorker {
       // the EIO result. Its materializer catches an ordinary retry failure;
       // neither that retry nor publication replays the rejected syscall.
       this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
+    } finally {
+      const binding = this.#groupChannelBindings.get(channel);
+      if (this.#kernelFatalError === null && binding?.token !== undefined) {
+        this.#driveGroupChannelEffect(channel, binding,
+          binding.store.completion(binding.receipt, MEMORY_GROUP_PROTOCOL.completion.commands.returned,
+            entry, { token: binding.token }), entry);
+      }
     }
   }
 
@@ -15018,6 +15236,10 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry?: KernelWorkerEntryContext,
   ): void {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      this.completeChannelRaw(channel, -1, EINTR_ERRNO, entry, false, false, true);
+      return;
+    }
     // WHY: Rust already owns the authoritative exit, so never cancel a TID
     // here. Retire only this old host match before its terminal marker: a
     // previously queued park result must not erase it or publish again.
@@ -15063,6 +15285,7 @@ export class CentralizedKernelWorker {
     // its result must never be overwritten or re-armed by that old park.
     channel.kernelWaitGeneration = undefined;
     this.completeChannelRaw(channel, 0, 0, entry, false, false, true);
+    if (channel.source instanceof GroupProcessAddressSpace) return;
     if (syscallNr === SYS_EXIT_GROUP) {
       // musl follows a returning EXIT_GROUP with the non-returning SYS_EXIT
       // import. Re-arm once so worker-main can complete that request and trap
@@ -17421,6 +17644,17 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
     suppressRestart = false,
   ): number {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      if (!entry) throw new MemoryGroupProtocolFault('Grouped signal preparation requires a live kernel entry');
+      const binding = this.#groupChannelBinding(channel);
+      if (binding.token === undefined) throw new MemoryGroupProtocolFault('Grouped signal preparation has no captured call');
+      const reply = binding.store.completion(binding.receipt, MEMORY_GROUP_PROTOCOL.completion.commands.signal, entry,
+        { token: binding.token, argument: suppressRestart ? 1 : 0 });
+      if (reply.effect === MEMORY_GROUP_PROTOCOL.completion.effects.fatal) {
+        throw new MemoryGroupProtocolFault('Kernel quarantined grouped signal preparation');
+      }
+      return Number(reply.value);
+    }
     const requestFlags = this.activeChannelRequests.get(channel)?.requestFlags
       ?? processDataView(channel.source, channel.channelOffset).getUint32(CH_REQUEST_FLAGS, true);
     if (
@@ -17545,6 +17779,13 @@ export class CentralizedKernelWorker {
     deferredClone?: PreparedChannelCompletion["deferredClone"],
     entry?: KernelWorkerEntryContext,
   ): void {
+    if (channel.source instanceof GroupProcessAddressSpace && !entry) {
+      this.#runOrDeferKernelEntry('grouped syscall completion', next => {
+        this.completeChannel(channel, syscallNr, origArgs, argDescs, retVal, errVal, detachedOutput, deferredClone, next);
+        return undefined;
+      });
+      return;
+    }
     // Completion is the logical lifetime boundary even when publication is
     // parked behind SIGSTOP or observed only by a test hook.
     this.#releaseBlockingRetrySnapshot(channel, entry);
@@ -17660,7 +17901,9 @@ export class CentralizedKernelWorker {
     } else {
       this.drainAndProcessWakeupEvents();
     }
-    if (entry) {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      this.#completeGroupChannel(channel, prepared.retVal, prepared.errVal, entry!);
+    } else if (entry) {
       // WHY: Atomics.notify releases guest execution and relistening can invoke
       // host scheduling hooks. The kernel wake snapshot is already owned, so
       // publish only after the scoped capability is revoked.
@@ -17711,30 +17954,15 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     prepared: PreparedChannelCompletion,
   ): void {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      throw new MemoryGroupProtocolFault('Grouped publication bypassed the actual kernel owner');
+    }
     if (!prepared.materialized) {
       throw new Error(
         `Refusing to publish unmaterialized completion for pid ${channel.pid}`,
       );
     }
 
-    if (channel.source instanceof GroupProcessAddressSpace) {
-      const bytes = new Uint8Array(CH_ERRNO + 4 - CH_RETURN);
-      const result = new DataView(bytes.buffer);
-      result.setBigInt64(0, KernelEntryIntrinsicBigInt(prepared.retVal), true);
-      result.setUint32(CH_ERRNO - CH_RETURN, prepared.errVal, true);
-      this.#noteGuestMayRun(channel.source);
-      const published = channel.source.tryPublishBytes(channel.channelOffset + CH_RETURN, bytes,
-        channel.channelOffset + CH_STATUS, CH_COMPLETE, 1);
-      if (published === 'busy') {
-        this.deferGroupedChannelCompletion(channel, prepared);
-        return;
-      }
-      this.resumePreparedSignals?.delete(channel);
-      channel.handling = false;
-      if (prepared.relistenRequested && this.isRegisteredChannel(channel)) this.relistenChannel(channel);
-      if (prepared.exitHandshake === 'thread') this.acknowledgeIdleRetiredCompletionChannel(channel);
-      return;
-    }
     channel.handling = false;
     const buffer = kernelEntryMemoryBuffer(channel.source);
     const processView = new KernelEntryIntrinsicDataView(
@@ -17795,100 +18023,6 @@ export class CentralizedKernelWorker {
     }
   }
 
-  /** Retain one already-materialized result while Q belongs to a participant.
-   * No kernel scratch survives this boundary. The exact native observation is
-   * charged to the image/channel until its engine promise really settles. */
-  private deferGroupedChannelCompletion(channel: ChannelInfo, prepared: PreparedChannelCompletion): void {
-    if (!(channel.source instanceof GroupProcessAddressSpace)) throw new MemoryGroupProtocolFault('Grouped publication source changed');
-    const parkedCompletions = this.parkedChannelCompletions;
-    const existing = parkedCompletions.get(channel);
-    if (existing) {
-      if (existing.prepared !== prepared) throw new MemoryGroupProtocolFault('Conflicting queued channel completion');
-      existing.relistenRequested ||= prepared.relistenRequested;
-      return;
-    }
-    const parked: ParkedChannelCompletion = { prepared, relistenRequested: prepared.relistenRequested };
-    parkedCompletions.set(channel, parked);
-    channel.handling = true;
-    this.#prepareChannelObservation(channel, true, observation => {
-      this.#armGroupedCompletionObservation(channel, prepared, parked, observation); return undefined;
-    });
-  }
-
-  #armGroupedCompletionObservation(channel: ChannelInfo, prepared: PreparedChannelCompletion,
-    parked: ParkedChannelCompletion, observation: NativeI32Observation): void {
-    const parkedCompletions = this.parkedChannelCompletions;
-    const observations = this.pendingChannelNativeObservations.get(channel) ?? new Set<NativeI32Observation>();
-    this.pendingChannelNativeObservations.set(channel, observations); observations.add(observation);
-    let waitResult;
-    try {
-      // This is an internal progress wait, not a guest timeout or retirement
-      // proof. A finite engine wait handles a missed/competing Q notification.
-      waitResult = observation.arm(1, 10);
-    } catch (cause) {
-      this.#failKernelInstance(kernelEntryEffectFailure(`completion queue observer pid=${channel.pid} failed`, cause));
-      return;
-    }
-    let retiredWhenSettled = false;
-    const settle = () => {
-      if (!observation.settled) throw new MemoryGroupProtocolFault('Completion queue wait has not actually settled');
-      observations.delete(observation);
-      if (!observations.size) this.pendingChannelNativeObservations.delete(channel);
-      const finalListener = this.finishChannelListenerWait(channel);
-      retiredWhenSettled = this.retiredChannelListeners.has(channel);
-      if (retiredWhenSettled) {
-        if (prepared.exitHandshake !== 'thread' && parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
-        if (finalListener) this.acknowledgeIdleRetiredCompletionChannel(channel);
-      }
-    };
-    const retry = () => {
-      if ((retiredWhenSettled && prepared.exitHandshake !== 'thread') || parkedCompletions.get(channel) !== parked) {
-        this.acknowledgeIdleRetiredCompletionChannel(channel);
-        return;
-      }
-      this.#runOrDeferKernelEntry(`completion queue publication pid=${channel.pid}`, entry => {
-        if (parkedCompletions.get(channel) !== parked) {
-          this.acknowledgeIdleRetiredCompletionChannel(channel);
-          return undefined;
-        }
-        // A dead Process can retain its exact host registration during orderly
-        // teardown. A settled Q wait grants no authority to wake that image.
-        if (this.#kernelFatalError !== null || !this.canPublishPreparedChannelCompletion(channel, prepared)
-            || (!prepared.exitHandshake
-              && (!this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
-                || !this.#isProcessExecutionActiveWithinKernelEntry(channel.pid, entry)))) {
-          if (parkedCompletions.get(channel) === parked) parkedCompletions.delete(channel);
-          this.acknowledgeIdleRetiredCompletionChannel(channel);
-          return undefined;
-        }
-        entry.deferProtocolEffect(() => {
-          if (parkedCompletions.get(channel) !== parked) {
-            this.acknowledgeIdleRetiredCompletionChannel(channel);
-            return;
-          }
-          parkedCompletions.delete(channel);
-          if (!this.canPublishPreparedChannelCompletion(channel, prepared) || this.#kernelFatalError !== null) {
-            this.acknowledgeIdleRetiredCompletionChannel(channel);
-            return;
-          }
-          prepared.relistenRequested ||= parked.relistenRequested;
-          // STOP may have arrived while Q was busy. Keep the materialized
-          // result parked until normal SIGCONT preflight permits publication.
-          this.publishOrParkChannelCompletion(channel, prepared);
-        });
-        return undefined;
-      }, parked);
-    };
-    if (waitResult.async) {
-      this.#continueWaitAsyncListenerRoot(waitResult.value,
-        `completion queue continuation pid=${channel.pid}`, retry, settle);
-    } else {
-      settle();
-      // Q changed before the engine wait armed. Yield instead of recursing.
-      this.#scheduleImmediateListenerRoot(`completion queue retry pid=${channel.pid}`, retry);
-    }
-  }
-
   private materializePreparedChannelCompletion(
     channel: ChannelInfo,
     prepared: PreparedChannelCompletion,
@@ -17926,6 +18060,9 @@ export class CentralizedKernelWorker {
 
   /** Hold one exact mailbox at a syscall boundary while its process is stopped. */
   private deferChannelWhileStopped(channel: ChannelInfo): boolean {
+    // The actual Rust ingress/completion owner holds grouped requests. A host
+    // mirror must not independently grant dispatch or publication permission.
+    if (channel.source instanceof GroupProcessAddressSpace) return false;
     if (this.#terminalProcessTeardown) return false;
     const testHook = this.#scratchBoundaryTestHooks?.deferChannelWhileStopped;
     if (testHook) return testHook(channel);
@@ -17952,10 +18089,52 @@ export class CentralizedKernelWorker {
    * release. The wake-event caller uses this to suppress a stale CONTINUED
    * parent notification after a resume-time stop or exit.
    */
+  #resumeGroupedChannels(pid: number, entry: KernelWorkerEntryContext): boolean | undefined {
+    const registration = this.processes.get(pid);
+    if (!registration?.grouped || !registration.channels.length) return undefined;
+    const channel = registration.channels[0]!, binding = this.#groupChannelBinding(channel);
+    const protocol = MEMORY_GROUP_PROTOCOL.completion;
+    let reply = binding.store.completion(binding.receipt, protocol.commands.resume, entry);
+    while (reply.effect === protocol.effects.interrupt) {
+      this.#driveGroupChannelEffect(channel, binding, reply, entry);
+      reply = binding.store.completion(binding.receipt, protocol.commands.resume, entry);
+    }
+    if (reply.effect === protocol.effects.fatal) throw new MemoryGroupProtocolFault('Kernel quarantined grouped resume');
+    if (reply.effect !== protocol.effects.resumed) return false;
+    this.stoppedPids.delete(pid); this.pendingResumePids.delete(pid);
+    for (const fork of this.pendingGroupForks.values()) if (fork.childReceipt?.pid === pid && fork.launching) {
+      fork.nativeChanged = true; fork.nativeWake?.();
+    }
+    for (const clone of this.pendingGroupMappings.values()) if (clone.receipt.pid === pid && clone.cloning?.launching) {
+      clone.cloning.nativeChanged = true; clone.cloning.nativeWake?.();
+    }
+    const starts = this.deferredProcessWorkerStarts.get(pid);
+    this.deferredProcessWorkerStarts.delete(pid);
+    if (starts) entry.deferFinalProtocolTransactionStart(() => {
+      for (const pending of starts) {
+        const actual = this.processes.get(pid);
+        if (actual !== pending.expectedRegistration || actual.source !== pending.expectedSource
+            || actual.memory !== pending.expectedMemory) { pending.cancel(); continue; }
+        try { pending.start(); }
+        catch (error) { pending.cancel(); if (pending.onStartError?.(error) !== true) throw error; }
+      }
+      return undefined;
+    });
+    for (const [target, owner] of this.#groupChannelBindings) {
+      if (owner.receipt.pid === pid && owner.receipt.generation === binding.receipt.generation && owner.token !== undefined) {
+        this.#driveGroupChannelEffect(target, owner,
+          owner.store.completion(owner.receipt, protocol.commands.poll, entry, { token: owner.token }), entry);
+      }
+    }
+    return true;
+  }
+
   private resumeStoppedProcess(
     pid: number,
     kernelEntry: KernelWorkerEntryContext,
   ): boolean {
+    const grouped = this.#resumeGroupedChannels(pid, kernelEntry);
+    if (grouped !== undefined) return grouped;
     // Wake events carry a PID, not a host execution-generation token. A
     // delayed event must not release a process that has since stopped again,
     // exited, or entered an exec handoff.
@@ -18790,6 +18969,15 @@ export class CentralizedKernelWorker {
         `Exec retirement generation changed for pid ${pid}`,
       );
     }
+    if (registration.source instanceof GroupProcessAddressSpace) {
+      const effects = MEMORY_GROUP_PROTOCOL.completion.effects;
+      for (const channel of registration.channels) {
+        const reply = this.#completeGroupChannel(channel, -1, EINTR_ERRNO, entry, true);
+        if (reply && (reply.effect === effects.published || reply.effect === effects.observe
+            || reply.effect === effects.cancelObservation)) wokenOffsets.add(channel.channelOffset);
+      }
+      return wokenOffsets;
+    }
     const execCallers = registration.channels.filter((channel) => {
       if (channel.memory !== expectedMemory || channel.source !== registration.source) return false;
       const view = processDataView(channel.source, channel.channelOffset);
@@ -18837,6 +19025,14 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
     alreadyExited = false,
   ): boolean {
+    if (channel.source instanceof GroupProcessAddressSpace && !alreadyExited && !this.hostReaped.has(channel.pid)) {
+      const mark = entry.instance.exports.kernel_mark_process_signaled as (pid: number, signum: number) => number;
+      const status = mark(channel.pid, SIGKILL);
+      if (status !== 0) throw new MemoryGroupProtocolFault(`Kernel refused grouped teardown: ${status}`);
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      this.wakeExitedChannelForRetirement(channel, entry);
+      return true;
+    }
     if (alreadyExited || this.hostReaped?.has(channel.pid)) {
       this.wakeExitedChannelForRetirement(channel, entry);
       return true;
@@ -18991,7 +19187,7 @@ export class CentralizedKernelWorker {
     const channels = this.activeChannels.slice();
     for (const channel of channels) {
       if (!this.isRegisteredChannel(channel)) continue;
-      if (!this.#terminalProcessTeardown && this.stoppedPids?.has(channel.pid)) {
+      if (!(channel.source instanceof GroupProcessAddressSpace) && !this.#terminalProcessTeardown && this.stoppedPids?.has(channel.pid)) {
         if (this.loadChannelStatus(channel) === CH_PENDING) {
           this.deferChannelWhileStopped(channel);
         }
@@ -19060,6 +19256,13 @@ export class CentralizedKernelWorker {
     refreshImportedBos = false,
     exitHandshake: boolean | 'thread' = false,
   ): void {
+    if (channel.source instanceof GroupProcessAddressSpace && !entry) {
+      this.#runOrDeferKernelEntry('grouped raw completion', next => {
+        this.completeChannelRaw(channel, retVal, errVal, next, relistenRequested, refreshImportedBos, exitHandshake);
+        return undefined;
+      });
+      return;
+    }
     this.#releaseBlockingRetrySnapshot(channel, entry);
     this.#finishChannelRequest(channel);
     const testHook = this.#scratchBoundaryTestHooks?.completeChannelRaw;
@@ -19089,7 +19292,9 @@ export class CentralizedKernelWorker {
     } else {
       this.drainAndProcessWakeupEvents();
     }
-    if (entry) {
+    if (channel.source instanceof GroupProcessAddressSpace) {
+      this.#completeGroupChannel(channel, prepared.retVal, prepared.errVal, entry!, exitHandshake !== false);
+    } else if (entry) {
       entry.deferProtocolEffect(() => {
         this.publishOrParkChannelCompletion(channel, prepared);
       });

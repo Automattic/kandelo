@@ -198,31 +198,7 @@ pub(crate) fn thread_exit(
     tid: u32,
     clear_child_tid: bool,
 ) -> Result<usize, Errno> {
-    let proc = table.get(pid).ok_or(Errno::ESRCH)?;
-    if proc.prepared_exec_targets.has_retiring() {
-        return Err(Errno::EBUSY);
-    }
-    if proc.get_thread(tid).is_none() {
-        return Err(Errno::ESRCH);
-    }
-    let generation = proc.exec_generation;
-    let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-    let ctid = syscalls::cleanup_exiting_thread_with_state(proc, locks, host, tid)?.ctid_ptr;
-    if clear_child_tid
-        && ctid != 0
-        && matches!(proc.state, ProcessState::Running | ProcessState::Stopped)
-        && host.proc_write_bytes(pid as i32, ctid as u64, &0u32.to_le_bytes()) == 0
-    {
-        crate::wait_park::with(|parks| parks.futex_wake(pid, ctid as u64, 1, u32::MAX));
-    }
-    table
-        .memory_groups()
-        .note_thread_exit(runtime_core::memory_group::GroupExecution {
-            pid,
-            tid,
-            exec_generation: generation,
-        })?;
-    Ok(ctid)
+    table.exit_thread_with_io(pid, tid, clear_child_tid, host)
 }
 
 #[cfg(test)]

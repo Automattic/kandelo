@@ -64,9 +64,8 @@ export function groupMemoryObservationFixture(options: Parameters<typeof groupMe
   const retain = () => { const token = {}; pending.add(token); return () => { pending.delete(token); }; };
   const fixture = groupMemoryLayout({ ...options, retainNativeObservation: retain });
   const transport = {
-    prepareChannelObservation(_handle: unknown, address: number, queue: boolean) {
-      return queue ? new NativeI32Observation(new Int32Array(fixture.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1), retain())
-        : fixture.source.prepareNativeObservationI32(address);
+    prepareChannelObservation(_handle: unknown, _receipt: unknown, address: number) {
+      return fixture.source.prepareNativeObservationI32(address);
     },
   };
   return { ...fixture, transport, pending };

@@ -83,6 +83,7 @@ pub struct ProcessTable {
     /// Kernel authority for opt-in backing groups, separate from POSIX pgids.
     memory_groups: crate::memory_group::MemoryGroups,
     group_operations: crate::group_operation::Operations,
+    group_completions: crate::group_completion::Completions,
     exec_controls: crate::exec_control::Controls,
     root_controls: crate::root_control::Roots,
     retirement_controls: crate::retirement_control::Controls,
@@ -695,6 +696,40 @@ fn serialize_fork_state_with_allocator(
 }
 
 impl ProcessTable {
+    /// Commit exact thread exit in the actual table. A natural EXIT completion
+    /// is retained before its transport can be detached; native stop remains a
+    /// separate fact and is never inferred from removing this task.
+    pub fn exit_thread_with_io(&mut self, pid: u32, tid: u32, clear_child_tid: bool,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<usize, Errno> {
+        let proc = self.get(pid).ok_or(Errno::ESRCH)?;
+        if proc.prepared_exec_targets.has_retiring() {
+            return Err(Errno::EBUSY);
+        }
+        if proc.get_thread(tid).is_none() {
+            return Err(Errno::ESRCH);
+        }
+        let generation = proc.exec_generation;
+        let (proc, locks) = self.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
+        let ctid = crate::syscalls::cleanup_exiting_thread_with_state(proc, locks, host, tid)?.ctid_ptr;
+        if clear_child_tid
+            && ctid != 0
+            && matches!(proc.state, ProcessState::Running | ProcessState::Stopped)
+            && host.proc_write_bytes(pid as i32, ctid as u64, &0u32.to_le_bytes()) == 0
+        {
+            crate::wait_park::with(|parks| parks.futex_wake(pid, ctid as u64, 1, u32::MAX));
+        }
+        self
+            .memory_groups()
+            .note_thread_exit(crate::memory_group::GroupExecution {
+                pid,
+                tid,
+                exec_generation: generation,
+            })?;
+        self.note_group_completion_thread_exit(pid, tid, generation, clear_child_tid);
+        Ok(ctid)
+    }
+
     /// Group configuration/lifecycle is host-driven; guest POSIX pgids do not
     /// grant admission. The ledger itself cannot mint a ProcessTable task.
     pub fn memory_groups(&mut self) -> &mut crate::memory_group::MemoryGroups {
@@ -704,6 +739,8 @@ impl ProcessTable {
     pub(crate) fn root_controls(&mut self) -> &mut crate::root_control::Roots { &mut self.root_controls }
     pub(crate) fn exec_controls_ref(&self) -> &crate::exec_control::Controls { &self.exec_controls }
     pub(crate) fn exec_controls(&mut self) -> &mut crate::exec_control::Controls { &mut self.exec_controls }
+    pub(crate) fn group_completions(&mut self) -> &mut crate::group_completion::Completions { &mut self.group_completions }
+    pub(crate) fn group_completions_ref(&self) -> &crate::group_completion::Completions { &self.group_completions }
     pub(crate) fn group_operations(&mut self) -> &mut crate::group_operation::Operations {
         &mut self.group_operations
     }
@@ -742,7 +779,9 @@ impl ProcessTable {
         } else if store.resolve(record).is_ok() {
             store.cancel_unpublished(&mut memory, admission)?;
         }
-        self.memory_groups.retire_quiescent(admission)
+        self.memory_groups.retire_quiescent(admission)?;
+        self.forget_released_group_completions(record, false);
+        Ok(())
     }
 
     /// A stopped pthread's scratch and its mapped control-slot authority end
@@ -770,15 +809,19 @@ impl ProcessTable {
         let process = self.processes.get_mut(&record.pid).filter(|process| process.exec_generation == record.generation);
         let Some(process) = process else {
             let (store, admission) = self.memory_groups.storage_owner(record)?;
-            return store.release_retired_image_thread(
-                &mut crate::memory_group::physical::HostMemory { resource: store.resource(), host }, admission);
+            store.release_retired_image_thread(
+                &mut crate::memory_group::physical::HostMemory { resource: store.resource(), host }, admission)?;
+            self.forget_released_group_completions(record, false);
+            return Ok(());
         };
         if task_present { return Err(Errno::EBUSY); }
         let (address, length) = process.memory.group_thread_control_interval(record)?;
         let (store, admission) = self.memory_groups.storage_owner(record)?;
         store.release_stopped_thread(&mut crate::memory_group::physical::HostMemory { resource: store.resource(), host },
             admission, u32::try_from(address).map_err(|_| Errno::EIO)?, u32::try_from(length).map_err(|_| Errno::EIO)?,
-            || process.memory.release_group_thread_control(record))
+            || process.memory.release_group_thread_control(record))?;
+        self.forget_released_group_completions(record, false);
+        Ok(())
     }
 
     pub fn release_group_storage_unconstructed_control(&mut self, record: wasm_posix_shared::memory_group::ReceiptRecord,
@@ -799,7 +842,9 @@ impl ProcessTable {
         let root = store.root_for_image(record)?;
         store.release_unconstructed_control(&mut crate::memory_group::physical::HostMemory { resource: store.resource(), host },
             root, u32::try_from(address).map_err(|_| Errno::EIO)?, u32::try_from(length).map_err(|_| Errno::EIO)?,
-            || process.memory.release_group_thread_control(record))
+            || process.memory.release_group_thread_control(record))?;
+        self.forget_released_group_completions(record, false);
+        Ok(())
     }
 
     /// Validation only for an explicitly selected host group. Initial commit
@@ -950,6 +995,7 @@ impl ProcessTable {
             advisory_locks: AdvisoryLockManager::new(),
             memory_groups: crate::memory_group::MemoryGroups::new(),
             group_operations: crate::group_operation::Operations::new(),
+            group_completions: crate::group_completion::Completions::new(),
             exec_controls: crate::exec_control::Controls::new(),
             root_controls: crate::root_control::Roots::new(),
             retirement_controls: crate::retirement_control::Controls::new(),
@@ -2697,6 +2743,8 @@ impl ProcessTable {
             return;
         }
         let (pgid, sid, ppid) = (process.pgid, process.sid, process.ppid);
+        let generation = process.exec_generation;
+        self.note_group_completion_process_exit(pid, generation);
 
         let adoption = self.reparent_children_to_init(pid);
 

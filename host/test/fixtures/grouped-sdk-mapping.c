@@ -1,11 +1,13 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #define PAGE 65536
@@ -25,6 +27,30 @@ int main(int argc, char **argv) {
     CHECK(sum == 3 * PAGE * 0x63u);
     free(heap);
     puts("heap-ok");
+
+    /* Real dispatch, not a synthetic host registration: both exec entries
+     * must reject a bad path before preparing or launching a replacement. */
+    char *const replacement[] = {"missing", NULL};
+    char *const environment[] = {NULL};
+    char *outside = (char *)(uintptr_t)0xffffffffu;
+    errno = 0;
+    CHECK(execve(outside, replacement, environment) == -1 && errno == EFAULT);
+    errno = 0;
+    CHECK(syscall(SYS_execveat, AT_FDCWD, outside, replacement, environment, 0) == -1 && errno == EFAULT);
+    if (!strcmp(argv[1], "grouped")) {
+        char *path = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(path != MAP_FAILED);
+        memcpy(path + PAGE - 2, "/x", 3);
+        CHECK(mprotect(path + PAGE, PAGE, PROT_NONE) == 0);
+        errno = 0;
+        CHECK(execve(path + PAGE - 2, replacement, environment) == -1 && errno == EFAULT);
+        errno = 0;
+        CHECK(syscall(SYS_execveat, AT_FDCWD, path + PAGE - 2, replacement, environment, 0) == -1 && errno == EFAULT);
+        CHECK(mprotect(path + PAGE, PAGE, PROT_READ | PROT_WRITE) == 0);
+        CHECK(munmap(path, 2 * PAGE) == 0);
+    }
+    puts("exec-path-faults-ok");
 
     unsigned char *p = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE,
                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
