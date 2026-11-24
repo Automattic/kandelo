@@ -147,6 +147,38 @@ export function nodeWorkerOptions(
   };
 }
 
+const TSX_LOADER_SPECIFIER = /^tsx(?:\/|$)|[\\/]tsx[\\/]dist[\\/]/;
+
+/**
+ * @internal Exported so the kernel worker shares the rule and tests can
+ * verify it.
+ *
+ * WHY: the tsx CLI (`--require .../tsx/dist/preflight.cjs --import
+ * file:///.../tsx/dist/loader.mjs`) and `node --import tsx/esm` put the tsx
+ * loader in process.execArgv. A Worker created without `execArgv` inherits
+ * the list, so every Worker loads tsx again although a compiled or bundled
+ * entry is already JavaScript. Node rejects V8 flags in an explicit Worker
+ * `execArgv` (ERR_WORKER_INVALID_EXEC_ARGV), so the other arguments cannot be
+ * passed on selectively. The result is an empty list: V8 flags are
+ * process-wide and stay in effect, and Node per-thread options are not
+ * inherited. Without a tsx loader the result is `undefined`, which keeps
+ * Node's inheritance.
+ */
+export function nodeCompiledWorkerExecArgv(
+  execArgv: readonly string[] = process.execArgv,
+): string[] | undefined {
+  const loadsTsx = execArgv.some((argument, index) => {
+    const inline = /^--(?:require|import)=(.*)$/.exec(argument);
+    const specifier = inline
+      ? inline[1]
+      : /^(?:--require|-r|--import)$/.test(argument)
+        ? execArgv[index + 1]
+        : undefined;
+    return specifier !== undefined && TSX_LOADER_SPECIFIER.test(specifier);
+  });
+  return loadsTsx ? [] : undefined;
+}
+
 /** @internal Exported so the process-memory ownership policy stays testable. */
 export function nodeWorkerInitialization(
   init: unknown,
@@ -339,7 +371,9 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     if (compiledEntry) {
       const worker = new Worker(
         compiledEntry,
-        nodeWorkerOptions(initialization.workerDataValue),
+        nodeWorkerOptions(initialization.workerDataValue, {
+          execArgv: nodeCompiledWorkerExecArgv(),
+        }),
       );
       return this.initializeWorker(worker, initialization);
     }

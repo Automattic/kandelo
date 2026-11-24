@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import {
   MockWorkerAdapter,
   NodeWorkerAdapter,
+  nodeCompiledWorkerExecArgv,
   nodeWorkerInitialization,
   nodeWorkerOptions,
   nodeWorkerStackSizeMb,
@@ -110,6 +111,54 @@ describe("NodeWorkerAdapter stack policy", () => {
         stackSizeMb: 32,
       },
     });
+  });
+
+  it("starts compiled entries without arguments when the tsx CLI set its loader", () => {
+    expect(nodeCompiledWorkerExecArgv([
+      "--require",
+      "/foo/node_modules/tsx/dist/preflight.cjs",
+      "--import",
+      "file:///foo/node_modules/tsx/dist/loader.mjs",
+    ])).toEqual([]);
+    expect(nodeCompiledWorkerExecArgv([
+      "--require=/foo/node_modules/tsx/dist/preflight.cjs",
+    ])).toEqual([]);
+    expect(nodeCompiledWorkerExecArgv([
+      "--import=file:///foo/node_modules/tsx/dist/loader.mjs",
+    ])).toEqual([]);
+    expect(nodeCompiledWorkerExecArgv([
+      "-r",
+      "/foo/node_modules/tsx/dist/preflight.cjs",
+    ])).toEqual([]);
+  });
+
+  it("starts compiled entries without arguments when a tsx specifier is imported", () => {
+    expect(nodeCompiledWorkerExecArgv(["--import", "tsx"])).toEqual([]);
+    expect(nodeCompiledWorkerExecArgv(["--import=tsx/esm"])).toEqual([]);
+    expect(nodeCompiledWorkerExecArgv(["-r", "tsx/cjs"])).toEqual([]);
+  });
+
+  it("drops V8 flags next to a tsx loader because a Worker rejects them", () => {
+    expect(nodeCompiledWorkerExecArgv([
+      "--experimental-wasm-exnref",
+      "--max-old-space-size=16384",
+      "--import",
+      "tsx/esm",
+    ])).toEqual([]);
+  });
+
+  it("keeps Node's inheritance when no argument loads tsx", () => {
+    expect(nodeCompiledWorkerExecArgv([])).toBeUndefined();
+    expect(nodeCompiledWorkerExecArgv([
+      "--experimental-wasm-exnref",
+      "--max-old-space-size=16384",
+      "--import",
+      "/foo/bar.mjs",
+      "--require=/foo/tsx-baz/dist/qux.cjs",
+      "--import=tsxfoo",
+      "--conditions",
+      "tsx",
+    ])).toBeUndefined();
   });
 
   it("keeps built-in process memory out of the workerData startup path", () => {

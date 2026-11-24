@@ -288,6 +288,13 @@ process workers; if bundling is unavailable, it falls back to the `tsx`
 loader. Browser worker entries are bundled by the browser build and do not use
 this Node-only source fallback.
 
+When the parent's `process.execArgv` loads `tsx` (the `tsx` CLI, or `node
+--import tsx`), the kernel worker and the process workers that start from a
+compiled or bundled entry receive an empty `execArgv`, so they do not load
+`tsx` again. V8 flags are process-wide and stay in effect; Node per-thread
+options such as `--conditions` are not passed to those workers. The `tsx`
+fallback keeps the inherited arguments.
+
 Kernel module instantiation snapshots the caller's exact intrinsic
 `ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.
 Pointer-width detection and `WebAssembly.compile` consume that same detached
