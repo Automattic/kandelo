@@ -35,6 +35,7 @@ struct Control {
     parent: u32,
     signal: u32,
     pending_effect: u32,
+    entered_effect: u32,
 }
 impl MapMemory for Control {
     fn heap_bytes(&self) -> Result<usize, Errno> {
@@ -83,6 +84,7 @@ impl ProcessTable {
             parent: 0,
             signal: 0,
             pending_effect: 0,
+            entered_effect: 0,
         };
         let entry = slot.finish(Key(record.group, record.serial), control)?;
         self.exec_controls().entries.publish_io(entry);
@@ -188,7 +190,7 @@ impl ProcessTable {
         completed_effect: u32,
         host: &mut dyn HostIO,
     ) -> Result<Reply, Errno> {
-        if matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED) != (completed_effect != 0)
+        if matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED | C::ENTER_NATIVE) != (completed_effect != 0)
         {
             return Err(Errno::EINVAL);
         }
@@ -335,6 +337,8 @@ impl ProcessTable {
                     self.complete_exec_platform_effect(control, completed_effect)?;
                 }
             }
+            C::ENTER_NATIVE if matches!(completed_effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH)
+                && control.pending_effect == completed_effect && control.entered_effect == 0 => {}
             C::VALIDATE_INSTALL | C::INSTALLED => {
                 if control.phase != P::OLD_STOPPED
                     || control.signal != 0
@@ -388,6 +392,29 @@ impl ProcessTable {
                 }
             }
             return Ok(Self::exec_control_reply(control, effect::COMPLETE));
+        }
+        if matches!(control.pending_effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH) && control.entered_effect == 0 {
+            use crate::group_completion::NativeStart;
+            match self.group_native_start_permission(record, host)? {
+                NativeStart::Stopped => {
+                    let mut reply = Self::exec_control_reply(control, effect::YIELD); reply.delay = 10; return Ok(reply);
+                }
+                NativeStart::Dead => {
+                    // A post-install exit still owes exact future Worker and
+                    // reference retirement. Keep custody visible; do not
+                    // authorize construction or pretend the handoff succeeded.
+                    control.failure = Some(Errno::ESRCH);
+                    control.phase = P::CONTAINED;
+                    control.pending_effect = E::CONTAIN_FAILURE;
+                }
+                NativeStart::Ready if command == C::ENTER_NATIVE => {
+                    control.entered_effect = control.pending_effect;
+                    let mut reply = Self::exec_control_reply(control, control.pending_effect);
+                    reply.flags |= wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE;
+                    return Ok(reply);
+                }
+                NativeStart::Ready => {}
+            }
         }
         if control.pending_effect != 0 {
             return Ok(Self::exec_control_reply(control, control.pending_effect));
@@ -520,7 +547,11 @@ impl ProcessTable {
                 }
             }
             E::BIND_REPLACEMENT => E::START_REPLACEMENT,
-            E::START_REPLACEMENT => E::FINISH_HANDOFF,
+            E::START_REPLACEMENT | E::DELIVER_LAUNCH => {
+                if control.entered_effect != completed { return Err(Errno::EBUSY); }
+                if completed == E::START_REPLACEMENT { E::WAIT_READY } else { E::FINISH_HANDOFF }
+            }
+            E::WAIT_READY => E::DELIVER_LAUNCH,
             E::FINISH_HANDOFF | E::PUBLISH_TERMINATION => {
                 control.phase = P::FINISHED;
                 0
@@ -528,6 +559,7 @@ impl ProcessTable {
             _ => return Err(Errno::EINVAL),
         };
         control.pending_effect = next;
+        control.entered_effect = 0;
         Ok(())
     }
 }
@@ -779,6 +811,10 @@ pub(crate) mod tests {
         (f, host, old.record(), future, target)
     }
     fn done(f: &mut Fixture, host: &mut Host, future: ReceiptRecord, effect: u32) -> Reply {
+        if matches!(effect, E::START_REPLACEMENT | E::DELIVER_LAUNCH) {
+            let permission = f.table.exec_control_effect(future, C::ENTER_NATIVE, effect, host).unwrap();
+            assert_ne!(permission.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
+        }
         f.table
             .exec_control_effect(future, C::PLATFORM_COMPLETED, effect, host)
             .unwrap()
@@ -895,10 +931,22 @@ pub(crate) mod tests {
             done(&mut f, &mut host, future, E::BIND_REPLACEMENT).effect,
             E::START_REPLACEMENT
         );
+        f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        let held = f.table.exec_control_effect(future, C::ENTER_NATIVE, E::START_REPLACEMENT, &mut host).unwrap();
+        assert_eq!(held.effect, effect::YIELD);
+        assert_eq!(held.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
+        assert!(matches!(f.table.exec_control_effect(future, C::PLATFORM_COMPLETED, E::START_REPLACEMENT, &mut host), Err(Errno::EBUSY)));
+        f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Running;
         assert_eq!(
             done(&mut f, &mut host, future, E::START_REPLACEMENT).effect,
-            E::FINISH_HANDOFF
+            E::WAIT_READY
         );
+        assert_eq!(done(&mut f, &mut host, future, E::WAIT_READY).effect, E::DELIVER_LAUNCH);
+        f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        assert_eq!(f.table.exec_control_effect(future, C::ENTER_NATIVE, E::DELIVER_LAUNCH, &mut host).unwrap().effect, effect::YIELD);
+        assert!(matches!(f.table.exec_control_effect(future, C::PLATFORM_COMPLETED, E::DELIVER_LAUNCH, &mut host), Err(Errno::EBUSY)));
+        f.table.get_mut(future.pid).unwrap().state = crate::process::ProcessState::Running;
+        assert_eq!(done(&mut f, &mut host, future, E::DELIVER_LAUNCH).effect, E::FINISH_HANDOFF);
         let final_reply = done(&mut f, &mut host, future, E::FINISH_HANDOFF);
         assert_eq!(
             (final_reply.effect, final_reply.value),

@@ -7,8 +7,7 @@ pub mod command {
     pub const LAUNCH: u32 = 6;
     pub const PLATFORM_COMPLETED: u32 = 7;
     pub const PLATFORM_FAILED: u32 = 8;
-    pub const WORKER_STARTED: u32 = 9;
-    pub const WORKER_CANCELLED: u32 = 10;
+    pub const ENTER_NATIVE: u32 = 11;
 }
 pub mod phase {
     pub const PREPARING: u32 = 1;

@@ -2514,7 +2514,7 @@ Opt-in shared-memory groups belong to Rust's `ProcessTable` and `MemoryGroups`, 
 
 Host-adapter 29 supplies raw bounded reads, writes, copies, growth and atomics over a kernel-issued backing resource. These imports bridge separate Wasm memories: the kernel's own pointers cannot directly address the group's `WebAssembly.Memory`. TypeScript retains the actual Memory, Worker and native Promise objects, transports kernel-issued descriptors and reports genuine completion. It does not choose physical pages, reconstruct mapping effects or decide when storage can be reused. Graphics mappings retain their Rust BO/object ownership; host device staging is independent. Program ABI 56 is unchanged. The public Node/browser launch API selects this backend only through explicit opt-in. See [shared-memory groups](shared-memory-groups.md) for the trust boundary, scope and validation requirements.
 
-Host-adapter 32 retains grouped syscall completions in the actual
+Host-adapter 33 retains grouped syscall completions in the actual
 `ProcessTable`. Rust captures and consumes request flags, permits dispatch,
 retains full-width results and prepared signals, and selects publication,
 stop holds, native queue observations, interruption, terminal unwind and

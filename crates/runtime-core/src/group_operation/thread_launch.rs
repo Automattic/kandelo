@@ -213,6 +213,9 @@ impl ProcessTable {
         host: &mut dyn HostIO,
     ) -> Result<Reply, Errno> {
         let child = operation.child.ok_or(Errno::EIO)?;
+        let native_permission = if !launch.cancelled && matches!(launch.effect, E::THREAD_START | E::THREAD_DELIVER) {
+            self.group_native_start_permission(child, host)?
+        } else { crate::group_completion::NativeStart::Ready };
         let parent_stopping = self.group_clone_parent_stopping(operation.receipt);
         let child_admitted = self
             .memory_group_task(child.pid, child.tid)
@@ -222,7 +225,7 @@ impl ProcessTable {
                 admission.record() == child
                     && self.memory_group_running_admission(admission).is_ok()
             });
-        let child_dead = !child_admitted
+        let child_dead = native_permission == crate::group_completion::NativeStart::Dead || !child_admitted
             || self.get(child.pid).is_none_or(|process| {
                 process.exec_generation != child.generation
                     || process.exit_signal != 0
@@ -239,7 +242,7 @@ impl ProcessTable {
             operation.failure.get_or_insert(Errno::ESRCH);
             launch.cancel();
         }
-        let stopped = self
+        let stopped = native_permission == crate::group_completion::NativeStart::Stopped || self
             .get(child.pid)
             .is_some_and(|process| process.state == crate::process::ProcessState::Stopped);
         let gated = stopped
@@ -277,12 +280,12 @@ impl ProcessTable {
             match command {
                 C::THREAD_NATIVE_VALIDATE if launch.entered => execute = !gated,
                 C::THREAD_NATIVE_NOT_APPLIED
-                    if launch.entered && launch.effect == E::THREAD_DELIVER =>
+                    if launch.entered && matches!(launch.effect, E::THREAD_START | E::THREAD_DELIVER) =>
                 {
                     // The mechanical adapter reports refusal before postMessage;
                     // a throwing/uncertain postMessage must report FAILED instead.
                     launch.committed = false;
-                    launch.next(E::THREAD_DELIVER);
+                    launch.next(launch.effect);
                 }
                 C::THREAD_NATIVE_TIMEOUT if stopped && !launch.cancelled && launch.entered => {}
                 C::THREAD_NATIVE_ENTERED

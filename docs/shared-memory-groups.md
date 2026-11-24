@@ -83,7 +83,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 32, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 33, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -95,6 +95,8 @@ desktop tests provide that evidence. No artifact is restamped or admitted merely
 to match the historical name.
 
 ## Executables and process lifecycle
+
+The actual root, fork, exec and pthread owners grant native construction and launch delivery after checking the exact execution and pending default signals. A stopped operation stays pending in Rust. TypeScript retains native objects and executes each granted effect in the same kernel-entry transaction; grouped starts never enter the ordinary host deferred-constructor registry. Exec readiness and memory delivery are separate kernel-selected effects. A post-install exec exit still has an unresolved retirement path and retains custody rather than constructing or claiming completion. Session/shutdown and the remaining ownership audit below are not complete.
 
 The normal SDK prepares versioned compatible executables. The runtime checks
 the translated contract, program ABI and kernel-host contract before admission.

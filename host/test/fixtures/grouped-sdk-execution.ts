@@ -605,7 +605,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           const forkKernel = options.rejectForkLaunchCount ? Object.fromEntries([
             'runMemoryGroupForkLaunch', 'observeMemoryGroupReplicaWorker', 'sealMemoryGroupReplicaWorkerAbsence', 'registerMemoryGroupProcess',
             'processSecureExec', 'getKernelAbiVersion', 'getKernelAbiContractDigest',
-            'startMemoryGroupProcessWorkerWhenRunnable', 'shouldLaunchPendingChild',
+            'shouldLaunchPendingChild',
             'requestMemoryGroupReplicaWorkerStop', 'waitForMemoryGroupReplicaQuiescence', 'deactivateMemoryGroupProcess', 'releaseMemoryGroupWorkerReferences',
           ].map(name => [name, (...args: any[]) => {
             if (name === 'runMemoryGroupForkLaunch' && options.rejectForkStage === 'replay') {

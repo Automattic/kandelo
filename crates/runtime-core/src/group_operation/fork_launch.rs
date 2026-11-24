@@ -204,6 +204,9 @@ impl ProcessTable {
                 .map_or(true, |state| {
                     state & (S::STOPPING | S::STOPPED) != 0 || state & S::SOURCE_LIVE == 0
                 });
+        let native_permission = if !launch.cancelled && matches!(launch.effect, E::FORK_START | E::FORK_DELIVER) {
+            self.group_native_start_permission(child, host)?
+        } else { crate::group_completion::NativeStart::Ready };
         let child_dead = self.get(child.pid).is_none_or(|proc| {
             proc.exec_generation != child.generation
                 || proc.exit_signal != 0
@@ -215,11 +218,11 @@ impl ProcessTable {
         if parent_stopping {
             operation.deliver = false;
         }
-        if !launch.committed && (parent_stopping || child_dead) {
+        if !launch.committed && (parent_stopping || child_dead || native_permission == crate::group_completion::NativeStart::Dead) {
             operation.failure.get_or_insert(Errno::ESRCH);
             launch.cancel();
         }
-        let child_stopped = self
+        let child_stopped = native_permission == crate::group_completion::NativeStart::Stopped || self
             .get(child.pid)
             .is_some_and(|proc| proc.state == crate::process::ProcessState::Stopped);
         let mut execute = false;
@@ -240,12 +243,12 @@ impl ProcessTable {
             match command {
                 C::FORK_NATIVE_VALIDATE if launch.entered => {
                     execute =
-                        !(child_stopped && launch.effect == E::FORK_DELIVER && !launch.cancelled);
+                        !(child_stopped && matches!(launch.effect, E::FORK_START | E::FORK_DELIVER) && !launch.cancelled);
                 }
                 C::FORK_NATIVE_NOT_APPLIED
-                    if launch.entered && launch.effect == E::FORK_DELIVER && !launch.cancelled =>
+                    if launch.entered && matches!(launch.effect, E::FORK_START | E::FORK_DELIVER) && !launch.cancelled =>
                 {
-                    launch.next(E::FORK_DELIVER);
+                    launch.next(launch.effect);
                 }
                 C::FORK_NATIVE_TIMEOUT if child_stopped && !launch.cancelled && launch.entered => {}
                 C::FORK_NATIVE_ENTERED
@@ -255,7 +258,7 @@ impl ProcessTable {
                             E::FORK_SUCCEEDED | E::FORK_FAILED | E::FORK_FATAL
                         ) =>
                 {
-                    if !(child_stopped && launch.effect == E::FORK_DELIVER && !launch.cancelled) {
+                    if !(child_stopped && matches!(launch.effect, E::FORK_START | E::FORK_DELIVER) && !launch.cancelled) {
                         launch.entered = true;
                         execute = true;
                     }
@@ -341,7 +344,7 @@ impl ProcessTable {
             E::FORK_START | E::FORK_REPLAY | E::FORK_WAIT_STOP => 30_000,
             _ => 0,
         };
-        if paused && (pending || launch.effect == E::FORK_DELIVER && !execute) {
+        if paused && (pending || matches!(launch.effect, E::FORK_START | E::FORK_DELIVER) && !execute) {
             reply.effect = E::YIELD;
             reply.delay = 0;
         } else if pending && launch.completing {
@@ -874,6 +877,18 @@ mod tests {
         assert!(matches!(f.process.table.poll_group_channel_completion(child, call.token, &mut f.host).unwrap(), crate::group_completion::Effect::Published { .. }));
         f.process.table.acknowledge_group_channel_completion(child, call.token).unwrap();
     }
+    #[test]
+    fn grouped_completion_publishes_with_no_signal_scan_allocation_headroom() {
+        use crate::group_completion::Effect as F;
+        let (mut f, _, _) = completion_running_child();
+        let call = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, call.token, 51, 0).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _budget = crate::io_buffer::test_budget(held);
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+    }
+
     #[test]
     fn grouped_completion_preflights_a_siblings_fatal_signal_before_publishing_any_result() {
         use crate::group_completion::Effect as F;
@@ -1753,6 +1768,29 @@ mod tests {
     }
 
     #[test]
+    fn pthread_constructor_applies_default_stop_and_retries_a_revoked_exact_effect() {
+        use crate::process::ProcessState;
+        let (mut f, token, child) = bound_clone();
+        let start = thread_until(&mut f, token, child, E::THREAD_START);
+        assert!(f.process.table.get_mut(child.pid).unwrap().raise_for_thread(child.tid, wasm_posix_shared::signal::SIGSTOP));
+        let held = thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, start.length);
+        assert_eq!((held.effect, held.delay), (E::YIELD, 0));
+        assert_eq!(held.flags & flags::NATIVE_EXECUTE, 0);
+        f.process.table.get_mut(child.pid).unwrap().state = ProcessState::Running;
+        assert_ne!(thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, start.length).flags & flags::NATIVE_EXECUTE, 0);
+        f.process.table.get_mut(child.pid).unwrap().state = ProcessState::Stopped;
+        assert_eq!(thread_native(&mut f, token, C::THREAD_NATIVE_VALIDATE, start.length).flags & flags::NATIVE_EXECUTE, 0);
+        let retry = thread_native(&mut f, token, C::THREAD_NATIVE_NOT_APPLIED, start.length);
+        assert_eq!(retry.effect, E::YIELD);
+        assert!(retry.length > start.length);
+        f.process.table.get_mut(child.pid).unwrap().state = ProcessState::Running;
+        let next = thread_native(&mut f, token, C::THREAD_NATIVE_POLL, 0);
+        assert_eq!(next.effect, E::THREAD_START);
+        assert_ne!(thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, next.length).flags & flags::NATIVE_EXECUTE, 0);
+        assert_eq!(thread_native(&mut f, token, C::THREAD_NATIVE_COMPLETED, next.length).effect, E::THREAD_READY);
+    }
+
+    #[test]
     fn grouped_clone_native_stopped_process_cannot_construct_or_deliver() {
         let (mut f, token, child) = bound_clone();
         let start = thread_until(&mut f, token, child, E::THREAD_START);
@@ -2539,6 +2577,28 @@ mod tests {
         let replay = f.step(deliver);
         assert_eq!(f.step(replay).effect, E::FORK_RUNTIME);
     }
+    #[test]
+    fn fork_constructor_default_stop_and_late_stop_revoke_exact_execution_permission() {
+        use crate::process::ProcessState;
+        let mut f = fixture();
+        let start = f.until(E::FORK_START);
+        assert!(f.process.table.get_mut(f.child.pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGSTOP));
+        let held = f.call(C::FORK_NATIVE_ENTERED, start.length);
+        assert_eq!((held.effect, held.delay), (E::YIELD, 0));
+        assert_eq!(held.flags & flags::NATIVE_EXECUTE, 0);
+        f.process.table.get_mut(f.child.pid).unwrap().state = ProcessState::Running;
+        assert_ne!(f.call(C::FORK_NATIVE_ENTERED, start.length).flags & flags::NATIVE_EXECUTE, 0);
+        f.process.table.get_mut(f.child.pid).unwrap().state = ProcessState::Stopped;
+        assert_eq!(f.call(C::FORK_NATIVE_VALIDATE, start.length).flags & flags::NATIVE_EXECUTE, 0);
+        let retry = f.call(C::FORK_NATIVE_NOT_APPLIED, start.length);
+        assert_eq!(retry.effect, E::YIELD);
+        assert!(retry.length > start.length);
+        f.process.table.get_mut(f.child.pid).unwrap().state = ProcessState::Running;
+        let next = f.poll();
+        assert_eq!(next.effect, E::FORK_START);
+        assert_eq!(f.step(next).effect, E::FORK_READY);
+    }
+
     #[test]
     fn stopped_child_suspends_deadlines_and_defers_delivery_and_replay_commit() {
         use crate::process::ProcessState;

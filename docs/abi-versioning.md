@@ -18,7 +18,7 @@ convention — CI enforces it.
 
 ## Kernel-owned grouped completion control
 
-Host-adapter 32 adds optional `kernel_group_completion(input_ptr, input_len,
+Host-adapter 33 retains optional `kernel_group_completion(input_ptr, input_len,
 out_ptr, capacity) -> i32`. Rust declares its 80-byte request and 112-byte
 reply, commands, effects and retirement markers. Replies preserve all signed
 64-bit result bits. The host must rebuild with the kernel; program ABI 56
@@ -35,6 +35,15 @@ host publication import. Copied backing inspection appends
 Native settlement and host acknowledgement remain separate from permission
 to publish or reclaim storage. These interfaces do not establish final
 desktop, browser-memory, conformance or performance acceptance.
+
+Adapter 33 also replaces root start/cancel facts with exact native-effect
+entry grants. Root, fork, exec and pthread owners check pending default
+signals before construction or launch delivery. Exec readiness and delivery
+are separate effects. The host reports actual callback settlement before
+acknowledging an effect; a queued transaction callback is not completion.
+Stopped operations stay in Rust rather than the ordinary host constructor
+registry. These host-only changes require matching rebuilt adapters and
+leave the program baseline unchanged.
 
 ## Descriptor-backed SDK group variants
 

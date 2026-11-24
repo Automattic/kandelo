@@ -28,7 +28,7 @@ struct Root {
     descriptor: Option<ReplicaDescriptor>,
     failure: Option<Errno>,
     pending_effect: u32,
-    start_fact: u32,
+    entered_effect: u32,
 }
 impl MapMemory for Root {
     fn heap_bytes(&self) -> Result<usize, Errno> {
@@ -90,7 +90,7 @@ impl ProcessTable {
                 descriptor: None,
                 failure: None,
                 pending_effect: 0,
-                start_fact: 0,
+                entered_effect: 0,
             },
         )?;
         self.root_controls().entries.publish_io(entry);
@@ -158,7 +158,7 @@ impl ProcessTable {
         host: &mut dyn HostIO,
     ) -> Result<Reply, Errno> {
         let record = root.admission.record();
-        if !matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED) && argument != 0 {
+        if !matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED | C::ENTER_NATIVE) && argument != 0 {
             return Err(Errno::EINVAL);
         }
         match command {
@@ -172,6 +172,10 @@ impl ProcessTable {
                 if root.phase != P::CANCELLED {
                     root.phase = P::CANCELLING;
                 }
+            }
+            C::CANCEL if root.pending_effect == E::SCHEDULE_START && root.entered_effect == 0 => {
+                root.failure = Some(Errno::ESRCH);
+                root.pending_effect = self.root_cleanup_effect(record)?;
             }
             C::LAUNCH if root.phase == P::PREPARED && root.pending_effect == 0 => {
                 // Publication and task admission are kernel mutations, not a
@@ -227,21 +231,12 @@ impl ProcessTable {
                         E::REGISTER_PROCESS => E::CONNECT_IMPORTS,
                         E::CONNECT_IMPORTS => E::SCHEDULE_START,
                         E::SCHEDULE_START => {
-                            match root.start_fact {
-                                C::WORKER_STARTED => {}
-                                C::WORKER_CANCELLED => {
-                                    root.failure = Some(Errno::ESRCH);
-                                }
-                                _ => root.phase = P::WAITING,
-                            }
-                            match root.start_fact {
-                                C::WORKER_CANCELLED => self.root_cleanup_effect(record)?,
-                                C::WORKER_STARTED => E::WAIT_READY,
-                                _ => 0,
-                            }
+                            if root.entered_effect != E::SCHEDULE_START { return Err(Errno::EBUSY); }
+                            E::WAIT_READY
                         }
                         E::WAIT_READY => E::DELIVER_LAUNCH,
                         E::DELIVER_LAUNCH => {
+                            if root.entered_effect != E::DELIVER_LAUNCH { return Err(Errno::EBUSY); }
                             root.phase = P::FINISHED;
                             0
                         }
@@ -269,26 +264,34 @@ impl ProcessTable {
                         }
                         _ => return Err(Errno::EBUSY),
                     };
+                    root.entered_effect = 0;
                 }
             }
-            C::WORKER_STARTED | C::WORKER_CANCELLED
-                if root.start_fact == 0
-                    && (root.phase == P::WAITING
-                        || root.phase == P::LAUNCHING
-                            && root.pending_effect == E::SCHEDULE_START) =>
-            {
-                root.start_fact = command;
-                if root.phase == P::WAITING {
-                    if command == C::WORKER_STARTED {
-                        root.phase = P::LAUNCHING;
-                        root.pending_effect = E::WAIT_READY;
-                    } else {
-                        root.failure = Some(Errno::ESRCH);
-                        root.pending_effect = self.root_cleanup_effect(record)?;
+            C::ENTER_NATIVE if matches!(argument, E::SCHEDULE_START | E::DELIVER_LAUNCH)
+                && root.pending_effect == argument && root.entered_effect == 0 => {}
+            _ => return Err(Errno::EBUSY),
+        }
+        if matches!(root.pending_effect, E::SCHEDULE_START | E::DELIVER_LAUNCH) && root.entered_effect == 0 {
+            use crate::group_completion::NativeStart;
+            match self.group_native_start_permission(record, host)? {
+                NativeStart::Stopped => {
+                    root.phase = P::WAITING;
+                    let mut reply = root.reply(effect::YIELD); reply.delay = 10; return Ok(reply);
+                }
+                NativeStart::Dead => {
+                    root.failure = Some(Errno::ESRCH);
+                    root.pending_effect = self.root_cleanup_effect(record)?;
+                }
+                NativeStart::Ready => {
+                    root.phase = P::LAUNCHING;
+                    if command == C::ENTER_NATIVE {
+                        root.entered_effect = root.pending_effect;
+                        let mut reply = root.reply(root.pending_effect);
+                        reply.flags |= wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE;
+                        return Ok(reply);
                     }
                 }
             }
-            _ => return Err(Errno::EBUSY),
         }
         if root.pending_effect == E::RETIRE_IMAGE && self.retirement_control_retains(record) {
             // A signal/exit owner may already be draining this exact image.
@@ -412,6 +415,10 @@ mod tests {
         record: ReceiptRecord,
         issued: u32,
     ) -> Reply {
+        if matches!(issued, E::SCHEDULE_START | E::DELIVER_LAUNCH) {
+            let permission = table.root_control_effect(record, C::ENTER_NATIVE, issued, host).unwrap();
+            assert_ne!(permission.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
+        }
         table
             .root_control_effect(record, C::PLATFORM_COMPLETED, issued, host)
             .unwrap()
@@ -474,19 +481,18 @@ mod tests {
             complete(&mut table, &mut host, record, E::CONNECT_IMPORTS).effect,
             E::SCHEDULE_START
         );
-        let waiting = complete(&mut table, &mut host, record, E::SCHEDULE_START);
-        assert_eq!(
-            (waiting.effect, waiting.value),
-            (effect::COMPLETE, i64::from(P::WAITING))
-        );
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        let waiting = table.root_control_effect(record, C::ENTER_NATIVE, E::SCHEDULE_START, &mut host).unwrap();
+        assert_eq!((waiting.effect, waiting.value), (effect::YIELD, i64::from(P::WAITING)));
         assert!(matches!(
             table.root_control(record, C::ACK, &mut host),
             Err(Errno::EBUSY)
         ));
         assert_eq!(table.root_controls().entries.len(), 1);
-        let started = table
-            .root_control(record, C::WORKER_STARTED, &mut host)
-            .unwrap();
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Running;
+        let permission = table.root_control_effect(record, C::ENTER_NATIVE, E::SCHEDULE_START, &mut host).unwrap();
+        assert_ne!(permission.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
+        let started = table.root_control_effect(record, C::PLATFORM_COMPLETED, E::SCHEDULE_START, &mut host).unwrap();
         assert_eq!(started.effect, E::WAIT_READY);
         assert!(matches!(
             table.root_control(record, C::ACK, &mut host),
@@ -501,12 +507,41 @@ mod tests {
             i64::from(P::FINISHED)
         );
         assert!(matches!(
-            table.root_control(record, C::WORKER_STARTED, &mut host),
+            table.root_control_effect(record, C::ENTER_NATIVE, E::SCHEDULE_START, &mut host),
             Err(Errno::EBUSY)
         ));
         table.root_control(record, C::ACK, &mut host).unwrap();
         assert_eq!(table.root_controls().entries.len(), 0);
     }
+    #[test]
+    fn root_default_stop_and_delivery_each_require_a_live_exact_kernel_grant() {
+        let (mut table, mut host, record) = prepared();
+        let mut reply = table.root_control(record, C::LAUNCH, &mut host).unwrap();
+        while reply.effect != E::SCHEDULE_START {
+            if reply.effect == E::BIND_WORKER { bound(&mut table, &mut host, record); }
+            reply = complete(&mut table, &mut host, record, reply.effect);
+        }
+        assert!(table.get_mut(record.pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGSTOP));
+        let held = table.root_control_effect(record, C::ENTER_NATIVE, E::SCHEDULE_START, &mut host).unwrap();
+        assert_eq!((held.effect, held.value), (effect::YIELD, i64::from(P::WAITING)));
+        assert_eq!(held.flags & wasm_posix_shared::group_operation::flags::NATIVE_EXECUTE, 0);
+        assert!(matches!(table.root_control_effect(record, C::PLATFORM_COMPLETED, E::SCHEDULE_START, &mut host), Err(Errno::EBUSY)));
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Running;
+        // No signal scan allocation may be required to grant this effect.
+        let held_bytes = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _budget = crate::io_buffer::test_budget(held_bytes);
+            assert_eq!(complete(&mut table, &mut host, record, E::SCHEDULE_START).effect, E::WAIT_READY);
+        }
+        assert_eq!(complete(&mut table, &mut host, record, E::WAIT_READY).effect, E::DELIVER_LAUNCH);
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        assert_eq!(table.root_control_effect(record, C::ENTER_NATIVE, E::DELIVER_LAUNCH, &mut host).unwrap().effect, effect::YIELD);
+        assert!(matches!(table.root_control_effect(record, C::PLATFORM_COMPLETED, E::DELIVER_LAUNCH, &mut host), Err(Errno::EBUSY)));
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Running;
+        assert_eq!(complete(&mut table, &mut host, record, E::DELIVER_LAUNCH).value, i64::from(P::FINISHED));
+        table.root_control(record, C::ACK, &mut host).unwrap();
+    }
+
     #[test]
     fn root_setup_failure_requires_real_absence_and_reference_retirement_before_rollback() {
         use wasm_posix_shared::retirement_control as R;
@@ -522,11 +557,6 @@ mod tests {
             while reply.effect != failed {
                 if reply.effect == E::BIND_WORKER {
                     bound(&mut table, &mut host, record);
-                }
-                if reply.effect == E::SCHEDULE_START {
-                    table
-                        .root_control(record, C::WORKER_STARTED, &mut host)
-                        .unwrap();
                 }
                 reply = complete(&mut table, &mut host, record, reply.effect);
             }
@@ -624,13 +654,14 @@ mod tests {
             }
             reply = complete(&mut table, &mut host, record, reply.effect);
         }
-        complete(&mut table, &mut host, record, E::SCHEDULE_START);
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        assert_eq!(table.root_control(record, C::POLL, &mut host).unwrap().effect, effect::YIELD);
         table
             .retirement_control(record, R::command::SEALED_ABSENCE, 0, &mut host)
             .unwrap();
         assert_eq!(
             table
-                .root_control(record, C::WORKER_CANCELLED, &mut host)
+                .root_control(record, C::CANCEL, &mut host)
                 .unwrap()
                 .effect,
             E::RETIRE_IMAGE
@@ -647,7 +678,8 @@ mod tests {
             }
             reply = complete(&mut table, &mut host, record, reply.effect);
         }
-        complete(&mut table, &mut host, record, E::SCHEDULE_START);
+        table.get_mut(record.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        assert_eq!(table.root_control(record, C::POLL, &mut host).unwrap().effect, effect::YIELD);
         table
             .retirement_control(record, R::command::SEALED_ABSENCE, 0, &mut host)
             .unwrap();
@@ -655,7 +687,7 @@ mod tests {
             .retirement_control(record, R::command::BEGIN_IMAGE, 0, &mut host)
             .unwrap();
         let wait = table
-            .root_control(record, C::WORKER_CANCELLED, &mut host)
+            .root_control(record, C::CANCEL, &mut host)
             .unwrap();
         assert_eq!((wait.effect, wait.delay), (effect::YIELD, 1));
         assert_eq!(
@@ -703,23 +735,9 @@ mod tests {
                 if reply.effect == E::BIND_WORKER {
                     bound(&mut table, &mut host, record);
                 }
-                if reply.effect == E::SCHEDULE_START {
-                    table
-                        .root_control(record, C::WORKER_STARTED, &mut host)
-                        .unwrap();
-                }
                 reply = complete(&mut table, &mut host, record, reply.effect);
             }
-            let seal = if failed == E::SCHEDULE_START {
-                table
-                    .root_control(record, C::WORKER_CANCELLED, &mut host)
-                    .unwrap();
-                complete(&mut table, &mut host, record, E::SCHEDULE_START)
-            } else {
-                table
-                    .root_control_effect(record, C::PLATFORM_FAILED, failed, &mut host)
-                    .unwrap()
-            };
+            let seal = table.root_control_effect(record, C::PLATFORM_FAILED, failed, &mut host).unwrap();
             assert_eq!(seal.effect, E::SEAL_ABSENCE);
             let contained = table
                 .root_control_effect(record, C::PLATFORM_FAILED, E::SEAL_ABSENCE, &mut host)
@@ -754,11 +772,6 @@ mod tests {
                         R::NATIVE_JOIN_CAPABILITY,
                         &mut host,
                     )
-                    .unwrap();
-            }
-            if reply.effect == E::SCHEDULE_START {
-                table
-                    .root_control(record, C::WORKER_STARTED, &mut host)
                     .unwrap();
             }
             reply = complete(&mut table, &mut host, record, reply.effect);

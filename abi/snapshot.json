@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 32,
+      "required_host_adapter_version": 33,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2716,7 +2716,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 32,
+    "version": 33,
     "worker_features": [
       {
         "bit": 2,
@@ -8724,6 +8724,7 @@
         "ack": 13,
         "begin": 1,
         "cancel": 3,
+        "enterNative": 17,
         "handoff": 5,
         "installed": 10,
         "platformCompleted": 15,
@@ -8736,6 +8737,7 @@
       "effects": {
         "bindReplacement": 18,
         "containFailure": 23,
+        "deliverLaunch": 25,
         "detachPrevious": 14,
         "discardFuture": 20,
         "finishHandoff": 22,
@@ -8744,6 +8746,7 @@
         "publishTermination": 21,
         "retirePrevious": 17,
         "startReplacement": 19,
+        "waitReady": 24,
         "waitWorkers": 13
       },
       "layout_fields": {
@@ -8897,12 +8900,11 @@
         "ack": 5,
         "begin": 1,
         "cancel": 3,
+        "enterNative": 11,
         "launch": 6,
         "platformCompleted": 7,
         "platformFailed": 8,
-        "poll": 2,
-        "workerCancelled": 10,
-        "workerStarted": 9
+        "poll": 2
       },
       "effects": {
         "bindWorker": 14,

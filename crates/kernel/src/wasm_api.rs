@@ -4471,7 +4471,7 @@ pub extern "C" fn kernel_group_root_control(group: u32, pid: u32, receipt_ptr: *
         if unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }.iter().any(|v| *v != 0) { return -(Errno::EINVAL as i32); }
         table.begin_root_control(group, pid, ceiling, default_slots, &mut WasmHostIO)
     } else {
-        if default_slots != 0 || (!matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED) && ceiling != 0) { return -(Errno::EINVAL as i32); }
+        if default_slots != 0 || (!matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED | C::ENTER_NATIVE) && ceiling != 0) { return -(Errno::EINVAL as i32); }
         let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
             Ok(receipt) if receipt.group == group && receipt.pid == pid && receipt.tid == pid => receipt,
             _ => return -(Errno::EINVAL as i32),

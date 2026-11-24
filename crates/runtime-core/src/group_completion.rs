@@ -1,7 +1,6 @@
 //! Exact grouped syscall outcomes retained by the actual ProcessTable.
 //! Native observations only report settlement; they grant no publication right.
 use crate::{
-    IoBuffer,
     io_buffer::IO_MEMORY,
     memory_group::{
         physical::HostMemory,
@@ -106,6 +105,8 @@ pub enum Effect {
     Discarded,
     Fatal,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeStart { Ready, Stopped, Dead }
 impl ProcessTable {
     fn completion_binding(&self, receipt: ReceiptRecord) -> Result<Binding, Errno> {
         let binding = *self
@@ -562,25 +563,17 @@ impl ProcessTable {
                 && binding.receipt.generation == receipt.generation
                 && !binding.detached
         };
-        // Bound scratch to this exact image, not every machine participant.
-        // Prepare it before the first dequeue so refusal cannot release half
-        // a resumed process.
-        let count = self
-            .group_completions_ref()
-            .bindings
-            .values()
-            .filter(selected)
-            .count();
-        let mut scan = IoBuffer::try_with_capacity(count)?;
-        for binding in self
-            .group_completions_ref()
-            .bindings
-            .values()
-            .filter(selected)
-        {
-            scan.push(binding.receipt);
-        }
-        for current in scan.iter().copied() {
+        // Copy only the next key/receipt before each mutable signal action.
+        // Foreign callbacks cannot reenter ProcessTable, so no channel can be
+        // inserted during this barrier. No per-syscall scan allocation or
+        // allocation refusal may split an image's resume/start decision.
+        let mut cursor = Key(receipt.group, 0);
+        while let Some((key, binding)) = self.group_completions_ref().bindings
+            .next_after(&cursor).map(|(key, binding)| (*key, *binding)) {
+            cursor = key;
+            if key.0 != receipt.group { break; }
+            if !selected(&&binding) { continue; }
+            let current = binding.receipt;
             if self.validate_task(current.pid, current.tid).is_err() {
                 continue;
             }
@@ -635,6 +628,31 @@ impl ProcessTable {
                     })
                     .flatten()
             }))
+    }
+    /// Actual root/fork/exec owners call this before issuing or entering a
+    /// native constructor/delivery effect. It holds no separate lifecycle.
+    pub(crate) fn group_native_start_permission(&mut self, receipt: ReceiptRecord,
+        host: &mut dyn HostIO) -> Result<NativeStart, Errno> {
+        let current = self.admitted_group_memory_caller(receipt.pid, receipt.tid).ok() == Some(receipt);
+        if !current { return Ok(NativeStart::Dead); }
+        let (store, admission) = self.memory_groups().storage_owner(receipt)?;
+        if store.status(admission)? & (S::STOPPING | S::STOPPED) != 0
+            || store.status(admission)? & S::SOURCE_LIVE == 0 { return Ok(NativeStart::Dead); }
+        if self.get(receipt.pid).is_some_and(|process| process.state == ProcessState::Stopped) {
+            return Ok(NativeStart::Stopped);
+        }
+        // A newly constructed image has no result carrying a caught handler.
+        // Keep those signals queued for real PENDING dispatch; apply defaults
+        // across the whole image before any guest instruction may run.
+        let (process, locks) = self.task_and_advisory_locks(receipt.pid, receipt.tid).ok_or(Errno::ESRCH)?;
+        crate::signal::deliver_pending_signals_for_tid_with_locks(process, locks, host, receipt.tid)?;
+        self.preflight_group_completion_signals(receipt, host, false)?;
+        Ok(match self.get(receipt.pid) {
+            Some(process) if process.exec_generation == receipt.generation && process.exit_signal == 0 =>
+                match process.state { ProcessState::Running => NativeStart::Ready,
+                    ProcessState::Stopped => NativeStart::Stopped, _ => NativeStart::Dead },
+            _ => NativeStart::Dead,
+        })
     }
     pub fn poll_group_channel_completion(
         &mut self,

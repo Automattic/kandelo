@@ -1794,6 +1794,8 @@ export interface GroupedExecPlatformEffects {
   retirePreviousReferences(): void | Promise<void>;
   bindReplacement(handle: PreparedGroupReplica, launch: GroupReplicaLaunch, secureExec: boolean): Promise<void>;
   startReplacement(): void;
+  waitReady(): Promise<void>;
+  deliverLaunch(): void;
   discardFuture(): void;
   publishTermination(signal: number): void;
 }
@@ -8437,24 +8439,24 @@ export class CentralizedKernelWorker {
         case e.forkBind: await scoped(sequence, effect, () => platform.bindWorker()); break;
         case e.forkRegister: await scoped(sequence, effect, () => platform.registerProcess()); break;
         case e.forkConnect: await nativeAction(sequence, effect, entry => platform.connectImports(this.#processSecureExecWithinKernelEntry(request.childPid, entry))); break;
-        case e.forkStart:
-          await new this.#promiseReceiver<void>((resolve, reject) => {
-            void scoped(sequence, effect, () => this.startMemoryGroupProcessWorkerWhenRunnable(handle,
-              () => { platform.startWorker(); resolve(); }, () => reject(Error('Native fork start cancelled')),
-              cause => { reject(cause); return true; })).catch(reject);
-          });
+        case e.forkStart: {
+          let completed!: () => void, failed!: (cause: unknown) => void;
+          const settlement = new this.#promiseReceiver<void>((resolve, reject) => { completed = resolve; failed = reject; });
+          void settlement.catch(() => {});
+          const permission = await retryKernelEntryResult(() => this.#forkNativeCall(pending, c.forkNativeValidate, sequence, issued => {
+            if (issued.effect !== e.forkStart) this.#memoryGroupProtocolError('Kernel changed the native fork start effect');
+            try { platform.startWorker(); completed(); } catch (cause) { failed(cause); }
+          }));
+          if (!(permission.flags & p.flags.nativeExecute)) throw new GroupMemoryStorageRefusal(EBUSY);
+          await settlement;
           break;
+        }
         case e.forkReady: await platform.waitReady(); break;
         case e.forkDeliver: await nativeAction(sequence, effect, () => platform.deliverLaunch()); break;
         case e.forkReplay: await platform.waitReplay(); break;
         case e.forkRuntime: platform.installRuntimeListeners(); break;
         case e.forkCancelNative:
           await nativeAction(sequence, effect, entry => {
-            const source = pending.store.imageSource(handle), starts = this.deferredProcessWorkerStarts.get(request.childPid);
-            if (starts) for (const start of [...starts]) if (start.expectedSource === source) {
-              starts.delete(start); entry.deferProtocolEffect(() => { start.cancel(); return undefined; });
-            }
-            if (starts?.size === 0) this.deferredProcessWorkerStarts.delete(request.childPid);
             platform.cancelNativeObservers();
           });
           break;
@@ -8489,7 +8491,7 @@ export class CentralizedKernelWorker {
       await retryKernelEntryResult(() => this.#forkNativeCall(pending, c.forkNativeEntered, reply.length, issued => {
         const completion = execute(issued);
         this.#continuePromise(completion, () => report(c.forkNativeCompleted, issued.length), cause => {
-          const command = issued.effect === e.forkDeliver && cause instanceof GroupMemoryStorageRefusal && cause.errno === EBUSY ? c.forkNativeNotApplied
+          const command = (issued.effect === e.forkDeliver || issued.effect === e.forkStart) && cause instanceof GroupMemoryStorageRefusal && cause.errno === EBUSY ? c.forkNativeNotApplied
             : issued.effect === e.forkStart && platform.constructorUncertain() ? c.forkNativeConstructorUnknown
             : cause instanceof MemoryGroupProtocolFault ? c.forkNativeProtocolFailed
             : cause instanceof GroupMemoryStorageRefusal && cause.errno === ENOMEM ? c.forkNativeNoMemory : c.forkNativeFailed;
@@ -8537,31 +8539,40 @@ export class CentralizedKernelWorker {
     return result;
   }
 
-  #rootControlCall(store: GroupMemoryTransport, receipt: MemoryGroupTaskReceipt, command: number, argument = 0): GroupExecControlEffect {
+  #rootControlCall(store: GroupMemoryTransport, receipt: MemoryGroupTaskReceipt, command: number, argument = 0, native?: () => void): GroupExecControlEffect {
     let reply!: GroupExecControlEffect, refusal: GroupMemoryStorageRefusal | undefined;
     this.#runImmediateKernelEntry('advance kernel-owned root launch', entry => {
       try { reply = store.rootControl(receipt.pid, command, entry, receipt, argument); }
-      catch (error) { if (!(error instanceof GroupMemoryStorageRefusal)) throw error; refusal = error; }
+      catch (error) { if (!(error instanceof GroupMemoryStorageRefusal)) throw error; refusal = error; return undefined; }
+      if (native && (reply.flags & MEMORY_GROUP_PROTOCOL.driver.flags.nativeExecute)) {
+        entry.deferProtocolTransactionStart(() => {
+          native();
+          return undefined;
+        });
+      }
       return undefined;
     });
     if (refusal) throw refusal;
     return reply;
   }
 
-  /** Dispatch the actual ProcessTable's effects. A stopped launch returns
-   * after its native constructor is queued; Rust retains the operation until
-   * that exact constructor reports a start or cancellation fact. */
+  /** Dispatch only effects issued by the actual ProcessTable. A stopped root
+   * retains its operation in Rust; the detached loop holds native objects and
+   * waits for kernel-selected progress, never a deferred constructor policy. */
   async runMemoryGroupRootLaunch(handle: PreparedGroupReplica, platform: GroupedRootPlatformEffects): Promise<void> {
     const store = this.#memoryGroupReplicas.get(handle), receipt = this.#rootLaunchReceipts.get(handle);
     if (!store || !receipt) this.#memoryGroupProtocolError('Unknown root launch transport');
     const root = MEMORY_GROUP_PROTOCOL.root_control, commands = root.commands, effects = root.effects;
     const call = (command: number, argument = 0) => retryKernelEntryResult(() => this.#rootControlCall(store, receipt, command, argument));
-    type StartFact = { command: number; error?: unknown };
-    let observedStart: StartFact | undefined, nativeStart: Promise<StartFact> | undefined, failure: unknown;
-    const drive = async (initial: GroupExecControlEffect): Promise<GroupExecControlEffect> => {
+    let failure: unknown;
+    const drive = async (initial: GroupExecControlEffect, detached = false): Promise<GroupExecControlEffect> => {
       let reply = initial;
       while (reply.effect !== MEMORY_GROUP_PROTOCOL.driver.effects.complete) {
         if (reply.effect === MEMORY_GROUP_PROTOCOL.driver.effects.yield) {
+          if (!detached && reply.value === root.phases.waiting) {
+            this.#observeProtocolCompletionFailure(drive(reply, true));
+            return reply;
+          }
           await new this.#promiseReceiver<void>(resolve => this.#registerTimeout(resolve, reply.delay));
           reply = await call(commands.poll); continue;
         }
@@ -8580,17 +8591,23 @@ export class CentralizedKernelWorker {
             case effects.bindWorker: await retryKernelEntryResult(() => platform.bindWorker()); break;
             case effects.registerProcess: await retryKernelEntryResult(() => platform.registerProcess()); break;
             case effects.connectImports: platform.connectImports(); break;
-            case effects.scheduleStart: {
-              let report!: (fact: StartFact) => void;
-              nativeStart = new this.#promiseReceiver<StartFact>(resolve => { report = fact => { if (observedStart) return; observedStart = fact; resolve(fact); }; });
-              await retryKernelEntryResult(() => this.startMemoryGroupProcessWorkerWhenRunnable(handle,
-                () => { platform.startWorker(); report({ command: commands.workerStarted }); },
-                () => report({ command: commands.workerCancelled }),
-                error => { report({ command: commands.workerCancelled, error }); return true; }));
+            case effects.scheduleStart:
+            case effects.deliverLaunch: {
+              let completed!: () => void, failed!: (cause: unknown) => void;
+              const settlement = new this.#promiseReceiver<void>((resolve, reject) => { completed = resolve; failed = reject; });
+              void settlement.catch(() => {});
+              const next = await retryKernelEntryResult(() => this.#rootControlCall(store, receipt,
+                commands.enterNative, issued, () => {
+                  try {
+                    if (issued === effects.scheduleStart) platform.startWorker(); else platform.deliverLaunch();
+                    completed();
+                  } catch (cause) { failed(cause); }
+                }));
+              if (!(next.flags & MEMORY_GROUP_PROTOCOL.driver.flags.nativeExecute)) { reply = next; continue; }
+              await settlement;
               break;
             }
             case effects.waitReady: await platform.waitReady(); break;
-            case effects.deliverLaunch: platform.deliverLaunch(); break;
             case effects.sealAbsence:
               if (!await retryKernelEntryResult(() => platform.sealAbsence())) throw Error('Root constructor absence is unproven');
               break;
@@ -8609,19 +8626,8 @@ export class CentralizedKernelWorker {
       }
       return reply;
     };
-    const finishStart = async (fact: StartFact): Promise<GroupExecControlEffect> => {
-      failure ??= fact.error;
-      return drive(await call(fact.command));
-    };
-    let reply = await drive(await call(commands.launch));
-    if (reply.value === root.phases.waiting) {
-      if (observedStart) reply = await finishStart(observedStart);
-      else {
-        if (!nativeStart) this.#memoryGroupProtocolError('Root launch lost its native start observation');
-        this.#observeProtocolCompletionFailure(nativeStart.then(finishStart));
-        return;
-      }
-    }
+    const reply = await drive(await call(commands.launch));
+    if (reply.value === root.phases.waiting) return;
     if (reply.value !== root.phases.finished) throw failure ?? Error(`Grouped root launch cancelled: errno ${reply.errno}`);
   }
 
@@ -8838,7 +8844,7 @@ export class CentralizedKernelWorker {
       await retryKernelEntryResult(() => this.#threadNativeCall(pending, c.threadNativeEntered, reply.length, issued => {
         const completion = execute(issued);
         this.#continuePromise(completion, () => report(c.threadNativeCompleted, issued.length), cause => {
-          const command = issued.effect === e.threadDeliver && cause instanceof GroupMemoryStorageRefusal && cause.errno === EBUSY ? c.threadNativeNotApplied
+          const command = (issued.effect === e.threadDeliver || issued.effect === e.threadStart) && cause instanceof GroupMemoryStorageRefusal && cause.errno === EBUSY ? c.threadNativeNotApplied
             : issued.effect === e.threadStart && platform.constructorUncertain() ? c.threadNativeConstructorUnknown
             : cause instanceof MemoryGroupProtocolFault ? c.threadNativeProtocolFailed
             : cause instanceof GroupMemoryStorageRefusal && cause.errno === ENOMEM ? c.threadNativeNoMemory : c.threadNativeFailed;
@@ -8935,10 +8941,17 @@ export class CentralizedKernelWorker {
     return state.store.execControl(state.receipt, command, entry, completedEffect);
   }
 
-  #execControlCall(state: GroupedExecPreparationState, command: number, completedEffect = 0): GroupExecControlEffect {
+  #execControlCall(state: GroupedExecPreparationState, command: number, completedEffect = 0, native?: () => void): GroupExecControlEffect {
     let reply!: GroupExecControlEffect;
     this.#runImmediateKernelEntry('report exact exec platform effect', entry => {
-      reply = this.#execControlWithinKernelEntry(state, command, entry, completedEffect); return undefined;
+      reply = this.#execControlWithinKernelEntry(state, command, entry, completedEffect);
+      if (native && (reply.flags & MEMORY_GROUP_PROTOCOL.driver.flags.nativeExecute)) {
+        entry.deferProtocolTransactionStart(() => {
+          native();
+          return undefined;
+        });
+      }
+      return undefined;
     });
     return reply;
   }
@@ -9062,13 +9075,22 @@ export class CentralizedKernelWorker {
             await platform.bindReplacement(state.handle!, launch, secureExec);
             break;
           case effects.startReplacement:
-            await new this.#promiseReceiver<void>((resolve, reject) => {
-              void retryKernelEntryResult(() => this.startMemoryGroupProcessWorkerWhenRunnable(state.handle!,
-                () => { platform.startReplacement(); resolve(); },
-                () => reject(Error('Grouped exec launch cancelled')),
-                cause => { reject(cause); return true; })).catch(reject);
-            });
+          case effects.deliverLaunch: {
+            let completed!: () => void, failed!: (cause: unknown) => void;
+            const settlement = new this.#promiseReceiver<void>((resolve, reject) => { completed = resolve; failed = reject; });
+            void settlement.catch(() => {});
+            const next = await retryKernelEntryResult(() => this.#execControlCall(state,
+              commands.enterNative, issued, () => {
+                try {
+                  if (issued === effects.startReplacement) platform.startReplacement(); else platform.deliverLaunch();
+                  completed();
+                } catch (cause) { failed(cause); }
+              }));
+            if (!(next.flags & protocol.driver.flags.nativeExecute)) { reply = next; continue; }
+            await settlement;
             break;
+          }
+          case effects.waitReady: await platform.waitReady(); break;
           case effects.discardFuture:
             await retryKernelEntryResult(() => this.#runImmediateKernelEntry('discard kernel-cancelled future platform objects', entry => {
               state.store.forgetCancelledReplica(state.handle!, entry); this.#memoryGroupReplicas.delete(state.handle!);
@@ -13491,27 +13513,6 @@ export class CentralizedKernelWorker {
    * Deferred constructors retain the selected registration and source, so a
    * replacement sharing the backing cannot inherit the old constructor.
    */
-  /** Capability-bound form of the ordinary runnable gate. No physical
-   * Memory identity can select another grouped image's constructor. */
-  startMemoryGroupProcessWorkerWhenRunnable(handle: PreparedGroupReplica, start: () => void,
-    cancel: () => void, onStartError?: (error: unknown) => boolean): ProcessWorkerStartDisposition {
-    let result: ProcessWorkerStartDisposition = 'stale';
-    this.#runImmediateKernelEntry('start exact grouped process Worker', entry => {
-      if (!this.#validateForkNativeScope(handle, [MEMORY_GROUP_PROTOCOL.driver.effects.forkStart], entry)) {
-        entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
-      }
-      const store = this.#memoryGroupReplicas.get(handle);
-      const registration = store && this.processes.get(store.receipt(handle).pid);
-      if (!registration || registration.grouped?.handle !== handle) {
-        entry.deferProtocolEffect(() => { cancel(); return undefined; }); return undefined;
-      }
-      result = this.#startProcessWorkerWhenRunnableWithinKernelEntry(registration.pid, registration.memory,
-        start, cancel, onStartError, entry, registration.source);
-      return undefined;
-    });
-    return result;
-  }
-
   startProcessWorkerWhenRunnable(
     pid: number,
     expectedMemory: WebAssembly.Memory,
@@ -13564,6 +13565,8 @@ export class CentralizedKernelWorker {
       });
       return "stale";
     }
+
+    if (registration.grouped) throw new MemoryGroupProtocolFault('Grouped constructors require their actual Rust operation');
 
     const getState = this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (
       pid: number,
@@ -18108,18 +18111,6 @@ export class CentralizedKernelWorker {
     for (const clone of this.pendingGroupMappings.values()) if (clone.receipt.pid === pid && clone.cloning?.launching) {
       clone.cloning.nativeChanged = true; clone.cloning.nativeWake?.();
     }
-    const starts = this.deferredProcessWorkerStarts.get(pid);
-    this.deferredProcessWorkerStarts.delete(pid);
-    if (starts) entry.deferFinalProtocolTransactionStart(() => {
-      for (const pending of starts) {
-        const actual = this.processes.get(pid);
-        if (actual !== pending.expectedRegistration || actual.source !== pending.expectedSource
-            || actual.memory !== pending.expectedMemory) { pending.cancel(); continue; }
-        try { pending.start(); }
-        catch (error) { pending.cancel(); if (pending.onStartError?.(error) !== true) throw error; }
-      }
-      return undefined;
-    });
     for (const [target, owner] of this.#groupChannelBindings) {
       if (owner.receipt.pid === pid && owner.receipt.generation === binding.receipt.generation && owner.token !== undefined) {
         this.#driveGroupChannelEffect(target, owner,

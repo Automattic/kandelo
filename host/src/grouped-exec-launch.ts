@@ -42,14 +42,15 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
   const { kernel, request } = options;
   const reservation = request.groupedExec;
   if (!reservation) throw Error('Grouped exec requires its opaque preparation');
-  let consumed = false;
   return {
-    onCommitFailure: () => { consumed = true; },
+    // No native objects are allocated before the actual Rust commit. The
+    // exact exec operation owns cancellation and refuses repeated handoff.
+    onCommitFailure: () => {},
     startAfterCommit: async () => {
-      if (consumed) throw Error('Grouped exec launch plan already consumed');
-      consumed = true;
       let generation!: ForkExternrefGeneration;
       let replacement!: GroupedWorkerObjects;
+      let nativeWorker: WorkerHandle | undefined, readiness: Promise<void> | undefined;
+      let deliver: (() => void) | undefined;
       try {
         return await kernel.runMemoryGroupExecHandoff(request, {
           detachPrevious: previous => {
@@ -74,12 +75,15 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
             let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
             const worker = new DeferredWorkerHandle(() => {
               const actual = options.adapter.createWorker(createGroupedWorkerPrepare(expected));
-              void waitForGroupedWorkerReady(actual, expected).then(() => {
-                if (!options.isCurrent(ownership)) throw Error('Stale grouped exec before memory launch');
-                actual.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
-              }).catch(error => options.onError(error instanceof Error ? error : Error(String(error)), ownership));
+              nativeWorker = actual;
+              readiness = waitForGroupedWorkerReady(actual, expected);
+              void readiness.catch(() => {});
               return actual;
             });
+            deliver = () => {
+              if (!nativeWorker || !options.isCurrent(ownership)) throw Error('Stale grouped exec before memory launch');
+              nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+            };
             ownership = new GroupedWorkerObjects(handle, expected.receipt, generation, worker, options.terminationProvesQuiescence,
               () => options.externrefs.releaseGeneration(generation));
             const endpoint = options.imports.createWorker({ pid: request.pid, generationId: generation.id,
@@ -107,7 +111,17 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
               { terminationProvesQuiescence: options.terminationProvesQuiescence, retireHostReferences: () => ownership.disposeReferences() }));
             replacement = ownership;
           },
-          startReplacement: () => replacement.worker.start(),
+          startReplacement: () => {
+            if (!replacement.worker.start()) throw Error('Grouped exec Worker start cancelled');
+          },
+          waitReady: async () => {
+            if (!readiness) throw Error('Grouped exec has no constructed Worker');
+            await readiness;
+          },
+          deliverLaunch: () => {
+            if (!deliver) throw Error('Grouped exec has no bound launch');
+            deliver();
+          },
         });
       } catch (cause) { return kernel.containMemoryGroupExecFailure(cause); }
     },

@@ -11,6 +11,7 @@ pub mod command {
     pub const STATUS: u32 = 14;
     pub const PLATFORM_COMPLETED: u32 = 15;
     pub const PLATFORM_FAILED: u32 = 16;
+    pub const ENTER_NATIVE: u32 = 17;
 }
 pub mod phase {
     pub const PREPARING: u32 = 1;
@@ -41,6 +42,8 @@ pub mod effect {
     pub const PUBLISH_TERMINATION: u32 = 21;
     pub const FINISH_HANDOFF: u32 = 22;
     pub const CONTAIN_FAILURE: u32 = 23;
+    pub const WAIT_READY: u32 = 24;
+    pub const DELIVER_LAUNCH: u32 = 25;
 }
 pub const EFFECTS: &[(&str, u32)] = &[
     ("waitWorkers", effect::WAIT_WORKERS),
@@ -54,6 +57,8 @@ pub const EFFECTS: &[(&str, u32)] = &[
     ("publishTermination", effect::PUBLISH_TERMINATION),
     ("finishHandoff", effect::FINISH_HANDOFF),
     ("containFailure", effect::CONTAIN_FAILURE),
+    ("waitReady", effect::WAIT_READY),
+    ("deliverLaunch", effect::DELIVER_LAUNCH),
 ];
 pub const LAYOUT_FIELDS: &[(&str, usize)] = &[
     ("initialPages", 0),
