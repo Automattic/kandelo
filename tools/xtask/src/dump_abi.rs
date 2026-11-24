@@ -7107,7 +7107,7 @@ fn memory_group_contract() -> Value {
             "fork_layout_offset": shared::group_operation::layout::FORK_OFFSET,
             "fork_continuations": { "main": shared::group_operation::layout::MAIN, "thread": shared::group_operation::layout::THREAD },
             "commands": shared::group_operation::COMMANDS.iter().copied().collect::<BTreeMap<_,_>>(),
-            "kinds": { "mapping": shared::group_operation::kind::MAPPING, "ownedMapping": shared::group_operation::kind::OWNED_MAPPING, "threadPrepare": shared::group_operation::kind::THREAD_PREPARE, "clone": shared::group_operation::kind::CLONE, "fork": shared::group_operation::kind::FORK },
+            "kinds": { "mapping": shared::group_operation::kind::MAPPING, "ownedMapping": shared::group_operation::kind::OWNED_MAPPING, "clone": shared::group_operation::kind::CLONE, "fork": shared::group_operation::kind::FORK },
             "effects": shared::group_operation::DRIVER_EFFECTS.iter().chain(shared::group_operation::FORK_NATIVE_EFFECTS).copied().collect::<BTreeMap<_,_>>(),
             "flags": { "deliver": shared::group_operation::flags::DELIVER, "ownedPacket": shared::group_operation::flags::OWNED_PACKET, "threadRetired": shared::group_operation::flags::THREAD_RETIRED, "threadExecution": shared::group_operation::flags::THREAD_EXECUTION, "nativeExecute": shared::group_operation::flags::NATIVE_EXECUTE, "nativePending": shared::group_operation::flags::NATIVE_PENDING },
         },

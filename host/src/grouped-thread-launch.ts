@@ -3,10 +3,9 @@ import type { CentralizedKernelWorker, GroupedThreadChannelAttachment, GroupedTh
 import type { ForkExternrefGeneration } from './fork-reference-broker';
 import type { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
 import { DeferredWorkerHandle } from './deferred-worker-handle';
-import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, waitForGroupedWorkerReady } from './grouped-worker-initialization';
-import { retryKernelEntryResult } from './kernel-entry-retry';
+import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, observeGroupedWorkerReady } from './grouped-worker-initialization';
 import type { CentralizedThreadInitMessage } from './worker-protocol';
-import type { WorkerAdapter } from './worker-adapter';
+import type { WorkerAdapter, WorkerHandle } from './worker-adapter';
 
 export interface GroupedThreadWorkerOptions {
   readonly kernel: CentralizedKernelWorker;
@@ -25,81 +24,91 @@ export interface GroupedThreadWorkerOptions {
 }
 
 
-/** Shared production thread launch. Only this exact clone capability selects
- * the image; physical Memory is transported solely to its disposable Worker. */
+/** Native objects for the actual kernel clone owner. This adapter neither
+ * selects startup order nor authorizes rollback, delivery or reclamation. */
 export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOptions): Promise<GroupedWorkerObjects> {
   const { kernel, attachment } = options;
-  const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(attachment.pid));
-  let plan: GroupedThreadLaunch;
-  for (;;) {
-    const prepared = await retryKernelEntryResult(() => kernel.prepareMemoryGroupThreadLaunch(attachment));
-    if (typeof prepared === 'number') throw Error(`Cannot prepare grouped pthread: errno ${-prepared}`);
-    if (prepared.status === 'waiting') { await prepared.progress; continue; }
-    plan = prepared; break;
-  }
-  let ownership!: GroupedWorkerObjects;
+  let ownership!: GroupedWorkerObjects, plan!: GroupedThreadLaunch;
   let init!: Omit<CentralizedThreadInitMessage, 'memory'>;
-  const { assertLive: _live, ...expected } = plan.launch.expectation;
-  const worker = new DeferredWorkerHandle(() => {
-    const actual = options.adapter.createWorker(createGroupedWorkerPrepare(expected));
-    void waitForGroupedWorkerReady(actual, expected).then(() => {
-      if (!options.isCurrent(ownership)) throw Error('Stale grouped thread before memory launch');
-      actual.postMessage(createGroupedWorkerLaunch(init, plan.launch.envelope));
-    }).catch(error => options.onError(error instanceof Error ? error : Error(String(error)), ownership));
-    return actual;
-  });
-  ownership = new GroupedWorkerObjects(plan.handle, plan.launch.expectation.receipt, options.generation, worker, options.terminationProvesQuiescence);
-  const exact = ownership;
-  let observed = false;
-  try {
-    await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(plan.handle, worker,
-      { terminationProvesQuiescence: options.terminationProvesQuiescence, retireHostReferences: () => exact.disposeReferences() }));
-    observed = true;
-    const endpoint = options.imports.createWorker({ pid: exact.pid, generationId: options.generation.id,
-      authorizeSender: () => { if (!options.isCurrent(exact)) throw Error('Stale grouped thread host-import sender'); } });
-    const onMessage = (message: any): void => {
-      try {
-        if (message.type === 'fork_host_import') {
-          if (!endpoint.dispatch(message.wake)) throw Error('Stale grouped thread host-import wake');
-        } else {
-          if (message.type === 'memory_quiescent') exact.acceptQuiescence(message);
-          options.onMessage(message, exact);
+  let native: WorkerHandle | undefined, factoryAttempted = false;
+  let readiness: ReturnType<typeof observeGroupedWorkerReady> | undefined;
+  let forward = false;
+  const messages: any[] = [], errors: Error[] = [], exits: number[] = [];
+  await kernel.runMemoryGroupThreadLaunch(attachment, {
+    createObjects: (receipt, selected) => {
+      plan = selected;
+      const { assertLive: _live, ...expected } = plan.launch.expectation;
+      const worker = new DeferredWorkerHandle(() => {
+        factoryAttempted = true;
+        native = options.adapter.createWorker(createGroupedWorkerPrepare(expected));
+        readiness = observeGroupedWorkerReady(native, expected);
+        void readiness.result.catch(() => {});
+        return native;
+      });
+      ownership = new GroupedWorkerObjects(plan.handle, receipt, options.generation, worker, options.terminationProvesQuiescence);
+    },
+    bindWorker: () => {
+      kernel.observeMemoryGroupReplicaWorker(plan.handle, ownership.worker,
+        { terminationProvesQuiescence: options.terminationProvesQuiescence, retireHostReferences: () => ownership.disposeReferences() });
+      options.retain(ownership);
+    },
+    connectImports: secureExec => {
+      const exact = ownership;
+      const endpoint = options.imports.createWorker({ pid: exact.pid, generationId: options.generation.id,
+        authorizeSender: () => { if (!options.isCurrent(exact)) throw Error('Stale grouped thread host-import sender'); } });
+      ownership.attachEndpoint(endpoint);
+      const onMessage = (message: any): void => {
+        try {
+          if (message.type === 'fork_host_import') {
+            if (!endpoint.dispatch(message.wake)) throw Error('Stale grouped thread host-import wake');
+          } else {
+            if (message.type === 'memory_quiescent') exact.acceptQuiescence(message);
+            if (forward) options.onMessage(message, exact); else messages.push(message);
+          }
+        } catch (cause) {
+          const error = cause instanceof Error ? cause : Error(String(cause));
+          if (forward) options.onError(error, exact); else errors.push(error);
         }
-      } catch (error) { options.onError(error instanceof Error ? error : Error(String(error)), exact); }
-    };
-    const onError = (error: Error): void => options.onError(error, exact);
-    const onExit = (code: number): void => { exact.noteExit(); options.onExit(code, exact); };
-    worker.on('message', onMessage); worker.on('error', onError); worker.on('exit', onExit);
-    ownership.attach(endpoint, () => {
-      worker.off('message', onMessage); worker.off('error', onError); worker.off('exit', onExit);
-    });
-    init = { type: 'centralized_thread_init', pid: exact.pid, tid: exact.tid, programBytes: options.programBytes,
-      processChannelOffset: plan.processChannelOffset, channelOffset: plan.allocation.channelOffset,
-      secureExec, externrefGenerationId: options.generation.id, forkHostImports: endpoint.init,
-      fnPtr: plan.entry.fnPtr, argPtr: plan.entry.argPtr, stackPtr: plan.entry.stackPtr, tlsPtr: plan.entry.tlsPtr,
-      ctidPtr: plan.entry.ctidPtr, tlsOffset: plan.allocation.tlsOffset, tlsAllocAddr: plan.allocation.tlsOffset,
-      ptrWidth: 4, kernelAbiVersion: kernel.getKernelAbiVersion(),
-      kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
-    options.retain(exact);
-    let startError: unknown;
-    const disposition = await retryKernelEntryResult(() => kernel.startMemoryGroupThreadWorkerWhenRunnable(plan.handle,
-      () => worker.start(), () => { startError ??= Error('Grouped thread start cancelled'); },
-      error => { startError = error; return true; }));
-    if (startError) throw startError;
-    if (disposition === 'stale' || disposition === 'dead') throw Error(`Grouped thread is ${disposition}`);
-    return exact;
-  } catch (error) {
-    // Seal only this observed handle. A constructor attempt is uncertainty,
-    // even if terminate() resolves without a returned concrete Worker.
-    const absent = observed && await retryKernelEntryResult(() => kernel.sealMemoryGroupReplicaWorkerAbsence(plan.handle, worker));
-    if (absent) await kernel.releaseMemoryGroupWorkerReferences(plan.handle);
-    await exact.contain();
-    if (await kernel.releaseMemoryGroupWorkerReferences(plan.handle)) {
-      if (observed) await kernel.waitForMemoryGroupReplicaQuiescence(plan.handle);
-      options.discard(exact);
-    }
-    // The kernel's allocated-clone rollback now owns physical retirement.
-    // Awaiting that clone's retirement here would wait on this same callback.
-    throw error;
-  }
+      };
+      const onError = (error: Error): void => { if (forward) options.onError(error, exact); else errors.push(error); };
+      const onExit = (code: number): void => { exact.noteExit(); if (forward) options.onExit(code, exact); else exits.push(code); };
+      ownership.worker.on('message', onMessage); ownership.worker.on('error', onError); ownership.worker.on('exit', onExit);
+      ownership.attachObserverCleanup(() => {
+        readiness?.cancel(Error('Kernel disposed pthread readiness'));
+        ownership.worker.off('message', onMessage); ownership.worker.off('error', onError); ownership.worker.off('exit', onExit);
+        messages.length = errors.length = exits.length = 0;
+      });
+      init = { type: 'centralized_thread_init', pid: exact.pid, tid: exact.tid, programBytes: options.programBytes,
+        processChannelOffset: plan.processChannelOffset, channelOffset: plan.allocation.channelOffset,
+        secureExec, externrefGenerationId: options.generation.id, forkHostImports: endpoint.init,
+        fnPtr: plan.entry.fnPtr, argPtr: plan.entry.argPtr, stackPtr: plan.entry.stackPtr, tlsPtr: plan.entry.tlsPtr,
+        ctidPtr: plan.entry.ctidPtr, tlsOffset: plan.allocation.tlsOffset, tlsAllocAddr: plan.allocation.tlsOffset,
+        ptrWidth: 4, kernelAbiVersion: kernel.getKernelAbiVersion(),
+        kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
+    },
+    startWorker: () => { if (!ownership.worker.start()) throw Error('Native pthread constructor was cancelled'); },
+    constructorUncertain: () => factoryAttempted && !native,
+    waitReady: () => { if (!readiness) throw Error('Pthread readiness has no Worker'); return readiness.result; },
+    installRuntimeListeners: () => {
+      forward = true;
+      for (const message of messages.splice(0)) options.onMessage(message, ownership);
+      for (const error of errors.splice(0)) options.onError(error, ownership);
+      for (const code of exits.splice(0)) options.onExit(code, ownership);
+    },
+    deliverLaunch: () => {
+      if (!native || !options.isCurrent(ownership)) throw Error('Native pthread delivery lost its exact Worker');
+      native.postMessage(createGroupedWorkerLaunch(init, plan.launch.envelope));
+    },
+    cancelNativeObservers: () => {
+      forward = false;
+      readiness?.cancel(Error('Kernel cancelled pthread readiness'));
+      messages.length = errors.length = exits.length = 0;
+    },
+    contain: async () => { await ownership?.contain(); },
+    disposeObjects: () => {
+      if (ownership) { ownership.disposeReferences(); options.discard(ownership); }
+      messages.length = errors.length = exits.length = 0;
+    },
+  });
+  return ownership;
 }

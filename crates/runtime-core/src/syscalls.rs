@@ -20689,6 +20689,9 @@ pub fn sys_clone(
     // channel mailbox but the kernel stores masks by TID.
     let caller_tid = table.current_tid();
     let pid = table.current_pid();
+    // Grouped creation is retained by its canonical operation before identity
+    // allocation. Direct/synthetic ordinary clone dispatch cannot bypass it.
+    if table.memory_group_task(pid, caller_tid)?.is_some() { return Err(Errno::EOPNOTSUPP); }
     if table.get(pid).is_some_and(|proc| proc.vfork_child) {
         return Err(Errno::EAGAIN);
     }

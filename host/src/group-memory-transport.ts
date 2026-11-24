@@ -47,7 +47,7 @@ export interface GroupMemoryBackingSnapshot {
 }
 export interface GroupOperationRequest {
   readonly kind: number; readonly syscall: number; readonly args: readonly bigint[];
-  readonly thread?: number; readonly payload?: Uint8Array;
+  readonly payload?: Uint8Array;
 }
 export interface GroupExecControlEffect extends GroupOperationEffect { readonly receipt: MemoryGroupTaskReceipt }
 export interface GroupOperationEffect {
@@ -116,7 +116,6 @@ export class GroupMemoryTransport {
       if (!request) this.#fault('Missing operation request');
       const view = new DataView(wire.buffer), fields = protocol.request_fields;
       view.setUint32(fields.kind, request.kind, true); view.setUint32(fields.syscall, request.syscall, true);
-      view.setUint32(fields.thread, request.thread ?? 0, true);
       for (let at = 0; at < 6; at++) view.setBigUint64(fields.args + at * 8, BigInt.asUintN(64, request.args[at] ?? 0n), true);
       if (request.payload) {
         if (request.payload.length !== protocol.payload_bytes) this.#fault('Invalid operation payload extent');
@@ -137,7 +136,7 @@ export class GroupMemoryTransport {
       return lease.copyOut(output, count);
     });
     if (!bytes) return undefined;
-    return this.#operationReply(bytes, receipt, begin ? undefined : token, command >= protocol.commands.forkNativePoll ? 'forkLaunch' : 'operation');
+    return this.#operationReply(bytes, receipt, begin ? undefined : token, command >= protocol.commands.forkNativePoll ? 'nativeLaunch' : 'operation');
   }
 
   execControl(receipt: MemoryGroupTaskReceipt, command: number, entry: GroupMemoryEntry, target = 0): GroupExecControlEffect {
@@ -198,7 +197,7 @@ export class GroupMemoryTransport {
     return removed;
   }
 
-  #operationReply(bytes: Uint8Array, receipt: MemoryGroupTaskReceipt, token?: bigint, control: 'operation' | 'exec' | 'retirement' | 'root' | 'forkLaunch' = 'operation'): GroupOperationEffect {
+  #operationReply(bytes: Uint8Array, receipt: MemoryGroupTaskReceipt, token?: bigint, control: 'operation' | 'exec' | 'retirement' | 'root' | 'nativeLaunch' = 'operation'): GroupOperationEffect {
     const protocol = P.driver;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), fields = protocol.reply_fields;
     decodeMemoryGroupReceipt(bytes.slice(fields.receipt, fields.receipt + P.receipt_bytes), receipt);
@@ -210,7 +209,7 @@ export class GroupMemoryTransport {
         && !(control === 'retirement' && (effect === P.retirement_control.detach_platform || effect === P.retirement_control.detach_references || effect === P.retirement_control.cancel_exec_transport || effect === P.retirement_control.wait_workers)))
         || payloadBytes !== 0 && payloadBytes !== protocol.payload_bytes) this.#fault('Invalid operation effect');
     const value = Number(view.getBigInt64(fields.value, true)), delay = view.getUint32(fields.delay, true);
-    if (!Number.isSafeInteger(value) || delay > (control === 'forkLaunch' ? 30000 : 1000)) this.#fault('Invalid operation result');
+    if (!Number.isSafeInteger(value) || delay > (control === 'nativeLaunch' ? 30000 : 1000)) this.#fault('Invalid operation result');
     const waitToken = view.getBigUint64(fields.waitToken, true);
     let progress: (() => Promise<void>) | undefined;
     if (effect === protocol.effects.native) {
@@ -418,11 +417,6 @@ export class GroupMemoryTransport {
       const bytes = lease.copyOut(0, count), view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       return Object.freeze(Object.fromEntries(P.storage.snapshot_fields.map((field, at) => [field, view.getUint32(at * 4, true)]))) as unknown as GroupMemoryBackingSnapshot;
     });
-  }
-  snapshot(entry: GroupMemoryEntry): GroupMemoryBackingSnapshot {
-    const result = this.trySnapshot(entry);
-    if (result === 'busy') this.#fault('Group allocator snapshot is busy');
-    return result;
   }
   close(): void {
     this.#closed = true;

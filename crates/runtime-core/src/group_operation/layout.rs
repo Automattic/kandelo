@@ -122,8 +122,7 @@ impl ProcessTable {
         child: ReceiptRecord,
         address: u32,
         length: u32,
-        entry: Option<(u32, u32)>,
-        host: &mut dyn HostIO,
+        entry: (u32, u32),
     ) -> Result<L::Thread, Errno> {
         if length != M::PAGES_PER_THREAD_SLOT * PAGE || address % PAGE != 0 {
             return Err(Errno::EIO);
@@ -137,25 +136,7 @@ impl ProcessTable {
             return Err(Errno::EBUSY);
         }
         let channel = self.group_task_channel(caller)?;
-        let (function, argument) = match entry {
-            Some(entry) => entry,
-            None => (
-                self.group_caller_word(
-                    caller,
-                    channel
-                        .checked_add(wasm_posix_shared::channel::DATA_OFFSET as u32)
-                        .ok_or(Errno::EFAULT)?,
-                    host,
-                )?,
-                self.group_caller_word(
-                    caller,
-                    channel
-                        .checked_add(wasm_posix_shared::channel::DATA_OFFSET as u32 + 4)
-                        .ok_or(Errno::EFAULT)?,
-                    host,
-                )?,
-            ),
-        };
+        let (function, argument) = entry;
         let process_channel =
             u32::try_from(self.get(child.pid).ok_or(Errno::ESRCH)?.main_channel_addr)
                 .map_err(|_| Errno::EFAULT)?;

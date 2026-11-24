@@ -707,6 +707,23 @@ impl MemoryGroups {
         Ok(())
     }
 
+    /// Fatal image uncertainty retains every exact task budget, independently
+    /// of whether a host can still observe a native Worker handle.
+    pub(crate) fn quarantine_image_tasks(&mut self, record: wasm_posix_shared::memory_group::ReceiptRecord) -> Result<(), Errno> {
+        let group = self.image_group(record.pid, record.generation).ok_or(Errno::ESRCH)?;
+        if group.as_raw() != record.group { return Err(Errno::ESRCH); }
+        let mut added = 0;
+        self.tasks.try_for_each_mut_entry(|_, task| {
+            if task.receipt.execution.pid == record.pid && task.receipt.execution.exec_generation == record.generation
+                && task.phase != Phase::Quarantined {
+                task.phase = Phase::Quarantined; added += 1;
+            }
+            Ok(())
+        })?;
+        self.groups.get_mut(&group.0).ok_or(Errno::ESRCH)?.snapshot.quarantined_tasks += added;
+        Ok(())
+    }
+
     /// Failed proof retains capacity. It never becomes a successful exit ACK.
     pub fn quarantine(&mut self, receipt: GroupAdmission) -> Result<(), Errno> {
         let phase = self.task(receipt)?.phase;

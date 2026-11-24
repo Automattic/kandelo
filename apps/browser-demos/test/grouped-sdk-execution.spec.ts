@@ -132,11 +132,11 @@ for (const probe of probes) for (const grouped of [false, true]) {
     writeFileSync(info.outputPath("result.json"), JSON.stringify({ engine: info.project.name,
       version: browser.version(), inputs, result }, null, 2) + "\n");
     if (probe.name === 'pthread-constructor-failure') {
-      expect(result.failureMessage).toBe('Failed grouped thread has no execution-stop proof');
+      expect(result.failureMessage).toBe('Grouped pthread launch failed; storage retained');
       expect(result.stdout).toBe('');
       expect(result.kernelExit).toBeUndefined();
       expect(result.processExit).toBeUndefined();
-      expect(result.failedThreadLaunches).toEqual([expect.objectContaining({ cause: 'Error: fixture uncertain thread constructor' })]);
+      expect(result.failureCauses).toContain('Error: fixture uncertain thread constructor');
       expect(result.failedThreadWorkers).toEqual([expect.objectContaining({ executionAbsent: false, quiescent: false, joined: false })]);
       expect(result.threadConstructionAttempts).toBe(1);
       expect(result.memory).toMatchObject({ backing: { images: 1, replicas: 2, quarantinedReplicas: 2 } });
@@ -291,6 +291,15 @@ for (const probe of probes) for (const grouped of [false, true]) {
         expect(events.filter(row => row.kind === 'shared-child-retired')).toHaveLength(1);
         expect(result.retirement).toMatchObject({ after: { backing: { allocatedPages: 1, sharedObjects: 0, sharedPages: 0, sharedImageReferences: 0 } } });
       }
+      if (['pthread-launch-rollback', 'pthread-pool-rollback'].includes(probe.name)) {
+        const checkpoints = (result.lifecycleEvidence as any[]).filter(row => row.kind === 'thread-retirement-checkpoint');
+        expect(checkpoints).toHaveLength(16);
+        expect(checkpoints.map(row => row.checkpoint)).toEqual(Array.from({ length: 16 }, (_, index) => index + 1));
+        for (const row of checkpoints) {
+          expect(row.admission).toMatchObject({ tasks: 1, quarantinedTasks: 0 });
+          expect(row.backing).toMatchObject({ images: 1, replicas: 1, quarantinedReplicas: 0 });
+        }
+      }
       if (probe.name === 'pthread-launch-rollback') {
       expect(result.failedThreadLaunches).toHaveLength(16);
       expect(result.failedThreadWorkers).toEqual(Array.from({ length: 16 }, () => expect.objectContaining({ executionAbsent: true, quiescent: true, joined: false })));
@@ -301,11 +310,8 @@ for (const probe of probes) for (const grouped of [false, true]) {
       expect(new Set(samples.slice(-8).map(row => row.backing.physicalExtentPages)).size).toBe(1);
     }
     if (probe.name === 'pthread-rollback') {
-      expect(result.failedThreadLaunches).toEqual([expect.objectContaining({
-        cause: 'Error: Cannot prepare grouped pthread: errno 12',
-        before: expect.objectContaining({ maximumVirtualPages: 2048, backing: expect.objectContaining({ maximumPages: 196, allocatedPages: 192 }) }),
-        after: expect.objectContaining({ backing: expect.objectContaining({ allocatedPages: 196 }) }),
-      })]);
+      expect(result.failedThreadLaunches).toEqual([]);
+      expect(result.threadConstructionAttempts).toBe(1);
       expect(result.threads).toEqual([expect.objectContaining({ logicalExited: true, quiescent: true, retired: true })]);
     }
     if (probe.name === 'pthread-churn') {

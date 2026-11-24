@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 30,
+      "required_host_adapter_version": 31,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2715,7 +2715,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 30,
+    "version": 31,
     "worker_features": [
       {
         "bit": 2,
@@ -8509,7 +8509,20 @@
         "threadBindingFailed": 22,
         "threadBindingNoMemory": 23,
         "threadBound": 5,
-        "threadDetached": 6
+        "threadDetached": 6,
+        "threadNativeCompleted": 27,
+        "threadNativeConstructorUnknown": 32,
+        "threadNativeEntered": 26,
+        "threadNativeFailed": 28,
+        "threadNativeNoMemory": 31,
+        "threadNativeNotApplied": 34,
+        "threadNativePoll": 25,
+        "threadNativeProtocolFailed": 30,
+        "threadNativeTimeout": 29,
+        "threadNativeValidate": 33,
+        "threadSetupFailed": 35,
+        "threadSetupNoMemory": 36,
+        "threadSetupUnavailable": 37
       },
       "effects": {
         "complete": 1,
@@ -8540,6 +8553,21 @@
         "native": 2,
         "operation": 4,
         "prepareThreadBinding": 5,
+        "threadBind": 45,
+        "threadCancelNative": 51,
+        "threadConnect": 46,
+        "threadContain": 52,
+        "threadDeliver": 50,
+        "threadDispose": 54,
+        "threadFailed": 56,
+        "threadFatal": 57,
+        "threadLaunch": 13,
+        "threadObjects": 44,
+        "threadReady": 48,
+        "threadReferences": 53,
+        "threadRuntime": 49,
+        "threadStart": 47,
+        "threadSucceeded": 55,
         "yield": 3
       },
       "flags": {
@@ -8568,8 +8596,7 @@
         "clone": 6,
         "fork": 5,
         "mapping": 1,
-        "ownedMapping": 3,
-        "threadPrepare": 4
+        "ownedMapping": 3
       },
       "native_event_limit": 64,
       "payload_bytes": 320,
@@ -8596,8 +8623,8 @@
         "kind": 0,
         "payload": 64,
         "reserved": 60,
-        "syscall": 4,
-        "thread": 56
+        "reservedTask": 56,
+        "syscall": 4
       },
       "thread_layout": {
         "argPtr": 32,

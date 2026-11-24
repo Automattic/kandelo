@@ -224,8 +224,9 @@ impl Storage {
         }
     }
 
-    /// This call is made only from the exact platform Worker completion path.
-    /// A stop request, timeout or browser terminate() is insufficient evidence.
+    /// Called after an exact native stop fact, or privately by the actual
+    /// clone owner before it has ever authorized Memory delivery. A stop
+    /// request, timeout or browser terminate() is insufficient evidence.
     pub(crate) fn note_quiescent(
         &mut self,
         memory: &mut impl PhysicalMemory,

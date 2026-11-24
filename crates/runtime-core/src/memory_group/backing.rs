@@ -366,7 +366,13 @@ impl MemoryGroups {
             Phase::Prepared => return Err(Errno::EBUSY),
         }
         self.retire_quiescent(admission)?;
-        self.storage_action(record, wasm_posix_shared::group_storage::Action::NoteQuiescent, 0, 0, host)?;
+        // The actual clone owner may already have stopped an execution whose
+        // Memory was never delivered. A later genuine native join still ends
+        // logical admission without inventing a second physical stop.
+        let (store, physical) = self.storage_owner(record)?;
+        if store.status(physical)? & wasm_posix_shared::group_storage::status::STOPPED == 0 {
+            self.storage_action(record, wasm_posix_shared::group_storage::Action::NoteQuiescent, 0, 0, host)?;
+        }
         let (store, _) = self.storage_owner(record)?;
         store.record_worker_fact(admission, fact);
         crate::wait_park::note_children_changed();

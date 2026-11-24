@@ -90,7 +90,6 @@ impl ProcessTable {
             .expect("newly allocated grouped clone must retain its prepared admission")
             .record();
         operation.child = Some(child);
-        operation.request.thread = tid;
         operation.clone_task = Some(Task { entry, parent_tid });
         if let Some((address, _)) = parent_tid {
             let (store, admission) = self.memory_groups().storage_owner(caller)?;
@@ -112,6 +111,13 @@ impl ProcessTable {
         operation: &mut Operation,
         host: &mut dyn HostIO,
     ) -> Result<(), Errno> {
+        if operation
+            .thread_launch
+            .as_ref()
+            .is_some_and(|launch| launch.committed())
+        {
+            return Ok(());
+        }
         let Some(task) = operation.clone_task.as_mut() else {
             return Ok(());
         };

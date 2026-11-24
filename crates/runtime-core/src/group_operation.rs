@@ -3,6 +3,7 @@
 mod clone;
 mod fork_launch;
 mod layout;
+mod thread_launch;
 use crate::{
     group_memory_change::Description,
     io_buffer::IO_MEMORY,
@@ -39,6 +40,7 @@ enum Phase {
     Cancel,
     ThreadPrepare,
     ThreadBinding,
+    ThreadLaunch,
     ThreadDetach,
     ThreadExit,
     ThreadControls,
@@ -76,6 +78,7 @@ struct Operation {
     fork_layout: Option<W::layout::Fork>,
     thread_binding_entered: bool,
     clone_task: Option<clone::Task>,
+    thread_launch: Option<thread_launch::Launch>,
 }
 impl MapMemory for Operation {
     fn heap_bytes(&self) -> Result<usize, Errno> {
@@ -107,12 +110,8 @@ impl ProcessTable {
                 n if n == Syscall::Mmap as u32 || n == Syscall::Munmap as u32
                     || n == Syscall::Mprotect as u32 || n == Syscall::Mremap as u32 || n == Syscall::Brk as u32) =>
                 {}
-            kind::THREAD_PREPARE
-                if request.syscall == wasm_posix_shared::abi::extended_syscalls::SYS_CLONE
-                    && request.thread != 0 => {}
             kind::CLONE
-                if request.syscall == wasm_posix_shared::abi::extended_syscalls::SYS_CLONE
-                    && request.thread == 0 => {}
+                if request.syscall == wasm_posix_shared::abi::extended_syscalls::SYS_CLONE => {}
             kind::FORK if request.syscall == wasm_posix_shared::abi::host_intercepted::SYS_FORK => {
             }
             kind::OWNED_MAPPING if request.syscall == Syscall::Ioctl as u32 => {}
@@ -128,28 +127,7 @@ impl ProcessTable {
         if request.syscall == Syscall::Mmap as u32 || request.syscall == Syscall::Mremap as u32 {
             request.args[3] = u64::from(request.args[3] as u32);
         }
-        let child = if request.kind == kind::THREAD_PREPARE {
-            let child =
-                self.memory_group_prepared_admission(crate::memory_group::GroupExecution {
-                    pid: receipt.pid,
-                    tid: request.thread,
-                    exec_generation: receipt.generation,
-                })?;
-            if child.group().as_raw() != receipt.group {
-                return Err(Errno::ESRCH);
-            }
-            let thread = self
-                .get(receipt.pid)
-                .ok_or(Errno::ESRCH)?
-                .get_thread(request.thread)
-                .ok_or(Errno::ESRCH)?;
-            if thread.creator_tid != receipt.tid || thread.grouped_entry.is_some() {
-                return Err(Errno::EBUSY);
-            }
-            Some(child.record())
-        } else {
-            None
-        };
+        let child = None;
         let slot = PreparedMapSlot::new_in(&IO_MEMORY, 0)?;
         let mut packet = [0; W::PAYLOAD_BYTES];
         if request.kind == kind::OWNED_MAPPING {
@@ -181,6 +159,7 @@ impl ProcessTable {
             fork_layout: None,
             thread_binding_entered: false,
             clone_task: None,
+            thread_launch: None,
         };
         let entry = match slot.finish(
             Key {
@@ -196,7 +175,12 @@ impl ProcessTable {
             }
         };
         self.group_operations().entries.publish_io(entry);
-        self.poll_group_operation(receipt, token, None, host)
+        match self.poll_group_operation(receipt, token, None, host) {
+            Ok(reply) => Ok(reply),
+            Err(error) => {
+                panic!("retained group operation failed for {receipt:?}/{token}: {error:?}")
+            }
+        }
     }
 
     /// A prepared map node retains its I/O reservation across driving. The
@@ -238,12 +222,18 @@ impl ProcessTable {
                 let committed = operation
                     .launch
                     .as_ref()
-                    .is_some_and(|launch| launch.committed());
+                    .is_some_and(|launch| launch.committed())
+                    || operation
+                        .thread_launch
+                        .as_ref()
+                        .is_some_and(|launch| launch.committed());
                 if !committed {
                     operation.failure.get_or_insert(
                         Errno::from_u32(reason & !W::TRANSPORT_GONE).unwrap_or(Errno::EIO),
                     );
-                    if operation.phase == Phase::ForkLaunch
+                    if operation.phase == Phase::ThreadLaunch {
+                        operation.thread_launch.as_mut().ok_or(Errno::EIO)?.cancel();
+                    } else if operation.phase == Phase::ForkLaunch
                         && operation
                             .launch
                             .as_ref()
@@ -293,7 +283,8 @@ impl ProcessTable {
                 let descriptor = groups.publish_storage(admission)?;
                 let operation = self.group_operations().entries.get_mut(&key).unwrap();
                 operation.execution = Some(descriptor);
-                operation.phase = Phase::Done;
+                operation.thread_launch = Some(thread_launch::Launch::new());
+                operation.phase = Phase::ThreadLaunch;
             }
             _ => return Err(Errno::EBUSY),
         }
@@ -590,7 +581,10 @@ impl ProcessTable {
             reply.flags |= flags::THREAD_RETIRED;
         }
         if operation.failure.is_none()
-            && matches!(operation.phase, Phase::ThreadBinding | Phase::Done)
+            && matches!(
+                operation.phase,
+                Phase::ThreadBinding | Phase::ThreadLaunch | Phase::Done
+            )
         {
             if let Some(descriptor) = operation.execution {
                 reply.flags |= flags::THREAD_EXECUTION;
@@ -627,11 +621,7 @@ impl ProcessTable {
                 reply.value = operation.old_break.unwrap() as i64;
                 reply.errno = 0;
             } else {
-                reply.value = if kind::is_thread(operation.request.kind) {
-                    -(error as i64)
-                } else {
-                    -1
-                };
+                reply.value = -1;
             }
         }
         if operation.request.kind == kind::FORK {
@@ -745,6 +735,7 @@ impl ProcessTable {
                 && !matches!(
                     operation.phase,
                     Phase::Cancel
+                        | Phase::ThreadLaunch
                         | Phase::ThreadDetach
                         | Phase::ThreadExit
                         | Phase::ThreadControls
@@ -773,6 +764,7 @@ impl ProcessTable {
                 && !matches!(
                     operation.phase,
                     Phase::Cancel
+                        | Phase::ThreadLaunch
                         | Phase::ThreadDetach
                         | Phase::ThreadExit
                         | Phase::ThreadControls
@@ -845,7 +837,7 @@ impl ProcessTable {
                     let admission = self.memory_group_prepared_admission(
                         crate::memory_group::GroupExecution {
                             pid: receipt.pid,
-                            tid: operation.request.thread,
+                            tid: operation.child.ok_or(Errno::EIO)?.tid,
                             exec_generation: receipt.generation,
                         },
                     )?;
@@ -870,8 +862,7 @@ impl ProcessTable {
                                 child,
                                 address as u32,
                                 length as u32,
-                                operation.clone_task.as_ref().map(|task| task.entry),
-                                host,
+                                operation.clone_task.as_ref().ok_or(Errno::EIO)?.entry,
                             ) {
                                 Ok(layout) => {
                                     operation.thread_layout = Some(layout);
@@ -902,15 +893,41 @@ impl ProcessTable {
                         effect::PREPARE_THREAD_BINDING,
                     ));
                 }
+                Phase::ThreadLaunch => {
+                    let launch = operation.thread_launch.as_ref().ok_or(Errno::EIO)?;
+                    if launch.succeeded() {
+                        // Native handoff and its parent-result entry are
+                        // separate turns. The child is already committed;
+                        // revalidate only publication, never undo creation.
+                        if self.group_clone_parent_stopping(receipt) {
+                            operation.deliver = false;
+                        }
+                        match self.running_group_memory_caller(receipt.pid, receipt.tid) {
+                            Ok(current) if current == receipt => {}
+                            Err(Errno::EAGAIN) if operation.deliver => {
+                                let mut reply =
+                                    Self::group_operation_reply(operation, effect::YIELD);
+                                reply.delay = 10;
+                                return Ok(reply);
+                            }
+                            _ => operation.deliver = false,
+                        }
+                        operation.value = i64::from(operation.child.ok_or(Errno::EIO)?.tid);
+                        operation.phase = Phase::Done;
+                        continue;
+                    }
+                    if launch.failed() {
+                        operation.phase = Phase::ThreadDetach;
+                        continue;
+                    }
+                    return Ok(Self::group_operation_reply(
+                        operation,
+                        effect::THREAD_LAUNCH,
+                    ));
+                }
                 Phase::ThreadDetach => {
                     self.restore_group_clone_parent_tid(operation, host)?;
-                    let admission = self
-                        .memory_groups()
-                        .resolve_receipt(operation.child.ok_or(Errno::EIO)?)?;
-                    match self.memory_groups().begin_retirement(admission) {
-                        Ok(()) | Err(Errno::EBUSY) => {}
-                        Err(error) => return Err(error),
-                    }
+                    self.begin_group_thread_cleanup(operation.child.ok_or(Errno::EIO)?)?;
                     return Ok(Self::group_operation_reply(
                         operation,
                         effect::DETACH_THREAD_BINDING,
@@ -919,20 +936,20 @@ impl ProcessTable {
                 Phase::ThreadExit => {
                     self.restore_group_clone_parent_tid(operation, host)?;
                     let child = operation.child.ok_or(Errno::EIO)?;
-                    let admission = self.memory_groups().resolve_receipt(child)?;
-                    match self.memory_groups().begin_retirement(admission) {
-                        Ok(()) | Err(Errno::EBUSY) => {}
-                        Err(error) => return Err(error),
-                    }
+                    self.begin_group_thread_cleanup(child)?;
                     return Ok(Self::group_operation_reply(
                         operation,
                         effect::KERNEL_THREAD_EXIT,
                     ));
                 }
                 Phase::ThreadControls => {
-                    match self
-                        .release_unstarted_group_thread(operation.child.ok_or(Errno::EIO)?, host)
-                    {
+                    let child = operation.child.ok_or(Errno::EIO)?;
+                    let release = if self.memory_groups().resolve_receipt(child).is_ok() {
+                        self.release_unstarted_group_thread(child, host)
+                    } else {
+                        self.release_group_storage_control(child, host)
+                    };
+                    match release {
                         Ok(()) => {
                             operation.thread_retired = true;
                             operation.execution = None;
@@ -1162,11 +1179,11 @@ impl ProcessTable {
                             Some(self.group_memory_break(receipt.pid, receipt.tid)?);
                     }
                     let prepared = match operation.request.kind {
-                        kind::THREAD_PREPARE | kind::CLONE => {
+                        kind::CLONE => {
                             match self.reuse_group_thread_control(
                                 receipt.pid,
                                 receipt.tid,
-                                operation.request.thread,
+                                operation.child.ok_or(Errno::EIO)?.tid,
                             ) {
                                 Ok(address) => {
                                     operation.value = address as i64;
@@ -1181,7 +1198,7 @@ impl ProcessTable {
                                     .prepare_group_thread_control(
                                         receipt.pid,
                                         receipt.tid,
-                                        operation.request.thread,
+                                        operation.child.ok_or(Errno::EIO)?.tid,
                                         extent,
                                     )
                                     .map(Some),

@@ -4515,6 +4515,10 @@ pub extern "C" fn kernel_group_operation(receipt_ptr: *const u8, receipt_len: u3
             table.group_fork_launch_control(receipt, token, native, argument, &mut WasmHostIO),
         W::command::FORK_SETUP_FAILED | W::command::FORK_SETUP_NO_MEMORY if request_len == 0 && argument == 0 =>
             table.report_group_fork_setup_failure(receipt, token, command == W::command::FORK_SETUP_NO_MEMORY, &mut WasmHostIO),
+        native if (W::command::THREAD_NATIVE_POLL..=W::command::THREAD_NATIVE_NOT_APPLIED).contains(&native) && request_len == 0 =>
+            table.group_thread_launch_control(receipt, token, native, argument, &mut WasmHostIO),
+        W::command::THREAD_SETUP_FAILED | W::command::THREAD_SETUP_NO_MEMORY | W::command::THREAD_SETUP_UNAVAILABLE if request_len == 0 && argument == 0 =>
+            table.report_group_thread_setup_failure(receipt, token, command, &mut WasmHostIO),
         W::command::ACK if request_len == 0 && argument == 0 => {
             return table.acknowledge_group_operation(receipt, token).map(|()| 0).unwrap_or_else(|error| -(error as i32));
         }

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import * as G from '../src/generated/program-extensions';
+import { ERRNO } from '../src/generated/abi';
 import { WasmPosixKernel, getWasmPosixKernelRuntimeAccess } from '../src/kernel';
 import { createCentralizedKernelWorkerTestDouble, CAPTURED_STDIO } from '../src/kernel-worker';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
@@ -37,6 +38,13 @@ async function harness() {
   return { kernel, access, instance, scratch, worker, group, pid, receipt, handle };
 }
 
+function inspectBacking(h: Awaited<ReturnType<typeof harness>>) {
+  const usage = h.worker.inspectMemoryGroupUsage(h.group);
+  if (typeof usage === 'number') throw Error(`Inspection refused: errno ${-usage}`);
+  if (!usage.backing) throw Error('Missing admitted backing');
+  return usage.backing;
+}
+
 it('registers the actual Rust-owned image with an explicit virtual channel', async () => {
   const h = await harness();
   try {
@@ -46,13 +54,13 @@ it('registers the actual Rust-owned image with an explicit virtual channel', asy
     expect(launch.source.byteLength).toBe(4 * 65536);
     h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
       brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
-    expect(await retryKernelEntryResult(() => h.worker.inspectMemoryGroupBacking(h.group))).toMatchObject({ images: 1, replicas: 1, exposedReplicas: 1 });
+    expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ images: 1, replicas: 1, exposedReplicas: 1 });
     expect(await retryKernelEntryResult(() => h.worker.cancelUnexposedMemoryGroupReplica(h.handle))).toBe(-22);
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
     await retryKernelEntryResult(() => h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false }));
     expect(await retryKernelEntryResult(() => h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete, () => {}))).toBe(true);
     expect(concrete.start()).toBe(false);
-    expect(await retryKernelEntryResult(() => h.worker.inspectMemoryGroupBacking(h.group))).toMatchObject({ images: 0, replicas: 0, allocatedPages: 1, nativeObservers: 0 });
+    expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ images: 0, replicas: 0, allocatedPages: 1, nativeObservers: 0 });
   } finally { h.scratch.revoke(); }
 }, 30_000);
 
@@ -63,6 +71,20 @@ async function published() {
   return { ...h, launch };
 }
 
+it('reports allocator contention without poisoning inspection or changing ownership', async () => {
+  const h = await published();
+  const lock = new Int32Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_CONTROL, 1);
+  try {
+    const before = h.worker.inspectMemoryGroupUsage(h.group);
+    expect(typeof before).toBe('object');
+    expect(Atomics.compareExchange(lock, 0, 0, 1)).toBe(0);
+    try { expect(h.worker.inspectMemoryGroupUsage(h.group)).toBe(-ERRNO.EAGAIN); }
+    finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+    expect(h.worker.inspectMemoryGroupUsage(h.group)).toEqual(before);
+    expect(inspectBacking(h)).toMatchObject({ images: 1, replicas: 1, exposedReplicas: 1 });
+  } finally { h.scratch.revoke(); }
+}, 30_000);
+
 it.each(['group', 'pid', 'tid', 'serial', 'generation'] as const)('contains a foreign terminal %s without freeing the real Rust allocation', async key => {
   const h = await published();
   try {
@@ -71,7 +93,7 @@ it.each(['group', 'pid', 'tid', 'serial', 'generation'] as const)('contains a fo
     const before = new Uint8Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_BITMAP, G.MEMORY_GROUP_BITMAP_BYTES).slice();
     const forged = { ...h.receipt, [key]: typeof h.receipt[key] === 'bigint' ? h.receipt[key] as bigint ^ (1n << 40n) : Number(h.receipt[key]) + 1 };
     expect(() => concrete.simulateMessage({ type: 'memory_quiescent', pid: h.pid, memoryGroup: forged })).toThrow(/Wrong terminal/);
-    expect(() => h.worker.inspectMemoryGroupBacking(h.group)).toThrow();
+    expect(() => inspectBacking(h)).toThrow();
     expect(() => h.launch.source.readBytes(0, 1)).toThrow();
     // Fatal containment makes inspection unavailable. Read only the retained
     // test-owned backing to prove its allocation bits were not returned.
@@ -84,17 +106,17 @@ it.each([true, false])('accepts only the bound Worker fence or a concrete Node j
   try {
     const concrete = new MockWorkerHandle(), other = new MockWorkerHandle();
     h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: joins });
-    const before = h.worker.inspectMemoryGroupBacking(h.group)!.allocatedPages;
+    const before = inspectBacking(h)!.allocatedPages;
     const fence = { type: 'memory_quiescent', pid: h.pid, memoryGroup: h.receipt };
     other.simulateMessage(fence);
     concrete.simulateMessage({ type: 'exit', pid: h.pid, status: 23 });
-    expect(h.worker.inspectMemoryGroupBacking(h.group)).toMatchObject({ exposedReplicas: 1, allocatedPages: before });
+    expect(inspectBacking(h)).toMatchObject({ exposedReplicas: 1, allocatedPages: before });
     concrete.simulateExit(0);
-    expect(h.worker.inspectMemoryGroupBacking(h.group)!.exposedReplicas).toBe(joins ? 0 : 1);
+    expect(inspectBacking(h)!.exposedReplicas).toBe(joins ? 0 : 1);
     concrete.simulateMessage(fence);
     concrete.simulateMessage(fence); concrete.simulateExit(0);
     await h.worker.waitForMemoryGroupReplicaQuiescence(h.handle);
-    expect(h.worker.inspectMemoryGroupBacking(h.group)).toMatchObject({ exposedReplicas: 0, allocatedPages: before });
+    expect(inspectBacking(h)).toMatchObject({ exposedReplicas: 0, allocatedPages: before });
     // Worker quiescence alone cannot retire a Rust process which is still live.
     expect(await h.worker.retireMemoryGroupImage(h.handle, () => {})).toBe(-16);
   } finally { h.scratch.revoke(); }
@@ -105,11 +127,11 @@ it.each([true, false])('retains an uncertain constructor without inventing absen
   try {
     const concrete = new DeferredWorkerHandle(() => { throw Error('uncertain constructor'); });
     h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: joins });
-    const before = h.worker.inspectMemoryGroupBacking(h.group)!.allocatedPages;
+    const before = inspectBacking(h)!.allocatedPages;
     expect(() => concrete.start()).toThrow('uncertain constructor');
     await concrete.terminate();
     expect(h.worker.sealMemoryGroupReplicaWorkerAbsence(h.handle, concrete)).toBe(false);
-    expect(h.worker.inspectMemoryGroupBacking(h.group)).toMatchObject({ exposedReplicas: 1, allocatedPages: before });
+    expect(inspectBacking(h)).toMatchObject({ exposedReplicas: 1, allocatedPages: before });
   } finally { h.scratch.revoke(); }
 }, 30_000);
 
@@ -118,18 +140,18 @@ it('joins the exact asynchronous host closer before Rust returns image storage',
   try {
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
     h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
-    const before = h.worker.inspectMemoryGroupBacking(h.group)!.allocatedPages;
+    const before = inspectBacking(h)!.allocatedPages;
     let finish!: () => void, entered!: () => void;
     const pending = new Promise<void>(resolve => { finish = resolve; });
     const called = new Promise<void>(resolve => { entered = resolve; });
     const close = vi.fn(() => { entered(); return pending; });
     const retirement = h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete, close);
     await called;
-    expect(await retryKernelEntryResult(() => h.worker.inspectMemoryGroupBacking(h.group))).toMatchObject({ allocatedPages: before, images: 1 });
+    expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ allocatedPages: before, images: 1 });
     finish(); expect(await retirement).toBe(true);
     expect(await h.worker.retireMemoryGroupImage(h.handle, close)).toBe(0);
     expect(close).toHaveBeenCalledTimes(1);
-    expect(h.worker.inspectMemoryGroupBacking(h.group)).toMatchObject({ allocatedPages: 1, images: 0, nativeObservers: 0 });
+    expect(inspectBacking(h)).toMatchObject({ allocatedPages: 1, images: 0, nativeObservers: 0 });
   } finally { h.scratch.revoke(); }
 }, 30_000);
 
@@ -138,12 +160,12 @@ it('retains the Rust allocation after a failed asynchronous host closer without 
   try {
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
     h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
-    const before = h.worker.inspectMemoryGroupBacking(h.group)!.allocatedPages;
+    const before = inspectBacking(h)!.allocatedPages;
     const close = vi.fn(async () => { throw Error('reference closer failed'); });
     await expect(h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete, close)).rejects.toThrow('reference closer failed');
     await expect(h.worker.retireMemoryGroupImage(h.handle, close)).rejects.toThrow('reference closer failed');
     expect(close).toHaveBeenCalledTimes(1);
-    expect(h.worker.inspectMemoryGroupBacking(h.group)).toMatchObject({ allocatedPages: before, images: 1 });
+    expect(inspectBacking(h)).toMatchObject({ allocatedPages: before, images: 1 });
   } finally { h.scratch.revoke(); }
 }, 30_000);
 
@@ -168,9 +190,9 @@ it('returns scalar diagnostics and refuses actual allocator contention without b
 it('returns the actual never-exposed image only after exact Rust cancellation', async () => {
   const h = await harness();
   try {
-    expect(h.worker.inspectMemoryGroupBacking(h.group)!.allocatedPages).toBeGreaterThan(1);
+    expect(inspectBacking(h)!.allocatedPages).toBeGreaterThan(1);
     expect(h.worker.cancelUnexposedMemoryGroupReplica(h.handle)).toBe(0);
-    expect(h.worker.inspectMemoryGroupBacking(h.group)).toMatchObject({ allocatedPages: 1, images: 0, replicas: 0 });
+    expect(inspectBacking(h)).toMatchObject({ allocatedPages: 1, images: 0, replicas: 0 });
     expect(h.worker.cancelUnexposedMemoryGroupReplica(h.handle)).toBe(-22);
   } finally { h.scratch.revoke(); }
 }, 30_000);

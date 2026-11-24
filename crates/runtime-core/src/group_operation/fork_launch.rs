@@ -1082,6 +1082,485 @@ mod tests {
             .unwrap();
     }
 
+    fn bound_clone() -> (Fixture<impl HostIO>, u64, ReceiptRecord) {
+        use wasm_posix_shared::program_extensions::memory_group_v3 as G;
+        let mut f = clone_fixture();
+        let mut reply = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &clone_request(0x390100, 0x12000), &mut f.host)
+            .unwrap();
+        for _ in 0..32 {
+            if reply.effect == E::PREPARE_THREAD_BINDING {
+                break;
+            }
+            settle_clone_observer(&mut f, &reply);
+            let (store, admission) = f
+                .process
+                .table
+                .memory_groups()
+                .storage_owner(f.parent)
+                .unwrap();
+            let descriptor = store.descriptor(admission).unwrap();
+            let epoch = f
+                .host
+                .group_memory_atomic_load(f.resource, descriptor.replica + G::REPLICA_REQUEST)
+                .unwrap();
+            f.host
+                .group_memory_atomic_store(f.resource, descriptor.replica + G::REPLICA_ACK, epoch)
+                .unwrap();
+            reply = f
+                .process
+                .table
+                .poll_group_operation(f.parent, reply.operation, None, &mut f.host)
+                .unwrap();
+        }
+        assert_eq!(reply.effect, E::PREPARE_THREAD_BINDING);
+        let offset = W::layout::THREAD_RECEIPT_OFFSET;
+        let child = ReceiptRecord::decode(&reply.payload[offset..offset + 32]).unwrap();
+        let channel = u32::from_le_bytes(reply.payload[20..24].try_into().unwrap());
+        f.process
+            .table
+            .enter_group_thread_binding(child, reply.operation, channel)
+            .unwrap();
+        let bound = f
+            .process
+            .table
+            .report_group_thread_binding(f.parent, reply.operation, false, &mut f.host)
+            .unwrap();
+        assert_eq!(bound.effect, E::THREAD_LAUNCH);
+        (f, reply.operation, child)
+    }
+
+    fn thread_native<H: HostIO>(
+        f: &mut Fixture<H>,
+        token: u64,
+        command: u32,
+        sequence: u32,
+    ) -> Reply {
+        f.process
+            .table
+            .group_thread_launch_control(f.parent, token, command, sequence, &mut f.host)
+            .unwrap()
+    }
+    fn thread_step<H: HostIO>(
+        f: &mut Fixture<H>,
+        token: u64,
+        child: ReceiptRecord,
+        reply: Reply,
+    ) -> Reply {
+        let entered = thread_native(f, token, C::THREAD_NATIVE_ENTERED, reply.length);
+        assert_ne!(entered.flags & flags::NATIVE_EXECUTE, 0);
+        if reply.effect == E::THREAD_BIND {
+            f.process
+                .table
+                .retirement_control(
+                    child,
+                    R::command::BIND_REFERENCES,
+                    R::NATIVE_JOIN_CAPABILITY,
+                    &mut f.host,
+                )
+                .unwrap();
+        }
+        if reply.effect == E::THREAD_REFERENCES {
+            assert_eq!(
+                f.process
+                    .table
+                    .retirement_control(child, R::command::BEGIN_REFERENCES, 0, &mut f.host)
+                    .unwrap()
+                    .effect,
+                R::DETACH_PLATFORM
+            );
+            f.process
+                .table
+                .retirement_control(child, R::command::REFERENCES_DETACHED, 0, &mut f.host)
+                .unwrap();
+        }
+        thread_native(f, token, C::THREAD_NATIVE_COMPLETED, reply.length)
+    }
+    fn thread_until<H: HostIO>(
+        f: &mut Fixture<H>,
+        token: u64,
+        child: ReceiptRecord,
+        effect: u32,
+    ) -> Reply {
+        let mut reply = thread_native(f, token, C::THREAD_NATIVE_POLL, 0);
+        for _ in 0..32 {
+            if reply.effect == effect {
+                return reply;
+            }
+            reply = thread_step(f, token, child, reply);
+        }
+        panic!(
+            "missing native thread effect {effect}, actual {}",
+            reply.effect
+        );
+    }
+
+    #[test]
+    fn grouped_clone_native_owner_selects_startup_and_commits_exact_child_result() {
+        let (mut f, token, child) = bound_clone();
+        let success = thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        assert_eq!(success.errno, 0);
+        let done = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        assert_eq!(
+            (done.effect, done.value, done.errno),
+            (E::COMPLETE, i64::from(child.tid), 0)
+        );
+        assert_eq!(clone_word(&mut f, 0x12000, None), child.tid);
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, token)
+            .unwrap();
+    }
+
+    #[test]
+    fn grouped_clone_native_cancel_before_delivery_reclaims_without_false_worker_absence() {
+        let (mut f, token, child) = bound_clone();
+        let ready = thread_until(&mut f, token, child, E::THREAD_READY);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, ready.length);
+        let failed = thread_native(&mut f, token, C::THREAD_NATIVE_FAILED, ready.length);
+        assert_eq!(failed.effect, E::THREAD_CANCEL_NATIVE);
+        thread_until(&mut f, token, child, E::THREAD_FAILED);
+        let (store, admission) = f
+            .process
+            .table
+            .memory_groups()
+            .storage_owner(child)
+            .unwrap();
+        assert!(
+            !store.accepted_worker_fact(admission).unwrap(),
+            "kernel non-delivery became a fake native fact"
+        );
+        let cleanup = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        let done = finish_failed_clone(&mut f, cleanup);
+        assert_eq!(done.errno, Errno::EIO as u32);
+        assert_eq!(clone_word(&mut f, 0x12000, None), 0x1234);
+        assert_eq!(clone_word(&mut f, 0x12004, None), 0x5678);
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, token)
+            .unwrap();
+    }
+
+    #[test]
+    fn grouped_clone_native_stale_observation_cannot_acknowledge_cleanup() {
+        let (mut f, token, child) = bound_clone();
+        let ready = thread_until(&mut f, token, child, E::THREAD_READY);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, ready.length);
+        f.process
+            .table
+            .poll_group_operation(f.parent, token, Some(Errno::EINTR as u32), &mut f.host)
+            .unwrap();
+        let stale = thread_native(&mut f, token, C::THREAD_NATIVE_COMPLETED, ready.length);
+        assert_eq!(stale.effect, E::THREAD_CANCEL_NATIVE);
+        assert_eq!(stale.flags & flags::NATIVE_EXECUTE, 0);
+        assert!(matches!(
+            f.process.table.group_thread_launch_control(
+                f.parent,
+                token,
+                C::THREAD_NATIVE_COMPLETED,
+                stale.length,
+                &mut f.host
+            ),
+            Err(Errno::EBUSY)
+        ));
+    }
+
+    #[test]
+    fn grouped_clone_native_memory_delivery_failure_is_fatal_and_retained() {
+        let (mut f, token, child) = bound_clone();
+        let delivery = thread_until(&mut f, token, child, E::THREAD_DELIVER);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, delivery.length);
+        assert_eq!(clone_word(&mut f, 0x12000, None), child.tid);
+        let failure = thread_native(&mut f, token, C::THREAD_NATIVE_FAILED, delivery.length);
+        assert_eq!(failure.effect, E::THREAD_FATAL);
+        let (store, admission) = f
+            .process
+            .table
+            .memory_groups()
+            .storage_owner(child)
+            .unwrap();
+        assert_eq!(
+            store.status(admission).unwrap()
+                & wasm_posix_shared::group_storage::status::SOURCE_LIVE,
+            0
+        );
+        let group = f
+            .process
+            .table
+            .memory_groups()
+            .resolve_group(child.group)
+            .unwrap();
+        assert_eq!(
+            f.process
+                .table
+                .memory_groups()
+                .snapshot(group)
+                .unwrap()
+                .quarantined_tasks,
+            2
+        );
+        assert!(f
+            .process
+            .table
+            .get(child.pid)
+            .unwrap()
+            .get_thread(child.tid)
+            .is_some());
+        assert_eq!(
+            f.process.table.acknowledge_group_operation(f.parent, token),
+            Err(Errno::EBUSY)
+        );
+    }
+
+    #[test]
+    fn grouped_clone_native_child_exit_during_delivery_does_not_rollback_creation() {
+        let (mut f, token, child) = bound_clone();
+        let delivery = thread_until(&mut f, token, child, E::THREAD_DELIVER);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, delivery.length);
+        let (process, locks) = f
+            .process
+            .table
+            .process_and_advisory_locks(child.pid)
+            .unwrap();
+        crate::syscalls::cleanup_exiting_thread_with_state(process, locks, &mut f.host, child.tid)
+            .unwrap();
+        f.process
+            .table
+            .memory_groups()
+            .note_thread_exit(crate::memory_group::GroupExecution {
+                pid: child.pid,
+                tid: child.tid,
+                exec_generation: child.generation,
+            })
+            .unwrap();
+        let success = thread_native(&mut f, token, C::THREAD_NATIVE_COMPLETED, delivery.length);
+        assert_eq!(success.effect, E::THREAD_SUCCEEDED);
+        let done = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        assert_eq!((done.value, done.errno), (i64::from(child.tid), 0));
+        assert_eq!(clone_word(&mut f, 0x12000, None), child.tid);
+    }
+
+    #[test]
+    fn grouped_clone_native_stopped_process_cannot_construct_or_deliver() {
+        let (mut f, token, child) = bound_clone();
+        let start = thread_until(&mut f, token, child, E::THREAD_START);
+        f.process.table.get_mut(child.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        let gated = thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, start.length);
+        assert_eq!(gated.effect, E::YIELD);
+        assert_eq!(gated.flags & flags::NATIVE_EXECUTE, 0);
+        assert_eq!(gated.delay, 0);
+        f.process.table.get_mut(child.pid).unwrap().state = crate::process::ProcessState::Running;
+        assert_ne!(
+            thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, start.length).flags
+                & flags::NATIVE_EXECUTE,
+            0
+        );
+    }
+
+    #[test]
+    fn grouped_clone_native_cancellation_waits_for_the_exact_interrupted_observer() {
+        let (mut f, token, child) = bound_clone();
+        let ready = thread_until(&mut f, token, child, E::THREAD_READY);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, ready.length);
+        f.process
+            .table
+            .poll_group_operation(f.parent, token, Some(Errno::EINTR as u32), &mut f.host)
+            .unwrap();
+        let cancel = thread_native(&mut f, token, C::THREAD_NATIVE_POLL, 0);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, cancel.length);
+        let pending = thread_native(&mut f, token, C::THREAD_NATIVE_COMPLETED, cancel.length);
+        assert_eq!(pending.effect, E::YIELD);
+        let (store, admission) = f
+            .process
+            .table
+            .memory_groups()
+            .storage_owner(child)
+            .unwrap();
+        assert_eq!(
+            store.status(admission).unwrap() & wasm_posix_shared::group_storage::status::STOPPED,
+            0
+        );
+        thread_native(&mut f, token, C::THREAD_NATIVE_TIMEOUT, ready.length);
+        assert_eq!(
+            thread_native(&mut f, token, C::THREAD_NATIVE_POLL, 0).effect,
+            E::YIELD
+        );
+        thread_native(&mut f, token, C::THREAD_NATIVE_FAILED, ready.length);
+        thread_until(&mut f, token, child, E::THREAD_FAILED);
+        let cleanup = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        let done = finish_failed_clone(&mut f, cleanup);
+        assert_eq!(done.errno, Errno::EINTR as u32);
+    }
+
+    #[test]
+    fn grouped_clone_native_late_uncertain_constructor_still_quarantines_custody() {
+        let (mut f, token, child) = bound_clone();
+        let start = thread_until(&mut f, token, child, E::THREAD_START);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, start.length);
+        f.process
+            .table
+            .poll_group_operation(f.parent, token, Some(Errno::EIO as u32), &mut f.host)
+            .unwrap();
+        let late = thread_native(
+            &mut f,
+            token,
+            C::THREAD_NATIVE_CONSTRUCTOR_UNKNOWN,
+            start.length,
+        );
+        assert_eq!(late.effect, E::THREAD_FATAL);
+        let group = f
+            .process
+            .table
+            .memory_groups()
+            .resolve_group(child.group)
+            .unwrap();
+        assert_eq!(
+            f.process
+                .table
+                .memory_groups()
+                .snapshot(group)
+                .unwrap()
+                .quarantined_tasks,
+            2
+        );
+        assert_eq!(
+            f.process.table.acknowledge_group_operation(f.parent, token),
+            Err(Errno::EBUSY)
+        );
+    }
+
+    #[test]
+    fn grouped_clone_native_join_after_non_delivery_stop_keeps_physical_cleanup_owned() {
+        let (mut f, token, child) = bound_clone();
+        let ready = thread_until(&mut f, token, child, E::THREAD_READY);
+        thread_native(&mut f, token, C::THREAD_NATIVE_ENTERED, ready.length);
+        thread_native(&mut f, token, C::THREAD_NATIVE_FAILED, ready.length);
+        let contain = thread_until(&mut f, token, child, E::THREAD_CONTAIN);
+        assert_ne!(
+            f.process
+                .table
+                .retirement_control(child, R::command::NATIVE_JOIN, 0, &mut f.host)
+                .unwrap()
+                .flags
+                & R::STOP_ACCEPTED,
+            0
+        );
+        assert!(f
+            .process
+            .table
+            .memory_groups()
+            .resolve_receipt(child)
+            .is_err());
+        assert!(f.process.table.memory_groups().storage_owner(child).is_ok());
+        thread_step(&mut f, token, child, contain);
+        thread_until(&mut f, token, child, E::THREAD_FAILED);
+        let cleanup = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        let done = finish_failed_clone(&mut f, cleanup);
+        assert_eq!(done.errno, Errno::EIO as u32);
+        assert!(f
+            .process
+            .table
+            .memory_groups()
+            .storage_owner(child)
+            .is_err());
+    }
+
+    #[test]
+    fn grouped_clone_native_parent_exit_after_handoff_suppresses_only_publication() {
+        let (mut f, token, child) = bound_clone();
+        thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        f.process.table.get_mut(child.pid).unwrap().state = crate::process::ProcessState::Exited;
+        let done = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        assert_eq!(
+            (done.effect, done.value, done.errno),
+            (E::COMPLETE, i64::from(child.tid), 0)
+        );
+        assert_eq!(done.flags & flags::DELIVER, 0);
+        assert!(f
+            .process
+            .table
+            .get(child.pid)
+            .unwrap()
+            .get_thread(child.tid)
+            .is_some());
+        assert_eq!(clone_word(&mut f, 0x12000, None), child.tid);
+    }
+
+    #[test]
+    fn grouped_clone_native_pending_fatal_exit_after_handoff_suppresses_publication() {
+        let (mut f, token, child) = bound_clone();
+        thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        let parent = f.process.table.get_mut(child.pid).unwrap();
+        assert_eq!(parent.state, crate::process::ProcessState::Running);
+        parent.exit_signal = 9;
+        let done = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        assert_eq!(
+            (done.effect, done.value, done.errno),
+            (E::COMPLETE, i64::from(child.tid), 0)
+        );
+        assert_eq!(done.flags & flags::DELIVER, 0);
+        assert!(f.process.table.get(child.pid).unwrap().get_thread(child.tid).is_some());
+        assert_eq!(clone_word(&mut f, 0x12000, None), child.tid);
+    }
+
+    #[test]
+    fn grouped_clone_native_parent_stop_after_handoff_retains_result_until_continue() {
+        let (mut f, token, child) = bound_clone();
+        thread_until(&mut f, token, child, E::THREAD_SUCCEEDED);
+        f.process.table.get_mut(child.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        let parked = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        assert_eq!(parked.effect, E::YIELD);
+        assert_eq!(
+            f.process.table.acknowledge_group_operation(f.parent, token),
+            Err(Errno::EBUSY)
+        );
+        f.process.table.get_mut(child.pid).unwrap().state = crate::process::ProcessState::Running;
+        let done = f
+            .process
+            .table
+            .poll_group_operation(f.parent, token, None, &mut f.host)
+            .unwrap();
+        assert_eq!(
+            (done.effect, done.value, done.errno),
+            (E::COMPLETE, i64::from(child.tid), 0)
+        );
+        assert_ne!(done.flags & flags::DELIVER, 0);
+    }
+
     impl<H: HostIO> Fixture<H> {
         fn call(&mut self, command: u32, sequence: u32) -> Reply {
             self.process
@@ -1235,11 +1714,6 @@ mod tests {
             .table
             .acknowledge_group_operation(f.parent, f.token)
             .unwrap();
-        let tid = f
-            .process
-            .table
-            .create_thread(f.parent.pid, f.parent.tid, 0x12000, 0x13000, 0x14000)
-            .unwrap();
         let (store, admission) = f
             .process
             .table
@@ -1262,15 +1736,24 @@ mod tests {
                 .unwrap();
         }
         let mut request = [0; W::REQUEST_BYTES];
-        request[..4].copy_from_slice(&kind::THREAD_PREPARE.to_le_bytes());
+        request[..4].copy_from_slice(&kind::CLONE.to_le_bytes());
         request[4..8]
             .copy_from_slice(&wasm_posix_shared::abi::extended_syscalls::SYS_CLONE.to_le_bytes());
-        request[56..60].copy_from_slice(&tid.to_le_bytes());
+        for (index, value) in [0x290100u32, 0x12000, 0, 0x13000, 0x14000, 0]
+            .into_iter()
+            .enumerate()
+        {
+            request[8 + index * 8..16 + index * 8].copy_from_slice(&u64::from(value).to_le_bytes());
+        }
         let mut reply = f
             .process
             .table
             .begin_group_operation(f.parent, &request, &mut f.host)
             .unwrap();
+        let offset = W::layout::THREAD_RECEIPT_OFFSET;
+        let tid = ReceiptRecord::decode(&reply.payload[offset..offset + 32])
+            .unwrap()
+            .tid;
         for _ in 0..16 {
             if reply.effect == E::PREPARE_THREAD_BINDING {
                 break;
@@ -1325,13 +1808,16 @@ mod tests {
             (entry.function, entry.argument, entry.slot_start),
             (37, 91, reply.value as u32)
         );
-        // A later mutation of the pending mailbox cannot rewrite this task's
-        // retained recipe or mint another launch operation for it.
+        // The former preallocated preparation wire is unsupported before
+        // it can mint another owner for this already allocated child.
+        let mut legacy = request;
+        legacy[..4].copy_from_slice(&4u32.to_le_bytes());
+        legacy[56..60].copy_from_slice(&tid.to_le_bytes());
         assert!(matches!(
             f.process
                 .table
-                .begin_group_operation(f.parent, &request, &mut f.host),
-            Err(Errno::EBUSY)
+                .begin_group_operation(f.parent, &legacy, &mut f.host),
+            Err(Errno::EINVAL)
         ));
         let child = f
             .process

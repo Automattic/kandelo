@@ -50,7 +50,8 @@ Grouped mappings must enter the Rust physical/PTE transaction owner. The ordinar
 
 The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. The SDK's private growth path still uses the shared v3 bitmap protocol; Rust synchronizes with its locks and captures its frames from stable page tables for reclamation. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or
-authorize reuse. No persistent browser or audio realm receives the guest
+authorize reuse. The optional scalar usage API reports allocator contention as
+`EAGAIN` without poisoning the kernel. No persistent browser or audio realm receives the guest
 memory or a view into it.
 
 Unconstructed cancellation returns physical storage and releases task admission
@@ -80,7 +81,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 30, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 31, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -536,7 +537,7 @@ A committed child cannot be rolled back by
 a later parent exit. Generic native setup failures report `EIO`; an explicitly
 reported resource exhaustion remains `ENOMEM`. Constructor uncertainty retains
 custody and contains the kernel. Native and real SDK Node/browser checks cover
-this fork path; the remaining pthread/session and pure-rule audit is unfinished.
+this fork path; session progression and the pure-rule audit remain unfinished.
 
 The actual kernel thread record retains its creator and grouped entry recipe.
 The mapping operation emits the complete pthread control/bootstrap layout;
@@ -546,6 +547,24 @@ that operation's exact task and selected offset. Missing, duplicate or mismatche
 grants fail before native registration; binding cannot be acknowledged early.
 Fork derives its continuation and caller mailbox from those retained records.
 A thread-born process leader keeps its thread bootstrap role for subsequent
-forks; exec clears the outgoing recipe. Native pthread startup, outer clone
-completion and session lifecycle ownership remain part of the unfinished
-Rust-first migration.
+forks; exec clears the outgoing recipe.
+
+Grouped clone enters the retained Rust operation before allocating a TID. The
+ordinary direct clone entry refuses grouped callers, and the former separate
+thread-preparation wire entry is unsupported. Rust chooses native object setup,
+reference binding, connection, scalar-only preparation, readiness observation,
+runtime listeners and guest-memory delivery. Issuing memory delivery commits
+creation; a later child exit or parent death cannot roll it back. Parent stop
+holds the result until continue, while parent exit or a pending fatal exit
+suppresses publication without undoing the committed child or parent-TID word.
+
+Before delivery, cancellation retains each entered native observation until its
+actual settlement. A timeout permits another observation; it is not settlement.
+The kernel can stop an undelivered task because no native Worker was authorized
+to receive its memory. This does not fabricate Worker absence or a native join.
+Rust still requires containment, exact reference disposal and control reclamation.
+Uncertain construction or delivery quarantines the image and retains its charges.
+The host holds objects and executes the exact requested effects; it no longer
+selects grouped clone startup, rollback or failed-clone reclamation. General
+delayed syscall-result publication and session lifecycle progression still need
+their remaining Rust-first migration.

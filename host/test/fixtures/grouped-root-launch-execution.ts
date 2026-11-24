@@ -5,6 +5,7 @@ import { GroupedSessionRuntime } from '../../src/grouped-session-runtime';
 import { retryKernelEntryResult as retry } from '../../src/kernel-entry-retry';
 import type { WorkerAdapter } from '../../src/worker-adapter';
 import type { PlatformIO } from '../../src/types';
+import { ERRNO } from '../../src/generated/abi';
 export async function execute(options: {
     kernelBytes: ArrayBuffer;
     imageBytes: Uint8Array;
@@ -59,7 +60,9 @@ export async function execute(options: {
             if (key === 'containMemoryGroupLaunchFailure')
                 return (cause: unknown) => {
                     try {
-                        fatalLedger = { kernel: kernel.inspectMemoryGroup(group), backing: kernel.inspectMemoryGroupBacking(group) };
+                        const usage = kernel.inspectMemoryGroupUsage(group);
+                        if (typeof usage === 'number') throw Error(`Inspection refused: errno ${-usage}`);
+                        fatalLedger = { kernel: usage.admission, backing: usage.backing };
                     }
                     catch (error) {
                         fatalLedger = { inspectionFailure: String(error) };
@@ -72,6 +75,14 @@ export async function execute(options: {
     session = new GroupedSessionRuntime(facade, adapter, { maximumPages: 2048, maximumProcesses: 8, maximumTasks: 16 }, options.joins, (pid, code) => { if (pid === rootPid)
         exitResolve?.(code); }, (_pid, error) => diagnostics.push(error.message));
     const group = await session.initialPathGroup();
+    const backing = async () => {
+        for (;;) {
+            const usage = await retry(() => kernel.inspectMemoryGroupUsage(group));
+            if (typeof usage !== 'number') return usage.backing ?? undefined;
+            if (usage !== -ERRNO.EAGAIN) throw Error(`Inspection refused: errno ${-usage}`);
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+        }
+    };
     const launch = async () => {
         const pid = await retry(() => kernel.createProcess(CAPTURED_STDIO));
         rootPid = pid;
@@ -100,7 +111,7 @@ export async function execute(options: {
                     throw error;
             }
             await retry(() => kernel.removeProcessFromKernelTable(rootPid!));
-            rollbacks.push({ kernel: await retry(() => kernel.inspectMemoryGroup(group)), backing: await retry(() => kernel.inspectMemoryGroupBacking(group)), receipt: await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) });
+            rollbacks.push({ kernel: await retry(() => kernel.inspectMemoryGroup(group)), backing: await backing(), receipt: await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) });
         }
         inject = false;
         const exited = new Promise<number>(resolve => { exitResolve = resolve; });
@@ -131,13 +142,13 @@ export async function execute(options: {
     }
     let inspectionRefusal: string | undefined;
     if (fatal) {
-        try { kernel.inspectMemoryGroupBacking(group); }
+        try { kernel.inspectMemoryGroupUsage(group); }
         catch (error) { inspectionRefusal = String(error); }
     }
     const result = { stage: options.stage, constructionAttempts, injected, failure, fatal, fatalLedger,
         fatalLedgerObserved: fatalLedger ? 'before-fatal-latch' : undefined, inspectionRefusal,
         code, stdout, stderr, diagnostics, rollbacks, kernel: fatal ? undefined : await retry(() => kernel.inspectMemoryGroup(group)),
-        backing: fatal ? undefined : await retry(() => kernel.inspectMemoryGroupBacking(group)),
+        backing: fatal ? undefined : await backing(),
         rootReceipt: fatal ? undefined : await retry(() => kernel.readMemoryGroupTaskReceipt(rootPid!, rootPid!)) };
     if (!fatal)
         kernel.stopPolling();

@@ -109,9 +109,20 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   let execTermination: { signal: number } | undefined;
   let execReplacementPublications = 0;
   let execPrecommitStopFinished = false;
-  const memoryEvidence = async () => ({ group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
-    maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount,
-    backing: admittedGroup === undefined ? undefined : await retryKernelEntryResult(() => kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup!)) });
+  let threadRetirementCheckpoints = 0;
+  const memoryEvidence = async () => {
+    let backing;
+    if (admittedGroup !== undefined && kernelForDiagnostics) for (;;) {
+      const usage = await retryKernelEntryResult(() => kernelForDiagnostics!.inspectMemoryGroupUsage(admittedGroup!));
+      if (typeof usage !== 'number') { backing = usage.backing ?? undefined; break; }
+      if (usage !== -ERRNO.EAGAIN) throw Error(`Memory-group inspection refused: errno ${-usage}`);
+      // Diagnostic contention grants no lifecycle fact. Wait for another real
+      // turn; the test's execution deadline still bounds this observation.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+    return { group: admittedGroup, pid: rootPid, initialVirtualPages: processLayout?.initialPages,
+      maximumVirtualPages: processLayout?.maximumPages, declaredThreadSlots: processLayout?.threadSlotCount, backing };
+  };
   const rolledBackPids: number[] = [];
   const evidenceWork: Promise<void>[] = [];
   const children = new Map<number, GroupedWorkerObjects>();
@@ -123,7 +134,6 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const processDeactivations: Promise<void>[] = [];
   const retiredThreads = new Set<number>();
   const threadRetirementMemory: Record<string, unknown>[] = [];
-  const failedControlInitializations = new Set<number>();
   let restoreThreadInitializationFault: (() => void) | undefined;
   const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
@@ -512,55 +522,19 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         },
         onKernelFatal: error => { kernelFailed = true; reject(error); },
         onGroupedClone: async attachment => {
+          // This identity came from the real Rust clone operation. Its native
+          // binding was already consumed; raw reattachment cannot mutate it.
+          for (const field of ['memory', 'fnPtr', 'argPtr', 'stackPtr', 'tlsPtr', 'ctidPtr']) {
+            if (Object.hasOwn(attachment, field)) throw Error(`Grouped attachment leaked ${field}`);
+          }
+          let duplicateRefused = false;
+          try { kernel.attachThreadChannel(attachment, 0); }
+          catch (error) { if (!String(error).includes('already consumed thread attachment')) throw error; duplicateRefused = true; }
+          if (!duplicateRefused) throw Error('Grouped clone attachment was reusable');
           await Promise.all(threadRetirements.values());
           const processGeneration = attachment.pid === rootPid ? generation : children.get(attachment.pid)?.generation;
           if (!processGeneration || !processLayout) throw Error('Missing exact grouped pthread process image');
           const before = await memoryEvidence();
-          const failBeforePublication = options.threadPoolRollback && ++threadPreparationAttempts % 2 === 1;
-          if (failBeforePublication) failedControlInitializations.add(attachment.tid);
-          if (options.threadPoolRollback && !restoreThreadInitializationFault) {
-            // Refuse the real foreign fill issued by Rust initialization, with
-            // the allocator lock held until the next actual Worker turn.
-            const operation = GroupMemoryTransport.prototype.operation;
-            const fill = GroupMemoryResources.prototype.fill;
-            const preparingThreads = new Map<bigint, number>();
-            let preparingThread: number | undefined;
-            GroupMemoryTransport.prototype.operation = function(this: GroupMemoryTransport, ...args: Parameters<typeof operation>) {
-              const request = args[5], protocol = MEMORY_GROUP_PROTOCOL.driver;
-              const thread = request?.kind === protocol.kinds.threadPrepare ? request.thread : preparingThreads.get(args[2]);
-              preparingThread = thread;
-              try {
-                const result = operation.apply(this, args);
-                if (result && thread !== undefined) preparingThreads.set(result.operation, thread);
-                if (args[1] === protocol.commands.ack) preparingThreads.delete(args[2]);
-                return result;
-              } finally { preparingThread = undefined; }
-            };
-            GroupMemoryResources.prototype.fill = function(this: GroupMemoryResources, ...args: Parameters<typeof fill>) {
-              if (preparingThread !== undefined && failedControlInitializations.has(preparingThread)
-                  && this.memory(args[0]) === rollbackPoolMemory) {
-                const lock = new Int32Array(rollbackPoolMemory!.buffer, MEMORY_GROUP_CONTROL, 1);
-                // Reservation now belongs to this same driver. Leave its
-                // mutex-protected page allocation intact; fail the subsequent
-                // unlocked control initialization and hold the mutex afterward.
-                if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return fill.apply(this, args);
-                failedControlInitializations.delete(preparingThread);
-                const attempt = ++injectedThreadRefusals;
-                setTimeout(() => {
-                  try { lifecycleEvidence.push({ kind: 'thread-pool-lock-released', attempt,
-                    admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
-                  catch (error) { reject(error); }
-                  finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
-                }, 0);
-                throw new GroupMemoryResourceError(ERRNO.ENOMEM);
-              }
-              return fill.apply(this, args);
-            };
-            restoreThreadInitializationFault = () => {
-              GroupMemoryTransport.prototype.operation = operation;
-              GroupMemoryResources.prototype.fill = fill;
-            };
-          }
           try { await launchGroupedThreadWorker({ kernel, attachment, adapter: threadAdapter, imports, generation: processGeneration,
             programBytes: options.programBytes, terminationProvesQuiescence: options.joinOnExit,
             isCurrent: thread => threads.get(thread.tid) === thread,
@@ -679,6 +653,44 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         else { machine.kernel = kernel; machine.callbacks = callbacks; }
       }
       kernelForDiagnostics = kernel;
+      if (options.threadPoolRollback && !restoreThreadInitializationFault) {
+        // Fault the actual Rust-issued unlocked control initialization. The
+        // canonical operation starts before the native launch callback now.
+        const operation = GroupMemoryTransport.prototype.operation, fill = GroupMemoryResources.prototype.fill;
+        const refusing = new Map<bigint, boolean>();
+        let current: { refuse: boolean } | undefined;
+        GroupMemoryTransport.prototype.operation = function(this: GroupMemoryTransport, ...args: Parameters<typeof operation>) {
+          const protocol = MEMORY_GROUP_PROTOCOL.driver, begin = args[1] === protocol.commands.begin && args[5]?.kind === protocol.kinds.clone;
+          const state = { refuse: begin ? ++threadPreparationAttempts % 2 === 1 : refusing.get(args[2]) === true };
+          const previous = current; current = state;
+          try {
+            const result = operation.apply(this, args);
+            if (result && (begin || refusing.has(args[2]))) refusing.set(result.operation, state.refuse);
+            if (args[1] === protocol.commands.ack) refusing.delete(args[2]);
+            return result;
+          } finally { current = previous; }
+        };
+        GroupMemoryResources.prototype.fill = function(this: GroupMemoryResources, ...args: Parameters<typeof fill>) {
+          if (current?.refuse && this.memory(args[0]) === rollbackPoolMemory) {
+            const lock = new Int32Array(rollbackPoolMemory!.buffer, MEMORY_GROUP_CONTROL, 1);
+            if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return fill.apply(this, args);
+            current.refuse = false;
+            const attempt = ++injectedThreadRefusals;
+            setTimeout(() => {
+              try { lifecycleEvidence.push({ kind: 'thread-pool-lock-released', attempt,
+                admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
+              catch (error) { reject(error); }
+              finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+            }, 0);
+            throw new GroupMemoryResourceError(ERRNO.ENOMEM);
+          }
+          return fill.apply(this, args);
+        };
+        restoreThreadInitializationFault = () => {
+          GroupMemoryTransport.prototype.operation = operation; GroupMemoryResources.prototype.fill = fill;
+        };
+      }
+
       void (async () => {
         // Compose through the normal image writer, inside this disposable
         // realm. A real root namespace is needed to reach kernel tmpfs on both
@@ -704,6 +716,19 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         kernel.setOutputCallbacks({
           onStdout: bytes => {
             stdout += new TextDecoder().decode(bytes);
+            if ((options.rejectThreadLaunchCount || options.threadPoolRollback)
+                && stdout.endsWith('thread-retirement-checkpoint\n')) {
+              const checkpoint = ++threadRetirementCheckpoints;
+              const sample = (async () => {
+                await Promise.all(threadRetirements.values());
+                if (retiredThreads.size !== checkpoint) throw Error('Checkpoint lacks exact thread retirement');
+                lifecycleEvidence.push({ kind: 'thread-retirement-checkpoint', checkpoint,
+                  admission: await retryKernelEntryResult(() => kernel.inspectMemoryGroup(admittedGroup!)),
+                  ...await memoryEvidence() });
+                kernel.appendStdinData(rootPid!, Uint8Array.of(107));
+              })();
+              evidenceWork.push(sample); void sample.catch(reject);
+            }
             if (options.anonymousShared) {
               const match = /anonymous-phase (\d+)\n$/.exec(stdout);
               if (match && !anonymousPhases.has(Number(match[1]))) {
@@ -783,7 +808,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         let init!: Omit<CentralizedWorkerInitMessage, "memory">;
         const connectImports = () => {
           kernel.installHostStdinPipe(pid);
-          if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads || options.anonymousShared || options.rejectForkStage) kernel.appendStdinData(pid, new Uint8Array());
+          if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads || options.anonymousShared || options.rejectForkStage || options.rejectThreadLaunchCount || options.threadPoolRollback) kernel.appendStdinData(pid, new Uint8Array());
           else kernel.setStdinData(pid, new Uint8Array());
           generation = owner.startGeneration(pid);
           const currentGeneration = generation;

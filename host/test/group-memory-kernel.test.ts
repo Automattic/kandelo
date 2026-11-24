@@ -157,6 +157,10 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
     };
     Atomics.store(virtualWord(0x4000), 0, 0x1234);
     Atomics.store(virtualWord(0x4004), 0, 0x5678);
+    // Ordinary/direct clone cannot allocate a grouped task outside its owner.
+    expect(scalar('kernel_set_current_tid', pid, pid)).toBe(0);
+    expect(scalar('kernel_clone', 0, 0x17000, 0x390100, 0, 0x4000, 0x13000, 0x4004)).toBe(-ERRNO.EOPNOTSUPP);
+    expect(Atomics.load(virtualWord(0x4000), 0)).toBe(0x1234);
     const cloneArgs = [0x390100n, 0x17000n, 0x4000n, 0x13000n, 0x4004n, 0n];
     const clone = driver(P.driver.commands.begin, 0n, ABI_SYSCALLS.Clone, cloneArgs, 0, receipt, P.driver.kinds.clone);
     expect(clone.status).toBe(P.driver.reply_bytes);

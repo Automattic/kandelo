@@ -4,6 +4,19 @@ use super::*;
 use crate::memory_group::wait_queue;
 
 impl Storage {
+    /// Private to actual clone progression before it authorizes Memory delivery.
+    /// A scalar-only native Worker may exist. This proves inability to access
+    /// the backing, not native constructor absence or an engine join.
+    pub(crate) fn stop_undelivered_thread(&mut self, memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+    ) -> Result<(), Errno> {
+        if admission.record().pid == admission.record().tid { return Err(Errno::EINVAL); }
+        if self.owned(admission)?.exposure == Exposure::Stopped { return Ok(()); }
+        if self.owned(admission)?.exposure != Exposure::Exposed { return Err(Errno::EBUSY); }
+        self.request_stop(memory, admission)?;
+        self.note_quiescent(memory, admission)
+    }
+
     /// Only the kernel launch driver can prove that no Worker construction
     /// effect was issued. This is not a host-callable quiescence substitute.
     pub(crate) fn release_unstarted_thread(&mut self, memory: &mut impl PhysicalMemory,
@@ -11,7 +24,8 @@ impl Storage {
         release_control: impl FnOnce() -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         let member = self.owned(admission)?;
-        if admission.record().pid == admission.record().tid || member.exposure == Exposure::Quarantined {
+        if admission.record().pid == admission.record().tid || member.exposure == Exposure::Quarantined
+            || matches!(member.references, References::Bound | References::Detaching) {
             return Err(Errno::EBUSY);
         }
         let key = member.image;

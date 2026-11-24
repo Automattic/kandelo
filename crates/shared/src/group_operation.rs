@@ -9,7 +9,7 @@ pub const REQUEST_FIELDS: &[(&str, usize)] = &[
     ("kind", 0),
     ("syscall", 4),
     ("args", 8),
-    ("thread", 56),
+    ("reservedTask", 56),
     ("reserved", 60),
     ("payload", 64),
 ];
@@ -54,16 +54,28 @@ pub mod command {
     pub const THREAD_BINDING_FAILED: u32 = 22;
     pub const THREAD_BINDING_NO_MEMORY: u32 = 23;
     pub const THREAD_BINDING_ENTER: u32 = 24;
+    pub const THREAD_NATIVE_POLL: u32 = 25;
+    pub const THREAD_NATIVE_ENTERED: u32 = 26;
+    pub const THREAD_NATIVE_COMPLETED: u32 = 27;
+    pub const THREAD_NATIVE_FAILED: u32 = 28;
+    pub const THREAD_NATIVE_TIMEOUT: u32 = 29;
+    pub const THREAD_NATIVE_PROTOCOL_FAILED: u32 = 30;
+    pub const THREAD_NATIVE_NO_MEMORY: u32 = 31;
+    pub const THREAD_NATIVE_CONSTRUCTOR_UNKNOWN: u32 = 32;
+    pub const THREAD_NATIVE_VALIDATE: u32 = 33;
+    pub const THREAD_NATIVE_NOT_APPLIED: u32 = 34;
+    pub const THREAD_SETUP_FAILED: u32 = 35;
+    pub const THREAD_SETUP_NO_MEMORY: u32 = 36;
+    pub const THREAD_SETUP_UNAVAILABLE: u32 = 37;
 }
 pub mod kind {
     pub const MAPPING: u32 = 1;
     pub const OWNED_MAPPING: u32 = 3;
-    pub const THREAD_PREPARE: u32 = 4;
     pub const FORK: u32 = 5;
     /// Complete clone operation, opened before the kernel allocates its task.
     pub const CLONE: u32 = 6;
     pub const fn is_thread(value: u32) -> bool {
-        matches!(value, THREAD_PREPARE | CLONE)
+        value == CLONE
     }
 }
 pub mod effect {
@@ -79,6 +91,7 @@ pub mod effect {
     pub const FORK_REMOVE_TRANSPORT: u32 = 10;
     pub const KERNEL_FORK_CREATE: u32 = 11;
     pub const KERNEL_FORK_REMOVE: u32 = 12;
+    pub const THREAD_LAUNCH: u32 = 13;
     pub const FORK_OBJECTS: u32 = 24;
     pub const FORK_PUBLISH: u32 = 25;
     pub const FORK_BIND: u32 = 26;
@@ -99,6 +112,20 @@ pub mod effect {
     pub const FORK_SUCCEEDED: u32 = 41;
     pub const FORK_FAILED: u32 = 42;
     pub const FORK_FATAL: u32 = 43;
+    pub const THREAD_OBJECTS: u32 = 44;
+    pub const THREAD_BIND: u32 = 45;
+    pub const THREAD_CONNECT: u32 = 46;
+    pub const THREAD_START: u32 = 47;
+    pub const THREAD_READY: u32 = 48;
+    pub const THREAD_RUNTIME: u32 = 49;
+    pub const THREAD_DELIVER: u32 = 50;
+    pub const THREAD_CANCEL_NATIVE: u32 = 51;
+    pub const THREAD_CONTAIN: u32 = 52;
+    pub const THREAD_REFERENCES: u32 = 53;
+    pub const THREAD_DISPOSE: u32 = 54;
+    pub const THREAD_SUCCEEDED: u32 = 55;
+    pub const THREAD_FAILED: u32 = 56;
+    pub const THREAD_FATAL: u32 = 57;
 }
 pub mod flags {
     pub const DELIVER: u32 = 1;
@@ -115,7 +142,6 @@ pub struct Request {
     pub kind: u32,
     pub syscall: u32,
     pub args: [u64; 6],
-    pub thread: u32,
 }
 impl Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Errno> {
@@ -129,12 +155,11 @@ impl Request {
             args: core::array::from_fn(|at| {
                 u64::from_le_bytes(bytes[8 + at * 8..16 + at * 8].try_into().unwrap())
             }),
-            thread: word(56),
         };
         if !matches!(
             request.kind,
-            kind::MAPPING | kind::OWNED_MAPPING | kind::THREAD_PREPARE | kind::FORK | kind::CLONE
-        ) || request.kind != kind::THREAD_PREPARE && request.thread != 0
+            kind::MAPPING | kind::OWNED_MAPPING | kind::FORK | kind::CLONE
+        ) || word(56) != 0
             || request.kind != kind::OWNED_MAPPING && bytes[64..].iter().any(|byte| *byte != 0)
         {
             return Err(Errno::EINVAL);
@@ -260,6 +285,19 @@ pub const COMMANDS: &[(&str, u32)] = &[
     ("threadBindingFailed", command::THREAD_BINDING_FAILED),
     ("threadBindingNoMemory", command::THREAD_BINDING_NO_MEMORY),
     ("threadBindingEnter", command::THREAD_BINDING_ENTER),
+    ("threadNativePoll", command::THREAD_NATIVE_POLL),
+    ("threadNativeEntered", command::THREAD_NATIVE_ENTERED),
+    ("threadNativeCompleted", command::THREAD_NATIVE_COMPLETED),
+    ("threadNativeFailed", command::THREAD_NATIVE_FAILED),
+    ("threadNativeTimeout", command::THREAD_NATIVE_TIMEOUT),
+    ("threadNativeProtocolFailed", command::THREAD_NATIVE_PROTOCOL_FAILED),
+    ("threadNativeNoMemory", command::THREAD_NATIVE_NO_MEMORY),
+    ("threadNativeConstructorUnknown", command::THREAD_NATIVE_CONSTRUCTOR_UNKNOWN),
+    ("threadNativeValidate", command::THREAD_NATIVE_VALIDATE),
+    ("threadNativeNotApplied", command::THREAD_NATIVE_NOT_APPLIED),
+    ("threadSetupFailed", command::THREAD_SETUP_FAILED),
+    ("threadSetupNoMemory", command::THREAD_SETUP_NO_MEMORY),
+    ("threadSetupUnavailable", command::THREAD_SETUP_UNAVAILABLE),
 ];
 
 pub const DRIVER_EFFECTS: &[(&str, u32)] = &[
@@ -268,6 +306,21 @@ pub const DRIVER_EFFECTS: &[(&str, u32)] = &[
     ("yield", effect::YIELD),
     ("operation", effect::WAIT_OPERATION),
     ("prepareThreadBinding", effect::PREPARE_THREAD_BINDING),
+    ("threadLaunch", effect::THREAD_LAUNCH),
+    ("threadObjects", effect::THREAD_OBJECTS),
+    ("threadBind", effect::THREAD_BIND),
+    ("threadConnect", effect::THREAD_CONNECT),
+    ("threadStart", effect::THREAD_START),
+    ("threadReady", effect::THREAD_READY),
+    ("threadRuntime", effect::THREAD_RUNTIME),
+    ("threadDeliver", effect::THREAD_DELIVER),
+    ("threadCancelNative", effect::THREAD_CANCEL_NATIVE),
+    ("threadContain", effect::THREAD_CONTAIN),
+    ("threadReferences", effect::THREAD_REFERENCES),
+    ("threadDispose", effect::THREAD_DISPOSE),
+    ("threadSucceeded", effect::THREAD_SUCCEEDED),
+    ("threadFailed", effect::THREAD_FAILED),
+    ("threadFatal", effect::THREAD_FATAL),
     ("detachThreadBinding", effect::DETACH_THREAD_BINDING),
     ("forkLaunch", effect::FORK_LAUNCH),
     ("forkRetireTransport", effect::FORK_RETIRE_TRANSPORT),

@@ -512,8 +512,8 @@ describe("thread channel ownership", () => {
     // A refused attempt consumes its exact attachment; it cannot later be
     // redirected after the apparent generation mismatch is removed.
     h.setGeneration(0n);
-    expectIngressFailureCause(() => h.worker.attachThreadChannel(attachment, firstThreadOffset),
-      "Unknown, expired, or already consumed thread attachment");
+    expect(() => h.worker.attachThreadChannel(attachment, firstThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
   });
 
   it("rejects a duplicate channel offset instead of remapping its TID", async () => {
@@ -613,12 +613,12 @@ describe("thread channel ownership", () => {
       .toEqual({ fnPtr: 33, argPtr: 44 });
     expect((worker as any).addChannel).toBeUndefined();
 
-    // A failed public ingress poisons this deliberately conservative test
-    // generation, so make the one-shot replay assertion the final operation.
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(first, thirdThreadOffset),
-      "Unknown, expired, or already consumed thread attachment",
-    );
+    // Native identity refusal happens before kernel ingress and cannot poison
+    // a generation that still owns valid sibling channels.
+    expect(() => worker.attachThreadChannel(first, thirdThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
+    expect((worker as any).activeChannels).toHaveLength(3);
+    expect((worker as any).channelTids.size).toBe(2);
   });
 
   it("rejects a copied attachment with substituted identity", async () => {
@@ -629,12 +629,12 @@ describe("thread channel ownership", () => {
       tid: KERNEL_TID + 1,
     }) as typeof attachment;
 
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(forged, firstThreadOffset),
-      "Unknown, expired, or already consumed thread attachment",
-    );
-    expect((worker as any).channelTids.size).toBe(0);
-    expect((worker as any).threadForkContexts.size).toBe(0);
+    expect(() => worker.attachThreadChannel(forged, firstThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
+    // Refusing a copied native identity does not consume the authentic proof.
+    worker.attachThreadChannel(attachment, firstThreadOffset);
+    expect((worker as any).channelTids.size).toBe(1);
+    expect((worker as any).threadForkContexts.size).toBe(1);
   });
 
   it("releases channel ownership on removal so a later clone can reuse the slot", async () => {
@@ -683,66 +683,20 @@ describe("clone transport with virtual images", () => {
   const parentTidPointer = 4 * WASM_PAGE_SIZE + 256;
   const args = () => [CLONE_ARGS[0] | 0x00100000, CLONE_ARGS[1], parentTidPointer, CLONE_ARGS[3], CLONE_ARGS[4], 0];
 
-  it('refuses grouped clone before allocating a task when only the ordinary backend is present', () => {
-    const h = makeCloneHarness(async () => {}), { fixture } = group(h);
-    (h.worker as any).callbacks.onGroupedClone = undefined;
+  it.each([false, true])('refuses a raw virtual transport without an actual kernel group owner (callback=%s)', callback => {
+    const h = makeCloneHarness(async () => {}), { fixture, source } = group(h);
+    const grouped = vi.fn(async () => {});
+    (h.worker as any).callbacks.onGroupedClone = callback ? grouped : undefined;
+    processDataView(source).setInt32(parentTidPointer, 77, true);
     try {
-      h.dispatch(args());
-      expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 95 });
+      expect(() => h.dispatch(args())).toThrow('Grouped mapping has no exact registered image/request');
       expect(h.kernelHandleChannel).not.toHaveBeenCalled();
+      expect(grouped).not.toHaveBeenCalled();
       expect((h.worker as any).callbacks.onClone).not.toHaveBeenCalled();
+      expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(77);
     } finally { fixture.close(); }
   });
 
-  it("refuses direct grouped attachment before native channel mutation without a kernel binding owner", async () => {
-    let h!: ReturnType<typeof makeCloneHarness>;
-    h = makeCloneHarness(async attachment => {
-      expect(attachment).toMatchObject({ pid: PID, tid: KERNEL_TID, memoryBackend: 'grouped' });
-      for (const field of ['memory', 'fnPtr', 'argPtr', 'stackPtr', 'tlsPtr', 'ctidPtr']) expect(attachment).not.toHaveProperty(field);
-      expect(() => h.worker.attachThreadChannel(attachment as any, 3 * WASM_PAGE_SIZE)).toThrow('actual kernel binding owner');
-      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
-      expect((h.worker as any).threadForkContexts.size).toBe(0);
-    }, KERNEL_TID, false);
-    const { fixture, source } = group(h);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      h.dispatch(args());
-      await vi.waitFor(() => expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_COMPLETE));
-      expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12 });
-      expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(0);
-      expect(h.notifyThreadExit).toHaveBeenCalledExactlyOnceWith(PID, KERNEL_TID, 0);
-      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
-      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('without attaching kernel tid'));
-    } finally { consoleError.mockRestore(); fixture.close(); }
-  });
-
-  it.each([false, true])("refuses an old attachment on the same backing and rolls back its own TID (revoked=%s)", async revoke => {
-    const started = Promise.withResolvers<any>(), launch = Promise.withResolvers<void>();
-    const h = makeCloneHarness(async attachment => { started.resolve(attachment); return launch.promise; }, KERNEL_TID, false);
-    const { fixture, owner, source, memory } = group(h);
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      h.dispatch(args()); const attachment = await started.promise;
-      const nextTask = { group: 7, pid: PID, tid: PID, serial: 2n, generation: 1n };
-      const { launch: nextLaunch, source: nextSource } = groupMemoryLayout({ receipt: nextTask, memory, initialPages: 8, rootPage: 2, replicaPage: 5, payloadPage: 16 });
-      expect(nextLaunch.envelope.memory).toBe(memory);
-      nextSource.fillBytes(CHANNEL_OFFSET, 64, 0);
-      processDataView(nextSource).setInt32(parentTidPointer, 77, true);
-      const replacement = { ...h.channel, source: nextSource };
-      const oldRegistration = (h.worker as any).processes.get(PID);
-      (h.worker as any).processes.set(PID, { ...oldRegistration, source: nextSource, channels: [replacement] });
-      (h.worker as any).activeChannels = [replacement];
-      if (revoke) fixture.close();
-      expect(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE)).toThrow("changed memory generation");
-      launch.reject(Error("old image launch failed"));
-      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
-      expect(h.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
-      expect(processDataView(nextSource).getInt32(parentTidPointer, true)).toBe(77);
-      expect(processDataView(nextSource, CHANNEL_OFFSET).getUint32(CH_STATUS, true)).toBe(0);
-      expect((h.worker as any).processes.get(PID).channels).toEqual([replacement]);
-      if (!revoke) expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(0);
-    } finally { consoleError.mockRestore(); fixture.close(); }
-  });
 });
 
 describe("clone teardown ownership", () => {
@@ -810,7 +764,8 @@ describe("clone teardown ownership", () => {
       expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
       expect((h.worker as any).threadForkContexts.size).toBe(0);
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("real Worker construction failed"));
-      expectIngressFailureCause(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE), "Unknown, expired, or already consumed thread attachment");
+      expect(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE))
+        .toThrow("Unknown, expired, or already consumed thread attachment");
     } finally { consoleError.mockRestore(); }
   });
 
