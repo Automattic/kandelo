@@ -31,6 +31,7 @@ pub mod effect {
     pub const CONTAIN_FAILURE: u32 = 21;
     pub const WAIT_READY: u32 = 22;
     pub const DELIVER_LAUNCH: u32 = 23;
+    pub const CANCEL_PREPARED_WORKER: u32 = 24;
 }
 pub const EFFECTS: &[(&str, u32)] = &[
     ("publishTransport", effect::PUBLISH_TRANSPORT),
@@ -44,4 +45,5 @@ pub const EFFECTS: &[(&str, u32)] = &[
     ("containFailure", effect::CONTAIN_FAILURE),
     ("waitReady", effect::WAIT_READY),
     ("deliverLaunch", effect::DELIVER_LAUNCH),
+    ("cancelPreparedWorker", effect::CANCEL_PREPARED_WORKER),
 ];

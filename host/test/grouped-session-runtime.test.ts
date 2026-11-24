@@ -191,3 +191,32 @@ it('inspects independent group counters without allocation or double-counting sh
     expect(await host.readFileFromVfs(`/proc/${child.pid}/stat`)).toBeNull();
   } finally { await host?.destroy(); fixture.cleanup(); }
 }, 90_000);
+
+
+it.each([false, true])('destroys a live memory group through kernel-selected stop (stopped=%s)', async stopped => {
+  const fixture = compileSdkFixture(new URL('./fixtures/grouped-sdk-inspection.c', import.meta.url), [], { forkInstrument: true });
+  let host: NodeKernelHost | undefined;
+  try {
+    const grouped = fixture.programPath + '.grouped.wasm';
+    execFileSync(fileURLToPath(new URL('../../sdk/bin/wasm32posix-shared-memory', import.meta.url)),
+      [fixture.programPath, '-o', grouped], { stdio: 'pipe' });
+    const image = KandeloImageFs.create(); image.mkdir('/tmp', 0o1777); image.mkdir('/bin', 0o755);
+    image.writeFile('/bin/inspection', new Uint8Array(readFileSync(grouped)), 0o755);
+    const rootfsImage = await image.saveImage(); image.reset();
+    let stdout = '', stderr = ''; const diagnostics: unknown[] = [];
+    host = new NodeKernelHost({ rootfsImage, kernelMaxPages: 1024, maxPages: 2048,
+      experimentalMemoryGroup: { maximumPages: 2048, maximumProcesses: 4, maximumTasks: 8 },
+      onStdout: (_pid, bytes) => { stdout += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
+      onHostDiagnostic: event => diagnostics.push(event) });
+    await host.init();
+    const child = await host.spawnFromVfs('/bin/inspection', ['inspection'], { onStarted: () => {} });
+    await expect.poll(() => stdout, { timeout: 30_000 }).toContain('inspection-ready');
+    expect((await host.getMemoryGroupUsage())?.backing).toMatchObject({ images: 1, sharedObjects: 1, sharedPages: 2 });
+    if (stopped) expect(await host.signalProcess(child.pid, 19)).toBe(true);
+    await host.destroy(); host = undefined;
+    expect(await child.exit).toBe(137);
+    expect({ stderr, diagnostics }).toEqual({ stderr: '', diagnostics: [] });
+    expect(stdout).not.toContain('grouped-sdk-inspection PASS');
+  } finally { await host?.destroy(); fixture.cleanup(); }
+}, 60_000);

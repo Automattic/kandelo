@@ -34,7 +34,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { if (server)
     await new Promise<void>(yes => { server.close(() => yes()); server.closeAllConnections(); }); });
-for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-constructor', 'readiness', 'launch-message', 'stopped-destroy', 'destroy-in-registration'])
+for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-constructor', 'readiness', 'launch-message', 'stopped-destroy', 'destroy-in-registration', 'destroy-before-ready', 'destroy-after-ready', 'destroy-during-group-creation'])
     test(stage, async ({ page, browser }, info) => {
         test.setTimeout(90000);
         const pageErrors: string[] = [];
@@ -43,6 +43,15 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
         const r: any = await page.evaluate(stage => new Promise((yes, no) => { const worker = new Worker('/kernel.mjs', { type: 'module' }); const timer = setTimeout(() => { worker.terminate(); no(Error('kernel Worker deadline')); }, 75000); worker.onmessage = e => { clearTimeout(timer); worker.terminate(); yes(e.data); }; worker.onerror = e => { clearTimeout(timer); worker.terminate(); no(Error(e.message)); }; worker.postMessage({ stage }); }), stage);
         writeFileSync(info.outputPath('result.json'), JSON.stringify({ stage, browser: browser.version(), result: r, pageErrors }, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2) + '\n');
         expect(pageErrors).toEqual([]);
+        if (stage === 'destroy-during-group-creation') {
+            expect(r.failure, JSON.stringify(r)).toBeUndefined();
+            expect(r.fatal).toBeUndefined();
+            expect(r.diagnostics).toEqual([]);
+            expect(r.constructionAttempts).toBe(0);
+            expect(r.injected).toBe(2);
+            expect(r.kernel).toMatchObject({ accepting: false, processes: 0, images: 0, tasks: 0 });
+            return;
+        }
         if (['constructor', 'stopped-constructor', 'readiness', 'launch-message'].includes(stage)) {
             expect(r.fatal).toBe('Grouped process launch failed; storage retained');
             expect(r.constructionAttempts).toBe(1);
@@ -51,7 +60,10 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
             expect(r.inspectionRefusal).toBe('Error: Grouped process launch failed; storage retained');
             return;
         }
-        expect(r.failure, JSON.stringify(r)).toBeUndefined();
+        if (['destroy-before-ready', 'destroy-after-ready', 'destroy-in-registration'].includes(stage)) {
+            expect(r.failure).toBeDefined();
+            expect(r.fatal).toBeUndefined();
+        } else expect(r.failure, JSON.stringify(r)).toBeUndefined();
         expect(r.diagnostics).toEqual([]);
         expect(r.stderr).toBe('');
         expect(r.kernel).toMatchObject({ processes: 0, images: 0, tasks: 0 });
@@ -67,7 +79,7 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
                 expect(row.receipt).toBe(-3);
             }
         }
-        else {
+        else if (!['destroy-before-ready', 'destroy-after-ready', 'destroy-in-registration'].includes(stage)) {
             expect(r.code).toBe(137);
             if (stage === 'stopped-destroy')
                 expect(r.constructionAttempts).toBe(0);

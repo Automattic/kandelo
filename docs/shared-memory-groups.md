@@ -48,7 +48,7 @@ Grouped completion authority also belongs to the actual `ProcessTable`. It retai
 
 The actual Rust root, fork, exec and pthread owners select execution transactions and cancellation. Rust also selects Worker containment before reference disposal and orders pthread retirement against whole-image retirement. An accepted Node native join or sealed constructor absence already satisfies containment; a browser terminal fence still requires the requested platform termination. References and physical frames remain charged until their distinct acknowledgements and native waits settle.
 
-Group shutdown member selection and SDK private-growth allocation still need ownership correction. TypeScript retains genuine platform objects, native observations and pending platform operations. Existing IPC, fork serialization, dynamic loading, graphics presentation and build/lazy-loading helpers remain in their normal layers unless this feature placed group policy there. Moving ordinary algorithms to Rust is not a requirement of this feature.
+Group shutdown seals admission and selects current members in the actual Rust `ProcessTable`, using normal signal delivery. Native creator draining starts after that stop request, so a pending or stopped launch cannot hold the shutdown open indefinitely. A constructed root awaiting readiness or backing delivery receives exact scalar-only cancellation and must return a real terminal fence. An already completed native retirement can satisfy its late acknowledgement. SDK private-growth allocation still needs ownership correction. TypeScript retains genuine platform objects, native observations and pending platform operations. Existing IPC, fork serialization, dynamic loading, graphics presentation and build/lazy-loading helpers remain in their normal layers unless this feature placed group policy there. Moving ordinary algorithms to Rust is not a requirement of this feature.
 
 Host address translation and ordered queue notification execute shared stateless Rust SDK primitives against the admitted foreign memory; that extraction owns no pages, membership or lifecycle. Its bounded publication callback reports failure as data so Rust releases its own queue lock. The normal generator rejects start/data initialization, memory growth and mutable instance writes. Platform objects and native completion observations remain host responsibilities.
 
@@ -98,7 +98,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 35, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 36, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -125,7 +125,7 @@ process-stop owner handles later exit. A constructed Worker awaiting launch
 receives an exact scalar-only cancellation and returns its real terminal fence
 without guest memory. Readiness requires the exact host adapter version before
 memory delivery, so an older Worker cannot claim this cancellation contract.
-Session/shutdown and the remaining ownership audit below are not complete.
+SDK private-growth allocation and final integrated validation remain incomplete.
 
 The normal SDK prepares versioned compatible executables. The runtime checks
 the translated contract, program ABI and kernel-host contract before admission.

@@ -4677,6 +4677,19 @@ pub extern "C" fn kernel_memory_group_seal(group: u32) -> i32 {
         .unwrap_or_else(|e| -(e as i32))
 }
 
+/// Stop one actual group member and return its native-notification identity.
+/// Zero means no live member remains; physical owners may still be retiring.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_stop_next(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    table.memory_groups().resolve_group(group)
+        .and_then(|id| table.stop_next_memory_group_member(id, &mut host))
+        .map(|pid| pid.unwrap_or(0) as i32)
+        .unwrap_or_else(|error| -(error as i32))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_memory_group_remove(group: u32) -> i32 {
     let _gkl = GklGuard::acquire();

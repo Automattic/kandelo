@@ -16,6 +16,23 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Kernel-selected grouped shutdown
+
+Host-adapter 36 adds optional `kernel_memory_group_stop_next(group) -> i32`.
+It seals actual admission, selects one current running or stopped member and
+applies normal Rust SIGKILL delivery. A positive result requests the normal
+native notification for that PID; zero means no live member remains, not that
+its Workers or storage have retired. Errors remain negative errno values.
+The host repeats the operation and transports the selected notifications;
+it does not choose group membership from native maps.
+
+The retained root owner also issues `cancelPreparedWorker` for an exited
+current image whose Worker was constructed but has not received guest memory.
+It requires that exact Worker's terminal fact, or completed native retirement,
+before advancing. TypeScript retains only the pending readiness observation
+and executes the existing scalar-only cancellation protocol. Program ABI 56
+and its frozen executable contract are unchanged.
+
 ## Kernel-selected grouped native retirement
 
 Host-adapter 35 adds `WORKER_CONTAINED` to the existing retirement control

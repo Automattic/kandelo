@@ -9,7 +9,7 @@ let directory: string, image: string;
 beforeAll(async () => { directory = mkdtempSync(join(root, '.scratch/grouped-root-node-')); image = join(directory, 'rootfs.vfs'); writeFileSync(image, await groupedRootLaunchFixture()); }, 90000);
 afterAll(() => { if (directory)
     rmSync(directory, { recursive: true, force: true }); });
-for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-constructor', 'readiness', 'launch-message', 'stopped-destroy', 'destroy-in-registration'])
+for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-constructor', 'readiness', 'launch-message', 'stopped-destroy', 'destroy-in-registration', 'destroy-before-ready', 'destroy-after-ready', 'destroy-during-group-creation'])
     it(stage, async () => {
         const registration = new URL('../node_modules/tsx/dist/esm/api/index.mjs', import.meta.url).href;
         const entry = new URL('./fixtures/grouped-root-launch-node-worker.ts', import.meta.url).href;
@@ -26,7 +26,16 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
                 mkdirSync(process.env.KANDELO_ROOT_CUSTODY_EVIDENCE, { recursive: true });
                 writeFileSync(join(process.env.KANDELO_ROOT_CUSTODY_EVIDENCE, stage + '.json'), JSON.stringify(r, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2) + '\n');
             }
-            if (['constructor', 'stopped-constructor', 'readiness', 'launch-message'].includes(stage)) {
+            if (stage === 'destroy-during-group-creation') {
+            expect(r.failure, JSON.stringify(r)).toBeUndefined();
+            expect(r.fatal).toBeUndefined();
+            expect(r.diagnostics).toEqual([]);
+            expect(r.constructionAttempts).toBe(0);
+            expect(r.injected).toBe(2);
+            expect(r.kernel).toMatchObject({ accepting: false, processes: 0, images: 0, tasks: 0 });
+            return;
+        }
+        if (['constructor', 'stopped-constructor', 'readiness', 'launch-message'].includes(stage)) {
                 expect(r.fatal).toBe('Grouped process launch failed; storage retained');
                 expect(r.constructionAttempts).toBe(1);
                 expect(r.fatalLedger.kernel).toMatchObject({ processes: 1, images: 1, tasks: 1 });
@@ -34,7 +43,10 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
                 expect(r.inspectionRefusal).toBe('Error: Grouped process launch failed; storage retained');
                 return;
             }
-            expect(r.failure, JSON.stringify(r)).toBeUndefined();
+            if (['destroy-before-ready', 'destroy-after-ready', 'destroy-in-registration'].includes(stage)) {
+                expect(r.failure).toBeDefined();
+                expect(r.fatal).toBeUndefined();
+            } else expect(r.failure, JSON.stringify(r)).toBeUndefined();
             expect(r.diagnostics).toEqual([]);
             expect(r.stderr).toBe('');
             expect(r.kernel).toMatchObject({ processes: 0, images: 0, tasks: 0 });
@@ -50,7 +62,7 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
                     expect(row.receipt).toBe(-3);
                 }
             }
-            else {
+            else if (!['destroy-before-ready', 'destroy-after-ready', 'destroy-in-registration'].includes(stage)) {
                 expect(r.code).toBe(137);
                 if (stage === 'stopped-destroy')
                     expect(r.constructionAttempts).toBe(0);

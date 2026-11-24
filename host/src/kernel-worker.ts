@@ -8291,6 +8291,26 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /** Rust selects and signals each member. JS only transports its requested
+   * wake/stop notification through the existing process adapters. */
+  stopMemoryGroup(group: number): number {
+    if (!memoryGroupU32(group)) return -EINVAL;
+    let result = -ERRNO.EOPNOTSUPP;
+    this.#runImmediateKernelEntry('stop kernel-owned memory group', entry => {
+      if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
+      const stop = this.#kernelInstanceForEntry(entry).exports.kernel_memory_group_stop_next;
+      if (typeof stop !== 'function') this.#memoryGroupProtocolError('Missing memory-group stop export');
+      for (;;) {
+        const pid = stop(group);
+        if (pid <= 0) { result = this.#checkedMemoryGroupStatus(pid); return undefined; }
+        if (!Number.isSafeInteger(pid) || pid <= 1 || pid > MAX_KERNEL_TASK_ID) this.#memoryGroupProtocolError('Invalid kernel-selected group member');
+        this.sendSignalToProcess(pid, SIGKILL, false, entry);
+        for (const pending of this.#rootLaunchWakes.values()) if (pending.receipt.pid === pid) pending.wake();
+      }
+    });
+    return result;
+  }
+
   removeEmptyMemoryGroup(group: number): number {
     if (!memoryGroupU32(group)) return -EINVAL;
     let result = -ERRNO.EOPNOTSUPP;
@@ -8507,6 +8527,7 @@ export class CentralizedKernelWorker {
   }
 
   readonly #rootLaunchReceipts = new WeakMap<PreparedGroupReplica, MemoryGroupTaskReceipt>();
+  readonly #rootLaunchWakes = new Map<PreparedGroupReplica, { receipt: MemoryGroupTaskReceipt; wake: () => void }>();
 
   async prepareMemoryGroupRoot(group: number, pid: number, maximumPages: number, defaultThreadSlots: number):
     Promise<{ handle: PreparedGroupReplica; receipt: MemoryGroupTaskReceipt; layout: ProcessMemoryLayout } | number> {
@@ -8612,7 +8633,31 @@ export class CentralizedKernelWorker {
               await settlement;
               break;
             }
-            case effects.waitReady: await platform.waitReady(); break;
+            case effects.waitReady: {
+              const interrupted = new this.#promiseReceiver<false>(resolve => {
+                this.#rootLaunchWakes.set(handle, { receipt, wake: () => resolve(false) });
+              });
+              try {
+                const ready = platform.waitReady().then(() => true);
+                if (!await Promise.race([ready, interrupted])) {
+                  reply = await call(commands.poll); continue;
+                }
+              } finally { this.#rootLaunchWakes.delete(handle); }
+              break;
+            }
+            case effects.cancelPreparedWorker: {
+              await retryKernelEntryResult(() => this.#runImmediateKernelEntry('cancel kernel-selected prepared root Worker', entry => {
+                const binding = this.#memoryGroupWorkerBindings.get(handle);
+                if (!binding) {
+                  if (!store.replicaExecutionStopped(handle, entry)) this.#memoryGroupProtocolError('Root cancellation lost its actual Worker binding');
+                  return undefined;
+                }
+                entry.deferProtocolEffect(() => { binding.worker.postMessage(createGroupedWorkerCancellation(receipt)); return undefined; });
+                return undefined;
+              }));
+              await this.waitForMemoryGroupReplicaQuiescence(handle);
+              break;
+            }
             case effects.sealAbsence:
               if (!await retryKernelEntryResult(() => platform.sealAbsence())) throw Error('Root constructor absence is unproven');
               break;

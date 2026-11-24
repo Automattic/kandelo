@@ -791,6 +791,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn group_shutdown_selects_current_members_and_retains_native_custody() {
+        use crate::process::{ProcessState, test_host::NoopHost};
+        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+        let (mut table, group, main) = grouped_table();
+        let pending = table.create_process().unwrap();
+        table.prepare_process_memory_group(group, pending).unwrap();
+        let ordinary = table.create_process().unwrap();
+        let other_group = table.memory_groups().create(limits()).unwrap();
+        let other = table.create_process().unwrap();
+        table.prepare_process_memory_group(other_group, other).unwrap();
+        assert!(table.get_mut(main.execution.pid).unwrap().record_stop(SIGSTOP));
+        let before = table.memory_groups().snapshot(group).unwrap();
+        let mut stopped = Vec::new();
+        while let Some(pid) = table.stop_next_memory_group_member(group, &mut NoopHost).unwrap() {
+            stopped.push(pid);
+            assert_eq!(table.get(pid).unwrap().state, ProcessState::Exited);
+            assert_eq!(table.get(pid).unwrap().exit_signal, SIGKILL);
+        }
+        assert_eq!(stopped, [main.execution.pid, pending]);
+        let after = table.memory_groups().snapshot(group).unwrap();
+        assert!(!after.accepting);
+        assert_eq!(after.tasks, before.tasks);
+        assert_eq!(after.images, before.images);
+        // Signal death is not the exact Worker/native-wait retirement proof.
+        assert!(table.memory_group_removal_pending(main.execution.pid));
+        assert!(table.remove_process(main.execution.pid).is_none());
+        assert_eq!(table.get(ordinary).unwrap().state, ProcessState::Running);
+        assert_eq!(table.get(other).unwrap().state, ProcessState::Running);
+        assert!(table.memory_groups().snapshot(other_group).unwrap().accepting);
+        let late = table.create_process().unwrap();
+        assert_eq!(table.prepare_process_memory_group(group, late), Err(Errno::EBUSY));
+        assert_eq!(table.stop_next_memory_group_member(group, &mut NoopHost).unwrap(), None);
+    }
+
+    #[test]
+    fn group_shutdown_does_not_signal_an_image_with_a_different_generation() {
+        use crate::process::{ProcessState, test_host::NoopHost};
+        let (mut table, group, main) = grouped_table();
+        // Retained predecessor custody does not identify the current image.
+        table.get_mut(main.execution.pid).unwrap().exec_generation += 1;
+        assert_eq!(table.stop_next_memory_group_member(group, &mut NoopHost).unwrap(), None);
+        assert_eq!(table.get(main.execution.pid).unwrap().state, ProcessState::Running);
+        assert!(!table.memory_groups().snapshot(group).unwrap().accepting);
+        assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 1);
+    }
+
+    #[test]
     fn wire_actions_reject_forgery_and_late_start_but_allow_exact_old_cleanup() {
         use wasm_posix_shared::memory_group::TaskAction;
         let (mut table, group, main) = grouped_table();

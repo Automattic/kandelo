@@ -4712,7 +4712,12 @@ async function handleDestroy(
     // handler yields. The shared gate closes admission synchronously, drains
     // every creator already in flight, and runs this terminal sweep only once.
     // Browser main still terminates this whole worker realm on timeout.
-    const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
+    const groupedShutdown = groupedSession?.requestShutdown();
+    void groupedShutdown?.catch(() => {});
+    const destroy = processMemoryCreators.closeAndRunAfterDrain(async () => {
+      await groupedShutdown;
+      return performDestroy();
+    });
     // Carry the gate's terminal refusal through pending allocation rollback;
     // genuine construction or worker-retirement failures keep their diagnostics.
     processMemoryFactory?.dispose(

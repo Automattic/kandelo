@@ -140,9 +140,19 @@ impl ProcessTable {
         self.root_controls().entries.publish_io(entry);
         result
     }
-    fn root_cleanup_effect(&mut self, record: ReceiptRecord) -> Result<u32, Errno> {
-        match self.memory_groups().storage_owner(record) {
+    fn root_cleanup_effect(&mut self, root: &Root) -> Result<u32, Errno> {
+        let record = root.admission.record();
+        let current_exited = self.get(record.pid).is_some_and(|process|
+            process.exec_generation == record.generation
+                && process.state == crate::process::ProcessState::Exited);
+        match self.memory_groups().storage_owner(root.admission.record()) {
             Ok((store, admission)) if store.accepted_worker_fact(admission)? => Ok(E::RETIRE_IMAGE),
+            // Construction completed, but no guest backing was delivered. The
+            // exact prepared realm must acknowledge cancellation, not absence.
+            Ok(_) if root.entered_effect == 0
+                && matches!(root.pending_effect, E::WAIT_READY | E::DELIVER_LAUNCH)
+                && current_exited
+                => Ok(E::CANCEL_PREPARED_WORKER),
             Ok(_) => Ok(E::SEAL_ABSENCE),
             // An ordinary exit/teardown may already have joined exact native
             // and reference retirement. The root continuation never revives it.
@@ -175,7 +185,7 @@ impl ProcessTable {
             }
             C::CANCEL if root.pending_effect == E::SCHEDULE_START && root.entered_effect == 0 => {
                 root.failure = Some(Errno::ESRCH);
-                root.pending_effect = self.root_cleanup_effect(record)?;
+                root.pending_effect = self.root_cleanup_effect(root)?;
             }
             C::LAUNCH if root.phase == P::PREPARED && root.pending_effect == 0 => {
                 // Publication and task admission are kernel mutations, not a
@@ -206,10 +216,11 @@ impl ProcessTable {
                 }
                 if command == C::PLATFORM_FAILED {
                     root.failure = Some(Errno::EIO);
-                    let cleanup = self.root_cleanup_effect(record)?;
+                    let cleanup = self.root_cleanup_effect(root)?;
                     root.pending_effect = if argument == E::DISCARD_TRANSPORT
                         || argument == E::RETIRE_IMAGE && cleanup != E::DISCARD_TRANSPORT
                         || argument == E::SEAL_ABSENCE && cleanup == E::SEAL_ABSENCE
+                        || argument == E::CANCEL_PREPARED_WORKER && cleanup != E::RETIRE_IMAGE && cleanup != E::DISCARD_TRANSPORT
                     {
                         root.phase = P::CONTAINED;
                         E::CONTAIN_FAILURE
@@ -240,6 +251,14 @@ impl ProcessTable {
                             root.phase = P::FINISHED;
                             0
                         }
+                        E::CANCEL_PREPARED_WORKER => match self.memory_groups().storage_owner(record) {
+                            Ok((store, admission)) if store.accepted_worker_fact(admission)? => E::RETIRE_IMAGE,
+                            Ok(_) => return Err(Errno::EBUSY),
+                            // The normal exit owner may finish after the real
+                            // terminal fence but before this native effect ACK.
+                            Err(Errno::ESRCH) => E::DISCARD_TRANSPORT,
+                            Err(error) => return Err(error),
+                        },
                         E::SEAL_ABSENCE => {
                             let (store, admission) = self.memory_groups().storage_owner(record)?;
                             if !store.accepted_worker_fact(admission)?
@@ -271,18 +290,18 @@ impl ProcessTable {
                 && root.pending_effect == argument && root.entered_effect == 0 => {}
             _ => return Err(Errno::EBUSY),
         }
-        if matches!(root.pending_effect, E::SCHEDULE_START | E::DELIVER_LAUNCH) && root.entered_effect == 0 {
+        if matches!(root.pending_effect, E::SCHEDULE_START | E::WAIT_READY | E::DELIVER_LAUNCH) && root.entered_effect == 0 {
             use crate::group_completion::NativeStart;
             match self.group_native_start_permission(record, host)? {
-                NativeStart::Stopped => {
+                NativeStart::Stopped if root.pending_effect != E::WAIT_READY => {
                     root.phase = P::WAITING;
                     let mut reply = root.reply(effect::YIELD); reply.delay = 10; return Ok(reply);
                 }
                 NativeStart::Dead => {
                     root.failure = Some(Errno::ESRCH);
-                    root.pending_effect = self.root_cleanup_effect(record)?;
+                    root.pending_effect = self.root_cleanup_effect(root)?;
                 }
-                NativeStart::Ready => {
+                NativeStart::Ready | NativeStart::Stopped => {
                     root.phase = P::LAUNCHING;
                     if command == C::ENTER_NATIVE {
                         root.entered_effect = root.pending_effect;
@@ -757,6 +776,55 @@ mod tests {
                 (1, 1, 1)
             );
         }
+    }
+    #[test]
+    fn shutdown_of_a_prepared_worker_requires_its_exact_terminal_fact() {
+        use wasm_posix_shared::retirement_control as R;
+        for ready in [false, true] {
+            let (mut table, mut host, record) = prepared();
+            let mut reply = table.root_control(record, C::LAUNCH, &mut host).unwrap();
+            while reply.effect != E::WAIT_READY {
+                if reply.effect == E::BIND_WORKER { bound(&mut table, &mut host, record); }
+                reply = complete(&mut table, &mut host, record, reply.effect);
+            }
+            if ready { reply = complete(&mut table, &mut host, record, E::WAIT_READY); }
+            assert_eq!(reply.effect, if ready { E::DELIVER_LAUNCH } else { E::WAIT_READY });
+            let group = table.memory_groups().resolve_group(record.group).unwrap();
+            assert_eq!(table.stop_next_memory_group_member(group, &mut host).unwrap(), Some(record.pid));
+            let cancelled = table.root_control(record, C::POLL, &mut host).unwrap();
+            assert_eq!(cancelled.effect, E::CANCEL_PREPARED_WORKER);
+            assert!(matches!(table.root_control_effect(record, C::PLATFORM_COMPLETED, E::CANCEL_PREPARED_WORKER, &mut host), Err(Errno::EBUSY)));
+            table.retirement_control(record, R::command::WORKER_FENCE, 0, &mut host).unwrap();
+            assert_eq!(complete(&mut table, &mut host, record, E::CANCEL_PREPARED_WORKER).effect, E::RETIRE_IMAGE);
+        }
+    }
+    #[test]
+    fn prepared_root_cancellation_ack_joins_already_finished_native_retirement() {
+        use wasm_posix_shared::retirement_control as R;
+        let (mut table, mut host, record) = prepared();
+        let mut reply = table.root_control(record, C::LAUNCH, &mut host).unwrap();
+        while reply.effect != E::WAIT_READY {
+            if reply.effect == E::BIND_WORKER {
+                table.retirement_control(record, R::command::BIND_REFERENCES, R::NATIVE_JOIN_CAPABILITY, &mut host).unwrap();
+            }
+            reply = complete(&mut table, &mut host, record, reply.effect);
+        }
+        let group = table.memory_groups().resolve_group(record.group).unwrap();
+        table.stop_next_memory_group_member(group, &mut host).unwrap();
+        assert_eq!(table.root_control(record, C::POLL, &mut host).unwrap().effect, E::CANCEL_PREPARED_WORKER);
+        table.retirement_control(record, R::command::WORKER_FENCE, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::NATIVE_JOIN, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::BEGIN_IMAGE, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::PLATFORM_DETACHED, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::BEGIN_REFERENCES, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::REFERENCES_DETACHED, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::POLL, 0, &mut host).unwrap();
+        table.retirement_control(record, R::command::ACK, 0, &mut host).unwrap();
+        assert!(matches!(table.memory_groups().storage_owner(record), Err(Errno::ESRCH)));
+        assert_eq!(complete(&mut table, &mut host, record, E::CANCEL_PREPARED_WORKER).effect, E::DISCARD_TRANSPORT);
+        complete(&mut table, &mut host, record, E::DISCARD_TRANSPORT);
+        table.root_control(record, C::ACK, &mut host).unwrap();
+        assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 0);
     }
     #[test]
     fn failed_readiness_uses_an_accepted_node_join_without_requiring_absence() {

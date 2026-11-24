@@ -3930,9 +3930,12 @@ async function handleDestroy(msg: { requestId: number }) {
     // closes admission synchronously, drains every creator that entered first,
     // and runs this terminal sweep only once. The outer worker-realm termination
     // remains the bounded fallback if an admitted creator does not finish.
-    const destroy = processMemoryCreators.closeAndRunAfterDrain(
-      performDestroy,
-    );
+    const groupedShutdown = groupedSession?.requestShutdown();
+    void groupedShutdown?.catch(() => {});
+    const destroy = processMemoryCreators.closeAndRunAfterDrain(async () => {
+      await groupedShutdown;
+      return performDestroy();
+    });
     deferredByteSpool?.cancelTransfers();
     // Pending lazy exec reads may hold a creator token. Cancel their resolver
     // after closing admission, before waiting for that token to drain.

@@ -6,6 +6,7 @@ import { retryKernelEntryResult as retry } from '../../src/kernel-entry-retry';
 import type { WorkerAdapter } from '../../src/worker-adapter';
 import type { PlatformIO } from '../../src/types';
 import { ERRNO } from '../../src/generated/abi';
+import { KernelReentrantEntryError } from '../../src/kernel-entry-gate';
 export async function execute(options: {
     kernelBytes: ArrayBuffer;
     imageBytes: Uint8Array;
@@ -35,10 +36,29 @@ export async function execute(options: {
     // Production KernelWorker methods are sealed. A fixture-only bound facade
     // injects setup refusal without replacing any real method or kernel authority.
     const facade = new Proxy(kernel, { get(target, key) {
+            if (key === 'configureMemoryGroups' && options.stage === 'destroy-during-group-creation')
+                return (...args: Parameters<CentralizedKernelWorker['configureMemoryGroups']>) => {
+                    if (!injected++) {
+                        // Refusal is before entry. Destroy then owns the same
+                        // pending native request while its retry creates/seals
+                        // the actual kernel group; no Worker was admitted.
+                        queueMicrotask(() => { destruction = session.destroy(); void destruction.catch(() => {}); });
+                        throw new KernelReentrantEntryError('fixture pending group configuration');
+                    }
+                    return target.configureMemoryGroups(...args);
+                };
             if (key === 'runMemoryGroupRootLaunch')
                 return (handle: Parameters<CentralizedKernelWorker['runMemoryGroupRootLaunch']>[0], platform: Parameters<CentralizedKernelWorker['runMemoryGroupRootLaunch']>[1]) =>
                     target.runMemoryGroupRootLaunch(handle, { ...platform,
-                        waitReady: async () => { await platform.waitReady(); if (options.stage === 'readiness') throw Error('fixture root readiness effect'); },
+                        waitReady: async () => {
+                            if (options.stage === 'destroy-before-ready') {
+                                destruction = session.destroy();
+                                return new Promise<void>(() => {});
+                            }
+                            await platform.waitReady();
+                            if (options.stage === 'destroy-after-ready') { destruction = session.destroy(); return; }
+                            if (options.stage === 'readiness') throw Error('fixture root readiness effect');
+                        },
                         deliverLaunch: () => { if (options.stage === 'launch-message') throw Error('fixture root launch delivery'); platform.deliverLaunch(); },
                     });
             if (key === 'registerMemoryGroupProcess')
@@ -75,6 +95,13 @@ export async function execute(options: {
     session = new GroupedSessionRuntime(facade, adapter, { maximumPages: 2048, maximumProcesses: 8, maximumTasks: 16 }, options.joins, (pid, code) => { if (pid === rootPid)
         exitResolve?.(code); }, (_pid, error) => diagnostics.push(error.message));
     const group = await session.initialPathGroup();
+    if (options.stage === 'destroy-during-group-creation') {
+        await destruction;
+        const result = { stage: options.stage, constructionAttempts, injected, diagnostics, fatal, stderr, stdout,
+            kernel: await retry(() => kernel.inspectMemoryGroup(group)) };
+        kernel.stopPolling();
+        return result;
+    }
     const backing = async () => {
         for (;;) {
             const usage = await retry(() => kernel.inspectMemoryGroupUsage(group));
@@ -125,13 +152,14 @@ export async function execute(options: {
         await fatalReported;
         await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
-    else if (['constructor', 'readiness', 'launch-message'].includes(options.stage)) {
+    else if (['constructor', 'readiness', 'launch-message', 'destroy-before-ready', 'destroy-after-ready', 'destroy-in-registration'].includes(options.stage)) {
         try {
             await launch();
         }
         catch (error) {
             failure = String(error);
         }
+        await destruction;
         await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
     else {

@@ -55,6 +55,7 @@ export class GroupedSessionRuntime {
   private backing?: Promise<number>;
   private closed = false;
   private closing = false;
+  private shutdown?: Promise<void>;
   private readonly launches = new Set<Promise<void>>();
   private readonly options: Required<Pick<TrustedMemoryGroupOptions, 'maximumPages' | 'maximumProcesses' | 'maximumTasks'>>;
   constructor(private readonly kernel: CentralizedKernelWorker, private readonly adapter: WorkerAdapter,
@@ -97,6 +98,8 @@ export class GroupedSessionRuntime {
   }
   private ensureGroup(): Promise<number> {
     return this.group ??= retry(() => {
+      // An already requested group may finish after closing; shutdown owns
+      // this same Promise and seals its actual kernel identity before draining.
       this.number(this.kernel.configureMemoryGroups(this.options.maximumPages, 1), 'configure memory group');
       const id = this.number(this.kernel.createMemoryGroup(this.options.maximumPages,
         this.options.maximumProcesses, this.options.maximumTasks), 'create memory group');
@@ -114,7 +117,7 @@ export class GroupedSessionRuntime {
   /** Validation may precede initial exec's generation change. It reserves no
    * task/image: launch admits the resulting generation before any Worker. */
   async initialPathGroup(): Promise<number> {
-    if (this.closed) throw Error('Grouped session is closed');
+    if (this.closing || this.closed) throw Error('Grouped session is closed');
     return this.ensureGroup();
   }
   private fault(process: Process, error: Error): void {
@@ -159,6 +162,7 @@ export class GroupedSessionRuntime {
     if (!committedExecutable) {
       this.number(await retry(() => this.kernel.attachProgram(pid, { bytes: new Uint8Array(bytes), name: argv[0] || 'program' })), 'attach grouped executable');
     }
+    if (this.closing || this.closed) throw Error('Grouped root admission closed');
     const group = await this.ensureBacking();
     const prepared = await this.kernel.prepareMemoryGroupRoot(group, pid, maximumPages, defaultThreadSlots);
     if (typeof prepared === 'number') throw Error(`Grouped root preparation: errno ${-prepared}`);
@@ -328,15 +332,23 @@ export class GroupedSessionRuntime {
     void process.retiring.catch(error => this.report(pid, error));
     return true;
   }
-  async destroy(): Promise<void> {
+  /** Begin before platform creator draining: Rust closes real admission and
+   * selects every current member, including pending/stopped native launches. */
+  requestShutdown(): Promise<void> {
     this.closing = true;
+    return this.shutdown ??= (async () => {
+      const group = this.group;
+      if (group) {
+        const id = await group;
+        this.number(await retry(() => this.kernel.stopMemoryGroup(id)), 'stop memory group');
+      }
+    })();
+  }
+  async destroy(): Promise<void> {
+    await this.requestShutdown();
     await Promise.allSettled(this.launches);
     this.closed = true;
     const live = [...this.processes.values()];
-    for (const process of live) {
-      await retry(() => this.kernel.sealMemoryGroupReplicaWorkerAbsence(process.handle, process.owner.worker));
-      await retry(() => this.kernel.signalProcess(process.pid, 9));
-    }
     for (const process of live) {
       // The kernel publishes exit only after its exact all-replica stop fence.
       while (!process.retiring && this.processes.get(process.pid) === process) {

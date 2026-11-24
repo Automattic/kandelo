@@ -735,6 +735,29 @@ impl ProcessTable {
     pub fn memory_groups(&mut self) -> &mut crate::memory_group::MemoryGroups {
         &mut self.memory_groups
     }
+    /// Seal admission and stop one current member selected by the actual
+    /// group/image ledger. The returned PID requests native notification only;
+    /// execution fences, reference retirement and physical reuse stay with
+    /// their existing owners.
+    pub fn stop_next_memory_group_member(
+        &mut self,
+        group: crate::memory_group::MemoryGroupId,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<Option<u32>, Errno> {
+        self.memory_groups.seal(group)?;
+        let selected = self.processes.values().find(|process| {
+            matches!(process.state, ProcessState::Running | ProcessState::Stopped)
+                && self.memory_groups.image_group(process.pid, process.exec_generation) == Some(group)
+        }).map(|process| process.pid);
+        let Some(pid) = selected else { return Ok(None); };
+        let (process, locks) = self.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
+        let uid = process.real_uid();
+        let signal = wasm_posix_shared::signal::SIGKILL;
+        process.raise_signal_with_metadata(signal, 0, 0, pid, uid);
+        crate::signal::deliver_pending_signals_for_tid_with_locks(process, locks, host, pid)?;
+        Ok(Some(pid))
+    }
+
     pub(crate) fn retirement_controls(&mut self) -> &mut crate::retirement_control::Controls { &mut self.retirement_controls }
     pub(crate) fn root_controls(&mut self) -> &mut crate::root_control::Roots { &mut self.root_controls }
     pub(crate) fn exec_controls_ref(&self) -> &crate::exec_control::Controls { &self.exec_controls }
