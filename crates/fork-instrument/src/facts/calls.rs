@@ -334,6 +334,11 @@ impl FactsStore {
                 }
             }
         }
+        // The facts pool models table 0, the exported indirect table, which
+        // is the table the dynamic linker grows.
+        for function in crate::call_graph::runtime_table_exports(scan).1 {
+            self.execute("UPDATE wasm_function SET in_table=1 WHERE id=?", [function])?;
+        }
         Ok(())
     }
 

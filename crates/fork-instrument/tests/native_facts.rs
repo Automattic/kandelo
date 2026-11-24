@@ -134,3 +134,44 @@ fn dynamic_facts_preserve_the_explicit_side_module_contract() {
     );
     compare(&input, &Options::default());
 }
+
+#[test]
+fn dlsym_installable_exports_are_indirect_targets_in_traced_entries() {
+    // WHY: dlsym(RTLD_DEFAULT, name) appends a main-program function export to
+    // __indirect_function_table at run time, so an export is a possible
+    // target of the program's own indirect calls even with no element
+    // segment. Without that, a call through the pointer has no targets, is
+    // treated as never returning, and the frames above a later fork are
+    // dropped from the plan.
+    let plain = wat::parse_str(include_str!("fixtures/dlsym_dispatch.wat")).unwrap();
+    let mut input = plain.clone();
+    append(
+        &mut input,
+        facts::SECTION,
+        include_str!("fixtures/dlsym_dispatch.calltypes").as_bytes(),
+    );
+    append(
+        &mut input,
+        facts::CODE_HASH_SECTION,
+        &facts::code_sha256(&plain).unwrap(),
+    );
+    let native = native::analyze(&input, &Options::default(), Default::default()).unwrap();
+    assert_eq!(
+        native.decision.source,
+        PlanSource::Facts,
+        "{:?}",
+        native.decision.facts_error
+    );
+    let activations: Vec<_> = native
+        .reaching
+        .activations
+        .iter()
+        .filter_map(|&function| native.scan.functions[function as usize].name.clone())
+        .collect();
+    for name in ["direct", "through", "_start"] {
+        assert!(
+            activations.iter().any(|activation| activation == name),
+            "{name} must stay instrumented: {activations:?}"
+        );
+    }
+}

@@ -425,6 +425,13 @@ impl<'s, 'a> Program<'s, 'a> {
         if mutated {
             store.db.execute_batch("INSERT OR IGNORE INTO sink_member SELECT t.id,c.signature,r.target FROM sink_ref r JOIN sink_compatible c ON c.function=r.target CROSS JOIN sink_table t;")?;
         }
+        // Exports are already escaping. A runtime-installed slot is never a
+        // literal slot, so `sink_slot` is unchanged.
+        if let (Some(table), functions) = crate::call_graph::runtime_table_exports(scan) {
+            for function in functions {
+                store.execute("INSERT OR IGNORE INTO sink_member SELECT ?,signature,function FROM sink_compatible WHERE function=?", params![table, function])?;
+            }
+        }
         store.db.execute_batch(
             "UPDATE sink_function SET escaping=1 WHERE id IN (SELECT target FROM sink_ref);",
         )?;
