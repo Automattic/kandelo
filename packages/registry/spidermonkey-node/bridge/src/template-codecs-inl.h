@@ -210,8 +210,8 @@ bool ApplyTemplateProperties(Frame& frame,JS::HandleObject record,JS::HandleObje
     if(accessor&&JS::GetClass(accessor)==&nativePropertyClass){
       // Each instance owns its native callback record in its creation realm.
       // Only the template payload is shared, through the normal traced slots.
-      auto callbacks=*static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(accessor,0).toPrivate());
-      JS::RootedValue payload(frame.cx,JS::GetReservedSlot(accessor,2));
+      auto callbacks=*static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(accessor,NativePropertyCallbackData).toPrivate());
+      JS::RootedValue payload(frame.cx,JS::GetReservedSlot(accessor,NativePropertyPayload));
       JSAutoRealm home(frame.cx,target);JS::RootedObject owner(frame.cx,JS::CurrentGlobalOrNull(frame.cx));
       if(!JS_WrapValue(frame.cx,&payload)||!JS_WrapValue(frame.cx,&name)||!JS_ValueToId(frame.cx,name,&key))return false;
       JS::RootedObject metadata(frame.cx,NewNativePropertyRecord(frame,callbacks,owner,payload));if(!metadata)return false;

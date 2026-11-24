@@ -5,6 +5,16 @@
 // in their complete original translation units.
 namespace v8 {
 namespace {
+// Slot zero is the engine's generic dispatch table, not a Node callback.
+// Share this layout with template copying so it cannot reinterpret that table
+// as callback storage or copy the creation realm in place of the payload.
+enum NativePropertySlot : uint32_t {
+  NativePropertyOperations = 0,
+  NativePropertyCallbackData,
+  NativePropertyRealm,
+  NativePropertyPayload,
+  NativePropertySlotCount,
+};
 struct NativePropertyCallbacks {
   AccessorNameGetterCallback getter;
   AccessorNameSetterCallback setter;
@@ -13,13 +23,13 @@ struct NativePropertyCallbacks {
   bool lazy=false;
 };
 void FinalizeNativePropertyCallbacks(JS::GCContext*, JSObject* object) {
-  auto value=JS::GetReservedSlot(object,1);
+  auto value=JS::GetReservedSlot(object,NativePropertyCallbackData);
   if(!value.isUndefined())delete static_cast<NativePropertyCallbacks*>(value.toPrivate());
 }
 const JSClassOps nativePropertyOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeNativePropertyCallbacks};
 // Callback pointers are native-only. Realm and payload are actual traced slots;
 // no hidden persistent JS roots or captured native frame are retained.
-const JSClass nativePropertyClass={"NodeNativeProperty",JSCLASS_HAS_RESERVED_SLOTS(4)|JSCLASS_FOREGROUND_FINALIZE,&nativePropertyOps};
+const JSClass nativePropertyClass={"NodeNativeProperty",JSCLASS_HAS_RESERVED_SLOTS(NativePropertySlotCount)|JSCLASS_FOREGROUND_FINALIZE,&nativePropertyOps};
 Local<Name> NativePropertyName(Frame& frame,JS::HandleId id) {
   JS::RootedValue key(frame.cx);
   if(!JS_IdToValue(frame.cx,id,&key))return {};
@@ -35,8 +45,8 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
                           bool setter,JS::MutableHandleValue output) {
   JS::RootedObject metadata(cx,&data.toObject());
   CHECK(JS::GetClass(metadata)==&nativePropertyClass);
-  auto* callbacks=static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,1).toPrivate());
-  JS::RootedObject realm(cx,&JS::GetReservedSlot(metadata,2).toObject());
+  auto* callbacks=static_cast<NativePropertyCallbacks*>(JS::GetReservedSlot(metadata,NativePropertyCallbackData).toPrivate());
+  JS::RootedObject realm(cx,&JS::GetReservedSlot(metadata,NativePropertyRealm).toObject());
   auto state=ReadNativeEngineState(cx);
   if(!state)return false;
   NativeCallbackEntry callbackEntry(*state);
@@ -45,7 +55,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
   auto mode=cx->nativePropertyFailureMode();
   if(mode)frame.propertyShouldThrow=mode.value();
   JSContext::AutoNativePropertyFailureMode propertyMode(cx,mozilla::Nothing());
-  frame.propertyData=JS::GetReservedSlot(metadata,3);
+  frame.propertyData=JS::GetReservedSlot(metadata,NativePropertyPayload);
   frame.propertyReturn=setter?JS::TrueValue():JS::UndefinedValue();
   auto name=NativePropertyName(frame,id);if(name.IsEmpty())return false;
   if(setter) {
@@ -93,9 +103,9 @@ JSObject* NewNativePropertyRecord(Frame& frame,const NativePropertyCallbacks& ca
   JS::RootedObject record(frame.cx,JS_NewObject(frame.cx,&nativePropertyClass));if(!record)return nullptr;
   auto* operations=callbacks.lazy?&lazyPropertyOperations:
       callbacks.setter?&writablePropertyOperations:&livePropertyOperations;
-  JS::SetReservedSlot(record,0,JS::PrivateValue(const_cast<js::NativeDataPropertyOperations*>(operations)));
-  JS::SetReservedSlot(record,1,JS::PrivateValue(native.release()));
-  JS::SetReservedSlot(record,2,JS::ObjectValue(*owner));JS::SetReservedSlot(record,3,payload);
+  JS::SetReservedSlot(record,NativePropertyOperations,JS::PrivateValue(const_cast<js::NativeDataPropertyOperations*>(operations)));
+  JS::SetReservedSlot(record,NativePropertyCallbackData,JS::PrivateValue(native.release()));
+  JS::SetReservedSlot(record,NativePropertyRealm,JS::ObjectValue(*owner));JS::SetReservedSlot(record,NativePropertyPayload,payload);
   return record;
 }
 bool DefineNativePropertyRecord(Frame& frame,JS::HandleObject target,JS::HandleId id,
