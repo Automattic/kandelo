@@ -37,6 +37,17 @@ updates follow GitHub's default-branch behavior and need separate review.
 See GitHub's [default branch documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch)
 and [CLI PR documentation](https://cli.github.com/manual/gh_pr_create).
 
+## Check changes to the host boundary
+
+For changes to the syscall dispatcher or kernel ABI, run
+`bash scripts/dev-shell.sh npm --prefix host test -- run --config vitest.host-boundary.config.ts`
+with the host dependencies installed. A new syscall-specific reference in the
+JavaScript dispatcher, a new or changed kernel import, or a new host intercept
+in the ABI needs an explicit ownership review. Explain the platform primitive
+that needs the host and how a host without it reports failure. Update the
+inventory for reviewed changes, including removals, in the same patch.
+
+
 ## Daily validation and promotion
 
 The following is the required design for the replacement CI, not a claim
@@ -49,7 +60,8 @@ that automation is already running:
 2. Build and run the full daily test inventory against that fixed candidate,
    using the pinned development shell and artifacts built from its sources.
    Do not narrow the inventory with PR path filters. Cover Rust, Node.js,
-   browsers, ABI, package tooling and the libc/POSIX/Sortix conformance suites;
+   browsers, ABI, the Rust-first host boundary check, package tooling and the
+   libc/POSIX/Sortix conformance suites;
    retain suite counts, expected failures, skips and logs. The CI review must
    explicitly account for additional acceptance and service-contract checks.
 3. Promote only after every required check succeeds. Failed, skipped,
