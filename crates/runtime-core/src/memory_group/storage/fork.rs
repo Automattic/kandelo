@@ -3,16 +3,49 @@
 use super::*;
 
 impl Storage {
-    /// Read a copied scalar from the exact image through its live page table.
-    pub(crate) fn execution_word(&self, memory: &impl PhysicalMemory, admission: GroupAdmission, address: u32) -> Result<u32, Errno> {
+    /// Translate one aligned word under the exact live image and page rights.
+    /// Foreign-memory callbacks perform only the selected load/store/CAS.
+    fn execution_word_address(&self, memory: &impl PhysicalMemory,
+        admission: GroupAdmission, address: u32, rights: u32,
+    ) -> Result<u32, Errno> {
         let image = self.images.get(&self.owned(admission)?.image).ok_or(Errno::ESRCH)?;
-        if address % 4 != 0 || !image.source_live || image.stopping { return Err(Errno::EFAULT); }
+        if address % 4 != 0 || !image.source_live || image.stopping {
+            return Err(Errno::EFAULT);
+        }
         let table = image.allocation.ok_or(Errno::EIO)?.controls.address();
         let extent = memory.atomic_load(table)?;
         if extent > image.layout.maximum_pages || address / PAGE >= extent { return Err(Errno::EFAULT); }
         let pte = memory.atomic_load(table + layout::ROOT_HEADER_BYTES + address / PAGE * 4)?;
-        if pte & 0xfffc != 0 || pte & 1 == 0 || pte >> 16 == 0 || pte >> 16 >= memory.current_pages()? { return Err(Errno::EFAULT); }
-        memory.atomic_load((pte & 0xffff0000) + address % PAGE)
+        if pte & 0xfffc != 0 || pte & rights != rights || pte >> 16 == 0 || pte >> 16 >= memory.current_pages()? {
+            return Err(Errno::EFAULT);
+        }
+        Ok((pte & 0xffff0000) + address % PAGE)
+    }
+
+    pub(crate) fn execution_word(&self, memory: &impl PhysicalMemory,
+        admission: GroupAdmission, address: u32,
+    ) -> Result<u32, Errno> {
+        memory.atomic_load(self.execution_word_address(memory, admission, address, 1)?)
+    }
+
+    pub(crate) fn writable_execution_word(&self, memory: &impl PhysicalMemory,
+        admission: GroupAdmission, address: u32,
+    ) -> Result<u32, Errno> {
+        memory.atomic_load(self.execution_word_address(memory, admission, address, 3)?)
+    }
+
+    pub(crate) fn write_execution_word(&self, memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission, address: u32, value: u32,
+    ) -> Result<(), Errno> {
+        let physical = self.execution_word_address(memory, admission, address, 3)?;
+        memory.atomic_store(physical, value)
+    }
+
+    pub(crate) fn compare_exchange_execution_word(&self, memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission, address: u32, expected: u32, value: u32,
+    ) -> Result<u32, Errno> {
+        let physical = self.execution_word_address(memory, admission, address, 3)?;
+        memory.atomic_compare_exchange(physical, expected, value)
     }
 
     /// A copied pending syscall belongs to the parent. Clear the child's

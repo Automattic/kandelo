@@ -20650,6 +20650,25 @@ pub fn sys_membarrier(cmd: i32, flags: i32) -> Result<i32, Errno> {
     }
 }
 
+/// Normalize the supported thread-style clone flags for both ordinary syscall
+/// dispatch and the retained grouped clone owner. Addresses are validated by
+/// the corresponding memory owner before allocation.
+pub(crate) fn thread_clone_settings(
+    flags: u32, tls_ptr: usize, ctid_ptr: usize,
+) -> Result<(usize, usize), Errno> {
+    const CLONE_VM: u32 = 0x00000100;
+    const CLONE_THREAD: u32 = 0x00010000;
+    const CLONE_SETTLS: u32 = 0x00080000;
+    const CLONE_CHILD_CLEARTID: u32 = 0x00200000;
+    if flags & CLONE_VM == 0 || flags & CLONE_THREAD == 0 {
+        return Err(Errno::ENOSYS);
+    }
+    Ok((
+        if flags & CLONE_SETTLS != 0 { tls_ptr } else { 0 },
+        if flags & CLONE_CHILD_CLEARTID != 0 { ctid_ptr } else { 0 },
+    ))
+}
+
 /// clone — spawn a new thread.
 ///
 /// Allocates a TID, stores thread state, and returns the TID. The host's
@@ -20664,29 +20683,7 @@ pub fn sys_clone(
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> Result<i32, Errno> {
-    const CLONE_VM: u32 = 0x00000100;
-    const CLONE_THREAD: u32 = 0x00010000;
-    const CLONE_PARENT_SETTID: u32 = 0x00100000;
-    #[allow(dead_code)]
-    const CLONE_CHILD_SETTID: u32 = 0x01000000;
-    const CLONE_CHILD_CLEARTID: u32 = 0x00200000;
-    const CLONE_SETTLS: u32 = 0x00080000;
-
-    // We only support thread-style clone (CLONE_VM | CLONE_THREAD)
-    if flags & CLONE_VM == 0 || flags & CLONE_THREAD == 0 {
-        return Err(Errno::ENOSYS);
-    }
-
-    let effective_tls = if flags & CLONE_SETTLS != 0 {
-        tls_ptr
-    } else {
-        0
-    };
-    let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 {
-        ctid_ptr
-    } else {
-        0
-    };
+    let (effective_tls, effective_ctid) = thread_clone_settings(flags, tls_ptr, ctid_ptr)?;
     // POSIX: new threads inherit the creator's signal mask. The creator is
     // identified by current_tid because clone arrives through the caller's
     // channel mailbox but the kernel stores masks by TID.
@@ -20697,7 +20694,6 @@ pub fn sys_clone(
     }
     let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
 
-    let _ = flags & CLONE_PARENT_SETTID;
     Ok(tid as i32)
 }
 

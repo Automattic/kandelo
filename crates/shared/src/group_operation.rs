@@ -60,6 +60,11 @@ pub mod kind {
     pub const OWNED_MAPPING: u32 = 3;
     pub const THREAD_PREPARE: u32 = 4;
     pub const FORK: u32 = 5;
+    /// Complete clone operation, opened before the kernel allocates its task.
+    pub const CLONE: u32 = 6;
+    pub const fn is_thread(value: u32) -> bool {
+        matches!(value, THREAD_PREPARE | CLONE)
+    }
 }
 pub mod effect {
     pub const COMPLETE: u32 = 1;
@@ -128,7 +133,7 @@ impl Request {
         };
         if !matches!(
             request.kind,
-            kind::MAPPING | kind::OWNED_MAPPING | kind::THREAD_PREPARE | kind::FORK
+            kind::MAPPING | kind::OWNED_MAPPING | kind::THREAD_PREPARE | kind::FORK | kind::CLONE
         ) || request.kind != kind::THREAD_PREPARE && request.thread != 0
             || request.kind != kind::OWNED_MAPPING && bytes[64..].iter().any(|byte| *byte != 0)
         {

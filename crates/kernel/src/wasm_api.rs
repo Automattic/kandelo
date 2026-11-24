@@ -4530,8 +4530,11 @@ pub extern "C" fn kernel_group_operation(receipt_ptr: *const u8, receipt_len: u3
                 let target = match table.group_operation_thread_exit_target(receipt, operation) {
                     Ok(target) => target, Err(error) => return -(error as i32),
                 };
+                let clear_child_tid = match table.group_operation_thread_exit_clears_child_tid(receipt, operation) {
+                    Ok(clear) => clear, Err(error) => return -(error as i32),
+                };
                 let current = table.get(target.pid).is_some_and(|proc| proc.exec_generation == target.generation);
-                let exited = if current { lifecycle::thread_exit(table, &mut WasmHostIO, target.pid, target.tid, true).map(|_| ()) } else { Ok(()) };
+                let exited = if current { lifecycle::thread_exit(table, &mut WasmHostIO, target.pid, target.tid, clear_child_tid).map(|_| ()) } else { Ok(()) };
                 match exited {
                     Ok(()) | Err(Errno::ESRCH) => {
                         if let Err(error) = table.finish_group_operation_thread_exit(receipt, operation) { return -(error as i32); }

@@ -1,5 +1,7 @@
 //! Copied layouts emitted by the actual kernel operation, never host inputs.
 pub const THREAD_BYTES: usize = 48;
+/// The allocated task receipt follows its copied numeric launch recipe.
+pub const THREAD_RECEIPT_OFFSET: usize = THREAD_BYTES;
 pub const THREAD_FIELDS: &[(&str, usize)] = &[
     ("slotStartPage", 0),
     ("basePage", 4),

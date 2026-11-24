@@ -922,6 +922,7 @@ impl ProcessTable {
             self.validate_exec_control_start(record)?;
             self.validate_root_control_start(record)?;
             self.validate_fork_control_start(record)?;
+            self.validate_clone_control_start(record)?;
             self.validate_task(record.pid, record.tid)?;
             if self
                 .processes

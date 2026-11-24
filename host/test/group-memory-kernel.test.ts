@@ -9,7 +9,7 @@ import { resolveBinary } from '../src/binary-resolver';
 import { VirtualPlatformIO } from '../src/vfs/vfs';
 import { NodeTimeProvider } from '../src/vfs/time';
 import { FixedTreeBackend } from './support/fixed-tree-backend';
-import { MEMORY_GROUP_CONTROL, MEMORY_GROUP_REPLICA_REQUEST, MEMORY_GROUP_REPLICA_ACK } from '../src/generated/program-extensions';
+import { MEMORY_GROUP_CONTROL, MEMORY_GROUP_REPLICA_REQUEST, MEMORY_GROUP_REPLICA_ACK, MEMORY_GROUP_ROOT_HEADER_BYTES } from '../src/generated/program-extensions';
 
 it('uses the real Rust kernel for storage preparation, exposure and exact pinned retirement', async () => {
   const io = new VirtualPlatformIO([{ mountPoint: '/', backend: new FixedTreeBackend({ '/': { mode: 0o040755, ino: 1 } }) }], new NodeTimeProvider());
@@ -148,6 +148,41 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
       expect(driver(P.driver.commands.poll, result.token).status).toBe(-ERRNO.ESRCH);
       return result;
     };
+    // The canonical clone entry owns identity and the parent-TID transaction
+    // before preparation. This fixture constructs no native Worker and reports
+    // only the real release of its unarmed progress observation.
+    const virtualWord = (address: number) => {
+      const pte = Atomics.load(new Uint32Array(memory.buffer), (root + MEMORY_GROUP_ROOT_HEADER_BYTES + Math.floor(address / 65536) * 4) / 4);
+      return new Uint32Array(memory.buffer, (pte & 0xffff0000) + address % 65536, 1);
+    };
+    Atomics.store(virtualWord(0x4000), 0, 0x1234);
+    Atomics.store(virtualWord(0x4004), 0, 0x5678);
+    const cloneArgs = [0x390100n, 0x17000n, 0x4000n, 0x13000n, 0x4004n, 0n];
+    const clone = driver(P.driver.commands.begin, 0n, ABI_SYSCALLS.Clone, cloneArgs, 0, receipt, P.driver.kinds.clone);
+    expect(clone.status).toBe(P.driver.reply_bytes);
+    const cloneOffset = P.driver.thread_receipt_offset;
+    const cloneBytes = clone.payload.slice(cloneOffset, cloneOffset + P.receipt_bytes);
+    const cloneTid = new DataView(cloneBytes.buffer, cloneBytes.byteOffset, cloneBytes.byteLength).getUint32(P.receipt_fields.tid, true);
+    const cloneTask = decodeMemoryGroupReceipt(cloneBytes, { group, pid, tid: cloneTid, generation: receipt.generation });
+    expect(cloneTask.tid).toBeGreaterThan(pid);
+    expect(Atomics.load(virtualWord(0x4000), 0)).toBe(cloneTask.tid);
+    expect(scalar('kernel_validate_task', pid, cloneTask.tid)).toBe(0);
+    expect(task(cloneTask, P.task_actions.start)).toBe(-ERRNO.EBUSY);
+    expect(driver(P.driver.commands.ack, clone.token).status).toBe(-ERRNO.EBUSY);
+    if (clone.effect === P.driver.effects.native) {
+      expect(storage(receipt, P.storage.actions.settleNative, clone.pin).status).toBe(P.storage.reply_bytes);
+    }
+    // The actual Wasm export performs its kernel-owned thread-exit effect;
+    // failed construction must not run the guest clear_child_tid side effect.
+    const cloneFailure = driver(P.driver.commands.cancel, clone.token, ABI_SYSCALLS.Clone, [], ERRNO.EIO);
+    expect(cloneFailure.status).toBe(P.driver.reply_bytes);
+    expect(cloneFailure.effect).toBe(P.driver.effects.complete);
+    expect(cloneFailure.errno).toBe(ERRNO.EIO);
+    expect(Atomics.load(virtualWord(0x4000), 0)).toBe(0x1234);
+    expect(Atomics.load(virtualWord(0x4004), 0)).toBe(0x5678);
+    expect(scalar('kernel_validate_task', pid, cloneTask.tid)).toBe(-ERRNO.ESRCH);
+    expect(task(cloneTask, P.task_actions.start)).toBe(-ERRNO.ESRCH);
+    expect(driver(P.driver.commands.ack, clone.token).status).toBe(0);
     const mapping = driver(P.driver.commands.begin, 0n, ABI_SYSCALLS.Mmap, [0n, 65536n, 3n, 0x22n]);
     expect(driver(P.driver.commands.ack, mapping.token).status).toBe(-ERRNO.EBUSY);
     expect(driver(P.driver.commands.poll, mapping.token, ABI_SYSCALLS.Mmap, [], 0,

@@ -8565,6 +8565,7 @@
       },
       "fork_layout_offset": 32,
       "kinds": {
+        "clone": 6,
         "fork": 5,
         "mapping": 1,
         "ownedMapping": 3,
@@ -8612,6 +8613,7 @@
         "tlsOffset": 8,
         "tlsPtr": 40
       },
+      "thread_receipt_offset": 48,
       "transport_gone": 2147483648
     },
     "exec_control": {

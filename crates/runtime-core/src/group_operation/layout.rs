@@ -23,7 +23,7 @@ impl ProcessTable {
             .entries
             .get(&key)
             .ok_or(Errno::ESRCH)?;
-        if operation.child != Some(child) || operation.request.kind != kind::THREAD_PREPARE {
+        if operation.child != Some(child) || !kind::is_thread(operation.request.kind) {
             return Err(Errno::ESRCH);
         }
         if operation.phase != Phase::ThreadBinding
@@ -61,7 +61,7 @@ impl ProcessTable {
             .entries
             .get(&key)
             .ok_or(Errno::ESRCH)?;
-        if owner.receipt != receipt || owner.request.kind != kind::THREAD_PREPARE {
+        if owner.receipt != receipt || !kind::is_thread(owner.request.kind) {
             return Err(Errno::ESRCH);
         }
         if !matches!(owner.phase, Phase::ThreadBinding | Phase::Done) || owner.thread_retired {
@@ -99,7 +99,7 @@ impl ProcessTable {
             .ok_or(Errno::EFAULT)
     }
 
-    fn group_caller_word(
+    pub(super) fn group_caller_word(
         &mut self,
         receipt: ReceiptRecord,
         address: u32,
@@ -122,6 +122,7 @@ impl ProcessTable {
         child: ReceiptRecord,
         address: u32,
         length: u32,
+        entry: Option<(u32, u32)>,
         host: &mut dyn HostIO,
     ) -> Result<L::Thread, Errno> {
         if length != M::PAGES_PER_THREAD_SLOT * PAGE || address % PAGE != 0 {
@@ -136,20 +137,25 @@ impl ProcessTable {
             return Err(Errno::EBUSY);
         }
         let channel = self.group_task_channel(caller)?;
-        let function = self.group_caller_word(
-            caller,
-            channel
-                .checked_add(wasm_posix_shared::channel::DATA_OFFSET as u32)
-                .ok_or(Errno::EFAULT)?,
-            host,
-        )?;
-        let argument = self.group_caller_word(
-            caller,
-            channel
-                .checked_add(wasm_posix_shared::channel::DATA_OFFSET as u32 + 4)
-                .ok_or(Errno::EFAULT)?,
-            host,
-        )?;
+        let (function, argument) = match entry {
+            Some(entry) => entry,
+            None => (
+                self.group_caller_word(
+                    caller,
+                    channel
+                        .checked_add(wasm_posix_shared::channel::DATA_OFFSET as u32)
+                        .ok_or(Errno::EFAULT)?,
+                    host,
+                )?,
+                self.group_caller_word(
+                    caller,
+                    channel
+                        .checked_add(wasm_posix_shared::channel::DATA_OFFSET as u32 + 4)
+                        .ok_or(Errno::EFAULT)?,
+                    host,
+                )?,
+            ),
+        };
         let process_channel =
             u32::try_from(self.get(child.pid).ok_or(Errno::ESRCH)?.main_channel_addr)
                 .map_err(|_| Errno::EFAULT)?;

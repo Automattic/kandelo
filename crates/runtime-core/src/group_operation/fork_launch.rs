@@ -2,11 +2,11 @@
 //! Native effects carry an exact sequence; pending native waits do not prevent
 //! the kernel from selecting cancellation and cleanup on a later entry.
 use super::*;
-use W::{command as C, effect as E};
 use wasm_posix_shared::{
-    group_storage::{Action, status as S},
+    group_storage::{status as S, Action},
     memory_group::TaskAction,
 };
+use W::{command as C, effect as E};
 
 pub(super) struct Launch {
     effect: u32,
@@ -473,7 +473,7 @@ mod tests {
     use super::*;
     use crate::{
         group_layout::Layout,
-        grouped_exec::tests::{Fixture as ProcessFixture, grouped},
+        grouped_exec::tests::{grouped, Fixture as ProcessFixture},
         memory_group::{ImageLayout, MemoryGroupLimits},
     };
     use wasm_posix_shared::retirement_control as R;
@@ -614,6 +614,474 @@ mod tests {
             child_control: child_descriptor.replica,
         }
     }
+    fn clone_fixture() -> Fixture<impl HostIO> {
+        let mut f = fixture();
+        let runtime = f.until(E::FORK_RUNTIME);
+        f.step(runtime);
+        f.process
+            .table
+            .report_group_fork_effect(f.parent, f.token, C::FORK_LAUNCHED, 0, &mut f.host)
+            .unwrap();
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, f.token)
+            .unwrap();
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        for (address, value) in [
+            (channel + wasm_posix_shared::channel::DATA_OFFSET as u32, 37),
+            (
+                channel + wasm_posix_shared::channel::DATA_OFFSET as u32 + 4,
+                91,
+            ),
+            (0x12000, 0x1234),
+            (0x12004, 0x5678),
+        ] {
+            clone_word(&mut f, address, Some(value));
+        }
+        f
+    }
+
+    fn clone_word<H: HostIO>(f: &mut Fixture<H>, address: u32, write: Option<u32>) -> u32 {
+        let (store, admission) = f
+            .process
+            .table
+            .memory_groups()
+            .storage_owner(f.parent)
+            .unwrap();
+        let mut memory = HostMemory {
+            resource: store.resource(),
+            host: &mut f.host,
+        };
+        if let Some(value) = write {
+            store
+                .write_execution_word(&mut memory, admission, address, value)
+                .unwrap();
+        }
+        store.execution_word(&memory, admission, address).unwrap()
+    }
+
+    fn clone_request(flags: u32, parent_tid: u32) -> [u8; W::REQUEST_BYTES] {
+        let mut bytes = [0; W::REQUEST_BYTES];
+        bytes[..4].copy_from_slice(&kind::CLONE.to_le_bytes());
+        bytes[4..8]
+            .copy_from_slice(&wasm_posix_shared::abi::extended_syscalls::SYS_CLONE.to_le_bytes());
+        for (index, value) in [flags, 0x17000, parent_tid, 0x13000, 0x12004, 0]
+            .into_iter()
+            .enumerate()
+        {
+            bytes[8 + index * 8..16 + index * 8].copy_from_slice(&u64::from(value).to_le_bytes());
+        }
+        bytes
+    }
+
+    fn settle_clone_observer<H: HostIO>(f: &mut Fixture<H>, reply: &Reply) {
+        if reply.effect == E::WAIT_NATIVE && reply.wait_token != 0 {
+            f.process
+                .table
+                .memory_groups()
+                .storage_action(
+                    f.parent,
+                    Action::SettleNative,
+                    reply.wait_token,
+                    0,
+                    &mut f.host,
+                )
+                .unwrap();
+        }
+    }
+
+    fn finish_failed_clone<H: HostIO>(f: &mut Fixture<H>, mut reply: Reply) -> Reply {
+        for _ in 0..64 {
+            match reply.effect {
+                E::COMPLETE => return reply,
+                E::DETACH_THREAD_BINDING => {
+                    reply = f
+                        .process
+                        .table
+                        .report_group_thread_binding(f.parent, reply.operation, true, &mut f.host)
+                        .unwrap();
+                    continue;
+                }
+                E::KERNEL_THREAD_EXIT => {
+                    let target = f
+                        .process
+                        .table
+                        .group_operation_thread_exit_target(f.parent, reply.operation)
+                        .unwrap();
+                    assert!(!f
+                        .process
+                        .table
+                        .group_operation_thread_exit_clears_child_tid(f.parent, reply.operation)
+                        .unwrap());
+                    let (process, locks) = f
+                        .process
+                        .table
+                        .process_and_advisory_locks(target.pid)
+                        .unwrap();
+                    crate::syscalls::cleanup_exiting_thread_with_state(
+                        process,
+                        locks,
+                        &mut f.host,
+                        target.tid,
+                    )
+                    .unwrap();
+                    f.process
+                        .table
+                        .memory_groups()
+                        .note_thread_exit(crate::memory_group::GroupExecution {
+                            pid: target.pid,
+                            tid: target.tid,
+                            exec_generation: target.generation,
+                        })
+                        .unwrap();
+                    f.process
+                        .table
+                        .finish_group_operation_thread_exit(f.parent, reply.operation)
+                        .unwrap();
+                }
+                _ => {}
+            }
+            if reply.wait_token != 0 {
+                f.process
+                    .table
+                    .memory_groups()
+                    .storage_action(
+                        f.parent,
+                        Action::SettleNative,
+                        reply.wait_token,
+                        0,
+                        &mut f.host,
+                    )
+                    .unwrap();
+            }
+            reply = f
+                .process
+                .table
+                .poll_group_operation(f.parent, reply.operation, None, &mut f.host)
+                .unwrap();
+        }
+        panic!(
+            "failed clone retained an unexpected effect {}",
+            reply.effect
+        );
+    }
+
+    #[test]
+    fn grouped_clone_preflights_before_allocating_a_task_or_writing_parent_tid() {
+        let mut f = clone_fixture();
+        for (flags, address, errno) in [
+            (0, 0x12000, Errno::ENOSYS),
+            (0x390100, 0, Errno::EFAULT),
+            (0x390100, 0x12001, Errno::EFAULT),
+            (0x390100, 0xffff0000, Errno::EFAULT),
+        ] {
+            let request = clone_request(flags, address);
+            let reply = f
+                .process
+                .table
+                .begin_group_operation(f.parent, &request, &mut f.host)
+                .unwrap();
+            assert_eq!((reply.effect, reply.errno), (E::COMPLETE, errno as u32));
+            assert_eq!(clone_word(&mut f, 0x12000, None), 0x1234);
+            f.process
+                .table
+                .acknowledge_group_operation(f.parent, reply.operation)
+                .unwrap();
+        }
+        let tid = f
+            .process
+            .table
+            .create_thread(f.parent.pid, f.parent.tid, 0, 0, 0)
+            .unwrap();
+        assert_eq!(
+            tid,
+            f.child.pid + 1,
+            "preflight refusals consumed a task identity"
+        );
+    }
+
+    #[test]
+    fn grouped_clone_cancel_restores_parent_word_and_reclaims_the_exact_task() {
+        let mut f = clone_fixture();
+        let request = clone_request(0x390100, 0x12000);
+        let reply = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &request, &mut f.host)
+            .unwrap();
+        let offset = W::layout::THREAD_RECEIPT_OFFSET;
+        let child = ReceiptRecord::decode(&reply.payload[offset..offset + 32]).unwrap();
+        assert_eq!(child.tid, f.child.pid + 1);
+        assert_eq!(clone_word(&mut f, 0x12000, None), child.tid);
+        assert!(f
+            .process
+            .table
+            .get(child.pid)
+            .unwrap()
+            .get_thread(child.tid)
+            .is_some());
+        assert_eq!(
+            f.process
+                .table
+                .memory_group_task_action(child, TaskAction::Start),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(
+            f.process
+                .table
+                .acknowledge_group_operation(f.parent, reply.operation),
+            Err(Errno::EBUSY)
+        );
+        settle_clone_observer(&mut f, &reply);
+        let cancelled = f
+            .process
+            .table
+            .poll_group_operation(
+                f.parent,
+                reply.operation,
+                Some(Errno::EIO as u32),
+                &mut f.host,
+            )
+            .unwrap();
+        let done = finish_failed_clone(&mut f, cancelled);
+        assert_eq!((done.effect, done.errno), (E::COMPLETE, Errno::EIO as u32));
+        assert_ne!(done.flags & flags::THREAD_RETIRED, 0);
+        assert_eq!(clone_word(&mut f, 0x12000, None), 0x1234);
+        assert_eq!(
+            clone_word(&mut f, 0x12004, None),
+            0x5678,
+            "unstarted failure cleared child_tid"
+        );
+        assert!(f
+            .process
+            .table
+            .get(child.pid)
+            .unwrap()
+            .get_thread(child.tid)
+            .is_none());
+        assert!(f
+            .process
+            .table
+            .memory_groups()
+            .resolve_receipt(child)
+            .is_err());
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, done.operation)
+            .unwrap();
+    }
+
+    #[test]
+    fn grouped_clone_cancel_preserves_an_intervening_user_parent_tid_write() {
+        let mut f = clone_fixture();
+        let reply = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &clone_request(0x390100, 0x12000), &mut f.host)
+            .unwrap();
+        clone_word(&mut f, 0x12000, Some(0x778899));
+        settle_clone_observer(&mut f, &reply);
+        let cancelled = f
+            .process
+            .table
+            .poll_group_operation(
+                f.parent,
+                reply.operation,
+                Some(Errno::ENOMEM as u32),
+                &mut f.host,
+            )
+            .unwrap();
+        let done = finish_failed_clone(&mut f, cancelled);
+        assert_eq!(done.errno, Errno::ENOMEM as u32);
+        assert_eq!(clone_word(&mut f, 0x12000, None), 0x778899);
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, done.operation)
+            .unwrap();
+    }
+
+    #[test]
+    fn grouped_clone_refuses_readonly_parent_tid_without_allocating() {
+        let mut f = clone_fixture();
+        let (store, admission) = f
+            .process
+            .table
+            .memory_groups()
+            .storage_owner(f.parent)
+            .unwrap();
+        let descriptor = store.descriptor(admission).unwrap();
+        let address = descriptor.root
+            + wasm_posix_shared::program_extensions::memory_group_v3::ROOT_HEADER_BYTES
+            + 4;
+        let pte = f
+            .host
+            .group_memory_atomic_load(f.resource, address)
+            .unwrap();
+        f.host
+            .group_memory_atomic_store(f.resource, address, pte & !2)
+            .unwrap();
+        let reply = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &clone_request(0x110100, 0x12000), &mut f.host)
+            .unwrap();
+        assert_eq!(
+            (reply.effect, reply.errno),
+            (E::COMPLETE, Errno::EFAULT as u32)
+        );
+        assert_eq!(clone_word(&mut f, 0x12000, None), 0x1234);
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, reply.operation)
+            .unwrap();
+        f.host
+            .group_memory_atomic_store(f.resource, address, pte)
+            .unwrap();
+        let tid = f
+            .process
+            .table
+            .create_thread(f.parent.pid, f.parent.tid, 0, 0, 0)
+            .unwrap();
+        assert_eq!(tid, f.child.pid + 1);
+    }
+
+    #[test]
+    fn grouped_clone_queued_cancellation_has_no_task_or_parent_tid_effect() {
+        let mut f = clone_fixture();
+        clone_word(&mut f, 0x12008, Some(0x9abc));
+        let first = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &clone_request(0x390100, 0x12000), &mut f.host)
+            .unwrap();
+        let queued = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &clone_request(0x390100, 0x12008), &mut f.host)
+            .unwrap();
+        assert_eq!(queued.effect, E::WAIT_OPERATION);
+        assert_eq!(clone_word(&mut f, 0x12008, None), 0x9abc);
+        let cancelled = f
+            .process
+            .table
+            .poll_group_operation(
+                f.parent,
+                queued.operation,
+                Some(Errno::EIO as u32),
+                &mut f.host,
+            )
+            .unwrap();
+        assert_eq!(cancelled.effect, E::COMPLETE);
+        assert_eq!(cancelled.flags & flags::THREAD_RETIRED, 0);
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, cancelled.operation)
+            .unwrap();
+        settle_clone_observer(&mut f, &first);
+        let cancelled = f
+            .process
+            .table
+            .poll_group_operation(
+                f.parent,
+                first.operation,
+                Some(Errno::EIO as u32),
+                &mut f.host,
+            )
+            .unwrap();
+        let done = finish_failed_clone(&mut f, cancelled);
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, done.operation)
+            .unwrap();
+        assert_eq!(clone_word(&mut f, 0x12008, None), 0x9abc);
+        let tid = f
+            .process
+            .table
+            .create_thread(f.parent.pid, f.parent.tid, 0, 0, 0)
+            .unwrap();
+        assert_eq!(
+            tid,
+            f.child.pid + 2,
+            "queued clone allocated before owning its turn"
+        );
+    }
+
+    #[test]
+    fn grouped_clone_keeps_its_original_entry_until_binding_failure_reclamation() {
+        use wasm_posix_shared::program_extensions::memory_group_v3 as G;
+        let mut f = clone_fixture();
+        let mut reply = f
+            .process
+            .table
+            .begin_group_operation(f.parent, &clone_request(0x390100, 0x12000), &mut f.host)
+            .unwrap();
+        let offset = W::layout::THREAD_RECEIPT_OFFSET;
+        let child = ReceiptRecord::decode(&reply.payload[offset..offset + 32]).unwrap();
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        clone_word(
+            &mut f,
+            channel + wasm_posix_shared::channel::DATA_OFFSET as u32,
+            Some(999),
+        );
+        for _ in 0..32 {
+            if reply.effect == E::PREPARE_THREAD_BINDING {
+                break;
+            }
+            settle_clone_observer(&mut f, &reply);
+            let (store, admission) = f
+                .process
+                .table
+                .memory_groups()
+                .storage_owner(f.parent)
+                .unwrap();
+            let descriptor = store.descriptor(admission).unwrap();
+            let epoch = f
+                .host
+                .group_memory_atomic_load(f.resource, descriptor.replica + G::REPLICA_REQUEST)
+                .unwrap();
+            f.host
+                .group_memory_atomic_store(f.resource, descriptor.replica + G::REPLICA_ACK, epoch)
+                .unwrap();
+            reply = f
+                .process
+                .table
+                .poll_group_operation(f.parent, reply.operation, None, &mut f.host)
+                .unwrap();
+        }
+        assert_eq!(reply.effect, E::PREPARE_THREAD_BINDING);
+        assert_eq!(
+            u32::from_le_bytes(reply.payload[28..32].try_into().unwrap()),
+            37
+        );
+        assert_eq!(
+            u32::from_le_bytes(reply.payload[32..36].try_into().unwrap()),
+            91
+        );
+        assert_eq!(
+            ReceiptRecord::decode(&reply.payload[offset..offset + 32]).unwrap(),
+            child
+        );
+        let failed = f
+            .process
+            .table
+            .report_group_thread_binding_failure(f.parent, reply.operation, true, &mut f.host)
+            .unwrap();
+        let done = finish_failed_clone(&mut f, failed);
+        assert_eq!(done.errno, Errno::ENOMEM as u32);
+        assert_eq!(clone_word(&mut f, 0x12000, None), 0x1234);
+        assert_eq!(clone_word(&mut f, 0x12004, None), 0x5678);
+        assert!(f
+            .process
+            .table
+            .memory_groups()
+            .resolve_receipt(child)
+            .is_err());
+        f.process
+            .table
+            .acknowledge_group_operation(f.parent, done.operation)
+            .unwrap();
+    }
+
     impl<H: HostIO> Fixture<H> {
         fn call(&mut self, command: u32, sequence: u32) -> Reply {
             self.process
@@ -958,14 +1426,13 @@ mod tests {
             (E::COMPLETE, Errno::EIO as u32)
         );
         assert_ne!(retired.flags & flags::THREAD_RETIRED, 0);
-        assert!(
-            f.process
-                .table
-                .get(target.pid)
-                .unwrap()
-                .get_thread(tid)
-                .is_none()
-        );
+        assert!(f
+            .process
+            .table
+            .get(target.pid)
+            .unwrap()
+            .get_thread(tid)
+            .is_none());
         assert!(f.process.table.memory_group_task(target.pid, tid).is_err());
         f.process
             .table
