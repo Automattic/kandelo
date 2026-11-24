@@ -424,6 +424,12 @@
           "${pkgs.apple-sdk_26}";
       in {
         packages.zig = kandeloZig;
+        # LDC links LLVM's C++ API. Its LLVM 21 libraries and TableGen are
+        # optional inputs to the D compiler bootstrap, alongside the main SDK.
+        packages.d-llvm = pkgs.symlinkJoin {
+          name = "kandelo-d-llvm-${pkgs.llvmPackages_21.llvm.version}";
+          paths = [ pkgs.llvmPackages_21.llvm pkgs.llvmPackages_21.llvm.dev ];
+        };
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
 
@@ -435,6 +441,30 @@
             # binary ahead of the flake-pinned version.
             export KANDELO_DEV_SHELL_TOOL_PATH="${pkgs.lib.makeBinPath devShellPackages}"
             export PATH="$KANDELO_DEV_SHELL_TOOL_PATH:$PATH"
+            ${pkgs.lib.optionalString (system == "aarch64-linux") ''
+              # mkShell repeats store include and prefix-map flags across
+              # dependency roles. The compiler wrapper combines those roles
+              # into one environment value, which can exceed Linux's per-value
+              # exec limit on 4 KiB page hosts. Keep the first occurrence of
+              # each repeated Nix store flag without changing search order.
+              compact_nix_compile_flags() {
+                ${pkgs.gawk}/bin/awk '{
+                  for (i = 1; i <= NF; i++) {
+                    flag = $i
+                    if (flag == "-isystem" && $(i + 1) ~ /^\/nix\/store\//) {
+                      flag = flag " " $(++i)
+                    } else if (flag !~ /^-fmacro-prefix-map=\/nix\/store\//) {
+                      printf "%s ", flag
+                      continue
+                    }
+                    if (!seen[flag]++) printf "%s ", flag
+                  }
+                }' <<< "$1"
+              }
+              export NIX_CFLAGS_COMPILE="$(compact_nix_compile_flags "$NIX_CFLAGS_COMPILE")"
+              export NIX_CFLAGS_COMPILE_FOR_BUILD="$(compact_nix_compile_flags "$NIX_CFLAGS_COMPILE_FOR_BUILD")"
+              unset -f compact_nix_compile_flags
+            ''}
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=${llvmVersion}

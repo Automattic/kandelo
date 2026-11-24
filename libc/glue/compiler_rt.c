@@ -48,155 +48,6 @@ typedef union {
     uint32_t u;
 } f32_bits;
 
-/* ===== fp128 → double conversion (no compiler-rt calls) ===== */
-
-static double fp128_to_f64(fp128 a) {
-    fp128_bits in;
-    memcpy(&in, &a, sizeof(in));
-
-    /* Extract fp128 fields */
-    uint64_t lo = in.u[0];  /* fraction bits [0..63] */
-    uint64_t hi = in.u[1];  /* fraction bits [64..111], exp [112..126], sign [127] */
-
-    uint32_t sign = (hi >> 63) & 1;
-    uint32_t exp128 = (hi >> 48) & 0x7FFF;
-    /* Fraction: top 48 bits in hi[47:0], bottom 64 bits in lo */
-
-    f64_bits out;
-
-    if (exp128 == 0x7FFF) {
-        /* Inf or NaN */
-        uint64_t frac_hi = hi & 0x0000FFFFFFFFFFFFULL;
-        if (frac_hi == 0 && lo == 0) {
-            /* Infinity */
-            out.u = ((uint64_t)sign << 63) | 0x7FF0000000000000ULL;
-        } else {
-            /* NaN - preserve some fraction bits */
-            out.u = ((uint64_t)sign << 63) | 0x7FF8000000000000ULL | 1;
-        }
-        return out.f;
-    }
-
-    if (exp128 == 0) {
-        /* Zero or subnormal → flush to zero for simplicity */
-        out.u = (uint64_t)sign << 63;
-        return out.f;
-    }
-
-    /* Normal number: convert exponent */
-    int32_t unbiased = (int32_t)exp128 - 16383;
-
-    if (unbiased > 1023) {
-        /* Overflow → infinity */
-        out.u = ((uint64_t)sign << 63) | 0x7FF0000000000000ULL;
-        return out.f;
-    }
-
-    if (unbiased < -1074) {
-        /* Underflow → zero */
-        out.u = (uint64_t)sign << 63;
-        return out.f;
-    }
-
-    /* Extract top 52 bits of the 112-bit fraction.
-     * fp128 fraction: hi[47:0] are bits [111:64], lo is bits [63:0].
-     * We want the top 52 bits = hi[47:0] (48 bits) + lo[63:60] (4 bits). */
-    uint64_t frac52 = ((hi & 0x0000FFFFFFFFFFFFULL) << 4) | (lo >> 60);
-
-    if (unbiased < -1022) {
-        /* Subnormal double: shift fraction right */
-        int shift = -1022 - unbiased;
-        /* Add implicit 1 bit */
-        frac52 = (1ULL << 52) | frac52;
-        if (shift < 64) {
-            frac52 >>= shift;
-        } else {
-            frac52 = 0;
-        }
-        out.u = ((uint64_t)sign << 63) | frac52;
-        return out.f;
-    }
-
-    uint64_t exp64 = (uint64_t)(unbiased + 1023) & 0x7FF;
-    out.u = ((uint64_t)sign << 63) | (exp64 << 52) | (frac52 & 0x000FFFFFFFFFFFFFULL);
-    return out.f;
-}
-
-/* ===== double → fp128 conversion ===== */
-
-static fp128 f64_to_fp128(double a) {
-    f64_bits in;
-    in.f = a;
-
-    uint32_t sign = (in.u >> 63) & 1;
-    uint32_t exp64 = (in.u >> 52) & 0x7FF;
-    uint64_t frac52 = in.u & 0x000FFFFFFFFFFFFFULL;
-
-    fp128_bits out;
-
-    if (exp64 == 0x7FF) {
-        /* Inf or NaN */
-        out.u[1] = ((uint64_t)sign << 63) | (0x7FFFULL << 48);
-        if (frac52 != 0) {
-            out.u[1] |= 0x0000800000000000ULL; /* quiet NaN */
-            out.u[0] = 1;
-        } else {
-            out.u[0] = 0;
-        }
-        fp128 result;
-        memcpy(&result, &out, sizeof(result));
-        return result;
-    }
-
-    if (exp64 == 0 && frac52 == 0) {
-        /* Zero */
-        out.u[1] = (uint64_t)sign << 63;
-        out.u[0] = 0;
-        fp128 result;
-        memcpy(&result, &out, sizeof(result));
-        return result;
-    }
-
-    int32_t unbiased;
-    if (exp64 == 0) {
-        /* Subnormal double → normalize */
-        unbiased = -1022;
-        while (!(frac52 & (1ULL << 52))) {
-            frac52 <<= 1;
-            unbiased--;
-        }
-        frac52 &= 0x000FFFFFFFFFFFFFULL; /* remove implicit 1 */
-    } else {
-        unbiased = (int32_t)exp64 - 1023;
-    }
-
-    uint64_t exp128 = (uint64_t)(unbiased + 16383) & 0x7FFF;
-
-    /* Place 52-bit fraction into 112-bit field.
-     * Top 48 bits of fraction → hi[47:0], remaining 4 bits → lo[63:60] */
-    uint64_t frac_hi = frac52 >> 4;
-    uint64_t frac_lo = (frac52 & 0xF) << 60;
-
-    out.u[1] = ((uint64_t)sign << 63) | (exp128 << 48) | frac_hi;
-    out.u[0] = frac_lo;
-
-    fp128 result;
-    memcpy(&result, &out, sizeof(result));
-    return result;
-}
-
-/* ===== float → fp128 conversion ===== */
-
-static fp128 f32_to_fp128(float a) {
-    return f64_to_fp128((double)a);
-}
-
-/* ===== fp128 → float conversion ===== */
-
-static float fp128_to_f32(fp128 a) {
-    return (float)fp128_to_f64(a);
-}
-
 /* ===== 128-bit unsigned integer helpers ===== */
 
 /* 128-bit unsigned integer as (lo, hi) pair */
@@ -337,6 +188,116 @@ static fp128 fp128_inf(uint32_t sign) {
     return fp128_pack(sign, FP128_EXP_INF, u128_from64(0));
 }
 
+/* The significand includes guard, round and sticky bits in positions 2, 1 and 0. */
+static fp128 fp128_round(uint32_t sign, int exp, uint128_t_ significand) {
+    if (exp <= 0) {
+        int shift = 1 - exp;
+        if (shift > FP128_FRAC_BITS + 1) return fp128_zero(sign);
+        int discarded = !u128_is_zero(u128_shl(significand, 128 - shift));
+        significand = u128_shr(significand, shift);
+        significand.lo |= discarded;
+        exp = 1; /* Effective exponent for both subnormals and the smallest normal. */
+    }
+
+    uint32_t round_bits = significand.lo & 7;
+    significand = u128_shr(significand, 3);
+    if (round_bits > 4 || (round_bits == 4 && (significand.lo & 1))) {
+        significand = u128_add(significand, u128_from64(1));
+        uint128_t_ carry = u128_shl(u128_from64(1), FP128_FRAC_BITS + 1);
+        if (!u128_is_zero(u128_and(significand, carry))) {
+            significand = u128_shr(significand, 1);
+            exp++;
+        }
+    }
+    if (exp >= FP128_EXP_INF) return fp128_inf(sign);
+
+    uint128_t_ implicit = u128_shl(u128_from64(1), FP128_FRAC_BITS);
+    if (exp == 1 && u128_is_zero(u128_and(significand, implicit))) {
+        exp = 0;
+    }
+    return fp128_pack(sign, exp, u128_and(significand, u128_not(implicit)));
+}
+
+/* ===== Conversions between IEEE binary128, binary64 and binary32 ===== */
+
+static uint64_t fp128_to_binary(fp128 a, int fraction_bits, int exponent_bits, int bias) {
+    fp128_bits in;
+    memcpy(&in, &a, sizeof(in));
+    uint64_t sign = (in.u[1] >> 63) << (exponent_bits + fraction_bits);
+    int exponent_limit = (1 << exponent_bits) - 1;
+    uint64_t infinity = (uint64_t)exponent_limit << fraction_bits;
+    int exponent = (in.u[1] >> 48) & FP128_EXP_INF;
+    uint128_t_ fraction = { in.u[0], in.u[1] & 0x0000FFFFFFFFFFFFULL };
+    int shift = FP128_FRAC_BITS - fraction_bits;
+
+    if (exponent == FP128_EXP_INF) {
+        uint64_t payload = u128_shr(fraction, shift).lo;
+        if (!u128_is_zero(fraction)) payload |= 1ULL << (fraction_bits - 1);
+        return sign | infinity | payload;
+    }
+    if (exponent == 0) return sign; /* Binary128 subnormals are below either output range. */
+
+    exponent += bias - FP128_EXP_BIAS;
+    if (exponent >= exponent_limit) return sign | infinity;
+    if (exponent <= 0) shift += 1 - exponent;
+    if (shift > FP128_FRAC_BITS + 1) return sign;
+
+    uint128_t_ significand = u128_or(fraction, u128_shl(u128_from64(1), FP128_FRAC_BITS));
+    uint64_t rounded = u128_shr(significand, shift).lo;
+    uint128_t_ discarded = u128_shl(significand, 128 - shift);
+    const uint64_t halfway = 1ULL << 63;
+    if (discarded.hi > halfway ||
+        (discarded.hi == halfway && (discarded.lo || (rounded & 1)))) {
+        rounded++;
+    }
+
+    /* The retained leading bit supplies one exponent unit for normals.
+     * Addition also carries a rounded subnormal or significand overflow. */
+    uint64_t encoded_exp = (uint64_t)(exponent > 0 ? exponent - 1 : 0) << fraction_bits;
+    return sign | (encoded_exp + rounded);
+}
+
+static fp128 fp128_from_binary(uint64_t bits, int fraction_bits, int exponent_bits, int bias) {
+    uint64_t fraction_mask = (1ULL << fraction_bits) - 1;
+    uint64_t fraction = bits & fraction_mask;
+    int exponent_limit = (1 << exponent_bits) - 1;
+    int exponent = (bits >> fraction_bits) & exponent_limit;
+    uint32_t sign = bits >> (exponent_bits + fraction_bits);
+
+    if (exponent == exponent_limit) {
+        if (fraction != 0) fraction |= 1ULL << (fraction_bits - 1);
+        exponent = FP128_EXP_INF;
+    } else if (exponent != 0) {
+        exponent += FP128_EXP_BIAS - bias;
+    } else if (fraction != 0) {
+        int shift = u128_clz(u128_from64(fraction)) - (127 - fraction_bits);
+        fraction = (fraction << shift) & fraction_mask;
+        exponent = FP128_EXP_BIAS + 1 - bias - shift;
+    }
+
+    return fp128_pack(sign, exponent, u128_shl(u128_from64(fraction), FP128_FRAC_BITS - fraction_bits));
+}
+
+static double fp128_to_f64(fp128 a) {
+    f64_bits out = { .u = fp128_to_binary(a, 52, 11, 1023) };
+    return out.f;
+}
+
+static float fp128_to_f32(fp128 a) {
+    f32_bits out = { .u = (uint32_t)fp128_to_binary(a, 23, 8, 127) };
+    return out.f;
+}
+
+static fp128 f64_to_fp128(double a) {
+    f64_bits in = { .f = a };
+    return fp128_from_binary(in.u, 52, 11, 1023);
+}
+
+static fp128 f32_to_fp128(float a) {
+    f32_bits in = { .f = a };
+    return fp128_from_binary(in.u, 23, 8, 127);
+}
+
 /* ===== Proper fp128 addition ===== */
 
 fp128 __addtf3(fp128 a, fp128 b) {
@@ -471,39 +432,7 @@ fp128 __addtf3(fp128 a, fp128 b) {
         }
     }
 
-    /* Round: bits [2:0] are guard(2), round(1), sticky(0) */
-    uint32_t round_bits = result_sig.lo & 0x7;
-    result_sig = u128_shr(result_sig, 3); /* Remove guard/round/sticky */
-
-    /* Round to nearest, ties to even */
-    if (round_bits > 4 || (round_bits == 4 && (result_sig.lo & 1))) {
-        result_sig = u128_add(result_sig, u128_from64(1));
-        /* Check for carry into exponent */
-        if (!u128_is_zero(u128_and(result_sig, u128_shl(u128_from64(1), 113)))) {
-            result_sig = u128_shr(result_sig, 1);
-            result_exp++;
-        }
-    }
-
-    /* Handle overflow */
-    if (result_exp >= FP128_EXP_INF) {
-        return fp128_inf(result_sign);
-    }
-
-    /* Handle underflow to subnormal */
-    if (result_exp <= 0) {
-        int shift = 1 - result_exp;
-        result_sig = u128_shr(result_sig, shift);
-        result_exp = 0;
-    }
-
-    /* Strip implicit bit for normal numbers */
-    uint128_t_ implicit = u128_shl(u128_from64(1), FP128_FRAC_BITS);
-    if (result_exp > 0) {
-        result_sig = u128_and(result_sig, u128_not(implicit));
-    }
-
-    return fp128_pack(result_sign, result_exp, result_sig);
+    return fp128_round(result_sign, result_exp, result_sig);
 }
 
 /* ===== Proper fp128 subtraction ===== */
@@ -610,16 +539,21 @@ fp128 __multf3(fp128 a, fp128 b) {
     if (exp_a == 0 && u128_is_zero(sig_a)) return fp128_zero(result_sign);
     if (exp_b == 0 && u128_is_zero(sig_b)) return fp128_zero(result_sign);
 
-    /* Add implicit bits */
+    /* Normalize both significands before multiplying. */
+    uint128_t_ implicit = u128_shl(u128_from64(1), FP128_FRAC_BITS);
     if (exp_a != 0) {
-        sig_a = u128_or(sig_a, u128_shl(u128_from64(1), FP128_FRAC_BITS));
+        sig_a = u128_or(sig_a, implicit);
     } else {
-        exp_a = 1; /* subnormal */
+        int shift = u128_clz(sig_a) - (127 - FP128_FRAC_BITS);
+        sig_a = u128_shl(sig_a, shift);
+        exp_a = 1 - shift;
     }
     if (exp_b != 0) {
-        sig_b = u128_or(sig_b, u128_shl(u128_from64(1), FP128_FRAC_BITS));
+        sig_b = u128_or(sig_b, implicit);
     } else {
-        exp_b = 1;
+        int shift = u128_clz(sig_b) - (127 - FP128_FRAC_BITS);
+        sig_b = u128_shl(sig_b, shift);
+        exp_b = 1 - shift;
     }
 
     /* Result exponent (before normalization) */
@@ -631,116 +565,21 @@ fp128 __multf3(fp128 a, fp128 b) {
      * bit from everything below. */
     uint256_t_ prod = u128_mul_full(sig_a, sig_b);
 
-    /* Find MSB of the 256-bit product. It's in w[3] at bit (127+128) or w[3]:w[2].
-     * For two 113-bit significands, MSB is at bit 224 or 225. */
+    /* Extract the 116 highest bits. The least significant bit folds in the
+     * rest of the product so rounding retains all discarded information. */
     uint128_t_ prod_hi = { prod.w[2], prod.w[3] };
-    int lz = u128_clz(prod_hi);
-    int msb_pos = 255 - lz; /* position in 256-bit product */
-
-    /* We want 116 bits starting from msb_pos going down, placed at
-     * positions [115:0] of result_sig. Position 115 = implicit bit,
-     * positions [114:3] = fraction, positions [2:0] = guard/round/sticky.
-     * Plus a sticky bit from all remaining lower bits. */
-    int top_bit = msb_pos; /* e.g. 224 or 225 */
-    int bottom_bit = top_bit - 115; /* lowest bit we extract, e.g. 109 or 110 */
-
-    /* Extract bits [top_bit : bottom_bit] from the 256-bit product into result_sig.
-     * Shift the product right by bottom_bit positions, then mask to 116 bits. */
-    /* Shift the 256-bit product right by bottom_bit */
-    uint128_t_ result_sig;
-    if (bottom_bit >= 128) {
-        /* Only need bits from high 128 */
-        int shift = bottom_bit - 128;
-        result_sig = u128_shr(prod_hi, shift);
-    } else if (bottom_bit > 0) {
-        /* Need bits spanning both high and low halves */
-        uint128_t_ prod_lo = { prod.w[0], prod.w[1] };
-        result_sig.lo = (prod_lo.lo >> bottom_bit) | (prod_lo.hi << (64 - bottom_bit));
-        result_sig.hi = (prod_lo.hi >> bottom_bit) | (prod_hi.lo << (64 - bottom_bit));
-        if (bottom_bit < 64) {
-            result_sig.lo = (prod.w[1] << (64 - bottom_bit)) | (prod.w[0] >> bottom_bit);
-            result_sig.hi = (prod.w[2] << (64 - bottom_bit)) | (prod.w[1] >> bottom_bit);
-        } else {
-            int s = bottom_bit - 64;
-            if (s == 0) {
-                result_sig.lo = prod.w[1];
-                result_sig.hi = prod.w[2];
-            } else {
-                result_sig.lo = (prod.w[2] << (64 - s)) | (prod.w[1] >> s);
-                result_sig.hi = (prod.w[3] << (64 - s)) | (prod.w[2] >> s);
-            }
-        }
-    } else {
-        uint128_t_ prod_lo = { prod.w[0], prod.w[1] };
-        result_sig = prod_lo;
+    int top_bit = 255 - u128_clz(prod_hi); /* 224 or 225 */
+    int shift = top_bit - 115 - 64;
+    uint128_t_ result_sig = {
+        (prod.w[2] << (64 - shift)) | (prod.w[1] >> shift),
+        (prod.w[3] << (64 - shift)) | (prod.w[2] >> shift),
+    };
+    if (prod.w[0] || (prod.w[1] & ((1ULL << shift) - 1))) {
+        result_sig.lo |= 1;
     }
-    /* Mask to 116 bits (positions [115:0]) */
-    result_sig.hi &= (1ULL << 52) - 1; /* 52 bits in hi (116-64=52) */
+    result_exp += top_bit - 2 * FP128_FRAC_BITS;
 
-    /* Compute sticky from all bits below bottom_bit */
-    int sticky = 0;
-    if (bottom_bit > 0) {
-        /* Check if any bits [bottom_bit-1 : 0] are set in the 256-bit product */
-        if (bottom_bit >= 128) {
-            sticky = (prod.w[0] != 0 || prod.w[1] != 0);
-            if (bottom_bit > 128) {
-                uint64_t mask = (bottom_bit - 128 >= 64) ? 0xFFFFFFFFFFFFFFFFULL
-                              : ((1ULL << (bottom_bit - 128)) - 1);
-                sticky |= (prod.w[2] & mask) != 0;
-            }
-            if (bottom_bit > 192) {
-                uint64_t mask = ((1ULL << (bottom_bit - 192)) - 1);
-                sticky |= (prod.w[3] & mask) != 0;
-            }
-        } else if (bottom_bit >= 64) {
-            sticky = (prod.w[0] != 0);
-            uint64_t mask = (bottom_bit - 64 >= 64) ? 0xFFFFFFFFFFFFFFFFULL
-                          : ((1ULL << (bottom_bit - 64)) - 1);
-            sticky |= (prod.w[1] & mask) != 0;
-        } else {
-            uint64_t mask = (1ULL << bottom_bit) - 1;
-            sticky |= (prod.w[0] & mask) != 0;
-        }
-    }
-    if (sticky) result_sig.lo |= 1; /* fold sticky into LSB */
-
-    /* Adjust exponent: MSB should represent 2^(result_exp).
-     * The MSB is at bit (top_bit) of the 256-bit product = bit (112+112)=224 nominally.
-     * If at 225, product overflowed by 1 bit → add 1 to exponent. */
-    result_exp += (top_bit - 224);
-
-    /* Round: bits [2:0] are guard/round/sticky */
-    uint32_t round_bits = result_sig.lo & 0x7;
-    result_sig = u128_shr(result_sig, 3);
-
-    if (round_bits > 4 || (round_bits == 4 && (result_sig.lo & 1))) {
-        result_sig = u128_add(result_sig, u128_from64(1));
-        if (!u128_is_zero(u128_and(result_sig, u128_shl(u128_from64(1), 113)))) {
-            result_sig = u128_shr(result_sig, 1);
-            result_exp++;
-        }
-    }
-
-    /* Overflow */
-    if (result_exp >= FP128_EXP_INF) {
-        return fp128_inf(result_sign);
-    }
-
-    /* Underflow */
-    if (result_exp <= 0) {
-        int shift = 1 - result_exp;
-        if (shift >= 113) return fp128_zero(result_sign);
-        result_sig = u128_shr(result_sig, shift);
-        result_exp = 0;
-    }
-
-    /* Strip implicit bit */
-    if (result_exp > 0) {
-        uint128_t_ implicit = u128_shl(u128_from64(1), FP128_FRAC_BITS);
-        result_sig = u128_and(result_sig, u128_not(implicit));
-    }
-
-    return fp128_pack(result_sign, result_exp, result_sig);
+    return fp128_round(result_sign, result_exp, result_sig);
 }
 
 /* ===== Proper fp128 division ===== */
@@ -810,6 +649,12 @@ fp128 __divtf3(fp128 a, fp128 b) {
     uint128_t_ quotient = u128_from64(0);
     uint128_t_ remainder = sig_a;
     int carry = 0;
+    if (!u128_ge(sig_a, sig_b)) {
+        /* Make the first quotient bit implicit while retaining all guard bits. */
+        carry = 1;
+        remainder = u128_shl(remainder, 1);
+        result_exp--;
+    }
 
     for (int i = 0; i < 116; i++) {
         quotient = u128_shl(quotient, 1);
@@ -823,45 +668,8 @@ fp128 __divtf3(fp128 a, fp128 b) {
         remainder = u128_shl(remainder, 1);
     }
 
-    /* Sticky bit from remainder */
-    if (!u128_is_zero(remainder)) quotient.lo |= 1;
-
-    /* Now quotient has 116 bits: implicit at bit 115, fraction bits [114:3], guard bits [2:0] */
-    /* If sig_a >= sig_b, first quotient bit is 1; otherwise 0.
-     * If 0, shift left and decrement exponent */
-    uint128_t_ bit115 = u128_shl(u128_from64(1), 115);
-    if (u128_is_zero(u128_and(quotient, bit115))) {
-        quotient = u128_shl(quotient, 1);
-        result_exp--;
-    }
-
-    /* Round */
-    uint32_t round_bits = quotient.lo & 0x7;
-    uint128_t_ result_sig = u128_shr(quotient, 3);
-
-    if (round_bits > 4 || (round_bits == 4 && (result_sig.lo & 1))) {
-        result_sig = u128_add(result_sig, u128_from64(1));
-        if (!u128_is_zero(u128_and(result_sig, u128_shl(u128_from64(1), 113)))) {
-            result_sig = u128_shr(result_sig, 1);
-            result_exp++;
-        }
-    }
-
-    if (result_exp >= FP128_EXP_INF) return fp128_inf(result_sign);
-
-    if (result_exp <= 0) {
-        int shift = 1 - result_exp;
-        if (shift >= 113) return fp128_zero(result_sign);
-        result_sig = u128_shr(result_sig, shift);
-        result_exp = 0;
-    }
-
-    if (result_exp > 0) {
-        uint128_t_ implicit = u128_shl(u128_from64(1), FP128_FRAC_BITS);
-        result_sig = u128_and(result_sig, u128_not(implicit));
-    }
-
-    return fp128_pack(result_sign, result_exp, result_sig);
+    if (carry || !u128_is_zero(remainder)) quotient.lo |= 1;
+    return fp128_round(result_sign, result_exp, quotient);
 }
 
 /* ===== Public API: Conversions ===== */
@@ -1059,9 +867,8 @@ unsigned long long __fixunstfdi(fp128 a) {
 
 /* ===== Public API: Comparisons ===== */
 
-/* Proper fp128 comparison — returns -1, 0, or 1.
- * Handles NaN (returns 1 for unordered), ±0, sign, exponent, and fraction. */
-static int fp128_compare(fp128 a, fp128 b) {
+/* The compare builtins choose the unordered sentinel for their predicate. */
+static int fp128_compare(fp128 a, fp128 b, int unordered) {
     fp128_bits ua, ub;
     memcpy(&ua, &a, sizeof(ua));
     memcpy(&ub, &b, sizeof(ub));
@@ -1076,7 +883,7 @@ static int fp128_compare(fp128 a, fp128 b) {
     /* Check NaN: exp=0x7FFF and frac!=0 */
     int a_nan = (exp_a == 0x7FFF) && (frac_a_hi != 0 || ua.u[0] != 0);
     int b_nan = (exp_b == 0x7FFF) && (frac_b_hi != 0 || ub.u[0] != 0);
-    if (a_nan || b_nan) return 1; /* unordered */
+    if (a_nan || b_nan) return unordered;
 
     /* Check ±0: both +0 and -0 are equal */
     int a_zero = (exp_a == 0) && (frac_a_hi == 0) && (ua.u[0] == 0);
@@ -1105,27 +912,27 @@ static int fp128_compare(fp128 a, fp128 b) {
 }
 
 int __eqtf2(fp128 a, fp128 b) {
-    return fp128_compare(a, b);
+    return fp128_compare(a, b, 1);
 }
 
 int __netf2(fp128 a, fp128 b) {
-    return fp128_compare(a, b);
+    return fp128_compare(a, b, 1);
 }
 
 int __letf2(fp128 a, fp128 b) {
-    return fp128_compare(a, b);
+    return fp128_compare(a, b, 1);
 }
 
 int __getf2(fp128 a, fp128 b) {
-    return fp128_compare(a, b);
+    return fp128_compare(a, b, -1);
 }
 
 int __lttf2(fp128 a, fp128 b) {
-    return fp128_compare(a, b);
+    return fp128_compare(a, b, 1);
 }
 
 int __gttf2(fp128 a, fp128 b) {
-    return fp128_compare(a, b);
+    return fp128_compare(a, b, -1);
 }
 
 int __unordtf2(fp128 a, fp128 b) {

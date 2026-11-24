@@ -172,6 +172,17 @@ impl Scan<'_> {
         seeds: impl IntoIterator<Item = u32>,
         external_dynamic_dispatch: bool,
     ) -> anyhow::Result<ReachingPlan> {
+        self.reaching_until(seeds, external_dynamic_dispatch, &BTreeSet::new())
+    }
+
+    /// A local continuation returns to its live dispatcher when it yields.
+    /// Its dispatcher and transport callbacks execute outside that capture.
+    pub(super) fn reaching_until(
+        &self,
+        seeds: impl IntoIterator<Item = u32>,
+        external_dynamic_dispatch: bool,
+        boundaries: &BTreeSet<u32>,
+    ) -> anyhow::Result<ReachingPlan> {
         let tables = table_targets(self);
         let types = self.types.as_ref();
         let signature = |ty: u32| {
@@ -203,6 +214,9 @@ impl Scan<'_> {
             .enumerate()
             .filter_map(|(i, f)| f.body.as_ref().map(|b| (i as u32, b)))
         {
+            if boundaries.contains(&caller) {
+                continue;
+            }
             for (target, tail) in body
                 .calls
                 .iter()

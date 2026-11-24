@@ -18,6 +18,11 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 8 uses length-derived bitmap slots for the
+`select` family above `FD_SETSIZE`. The original slots are unchanged for
+smaller requests. This transport update leaves the program ABI digest
+unchanged.
+
 Kernel-host adapter version 7 adds bounded entropy-read continuations, a
 nonallocating process-range validation import, and a private guest-address I/O
 transport. Selection, allocation admission and retained write payloads are

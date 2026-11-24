@@ -1,0 +1,129 @@
+--- a/driver/toobj.cpp
++++ b/driver/toobj.cpp
+@@ -34,6 +34,7 @@
+ #include "llvm/Target/TargetMachine.h"
+ #include "llvm/Analysis/TargetLibraryInfo.h"
+ #include "llvm/Analysis/TargetTransformInfo.h"
++#include "llvm/CodeGen/Passes.h"
+ #include "llvm/CodeGen/TargetSubtargetInfo.h"
+ #include "llvm/Transforms/Utils/Cloning.h"
+ #include "llvm/IR/Module.h"
+@@ -58,6 +59,60 @@
+   pm.run(m);
+ }
+
++// LLVM lowers a Wasm catch to the libunwind personality and TLS slot by
++// default. DRuntime uses a D personality and needs distinct names when an
++// executable also links the C++ unwinder.
++class KandeloDExceptionSymbols : public llvm::ModulePass {
++public:
++  static char ID;
++  KandeloDExceptionSymbols() : ModulePass(ID) {}
++
++  bool runOnModule(llvm::Module &M) override {
++    bool changed = false;
++    auto rename = [&](llvm::StringRef source, llvm::StringRef target) {
++      if (auto *symbol = M.getNamedValue(source)) {
++        if (auto *definition = M.getNamedValue(target)) {
++          symbol->replaceAllUsesWith(definition);
++          symbol->eraseFromParent();
++        } else {
++          symbol->setName(target);
++        }
++        changed = true;
++      }
++    };
++    rename("_Unwind_CallPersonality", "__ldc_d_wasm_call_personality");
++    rename("__wasm_lpad_context", "__ldc_d_wasm_lpad_context");
++    return changed;
++  }
++};
++
++char KandeloDExceptionSymbols::ID;
++
++class KandeloDCodeGenPassManager : public llvm::legacy::PassManager {
++public:
++  explicit KandeloDCodeGenPassManager(bool useDExceptionSymbols)
++      : useDExceptionSymbols(useDExceptionSymbols) {}
++
++  void add(llvm::Pass *pass) override {
++    const bool followsWasmEH = useDExceptionSymbols &&
++                              pass->getPassID() == wasmEHPrepareID();
++    llvm::legacy::PassManager::add(pass);
++    if (followsWasmEH)
++      llvm::legacy::PassManager::add(new KandeloDExceptionSymbols);
++  }
++
++private:
++  static const void *wasmEHPrepareID() {
++    static const void *id = [] {
++      std::unique_ptr<llvm::FunctionPass> pass(llvm::createWasmEHPass());
++      return pass->getPassID();
++    }();
++    return id;
++  }
++
++  bool useDExceptionSymbols;
++};
++
+ // based on llc code, University of Illinois Open Source License
+ void codegenModule(llvm::TargetMachine &Target, llvm::Module &m,
+                    const char *filename,
+@@ -88,7 +143,9 @@
+
+   // Create a PassManager to hold and optimize the collection of passes we are
+   // about to build.
+-  legacy::PassManager Passes;
++  const auto &triple = Target.getTargetTriple();
++  KandeloDCodeGenPassManager Passes(triple.isWasm() &&
++                                  triple.getOSName() == "kandelo");
+
+   // Add internal analysis passes from the target machine.
+   Passes.add(
+--- a/runtime/druntime/src/rt/dwarfeh.d
++++ b/runtime/druntime/src/rt/dwarfeh.d
+@@ -652,11 +652,20 @@
+         }
+     }
+
+-    // We inline the needed parts of libunwind here to avoid dependence
+-    // We can't link libunwind because we need to override _Unwind_CallPersonality
+-    //
+-    // TODO: if/when the personality can be changed per function for Wasm in LLVM, use libunwind
+-    // (so we can support C++ exceptions as well)
++    // Kandelo's D codegen uses a private personality and TLS slot so the
++    // C++ unwinder can supply its own implementation of these symbols.
++    version (Kandelo)
++    {
++        private enum wasmLPadSymbol = "__ldc_d_wasm_lpad_context";
++        private enum wasmPersonalitySymbol = "__ldc_d_wasm_call_personality";
++        private enum wasmDeleteSymbol = "__ldc_d_wasm_delete_exception";
++    }
++    else
++    {
++        private enum wasmLPadSymbol = "__wasm_lpad_context";
++        private enum wasmPersonalitySymbol = "_Unwind_CallPersonality";
++        private enum wasmDeleteSymbol = "_Unwind_DeleteException";
++    }
+
+     extern(C) struct _Unwind_LandingPadContext {
+         // Input information to personality function
+@@ -669,8 +678,10 @@
+
+     // Communication channel between compiler-generated user code and personality
+     // function
++    pragma(mangle, wasmLPadSymbol)
+     extern(C) _Unwind_LandingPadContext __wasm_lpad_context;
+
++    pragma(mangle, wasmPersonalitySymbol)
+     extern(C) _Unwind_Reason_Code _Unwind_CallPersonality(_Unwind_Exception *exception_object) {
+         // Reset the selector.
+         __wasm_lpad_context.selector = 0;
+@@ -682,6 +693,7 @@
+             cast(_Unwind_Context *)&__wasm_lpad_context);
+     }
+
++    pragma(mangle, wasmDeleteSymbol)
+     extern(C) void _Unwind_DeleteException(_Unwind_Exception *exception_object) {
+         if (exception_object.exception_cleanup != null) {
+             exception_object.exception_cleanup(_URC_FOREIGN_EXCEPTION_CAUGHT, exception_object);

@@ -563,51 +563,82 @@ impl<'a> Planner<'_, '_, 'a> {
         let mut provider = program
             .original_scan()
             .body_provider(self.limits.interpreter.ir);
+        // The reaching relation stays fixed during this phase. Large groups
+        // can be shared by thousands of callers, so keep their ordered rows
+        // within the planner's remaining resident budget.
+        let cache_budget = (self.limits.metadata_bytes - self.n * 192).min(4 * 1024 * 1024);
+        let effect_limit = cache_budget / 256;
+        let mut target_budget = cache_budget / 2;
+        let mut target_groups = BTreeMap::<i64, Vec<u32>>::new();
         while let Some(function) = queue.pop_front() {
             queued[function as usize] = false;
             let mut injections = BTreeMap::new();
             let mut needed = false;
+            // Child results stay fixed while evaluating this caller.
+            // Many instructions share a target group and the same child effect.
+            let mut effects = BTreeMap::new();
             store.charge_work(1)?;
-            let mut query=store.db.prepare_cached("SELECT s.instruction,m.target FROM sink_site s JOIN sink_target_member m ON m.group_id=s.group_id
-              JOIN sink_reaching r ON r.function=m.target WHERE s.caller=? ORDER BY s.instruction,m.target")?;
+            let mut query = store.db.prepare_cached(
+                "SELECT instruction,group_id FROM sink_site WHERE caller=? ORDER BY point",
+            )?;
+            let mut members = store.db.prepare_cached(
+                "SELECT m.target FROM sink_target_member m
+                 JOIN sink_reaching r ON r.function=m.target
+                 WHERE m.group_id=? ORDER BY m.target",
+            )?;
             let mut rows = query.query([function])?;
-            let mut site = None;
             let mut targets = Vec::new();
             while let Some(row) = rows.next()? {
                 let instruction: usize = row.get(0)?;
-                let target: u32 = row.get(1)?;
-                if site != Some(instruction) {
-                    if let Some(instruction) = site {
-                        self.injection(
-                            function,
-                            instruction,
-                            &targets,
-                            &child,
-                            &mut injections,
-                            &mut needed,
-                        )?;
+                let group: i64 = row.get(1)?;
+                let (effect, vfork) = if let Some(&effect) = effects.get(&group) {
+                    effect
+                } else {
+                    store.charge_work(1)?;
+                    let effect = if let Some(targets) = target_groups.get(&group) {
+                        self.child_effect(function, targets, &child)
+                    } else {
+                        targets.clear();
+                        let mut members = members.query([group])?;
+                        while let Some(member) = members.next()? {
+                            ensure!(
+                                targets.len() < self.limits.interpreter.evaluation.call_targets,
+                                "child target group exceeds budget"
+                            );
+                            targets.push(member.get(0)?);
+                        }
+                        let effect = self.child_effect(function, &targets, &child);
+                        let bytes = targets.capacity() * size_of::<u32>() + 192;
+                        if targets.len() >= 32 && bytes <= target_budget {
+                            target_groups.insert(group, std::mem::take(&mut targets));
+                            target_budget -= bytes;
+                        }
+                        effect
+                    };
+                    if effects.len() < effect_limit {
+                        effects.insert(group, effect);
                     }
-                    targets.clear();
-                    site = Some(instruction);
+                    effect
+                };
+                needed |= vfork;
+                if effect.returned.is_some() || effect.thrown != 0 {
+                    ensure!(
+                        injections.len() < self.limits.interpreter.evaluation.call_targets,
+                        "child injection count exceeds budget"
+                    );
+                    injections.insert(
+                        instruction,
+                        Injection {
+                            returned: effect.returned,
+                            thrown: effect.thrown,
+                            payload: None,
+                        },
+                    );
                 }
-                ensure!(
-                    targets.len() < self.limits.interpreter.evaluation.call_targets,
-                    "child target group exceeds budget"
-                );
-                targets.push(target);
-            }
-            if let Some(instruction) = site {
-                self.injection(
-                    function,
-                    instruction,
-                    &targets,
-                    &child,
-                    &mut injections,
-                    &mut needed,
-                )?;
             }
             drop(rows);
             drop(query);
+            drop(members);
             let mut result = if injections.is_empty() {
                 if !needed {
                     continue;
@@ -691,20 +722,18 @@ impl<'a> Planner<'_, '_, 'a> {
         }
         Ok(output)
     }
-    fn injection(
+    fn child_effect(
         &self,
         function: u32,
-        instruction: usize,
         targets: &[u32],
         child: &[Option<Child>],
-        injections: &mut BTreeMap<usize, Injection>,
-        needed: &mut bool,
-    ) -> Result<()> {
+    ) -> (Child, bool) {
         let mut returned = None;
         let mut thrown = 0;
+        let mut vfork = false;
         for &target in targets {
             if target != EXT && self.vfork[target as usize] {
-                *needed = true;
+                vfork = true;
                 continue;
             }
             if let Some(c) = child[self.ix(target)] {
@@ -727,21 +756,7 @@ impl<'a> Planner<'_, '_, 'a> {
         thrown = self
             .plan
             .remap_longjmp(function, targets, targets.contains(&EXT), thrown);
-        if returned.is_some() || thrown != 0 {
-            ensure!(
-                injections.len() < self.limits.interpreter.evaluation.call_targets,
-                "child injection count exceeds budget"
-            );
-            injections.insert(
-                instruction,
-                Injection {
-                    returned,
-                    thrown,
-                    payload: None,
-                },
-            );
-        }
-        Ok(())
+        (Child { returned, thrown }, vfork)
     }
 }
 

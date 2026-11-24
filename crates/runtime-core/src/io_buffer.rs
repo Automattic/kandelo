@@ -2,11 +2,12 @@ use alloc::vec::{IntoIter, Vec};
 use alloc::collections::VecDeque;
 use core::ops::{Deref, DerefMut};
 use wasm_posix_shared::Errno;
+use wasm_posix_shared::platform_limits::LIVE_IO_BUDGET_BYTES;
 use crate::metadata_budget::{MetadataBudget, MetadataReservation};
 
-pub(crate) const DEFAULT_IO_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const WRITEBACK_BYTES: usize = 2 * 1024 * 1024;
-pub(crate) static IO_MEMORY: MetadataBudget = MetadataBudget::tracked(DEFAULT_IO_BYTES - WRITEBACK_BYTES, &crate::metadata_budget::FILESYSTEM_ADMISSION);
+pub(crate) const DEFAULT_IO_BYTES: usize = LIVE_IO_BUDGET_BYTES + WRITEBACK_BYTES;
+pub(crate) static IO_MEMORY: MetadataBudget = MetadataBudget::tracked(LIVE_IO_BUDGET_BYTES, &crate::metadata_budget::FILESYSTEM_ADMISSION);
 pub(crate) static WRITEBACK_MEMORY: MetadataBudget = MetadataBudget::tracked(WRITEBACK_BYTES, &crate::metadata_budget::FILESYSTEM_ADMISSION);
 
 pub(crate) fn reserve_payload(bytes: usize, writeback: bool) -> Result<MetadataReservation<'static>, Errno> {

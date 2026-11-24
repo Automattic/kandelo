@@ -7452,7 +7452,7 @@ pub fn sys_write(
                     if buf.len() <= PIPE_BUF && pipe.free_space() < buf.len() {
                         // Not enough space for atomic write — fall through to block/EAGAIN
                     } else {
-                        let n = pipe.write(buf);
+                        let n = pipe.try_write(buf)?;
                         if n > 0 {
                             return Ok(n);
                         }
@@ -7488,7 +7488,7 @@ pub fn sys_write(
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
                             }
-                            let n = pipe.write(buf);
+                            let n = pipe.try_write(buf)?;
                             if n > 0 {
                                 return Ok(n);
                             }
@@ -7519,7 +7519,7 @@ pub fn sys_write(
                             proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                             return Err(Errno::EPIPE);
                         }
-                        let n = pipe.write(buf);
+                        let n = pipe.try_write(buf)?;
                         if n > 0 {
                             return Ok(n);
                         }
@@ -8599,6 +8599,40 @@ fn commit_staged_transfer_input(
     }
 }
 
+enum TransferOutput {
+    Direct,
+    Append,
+    UnixStream(usize),
+}
+
+impl TransferOutput {
+    fn prepare_chunk(&self, proc: &mut Process, requested: usize) -> Result<usize, Errno> {
+        let Self::UnixStream(sock_idx) = *self else {
+            return Ok(requested);
+        };
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        if socket_write_shutdown(sock) {
+            proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+            return Err(Errno::EPIPE);
+        }
+        let pipe_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
+        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+            .ok_or(Errno::EBADF)?;
+        if !pipe.is_read_end_open() {
+            proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+            return Err(Errno::EPIPE);
+        }
+
+        // Admit the Unix stream's storage before reading from a source
+        // that may advance a cursor or destructively dequeue data.
+        let bytes = pipe.prepare_write(requested)?;
+        if bytes == 0 {
+            return Err(Errno::EAGAIN);
+        }
+        Ok(bytes)
+    }
+}
+
 fn transfer_output_plan(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -8606,7 +8640,7 @@ fn transfer_output_plan(
     fd: i32,
     offset: Option<i64>,
     requested_len: usize,
-) -> Result<(usize, bool), Errno> {
+) -> Result<(usize, TransferOutput), Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.is_path_only() || ofd.status_flags() & O_ACCMODE == O_RDONLY {
@@ -8620,11 +8654,19 @@ fn transfer_output_plan(
         // Do not pre-limit against fstat: concurrent growth could raise an
         // early EFBIG, and concurrent shrink could under-copy. The exact
         // append result clips against RLIMIT_FSIZE and drives source commit.
-        return Ok((requested_len, true));
+        return Ok((requested_len, TransferOutput::Append));
+    }
+    if offset.is_none() && ofd.file_type == FileType::Socket {
+        use crate::socket::{SocketDomain, SocketType};
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        if sock.domain == SocketDomain::Unix && sock.sock_type == SocketType::Stream {
+            return Ok((requested_len, TransferOutput::UnixStream(sock_idx)));
+        }
     }
     Ok((
         write_operation_budget(proc, host, caller_tid, fd, offset, requested_len)?,
-        false,
+        TransferOutput::Direct,
     ))
 }
 
@@ -8727,7 +8769,7 @@ pub fn sys_sendfile(
     count: usize,
 ) -> Result<usize, Errno> {
     validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
-    let (writable_len, stage_source) = transfer_output_plan(
+    let (writable_len, output) = transfer_output_plan(
         proc,
         host,
         current_tid_for_process(proc),
@@ -8743,8 +8785,12 @@ pub fn sys_sendfile(
     let mut cur_offset = offset;
 
     while total < writable_len {
-        let to_read = (writable_len - total).min(buf.len());
-        let (n, staged) = if stage_source {
+        let to_read = match output.prepare_chunk(proc, (writable_len - total).min(buf.len())) {
+            Ok(bytes) => bytes,
+            Err(_) if total > 0 => return Ok(total),
+            Err(error) => return Err(error),
+        };
+        let (n, staged) = if matches!(output, TransferOutput::Append) {
             match stage_transfer_input(
                 proc,
                 host,
@@ -8824,7 +8870,7 @@ pub fn sys_copy_file_range(
     len: usize,
 ) -> Result<usize, Errno> {
     validate_transfer_input(proc, fd_in, off_in)?;
-    let (writable_len, stage_source) = transfer_output_plan(
+    let (writable_len, output) = transfer_output_plan(
         proc,
         host,
         current_tid_for_process(proc),
@@ -8841,8 +8887,12 @@ pub fn sys_copy_file_range(
     let mut cur_off_out = off_out.unwrap_or(-1);
 
     while total < writable_len {
-        let to_read = (writable_len - total).min(buf.len());
-        let (n, staged) = if stage_source {
+        let to_read = match output.prepare_chunk(proc, (writable_len - total).min(buf.len())) {
+            Ok(bytes) => bytes,
+            Err(_) if total > 0 => return Ok(total),
+            Err(error) => return Err(error),
+        };
+        let (n, staged) = if matches!(output, TransferOutput::Append) {
             match stage_transfer_input(
                 proc,
                 host,
@@ -13977,11 +14027,7 @@ pub fn sys_socketpair(
     // and therefore must not acquire unrelated stream buffers.
     let pipe_indices = if stype == SocketType::Stream {
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let prepared = (|| pipe_table.try_alloc_pair(
-            PipeBuffer::try_new(DEFAULT_PIPE_CAPACITY)?,
-            PipeBuffer::try_new(DEFAULT_PIPE_CAPACITY)?,
-        ))();
-        match prepared {
+        match pipe_table.try_alloc_unix_stream_pair() {
             Ok(indices) => Some(indices),
             Err(error) => {
                 proc.cancel_descriptor(first);
@@ -17829,9 +17875,7 @@ fn sys_connect_impl(
 
             // Create pipe pair for bidirectional communication (in global table for fork safety)
             let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-            let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
-                PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
-            )?;
+            let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_unix_stream_pair()?;
 
             if let Some(shared_idx) = shared_idx {
                 let pending = crate::socket::PendingConnection {
@@ -23475,9 +23519,7 @@ pub fn sys_readlinkat(
 
 /// select -- synchronous I/O multiplexing.
 ///
-/// Wraps poll() by converting fd_set bitmasks into pollfd entries.
-/// Each fd_set has the shared generated FD_SET_BYTES width. Null sets are
-/// allowed.
+/// Uses poll readiness for the descriptors named in the caller's bitmaps.
 pub fn sys_select(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -23503,107 +23545,82 @@ pub fn sys_select_with_peers(
     proc: &mut Process,
     host: &mut dyn HostIO,
     nfds: i32,
-    mut readfds: Option<&mut [u8]>,
-    mut writefds: Option<&mut [u8]>,
-    mut exceptfds: Option<&mut [u8]>,
+    readfds: Option<&mut [u8]>,
+    writefds: Option<&mut [u8]>,
+    exceptfds: Option<&mut [u8]>,
     timeout_ms: i32,
     peers: &mut [&mut Process],
 ) -> Result<i32, Errno> {
-    use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLPRI};
-    use wasm_posix_shared::select::{FD_SETSIZE, FD_SET_BYTES};
+    use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLPRI};
+    use wasm_posix_shared::select::MAX_NFDS;
 
-    if nfds < 0 || nfds as usize > FD_SETSIZE {
+    if nfds < 0 || nfds as usize > MAX_NFDS {
         return Err(Errno::EINVAL);
     }
 
     let nfds = nfds as usize;
+    let mut sets = [readfds, writefds, exceptfds];
+    let set_bytes = if sets.iter().any(Option::is_some) {
+        nfds.div_ceil(8)
+    } else {
+        0
+    };
+    if sets.iter().flatten().any(|set| set.len() < set_bytes) {
+        return Err(Errno::EFAULT);
+    }
 
-    // Inline readiness check keeps this bounded hot path allocation-free.
-    // Check each fd directly from the fd_sets.
+    // Read and replace one byte at a time in private channel scratch. This
+    // needs no second bitmap allocation and skips unrequested descriptors.
+    // The host publishes the results only when the operation succeeds.
+    let requested_events = [POLLIN, POLLOUT, POLLPRI];
+    let ready_events = [POLLIN | POLLHUP | POLLERR, POLLOUT | POLLERR, POLLPRI];
     let mut ready = 0i32;
-
-    // Save input fd_sets before clearing (we need to know which fds were requested)
-    let mut in_read_buf = [0u8; FD_SET_BYTES];
-    let mut in_write_buf = [0u8; FD_SET_BYTES];
-    let mut in_except_buf = [0u8; FD_SET_BYTES];
-    let set_bytes = nfds.div_ceil(8);
-
-    if let Some(ref s) = readfds {
-        in_read_buf[..set_bytes].copy_from_slice(&s[..set_bytes]);
-    }
-    if let Some(ref s) = writefds {
-        in_write_buf[..set_bytes].copy_from_slice(&s[..set_bytes]);
-    }
-    if let Some(ref s) = exceptfds {
-        in_except_buf[..set_bytes].copy_from_slice(&s[..set_bytes]);
-    }
-
-    // Clear output fd_sets
-    if let Some(ref mut s) = readfds {
-        s[..set_bytes].fill(0);
-    }
-    if let Some(ref mut s) = writefds {
-        s[..set_bytes].fill(0);
-    }
-    if let Some(ref mut s) = exceptfds {
-        s[..set_bytes].fill(0);
-    }
-
-    for fd in 0..nfds {
-        let byte = fd / 8;
-        let bit = fd % 8;
-
-        let want_read = (in_read_buf[byte] >> bit) & 1 != 0;
-        let want_write = (in_write_buf[byte] >> bit) & 1 != 0;
-        let want_except = (in_except_buf[byte] >> bit) & 1 != 0;
-
-        if !want_read && !want_write && !want_except {
-            continue;
+    for byte in 0..set_bytes {
+        let requested = sets.each_ref().map(|set| set.as_ref().map_or(0, |bits| bits[byte]));
+        let mut pending = requested[0] | requested[1] | requested[2];
+        let remaining = nfds - byte * 8;
+        if remaining < 8 {
+            pending &= (1u8 << remaining) - 1;
         }
-        let mut events: i16 = 0;
-        if want_read {
-            events |= POLLIN;
-        }
-        if want_write {
-            events |= POLLOUT;
-        }
-        if want_except {
-            events |= POLLPRI;
-        }
-
-        let mut pollfd = WasmPollFd {
-            fd: fd as i32,
-            events,
-            revents: 0,
-        };
-        poll_check_depth(proc, host, core::slice::from_mut(&mut pollfd), 0, peers);
-
-        let revents = pollfd.revents;
-        let mut counted = false;
-
-        if want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
-            if let Some(ref mut s) = readfds {
-                s[byte] |= 1 << bit;
+        let mut result = [0u8; 3];
+        while pending != 0 {
+            let bit = pending.trailing_zeros();
+            let mask = 1u8 << bit;
+            pending &= !mask;
+            let mut pollfd = WasmPollFd {
+                fd: (byte * 8 + bit as usize) as i32,
+                events: 0,
+                revents: 0,
+            };
+            for (bits, events) in requested.into_iter().zip(requested_events) {
+                if bits & mask != 0 {
+                    pollfd.events |= events;
+                }
             }
-            counted = true;
-        }
-        if want_write && (revents & (POLLOUT | POLLERR)) != 0 {
-            if let Some(ref mut s) = writefds {
-                s[byte] |= 1 << bit;
+            poll_check_depth(proc, host, core::slice::from_mut(&mut pollfd), 0, peers);
+            if pollfd.revents & POLLNVAL != 0 {
+                return Err(Errno::EBADF);
             }
-            counted = true;
-        }
-        if want_except && (revents & POLLPRI) != 0 {
-            if let Some(ref mut s) = exceptfds {
-                s[byte] |= 1 << bit;
+            for index in 0..3 {
+                if requested[index] & mask != 0 && pollfd.revents & ready_events[index] != 0 {
+                    result[index] |= mask;
+                    ready += 1;
+                }
             }
-            counted = true;
         }
-        if counted {
-            ready += 1;
+        for (set, bits) in sets.iter_mut().zip(result) {
+            if let Some(set) = set {
+                set[byte] = bits;
+            }
         }
     }
 
+    let guest_word = if proc.pointer_width == 8 { 8 } else { 4 };
+    let rounded_bytes = nfds.div_ceil(guest_word * 8) * guest_word;
+    for set in sets.iter_mut().flatten() {
+        let end = rounded_bytes.min(set.len());
+        set[set_bytes..end].fill(0);
+    }
     if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
@@ -29661,7 +29678,7 @@ mod tests {
     }
 
     #[test]
-    fn pipe_and_socketpair_payload_refusal_releases_both_reserved_descriptors() {
+    fn pipe_and_socketpair_setup_refusal_releases_both_reserved_descriptors() {
         let mut proc = Process::new(81_062);
         let mut host = MockHostIO::new();
         proc.sockets.prepare_additional(2).unwrap();
@@ -29683,8 +29700,7 @@ mod tests {
         let socket_default_bytes = 2 * (crate::io_buffer::IO_MEMORY.usage().0 - baseline);
         drop(defaults);
         let active = unsafe { crate::pipe::global_pipe_table() }.count_active();
-        for available in [0, descriptor_bytes + socket_default_bytes,
-            descriptor_bytes + socket_default_bytes + 2 * DEFAULT_PIPE_CAPACITY] {
+        for available in [0, descriptor_bytes + socket_default_bytes - 1] {
             let _limit = crate::io_buffer::test_budget(baseline + available);
             if available == 0 { assert_eq!(sys_pipe(&mut proc), Err(Errno::ENOMEM)); }
             assert_eq!(sys_socketpair(&mut proc, &mut host, wasm_posix_shared::socket::AF_UNIX,
@@ -29703,9 +29719,21 @@ mod tests {
         assert_eq!((read_fd, write_fd), (4, 5));
         sys_close(&mut proc, &mut host, read_fd).unwrap();
         sys_close(&mut proc, &mut host, write_fd).unwrap();
-        let (first, second) = sys_socketpair(&mut proc, &mut host, wasm_posix_shared::socket::AF_UNIX,
-            wasm_posix_shared::socket::SOCK_STREAM, 0).unwrap();
+        let (first, second) = {
+            // Both arena slots already exist from the preceding pipe and fd
+            // checks. Reserve for descriptors and socket defaults only.
+            let retained = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(retained + descriptor_bytes + socket_default_bytes);
+            let pair = sys_socketpair(&mut proc, &mut host, wasm_posix_shared::socket::AF_UNIX,
+                wasm_posix_shared::socket::SOCK_STREAM, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, pair.0, b"q"), Err(Errno::ENOMEM));
+            pair
+        };
         assert_eq!((first, second), (4, 5));
+        assert_eq!(sys_write(&mut proc, &mut host, first, b"q"), Ok(1));
+        let mut byte = [0];
+        assert_eq!(sys_read(&mut proc, &mut host, second, &mut byte), Ok(1));
+        assert_eq!(byte, *b"q");
         sys_close(&mut proc, &mut host, first).unwrap();
         sys_close(&mut proc, &mut host, second).unwrap();
         sys_close(&mut proc, &mut host, held_fd).unwrap();
@@ -43597,6 +43625,38 @@ mod tests {
         assert_eq!(result, Ok(2));
     }
 
+    #[test]
+    fn wide_select_counts_each_ready_bit_and_checks_closed_descriptors() {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_STREAM};
+        let mut proc = Process::new(81_085);
+        let mut host = MockHostIO::new();
+        let (left, right) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let fd = 1024;
+        sys_setrlimit(&mut proc, 7, 2048, 4096).unwrap();
+        assert_eq!(sys_dup2(&mut proc, &mut host, left, fd), Ok(fd));
+        // Lowering the soft limit does not close the existing descriptor.
+        sys_setrlimit(&mut proc, 7, 1024, 4096).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, right, b"x"), Ok(1));
+        let mut read = [0; 129];
+        let mut write = [0; 129];
+        *read.last_mut().unwrap() = 0xff;
+        *write.last_mut().unwrap() = 1;
+        assert_eq!(
+            sys_select(&mut proc, &mut host, fd + 1, Some(&mut read), Some(&mut write), None, 0),
+            Ok(2)
+        );
+        assert_eq!(read[128], 1);
+        assert_eq!(write[128], 1);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_select(&mut proc, &mut host, fd + 1, Some(&mut read), None, None, -1),
+            Err(Errno::EBADF)
+        );
+        for fd in [left, right] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+    }
+
     // ---- Phase 12: setuid/setgid/seteuid/setegid ----
 
     #[test]
@@ -45642,6 +45702,37 @@ impl HostIO for NetMock {
         let result = sys_sendfile(&mut proc, &mut host, out_fd, in_fd, 0, 10);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 10);
+    }
+
+    #[test]
+    fn unix_stream_transfer_preserves_input_on_backing_refusal_and_backpressure() {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_STREAM};
+        let mut proc = Process::new(81_081);
+        let mut host = MockHostIO::new();
+        let source = sys_memfd_create(&mut proc, b"transfer", 0).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, source, b"source"), Ok(6));
+        assert_eq!(sys_lseek(&mut proc, &mut host, source, 0, 0), Ok(0));
+        let (send, recv) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(sys_sendfile(&mut proc, &mut host, send, source, -1, 6), Err(Errno::ENOMEM));
+            assert_eq!(sys_lseek(&mut proc, &mut host, source, 0, 1), Ok(0));
+        }
+        let queued = vec![0; DEFAULT_PIPE_CAPACITY - 3];
+        assert_eq!(sys_write(&mut proc, &mut host, send, &queued), Ok(queued.len()));
+        assert_eq!(sys_sendfile(&mut proc, &mut host, send, source, -1, 6), Ok(3));
+        assert_eq!(sys_sendfile(&mut proc, &mut host, send, source, -1, 3), Err(Errno::EAGAIN));
+        assert_eq!(sys_lseek(&mut proc, &mut host, source, 0, 1), Ok(3));
+        let mut received = vec![0; DEFAULT_PIPE_CAPACITY];
+        assert_eq!(sys_read(&mut proc, &mut host, recv, &mut received), Ok(received.len()));
+        assert_eq!(&received[queued.len()..], b"sou");
+        assert_eq!(sys_sendfile(&mut proc, &mut host, send, source, -1, 3), Ok(3));
+        assert_eq!(sys_read(&mut proc, &mut host, recv, &mut received), Ok(3));
+        assert_eq!(&received[..3], b"rce");
+        for fd in [source, send, recv] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
     }
 
     // ===== statx tests =====
