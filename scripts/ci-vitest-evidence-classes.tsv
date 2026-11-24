@@ -220,13 +220,12 @@ host/test/group-memory-kernel.test.ts	prepared-product
 host/test/group-memory-resources.test.ts	source-only
 host/test/group-memory-transport.test.ts	source-only
 host/test/group-memory-worker-boundary.test.ts	prepared-product
-host/test/grouped-fork-launch.test.ts	source-only
 host/test/grouped-root-launch.test.ts	prepared-product
 host/test/grouped-sdk-execution.test.ts	prepared-product
 host/test/grouped-session-exit-publication.test.ts	source-only
 host/test/grouped-session-runtime.test.ts	prepared-product
-host/test/grouped-thread-launch.test.ts	source-only
 host/test/grouped-worker-initialization.test.ts	source-only
+host/test/grouped-worker-objects.test.ts	source-only
 host/test/gtk3-smoke.test.ts	prepared-product
 host/test/guest-autotools.test.ts	prepared-product
 host/test/guest-bash-subshells.test.ts	prepared-product

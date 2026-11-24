@@ -3,6 +3,67 @@
 use super::*;
 
 impl Storage {
+    /// Read a copied scalar from the exact image through its live page table.
+    pub(crate) fn execution_word(&self, memory: &impl PhysicalMemory, admission: GroupAdmission, address: u32) -> Result<u32, Errno> {
+        let image = self.images.get(&self.owned(admission)?.image).ok_or(Errno::ESRCH)?;
+        if address % 4 != 0 || !image.source_live || image.stopping { return Err(Errno::EFAULT); }
+        let table = image.allocation.ok_or(Errno::EIO)?.controls.address();
+        let extent = memory.atomic_load(table)?;
+        if extent > image.layout.maximum_pages || address / PAGE >= extent { return Err(Errno::EFAULT); }
+        let pte = memory.atomic_load(table + layout::ROOT_HEADER_BYTES + address / PAGE * 4)?;
+        if pte & 0xfffc != 0 || pte & 1 == 0 || pte >> 16 == 0 || pte >> 16 >= memory.current_pages()? { return Err(Errno::EFAULT); }
+        memory.atomic_load((pte & 0xffff0000) + address % PAGE)
+    }
+
+    /// A copied pending syscall belongs to the parent. Clear the child's
+    /// mailbox before it can be registered or observed by a dispatcher, while
+    /// preserving the continuation anchor and every surrounding guest byte.
+    pub(crate) fn initialize_fork_channel(
+        &self,
+        memory: &mut impl PhysicalMemory,
+        child: GroupAdmission,
+        address: u32,
+    ) -> Result<(), Errno> {
+        let member = self.owned(child)?;
+        let image = self.images.get(&member.image).ok_or(Errno::ESRCH)?;
+        if member.exposure != Exposure::Prepared || image.exposed || image.stopping {
+            return Err(Errno::EBUSY);
+        }
+        let length = wasm_posix_shared::channel::MIN_CHANNEL_SIZE as u32;
+        let end = address.checked_add(length).ok_or(Errno::EFAULT)?;
+        let root = image.allocation.ok_or(Errno::EIO)?.controls.address();
+        if address % 4 != 0
+            || u64::from(end) > u64::from(memory.atomic_load(root)?) * u64::from(PAGE)
+        {
+            return Err(Errno::EFAULT);
+        }
+        const TARGETS: usize =
+            (wasm_posix_shared::channel::MIN_CHANNEL_SIZE + 2 * PAGE as usize - 2) / PAGE as usize;
+        let mut targets = [(0, 0); TARGETS];
+        let mut count = 0;
+        let mut cursor = address;
+        // Preflight every segment before the first write. A mailbox must be
+        // private to this child; a shared-object alias cannot be cleared.
+        while cursor < end {
+            let entry = memory.atomic_load(root + layout::ROOT_HEADER_BYTES + cursor / PAGE * 4)?;
+            let frame = entry >> 16;
+            if entry & 0xffff != 3
+                || !image.payload.contains(&frame)
+                || frame >= memory.current_pages()?
+            {
+                return Err(Errno::EFAULT);
+            }
+            let bytes = (end - cursor).min(PAGE - cursor % PAGE);
+            targets[count] = (frame * PAGE + cursor % PAGE, bytes);
+            count += 1;
+            cursor += bytes;
+        }
+        for (physical, bytes) in &targets[..count] {
+            memory.fill(*physical, *bytes, 0)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_private_fork(
         &mut self,
         memory: &mut impl PhysicalMemory,
@@ -120,6 +181,10 @@ impl Storage {
                     exposure: Exposure::Prepared,
                     pause: None,
                     pending_wait_drain: false,
+                    worker_absent: false,
+                    references: References::Unbound,
+                    native_join: false,
+                    worker_fact: 0,
                 },
             )?;
             let allocation = self.pool.as_mut().ok_or(Errno::EAGAIN)?.allocate_image(
@@ -200,6 +265,83 @@ mod tests {
             .atomic_load(root + layout::ROOT_HEADER_BYTES + page * 4)
             .unwrap()
     }
+    #[test]
+    fn child_mailbox_initialization_preserves_parent_and_continuation_bytes() {
+        let (mut groups, mut storage, mut memory, parent) = running();
+        let original = storage.descriptor(parent).unwrap();
+        for page in 0..2 {
+            memory
+                .fill(pte(&memory, original.root, page) & 0xffff0000, PAGE, 0xa5)
+                .unwrap();
+        }
+        let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+        memory
+            .atomic_store(original.replica + layout::REPLICA_ACK, epoch)
+            .unwrap();
+        let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+        storage
+            .prepare_private_fork(&mut memory, parent, epoch, child)
+            .unwrap();
+        let copied = storage.descriptor(child).unwrap();
+        let channel = 16;
+        let end = channel + wasm_posix_shared::channel::MIN_CHANNEL_SIZE as u32;
+        storage
+            .initialize_fork_channel(&mut memory, child, channel)
+            .unwrap();
+        let mut bytes = [0; PAGE as usize];
+        for page in 0..2 {
+            memory
+                .read(pte(&memory, original.root, page) & 0xffff0000, &mut bytes)
+                .unwrap();
+            assert!(bytes.iter().all(|byte| *byte == 0xa5));
+            memory
+                .read(pte(&memory, copied.root, page) & 0xffff0000, &mut bytes)
+                .unwrap();
+            for (offset, byte) in bytes.iter().enumerate() {
+                let address = page * PAGE + offset as u32;
+                assert_eq!(
+                    *byte,
+                    if (channel..end).contains(&address) {
+                        0
+                    } else {
+                        0xa5
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn child_mailbox_initialization_preflights_the_whole_range_before_writing() {
+        let (mut groups, mut storage, mut memory, parent) = running();
+        let original = storage.descriptor(parent).unwrap();
+        let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+        memory
+            .atomic_store(original.replica + layout::REPLICA_ACK, epoch)
+            .unwrap();
+        let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+        storage
+            .prepare_private_fork(&mut memory, parent, epoch, child)
+            .unwrap();
+        let copied = storage.descriptor(child).unwrap();
+        let first = pte(&memory, copied.root, 0) & 0xffff0000;
+        memory.fill(first, PAGE, 0xa5).unwrap();
+        memory
+            .atomic_store(copied.root + layout::ROOT_HEADER_BYTES + 4, 0)
+            .unwrap();
+        assert_eq!(
+            storage.initialize_fork_channel(&mut memory, child, 16),
+            Err(Errno::EFAULT)
+        );
+        let mut bytes = [0; PAGE as usize];
+        memory.read(first, &mut bytes).unwrap();
+        assert!(bytes.iter().all(|byte| *byte == 0xa5));
+        assert_eq!(
+            storage.initialize_fork_channel(&mut memory, parent, 16),
+            Err(Errno::EBUSY)
+        );
+    }
+
     #[test]
     fn fork_copies_private_aliases_once_and_preserves_holes_and_prot_none() {
         let (mut groups, mut storage, mut memory, parent) = running();

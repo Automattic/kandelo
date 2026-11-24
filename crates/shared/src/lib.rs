@@ -10,6 +10,11 @@ pub mod ioctl_contract;
 pub mod kms_cursor;
 pub mod memory_group;
 pub mod group_storage;
+pub mod group_operation;
+pub mod exec_control;
+pub mod root_control;
+pub mod retirement_control;
+pub mod group_access;
 pub mod group_memory_change;
 pub mod group_memory_layout;
 pub mod group_exec;
@@ -2357,7 +2362,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 28;
+    pub const HOST_ADAPTER_VERSION: u32 = 30;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2523,6 +2528,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
         HostAdapterKernelExport::required("kernel_get_process_state"),
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
+        HostAdapterKernelExport::optional("kernel_group_exec_control"),
         HostAdapterKernelExport::optional("kernel_group_exec_target_bind_image"),
         HostAdapterKernelExport::optional("kernel_group_memory_break"),
         HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
@@ -2535,8 +2541,11 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_prepare"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_release"),
         HostAdapterKernelExport::optional("kernel_group_memory_thread_control_reuse"),
+        HostAdapterKernelExport::optional("kernel_group_operation"),
         HostAdapterKernelExport::optional("kernel_group_owned_mapping_prepare"),
         HostAdapterKernelExport::optional("kernel_group_owned_mapping_validate"),
+        HostAdapterKernelExport::optional("kernel_group_retirement_control"),
+        HostAdapterKernelExport::optional("kernel_group_root_control"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
         HostAdapterKernelExport::required("kernel_handle_guest_io"),

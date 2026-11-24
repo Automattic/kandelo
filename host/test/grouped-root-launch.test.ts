@@ -9,7 +9,7 @@ let directory: string, image: string;
 beforeAll(async () => { directory = mkdtempSync(join(root, '.scratch/grouped-root-node-')); image = join(directory, 'rootfs.vfs'); writeFileSync(image, await groupedRootLaunchFixture()); }, 90000);
 afterAll(() => { if (directory)
     rmSync(directory, { recursive: true, force: true }); });
-for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-destroy', 'destroy-in-registration'])
+for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-constructor', 'readiness', 'launch-message', 'stopped-destroy', 'destroy-in-registration'])
     it(stage, async () => {
         const registration = new URL('../node_modules/tsx/dist/esm/api/index.mjs', import.meta.url).href;
         const entry = new URL('./fixtures/grouped-root-launch-node-worker.ts', import.meta.url).href;
@@ -26,7 +26,7 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
                 mkdirSync(process.env.KANDELO_ROOT_CUSTODY_EVIDENCE, { recursive: true });
                 writeFileSync(join(process.env.KANDELO_ROOT_CUSTODY_EVIDENCE, stage + '.json'), JSON.stringify(r, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2) + '\n');
             }
-            if (stage === 'constructor') {
+            if (['constructor', 'stopped-constructor', 'readiness', 'launch-message'].includes(stage)) {
                 expect(r.fatal).toBe('Grouped process launch failed; storage retained');
                 expect(r.constructionAttempts).toBe(1);
                 expect(r.fatalLedger.kernel).toMatchObject({ processes: 1, images: 1, tasks: 1 });

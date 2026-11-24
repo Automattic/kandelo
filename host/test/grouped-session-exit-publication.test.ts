@@ -16,7 +16,7 @@ it('waits for a deferred root reap when destroy starts after execution retiremen
   const kernel = {
     waitForMemoryGroupReplicaQuiescence: async () => {},
     deactivateMemoryGroupProcess: () => true,
-    retireMemoryGroupImage: async (_handle: unknown, retireReferences: () => void) => {
+    retireMemoryGroupImage: async (_handle: unknown, retireReferences: () => void = () => {}) => {
       retireReferences(); return 0;
     },
     reapHostOwnedExitedProcess: reaper,
@@ -28,7 +28,7 @@ it('waits for a deferred root reap when destroy starts after execution retiremen
   // An already-stopped fixture owner: this test checks final publication
   // ownership, not Worker, memory or kernel execution semantics.
   const process: any = {pid: 123, handle: {}, owner: {
-    contain: async () => {}, releaseAfterStop: () => true, generation: {id: 7},
+    contain: async () => {}, generation: {id: 7},
   }};
   (session as any).processes.set(123, process);
   expect(session.exit(123, 23)).toBe(true);

@@ -5,6 +5,24 @@ use super::*;
 use crate::{memory_group::physical::HostMemory, process::HostIO};
 
 impl ProcessTable {
+    /// Initialize only the virtual control interval retained by this task's MM
+    /// receipt, before constructing or publishing its physical thread scratch.
+    pub fn prepare_group_storage_thread(&mut self,
+        record: wasm_posix_shared::memory_group::ReceiptRecord, host: &mut dyn HostIO,
+    ) -> Result<crate::memory_group::ReplicaDescriptor, Errno> {
+        if record.pid == record.tid { return Err(Errno::EINVAL); }
+        self.validate_task(record.pid, record.tid)?;
+        let proc = self.get(record.pid).ok_or(Errno::ESRCH)?;
+        if proc.exec_generation != record.generation { return Err(Errno::ESRCH); }
+        let (address, length) = proc.memory.group_thread_control_interval(record)?;
+        let address = u32::try_from(address).map_err(|_| Errno::EOVERFLOW)?;
+        let length = u32::try_from(length).map_err(|_| Errno::EOVERFLOW)?;
+        self.memory_groups().initialize_storage_thread_control(record, address, length, host)?;
+        let groups = self.memory_groups();
+        let admission = groups.resolve_receipt(record)?;
+        groups.prepare_storage_thread(admission, host)
+    }
+
     /// Only opaque kernel-issued identities cross the host boundary. The
     /// logical VM/driver plan supplies all addresses, rights and object holds.
     pub fn group_storage_mapping_action(&mut self,

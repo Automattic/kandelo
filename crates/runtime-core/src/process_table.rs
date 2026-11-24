@@ -82,6 +82,10 @@ pub struct ProcessTable {
     advisory_locks: AdvisoryLockManager,
     /// Kernel authority for opt-in backing groups, separate from POSIX pgids.
     memory_groups: crate::memory_group::MemoryGroups,
+    group_operations: crate::group_operation::Operations,
+    exec_controls: crate::exec_control::Controls,
+    root_controls: crate::root_control::Roots,
+    retirement_controls: crate::retirement_control::Controls,
     current_pid: u32,
     /// Next machine-wide process or thread identity to consider.
     ///
@@ -696,6 +700,50 @@ impl ProcessTable {
     pub fn memory_groups(&mut self) -> &mut crate::memory_group::MemoryGroups {
         &mut self.memory_groups
     }
+    pub(crate) fn retirement_controls(&mut self) -> &mut crate::retirement_control::Controls { &mut self.retirement_controls }
+    pub(crate) fn root_controls(&mut self) -> &mut crate::root_control::Roots { &mut self.root_controls }
+    pub(crate) fn exec_controls_ref(&self) -> &crate::exec_control::Controls { &self.exec_controls }
+    pub(crate) fn exec_controls(&mut self) -> &mut crate::exec_control::Controls { &mut self.exec_controls }
+    pub(crate) fn group_operations(&mut self) -> &mut crate::group_operation::Operations {
+        &mut self.group_operations
+    }
+
+    /// Private launch-driver cancellation. Its retained stopping receipt and
+    /// unissued construction effect establish absence; the public release API
+    /// still refuses a live task/admission.
+    pub(crate) fn release_unstarted_group_thread(&mut self,
+        record: wasm_posix_shared::memory_group::ReceiptRecord, host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        if record.pid == record.tid || self.validate_task(record.pid, record.tid).is_ok() { return Err(Errno::EBUSY); }
+        let admission = self.memory_groups.resolve_receipt(record)?;
+        let group = self.memory_groups.resolve_group(record.group)?;
+        let process = self.processes.get_mut(&record.pid).filter(|process| process.exec_generation == record.generation);
+        let store = self.memory_groups.storage_mut(group)?;
+        let mut memory = crate::memory_group::physical::HostMemory { resource: store.resource(), host };
+        if let Some(process) = process {
+            match process.memory.group_thread_control_interval(record) {
+                Ok((address, length)) => {
+                    let address = u32::try_from(address).map_err(|_| Errno::EIO)?;
+                    let length = u32::try_from(length).map_err(|_| Errno::EIO)?;
+                    if store.resolve(record).is_ok() {
+                        store.release_unstarted_thread(&mut memory, admission, address, length,
+                            || process.memory.release_group_thread_control(record))?;
+                    } else {
+                        let root = store.root_for_image(record)?;
+                        store.release_unconstructed_control(&mut memory, root, address, length,
+                            || process.memory.release_group_thread_control(record))?;
+                    }
+                }
+                Err(Errno::ESRCH) => {
+                    if store.resolve(record).is_ok() { store.cancel_unpublished(&mut memory, admission)?; }
+                }
+                Err(error) => return Err(error),
+            }
+        } else if store.resolve(record).is_ok() {
+            store.cancel_unpublished(&mut memory, admission)?;
+        }
+        self.memory_groups.retire_quiescent(admission)
+    }
 
     /// A stopped pthread's scratch and its mapped control-slot authority end
     /// together under the physical allocator's queue/native-observation fence.
@@ -871,6 +919,9 @@ impl ProcessTable {
     ) -> Result<(), Errno> {
         let receipt = self.memory_groups.resolve_receipt(record)?;
         if action == wasm_posix_shared::memory_group::TaskAction::Start {
+            self.validate_exec_control_start(record)?;
+            self.validate_root_control_start(record)?;
+            self.validate_fork_control_start(record)?;
             self.validate_task(record.pid, record.tid)?;
             if self
                 .processes
@@ -897,6 +948,10 @@ impl ProcessTable {
             processes: PreparedMap::new(),
             advisory_locks: AdvisoryLockManager::new(),
             memory_groups: crate::memory_group::MemoryGroups::new(),
+            group_operations: crate::group_operation::Operations::new(),
+            exec_controls: crate::exec_control::Controls::new(),
+            root_controls: crate::root_control::Roots::new(),
+            retirement_controls: crate::retirement_control::Controls::new(),
             current_pid: 0,
             next_task_id: FIRST_TASK_ID,
             current_tid: 0,
@@ -2285,6 +2340,7 @@ impl ProcessTable {
         crate::image_build_determinism::thread_created(pid, tid);
         let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
         let thread_info = process.add_allocated_thread(task_id, ctid_ptr, stack_ptr, tls_ptr);
+        thread_info.creator_tid = caller_tid;
         thread_info.signals.blocked = inherited_blocked;
         Ok(tid)
     }

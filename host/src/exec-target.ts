@@ -276,7 +276,7 @@ export interface PreparedExecLaunchOptions {
   readonly compileModule: CompileWasmModule;
   /** Only the shared launcher sees the retained token. Backend preparation
    * returns an opaque context, never commit/target authority to callbacks. */
-  readonly prepareBackend?: (target: number, bytes: ArrayBuffer) => PreparedExecBackend;
+  readonly prepareBackend?: (target: number, bytes: ArrayBuffer) => PreparedExecBackend | Promise<PreparedExecBackend>;
   /** Bind a descriptor-backed SDK implementation before final admission. */
   readonly prepareImage?: (target: number, bytes: ArrayBuffer,
     prepareImageTarget: (path: string) => number) => Promise<boolean>;

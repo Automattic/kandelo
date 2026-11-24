@@ -6,25 +6,39 @@ pub(super) struct ImageOperation {
     admission: GroupAdmission,
     image: ImageKey,
     pause: Option<u32>,
+    child: Option<ImageKey>,
 }
 impl MapMemory for ImageOperation {
-    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+    fn heap_bytes(&self) -> Result<usize, Errno> {
+        Ok(0)
+    }
 }
 
 impl Storage {
-    pub(crate) fn begin_operation_pause(&mut self, memory: &mut impl PhysicalMemory,
-        admission: GroupAdmission, token: u64) -> Result<u32, Errno> {
+    pub(crate) fn begin_operation_pause(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+        token: u64,
+    ) -> Result<u32, Errno> {
         if token != 0 {
-            if !self.image_operation_ready(admission, token)? { return Err(Errno::EAGAIN); }
+            if !self.image_operation_ready(admission, token)? {
+                return Err(Errno::EAGAIN);
+            }
         } else if self.image_has_operations(self.owned(admission)?.image) {
             return Err(Errno::EBUSY);
         }
         let epoch = self.begin_image_pause(memory, admission)?;
-        if token != 0 { self.operations.get_mut(&token).ok_or(Errno::ESRCH)?.pause = Some(epoch); }
+        if token != 0 {
+            self.operations.get_mut(&token).ok_or(Errno::ESRCH)?.pause = Some(epoch);
+        }
         Ok(epoch)
     }
 
-    pub(crate) fn begin_image_operation(&mut self, admission: GroupAdmission) -> Result<u64, Errno> {
+    pub(crate) fn begin_image_operation(
+        &mut self,
+        admission: GroupAdmission,
+    ) -> Result<u64, Errno> {
         let image = self.owned(admission)?.image;
         let owner = self.images.get(&image).ok_or(Errno::ESRCH)?;
         if self.poisoned || !owner.source_live || !owner.exposed || owner.stopping {
@@ -32,47 +46,124 @@ impl Storage {
         }
         let token = self.next_operation;
         let next = token.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-        let operation = ImageOperation { admission, image, pause: None };
+        let operation = ImageOperation {
+            admission,
+            image,
+            pause: None,
+            child: None,
+        };
         let entry = PreparedMapSlot::new_in(&IO_MEMORY, 0)?.finish(token, operation)?;
         self.operations.publish_io(entry);
         self.next_operation = next;
         Ok(token)
     }
 
-    pub(crate) fn image_operation_ready(&self, admission: GroupAdmission, token: u64) -> Result<bool, Errno> {
+    pub(crate) fn image_operation_ready(
+        &self,
+        admission: GroupAdmission,
+        token: u64,
+    ) -> Result<bool, Errno> {
+        Ok(self.blocking_image_operation(admission, token)?.is_none())
+    }
+
+    pub(crate) fn blocking_image_operation(
+        &self,
+        admission: GroupAdmission,
+        token: u64,
+    ) -> Result<Option<u64>, Errno> {
         let image = self.owned(admission)?.image;
         let operation = self.operations.get(&token).ok_or(Errno::ESRCH)?;
         if operation.admission != admission || operation.image != image {
             return Err(Errno::ESRCH);
         }
-        Ok(!self.operations.iter().any(|(other, operation)| *other < token && operation.image == image))
+        Ok(self.operations.iter().find_map(|(other, operation)| {
+            (*other < token && operation.image == image).then_some(*other)
+        }))
     }
 
-    pub(crate) fn finish_image_operation(&mut self, admission: GroupAdmission, token: u64) -> Result<(), Errno> {
+    pub(crate) fn finish_image_operation(
+        &mut self,
+        admission: GroupAdmission,
+        token: u64,
+    ) -> Result<(), Errno> {
         // Cancellation may remove a queued middle operation. Its successor
         // still waits for every earlier live operation on this image.
         self.image_operation_ready(admission, token)?;
         let operation = self.operations.get(&token).ok_or(Errno::ESRCH)?;
-        if operation.pause.is_some() && self.images.get(&operation.image).ok_or(Errno::ESRCH)?.pause == operation.pause {
+        if operation.child.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        if operation.pause.is_some()
+            && self.images.get(&operation.image).ok_or(Errno::ESRCH)?.pause == operation.pause
+        {
             return Err(Errno::EBUSY);
         }
         self.operations.remove(&token).ok_or(Errno::ESRCH)?;
         Ok(())
     }
 
+    /// Retain the copied image until launch handover or proven-stop rollback.
+    /// A child can exit before the platform launch callback reaches the parent.
+    pub(crate) fn hold_operation_child(
+        &mut self,
+        admission: GroupAdmission,
+        token: u64,
+        child: GroupAdmission,
+    ) -> Result<(), Errno> {
+        let image = self.owned(admission)?.image;
+        let child_image = self.owned(child)?.image;
+        if image == child_image {
+            return Err(Errno::EINVAL);
+        }
+        let operation = self.operations.get_mut(&token).ok_or(Errno::ESRCH)?;
+        if operation.admission != admission || operation.image != image {
+            return Err(Errno::ESRCH);
+        }
+        if operation.child.is_some_and(|held| held != child_image) {
+            return Err(Errno::EBUSY);
+        }
+        operation.child = Some(child_image);
+        Ok(())
+    }
+
+    pub(crate) fn release_operation_child(
+        &mut self,
+        admission: GroupAdmission,
+        token: u64,
+        child: wasm_posix_shared::memory_group::ReceiptRecord,
+    ) -> Result<(), Errno> {
+        let operation = self.operations.get_mut(&token).ok_or(Errno::ESRCH)?;
+        if operation.admission != admission || child.group != admission.record().group {
+            return Err(Errno::ESRCH);
+        }
+        let key = ImageKey {
+            pid: child.pid,
+            generation: child.generation,
+        };
+        if operation.child.is_some_and(|held| held != key) {
+            return Err(Errno::ESRCH);
+        }
+        operation.child = None;
+        Ok(())
+    }
+
     pub(super) fn image_has_operations(&self, image: ImageKey) -> bool {
-        self.operations.values().any(|operation| operation.image == image)
+        self.operations
+            .values()
+            .any(|operation| operation.image == image || operation.child == Some(image))
     }
 
     pub(super) fn task_has_operations(&self, admission: GroupAdmission) -> bool {
-        self.operations.values().any(|operation| operation.admission == admission)
+        self.operations
+            .values()
+            .any(|operation| operation.admission == admission)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::contract_tests::image;
+    use super::*;
 
     #[test]
     fn cancelled_middle_operation_never_lets_its_successor_bypass_the_head() {
@@ -96,8 +187,14 @@ mod tests {
         let thread = groups.prepare_thread(root, 101).unwrap();
         store.prepare_thread(&mut memory, thread).unwrap();
         let token = store.begin_image_operation(root).unwrap();
-        assert_eq!(store.image_operation_ready(thread, token), Err(Errno::ESRCH));
-        assert_eq!(store.finish_image_operation(thread, token), Err(Errno::ESRCH));
+        assert_eq!(
+            store.image_operation_ready(thread, token),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(
+            store.finish_image_operation(thread, token),
+            Err(Errno::ESRCH)
+        );
         assert_eq!(store.image_operation_ready(root, token), Ok(true));
         store.finish_image_operation(root, token).unwrap();
         assert_eq!(store.image_operation_ready(root, token), Err(Errno::ESRCH));
@@ -117,28 +214,51 @@ mod tests {
         let (_groups, mut store, mut memory, root) = image(32);
         let first = store.begin_image_operation(root).unwrap();
         let second = store.begin_image_operation(root).unwrap();
-        assert_eq!(store.begin_operation_pause(&mut memory, root, second), Err(Errno::EAGAIN));
-        assert_eq!(store.begin_operation_pause(&mut memory, root, 0), Err(Errno::EBUSY));
-        let epoch = store.begin_operation_pause(&mut memory, root, first).unwrap();
+        assert_eq!(
+            store.begin_operation_pause(&mut memory, root, second),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(
+            store.begin_operation_pause(&mut memory, root, 0),
+            Err(Errno::EBUSY)
+        );
+        let epoch = store
+            .begin_operation_pause(&mut memory, root, first)
+            .unwrap();
         assert_eq!(store.finish_image_operation(root, first), Err(Errno::EBUSY));
         store.resume_image(&mut memory, root, epoch).unwrap();
         store.finish_image_operation(root, first).unwrap();
-        assert!(store.begin_operation_pause(&mut memory, root, second).is_ok());
+        assert!(
+            store
+                .begin_operation_pause(&mut memory, root, second)
+                .is_ok()
+        );
     }
 
     #[test]
     fn unrelated_images_do_not_serialize_on_the_same_group() {
         let (mut groups, mut store, mut memory, root) = image(32);
         let other = groups.prepare_image(root.group(), 102, 1).unwrap();
-        store.prepare_image(&mut memory, other, ImageLayout {
-            initial_pages: 2, maximum_pages: 32, scratch_bytes: PAGE,
-        }).unwrap();
+        store
+            .prepare_image(
+                &mut memory,
+                other,
+                ImageLayout {
+                    initial_pages: 2,
+                    maximum_pages: 32,
+                    scratch_bytes: PAGE,
+                },
+            )
+            .unwrap();
         store.publish(other).unwrap();
         let first = store.begin_image_operation(root).unwrap();
         let second = store.begin_image_operation(other).unwrap();
         assert_eq!(store.image_operation_ready(root, first), Ok(true));
         assert_eq!(store.image_operation_ready(other, second), Ok(true));
-        assert_eq!(store.finish_image_operation(root, second), Err(Errno::ESRCH));
+        assert_eq!(
+            store.finish_image_operation(root, second),
+            Err(Errno::ESRCH)
+        );
         store.finish_image_operation(other, second).unwrap();
         store.finish_image_operation(root, first).unwrap();
     }
@@ -149,8 +269,98 @@ mod tests {
         let token = store.begin_image_operation(root).unwrap();
         store.note_quiescent(&mut memory, root).unwrap();
         store.revoke_source(&mut memory, root).unwrap();
-        assert_eq!(store.release_stopped_image(&mut memory, root), Err(Errno::EAGAIN));
+        assert_eq!(
+            store.release_stopped_image(&mut memory, root),
+            Err(Errno::EAGAIN)
+        );
         store.finish_image_operation(root, token).unwrap();
         assert!(store.release_stopped_image(&mut memory, root).is_ok());
+    }
+    #[test]
+    fn fork_child_cannot_reclaim_or_finish_its_parent_operation_before_handover() {
+        let (mut groups, mut store, mut memory, parent) = image(32);
+        let child = groups.prepare_image(parent.group(), 102, 1).unwrap();
+        store
+            .prepare_image(
+                &mut memory,
+                child,
+                ImageLayout {
+                    initial_pages: 2,
+                    maximum_pages: 32,
+                    scratch_bytes: PAGE,
+                },
+            )
+            .unwrap();
+        store.publish(child).unwrap();
+        let token = store.begin_image_operation(parent).unwrap();
+        store.hold_operation_child(parent, token, child).unwrap();
+        store.note_quiescent(&mut memory, child).unwrap();
+        store.revoke_source(&mut memory, child).unwrap();
+        let before = store
+            .pool()
+            .unwrap()
+            .snapshot(&mut memory)
+            .unwrap()
+            .allocated_pages;
+        assert_eq!(
+            store.release_stopped_image(&mut memory, child),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(
+            store.finish_image_operation(parent, token),
+            Err(Errno::EBUSY)
+        );
+        let wrong = groups.prepare_image(parent.group(), 103, 1).unwrap();
+        assert_eq!(
+            store.release_operation_child(parent, token, wrong.record()),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(
+            store.release_operation_child(child, token, child.record()),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(
+            store
+                .pool()
+                .unwrap()
+                .snapshot(&mut memory)
+                .unwrap()
+                .allocated_pages,
+            before
+        );
+        store
+            .release_operation_child(parent, token, child.record())
+            .unwrap();
+        store.release_stopped_image(&mut memory, child).unwrap();
+        store.finish_image_operation(parent, token).unwrap();
+    }
+
+    #[test]
+    fn prepared_child_cancellation_requires_its_exact_fork_hold_to_end() {
+        let (mut groups, mut store, mut memory, parent) = image(32);
+        let child = groups.prepare_image(parent.group(), 102, 1).unwrap();
+        store
+            .prepare_image(
+                &mut memory,
+                child,
+                ImageLayout {
+                    initial_pages: 2,
+                    maximum_pages: 32,
+                    scratch_bytes: PAGE,
+                },
+            )
+            .unwrap();
+        let token = store.begin_image_operation(parent).unwrap();
+        store.hold_operation_child(parent, token, child).unwrap();
+        assert_eq!(
+            store.cancel_unpublished(&mut memory, child),
+            Err(Errno::EAGAIN)
+        );
+        assert!(store.descriptor(child).is_ok());
+        store
+            .release_operation_child(parent, token, child.record())
+            .unwrap();
+        store.cancel_unpublished(&mut memory, child).unwrap();
+        store.finish_image_operation(parent, token).unwrap();
     }
 }

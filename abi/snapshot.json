@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 28,
+      "required_host_adapter_version": 30,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2550,6 +2550,7 @@
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_epoll_wait_retry_state",
+      "kernel_group_exec_control",
       "kernel_group_exec_target_bind_image",
       "kernel_group_memory_break",
       "kernel_group_memory_change_prepare",
@@ -2562,8 +2563,11 @@
       "kernel_group_memory_thread_control_prepare",
       "kernel_group_memory_thread_control_release",
       "kernel_group_memory_thread_control_reuse",
+      "kernel_group_operation",
       "kernel_group_owned_mapping_prepare",
       "kernel_group_owned_mapping_validate",
+      "kernel_group_retirement_control",
+      "kernel_group_root_control",
       "kernel_initial_group_exec_target_admit",
       "kernel_memory_group_capabilities",
       "kernel_memory_group_configure",
@@ -2711,7 +2715,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 28,
+    "version": 30,
     "worker_features": [
       {
         "bit": 2,
@@ -4493,6 +4497,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_group_exec_control",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_group_exec_target_bind_image",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -4553,6 +4562,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_group_operation",
+      "signature": "(i32,i32,i32,i64,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_group_owned_mapping_prepare",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -4560,6 +4574,16 @@
       "kind": "func",
       "name": "kernel_group_owned_mapping_validate",
       "signature": "(i32,i32,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_retirement_control",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_group_root_control",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -8450,7 +8474,207 @@
     }
   },
   "memory_group_contract": {
+    "access": {
+      "bounds": -1,
+      "busy": -4,
+      "metadata": -3,
+      "module": "kandelo.host-memory.v2",
+      "protection": -2,
+      "publicationFailed": -5,
+      "version": 2
+    },
     "capability_admission": 1,
+    "driver": {
+      "commands": {
+        "ack": 4,
+        "begin": 1,
+        "cancel": 3,
+        "forkDetached": 9,
+        "forkImageRetired": 8,
+        "forkLaunched": 7,
+        "forkNativeCompleted": 12,
+        "forkNativeConstructorUnknown": 17,
+        "forkNativeEntered": 11,
+        "forkNativeFailed": 13,
+        "forkNativeNoMemory": 16,
+        "forkNativeNotApplied": 19,
+        "forkNativePoll": 10,
+        "forkNativeProtocolFailed": 15,
+        "forkNativeTimeout": 14,
+        "forkNativeValidate": 18,
+        "forkSetupFailed": 20,
+        "forkSetupNoMemory": 21,
+        "poll": 2,
+        "threadBindingEnter": 24,
+        "threadBindingFailed": 22,
+        "threadBindingNoMemory": 23,
+        "threadBound": 5,
+        "threadDetached": 6
+      },
+      "effects": {
+        "complete": 1,
+        "detachThreadBinding": 6,
+        "forkBind": 26,
+        "forkCancelNative": 34,
+        "forkConnect": 28,
+        "forkContain": 37,
+        "forkDeactivate": 39,
+        "forkDeliver": 31,
+        "forkDispose": 40,
+        "forkFailed": 42,
+        "forkFatal": 43,
+        "forkLaunch": 8,
+        "forkObjects": 24,
+        "forkPublish": 25,
+        "forkReady": 30,
+        "forkReferences": 38,
+        "forkRegister": 27,
+        "forkRemoveTransport": 10,
+        "forkReplay": 32,
+        "forkRetireTransport": 9,
+        "forkRuntime": 33,
+        "forkSeal": 35,
+        "forkStart": 29,
+        "forkSucceeded": 41,
+        "forkWaitStop": 36,
+        "native": 2,
+        "operation": 4,
+        "prepareThreadBinding": 5,
+        "yield": 3
+      },
+      "flags": {
+        "deliver": 1,
+        "nativeExecute": 32,
+        "nativePending": 64,
+        "ownedPacket": 2,
+        "threadExecution": 16,
+        "threadRetired": 8
+      },
+      "fork_continuations": {
+        "main": 0,
+        "thread": 1
+      },
+      "fork_layout": {
+        "argPtr": 12,
+        "channelOffset": 24,
+        "fnPtr": 8,
+        "forkBufAddr": 4,
+        "kind": 0,
+        "slotLen": 20,
+        "slotStart": 16
+      },
+      "fork_layout_offset": 32,
+      "kinds": {
+        "fork": 5,
+        "mapping": 1,
+        "ownedMapping": 3,
+        "threadPrepare": 4
+      },
+      "native_event_limit": 64,
+      "payload_bytes": 320,
+      "reply_bytes": 512,
+      "reply_fields": {
+        "delay": 28,
+        "effect": 0,
+        "errno": 24,
+        "flags": 4,
+        "length": 164,
+        "operation": 8,
+        "payload": 168,
+        "payloadBytes": 160,
+        "receipt": 48,
+        "storage": 80,
+        "value": 16,
+        "waitAddress": 40,
+        "waitExpected": 44,
+        "waitToken": 32
+      },
+      "request_bytes": 384,
+      "request_fields": {
+        "args": 8,
+        "kind": 0,
+        "payload": 64,
+        "reserved": 60,
+        "syscall": 4,
+        "thread": 56
+      },
+      "thread_layout": {
+        "argPtr": 32,
+        "basePage": 4,
+        "channelOffset": 20,
+        "ctidPtr": 44,
+        "fnPtr": 28,
+        "forkSaveOffset": 16,
+        "processChannelOffset": 24,
+        "slotStartPage": 0,
+        "stackPtr": 36,
+        "tlsAllocAddr": 12,
+        "tlsOffset": 8,
+        "tlsPtr": 40
+      },
+      "transport_gone": 2147483648
+    },
+    "exec_control": {
+      "commands": {
+        "ack": 13,
+        "begin": 1,
+        "cancel": 3,
+        "handoff": 5,
+        "installed": 10,
+        "platformCompleted": 15,
+        "platformFailed": 16,
+        "poll": 2,
+        "status": 14,
+        "validate": 4,
+        "validateInstall": 9
+      },
+      "effects": {
+        "bindReplacement": 18,
+        "containFailure": 23,
+        "detachPrevious": 14,
+        "discardFuture": 20,
+        "finishHandoff": 22,
+        "installReplacement": 16,
+        "joinPrevious": 15,
+        "publishTermination": 21,
+        "retirePrevious": 17,
+        "startReplacement": 19,
+        "waitWorkers": 13
+      },
+      "layout_fields": {
+        "brkBase": 48,
+        "brkLimit": 64,
+        "channelOffset": 32,
+        "channelPage": 40,
+        "controlBase": 16,
+        "controlEnd": 24,
+        "firstThreadBasePage": 88,
+        "firstThreadSlotPage": 80,
+        "initialPages": 0,
+        "maxAddr": 72,
+        "maximumPages": 8,
+        "mmapBase": 56,
+        "threadArenaEndPage": 96,
+        "threadSlotCount": 104
+      },
+      "parent": 144,
+      "phases": {
+        "cancelled": 7,
+        "cancelling": 6,
+        "committed": 3,
+        "contained": 12,
+        "finished": 11,
+        "handoff": 4,
+        "installed": 10,
+        "oldStopped": 5,
+        "prepared": 2,
+        "preparing": 1,
+        "terminatedFuture": 9,
+        "terminating": 8
+      },
+      "signal": 148,
+      "source": 112
+    },
     "exec_preparation": {
       "actions": {
         "cancel": 2,
@@ -8534,6 +8758,70 @@
       "reserved": 12,
       "serial": 16,
       "tid": 8
+    },
+    "retirement_control": {
+      "cancel_exec_transport": 15,
+      "commands": {
+        "ack": 5,
+        "ackStop": 11,
+        "beginImage": 1,
+        "beginReferences": 13,
+        "beginStop": 8,
+        "beginThread": 2,
+        "bindReferences": 12,
+        "nativeJoin": 16,
+        "noteWorkerAbsence": 6,
+        "platformDetached": 4,
+        "poll": 3,
+        "pollStop": 10,
+        "prepareDeactivation": 7,
+        "referencesDetached": 14,
+        "sealedAbsence": 17,
+        "workerFence": 15,
+        "workersStopped": 9
+      },
+      "detach_platform": 14,
+      "detach_references": 17,
+      "native_join_capability": 1,
+      "publish_exit": 1,
+      "stop_accepted": 2,
+      "wait_workers": 16
+    },
+    "root_control": {
+      "commands": {
+        "ack": 5,
+        "begin": 1,
+        "cancel": 3,
+        "launch": 6,
+        "platformCompleted": 7,
+        "platformFailed": 8,
+        "poll": 2,
+        "workerCancelled": 10,
+        "workerStarted": 9
+      },
+      "effects": {
+        "bindWorker": 14,
+        "connectImports": 16,
+        "containFailure": 21,
+        "deliverLaunch": 23,
+        "discardTransport": 20,
+        "publishTransport": 13,
+        "registerProcess": 15,
+        "retireImage": 19,
+        "scheduleStart": 17,
+        "sealAbsence": 18,
+        "waitReady": 22
+      },
+      "phases": {
+        "cancelled": 4,
+        "cancelling": 3,
+        "contained": 8,
+        "finished": 7,
+        "launching": 5,
+        "prepared": 2,
+        "preparing": 1,
+        "waiting": 6
+      }
     },
     "snapshot_bytes": 40,
     "snapshot_fields": {

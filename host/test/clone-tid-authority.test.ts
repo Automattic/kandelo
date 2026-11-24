@@ -694,16 +694,14 @@ describe("clone transport with virtual images", () => {
     } finally { fixture.close(); }
   });
 
-  it("attaches through the virtual source but refuses success without a published Worker owner", async () => {
+  it("refuses direct grouped attachment before native channel mutation without a kernel binding owner", async () => {
     let h!: ReturnType<typeof makeCloneHarness>;
-    let attached: any;
     h = makeCloneHarness(async attachment => {
-      expect(attachment).toMatchObject({ tid: KERNEL_TID, fnPtr: 11, argPtr: 22 });
-      expect(attachment).toMatchObject({ memoryBackend: 'grouped' });
-      expect(attachment).not.toHaveProperty('memory');
-      h.worker.attachThreadChannel(attachment as any, 3 * WASM_PAGE_SIZE);
-      attached = (h.worker as any).processes.get(PID).channels[1];
-      expect(processDataView(attached.source).getInt32(parentTidPointer, true)).toBe(KERNEL_TID);
+      expect(attachment).toMatchObject({ pid: PID, tid: KERNEL_TID, memoryBackend: 'grouped' });
+      for (const field of ['memory', 'fnPtr', 'argPtr', 'stackPtr', 'tlsPtr', 'ctidPtr']) expect(attachment).not.toHaveProperty(field);
+      expect(() => h.worker.attachThreadChannel(attachment as any, 3 * WASM_PAGE_SIZE)).toThrow('actual kernel binding owner');
+      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
+      expect((h.worker as any).threadForkContexts.size).toBe(0);
     }, KERNEL_TID, false);
     const { fixture, source } = group(h);
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -712,10 +710,9 @@ describe("clone transport with virtual images", () => {
       await vi.waitFor(() => expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_COMPLETE));
       expect(readCloneCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12 });
       expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(0);
-      expect(attached.source).toBe(source); expect(attached.i32View).toBeUndefined();
       expect(h.notifyThreadExit).toHaveBeenCalledExactlyOnceWith(PID, KERNEL_TID, 0);
       expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
-      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('without publishing an observed Worker'));
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('without attaching kernel tid'));
     } finally { consoleError.mockRestore(); fixture.close(); }
   });
 

@@ -75,7 +75,8 @@ impl Storage {
             || self
                 .replicas
                 .values()
-                .any(|replica| replica.image == key && replica.exposure != Exposure::Stopped)
+                .any(|replica| replica.image == key && (replica.exposure != Exposure::Stopped
+                    || matches!(replica.references, References::Bound | References::Detaching)))
         {
             return Err(Errno::EAGAIN);
         }

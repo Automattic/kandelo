@@ -1,6 +1,7 @@
 import * as G from '../src/generated/program-extensions';
 import { describe, expect, it, vi } from 'vitest';
 import { GroupProcessAddressSpace, LinearProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
+import { publishMemoryGroupNotification } from '../src/memory-group-notification';
 import { ProcessAtomicI32, ProcessAtomicU64 } from '../src/process-atomic-word';
 const PAGE = 65536;
 function fixture() {
@@ -260,4 +261,39 @@ describe('explicit process atomic publication', () => {
     expect([...access.readBytes(30, 4)]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
     expect(access.atomicLoadI32(20)).toBe(0); expect(words[q]).toBe(0);
   });
+});
+
+it('keeps the unsigned four-GiB virtual end through the compiled SDK access ABI', () => {
+  const memory = new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true }), root = PAGE;
+  const words = new Uint32Array(memory.buffer), table = root / 4 + 16;
+  words[root / 4] = 65536;
+  words[table + 65535] = 12 * PAGE | 3;
+  new Uint8Array(memory.buffer)[13 * PAGE - 1] = 0xab;
+  const source = new GroupProcessAddressSpace({ memory, root, maximumPages: 65536, assertLive: () => {} });
+  expect(source.byteLength).toBe(4294967296);
+  expect(source.readBytes(4294967296, 0)).toEqual(new Uint8Array());
+  expect(source.readBytes(4294967295, 1)).toEqual(Uint8Array.of(0xab));
+  expect(() => source.readBytes(4294967296, 1)).toThrow(ProcessAddressFault);
+});
+it('releases its own queue on an abrupt bounded publication without waking an unwritten result', () => {
+  const { memory, words } = fixture(), q = G.MEMORY_GROUP_WAIT_HEADER / 4, node = G.MEMORY_GROUP_WAIT_NODES;
+  words[q + 1] = node; words[q + 2] = node; words[q + 4] = 1;
+  words[node / 4] = G.MEMORY_GROUP_WAIT_WAITING; words[node / 4 + 2] = 4 * PAGE + 20;
+  const failure = new Error('bounded publication refused');
+  expect(() => publishMemoryGroupNotification(memory, 4 * PAGE + 20, 1, () => { throw failure; })).toThrow(failure);
+  expect(words[q]).toBe(0);
+  expect(words[node / 4]).toBe(G.MEMORY_GROUP_WAIT_WAITING);
+  expect(words[q + 1]).toBe(node); expect(words[q + 4]).toBe(1);
+});
+it('validates a later corrupt waiter before publishing to an earlier matching waiter', () => {
+  const { access, words } = fixture(), q = G.MEMORY_GROUP_WAIT_HEADER / 4, first = G.MEMORY_GROUP_WAIT_NODES;
+  const last = first + G.MEMORY_GROUP_WAIT_NODE_BYTES;
+  words[q + 1] = first; words[q + 2] = last; words[q + 4] = 2;
+  words[first / 4] = G.MEMORY_GROUP_WAIT_WAITING; words[first / 4 + 1] = last; words[first / 4 + 2] = 4 * PAGE + 20;
+  words[last / 4] = G.MEMORY_GROUP_WAIT_FREE;
+  access.fillBytes(30, 4, 0xa5);
+  expect(() => access.publishBytes(30, new Uint8Array(4), 20, 2, 1)).toThrow('Corrupt memory-group wait queue');
+  expect(access.readBytes(30, 4)).toEqual(new Uint8Array(4).fill(0xa5));
+  expect(access.atomicLoadI32(20)).toBe(0); expect(words[first / 4]).toBe(G.MEMORY_GROUP_WAIT_WAITING);
+  expect(words[q]).toBe(0);
 });

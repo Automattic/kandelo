@@ -1,5 +1,5 @@
 import * as G from './generated/program-extensions';
-import { publishMemoryGroupNotification, tryPublishMemoryGroupNotification } from './memory-group-notification';
+import { memoryGroupAccess, publishMemoryGroupNotification, tryPublishMemoryGroupNotification } from './memory-group-notification';
 
 const PAGE = G.MEMORY_GROUP_PAGE_BYTES;
 const READ = 1, WRITE = 2;
@@ -193,53 +193,42 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
     const binding = this.binding;
     if (!binding) throw new ProcessAddressFault('retired');
     binding.assertLive();
-    const header = new Uint32Array(binding.memory.buffer, binding.root, 1);
-    const pages = Atomics.load(header, 0);
-    if (pages > binding.maximumPages) throw new ProcessAddressFault('metadata');
-    return { binding, pages };
+    const length = memoryGroupAccess(binding.memory).length(binding.root, binding.maximumPages);
+    if (length < 0n) throw new ProcessAddressFault('metadata');
+    return { binding, pages: Number(length) / PAGE };
   }
   get byteLength(): number { return this.current().pages * PAGE; }
-  /** Revoke host access without claiming quiescence or freeing physical pages.
-   * Clearing the entire binding also drops any owner callback retaining storage.
-   */
+  /** This drops actual platform references, without granting reuse. */
   detachHostAccess(): void { this.binding = undefined; }
-  private walk(address: number, length: number, rights: number,
-    visit?: (physical: number, length: number) => void): GroupAddressSpaceBinding {
+  private checked(address: number, length: number, rights: number): GroupAddressSpaceBinding {
     const { binding, pages } = this.current();
     range(address, length, pages * PAGE);
-    // Refresh after the acquire of logical size: C may have grown physical
-    // memory and published new PTEs immediately before that acquire.
-    const table = new Uint32Array(binding.memory.buffer,
-      binding.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, binding.maximumPages);
-    let at = address, remaining = length;
-    while (remaining) {
-      const entry = table[Math.floor(at / PAGE)];
-      const physicalPage = (entry & 0xffff0000) >>> 0;
-      if ((entry & rights) !== rights || !physicalPage) {
-        throw new ProcessAddressFault('protection');
-      }
-      if (physicalPage + PAGE > binding.memory.buffer.byteLength) {
-        throw new ProcessAddressFault('metadata');
-      }
-      const offset = at % PAGE, count = Math.min(remaining, PAGE - offset);
-      visit?.(physicalPage + offset, count);
-      at += count; remaining -= count;
-    }
+    const result = memoryGroupAccess(binding.memory).check(binding.root, binding.maximumPages, BigInt(address), BigInt(length), rights);
+    if (result !== 0) this.accessFault(result);
     return binding;
+  }
+  private accessFault(result: number): never {
+    if (result === G.MEMORY_GROUP_HOST_ACCESS_BOUNDS) throw new ProcessAddressFault('bounds');
+    if (result === G.MEMORY_GROUP_HOST_ACCESS_PROTECTION) throw new ProcessAddressFault('protection');
+    throw new ProcessAddressFault('metadata');
   }
   checkAccessRange(address: number, length: number, access: 'read' | 'write'): void {
     if (access !== 'read' && access !== 'write') throw new ProcessAddressFault('metadata');
-    // Walk every page without a payload copy or span-array allocation. This
-    // observation grants no future authority; actual access checks again.
-    this.walk(address, length, access === 'read' ? READ : WRITE);
+    this.checked(address, length, access === 'read' ? READ : WRITE);
   }
   private plan(address: number, length: number, rights: number): { binding: GroupAddressSpaceBinding; spans: Span[] } {
-    const spans: Span[] = [];
-    const binding = this.walk(address, length, rights, (physical, length) => {
-      const previous = spans[spans.length - 1];
-      if (previous && previous.physical + previous.length === physical) previous.length += length;
-      else spans.push({ physical, length });
-    });
+    const binding = this.checked(address, length, rights), native = memoryGroupAccess(binding.memory), spans: Span[] = [];
+    let at = address, remaining = length;
+    while (remaining) {
+      const packed = BigInt.asUintN(64, native.span(binding.root, binding.maximumPages, BigInt(at), BigInt(remaining), rights));
+      const physical = Number(packed & 0xffffffffn), size = Number(packed >> 32n);
+      if (!physical || !size || size > remaining) {
+        const fault = native.check(binding.root, binding.maximumPages, BigInt(at), BigInt(remaining), rights);
+        this.accessFault(fault);
+      }
+      spans.push({ physical, length: size });
+      at += size; remaining -= size;
+    }
     return { binding, spans };
   }
   readBytes(address: number, length: number): Uint8Array {

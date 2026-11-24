@@ -1,7 +1,7 @@
 import { MEMORY_GROUP_PROTOCOL as P, ERRNO } from './generated/abi';
 import * as G from './generated/program-extensions';
 import { encodeMemoryGroupReceipt, decodeMemoryGroupReceipt, MemoryGroupProtocolFault,
-  type MemoryGroupTaskReceipt, type GroupMemoryChangeDescription } from './memory-group-protocol';
+  type MemoryGroupTaskReceipt } from './memory-group-protocol';
 import { GroupProcessAddressSpace, ProcessAddressFault, NativeI32Observation } from './process-address-space';
 import { encodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation, type ProcessMemoryEnvelope } from './process-memory-descriptor';
 import type { KernelVoidIngressScope } from './kernel-entry-gate';
@@ -9,8 +9,6 @@ import { validateKernelScratchRegionOwnership, type KernelScratchRegion } from '
 
 declare const replicaBrand: unique symbol;
 export interface PreparedGroupReplica { readonly [replicaBrand]: true }
-declare const pauseBrand: unique symbol;
-export interface GroupImageExecutionPause { readonly [pauseBrand]: true }
 export interface GroupImageLayout { readonly initialVirtualPages: number; readonly maximumVirtualPages: number; readonly scratchBytes: number }
 export interface GroupReplicaLaunch { readonly envelope: ProcessMemoryEnvelope; readonly source: GroupProcessAddressSpace; readonly expectation: GroupReplicaMemoryExpectation }
 export interface GroupMemoryEntry { readonly scope: KernelVoidIngressScope; readonly instance: WebAssembly.Instance }
@@ -38,13 +36,6 @@ interface ImageTransport {
   readonly root: number;
   readonly live: { value: boolean };
   source?: GroupProcessAddressSpace;
-  readonly resumed: Set<() => void>;
-}
-interface Pause { readonly handle: PreparedGroupReplica; readonly epoch: bigint }
-export interface PreparedGroupMapping {
-  readonly receipt: MemoryGroupTaskReceipt;
-  readonly token: bigint;
-  readonly driver?: { readonly token: number; readonly transaction: bigint };
 }
 export interface GroupMemoryBackingSnapshot {
   readonly group: number; readonly images: number; readonly replicas: number;
@@ -54,6 +45,18 @@ export interface GroupMemoryBackingSnapshot {
   readonly sharedImageReferences: number; readonly maximumPages: number; readonly highWaterPages: number; readonly physicalExtentPages: number;
   readonly pausedImages: number; readonly unacknowledgedReplicas: number; readonly waitQueueLock: number; readonly waitQueueNodes: number;
 }
+export interface GroupOperationRequest {
+  readonly kind: number; readonly syscall: number; readonly args: readonly bigint[];
+  readonly thread?: number; readonly payload?: Uint8Array;
+}
+export interface GroupExecControlEffect extends GroupOperationEffect { readonly receipt: MemoryGroupTaskReceipt }
+export interface GroupOperationEffect {
+  readonly effect: number; readonly flags: number; readonly operation: bigint;
+  readonly value: number; readonly errno: number; readonly length: number; readonly delay: number;
+  readonly waitToken: bigint; readonly payload: Uint8Array;
+  readonly storage: Uint8Array;
+  readonly progress?: () => Promise<void>;
+}
 
 /** Disposable-kernel platform transport. Every allocation, PTE transaction,
  * barrier, status and release decision is made by ProcessTable's Rust owner.
@@ -62,7 +65,6 @@ export interface GroupMemoryBackingSnapshot {
 export class GroupMemoryTransport {
   readonly #replicas = new Map<PreparedGroupReplica, Replica>();
   readonly #images = new Map<number, ImageTransport>();
-  readonly #pauses = new WeakMap<GroupImageExecutionPause, Pause>();
   readonly #scratch: KernelScratchRegion;
   #closed = false;
   constructor(readonly group: number, private readonly host: GroupMemoryTransportHost,
@@ -87,7 +89,7 @@ export class GroupMemoryTransport {
     let resolveQuiescent!: () => void;
     const quiescent = new Promise<void>(resolve => { resolveQuiescent = resolve; });
     this.#replicas.set(handle, { descriptor, live: { value: true }, quiescent, resolveQuiescent });
-    if (!this.#images.has(descriptor.root)) this.#images.set(descriptor.root, { root: descriptor.root, live: { value: true }, resumed: new Set() });
+    if (!this.#images.has(descriptor.root)) this.#images.set(descriptor.root, { root: descriptor.root, live: { value: true } });
     return handle;
   }
   action(receipt: MemoryGroupTaskReceipt, action: number, entry: GroupMemoryEntry, token = 0n, argument = 0):
@@ -104,6 +106,131 @@ export class GroupMemoryTransport {
       return { status: 0, bytes, value: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(P.storage.reply_fields.value, true) };
     });
   }
+
+  operation(receipt: MemoryGroupTaskReceipt, command: number, token: bigint, argument: number,
+    entry: GroupMemoryEntry, request?: GroupOperationRequest): GroupOperationEffect | undefined {
+    const protocol = P.driver, begin = command === protocol.commands.begin;
+    if (begin && this.#closed) this.#fault('Grouped platform transport is closed');
+    const wire = new Uint8Array(begin ? protocol.request_bytes : 0);
+    if (begin) {
+      if (!request) this.#fault('Missing operation request');
+      const view = new DataView(wire.buffer), fields = protocol.request_fields;
+      view.setUint32(fields.kind, request.kind, true); view.setUint32(fields.syscall, request.syscall, true);
+      view.setUint32(fields.thread, request.thread ?? 0, true);
+      for (let at = 0; at < 6; at++) view.setBigUint64(fields.args + at * 8, BigInt.asUintN(64, request.args[at] ?? 0n), true);
+      if (request.payload) {
+        if (request.payload.length !== protocol.payload_bytes) this.#fault('Invalid operation payload extent');
+        wire.set(request.payload, fields.payload);
+      }
+    }
+    const bytes = this.#scratch.withLease(lease => {
+      lease.copyFrom(encodeMemoryGroupReceipt(receipt)); if (begin) lease.copyFrom(wire, P.receipt_bytes);
+      const output = P.receipt_bytes + protocol.request_bytes;
+      const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_group_operation', [
+        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, command, token, argument,
+        lease.exportPointer(P.receipt_bytes, wire.length), wire.length,
+        lease.exportPointer(output, protocol.reply_bytes), protocol.reply_bytes,
+      ]);
+      if (count < 0) throw new GroupMemoryStorageRefusal(-count);
+      if (command === protocol.commands.ack && count === 0) return undefined;
+      if (count !== protocol.reply_bytes) this.#fault('Invalid operation reply extent');
+      return lease.copyOut(output, count);
+    });
+    if (!bytes) return undefined;
+    return this.#operationReply(bytes, receipt, begin ? undefined : token, command >= protocol.commands.forkNativePoll ? 'forkLaunch' : 'operation');
+  }
+
+  execControl(receipt: MemoryGroupTaskReceipt, command: number, entry: GroupMemoryEntry, target = 0): GroupExecControlEffect {
+    const bytes = this.#scratch.withLease(lease => {
+      lease.copyFrom(encodeMemoryGroupReceipt(receipt));
+      const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_group_exec_control', [
+        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, command, target,
+        lease.exportPointer(P.receipt_bytes, P.driver.reply_bytes), P.driver.reply_bytes,
+      ]);
+      if (count < 0) throw new GroupMemoryStorageRefusal(-count);
+      if (count !== P.driver.reply_bytes) this.#fault('Invalid exec control reply extent');
+      return lease.copyOut(P.receipt_bytes, count);
+    });
+    const at = P.driver.reply_fields.receipt;
+    const future = decodeMemoryGroupReceipt(bytes.slice(at, at + P.receipt_bytes), command === P.exec_control.commands.begin
+      ? { group: receipt.group, pid: receipt.pid, tid: receipt.pid, generation: receipt.generation + 1n } : receipt);
+    return Object.freeze({ ...this.#operationReply(bytes, future, future.serial, 'exec'), receipt: future });
+  }
+
+  rootControl(pid: number, command: number, entry: GroupMemoryEntry, receipt?: MemoryGroupTaskReceipt,
+    ceiling = 0, defaultSlots = 0): GroupExecControlEffect {
+    const bytes = this.#scratch.withLease(lease => {
+      lease.copyFrom(receipt ? encodeMemoryGroupReceipt(receipt) : new Uint8Array(P.receipt_bytes));
+      const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_group_root_control', [
+        this.group, pid, lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, command, ceiling, defaultSlots,
+        lease.exportPointer(P.receipt_bytes, P.driver.reply_bytes), P.driver.reply_bytes,
+      ]);
+      if (count < 0) throw new GroupMemoryStorageRefusal(-count);
+      if (count !== P.driver.reply_bytes) this.#fault('Invalid root control reply extent');
+      return lease.copyOut(P.receipt_bytes, count);
+    });
+    const at = P.driver.reply_fields.receipt;
+    const identity = decodeMemoryGroupReceipt(bytes.slice(at, at + P.receipt_bytes), receipt ?? { group: this.group, pid, tid: pid });
+    return Object.freeze({ ...this.#operationReply(bytes, identity, identity.serial, 'root'), receipt: identity });
+  }
+
+  retirementControl(receipt: MemoryGroupTaskReceipt, command: number, entry: GroupMemoryEntry, argument = 0): GroupOperationEffect {
+    const bytes = this.#scratch.withLease(lease => {
+      lease.copyFrom(encodeMemoryGroupReceipt(receipt));
+      const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_group_retirement_control', [
+        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, command, argument,
+        lease.exportPointer(P.receipt_bytes, P.driver.reply_bytes), P.driver.reply_bytes,
+      ]);
+      if (count < 0) throw new GroupMemoryStorageRefusal(-count);
+      if (count !== P.driver.reply_bytes) this.#fault('Invalid retirement control reply extent');
+      return lease.copyOut(P.receipt_bytes, count);
+    });
+    return this.#operationReply(bytes, receipt, receipt.serial, 'retirement');
+  }
+  detachRetiringImage(handle: PreparedGroupReplica): void { this.#detachImage(handle); }
+  forgetRetiredExecution(handle: PreparedGroupReplica, image: boolean): readonly PreparedGroupReplica[] {
+    const root = this.#replica(handle).descriptor.root, removed: PreparedGroupReplica[] = [];
+    for (const [key, replica] of this.#replicas) if (key === handle || image && replica.descriptor.root === root) {
+      replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined;
+      removed.push(key); this.#replicas.delete(key);
+    }
+    if (image) this.#images.delete(root);
+    return removed;
+  }
+
+  #operationReply(bytes: Uint8Array, receipt: MemoryGroupTaskReceipt, token?: bigint, control: 'operation' | 'exec' | 'retirement' | 'root' | 'forkLaunch' = 'operation'): GroupOperationEffect {
+    const protocol = P.driver;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), fields = protocol.reply_fields;
+    decodeMemoryGroupReceipt(bytes.slice(fields.receipt, fields.receipt + P.receipt_bytes), receipt);
+    const operation = view.getBigUint64(fields.operation, true);
+    if (operation === 0n || token !== undefined && operation !== token) this.#fault('Wrong operation reply token');
+    const effect = view.getUint32(fields.effect, true), payloadBytes = view.getUint32(fields.payloadBytes, true);
+    if ((!Object.values(protocol.effects).includes(effect as any) && !(control === 'exec' && Object.values(P.exec_control.effects).includes(effect as any))
+        && !(control === 'root' && Object.values(P.root_control.effects).includes(effect as any))
+        && !(control === 'retirement' && (effect === P.retirement_control.detach_platform || effect === P.retirement_control.detach_references || effect === P.retirement_control.cancel_exec_transport || effect === P.retirement_control.wait_workers)))
+        || payloadBytes !== 0 && payloadBytes !== protocol.payload_bytes) this.#fault('Invalid operation effect');
+    const value = Number(view.getBigInt64(fields.value, true)), delay = view.getUint32(fields.delay, true);
+    if (!Number.isSafeInteger(value) || delay > (control === 'forkLaunch' ? 30000 : 1000)) this.#fault('Invalid operation result');
+    const waitToken = view.getBigUint64(fields.waitToken, true);
+    let progress: (() => Promise<void>) | undefined;
+    if (effect === protocol.effects.native) {
+      const observer = decodeMemoryGroupReceipt(bytes.slice(fields.storage, fields.storage + P.receipt_bytes),
+        { group: receipt.group, pid: receipt.pid, tid: receipt.pid, generation: control === 'exec' ? undefined : receipt.generation });
+      const resource = view.getBigUint64(fields.storage + P.storage.reply_fields.resource, true);
+      const address = view.getUint32(fields.waitAddress, true), expected = view.getUint32(fields.waitExpected, true);
+      const memory = this.host.memory(resource);
+      const observation = new NativeI32Observation(new Int32Array(memory.buffer, address, 1),
+        () => this.host.settleNative(observer, waitToken));
+      progress = () => {
+        const wait = observation.arm(expected, delay);
+        return wait.async ? wait.value.then(() => undefined) : Promise.resolve();
+      };
+    }
+    return Object.freeze({ effect, operation, flags: view.getUint32(fields.flags, true), value,
+      errno: view.getUint32(fields.errno, true), length: view.getUint32(fields.length, true),
+      delay, waitToken, progress, storage: bytes.slice(fields.storage, fields.storage + P.storage.reply_bytes),
+      payload: bytes.slice(fields.payload, fields.payload + payloadBytes) });
+  }
   #checked(handle: PreparedGroupReplica, action: number, entry: GroupMemoryEntry, token = 0n, argument = 0): bigint {
     const result = this.action(this.receipt(handle), action, entry, token, argument);
     if (result.status !== 0) this.#fault(`Kernel storage action ${action} refused: errno ${-result.status}`);
@@ -111,16 +238,12 @@ export class GroupMemoryTransport {
   }
   #status(handle: PreparedGroupReplica, entry: GroupMemoryEntry): number { return Number(this.#checked(handle, P.storage.actions.status, entry)); }
   prepareImage(receipt: MemoryGroupTaskReceipt, layout: GroupImageLayout, entry: GroupMemoryEntry): PreparedGroupReplica {
-    return this.#prepare(receipt, entry, layout);
-  }
-  prepareThread(receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): PreparedGroupReplica { return this.#prepare(receipt, entry); }
-  #prepare(receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry, layout?: GroupImageLayout): PreparedGroupReplica {
     if (this.#closed) this.#fault('Grouped platform transport is closed');
     const result = this.#scratch.withLease(lease => {
       lease.copyFrom(encodeMemoryGroupReceipt(receipt));
       const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_memory_group_storage_prepare', [
-        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, layout?.initialVirtualPages ?? 0,
-        layout?.maximumVirtualPages ?? 0, layout?.scratchBytes ?? 0,
+        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, layout.initialVirtualPages,
+        layout.maximumVirtualPages, layout.scratchBytes,
         lease.exportPointer(P.receipt_bytes, P.storage.reply_bytes), P.storage.reply_bytes,
       ]);
       if (count === -ERRNO.ENOMEM) throw new RangeError('Admitted group memory is exhausted');
@@ -130,112 +253,20 @@ export class GroupMemoryTransport {
     });
     return this.#adopt(result);
   }
-  preparePrivateFork(token: GroupImageExecutionPause, child: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): PreparedGroupReplica | 'waiting' | 'busy' | 'exhausted' {
-    if (this.#closed) this.#fault('Grouped platform transport is closed');
-    const pause = this.#pause(token);
-    return this.#scratch.withLease(lease => {
-      lease.copyFrom(encodeMemoryGroupReceipt(this.receipt(pause.handle)));
-      lease.copyFrom(encodeMemoryGroupReceipt(child), P.receipt_bytes);
-      const count = lease.invokeKernelExportScoped(entry.scope, 'kernel_memory_group_storage_fork', [
-        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes,
-        lease.exportPointer(P.receipt_bytes, P.receipt_bytes), P.receipt_bytes, Number(pause.epoch),
-        lease.exportPointer(P.receipt_bytes * 2, P.storage.reply_bytes), P.storage.reply_bytes,
-      ]);
-      if (count === -ERRNO.EAGAIN) return 'busy';
-      if (count === -ERRNO.ENOMEM) return 'exhausted';
-      if (count !== P.storage.reply_bytes) this.#fault(`Kernel physical fork refused: ${count}`);
-      return this.#adopt(this.#reply(lease.copyOut(P.receipt_bytes * 2, count), child));
-    });
-  }
-  #mapping(mapping: PreparedGroupMapping, command: number, entry: GroupMemoryEntry, argument = 0): number {
-    return this.#scratch.withLease(lease => {
-      lease.copyFrom(encodeMemoryGroupReceipt(mapping.receipt));
-      return lease.invokeKernelExportScoped(entry.scope, 'kernel_memory_group_storage_mapping', [
-        lease.exportPointer(0, P.receipt_bytes), P.receipt_bytes, command, mapping.token,
-        mapping.driver?.token ?? 0, mapping.driver?.transaction ?? 0n, argument,
-      ]);
-    });
-  }
-  prepareImageMapping(token: GroupImageExecutionPause, description: GroupMemoryChangeDescription,
-    entry: GroupMemoryEntry, driver?: PreparedGroupMapping['driver']): PreparedGroupMapping | 'waiting' | 'busy' | 'exhausted' {
-    const pause = this.#pause(token);
-    const mapping = Object.freeze({ receipt: description.receipt, token: description.token, driver });
-    const status = this.#mapping(mapping, P.storage.mapping.stage, entry, Number(pause.epoch));
-    if (status === -ERRNO.EAGAIN) return 'busy';
-    if (status === -ERRNO.ENOMEM) return 'exhausted';
-    if (status !== 0) this.#fault(`Kernel physical mapping preparation refused: ${status}`);
-    return mapping;
-  }
-  advanceImageMapping(mapping: PreparedGroupMapping, entry: GroupMemoryEntry): number {
-    return this.#mapping(mapping, P.storage.mapping.populate, entry);
-  }
-  commitImageMapping(mapping: PreparedGroupMapping, entry: GroupMemoryEntry): 'committed' | 'busy' | number {
-    const status = this.#mapping(mapping, P.storage.mapping.commit, entry);
-    return status === -ERRNO.EAGAIN ? 'busy' : status === 0 ? 'committed' : status;
-  }
-  cancelImageMapping(mapping: PreparedGroupMapping, entry: GroupMemoryEntry, errno = ERRNO.EIO): 'cancelled' | 'busy' {
-    const status = this.#mapping(mapping, P.storage.mapping.cancel, entry, errno);
-    if (status === -ERRNO.EAGAIN) return 'busy';
-    if (status !== 0 && status !== -ERRNO.ESRCH) this.#fault(`Kernel mapping cancellation refused: ${status}`);
-    return 'cancelled';
-  }
   isUnexposed(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.prepared); }
-  imageHasExecutionPause(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.paused); }
-  imageStopRequested(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.stopping); }
   replicaExecutionStopped(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.stopped); }
   imageExecutionStopped(handle: PreparedGroupReplica, entry: GroupMemoryEntry): boolean { return !!(this.#status(handle, entry) & P.storage.status.imageStopped); }
-  beginImageOperation(receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): bigint {
-    const result = this.action(receipt, P.storage.actions.beginImageOperation, entry);
-    if (result.status !== 0) throw new GroupMemoryStorageRefusal(-result.status);
-    if (result.value === 0n) this.#fault('Kernel returned an empty image operation');
-    return result.value;
-  }
-  imageOperationReady(receipt: MemoryGroupTaskReceipt, token: bigint, entry: GroupMemoryEntry): boolean {
-    const result = this.action(receipt, P.storage.actions.imageOperationReady, entry, token);
-    if (result.status !== 0 || result.value > 1n) this.#fault('Kernel image operation readiness refused');
-    return result.value === 1n;
-  }
-  finishImageOperation(receipt: MemoryGroupTaskReceipt, token: bigint, entry: GroupMemoryEntry): void {
-    const result = this.action(receipt, P.storage.actions.finishImageOperation, entry, token);
-    if (result.status !== 0) this.#fault('Kernel image operation completion refused');
-  }
-  beginImageExecutionPause(handle: PreparedGroupReplica, entry: GroupMemoryEntry,
-    operation?: { readonly receipt: MemoryGroupTaskReceipt; readonly token: bigint }): GroupImageExecutionPause {
-    const result = this.action(operation?.receipt ?? this.receipt(handle), P.storage.actions.beginImagePause, entry, operation?.token);
-    if (result.status !== 0) this.#fault('Kernel image pause refused');
-    const epoch = result.value;
-    const pause = Object.freeze(Object.create(null)) as GroupImageExecutionPause;
-    this.#pauses.set(pause, { handle, epoch }); return pause;
-  }
-  #pause(token: GroupImageExecutionPause): Pause { return this.#pauses.get(token) ?? this.#fault('Unknown barrier transport token'); }
-  imageExecutionPauseAcknowledged(token: GroupImageExecutionPause, entry: GroupMemoryEntry): boolean {
-    const pause = this.#pause(token);
-    return this.#checked(pause.handle, P.storage.actions.imagePauseAcknowledged, entry, pause.epoch) === 1n;
-  }
-  virtualExtentAtBarrier(token: GroupImageExecutionPause, entry: GroupMemoryEntry): number | 'waiting' | 'busy' {
-    const pause = this.#pause(token), result = this.action(this.receipt(pause.handle), P.storage.actions.pausedExtent, entry, pause.epoch);
-    if (result.status === -ERRNO.EAGAIN) return 'busy';
-    if (result.status !== 0) this.#fault(`Kernel paused extent refused: ${result.status}`);
-    return Number(result.value);
-  }
-  resumeImageExecutionPause(token: GroupImageExecutionPause, entry: GroupMemoryEntry): boolean {
-    const pause = this.#pause(token), result = this.action(this.receipt(pause.handle), P.storage.actions.resumeImage, entry, pause.epoch);
-    if (result.status === -ERRNO.ESRCH) return false;
-    if (result.status !== 0) this.#fault(`Kernel barrier resume refused: ${result.status}`);
-    this.#pauses.delete(token); this.#resumeWaiters(pause.handle); return true;
-  }
-  #resumeWaiters(handle: PreparedGroupReplica): void {
-    const image = this.#images.get(this.#replica(handle).descriptor.root);
-    for (const resolve of image?.resumed ?? []) resolve(); image?.resumed.clear();
-  }
-  waitForImageExecutionPause(handle: PreparedGroupReplica): Promise<void> {
-    const image = this.#images.get(this.#replica(handle).descriptor.root)!;
-    return new Promise(resolve => { image.resumed.add(resolve); });
-  }
   publish(handle: PreparedGroupReplica, receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): GroupReplicaLaunch {
-    const replica = this.#replica(handle), response = this.action(receipt, P.storage.actions.publish, entry);
+    const response = this.action(receipt, P.storage.actions.publish, entry);
     if (response.status !== 0) this.#fault(`Kernel storage publication refused: ${response.status}`);
-    const descriptor = this.#reply(response.bytes, replica.descriptor.receipt), memory = this.host.memory(descriptor.resource), live = replica.live;
+    return this.bindPublishedExecution(handle, response.bytes);
+  }
+  adoptExecution(bytes: Uint8Array, receipt: MemoryGroupTaskReceipt): PreparedGroupReplica {
+    return this.#adopt(this.#reply(bytes, receipt));
+  }
+  bindPublishedExecution(handle: PreparedGroupReplica, bytes: Uint8Array): GroupReplicaLaunch {
+    const replica = this.#replica(handle);
+    const descriptor = this.#reply(bytes, replica.descriptor.receipt), memory = this.host.memory(descriptor.resource), live = replica.live;
     const assertLive = () => { if (!live.value) throw new ProcessAddressFault('retired'); };
     const { resource: _resource, ...identity } = descriptor;
     const expectation = Object.freeze({ ...identity, assertLive });
@@ -260,8 +291,7 @@ export class GroupMemoryTransport {
     const descriptor = this.#replica(handle).descriptor;
     return Object.freeze({ receipt: descriptor.receipt, memory: this.host.memory(descriptor.resource), source: this.imageSource(handle), maximumVirtualPages: descriptor.maximumVirtualPages });
   }
-  noteReplicaQuiescent(handle: PreparedGroupReplica, entry: GroupMemoryEntry): void {
-    this.#checked(handle, P.storage.actions.noteQuiescent, entry);
+  acceptReplicaStop(handle: PreparedGroupReplica): void {
     const replica = this.#replica(handle); replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined; replica.resolveQuiescent();
   }
   waitForReplicaQuiescence(handle: PreparedGroupReplica): Promise<void> { return this.#replica(handle).quiescent; }
@@ -277,7 +307,6 @@ export class GroupMemoryTransport {
   }
   requestImageStop(handle: PreparedGroupReplica, entry: GroupMemoryEntry, naturalExitTid = 0): boolean {
     const result = this.action(this.receipt(handle), P.storage.actions.stopImage, entry, 0n, naturalExitTid);
-    this.#resumeWaiters(handle);
     if (result.status === -ERRNO.EAGAIN) return false;
     if (result.status !== 0) this.#fault(`Kernel image stop refused: ${result.status}`);
     return true;
@@ -287,7 +316,7 @@ export class GroupMemoryTransport {
   }
   #detachImage(handle: PreparedGroupReplica): void {
     const image = this.#images.get(this.#replica(handle).descriptor.root)!;
-    image.live.value = false; image.source?.detachHostAccess(); image.source = undefined; this.#resumeWaiters(handle);
+    image.live.value = false; image.source?.detachHostAccess(); image.source = undefined;
   }
   quarantine(handle: PreparedGroupReplica, entry: GroupMemoryEntry): void {
     const result = this.action(this.receipt(handle), P.storage.actions.quarantine, entry);
@@ -350,9 +379,6 @@ export class GroupMemoryTransport {
     const observation = this.#nativeObservation(handle, result);
     return () => { const wait = observation.arm(expected, 10); return wait.async ? wait.value.then(() => undefined) : Promise.resolve(); };
   }
-  prepareMappingProgress(token: GroupImageExecutionPause, entry: GroupMemoryEntry, target: 'barrier' | 'locks' | 'pool'): () => Promise<void> {
-    const pause = this.#pause(token); return this.prepareProgress(pause.handle, entry, target, pause.epoch);
-  }
   #releaseControl(receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): 'released' | 'busy' {
     const release = entry.instance.exports.kernel_group_memory_thread_control_release;
     if (typeof release !== 'function') this.#fault('Missing physical thread control release export');
@@ -371,7 +397,6 @@ export class GroupMemoryTransport {
     const result = this.action(this.receipt(handle), P.storage.actions.containImage, entry);
     if (result.status !== 0 && result.status !== -ERRNO.EAGAIN) this.#fault(`Kernel image containment refused: ${result.status}`);
   }
-  tryReleaseUnconstructedThreadControl(receipt: MemoryGroupTaskReceipt, entry: GroupMemoryEntry): 'released' | 'busy' { return this.#releaseControl(receipt, entry); }
   inspectReplicaWait(handle: PreparedGroupReplica, entry: GroupMemoryEntry): 'none' | 'waiting' | 'returning' | 'busy' {
     const result = this.action(this.receipt(handle), P.storage.actions.inspectWait, entry);
     if (result.status === -ERRNO.EAGAIN) return 'busy';

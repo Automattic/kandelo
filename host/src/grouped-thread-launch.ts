@@ -1,105 +1,43 @@
+import { GroupedWorkerObjects } from './grouped-worker-objects';
 import type { CentralizedKernelWorker, GroupedThreadChannelAttachment, GroupedThreadLaunch } from './kernel-worker';
 import type { ForkExternrefGeneration } from './fork-reference-broker';
-import type { ForkHostImportOwnerRuntime, ForkHostImportOwnerWorker } from './fork-host-import-runtime';
+import type { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
 import { DeferredWorkerHandle } from './deferred-worker-handle';
 import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, waitForGroupedWorkerReady } from './grouped-worker-initialization';
 import { retryKernelEntryResult } from './kernel-entry-retry';
-import type { MemoryGroupTaskReceipt } from './memory-group-protocol';
 import type { CentralizedThreadInitMessage } from './worker-protocol';
-import type { ThreadPageAllocator } from './thread-allocator';
 import type { WorkerAdapter } from './worker-adapter';
 
 export interface GroupedThreadWorkerOptions {
   readonly kernel: CentralizedKernelWorker;
   readonly attachment: GroupedThreadChannelAttachment;
-  readonly allocator: ThreadPageAllocator;
   readonly adapter: WorkerAdapter;
   readonly imports: ForkHostImportOwnerRuntime;
   readonly generation: ForkExternrefGeneration;
   readonly programBytes: ArrayBuffer;
   readonly terminationProvesQuiescence: boolean;
-  readonly isCurrent: (thread: GroupedThreadWorkerOwnership) => boolean;
-  readonly retain: (thread: GroupedThreadWorkerOwnership) => void;
-  readonly discard: (thread: GroupedThreadWorkerOwnership) => void;
-  readonly onMessage: (message: any, thread: GroupedThreadWorkerOwnership) => void;
-  readonly onError: (error: Error, thread: GroupedThreadWorkerOwnership) => void;
-  readonly onExit: (code: number, thread: GroupedThreadWorkerOwnership) => void;
+  readonly isCurrent: (thread: GroupedWorkerObjects) => boolean;
+  readonly retain: (thread: GroupedWorkerObjects) => void;
+  readonly discard: (thread: GroupedWorkerObjects) => void;
+  readonly onMessage: (message: any, thread: GroupedWorkerObjects) => void;
+  readonly onError: (error: Error, thread: GroupedWorkerObjects) => void;
+  readonly onExit: (code: number, thread: GroupedWorkerObjects) => void;
 }
 
-/** Thread realm custody shares the process's externref generation. Its import
- * endpoint ends independently; neither process generation nor slots/pages are
- * released here. Exact observer/channel retirement remains a separate gate. */
-export class GroupedThreadWorkerOwnership {
-  private stopped = false;
-  private absent = false;
-  private joined = false;
-  private joinWaiters?: Set<() => void>;
-  private released = false;
-  private endpoint?: ForkHostImportOwnerWorker;
-  private cleanup?: () => void;
-  readonly receipt: MemoryGroupTaskReceipt;
-  readonly handle: GroupedThreadLaunch['handle'];
-  constructor(readonly pid: number, readonly tid: number, plan: GroupedThreadLaunch,
-    readonly worker: DeferredWorkerHandle, private readonly joins: boolean) {
-    this.receipt = plan.launch.expectation.receipt; this.handle = plan.handle;
-  }
-  get quiescent(): boolean { return this.stopped || this.absent; }
-  get executionAbsent(): boolean { return this.absent; }
-  get hasJoined(): boolean { return this.joined; }
-  attach(endpoint: ForkHostImportOwnerWorker, cleanup: () => void): void {
-    this.endpoint = endpoint; this.cleanup = cleanup;
-  }
-  acceptQuiescence(message: any): void {
-    if (message.pid !== this.pid || message.tid !== this.tid) throw Error('Wrong terminal grouped pthread');
-    for (const key of ['group', 'pid', 'tid', 'serial', 'generation'] as const) {
-      if (message.memoryGroup?.[key] !== this.receipt[key]) throw Error('Wrong terminal grouped pthread receipt');
-    }
-    this.stopped = true;
-  }
-  noteExit(): void {
-    if (!this.joins) return;
-    this.joined = true;
-    for (const resolve of this.joinWaiters ?? []) resolve();
-    this.joinWaiters = undefined;
-  }
-  /** Exact Node thread exit only. A browser's synthetic exit is never a join. */
-  waitForNodeJoin(): Promise<void> {
-    if (!this.joins) return Promise.reject(Error('Browser Worker exit cannot prove a Node join'));
-    if (this.joined) return Promise.resolve();
-    return new Promise<void>(resolve => { (this.joinWaiters ??= new Set()).add(resolve); });
-  }
-  async contain(): Promise<void> {
-    await this.worker.terminate();
-    if (this.joins && DeferredWorkerHandle.hasCompletedBackingTermination(this.worker)) this.noteExit();
-  }
-  releaseAfterStop(): boolean {
-    if (this.released) return true;
-    if (!this.stopped && !this.joined) {
-      if (!DeferredWorkerHandle.sealNeverStarted(this.worker)) return false;
-      this.absent = true;
-    }
-    this.cleanup?.(); this.cleanup = undefined;
-    this.endpoint?.close(); this.endpoint = undefined;
-    this.released = true; return true;
-  }
-}
 
 /** Shared production thread launch. Only this exact clone capability selects
  * the image; physical Memory is transported solely to its disposable Worker. */
-export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOptions): Promise<GroupedThreadWorkerOwnership> {
+export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOptions): Promise<GroupedWorkerObjects> {
   const { kernel, attachment } = options;
-  options.allocator.assertCanAllocate();
   const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(attachment.pid));
-  const control = await retryKernelEntryResult(() => kernel.reserveMemoryGroupThreadControl(attachment));
-  if (control < 0) throw Error(`Cannot reserve grouped pthread controls: errno ${-control}`);
   let plan: GroupedThreadLaunch;
   for (;;) {
-    const prepared = await retryKernelEntryResult(() => kernel.prepareMemoryGroupThreadLaunch(attachment, options.allocator));
+    const prepared = await retryKernelEntryResult(() => kernel.prepareMemoryGroupThreadLaunch(attachment));
     if (typeof prepared === 'number') throw Error(`Cannot prepare grouped pthread: errno ${-prepared}`);
     if (prepared.status === 'waiting') { await prepared.progress; continue; }
     plan = prepared; break;
   }
-  let ownership!: GroupedThreadWorkerOwnership;
+  let ownership!: GroupedWorkerObjects;
   let init!: Omit<CentralizedThreadInitMessage, 'memory'>;
   const { assertLive: _live, ...expected } = plan.launch.expectation;
   const worker = new DeferredWorkerHandle(() => {
@@ -110,12 +48,12 @@ export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOpti
     }).catch(error => options.onError(error instanceof Error ? error : Error(String(error)), ownership));
     return actual;
   });
-  ownership = new GroupedThreadWorkerOwnership(attachment.pid, attachment.tid, plan, worker, options.terminationProvesQuiescence);
+  ownership = new GroupedWorkerObjects(plan.handle, plan.launch.expectation.receipt, options.generation, worker, options.terminationProvesQuiescence);
   const exact = ownership;
   let observed = false;
   try {
     await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(plan.handle, worker,
-      { terminationProvesQuiescence: options.terminationProvesQuiescence, retireHostReferences: () => exact.releaseAfterStop() }));
+      { terminationProvesQuiescence: options.terminationProvesQuiescence, retireHostReferences: () => exact.disposeReferences() }));
     observed = true;
     const endpoint = options.imports.createWorker({ pid: exact.pid, generationId: options.generation.id,
       authorizeSender: () => { if (!options.isCurrent(exact)) throw Error('Stale grouped thread host-import sender'); } });
@@ -138,8 +76,8 @@ export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOpti
     init = { type: 'centralized_thread_init', pid: exact.pid, tid: exact.tid, programBytes: options.programBytes,
       processChannelOffset: plan.processChannelOffset, channelOffset: plan.allocation.channelOffset,
       secureExec, externrefGenerationId: options.generation.id, forkHostImports: endpoint.init,
-      fnPtr: attachment.fnPtr, argPtr: attachment.argPtr, stackPtr: attachment.stackPtr, tlsPtr: attachment.tlsPtr,
-      ctidPtr: attachment.ctidPtr, tlsOffset: plan.allocation.tlsOffset, tlsAllocAddr: plan.allocation.tlsOffset,
+      fnPtr: plan.entry.fnPtr, argPtr: plan.entry.argPtr, stackPtr: plan.entry.stackPtr, tlsPtr: plan.entry.tlsPtr,
+      ctidPtr: plan.entry.ctidPtr, tlsOffset: plan.allocation.tlsOffset, tlsAllocAddr: plan.allocation.tlsOffset,
       ptrWidth: 4, kernelAbiVersion: kernel.getKernelAbiVersion(),
       kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
     options.retain(exact);
@@ -154,9 +92,9 @@ export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOpti
     // Seal only this observed handle. A constructor attempt is uncertainty,
     // even if terminate() resolves without a returned concrete Worker.
     const absent = observed && await retryKernelEntryResult(() => kernel.sealMemoryGroupReplicaWorkerAbsence(plan.handle, worker));
-    if (absent || exact.quiescent) exact.releaseAfterStop();
+    if (absent) await kernel.releaseMemoryGroupWorkerReferences(plan.handle);
     await exact.contain();
-    if (exact.releaseAfterStop()) {
+    if (await kernel.releaseMemoryGroupWorkerReferences(plan.handle)) {
       if (observed) await kernel.waitForMemoryGroupReplicaQuiescence(plan.handle);
       options.discard(exact);
     }

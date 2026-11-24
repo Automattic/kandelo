@@ -930,9 +930,20 @@ impl Deref for ThreadIdentity {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GroupedThreadEntry {
+    pub function: u32,
+    pub argument: u32,
+    pub slot_start: u32,
+    pub slot_length: u32,
+}
+
 /// Mutable non-identity state for a retained thread.
 #[derive(Debug, Clone)]
 pub struct ThreadState {
+    /// The allocating caller and grouped replay recipe belong to this task.
+    pub(crate) creator_tid: u32,
+    pub(crate) grouped_entry: Option<GroupedThreadEntry>,
     pub ctid_ptr: usize, // CLONE_CHILD_CLEARTID address (futex wake on exit)
     pub stack_ptr: usize,
     pub tls_ptr: usize,
@@ -971,6 +982,8 @@ impl ThreadInfo {
             identity: ThreadIdentity {
                 tid,
                 state: ThreadState {
+                    creator_tid: 0,
+                    grouped_entry: None,
                     ctid_ptr,
                     stack_ptr,
                     tls_ptr,
@@ -1256,10 +1269,14 @@ pub struct Process {
     /// it (`kernel_set_main_channel_addr`), at every registration of an
     /// address space, including the one after an exec.
     pub main_channel_addr: u64,
+    /// A forked pthread becomes a process leader but still replays its thread
+    /// entry on subsequent forks. Exec clears this old-image recipe.
+    pub(crate) grouped_main_entry: Option<GroupedThreadEntry>,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
     pub exec_generation: u64,
+    pub(crate) grouped_artifact: Option<crate::group_layout::Artifact>,
     pub entropy_reads: crate::entropy_read::EntropyReadLedger,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
     pub prepared_exec_targets: PreparedExecLedger,
@@ -1734,7 +1751,9 @@ impl Process {
             secure_exec: false,
             pointer_width: 4,
             main_channel_addr: 0,
+            grouped_main_entry: None,
             exec_generation: 0,
+            grouped_artifact: None,
             entropy_reads: crate::entropy_read::EntropyReadLedger::default(),
             prepared_exec_targets: PreparedExecLedger::new(),
             exe: None,

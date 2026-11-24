@@ -4,6 +4,57 @@ use super::*;
 use crate::memory_group::wait_queue;
 
 impl Storage {
+    /// Only the kernel launch driver can prove that no Worker construction
+    /// effect was issued. This is not a host-callable quiescence substitute.
+    pub(crate) fn release_unstarted_thread(&mut self, memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission, address: u32, length: u32,
+        release_control: impl FnOnce() -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        let member = self.owned(admission)?;
+        if admission.record().pid == admission.record().tid || member.exposure == Exposure::Quarantined {
+            return Err(Errno::EBUSY);
+        }
+        let key = member.image;
+        let (_, _, control) = self.control(memory, admission)?;
+        memory.atomic_store(control + layout::REPLICA_RUN, 0)?;
+        self.replicas.get_mut(&admission.record().serial).unwrap().exposure = Exposure::Stopped;
+        self.release_control_storage(memory, admission, address, length, true, release_control)?;
+        self.images.get_mut(&key).ok_or(Errno::ESRCH)?.replicas.remove(&admission.record().serial);
+        Ok(())
+    }
+
+    /// The ProcessTable MM supplies this exact task's reserved virtual slot.
+    /// Preflight every private frame before the first store. No host allocator
+    /// chooses the slot or charges a second pthread quota.
+    pub(crate) fn initialize_thread_control(&self, memory: &mut impl PhysicalMemory,
+        root: GroupAdmission, address: u32, length: u32,
+    ) -> Result<(), Errno> {
+        let key = self.owned(root)?.image;
+        let image = self.images.get(&key).ok_or(Errno::ESRCH)?;
+        if !image.source_live || !image.exposed || image.stopping || image.pause.is_some() {
+            return Err(Errno::EAGAIN);
+        }
+        const PAGES: usize = wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize;
+        if address % PAGE != 0 || length != PAGES as u32 * PAGE { return Err(Errno::EINVAL); }
+        let table = image.allocation.ok_or(Errno::EIO)?.controls.address();
+        let extent = memory.atomic_load(table)?;
+        if extent > image.layout.maximum_pages { return Err(Errno::EIO); }
+        if u64::from(address) + u64::from(length) > u64::from(extent) * u64::from(PAGE) {
+            return Err(Errno::EFAULT);
+        }
+        let physical_pages = memory.current_pages()?;
+        let mut targets = [0u32; PAGES];
+        for (index, virtual_page) in (address / PAGE..address / PAGE + PAGES as u32).enumerate() {
+            let pte = memory.atomic_load(table + layout::ROOT_HEADER_BYTES + virtual_page * 4)?;
+            let frame = pte >> 16;
+            if pte & 3 != 3 || frame == 0 || frame >= physical_pages { return Err(Errno::EFAULT); }
+            if !image.payload.contains(&frame) || targets[..index].contains(&frame) { return Err(Errno::EIO); }
+            targets[index] = frame;
+        }
+        for frame in targets { memory.fill(frame * PAGE, PAGE, 0)?; }
+        Ok(())
+    }
+
     pub(crate) fn release_stopped_thread(
         &mut self,
         memory: &mut impl PhysicalMemory,
@@ -18,6 +69,7 @@ impl Storage {
         {
             return Err(Errno::EBUSY);
         }
+        if matches!(member.references, References::Bound | References::Detaching) { return Err(Errno::EAGAIN); }
         if member.pending_wait_drain {
             self.request_stop(memory, admission)?;
         }
@@ -43,6 +95,7 @@ impl Storage {
         if admission.record().pid == admission.record().tid || member.exposure != Exposure::Stopped {
             return Err(Errno::EBUSY);
         }
+        if matches!(member.references, References::Bound | References::Detaching) { return Err(Errno::EAGAIN); }
         if member.pending_wait_drain {
             self.request_stop(memory, admission)?;
         }
@@ -156,6 +209,58 @@ mod tests {
     };
     const ADDRESS: u32 = 4 * PAGE;
     const LENGTH: u32 = 4 * PAGE;
+    #[test]
+    fn initialization_clears_virtual_controls_without_touching_a_permuted_neighbor() {
+        let (_groups, storage, mut memory, root) = controls();
+        let table = storage.descriptor(root).unwrap().root + layout::ROOT_HEADER_BYTES;
+        for frame in storage.images.get(&storage.owned(root).unwrap().image).unwrap().payload.iter() {
+            memory.fill(*frame * PAGE, PAGE, 0xa7).unwrap();
+        }
+        let neighbor = memory.atomic_load(table).unwrap();
+        let first = memory.atomic_load(table + ADDRESS / PAGE * 4).unwrap();
+        memory.atomic_store(table, first).unwrap();
+        memory.atomic_store(table + ADDRESS / PAGE * 4, neighbor).unwrap();
+        let pages = memory.current_pages().unwrap();
+        storage.initialize_thread_control(&mut memory, root, ADDRESS, LENGTH).unwrap();
+        assert_eq!(memory.current_pages().unwrap(), pages);
+        let mut bytes = [0; 16];
+        memory.read(first & 0xffff0000, &mut bytes).unwrap();
+        assert_eq!(bytes, [0xa7; 16]);
+        for page in ADDRESS / PAGE..(ADDRESS + LENGTH) / PAGE {
+            let frame = memory.atomic_load(table + page * 4).unwrap() & 0xffff0000;
+            memory.read(frame, &mut bytes).unwrap();
+            assert_eq!(bytes, [0; 16]);
+        }
+    }
+
+    #[test]
+    fn initialization_preflights_the_last_page_before_clearing_any_control() {
+        for corrupt in [1, 2] {
+            let (_groups, storage, mut memory, root) = controls();
+            let table = storage.descriptor(root).unwrap().root + layout::ROOT_HEADER_BYTES;
+            let first = memory.atomic_load(table + ADDRESS / PAGE * 4).unwrap();
+            let last = memory.atomic_load(table + ((ADDRESS + LENGTH) / PAGE - 1) * 4).unwrap();
+            memory.fill(first & 0xffff0000, PAGE, 0xa7).unwrap();
+            memory.atomic_store(table + ((ADDRESS + LENGTH) / PAGE - 1) * 4,
+                if corrupt == 1 { last & !2 } else { first }).unwrap();
+            assert_eq!(storage.initialize_thread_control(&mut memory, root, ADDRESS, LENGTH),
+                Err(if corrupt == 1 { Errno::EFAULT } else { Errno::EIO }));
+            let mut bytes = [0; 16];
+            memory.read(first & 0xffff0000, &mut bytes).unwrap();
+            assert_eq!(bytes, [0xa7; 16]);
+        }
+    }
+
+    #[test]
+    fn initialization_refuses_live_image_barriers_and_wrong_slot_extents() {
+        let (_groups, mut storage, mut memory, root) = controls();
+        assert_eq!(storage.initialize_thread_control(&mut memory, root, ADDRESS + 1, LENGTH), Err(Errno::EINVAL));
+        assert_eq!(storage.initialize_thread_control(&mut memory, root, ADDRESS, LENGTH - PAGE), Err(Errno::EINVAL));
+        assert_eq!(storage.initialize_thread_control(&mut memory, root, ADDRESS + LENGTH, LENGTH), Err(Errno::EFAULT));
+        storage.begin_image_pause(&mut memory, root).unwrap();
+        assert_eq!(storage.initialize_thread_control(&mut memory, root, ADDRESS, LENGTH), Err(Errno::EAGAIN));
+    }
+
     fn controls() -> (MemoryGroups, Storage, Memory, GroupAdmission) {
         let (groups, mut storage, mut memory, root) = running();
         let descriptor = storage.descriptor(root).unwrap();

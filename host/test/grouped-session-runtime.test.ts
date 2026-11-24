@@ -9,7 +9,7 @@ import { compileSdkFixture } from './support/compile-sdk-fixture';
 
 // Exercise the public host option, not the separate internal-admission fixture.
 const publicLaunchCases = [
-  ['readonly-file', true], ['shared-file', true], ['fork', true], ['pthread', true],
+  ['readonly-file', true], ['shared-file', true], ['fork', true], ['pthread', true], ['pthread-fork', true],
   ['dri-mapping-fork', true], ['dri-mapping-fork', false], ['dri-direct', true],
   ['fork', false], ['pthread', false],
   ['sigchld-wnohang', true], ['sigchld-wnohang', false],
@@ -127,7 +127,7 @@ it('rolls back repeated initial grouped image allocation refusals before a Worke
     await host.init();
     for (let attempt = 0; attempt < 16; attempt++) {
       await expect(host.spawnFromVfs('/bin/grouped', ['grouped', 'grouped'], { stdin: new Uint8Array() }))
-        .rejects.toThrow(/Grouped root image: errno 12/);
+        .rejects.toThrow(/Grouped root preparation: errno 12/);
       expect((await host.enumProcs()).filter(process => process.pid !== 1)).toEqual([]);
     }
     const child = await host.spawnFromVfs('/bin/ordinary', ['ordinary', 'ordinary'], { stdin: new Uint8Array() });

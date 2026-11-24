@@ -12824,6 +12824,7 @@ pub fn sys_mremap(
     flags: u32,
     new_addr: usize,
 ) -> Result<usize, Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     use wasm_posix_shared::mmap::{MAP_FAILED, MAP_FIXED, MAP_SHARED};
     if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
 
@@ -13075,6 +13076,7 @@ pub fn sys_mmap(
     fd: i32,
     offset: i64,
 ) -> Result<usize, Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     let cleanup = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0 && len != 0 {
         let aligned = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
         Some(unsafe { crate::memory::global_shared_mapping_table() }.stage_cleanup_mappings(proc.pid, addr as u64, aligned as u64)?)
@@ -13753,6 +13755,7 @@ pub fn sys_munmap(
     addr: usize,
     len: usize,
 ) -> Result<(), Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
 
     if len == 0 {
@@ -13788,6 +13791,9 @@ pub fn sys_munmap(
 /// If addr is 0, returns the current break.
 /// Otherwise, sets the break to addr and returns the new break.
 pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
+    // brk reports the unchanged break when growth is refused. Grouped changes
+    // must enter the physical/PTE transaction owner, never this legacy path.
+    if validate_ordinary_memory_mutation(proc).is_err() { return proc.memory.get_brk(); }
     if crate::owned_resource::has_pending_mapping(proc) {return proc.memory.get_brk();}
     if addr == 0 {
         proc.memory.get_brk()
@@ -13807,6 +13813,7 @@ pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
 /// `mprotect()` in `docs/posix-status.md`). The host keeps its own effect of
 /// a write upgrade on a shared file mapping (writeback eligibility).
 pub fn sys_mprotect(proc: &Process, addr: usize, len: usize, prot: u32) -> Result<(), Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     use wasm_posix_shared::mmap::{PROT_EXEC, PROT_READ, PROT_WRITE};
     if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
         return Err(Errno::EINVAL);
@@ -13822,6 +13829,13 @@ pub fn sys_mprotect(proc: &Process, addr: usize, len: usize, prot: u32) -> Resul
         return Err(Errno::ENOMEM);
     }
     Ok(())
+}
+
+/// Direct/synthetic channel dispatch cannot commit only the logical half of
+/// a grouped address-space change. Group drivers use staged MemoryManager
+/// plans and publish their physical/PTE effects before committing that plan.
+fn validate_ordinary_memory_mutation(proc: &Process) -> Result<(), Errno> {
+    if proc.memory.group_virtual_extent().is_some() { Err(Errno::EOPNOTSUPP) } else { Ok(()) }
 }
 
 pub fn listener_accept_wake_for_entry(

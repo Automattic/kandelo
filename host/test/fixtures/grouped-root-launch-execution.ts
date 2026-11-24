@@ -15,16 +15,18 @@ export async function execute(options: {
 }) {
     let session!: GroupedSessionRuntime, rootPid: number | undefined, exitResolve!: (code: number) => void;
     let stdout = '', stderr = '', constructionAttempts = 0, fatal: string | undefined, destruction: Promise<void> | undefined;
+    let fatalResolve!: () => void;
+    const fatalReported = new Promise<void>(resolve => { fatalResolve = resolve; });
     const diagnostics: string[] = [], rollbacks: unknown[] = [];
     let fatalLedger: unknown;
     const kernel = new CentralizedKernelWorker({ maxWorkers: 16, dataBufferSize: 65536, useSharedMemory: true, kernelMaxPages: 1024 }, options.io, {
-        onExit: (pid, code) => { session.exit(pid, code); }, onGroupedFork: r => session.fork(r), onGroupedClone: r => session.clone(r), onGroupedExec: r => session.exec(r), onThreadExit: (pid, tid) => session.threadExit(pid, tid), onKernelFatal: e => { fatal = e.message; }, onHostDiagnostic: e => diagnostics.push(JSON.stringify(e)),
+        onExit: (pid, code) => { session.exit(pid, code); }, onGroupedFork: r => session.fork(r), onGroupedClone: r => session.clone(r), onGroupedExec: r => session.exec(r), onThreadExit: (pid, tid) => session.threadExit(pid, tid), onKernelFatal: e => { fatal = e.message; fatalResolve(); }, onHostDiagnostic: e => diagnostics.push(JSON.stringify(e)),
     });
     const image = options.imageBytes;
     kernel.configureRootfsOverlay(() => -2, [], false, image.byteLength, (offset, destination) => { const n = Math.min(destination.length, Math.max(0, image.length - offset)); destination.set(image.subarray(offset, offset + n)); return n; });
     await kernel.init(options.kernelBytes);
     kernel.setOutputCallbacks({ onStdout: b => stdout += new TextDecoder().decode(b), onStderr: b => stderr += new TextDecoder().decode(b) });
-    const adapter: WorkerAdapter = { createWorker: data => { constructionAttempts++; if (options.stage === 'constructor')
+    const adapter: WorkerAdapter = { createWorker: data => { constructionAttempts++; if (['constructor', 'stopped-constructor'].includes(options.stage))
             throw Error('fixture uncertain root constructor'); return options.adapter.createWorker(data); } };
     const originalRegister = kernel.registerMemoryGroupProcess.bind(kernel);
     let injected = 0, inject = true;
@@ -32,6 +34,12 @@ export async function execute(options: {
     // Production KernelWorker methods are sealed. A fixture-only bound facade
     // injects setup refusal without replacing any real method or kernel authority.
     const facade = new Proxy(kernel, { get(target, key) {
+            if (key === 'runMemoryGroupRootLaunch')
+                return (handle: Parameters<CentralizedKernelWorker['runMemoryGroupRootLaunch']>[0], platform: Parameters<CentralizedKernelWorker['runMemoryGroupRootLaunch']>[1]) =>
+                    target.runMemoryGroupRootLaunch(handle, { ...platform,
+                        waitReady: async () => { await platform.waitReady(); if (options.stage === 'readiness') throw Error('fixture root readiness effect'); },
+                        deliverLaunch: () => { if (options.stage === 'launch-message') throw Error('fixture root launch delivery'); platform.deliverLaunch(); },
+                    });
             if (key === 'registerMemoryGroupProcess')
                 return (...args: Parameters<CentralizedKernelWorker['registerMemoryGroupProcess']>) => {
                     if (inject && options.stage === 'registration-before') {
@@ -71,7 +79,7 @@ export async function execute(options: {
         kernel.setStdinData(pid, new Uint8Array());
         const result = await kernel.launchInitialPath(pid, '/bin/fork-grouped', ['fork', 'grouped'], [], async (request) => ({ onCommitFailure: () => { }, startAfterCommit: async () => {
                 const secureExec = kernel.takeCommittedExecSecureExec(pid);
-                if (options.stage === 'stopped-destroy')
+                if (['stopped-destroy', 'stopped-constructor'].includes(options.stage))
                     await retry(() => kernel.signalProcess(pid, 19));
                 await session.launch(pid, request.targetBytes, request.targetModule, request.argv, request.envp, 2048, 8, secureExec, true);
                 return 0;
@@ -100,7 +108,13 @@ export async function execute(options: {
         code = await exited;
         await session.destroy();
     }
-    else if (options.stage === 'constructor') {
+    else if (options.stage === 'stopped-constructor') {
+        await launch();
+        await retry(() => kernel.signalProcess(rootPid!, 18));
+        await fatalReported;
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+    else if (['constructor', 'readiness', 'launch-message'].includes(options.stage)) {
         try {
             await launch();
         }

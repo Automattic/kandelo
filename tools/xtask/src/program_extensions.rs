@@ -52,6 +52,17 @@ fn outputs() -> Vec<(&'static str, String)> {
         ts.push_str(&format!("export const MEMORY_GROUP_{name} = {value} as const;\n"));
         group_header.push_str(&format!("#define KANDELO_MG_{name} {value}u\n"));
     }
+    ts.push_str(&format!("export const MEMORY_GROUP_HOST_ACCESS_MODULE = {:?} as const;\n", wasm_posix_shared::group_access::MODULE));
+    for (name, value) in [
+        ("HOST_ACCESS_VERSION", wasm_posix_shared::group_access::VERSION as i32),
+        ("HOST_ACCESS_BOUNDS", wasm_posix_shared::group_access::BOUNDS),
+        ("HOST_ACCESS_PROTECTION", wasm_posix_shared::group_access::PROTECTION),
+        ("HOST_ACCESS_METADATA", wasm_posix_shared::group_access::METADATA),
+        ("HOST_ACCESS_BUSY", wasm_posix_shared::group_access::BUSY),
+        ("HOST_ACCESS_PUBLICATION_FAILED", wasm_posix_shared::group_access::PUBLICATION_FAILED),
+    ] {
+        ts.push_str(&format!("export const MEMORY_GROUP_{name} = {value} as const;\n"));
+    }
     // Compile these declarations into independently checkable Wasm markers.
     // A stale generated header must not silently change the translator's ABI.
     group_header.push_str("#define KANDELO_MG_LAYOUT_MARKERS(X) \\\n");
@@ -77,7 +88,7 @@ fn outputs() -> Vec<(&'static str, String)> {
             "errors":klog::ERRORS.iter().map(|(key,value)| (*key,*value)).collect::<std::collections::BTreeMap<_,_>>(),
         },{
             "module":group::MODULE,"name":group::IMPORT,"kind":"memory",
-            "status":"artifact producer and pool primitive only; normal launch remains refused",
+            "status":"explicit opt-in for compatible, mutually trusting participants",
             "shared":true,"memory64":false,"initialPages":1,"maximumPages":65536,
             "section":group::SECTION,
             "wire":group::WIRE.iter().map(|(key,value)|(*key,*value)).collect::<std::collections::BTreeMap<_,_>>(),
@@ -122,9 +133,68 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             std::fs::write(path, content).map_err(|error| error.to_string())?;
         }
     }
+    let access = foreign_access_module()?;
+    let path = crate::repo_root().join("host/src/generated/group-memory-access.ts");
+    if check {
+        let actual = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        if actual != access { return Err("SDK group-memory access module is stale; run xtask program-extensions".into()); }
+    } else { std::fs::write(path, access).map_err(|error| error.to_string())?; }
     println!(
         "program extension contracts {}",
         if check { "are current" } else { "generated" }
     );
     Ok(())
+}
+
+/// Compile the normal SDK's bounded execution primitives, not a second
+/// lifecycle owner. Importing the actual foreign memory needs no kernel entry.
+fn foreign_access_module() -> Result<String, String> {
+    let root = crate::repo_root();
+    let stage = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let output = stage.path().join("group-memory-access.wasm");
+    let built = std::process::Command::new("rustc")
+        .current_dir(&root)
+        .args(["--target=wasm32-unknown-unknown", "--crate-type=cdylib", "--edition=2024", "-Copt-level=s", "-Clto", "-Cpanic=abort",
+            "-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
+            "-Clink-arg=--no-entry", "-Clink-arg=--import-memory", "-Clink-arg=--shared-memory", "-Clink-arg=--initial-memory=0",
+            "-Clink-arg=-z", "-Clink-arg=stack-size=0", "-Clink-arg=--max-memory=4294967296", "-Clink-arg=--strip-all"])
+        .arg(root.join("crates/shared-memory-instrument/helpers/host-access.rs"))
+        .arg("-o").arg(&output).output().map_err(|error| error.to_string())?;
+    if !built.status.success() { return Err(format!("compile SDK foreign-memory primitives: {}", String::from_utf8_lossy(&built.stderr))); }
+    let bytes = std::fs::read(output).map_err(|error| error.to_string())?;
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
+        .map_err(|error| format!("SDK foreign-memory validation: {error}"))?;
+    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+        use wasmparser::{Payload, TypeRef};
+        match payload.map_err(|error| error.to_string())? {
+            Payload::StartSection { .. } | Payload::MemorySection(_) => return Err("SDK access helper must only import existing memory and defer execution".into()),
+            Payload::DataSection(data) if data.count() != 0 => return Err("SDK access helper may not initialize foreign memory".into()),
+            Payload::CodeSectionEntry(body) => {
+                let mut operations = body.get_operators_reader().map_err(|error| error.to_string())?;
+                while !operations.eof() {
+                    use wasmparser::Operator;
+                    if matches!(operations.read().map_err(|error| error.to_string())?, Operator::GlobalSet { .. } | Operator::MemoryGrow { .. } | Operator::TableGrow { .. }) {
+                        return Err("SDK access helper must not require a linear stack, allocate memory, or retain hidden instance state".into());
+                    }
+                }
+            },
+            Payload::ImportSection(imports) => for entry in imports.into_imports() {
+                let entry = entry.map_err(|error| error.to_string())?;
+                match entry.ty {
+                    TypeRef::Memory(memory) if entry.module == "env" && entry.name == "memory" && memory.shared && !memory.memory64 && memory.initial == 0 && memory.maximum == Some(65536) => {},
+                    TypeRef::Func(_) if entry.module == wasm_posix_shared::group_access::MODULE && entry.name == "publish" => {},
+                    _ => return Err("unexpected SDK access helper import".into()),
+                }
+            },
+            _ => {},
+        }
+    }
+    let mut source = String::from("// Generated by xtask program-extensions from the normal Rust SDK access primitives; do not edit.\nexport const MEMORY_GROUP_ACCESS_BYTES = new Uint8Array([\n");
+    for chunk in bytes.chunks(32) {
+        source.push_str("  ");
+        for byte in chunk { source.push_str(&format!("{byte},")); }
+        source.push('\n');
+    }
+    source.push_str("]);\n");
+    Ok(source)
 }

@@ -234,3 +234,51 @@ fn queue_pins_and_contention_keep_retired_image_pages_charged() {
         .release_stopped_image(&mut memory, admission)
         .unwrap();
 }
+
+
+#[test]
+fn stopped_storage_remains_owned_until_exact_platform_reference_acknowledgement() {
+    let (_groups, mut storage, mut memory, root) = running();
+    storage.bind_platform_references(root, false).unwrap();
+    assert_eq!(storage.bind_platform_references(root, false), Err(Errno::EBUSY));
+    assert_eq!(storage.begin_reference_detachment(root), Err(Errno::EBUSY));
+    assert_eq!(storage.complete_reference_detachment(root), Err(Errno::EBUSY));
+    storage.request_image_stop(&mut memory, root, None).unwrap();
+    storage.note_quiescent(&mut memory, root).unwrap();
+    storage.revoke_source(&mut memory, root).unwrap();
+    let before = storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages;
+    assert_eq!(storage.pending_platform_references(root, true).unwrap(), Some(root.record()));
+    assert_eq!(storage.release_stopped_image(&mut memory, root), Err(Errno::EAGAIN));
+    assert!(storage.begin_reference_detachment(root).unwrap());
+    assert!(storage.begin_reference_detachment(root).unwrap());
+    assert_eq!(storage.release_stopped_image(&mut memory, root), Err(Errno::EAGAIN));
+    assert_eq!(storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages, before);
+    storage.complete_reference_detachment(root).unwrap();
+    assert_eq!(storage.complete_reference_detachment(root), Err(Errno::EBUSY));
+    assert!(!storage.begin_reference_detachment(root).unwrap());
+    assert_eq!(storage.pending_platform_references(root, true).unwrap(), None);
+    storage.release_stopped_image(&mut memory, root).unwrap();
+}
+#[test]
+fn image_owner_selects_every_bound_pthread_before_allowing_detachment() {
+    let (mut groups, mut storage, mut memory, root) = running();
+    let thread = groups.prepare_thread(root, 101).unwrap();
+    storage.prepare_thread(&mut memory, thread).unwrap();
+    groups.start(thread).unwrap(); storage.publish(thread).unwrap();
+    storage.bind_platform_references(root, false).unwrap();
+    storage.bind_platform_references(thread, false).unwrap();
+    storage.request_image_stop(&mut memory, root, None).unwrap();
+    storage.note_quiescent(&mut memory, root).unwrap();
+    storage.note_quiescent(&mut memory, thread).unwrap();
+    assert_eq!(storage.release_retired_image_thread(&mut memory, thread), Err(Errno::EAGAIN));
+    let first = storage.pending_platform_references(root, true).unwrap().unwrap();
+    let admission = storage.resolve(first).unwrap();
+    storage.begin_reference_detachment(admission).unwrap();
+    storage.complete_reference_detachment(admission).unwrap();
+    let second = storage.pending_platform_references(root, true).unwrap().unwrap();
+    assert_ne!(first, second);
+    let admission = storage.resolve(second).unwrap();
+    storage.begin_reference_detachment(admission).unwrap();
+    storage.complete_reference_detachment(admission).unwrap();
+    assert_eq!(storage.pending_platform_references(root, true).unwrap(), None);
+}

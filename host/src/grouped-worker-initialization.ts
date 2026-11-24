@@ -47,7 +47,8 @@ function expectation(value: unknown): Expectation {
 }
 function ready(expected: Expectation) {
   return { type: READY, receipt: expected.receipt, version: G.MEMORY_GROUP_VERSION,
-    threadAttach: 2, cooperativeStop: 3, executionBarrier: 1, orderedWaitQueue: 2 } as const;
+    threadAttach: 2, cooperativeStop: 3, executionBarrier: 1, orderedWaitQueue: 2,
+    forkReplay: G.MEMORY_GROUP_FORK_REPLAY_VERSION } as const;
 }
 /** Start the exact normal Worker entry without exposing any process backing. */
 export function createGroupedWorkerPrepare(expected: Expectation): unknown {
@@ -56,14 +57,13 @@ export function createGroupedWorkerPrepare(expected: Expectation): unknown {
 /** The caller keeps ownership of this handle on timeout/failure. Neither a
  * timeout nor readiness authorizes task cancellation, page reuse or reclamation.
  */
-export function waitForGroupedWorkerReady(worker: WorkerHandle, expected: Expectation, timeoutMs = 10000): Promise<void> {
+export function observeGroupedWorkerReady(worker: WorkerHandle, expected: Expectation): { result: Promise<void>; cancel(reason: Error): void } {
   const wanted = ready(expectation(expected));
-  return new Promise<void>((resolve, reject) => {
-    let timeout: ReturnType<typeof setTimeout>;
-    const clean = () => {
-      clearTimeout(timeout); worker.off('message', message); worker.off('error', error); worker.off('exit', exit);
-    };
-    const error = (reason: Error) => { clean(); reject(reason); };
+  let cancel!: (reason: Error) => void;
+  const result = new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const clean = () => { worker.off('message', message); worker.off('error', error); worker.off('exit', exit); };
+    const error = (reason: Error) => { if (settled) return; settled = true; clean(); reject(reason); };
     const exit = (code: number) => error(new MemoryGroupProtocolFault(`Grouped Worker exited before readiness (${code})`));
     const message = (value: unknown) => {
       try {
@@ -74,12 +74,18 @@ export function waitForGroupedWorkerReady(worker: WorkerHandle, expected: Expect
         for (const [key, value] of Object.entries(wanted.receipt)) {
           if (task[key] !== value) fail('Grouped Worker readiness names another admission');
         }
-        clean(); resolve();
+        if (!settled) { settled = true; clean(); resolve(); }
       } catch (reason) { error(reason instanceof Error ? reason : new Error(String(reason))); }
     };
+    cancel = error;
     worker.on('message', message); worker.on('error', error); worker.on('exit', exit);
-    timeout = setTimeout(() => error(new MemoryGroupProtocolFault('Grouped Worker readiness timed out')), timeoutMs);
   });
+  return { result, cancel };
+}
+export async function waitForGroupedWorkerReady(worker: WorkerHandle, expected: Expectation, timeoutMs = 10000): Promise<void> {
+  const observation = observeGroupedWorkerReady(worker, expected);
+  const timeout = setTimeout(() => observation.cancel(new MemoryGroupProtocolFault('Grouped Worker readiness timed out')), timeoutMs);
+  try { await observation.result; } finally { clearTimeout(timeout); }
 }
 /** Send only after readiness and exact Rust publication have both succeeded. */
 export function createGroupedWorkerLaunch(init: GroupedWorkerInit, envelope: ProcessMemoryEnvelope): unknown {

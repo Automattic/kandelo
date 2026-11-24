@@ -636,33 +636,11 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     count: 1,
     why: "Host20 reads Rust's existing exit-publication bit for one kernel PID under the same lexical entry as finalization. It returns only 0, 1 or ESRCH; no address, kernel-memory borrow or scratch authority crosses the call. This avoids retaining host PID tombstones after grouped exec image retirement.",
   },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.cancelTerminatedMemoryGroupExec::kernel-export-direct-use::retire(state.receipt.pid, Number(state.receipt.generation & 0xffffffffn), Number(state.receipt.generation >> 32n))",
-    disposition: "kernel-control",
-    count: 1,
-    why: "Three control scalars identify the private committed future image: PID and unsigned generation halves. The same lexical entry proves signal death, exact old-image stop and never-exposed future custody, cancels its task and scratch, then ends the kernel image hold before returning physical root pages. No kernel pointer or borrowed output is passed.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#reuseGroupThreadControl::kernel-export-direct-use::reuse(pending.receipt.pid, pending.receipt.tid, pending.hostControl!.thread.tid)",
-    disposition: "kernel-control", count: 1,
-    why: "Host16 (i32,i32,i32)->i64 takes the exact caller and unconstructed Rust TID, returning a Rust-selected guest virtual address or errno. There is no kernel pointer, byte borrow or raw host slot selection. It runs under the owning image FIFO/barrier before mapped-slot initialization.",
-  },
+
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#releaseGroupThreadControlWithinKernelEntry::kernel-export-direct-use::release(receipt.group, receipt.pid, receipt.tid, Number(receipt.serial & 0xffffffffn), Number(receipt.serial >> 32n), Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
     disposition: "kernel-control", count: 1,
     why: "Host16 takes seven i32 receipt control scalars, including both unsigned serial and generation halves. It releases only an existing kernel control owner after Rust thread and Worker custody ended. No address or pointer is supplied. The store proves exact native/queue retirement; Rust mutation and scratch bitmap release share one synchronous pool guard.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireMemoryGroupImage::kernel-export-direct-use::(this.#kernelInstanceForEntry(entry).exports.kernel_get_process_state as (pid: number) => number)(receipt.pid)",
-    disposition: "kernel-control",
-    count: 1,
-    why: "This exact (i32)->i32 query reads only the registered root PID's Rust process state in the same lexical entry as the already-checked image generation. It borrows no pointer or scratch. A running current generation refuses retirement; a replaced or reaped image still requires its concrete Worker stop proofs.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireMemoryGroupImage::kernel-export-direct-use::retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
-    disposition: "kernel-control",
-    count: 1,
-    why: "This exact (i32,i32,i32)->i32 call retires only Rust image custody identified by PID and unsigned generation halves after every concrete replica stopped. No pointer or allocator authority crosses the export. Status 0 or already-reaped ENOENT permits host retirement to begin; pages remain charged through pending launch callbacks, channel and engine observer settlement, reference closure and the store's independent queue proof.",
   },
 
   {
@@ -676,24 +654,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     count: 1,
     why: "This exact (i32,i32,i32)->i32 export releases only Rust image custody identified by PID and both unsigned generation halves, after exact unexposed task cancellation. It borrows no kernel pointer or memory. Physical pages return only on status0; EBUSY retains the root.",
   },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#advanceGroupFork::kernel-export-direct-use::fork(r.group, r.pid, r.tid, Number(r.serial & 0xffffffffn), Number(r.serial >> 32n), Number(r.generation & 0xffffffffn), Number(r.generation >> 32n), extent)",
-    disposition: "kernel-control",
-    count: 1,
-    why: "Host13 kernel_group_memory_fork takes eight i32 control scalars: group/PID/TID, unsigned receipt serial/generation halves and paused logical page count. It returns a kernel-assigned child PID or errno. No parameter is a kernel pointer, byte range or allocator authority; this exact call stays inside the lexical kernel entry after the image barrier.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#advanceGroupFork::kernel-export-direct-use::clear(childPid)",
-    disposition: "kernel-control",
-    count: 1,
-    why: "kernel_clear_fork_child takes only the validated Rust-assigned child PID and returns i32 status. This exact entry-scoped call has no pointer or borrowed scratch output and clears the marker before any child Worker launch.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#cancelGroupFork::kernel-export-direct-use::retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
-    disposition: "kernel-control",
-    count: 1,
-    why: "kernel_memory_group_retire_image takes three i32 control scalars: the exact unpublished child's PID and unsigned image-generation halves. It returns status without any pointer or borrowed storage; this call follows exact unconstructed task cancellation within the same lexical entry.",
-  },
+
+
+
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",
@@ -1674,10 +1637,10 @@ const auditAllowances: AuditAllowance[] = [
     why: "The disposable kernel Worker constructs the exact foreign backing resource issued by Rust after its group budget is admitted. This adapter retains only platform Memory/store objects and performs raw byte, growth and atomic operations; Rust owns images, page choice, mappings and retirement. The backing never reaches a persistent or main-thread realm.",
   },
   {
-    key: "host/src/memory-group-notification.ts::prepareMemoryGroupPhysicalStore::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory } })",
+    key: "host/src/memory-group-notification.ts::prepared::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory }, [G.MEMORY_GROUP_HOST_ACCESS_MODULE]: { publish: () => { if (!publication) return 1; try { publication.publish(); return 0; } catch (error) { publication.failed = true; publication.error = error; return 1; } } } })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
-    why: "This raw atomic-store helper imports only the already-admitted group backing in its disposable owning kernel or process Worker, before guest execution. It allocates no Memory and has no host imports. The queue helper restricts its closure to the queue mutex; the physical resource adapter accepts only synchronous bounded addresses chosen by Rust. Private weak-key caches grant no image or retirement authority.",
+    why: "The normal Rust SDK primitive imports only an admitted foreign backing and one synchronous bounded publication callback. It creates no Memory and owns no allocation, identity, budgets or lifecycle. The generator rejects start/data initialization, memory/table growth and mutable instance writes. Rust owns translation, FIFO selection and lock cleanup. The callback catches native failures and reports status without unwinding through Rust; its exception/object references are cleared on return. It grants no kernel-entry or pointer authority. Weak-key caches retain actual platform bindings only.",
   },
   {
     key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/contender.js::<module>::wasm-instance-authority::new WebAssembly.Instance(data.module,{env:{memory:data.memory}})",

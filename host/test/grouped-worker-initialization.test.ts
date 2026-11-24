@@ -63,6 +63,19 @@ describe('normal grouped Worker initialization', () => {
     await expect(receiveGroupedWorkerInitialization(createGroupedWorkerLaunch(f.init, f.launch.envelope), receive, post)).rejects.toThrow('without its readiness');
     expect(receive).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled(); f.close();
   });
+  it.each([undefined, 0, 2])('refuses a Worker without the exact kernel replay protocol (%s)', async version => {
+    const f = fixture(), posts: any[] = [];
+    const pending = receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected),
+      async () => ({ type: 'wrong' }), message => posts.push(message));
+    await expect(pending).rejects.toThrow();
+    const worker = new MockWorkerHandle(), ready = waitForGroupedWorkerReady(worker, f.expected);
+    const message = { ...posts[0], forkReplay: version };
+    if (version === undefined) delete message.forkReplay;
+    worker.simulateMessage(message);
+    await expect(ready).rejects.toThrow();
+    expect(worker.sentMessages).toHaveLength(0);
+    f.close();
+  });
   it.each([false, true])('acknowledges an exact pre-execution stop without guest storage (pthread=%s)', async thread => {
     const f = fixture();
     const task = { ...f.expected.receipt, tid: 101, serial: f.expected.receipt.serial + 1n };

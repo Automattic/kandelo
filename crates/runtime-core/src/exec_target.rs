@@ -1157,6 +1157,7 @@ fn finish_commit(
     // unreadable or drifted fails the exec outright instead of committing an
     // image under the outgoing image's width.
     let image_pointer_width = wasm_artifact::detect_pointer_width(target.observed_bytes()?);
+    let grouped_artifact = crate::group_layout::Artifact::read(target.observed_bytes()?).ok();
     match caller_tid {
         Some(tid) => crate::syscalls::commit_exec_state_with_locks(proc, locks, host, tid)?,
         None => crate::syscalls::commit_spawn_exec_state_with_locks(proc, locks, host)?,
@@ -1168,10 +1169,12 @@ fn finish_commit(
     // image has stopped being the one that runs, and before the host launches
     // the incoming one. An exec may legitimately change the width.
     proc.pointer_width = image_pointer_width;
+    proc.grouped_artifact = grouped_artifact;
     // The incoming image's channel is placed by the host with its layout and
     // registered before that image runs; the outgoing one's address means
     // nothing to it.
     proc.main_channel_addr = 0;
+    proc.grouped_main_entry = None;
     proc.exec_generation = next_generation;
     proc.entropy_reads.clear();
 
@@ -1274,6 +1277,7 @@ fn install_exe(
     host: &mut dyn HostIO,
     opened: OpenFileDescRef,
 ) {
+    proc.grouped_artifact = None;
     if let Some(previous) = proc.exe.replace(opened) {
         let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, previous);
     }
@@ -1641,4 +1645,25 @@ mod tests {
         assert_eq!(spawn_owner.validate_spawn(3, 6, 13), Err(Errno::ESRCH),);
         assert_eq!(spawn_owner.validate_spawn(3, 5, 14), Err(Errno::EINVAL),);
     }
+}
+
+/// Only direct byte-supplied host roots lack the metadata retained at normal
+/// exec commit. Read their attached object without changing its file offset.
+pub(crate) fn attached_group_artifact(proc: &Process, host: &mut dyn HostIO) -> Result<crate::group_layout::Artifact, Errno> {
+    if let Some(artifact) = proc.grouped_artifact { return Ok(artifact); }
+    let ofd = proc.ofd_table.get(proc.exe.ok_or(Errno::ENOENT)?.0).ok_or(Errno::EBADF)?;
+    let stat = target_fstat(host, ofd.host_handle)?;
+    let size = usize::try_from(stat.st_size).map_err(|_| Errno::EFBIG)?;
+    if size > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES { return Err(Errno::EFBIG); }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| Errno::ENOMEM)?;
+    bytes.resize(size, 0);
+    let mut offset = 0;
+    while offset < size {
+        let end = size.min(offset.saturating_add(32768));
+        let count = target_pread(host, ofd.host_handle, &mut bytes[offset..end], offset as i64)?;
+        if count == 0 || count > end - offset { return Err(Errno::EIO); }
+        offset += count;
+    }
+    crate::group_layout::Artifact::read(&bytes)
 }

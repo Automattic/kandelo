@@ -34,7 +34,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { if (server)
     await new Promise<void>(yes => { server.close(() => yes()); server.closeAllConnections(); }); });
-for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-destroy', 'destroy-in-registration'])
+for (const stage of ['registration-before', 'registration-after', 'constructor', 'stopped-constructor', 'readiness', 'launch-message', 'stopped-destroy', 'destroy-in-registration'])
     test(stage, async ({ page, browser }, info) => {
         test.setTimeout(90000);
         const pageErrors: string[] = [];
@@ -43,7 +43,7 @@ for (const stage of ['registration-before', 'registration-after', 'constructor',
         const r: any = await page.evaluate(stage => new Promise((yes, no) => { const worker = new Worker('/kernel.mjs', { type: 'module' }); const timer = setTimeout(() => { worker.terminate(); no(Error('kernel Worker deadline')); }, 75000); worker.onmessage = e => { clearTimeout(timer); worker.terminate(); yes(e.data); }; worker.onerror = e => { clearTimeout(timer); worker.terminate(); no(Error(e.message)); }; worker.postMessage({ stage }); }), stage);
         writeFileSync(info.outputPath('result.json'), JSON.stringify({ stage, browser: browser.version(), result: r, pageErrors }, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2) + '\n');
         expect(pageErrors).toEqual([]);
-        if (stage === 'constructor') {
+        if (['constructor', 'stopped-constructor', 'readiness', 'launch-message'].includes(stage)) {
             expect(r.fatal).toBe('Grouped process launch failed; storage retained');
             expect(r.constructionAttempts).toBe(1);
             expect(r.fatalLedger.kernel).toMatchObject({ processes: 1, images: 1, tasks: 1 });

@@ -79,6 +79,8 @@ struct Image {
     mapping: Option<crate::IoBox<mapping::Mapping>>,
     objects: PreparedMap<u64, u8>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum References { Unbound, Bound, Detaching, Detached }
 struct Replica {
     admission: GroupAdmission,
     image: ImageKey,
@@ -86,6 +88,10 @@ struct Replica {
     exposure: Exposure,
     pause: Option<u32>,
     pending_wait_drain: bool,
+    worker_absent: bool,
+    references: References,
+    native_join: bool,
+    worker_fact: u32,
 }
 struct NativePin {
     image: ImageKey,
@@ -290,6 +296,10 @@ impl Storage {
                 exposure: Exposure::Prepared,
                 pause: None,
                 pending_wait_drain: false,
+                worker_absent: false,
+                references: References::Unbound,
+                native_join: false,
+                worker_fact: 0,
             },
         )?;
         // All metadata custody precedes the one physical reservation. Busy and
@@ -350,6 +360,10 @@ impl Storage {
                 exposure: Exposure::Prepared,
                 pause: None,
                 pending_wait_drain: false,
+                worker_absent: false,
+                references: References::Unbound,
+                native_join: false,
+                worker_fact: 0,
             },
         )?;
         entry.value_mut().scratch = Some(self.pool()?.allocate_contiguous(memory, pages)?);
@@ -435,6 +449,7 @@ impl Storage {
             return Err(Errno::EBUSY);
         }
         let root = admission.record().pid == admission.record().tid;
+        if root && self.image_has_operations(key) { return Err(Errno::EAGAIN); }
         if root && (image.exposed || image.replicas.len() != 1) {
             return Err(Errno::EBUSY);
         }

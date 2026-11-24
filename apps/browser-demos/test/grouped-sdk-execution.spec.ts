@@ -10,6 +10,7 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repository = resolve(import.meta.dirname, "../../..");
 const availableProbes = [
+  { name: "legacy-mapping", source: "grouped-sdk-legacy-mapping.c", markers: ["grouped-sdk-legacy-mapping PASS"], partial: "" },
   { name: "grow-churn", source: "grouped-sdk-grow-churn.c", markers: ["grouped-sdk-grow-churn PASS 384 512"], partial: "", groupedOnly: true },
   { name: "exec-precommit-retire", source: "grouped-sdk-exec-rollback.c", markers: [], partial: "", groupedOnly: true },
   { name: "exec-precommit-stop", source: "grouped-sdk-exec-rollback.c", markers: [], partial: "", groupedOnly: true },
@@ -36,6 +37,7 @@ const availableProbes = [
   { name: "private-file", source: "grouped-sdk-private-file.c", markers: ["grouped-sdk-private-file PASS"], partial: "ordinary-private-file-growth-unsupported" },
   { name: "native-wait-exit", source: "grouped-sdk-native-wait-exit.c", markers: ["grouped-sdk-native-wait-exit PASS wait32-wait64-kill-peer-notify"], partial: "", groupedOnly: true },
   { name: "forced-exit", source: "grouped-sdk-forced-exit.c", markers: ["wait-blocked PASS", "wait-busy PASS", "wait-crash PASS", "grouped-sdk-forced-exit PASS"], partial: "", groupedOnly: true },
+  { name: "pthread-fork", source: "grouped-sdk-pthread-fork.c", markers: ["grouped-sdk-pthread-fork PASS"], partial: "", groupedOnly: true },
   { name: "fork", source: "grouped-sdk-fork.c", markers: ["grouped-fork-child PASS", "grouped-sdk-fork PASS"], partial: "", groupedOnly: true },
   { name: "pthread", source: "grouped-sdk-pthread.c", markers: ["grouped-sdk-pthread PASS tls-init-growth-wait32-wait64-join"], partial: "", groupedOnly: true },
   { name: "pthread-launch-rollback", source: "grouped-sdk-pthread-launch-rollback.c", markers: ["grouped-sdk-pthread-launch-rollback PASS 16"], partial: "", groupedOnly: true },

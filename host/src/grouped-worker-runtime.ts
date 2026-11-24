@@ -1,4 +1,4 @@
-import { prepareMemoryGroupQueueUnlock } from './memory-group-notification';
+import { prepareMemoryGroupQueueUnlock, prepareMemoryGroupForkReplay } from './memory-group-notification';
 import * as G from './generated/program-extensions';
 import { MemoryGroupImportGuard } from './memory-group-import-guard';
 import { MemoryGroupProtocolFault } from './memory-group-protocol';
@@ -133,6 +133,9 @@ export class GroupedWorkerRuntime {
     prepareMemoryGroupQueueUnlock(this.memory);
     this.bound = true;
     (e.__vm_initialize as (mode: number) => void)(mode);
+  }
+  waitForForkReplay(): void {
+    if (!this.bound || !this.backing || prepareMemoryGroupForkReplay(this.backing)(this.descriptor.replica) !== 0) trapProcessWorker();
   }
   detach(): void {
     this.guard.detach(); this.wait = undefined; this.validatedModule = undefined;

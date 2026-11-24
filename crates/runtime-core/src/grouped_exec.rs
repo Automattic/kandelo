@@ -310,6 +310,7 @@ impl ProcessTable {
                 return Err(Errno::EINVAL);
             }
             self.validate_grouped_exec(pending.future.receipt.record())?;
+            self.validate_exec_control_commit(pending.future.receipt.record())?;
             if pending.memory.is_none()
                 || proc.pending_group_memory_change.is_some()
                 || crate::owned_resource::has_pending_mapping(proc)
@@ -343,6 +344,7 @@ impl ProcessTable {
         self.memory_groups()
             .commit_exec_image(future)
             .expect("committed exec lost exact image custody");
+        self.note_exec_control_commit(future.record());
         Ok(())
     }
 }
@@ -354,13 +356,13 @@ pub(crate) mod tests {
     use alloc::{format, vec, vec::Vec};
     use wasm_posix_shared::{ABI_VERSION, flags::*};
 
-    pub(super) struct Fixture {
-        pub(super) table: ProcessTable,
-        pub(super) pid: u32,
+    pub(crate) struct Fixture {
+        pub(crate) table: ProcessTable,
+        pub(crate) pid: u32,
         enabled: (bool, bool),
     }
     impl Fixture {
-        pub(super) fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let enabled = (
                 crate::rootfs::set_enabled(true),
                 crate::tmpfs::set_enabled(true),
@@ -377,7 +379,7 @@ pub(crate) mod tests {
                 enabled,
             }
         }
-        pub(super) fn group(&mut self) {
+        pub(crate) fn group(&mut self) {
             self.table.memory_groups().configure(2048, 1).unwrap();
             let group = self
                 .table
@@ -394,10 +396,10 @@ pub(crate) mod tests {
                 .unwrap();
             self.table.memory_groups().start(receipt).unwrap();
         }
-        pub(super) fn target(&mut self, bytes: &[u8]) -> u32 {
+        pub(crate) fn target(&mut self, bytes: &[u8]) -> u32 {
             self.target_for(bytes, self.pid)
         }
-        pub(super) fn target_for(&mut self, bytes: &[u8], caller_tid: u32) -> u32 {
+        pub(crate) fn target_for(&mut self, bytes: &[u8], caller_tid: u32) -> u32 {
             let generation = self.table.get(self.pid).unwrap().exec_generation;
             self.target_owned(bytes, PreparedExecOwner::Process { pid: self.pid, caller_tid, generation })
         }
@@ -434,7 +436,7 @@ pub(crate) mod tests {
             sys_close(proc, &mut NoopHost, fd).unwrap();
             token
         }
-        pub(super) fn admission(&self, token: u32) -> Result<Admission, Errno> {
+        pub(crate) fn admission(&self, token: u32) -> Result<Admission, Errno> {
             self.table.admit_exec_target(self.pid, token, ABI_VERSION)
         }
     }

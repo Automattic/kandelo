@@ -164,6 +164,10 @@ pub(crate) fn stop(
 ) -> Result<(), Errno> {
     replica(memory, root, control)?;
     memory.atomic_store(control + L::REPLICA_RUN, 0)?;
+    let gate = control + L::REPLICA_FORK_REPLAY;
+    let pending = memory.atomic_compare_exchange(gate, L::REPLAY_PENDING, L::REPLAY_CANCELLED)?;
+    if pending == L::REPLAY_PAUSED { memory.atomic_compare_exchange(gate, L::REPLAY_PAUSED, L::REPLAY_CANCELLED)?; }
+    memory.atomic_notify(control + L::REPLICA_FORK_REPLAY, u32::MAX)?;
     memory.atomic_notify(control + L::REPLICA_REQUEST, u32::MAX)?;
     memory.atomic_notify(control + L::REPLICA_ACK, u32::MAX)?;
     locked(memory, |memory| {

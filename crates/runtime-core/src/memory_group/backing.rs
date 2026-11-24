@@ -13,6 +13,15 @@ pub struct StorageReply {
     pub wait: Option<super::storage::ProgressWait>,
 }
 impl StorageReply {
+    /// A retry observation may outlive source access. It carries no root,
+    /// replica, scratch or layout capability that could launch execution.
+    pub(crate) fn encode_progress(observer: wasm_posix_shared::memory_group::ReceiptRecord,
+        resource: u64, wait: super::storage::ProgressWait, output: &mut [u8]) -> Result<(), Errno> {
+        Self { descriptor: None, value: wait.token, wait: Some(wait) }.encode(output)?;
+        observer.encode(&mut output[..32])?;
+        output[32..40].copy_from_slice(&resource.to_le_bytes());
+        Ok(())
+    }
     pub fn encode(&self, output: &mut [u8]) -> Result<(), Errno> {
         use wasm_posix_shared::group_storage::REPLY_BYTES;
         if output.len() != REPLY_BYTES {
@@ -258,6 +267,19 @@ impl MemoryGroups {
         store.descriptor(admission)
     }
 
+    pub(crate) fn initialize_storage_thread_control(&mut self,
+        record: wasm_posix_shared::memory_group::ReceiptRecord, address: u32, length: u32,
+        host: &mut dyn HostIO,
+    ) -> Result<(), Errno> {
+        let admission = self.resolve_receipt(record)?;
+        if self.task(admission)?.phase != Phase::Prepared || record.pid == record.tid {
+            return Err(Errno::EBUSY);
+        }
+        let store = self.storage_mut(admission.group)?;
+        let root = store.root_for_image(record)?;
+        store.initialize_thread_control(&mut HostMemory { resource: store.resource(), host }, root, address, length)
+    }
+
     pub fn prepare_storage_fork(&mut self,
         parent: wasm_posix_shared::memory_group::ReceiptRecord,
         child: wasm_posix_shared::memory_group::ReceiptRecord,
@@ -326,5 +348,28 @@ impl MemoryGroups {
         host.group_memory_drop(lease.serial)?;
         self.groups.get_mut(&group.0).unwrap().storage = None;
         self.release_backing(lease)
+    }
+}
+
+impl MemoryGroups {
+    /// The platform reports one exact native fact. The actual group owner
+    /// chooses whether that fact retires execution and records physical stop.
+    pub(crate) fn report_worker_fact(&mut self, record: wasm_posix_shared::memory_group::ReceiptRecord,
+        fact: u32, host: &mut dyn HostIO) -> Result<bool, Errno>
+    {
+        let (store, admission) = self.storage_owner(record)?;
+        if !store.validate_worker_fact(admission, fact)? { return Ok(false); }
+        if store.accepted_worker_fact(admission)? { return Ok(true); }
+        match self.task(admission)?.phase {
+            Phase::Running | Phase::Stopping => self.begin_retirement(admission)?,
+            Phase::Quarantined => {},
+            Phase::Prepared => return Err(Errno::EBUSY),
+        }
+        self.retire_quiescent(admission)?;
+        self.storage_action(record, wasm_posix_shared::group_storage::Action::NoteQuiescent, 0, 0, host)?;
+        let (store, _) = self.storage_owner(record)?;
+        store.record_worker_fact(admission, fact);
+        crate::wait_park::note_children_changed();
+        Ok(true)
     }
 }

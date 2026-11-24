@@ -1,45 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { ThreadPageAllocator } from "../src/thread-allocator";
 import { WASM_PAGE_SIZE, PAGES_PER_THREAD, CH_TOTAL_SIZE } from "../src/constants";
-import { groupMemoryLayout } from './support/group-memory-layout';
-import * as G from '../src/generated/program-extensions';
 
 const MAX_PAGES = 256;
 const FIRST_THREAD_SLOT_PAGE = 24;
 const THREAD_ARENA_END_PAGE = 64;
-
-function mappedImage() {
-  const receipt = { group: 7, pid: 100, tid: 100, serial: 1n, generation: 0n };
-  const { launch, source, close, memory } = groupMemoryLayout({ receipt, initialPages: 8 });
-  const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + G.MEMORY_GROUP_ROOT_HEADER_BYTES, 16);
-  [ptes[3], ptes[7]] = [ptes[7], ptes[3]];
-  source.fillBytes(0, 8 * WASM_PAGE_SIZE, 0xa7);
-  return { source, close, memory };
-}
-
-it('initializes an exact dynamically mapped virtual slot without growing or clearing a physical offset', () => {
-  const { source, close, memory } = mappedImage(), before = memory.buffer.byteLength;
-  const allocator = new ThreadPageAllocator({ firstSlotStartPage: 0, maxPageExclusive: 0, reservedSlots: 1 });
-  const allocation = allocator.allocateMapped(source, { start: 3 * WASM_PAGE_SIZE, end: 7 * WASM_PAGE_SIZE, occupiedChannels: [WASM_PAGE_SIZE] }, 3);
-  expect(allocation).toMatchObject({ slotStartPage: 3, tlsOffset: 3 * WASM_PAGE_SIZE, forkSaveOffset: 4 * WASM_PAGE_SIZE, channelOffset: 5 * WASM_PAGE_SIZE });
-  for (const address of [allocation.tlsOffset, allocation.forkSaveOffset, allocation.channelOffset]) expect(source.readBytes(address, 16)).toEqual(new Uint8Array(16));
-  expect(source.readBytes(7 * WASM_PAGE_SIZE, 16)).toEqual(new Uint8Array(16).fill(0xa7));
-  expect(source.byteLength).toBe(8 * WASM_PAGE_SIZE);
-  expect(memory.buffer.byteLength).toBe(before);
-  expect(() => allocator.allocateMapped(source, { start: 3 * WASM_PAGE_SIZE, end: 7 * WASM_PAGE_SIZE, occupiedChannels: [] }, 3)).toThrow(/limit/);
-  close();
-});
-
-it('refuses an occupied or wrong virtual slot before zeroing or consuming its quota', () => {
-  const { source, close } = mappedImage();
-  const allocator = new ThreadPageAllocator({ firstSlotStartPage: 0, maxPageExclusive: 0, reservedSlots: 1 });
-  const control = { start: 3 * WASM_PAGE_SIZE, end: 7 * WASM_PAGE_SIZE, occupiedChannels: [5 * WASM_PAGE_SIZE] };
-  expect(() => allocator.allocateMapped(source, control, 3)).toThrow(/free reserved/);
-  expect(() => allocator.allocateMapped(source, { ...control, occupiedChannels: [] }, 4)).toThrow(/free reserved/);
-  expect(source.readBytes(3 * WASM_PAGE_SIZE, 16)).toEqual(new Uint8Array(16).fill(0xa7));
-  expect(() => allocator.allocateMapped(source, { ...control, occupiedChannels: [] }, 3)).not.toThrow();
-  close();
-});
 
 function makeAllocator(): ThreadPageAllocator {
   return new ThreadPageAllocator({
@@ -265,20 +230,4 @@ describe("ThreadPageAllocator", () => {
     alloc.free(pthread.slotStartPage);
     expect(alloc.allocate(mem).slotStartPage).toBe(pthread.slotStartPage);
   });
-});
-
-it('recycles a kernel-selected mapped slot without accumulating native free-list entries or losing quota', () => {
-  const { source, close } = mappedImage();
-  const allocator = new ThreadPageAllocator({ firstSlotStartPage: 0, maxPageExclusive: 0, reservedSlots: 1 });
-  const control = { start: 3 * WASM_PAGE_SIZE, end: 7 * WASM_PAGE_SIZE, occupiedChannels: [] };
-  for (let cycle = 0; cycle < 256; cycle++) {
-    const allocation = allocator.allocateMapped(source, control, 3);
-    expect(allocation.slotStartPage).toBe(3);
-    expect(() => allocator.assertCanAllocate()).toThrow(/limit/);
-    allocator.freeMapped(3);
-    expect(() => allocator.freeMapped(3)).toThrow(/already retired/);
-  }
-  expect(() => allocator.assertCanAllocate()).not.toThrow();
-  expect((allocator as any).freePages).toEqual([]);
-  close();
 });

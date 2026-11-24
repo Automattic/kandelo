@@ -3617,7 +3617,7 @@ export async function centralizedWorkerMain(
           }
           if (initData.isForkChild) {
             const gate = initData.forkReplayGate;
-            if (!gate) {
+            if (!grouped && !gate) {
               throw new Error(
                 `pid=${pid}: fork child is missing its replay commit gate`,
               );
@@ -3629,7 +3629,8 @@ export async function centralizedWorkerMain(
               type: "fork_replay_ready",
               pid,
             } satisfies WorkerToHostMessage);
-            waitForForkReplayCommit(gate, `pid=${pid}`);
+            if (grouped) grouped.waitForForkReplay();
+            else waitForForkReplayCommit(gate!, `pid=${pid}`);
           }
           return forkResult;
         }

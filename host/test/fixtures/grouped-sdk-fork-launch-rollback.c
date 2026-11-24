@@ -8,7 +8,7 @@ int main(void) {
     const pid_t original = getpid();
     for (int attempt = 0; attempt < 16; attempt++) {
         errno = 0;
-        CHECK(fork() == -1 && errno == ENOMEM);
+        CHECK(fork() == -1 && errno == EIO);
         CHECK(getpid() == original && unchanged == 37);
         errno = 0;
         CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);

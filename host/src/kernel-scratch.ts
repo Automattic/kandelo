@@ -182,6 +182,10 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_kms_cursor_read",
   "kernel_memory_group_snapshot",
   "kernel_memory_group_storage_action",
+  "kernel_group_operation",
+  "kernel_group_exec_control",
+  "kernel_group_root_control",
+  "kernel_group_retirement_control",
   "kernel_memory_group_storage_fork",
   "kernel_memory_group_storage_mapping",
   "kernel_memory_group_storage_snapshot",
@@ -280,11 +284,13 @@ type KernelScratchExportSnapshot = Readonly<
 >;
 
 const REQUIRED_POINTER_0_5 = intrinsicObjectFreeze([0, 5] as const);
+const REQUIRED_POINTER_0_5_7 = intrinsicObjectFreeze([0, 5, 7] as const);
 const REQUIRED_POINTER_0_2_5 = intrinsicObjectFreeze([0, 2, 5] as const);
 const REQUIRED_POINTER_0 = intrinsicObjectFreeze([0] as const);
 const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_1_3 = intrinsicObjectFreeze([1, 3] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
+const REQUIRED_POINTER_2_7 = intrinsicObjectFreeze([2, 7] as const);
 const REQUIRED_POINTER_2_4 = intrinsicObjectFreeze([2, 4] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
@@ -300,6 +306,14 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_group_retirement_control":
+      return REQUIRED_POINTER_0_4;
+    case "kernel_group_root_control":
+      return REQUIRED_POINTER_2_7;
+    case "kernel_group_exec_control":
+      return REQUIRED_POINTER_0_4;
+    case "kernel_group_operation":
+      return REQUIRED_POINTER_0_5_7;
     case "kernel_memory_group_storage_fork":
       return REQUIRED_POINTER_0_2_5;
     case "kernel_memory_group_storage_mapping":
@@ -460,6 +474,10 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_group_retirement_control":
+    case "kernel_group_root_control":
+    case "kernel_group_exec_control":
+    case "kernel_group_operation":
     case "kernel_memory_group_storage_fork":
     case "kernel_memory_group_storage_mapping":
     case "kernel_memory_group_storage_snapshot":

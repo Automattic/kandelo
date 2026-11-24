@@ -95,6 +95,16 @@ fn intent(syscall: u32, args: [u64; 6]) -> Result<MemoryChange, Errno> {
 }
 
 impl ProcessTable {
+    /// Legacy mirror-based attachments cannot change a grouped image. This
+    /// check belongs before attachment accounting, including before the image
+    /// has installed its linear layout or exposed its first execution.
+    pub fn validate_legacy_mapping_backend(&self, pid: u32) -> Result<(), Errno> {
+        let proc = self.get(pid).ok_or(Errno::ESRCH)?;
+        if self.process_memory_group(pid)?.is_some() || proc.memory.group_virtual_extent().is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        Ok(())
+    }
     /// The same exact all-replica barrier used by mmap must precede driver
     /// construction. Its packet still belongs to the normal owned-resource
     /// receipt; this bridge supplies physical pages, never new DRM authority.
@@ -205,7 +215,7 @@ impl ProcessTable {
         if proc.pointer_width != 4 || proc.vfork_child { return Err(Errno::EOPNOTSUPP); }
         Ok(admission.record())
     }
-    fn running_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
+    pub(crate) fn running_group_memory_caller(&self, pid: u32, tid: u32) -> Result<ReceiptRecord, Errno> {
         let receipt = self.admitted_group_memory_caller(pid, tid)?;
         if self.get(pid).ok_or(Errno::ESRCH)?.state != ProcessState::Running { return Err(Errno::EAGAIN); }
         Ok(receipt)
@@ -490,6 +500,62 @@ mod tests {
         (table, pid, admission)
     }
     fn map_args() -> [u64; 6] { [0, P as u64, 3, ANON as u64, u64::MAX, 0] }
+    #[test]
+    fn legacy_attachment_backend_is_refused_before_group_layout_or_execution() {
+        let mut table = ProcessTable::new();
+        let ordinary = table.create_process().unwrap();
+        assert_eq!(table.validate_legacy_mapping_backend(ordinary), Ok(()));
+        assert_eq!(table.validate_legacy_mapping_backend(ordinary + 1), Err(Errno::ESRCH));
+        table.memory_groups().configure(64, 1).unwrap();
+        let group = table.memory_groups().create(MemoryGroupLimits {
+            maximum_pages: 64, maximum_processes: 2, maximum_tasks: 4,
+        }).unwrap();
+        let pid = table.create_process().unwrap();
+        let admission = table.prepare_process_memory_group(group, pid).unwrap();
+        assert_eq!(table.get(pid).unwrap().memory.group_virtual_extent(), None);
+        let before = table.memory_groups().snapshot(group).unwrap();
+        assert_eq!(table.validate_legacy_mapping_backend(pid), Err(Errno::EOPNOTSUPP));
+        table.memory_groups().start(admission).unwrap();
+        assert_eq!(table.validate_legacy_mapping_backend(pid), Err(Errno::EOPNOTSUPP));
+        let after = table.memory_groups().snapshot(group).unwrap();
+        assert_eq!((after.tasks, after.images, after.backings), (before.tasks, before.images, before.backings));
+        assert!(table.get(pid).unwrap().shm_mappings.is_empty());
+        assert_eq!(table.validate_legacy_mapping_backend(ordinary), Ok(()));
+    }
+
+    #[test]
+    fn direct_memory_syscalls_cannot_commit_the_logical_half_of_a_group_change() {
+        use crate::{process::test_host::NoopHost, syscalls};
+        let (mut table, pid, admission) = setup(true);
+        let prepared = table.prepare_group_memory_change(pid, pid, Syscall::Mmap as u32, map_args(), 4).unwrap();
+        let address = prepared.result() as usize;
+        table.commit_group_memory_change(pid, pid, prepared.token).unwrap();
+        let counts = table.memory_groups().snapshot(admission.group()).unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        let before: alloc::vec::Vec<_> = proc.memory.mappings().iter().map(|m| (m.addr, m.len, m.prot, m.flags)).collect();
+        let reserved = proc.memory.reserved_regions().to_vec();
+        let old_break = proc.memory.get_brk();
+        let old_extent = proc.memory.group_virtual_extent();
+        let mut host = NoopHost;
+        assert_eq!(syscalls::sys_mmap(proc, &mut host, address, P, 3, ANON | mmap::MAP_FIXED, -1, 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(syscalls::sys_munmap(proc, &mut host, address, P), Err(Errno::EOPNOTSUPP));
+        assert_eq!(syscalls::sys_mremap(proc, &mut host, address, P, 2 * P, 1, 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(syscalls::sys_mprotect(proc, address, P, 0), Err(Errno::EOPNOTSUPP));
+        assert_eq!(syscalls::sys_brk(proc, old_break + P), old_break);
+        assert_eq!(syscalls::sys_brk(proc, 0), old_break);
+        assert_eq!(proc.memory.mappings().iter().map(|m| (m.addr, m.len, m.prot, m.flags)).collect::<alloc::vec::Vec<_>>(), before);
+        assert_eq!(proc.memory.reserved_regions(), reserved);
+        assert_eq!(proc.memory.get_brk(), old_break);
+        assert_eq!(proc.memory.group_virtual_extent(), old_extent);
+        let after = table.memory_groups().snapshot(admission.group()).unwrap();
+        assert_eq!((after.tasks, after.images, after.backings), (counts.tasks, counts.images, counts.backings));
+        // The staged group path remains usable after every legacy refusal.
+        let unmap = table.prepare_group_memory_change(pid, pid, Syscall::Munmap as u32,
+            [address as u64, P as u64, 0, 0, 0, 0], 5).unwrap();
+        table.commit_group_memory_change(pid, pid, unmap.token).unwrap();
+        assert!(table.get(pid).unwrap().memory.mappings().is_empty());
+    }
+
     #[test]
     fn thread_control_reservation_is_staged_cancellable_and_protected_from_guest_remapping() {
         let (mut table, pid, _) = setup(true);

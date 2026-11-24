@@ -32,7 +32,21 @@ The Rust kernel owns group identity, membership, budgets and backing leases, phy
 
 Image-mutating mappings, fork and pthread-control reservations enter a kernel-owned operation queue. Rust issues exact task-bound tokens and permits only the earliest live operation on an image to begin its pause. Cancelling an operation from the middle cannot let its successor bypass an earlier operation. Outstanding operations prevent image reclamation; an owning task's scratch cannot retire while its operation remains live. Host promises wake continuations, which must recheck Rust readiness before proceeding.
 
-The control-flow migration is not complete: TypeScript still coordinates launch, mapping and cancellation phases, translates virtual addresses in host access helpers and selects ordered wait-queue notifications. These are migration work, not requirements imposed by the browser object model. Platform object handles and native completion observations remain host responsibilities.
+Root preparation, mapping, fork, exec replacement and pthread preparation use kernel-owned continuations. Rust computes grouped layouts from the SDK artifact and retains exact admissions through allocator contention and cancellation. Normal executable commits retain the parsed layout metadata; direct byte-supplied roots read their attached executable once before admission. The host receives copied layouts and transport descriptors.
+
+After exec commit, the retained Rust controller selects detachment, exact stop observation, native Worker termination/join, replacement installation or signal cancellation, old-image retirement, replacement binding/start and final publication. The host executes the issued effect and reports its completion with the exact future receipt and effect identity. Out-of-order or repeated completions cannot advance the operation. A failed platform action retains custody; it does not become proof of Worker absence, stop or reference release. Registration still reports actual platform bindings through the kernel entry gate.
+
+Worker terminal fences, native exit/join observations and sealed never-started handles are reported as distinct facts to the actual Rust group owner. Rust uses the bound platform capability to decide whether a native exit is a join; a browser's synthetic exit leaves execution custody intact. One host object holder retains real endpoints, callbacks and native observations, without deciding release eligibility.
+
+Normal image/thread retirement first detaches and settles its transport. Rust then selects each remaining task's reference disposer and retains the corresponding charge until JavaScript acknowledges that exact disposal. Stopped scratch and image pages cannot be reclaimed while references remain bound or a disposer is outstanding. A failed disposer retains custody and is not silently retried as successful cleanup.
+
+Post-construction image and thread retirement also use kernel-owned continuations. Rust checks eligibility and exact receipts, identifies exec futures requiring cancellation, and waits for actual host detachment before reclaiming storage. Native retry replies carry an observation identity and backing resource, without granting an execution descriptor after source revocation.
+
+Process-exit stopping and publication use a kernel continuation as well. It retains the exit status and parent identity before native reaping, selects stop/progress effects, and requires exact Worker-stop proof before returning the exit event for host notification. A stopped event cannot be consumed by a replacement generation.
+
+The control-flow migration is not complete. Host launch/session wrappers still select some transaction progression, completion-publication and failure outcomes. Artifact/layout rules and group-path execution algorithms also remain outside their intended Rust owners. Host address translation and ordered queue notification now execute shared stateless Rust SDK primitives against the admitted foreign memory; that extraction owns no pages, membership or lifecycle. Its bounded publication callback reports failure as data so Rust releases its own queue lock. The normal generator rejects start/data initialization, memory growth and mutable instance writes. Platform objects and native completion observations remain host responsibilities. The remaining ownership gaps are implementation work, not browser requirements.
+
+Grouped mappings must enter the Rust physical/PTE transaction owner. The ordinary direct/synthetic mmap, munmap, mremap and mprotect entries refuse grouped images; direct brk leaves the break unchanged. SysV attachment to a grouped image is unsupported and is refused by the kernel before attachment accounting, rather than entering the legacy synthetic-mmap and byte-mirror path. Ordinary processes retain that path. This refusal does not add SysV sharing to the grouped preview.
 
 The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. The SDK's private growth path still uses the shared v3 bitmap protocol; Rust synchronizes with its locks and captures its frames from stable page tables for reclamation. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or
@@ -66,7 +80,7 @@ metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `orderedWaitQueue: 2`. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 28, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 30, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -495,3 +509,43 @@ existing exact Worker, native-observer and image retirement fences still apply.
 If teardown cancels this queued response, its last actual native observation
 still settles before releasing the retired transport token. STOP/CONT preflight
 preserves this terminal queue owner without reactivating the removed task.
+
+Root launch retains an actual `ProcessTable` operation through publication,
+Worker binding, process registration, import connection and constructor scheduling.
+The kernel publishes the task and physical descriptor itself and issues each
+platform effect in order, including readiness and launch-message delivery.
+A job-control-stopped constructor keeps its operation
+until its exact start or cancellation observation arrives. Setup failure requests
+sealed absence and normal reference/image retirement; an uncertain constructor
+keeps its resources charged and contains the disposable kernel. Already accepted
+absence from concurrent teardown is reused by Rust rather than requested again.
+This does not complete the remaining fork, session and delayed-result migration.
+
+Grouped fork replay uses a kernel-owned word in the existing 64-byte task
+control record. Its blocking wait is a normal stateless Rust SDK primitive.
+The actual fork operation retains native effect sequence IDs, chooses startup,
+replay commit, cancellation, stop/join and reference-detachment progression, and
+ignores late native completions without granting the next effect. Native waits
+can be cancelled while outstanding. Before any child Worker effect, Rust clears
+the child's copied syscall mailbox using the actual caller's kernel-owned
+channel/control slot, preserving the parent and surrounding continuation bytes.
+Exact task liveness distinguishes process exit from a stopped parent without
+waiting for host storage teardown. Memory-free Worker readiness checks the
+kernel replay protocol before the shared backing is sent.
+A committed child cannot be rolled back by
+a later parent exit. Generic native setup failures report `EIO`; an explicitly
+reported resource exhaustion remains `ENOMEM`. Constructor uncertainty retains
+custody and contains the kernel. Native and real SDK Node/browser checks cover
+this fork path; the remaining pthread/session and pure-rule audit is unfinished.
+
+The actual kernel thread record retains its creator and grouped entry recipe.
+The mapping operation emits the complete pthread control/bootstrap layout;
+grouped channel attachments carry identity rather than a second host recipe.
+Before native channel attachment, Rust consumes a one-shot binding grant for
+that operation's exact task and selected offset. Missing, duplicate or mismatched
+grants fail before native registration; binding cannot be acknowledged early.
+Fork derives its continuation and caller mailbox from those retained records.
+A thread-born process leader keeps its thread bootstrap role for subsequent
+forks; exec clears the outgoing recipe. Native pthread startup, outer clone
+completion and session lifecycle ownership remain part of the unfinished
+Rust-first migration.

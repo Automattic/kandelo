@@ -1,9 +1,11 @@
+import { DeferredWorkerHandle } from '../../src/deferred-worker-handle';
+import { GroupedWorkerObjects } from '../../src/grouped-worker-objects';
 import { CAPTURED_STDIO, CentralizedKernelWorker, type CentralizedKernelCallbacks } from "../../src/kernel-worker";
 import type { WorkerAdapter, WorkerHandle } from "../../src/worker-adapter";
 import type { PlatformIO } from "../../src/types";
 import { computeProcessMemoryLayout, createProcessMemory } from "../../src/process-memory";
 import { extractHeapBase } from "../../src/constants";
-import { ABI_SYSCALLS } from "../../src/generated/abi";
+import { ERRNO, ABI_SYSCALLS, MEMORY_GROUP_PROTOCOL } from "../../src/generated/abi";
 import { ForkExternrefProcessOwner } from "../../src/fork-externref-process-owner";
 import { ForkHostImportOwnerRuntime, type ForkHostImportOwnerWorker } from "../../src/fork-host-import-runtime";
 import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, waitForGroupedWorkerReady } from "../../src/grouped-worker-initialization";
@@ -12,11 +14,11 @@ import { retryKernelEntryResult } from "../../src/kernel-entry-retry";
 import { MemoryGroupProtocolFault } from '../../src/memory-group-protocol';
 import { MEMORY_GROUP_CONTROL } from '../../src/generated/program-extensions';
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
-import { launchGroupedForkWorker, type GroupedForkWorkerOwnership } from '../../src/grouped-fork-launch';
-import type { PreparedGroupReplica } from '../../src/group-memory-transport';
-import { ThreadPageAllocator } from '../../src/thread-allocator';
-import { launchGroupedThreadWorker, type GroupedThreadWorkerOwnership } from '../../src/grouped-thread-launch';
-import { prepareGroupedExecWorker, type GroupedExecWorkerOwnership } from '../../src/grouped-exec-launch';
+import { launchGroupedForkWorker } from '../../src/grouped-fork-launch';
+import { GroupMemoryTransport, type PreparedGroupReplica, type GroupReplicaLaunch } from '../../src/group-memory-transport';
+import { GroupMemoryResources, GroupMemoryResourceError } from '../../src/group-memory-resources';
+import { launchGroupedThreadWorker } from '../../src/grouped-thread-launch';
+import { prepareGroupedExecWorker } from '../../src/grouped-exec-launch';
 
 // Invoke only inside a disposable kernel Worker. Results contain copied
 // output/scalars, never a kernel/process Memory or a view of its backing.
@@ -100,8 +102,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const execReturns: Record<string, unknown>[] = [];
   const execHandoffs: Record<string, unknown>[] = [];
   let execHandoff = false;
-  let currentExecWorker: GroupedExecWorkerOwnership | undefined;
-  const execRetiringThreads = new WeakSet<GroupedThreadWorkerOwnership>();
+  let currentExecWorker: GroupedWorkerObjects | undefined;
+  const execRetiringThreads = new WeakSet<GroupedWorkerObjects>();
   let execThreadProbe: { step: number; busy: number; ready32: number; ready64: number; returned: number; firstBusy?: number; released: boolean } | undefined;
   let execProbeActive = false;
   let execTermination: { signal: number } | undefined;
@@ -112,8 +114,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     backing: admittedGroup === undefined ? undefined : await retryKernelEntryResult(() => kernelForDiagnostics?.inspectMemoryGroupBacking(admittedGroup!)) });
   const rolledBackPids: number[] = [];
   const evidenceWork: Promise<void>[] = [];
-  const children = new Map<number, GroupedForkWorkerOwnership>();
-  const threads = new Map<number, GroupedThreadWorkerOwnership>();
+  const children = new Map<number, GroupedWorkerObjects>();
+  const threads = new Map<number, GroupedWorkerObjects>();
   const threadExits = new Set<number>();
   const logicalThreadExits = new Set<number>();
   const stoppedWithProcess = new Set<number>();
@@ -121,7 +123,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const processDeactivations: Promise<void>[] = [];
   const retiredThreads = new Set<number>();
   const threadRetirementMemory: Record<string, unknown>[] = [];
-  const threadAllocators = new Map<number, ThreadPageAllocator>();
+  const failedControlInitializations = new Set<number>();
+  let restoreThreadInitializationFault: (() => void) | undefined;
   const childStates = new Map<number, { kernelExit?: number; processExit?: number; ready?: boolean }>();
   const diagnostics: string[] = [];
   const rolledBackForks: Record<string, unknown>[] = [];
@@ -149,15 +152,13 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   let result: Record<string, unknown>;
   try {
     const execution = new Promise<void>((resolve, reject) => {
-      const retireThread = (tid: number, thread: GroupedThreadWorkerOwnership) => {
+      const retireThread = (tid: number, thread: GroupedWorkerObjects) => {
         if (retiredThreads.has(tid)) return;
         if (threadRetirements.has(tid)) return;
         const retirement = (async () => {
           await kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
           if (options.joinOnExit) await thread.waitForNodeJoin();
-          const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupThread(thread.handle, () => {
-            if (!thread.releaseAfterStop()) throw Error('Thread references have no stop proof');
-          }));
+          const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupThread(thread.handle));
           if (result !== 0) throw Error(`Thread retirement refused: ${result}`);
           await thread.contain();
           retiredThreads.add(tid); threadRetirementMemory.push({ tid, ...await memoryEvidence() });
@@ -345,8 +346,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
                 lifecycleEvidence.push({ kind: 'exec-late-exit-held', signal, repeated, backing });
               }
               previousImport?.close();
-              if (previousExec && !previousExec.releaseAfterStop()) throw Error('Old exec references lack stop proof');
-              for (const thread of previousThreads) if (!thread.releaseAfterStop()) throw Error('Old exec pthread references lack stop proof');
+
             },
             onRetired: async () => {
               for (const thread of previousThreads) { stoppedWithProcess.add(thread.tid); retiredThreads.add(thread.tid); }
@@ -359,7 +359,6 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               currentExecWorker = worker; processWorker = worker.worker; generation = worker.generation;
               rootHandle = worker.handle; imageHandles.set(request.pid, worker.handle);
               importWorker = undefined; processLayout = request.groupedExec!.layout;
-              threadAllocators.delete(request.pid);
               processReady = false; processExit = undefined; quiescent = false; rootJoined = false; execHandoff = false;
             },
             onMessage: (message, worker) => {
@@ -464,7 +463,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               const retirement = (async () => {
                 for (;;) {
                   const status = await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(handle, async () => {
-                    if (!child.releaseAfterStop()) throw Error('Shared child references lack stop proof');
+
                     // Its real terminal fence preceded this callback. Detach
                     // embedding observers before intentional realm termination;
                     // physical retirement still joins the actual Node stop.
@@ -516,32 +515,53 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           await Promise.all(threadRetirements.values());
           const processGeneration = attachment.pid === rootPid ? generation : children.get(attachment.pid)?.generation;
           if (!processGeneration || !processLayout) throw Error('Missing exact grouped pthread process image');
-          let allocator = threadAllocators.get(attachment.pid);
-          if (!allocator) {
-            allocator = new ThreadPageAllocator({ firstSlotStartPage: processLayout.firstThreadSlotPage,
-              maxPageExclusive: processLayout.threadArenaEndPage, reservedSlots: processLayout.threadSlotCount, ptrWidth: 4 });
-            threadAllocators.set(attachment.pid, allocator);
-          }
           const before = await memoryEvidence();
           const failBeforePublication = options.threadPoolRollback && ++threadPreparationAttempts % 2 === 1;
-          const launchAllocator = failBeforePublication ? new Proxy(allocator, { get(target, key) {
-            if (key === 'allocateMapped') return () => {
-              if (!rollbackPoolMemory) throw Error('Missing actual grouped thread backing');
-              const lock = new Int32Array(rollbackPoolMemory.buffer, MEMORY_GROUP_CONTROL, 1);
-              if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) throw Error('Thread fixture did not acquire its pool lock');
-              const attempt = ++injectedThreadRefusals;
-              setTimeout(() => {
-                try { lifecycleEvidence.push({ kind: 'thread-pool-lock-released', attempt,
-                  admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
-                catch (error) { reject(error); }
-                finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
-              }, 0);
-              throw new RangeError('fixture grouped thread control refusal');
+          if (failBeforePublication) failedControlInitializations.add(attachment.tid);
+          if (options.threadPoolRollback && !restoreThreadInitializationFault) {
+            // Refuse the real foreign fill issued by Rust initialization, with
+            // the allocator lock held until the next actual Worker turn.
+            const operation = GroupMemoryTransport.prototype.operation;
+            const fill = GroupMemoryResources.prototype.fill;
+            const preparingThreads = new Map<bigint, number>();
+            let preparingThread: number | undefined;
+            GroupMemoryTransport.prototype.operation = function(this: GroupMemoryTransport, ...args: Parameters<typeof operation>) {
+              const request = args[5], protocol = MEMORY_GROUP_PROTOCOL.driver;
+              const thread = request?.kind === protocol.kinds.threadPrepare ? request.thread : preparingThreads.get(args[2]);
+              preparingThread = thread;
+              try {
+                const result = operation.apply(this, args);
+                if (result && thread !== undefined) preparingThreads.set(result.operation, thread);
+                if (args[1] === protocol.commands.ack) preparingThreads.delete(args[2]);
+                return result;
+              } finally { preparingThread = undefined; }
             };
-            const value = Reflect.get(target, key, target);
-            return typeof value === 'function' ? value.bind(target) : value;
-          } }) : allocator;
-          try { await launchGroupedThreadWorker({ kernel, attachment, allocator: launchAllocator, adapter: threadAdapter, imports, generation: processGeneration,
+            GroupMemoryResources.prototype.fill = function(this: GroupMemoryResources, ...args: Parameters<typeof fill>) {
+              if (preparingThread !== undefined && failedControlInitializations.has(preparingThread)
+                  && this.memory(args[0]) === rollbackPoolMemory) {
+                const lock = new Int32Array(rollbackPoolMemory!.buffer, MEMORY_GROUP_CONTROL, 1);
+                // Reservation now belongs to this same driver. Leave its
+                // mutex-protected page allocation intact; fail the subsequent
+                // unlocked control initialization and hold the mutex afterward.
+                if (Atomics.compareExchange(lock, 0, 0, 1) !== 0) return fill.apply(this, args);
+                failedControlInitializations.delete(preparingThread);
+                const attempt = ++injectedThreadRefusals;
+                setTimeout(() => {
+                  try { lifecycleEvidence.push({ kind: 'thread-pool-lock-released', attempt,
+                    admission: kernel.inspectMemoryGroup(admittedGroup!) }); }
+                  catch (error) { reject(error); }
+                  finally { Atomics.store(lock, 0, 0); Atomics.notify(lock, 0); }
+                }, 0);
+                throw new GroupMemoryResourceError(ERRNO.ENOMEM);
+              }
+              return fill.apply(this, args);
+            };
+            restoreThreadInitializationFault = () => {
+              GroupMemoryTransport.prototype.operation = operation;
+              GroupMemoryResources.prototype.fill = fill;
+            };
+          }
+          try { await launchGroupedThreadWorker({ kernel, attachment, adapter: threadAdapter, imports, generation: processGeneration,
             programBytes: options.programBytes, terminationProvesQuiescence: options.joinOnExit,
             isCurrent: thread => threads.get(thread.tid) === thread,
             retain: thread => {
@@ -609,15 +629,23 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           // Its refusal happens after publication, before registration or replay commit;
           // no production method/prototype or source is replaced.
           const forkKernel = options.rejectForkLaunchCount ? Object.fromEntries([
-            'publishMemoryGroupReplica', 'observeMemoryGroupReplicaWorker', 'registerMemoryGroupProcess',
+            'runMemoryGroupForkLaunch', 'observeMemoryGroupReplicaWorker', 'sealMemoryGroupReplicaWorkerAbsence', 'registerMemoryGroupProcess',
             'processSecureExec', 'getKernelAbiVersion', 'getKernelAbiContractDigest',
             'startMemoryGroupProcessWorkerWhenRunnable', 'shouldLaunchPendingChild',
-            'requestMemoryGroupReplicaWorkerStop', 'waitForMemoryGroupReplicaQuiescence', 'deactivateMemoryGroupProcess',
+            'requestMemoryGroupReplicaWorkerStop', 'waitForMemoryGroupReplicaQuiescence', 'deactivateMemoryGroupProcess', 'releaseMemoryGroupWorkerReferences',
           ].map(name => [name, (...args: any[]) => {
-            if ((options.rejectForkStage === 'replay' ? name === 'shouldLaunchPendingChild' && args[0] === request.childPid
-                : name === 'registerMemoryGroupProcess' && args[0] === request.childReplica)
+            if (name === 'runMemoryGroupForkLaunch' && options.rejectForkStage === 'replay') {
+              const [request, platform] = args as Parameters<CentralizedKernelWorker['runMemoryGroupForkLaunch']>;
+              return kernel.runMemoryGroupForkLaunch(request, { ...platform, waitReplay: async () => {
+                await platform.waitReplay();
+                if (injectedForkRefusals < options.rejectForkLaunchCount!) {
+                  injectedForkRefusals++; refused = Error('fixture grouped fork replay refusal'); throw refused;
+                }
+              } });
+            }
+            if (options.rejectForkStage !== 'replay' && name === 'registerMemoryGroupProcess' && args[0] === request.childReplica
                 && injectedForkRefusals < options.rejectForkLaunchCount!) {
-              injectedForkRefusals++; refused = Error('fixture grouped fork '+(options.rejectForkStage ?? 'registration')+' refusal'); throw refused;
+              injectedForkRefusals++; refused = Error('fixture grouped fork registration refusal'); throw refused;
             }
             return Reflect.apply((kernel as any)[name], kernel, args);
           }])) as unknown as CentralizedKernelWorker : kernel;
@@ -625,7 +653,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             const parentGeneration = request.parentPid === rootPid ? generation : children.get(request.parentPid)?.generation;
             if (!parentGeneration || !processLayout) throw Error('Missing exact grouped fork parent');
             await launchGroupedForkWorker({ kernel: forkKernel, request, adapter: { createWorker: init => { forkWorkerConstructionAttempts++; return adapter.createWorker(init); } }, externrefs: owner, imports, parentGeneration,
-              programBytes: options.programBytes, channelOffset: processLayout.channelOffset,
+              programBytes: options.programBytes,
               maximumVirtualPages: processLayout.maximumPages, terminationProvesQuiescence: options.joinOnExit,
               isCurrent: child => children.get(child.pid) === child,
               retain: child => { children.set(child.pid, child); if (!childStates.has(child.pid)) childStates.set(child.pid, {}); },
@@ -640,7 +668,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               onError: (error, child) => { try { recordCrash(child.pid, error.message); } catch (failure) { reject(failure); } },
               onExit: (code, _child) => { if (code !== 0) reject(Error(`Child Worker exit ${code}`)); else maybeComplete(); },
             });
-            return [processLayout.channelOffset];
+            return;
           } catch (error) { if (error !== refused) reject(error); throw error; }
         },
       };
@@ -722,15 +750,14 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           onStderr: bytes => { stderr += new TextDecoder().decode(bytes); },
         });
         const { programBytes, ordinaryBytes: ordinary } = options;
-        const layout = computeProcessMemoryLayout({ ptrWidth: 4, maxPages: options.maximumVirtualPages ?? 2048,
-          programBytes: ordinary, heapBase: extractHeapBase(ordinary) });
-        processLayout = layout;
+        let layout!: ReturnType<typeof computeProcessMemoryLayout>;
         const pid = status(kernel.createProcess(CAPTURED_STDIO), "create process");
         rootPid = pid;
         const argv = ["grouped-sdk-mapping", grouped ? "grouped" : "ordinary",
           ...(options.execPrecommitFailure ? [options.execPrecommitFailure] : options.execSuccess ? ['success'] : [])], env = ["PATH=/bin"];
-        const registration = { ...layout, ptrWidth: 4 as const, argv, env };
-        let launch: ReturnType<CentralizedKernelWorker["publishMemoryGroupReplica"]> | undefined;
+        status(await retryKernelEntryResult(() => kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] })), "attach executable");
+        const registration = () => ({ ...layout, ptrWidth: 4 as const, argv, env });
+        let launch: GroupReplicaLaunch | undefined;
         if (grouped) {
           let group = machine?.group;
           if (group === undefined) {
@@ -740,51 +767,37 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             if (machine) machine.group = group;
           }
           admittedGroup = group;
-          const receipt = kernel.prepareMemoryGroupProcess(group, pid);
-          if (typeof receipt === "number") throw new Error(`prepare process: ${receipt}`);
-          const handle = kernel.prepareMemoryGroupImage(receipt, { initialVirtualPages: layout.initialPages,
-            maximumVirtualPages: layout.maximumPages, scratchBytes: 65536 });
-          if (typeof handle === "number") throw new Error(`prepare image: ${handle}`);
+          const prepared = await kernel.prepareMemoryGroupRoot(group, pid, options.maximumVirtualPages ?? 2048, 1024);
+          if (typeof prepared === 'number') throw new Error(`prepare root: ${prepared}`);
+          const { handle } = prepared; layout = prepared.layout;
           rootHandle = handle;
           imageHandles.set(pid, handle);
-          launch = kernel.publishMemoryGroupReplica(handle);
-          if (typeof launch === "number") throw new Error(`publish replica: ${launch}`);
-          if (options.rejectForkStage === 'pool' || options.threadPoolRollback || options.execPoolRollback || options.execTerminationPool || options.execPrecommitStop) rollbackPoolMemory = launch.envelope.memory;
-          kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], registration);
-        } else kernel.registerProcess(pid, createProcessMemory(4, layout), [layout.channelOffset], registration);
-        status(await retryKernelEntryResult(() => kernel.attachProgram(pid, { bytes: new Uint8Array(programBytes), name: argv[0] })), "attach executable");
-        const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(pid));
-        kernel.installHostStdinPipe(pid);
-        if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads || options.anonymousShared || options.rejectForkStage) kernel.appendStdinData(pid, new Uint8Array());
-        else kernel.setStdinData(pid, new Uint8Array());
-        generation = owner.startGeneration(pid);
-        const currentGeneration = generation;
-        importWorker = imports.createWorker({ pid, generationId: generation.id,
-          authorizeSender: () => {
-            if (!processWorker || generation !== currentGeneration) throw new Error("stale fixture sender");
-          }, onDiagnostic: error => diagnostics.push(String(error)) });
-        const init: Omit<CentralizedWorkerInitMessage, "memory"> = {
-          type: "centralized_init", pid, programBytes, channelOffset: layout.channelOffset,
-          secureExec, argv, env, ptrWidth: 4,
-          externrefGenerationId: generation.id, forkHostImports: importWorker.init,
-          kernelAbiVersion: kernel.getKernelAbiVersion(),
-          kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined,
-        };
-        if (launch && typeof launch !== "number") {
-          const { assertLive: _live, ...expected } = launch.expectation;
-          processWorker = processAdapter.createWorker(createGroupedWorkerPrepare(expected));
-          // Install ordinary message handling after readiness: that protocol has
-          // its own exact receipt check and permits no unrelated message.
-          await waitForGroupedWorkerReady(processWorker, expected);
-          await retryKernelEntryResult(() => kernel.observeMemoryGroupReplicaWorker(rootHandle!, processWorker!,
-            { terminationProvesQuiescence: options.joinOnExit }));
+
         } else {
-          const memory = kernel.getProcessMemory(pid);
-          if (!memory) throw new Error("ordinary process registration lost Memory");
-          processWorker = processAdapter.createWorker({ ...init, memory });
+          layout = computeProcessMemoryLayout({ ptrWidth: 4, maxPages: options.maximumVirtualPages ?? 2048,
+            programBytes: ordinary, heapBase: extractHeapBase(ordinary) });
+          kernel.registerProcess(pid, createProcessMemory(4, layout), [layout.channelOffset], registration());
         }
-        const initialWorker = processWorker;
-        processWorker.on("message", (message: any) => {
+        processLayout = layout;
+        const secureExec = await retryKernelEntryResult(() => kernel.processSecureExec(pid));
+        let init!: Omit<CentralizedWorkerInitMessage, "memory">;
+        const connectImports = () => {
+          kernel.installHostStdinPipe(pid);
+          if (lifecycleEnabled || options.execPrecommitFailure || options.execOldThreads || options.anonymousShared || options.rejectForkStage) kernel.appendStdinData(pid, new Uint8Array());
+          else kernel.setStdinData(pid, new Uint8Array());
+          generation = owner.startGeneration(pid);
+          const currentGeneration = generation;
+          importWorker = imports.createWorker({ pid, generationId: generation.id,
+            authorizeSender: () => {
+              if (!processWorker || generation !== currentGeneration) throw new Error("stale fixture sender");
+            }, onDiagnostic: error => diagnostics.push(String(error)) });
+          init = { type: "centralized_init", pid, programBytes, channelOffset: layout.channelOffset,
+            secureExec, argv, env, ptrWidth: 4, externrefGenerationId: generation.id, forkHostImports: importWorker.init,
+            kernelAbiVersion: kernel.getKernelAbiVersion(), kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
+        };
+        const attachListeners = () => {
+        const initialWorker = processWorker!;
+        initialWorker.on("message", (message: any) => {
           if (processWorker !== initialWorker || execHandoff) return;
           if (message.type === "fork_host_import") {
             if (!importWorker!.dispatch(message.wake)) reject(new Error("stale host-import wake"));
@@ -793,7 +806,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           else if (message.type === "error") reject(new Error(message.message));
           else if (message.type === "memory_quiescent") {
             if (message.pid !== pid || message.tid !== undefined) return reject(new Error("wrong terminal Worker"));
-            if (launch && typeof launch !== "number") {
+            if (launch) {
               for (const key of ["group", "pid", "tid", "serial", "generation"] as const) {
                 if (message.memoryGroup?.[key] !== launch.expectation.receipt[key]) return reject(new Error("wrong terminal group receipt"));
               }
@@ -802,12 +815,49 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           }
           maybeComplete();
         });
-        processWorker.on("error", reject);
-        processWorker.on("exit", code => {
+        initialWorker.on("error", reject);
+        initialWorker.on("exit", code => {
           if (processWorker !== initialWorker || execHandoff) return;
           if (code !== 0) reject(new Error(`process Worker exit ${code}`)); else { rootJoined = options.joinOnExit; maybeComplete(); }
         });
-        if (launch && typeof launch !== "number") processWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+        };
+        if (grouped) {
+          let native!: WorkerHandle, readiness!: Promise<void>;
+          const worker = new DeferredWorkerHandle(() => {
+            if (!launch) throw Error('Root fixture lacks kernel publication');
+            const { assertLive: _live, ...expected } = launch.expectation;
+            native = processAdapter.createWorker(createGroupedWorkerPrepare(expected));
+            readiness = waitForGroupedWorkerReady(native, expected);
+            void readiness.catch(() => {});
+            return native;
+          });
+          processWorker = worker;
+          await kernel.runMemoryGroupRootLaunch(rootHandle!, {
+            publishTransport: value => {
+              launch = value;
+              if (options.rejectForkStage === 'pool' || options.threadPoolRollback || options.execPoolRollback || options.execTerminationPool || options.execPrecommitStop) rollbackPoolMemory = value.envelope.memory;
+            },
+            bindWorker: () => kernel.observeMemoryGroupReplicaWorker(rootHandle!, worker, { terminationProvesQuiescence: options.joinOnExit }),
+            registerProcess: () => kernel.registerMemoryGroupProcess(rootHandle!, [layout.channelOffset], registration()),
+            connectImports: () => { connectImports(); attachListeners(); },
+            startWorker: () => { if (!worker.start()) throw Error('Root fixture start cancelled'); },
+            waitReady: () => readiness,
+            deliverLaunch: () => {
+              if (!launch) throw Error('Root fixture lost kernel publication');
+              native.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+            },
+            sealAbsence: () => kernel.sealMemoryGroupReplicaWorkerAbsence(rootHandle!, worker),
+            retireImage: async () => { status(await retryKernelEntryResult(() => kernel.retireMemoryGroupImage(rootHandle!)), 'retire fixture root'); },
+            discardTransport: () => { imageHandles.delete(pid); },
+            containFailure: cause => kernel.containMemoryGroupLaunchFailure(cause),
+          });
+        } else {
+          connectImports();
+          const memory = kernel.getProcessMemory(pid);
+          if (!memory) throw new Error("ordinary process registration lost Memory");
+          processWorker = processAdapter.createWorker({ ...init, memory });
+          attachListeners();
+        }
       })().catch(reject);
     });
     await execution;
@@ -834,11 +884,9 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       const statuses: number[] = [];
       for (const [pid, handle] of imageHandles) {
         const releaseReferences = () => {
-          for (const thread of threads.values()) if (thread.pid === pid && !thread.releaseAfterStop()) throw Error('Pthread reference retirement is unproven');
-          const child = children.get(pid);
-          if (child && !child.releaseAfterStop()) throw Error('Child reference retirement is unproven');
+
           if (pid === rootPid) {
-            if (currentExecWorker && !currentExecWorker.releaseAfterStop()) throw Error('Final exec references lack stop proof');
+
             importWorker?.close(); if (generation) owner.releaseGeneration(generation);
           }
         };
@@ -872,13 +920,14 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
       failureCauses, failureMessage: error instanceof Error ? error.message : String(error),
       failure: error instanceof Error ? error.stack : String(error) };
   } finally {
+    restoreThreadInitializationFault?.();
     lifecycleActive = false;
     if (deadline) clearTimeout(deadline);
     if (probeTimer) clearTimeout(probeTimer);
     await processWorker?.terminate();
-    currentExecWorker?.releaseAfterStop();
-    for (const thread of threads.values()) { await thread.contain(); thread.releaseAfterStop(); }
-    for (const child of children.values()) { await child.contain(); child.releaseAfterStop(); }
+
+    for (const thread of threads.values()) { await thread.contain();  }
+    for (const child of children.values()) { await child.contain();  }
     importWorker?.close();
     if (generation) owner.releaseGeneration(generation);
     if (machine?.callbacks) {
