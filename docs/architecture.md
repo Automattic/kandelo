@@ -257,7 +257,13 @@ import would stall all of them.
 
 **Location**: `host/src/`
 
-The host runtime loads and manages the kernel and process workers. It has two main classes:
+The host runtime instantiates the kernel and guest modules, manages engine
+resources, transports requests and results, and provides platform I/O. Rust
+owns guest state and portable runtime decisions. Existing TypeScript paths
+for syscall marshalling, blocking retry, and fork sequencing are migration
+work. Keep the kernel-host protocol usable by native Wasm engines.
+
+The JavaScript host has two main classes:
 
 **`CentralizedKernelWorker`** (`kernel-worker.ts`): The primary runtime. Creates the kernel Wasm instance, manages process registration, listens for syscall channel activity via `Atomics.waitAsync`, and dispatches to the kernel's `kernel_handle_channel` export. **Must be instantiated in a dedicated worker thread**, not on the main thread.
 
@@ -267,7 +273,7 @@ Key host components:
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| CentralizedKernelWorker | `kernel-worker.ts` | Manages kernel instance, process channels, blocking retry |
+| CentralizedKernelWorker | `kernel-worker.ts` | Manages the kernel instance and process channels. Still handles some legacy syscall marshalling and blocking retries |
 | SyscallChannel | `channel.ts` | Typed view into SharedArrayBuffer channel region |
 | NodePlatformIO | `platform/node.ts` | Node.js handle-only `*at` filesystem calls, networking, clocks, random |
 | VirtualPlatformIO | `vfs/vfs.ts` | Host-mount router for directories mounted beneath the kernel's `/` — used by both Node and browser hosts |
