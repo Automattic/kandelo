@@ -4,7 +4,7 @@ use crate::streaming::{
     FrameEnvironment, FrameLayout, FrozenDeclarations, LocalKey, NativeRuntimeIndices,
 };
 use anyhow::{Context, Result, ensure};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, mem::size_of};
 use wasm_encoder::{BlockType, FuncType, ValType};
 
 mod emit;
@@ -53,6 +53,24 @@ enum ResumeArgument {
         class: NativeReferenceClass,
         vector_position: u32,
     },
+}
+
+fn recipe_metadata_cost(values: usize) -> Result<usize> {
+    // Large C++ tools have many small helpers. A fixed 2 KiB charge per helper
+    // rejects their compact catalogs before they reach the metadata ceiling.
+    // Count vector growth, map-node slack and up to two interned signatures
+    // from the retained Rust records. Keep the conservative per-value charge
+    // for their owned buffers; this changes no ceiling or generated Wasm.
+    const RECORDS: usize = 2 * size_of::<Recipe>()
+        + 2 * size_of::<u32>()
+        + 3 * size_of::<(Transport, u32)>()
+        + 6 * size_of::<(Vec<ValType>, Vec<ValType>, u32)>()
+        + 4 * size_of::<FuncType>()
+        + 32 * size_of::<usize>();
+    values
+        .checked_mul(256)
+        .and_then(|bytes| bytes.checked_add(RECORDS))
+        .context("activation recipe metadata overflow")
 }
 
 /// Frozen final indices are assigned before any function is emitted. The
@@ -194,12 +212,12 @@ impl ActivationSupportCatalog {
         reference_context: Option<(&FrameReferencePlan, &FrozenReferenceKinds)>,
     ) -> Result<u32> {
         let parameter_count = u32::try_from(parameters.len())?;
-        let cost = parameters
-            .len()
-            .checked_add(results.len())
-            .and_then(|count| count.checked_mul(256))
-            .and_then(|bytes| bytes.checked_add(2048))
-            .context("resume metadata overflow")?;
+        let cost = recipe_metadata_cost(
+            parameters
+                .len()
+                .checked_add(results.len())
+                .context("resume metadata overflow")?,
+        )?;
         self.preflight(cost)?;
         let index = self
             .first_function
@@ -348,10 +366,7 @@ impl ActivationSupportCatalog {
             return Ok(function);
         }
         // Preflight every index/budget before interning either signature.
-        let charge = values
-            .checked_mul(256)
-            .and_then(|n| n.checked_add(2048))
-            .context("transport metadata overflow")?;
+        let charge = recipe_metadata_cost(values)?;
         let index = self
             .first_function
             .checked_add(u32::try_from(self.recipes.len())?)
