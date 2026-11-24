@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One package owns the engine adapter and both complete upstream Node profiles.
+# One package owns the engine adapter and the complete standard Node executable.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -11,12 +11,10 @@ if [ "${WASM_POSIX_DEP_NAME:?}" != spidermonkey-node ] || \
    [ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" != wasm32 ]; then
     echo 'ERROR: unexpected Node package/architecture' >&2; exit 2
 fi
-PROFILES=(default features)
 if [ "$#" -gt 0 ]; then
-    # The unshipped native companion replaces main only in the default profile.
+    # The unshipped native companion replaces main without changing Node flags.
     [ "$#" = 1 ] && [ "$1" = --native-lifetime-test ] && \
         [ -n "${KANDELO_NATIVE_TEST_DIR:-}" ] || { echo 'ERROR: unexpected internal build argument' >&2; exit 2; }
-    PROFILES=(default)
 fi
 source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot node-core "$REPO_ROOT/sysroot" \
@@ -38,12 +36,4 @@ python3 "$SCRIPT_DIR/check-engine-sdk.py" \
     --core "$WASM_POSIX_DEP_SPIDERMONKEY_CORE_DIR" --bridge "$BRIDGE" \
     --tracing "$WASM_POSIX_DEP_V8_TRACING_DIR" --sysroot "$WASM_POSIX_SYSROOT" \
     --output "$KANDELO_NODE_ENGINE_CONFIGURATION"
-WORK="$WASM_POSIX_DEP_WORK_DIR"
-for profile in "${PROFILES[@]}"; do
-    profile_work="$WORK"
-    if [ "$profile" = features ]; then
-        profile_work="$WORK/features"
-        mkdir -p "$profile_work"
-    fi
-    WASM_POSIX_DEP_WORK_DIR="$profile_work" bash "$SCRIPT_DIR/build-node-profile.sh" "$profile"
-done
+bash "$SCRIPT_DIR/build-node-profile.sh"

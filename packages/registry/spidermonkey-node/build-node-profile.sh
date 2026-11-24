@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build original Node startup and every native component enabled by its profile.
+# Build original Node startup and every native component in its standard profile.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -15,17 +15,8 @@ source "$REPO_ROOT/scripts/package-build-roots.sh"
 : "${WASM_POSIX_DEP_NODE_AMARO_DIR:?declare the actual native Amaro provider}"
 : "${WASM_POSIX_DEP_NODE_UNDICI_LLHTTP_DIR:?declare the exact Undici native parser provider}"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:?resolver must identify the package}"
-PROFILE="${1:?internal build requires a profile}"
+[ "$#" = 0 ] || { echo "ERROR: unexpected internal Node build argument" >&2; exit 2; }
 OUTPUT_NAME=node.wasm
-PROFILE_FLAGS=()
-case "$PROFILE" in
-    default) ;;
-    features)
-        OUTPUT_NAME=node-features.wasm
-        PROFILE_FLAGS=(--experimental-quic --experimental-dtls)
-        ;;
-    *) echo "ERROR: unexpected Node profile: $PROFILE" >&2; exit 2;;
-esac
 if [ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" != wasm32 ]; then
     echo "ERROR: the approved initial Node target is wasm32." >&2
     exit 2
@@ -78,8 +69,8 @@ export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
         --shared-libuv-libpath="$WASM_POSIX_DEP_LIBUV_DIR/lib" --with-intl=full-icu \
         --shared-ffi --shared-ffi-includes="$WASM_POSIX_DEP_NODE_LIBFFI_DIR/include" \
         --shared-ffi-libname=ffi,kandelo-ffi-adapter \
-        --openssl-no-asm "${PROFILE_FLAGS[@]}"
-    python3 "$SCRIPT_DIR/check-native-profile.py" "$NODE_SOURCE/config.gypi" "$PROFILE"
+        --openssl-no-asm
+    python3 "$SCRIPT_DIR/check-native-profile.py" "$NODE_SOURCE/config.gypi"
     # -k collects independent compiler/link failures across the entire graph.
     # Original registration, node_main.cc and node.cc remain authoritative.
     # The root Makefile's node recipe invokes the generated default 'all'

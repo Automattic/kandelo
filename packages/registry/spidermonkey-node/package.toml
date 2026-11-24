@@ -71,8 +71,3 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 name = "spidermonkey-node"
 wasm = "node.wasm"
 fork_instrumentation = "auto"
-
-[[outputs]]
-name = "spidermonkey-node-features"
-wasm = "node-features.wasm"
-fork_instrumentation = "auto"

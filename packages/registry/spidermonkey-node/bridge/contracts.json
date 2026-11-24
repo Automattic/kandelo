@@ -7,7 +7,7 @@
       "id": "source-interfaces",
       "owner": "spidermonkey-node",
       "why": "Let original Node C++ retain its consumed V8-shaped declarations, handles, Maybe results, callback/signature metadata and checks while implementations operate on SpiderMonkey. These declarations supply no V8 heap layout, register ABI or independent Node owner.",
-      "protectingContracts": ["complete default and feature compilation/linkage", "native handle identity and failure-state controls"],
+      "protectingContracts": ["complete standard Node compilation/linkage", "native handle identity and failure-state controls"],
       "testLimit": "Compilation protects source compatibility. The named native controls exercise selected handle/error operations, not every declared method or fast-call optimization.",
       "files": ["native-engine.cpp", "engine-native-api.h", "engine-maybe-api.h", "engine-wire-codec.h", "engine-value-wire-codecs-inl.h", "fast-call-metadata.cpp", "engine-script-api.h", "engine-gc-api.h", "engine-checks.h", "engine-process.h"]
     },
@@ -71,7 +71,7 @@
       "id": "portable-wire-and-shared-values",
       "owner": "spidermonkey-node",
       "why": "Reuse portable upstream value serialization while traversing real SpiderMonkey graphs and retaining actual shared-value/conveyor ownership. Keep Node's messaging/transfer policy with original owners.",
-      "protectingContracts": ["complete default and feature compilation/linkage"],
+      "protectingContracts": ["complete standard Node compilation/linkage"],
       "testLimit": "No comprehensive current-artifact serialization/transfer/conveyor runtime acceptance is established by the initial gates. Preserve those required worker/value/engine tests for the complete catalog and family roadmap.",
       "files": ["engine-serialization-codecs-inl.h", "engine-shared-conveyor-data.h"]
     },
@@ -79,7 +79,7 @@
       "id": "native-extras",
       "owner": "spidermonkey-node",
       "why": "Adapt the complete original tracing/extras routines and their argument/result conventions to real engine callbacks and Node's tracing controller. Construct each realm's native extras eagerly so cleanup does not create new callbacks or replace pending errors.",
-      "protectingContracts": ["complete default and feature compilation/linkage", "CLI/context bootstrap and native cleanup", "synchronous no-argument GC controls"],
+      "protectingContracts": ["complete standard Node compilation/linkage", "CLI/context bootstrap and native cleanup", "synchronous no-argument GC controls"],
       "testLimit": "Bootstrap/cleanup and plain gc() do not prove complete tracing. GC option-bag, asynchronous and snapshot extension requests are explicit remaining engine-service work; trace protocol output needs its own family acceptance.",
       "files": ["engine-extras-runtime.h", "engine-extras-runtime-undef.h", "engine-extras-codecs-inl.h"]
     },
@@ -87,7 +87,7 @@
       "id": "profiling-and-heap-data",
       "owner": "spidermonkey-node",
       "why": "Feed original portable profile-tree, sampling and heap JSON algorithms with actual owner-thread SpiderMonkey frames, allocation/weak-edge observations and heap graph data. Native producers must stop/join before their callback records and engine owners retire.",
-      "protectingContracts": ["complete default and feature compilation/linkage", "shared native callback/GC/shutdown prerequisites"],
+      "protectingContracts": ["complete standard Node compilation/linkage", "shared native callback/GC/shutdown prerequisites"],
       "testLimit": "Shared prerequisite checks do not exercise every active profiler producer or qualify profiles, snapshots, sampling or trace chunks. Direct current-artifact profiling/heap API acceptance remains required. Initial V8 startup-snapshot and Inspector boundaries retain their separate approved follow-ups.",
       "files": ["engine-cpu-profiler-data.h", "engine-cpu-profiler-codecs-inl.h", "engine-profiler-stream-support.h", "engine-heap-profiler-data.h", "engine-heap-profiler-codecs-inl.h", "engine-heap-snapshot-data.h", "engine-heap-snapshot-codecs-inl.h", "engine-heap-snapshot-capture-inl.h", "engine-heap-allocation-data.h", "engine-heap-allocation-codecs-inl.h"]
     }
@@ -96,7 +96,7 @@
     {
       "id": "portable-target-and-build",
       "why": "Adapt the real Kandelo/Wasm target, static runtime and data types, binary format checks, declared providers and separate host/target toolsets. Keep original Node startup/registration and portable library dependencies; replace unavailable OS/CPU build assumptions rather than public Node algorithms.",
-      "protectingContracts": ["complete default and feature compilation/linkage", "verified engine/archive/header/ABI preflight", "installed CLI metadata and startup"],
+      "protectingContracts": ["complete standard Node compilation/linkage", "verified engine/archive/header/ABI preflight", "installed CLI metadata and startup"],
       "testLimit": "Build admission and initial startup do not prove all provider APIs, target variants or full OS behavior.",
       "members": {
         "base-engine": ["0002-kandelo-rust-target.patch", "0003-jsonprinter-size-t-wasm32.patch", "0007-check-wasm-network-imports.patch", "0010-use-wasm-icu-data-section-syntax.patch", "0023-use-flag-visibility-on-wasm32.patch", "0074-kandelo-posix-target-profile.patch"],
@@ -141,7 +141,7 @@
     {
       "id": "portable-profile-and-memory-algorithms",
       "why": "Reuse complete portable V8/Node tracing, profile-tree, heap registry, JSON writer, measurement and sampling routines. Replace engine-private compiler/collector/register inputs with real SpiderMonkey metadata; preserve original public owner and output policy. Optional V8 statistics machinery is distinct from required Node observability.",
-      "protectingContracts": ["complete default and feature compilation/linkage", "shared native GC/callback/cleanup prerequisites", "actual external-allocation diagnostic"],
+      "protectingContracts": ["complete standard Node compilation/linkage", "shared native GC/callback/cleanup prerequisites", "actual external-allocation diagnostic"],
       "testLimit": "These prerequisites and one real counter do not qualify complete profiling, heap snapshots/sampling, trace output, space metrics or reports. Required engine/observability acceptance remains separate; do not infer it from compilation.",
       "members": {
         "producer-engine": ["0014-native-code-memory-metrics.patch"],
@@ -152,7 +152,7 @@
     {
       "id": "native-provider-and-transfer-ownership",
       "why": "Connect actual guest native libraries, target ABI and shared-value leases through original Node owners and the normal dynamic loader. Preserve lazy Amaro loading and its full wrapper; the explicit Undici factory change selects its exact native C parser. FFI CIF/callback and shared-value retirement remain with their original native owners.",
-      "protectingContracts": ["complete default and feature compilation/linkage", "default CJS/ESM TypeScript", "HTTP/HTTPS Fetch and parser callback/GC/Worker retirement", "original disabled-addon profile controls"],
+      "protectingContracts": ["complete standard Node compilation/linkage", "default CJS/ESM TypeScript", "HTTP/HTTPS Fetch and parser callback/GC/Worker retirement", "original disabled-addon profile controls"],
       "testLimit": "Amaro/Undici consumer qualification does not qualify all FFI, addon or shared-conveyor operations. Native addon execution and general guest Wasm retain their agreed follow-ups. Migrate the two temporary native helpers back only after equivalent upstream Wasm qualification.",
       "members": {
         "normal-node": ["0007-native-amaro-consumer.patch", "0007-wasm-ffi-native-code-capability.patch", "0013-kandelo-native-dynamic-loader.patch", "0015-native-undici-parser-factory.patch", "0016-native-undici-parser-binding.patch"],
@@ -162,7 +162,7 @@
     {
       "id": "selected-initial-capability-boundaries",
       "why": "Retain ordinary live startup/interfaces while rejecting the separately agreed V8 startup-snapshot operations and deferred diagnostic-report generation. Keep original Node flags, registration and ordinary error/exit behavior rather than manufacture successful snapshots or report data.",
-      "protectingContracts": ["initial CLI snapshot/report rejection and ordinary error/exit controls", "complete default and feature compilation/linkage"],
+      "protectingContracts": ["initial CLI snapshot/report rejection and ordinary error/exit controls", "complete standard Node compilation/linkage"],
       "testLimit": "Rejection/profile controls qualify the selected initial boundary only. Full snapshots and diagnostic reports remain required follow-up implementation and acceptance, not completed APIs.",
       "members": {
         "normal-node": ["0010-engine-owned-snapshot-flags.patch", "0012-deferred-diagnostic-report-generation.patch"]

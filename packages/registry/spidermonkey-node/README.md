@@ -32,11 +32,11 @@ Run through `scripts/dev-shell.sh`. A focused package/image build is:
 ./run.sh partial shell node-browser-bundle
 ```
 
-The normal canonical build is `./run.sh local-build`. This recipe builds both
-`node.wasm` (default) and `node-features.wasm`
-(experimental QUIC/DTLS). The bridge is built once and shared by both internal
-configurations. Normal packaging installs only the default executable; compiling
-the experimental output does not establish feature conformance.
+The normal canonical build is `./run.sh local-build`. This recipe builds one
+complete standard `node.wasm`, installed as `spidermonkey-node` with the `node`
+symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
+implementation and qualification remain required later compatibility work.
+There is no automatic second executable or user profile selector.
 
 [Maintained npm regressions](../node-browser-bundle/test/README.md) run offline
 and controlled-registry installation, lifecycle execution, CJS/ESM package use,

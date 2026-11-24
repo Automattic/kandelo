@@ -175,6 +175,11 @@ full conformance work and B6 review remain required.
   pointers between independent SpiderMonkey runtimes. Retaining this gap in the
   roadmap is not approval to exclude it from the complete compatibility review.
 
+- [ ] Implement and qualify experimental QUIC/DTLS in the later compatibility
+  work. The first iteration builds one standard executable; it does not build
+  an experimental companion automatically. Select the eventual experimental
+  build and delivery approach when reviewing that work.
+
 ## Upgrade procedure
 
 1. Preserve the current source, exact artifact identities, test inventories and
@@ -187,7 +192,7 @@ full conformance work and B6 review remain required.
 4. Review each changed bridge operation alongside its Node callers. Generate
    metadata from the verified archive in the build directory. Keep ownership of
    Node policy with Node; do not add another loader, timer queue or process owner.
-5. Build normal default and feature profiles through the declared dev shell and
+5. Build the complete standard executable through the declared dev shell and
    package pipeline. Preserve registration lists and collect complete related
    compiler/linker failures before changing inputs and retesting.
 6. Bind acceptance to the resulting executable, providers, kernel, host and image.
