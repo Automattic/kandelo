@@ -5293,7 +5293,7 @@ export async function centralizedThreadWorkerMain(
     tlsPtr,
     ctidPtr,
   } = initData;
-  const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
+  const { offset: tlsOffset, byteLength: tlsByteLength } = initData.tls;
   const ptrWidth = initData.ptrWidth ?? 4;
 
   // WHY: synchronize the received memory before this isolate binds any view
@@ -5943,13 +5943,21 @@ export async function centralizedThreadWorkerMain(
     }
     threadTableReplication?.reconcileNow();
 
-    // Initialize Wasm TLS for this thread in the slot's explicit TLS/control page.
+    // The host reserves the executable TLS range before starting this worker.
     const wasmInitTls = instance.exports.__wasm_init_tls as
       ((addr: number | bigint) => void) | undefined;
-    const tlsBlock = tlsOffset;
-
-    if (wasmInitTls && tlsBlock > 0) {
-      wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);
+    if (wasmInitTls && tlsOffset > 0) {
+      const size = instance.exports.__tls_size;
+      const align = instance.exports.__tls_align;
+      if (
+        !Number.isSafeInteger(tlsOffset + tlsByteLength)
+        || tlsByteLength < 0 || tlsOffset + tlsByteLength > memory.buffer.byteLength
+        || (size instanceof WebAssembly.Global && Number(size.value) > tlsByteLength)
+        || (align instanceof WebAssembly.Global && tlsOffset % Number(align.value) !== 0)
+      ) {
+        throw new Error("pthread executable TLS reservation does not match its Wasm layout");
+      }
+      wasmInitTls(ptrWidth === 8 ? BigInt(tlsOffset) : tlsOffset);
     }
 
     // Set __stack_pointer, rounded down to the 16-byte alignment the wasm

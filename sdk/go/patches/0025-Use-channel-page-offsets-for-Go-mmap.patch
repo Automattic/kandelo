@@ -1,0 +1,77 @@
+Translate byte offsets in Go’s syscall.Mmap into the existing Kandelo
+mmap2 channel units. Exercise a nonzero offset in both shared and private
+mappings, which the linker uses when reading Go archive members.
+
+diff --git a/src/syscall/mmap_kandelo.go b/src/syscall/mmap_kandelo.go
+index 33a3299a..34ccb1a6 100644
+--- a/src/syscall/mmap_kandelo.go
++++ b/src/syscall/mmap_kandelo.go
+@@ -28,10 +28,12 @@ var kandeloMappings = struct {
+ }{lengths: make(map[uintptr]int)}
+ 
+ func Mmap(fd int, offset int64, length int, prot int, flags int) ([]byte, error) {
+-	if length <= 0 {
++	// The Kandelo syscall channel uses mmap2 offsets in 4 KiB units.
++	const offsetUnit = 4096
++	if length <= 0 || offset < 0 || offset%offsetUnit != 0 {
+ 		return nil, EINVAL
+ 	}
+-	address, errno := kandeloSyscall6(kSysMmap, 0, int64(length), int64(prot), int64(flags), int64(fd), offset)
++	address, errno := kandeloSyscall6(kSysMmap, 0, int64(length), int64(prot), int64(flags), int64(fd), offset/offsetUnit)
+ 	if errno != 0 {
+ 		return nil, kandeloErrno(errno)
+ 	}
+diff --git a/src/syscall/mmap_kandelo_test.go b/src/syscall/mmap_kandelo_test.go
+index 8fd8a375..64f98810 100644
+--- a/src/syscall/mmap_kandelo_test.go
++++ b/src/syscall/mmap_kandelo_test.go
+@@ -14,11 +14,12 @@ func TestKandeloMmap(t *testing.T) {
+ 	defer os.Remove(file.Name())
+ 	defer file.Close()
+ 	pageSize := syscall.Getpagesize()
+-	if err := file.Truncate(int64(pageSize)); err != nil {
++	offset := int64(pageSize)
++	if err := file.Truncate(offset + int64(pageSize)); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 
+-	shared, err := syscall.Mmap(int(file.Fd()), 0, pageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
++	shared, err := syscall.Mmap(int(file.Fd()), offset, pageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -27,7 +28,7 @@ func TestKandeloMmap(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	stored := make([]byte, 1)
+-	if _, err := file.ReadAt(stored, 0); err != nil {
++	if _, err := file.ReadAt(stored, offset); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if stored[0] != 'K' {
+@@ -42,14 +43,14 @@ func TestKandeloMmap(t *testing.T) {
+ 	if err := syscall.Munmap(shared); err != syscall.EINVAL {
+ 		t.Fatalf("duplicate unmap: got %v, want EINVAL", err)
+ 	}
+-	if _, err := file.ReadAt(stored, 0); err != nil {
++	if _, err := file.ReadAt(stored, offset); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if stored[0] != 'K' {
+ 		t.Fatalf("shared writeback: got %q, want K", stored[0])
+ 	}
+ 
+-	private, err := syscall.Mmap(int(file.Fd()), 0, pageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE)
++	private, err := syscall.Mmap(int(file.Fd()), offset, pageSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -60,7 +61,7 @@ func TestKandeloMmap(t *testing.T) {
+ 	if err := syscall.Munmap(private); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if _, err := file.ReadAt(stored, 0); err != nil {
++	if _, err := file.ReadAt(stored, offset); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if stored[0] != 'K' {

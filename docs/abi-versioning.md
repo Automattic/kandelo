@@ -3037,6 +3037,30 @@ is bookkeeping and does not itself require a bump; changing an existing fixed
 wire or observable accepted layout is evaluated under the normal
 incompatible-change rules.
 
+## Required changes for the next program ABI
+
+The first program ABI after **56** must give each pthread an independently
+reserved executable TLS block. This applies to any change that bumps the
+program ABI. The ABI check requires the replacement control slot to contain
+three pages in order: fork scratch, syscall channel primary, and syscall
+channel spill. The old TLS/control page and the temporary inline TLS path
+must be removed. Host-only `vfork` replay scratch needs its own reservation
+and lifetime accounting when it stops borrowing that page.
+
+Use the executable's `__tls_size` and `__tls_align` before starting a pthread.
+Carry the TLS range separately from the control reservation through worker
+startup, slot reuse and teardown, and fork replay. Preserve the calling
+thread's TLS address and live contents through fork, including a subsequent
+fork from the child. Cover small and multi-page TLS, over-alignment, thread
+isolation, slot reuse, and fork on Node and in the browser. Follow the normal
+supported-program baseline and ABI fixture workflow for that version bump.
+
+To schedule another verified change for a specific program ABI, record its
+current epoch, required behavior, and acceptance tests here. Add a check to
+`check_scheduled_program_abi_changes` in `scripts/check-abi-version.sh` that
+fails above that epoch while the old contract remains. Keep the check when
+the transition lands so skipping a version cannot bypass it.
+
 ## Developer workflow
 
 On a change:

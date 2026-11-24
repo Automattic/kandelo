@@ -1733,6 +1733,8 @@ interface ProcessRegistration {
   channels: ChannelInfo[];
   /** True only while a vfork child borrows its suspended parent's Memory. */
   borrowedAddressSpace: boolean;
+  /** The original pthread reservation if fork resumed this image on its TLS. */
+  inheritedThreadSlot?: ForkThreadSlot;
   /** Pointer width: 4 for wasm32, 8 for wasm64. */
   ptrWidth: 4 | 8;
   /**
@@ -1885,6 +1887,7 @@ interface RegisterProcessOptions {
   brkLimit?: number;
   /** The process is a vfork child borrowing another process's Memory. */
   borrowedAddressSpace?: boolean;
+  inheritedThreadSlot?: ForkThreadSlot;
 }
 
 type RegisterProcessStdioKind = "pipe" | "terminal";
@@ -1967,7 +1970,7 @@ export type ProcessWorkerStartDisposition =
  * - `forkBufAddr`: the dynamically allocated linked-continuation address read
  *   from the caller thread's channel anchor. In the child's memory copy this
  *   allocation holds the frames and globals saved by the parent thread.
- * - `slotStart`/`slotLen`: the dynamic pthread control reservation that
+ * - `slot`: the dynamic pthread control reservation that
  *   contains the caller's TLS, fork-save buffer, and channel. Fork children
  *   retain this one slot and discard all other parent pthread reservations.
  */
@@ -1975,8 +1978,12 @@ export interface ForkFromThreadContext {
   fnPtr: number;
   argPtr: number;
   forkBufAddr: number;
-  slotStart: number;
-  slotLen: number;
+  slot: ForkThreadSlot;
+}
+
+interface ForkThreadSlot {
+  readonly address: number;
+  readonly byteLength: number;
 }
 
 /**
@@ -1990,6 +1997,7 @@ export type ForkContinuationContext =
   | {
       readonly kind: "main";
       readonly forkBufAddr: number;
+      readonly slot?: ForkThreadSlot;
     }
   | ({
       readonly kind: "thread";
@@ -3097,7 +3105,7 @@ export class CentralizedKernelWorker {
    * `pid:channelOffset` like `channelTids`; entries are cleared by
    * `removeChannel` and the thread-exit path.
    */
-  private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
+  private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number; slot: ForkThreadSlot }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
@@ -7978,6 +7986,7 @@ export class CentralizedKernelWorker {
     const mmapBase = options?.mmapBase;
     const explicitMaxAddr = options?.maxAddr;
     const brkLimit = options?.brkLimit;
+    const inheritedThreadSlot = options?.inheritedThreadSlot;
     const existingRegistration = this.processes.get(pid);
     const replacingExecImage =
       preserveProcessState
@@ -8048,7 +8057,7 @@ export class CentralizedKernelWorker {
         }
         const registration: ProcessRegistration = {
           pid, memory, channels, execGeneration, borrowedAddressSpace,
-          ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined,
+          ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined, inheritedThreadSlot,
         };
         this.#noteGuestMayRun(memory);
         kernelEntryIntrinsicObjectDefineProperty(registration, "execGeneration", {
@@ -10932,6 +10941,7 @@ export class CentralizedKernelWorker {
   attachThreadChannel(
     attachment: ThreadChannelAttachment,
     channelOffset: number,
+    slotByteLength = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE,
   ): void {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -10944,6 +10954,7 @@ export class CentralizedKernelWorker {
         attachmentError = this.#attachThreadChannelWithinKernelEntry(
           attachment,
           channelOffset,
+          slotByteLength,
           entry,
         );
         return undefined;
@@ -10958,6 +10969,7 @@ export class CentralizedKernelWorker {
   #attachThreadChannelWithinKernelEntry(
     attachment: ThreadChannelAttachment,
     channelOffset: number,
+    slotByteLength: number,
     entry: KernelWorkerEntryContext,
   ): Error | undefined {
     const pending = pendingThreadChannelAttachments.get(attachment);
@@ -11044,7 +11056,14 @@ export class CentralizedKernelWorker {
       this.#noteGuestMayRun(registration.memory);
       this.activeChannels.push(channel);
       this.channelTids.set(channelKey, tid);
-      this.threadForkContexts.set(channelKey, { fnPtr, argPtr });
+      this.threadForkContexts.set(channelKey, {
+        fnPtr,
+        argPtr,
+        slot: {
+          address: channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE,
+          byteLength: slotByteLength,
+        },
+      });
 
       // Lower the kernel's mmap ceiling only for legacy high-address thread
       // control pages. Compact process memories reserve thread pages before the
@@ -21438,9 +21457,7 @@ export class CentralizedKernelWorker {
     // copying memory because only it owns the program module descriptor.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
-    const callerSlotStart =
-      channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
-    const callerSlotLen = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
+    const inheritedThreadSlot = this.processes.get(parentPid)?.inheritedThreadSlot;
     const forkBufAddr = readForkContinuationAnchor(
       channel.memory,
       channel.channelOffset - FORK_BUF_SIZE,
@@ -21452,22 +21469,21 @@ export class CentralizedKernelWorker {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
           forkBufAddr,
-          slotStart: callerSlotStart,
-          slotLen: callerSlotLen,
+          slot: threadCtx.slot,
         }
-      : { kind: "main", forkBufAddr };
+      : { kind: "main", forkBufAddr, ...(inheritedThreadSlot ? { slot: inheritedThreadSlot } : {}) };
     const guestPointerWidth = this.getPtrWidth(parentPid);
     let callerSlotReservation:
       | { pointer: number; length: number; end: number }
       | null = null;
-    if (continuation.kind === "thread") {
+    if (continuation.slot) {
       try {
         // WHY: reject impossible guest geometry before Rust allocates the
         // child PID. The later reservation export receives this same checked
         // range, so it cannot reinterpret a lossy host number after fork.
         callerSlotReservation = checkedWasmAddressRange(
-          continuation.slotStart,
-          continuation.slotLen,
+          continuation.slot.address,
+          continuation.slot.byteLength,
           guestPointerWidth,
           "fork child pthread control slot",
         );
@@ -21532,11 +21548,11 @@ export class CentralizedKernelWorker {
       ((pid: number) => number) | undefined;
     if (clearForkChild) clearForkChild(childPid);
 
-    if (continuation.kind === "thread") {
+    if (callerSlotReservation) {
       try {
         this.#reserveHostRegionAtWithinKernelEntry(
           childPid,
-          callerSlotReservation!,
+          callerSlotReservation,
           guestPointerWidth,
           entry,
         );

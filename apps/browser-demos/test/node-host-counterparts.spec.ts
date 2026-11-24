@@ -11,6 +11,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
 const publicDir = join(repoRoot, "apps", "browser-demos", "public");
 
+// Run TypeScript demos through tsx's loader, not the tsx CLI. The CLI opens
+// an IPC socket at $TMPDIR/tsx-<uid>/<pid>.pipe, and Playwright runs set
+// TMPDIR inside the worktree's .scratch directory (tests/playwright-run.ts).
+// That path exceeds macOS's 104-byte sun_path, which libuv before 1.53
+// rejects with `listen EINVAL`.
+const tsxCommand = (script: string, args: string[]): [string, string[]] => [
+  process.execPath,
+  ["--import", "tsx", script, ...args],
+];
+
 interface ServiceImageRef {
   relPath: string;
   publicFile: string;
@@ -93,7 +103,7 @@ async function startNodeHostDemo(
   readyPattern: RegExp,
   timeoutMs: number,
 ): Promise<RunningDemo> {
-  const proc = spawn("npx", ["tsx", script, ...args], {
+  const proc = spawn(...tsxCommand(script, args), {
     cwd: repoRoot,
     detached: process.platform !== "win32",
     env: { ...process.env, FORCE_COLOR: "0" },
@@ -193,13 +203,10 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
     skipUnlessProgram("shell Node-host demo", "programs/dash.wasm");
 
     const output = execFileSync(
-      "npx",
-      [
-        "tsx",
-        "packages/registry/shell/demo/serve.ts",
+      ...tsxCommand("packages/registry/shell/demo/serve.ts", [
         "-c",
         "echo KANDELO_NODE_HOST_SHELL_OK",
-      ],
+      ]),
       {
         cwd: repoRoot,
         encoding: "utf8",

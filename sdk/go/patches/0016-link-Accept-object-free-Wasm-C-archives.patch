@@ -1,0 +1,159 @@
+From a0b048e19e1b183db33f52d26c08d1c63b4f1c1d Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Fri, 6 Nov 2026 23:09:41 -0500
+Subject: [PATCH 16/22] link: Accept object-free Wasm C archives
+
+Valid compatibility libraries can be empty: GNU ar writes only the
+archive magic; Darwin ranlib can add a zero-entry BSD index.
+Accept those forms instead of rejecting upstream link flags such
+as -lm and -lutil. Continue rejecting unsupported BSD maps,
+nonempty or malformed indexes, and archives with actual objects.
+
+Eight parser subcases pass. The declared C archive fixture links
+both a bare empty archive and the SDK compatibility archive on
+Node and all three browsers. Upstream FrankenPHP source needs no
+link-flag removal for this boundary.
+
+diff --git a/src/cmd/link/internal/ld/ar.go b/src/cmd/link/internal/ld/ar.go
+index 9a9ac6538f26fa7fe9ee68a54dbe9f7ceead71bd..cfb08c9fefe9def5a3e3788ff8ff058fd9cc929c 100644
+--- a/src/cmd/link/internal/ld/ar.go
++++ b/src/cmd/link/internal/ld/ar.go
+@@ -40,6 +40,7 @@ import (
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ )
+ 
+@@ -95,6 +96,42 @@ func pruneUndefsForWindows(ldr *loader.Loader, undefs, froms []loader.Sym) ([]lo
+ 	return newundefs, newfroms
+ }
+ 
++// emptyBSDArchive accepts only an object-free BSD archive with a zero-entry
++// 32-bit index. Other BSD indexes remain unsupported; never skip real objects
++// or a malformed/nonempty index because a library happens to be optional.
++func emptyBSDArchive(f *bio.Reader, header ArHdr, fileSize int64) bool {
++	name, nameBytes := header.name, int64(0)
++	if strings.HasPrefix(name, "#1/") {
++		var err error
++		nameBytes, err = strconv.ParseInt(name[3:], 10, 64)
++		if err != nil || nameBytes <= 0 || nameBytes > 32 {
++			return false
++		}
++	}
++	size, err := strconv.ParseInt(header.size, 10, 64)
++	if err != nil || size != nameBytes+8 || fileSize != SARMAG+SAR_HDR+(size+1)&^1 || header.fmag != "`\n" {
++		return false
++	}
++	contents := make([]byte, size)
++	if _, err := io.ReadFull(f, contents); err != nil {
++		return false
++	}
++	if nameBytes != 0 {
++		name = strings.TrimRight(string(contents[:nameBytes]), "\x00")
++	}
++	if name != "__.SYMDEF" && name != "__.SYMDEF SORTED" {
++		return false
++	}
++	// Both the ranlib-entry byte count and string-table length must be zero.
++	// Zero is endian-independent, so empty archives need no host-endian guess.
++	for _, value := range contents[nameBytes:] {
++		if value != 0 {
++			return false
++		}
++	}
++	return true
++}
++
+ // hostArchive reads an archive file holding host objects and links in
+ // required objects. The general format is the same as a Go archive
+ // file, but it has an armap listing symbols and the objects that
+@@ -126,6 +163,16 @@ func hostArchive(ctxt *Link, name string) {
+ 		Exitf("%s is not an archive file", name)
+ 	}
+ 
++	// musl compatibility libraries can contain no objects. GNU ar emits just
++	// the magic in that case; Darwin's llvm-ar emits an empty BSD index.
++	info, err := f.File().Stat()
++	if err != nil {
++		Exitf("cannot stat archive %s: %v", name, err)
++	}
++	if info.Size() == SARMAG {
++		return
++	}
++
+ 	var arhdr ArHdr
+ 	l := nextar(f, f.Offset(), &arhdr)
+ 	if l <= 0 {
+@@ -135,6 +182,8 @@ func hostArchive(ctxt *Link, name string) {
+ 	var armap archiveMap
+ 	if arhdr.name == "/" || arhdr.name == "/SYM64/" {
+ 		armap = readArmap(name, f, arhdr)
++	} else if ctxt.IsWasm() && emptyBSDArchive(f, arhdr, info.Size()) {
++		return
+ 	} else {
+ 		Exitf("%s missing armap", name)
+ 	}
+diff --git a/src/cmd/link/internal/ld/ar_empty_test.go b/src/cmd/link/internal/ld/ar_empty_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9565a5e05df0631ae6e619c0221762e2671457cf
+--- /dev/null
++++ b/src/cmd/link/internal/ld/ar_empty_test.go
+@@ -0,0 +1,56 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package ld
++
++import (
++	"bytes"
++	"cmd/internal/bio"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestEmptyBSDArchive(t *testing.T) {
++	// llvm-ar's actual object-free Darwin archive, including its padded name.
++	original := []byte("!<arch>\n#1/12           0           0     0     0       20        `\n__.SYMDEF\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
++	mutate := func(offset int, value byte) []byte {
++		data := bytes.Clone(original)
++		data[offset] = value
++		return data
++	}
++	for _, test := range []struct {
++		name string
++		data []byte
++		want bool
++	}{
++		{"empty index", original, true},
++		{"nonzero ranlib entries", mutate(80, 8), false},
++		{"nonzero string table", mutate(84, 1), false},
++		{"unknown member name", mutate(68, 'x'), false},
++		{"invalid extended name", mutate(11, '-'), false},
++		{"invalid header trailer", mutate(66, '!'), false},
++		{"truncated index", original[:len(original)-1], false},
++		{"additional member", append(bytes.Clone(original), []byte("object.o/       0           0     0     0       4         `\nwasm")...), false},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "library.a")
++			if err := os.WriteFile(path, test.data, 0600); err != nil {
++				t.Fatal(err)
++			}
++			input, err := bio.Open(path)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer input.Close()
++			var header ArHdr
++			if nextar(input, SARMAG, &header) <= 0 {
++				t.Fatal("missing fixture header")
++			}
++			if got := emptyBSDArchive(input, header, int64(len(test.data))); got != test.want {
++				t.Fatalf("object-free=%v, want %v, header=%#v, length=%d", got, test.want, header, len(test.data))
++			}
++		})
++	}
++}

@@ -126,6 +126,46 @@ wasm32posix-cc -c bar.c -o bar.o
 wasm32posix-cc foo.o bar.o -o program.wasm
 ```
 
+### Zig programs
+
+The development flake builds Zig 0.17.1 from source against LLVM 22, with the
+patches in [sdk/zig](../sdk/zig). With the wasm32 musl sysroot built, select
+`wasm32-kandelo-musl` from the dev shell.
+
+```bash
+zig build-exe -target wasm32-kandelo-musl main.zig -femit-bin=main.wasm
+scripts/run-wasm-fork-instrument.sh main.wasm -o main.fork.wasm
+npx tsx examples/run-wasm.ts main.fork.wasm
+```
+
+The target uses musl and pthreads through the Kandelo SDK. The default target
+features enable atomics and bulk memory, and Zig emits Wasm TLS by default.
+The libc startup path enters Zig at `__main_argc_argv`.
+The host sizes and aligns each pthread's executable TLS from linker exports.
+The target leaves Zig's optional 256 KiB per-thread diagnostic signal stack
+disabled by default to keep its memory cost opt-in. Programs can register an
+alternate signal stack with caller-owned storage via libc.
+
+Zig emits relocatable objects and passes them and its `compiler_rt` archive to
+`wasm32posix-cc`. The SDK driver owns executable link policy, including the
+startup glue, host imports, pthread-slot export, ABI stamp and code hash for
+fork analysis. Zig hashes the SDK sysroot path and link identity, which
+includes the program ABI digest, so SDK updates invalidate cached links.
+Keep fork instrumentation as a post-link build step for programs that can
+fork. Zig objects carry no `kandelo.calltypes` compiler facts. They use the
+same per-function Wasm signature fallback and share the same pointer
+conversion gap as Rust. [Fork sinks and compiler facts](fork-instrumentation.md#fork-sinks-and-compiler-facts)
+
+The initial integration covers wasm32 static executable links. We are open
+to revisiting delegation if it blocks features users need, Zig drops the
+relocatable-object path, or Zig can consume the SDK link rules without
+duplicating them.
+
+See the [Zig validation guide](../sdk/zig/README.md) for the upstream
+test suites, the Node and browser runners, and known gaps. To compile
+within a running Kandelo guest, see the experimental [guest Zig
+compiler](../sdk/zig/README.md#compiling-zig-programs-inside-kandelo).
+
 ### With optimization
 
 ```bash
@@ -956,7 +996,8 @@ script that runs `readelf` would conclude a program has no dependencies.
 
 ## Go Programs
 
-See [Build and run a Go program](go.md) for the experimental pure-Go SDK.
+See [Build and run a Go program](go.md) for experimental pure-Go
+cross-compilation and in-guest builds.
 
 ## Running Programs
 

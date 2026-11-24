@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -74,6 +75,71 @@ func checkThreadInitialization() {
 			<-done
 		}
 	}
+}
+
+func checkParallelism(want int) {
+	if got := runtime.GOMAXPROCS(0); got != want {
+		panic(fmt.Sprintf("GOMAXPROCS = %d, want %d", got, want))
+	}
+	if want == 1 {
+		return
+	}
+	var arrived atomic.Int32
+	ready := make(chan struct{}, want)
+	release := make(chan struct{})
+	done := make(chan struct{}, want)
+	for range want {
+		go func() {
+			runtime.LockOSThread()
+			waitForProcessors(&arrived, int32(want))
+			ready <- struct{}{}
+			<-release
+			runtime.UnlockOSThread()
+			done <- struct{}{}
+		}()
+	}
+	for range want {
+		<-ready
+	}
+	if got := runtime.GOMAXPROCS(1); got != want {
+		panic("could not resize the running scheduler")
+	}
+	if got := runtime.GOMAXPROCS(want); got != 1 {
+		panic("could not restore the running scheduler")
+	}
+	close(release)
+	for range want {
+		<-done
+	}
+}
+
+// The participants must each run with their own P because this loop
+// cannot yield. The test host bounds the wait if a participant stalls.
+//
+//go:nosplit
+//go:noinline
+func waitForProcessors(arrived *atomic.Int32, want int32) {
+	arrived.Add(1)
+	for arrived.Load() != want {
+	}
+}
+
+//go:noinline
+func spinWithoutCalls() {
+	for {
+	}
+}
+
+func checkLoopPreemption() {
+	runtime.GOMAXPROCS(1)
+	ready := make(chan struct{})
+	go func() {
+		close(ready)
+		spinWithoutCalls()
+	}()
+	<-ready
+	<-time.After(20 * time.Millisecond)
+	runtime.GC()
 }
 
 func checkFiles() {
@@ -145,6 +211,13 @@ func main() {
 		fmt.Println("child")
 		os.Exit(23)
 	}
+	procs := 1
+	if len(os.Args) > 1 {
+		var err error
+		procs, err = strconv.Atoi(os.Args[1])
+		must(err)
+	}
+	checkParallelism(procs)
 	checkRuntime()
 	checkThreadInitialization()
 	fmt.Println("Go goroutines and GC OK")
@@ -156,4 +229,6 @@ func main() {
 	fmt.Println("Go subprocess OK")
 	checkShutdown()
 	fmt.Println("Go shutdown OK")
+	checkLoopPreemption()
+	fmt.Println("Go loop preemption OK")
 }

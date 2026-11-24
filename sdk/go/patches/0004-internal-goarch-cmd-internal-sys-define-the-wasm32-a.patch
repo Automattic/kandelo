@@ -1,0 +1,614 @@
+From 482ca0e533d67bedb9710c3397af90f13a3f3d86 Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 20:00:06 +0800
+Subject: [PATCH 04/22] internal/goarch, cmd/internal/sys: define the wasm32
+ architecture
+
+Define wasm32 with 4-byte pointers and ints, 8-byte integer registers,
+and 8-byte stack and int64 alignment. Use the WebAssembly architecture
+family and expose the same layout through go/types and the compiler's
+type checker.
+
+Platform registration follows in a later CL.
+
+Updates #63131
+
+Change-Id: If9b327399ea5fd5e070161cc1f13550795679f33
+
+diff --git a/src/cmd/compile/internal/types2/sizeof_test.go b/src/cmd/compile/internal/types2/sizeof_test.go
+index e2fce819aaf28ee350e0c54b1639f54ab46b3e87..9ce77b735f26f2bbcedddd677ee4e20235f2c0ad 100644
+--- a/src/cmd/compile/internal/types2/sizeof_test.go
++++ b/src/cmd/compile/internal/types2/sizeof_test.go
+@@ -13,6 +13,9 @@ import (
+ 
+ func TestSizeof(t *testing.T) {
+ 	const _64bit = ^uint(0)>>32 != 0
++	// wasm32 has 32-bit pointers with 8-byte alignment for uint64.
++	_wasm32 := reflect.TypeFor[uintptr]().Size() == 4 &&
++		reflect.TypeFor[uint64]().Align() == 8
+ 
+ 	// Objects and Scope each have two position fields (syntax.Pos vs token.Pos),
+ 	// which accounts for 16 extra bytes in types2 on both 32-bit and 64-bit platforms.
+@@ -63,6 +66,11 @@ func TestSizeof(t *testing.T) {
+ 		want := test._32bit
+ 		if _64bit {
+ 			want = test._64bit
++		} else if _wasm32 {
++			switch test.val.(type) {
++			case TypeParam:
++				want = 32
++			}
+ 		}
+ 		if got != want {
+ 			t.Errorf("unsafe.Sizeof(%T) = %d, want %d", test.val, got, want)
+diff --git a/src/cmd/compile/internal/types2/sizes.go b/src/cmd/compile/internal/types2/sizes.go
+index 215e5d5fef3ce77ad66b4bd40900ae0b434750ee..3c22128d81cbfe0775916bb12d77959a07dfdec0 100644
+--- a/src/cmd/compile/internal/types2/sizes.go
++++ b/src/cmd/compile/internal/types2/sizes.go
+@@ -266,6 +266,7 @@ var gcArchSizes = map[string]*gcSizes{
+ 	"s390x":    {8, 8},
+ 	"sparc64":  {8, 8},
+ 	"wasm":     {8, 8},
++	"wasm32":   {4, 8},
+ 	// When adding more architectures here,
+ 	// update the doc string of SizesFor below.
+ }
+@@ -275,7 +276,8 @@ var gcArchSizes = map[string]*gcSizes{
+ //
+ // Supported architectures for compiler "gc":
+ // "386", "amd64", "amd64p32", "arm", "arm64", "loong64", "mips", "mipsle",
+-// "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "wasm".
++// "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "wasm",
++// "wasm32".
+ func SizesFor(compiler, arch string) Sizes {
+ 	switch compiler {
+ 	case "gc":
+diff --git a/src/cmd/compile/internal/types2/sizes_test.go b/src/cmd/compile/internal/types2/sizes_test.go
+index d3cc2db07e97ccfc96c4e6ce44157d0f96e77a8e..0710ef98c4b11170815da9850ff2da51de6f132a 100644
+--- a/src/cmd/compile/internal/types2/sizes_test.go
++++ b/src/cmd/compile/internal/types2/sizes_test.go
+@@ -137,12 +137,14 @@ var s struct {
+ 
+ type gcSizeTest struct {
+ 	name string
++	arch string
+ 	src  string
+ }
+ 
+ var gcSizesTests = []gcSizeTest{
+ 	{
+ 		"issue60431",
++		"amd64",
+ 		`
+ package main
+ 
+@@ -160,6 +162,7 @@ func main() {
+ 	},
+ 	{
+ 		"issue60734",
++		"amd64",
+ 		`
+ package main
+ 
+@@ -178,6 +181,30 @@ type Data struct {
+ func main() {
+ 	assert(unsafe.Sizeof(Data{}) == 16)
+ }
++`,
++	},
++	{
++		"wasm32",
++		"wasm32",
++		`
++package main
++
++import "unsafe"
++
++var s struct {
++	p *byte
++	x int64
++	i int
++}
++
++func main() {
++	assert(unsafe.Sizeof(s.p) == 4)
++	assert(unsafe.Sizeof(s.i) == 4)
++	assert(unsafe.Alignof(s.x) == 8)
++	assert(unsafe.Offsetof(s.x) == 8)
++	assert(unsafe.Offsetof(s.i) == 16)
++	assert(unsafe.Sizeof(s) == 24)
++}
+ `,
+ 	},
+ }
+@@ -187,7 +214,7 @@ func TestGCSizes(t *testing.T) {
+ 	for _, tc := range gcSizesTests {
+ 		t.Run(tc.name, func(t *testing.T) {
+ 			t.Parallel()
+-			conf := types2.Config{Importer: defaultImporter(), Sizes: types2.SizesFor("gc", "amd64")}
++			conf := types2.Config{Importer: defaultImporter(), Sizes: types2.SizesFor("gc", tc.arch)}
+ 			mustTypecheck(tc.src, &conf, nil)
+ 		})
+ 	}
+diff --git a/src/cmd/internal/sys/arch.go b/src/cmd/internal/sys/arch.go
+index 48468a6dbe9321a2c0542a370a6777a6ec2e405d..22671c797c03a7f3f2eef7b3bd0d1b4e0b5f6edd 100644
+--- a/src/cmd/internal/sys/arch.go
++++ b/src/cmd/internal/sys/arch.go
+@@ -274,6 +274,19 @@ var ArchWasm = &Arch{
+ 	FixedFrameSize: 0,
+ }
+ 
++var ArchWasm32 = &Arch{
++	Name:           "wasm32",
++	Family:         Wasm,
++	ByteOrder:      binary.LittleEndian,
++	PtrSize:        4,
++	RegSize:        8,
++	MinLC:          1,
++	Alignment:      1,
++	CanMergeLoads:  false,
++	HasLR:          false,
++	FixedFrameSize: 0,
++}
++
+ var Archs = [...]*Arch{
+ 	Arch386,
+ 	ArchAMD64,
+diff --git a/src/cmd/internal/sys/arch_test.go b/src/cmd/internal/sys/arch_test.go
+index 011d0923d587e0dceed8374e239e5ca67d0d4450..f6206e20cf8ae8b8d3f884d846a0e13d700a7ef0 100644
+--- a/src/cmd/internal/sys/arch_test.go
++++ b/src/cmd/internal/sys/arch_test.go
+@@ -21,4 +21,7 @@ func TestArchInFamily(t *testing.T) {
+ 	if got, want := ArchPPC64LE.InFamily(AMD64, PPC64), true; got != want {
+ 		t.Errorf("Got ArchPPC64LE.InFamily(AMD64, PPC64) = %v, want %v", got, want)
+ 	}
++	if got, want := ArchWasm32.InFamily(Wasm), true; got != want {
++		t.Errorf("Got ArchWasm32.InFamily(Wasm) = %v, want %v", got, want)
++	}
+ }
+diff --git a/src/go/types/sizeof_test.go b/src/go/types/sizeof_test.go
+index 122e96d3d8e01c8ee9c5e88684886420e0b476df..30742c997fcf73038aaaf8751874b95574ac2029 100644
+--- a/src/go/types/sizeof_test.go
++++ b/src/go/types/sizeof_test.go
+@@ -16,6 +16,9 @@ import (
+ 
+ func TestSizeof(t *testing.T) {
+ 	const _64bit = ^uint(0)>>32 != 0
++	// wasm32 has 32-bit pointers with 8-byte alignment for uint64.
++	_wasm32 := reflect.TypeFor[uintptr]().Size() == 4 &&
++		reflect.TypeFor[uint64]().Align() == 8
+ 
+ 	// Objects and Scope each have two position fields (syntax.Pos vs token.Pos),
+ 	// which accounts for 16 extra bytes in types2 on both 32-bit and 64-bit platforms.
+@@ -66,6 +69,11 @@ func TestSizeof(t *testing.T) {
+ 		want := test._32bit
+ 		if _64bit {
+ 			want = test._64bit
++		} else if _wasm32 {
++			switch test.val.(type) {
++			case TypeParam:
++				want = 32
++			}
+ 		}
+ 		if got != want {
+ 			t.Errorf("unsafe.Sizeof(%T) = %d, want %d", test.val, got, want)
+diff --git a/src/go/types/sizes.go b/src/go/types/sizes.go
+index abe3f129259d0db730afc1525e911e848e949657..07f6dcc9c7e377f910c203020c93a4a746956748 100644
+--- a/src/go/types/sizes.go
++++ b/src/go/types/sizes.go
+@@ -269,6 +269,7 @@ var gcArchSizes = map[string]*gcSizes{
+ 	"s390x":    {8, 8},
+ 	"sparc64":  {8, 8},
+ 	"wasm":     {8, 8},
++	"wasm32":   {4, 8},
+ 	// When adding more architectures here,
+ 	// update the doc string of SizesFor below.
+ }
+@@ -278,7 +279,8 @@ var gcArchSizes = map[string]*gcSizes{
+ //
+ // Supported architectures for compiler "gc":
+ // "386", "amd64", "amd64p32", "arm", "arm64", "loong64", "mips", "mipsle",
+-// "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "wasm".
++// "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "wasm",
++// "wasm32".
+ func SizesFor(compiler, arch string) Sizes {
+ 	switch compiler {
+ 	case "gc":
+diff --git a/src/go/types/sizes_test.go b/src/go/types/sizes_test.go
+index e8fb746b1c23367b0d2574fdc4163183185a4cca..cc5d6c07fd9a7544693a28afcffc7af9581fd312 100644
+--- a/src/go/types/sizes_test.go
++++ b/src/go/types/sizes_test.go
+@@ -140,12 +140,14 @@ var s struct {
+ 
+ type gcSizeTest struct {
+ 	name string
++	arch string
+ 	src  string
+ }
+ 
+ var gcSizesTests = []gcSizeTest{
+ 	{
+ 		"issue60431",
++		"amd64",
+ 		`
+ package main
+ 
+@@ -163,6 +165,7 @@ func main() {
+ 	},
+ 	{
+ 		"issue60734",
++		"amd64",
+ 		`
+ package main
+ 
+@@ -181,6 +184,30 @@ type Data struct {
+ func main() {
+ 	assert(unsafe.Sizeof(Data{}) == 16)
+ }
++`,
++	},
++	{
++		"wasm32",
++		"wasm32",
++		`
++package main
++
++import "unsafe"
++
++var s struct {
++	p *byte
++	x int64
++	i int
++}
++
++func main() {
++	assert(unsafe.Sizeof(s.p) == 4)
++	assert(unsafe.Sizeof(s.i) == 4)
++	assert(unsafe.Alignof(s.x) == 8)
++	assert(unsafe.Offsetof(s.x) == 8)
++	assert(unsafe.Offsetof(s.i) == 16)
++	assert(unsafe.Sizeof(s) == 24)
++}
+ `,
+ 	},
+ }
+@@ -190,7 +217,7 @@ func TestGCSizes(t *testing.T) {
+ 	for _, tc := range gcSizesTests {
+ 		t.Run(tc.name, func(t *testing.T) {
+ 			t.Parallel()
+-			conf := types.Config{Importer: defaultImporter(testFSet), Sizes: types.SizesFor("gc", "amd64")}
++			conf := types.Config{Importer: defaultImporter(testFSet), Sizes: types.SizesFor("gc", tc.arch)}
+ 			mustTypecheck(tc.src, &conf, nil)
+ 		})
+ 	}
+diff --git a/src/internal/goarch/goarch.go b/src/internal/goarch/goarch.go
+index efcf298d3b7b35227cf767fbf935f784b93488eb..b40c5ebada6e2214a624887099bd654f911038d8 100644
+--- a/src/internal/goarch/goarch.go
++++ b/src/internal/goarch/goarch.go
+@@ -50,8 +50,9 @@ const DefaultPhysPageSize = _DefaultPhysPageSize
+ // The various PC tables record PC deltas pre-divided by PCQuantum.
+ const PCQuantum = _PCQuantum
+ 
+-// Int64Align is the required alignment for a 64-bit integer (4 on 32-bit systems, 8 on 64-bit).
+-const Int64Align = PtrSize
++// Int64Align is the required alignment for a 64-bit integer. It is 8 on
++// wasm32 and 64-bit systems, and 4 on other 32-bit systems.
++const Int64Align = PtrSize + 4*IsWasm32
+ 
+ // MinFrameSize is the size of the system-reserved words at the bottom
+ // of a frame (just above the architectural stack pointer).
+diff --git a/src/internal/goarch/goarch_test.go b/src/internal/goarch/goarch_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9d83e790166be8465db445b6d9b38dd14806f38
+--- /dev/null
++++ b/src/internal/goarch/goarch_test.go
+@@ -0,0 +1,17 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package goarch_test
++
++import (
++	"internal/goarch"
++	"testing"
++	"unsafe"
++)
++
++func TestInt64Align(t *testing.T) {
++	if got, want := uintptr(goarch.Int64Align), unsafe.Alignof(int64(0)); got != want {
++		t.Fatalf("Int64Align = %d, want %d", got, want)
++	}
++}
+diff --git a/src/internal/goarch/goarch_wasm32.go b/src/internal/goarch/goarch_wasm32.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2412f384dcec899185e00cbb2391a11ac96e0ab7
+--- /dev/null
++++ b/src/internal/goarch/goarch_wasm32.go
+@@ -0,0 +1,17 @@
++// Copyright 2024 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm32
++
++package goarch
++
++const (
++	_ArchFamily          = WASM
++	_DefaultPhysPageSize = 65536
++	_PCQuantum           = 1
++	_MinFrameSize        = 0
++	// WASI requires 8-byte alignment for uint64 values on the Go stack.
++	// The return-PC slot is also 8 bytes wide.
++	_StackAlign = 8
++)
+diff --git a/src/internal/goarch/zgoarch_386.go b/src/internal/goarch/zgoarch_386.go
+index 4a9b0e67c454a7212c804269400f76a509aa3f2e..a5cea972e8c785d5291c814408be1c15bbb300c0 100644
+--- a/src/internal/goarch/zgoarch_386.go
++++ b/src/internal/goarch/zgoarch_386.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_amd64.go b/src/internal/goarch/zgoarch_amd64.go
+index 7926392b77510ceade8475edd1978559e248679e..b253cda347f744a0b63bb4ce8145dfebc7405ea9 100644
+--- a/src/internal/goarch/zgoarch_amd64.go
++++ b/src/internal/goarch/zgoarch_amd64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_arm.go b/src/internal/goarch/zgoarch_arm.go
+index 6c03b8b060c1b4b7728e297bd46bf44a20737a52..8f9835329afee0e8eeb13e1954e707779d491c94 100644
+--- a/src/internal/goarch/zgoarch_arm.go
++++ b/src/internal/goarch/zgoarch_arm.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_arm64.go b/src/internal/goarch/zgoarch_arm64.go
+index ad342d79c96bb2feb1038cb1ff6588bf4bc48b81..ab821a51fe3e1e910d8f928e5a20ac315ec1802f 100644
+--- a/src/internal/goarch/zgoarch_arm64.go
++++ b/src/internal/goarch/zgoarch_arm64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_arm64be.go b/src/internal/goarch/zgoarch_arm64be.go
+index 0f260030908ecad894c655cdac66113d593ff415..754bf1de79c20adca643cce3a458e73dcc756915 100644
+--- a/src/internal/goarch/zgoarch_arm64be.go
++++ b/src/internal/goarch/zgoarch_arm64be.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_armbe.go b/src/internal/goarch/zgoarch_armbe.go
+index 6092fee7516e3805f21eda7f2ad37cb093822203..aee6bb67b0458a00eeae0de19e02d376820aaca6 100644
+--- a/src/internal/goarch/zgoarch_armbe.go
++++ b/src/internal/goarch/zgoarch_armbe.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_loong64.go b/src/internal/goarch/zgoarch_loong64.go
+index 21c67e1176838ece2818fb177b15970432361a95..92ce33801a6f1a834502d151c355f9ebea61e7d9 100644
+--- a/src/internal/goarch/zgoarch_loong64.go
++++ b/src/internal/goarch/zgoarch_loong64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_mips.go b/src/internal/goarch/zgoarch_mips.go
+index 0db19746556adf77af6c6b938a7622c18217a8ce..78f1ecf4d3737896f7c09df68f9ee4b49937f794 100644
+--- a/src/internal/goarch/zgoarch_mips.go
++++ b/src/internal/goarch/zgoarch_mips.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_mips64.go b/src/internal/goarch/zgoarch_mips64.go
+index 738806f0aef0afa8eee1011c0065a46fcfc55fef..dbf0f1dd4058a35001b94770a7ad01b4eb161e2a 100644
+--- a/src/internal/goarch/zgoarch_mips64.go
++++ b/src/internal/goarch/zgoarch_mips64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_mips64le.go b/src/internal/goarch/zgoarch_mips64le.go
+index 8de5beb88197290bc0afd54e19687cfd608523dc..2cc7554afdbbd9c89f9d12ea62d95a560ed284e4 100644
+--- a/src/internal/goarch/zgoarch_mips64le.go
++++ b/src/internal/goarch/zgoarch_mips64le.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_mips64p32.go b/src/internal/goarch/zgoarch_mips64p32.go
+index ea461bed70c26ceee2d68d65c57f23239ef80b24..8631c8615036e4839afdb9aec349a7ed9fa9246d 100644
+--- a/src/internal/goarch/zgoarch_mips64p32.go
++++ b/src/internal/goarch/zgoarch_mips64p32.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_mips64p32le.go b/src/internal/goarch/zgoarch_mips64p32le.go
+index 15473ce6c7a047fa0a4768cd9c2784c35f27e48f..4b2edd4219cfd5669ae0ca2d024f3eebbaab3c88 100644
+--- a/src/internal/goarch/zgoarch_mips64p32le.go
++++ b/src/internal/goarch/zgoarch_mips64p32le.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_mipsle.go b/src/internal/goarch/zgoarch_mipsle.go
+index 4955142e876539c6b8d328a429347750c4c055f7..8f40437cb11dfad666931832193a39c29f7f8520 100644
+--- a/src/internal/goarch/zgoarch_mipsle.go
++++ b/src/internal/goarch/zgoarch_mipsle.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_ppc.go b/src/internal/goarch/zgoarch_ppc.go
+index ec01763b3c3ca5cdd7c891e0ee148b5341760b0f..be439a6e69faadfe9d2fc60cfd7659b5870eff5e 100644
+--- a/src/internal/goarch/zgoarch_ppc.go
++++ b/src/internal/goarch/zgoarch_ppc.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_ppc64.go b/src/internal/goarch/zgoarch_ppc64.go
+index 39be3925c8e919ac6f379dd44136b2a367261858..2637b8ea3a53339c063fe7fb0da6829b6a35ce66 100644
+--- a/src/internal/goarch/zgoarch_ppc64.go
++++ b/src/internal/goarch/zgoarch_ppc64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_ppc64le.go b/src/internal/goarch/zgoarch_ppc64le.go
+index 5f959e0e0245efbf5c0c6f1dbe58ac31dcbb04f8..c1c235316f52a3f3c1cae299a58e657729fbdb8d 100644
+--- a/src/internal/goarch/zgoarch_ppc64le.go
++++ b/src/internal/goarch/zgoarch_ppc64le.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_riscv.go b/src/internal/goarch/zgoarch_riscv.go
+index 8d81a14dd9beace1427502533023265c69675eaa..38edee613eec0fa3da8c5602616159fcbfc4ff4d 100644
+--- a/src/internal/goarch/zgoarch_riscv.go
++++ b/src/internal/goarch/zgoarch_riscv.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_riscv64.go b/src/internal/goarch/zgoarch_riscv64.go
+index 1df989c2a696ed0eedd8b4ddaa31e441bf55f90b..c893c52ef06af135de42b3e0264cba5cba75c771 100644
+--- a/src/internal/goarch/zgoarch_riscv64.go
++++ b/src/internal/goarch/zgoarch_riscv64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_s390.go b/src/internal/goarch/zgoarch_s390.go
+index 56815b9f435567794cdc2dc5999772497719f944..e9c489318b8b1d45853edd21aaf9ee0fd939b203 100644
+--- a/src/internal/goarch/zgoarch_s390.go
++++ b/src/internal/goarch/zgoarch_s390.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_s390x.go b/src/internal/goarch/zgoarch_s390x.go
+index e61e9bd5938a8bb5b2c30ae761b1081611c09bc4..12713b6dac6abaf3823b462fa3acd9dfa73d3c72 100644
+--- a/src/internal/goarch/zgoarch_s390x.go
++++ b/src/internal/goarch/zgoarch_s390x.go
+@@ -30,3 +30,4 @@ const IsS390x = 1
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_sparc.go b/src/internal/goarch/zgoarch_sparc.go
+index ee5b746566ddd2d4fc7b717167933a5e19d5206f..7f44413249760cde798bbbb87c9dc077d1c62e90 100644
+--- a/src/internal/goarch/zgoarch_sparc.go
++++ b/src/internal/goarch/zgoarch_sparc.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 1
+ const IsSparc64 = 0
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_sparc64.go b/src/internal/goarch/zgoarch_sparc64.go
+index 519aaa10c13bb591f2a0e681e2856b3e0e7a54a4..240e345ab12531331ce421d0a2ceab6784eec9a0 100644
+--- a/src/internal/goarch/zgoarch_sparc64.go
++++ b/src/internal/goarch/zgoarch_sparc64.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 1
+ const IsWasm = 0
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_wasm.go b/src/internal/goarch/zgoarch_wasm.go
+index 25567a1b6481f6dbf2c864c527db3f53a5c83a03..370270bb8633d7b682ade3d817e9484eeed97f01 100644
+--- a/src/internal/goarch/zgoarch_wasm.go
++++ b/src/internal/goarch/zgoarch_wasm.go
+@@ -30,3 +30,4 @@ const IsS390x = 0
+ const IsSparc = 0
+ const IsSparc64 = 0
+ const IsWasm = 1
++const IsWasm32 = 0
+diff --git a/src/internal/goarch/zgoarch_wasm32.go b/src/internal/goarch/zgoarch_wasm32.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e73577068b8ac9ef03de0c9252b7d573c50bd7e
+--- /dev/null
++++ b/src/internal/goarch/zgoarch_wasm32.go
+@@ -0,0 +1,33 @@
++// Code generated by gengoarch.go using 'go generate'. DO NOT EDIT.
++
++//go:build wasm32
++
++package goarch
++
++const GOARCH = `wasm32`
++
++const Is386 = 0
++const IsAmd64 = 0
++const IsAmd64p32 = 0
++const IsArm = 0
++const IsArmbe = 0
++const IsArm64 = 0
++const IsArm64be = 0
++const IsLoong64 = 0
++const IsMips = 0
++const IsMipsle = 0
++const IsMips64 = 0
++const IsMips64le = 0
++const IsMips64p32 = 0
++const IsMips64p32le = 0
++const IsPpc = 0
++const IsPpc64 = 0
++const IsPpc64le = 0
++const IsRiscv = 0
++const IsRiscv64 = 0
++const IsS390 = 0
++const IsS390x = 0
++const IsSparc = 0
++const IsSparc64 = 0
++const IsWasm = 0
++const IsWasm32 = 1
+diff --git a/src/internal/syslist/syslist.go b/src/internal/syslist/syslist.go
+index 45a5c4d559de00898c6e1c4afdef8b8932a7ba75..537b4849c8c58dcb4c64fd9b3067bac54a85b5e1 100644
+--- a/src/internal/syslist/syslist.go
++++ b/src/internal/syslist/syslist.go
+@@ -78,4 +78,5 @@ var KnownArch = map[string]bool{
+ 	"sparc":       true,
+ 	"sparc64":     true,
+ 	"wasm":        true,
++	"wasm32":      true,
+ }
+diff --git a/src/internal/types/testdata/fixedbugs/issue78346.go b/src/internal/types/testdata/fixedbugs/issue78346.go
+index a007940be051b9670ad3d94569c916182f75860c..11c3498ca82a51bae1b2690b604885b469f519bd 100644
+--- a/src/internal/types/testdata/fixedbugs/issue78346.go
++++ b/src/internal/types/testdata/fixedbugs/issue78346.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build ignore && !386 && !arm && !mips && !mipsle && !wasm
++//go:build ignore && !386 && !arm && !mips && !mipsle && !wasm && !wasm32
+ 
+ package p
+ 

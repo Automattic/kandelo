@@ -51,13 +51,13 @@ import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ProcessMemoryLayout, ProcessMemoryLease } from "./process-memory";
 import type { ExactProcessGenerationDetachLedger } from "./process-generation-detach";
-import { ThreadPageAllocator } from "./thread-allocator";
+import { ThreadPageAllocator, type ThreadTlsRequirements } from "./thread-allocator";
 import type {
   VforkExactCompletionReason,
   VforkLifetimeCoordinator,
 } from "./vfork-lifetime";
 import type { VmInterruptTimerManager } from "./vm-interrupt-timer";
-import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import { WASM_PAGE_SIZE } from "./constants";
 import type { CentralizedKernelWorker } from "./kernel-worker";
 import { retryKernelEntryResult } from "./kernel-entry-retry";
 import type { LazyFetch } from "./vfs/lazy-download-event";
@@ -70,7 +70,6 @@ import {
 } from "./vfs/rootfs-lazy-archives";
 
 /** Bytes one pthread slot (TLS, stack and channel pages) occupies. */
-const THREAD_SLOT_BYTES = PAGES_PER_THREAD * WASM_PAGE_SIZE;
 
 /** The backing a single execution image owns. A PID persists across exec. */
 export interface ProcessGenerationOwnership {
@@ -311,14 +310,16 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     layout: ProcessMemoryLayout,
     ptrWidth: 4 | 8,
     pid: number,
+    tlsRequirements: ThreadTlsRequirements,
   ): ThreadPageAllocator {
     return new ThreadPageAllocator({
       firstSlotStartPage: layout.firstThreadSlotPage,
       maxPageExclusive: layout.threadArenaEndPage,
       ptrWidth,
       reservedSlots: layout.threadSlotCount,
-      reserveSlotStartPage: () =>
-        host.reserveThreadSlotStartPage(pid, THREAD_SLOT_BYTES) / WASM_PAGE_SIZE,
+      tlsRequirements,
+      reserveSlotStartPage: (byteLength) =>
+        host.reserveThreadSlotStartPage(pid, byteLength) / WASM_PAGE_SIZE,
     });
   }
 

@@ -342,6 +342,14 @@ pub extern "C" fn sm_metadata_used_bytes() -> u32 {
     rootfs::metadata_budget_usage().0 as u32
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_set_io_budget_bytes(limit: u32) -> i32 {
+    match rootfs::set_io_budget_bytes(limit as usize) {
+        Ok(()) => 0,
+        Err(error) => err(error),
+    }
+}
+
 #[cfg(feature = "positioned-image")]
 #[unsafe(no_mangle)]
 pub extern "C" fn sm_load_image_positioned(len_lo: u32, len_hi: u32) -> i32 {

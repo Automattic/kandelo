@@ -1,3 +1,4 @@
+import type { ThreadTlsAllocation } from "./thread-allocator";
 import type {
   ForkHostImportWorkerInit,
 } from "./fork-host-import-runtime";
@@ -157,10 +158,8 @@ export interface CentralizedThreadInitMessage {
   stackPtr: number;
   tlsPtr: number;
   ctidPtr: number;
-  /** Pre-allocated address in shared memory for Wasm TLS initialization. */
-  tlsOffset: number;
-  /** @deprecated Use tlsOffset. */
-  tlsAllocAddr: number;
+  /** Pre-allocated executable TLS range in shared process memory. */
+  tls: ThreadTlsAllocation;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
   /** See [`CentralizedWorkerInitMessage#kernelAbiVersion`]. */

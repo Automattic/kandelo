@@ -1,0 +1,27 @@
+kind = "program"
+name = "zigcli-docs"
+version = "0.7.0-dev.20261009"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["zigcli@0.7.0-dev.20261009", "kernel@0.1.0", "rootfs@0.1.0"]
+
+[[host_tools]]
+name = "help2man"
+version_constraint = ">=1.49"
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/jiacai2050/zigcli/blob/ae972e756c378310b1e737621998d0e7041b7e6e/LICENSE"
+
+[build]
+script_path = "packages/registry/zigcli-docs/build-zigcli-docs.sh"
+
+[[outputs]]
+name = "zigcli-docs"
+wasm = "zigcli-docs.zip"
+fork_instrumentation = "disabled"

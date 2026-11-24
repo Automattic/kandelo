@@ -788,7 +788,7 @@ function actualCloneRetirementControl(
   const info = { memory, memoryLease, workerQuiescence: createWorkerQuiescence(), programBytes: new ArrayBuffer(0), ptrWidth, channelOffset: 0,
     externrefGeneration: { id: 1 }, memoryRetirementSafe: true,
     threadAllocator: {
-      allocate() { slots.add(1); return { basePage: 1, slotStartPage: 1, channelOffset: 65536, tlsOffset: 0, tlsAllocAddr: 0 }; },
+      allocate() { slots.add(1); return { basePage: 1, slotStartPage: 1, channelOffset: 65536, tls: { offset: 0, byteLength: 0 }, slotByteLength: 262144 }; },
       free(page: number) { expect(slots.delete(page)).toBe(true); },
     },
   };

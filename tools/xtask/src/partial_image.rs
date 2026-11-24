@@ -614,7 +614,14 @@ fn run_package_tests(repo: &Path, packages: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let mut vitest = Command::new("npx");
-    vitest.current_dir(repo.join("host")).args(["vitest", "run"]);
+    vitest
+        .current_dir(repo.join("host"))
+        .args(["vitest", "run"])
+        .env("WASM_POSIX_RESOLUTION_POLICY", "source-only-v1")
+        .env(
+            "WASM_POSIX_SOURCE_ONLY_BINARY_ROOT",
+            repo.join("local-binaries/source-only-v1"),
+        );
     for dir in &dirs {
         vitest.arg(dir);
     }

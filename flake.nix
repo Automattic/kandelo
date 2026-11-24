@@ -111,7 +111,18 @@
             pkgs.qt6.qtshadertools.dev
           ] ++ pkgs.lib.optional (!qtHostHasWaylandScanner) qtWaylandScanner;
         };
+        # nixpkgs' zigVersions recipe builds Zig 0.17.1 with LLVM 22.
+        # The SDK still uses LLVM 23 for the final Kandelo executable link.
+        kandeloZig = assert pkgs.zig_0_17.version == "0.17.1";
+          pkgs.zig_0_17.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [
+              ./sdk/zig/0001-kandelo-target.patch
+              ./sdk/zig/0002-delegate-executable-link.patch
+              ./sdk/zig/0003-stdlib-musl.patch
+            ];
+          });
         devShellPackages = [
+            kandeloZig
             rustToolchain
             # The wrapper supplies host `cc`, `c++`, `ar`, and linker tools
             # with the pinned Darwin/Linux SDK flags. llvmTree below carries
@@ -412,6 +423,7 @@
         macosSdk = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin
           "${pkgs.apple-sdk_26}";
       in {
+        packages.zig = kandeloZig;
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
 

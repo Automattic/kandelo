@@ -599,6 +599,10 @@ name = "flang-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "go-toolchain"
+class = "browser-product"
+
+[[packages]]
 name = "kernel"
 class = "platform"
 
@@ -1313,6 +1317,14 @@ class = "browser-product"
 [[packages]]
 name = "zip"
 class = "user-software"
+
+[[packages]]
+name = "zigcli"
+class = "user-software"
+
+[[packages]]
+name = "zigcli-docs"
+class = "browser-product"
 
 [[packages]]
 name = "zip-docs"
