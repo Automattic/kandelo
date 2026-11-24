@@ -217,6 +217,7 @@ impl Storage {
                     worker_absent: false,
                     references: References::Unbound,
                     native_join: false,
+                    containment: Containment::Unissued,
                     worker_fact: 0,
                     pending_completions: 0,
                 },

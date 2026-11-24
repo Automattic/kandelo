@@ -586,6 +586,14 @@ mod tests {
             epoch,
         )
         .unwrap();
+        // This native fixture observes the barrier ACK synchronously. Settle
+        // the exact retry observation before polling, just as the platform
+        // dispatcher does after its native wait completes. Leaving this pin
+        // behind must prevent later image reclamation.
+        if first.effect == E::WAIT_NATIVE {
+            table.memory_groups().storage_action(parent.record(), Action::SettleNative,
+                first.wait_token, 0, &mut host).unwrap();
+        }
         let allocating = table
             .poll_group_operation(parent.record(), first.operation, None, &mut host)
             .unwrap();
@@ -880,6 +888,75 @@ mod tests {
         let channel = f.process.table.group_task_channel(child).unwrap();
         f.process.table.bind_group_completion_channel(child, channel).unwrap();
         (f, child, channel)
+    }
+    fn finish_native_retirement<H: HostIO>(f: &mut Fixture<H>, receipt: ReceiptRecord, mut reply: Reply) {
+        for _ in 0..32 {
+            let command = match reply.effect {
+                E::COMPLETE => {
+                    f.process.table.retirement_control(receipt, R::command::ACK, 0, &mut f.host).unwrap();
+                    return;
+                }
+                R::DETACH_PLATFORM => R::command::PLATFORM_DETACHED,
+                R::CONTAIN_WORKER => {
+                    let selected = ReceiptRecord::decode(&reply.payload[..32]).unwrap();
+                    // The fixture bound its main as a browser actor and its
+                    // constructed pthread as a Node actor.
+                    let joined = if selected.pid == selected.tid { 0 } else { R::WORKER_JOINED };
+                    f.process.table.retirement_control(selected, R::command::WORKER_CONTAINED, joined, &mut f.host).unwrap();
+                    R::command::POLL
+                }
+                R::DETACH_REFERENCES => {
+                    let selected = ReceiptRecord::decode(&reply.payload[..32]).unwrap();
+                    assert_eq!(f.process.table.retirement_control(selected, R::command::BEGIN_REFERENCES, 0, &mut f.host).unwrap().effect, R::DETACH_PLATFORM);
+                    f.process.table.retirement_control(selected, R::command::REFERENCES_DETACHED, 0, &mut f.host).unwrap();
+                    R::command::POLL
+                }
+                effect => panic!("unexpected retirement effect {effect}"),
+            };
+            reply = f.process.table.retirement_control(receipt, command, 0, &mut f.host).unwrap();
+        }
+        panic!("retirement did not finish");
+    }
+    #[test]
+    fn actual_kernel_orders_pthread_and_image_retirement_in_both_begin_orders() {
+        for thread_first in [false, true] {
+            let (mut f, child, _) = completion_running_child();
+            f.process.table.retirement_control(f.parent, R::command::BIND_REFERENCES, 0, &mut f.host).unwrap();
+            assert!(f.process.table.get_mut(f.parent.pid).unwrap().record_normal_exit(0));
+            f.process.table.memory_groups().storage_action(f.parent, Action::StopImage, 0, 0, &mut f.host).unwrap();
+            for task in [f.parent, child] {
+                assert_eq!(f.process.table.retirement_control(task, R::command::WORKER_FENCE, 0, &mut f.host).unwrap().flags, R::STOP_ACCEPTED);
+            }
+            let thread = if thread_first {
+                Some(f.process.table.retirement_control(child, R::command::BEGIN_THREAD, 0, &mut f.host).unwrap())
+            } else { None };
+            let image = f.process.table.retirement_control(f.parent, R::command::BEGIN_IMAGE, 0, &mut f.host).unwrap();
+            if let Some(thread) = thread {
+                assert_eq!(image.effect, R::WAIT_THREAD_RETIREMENT);
+                assert_eq!(ReceiptRecord::decode(&image.payload[..32]).unwrap(), child);
+                finish_native_retirement(&mut f, child, thread);
+            } else {
+                let joined = f.process.table.retirement_control(child, R::command::BEGIN_THREAD, 0, &mut f.host).unwrap();
+                assert_eq!(joined.effect, R::JOIN_IMAGE_RETIREMENT);
+                assert_eq!(ReceiptRecord::decode(&joined.payload[..32]).unwrap(), f.parent);
+                assert!(matches!(f.process.table.retirement_control(child, R::command::ACK, 0, &mut f.host), Err(Errno::ESRCH)));
+            }
+            let image = f.process.table.retirement_control(f.parent, R::command::POLL, 0, &mut f.host).unwrap();
+            let parent = f.parent;
+            finish_native_retirement(&mut f, parent, image);
+            assert!(matches!(f.process.table.memory_groups().storage_owner(child), Err(Errno::ESRCH)));
+            assert!(matches!(f.process.table.memory_groups().storage_owner(parent), Err(Errno::ESRCH)));
+        }
+    }
+    #[test]
+    fn actual_kernel_credits_a_native_join_after_the_terminal_worker_fence() {
+        let (mut f, child, _) = completion_running_child();
+        for fact in [R::command::WORKER_FENCE, R::command::NATIVE_JOIN] {
+            assert_eq!(f.process.table.retirement_control(child, fact, 0, &mut f.host).unwrap().flags, R::STOP_ACCEPTED);
+        }
+        // Logical execution retired on the fence. Its later real Node join
+        // still satisfies native containment without another platform effect.
+        assert_eq!(f.process.table.retirement_control(child, R::command::BEGIN_REFERENCES, 0, &mut f.host).unwrap().effect, R::DETACH_PLATFORM);
     }
     #[test]
     fn grouped_completion_binds_exact_prepared_thread_without_granting_execution() {
@@ -1600,6 +1677,13 @@ mod tests {
                 .unwrap();
         }
         if reply.effect == E::THREAD_REFERENCES {
+            let containment = f.process.table.retirement_control(child, R::command::BEGIN_REFERENCES, 0, &mut f.host).unwrap();
+            if containment.effect == R::CONTAIN_WORKER {
+                let (store, admission) = f.process.table.memory_groups().storage_owner(child).unwrap();
+                let joined = !store.worker_absence(admission).unwrap();
+                f.process.table.retirement_control(child, R::command::WORKER_CONTAINED,
+                    if joined { R::WORKER_JOINED } else { 0 }, &mut f.host).unwrap();
+            } else { assert_eq!(containment.effect, R::DETACH_PLATFORM); }
             assert_eq!(
                 f.process
                     .table
@@ -2534,10 +2618,13 @@ mod tests {
         assert_eq!(contain.effect, E::FORK_CONTAIN);
         let refs = f.step(contain);
         assert_eq!(refs.effect, E::FORK_REFERENCES);
-        f.process
+        let containment = f.process
             .table
             .retirement_control(f.child, R::command::BEGIN_REFERENCES, 0, &mut f.host)
             .unwrap();
+        assert_eq!(containment.effect, R::CONTAIN_WORKER);
+        f.process.table.retirement_control(f.child, R::command::WORKER_CONTAINED, 0, &mut f.host).unwrap();
+        assert_eq!(f.process.table.retirement_control(f.child, R::command::BEGIN_REFERENCES, 0, &mut f.host).unwrap().effect, R::DETACH_PLATFORM);
         f.process
             .table
             .retirement_control(f.child, R::command::REFERENCES_DETACHED, 0, &mut f.host)

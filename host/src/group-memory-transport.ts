@@ -275,7 +275,8 @@ export class GroupMemoryTransport {
     const effect = view.getUint32(fields.effect, true), payloadBytes = view.getUint32(fields.payloadBytes, true);
     if ((!Object.values(protocol.effects).includes(effect as any) && !(control === 'exec' && Object.values(P.exec_control.effects).includes(effect as any))
         && !(control === 'root' && Object.values(P.root_control.effects).includes(effect as any))
-        && !(control === 'retirement' && (effect === P.retirement_control.detach_platform || effect === P.retirement_control.detach_references || effect === P.retirement_control.cancel_exec_transport || effect === P.retirement_control.wait_workers)))
+        && !(control === 'retirement' && (effect === P.retirement_control.detach_platform || effect === P.retirement_control.detach_references || effect === P.retirement_control.cancel_exec_transport || effect === P.retirement_control.wait_workers
+          || effect === P.retirement_control.contain_worker || effect === P.retirement_control.wait_thread_retirement || effect === P.retirement_control.join_image_retirement)))
         || payloadBytes !== 0 && payloadBytes !== protocol.payload_bytes) this.#fault('Invalid operation effect');
     const value = Number(view.getBigInt64(fields.value, true)), delay = view.getUint32(fields.delay, true);
     if (!Number.isSafeInteger(value) || delay > (control === 'nativeLaunch' ? 30000 : 1000)) this.#fault('Invalid operation result');

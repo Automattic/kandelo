@@ -85,7 +85,7 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
               if (!nativeWorker || !options.isCurrent(ownership)) throw Error('Stale grouped exec before memory launch');
               nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
             };
-            ownership = new GroupedWorkerObjects(handle, expected.receipt, generation, worker, options.terminationProvesQuiescence,
+            ownership = new GroupedWorkerObjects(handle, expected.receipt, generation, worker,
               () => options.externrefs.releaseGeneration(generation));
             const endpoint = options.imports.createWorker({ pid: request.pid, generationId: generation.id,
               authorizeSender: () => { if (!options.isCurrent(ownership)) throw Error('Stale grouped exec host-import sender'); },
@@ -104,7 +104,7 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
               }
             };
             const error = (reason: Error) => options.onError(reason, ownership);
-            const exit = (code: number) => { ownership.noteExit(); options.onExit(code, ownership); };
+            const exit = (code: number) => { options.onExit(code, ownership); };
             replacementExitObserver = exit;
             worker.on('message', message); worker.on('error', error); worker.on('exit', exit);
             ownership.attach(endpoint, () => { worker.off('message', message); worker.off('error', error); worker.off('exit', exit); });

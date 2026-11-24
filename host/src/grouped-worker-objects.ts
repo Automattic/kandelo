@@ -10,19 +10,17 @@ import { DeferredWorkerHandle } from './deferred-worker-handle';
 export class GroupedWorkerObjects {
   private stopped = false;
   private absent = false;
-  private joined = false;
-  private joinWaiters?: Set<() => void>;
   private disposed = false;
   private endpoint?: ForkHostImportOwnerWorker;
   private cleanup?: () => void;
   constructor(readonly handle: PreparedGroupReplica, readonly receipt: MemoryGroupTaskReceipt,
     readonly generation: ForkExternrefGeneration, readonly worker: DeferredWorkerHandle,
-    private readonly joins: boolean, private releaseGeneration?: () => void) {}
+    private releaseGeneration?: () => void) {}
   get pid(): number { return this.receipt.pid; }
   get tid(): number { return this.receipt.tid; }
   get quiescent(): boolean { return this.stopped || this.absent; }
   get executionAbsent(): boolean { return this.absent; }
-  get hasJoined(): boolean { return this.joined; }
+  get referencesDisposed(): boolean { return this.disposed; }
   attachEndpoint(endpoint: ForkHostImportOwnerWorker): void {
     if (this.endpoint) throw Error('Grouped Worker endpoint already attached'); this.endpoint = endpoint;
   }
@@ -41,20 +39,8 @@ export class GroupedWorkerObjects {
     }
     this.stopped = true;
   }
-  noteExit(): void {
-    if (!this.joins) return;
-    this.joined = true;
-    for (const resolve of this.joinWaiters ?? []) resolve();
-    this.joinWaiters = undefined;
-  }
-  waitForNodeJoin(): Promise<void> {
-    if (!this.joins) return Promise.reject(Error('Browser Worker exit cannot prove a Node join'));
-    if (this.joined) return Promise.resolve();
-    return new Promise<void>(resolve => { (this.joinWaiters ??= new Set()).add(resolve); });
-  }
   async contain(): Promise<void> {
     await this.worker.terminate();
-    if (this.joins && DeferredWorkerHandle.hasCompletedBackingTermination(this.worker)) this.noteExit();
   }
   /** Mechanical cleanup only. Eligibility is retained by ProcessTable, and
    * failure here leaves Rust's detachment acknowledgement outstanding. */

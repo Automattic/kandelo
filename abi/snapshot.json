@@ -2483,7 +2483,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 34,
+      "required_host_adapter_version": 35,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2716,7 +2716,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 34,
+    "version": 35,
     "worker_features": [
       {
         "bit": 2,
@@ -8896,15 +8896,20 @@
         "prepareDeactivation": 7,
         "referencesDetached": 14,
         "sealedAbsence": 17,
+        "workerContained": 18,
         "workerFence": 15,
         "workersStopped": 9
       },
+      "contain_worker": 18,
       "detach_platform": 14,
       "detach_references": 17,
+      "join_image_retirement": 20,
       "native_join_capability": 1,
       "publish_exit": 1,
       "stop_accepted": 2,
+      "wait_thread_retirement": 19,
       "wait_workers": 16,
+      "worker_joined": 1,
       "worker_messages": {
         "cancel": "kandelo.memory-group.worker-cancel.v3",
         "launch": "kandelo.memory-group.worker-launch.v3",

@@ -179,7 +179,7 @@ export class GroupedSessionRuntime {
       void readiness.catch(() => {});
       return actual;
     });
-    const owner = new GroupedWorkerObjects(handle, receipt, generation, worker, this.joins, () => this.externrefs.releaseGeneration(generation));
+    const owner = new GroupedWorkerObjects(handle, receipt, generation, worker, () => this.externrefs.releaseGeneration(generation));
     const process: Process = { pid, handle, owner, bytes, module, layout };
     const bindWorker = () => {
       if (observed) return;
@@ -211,7 +211,7 @@ export class GroupedSessionRuntime {
           } catch (error) { this.fault(process, error instanceof Error ? error : Error(String(error))); }
         };
         const error = (error: Error) => this.fault(process, error);
-        const exit = (code: number) => { owner.noteExit(); if (code && this.current(process)) this.fault(process, Error(`Grouped Worker exit ${code}`)); };
+        const exit = (code: number) => { if (code && this.current(process)) this.fault(process, Error(`Grouped Worker exit ${code}`)); };
         worker.on('message', message); worker.on('error', error); worker.on('exit', exit);
         owner.attach(endpoint, () => { worker.off('message', message); worker.off('error', error); worker.off('exit', exit); });
         init = { type: 'centralized_init', pid, programBytes: bytes, programModule: module,
@@ -272,12 +272,11 @@ export class GroupedSessionRuntime {
   threadExit(pid: number, tid: number): boolean {
     const thread = this.threads.get(tid), process = this.processes.get(pid);
     if (!thread || thread.pid !== pid) return false;
-    if (!process || process.retiring || process.replacing || this.threadRetirements.has(tid)) return true;
+    if (!process || thread.referencesDisposed || this.threadRetirements.has(tid)) return true;
     const retirement = (async () => {
       await this.kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
-      if (this.joins) await thread.waitForNodeJoin();
       this.number(await retry(() => this.kernel.retireMemoryGroupThread(thread.handle)), 'retire grouped pthread');
-      await thread.contain(); this.threads.delete(tid);
+      this.threads.delete(tid);
     })();
     this.threadRetirements.set(tid, retirement);
     void retirement.catch(error => this.fault(process, error));
@@ -295,8 +294,6 @@ export class GroupedSessionRuntime {
       onCommitted: () => { previous.replacing = true; },
       retirePreviousReferences: async () => {
         for (const thread of oldThreads) {
-          await this.threadRetirements.get(thread.tid);
-
           this.threads.delete(thread.tid);
         }
 
@@ -322,11 +319,6 @@ export class GroupedSessionRuntime {
     if (process.replacing || process.retiring) return true;
     process.retiring = (async () => {
       const members = [...this.threads.values()].filter(thread => thread.pid === pid);
-      await this.kernel.waitForMemoryGroupReplicaQuiescence(process.handle);
-      await Promise.all(members.map(thread => this.kernel.waitForMemoryGroupReplicaQuiescence(thread.handle)));
-      await Promise.all([process.owner.contain(), ...members.map(thread => thread.contain())]);
-      await Promise.all(members.map(thread => this.threadRetirements.get(thread.tid)));
-      if (!await retry(() => this.kernel.deactivateMemoryGroupProcess(process.handle))) throw Error('Stopped grouped image cannot deactivate');
       const retired = await retry(() => this.kernel.retireMemoryGroupImage(process.handle));
       if (retired !== 0) throw Error(`Grouped image retirement: errno ${-retired}`);
       for (const thread of members) { this.threads.delete(thread.tid); this.threadRetirements.delete(thread.tid); }

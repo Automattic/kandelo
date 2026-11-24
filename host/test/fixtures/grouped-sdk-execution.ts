@@ -76,6 +76,11 @@ export async function runSdkCycles(options: SdkExecutionOptions, count: number):
 
 export async function runSdkExecution(options: SdkExecutionOptions, machine?: SdkExecutionMachine): Promise<Record<string, unknown>> {
   const { grouped, adapter } = options;
+  // Test observations only: a Node exit callback or completed native
+  // termination joins that exact Worker. Browser terminate is not a join.
+  const nativeExits = new WeakSet<GroupedWorkerObjects>();
+  const nativeJoined = (worker: GroupedWorkerObjects): boolean => options.joinOnExit
+    && (nativeExits.has(worker) || DeferredWorkerHandle.hasCompletedBackingTermination(worker.worker));
   const status = (value: number, label: string): number => {
     if (value < 0) throw new Error(`${label}: errno ${-value}`);
     return value;
@@ -104,7 +109,6 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   const execHandoffs: Record<string, unknown>[] = [];
   let execHandoff = false;
   let currentExecWorker: GroupedWorkerObjects | undefined;
-  const execRetiringThreads = new WeakSet<GroupedWorkerObjects>();
   let execThreadProbe: { step: number; busy: number; ready32: number; ready64: number; returned: number; firstBusy?: number; released: boolean } | undefined;
   let execProbeActive = false;
   let execTermination: { signal: number } | undefined;
@@ -169,10 +173,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         if (threadRetirements.has(tid)) return;
         const retirement = (async () => {
           await kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
-          if (options.joinOnExit) await thread.waitForNodeJoin();
           const result = await retryKernelEntryResult(() => kernel.retireMemoryGroupThread(thread.handle));
           if (result !== 0) throw Error(`Thread retirement refused: ${result}`);
-          await thread.contain();
           retiredThreads.add(tid); threadRetirementMemory.push({ tid, ...await memoryEvidence() });
           maybeComplete();
         })();
@@ -187,10 +189,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
         for (const [pid, child] of children) {
           const state = childStates.get(pid);
           if (state?.kernelExit === undefined || (state.processExit === undefined && !(lifecycleEnabled && (state.kernelExit ?? 0) >= 128)) || !state.ready || !child.quiescent
-              || (options.joinOnExit && !child.hasJoined)) return;
+              || (options.joinOnExit && !nativeJoined(child))) return;
         }
         for (const [tid, thread] of threads) {
-          if (!(logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) || !thread.quiescent || !retiredThreads.has(tid) || (options.joinOnExit && !thread.hasJoined)) return;
+          if (!(logicalThreadExits.has(tid) || threadExits.has(tid) || stoppedWithProcess.has(tid)) || !thread.quiescent || !retiredThreads.has(tid) || (options.joinOnExit && !nativeJoined(thread))) return;
         }
         resolve();
       };
@@ -330,7 +332,6 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             previousGeneration: generation, terminationProvesQuiescence: options.joinOnExit,
             onCommitted: () => {
               execHandoff = true;
-              for (const thread of previousThreads) execRetiringThreads.add(thread);
               if (options.execSignal === 'commit') void retryKernelEntryResult(signal).catch(reject);
             },
             onStopped: options.execOldThreads ? async () => {
@@ -343,7 +344,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               const after = await retryKernelEntryResult(() => kernel.inspectMemoryGroupWord(previousRoot, probe.busy));
               if (returned !== 0 || busy !== after) throw Error('Exec predecessor executed after its stop fence');
               lifecycleEvidence.push({ kind: 'exec-old-threads-stopped', step: probe.step, returned, busy, after,
-                joined: previousThreads.map(thread => thread.hasJoined) });
+                joined: previousThreads.map(thread => nativeJoined(thread)) });
               if (options.execSignal === 'stopped') await retryKernelEntryResult(signal);
               if (options.execTerminationPool) {
                 if (!rollbackPoolMemory) throw Error('Missing actual terminated exec backing');
@@ -364,7 +365,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               }
               for (const thread of previousThreads) { stoppedWithProcess.add(thread.tid); retiredThreads.add(thread.tid); }
               if (currentExecWorker) lifecycleEvidence.push({ kind: 'exec-replacement-joined',
-                joined: currentExecWorker.hasJoined, quiescent: currentExecWorker.quiescent });
+                joined: nativeJoined(currentExecWorker), quiescent: currentExecWorker.quiescent });
               execTermination = { signal }; quiescent = true; rootJoined = options.joinOnExit;
               imageHandles.delete(request.pid); rootHandle = undefined; generation = undefined;
               currentExecWorker = undefined; processWorker = undefined; importWorker = undefined;
@@ -410,9 +411,10 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             },
             onError: reject,
             onExit: (code, worker) => {
+              nativeExits.add(worker);
               if (currentExecWorker !== worker || execHandoff) return;
               if (code !== 0) reject(Error(`Exec Worker exit ${code}`));
-              else { rootJoined = worker.hasJoined; maybeComplete(); }
+              else { rootJoined = nativeJoined(worker); maybeComplete(); }
             },
           });
         } : options.execPrecommitFailure ? async request => {
@@ -574,7 +576,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               }
             },
             discard: thread => {
-              failedThreadWorkers.push({ tid: thread.tid, executionAbsent: thread.executionAbsent, quiescent: thread.quiescent, joined: thread.hasJoined });
+              failedThreadWorkers.push({ tid: thread.tid, executionAbsent: thread.executionAbsent, quiescent: thread.quiescent, joined: nativeJoined(thread) });
               if (threads.get(thread.tid) === thread) threads.delete(thread.tid);
             },
             onMessage: (message, thread) => {
@@ -586,16 +588,17 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             },
             onError: reject,
             onExit: (code, thread) => {
-              // The shared exec helper joins this exact old Worker only
-              // after all image fences. Node terminate() may then report 1;
-              // that host-realm outcome is not a guest pthread failure.
-              if (code !== 0 && !(execRetiringThreads.has(thread) && thread.quiescent)) reject(Error(`pthread Worker exit ${code}`));
+              nativeExits.add(thread);
+              // Kernel-selected containment follows this exact terminal
+              // fence. Node terminate() can report 1 for that native stop;
+              // the guest result and pthread join assertions remain separate.
+              if (code !== 0 && !thread.quiescent) reject(Error(`pthread Worker exit ${code}`));
               else maybeComplete();
             },
           }); } catch (error) {
             if (options.uncertainThreadConstructor) {
               const thread = threads.get(attachment.tid);
-              if (thread) failedThreadWorkers.push({ tid: thread.tid, executionAbsent: thread.executionAbsent, quiescent: thread.quiescent, joined: thread.hasJoined });
+              if (thread) failedThreadWorkers.push({ tid: thread.tid, executionAbsent: thread.executionAbsent, quiescent: thread.quiescent, joined: nativeJoined(thread) });
             }
             failedThreadLaunches.push({ before, after: await memoryEvidence(), cause: String(error) });
             throw error;
@@ -669,7 +672,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
                 maybeComplete();
               },
               onError: (error, child) => { try { recordCrash(child.pid, error.message); } catch (failure) { reject(failure); } },
-              onExit: (code, _child) => { if (code !== 0) reject(Error(`Child Worker exit ${code}`)); else maybeComplete(); },
+              onExit: (code, child) => { nativeExits.add(child); if (code !== 0) reject(Error(`Child Worker exit ${code}`)); else maybeComplete(); },
             });
             return;
           } catch (error) { if (error !== refused) reject(error); throw error; }
@@ -954,8 +957,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execHandoffResults, execTermination, execReplacementPublications, processWorkerConstructionAttempts, execLedger, memory: await memoryEvidence(),
       retirement, threadRetirementMemory, rolledBackForks, injectedForkRefusals, forkWorkerConstructionAttempts, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
-      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
-      children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })) };
+      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: nativeJoined(thread), retired: retiredThreads.has(tid) })),
+      children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: nativeJoined(child) })) };
   } catch (error) {
     const failureCauses: string[] = [];
     for (let cause = error; cause instanceof Error && failureCauses.length < 8; cause = cause.cause) {
@@ -971,8 +974,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
     }
     result = { grouped, stdout, stderr, kernelExit, processExit, quiescent, processReady, diagnostics, trace, execPreparations, execReturns, execHandoffs, execTermination, execReplacementPublications, processWorkerConstructionAttempts, memory: failedMemory,
       rolledBackForks, injectedForkRefusals, forkWorkerConstructionAttempts, lifecycleEvidence, parkedCalls, failedThreadLaunches, failedThreadWorkers, threadConstructionAttempts,
-      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: thread.hasJoined, retired: retiredThreads.has(tid) })),
-      children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: child.hasJoined })),
+      threads: [...threads].map(([tid, thread]) => ({ pid: thread.pid, tid, exited: threadExits.has(tid), logicalExited: logicalThreadExits.has(tid), stoppedWithProcess: stoppedWithProcess.has(tid), quiescent: thread.quiescent, joined: nativeJoined(thread), retired: retiredThreads.has(tid) })),
+      children: [...children].map(([pid, child]) => ({ pid, ...childStates.get(pid), quiescent: child.quiescent, joined: nativeJoined(child) })),
       failureCauses, failureMessage: error instanceof Error ? error.message : String(error),
       failure: error instanceof Error ? error.stack : String(error) };
   } finally {

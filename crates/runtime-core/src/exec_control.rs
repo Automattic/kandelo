@@ -1081,6 +1081,16 @@ pub(crate) mod tests {
         while reply.effect != effect::COMPLETE {
             let command = match reply.effect {
                 R::DETACH_PLATFORM => R::command::PLATFORM_DETACHED,
+                R::CONTAIN_WORKER => {
+                    let selected = ReceiptRecord::decode(&reply.payload[..32]).unwrap();
+                    let (store, admission) = f.table.memory_groups().storage_owner(selected).unwrap();
+                    // This fixture models Node Workers; a sealed constructor
+                    // has no native Worker to join.
+                    let joined = !store.worker_absence(admission).unwrap();
+                    f.table.retirement_control(selected, R::command::WORKER_CONTAINED,
+                        if joined { R::WORKER_JOINED } else { 0 }, host).unwrap();
+                    R::command::POLL
+                }
                 R::DETACH_REFERENCES => {
                     let selected = ReceiptRecord::decode(&reply.payload[..32]).unwrap();
                     f.table

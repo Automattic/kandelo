@@ -82,6 +82,8 @@ struct Image {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum References { Unbound, Bound, Detaching, Detached }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Containment { Unissued, Issued, Complete }
 struct Replica {
     admission: GroupAdmission,
     image: ImageKey,
@@ -92,6 +94,7 @@ struct Replica {
     worker_absent: bool,
     references: References,
     native_join: bool,
+    containment: Containment,
     worker_fact: u32,
     pending_completions: u32,
 }
@@ -301,6 +304,7 @@ impl Storage {
                 worker_absent: false,
                 references: References::Unbound,
                 native_join: false,
+                containment: Containment::Unissued,
                 worker_fact: 0,
                 pending_completions: 0,
             },
@@ -366,6 +370,7 @@ impl Storage {
                 worker_absent: false,
                 references: References::Unbound,
                 native_join: false,
+                containment: Containment::Unissued,
                 worker_fact: 0,
                 pending_completions: 0,
             },

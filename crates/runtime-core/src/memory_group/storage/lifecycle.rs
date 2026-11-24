@@ -387,6 +387,9 @@ impl Storage {
     pub(crate) fn begin_reference_detachment(&mut self, admission: GroupAdmission) -> Result<bool, Errno> {
         let member = self.owned(admission)?;
         if member.exposure != Exposure::Stopped { return Err(Errno::EBUSY); }
+        if member.references != References::Unbound && member.containment != Containment::Complete {
+            return Err(Errno::EBUSY);
+        }
         match member.references {
             References::Unbound | References::Detached => Ok(false),
             References::Bound | References::Detaching => {
@@ -401,6 +404,29 @@ impl Storage {
             return Err(Errno::EBUSY);
         }
         self.replicas.get_mut(&admission.record().serial).unwrap().references = References::Detached;
+        Ok(())
+    }
+
+    /// A terminal fence ends execution, but not the native Worker object.
+    /// Rust requests containment before it can request reference disposal.
+    pub(crate) fn begin_worker_containment(&mut self, admission: GroupAdmission) -> Result<bool, Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Stopped { return Err(Errno::EBUSY); }
+        if member.references == References::Unbound || member.containment == Containment::Complete {
+            return Ok(false);
+        }
+        self.replicas.get_mut(&admission.record().serial).unwrap().containment = Containment::Issued;
+        Ok(true)
+    }
+
+    pub(crate) fn complete_worker_containment(&mut self, admission: GroupAdmission, joined: bool) -> Result<(), Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Stopped || member.containment != Containment::Issued {
+            return Err(Errno::EBUSY);
+        }
+        if joined && !member.native_join { return Err(Errno::EINVAL); }
+        if member.native_join && !member.worker_absent && !joined { return Err(Errno::EBUSY); }
+        self.replicas.get_mut(&admission.record().serial).unwrap().containment = Containment::Complete;
         Ok(())
     }
 }
@@ -437,6 +463,14 @@ impl Storage {
         let member = self.replicas.get_mut(&admission.record().serial).unwrap();
         member.worker_fact = fact;
         if fact == wasm_posix_shared::retirement_control::command::SEALED_ABSENCE { member.worker_absent = true; }
+        if member.containment == Containment::Unissued && matches!(fact,
+            wasm_posix_shared::retirement_control::command::NATIVE_JOIN
+                | wasm_posix_shared::retirement_control::command::SEALED_ABSENCE) {
+            // Credit a genuine native fact before requesting a new effect.
+            // Once issued, its acknowledgement remains outstanding even if
+            // the same fact arrives while the native Promise is settling.
+            member.containment = Containment::Complete;
+        }
     }
 }
 

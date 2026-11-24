@@ -95,8 +95,8 @@ impl ProcessTable {
         ) {
             return self.group_stop_control(record, command, argument, host);
         }
-        if command == C::BIND_REFERENCES {
-            if argument & !W::NATIVE_JOIN_CAPABILITY != 0 {
+        if matches!(command, C::BIND_REFERENCES | C::WORKER_CONTAINED) {
+            if argument & !W::WORKER_JOINED != 0 {
                 return Err(Errno::EINVAL);
             }
         } else if argument != 0 {
@@ -114,11 +114,19 @@ impl ProcessTable {
             return Ok(reply);
         }
         let key = Key(record.group, record.serial);
+        if command == C::WORKER_CONTAINED {
+            let (store, admission) = self.memory_groups().storage_owner(record)?;
+            store.complete_worker_containment(admission, argument & W::WORKER_JOINED != 0)?;
+            return Ok(Reply::new(record, record.serial, effect::COMPLETE));
+        }
         if matches!(
             command,
             C::BIND_REFERENCES | C::BEGIN_REFERENCES | C::REFERENCES_DETACHED
         ) {
             let (store, admission) = self.memory_groups().storage_owner(record)?;
+            if command == C::BEGIN_REFERENCES && store.begin_worker_containment(admission)? {
+                return Self::selected_retirement_effect(record, W::CONTAIN_WORKER, record);
+            }
             let detach = match command {
                 C::BIND_REFERENCES => {
                     store.bind_platform_references(
@@ -171,6 +179,18 @@ impl ProcessTable {
             }
             if self.retirement_controls().entries.get(&key).is_some() {
                 return Err(Errno::EBUSY);
+            }
+            if !image {
+                // A whole-image owner already holds this exact execution's
+                // physical storage. Join its platform operation instead of
+                // minting a competing pthread reclamation transaction.
+                self.memory_groups().storage_owner(record)?;
+                if let Some(root) = self.retirement_controls().entries.values().find(|control|
+                    control.image && control.receipt.group == record.group
+                        && control.receipt.pid == record.pid && control.receipt.generation == record.generation)
+                    .map(|control| control.receipt) {
+                    return Self::selected_retirement_effect(record, W::JOIN_IMAGE_RETIREMENT, root);
+                }
             }
             if image && self.retirement_controls().stops.get(&key).is_some() {
                 return Err(Errno::EBUSY);
@@ -257,6 +277,12 @@ impl ProcessTable {
         }
         if control.phase == Phase::Preparing {
             if control.image {
+                if let Some(thread) = self.retirement_controls().entries.values().find(|other|
+                    !other.image && other.receipt.group == record.group
+                        && other.receipt.pid == record.pid && other.receipt.generation == record.generation)
+                    .map(|other| other.receipt) {
+                    return Self::selected_retirement_effect(record, W::WAIT_THREAD_RETIREMENT, thread);
+                }
                 let exec = self.retirement_exec_transport(record)?;
                 if exec.effect != effect::COMPLETE {
                     return Ok(exec);
@@ -287,6 +313,9 @@ impl ProcessTable {
             let (store, admission) = self.memory_groups().storage_owner(record)?;
             if let Some(selected) = store.pending_platform_references(admission, control.image)? {
                 let selected_admission = store.resolve(selected)?;
+                if store.begin_worker_containment(selected_admission)? {
+                    return Self::selected_retirement_effect(record, W::CONTAIN_WORKER, selected);
+                }
                 store.begin_reference_detachment(selected_admission)?;
                 let mut reply = Reply::new(record, record.serial, W::DETACH_REFERENCES);
                 reply.payload_bytes = wasm_posix_shared::group_operation::PAYLOAD_BYTES as u32;
@@ -321,6 +350,12 @@ impl ProcessTable {
             }
         }
         Ok(Reply::new(record, record.serial, effect::COMPLETE))
+    }
+    fn selected_retirement_effect(record: ReceiptRecord, effect: u32, selected: ReceiptRecord) -> Result<Reply, Errno> {
+        let mut reply = Reply::new(record, record.serial, effect);
+        reply.payload_bytes = wasm_posix_shared::group_operation::PAYLOAD_BYTES as u32;
+        selected.encode(&mut reply.payload[..32])?;
+        Ok(reply)
     }
     fn retirement_exec_transport(&mut self, record: ReceiptRecord) -> Result<Reply, Errno> {
         if let Some(future) = self.exec_preparation_for_retiring_image(record) {

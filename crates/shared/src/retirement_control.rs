@@ -17,6 +17,7 @@ pub mod command {
     pub const WORKER_FENCE: u32 = 15;
     pub const NATIVE_JOIN: u32 = 16;
     pub const SEALED_ABSENCE: u32 = 17;
+    pub const WORKER_CONTAINED: u32 = 18;
 }
 pub const DETACH_PLATFORM: u32 = 14;
 pub const DETACH_REFERENCES: u32 = 17;
@@ -24,6 +25,10 @@ pub const CANCEL_EXEC_TRANSPORT: u32 = 15;
 
 pub const WAIT_WORKERS: u32 = 16;
 pub const PUBLISH_EXIT: u32 = 1;
+pub const CONTAIN_WORKER: u32 = 18;
+pub const WAIT_THREAD_RETIREMENT: u32 = 19;
+pub const JOIN_IMAGE_RETIREMENT: u32 = 20;
+pub const WORKER_JOINED: u32 = 1;
 
 pub const NATIVE_JOIN_CAPABILITY: u32 = 1;
 pub const STOP_ACCEPTED: u32 = 2;

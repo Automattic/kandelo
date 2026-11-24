@@ -60,7 +60,7 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
         void readiness.result.catch(() => {});
         return native;
       });
-      ownership = new GroupedWorkerObjects(request.childReplica, receipt, generation, worker, options.terminationProvesQuiescence,
+      ownership = new GroupedWorkerObjects(request.childReplica, receipt, generation, worker,
         () => externrefs.releaseGeneration(generation!));
     },
     publishTransport: value => { launch = value; },
@@ -102,7 +102,7 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
         }
       };
       const onError = (error: Error) => { if (forward) options.onError(error, ownership); else { errors.push(error); replayError(error); } };
-      const onExit = (code: number) => { ownership.noteExit(); if (forward) options.onExit(code, ownership); else { exits.push(code); replayError(Error(`Grouped fork native exit ${code}`)); } };
+      const onExit = (code: number) => { if (forward) options.onExit(code, ownership); else { exits.push(code); replayError(Error(`Grouped fork native exit ${code}`)); } };
       ownership.worker.on('message', onMessage); ownership.worker.on('error', onError); ownership.worker.on('exit', onExit);
       ownership.attachObserverCleanup(() => {
         readiness?.cancel(Error('Kernel disposed native fork readiness'));

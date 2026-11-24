@@ -2271,6 +2271,7 @@ interface GroupThreadControlOwner {
   readonly channelOffset: number;
 }
 interface GroupThreadRetirement {
+  readonly receipt: MemoryGroupTaskReceipt;
   owner?: GroupThreadControlOwner;
   readonly finished: Promise<number>;
   released: boolean;
@@ -2282,6 +2283,7 @@ interface GroupProcessExit {
 }
 
 interface GroupImageRetirement {
+  readonly receipt: MemoryGroupTaskReceipt;
   owner?: { readonly handle: PreparedGroupReplica; readonly store: GroupMemoryTransport;
     readonly pid: number; readonly memory: WebAssembly.Memory; readonly source: GroupProcessAddressSpace };
   readonly settled: Promise<void>;
@@ -8704,10 +8706,35 @@ export class CentralizedKernelWorker {
    * Pre-entry contention is retryable; a ready result has consumed attachment. */
   readonly #groupWorkerReferences = new Map<PreparedGroupReplica, {
     readonly store: GroupMemoryTransport; readonly receipt: MemoryGroupTaskReceipt;
+    readonly worker: WorkerHandle; readonly joins: boolean;
+    containment?: Promise<void>;
     readonly dispose: () => void; pending?: Promise<boolean>;
   }>();
   readonly #groupWorkerReferenceKeys = new Map<string, PreparedGroupReplica>();
   readonly #disposedGroupWorkerReferences = new WeakSet<PreparedGroupReplica>();
+
+  async #containRetiringMemoryGroupWorker(handle: PreparedGroupReplica): Promise<void> {
+    const objects = this.#groupWorkerReferences.get(handle);
+    if (!objects) this.#memoryGroupProtocolError('Missing kernel-selected Worker containment objects');
+    const containment = objects.containment ??= (async () => {
+      // A bound rollback may precede the constructor. Seal the exact private
+      // Deferred handle and report real absence; terminate() alone cannot
+      // distinguish it from an uncertain constructor or prove a Node join.
+      if (DeferredWorkerHandle.sealNeverStarted(objects.worker)) {
+        const binding = this.#memoryGroupWorkerBindings.get(handle);
+        if (binding?.worker !== objects.worker) this.#memoryGroupProtocolError('Missing exact absent Worker binding');
+        binding.reportAbsent();
+      }
+      await objects.worker.terminate();
+      const joined = objects.joins && DeferredWorkerHandle.hasCompletedBackingTermination(objects.worker);
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('report exact Worker containment', entry => {
+        objects.store.retirementControl(objects.receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.workerContained,
+          entry, joined ? MEMORY_GROUP_PROTOCOL.retirement_control.worker_joined : 0);
+        return undefined;
+      }));
+    })();
+    await containment;
+  }
 
   async releaseMemoryGroupWorkerReferences(handle: PreparedGroupReplica): Promise<boolean> {
     const objects = this.#groupWorkerReferences.get(handle);
@@ -8715,7 +8742,7 @@ export class CentralizedKernelWorker {
     if (objects.pending) return objects.pending;
     const protocol = MEMORY_GROUP_PROTOCOL.retirement_control;
     const pending = (async (): Promise<boolean> => {
-      const reply = await retryKernelEntryResult(() => {
+      let reply = await retryKernelEntryResult(() => {
         let result: GroupOperationEffect | undefined;
         this.#runImmediateKernelEntry('request kernel-owned reference detachment', entry => {
           try { result = objects.store.retirementControl(objects.receipt, protocol.commands.beginReferences, entry); }
@@ -8725,6 +8752,10 @@ export class CentralizedKernelWorker {
         return result;
       });
       if (!reply) return false;
+      while (reply.effect === protocol.contain_worker) {
+        await this.#containRetiringMemoryGroupWorker(handle);
+        reply = await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.beginReferences));
+      }
       if (reply.effect === protocol.detach_platform) {
         objects.dispose();
         await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.referencesDetached));
@@ -9264,7 +9295,7 @@ export class CentralizedKernelWorker {
       if (stale && !DeferredWorkerHandle.sealNeverStarted(worker)) throw Error('Grouped Worker has a stale admission');
       store.retirementControl(receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.bindReferences, entry,
         joins ? MEMORY_GROUP_PROTOCOL.retirement_control.native_join_capability : 0);
-      this.#groupWorkerReferences.set(handle, { store, receipt, dispose: options.retireHostReferences ?? (() => {}) });
+      this.#groupWorkerReferences.set(handle, { store, receipt, worker, joins, dispose: options.retireHostReferences ?? (() => {}) });
       this.#groupWorkerReferenceKeys.set(`${receipt.group}:${receipt.serial}`, handle);
       let settled = false;
       const reportFact = (fact: number): void => {
@@ -11269,29 +11300,35 @@ export class CentralizedKernelWorker {
   retireMemoryGroupThread(handle: PreparedGroupReplica, retireHostReferences: () => void = () => {}): Promise<number> {
     const previous = this.#groupThreadRetirements.get(handle);
     if (previous) return previous.finished;
-    let record: GroupThreadRetirement | undefined, refusal = -EBUSY;
+    let record: GroupThreadRetirement | undefined, image: Promise<void> | undefined, refusal = -EBUSY;
     this.#runImmediateKernelEntry('begin exact grouped thread retirement', entry => {
       const owner = this.#memoryGroupThreadControls.get(handle);
       if (!owner) { refusal = -EINVAL; return undefined; }
-      if (this.#groupImageRetirements.has(owner.rootHandle)) { refusal = -ESRCH; return undefined; }
-      const registration = this.processes.get(owner.receipt.pid);
-      if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.channelOffset)) return undefined;
       const launch = this.#groupThreadNativeOperations.get(handle);
       const launches = launch && !launch.done ? [launch.finished] : [];
-      try { record = this.#beginGroupThreadRetirement(owner, launches, retireHostReferences, entry); }
+      try {
+        const initial = owner.store.retirementControl(owner.receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.beginThread, entry);
+        if (initial.effect === MEMORY_GROUP_PROTOCOL.retirement_control.join_image_retirement) {
+          const root = this.#groupImageRetirements.get(owner.rootHandle);
+          if (!root) this.#memoryGroupProtocolError('Missing kernel-selected image retirement operation');
+          const selected = decodeMemoryGroupReceipt(initial.payload.slice(0, MEMORY_GROUP_PROTOCOL.receipt_bytes),
+            { group: owner.receipt.group, pid: owner.receipt.pid, tid: owner.receipt.pid, generation: owner.receipt.generation });
+          if (selected.serial !== root.receipt.serial) this.#memoryGroupProtocolError('Changed image retirement binding');
+          image = root.settled;
+        } else record = this.#beginGroupThreadRetirement(owner, launches, retireHostReferences, initial, entry);
+      }
       catch (error) { if (!(error instanceof GroupMemoryStorageRefusal)) throw error; refusal = -error.errno; }
       return undefined;
     });
-    return record?.finished ?? Promise.resolve(refusal);
+    return image ? image.then(() => 0) : record?.finished ?? Promise.resolve(refusal);
   }
 
   #beginGroupThreadRetirement(owner: GroupThreadControlOwner, launches: readonly Promise<void>[],
-    retireHostReferences: () => void, entry: KernelWorkerEntryContext): GroupThreadRetirement {
+    retireHostReferences: () => void, initial: GroupOperationEffect, entry: KernelWorkerEntryContext): GroupThreadRetirement {
     if (this.#groupThreadRetirements.has(owner.handle)) this.#memoryGroupProtocolError('Duplicate exact thread retirement');
     let resolve!: (result: number) => void, reject!: (cause: unknown) => void;
     const finished = new this.#promiseReceiver<number>((yes, no) => { resolve = yes; reject = no; });
-    const initial = owner.store.retirementControl(owner.receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.beginThread, entry);
-    const record: GroupThreadRetirement = { owner, finished, released: false };
+    const record: GroupThreadRetirement = { owner, receipt: owner.receipt, finished, released: false };
     this.#groupThreadRetirements.set(owner.handle, record); this.#pendingGroupThreadRetirements.add(record);
     entry.deferProtocolEffect(() => {
       void this.#settleGroupThreadRetirement(record, launches, retireHostReferences, initial).then(resolve, reject)
@@ -11306,6 +11343,13 @@ export class CentralizedKernelWorker {
     const owner = record.owner!;
     await this.#driveRetirementControl(owner.store, owner.receipt, initial, async () => {
       await Promise.all(launches);
+      await retryKernelEntryResult(() => this.#runImmediateKernelEntry('detach retiring pthread transport', entry => {
+        const registration = this.processes.get(owner.receipt.pid);
+        if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.channelOffset)) {
+          this.#removeChannelWithinKernelEntry(owner.receipt.pid, owner.channelOffset, entry);
+        }
+        return undefined;
+      }));
       retireHostReferences();
       await this.settleRetiredChannelListeners(owner.receipt.pid, owner.memory, owner.channelOffset, owner.source);
     });
@@ -11332,7 +11376,31 @@ export class CentralizedKernelWorker {
     const protocol = MEMORY_GROUP_PROTOCOL;
     while (reply.effect !== protocol.driver.effects.complete) {
       let command = pollCommand;
-      if (reply.effect === protocol.retirement_control.detach_references) {
+      if (reply.effect === protocol.retirement_control.contain_worker || reply.effect === protocol.retirement_control.wait_thread_retirement) {
+        const wire = reply.payload.slice(0, protocol.receipt_bytes);
+        const selected = decodeMemoryGroupReceipt(wire, { group: receipt.group, pid: receipt.pid, generation: receipt.generation,
+          tid: new DataView(wire.buffer, wire.byteOffset, wire.byteLength).getUint32(protocol.receipt_fields.tid, true) });
+        if (reply.effect === protocol.retirement_control.contain_worker) {
+          const handle = this.#groupWorkerReferenceKeys.get(`${selected.group}:${selected.serial}`);
+          const objects = handle && this.#groupWorkerReferences.get(handle);
+          if (!objects || ['group', 'pid', 'tid', 'serial', 'generation'].some(key =>
+            selected[key as keyof MemoryGroupTaskReceipt] !== objects.receipt[key as keyof MemoryGroupTaskReceipt]))
+            this.#memoryGroupProtocolError('Missing kernel-selected containment binding');
+          await this.#containRetiringMemoryGroupWorker(handle!);
+        } else {
+          const pending = [...this.#pendingGroupThreadRetirements].find(candidate =>
+            ['group', 'pid', 'tid', 'serial', 'generation'].every(key => candidate.receipt[key as keyof MemoryGroupTaskReceipt] === selected[key as keyof MemoryGroupTaskReceipt]));
+          if (pending) await pending.finished;
+          else {
+            // A native completion can remove its binding after Rust issued
+            // this wait. Recheck Rust; missing host state proves nothing.
+            const next = await retryKernelEntryResult(() => this.#retirementControlCall(store, receipt, pollCommand));
+            if (next.effect === reply.effect && next.payload.every((value, index) => value === reply.payload[index]))
+              this.#memoryGroupProtocolError('Kernel retirement still owns an unbound native operation');
+            reply = next; continue;
+          }
+        }
+      } else if (reply.effect === protocol.retirement_control.detach_references) {
         const wire = reply.payload.slice(0, MEMORY_GROUP_PROTOCOL.receipt_bytes);
         const selected = decodeMemoryGroupReceipt(wire,
           { group: receipt.group, pid: receipt.pid, generation: receipt.generation,
@@ -11392,7 +11460,7 @@ export class CentralizedKernelWorker {
       catch (error) { if (!(error instanceof GroupMemoryStorageRefusal)) throw error; refusal = -error.errno; return undefined; }
       let resolve!: () => void, reject!: (reason: unknown) => void;
       const settled = new this.#promiseReceiver<void>((yes, no) => { resolve = yes; reject = no; });
-      record = { owner: { handle, store, pid: receipt.pid, ...image }, settled, released: false };
+      record = { owner: { handle, store, pid: receipt.pid, ...image }, receipt, settled, released: false };
       this.#groupImageRetirements.set(handle, record);
       const ownedRecord = record;
       entry.deferProtocolEffect(() => {

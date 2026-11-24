@@ -32,6 +32,58 @@ pub(super) fn running() -> (MemoryGroups, Storage, Memory, GroupAdmission) {
 }
 
 #[test]
+fn terminal_fence_does_not_authorize_worker_reference_disposal() {
+    let (_groups, mut storage, mut memory, admission) = running();
+    storage.bind_platform_references(admission, true).unwrap();
+    storage.note_quiescent(&mut memory, admission).unwrap();
+    assert_eq!(storage.begin_reference_detachment(admission), Err(Errno::EBUSY));
+    assert_eq!(storage.complete_reference_detachment(admission), Err(Errno::EBUSY));
+}
+
+#[test]
+fn containment_requires_an_issued_effect_and_the_exact_native_join_capability() {
+    for joins in [false, true] {
+        let (_groups, mut storage, mut memory, admission) = running();
+        storage.bind_platform_references(admission, joins).unwrap();
+        assert_eq!(storage.begin_worker_containment(admission), Err(Errno::EBUSY));
+        assert_eq!(storage.complete_worker_containment(admission, joins), Err(Errno::EBUSY));
+        storage.note_quiescent(&mut memory, admission).unwrap();
+        let before = storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages;
+        assert!(storage.begin_worker_containment(admission).unwrap());
+        assert_eq!(storage.complete_worker_containment(admission, !joins), Err(if joins { Errno::EBUSY } else { Errno::EINVAL }));
+        assert_eq!(storage.begin_reference_detachment(admission), Err(Errno::EBUSY));
+        storage.revoke_source(&mut memory, admission).unwrap();
+        assert_eq!(storage.release_stopped_image(&mut memory, admission), Err(Errno::EAGAIN));
+        assert_eq!(storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages, before);
+        storage.complete_worker_containment(admission, joins).unwrap();
+        assert_eq!(storage.complete_worker_containment(admission, joins), Err(Errno::EBUSY));
+        assert!(!storage.begin_worker_containment(admission).unwrap());
+        assert!(storage.begin_reference_detachment(admission).unwrap());
+        storage.complete_reference_detachment(admission).unwrap();
+        storage.release_stopped_image(&mut memory, admission).unwrap();
+        assert_eq!(storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages, 1);
+    }
+}
+
+#[test]
+fn native_stop_fact_keeps_an_issued_containment_acknowledgement_outstanding() {
+    use wasm_posix_shared::retirement_control::command as C;
+    for fact in [C::NATIVE_JOIN, C::SEALED_ABSENCE] {
+        let (_groups, mut storage, mut memory, root) = running();
+        storage.bind_platform_references(root, true).unwrap();
+        storage.note_quiescent(&mut memory, root).unwrap();
+        assert!(storage.begin_worker_containment(root).unwrap());
+        storage.record_worker_fact(root, fact);
+        // The native fact is true, but the already-issued native operation
+        // must acknowledge before its objects and receipt can be discarded.
+        assert_eq!(storage.begin_reference_detachment(root), Err(Errno::EBUSY));
+        storage.complete_worker_containment(root, fact == C::NATIVE_JOIN).unwrap();
+        assert!(storage.begin_reference_detachment(root).unwrap());
+        assert_eq!(storage.complete_worker_containment(root, fact == C::NATIVE_JOIN), Err(Errno::EBUSY));
+    }
+}
+
+#[test]
 fn uncertain_thread_contains_the_entire_exact_image_without_returning_pages() {
     let (mut groups, mut storage, mut memory, root) = running();
     let thread = groups.prepare_thread(root, 101).unwrap();
@@ -249,6 +301,8 @@ fn stopped_storage_remains_owned_until_exact_platform_reference_acknowledgement(
     let before = storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages;
     assert_eq!(storage.pending_platform_references(root, true).unwrap(), Some(root.record()));
     assert_eq!(storage.release_stopped_image(&mut memory, root), Err(Errno::EAGAIN));
+    assert!(storage.begin_worker_containment(root).unwrap());
+    storage.complete_worker_containment(root, false).unwrap();
     assert!(storage.begin_reference_detachment(root).unwrap());
     assert!(storage.begin_reference_detachment(root).unwrap());
     assert_eq!(storage.release_stopped_image(&mut memory, root), Err(Errno::EAGAIN));
@@ -273,11 +327,15 @@ fn image_owner_selects_every_bound_pthread_before_allowing_detachment() {
     assert_eq!(storage.release_retired_image_thread(&mut memory, thread), Err(Errno::EAGAIN));
     let first = storage.pending_platform_references(root, true).unwrap().unwrap();
     let admission = storage.resolve(first).unwrap();
+    assert!(storage.begin_worker_containment(admission).unwrap());
+    storage.complete_worker_containment(admission, false).unwrap();
     storage.begin_reference_detachment(admission).unwrap();
     storage.complete_reference_detachment(admission).unwrap();
     let second = storage.pending_platform_references(root, true).unwrap().unwrap();
     assert_ne!(first, second);
     let admission = storage.resolve(second).unwrap();
+    assert!(storage.begin_worker_containment(admission).unwrap());
+    storage.complete_worker_containment(admission, false).unwrap();
     storage.begin_reference_detachment(admission).unwrap();
     storage.complete_reference_detachment(admission).unwrap();
     assert_eq!(storage.pending_platform_references(root, true).unwrap(), None);

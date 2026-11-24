@@ -359,7 +359,13 @@ impl MemoryGroups {
     {
         let (store, admission) = self.storage_owner(record)?;
         if !store.validate_worker_fact(admission, fact)? { return Ok(false); }
-        if store.accepted_worker_fact(admission)? { return Ok(true); }
+        if store.accepted_worker_fact(admission)? {
+            // A terminal fence already retired logical execution. Its later
+            // exact native join/absence can still satisfy containment without
+            // consuming that logical admission twice.
+            store.record_worker_fact(admission, fact);
+            return Ok(true);
+        }
         match self.task(admission)?.phase {
             Phase::Running | Phase::Stopping => self.begin_retirement(admission)?,
             Phase::Quarantined => {},

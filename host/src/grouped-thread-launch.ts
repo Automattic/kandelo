@@ -45,7 +45,7 @@ export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOpti
         void readiness.result.catch(() => {});
         return native;
       });
-      ownership = new GroupedWorkerObjects(plan.handle, receipt, options.generation, worker, options.terminationProvesQuiescence);
+      ownership = new GroupedWorkerObjects(plan.handle, receipt, options.generation, worker);
     },
     bindWorker: () => {
       kernel.observeMemoryGroupReplicaWorker(plan.handle, ownership.worker,
@@ -71,7 +71,7 @@ export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOpti
         }
       };
       const onError = (error: Error): void => { if (forward) options.onError(error, exact); else errors.push(error); };
-      const onExit = (code: number): void => { exact.noteExit(); if (forward) options.onExit(code, exact); else exits.push(code); };
+      const onExit = (code: number): void => { if (forward) options.onExit(code, exact); else exits.push(code); };
       ownership.worker.on('message', onMessage); ownership.worker.on('error', onError); ownership.worker.on('exit', onExit);
       ownership.attachObserverCleanup(() => {
         readiness?.cancel(Error('Kernel disposed pthread readiness'));

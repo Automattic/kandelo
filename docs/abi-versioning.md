@@ -16,6 +16,28 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Kernel-selected grouped native retirement
+
+Host-adapter 35 adds `WORKER_CONTAINED` to the existing retirement control
+interface and `CONTAIN_WORKER`, `WAIT_THREAD_RETIREMENT` and
+`JOIN_IMAGE_RETIREMENT` effects. The actual `ProcessTable` selects the exact
+execution receipt and retains containment and retirement ordering. Reference
+disposal requires the selected native operation's acknowledgement; Node
+requires an actual join unless constructor absence was sealed. A prior
+accepted native join or sealed absence already satisfies containment. If a
+native fact arrives after containment was issued, its acknowledgement remains
+outstanding until that exact native operation settles. A later join still
+upgrades the proof after a terminal fence without retiring logical admission
+twice. Browser termination never supplies a join or replaces a terminal
+execution fence.
+
+A whole-image retirement waits for an already-started pthread retirement,
+including its acknowledgement. A later pthread retirement joins the existing
+image operation. Missing host objects or process removal do not prove either
+operation completed. TypeScript locates the exact native operation and
+executes the requested effects. Matching rebuilt host and kernel are required;
+program ABI 56 and its frozen executable contract are unchanged.
+
 ## Kernel-owned grouped completion control
 
 Host-adapter 33 retains optional `kernel_group_completion(input_ptr, input_len,

@@ -368,7 +368,17 @@ it('uses the real Rust kernel for storage preparation, exposure and exact pinned
     expect(task(receipt, P.task_actions.retireQuiescent)).toBe(0);
     expect(storage(receipt, P.storage.actions.settleNative, admittedRetirement.pin).status).toBe(P.storage.reply_bytes);
     expect(retire(commands.poll).effect).toBe(P.retirement_control.detach_platform);
-    expect(retire(commands.platformDetached).effect).toBe(P.retirement_control.detach_references);
+    // A stopped execution is not native containment. Rust selects the exact
+    // platform operation before granting reference disposal, even here where
+    // this fixture never constructs a Worker.
+    expect(retire(commands.workerContained).status).toBe(-ERRNO.EBUSY);
+    expect(retire(commands.platformDetached).effect).toBe(P.retirement_control.contain_worker);
+    expect(retire(commands.workerContained, { ...receipt, serial: receipt.serial + 1n }).status).toBe(-ERRNO.ESRCH);
+    expect(retire(commands.workerContained, receipt, P.retirement_control.worker_joined).status).toBe(-ERRNO.EINVAL);
+    expect(storage(receipt, P.storage.actions.releaseStoppedImage).status).toBe(-ERRNO.EAGAIN);
+    expect(retire(commands.workerContained).effect).toBe(P.driver.effects.complete);
+    expect(retire(commands.workerContained).status).toBe(-ERRNO.EBUSY);
+    expect(retire(commands.poll).effect).toBe(P.retirement_control.detach_references);
     expect(retire(commands.platformDetached).status).toBe(-ERRNO.EBUSY);
     expect(retire(commands.referencesDetached, { ...receipt, serial: receipt.serial + 1n }).status).toBe(-ERRNO.ESRCH);
     expect(retire(commands.beginReferences).effect).toBe(P.retirement_control.detach_platform);
