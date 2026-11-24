@@ -70,10 +70,24 @@ changing its target/sysroot or panic ABI requires a separate concrete review.
 
 Context metadata lives in a global application slot, so GC-sensitive native
 lookups need no property resolution, allocation or user JavaScript. Private
-object entries live in an engine-owner weak map; their bags may refer back to
-the object without rooting an otherwise unreachable cycle. Proxy identity stays
-separate from its target. Template-private entries are installed separately
-from public properties. Native fields and Node cleanup retain their owners.
+object entries use the restored engine capability: Node writes them through
+native APIs and reads them from its unchanged JavaScript when it holds the key.
+The WeakMap-only replacement could not serve that JavaScript read and failed
+ordinary bootstrap. The engine traces the real values, hides their keys from
+enumeration and preserves own-only, proxy and integrity behavior. Native fields
+and Node cleanup retain their owners.
+
+Private template entries remain bridge metadata in a traced Map in the existing
+template slot, then become real hidden properties on each recipient. Attributes
+belong to those recipient properties. The bridge uses the pinned private
+`js::MapObject::getKeysAndValuesInterleaved` method under the metadata realm;
+check that interface on engine upgrades. Its rooted vector lasts only for the
+owning thread's instantiation call. Do not substitute a user iterator/callback
+or make private properties enumerable to collect template entries.
+
+Review a narrower generic private-key interface later, preserving direct
+JavaScript access as well as native access. Do not remove the restored patch
+until lookup, reflection, proxy behavior, cross-realm access and GC are qualified.
 
 The bridge owns the continuation value and captures/restores it through the
 original job host-data API. A small generic engine option retains host data for

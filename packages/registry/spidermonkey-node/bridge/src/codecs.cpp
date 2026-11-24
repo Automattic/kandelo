@@ -51,6 +51,7 @@
 #include "js/ScriptPrivate.h"
 #include "js/experimental/JSStencil.h"
 #include "builtin/ModuleObject.h"
+#include "builtin/MapObject.h"
 #include "vm/BytecodeUtil.h"
 #include "vm/GeneratorObject.h"
 #include "frontend/CompilationStencil.h"
@@ -179,7 +180,7 @@ struct Frame {
     JS::RootedValue stored(cx,value);
     if constexpr(std::is_same_v<T,Private>){
       MOZ_RELEASE_ASSERT(stored.isSymbol());JS::RootedSymbol symbol(cx,stored.toSymbol());
-      MOZ_RELEASE_ASSERT(JS::GetSymbolCode(symbol)==JS::SymbolCode::UniqueSymbol);
+      MOZ_RELEASE_ASSERT(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
     }else if constexpr(!std::is_base_of_v<Value,T>){
       MOZ_RELEASE_ASSERT(stored.isObject());
       JS::RootedObject object(cx,js::CheckedUnwrapDynamic(&stored.toObject(),cx,false));MOZ_RELEASE_ASSERT(object);stored.setObject(*object);

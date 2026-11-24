@@ -23,9 +23,12 @@ tested. Earlier receipts describe earlier artifacts, not this review update.
 
 ## Maintained embedding boundary
 
-Node context fields use SpiderMonkey's global application slots. Ordinary
-private entries use a bridge-owned weak map, not a new language property or
-symbol kind. Async-context snapshots use the original job host-data APIs; the
+Node context fields use SpiderMonkey's global application slots. Node private
+keys use engine-owned hidden properties: upstream Node JavaScript deliberately
+reads `object[privateKey]`, which an external WeakMap cannot supply. The bridge
+creates and converts the keys; the engine owns lookup, reflection, proxy rules
+and tracing of the actual property values. This is separate from language
+`#private` fields. Async-context snapshots use the original job host-data APIs; the
 small `preservesHostDefinedData` option retains that data for observable
 optimized reactions. The engine owns its original queues and dispatch.
 
@@ -51,6 +54,11 @@ Comments describe that uncertainty rather than establish an upstream defect.
 
 ## Future work: platform omissions
 
+- [ ] Review a narrower generic engine interface for native private keys,
+  backed by bridge storage if it can preserve ordinary JavaScript access,
+  hidden enumeration, own-only lookup, proxies, frozen objects and GC. Native
+  `SetPrivate`/`GetPrivate` tests alone missed Node's bootstrap read. Keep the
+  restored capability until a faithful replacement passes both kinds of access.
 - [ ] Review **every retained engine patch and each separate purpose within it**
   for missing Kandelo platform support before treating it as a permanent engine
   requirement. The Node bridge/package maintainer owns this review and must

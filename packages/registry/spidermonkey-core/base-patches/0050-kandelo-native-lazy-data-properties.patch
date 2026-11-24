@@ -12,7 +12,7 @@
 
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
-@@ -1368,7 +1368,8 @@
+@@ -1374,7 +1374,8 @@
  template <IsAddOrChange AddOrChange>
  static MOZ_ALWAYS_INLINE bool AddOrChangeProperty(
      JSContext* cx, Handle<NativeObject*> obj, HandleId id,
@@ -22,7 +22,7 @@
    desc.assertComplete();
 
  #ifdef DEBUG
-@@ -1386,6 +1387,8 @@
+@@ -1392,6 +1393,8 @@
    // integer key with default property attributes and are either adding a new
    // property or changing a dense element.
    PropertyFlags flags = ComputePropertyFlags(desc);
@@ -31,7 +31,7 @@
    if (id.isInt() && flags == PropertyFlags::defaultDataPropFlags &&
        (AddOrChange == IsAddOrChange::Add || existing->isDenseElement())) {
      MOZ_ASSERT(!desc.isAccessorDescriptor());
-@@ -1463,7 +1466,13 @@
+@@ -1469,7 +1472,13 @@
    }
 
    if constexpr (AddOrChange == IsAddOrChange::Add) {
@@ -46,7 +46,7 @@
        if (!CallAddPropertyHook(cx, obj, id, desc.value())) {
          return false;
        }
-@@ -1530,6 +1539,19 @@
+@@ -1539,6 +1548,19 @@
 
  static bool GetCustomDataProperty(JSContext* cx, HandleObject obj, HandleId id,
                                    MutableHandleValue vp);
@@ -66,7 +66,7 @@
 
  static bool GetExistingDataProperty(JSContext* cx, Handle<NativeObject*> obj,
                                      HandleId id, const PropertyResult& prop,
-@@ -1549,6 +1571,9 @@
+@@ -1558,6 +1580,9 @@
      return true;
    }
 
@@ -76,7 +76,7 @@
    MOZ_RELEASE_ASSERT(propInfo.isCustomDataProperty());
    return GetCustomDataProperty(cx, obj, id, vp);
  }
-@@ -1561,7 +1586,8 @@
+@@ -1570,7 +1595,8 @@
                                        HandleId id, const PropertyResult& prop,
                                        JS::PropertyAttributes attrs,
                                        Handle<PropertyDescriptor> desc,
@@ -86,7 +86,7 @@
    *redundant = false;
 
    if (desc.hasConfigurable() && desc.configurable() != attrs.configurable()) {
-@@ -1580,7 +1606,9 @@
+@@ -1589,7 +1615,9 @@
      if (desc.hasValue()) {
        // Get the current value of the existing property.
        RootedValue currentValue(cx);
@@ -97,7 +97,7 @@
          return false;
        }
 
-@@ -1618,7 +1646,7 @@
+@@ -1627,7 +1655,7 @@
 
  bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
                                HandleId id, Handle<PropertyDescriptor> desc_,
@@ -106,7 +106,7 @@
    desc_.assertValid();
 
    // Section numbers and step numbers below refer to ES2025, draft rev
-@@ -1633,6 +1661,7 @@
+@@ -1642,6 +1670,7 @@
      // 10.4.2.1 step 1. Redefining an array's length is very special.
      auto arr = HandleObject(obj).as<ArrayObject>();
      if (id == NameToId(cx->names().length)) {
@@ -114,7 +114,7 @@
        // 10.1.6.3 ValidateAndApplyPropertyDescriptor, step 5.c.
        if (desc_.isAccessorDescriptor()) {
          return result.fail(JSMSG_CANT_REDEFINE_PROP);
-@@ -1651,6 +1680,7 @@
+@@ -1660,6 +1689,7 @@
    } else if (obj->is<TypedArrayObject>()) {
      // 10.4.5.3 step 1. Indexed properties of typed arrays are special.
      if (mozilla::Maybe<uint64_t> index = ToTypedArrayIndex(id)) {
@@ -122,7 +122,7 @@
        auto tobj = HandleObject(obj).as<TypedArrayObject>();
        return DefineTypedArrayElement(cx, tobj, index.value(), desc_, result);
      }
-@@ -1696,6 +1726,27 @@
+@@ -1705,6 +1735,27 @@
    }
    MOZ_ASSERT(!prop.isTypedArrayElement());
 
@@ -150,7 +150,7 @@
    // From this point, the step numbers refer to
    // 10.1.6.3, ValidateAndApplyPropertyDescriptor.
    // Step 1 is a redundant assertion.
-@@ -1717,7 +1768,8 @@
+@@ -1730,7 +1781,8 @@
      // Fill in missing desc fields with defaults.
      CompletePropertyDescriptor(&desc);
 
@@ -160,7 +160,7 @@
        return false;
      }
      return result.succeed();
-@@ -1730,10 +1782,15 @@
+@@ -1743,10 +1795,15 @@
    // paper-over that difference.
    JS::PropertyAttributes attrs = GetPropertyAttributes(obj, prop);
    bool redundant;
@@ -177,7 +177,7 @@
      return result.succeed();
    }
 
-@@ -1776,7 +1833,9 @@
+@@ -1789,7 +1846,9 @@
        // Step 5.e.ii.
        if (desc.hasValue()) {
          RootedValue currentValue(cx);
@@ -188,7 +188,7 @@
            return false;
          }
 
-@@ -1807,7 +1866,9 @@
+@@ -1820,7 +1879,9 @@
      if (IsDataDescriptor(prop)) {
        if (!desc.hasValue()) {
          RootedValue currentValue(cx);
@@ -199,7 +199,7 @@
            return false;
          }
 
-@@ -1856,7 +1917,9 @@
+@@ -1869,7 +1930,9 @@
      MOZ_ASSERT(!desc.hasSetter());
      if (IsDataDescriptor(prop)) {
        RootedValue currentValue(cx);
@@ -210,14 +210,11 @@
          return false;
        }
        desc.setValue(currentValue);
-@@ -1869,12 +1932,111 @@
+@@ -1882,12 +1945,111 @@
    }
    desc.assertComplete();
 
 -  if (!AddOrChangeProperty<IsAddOrChange::Change>(cx, obj, id, desc, &prop)) {
--    return false;
--  }
--
 +  if (liveData && !desc_.isAccessorDescriptor() &&
 +      (!desc_.hasValue() || callNativeSetter)) {
 +    desc.setValue(nativeRecord);
@@ -225,9 +222,9 @@
 +  }
 +  if (!AddOrChangeProperty<IsAddOrChange::Change>(
 +          cx, obj, id, desc, &prop, kandeloLazyData)) {
-+    return false;
-+  }
-+
+     return false;
+   }
+
 +  // Native data setters observe the new attributes, including on throw.
 +  if (callNativeSetter) {
 +    return SetKandeloNativeDataProperty(cx, obj, id, nativeRecord,
@@ -326,7 +323,7 @@
  }
 
  bool js::NativeDefineDataProperty(JSContext* cx, Handle<NativeObject*> obj,
-@@ -2171,6 +2333,9 @@
+@@ -2184,6 +2346,9 @@
      return js::CallGetter(cx, receiver, getter, vp);
    }
 
@@ -336,7 +333,7 @@
    MOZ_ASSERT(prop.isCustomDataProperty());
 
    return GetCustomDataProperty(cx, obj, id, vp);
-@@ -2189,7 +2354,8 @@
+@@ -2202,7 +2367,8 @@
 
    vp.setUndefined();
 
@@ -346,7 +343,7 @@
      return true;
    }
 
-@@ -2482,6 +2648,18 @@
+@@ -2495,6 +2661,18 @@
      return result.succeed();
    }
 

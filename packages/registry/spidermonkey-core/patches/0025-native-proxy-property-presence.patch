@@ -19,6 +19,12 @@ The existing native and scripted-proxy get algorithms optionally report their
 lookup result. Trap lookup, execution, validation and ordering stay original.
 No HasProperty/descriptor preflight or second trap lookup is introduced.
 
+Preserve actual [[Get]] presence through proxy forwarding.
+
+The existing native and scripted-proxy get algorithms optionally report their
+lookup result. Trap lookup, execution, validation and ordering stay original.
+No HasProperty/descriptor preflight or second trap lookup is introduced.
+
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
 @@ -16,6 +16,8 @@
@@ -30,7 +36,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
  #include "vm/EqualityOperations.h"  // js::SameValue
  #include "vm/GetterSetter.h"        // js::GetterSetter
  #include "vm/Interpreter.h"         // js::CallGetter, js::CallSetter
-@@ -2526,7 +2528,9 @@
+@@ -2543,7 +2545,9 @@
      JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
      typename MaybeRooted<Value, allowGC>::HandleType receiver,
      typename MaybeRooted<jsid, allowGC>::HandleType id, IsNameLookup nameLookup,
@@ -41,15 +47,15 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
    typename MaybeRooted<NativeObject*, allowGC>::RootType pobj(cx, obj);
    PropertyResult prop;
 
-@@ -2544,6 +2548,7 @@
-             return false;
+@@ -2562,6 +2566,7 @@
+               return false;
+             }
+             if (handled) {
++              if (found) *found = true;
+               return true;
+             }
            }
-           if (handled) {
-+            if (found) *found = true;
-             return true;
-           }
-         }
-@@ -2554,6 +2559,7 @@
+@@ -2573,6 +2578,7 @@
      }
 
      if (prop.isFound()) {
@@ -57,7 +63,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
        // Steps 3-7. Special case for dense elements because
        // GetExistingProperty doesn't support those.
        if (prop.isDenseElement()) {
-@@ -2585,6 +2591,9 @@
+@@ -2604,6 +2610,9 @@
      // is non-native, that optimization would be incorrect.
      if (proto->getOpsGetProperty()) {
        typename MaybeRooted<JSObject*, allowGC>::RootType protoRoot(cx, proto);
@@ -67,7 +73,7 @@ No HasProperty/descriptor preflight or second trap lookup is introduced.
        return GeneralizedGetProperty<allowGC>(cx, protoRoot, id, receiver,
                                               nameLookup, vp);
      }
-@@ -2598,6 +2607,45 @@
+@@ -2617,6 +2626,45 @@
                             MutableHandleValue vp) {
    return NativeGetPropertyInline<CanGC>(cx, obj, receiver, id, NotNameLookup,
                                          vp);

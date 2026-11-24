@@ -138,20 +138,21 @@
      }
 --- a/js/src/vm/NativeObject-inl.h
 +++ b/js/src/vm/NativeObject-inl.h
-@@ -735,6 +735,12 @@
+@@ -735,6 +735,13 @@
  static MOZ_ALWAYS_INLINE bool NativeLookupOwnPropertyInline(
      JSContext* cx, typename MaybeRooted<NativeObject*, allowGC>::HandleType obj,
      typename MaybeRooted<jsid, allowGC>::HandleType id, PropertyResult* propp) {
 +  if constexpr (allowGC == NoGC &&
 +                resolveMode != LookupResolveMode::IgnoreResolve) {
-+    if (obj->getClass()->getNativePropertyInterceptors()) {
++    if (!id.isEmbeddingPrivateName() &&
++        obj->getClass()->getNativePropertyInterceptors()) {
 +      return false;
 +    }
 +  }
    // Native objects should should avoid `lookupProperty` hooks, and those that
    // use them should avoid recursively triggering lookup, and those that still
    // violate this guidance are the ModuleEnvironmentObject.
-@@ -835,8 +841,28 @@
+@@ -843,8 +850,30 @@
          return false;
        }
      }
@@ -159,20 +160,22 @@
 -                                                             propp)) {
 +    bool interceptedAbsent = false;
 +    if constexpr (allowGC == CanGC) {
-+      if (const auto* ops =
-+              current->getClass()->getNativePropertyInterceptors();
-+          ops && ops->hasOwn) {
-+        bool found = false;
-+        bool handled = false;
-+        if (!ops->hasOwn(cx, current, id, &found, &handled)) {
-+          return false;
++      if (!id.isEmbeddingPrivateName()) {
++        if (const auto* ops =
++                current->getClass()->getNativePropertyInterceptors();
++            ops && ops->hasOwn) {
++          bool found = false;
++          bool handled = false;
++          if (!ops->hasOwn(cx, current, id, &found, &handled)) {
++            return false;
++          }
++          if (handled && found) {
++            objp.set(current);
++            propp->setNativeInterceptorProperty();
++            return true;
++          }
++          interceptedAbsent = handled;
 +        }
-+        if (handled && found) {
-+          objp.set(current);
-+          propp->setNativeInterceptorProperty();
-+          return true;
-+        }
-+        interceptedAbsent = handled;
 +      }
 +    }
 +    if (interceptedAbsent) {
@@ -184,7 +187,7 @@
 
 --- a/js/src/vm/NativeObject.cpp
 +++ b/js/src/vm/NativeObject.cpp
-@@ -1646,10 +1646,12 @@
+@@ -1655,10 +1655,13 @@
 
  bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
                                HandleId id, Handle<PropertyDescriptor> desc_,
@@ -193,23 +196,25 @@
 +                              NativePropertyInterception interception) {
    desc_.assertValid();
 
--  if (!kandeloLazyData) {
+-  if (!kandeloLazyData && !id.isEmbeddingPrivateName()) {
 +  if (!kandeloLazyData &&
-+      interception == NativePropertyInterception::Allow) {
++      interception == NativePropertyInterception::Allow &&
++      !id.isEmbeddingPrivateName()) {
      if (const auto* ops = obj->getClass()->getNativePropertyInterceptors();
          ops && ops->defineProperty) {
        bool handled = false;
-@@ -2849,7 +2851,8 @@
+@@ -2867,7 +2870,9 @@
 
    // Pure optimization for the common case. There's no point performing the
    // lookup in step 2.c again, as our caller just did it for us.
 -  if (IsQualified && receiver.isObject() && obj == &receiver.toObject()) {
 +  if (IsQualified && receiver.isObject() && obj == &receiver.toObject() &&
-+      !obj->getClass()->getNativePropertyInterceptors()) {
-     // Ensure that a custom GetOwnPropertyOp, if present, doesn't
-     // introduce additional properties which weren't previously found by
-     // LookupOwnProperty.
-@@ -3007,6 +3010,27 @@
++      (id.isEmbeddingPrivateName() ||
++       !obj->getClass()->getNativePropertyInterceptors())) {
+     if (id.isEmbeddingPrivateName()) {
+       return DefineNonexistentProperty(cx, obj, id, v, result);
+     }
+@@ -3028,6 +3033,27 @@
  bool js::NativeSetProperty(JSContext* cx, Handle<NativeObject*> obj,
                             HandleId id, HandleValue v, HandleValue receiver,
                             ObjectOpResult& result) {
@@ -272,7 +277,7 @@
      DenseElement,
      TypedArrayElement,
    };
-@@ -55,7 +56,12 @@
+@@ -57,7 +58,12 @@
    }
 
    bool isFound() const { return kind_ != Kind::NotFound; }
@@ -286,7 +291,7 @@
    bool isDenseElement() const { return kind_ == Kind::DenseElement; }
    bool isTypedArrayElement() const { return kind_ == Kind::TypedArrayElement; }
    bool isNativeProperty() const { return kind_ == Kind::NativeProperty; }
-@@ -83,6 +89,9 @@
+@@ -85,6 +91,9 @@
    }
 
    void setProxyProperty() { kind_ = Kind::NonNativeProperty; }

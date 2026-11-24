@@ -70,7 +70,9 @@ JSObject* NewTemplateRecord(Frame& frame,NativeTemplateKind kind,NativeObjectRol
   JS::SetReservedSlot(object,TemplateConfig,JS::PrivateValue(info.release()));
   JS::RootedObject properties(frame.cx,JS_NewObjectWithGivenProto(frame.cx,nullptr,nullptr));
   JS::RootedObject cache(frame.cx,JS::NewWeakMapObject(frame.cx));
-  JS::RootedObject privateProperties(frame.cx,JS_NewObjectWithGivenProto(frame.cx,nullptr,nullptr));
+  // Map keys are traced values, not enumerable object properties. Native
+  // enumeration must not expose embedding-private keys, even inside templates.
+  JS::RootedObject privateProperties(frame.cx,JS::NewMapObject(frame.cx));
   if(!properties||!cache||!privateProperties)return nullptr;
   JS::SetReservedSlot(object,TemplatePrivateProperties,JS::ObjectValue(*privateProperties));
   JS::SetReservedSlot(object,TemplateProperties,JS::ObjectValue(*properties));
@@ -238,19 +240,22 @@ bool ApplyTemplateProperties(Frame& frame,JS::HandleObject record,JS::HandleObje
       if(!JS_DefinePropertyById(frame.cx,target,key,descriptor))return false;
     }else if(!JS_WrapValue(frame.cx,&value)||!JS_DefinePropertyById(frame.cx,target,key,value,flags))return false;
   }
-  // Private entries are installed separately and never become public keys.
+  // Keep template private keys in bridge metadata. Materialize actual hidden
+  // properties on each recipient; never enumerate them from an object.
   properties=&JS::GetReservedSlot(record,TemplatePrivateProperties).toObject();
-  keys.clear();
-  {JSAutoRealm home(frame.cx,properties);if(!js::GetPropertyKeys(frame.cx,properties,JSITER_OWNONLY|JSITER_HIDDEN|JSITER_SYMBOLS,&keys))return false;}
-  for(size_t i=0;i<keys.length();++i){
-    JS::RootedId key(frame.cx,keys[i]);JS::RootedValue source(frame.cx),value(frame.cx);
-    JS::Rooted<mozilla::Maybe<JS::PropertyDescriptor>> stored(frame.cx);
-    {JSAutoRealm home(frame.cx,properties);if(!JS_GetOwnPropertyDescriptorById(frame.cx,properties,key,&stored))return false;}
-    CHECK(stored.isSome()&&stored.get().ref().isDataDescriptor());
-    const auto& descriptor=stored.get().ref();source=descriptor.value();
-    unsigned flags=descriptor.enumerable()?JSPROP_ENUMERATE:0;
-    if(!descriptor.writable())flags|=JSPROP_READONLY;if(!descriptor.configurable())flags|=JSPROP_PERMANENT;
-    if(!MaterializeTemplateValue(frame,source,context,&value)||!DefinePrivateEntry(frame,target,key,value,flags))return false;
+  JS::RootedValueVector entries(frame.cx);
+  {JSAutoRealm home(frame.cx,properties);
+    if(!properties->as<js::MapObject>().getKeysAndValuesInterleaved(&entries))return false;}
+  for(size_t i=0;i<entries.length();i+=2){
+    JS::RootedValue name(frame.cx,entries[i]),source(frame.cx),attributes(frame.cx),value(frame.cx);
+    {JSAutoRealm home(frame.cx,properties);
+      JS::RootedObject descriptor(frame.cx,&entries[i+1].toObject());
+      if(!JS_GetElement(frame.cx,descriptor,0,&source)||
+         !JS_GetElement(frame.cx,descriptor,1,&attributes))return false;}
+    CHECK(attributes.isInt32());JS::RootedId key(frame.cx);
+    if(!MaterializeTemplateValue(frame,source,context,&value)||
+       !JS_WrapValue(frame.cx,&name)||!JS_ValueToId(frame.cx,name,&key)||
+       !DefinePrivateEntry(frame,target,key,value,unsigned(attributes.toInt32())))return false;
   }
   return true;
 }
@@ -413,6 +418,13 @@ void StoreTemplateProperty(Template* receiver,JS::HandleValue name,Local<Data> d
   }
   CHECK(!(unsigned(attrs)&~7u));unsigned flags=(attrs&DontEnum)?0:JSPROP_ENUMERATE;
   if(attrs&ReadOnly)flags|=JSPROP_READONLY;if(attrs&DontDelete)flags|=JSPROP_PERMANENT;
+  if(slot==TemplatePrivateProperties){
+    // Attributes describe the future instance, not the template's metadata.
+    JS::RootedValueArray<2> fields(frame.cx);fields[0].set(value);fields[1].setInt32(int32_t(flags));
+    JS::RootedObject descriptor(frame.cx,JS::NewArrayObject(frame.cx,fields));CHECK(descriptor);
+    JS::RootedValue stored(frame.cx,JS::ObjectValue(*descriptor));
+    CHECK(JS::MapSet(frame.cx,properties,key,stored));return;
+  }
   CHECK(JS_DefinePropertyById(frame.cx,properties,id,value,flags));
 }
 }

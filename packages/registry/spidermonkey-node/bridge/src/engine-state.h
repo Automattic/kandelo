@@ -66,7 +66,6 @@ struct State {
   std::unique_ptr<JS::PersistentRootedObject> compilationOrigins;
   // Hidden private entries are ephemerons, never properties on user objects.
   // Globals keep their GC-sensitive context fields in application slots.
-  std::unique_ptr<JS::PersistentRootedObject> privateEntries;
   std::unique_ptr<JS::PersistentRootedValue> continuationData;
   struct ExternalStringResourceRecord {
     String::ExternalOneByteStringResource* one=nullptr;
