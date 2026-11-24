@@ -40,13 +40,12 @@ and [CLI PR documentation](https://cli.github.com/manual/gh_pr_create).
 ## Check changes to the host boundary
 
 For changes to the syscall dispatcher or kernel ABI, run
-`bash scripts/dev-shell.sh npm --prefix host test -- run --config vitest.host-boundary.config.ts`
+`bash scripts/dev-shell.sh npm --prefix host test -- run --config test/vitest.host-boundary.config.ts`
 with the host dependencies installed. A new syscall-specific reference in the
 JavaScript dispatcher, a new or changed kernel import, or a new host intercept
 in the ABI needs an explicit ownership review. Explain the platform primitive
 that needs the host and how a host without it reports failure. Update the
 inventory for reviewed changes, including removals, in the same patch.
-
 
 ## Daily validation and promotion
 
