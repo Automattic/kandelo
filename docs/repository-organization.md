@@ -10,6 +10,7 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 |------|------|--------------|
 | `crates/runtime-core/` | Engine-independent POSIX subsystems: syscalls, process table, fd tables, filesystems, signals, sockets, PTY, devices | Worker lifecycle, browser APIs, package builds |
 | `crates/kernel/` | Wasm exports and host-import adapter around runtime-core | Independent POSIX implementations, package builds |
+| `crates/host-native/` | Wasmtime smoke runner for the kernel artifact and syscall channel | General-purpose native hosting |
 | `crates/program-abi/` | Program ABI version and artifact declarations consumed by the fork instrumenter | Kernel-host-only metadata |
 | `crates/shared/` | Platform contracts and re-exports of program ABI declarations | Fork instrumentation implementation |
 | `host/src/` | TypeScript host runtime shared by Node.js and browser environments | Browser demo UI |
