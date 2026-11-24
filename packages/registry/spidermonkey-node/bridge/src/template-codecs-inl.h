@@ -243,7 +243,8 @@ bool ApplyTemplateProperties(Frame& frame,JS::HandleObject record,JS::HandleObje
   // Keep template private keys in bridge metadata. Materialize actual hidden
   // properties on each recipient; never enumerate them from an object.
   properties=&JS::GetReservedSlot(record,TemplatePrivateProperties).toObject();
-  JS::RootedValueVector entries(frame.cx);
+  JS::Rooted<JS::GCVector<JS::Value>> entries(
+      frame.cx,JS::GCVector<JS::Value>(js::TempAllocPolicy(frame.cx)));
   {JSAutoRealm home(frame.cx,properties);
     if(!properties->as<js::MapObject>().getKeysAndValuesInterleaved(&entries))return false;}
   for(size_t i=0;i<entries.length();i+=2){
