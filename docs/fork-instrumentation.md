@@ -2349,7 +2349,10 @@ chosen with `--side-modules`:
 
 - `traced-entries` (the default). The analysis treats a side module as
   entering the main program only through its imports (an `env` function or
-  a `GOT.func` slot). A function whose fork child can return to a caller is
+  a `GOT.func` slot). A main-program call through a pointer that may reach
+  a side module still returns normally and may throw, but no fork child
+  returns through it, so it does not by itself keep its callers
+  instrumented. A function whose fork child can return to a caller is
   *fork-returning*; it stays instrumented in the callers' frames. The
   instrumenter records the main module's side of that assumption in a
   `kandelo.wpk_fork.dlopen_contract` custom section: the exported

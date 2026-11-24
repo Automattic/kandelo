@@ -136,7 +136,7 @@ fn native_sink_planner_keeps_unresolved_external_dispatch_open() {
     let scan = streaming::scan(&bytes).unwrap();
     let mut store = FactsStore::empty(Default::default()).unwrap();
     let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
-    assert!(program.has_external_dispatch());
+    assert!(program.external_may_fork_return());
     let today = scan.reaching_from_seeds([0], true).unwrap();
     let plan = plan_sinks(
         &mut program,

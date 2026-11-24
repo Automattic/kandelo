@@ -358,19 +358,21 @@ impl<'a> Planner<'_, '_, 'a> {
     }
     fn closure(&mut self) -> Result<()> {
         let store = self.plan.original_program().store;
-        super::target_groups::reaching(
-            store,
-            self.seed,
-            self.plan
-                .original_program()
-                .has_external_dispatch()
-                .then_some(EXT),
-        )?;
+        // WHY: a call site can name EXT because external code returns to it
+        // normally. EXT is a fork path only when that code may also return
+        // through a fork child; otherwise it neither reaches the seed nor
+        // makes its callers return in the child.
+        let external = self
+            .plan
+            .original_program()
+            .external_may_fork_return()
+            .then_some(EXT);
+        super::target_groups::reaching(store, self.seed, external)?;
         for f in self.indices("SELECT function FROM sink_reaching ORDER BY function", [])? {
             let i = self.ix(f);
             self.reaching[i] = true;
         }
-        let mut queue = VecDeque::from([EXT]);
+        let mut queue = VecDeque::from_iter(external);
         while let Some(g) = queue.pop_front() {
             for f in self.callers(g)? {
                 let i = self.ix(f);
@@ -552,7 +554,7 @@ impl<'a> Planner<'_, '_, 'a> {
         }
         let mut queue = VecDeque::new();
         let mut queued = vec![false; self.n];
-        for root in [self.seed, EXT] {
+        for root in std::iter::once(self.seed).chain(self.reaching[self.n].then_some(EXT)) {
             for f in self.callers(root)? {
                 if !queued[f as usize] {
                     queued[f as usize] = true;
