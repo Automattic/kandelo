@@ -683,6 +683,30 @@ mod tests {
         store.completion_count(admission).unwrap()
     }
     #[test]
+    fn grouped_completion_admission_reservation_binds_exact_channels_at_full_budget() {
+        let (mut f, _, child) = bound_clone();
+        let parent_channel = f.process.table.group_task_channel(f.parent).unwrap();
+        let child_channel = f.process.table.group_task_channel(child).unwrap();
+        assert!(matches!(f.process.table.capture_group_channel_request(f.parent, &mut f.host), Err(Errno::ESRCH)));
+        assert!(matches!(f.process.table.capture_group_channel_request(child, &mut f.host), Err(Errno::ESRCH)));
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _full = crate::io_buffer::test_budget(held);
+        // Wrong channels cannot consume admission. Binding cannot allocate.
+        assert_eq!(f.process.table.bind_group_completion_channel(child, parent_channel), Err(Errno::ESRCH));
+        for (receipt, channel) in [(f.parent, parent_channel), (child, child_channel)] {
+            f.process.table.bind_group_completion_channel(receipt, channel).unwrap();
+            f.process.table.bind_group_completion_channel(receipt, channel).unwrap();
+            assert_eq!(f.process.table.bind_group_completion_channel(ReceiptRecord { serial: receipt.serial + 1000, ..receipt }, channel), Err(Errno::ESRCH));
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        assert_eq!(completion_count(&mut f), 0);
+        f.process.table.detach_group_completion_channel(child).unwrap();
+        f.process.table.bind_group_completion_channel(child, child_channel).unwrap();
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        // Bound metadata alone cannot grant a prepared child execution.
+        assert!(f.process.table.capture_group_channel_request(child, &mut f.host).is_err());
+    }
+    #[test]
     fn grouped_completion_actual_kernel_publishes_once_and_holds_until_ack() {
         use crate::group_completion::Effect as F;
         let mut f = clone_fixture();

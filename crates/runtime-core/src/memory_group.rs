@@ -110,6 +110,7 @@ enum Phase {
 struct Task {
     receipt: GroupAdmission,
     phase: Phase,
+    completion: Option<crate::group_completion::Reservation>,
 }
 
 struct Group {
@@ -638,11 +639,13 @@ impl MemoryGroups {
             execution,
         };
         let slot = PreparedMapSlot::new_in(&IO_MEMORY, 0)?;
+        let completion = crate::group_completion::Reservation::new()?;
         let entry = slot.finish(
             serial,
             Task {
                 receipt,
                 phase: Phase::Prepared,
+                completion: Some(completion),
             },
         )?;
         self.tasks.publish_io(entry);
@@ -656,6 +659,16 @@ impl MemoryGroups {
             group.snapshot.processes += 1;
         }
         Ok(receipt)
+    }
+
+    /// Only the actual ProcessTable channel owner consumes this reservation,
+    /// after it has checked the task's exact Rust-selected channel layout.
+    pub(crate) fn take_completion_reservation(
+        &mut self,
+        receipt: GroupAdmission,
+    ) -> Result<crate::group_completion::Reservation, Errno> {
+        self.task(receipt)?;
+        self.tasks.get_mut(&receipt.serial).unwrap().completion.take().ok_or(Errno::EBUSY)
     }
 
     fn task(&self, receipt: GroupAdmission) -> Result<&Task, Errno> {
@@ -901,6 +914,64 @@ mod tests {
         assert!(table.get(pid).unwrap().threads.is_empty());
         let snapshot = table.memory_groups().snapshot(group).unwrap();
         assert_eq!((snapshot.images, snapshot.tasks), (1, 1));
+        finish_member(&mut table, main);
+    }
+
+    #[test]
+    fn completion_reservation_refusal_precedes_root_and_pthread_publication() {
+        for pthread in [false, true] {
+            let mut refused = 0;
+            let mut admitted = 0;
+            for after in 0..8 {
+                let (mut table, group, main) = grouped_table();
+                let pid = if pthread { main.execution.pid } else { table.create_process().unwrap() };
+                let before = table.memory_groups().snapshot(group).unwrap();
+                crate::prepared_map::fail_after_allocations(after);
+                let result = if pthread {
+                    table.create_thread(pid, pid, 0x8000, 0, 0)
+                        .map(|tid| table.memory_group_task(pid, tid).unwrap().unwrap())
+                } else {
+                    table.prepare_process_memory_group(group, pid)
+                };
+                crate::prepared_map::fail_after_allocations(usize::MAX);
+                match result {
+                    Ok(receipt) => {
+                        admitted += 1;
+                        if pthread {
+                            table.get_mut(pid).unwrap().remove_thread(receipt.execution.tid).unwrap();
+                            table.memory_groups().cancel_unconstructed(receipt).unwrap();
+                        } else {
+                            table.remove_process(pid).unwrap();
+                        }
+                    }
+                    Err(Errno::ENOMEM) => {
+                        refused += 1;
+                        assert!(table.get(pid).unwrap().threads.is_empty());
+                        if !pthread {
+                            assert_eq!(table.process_memory_group(pid), Ok(None));
+                            table.remove_process(pid).unwrap();
+                        }
+                    }
+                    other => panic!("unexpected task admission result {other:?}"),
+                }
+                assert_eq!(table.memory_groups().snapshot(group).unwrap(), before);
+                finish_member(&mut table, main);
+            }
+            assert!(refused > 0);
+            assert!(admitted > 0);
+        }
+    }
+
+    #[test]
+    fn unbound_completion_reservations_retire_without_channel_metadata_or_budget_growth() {
+        let (mut table, group, main) = grouped_table();
+        let held = IO_MEMORY.usage().0;
+        for _ in 0..40 {
+            let child = table.fork_process_for_caller(main.execution.pid, main.execution.tid).unwrap();
+            table.remove_process(child).unwrap();
+            assert_eq!(IO_MEMORY.usage().0, held);
+            assert_eq!(table.memory_groups().snapshot(group).unwrap().tasks, 1);
+        }
         finish_member(&mut table, main);
     }
 

@@ -912,6 +912,33 @@ mod replacement_tests {
         assert_eq!(f.table.exec_generation(f.pid), Ok(0));
     }
     #[test]
+    fn completion_reservation_exec_refusal_and_cancellation_leave_no_future_owner() {
+        let mut refused = 0;
+        let mut admitted = 0;
+        for after in 0..8 {
+            let mut f = Fixture::new();
+            f.group();
+            let target = f.target(&grouped(3));
+            let group = f.table.process_memory_group(f.pid).unwrap().unwrap();
+            let before = f.table.memory_groups().snapshot(group).unwrap();
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            crate::prepared_map::fail_after_allocations(after);
+            let result = f.table.prepare_grouped_exec(f.pid, f.pid, target);
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            match result {
+                Ok(future) => { admitted += 1; cancel(&mut f, future); }
+                Err(Errno::ENOMEM) => { refused += 1; }
+                other => panic!("unexpected exec admission result {other:?}"),
+            }
+            assert_eq!(f.table.memory_groups().snapshot(group).unwrap(), before);
+            assert!(f.table.get(f.pid).unwrap().pending_grouped_exec.is_none());
+            assert_eq!(f.table.exec_generation(f.pid), Ok(0));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        assert!(refused > 0);
+        assert!(admitted > 0);
+    }
+    #[test]
     fn unconfigured_commit_consumes_target_but_preserves_old_image_and_cancel_custody() {
         let mut f = Fixture::new();
         f.group();

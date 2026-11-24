@@ -56,6 +56,17 @@ authorize reuse. The optional scalar usage API reports allocator contention as
 `EAGAIN` without poisoning the kernel. No persistent browser or audio realm receives the guest
 memory or a view into it.
 
+Each root, fork, exec and pthread admission reserves its completion-channel
+metadata before publishing the task or constructing a Worker. The Rust task
+ledger owns that allocation until the exact channel layout binds it. Binding
+uses the reservation even when the metadata budget is full; an incorrect
+channel cannot consume it. An unbound reservation grants no dispatch or signal
+publication rights, and cancellation or retirement drops it with its task.
+Once bound, the node stays with the exact physical owner through transport
+detachment and acknowledgement. A live task can bind its same channel again
+after the previous call settles without another allocation. Physical release
+prunes the binding; a detached channel cannot dispatch or receive signals.
+
 Unconstructed cancellation returns physical storage and releases task admission
 in one Rust operation. Allocator contention retains the exact receipt and its
 budget for retry. The host drops its platform references only after Rust

@@ -55,9 +55,25 @@ struct Binding {
     interrupt: bool,
     call: Option<Call>,
 }
+impl Binding {
+    fn new(receipt: ReceiptRecord, channel: u32) -> Self {
+        Self { receipt, channel, detached: false, natural_exit: false,
+            process_exit: false, exec_retired: false, signal: None,
+            signal_written: false, fatal: false, interrupt: false, call: None }
+    }
+}
 impl MapMemory for Binding {
     fn heap_bytes(&self) -> Result<usize, Errno> {
         Ok(0)
+    }
+}
+/// Allocated with the exact task admission, before any physical or native
+/// publication. An unbound reservation is not a channel and cannot dispatch.
+/// The task ledger drops it on every never-constructed rollback path.
+pub(crate) struct Reservation(PreparedMapSlot<Key, Binding>);
+impl Reservation {
+    pub(crate) fn new() -> Result<Self, Errno> {
+        Ok(Self(PreparedMapSlot::new_in(&IO_MEMORY, 0)?))
     }
 }
 pub(crate) struct Completions {
@@ -180,31 +196,22 @@ impl ProcessTable {
                 && self.memory_group_prepared_admission(admission.execution()).ok() != Some(admission)) {
             return Err(Errno::ESRCH);
         }
+        let (_, stored) = self.memory_groups().storage_owner(receipt)?;
+        if stored != admission { return Err(Errno::ESRCH); }
         let key = Key(receipt.group, receipt.serial);
-        if let Some(binding) = self.group_completions_ref().bindings.get(&key) {
-            return if binding.receipt == receipt && binding.channel == channel && !binding.detached
-            {
-                Ok(())
-            } else {
-                Err(Errno::EBUSY)
-            };
+        if let Some(binding) = self.group_completions_ref().bindings.get(&key).copied() {
+            if binding.receipt != receipt || binding.channel != channel
+                || binding.detached && binding.call.is_some() { return Err(Errno::EBUSY); }
+            if binding.detached {
+                self.set_completion_binding(Binding::new(receipt, channel));
+            }
+            return Ok(());
         }
-        let prepared = PreparedMapSlot::new_in(&IO_MEMORY, 0)?.finish(
+        let reserved = self.memory_groups().take_completion_reservation(admission)?;
+        let prepared = reserved.0.finish(
             key,
-            Binding {
-                receipt,
-                channel,
-                detached: false,
-                natural_exit: false,
-                process_exit: false,
-                exec_retired: false,
-                signal: None,
-                signal_written: false,
-                fatal: false,
-                interrupt: false,
-                call: None,
-            },
-        )?;
+            Binding::new(receipt, channel),
+        ).expect("scalar completion binding must fit its admitted reservation");
         self.group_completions().bindings.publish_io(prepared);
         Ok(())
     }
@@ -382,13 +389,9 @@ impl ProcessTable {
     pub fn detach_group_completion_channel(&mut self, receipt: ReceiptRecord) -> Result<(), Errno> {
         let mut binding = self.completion_binding(receipt)?;
         binding.detached = true;
-        if binding.call.is_none() {
-            self.group_completions()
-                .bindings
-                .remove(&Key(receipt.group, receipt.serial));
-        } else {
-            self.set_completion_binding(binding);
-        }
+        // Keep the admitted node until physical release. Rebinding an exact
+        // live channel must not allocate, even after its detached call's ACK.
+        self.set_completion_binding(binding);
         Ok(())
     }
     /// The actual engine observation reports its exact retained wait identity.
@@ -1072,13 +1075,7 @@ impl ProcessTable {
         let (store, admission) = self.memory_groups().storage_owner(receipt)?;
         store.release_completion(admission)?;
         binding.call = None;
-        if binding.detached {
-            self.group_completions()
-                .bindings
-                .remove(&Key(receipt.group, receipt.serial));
-        } else {
-            self.set_completion_binding(binding);
-        }
+        self.set_completion_binding(binding);
         Ok(())
     }
 }
