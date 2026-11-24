@@ -21,20 +21,17 @@ clarifies exclusive callback selection and the four-edge nesting limit.
 | `epoll_create1` | musl wrapper; syscall 239 | ordinary scalar dispatch to `sys_epoll_create1` | ordinary dispatch and result |
 | `epoll_create` | musl validates positive size; raw syscall 378 also validates it | same instance creation as create1 with flags zero | ordinary dispatch and result |
 | `epoll_ctl` | syscall 240; one opaque input record for ADD/MOD; DEL normalizes its unused pointer to null | reads the shared event layout, then changes the OFD-owned instance | bounds-checked opaque transfer; no interest-list mirror |
-| `epoll_pwait` | cancellation point, syscall 241; eight-byte kernel signal mask | signal context plus one nonblocking delivery attempt; internal EAGAIN means park | shared Node/browser `handleEpollPwait`: mask scope, exact wait token, monotonic deadline, event copyout and yielding retry |
-| `epoll_wait` | musl delegates to pwait with no mask; raw alias 379 | same delivery engine | same parking path without a mask swap |
+| `epoll_pwait` | cancellation point, syscall 241 and an eight-byte signal mask | validates caller memory, scopes the mask, parks on the kernel wait queue, and writes ready events into the caller | forwards the raw address words and publishes the kernel result |
+| `epoll_wait` | musl delegates to pwait with no mask, and raw alias 379 also works | same parking path | forwards the event address and publishes the kernel result |
 | `epoll_pwait2` | no C wrapper in pinned musl or either Kandelo syscall-number header; the Rust libc fork retains the unsupported Linux raw constant `SYS_epoll_pwait2 = 441` | no Kandelo syscall assignment, descriptor, glue, dispatcher or export | not implemented; the Rust constant does not establish runtime support |
 | obsolete `epoll_ctl_old` / `epoll_wait_old` | not exposed by either SDK target | absent | absent |
 
-The host intercepts only waits. It dispatches one kernel attempt without
-sleeping the dedicated worker. Indexed kernel notifications reaching an epoll
-with sleeping waiters raise the existing coalesced broad-readiness retry.
-Parking no longer resolves/copies every registration to collect pipe/listener
-hints. A timerfd expiry is accounted by the kernel timer at the earliest armed
-timerfd deadline. The existing bounded yielding fallback remains for providers
-that require sampling; its interval is unchanged. Every retry uses the same
-absolute monotonic deadline. An empty set can sleep and later observe a
-concurrent registration.
+The kernel owns the epoll park and its monotonic deadline. An indexed
+notification that reaches a sleeping instance triggers a readiness check. The
+kernel also requests a bounded fallback probe through its normal wait timer
+for providers that require sampling. A timerfd expiry is accounted before the
+kernel rechecks ready events. An empty set can sleep and observe a concurrent
+registration.
 
 ## Behavior matrix
 
@@ -136,26 +133,21 @@ be included in scaling measurements. Coarse device sources can still fan out to
 many registrations, and sampling-provider costs remain platform work; the index
 does not manufacture object-specific notifications where a producer lacks them.
 
-The shared Node/browser scheduler uses the existing broad-readiness record only
-when a notification reaches a sleeping instance (or ADD/MOD reaches its own
-sleeping instance). This also covers nested, sibling-only and empty-set waits
-without a host interest-list mirror. It can retry unrelated parked waits; this
-tradeoff replaces full-list wake-hint joins, not the kernel's readiness decision.
-The retained `kernel_epoll_wake_indices` export remains available as introspection
-but is no longer called by the active epoll parking path.
+The kernel rechecks parked epoll calls when an indexed notification reaches
+an instance with a waiter, including nested, sibling-only, and empty-set
+waits. The `kernel_epoll_wake_indices` export remains available for
+introspection. Host adapters also deliver deadlines through the existing
+kernel wait timer.
 
-The shared OFD state retires its registrations when its last owner disappears.
-An interest itself does not retain the target. A parked wait separately owns
-the epoll description and a backing reference. Its unique token is returned by
-`kernel_epoll_wait_token`; `kernel_epoll_wait_finish` accepts that token, so
-late cleanup cannot act on a different execution's wait. Exec, exit, thread
-exit and task cancellation also retire the kernel lease.
+A parked call pins the epoll description and its backing independently of the
+fd number. Exec, exit, and task retirement drop the park, and the completion
+record carries the generation so the adapter can discard a stale result.
 
-The kernel restores explicit and host-preinstalled temporary masks before
-processing pending signals on ready, zero-timeout and error returns. A
-signal blocked by the original mask stays pending when an already-ready
-batch wins. Internal EAGAIN retains the context while parked; EINTR retains
-it for handler delivery. Host output-range validation precedes mask setup.
+Rust validates the output range before installing the temporary mask. A ready
+batch wins over a signal blocked under the original mask. The kernel restores
+the original mask at readiness, timeout, cancellation, or error. A signal
+interruption keeps the temporary mask through signal delivery so the handler
+can run and the signal-return path can restore the original mask.
 
 Pipe-backed stream shutdown marks the connection half in the shared pipe
 backing before dropping the calling process's reference. Inherited stream

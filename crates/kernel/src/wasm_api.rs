@@ -4163,121 +4163,6 @@ pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
     }
 }
 
-/// Swap thread `tid` of `pid` onto a temporary blocked-signal mask for the
-/// duration of a host-converted epoll_pwait/ppoll wait (the host runs those
-/// waits as non-blocking poll retries, so the kernel never sees one blocking
-/// syscall it could scope the mask to). Uses the per-task LIFO mask-wait
-/// context: the signal-delivery machinery restores the saved mask after
-/// delivering the signal that ended the wait. Idempotent while a swap is
-/// active (a host retry re-enters the active top context).
-/// Returns 0 on success, -ESRCH if the process does not exist.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_swap_poll_sigmask(pid: u32, tid: u32, mask: u64) -> i32 {
-    use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get_mut(pid) {
-        Some(proc) => {
-            let m = mask
-                & !(crate::signal::sig_bit(SIGKILL)
-                    | crate::signal::sig_bit(SIGSTOP));
-            proc.enter_signal_mask_wait_for(
-                tid,
-                crate::signal::SignalMaskWaitKind::EpollPwait,
-                m,
-            );
-            0
-        }
-        None => -(Errno::ESRCH as i32),
-    }
-}
-
-/// Query the exact generation retained by this task's parked epoll call.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_epoll_wait_token(pid: u32, tid: u32) -> u64 {
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    table
-        .get(pid)
-        .and_then(|proc| proc.epoll_waits.iter().find(|(owner, _)| *owner == tid))
-        .map(|(_, lease)| lease.token)
-        .unwrap_or(0)
-}
-
-/// A private non-delivering check of one retained epoll wait. Only 1 certifies
-/// StillBlocked; 0/negative means the host must run its ordinary retry. This
-/// is not a guest syscall/coherence boundary and never publishes a result.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_epoll_wait_retry_state(
-    pid: u32,
-    tid: u32,
-    token: u64,
-    deadline_handle: u64,
-) -> i32 {
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Err(error) = table.bind_current_tid(pid, tid) {
-        return -(error as i32);
-    }
-    let result = (|| {
-        let mut host = WasmHostIO;
-        if deadline_handle != 0 {
-            let now = crate::wait_park::now_ns(&mut host)?;
-            if !crate::wait_queue::global::epoll_deadline_pending(
-                crate::wait_queue::ChannelGeneration(deadline_handle),
-                pid,
-                tid,
-                now,
-            ) {
-                return Ok(false);
-            }
-        }
-        let (proc, mut peers, _) = table
-            .current_process_peers_and_locks()
-            .ok_or(Errno::ESRCH)?;
-        syscalls::epoll_wait_still_blocked(proc, &mut host, tid, token, &mut peers)
-    })();
-    table.clear_current_tid_binding();
-    match result {
-        Ok(true) => 1,
-        Ok(false) => 0,
-        Err(error) => -(error as i32),
-    }
-}
-
-/// Retire only this execution's wait. An old worker's asynchronous retirement
-/// after exec must never cancel the replacement image's wait on the same TID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_epoll_wait_finish(pid: u32, tid: u32, token: u64) -> i32 {
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let Some(proc) = table.get_mut(pid) else {
-        return -(Errno::ESRCH as i32);
-    };
-    crate::epoll::finish_wait_token(proc, tid, token);
-    0
-}
-
-/// Restore the mask kernel_swap_poll_sigmask saved, unless a signal became
-/// deliverable under the temporary mask — then the swap stays active so the
-/// dequeue path both delivers that signal and performs the restore itself.
-/// Returns 0 on success, -ESRCH if the process does not exist.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_restore_poll_sigmask(pid: u32, tid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get_mut(pid) {
-        Some(proc) => {
-            if proc.deliverable_for(tid) == 0 {
-                proc.finish_signal_mask_wait_for(
-                    tid,
-                    crate::signal::SignalMaskWaitKind::EpollPwait,
-                );
-            }
-            0
-        }
-        None => -(Errno::ESRCH as i32),
-    }
-}
-
 /// Find a thread of `pid` that currently has `signum` unblocked. Returns
 /// a positive TID (the process PID for the main thread, allocated TIDs for
 /// worker threads), 0 if no thread accepts it, or -ESRCH if the process
@@ -7538,21 +7423,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let event_ptr = channel_const_ptr!(3, u8);
             kernel_epoll_ctl(a1, a2, a3, event_ptr)
         }
-        241 => {
-            let events_ptr = channel_mut_ptr!(1, u8);
-            let sigmask_ptr = channel_const_ptr!(4, u8);
-            if !sigmask_ptr.is_null()
-                && process_size!(5)
-                    != wasm_posix_shared::kernel_scratch_wire::SIGNAL_MASK_BYTES as usize
-            {
-                return -(Errno::EINVAL as i32);
-            }
-            kernel_epoll_pwait(a1, events_ptr, a3, a4, sigmask_ptr)
-        }
-        379 => {
-            let events_ptr = channel_mut_ptr!(1, u8);
-            kernel_epoll_pwait(a1, events_ptr, a3, a4, core::ptr::null())
-        }
+        241 => channel_epoll_pwait(a1, args[1] as u64, a3, a4, args[4] as u64, args[5] as u64),
+        379 => channel_epoll_pwait(a1, args[1] as u64, a3, a4, 0, 0),
 
         // eventfd
         242 => kernel_eventfd2(a1 as u32, a2 as u32), // SYS_EVENTFD2: (initval, flags)
@@ -10298,53 +10170,22 @@ pub fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i3
     result
 }
 
-/// Wait for events on an epoll instance.
-/// Returns number of ready events (>= 0), or negative errno on error.
-pub fn kernel_epoll_pwait(
-    epfd: i32,
-    events_ptr: *mut u8,
-    maxevents: i32,
-    timeout: i32,
-    sigmask_ptr: *const u8,
+/// Dispatch epoll with caller addresses, so a park retains no scratch memory.
+fn channel_epoll_pwait(
+    fd: i32, events: u64, capacity: i32, timeout_ms: i32, mask: u64, mask_size: u64,
 ) -> i32 {
-    let _gkl = GklGuard::acquire();
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let Some((proc, mut peers, advisory_locks)) = table.current_process_peers_and_locks() else {
-        return -(Errno::ESRCH as i32);
-    };
+    let (_gkl, proc, mut peers, locks) = unsafe { get_process_peers_and_locks() };
+    let task = channel_guest_task(proc);
     let mut host = WasmHostIO;
-
-    // Read signal mask if provided
-    let sigmask = if !sigmask_ptr.is_null() {
-        Some(unsafe { *(sigmask_ptr as *const u64) })
-    } else {
-        None
-    };
-
-    let result = match syscalls::sys_epoll_pwait_with_peers(proc, &mut host, epfd, maxevents, timeout, sigmask, &mut peers,
-    )
-    {
-        Ok((count, events)) => {
-            for (i, (ev, data)) in events.iter().enumerate() {
-                let event = wasm_posix_shared::WasmEpollEvent {
-                    events: *ev,
-                    _pad: 0,
-                    data: *data,
-                };
-                unsafe {
-                    core::ptr::write_unaligned(
-                        events_ptr
-                            .add(i * core::mem::size_of::<wasm_posix_shared::WasmEpollEvent>())
-                            .cast::<wasm_posix_shared::WasmEpollEvent>(),
-                        event,
-                    );
-                }
-            }
-            count
-        }
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    let outcome = (|| {
+        let bits = u32::from(task.pointer_width) * 8;
+        let events = channel_scalar::process_size_for_pointer_bits(events, bits).ok_or(Errno::EFAULT)?;
+        let mask = channel_scalar::process_size_for_pointer_bits(mask, bits).ok_or(Errno::EFAULT)?;
+        crate::wait_epoll::Request::start(proc, &mut peers, &mut host, task,
+            fd, events, capacity, timeout_ms, mask, mask_size)
+    })();
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, locks, &mut host);
     result
 }
 
@@ -17796,12 +17637,55 @@ pub extern "C" fn kernel_drain_wakeup_events(
     settle_signal_waits();
     release_orphaned_ofd_locks();
     settle_retry_waits();
+    if crate::wait_park::with(|parks| parks.epoll_ready()) {
+        if let Ok(now) = crate::wait_park::now_ns(&mut WasmHostIO) {
+            settle_epoll_waits(now);
+        }
+    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     if crate::wait_park::settle(table) {
         crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_WAIT_COMPLETE);
     }
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
+}
+
+/// Recheck retained epoll descriptions before expiring guest deadlines.
+fn settle_epoll_waits(now: i64) {
+    let waiters = crate::wait_park::with(|parks| parks.take_epoll_waiters(now));
+    let mut host = WasmHostIO;
+    for (id, pid, tid, request) in waiters {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if table.bind_current_tid(pid, tid).is_err() {
+            continue;
+        }
+        let result = match table.current_process_peers_and_locks() {
+            Some((proc, mut peers, _)) if proc.state != crate::process::ProcessState::Stopped => {
+                request.retry(proc, &mut peers, &mut host, tid)
+            }
+            _ => Err(Errno::EAGAIN),
+        };
+        table.clear_current_tid_binding();
+        let value = match result {
+            Ok(value) => value,
+            Err(Errno::EAGAIN) => continue,
+            Err(error) => -(error as i32),
+        };
+        crate::wait_park::with(|parks| parks.finish_epoll_waiter(id, value));
+    }
+}
+
+fn release_finished_epoll_waits() {
+    let finished = crate::wait_park::with(|parks| parks.take_finished_epoll());
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    for (pid, tid, token, restore_mask) in finished {
+        if let Some(proc) = table.get_mut(pid) {
+            let released = crate::epoll::finish_wait_token(proc, tid, token);
+            if released && restore_mask {
+                proc.finish_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::EpollPwait);
+            }
+        }
+    }
 }
 
 /// Collect the results the kernel decided for parked tasks.
@@ -17833,10 +17717,8 @@ pub extern "C" fn kernel_drain_wait_completions(
     } else {
         None
     };
-    // Timerfds are the other timed kernel state the host's timer serves (see
-    // kernel_wait_next_timeout_ns). Account the due ones now: their epoll
-    // interests are notified here, and the untargeted wake record makes the
-    // host retry the poll/select/epoll/read waits it keeps blocked.
+    // Account timerfds before rechecking epoll. Their expiration also raises
+    // a wake record for poll/select/read, which still have host-owned waits.
     if syscalls::timerfd_fire_due(&mut WasmHostIO) {
         crate::wakeup::push_timer_expired();
     }
@@ -17844,6 +17726,9 @@ pub extern "C" fn kernel_drain_wait_completions(
     settle_signal_waits();
     release_orphaned_ofd_locks();
     settle_retry_waits();
+    if let Some(now) = now {
+        settle_epoll_waits(now);
+    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     let drained = crate::wait_park::with(|parks| {
@@ -17875,6 +17760,7 @@ pub extern "C" fn kernel_drain_wait_completions(
     // Every decision above, the sweep's EINTRs included, is unpublished
     // until this returns: release the finished calls' pins first.
     release_completed_retry_bindings();
+    release_finished_epoll_waits();
     drained
 }
 

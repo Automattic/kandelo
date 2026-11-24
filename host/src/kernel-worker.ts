@@ -99,6 +99,7 @@ import {
   channelDiagnosticArguments,
   channelResultKind,
   normalizeChannelScalarArguments,
+  DIRECT_READINESS_ADDRESS_SLOTS,
   type ChannelScalarValue,
 } from "./channel-scalar-contract";
 import {
@@ -228,7 +229,6 @@ import {
   SIGNAL_ACTION_RESTART,
   SIGNAL_MASK_BYTES,
   SPAWN_WIRE_MAX_BYTES,
-  STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
   SYSCALL_ARGS,
@@ -937,8 +937,6 @@ const SYS_POLL = ABI_SYSCALLS.Poll;
 const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
 const SYS_PSELECT6 = ABI_SYSCALLS.Pselect6;
 const SYS_SELECT = ABI_SYSCALLS.Select;
-const SYS_EPOLL_PWAIT = ABI_SYSCALLS.EpollPwait;
-const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
 const SYS_SCHED_GETAFFINITY = ABI_SYSCALLS.SchedGetaffinity;
 const SYS_PRCTL = ABI_SYSCALLS.Prctl;
 
@@ -1145,7 +1143,6 @@ function enableKernelTmpfs(instance: WebAssembly.Instance): void {
  */
 const WAIT_KIND_POLL = 1;
 const WAIT_KIND_SELECT = 2;
-const WAIT_KIND_EPOLL = 3;
 
 /**
  * `kernel_wait_deadline_remaining_ns` sentinel for "this wait is live and has
@@ -1686,9 +1683,6 @@ interface ChannelInfo {
   waitHandle?: bigint;
   /** Force the next readiness dispatch to perform a zero-time final check. */
   readinessFinalCheck?: boolean;
-  /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
-  pollSigmaskSwapped?: boolean;
-  epollWaitToken?: bigint;
   /**
    * Generation of the kernel-owned park holding this channel's request, or
    * undefined. The kernel decides the result; the host publishes a completion
@@ -11144,15 +11138,6 @@ export class CentralizedKernelWorker {
     }
     this.pendingSelectRetries?.delete(channel);
     channel.readinessFinalCheck = undefined;
-    if (channel.epollWaitToken !== undefined) {
-      const token = channel.epollWaitToken;
-      channel.epollWaitToken = undefined;
-      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
-      const finish = instance?.exports.kernel_epoll_wait_finish as
-        ((pid: number, tid: number, token: bigint) => number) | undefined;
-      if (instance && !finish) throw new Error("kernel lacks kernel_epoll_wait_finish");
-      finish?.(channel.pid, this.guestTidForChannel(channel), token);
-    }
 
     this.removePendingPipeReader(channel);
     this.removePendingPipeWriter(channel);
@@ -12881,7 +12866,6 @@ export class CentralizedKernelWorker {
     this.retireChannelHostWaits(channel, entry);
     this.#forgetBlockingRetrySnapshotAfterKernelLifecycle(channel);
     channel.waitHandle = undefined;
-    channel.pollSigmaskSwapped = undefined;
 
     const processView = new DataView(
       channel.memory.buffer,
@@ -13266,15 +13250,6 @@ export class CentralizedKernelWorker {
     // (fcntl lock commands and flock go through the normal kernel path: the
     // kernel reads the caller's `struct flock` itself and parks a blocking
     // request (runtime_core::wait_retry).)
-
-    // --- epoll_pwait: the wait is still host-owned ---
-    // `epoll_create1`/`epoll_create`/`epoll_ctl` are NOT intercepted: they are
-    // ordinary kernel syscalls on the generic descriptor path. Only the
-    // blocking wait is here, and only until the K3 blocking scheduler owns it.
-    if (syscallNr === SYS_EPOLL_PWAIT || syscallNr === SYS_EPOLL_WAIT) {
-      this.handleEpollPwait(channel, syscallNr, origArgs, entry, rawArgs);
-      return;
-    }
 
     // --- SysV IPC: shmat/shmdt need host-side process memory management ---
     if (syscallNr === SYS_SHMAT) {
@@ -14887,11 +14862,9 @@ export class CentralizedKernelWorker {
       // keeps that mapping for the buffer's lifetime and re-reads it on
       // every commit, so refresh imported mappings when a wait reports
       // readiness — the moment the importer wakes to process a commit.
-      // Only poll/ppoll reach this tail; epoll_wait, select and pselect6 are
-      // intercepted before it and call the same helper where they report
-      // readiness. Below the EAGAIN branch so a still-blocked poller doesn't
-      // pay the copy on every retry.
-      if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      // Select and pselect6 still call this from their host completion path.
+      // Kernel-owned parks use the same refresh when their result is published.
+      if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL || DIRECT_READINESS_ADDRESS_SLOTS[syscallNr]) {
         this.#syncImportedBosBeforeResume(channel, retVal);
       }
 
@@ -14970,7 +14943,8 @@ export class CentralizedKernelWorker {
         channel,
         entry,
         (retryDisposition?.applicableSocketTimeoutMs ?? 0) > 0
-          || (retVal > 0 && syscallNr === SYS_READV),
+          || (retVal > 0 && syscallNr === SYS_READV)
+          || (errVal === EINTR_ERRNO && DIRECT_READINESS_ADDRESS_SLOTS[syscallNr] !== undefined),
       );
       if (
         routedMqNotification
@@ -17898,36 +17872,6 @@ export class CentralizedKernelWorker {
   ): void {
     this.closeWaitDeadline(channel, entry);
     channel.readinessFinalCheck = undefined;
-    if (channel.epollWaitToken !== undefined) {
-      const token = channel.epollWaitToken;
-      channel.epollWaitToken = undefined;
-      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
-      const finish = instance?.exports.kernel_epoll_wait_finish as
-        ((pid: number, tid: number, token: bigint) => number) | undefined;
-      if (instance && !finish) throw new Error("kernel lacks kernel_epoll_wait_finish");
-      finish?.(channel.pid, this.guestTidForChannel(channel), token);
-    }
-
-    if (channel.pollSigmaskSwapped) {
-      channel.pollSigmaskSwapped = undefined;
-      // Guarded kernel-side: a no-op when a signal became deliverable under
-      // the temporary mask — kernel_dequeue_signal owns the restore then.
-      // The entry keeps the call inside the active gate scope: the bare
-      // instance would open a NEW entry, which throws mid-retry
-      // (KernelReentrantEntryError while a syscall retry is active).
-      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
-      const restoreMask = instance?.exports.kernel_restore_poll_sigmask as
-        | ((pid: number, tid: number) => number)
-        | undefined;
-      // The swap above required the paired export; a kernel instance that
-      // is still live but lacks the restore half is the same broken build.
-      if (instance && !restoreMask) {
-        throw new Error(
-          "kernel lacks kernel_restore_poll_sigmask: epoll_pwait's signal mask cannot be restored",
-        );
-      }
-      restoreMask?.(channel.pid, this.guestTidForChannel(channel));
-    }
 
     const pollEntry = this.pendingPollRetries.get(channel);
     if (pollEntry) {
@@ -19173,7 +19117,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // (epoll_pwait parks in handleEpollPwait, which owns its own retry loop;
+    // (epoll_pwait parks in the kernel;
     //  it never reaches this generic blocking-retry path.)
 
     const needsFrozenDescriptorPolicy =
@@ -20286,389 +20230,6 @@ export class CentralizedKernelWorker {
       undefined,
       entry,
     );
-  }
-
-  // ---- epoll host-side implementation ----
-  //
-  // `epoll_create1`, `epoll_create` and `epoll_ctl` have no host-side
-  // implementation at all: they are ordinary kernel syscalls reached through
-  // the generic descriptor path, and `epoll_ctl`'s `struct epoll_event *` is
-  // staged by the `SYSCALL_ARG_DESCRIPTORS` entry the kernel declares for it.
-  //
-  // What remains here is `epoll_pwait`, and only because the *wait* is still
-  // host-owned: the kernel is dispatched with `timeout = 0` as a non-blocking
-  // readiness evaluation and this host loops until the caller's deadline. That
-  // loop is the K3 blocking-scheduler floor, shared in shape with `poll`, not
-  // an epoll-specific model — the kernel owns the interest list
-  // (`descriptor_backing::with_epolls`) and computes readiness
-  // (`sys_epoll_pwait`).
-  //
-  // The historical justification for a *larger* section here — that
-  // kernel_handle_channel crashed Chrome for epoll_pwait via a suspected V8
-  // shared-memory Wasm bug — is DISPROVED. The claim was re-tested on the
-  // real ABI-44 kernel across Node, Chromium and WebKit, on the main thread
-  // and in a dedicated worker with a peer sharing the memory, and it did not
-  // reproduce: `docs/plans/probes/2026-09-09-k0c-epoll/`.
-
-  /** Complete or reap an epoll wait when its kernel signal boundary fired. */
-  private completeEpollSignalOutcome(
-    channel: ChannelInfo,
-    entry: KernelWorkerEntryContext,
-    eventsReady = false,
-  ): boolean {
-    if (this.#finishSignalTermination(channel, entry)) return true;
-    const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return true;
-    if (deliveredSignal > 0 && !eventsReady) {
-      this.completeChannelRawAndRelisten(
-        channel,
-        -EINTR_ERRNO,
-        EINTR_ERRNO,
-        entry,
-      );
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Handle epoll_pwait / epoll_wait entirely on the host side.
-   * The kernel computes and consumes a readiness batch. This shared Node and
-   * browser path owns only the deadline, signal scope, parking, and copyout.
-   */
-  private handleEpollPwait(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-    rawArgs?: readonly bigint[],
-  ): void {
-    if (this.deferChannelWhileStopped(channel)) return;
-    const epfd = origArgs[0];
-    const rawEventsPtr = rawArgs?.[1] ?? origArgs[1];
-    let eventsPtr = 0;
-    const maxevents = origArgs[2];
-    const timeoutMs = origArgs[3];
-    // origArgs[4] = sigmask ptr (process-space), origArgs[5] = sigset size
-
-    if (maxevents <= 0 || maxevents > Math.floor(0x7fffffff / STRUCT_SIZE_WASM_EPOLL_EVENT)) {
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // -EINVAL
-      return;
-    }
-    if (!Number.isSafeInteger(maxevents)) {
-      this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
-      return;
-    }
-    try {
-      // Reject an invalid output range before installing a mask whose signal
-      // delivery scope belongs to a kernel wait that has not started yet.
-      eventsPtr = this.checkedProcessRange(
-        channel,
-        rawEventsPtr,
-        maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT,
-        "epoll output events",
-      ).pointer;
-      if (syscallNr === SYS_EPOLL_PWAIT) {
-        const rawMaskPointer = rawArgs?.[4] ?? BigInt(origArgs[4]);
-        if (rawMaskPointer !== 0n) {
-          const rawSigsetSize = BigInt.asUintN(
-            64,
-            rawArgs?.[5] ?? BigInt(origArgs[5]),
-          );
-          if (rawSigsetSize !== BigInt(SIGNAL_MASK_BYTES)) {
-            throw new KernelScratchError(
-              `epoll_pwait sigset size must be ${SIGNAL_MASK_BYTES}`,
-              EINVAL,
-            );
-          }
-          const maskPointer = this.checkedProcessRange(
-            channel,
-            rawMaskPointer,
-            SIGNAL_MASK_BYTES,
-            "epoll_pwait signal mask",
-          ).pointer;
-          // epoll_pwait's atomic mask swap. The host runs this wait as
-          // timeout=0 poll retries, so the kernel cannot scope the mask to
-          // one blocking syscall — swap it through the sigsuspend
-          // saved-mask slot (idempotent across retry re-entries) and keep
-          // it swapped while parked, so a signal arriving mid-wait (foot's
-          // SIGCHLD reaper) passes sendSignalToProcess's blocked check and
-          // wakes the retry. kernel_dequeue_signal restores the saved mask
-          // after delivering the signal that interrupted the wait. Completed
-          // kernel attempts restore it before the signal boundary;
-          // clearReadinessWait handles host deadlines and cancellation.
-          const swapMask = this.#kernelInstanceForEntry(entry).exports
-            .kernel_swap_poll_sigmask as
-            | ((pid: number, tid: number, mask: bigint) => number)
-            | undefined;
-          // Required, not optional: without the swap the caller's mask is
-          // silently ignored, and a signal it unblocks only inside the wait
-          // (foot's SIGCHLD reaper) never arrives, so the terminal never
-          // notices its shell exited. A kernel lacking the export is a
-          // broken build of this ABI; refuse it loudly.
-          if (!swapMask) {
-            throw new Error(
-              "kernel lacks kernel_swap_poll_sigmask: epoll_pwait's signal mask cannot be honoured",
-            );
-          }
-          const mask = new DataView(channel.memory.buffer)
-            .getBigUint64(maskPointer, true);
-          swapMask(channel.pid, this.guestTidForChannel(channel), mask);
-          channel.pollSigmaskSwapped = true;
-        }
-      }
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    // Dispatch one readiness attempt. A nonzero timeout lets the kernel retain
-    // an exact wait lease on EAGAIN; Rust never sleeps here. This host owns the
-    // wait/retry loop below; the kernel
-    // owns the interest list, validates `epfd` (EBADF for a descriptor that is
-    // not open, EINVAL for one that is not an epoll instance), computes
-    // readiness (sys_epoll_pwait), and writes the ready epoll_events into the
-    // scratch data region, which we copy back to the caller's array. An empty
-    // interest list is the kernel's zero-event answer, not a host special
-    // case: it lands in the ordinary timeout handling below. A wait returns at
-    // most as many events as fit the scratch data region, as epoll_wait may
-    // return fewer than maxevents.
-    const maxKernelEvents = Math.min(
-      maxevents,
-      Math.floor(CH_DATA_SIZE / STRUCT_SIZE_WASM_EPOLL_EVENT),
-    );
-    let epollResult: {
-      retVal: number;
-      errVal: number;
-      events: Uint8Array | null;
-    };
-    try {
-      epollResult = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_PWAIT, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
-        // events output array [out], staged at CH_DATA.
-        lease.writeAddress(
-          CH_ARGS + CH_ARG_SIZE,
-          CH_DATA,
-          maxKernelEvents * STRUCT_SIZE_WASM_EPOLL_EVENT,
-          "u64-le",
-        );
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(maxKernelEvents), true);
-        // Zero is a probe; -1 permits an EAGAIN lease for this host-owned
-        // wait. Both perform exactly one readiness evaluation.
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, timeoutMs === 0 ? 0n : -1n, true);
-        for (let i = 4; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-        }
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
-        const errVal = resultView.getUint32(CH_ERRNO, true);
-        const events = retVal > 0
-          ? lease.copyOut(
-              CH_DATA,
-              Math.min(retVal, maxKernelEvents) * STRUCT_SIZE_WASM_EPOLL_EVENT,
-            )
-          : null;
-        return { retVal, errVal, events };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    const { retVal, errVal, events } = epollResult;
-
-    // Signal death can retire the kernel lease at this syscall boundary.
-    // Settle that outcome before asking a live task for its wait identity.
-    if (this.completeEpollSignalOutcome(channel, entry, retVal > 0)) return;
-
-    if (retVal < 0 && errVal === EAGAIN && timeoutMs !== 0) {
-      const queryToken = this.#kernelInstanceForEntry(entry).exports.kernel_epoll_wait_token as
-        ((pid: number, tid: number) => bigint) | undefined;
-      if (!queryToken) throw new Error("kernel lacks kernel_epoll_wait_token");
-      const token = queryToken(channel.pid, this.guestTidForChannel(channel));
-      if (token <= 0n) throw new Error("blocking epoll retry has no kernel wait token");
-      channel.epollWaitToken = token;
-    }
-
-    // Propagate a real error (anything other than the would-block EAGAIN).
-    if (retVal < 0 && errVal !== EAGAIN) {
-      this.completeChannelRawAndRelisten(channel, retVal, errVal, entry);
-      return;
-    }
-
-    // Ready: the kernel wrote the ready epoll_events into the scratch; copy them
-    // into the caller's array and return the count.
-    if (retVal > 0 && events !== null) {
-      new Uint8Array(channel.memory.buffer).set(events, eventsPtr);
-      // Imported-bo coherence: an epoll_wait return is the moment a
-      // compositor-style importer wakes to process a client's commit and
-      // re-read its long-lived imported wl_shm mappings. Refresh them from
-      // the creator's memory first (mirror of the poll/ppoll hook in the
-      // generic post-syscall path — epoll is intercepted before that tail).
-      this.#syncImportedBosBeforeResume(channel, retVal);
-      this.completeChannelRawAndRelisten(channel, retVal, 0, entry);
-      return;
-    }
-
-    // No events ready — handle timeout
-    if (timeoutMs === 0) {
-      // Non-blocking: return 0 events
-      this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-      return;
-    }
-    // Arm the deadline only now, once this call is known to be blocking.
-    // Every exit above -- a ready descriptor, a bad argument, a real error,
-    // a caught signal, a non-blocking probe -- returns without one, so the
-    // common case where `epoll_wait` finds its fd ready pays nothing for a
-    // deadline it would never have consulted.
-    const remainingMs = this.waitRemainingMs(
-      channel,
-      timeoutMs,
-      WAIT_KIND_EPOLL,
-      entry,
-    );
-    if (remainingMs === 0) {
-      // The nonblocking kernel poll above was the final readiness check.
-      this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-      return;
-    }
-
-    // Blocking: retry via setTimeout to avoid starving other processes.
-    // Pipe-based wakeup (via wakeAllBlockedRetries) provides instant wakeup
-    // when data arrives; setTimeout is only a fallback.
-    // Indexed kernel notifications issue a coalesced broad wake when they
-    // reach a sleeping epoll. Enumerating all interests here would put an
-    // O(watches) join back into every empty delivery, including nested and
-    // sibling-only registrations that caller-local fd hints cannot cover.
-    if (
-      this.interruptPendingCancellationBeforeRegistration(
-        channel,
-        syscallNr,
-        this.#cancellationPointIdentity(channel),
-        entry,
-      )
-    ) return;
-    // Only this fallback belongs to the same still-blocked epoll invocation.
-    // Real notifications/cancellation keep using the ordinary retry boundary.
-    // Capture scalar request bytes and exact host registration before parking;
-    // neither an exec nor a reused/malformed mailbox grants negative proof.
-    const registration = this.processes.get(channel.pid);
-    const request = this.activeChannelRequests.get(channel);
-    const waitToken = channel.epollWaitToken;
-    const deadlineHandle = channel.waitHandle;
-    const frozenArgs = rawArgs?.slice();
-    entry.deferProtocolEffect(() => {
-      const pending = {
-        ...this.#cancellationPointIdentity(channel),
-        timer: null as ReturnType<typeof setTimeout> | null,
-        channel,
-        pipeIndices: [] as number[],
-        acceptIndices: [] as number[],
-      };
-      const arm = (remaining: number): void => {
-        const delay = remaining === WAIT_REMAINING_INFINITE
-          ? 10 : Math.min(Math.max(remaining, 1), 10);
-        const timer = this.#registerTimeout(() => {
-          if (this.pendingPollRetries.get(channel) !== pending
-            || pending.timer !== timer) return;
-          this.#runOrDeferChannelKernelEntry(
-            channel,
-            "epoll fallback",
-            (retryEntry) => {
-              if (this.pendingPollRetries.get(channel) !== pending
-                || pending.timer !== timer) return undefined;
-              let stillBlocked = false;
-              let nextRemaining = remaining;
-              const probe = retryEntry.instance.exports.kernel_epoll_wait_retry_state as
-                ((pid: number, tid: number, token: bigint, deadline: bigint) => number)
-                | undefined;
-              if (
-                probe && registration && request && frozenArgs
-                && frozenArgs.length === CH_ARGS_COUNT
-                && waitToken !== undefined && waitToken > 0n
-                && (timeoutMs < 0 ? deadlineHandle === undefined : deadlineHandle !== undefined)
-                && channel.epollWaitToken === waitToken
-                && channel.waitHandle === deadlineHandle
-                && this.processes.get(channel.pid) === registration
-                && this.activeChannelRequests.get(channel) === request
-                && !this.pendingCancels.has(channel)
-                && !this.stoppedPids.has(channel.pid)
-                && !this.pendingResumePids.has(channel.pid)
-                && !this.resumePreparedSignals?.has(channel)
-              ) {
-                // Do not retain this view outside the synchronous check. A
-                // changed argument/header must reach the full protocol path.
-                let unchanged: boolean;
-                {
-                  const view = new DataView(channel.memory.buffer, channel.channelOffset);
-                  unchanged = view.getUint32(CH_SYSCALL, true) === syscallNr
-                    && view.getUint32(CH_REQUEST_FLAGS, true) === 0
-                    && frozenArgs.every((arg, index) => arg === view.getBigInt64(
-                      CH_ARGS + index * CH_ARG_SIZE, true,
-                    ));
-                }
-                if (unchanged) {
-                  try {
-                    stillBlocked = probe(channel.pid, this.guestTidForChannel(channel),
-                      waitToken, deadlineHandle ?? 0n) === 1;
-                    if (stillBlocked && deadlineHandle !== undefined) {
-                      nextRemaining = this.#waitRemainingMsForHandle(deadlineHandle, retryEntry);
-                      stillBlocked = nextRemaining > 0;
-                    }
-                  } catch (error) {
-                    this.#rethrowKernelEntryFatal(error);
-                    // An unsupported/failed proof is never a blocked result.
-                    // The ordinary path owns errno/signal/protocol handling.
-                    stillBlocked = false;
-                  }
-                }
-              }
-              if (stillBlocked) {
-                retryEntry.deferProtocolEffect(() => {
-                  // A targeted wake may have retired this row while entry
-                  // effects ran. Never put that old invocation back in a map.
-                  if (this.pendingPollRetries.get(channel) !== pending
-                    || pending.timer !== timer) return;
-                  arm(nextRemaining);
-                });
-              } else {
-                this.pendingPollRetries.delete(channel);
-                this.#retrySyscallWithinKernelEntry(channel, retryEntry);
-              }
-              return undefined;
-            },
-            // A notification can retire this row while its probe is queued.
-            // Its full channel retry must not dedupe against that now-inert
-            // probe, or both callbacks could discard the only wakeup.
-            pending,
-          );
-        }, delay);
-        pending.timer = timer;
-      };
-      this.pendingPollRetries.set(channel, pending);
-      arm(remainingMs);
-    });
   }
 
   /** Execute only large scalar I/O, with guest addresses in a fixed header. */

@@ -506,6 +506,8 @@ static void masks_and_devices(void) {
   sigdelset(&wait_mask, SIGUSR1);
   struct sigaction sa = {.sa_handler = handler};
   sigemptyset(&sa.sa_mask);
+  /* A caught signal interrupts epoll even when the handler requests restart. */
+  sa.sa_flags = SA_RESTART;
   CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
   int ep = epoll_create1(0);
   pthread_t self = pthread_self(), sender;

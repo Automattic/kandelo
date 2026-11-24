@@ -192,6 +192,7 @@ pub fn push_timer_expired() {
 /// existing coalesced broad-readiness record: the host need not mirror or
 /// enumerate registrations to arrange a retry. This does not notify epoll again.
 pub fn push_epoll_ready() {
+    crate::wait_park::with(|parks| parks.note_epoll_ready());
     append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
 }
 

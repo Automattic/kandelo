@@ -221,8 +221,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_drain_wait_completions
     kernel_entropy_read_cancel
     kernel_entropy_read_step
-    kernel_epoll_wait_finish
-    kernel_epoll_wait_token
     kernel_exchange_activate
     kernel_exchange_add_entry
     kernel_exchange_agent_failed

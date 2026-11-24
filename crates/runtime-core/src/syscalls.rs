@@ -21783,7 +21783,7 @@ pub fn sys_epoll_pwait_with_peers(
             epoll_evaluate(proc, host, idx, maxevents as usize, true, false, 0, peers).and_then(|out| {
                 if !out.is_empty() || timeout_ms == 0 {
                     Ok((out.len() as i32, out))
-                } else if proc.deliverable_for(tid) != 0 {
+                } else if crate::wait_park::signal_targets_task(proc, tid) {
                     Err(Errno::EINTR)
                 } else {
                     Err(Errno::EAGAIN)
@@ -50073,7 +50073,7 @@ impl HostIO for NetMock {
         // the dequeue (sigsuspend_saved_mask pattern), and the EAGAIN park
         // must keep the swapped mask so the host sees it deliverable.
         use wasm_posix_shared::signal::SIGCHLD;
-        let mut proc = Process::new(1);
+        let mut proc = Process::new(100);
         let mut host = MockHostIO::new();
 
         let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
