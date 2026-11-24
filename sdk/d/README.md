@@ -1,5 +1,11 @@
 # D on Kandelo
 
+Status: prototype. Ordinary D programs run on Node.js, Chromium, Firefox
+and WebKit. In-guest DUB builds pass on Node.js, Chromium and Firefox. In
+WebKit, guest LDC reports `Maximum call stack size exceeded` while compiling
+a DUB project. That WebKit failure is an open, undiagnosed gap; see
+[DUB and LDC inside a guest](#dub-and-ldc-inside-a-guest) below.
+
 The development SDK uses host-side LDC 1.43.0 and statically links DRuntime
 and Phobos against Kandelo's wasm32 musl sysroot. The target is
 `wasm32-unknown-kandelo-musl`. Guest binaries use the native Kandelo ABI.
