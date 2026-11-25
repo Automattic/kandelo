@@ -3,7 +3,7 @@ use clap::Parser;
 use std::fs;
 use std::path::PathBuf;
 
-use memory_instrument::{Options, Role, instrument};
+use memory_instrument::{Options, Role, instrument, mark_for_exec};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -23,6 +23,11 @@ struct Cli {
     /// `aligned` trusts natural alignment hints.
     #[arg(long, default_value = "strict")]
     crossing: String,
+
+    /// Keep the code of the input and mark it, so the host rewrites the
+    /// program in `aligned` mode when a process starts it.
+    #[arg(long, conflicts_with = "crossing")]
+    at_exec: bool,
 }
 
 fn main() -> Result<()> {
@@ -30,12 +35,16 @@ fn main() -> Result<()> {
     let input =
         fs::read(&cli.input).with_context(|| format!("reading input: {}", cli.input.display()))?;
 
-    let options = Options {
-        crossing: cli.crossing.parse()?,
-        role: Role::Program,
-    };
-    let output = instrument(&input, &options)
-        .with_context(|| format!("rewriting {}", cli.input.display()))?;
+    let output = if cli.at_exec {
+        mark_for_exec(&input)
+    } else {
+        let options = Options {
+            crossing: cli.crossing.parse()?,
+            role: Role::Program,
+        };
+        instrument(&input, &options)
+    }
+    .with_context(|| format!("rewriting {}", cli.input.display()))?;
 
     fs::write(&cli.output, output)
         .with_context(|| format!("writing output: {}", cli.output.display()))?;

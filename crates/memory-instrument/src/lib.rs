@@ -21,10 +21,11 @@
 use std::{convert::Infallible, mem::discriminant, str::FromStr};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use sha2::{Digest, Sha256};
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, ExportKind, ExportSection, Function, FunctionSection,
-    GlobalSection, InstructionSink, MemArg as EncodedMemArg, Module, SectionId, TypeSection,
-    ValType,
+    BlockType, BranchHint, BranchHints, CodeSection, ConstExpr, CustomSection, ExportKind,
+    ExportSection, Function, FunctionSection, GlobalSection, InstructionSink,
+    MemArg as EncodedMemArg, Module, Section, SectionId, TypeSection, ValType,
     reencode::{self, Reencode},
 };
 use wasmparser::{
@@ -46,6 +47,13 @@ const STOP_BASE_EXPORT: &str = "__memory_stop_base";
 const STOP_ACKNOWLEDGED: u32 = 4;
 const OFFSET_MASK: i32 = (PAGE_BYTES - 1) as i32;
 const INLINE_LOOP_ACCESSES: u32 = 16;
+const BRANCH_HINT_SECTION: &str = "metadata.code.branch_hint";
+const PLAIN_FORM_SECTION: &str = "kandelo.memory.plain_form";
+const AT_EXEC_SECTION: &str = "kandelo.memory.rewrite_at_exec";
+const AT_EXEC_OPTIONS: Options = Options {
+    crossing: Crossing::Aligned,
+    role: Role::Program,
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Crossing {
@@ -124,17 +132,53 @@ pub fn instrument(input: &[u8], options: &Options) -> Result<Vec<u8>> {
         minimum_pages,
         next_global: 0,
         next_function: 0,
+        branch_hints: BranchHints::new(),
+        code_position: 0,
     };
     let mut module = Module::new();
     rewriter
         .parse_core_module(&mut module, Parser::new(0), input)
         .map_err(|error| anyhow!("rewriting module: {error}"))?;
-    let output = module.finish();
+    let mut output = module.finish();
+    let mut branch_hints = Vec::new();
+    rewriter.branch_hints.append_to(&mut branch_hints);
+    output.splice(rewriter.code_position..rewriter.code_position, branch_hints);
+    if options.role == Role::Program {
+        CustomSection {
+            name: PLAIN_FORM_SECTION.into(),
+            data: Sha256::digest(input).as_slice().into(),
+        }
+        .append_to(&mut output);
+    }
 
     Validator::new_with_features(features())
         .validate_all(&output)
         .context("rewritten module failed validation")?;
     Ok(output)
+}
+
+/// Marks a program that the host rewrites when a process starts it. The
+/// code of the program does not change. A marked program stays as it is.
+pub fn mark_for_exec(input: &[u8]) -> Result<Vec<u8>> {
+    instrument(input, &AT_EXEC_OPTIONS)?;
+    let mut output = input.to_vec();
+    let marked = Parser::new(0).parse_all(input).any(|payload| {
+        matches!(payload, Ok(Payload::CustomSection(section)) if section.name() == AT_EXEC_SECTION)
+    });
+    if marked {
+        return Ok(output);
+    }
+    CustomSection {
+        name: AT_EXEC_SECTION.into(),
+        data: [].as_slice().into(),
+    }
+    .append_to(&mut output);
+    Ok(output)
+}
+
+/// Rewrites a program that `mark_for_exec` marked.
+pub fn instrument_at_exec(input: &[u8]) -> Result<Vec<u8>> {
+    instrument(input, &AT_EXEC_OPTIONS)
 }
 
 fn features() -> WasmFeatures {
@@ -704,6 +748,7 @@ struct Scratch {
     addr: u32,
     entry: u32,
     i32: [u32; 2],
+    table: u32,
     i64: [u32; 2],
     f32: u32,
     f64: u32,
@@ -711,7 +756,7 @@ struct Scratch {
 
 impl Scratch {
     const LOCALS: [(u32, ValType); 4] = [
-        (4, ValType::I32),
+        (5, ValType::I32),
         (2, ValType::I64),
         (1, ValType::F32),
         (1, ValType::F64),
@@ -722,9 +767,10 @@ impl Scratch {
             addr: base,
             entry: base + 1,
             i32: [base + 2, base + 3],
-            i64: [base + 4, base + 5],
-            f32: base + 6,
-            f64: base + 7,
+            table: base + 4,
+            i64: [base + 5, base + 6],
+            f32: base + 7,
+            f64: base + 8,
         }
     }
 
@@ -742,6 +788,41 @@ impl Scratch {
     }
 }
 
+/// A function body and the `if` instructions in it that rarely run.
+struct Body {
+    function: Function,
+    unlikely: Vec<BranchHint>,
+}
+
+impl Body {
+    fn unlikely_if(&mut self, ty: BlockType) {
+        self.unlikely.push(BranchHint {
+            branch_func_offset: self.function.byte_len() as u32,
+            branch_hint_value: 0,
+        });
+        self.function.instructions().if_(ty);
+    }
+}
+
+impl From<Function> for Body {
+    fn from(function: Function) -> Self {
+        Self {
+            function,
+            unlikely: Vec::new(),
+        }
+    }
+}
+
+/// Where one translation finds its address and its table, and where it
+/// keeps its table entry.
+#[derive(Clone, Copy)]
+struct Place {
+    addr: u32,
+    entry: u32,
+    /// The local that holds the table base, or the global when `None`.
+    table: Option<u32>,
+}
+
 struct Rewriter<'a> {
     layout: &'a Layout<'a>,
     crossing: Crossing,
@@ -750,6 +831,8 @@ struct Rewriter<'a> {
     minimum_pages: u64,
     next_global: u32,
     next_function: usize,
+    branch_hints: BranchHints,
+    code_position: usize,
 }
 
 type ReencodeResult<T> = Result<T, reencode::Error<Infallible>>;
@@ -824,29 +907,36 @@ impl Rewriter<'_> {
             }
     }
 
-    fn emit_table_entry(&self, sink: &mut InstructionSink<'_>, write: bool) {
-        self.emit_table_entry_address(sink);
+    fn emit_table_entry(&self, sink: &mut InstructionSink<'_>, table: Option<u32>, write: bool) {
+        self.emit_table_entry_address(sink, table);
         sink.i32_load(table_memarg(write));
     }
 
-    fn emit_table_entry_address(&self, sink: &mut InstructionSink<'_>) {
-        sink.i32_const(14)
-            .i32_shr_u()
-            .i32_const(-4)
-            .i32_and()
-            .global_get(self.layout.table_global())
-            .i32_add();
+    fn emit_table_entry_address(&self, sink: &mut InstructionSink<'_>, table: Option<u32>) {
+        sink.i32_const(16).i32_shr_u().i32_const(2).i32_shl();
+        match table {
+            Some(local) => sink.local_get(local),
+            None => sink.global_get(self.layout.table_global()),
+        };
+        sink.i32_add();
+    }
+
+    fn hint(&mut self, function: u32, body: &Body) {
+        if !body.unlikely.is_empty() {
+            self.branch_hints
+                .function_hints(function, body.unlikely.iter().copied());
+        }
     }
 
     fn emit_access(
         &mut self,
-        function: &mut Function,
+        body: &mut Body,
         operator: Operator<'_>,
         access: Access,
         inline: bool,
         scratch: &Scratch,
     ) -> ReencodeResult<()> {
-        let mut sink = function.instructions();
+        let mut sink = body.function.instructions();
         let (memarg, operands, write, slow) = match access {
             Access::Copy => {
                 sink.call(self.layout.helper(Helper::Copy));
@@ -896,107 +986,102 @@ impl Rewriter<'_> {
         }
         emit_add_offset(&mut sink, &memarg);
         sink.local_set(scratch.addr);
-        drop(sink);
         let slow = slow.filter(|_| self.crosses(&memarg));
-        self.emit_checked(
-            function,
-            &memarg,
-            slow,
-            write,
-            scratch.addr,
-            scratch.entry,
-            &slots,
-            &original,
-        );
+        let place = Place {
+            addr: scratch.addr,
+            entry: scratch.entry,
+            table: Some(scratch.table),
+        };
+        self.emit_checked(body, &memarg, slow, write, place, &slots, &original);
         Ok(())
     }
 
-    /// Emit the access `original` to the address in the local `addr`, with
-    /// its operands in `slots`. `slow` sends an access that crosses a page
-    /// boundary to the byte-wise helper.
+    /// Emit the access `original` to the address in the local `place.addr`,
+    /// with its operands in `slots`. `slow` sends an access that crosses a
+    /// page boundary to the byte-wise helper.
     #[allow(clippy::too_many_arguments)]
     fn emit_checked(
         &self,
-        function: &mut Function,
+        body: &mut Body,
         memarg: &MemArg,
         slow: Option<Slow>,
         write: bool,
-        addr: u32,
-        entry: u32,
+        place: Place,
         slots: &[u32],
         original: &wasm_encoder::Instruction<'_>,
     ) {
         let size = 1u32 << memarg.max_align;
-        let mut sink = function.instructions();
         if let Some(slow) = slow {
-            sink.local_get(addr)
+            body.function
+                .instructions()
+                .local_get(place.addr)
                 .i32_const(OFFSET_MASK)
                 .i32_and()
                 .i32_const((PAGE_BYTES - size) as i32)
                 .i32_gt_u();
             match slow {
                 Slow::Load(widen) => {
-                    sink.if_(BlockType::Result(widen.val_type()))
-                        .local_get(addr)
+                    body.unlikely_if(BlockType::Result(widen.val_type()));
+                    let mut sink = body.function.instructions();
+                    sink.local_get(place.addr)
                         .i32_const(size as i32)
                         .call(self.layout.helper(Helper::LoadBytes));
                     widen.narrow_from_i64(&mut sink, size);
                 }
                 Slow::Store(value) => {
-                    sink.if_(BlockType::Empty)
-                        .local_get(addr)
+                    body.unlikely_if(BlockType::Empty);
+                    let mut sink = body.function.instructions();
+                    sink.local_get(place.addr)
                         .i32_const(size as i32)
                         .local_get(slots[0]);
                     value.widen_to_i64(&mut sink);
                     sink.call(self.layout.helper(Helper::StoreBytes));
                 }
             }
-            sink.else_();
+            body.function.instructions().else_();
         }
-        self.emit_fast(&mut sink, write, addr, entry, slots);
-        drop(sink);
-        function.instruction(original);
+        self.emit_fast(body, write, place, slots);
+        body.function.instruction(original);
         if slow.is_some() {
-            function.instructions().end();
+            body.function.instructions().end();
         }
     }
 
-    fn emit_fast(
-        &self,
-        sink: &mut InstructionSink<'_>,
-        write: bool,
-        addr: u32,
-        entry: u32,
-        slots: &[u32],
-    ) {
-        sink.local_get(addr).local_get(addr);
-        self.emit_table_entry(sink, write);
+    fn emit_fast(&self, body: &mut Body, write: bool, place: Place, slots: &[u32]) {
+        let mut sink = body.function.instructions();
+        sink.local_get(place.addr).local_get(place.addr);
+        self.emit_table_entry(&mut sink, place.table, write);
         if write {
-            sink.local_tee(entry)
-                .i32_const(COW_BIT)
-                .i32_and()
-                .if_(BlockType::Empty)
-                .local_get(addr)
+            sink.local_tee(place.entry).i32_const(COW_BIT).i32_and();
+            body.unlikely_if(BlockType::Empty);
+            body.function
+                .instructions()
+                .local_get(place.addr)
                 .call(self.layout.helper(Helper::CowFault))
-                .local_set(entry)
+                .local_set(place.entry)
                 .end()
-                .local_get(entry);
+                .local_get(place.entry);
         }
+        let mut sink = body.function.instructions();
         sink.i32_add();
         for slot in slots {
             sink.local_get(*slot);
         }
     }
 
-    fn thunk(&mut self, thunk: &Thunk<'_>) -> ReencodeResult<Function> {
+    fn thunk(&mut self, thunk: &Thunk<'_>) -> ReencodeResult<Body> {
         let original = self.instruction(thunk.operator.clone())?;
         let write = matches!(thunk.slow, Slow::Store(_));
-        let entry = 2 + u32::from(thunk.offset);
+        let place = Place {
+            addr: 0,
+            entry: 2 + u32::from(thunk.offset),
+            table: None,
+        };
         let slots: &[u32] = if write { &[1] } else { &[] };
 
-        let mut function = Function::new(write.then_some((1, ValType::I32)));
+        let mut body = Body::from(Function::new(write.then_some((1, ValType::I32))));
         if thunk.offset {
-            function
+            body.function
                 .instructions()
                 .local_get(0)
                 .local_get(2)
@@ -1005,31 +1090,31 @@ impl Rewriter<'_> {
         }
         let slow = Some(thunk.slow).filter(|_| self.crosses(&thunk.memarg));
         self.emit_checked(
-            &mut function,
+            &mut body,
             &thunk.memarg,
             slow,
             write,
-            0,
-            entry,
+            place,
             slots,
             &original,
         );
-        function.instructions().end();
-        Ok(function)
+        body.function.instructions().end();
+        Ok(body)
     }
 
-    fn helper_bodies(&self) -> Vec<Function> {
+    fn helper_bodies(&self) -> Vec<Body> {
         let mut bodies = vec![
-            self.translate_read(),
+            self.translate_read().into(),
             self.translate_write(),
-            self.cow_fault(),
-            self.load_bytes(),
-            self.store_bytes(),
-            self.copy(),
+            self.cow_fault().into(),
+            self.load_bytes().into(),
+            self.store_bytes().into(),
+            self.copy().into(),
             self.chunked(|sink, _| {
                 sink.memory_fill(0);
-            }),
-            self.stop(),
+            })
+            .into(),
+            self.stop().into(),
         ];
         bodies.extend((0..self.layout.data_segments).map(|segment| {
             self.chunked(move |sink, cursor| {
@@ -1039,6 +1124,7 @@ impl Rewriter<'_> {
                     .i32_add()
                     .local_set(cursor);
             })
+            .into()
         }));
         bodies
     }
@@ -1047,29 +1133,21 @@ impl Rewriter<'_> {
         let mut function = Function::new([]);
         let mut sink = function.instructions();
         sink.local_get(0).local_get(0);
-        self.emit_table_entry(&mut sink, false);
+        self.emit_table_entry(&mut sink, None, false);
         sink.i32_add().end();
         function
     }
 
-    fn translate_write(&self) -> Function {
-        let mut function = Function::new([(1, ValType::I32)]);
-        let mut sink = function.instructions();
-        sink.local_get(0);
-        self.emit_table_entry(&mut sink, true);
-        sink.local_tee(1)
-            .i32_const(COW_BIT)
-            .i32_and()
-            .if_(BlockType::Empty)
-            .local_get(0)
-            .call(self.layout.helper(Helper::CowFault))
-            .local_set(1)
-            .end()
-            .local_get(0)
-            .local_get(1)
-            .i32_add()
-            .end();
-        function
+    fn translate_write(&self) -> Body {
+        let mut body = Body::from(Function::new([(1, ValType::I32)]));
+        let place = Place {
+            addr: 0,
+            entry: 1,
+            table: None,
+        };
+        self.emit_fast(&mut body, true, place, &[]);
+        body.function.instructions().end();
+        body
     }
 
     fn cow_fault(&self) -> Function {
@@ -1079,7 +1157,7 @@ impl Rewriter<'_> {
         let mut sink = function.instructions();
 
         sink.local_get(addr);
-        self.emit_table_entry_address(&mut sink);
+        self.emit_table_entry_address(&mut sink, None);
         sink.local_set(slot);
         sink.loop_(BlockType::Empty)
             .local_get(slot)
@@ -1580,7 +1658,21 @@ impl Reencode for Rewriter<'_> {
             self.table_exports(&mut exports);
             module.section(&exports);
         }
+        if before == Some(SectionId::Code) {
+            self.code_position = module.as_slice().len();
+        }
         Ok(())
+    }
+
+    fn parse_custom_section(
+        &mut self,
+        module: &mut Module,
+        section: wasmparser::CustomSectionReader<'_>,
+    ) -> ReencodeResult<()> {
+        if matches!(section.name(), BRANCH_HINT_SECTION | AT_EXEC_SECTION) {
+            return Ok(());
+        }
+        reencode::utils::parse_custom_section(self, module, section)
     }
 
     fn parse_type_section(
@@ -1641,12 +1733,14 @@ impl Reencode for Rewriter<'_> {
         section: wasmparser::CodeSectionReader<'_>,
     ) -> ReencodeResult<()> {
         reencode::utils::parse_code_section(self, code, section)?;
-        for body in self.helper_bodies() {
-            code.function(&body);
-        }
         let layout = self.layout;
+        let mut bodies = self.helper_bodies();
         for thunk in &layout.thunks {
-            code.function(&self.thunk(thunk)?);
+            bodies.push(self.thunk(thunk)?);
+        }
+        for (helper, body) in (layout.helper(Helper::TranslateRead)..).zip(&bodies) {
+            self.hint(helper, body);
+            code.function(&body.function);
         }
         Ok(())
     }
@@ -1657,6 +1751,7 @@ impl Reencode for Rewriter<'_> {
         body: wasmparser::FunctionBody<'_>,
     ) -> ReencodeResult<()> {
         let params = self.layout.params(self.next_function);
+        let index = self.layout.imported_funcs + self.next_function as u32;
         self.next_function += 1;
 
         let mut locals = Vec::new();
@@ -1684,21 +1779,29 @@ impl Reencode for Rewriter<'_> {
         let scratch = Scratch::new(params + declared);
 
         let mut loops = Loops::new(&body)?;
-        let mut function = Function::new(locals);
+        let mut rewritten = Body::from(Function::new(locals));
+        if scratched {
+            rewritten
+                .function
+                .instructions()
+                .global_get(self.layout.table_global())
+                .local_set(scratch.table);
+        }
         let mut reader = body.get_operators_reader()?;
         while !reader.eof() {
             let operator = reader.read()?;
             loops.step(&operator);
             match access(&operator) {
                 Some(access) => {
-                    self.emit_access(&mut function, operator, access, loops.inline(), &scratch)?
+                    self.emit_access(&mut rewritten, operator, access, loops.inline(), &scratch)?
                 }
                 None => {
-                    function.instruction(&self.instruction(operator)?);
+                    rewritten.function.instruction(&self.instruction(operator)?);
                 }
             }
         }
-        code.function(&function);
+        self.hint(index, &rewritten);
+        code.function(&rewritten.function);
         Ok(())
     }
 }

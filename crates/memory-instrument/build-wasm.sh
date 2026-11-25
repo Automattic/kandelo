@@ -12,7 +12,7 @@ if [ "${1:-}" = --verify-fresh ]; then
 fi
 test "$#" = 0
 export RUSTFLAGS="-C target-feature=+bulk-memory -Zunstable-options -C panic=immediate-abort -C link-arg=--no-entry -C link-arg=--export-memory"
-for name in mi_begin mi_instrument_side_module mi_result; do
+for name in mi_begin mi_instrument_program mi_instrument_side_module mi_result; do
     RUSTFLAGS="$RUSTFLAGS -C link-arg=--export=$name"
 done
 cargo build --profile instrumenter -p memory-instrument --bin kandelo-memory-instrument-module \

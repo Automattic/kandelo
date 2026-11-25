@@ -1122,6 +1122,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "sha2",
  "wasm-encoder 0.247.0",
  "wasmparser 0.247.0",
  "wasmprinter 0.247.0",

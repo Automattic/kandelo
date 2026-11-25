@@ -1,4 +1,6 @@
-use memory_instrument::{Crossing, Options, Role, instrument};
+use memory_instrument::{Crossing, Options, Role, instrument, instrument_at_exec, mark_for_exec};
+use sha2::{Digest, Sha256};
+use wasmparser::{Parser, Payload};
 
 fn program(body: &str) -> Vec<u8> {
     wat::parse_str(format!(
@@ -19,6 +21,26 @@ fn rewrite(bytes: &[u8], crossing: Crossing) -> String {
     };
     let output = instrument(bytes, &options).expect("instrument");
     wasmprinter::print_bytes(output).expect("print")
+}
+
+fn custom_sections(output: &[u8], name: &str) -> Vec<Vec<u8>> {
+    Parser::new(0)
+        .parse_all(output)
+        .filter_map(|payload| match payload.expect("payload") {
+            Payload::CustomSection(section) if section.name() == name => {
+                Some(section.data().to_vec())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn plain_form(output: &[u8]) -> Vec<Vec<u8>> {
+    custom_sections(output, "kandelo.memory.plain_form")
+}
+
+fn at_exec_marks(output: &[u8]) -> usize {
+    custom_sections(output, "kandelo.memory.rewrite_at_exec").len()
 }
 
 #[test]
@@ -121,7 +143,7 @@ fn checks_copy_on_write_before_a_store() {
         "{text}"
     );
     assert!(
-        text.contains("global.get 1\n    i32.add\n    i32.load offset=262144\n    local.tee 2\n    i32.const 1\n    i32.and\n    if ;; label = @1\n      local.get 0\n      call 3"),
+        text.contains("global.get 1\n    i32.add\n    i32.load offset=262144\n    local.tee 2\n    i32.const 1\n    i32.and\n    (@metadata.code.branch_hint \"\\00\")\n    if ;; label = @1\n      local.get 0\n      call 3"),
         "{text}"
     );
 }
@@ -160,8 +182,12 @@ fn keeps_the_translation_inline_in_a_loop_with_few_accesses() {
     );
 
     assert!(
+        text.contains("(local i32 i32 i32 i32 i32 i64 i64 f32 f64)\n    global.get 1\n    local.set 6\n    loop"),
+        "{text}"
+    );
+    assert!(
         text.contains(
-            "global.get 1\n      i32.add\n      i32.load\n      i32.add\n      i32.load\n"
+            "local.get 6\n      i32.add\n      i32.load\n      i32.add\n      i32.load\n"
         ),
         "{text}"
     );
@@ -188,9 +214,24 @@ fn calls_the_helpers_in_a_loop_with_many_accesses() {
 
     assert_eq!(text.matches("call 9\n      drop").count(), 16, "{text}");
     assert!(
-        text.contains("global.get 1\n        i32.add\n        i32.load\n        i32.add\n        i32.load\n        br_if 0"),
+        text.contains("local.get 5\n        i32.add\n        i32.load\n        i32.add\n        i32.load\n        br_if 0"),
         "{text}"
     );
+}
+
+#[test]
+fn drops_the_branch_hints_of_the_input() {
+    let text = rewrite(
+        &program(
+            r#"(func (param i32)
+                local.get 0
+                (@metadata.code.branch_hint "\01")
+                if end)"#,
+        ),
+        Crossing::Aligned,
+    );
+
+    assert!(!text.contains("\\01"), "{text}");
 }
 
 #[test]
@@ -312,7 +353,7 @@ fn strict_mode_sends_a_crossing_store_to_the_byte_wise_helper() {
     );
 
     assert!(
-        text.contains("i32.const 65528\n    i32.gt_u\n    if ;; label = @1\n      local.get 0\n      i32.const 8\n      local.get 1\n      call 5\n    else"),
+        text.contains("i32.const 65528\n    i32.gt_u\n    (@metadata.code.branch_hint \"\\00\")\n    if ;; label = @1\n      local.get 0\n      i32.const 8\n      local.get 1\n      call 5\n    else"),
         "{text}"
     );
 }
@@ -402,9 +443,7 @@ fn translates_an_atomic_load_through_the_read_table_without_a_crossing_check() {
     );
 
     assert!(
-        text.contains(
-            "global.get 1\n    i32.add\n    i32.load\n    i32.add\n    i32.atomic.load\n"
-        ),
+        text.contains("local.get 5\n    i32.add\n    i32.load\n    i32.add\n    i32.atomic.load\n"),
         "{text}"
     );
     assert!(!text.contains("call 4"), "{text}");
@@ -425,7 +464,7 @@ fn checks_copy_on_write_before_an_atomic_store_and_a_compare_exchange() {
     );
 
     assert!(
-        store.contains("i32.load offset=262144\n    local.tee 3\n    i32.const 1\n    i32.and\n    if ;; label = @1\n      local.get 2\n      call 3\n      local.set 3\n    end\n    local.get 3\n    i32.add\n    local.get 4\n    i32.atomic.store\n"),
+        store.contains("i32.load offset=262144\n    local.tee 3\n    i32.const 1\n    i32.and\n    (@metadata.code.branch_hint \"\\00\")\n    if ;; label = @1\n      local.get 2\n      call 3\n      local.set 3\n    end\n    local.get 3\n    i32.add\n    local.get 4\n    i32.atomic.store\n"),
         "{store}"
     );
     assert!(
@@ -451,11 +490,11 @@ fn translates_wait_and_notify_through_the_read_table() {
     );
 
     assert!(
-        wait.contains("global.get 1\n    i32.add\n    i32.load\n    i32.add\n    local.get 5\n    local.get 7\n    memory.atomic.wait32\n"),
+        wait.contains("local.get 7\n    i32.add\n    i32.load\n    i32.add\n    local.get 5\n    local.get 8\n    memory.atomic.wait32\n"),
         "{wait}"
     );
     assert!(
-        notify.contains("global.get 1\n    i32.add\n    i32.load\n    i32.add\n    local.get 4\n    memory.atomic.notify\n"),
+        notify.contains("local.get 6\n    i32.add\n    i32.load\n    i32.add\n    local.get 4\n    memory.atomic.notify\n"),
         "{notify}"
     );
 }
@@ -561,6 +600,68 @@ fn rejects_a_module_it_cannot_place_tables_in() {
             "{module}: {error:#}"
         );
     }
+}
+
+#[test]
+fn records_the_hash_of_the_plain_form_in_a_program() {
+    let source = program("(func)");
+
+    let output = instrument(&source, &Options::default()).expect("instrument");
+
+    assert_eq!(plain_form(&output), [Sha256::digest(&source).to_vec()]);
+}
+
+#[test]
+fn records_no_plain_form_in_a_side_module() {
+    let source = wat::parse_str(r#"(module (import "env" "memory" (memory 1 100 shared)) (func))"#)
+        .expect("wat parse");
+    let options = Options {
+        crossing: Crossing::Strict,
+        role: Role::SideModule,
+    };
+
+    let output = instrument(&source, &options).expect("instrument");
+
+    assert!(plain_form(&output).is_empty());
+}
+
+#[test]
+fn marks_a_program_for_exec_and_keeps_its_bytes() {
+    let source = program("(func)");
+
+    let marked = mark_for_exec(&source).expect("mark");
+
+    assert_eq!(marked[..source.len()], source);
+    assert_eq!(at_exec_marks(&marked), 1);
+}
+
+#[test]
+fn leaves_a_marked_program_as_it_is() {
+    let marked = mark_for_exec(&program("(func)")).expect("mark");
+
+    assert_eq!(mark_for_exec(&marked).expect("mark"), marked);
+}
+
+#[test]
+fn refuses_to_mark_a_program_that_it_cannot_rewrite() {
+    let source = wat::parse_str("(module (memory 1) (func))").expect("wat parse");
+
+    assert!(mark_for_exec(&source).is_err());
+}
+
+#[test]
+fn rewrites_a_marked_program_in_aligned_mode_and_drops_the_mark() {
+    let marked = mark_for_exec(&program("(func)")).expect("mark");
+    let options = Options {
+        crossing: Crossing::Aligned,
+        role: Role::Program,
+    };
+
+    let output = instrument_at_exec(&marked).expect("instrument");
+
+    assert_eq!(output, instrument(&marked, &options).expect("instrument"));
+    assert_eq!(at_exec_marks(&output), 0);
+    assert_eq!(plain_form(&output), [Sha256::digest(&marked).to_vec()]);
 }
 
 #[test]

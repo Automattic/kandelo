@@ -8,6 +8,7 @@ It is the rewrite behind copy-on-write `fork()`: the host option
 
 ```text
 wasm-memory-instrument <input.wasm> -o <output.wasm> [--crossing strict|aligned]
+wasm-memory-instrument <input.wasm> -o <output.wasm> --at-exec
 ```
 
 From the repo root, `scripts/run-wasm-memory-instrument.sh` runs
@@ -69,6 +70,43 @@ mode, removes its start section, stores the three globals, and then calls
 `__wasm_init_memory`. The loader refuses a module with an active data
 segment or with a start function other than `__wasm_init_memory`. Without
 `memoryInstrumenter`, `dlopen` fails in such a process.
+
+## Rewrite at exec
+
+`--at-exec` does not rewrite the program. It checks that the rewrite
+accepts the program, keeps its code, and adds the empty custom section
+`kandelo.memory.rewrite_at_exec`. The output is the plain form of the
+program with a mark. A marked input stays as it is. A package asks for the
+mark with `memory_instrumentation = "auto"` on an output of its
+`package.toml` (see `docs/package-management.md`).
+
+In `"share"` mode the Kandelo host rewrites a marked program in `aligned`
+mode when a process starts it: at a host spawn, at `exec` and at
+`posix_spawn`. The process runs the rewritten form. The kernel keeps the
+plain form as the executable of the process, because those are the bytes
+that it admitted. In `"copy"` mode the host runs the plain form and the
+mark has no effect.
+
+The rewrite runs in a Worker of its own (`host/src/program-rewriter.ts`),
+so the kernel worker keeps serving syscalls. The host keeps the rewritten
+form of each program, by the SHA-256 of its plain form, until the kernel
+stops. On Node 24 the first start of a 37 MB `php-fpm` waits about 1.3 s
+for the rewrite and the tool uses 172 MiB for that time; a 2 MB `bash`
+waits about 0.15 s. The time in a browser is not measured.
+
+A process that runs both forms can choose at each fork. The option
+`forkShareMinimumBytes` of `NodeKernelHost` and `BrowserKernel` (default
+0) is the smallest guest address space
+whose fork child shares the pages of its parent. A smaller parent gets a
+child with a private Memory: the host copies each guest-virtual page of
+the parent through its tables, and the child runs the plain form with no
+tables. The forks of that child are plain copies.
+
+A rewritten program holds the custom section `kandelo.memory.plain_form`:
+the SHA-256 of the input of the rewrite. The host uses it as the fork
+template id of the rewritten form, so both forms have the same id and a
+fork child refuses a plain form that is not the input of its parent's
+rewrite. A side module gets no such section.
 
 ## Group
 
@@ -153,7 +191,13 @@ page.
 - Load and store in a loop: the same translation, inline, when the
   innermost loop of the access holds at most 16 loads and stores. An engine
   runs a loop of a long activation in the code of its baseline compiler,
-  where a call per access is slow.
+  where a call per access is slow. A function with an inline translation
+  reads `__memory_table_base` once, at its entry, into a local.
+- Rare branches: the custom section `metadata.code.branch_hint` marks the
+  copy-on-write test and the page-crossing test as unlikely, so an engine
+  that reads the section keeps the slow path out of the hot code. The
+  rewrite drops a branch hint section of the input, because its offsets
+  no longer match.
 - Atomic access: the same translation, inline. An atomic load uses the read
   table. An atomic store, read-modify-write and compare-exchange use the
   write table.
@@ -167,14 +211,16 @@ page.
 
 ## Cost
 
-The helpers keep the binary small: the rewrite adds 5% to 29% to the six
+The helpers keep the binary small: the rewrite adds 6% to 31% to the six
 package binaries of the trial (`bash`, `nginx`, `php`, `php-fpm`,
 `redis-server`, `redis-cli`). An engine that inlines small functions in its
-optimizing compiler removes the calls from hot code. V8 does: a loop in a
-function that V8 has optimized runs 2.5 times slower than the plain loop.
-A small loop that V8 has not optimized runs 3 times slower. A loop with
-more than 16 loads and stores keeps the calls and runs about 9 times slower
-until V8 optimizes its function.
+optimizing compiler removes the calls from hot code. V8 does: on Node 24, a
+loop in a function that V8 has optimized runs 2.1 times slower than the
+plain loop. It runs 1.6 times slower on Node 26, and on Node 24 with
+`--experimental-wasm-branch-hinting`. A small loop that V8 has not
+optimized runs 2.9 times slower. A loop with more than 16 loads and stores
+keeps the calls and runs about 9 times slower until V8 optimizes its
+function.
 
 `aligned` is the recommended mode: clang emits a natural alignment hint only
 for typed accesses that C requires to be aligned, and emits a weaker hint for
@@ -216,6 +262,11 @@ packed and `memcpy`-style accesses, which `aligned` still checks.
   against the physical size of the memory. `host/src/wasi-shim.ts` uses
   physical addresses; a WASI program cannot fork, so its entries are all
   identity.
+- The parent of a marked program runs the rewritten form from its start,
+  at the cost in "Cost", also when all its fork children are plain.
+- The host never drops a rewritten form that it made at `exec`, so a
+  kernel that starts many large marked programs keeps all their rewritten
+  bytes and modules.
 - The host rewrites a side module on every `dlopen` and keeps no cache. On
   Node the rewrite of a 650 KiB module takes about 60 ms, and the output is
   about four times the size of the input.
