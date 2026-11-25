@@ -1,9 +1,5 @@
-script_path = "packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
-inputs = [
-    "packages/registry/spidermonkey-node/build-spidermonkey-node.sh",
-    "scripts/install-local-binary.sh",
-    "scripts/wasm-artifact-guards.sh",
-]
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "UNPUBLISHED"
-revision    = 5
+script_path = "packages/registry/node/build-node-alias.sh"
+inputs = ["packages/registry/node/build-node-alias.sh", "scripts/package-build-roots.sh"]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 22

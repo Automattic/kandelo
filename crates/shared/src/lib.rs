@@ -2579,6 +2579,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_reserve_host_region"),
         HostAdapterKernelExport::optional("kernel_reserve_host_region_at"),
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
+        HostAdapterKernelExport::optional("kernel_rootfs_rename_file"),
         HostAdapterKernelExport::required("kernel_rootfs_take_compaction_request"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),
         HostAdapterKernelExport::required("kernel_set_cwd"),

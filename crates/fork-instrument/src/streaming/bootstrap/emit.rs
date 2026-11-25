@@ -72,6 +72,13 @@ pub(super) fn helper(plan: &FrozenModuleBootstrap, ordinal: u32, limit: usize) -
         if let Some(start) = plan.start {
             body.emit([Instruction::Call(start)])?;
         }
+    } else if ordinal == 1 {
+        // wasm-ld PIC addresses live in instance-local mutable globals. A
+        // pthread needs the original address initializer, while shared data,
+        // relocations and constructors remain owned by process startup.
+        if let Some(function) = plan.thread_globals {
+            body.emit([Instruction::Call(function)])?;
+        }
     }
     body.emit([Instruction::End, Instruction::End])?;
     Ok(body.function)

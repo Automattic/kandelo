@@ -185,3 +185,16 @@ export async function waitForProcessWorkerRetirement(
     ? waitForExecRetirement(generation.execRetirement, generation.workerQuiescence, timeoutMs)
     : waitForWorkerQuiescence(generation.workerQuiescence, timeoutMs);
 }
+
+/** The clone owner must observe initialization before returning success.
+ * Readiness is deliberately distinct from terminal Memory ownership. */
+export function createThreadWorkerReadiness() {
+  let settled = false;
+  let complete!: (started: boolean) => void;
+  const promise = new Promise<boolean>((resolve) => { complete = resolve; });
+  return {
+    promise,
+    ready() { if (!settled) { settled = true; complete(true); } },
+    retire() { if (!settled) { settled = true; complete(false); } },
+  };
+}

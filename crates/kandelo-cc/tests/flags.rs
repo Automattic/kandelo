@@ -289,6 +289,15 @@ fn needs_linking_is_true_for_link_only() {
 }
 
 #[test]
+fn archive_only_links_require_sdk_link_flags() {
+    assert!(needs_linking(&parsed(&["libmain.a", "-o", "main.wasm"])));
+    assert!(needs_linking(&parsed(&[
+        "-shared", "-Wl,--export=entry", "libentry.a", "-o", "libentry.so",
+    ])));
+    assert!(!needs_linking(&parsed(&["-print-file-name=libc.a"])));
+}
+
+#[test]
 fn needs_linking_is_false_for_preprocess_only() {
     assert!(!needs_linking(&parsed(&["-E", "foo.c"])));
 }

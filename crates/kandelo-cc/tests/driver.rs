@@ -103,6 +103,40 @@ fn compile_and_link_adds_compile_and_link_flags_plus_glue() {
 }
 
 #[test]
+fn ldl_selects_the_functional_dynamic_loading_glue() {
+    let args = build(&["foo.c", "-ldl", "-o", "foo.wasm"]);
+    assert!(!has(&args, "-ldl"));
+    assert!(has(&args, "/tmp/glue/dlopen.c"));
+    assert!(has(&args, "-Wl,--export=fork"));
+    assert!(!has(&build(&["foo.c", "-o", "foo.wasm"]), "-Wl,--export=fork"));
+}
+
+#[test]
+fn shared_library_can_limit_exports_to_its_explicit_abi() {
+    for controls in [
+        vec!["-Wl,--no-export-dynamic"],
+        vec!["-Wl,--no-export-dynamic,--gc-sections"],
+        vec!["-Xlinker", "--no-export-dynamic"],
+    ] {
+        let mut input = vec!["-shared", "libentry.a", "-Wl,--export=entry"];
+        input.extend(controls);
+        let args = build_clang_args(
+            &strings(&input), &toolchain(), WasmArch::Wasm32, Language::C, None, None,
+        ).unwrap();
+        assert!(has(&args, "-nostdlib"));
+        assert!(has(&args, "-Wl,--export=entry"));
+        assert!(!has(&args, "-Wl,--export-all"));
+        assert!(!joined_contains(&args, "crt1.o"));
+        assert!(!joined_contains(&args, "channel_syscall.c"));
+    }
+    let ordinary = build_clang_args(
+        &strings(&["-shared", "libentry.a"]), &toolchain(),
+        WasmArch::Wasm32, Language::C, None, None,
+    ).unwrap();
+    assert!(has(&ordinary, "-Wl,--export-all"));
+}
+
+#[test]
 fn every_executable_link_offers_the_dlopen_loader_as_a_lazy_member() {
     // With or without -ldl, the loader is a lazy member after the caller's
     // inputs and ahead of libc.a, so a program that calls dlopen gets it

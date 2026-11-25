@@ -159,6 +159,77 @@ fn parent_thread_and_fork_bootstrap_preserve_initialization_ownership() {
 }
 
 #[test]
+fn pthread_initializes_pic_addresses_without_replaying_shared_start_effects() {
+    for wide in [false, true] {
+        let pointer = if wide { "i64" } else { "i32" };
+        // Function zero deliberately has no name or export: stripped side
+        // modules must work, and a name alone must not authorize startup.
+        let source = format!(
+            r#"(module
+          (import "env" "__memory_base" (global $memory_base {pointer}))
+          (import "env" "__table_base" (global $table_base i32))
+          (import "env" "memory" (memory 1))
+          (global $address (export "address") (mut {pointer}) ({pointer}.const 8))
+          (global $callback (export "callback") (mut i32) (i32.const 3))
+          (func
+            global.get $memory_base {pointer}.const 8 {pointer}.add global.set $address
+            global.get $table_base i32.const 3 i32.add global.set $callback)
+          (func $start
+            call 0
+            i32.const 0 i32.const 0 i32.load i32.const 1 i32.add i32.store)
+          (start $start))"#
+        );
+        let output = emit(&wat::parse_str(source).unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("pic.wasm");
+        std::fs::write(&binary, output).unwrap();
+        let script = r#"
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+          const wide = process.argv[2] === '1';
+          const address = value => wide ? BigInt(value) : value;
+          const memory = new WebAssembly.Memory({initial: 1});
+          const create = () => new WebAssembly.Instance(module, {
+            env: { __memory_base: address(256), __table_base: 64, memory },
+            private: {
+              function() { throw new Error('private import must stay unused'); },
+              global: 999,
+              table: new WebAssembly.Table({element: 'anyfunc', initial: 1}),
+              memory: new WebAssembly.Memory({initial: 1}),
+            },
+          }).exports;
+          const parent = create();
+          parent.wpk_fork_module_bootstrap();
+          assert.equal(parent.address.value, address(264));
+          assert.equal(parent.callback.value, 67);
+          assert.equal(new Uint32Array(memory.buffer)[0], 1);
+          const thread = create();
+          thread.wpk_fork_module_thread_bootstrap();
+          assert.equal(thread.address.value, address(264));
+          assert.equal(thread.callback.value, 67);
+          assert.equal(new Uint32Array(memory.buffer)[0], 1);
+          thread.wpk_fork_module_thread_bootstrap();
+          thread.wpk_fork_module_bootstrap();
+          assert.equal(new Uint32Array(memory.buffer)[0], 1);
+          assert.equal(parent.address.value, address(264));
+        "#;
+        let result = std::process::Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .arg(binary)
+            .arg(if wide { "1" } else { "0" })
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
 fn deferred_data_count_is_inserted_before_original_or_helper_only_code() {
     for with_function in [false, true] {
         let input = wat::parse_str(format!(

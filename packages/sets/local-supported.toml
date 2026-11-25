@@ -1,6 +1,8 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "node-core-source",
+  "node-amaro-serde-source",
   "bytepath-source",
   "genesis-plus-gx-source",
   "snkrx-source",
@@ -18,7 +20,42 @@ dependency_only = [
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
 ]
-registry_non_roots = []
+registry_non_roots = [
+  { name = "node-native-lifetime-tests", reason = "unshipped native Node lifetime qualification fixture; resolved explicitly by diagnostic runs" },
+  { name = "flang-browser-bundle", reason = "optional Fortran compiler; resolve explicitly instead of blocking the standard shell and automatic builds" },
+]
+
+[[packages]]
+name = "kandelo-ffi-adapter"
+class = "platform"
+
+[[packages]]
+name = "node-libffi"
+class = "platform"
+
+[[packages]]
+name = "node-amaro"
+class = "platform"
+
+[[packages]]
+name = "node-undici-llhttp"
+class = "platform"
+
+[[packages]]
+name = "libuv"
+class = "platform"
+
+
+
+[[packages]]
+name = "spidermonkey-core"
+class = "platform"
+
+
+[[packages]]
+name = "v8-tracing"
+class = "platform"
+
 
 [[packages]]
 name = "service-activity-tools"
@@ -556,10 +593,6 @@ class = "test-support"
 
 [[packages]]
 name = "kandelo-sdk-browser-bundle"
-class = "browser-product"
-
-[[packages]]
-name = "flang-browser-bundle"
 class = "browser-product"
 
 [[packages]]

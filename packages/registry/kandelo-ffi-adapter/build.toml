@@ -1,0 +1,23 @@
+script_path = "packages/registry/kandelo-ffi-adapter/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 4
+inputs = [
+  "packages/registry/kandelo-ffi-adapter",
+  "packages/registry/wasm-fork-instrument/patches",
+  "crates/kandelo-ffi-adapter",
+  "crates/fork-instrument-capi",
+  "crates/fork-instrument",
+  "crates/program-abi",
+  "crates/wasm-artifact",
+  "Cargo.toml",
+  "Cargo.lock",
+  "abi/snapshot.json",
+  "tools/xtask/src/local_abi_identity.rs",
+  "tools/xtask/src/stamp_abi_contract.rs",
+  "scripts/package-build-roots.sh",
+  "scripts/package-rust-build-env.sh",
+  "scripts/build-rust-sysroot.sh",
+  "sdk/activate.sh",
+  "sdk/rust",
+]

@@ -4,6 +4,7 @@ import { MockWorkerAdapter } from "../src/worker-adapter";
 
 import {
   createWorkerQuiescence,
+  createThreadWorkerReadiness,
   retireWorkerBatch,
   runWithProcessWorkerQuiescence,
   waitForExecRetirement,
@@ -239,3 +240,23 @@ it.each(["attempted", "started", "unknown"] as const)(
     expect(fence.settled).toBe(false);
   },
 );
+
+describe("thread Worker startup acknowledgement", () => {
+  it("keeps clone pending until its exact initialization acknowledgement", async () => {
+    const startup = createThreadWorkerReadiness();
+    let outcome: boolean | undefined;
+    startup.promise.then(value => { outcome = value; });
+    await Promise.resolve();
+    expect(outcome).toBeUndefined();
+    startup.ready();
+    await expect(startup.promise).resolves.toBe(true);
+    startup.retire();
+    await expect(startup.promise).resolves.toBe(true);
+  });
+  it("releases failed or cancelled startup without accepting a late acknowledgement", async () => {
+    const startup = createThreadWorkerReadiness();
+    startup.retire();
+    startup.ready();
+    await expect(startup.promise).resolves.toBe(false);
+  });
+});

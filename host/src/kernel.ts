@@ -3064,22 +3064,17 @@ export class WasmPosixKernel {
               bufLen,
               "host_getrandom destination",
             );
-            // Bound the backing allocation, not just the view passed to
-            // Crypto. A short host result is legal; Rust owns read progress.
-            const random = new IntrinsicUint8Array(Math.min(destination.capacity, 65_536));
-            if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
-              // crypto.getRandomValues rejects SharedArrayBuffer-backed views
-              // in browsers. The owned temporary also ensures no host callback
-              // retains a live view of kernel memory.
-              // Web Crypto caps each call at 65,536 bytes, independently of
-              // the guest read size. Each import publishes one bounded window.
-              // https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues
-              if (random.length > 0) globalThis.crypto.getRandomValues(random);
-            } else {
-              for (let i = 0; i < random.length; i++) {
-                random[i] = (Math.random() * 256) | 0;
-              }
+            if (destination.capacity === 0) return 0;
+            const provider = globalThis.crypto;
+            if (!provider || typeof provider.getRandomValues !== "function") {
+              return -38; // ENOSYS: no cryptographic entropy provider.
             }
+            // Bound the backing allocation, not just the provider view.
+            // Rust owns syscall progress across these private windows.
+            // Publish only after this fill succeeds: a failed provider must
+            // never write uninitialized or partial bytes into kernel memory.
+            const random = new IntrinsicUint8Array(Math.min(destination.capacity, 65_536));
+            intrinsicApply(provider.getRandomValues, provider, [random]);
             this.#writeKernelBytes(destination, random);
             return random.length;
           } catch (error) {

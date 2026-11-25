@@ -241,9 +241,9 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
     id: "node",
     dependency: "node-browser-bundle",
-    resolverPath: "programs/wasm32/node.zip",
+    resolverPath: "programs/wasm32/spidermonkey-node.zip",
     mountPrefix: "/usr/",
-    requiredMember: "bin/node",
+    requiredMember: "bin/spidermonkey-node",
   },
   {
     id: "perl",
@@ -287,13 +287,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     mountPrefix: "/usr/",
     // A regular file: the SDK tool names are symlinks to the driver.
     requiredMember: "bin/kandelo-cc",
-  },
-  {
-    id: "flang",
-    dependency: "flang-browser-bundle",
-    resolverPath: "programs/wasm32/flang.zip",
-    mountPrefix: "/usr/",
-    requiredMember: "bin/flang",
   },
   {
     id: "go",
@@ -484,6 +477,11 @@ export function registerNodeShellProfile(fs: VfsImageFilesystem): void {
       "# scratch mount rather than spending the image's own space, and the\n" +
       "# interactive decoration (funding/audit summaries, progress bar,\n" +
       "# update check) is off.\n" +
+      "# Native addons remain explicitly deferred in this initial runtime.\n" +
+      "export NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--no-addons\"\n" +
+      "if [ -r /etc/ssl/certs/ca-certificates.crt ]; then\n" +
+      "  export NODE_EXTRA_CA_CERTS=\"${NODE_EXTRA_CA_CERTS:-/etc/ssl/certs/ca-certificates.crt}\"\n" +
+      "fi\n" +
       "export npm_config_cache=/tmp/.npm-cache\n" +
       "export npm_config_registry=https://registry.npmjs.org/\n" +
       "export npm_config_fund=false\n" +

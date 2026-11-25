@@ -1,0 +1,139 @@
+# Kandelo patch rationale (S36)
+# Judgment: Supported. Keep precisely timed allocator and GC hooks because
+# the stock callbacks do not provide the required retry opportunity and
+# heap-idle notification.
+#
+# Node memory policy needs a retry at the real heap-limit failure and GC
+# notifications when the heap is safe for native callbacks. Stock OOM
+# callbacks do not provide that retry protocol, and nursery callbacks occur
+# at a different GC phase. The bridge cannot recreate those opportunities
+# after they pass; the OS only sees memory, not JS collector phases. Keep
+# narrowly timed hooks, with callback lists, reentry rules and cleanup
+# owned by the bridge.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/src/gc/Allocator.cpp
++++ b/js/src/gc/Allocator.cpp
+@@ -12,6 +12,7 @@
+ #include "gc/GCProbes.h"
+ #include "gc/Nursery.h"
+ #include "gc/PublicIterators.h"
++#include "js/MemoryCallbacks.h"
+ #include "threading/CpuCount.h"
+ #include "util/Poison.h"
+ #include "vm/BigIntType.h"
+@@ -227,12 +228,37 @@
+   runtime->gc.attemptLastDitchGC();
+
+   void* ptr = AllocTenuredCellUnchecked<NoGC>(zone, kind);
++  JSContext* cx = runtime->mainContextFromOwnThread();
++  if (!ptr && runtime->gc.heapSize.bytes() >= runtime->gc.tunables.gcMaxBytes() &&
++      cx->tryNativeCellHeapLimitRecovery()) {
++    if (cx->isNativeExecutionTerminating() || cx->isExceptionPending()) {
++      return nullptr;
++    }
++    ptr = AllocTenuredCellUnchecked<NoGC>(zone, kind);
++  }
+   if (!ptr) {
++    if (cx->isNativeExecutionTerminating() || cx->isExceptionPending()) {
++      return nullptr;
++    }
+     ReportOutOfMemory(runtime->mainContextFromOwnThread());
+     return nullptr;
+   }
+
+   return ptr;
++}
++
++JS_PUBLIC_API void JS::SetNativeCellHeapLimitCallback(
++    JSContext* cx, NativeCellHeapLimitCallback callback, void* data) {
++  MOZ_RELEASE_ASSERT(cx == js::TlsContext.get());
++  cx->nativeCellHeapLimitCallback = callback;
++  cx->nativeCellHeapLimitData = callback ? data : nullptr;
++}
++
++JS_PUBLIC_API void JS::SetNativeMinorGCObserver(
++    JSContext* cx, NativeMinorGCObserver observer, void* data) {
++  MOZ_RELEASE_ASSERT(cx == js::TlsContext.get());
++  cx->nativeMinorGCObserver = observer;
++  cx->nativeMinorGCObserverData = observer ? data : nullptr;
+ }
+
+ void GCRuntime::attemptLastDitchGC() {
+--- a/js/src/gc/GC.cpp
++++ b/js/src/gc/GC.cpp
+@@ -5516,6 +5516,23 @@
+                                gcstats::PhaseKind phase) {
+   AutoMaybeLeaveAtomsZone leaveAtomsZone(rt->mainContextFromOwnThread());
+
++  JSContext* cx = rt->mainContextFromOwnThread();
++  auto observer = !JS::RuntimeHeapIsBusy() && nursery().isEnabled()
++                      ? cx->nativeMinorGCObserver
++                      : nullptr;
++  void* observerData = cx->nativeMinorGCObserverData;
++  if (observer) {
++    observer(cx, true, observerData);
++  }
++  // Declared outside Nursery::collect's AutoGCSession so the native epilogue
++  // observes the completed heap and may allocate. Existing nursery callbacks
++  // retain their original locations and collecting-heap contract.
++  auto notifyNativeObserver = MakeScopeExit([&] {
++    if (observer) {
++      observer(cx, false, observerData);
++    }
++  });
++
+   uint32_t numAllocs = 0;
+   for (ZonesIter zone(this, WithAtoms); !zone.done(); zone.next()) {
+     numAllocs += zone->getAndResetTenuredAllocsSinceMinorGC();
+--- a/js/public/MemoryCallbacks.h
++++ b/js/public/MemoryCallbacks.h
+@@ -41,6 +41,22 @@
+                                                  OutOfMemoryCallback cb,
+                                                  void* data);
+
++// Owner-thread embedding recovery after the original last-ditch GC/retry hits
++// the GC-cell heap cap. A true result requests one ordinary allocation retry.
++// The callback may collect or raise the real cap, must not run JS, and cannot
++// reenter itself. It is retired before the embedding's owner is destroyed.
++using NativeCellHeapLimitCallback = bool (*)(JSContext*, void*);
++extern JS_PUBLIC_API void SetNativeCellHeapLimitCallback(
++    JSContext* cx, NativeCellHeapLimitCallback callback, void* data);
++
++// Unlike the low-level nursery notifications inside a collecting heap, this
++// observer brackets an outer nursery collection while the heap permits native
++// allocation and collection. Internal nursery work during a major GC remains
++// part of that major event. Callbacks must not run JS or throw C++ exceptions.
++using NativeMinorGCObserver = void (*)(JSContext*, bool, void*);
++extern JS_PUBLIC_API void SetNativeMinorGCObserver(
++    JSContext* cx, NativeMinorGCObserver observer, void* data);
++
+ }  // namespace JS
+
+ #endif  // js_MemoryCallbacks_h
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -1087,6 +1087,22 @@
+   // Set by an embedding before creating realms. Ordinary Then results remain
+   // real objects so a hook enabled after registration can observe their jobs.
+   bool embedderPromiseLifecycleCapable = false;
++  bool (*nativeCellHeapLimitCallback)(JSContext*, void*) = nullptr;
++  void* nativeCellHeapLimitData = nullptr;
++  bool nativeCellHeapLimitRunning = false;
++  void (*nativeMinorGCObserver)(JSContext*, bool, void*) = nullptr;
++  void* nativeMinorGCObserverData = nullptr;
++  bool tryNativeCellHeapLimitRecovery() {
++    if (!nativeCellHeapLimitCallback || nativeCellHeapLimitRunning) {
++      return false;
++    }
++    nativeCellHeapLimitRunning = true;
++    struct Reset {
++      bool& running;
++      ~Reset() { running = false; }
++    } reset{nativeCellHeapLimitRunning};
++    return nativeCellHeapLimitCallback(this, nativeCellHeapLimitData);
++  }
+   EmbedderPromiseLifecycleHook embedderPromiseLifecycleHook = nullptr;
+   void* embedderPromiseLifecycleData = nullptr;
+   void emitEmbedderPromiseHook(EmbedderPromiseHookKind kind,

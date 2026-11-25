@@ -120,7 +120,7 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     // starts with directory metadata supplied by the image, never its files.
     // The rootfs journal also bounds /var/log, so a machine cannot be filled
     // by its own logs; see `rootfs::VAR_LOG_BYTE_LIMIT`.
-    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: RUN_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
     // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
@@ -148,6 +148,12 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
 pub(crate) fn mounts() -> impl Iterator<Item = (&'static [u8], u64, &'static str)> {
     SCRATCH_MOUNTS.iter().map(|mount| (mount.prefix, mount.st_dev, mount.fs_type))
 }
+
+// Protected boot-lifetime state for the OS's connected-name publisher. Use the
+// existing tmpfs layout owner so image-less boots also have this directory.
+const RUN_LAYOUT: &[LayoutNode] = &[
+    LayoutNode { path: b"kandelo", type_bits: S_IFDIR, mode: 0o755, uid: 0, gid: 0 },
+];
 
 const EXCHANGE_LAYOUT: &[LayoutNode] = {
     use crate::exchange::EXCHANGE_GID as G;

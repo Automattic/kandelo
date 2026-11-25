@@ -29,12 +29,12 @@ function archiveIdentity(pkg: string): [string, string, string] | null {
   return fields.length === 3 ? (fields as [string, string, string]) : null;
 }
 
-// A docs package whose source rides in a package of another name. npm is
-// node-browser-bundle's [source]; that package's version is the bundle's
-// own, so only the source archive (URL and SHA-256) is compared, and the
-// docs package's version must be the one in that URL.
+// These docs are bundled within the pinned Node archive. Their package
+// versions need not equal the enclosing source version; npm's build also
+// validates its declared version against deps/npm/package.json.
 const SOURCE_OWNERS: Record<string, string> = {
-  "npm-docs": "node-browser-bundle",
+  "npm-docs": "node-core-source",
+  "node-docs": "node-core-source",
 };
 
 const upstreamDocsPackages = readdirSync(registry)
@@ -56,9 +56,9 @@ describe("upstream man-page packages", () => {
     (docs) => {
       const sourceOwner = SOURCE_OWNERS[docs];
       if (sourceOwner !== undefined) {
-        const [version, url, sha256] = archiveIdentity(docs) ?? [];
+        const [, url, sha256] = archiveIdentity(docs) ?? [];
         expect(archiveIdentity(sourceOwner)?.slice(1)).toEqual([url, sha256]);
-        expect(url).toContain(`-${version}.`);
+        expect(url).toContain(`/node-v${archiveIdentity(sourceOwner)?.[0]}.tar.gz`);
         return;
       }
       const owner = docs.slice(0, -"-docs".length);

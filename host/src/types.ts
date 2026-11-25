@@ -312,7 +312,18 @@ export interface UdpReceiveTarget {
   receive(datagram: UdpDatagram): number;
 }
 
+/** A real connected-computer name, never a synthetic Internet lookup result. */
+export interface ConnectedComputerName {
+  readonly canonicalName: string;
+  readonly hostname: string;
+  readonly address: Uint8Array;
+}
+
 export interface NetworkIO {
+  /** Complete owned snapshots of the live membership table, including aliases. */
+  connectedComputerNames?(): readonly ConnectedComputerName[];
+  /** Changes are coalesced outside network mutation; unsubscribe before disposal. */
+  onConnectedComputerNamesChanged?(listener: () => void): () => void;
   /** IPv4 address owned by this guest network stack, when known. */
   readonly localAddress?: Uint8Array;
   /** True when this binding belongs to a virtual link. The runtime must not

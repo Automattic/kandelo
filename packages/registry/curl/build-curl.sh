@@ -20,4 +20,15 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 
-exec bash "$REPO_ROOT/packages/registry/libcurl/build-libcurl.sh" "$@"
+if [ "${WASM_POSIX_DEP_NAME:-}" = curl ]; then
+    # The delegated resolver branch copies the CLI but omits normal executable
+    # installation. Its real kernel_fork import requires complete instrumentation.
+    bash "$REPO_ROOT/packages/registry/libcurl/build-libcurl.sh" "$@"
+    : "${WASM_POSIX_DEP_OUT_DIR:?curl resolver output is required}"
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary curl "$WASM_POSIX_DEP_OUT_DIR/curl.wasm"
+else
+    exec bash "$REPO_ROOT/packages/registry/libcurl/build-libcurl.sh" "$@"
+fi

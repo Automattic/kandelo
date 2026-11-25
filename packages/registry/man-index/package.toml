@@ -64,7 +64,7 @@ depends_on = [
   "nethack-docs@3.6.7",
   "ninja-docs@1.13.2",
   "node-docs@0.1.0",
-  "npm-docs@10.9.2",
+  "npm-docs@11.20.0",
   "patch-docs@2.8",
   "perl-docs@5.40.3",
   "php-docs@8.5.12",

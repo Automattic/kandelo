@@ -2,6 +2,8 @@ import { MessageChannel } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RemoteSegmentRuntime, SessionNetwork } from "../src/networking/remote-segment-runtime";
 import type { NetworkIO, UdpDatagram } from "../src/types";
+import { LocalVirtualNetwork } from "../src/networking/virtual-network";
+import { RemoteVirtualNetwork } from "../src/networking/remote-segment";
 
 const runtimes: RemoteSegmentRuntime[] = [];
 afterEach(() => { for (const runtime of runtimes.splice(0)) runtime.close(); });
@@ -26,6 +28,39 @@ function receiver() {
 }
 
 describe("a machine's session network without a session", () => {
+  it("preserves real fallback aliases without using Internet lookup answers", async () => {
+    const local = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
+    const fallback = local.attachMachine({ id: "local", address: [10, 88, 0, 1], hostnames: ["local.test"] });
+    const remote = new RemoteVirtualNetwork("host", fallback);
+    try {
+      expect(remote.connectedComputerNames().map((entry) => entry.hostname).sort()).toEqual(["host", "local", "local.test"]);
+      const notification = new Promise<void>((resolve) => {
+        const stop = remote.onConnectedComputerNamesChanged(() => { stop(); resolve(); });
+      });
+      local.attachMachine({ id: "another", address: [10, 88, 0, 2] });
+      await notification;
+      expect(remote.connectedComputerNames().map((entry) => entry.hostname)).toContain("another");
+    } finally { remote.close(); }
+  });
+
+  it("publishes actual session membership and retires departed names", async () => {
+    const host = machine();
+    const joiner = machine();
+    host.runtime.host();
+    await link(host.runtime, joiner.runtime);
+    expect(host.network.connectedComputerNames().map((entry) => entry.hostname).sort()).toEqual(["host", "peer-2"]);
+    expect(joiner.network.connectedComputerNames().map((entry) => entry.hostname).sort()).toEqual(["host", "peer-2"]);
+    const departure = new Promise<void>((resolve) => {
+      const stop = host.network.onConnectedComputerNamesChanged(() => {
+        if (host.network.connectedComputerNames().length === 1) { stop(); resolve(); }
+      });
+    });
+    joiner.runtime.leave();
+    await departure;
+    expect(joiner.network.connectedComputerNames()).toEqual([]);
+    expect(host.network.connectedComputerNames().map((entry) => entry.hostname)).toEqual(["host"]);
+  });
+
   it("behaves as an absent network when it wraps no backend", () => {
     const { network } = machine();
     expect(network.localAddress).toBeUndefined();

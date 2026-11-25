@@ -1,0 +1,44 @@
+# Kandelo patch rationale (S31)
+# Judgment: Supported. Keep the pending-work accessor because the cleanup
+# callback alone cannot safely determine whether failed or reentrant
+# finalization still has work queued.
+#
+# A finalization cleanup callback can throw while work remains queued. The
+# bridge scheduler needs the engine's actual remaining/scheduled state to
+# avoid losing work or scheduling it twice. Blindly posting another
+# callback is not equivalent under GC reentry. Keep this small state
+# accessor rather than duplicate the cleanup algorithm; the OS cannot
+# inspect engine GC queues.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/src/builtin/FinalizationRegistryObject.h
++++ b/js/src/builtin/FinalizationRegistryObject.h
+@@ -220,6 +220,7 @@
+   FinalizationRecordVector* recordsToBeCleanedUp() const;
+   bool isQueuedForCleanup() const;
+   JSFunction* doCleanupFunction() const;
++  static FinalizationQueueObject* fromCleanupFunction(JSFunction* function);
+   bool hasRegistry() const;
+
+   void queueRecordToBeCleanedUp(FinalizationRecordObject* record);
+--- a/js/src/builtin/FinalizationRegistryObject.cpp
++++ b/js/src/builtin/FinalizationRegistryObject.cpp
+@@ -792,6 +792,17 @@
+ }
+
+ /* static */
++FinalizationQueueObject* FinalizationQueueObject::fromCleanupFunction(
++    JSFunction* function) {
++  MOZ_RELEASE_ASSERT(function && function->maybeNative() == doCleanup);
++  const Value& value =
++      function->getExtendedSlot(DoCleanupFunction_QueueSlot);
++  MOZ_RELEASE_ASSERT(value.isObject() &&
++                     value.toObject().is<FinalizationQueueObject>());
++  return &value.toObject().as<FinalizationQueueObject>();
++}
++
++/* static */
+ bool FinalizationQueueObject::doCleanup(JSContext* cx, unsigned argc,
+                                         Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);

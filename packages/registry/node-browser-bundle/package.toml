@@ -1,28 +1,31 @@
-# Browser lazy-archive bundle for Node.js. Reshapes the node package's
-# node.wasm plus npm (carried as this package's [source]) into a single
-# root-relative zip (bin/node + bin/npm + bin/npx +
-# lib/npm/…) that the shell overlay mounts at /usr/. The node package
-# itself is untouched.
+# Normal Node/Amaro executable payload and unchanged bundled npm, lazily at /usr.
 kind = "program"
 name = "node-browser-bundle"
 version = "0.1.0"
-kernel_abi = 7
-depends_on = ["node@0.1.0"]
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["node@0.1.0", "node-amaro@1.1.11", "node-undici-llhttp@9.3.1"]
 
-# npm 10.9.2 — its dist is staged into the archive and reshaped for SpiderMonkey.
 [source]
-url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
-sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
 provider = "archive"
 
 [license]
-spdx = "MIT AND Artistic-2.0"
+spdx = "MIT AND MPL-2.0 AND Artistic-2.0"
 url = "https://github.com/nodejs/node/blob/main/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/node-browser-bundle/build-node-browser-bundle.sh"
 
-[[outputs]]
+[[host_tools]]
 name = "node"
-wasm = "node.zip"
+version_constraint = ">=24.0"
+probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "spidermonkey-node"
+wasm = "spidermonkey-node.zip"
 fork_instrumentation = "disabled"

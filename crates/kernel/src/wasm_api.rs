@@ -3015,6 +3015,33 @@ pub extern "C" fn kernel_rootfs_write_file(
     }
 }
 
+/// Atomically rename a staged entry in the kernel-owned namespace. Both paths
+/// are canonical absolute paths lent from the host's kernel scratch allocation.
+/// The existing VFS rename keeps open readers on the previous inode alive.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_rename_file(
+    old_ptr: *const u8,
+    old_len: u32,
+    new_ptr: *const u8,
+    new_len: u32,
+) -> i32 {
+    if old_len == 0 || new_len == 0 {
+        return -(Errno::ENOENT as i32);
+    }
+    if old_ptr.is_null() || new_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
+    let old = unsafe { core::slice::from_raw_parts(old_ptr, old_len as usize) };
+    let new = unsafe { core::slice::from_raw_parts(new_ptr, new_len as usize) };
+    match syscalls::rename_kernel_file(&mut WasmHostIO, old, new) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Remove the non-directory rootfs entry named by `path_ptr..path_len`.
 /// Returns 0 or a negative errno (`ENOENT` when nothing is there, `EISDIR` for
 /// a directory). Host-facing so a host that stages files into the kernel-owned
@@ -7780,7 +7807,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             if output_pointer.is_null() {
                 return -(Errno::EFAULT as i32);
             }
-            let info = syscalls::sys_sysinfo();
+            let info = match syscalls::sys_sysinfo() {
+                Ok(info) => info,
+                Err(error) => return -(error as i32),
+            };
             let mut encoded = alloc::vec![0; model.sysinfo_size()];
             if let Err(error) = crate::process_wire::write_sysinfo(&mut encoded, &info, model) {
                 return -(error as i32);

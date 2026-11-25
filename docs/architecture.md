@@ -208,7 +208,11 @@ The shared Node/browser `host_getrandom` adapter allocates an independent
 buffer of at most 65,536 bytes, the
 [Web Crypto per-call quota](https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues).
 It publishes one initialized window to the Rust-lent destination and returns
-its byte count. The backing buffer, as well as its view, is bounded.
+its byte count. The backing buffer, as well as its view, is bounded. Nonempty
+requests fail with `ENOSYS` if the cryptographic provider is unavailable; no
+weak-randomness fallback is permitted. Each window is copied only after its
+provider call succeeds, so a failed fill leaves that window unchanged. Rust
+owns syscall progress and preserves bytes from earlier completed windows.
 
 Large `/dev/urandom`, `/dev/random`, and `getrandom()` requests bypass the
 request-sized transfer reservation. During normal dispatch Rust selects the
@@ -1777,6 +1781,12 @@ and libc performs an ordinary checkpoint after every `prepare`/`next` return
 and after `dlclose`. Constructors still begin only after both the import and
 checkpoint return, so signal delivery and dynamic initialization add no
 host-to-Wasm reentrancy.
+
+Live pthread replicas resolve function-pointer imports from the current module
+closure, including the module's own exports. Their newly instantiated GOT cells
+may start at zero until those exports are published. This is distinct from a
+fork snapshot: saved import values and table positions must match exactly, and
+an inconsistent saved function pointer remains an error.
 
 The dlopen replay list and its atomic pthread-fork lock live in a transient,
 host-private control record. The same host build writes and reads that record
@@ -4607,9 +4617,38 @@ count and SHA-256 before boot.
 The host stages and reads kernel-owned files only through kernel exports
 (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
 `kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
-`kernel_rootfs_mkdir_parents`). Writes, unlink and the browser's TLS root
+`kernel_rootfs_mkdir_parents`, `kernel_rootfs_rename_file`). Writes, unlink and the browser's TLS root
 certificate use these methods. Worker inspection uses
 the namespace methods below, including foreign mounts and cross-mount links.
+
+`CentralizedKernelWorker.rootfsRenameFile` publishes a staged entry with the
+existing tmpfs/rootfs rename operation, preserving open readers on the old
+inode and the native FIFO/Unix-socket registration policy. It accepts canonical
+absolute paths through two checked kernel scratch spans and does not borrow a
+guest process identity. Cross-authority moves fail with `EXDEV`; a kernel
+without the optional export fails with `ENOSYS`. Callers stage a complete file
+before renaming it: `rootfsWriteFile` truncates in place and is not itself an
+atomic publication primitive. Both hosts share this worker implementation.
+
+`ConnectedNamesFile` publishes `/run/kandelo/hosts-connected` in the dedicated
+kernel worker on both hosts. The native `/run` layout supplies its root-owned
+0755 parent even for image-less boots. The publisher checks directory ownership
+and modes, writes a complete 0644 staging file, then uses atomic rename. It
+does not edit `/etc/hosts`. Its source is the network owner's complete name,
+address and alias table, including real fallback virtual networks; Internet
+lookup results and UI snapshots are not membership sources. Departures remove
+only names still owned by the departing address. A machine ID cannot be reused
+until its previous attachment is retired.
+
+Initial publication precedes worker readiness; network-control replies await
+publication too. Membership changes schedule publication outside network
+callbacks, coalescing intermediate directory updates. Disposal revokes queued
+and staged generations before network/kernel retirement. Publication or staging
+cleanup errors produce host diagnostics and reject readiness/control replies;
+they do not count an older complete file as current. Failed publication retains
+the last complete file and attempts to remove the staging name. Interface tests
+exercise these rules but do not establish four-host guest DNS behavior. The
+libc resolver has not yet been changed to consume this file.
 
 For resizable persistent browsers, host-managed TLS provisioning runs after
 journal selection, recovery and any boot-time compaction, but before the worker
@@ -9987,3 +10026,15 @@ Integrated Swift/Node and three-engine headless controls validate these tooling
 contracts only. Physical opaque/partial/hidden-window adversarial controls and
 observer overhead remain unqualified. No complete-presentation coverage,
 originating native layer, application latency or native-feel claim follows.
+
+### Thread Worker startup and early process exit
+
+The shared Node/browser Worker protocol acknowledges pthread TLS, table and
+syscall-channel initialization before the existing clone transaction returns
+success. Merely constructing a Worker leaves asynchronous module loading and
+instantiation outstanding; an immediate parent abort could otherwise overtake
+that startup and require forced containment. Startup cancellation settles the
+same transaction without fabricating readiness. The startup acknowledgement
+is separate from `memory_quiescent` and never proves resource retirement.
+A running compute-only thread can still require the documented forced path.
+This change is undergoing the Node port's native and browser regression gates.

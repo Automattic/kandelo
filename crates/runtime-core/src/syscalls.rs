@@ -10567,6 +10567,49 @@ fn rename_with_fifo_registration(
     Ok(())
 }
 
+/// Rename canonical absolute paths in the kernel-owned namespace for a trusted
+/// host maintenance operation. No guest process identity is borrowed here.
+/// Keep named pipes, Unix sockets and exchange publication on their existing
+/// commit paths, just as the guest rename entrypoints do.
+pub fn rename_kernel_file(
+    host: &mut dyn HostIO,
+    oldpath: &[u8],
+    newpath: &[u8],
+) -> Result<(), Errno> {
+    for path in [oldpath, newpath] {
+        if path.is_empty() {
+            return Err(Errno::ENOENT);
+        }
+        let noncanonical = path != b"/" && path[1..].split(|byte| *byte == b'/')
+            .any(|component| component.is_empty() || component == b"." || component == b"..");
+        if path[0] != b'/' || path.contains(&0) || noncanonical {
+            return Err(Errno::EINVAL);
+        }
+    }
+    let old_tmpfs = crate::tmpfs::claims_path(oldpath);
+    let new_tmpfs = crate::tmpfs::claims_path(newpath);
+    if old_tmpfs || new_tmpfs {
+        if old_tmpfs != new_tmpfs {
+            return Err(Errno::EXDEV);
+        }
+        if crate::exchange::policy::check_rename(oldpath, newpath)?
+            == crate::exchange::policy::Rename::Publish
+        {
+            tmpfs_stamp_now(host)?;
+            return crate::exchange::outputs::publish(oldpath, newpath, exchange_now_ms(host)?);
+        }
+        return rename_with_fifo_registration(host, oldpath, newpath, |_| {
+            crate::tmpfs::rename(oldpath, newpath)
+        });
+    }
+    if crate::rootfs::claims_path(oldpath) && crate::rootfs::claims_path(newpath) {
+        return rename_with_fifo_registration(host, oldpath, newpath, |_| {
+            crate::rootfs::rename(oldpath, newpath)
+        });
+    }
+    Err(Errno::EXDEV)
+}
+
 fn publish_fifo_hardlink(prepared: Option<crate::fifo::PreparedFifoName>) {
     if let Some(prepared) = prepared {
         let pipe_idx = prepared.pipe_index();
@@ -23640,11 +23683,11 @@ pub fn can_query_sched(sender_euid: u32, target_uid: u32, target_euid: u32) -> b
     sender_euid == 0 || sender_euid == target_uid || sender_euid == target_euid
 }
 
-/// getrusage -- get resource usage (simulated).
+/// getrusage -- validate the request and report unavailable accounting.
 ///
-/// Returns mostly zeroed rusage struct. Wasm runtimes don't expose
-/// CPU/memory usage metrics, so we can't track actual resource usage. The wire
-/// size is owned by `wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE`.
+/// Do not publish invented zero measurements to any guest program. Real
+/// SELF/CHILDREN accounting remains required platform work; elapsed time is
+/// not a substitute for CPU time. Preserve the output buffer on failure.
 pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::rusage::{RUSAGE_CHILDREN, RUSAGE_SELF};
     let wire_size = wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize;
@@ -23655,10 +23698,7 @@ pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<()
     if buf.len() < wire_size {
         return Err(Errno::EINVAL);
     }
-    // Zero the entire struct — all fields are 0
-    // In a more complete implementation, ru_utime could track elapsed time
-    buf[..wire_size].fill(0);
-    Ok(())
+    Err(Errno::ENOSYS)
 }
 
 /// getpriority -- get scheduling priority.
@@ -24260,22 +24300,13 @@ pub struct KernelSysinfo {
     pub mem_unit: u32,
 }
 
-/// sysinfo — return width-independent system information.
-pub fn sys_sysinfo() -> KernelSysinfo {
-    KernelSysinfo {
-        uptime: 1,
-        loads: [0; 3],
-        totalram: 512 * 1024 * 1024,
-        freeram: 256 * 1024 * 1024,
-        sharedram: 0,
-        bufferram: 0,
-        totalswap: 0,
-        freeswap: 0,
-        procs: 1,
-        totalhigh: 0,
-        freehigh: 0,
-        mem_unit: 1,
-    }
+/// sysinfo -- real system accounting is not implemented yet.
+///
+/// Returning constant RAM, load and process counts made every consumer believe
+/// a measurement succeeded. Fail at the shared OS owner instead of requiring
+/// per-library guards. No successful record is written on this path.
+pub fn sys_sysinfo() -> Result<KernelSysinfo, Errno> {
+    Err(Errno::ENOSYS)
 }
 
 /// memfd_create — create an anonymous file backed by in-memory storage.
@@ -31269,6 +31300,72 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         sys_rename(&mut proc, &mut host, b"/tmp/old", b"/tmp/new").unwrap();
+    }
+
+    #[test]
+    fn kernel_file_rename_replaces_namespace_without_replacing_open_readers() {
+        let _fifo = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _unix = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let mut proc = Process::new(81_880);
+        let mut host = MockHostIO::new();
+        for (staged, published) in [
+            (b"/rename-staged".as_slice(), b"/rename-published".as_slice()),
+            (b"/run/rename-staged".as_slice(), b"/run/rename-published".as_slice()),
+            (b"/run/kandelo/rename-staged".as_slice(), b"/run/kandelo/rename-published".as_slice()),
+        ] {
+            let fd = sys_open(&mut proc, &mut host, published, O_CREAT | O_WRONLY, 0o644).unwrap();
+            sys_write(&mut proc, &mut host, fd, b"old").unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            let old_reader = sys_open(&mut proc, &mut host, published, O_RDONLY, 0).unwrap();
+            let fd = sys_open(&mut proc, &mut host, staged, O_CREAT | O_WRONLY, 0o644).unwrap();
+            sys_write(&mut proc, &mut host, fd, b"new generation").unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+
+            rename_kernel_file(&mut host, staged, published).unwrap();
+            assert_eq!(sys_open(&mut proc, &mut host, staged, O_RDONLY, 0), Err(Errno::ENOENT));
+            let new_reader = sys_open(&mut proc, &mut host, published, O_RDONLY, 0).unwrap();
+            let mut bytes = [0u8; 32];
+            let count = sys_read(&mut proc, &mut host, new_reader, &mut bytes).unwrap();
+            assert_eq!(&bytes[..count], b"new generation");
+            let count = sys_read(&mut proc, &mut host, old_reader, &mut bytes).unwrap();
+            assert_eq!(&bytes[..count], b"old");
+            sys_close(&mut proc, &mut host, old_reader).unwrap();
+            sys_close(&mut proc, &mut host, new_reader).unwrap();
+            if published.starts_with(b"/run/kandelo/") {
+                let directory = crate::tmpfs::lstat(b"/run/kandelo").unwrap();
+                assert_eq!((directory.st_mode & 0o7777, directory.st_uid, directory.st_gid), (0o755, 0, 0));
+                let mut reader = Process::new(81_881);
+                set_test_credentials(&mut reader, 1000, 1000, 1000, 1000, &[]);
+                let fd = sys_open(&mut reader, &mut host, published, O_RDONLY, 0).unwrap();
+                let count = sys_read(&mut reader, &mut host, fd, &mut bytes).unwrap();
+                assert_eq!(&bytes[..count], b"new generation");
+                sys_close(&mut reader, &mut host, fd).unwrap();
+                assert_eq!(sys_open(&mut reader, &mut host, published, O_WRONLY | O_TRUNC, 0), Err(Errno::EACCES));
+                assert_eq!(sys_unlink(&mut reader, &mut host, published), Err(Errno::EACCES));
+                assert_eq!(sys_open(&mut reader, &mut host, b"/run/kandelo/forbidden", O_CREAT | O_WRONLY, 0o644), Err(Errno::EACCES));
+            }
+            sys_unlink(&mut proc, &mut host, published).unwrap();
+        }
+        let fd = sys_open(&mut proc, &mut host, b"/rename-cross-source", O_CREAT | O_WRONLY, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(rename_kernel_file(&mut host, b"/rename-cross-source", b"/run/rename-cross-target"), Err(Errno::EXDEV));
+        let fd = sys_open(&mut proc, &mut host, b"/rename-cross-source", O_RDONLY, 0).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, b"/rename-cross-source").unwrap();
+    }
+
+    #[test]
+    fn kernel_file_rename_rejects_invalid_maintenance_paths() {
+        let mut host = MockHostIO::new();
+        for invalid in [b"relative".as_slice(), b"/run/../other".as_slice(), b"/run/a\0b".as_slice()] {
+            assert_eq!(rename_kernel_file(&mut host, invalid, b"/run/target"), Err(Errno::EINVAL));
+            assert_eq!(rename_kernel_file(&mut host, b"/run/source", invalid), Err(Errno::EINVAL));
+        }
+        assert_eq!(rename_kernel_file(&mut host, b"", b"/run/target"), Err(Errno::ENOENT));
     }
 
     #[test]
@@ -43690,9 +43787,8 @@ mod tests {
         let mut proc = Process::new(1);
         let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, 0, &mut buf);
-        assert!(result.is_ok());
-        // All fields should be zeroed
-        assert!(buf.iter().all(|&b| b == 0));
+        assert_eq!(result, Err(Errno::ENOSYS));
+        assert!(buf.iter().all(|&b| b == 0xFF));
     }
 
     #[test]
@@ -43700,8 +43796,8 @@ mod tests {
         let mut proc = Process::new(1);
         let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, -1, &mut buf);
-        assert!(result.is_ok());
-        assert!(buf.iter().all(|&b| b == 0));
+        assert_eq!(result, Err(Errno::ENOSYS));
+        assert!(buf.iter().all(|&b| b == 0xFF));
     }
 
     #[test]
@@ -52212,13 +52308,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn test_sysinfo() {
-        let info = sys_sysinfo();
-        assert_eq!(info.uptime, 1);
-        assert_eq!(info.loads, [0; 3]);
-        assert_eq!(info.totalram, 512 * 1024 * 1024);
-        assert_eq!(info.freeram, 256 * 1024 * 1024);
-        assert_eq!(info.procs, 1);
-        assert_eq!(info.mem_unit, 1);
+        assert_eq!(sys_sysinfo(), Err(Errno::ENOSYS));
     }
 
     #[test]
@@ -69687,6 +69777,8 @@ impl HostIO for RelSymlinkMock {
             let mut host = host_at(9);
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
             let create = |proc: &mut Process, host: &mut MockHostIO| {
+                // Reach the host capability check with a valid storage format;
+                // format 0 is rejected before the host is consulted.
                 let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: DRM_FORMAT_XRGB8888, usage: 0 };
                 let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
                 unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };

@@ -762,6 +762,7 @@ function objectLiteralIsDestructured(literal: ts.ObjectLiteralExpression): boole
       ts.isNonNullExpression(parent) ||
       ts.isSatisfiesExpression(parent) ||
       (ts.isObjectLiteralExpression(parent) && node !== literal) ||
+      ts.isArrayLiteralExpression(parent) ||
       (ts.isPropertyAssignment(parent) && parent.initializer === node)
     ) {
       continue;
@@ -3382,10 +3383,13 @@ function validateContractEntries(
   }
   const allowanceKeys = new Set<string>();
   for (const allowance of allowances) {
-    // Matching below is strict string equality. `?` is ordinary TypeScript
-    // source text (notably `??` and `?.`) and therefore can be part of an
-    // exact finding key; only `*` could plausibly advertise a wildcard.
-    if (allowance.key.includes("*")) {
+    // Matching below is strict string equality. The source-text component
+    // may contain literal operators or comments, including `*` and `?`.
+    // Reject wildcard declarations and an all-wildcard source component;
+    // stars inside exact source text never enable pattern matching.
+    const parts = allowance.key.split("::");
+    if (parts.slice(0, 3).some((part) => part.includes("*")) ||
+        parts.slice(3).join("::").trim() === "*") {
       throw new Error(`audit allowance must be exact: ${allowance.key}`);
     }
     if (allowance.why.trim().length < 12) {
@@ -7825,26 +7829,30 @@ function gitIgnoredRuntimeSourceFiles(
 ): ReadonlySet<string> {
   if (files.length === 0) return new Set();
   const relativeFiles = files.map((file) => path.relative(rootDir, file));
-  const result = spawnSync(
-    "git",
-    ["-C", rootDir, "check-ignore", "--stdin", "-z"],
-    {
-      input: `${relativeFiles.join("\0")}\0`,
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-    },
-  );
-  if (result.error || (result.status !== 0 && result.status !== 1)) {
-    // A virtual fixture or exported source tree need not be a Git checkout.
-    // In that case retain the conservative behavior and audit every source.
-    return new Set();
+  const ignored = new Set<string>();
+  // Bound each response independently of local package/build output volume.
+  // An overflowing response previously discarded every ignore result and
+  // admitted the very build trees this filter is intended to exclude.
+  for (let offset = 0; offset < relativeFiles.length; offset += 1024) {
+    const result = spawnSync(
+      "git",
+      ["-C", rootDir, "check-ignore", "--stdin", "-z"],
+      {
+        input: `${relativeFiles.slice(offset, offset + 1024).join("\0")}\0`,
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+    if (result.error || (result.status !== 0 && result.status !== 1)) {
+      // A virtual fixture or exported source tree need not be a Git checkout.
+      // Retain the conservative behavior and audit every source in that case.
+      return new Set();
+    }
+    for (const relative of result.stdout.split("\0")) {
+      if (relative.length > 0) ignored.add(path.resolve(rootDir, relative));
+    }
   }
-  return new Set(
-    result.stdout
-      .split("\0")
-      .filter((relative) => relative.length > 0)
-      .map((relative) => path.resolve(rootDir, relative)),
-  );
+  return ignored;
 }
 
 /**
@@ -7872,6 +7880,11 @@ export function repositoryRuntimeSourceFiles(rootDir: string): string[] {
         // sources and can contain their own nested build products.
         const relative = toPosix(path.relative(rootDir, absolute));
         if (
+          // Root-local evidence and disposable builds are never authored
+          // runtime sources (CLAUDE.md Worktree Storage). Avoid traversing
+          // millions of files before the ordinary Git-ignore filter runs.
+          relative === ".context" ||
+          relative === ".scratch" ||
           relative === "libc/musl" ||
           relative === "tests/libc/libc-test" ||
           relative === "tests/sortix/os-test"

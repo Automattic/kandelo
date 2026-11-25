@@ -63,8 +63,46 @@ export class SessionNetwork implements NetworkIO {
   private readonly segmentHandles = new Set<number>();
   /** Connections whose session ended under them: they report a reset. */
   private readonly resetHandles = new Set<number>();
+  private readonly nameListeners = new Set<() => void>();
+  private stopFallbackNames?: () => void;
+  private stopSegmentNames?: () => void;
 
   constructor(private readonly fallback?: NetworkIO) {}
+
+  connectedComputerNames(): { canonicalName: string; hostname: string; address: Uint8Array }[] {
+    const names = new Map<string, { canonicalName: string; hostname: string; address: Uint8Array }>();
+    for (const backend of [this.fallback, this.segment]) {
+      for (const entry of backend?.connectedComputerNames?.() ?? []) {
+        names.set(entry.hostname, { ...entry, address: entry.address.slice() });
+      }
+    }
+    return [...names.values()];
+  }
+
+  onConnectedComputerNamesChanged(listener: () => void): () => void {
+    if (this.nameListeners.size === 0) {
+      this.stopFallbackNames = this.fallback?.onConnectedComputerNamesChanged?.(this.notifyNamesChanged);
+      this.stopSegmentNames = this.segment?.onConnectedComputerNamesChanged(this.notifyNamesChanged);
+    }
+    this.nameListeners.add(listener);
+    return () => {
+      this.nameListeners.delete(listener);
+      if (this.nameListeners.size === 0) {
+        this.stopFallbackNames?.(); this.stopFallbackNames = undefined;
+        this.stopSegmentNames?.(); this.stopSegmentNames = undefined;
+      }
+    };
+  }
+
+  private readonly notifyNamesChanged = (): void => {
+    for (const listener of [...this.nameListeners]) listener();
+  };
+
+  disposeNameSubscriptions(): void {
+    this.stopFallbackNames?.(); this.stopFallbackNames = undefined;
+    this.stopSegmentNames?.(); this.stopSegmentNames = undefined;
+    this.nameListeners.clear();
+  }
 
   get attached(): RemoteVirtualNetwork | undefined { return this.segment; }
 
@@ -81,6 +119,9 @@ export class SessionNetwork implements NetworkIO {
   attach(segment: RemoteVirtualNetwork): void {
     if (this.segment) throw new Error("this machine is already in a network session");
     this.segment = segment;
+    if (this.nameListeners.size) {
+      this.stopSegmentNames = segment.onConnectedComputerNamesChanged(this.notifyNamesChanged);
+    }
     for (const [id, binding] of this.udp) {
       if (binding.inSegment) continue;
       const result = segment.bindUdp(id, binding.addr, binding.port, binding.target);
@@ -91,6 +132,7 @@ export class SessionNetwork implements NetworkIO {
       const result = segment.listenTcp(id, listener.addr, listener.port, listener.target);
       if (result !== 0) console.warn(`[session network] TCP ${listener.port} could not join the session: errno ${result}`);
     }
+    this.notifyNamesChanged();
   }
 
   /**
@@ -101,12 +143,14 @@ export class SessionNetwork implements NetworkIO {
   detach(): void {
     const segment = this.segment;
     if (!segment) return;
+    this.stopSegmentNames?.(); this.stopSegmentNames = undefined;
     this.segment = undefined;
     for (const handle of this.segmentHandles) this.resetHandles.add(handle);
     this.segmentHandles.clear();
     for (const [id, binding] of [...this.udp]) if (binding.inSegment) this.udp.delete(id);
     for (const [id, listener] of [...this.tcp]) if (listener.inSegment) this.tcp.delete(id);
     segment.close();
+    this.notifyNamesChanged();
   }
 
   private routesToSegment(addr: Uint8Array): boolean {
@@ -396,7 +440,10 @@ export class RemoteSegmentRuntime {
   }
 
   /** Destroy: leave any session and forget the installed network. */
-  close(): void { this.leave(); this.session = undefined; this.lastDisconnect = null; }
+  close(): void {
+    this.leave(); this.session?.disposeNameSubscriptions();
+    this.session = undefined; this.lastDisconnect = null;
+  }
 }
 
 /** Main-thread requests the runtime answers. Shared by both worker protocols. */
@@ -422,10 +469,15 @@ export function handleRemoteNetworkMessage(
   ready: boolean,
   respond: (requestId: number, result: unknown) => void,
   respondError: (requestId: number, error: string) => void,
+  namesPublished?: () => Promise<void>,
 ): message is RemoteNetworkMessage {
   if (!REMOTE_NETWORK_MESSAGES.has(message.type)) return false;
   const request = message as RemoteNetworkMessage;
   const reject = (error: unknown) => respondError(request.requestId, error instanceof Error ? error.message : String(error));
+  const respondPublished = (result: unknown): void => {
+    if (namesPublished === undefined) { respond(request.requestId, result); return; }
+    void Promise.resolve().then(namesPublished).then(() => respond(request.requestId, result), reject);
+  };
   const transferredPort = "peer" in request ? request.peer.port : undefined;
   if (!ready) {
     transferredPort?.close();
@@ -434,12 +486,12 @@ export function handleRemoteNetworkMessage(
   }
   try {
     switch (request.type) {
-      case "remote_network_attach": respond(request.requestId, runtime.attachPeer(request.peer)); break;
-      case "remote_network_snapshot": respond(request.requestId, runtime.snapshot()); break;
-      case "remote_network_host": respond(request.requestId, runtime.host()); break;
-      case "remote_network_leave": runtime.leave(); respond(request.requestId, null); break;
+      case "remote_network_attach": respondPublished(runtime.attachPeer(request.peer)); break;
+      case "remote_network_snapshot": respondPublished(runtime.snapshot()); break;
+      case "remote_network_host": respondPublished(runtime.host()); break;
+      case "remote_network_leave": runtime.leave(); respondPublished(null); break;
       case "remote_network_join":
-        void runtime.join(request.peer).then((address) => respond(request.requestId, address), reject);
+        void runtime.join(request.peer).then(respondPublished, reject);
         break;
     }
   } catch (error) { reject(error); }

@@ -42,9 +42,9 @@ describe("browser binary supply", () => {
     expect(binaries).not.toContain("programs/wasm32/termchat/termchat.wasm");
   });
 
-  it("selects the Node runner's built-ins including both Node entry points", () => {
+  it("selects the Node runner's declared package artifact", () => {
     const binaries = nodeRunnerDemands(repoRoot).map((demand) => demand.binary);
-    expect(binaries).toContain("programs/wasm32/spidermonkey-node.wasm");
+    expect(binaries).not.toContain("programs/wasm32/spidermonkey-node.wasm");
     expect(binaries).toContain("programs/wasm32/node.wasm");
     expect(binaries).not.toContain("programs/wasm32/echo.wasm");
     expect(hostProgramDemands(repoRoot).map((demand) => demand.binary)).toEqual(

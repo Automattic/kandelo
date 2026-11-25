@@ -1210,6 +1210,50 @@ describe("Rust-owned host import ranges", () => {
     expect(imports.env.host_getrandom(0, 1)).toBe(-14);
   });
 
+  function withEntropyProvider(provider: unknown, operation: () => void): void {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: provider });
+    try { operation(); }
+    finally {
+      if (previous) Object.defineProperty(globalThis, "crypto", previous);
+      else Reflect.deleteProperty(globalThis, "crypto");
+    }
+  }
+
+  for (const width of [4, 8] as const) {
+    const pointer = width === 8 ? 4096n : 4096;
+    it.each([undefined, null, {}])(`refuses missing entropy without weak bytes (wasm${width})`, (provider) => {
+      const { kernel, memory } = kernelHarness({}, width);
+      const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
+      const bytes = new Uint8Array(memory.buffer);
+      bytes.fill(0xa5, 4095, 4101);
+      const weakRandom = vi.spyOn(Math, "random").mockImplementation(() => { throw new Error("Weak entropy used"); });
+      try {
+        withEntropyProvider(provider, () => {
+          expect(imports.env.host_getrandom(pointer, 4)).toBe(-38);
+          expect(imports.env.host_getrandom(pointer, 0)).toBe(0);
+        });
+        expect(weakRandom).not.toHaveBeenCalled();
+        expect(Array.from(bytes.subarray(4095, 4101))).toEqual(Array(6).fill(0xa5));
+      } finally { weakRandom.mockRestore(); }
+    });
+
+    it(`preserves the destination when a provider mutates its private window then fails (wasm${width})`, () => {
+      const { kernel, memory } = kernelHarness({}, width);
+      const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
+      const bytes = new Uint8Array(memory.buffer);
+      bytes.fill(0xa5, 4095, 4101);
+      const provider = {
+        getRandomValues(view: Uint8Array) {
+          view.fill(0x42);
+          throw Object.assign(new Error("Entropy source failed"), { errno: 5 });
+        },
+      };
+      withEntropyProvider(provider, () => expect(imports.env.host_getrandom(pointer, 4)).toBe(-5));
+      expect(Array.from(bytes.subarray(4095, 4101))).toEqual(Array(6).fill(0xa5));
+    });
+  }
+
   for (const pointerWidth of [4, 8] as const) {
     it(`bounds random backing allocations and returns a prefix (wasm${pointerWidth * 8})`, () => {
       const memory = new WebAssembly.Memory({ initial: 50, maximum: 50, shared: true });

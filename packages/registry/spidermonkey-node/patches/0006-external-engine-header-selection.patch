@@ -1,0 +1,26 @@
+# Kandelo patch rationale (O26)
+#
+# Node's startup and other normal native targets must use the external
+# engine headers consistently. Remove the bundled V8 include directory when
+# that engine is not selected, without reducing source or binding lists.
+# Another include path placed earlier can still allow accidental bundled-
+# header selection; neither the OS nor runtime bridge can fix a translation
+# unit already compiled against the wrong declarations.
+#
+# Judgment: Supported. Bundled V8 headers must not be selected for targets
+# built against the SpiderMonkey bridge.
+#
+--- a/node.gyp
++++ b/node.gyp
+@@ -542,6 +542,11 @@
+     },
+
+     'conditions': [
++      ['node_use_bundled_v8=="false"', {
++        # Use only the external engine's headers, including for libnode's
++        # ordinary startup/snapshot-stub unit. Keep the target/source lists.
++        'include_dirs!': ['deps/v8/include'],
++      }],
+       ['clang==0 and OS!="win"', {
+         'cflags': [ '-Wno-restrict', ],
+       }],

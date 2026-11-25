@@ -90,3 +90,49 @@ fn source_declared_and_active_segments_start_logically_dropped() {
     assert_eq!(plan.initially_dropped_elements(), [true, true, false]);
     assert_eq!(plan.initially_dropped_data(), [true, false]);
 }
+
+#[test]
+fn pthread_address_initializer_rejects_other_start_effects() {
+    for (body, accepted) in [
+        (
+            "global.get $base i32.const 8 i32.add global.set $local",
+            true,
+        ),
+        ("global.get $base global.set $local", true),
+        ("i32.const 8 global.set $local", false),
+        (
+            "global.get $local i32.const 8 i32.add global.set $local",
+            false,
+        ),
+        (
+            "global.get $base i32.const 8 i32.add global.set $imported",
+            false,
+        ),
+        (
+            "global.get $base i32.const 8 i32.add global.set $local i32.const 0 i32.const 9 i32.store",
+            false,
+        ),
+        (
+            "call $other global.get $base i32.const 8 i32.add global.set $local",
+            false,
+        ),
+        (
+            "global.get $base i32.const 8 i32.add global.set $local loop end",
+            false,
+        ),
+    ] {
+        let input = wat::parse_str(format!(
+            r#"(module
+          (import "env" "__memory_base" (global $base i32))
+          (import "env" "other" (global $imported (mut i32)))
+          (memory 1) (global $local (mut i32) (i32.const 8))
+          (func $other)
+          (func $init {body})
+          (func $start call $init) (start $start))"#
+        ))
+        .unwrap();
+        let scan = scan(&input).unwrap();
+        let plan = ModuleBootstrapPlan::discover(&scan, Default::default()).unwrap();
+        assert_eq!(plan.thread_globals.is_some(), accepted, "{body}");
+    }
+}

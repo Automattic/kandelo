@@ -523,6 +523,10 @@ function signatures(
       parameters: [i32, pointer, pointer],
       result: pointer,
     },
+    kernel_rootfs_rename_file: {
+      parameters: [pointer, i32, pointer, i32],
+      result: i32,
+    },
     kernel_reap_exited_child: {
       parameters: [i32, i32],
       result: i32,

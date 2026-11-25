@@ -1,0 +1,208 @@
+# Kandelo patch rationale (S40)
+# Judgment: Supported. Retain real counters and seed access because
+# current-memory snapshots cannot recover allocation history or the
+# engine’s actual hash seed.
+#
+# Node exposes memory statistics and the engine's actual hash seed. Current
+# memory snapshots cannot reconstruct peak or cumulative allocation, and an
+# unrelated bridge-generated seed would be false data. Keep the required
+# engine counters/accessors while mapping Node fields in the bridge; OS
+# totals lack these categories. Review the three purposes separately and
+# share event infrastructure where possible instead of maintaining
+# duplicate counters.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/src/gc/Allocator-inl.h
++++ b/js/src/gc/Allocator-inl.h
+@@ -89,6 +89,7 @@
+   if (MOZ_UNLIKELY(!ptr)) {
+     return nullptr;
+   }
++  cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* string = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
+   MemoryReleaseFence(cx->zone());  // See note above.
+   return string;
+@@ -102,6 +103,7 @@
+   if (MOZ_UNLIKELY(!ptr)) {
+     return nullptr;
+   }
++  cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* bigInt = new (mozilla::KnownNotNull, ptr) T();
+   MemoryReleaseFence(cx->zone());  // See note above.
+   return bigInt;
+@@ -117,6 +119,7 @@
+   if (MOZ_UNLIKELY(!ptr)) {
+     return nullptr;
+   }
++  cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* gs = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
+   MemoryReleaseFence(cx->zone());  // See note above.
+   return gs;
+@@ -136,6 +139,7 @@
+   if (MOZ_UNLIKELY(!cell)) {
+     return nullptr;
+   }
++  cx->runtime()->gc.recordManagedAllocation(thingSize);
+   T* object = new (mozilla::KnownNotNull, cell) T();
+   MemoryReleaseFence(cx->zone());  // See note above.
+   return object;
+@@ -150,6 +154,7 @@
+   if (MOZ_UNLIKELY(!ptr)) {
+     return nullptr;
+   }
++  cx->runtime()->gc.recordManagedAllocation(sizeof(T));
+   T* cell = new (mozilla::KnownNotNull, ptr) T(std::forward<Args>(args)...);
+   MemoryReleaseFence(cx->zone());  // See note above.
+   return cell;
+--- a/js/src/gc/BufferAllocator.cpp
++++ b/js/src/gc/BufferAllocator.cpp
+@@ -606,16 +606,20 @@
+ void* BufferAllocator::alloc(size_t bytes, bool nurseryOwned) {
+   MOZ_ASSERT_IF(zone->isGCMarkingOrSweeping(), majorState == State::Marking);
+   checkAccess();
++  auto record = [this](void* allocation) {
++    if (allocation) gc->recordManagedAllocation(getAllocSize(allocation));
++    return allocation;
++  };
+
+   if (IsLargeAllocSize(bytes)) {
+-    return allocLarge(bytes, nurseryOwned, false);
++    return record(allocLarge(bytes, nurseryOwned, false));
+   }
+
+   if (IsSmallAllocSize(bytes)) {
+-    return allocSmall(bytes, nurseryOwned, false);
+-  }
+-
+-  return allocMedium(bytes, nurseryOwned, false);
++    return record(allocSmall(bytes, nurseryOwned, false));
++  }
++
++  return record(allocMedium(bytes, nurseryOwned, false));
+ }
+
+ void* BufferAllocator::allocInGC(size_t bytes, bool nurseryOwned) {
+@@ -715,6 +719,7 @@
+
+     if (bytes > currentBytes && !IsLargeAllocSize(bytes)) {
+       if (growMedium(alloc, bytes)) {
++        gc->recordManagedAllocation(bytes - currentBytes);
+         return alloc;
+       }
+     }
+--- a/js/src/gc/GCRuntime.h
++++ b/js/src/gc/GCRuntime.h
+@@ -271,4 +271,10 @@
+   [[nodiscard]] bool init(uint32_t maxbytes);
+   bool wasInitialized() const { return initialized; }
++  NativeAllocationCounters& nativeMallocCounters() { return nativeMallocCounters_; }
++  const NativeAllocationCounters& nativeMallocCounters() const { return nativeMallocCounters_; }
++  void recordManagedAllocation(size_t bytes) {
++    nativeManagedAllocatedBytes_ += uint64_t(bytes);
++  }
++  uint64_t nativeManagedAllocatedBytes() const { return nativeManagedAllocatedBytes_; }
+   void finishRoots();
+   void finish();
+@@ -1145,6 +1151,8 @@
+
+   /* Track total GC heap size for this runtime. */
+   HeapSize heapSize;
++  NativeAllocationCounters nativeMallocCounters_;
++  mozilla::Atomic<uint64_t, mozilla::Relaxed> nativeManagedAllocatedBytes_{0};
+
+   /* GC scheduling state and parameters. */
+   GCSchedulingTunables tunables;
+--- a/js/src/gc/Scheduling.h
++++ b/js/src/gc/Scheduling.h
+@@ -637,7 +637,29 @@
+  * It automatically maintains the memory usage relationship between parent and
+  * child instances, i.e. between those in a GCRuntime and its Zones.
+  */
++// Event counters for native consumers of the collector's malloc accounting.
++// The runtime counter observes all zones; it is not a sampled sum of peaks.
++class NativeAllocationCounters {
++  mozilla::Atomic<uint64_t, mozilla::Relaxed> bytes_{0};
++  mozilla::Atomic<uint64_t, mozilla::Relaxed> peak_{0};
++ public:
++  void add(size_t bytes) {
++    const uint64_t current = (bytes_ += uint64_t(bytes));
++    uint64_t previous = peak_;
++    while (previous < current && !peak_.compareExchange(previous, current)) {
++      previous = peak_;
++    }
++  }
++  void remove(size_t bytes) {
++    MOZ_RELEASE_ASSERT(uint64_t(bytes) <= bytes_);
++    bytes_ -= uint64_t(bytes);
++  }
++  uint64_t bytes() const { return bytes_; }
++  uint64_t peak() const { return peak_; }
++};
++
+ class HeapSize {
++  NativeAllocationCounters* nativeCounters_ = nullptr;
+   /*
+    * The number of bytes in use. For GC heaps this is approximate to the nearest
+    * ArenaSize. It is atomic because it is updated by both the active and GC
+@@ -658,7 +680,8 @@
+   AtomicByteCount retainedBytes_;
+
+  public:
+-  explicit HeapSize() {
++  explicit HeapSize(NativeAllocationCounters* counters = nullptr)
++      : nativeCounters_(counters) {
+     MOZ_ASSERT(bytes_ == 0);
+     MOZ_ASSERT(retainedBytes_ == 0);
+   }
+@@ -680,6 +703,7 @@
+     mozilla::DebugOnly<size_t> initialBytes(bytes_);
+     MOZ_ASSERT(initialBytes + nbytes > initialBytes);
+     bytes_ += nbytes;
++    if (nativeCounters_) nativeCounters_->add(nbytes);
+     if (updateRetainedSize) {
+       retainedBytes_ += nbytes;
+     }
+@@ -692,4 +716,5 @@
+     MOZ_ASSERT(bytes_ >= nbytes);
+     bytes_ -= nbytes;
++    if (nativeCounters_) nativeCounters_->remove(nbytes);
+   }
+ };
+--- a/js/src/gc/Zone.cpp
++++ b/js/src/gc/Zone.cpp
+@@ -35,6 +35,7 @@
+
+ ZoneAllocator::ZoneAllocator(JSRuntime* rt, Kind kind)
+     : JS::shadow::Zone(rt, rt->gc.marker().tracer(), kind),
++      mallocHeapSize(&rt->gc.nativeMallocCounters()),
+       jitHeapThreshold(size_t(jit::MaxCodeBytesPerProcess * 0.8)) {}
+
+ ZoneAllocator::~ZoneAllocator() {
+--- a/js/src/vm/Runtime.cpp
++++ b/js/src/vm/Runtime.cpp
+@@ -654,6 +654,7 @@
+   if (randomKeyGenerator_.isNothing()) {
+     mozilla::Array<uint64_t, 2> seed;
+     GenerateXorShift128PlusSeed(seed);
++    nativeInitialHashSeed_.emplace(seed[0]);
+     randomKeyGenerator_.emplace(seed[0], seed[1]);
+   }
+   return randomKeyGenerator_.ref();
+--- a/js/src/vm/Runtime.h
++++ b/js/src/vm/Runtime.h
+@@ -715,4 +715,5 @@
+  private:
+   // Used to generate random keys for hash tables.
++  mozilla::Maybe<uint64_t> nativeInitialHashSeed_;
+   mozilla::Maybe<mozilla::non_crypto::XorShift128PlusRNG> randomKeyGenerator_;
+   mozilla::non_crypto::XorShift128PlusRNG& randomKeyGenerator();
+@@ -724,4 +725,8 @@
+  public:
+   mozilla::non_crypto::XorShift128PlusRNG forkRandomKeyGenerator();
++  uint64_t nativeInitialHashSeed() {
++    randomKeyGenerator();
++    return *nativeInitialHashSeed_;
++  }
+
+   js::HashNumber randomHashCode();

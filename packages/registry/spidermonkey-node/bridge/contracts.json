@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "kind": "bridge-source-maintenance-contracts",
+  "scope": "Roles and protecting consumer contracts for the actual build-bridge.py staging list. This is documentation, not source selection, method coverage or full-port acceptance.",
+  "groups": [
+    {
+      "id": "source-interfaces",
+      "owner": "spidermonkey-node",
+      "why": "Let original Node C++ retain its consumed V8-shaped declarations, handles, Maybe results, callback/signature metadata and checks while implementations operate on SpiderMonkey. These declarations supply no V8 heap layout, register ABI or independent Node owner.",
+      "protectingContracts": ["complete standard Node compilation/linkage", "native handle identity and failure-state controls"],
+      "testLimit": "Compilation protects source compatibility. The named native controls exercise selected handle/error operations, not every declared method or fast-call optimization.",
+      "files": ["native-engine.cpp", "engine-native-api.h", "engine-maybe-api.h", "engine-wire-codec.h", "engine-value-wire-codecs-inl.h", "fast-call-metadata.cpp", "engine-script-api.h", "engine-gc-api.h", "engine-checks.h", "engine-process.h"]
+    },
+    {
+      "id": "engine-storage-and-native-lifetime",
+      "owner": "spidermonkey-node",
+      "why": "Store real rooted values, per-context engine state, native fields and process-level engine initialization/entropy/cache identity. Keep Node Environment, argv/options, scheduling and resource policy with original Node owners; use one engine-thread/root admission and retirement path.",
+      "protectingContracts": ["native roots/weak edges/handle identity", "native fields and asynchronous zlib/gunzip consumers", "native callback/stop/error/shared-loop cleanup", "installed CLI and Worker helper retirement"],
+      "testLimit": "The actual native and CLI inventories protect their named construction, field, callback and cleanup paths. Object detail formatting without JavaScript effects and other unselected value operations remain explicit full-family work.",
+      "files": ["codecs.cpp", "engine-state.h", "engine-isolate-codecs-inl.h", "engine-lifetime-codecs-inl.h", "engine-process.cpp", "metadata-values-codecs-inl.h", "data-array-codecs-inl.h", "internal-field-codecs-inl.h"]
+    },
+    {
+      "id": "values-and-backing-storage",
+      "owner": "spidermonkey-node",
+      "why": "Translate actual SpiderMonkey values, byte stores, views, strings and collection values for original Node consumers. Retain real backing-store identity, leases, external-memory credit and deleter ownership rather than copying Node's public Buffer or string policy.",
+      "protectingContracts": ["native handle and backing lifetime controls", "parser allocation/GC/cycle retirement", "asynchronous zlib and actual tarball gunzip", "VM and installed application consumers"],
+      "testLimit": "These are selected live byte/encoding/collection consumers. Full resizable/shared/detached storage, conversion and collection API variants remain required. trace-codecs-inl.h also contains ordinary value/backing operations; its filename must not be treated as profiling coverage.",
+      "files": ["engine-buffer-owner-inl.h", "buffer-codecs-inl.h", "trace-codecs-inl.h", "trace-utf8-native.cpp", "trace-utf8-native.h", "trace-unicode-native-api.h", "buffer-memory.cpp", "buffer-memory.h", "collection-codecs-inl.h", "value-services-inl.h"]
+    },
+    {
+      "id": "compiler-modules-and-cache",
+      "owner": "spidermonkey-node",
+      "why": "Use real SpiderMonkey function/script/module compilation, retained source origins and XDR stencils beneath original Node compiler/loaders and their error/retry policy. Bind private cache data to actual engine/bridge inputs and validate it before consumption.",
+      "protectingContracts": ["native parser diagnostics/module metadata/function source locations/hashbang", "installed CLI/default TypeScript", "separate CJS and ESM file gates", "VM compiler controls"],
+      "testLimit": "The frozen case inventories define the qualified parser/loader/cache consumers. They do not prove every cache format/version, loader hook, import phase or VM API. Private SpiderMonkey cache data is not a claim of V8 heap-snapshot compatibility.",
+      "files": ["engine-script-codecs-inl.h", "engine-decoded-origin-inl.h", "engine-code-cache-codecs-inl.h", "node-stencil-cache-format.h"]
+    },
+    {
+      "id": "contexts-templates-and-properties",
+      "owner": "spidermonkey-node",
+      "why": "Connect original Node contextification and native template callbacks to real realms, object construction/brands, property operations, global identifier/declaration lookup, descriptors and exception modes. Engine hooks preserve original SpiderMonkey object/proxy algorithms.",
+      "protectingContracts": ["VM18 sandbox/property/global/error/GC controls", "native handles and fields", "normal application REPL/top-level await/error formatting", "reported interactive HTTPS Fetch command"],
+      "testLimit": "VM18 and the application checks protect the reproduced integration failures. Full VM/Proxy/template/RegExp coverage remains required; the source guard rejecting recursive native template creation is not independently qualified by these cases.",
+      "files": ["engine-constructor-names-inl.h", "engine-construction-history-inl.h", "context-codecs-inl.h", "native-object-codecs-inl.h", "template-codecs-inl.h", "property-codecs-inl.h", "value-property-codecs-inl.h", "regexp-property-codecs-inl.h", "property-descriptor-codecs-inl.h", "property-interceptor-native-api.h", "property-interceptor-codecs-inl.h"]
+    },
+    {
+      "id": "jobs-continuations-and-code-generation",
+      "owner": "spidermonkey-node",
+      "why": "Expose actual Promise jobs/hooks, embedder continuation data, finalization work and per-realm code-generation callbacks. Original Node remains responsible for nextTick/microtask/async-resource and permission policy; the engine adapter transports its callbacks and values.",
+      "protectingContracts": ["CLI asynchronous drain/natural and explicit exit", "CLI/application top-level await", "native execution scopes/error/stop/cleanup"],
+      "testLimit": "Named initial async consumers do not qualify complete async_hooks/ALS, finalization, Promise-hook, code-generation-policy or permission variants. General guest WebAssembly remains the agreed later iteration.",
+      "files": ["promise-codecs-inl.h", "continuation-codecs-inl.h", "engine-finalization-codecs-inl.h", "engine-codegen-codecs-inl.h"]
+    },
+    {
+      "id": "collector-and-memory-services",
+      "owner": "spidermonkey-node",
+      "why": "Connect Node's existing tracing/cleanup methods to SpiderMonkey reachability and supply actual collector limits, external credit and engine census data. This replaces engine-specific collector machinery while preserving Node's native owners and resource retirement.",
+      "protectingContracts": ["native strong/weak/cyclic GC and incremental/shrinking/partial-construction controls", "native parser external-credit retirement", "VM live and unreachable context cycles"],
+      "testLimit": "External-credit and GC controls are not full heap-space/census/limit/measurement API conformance. The separately reproduced process.memoryUsage RSS ENOSYS remains a libuv/platform gap; no measurement is fabricated to hide it.",
+      "files": ["engine-memory-result-construction.h", "engine-gc-codecs-inl.h", "engine-memory-services-inl.h", "engine-memory-measurement-inl.h", "heap-statistics-codecs-inl.h"]
+    },
+    {
+      "id": "exceptions-stacks-and-inspection",
+      "owner": "spidermonkey-node",
+      "why": "Supply real saved-frame provenance, source positions, pending exceptions and native inspection of proxies/collections to Node's original error and inspection code. Preserve error ownership and avoid running user getters where the native interface requires inspection without effects.",
+      "protectingContracts": ["native diagnostic ownership and source-coordinate controls", "CLI and CJS/ESM failures", "VM18 error cases", "normal REPL and Fetch response inspection"],
+      "testLimit": "Named JavaScript stack/error paths are qualified separately from general inspection APIs. Wasm CallSite/message/stack position branches remain source-identified work for the agreed later guest-Wasm iteration.",
+      "files": ["engine-source-registry-inl.h", "error-stack.cpp", "error-stack.h", "native-source-location.h", "message-codecs-inl.h", "stack-codecs-inl.h", "inspection-codecs-inl.h"]
+    },
+    {
+      "id": "portable-wire-and-shared-values",
+      "owner": "spidermonkey-node",
+      "why": "Reuse portable upstream value serialization while traversing real SpiderMonkey graphs and retaining actual shared-value/conveyor ownership. Keep Node's messaging/transfer policy with original owners.",
+      "protectingContracts": ["complete standard Node compilation/linkage"],
+      "testLimit": "No comprehensive current-artifact serialization/transfer/conveyor runtime acceptance is established by the initial gates. Preserve those required worker/value/engine tests for the complete catalog and family roadmap.",
+      "files": ["engine-serialization-codecs-inl.h", "engine-shared-conveyor-data.h"]
+    },
+    {
+      "id": "native-extras",
+      "owner": "spidermonkey-node",
+      "why": "Adapt the complete original tracing/extras routines and their argument/result conventions to real engine callbacks and Node's tracing controller. Construct each realm's native extras eagerly so cleanup does not create new callbacks or replace pending errors.",
+      "protectingContracts": ["complete standard Node compilation/linkage", "CLI/context bootstrap and native cleanup", "synchronous no-argument GC controls"],
+      "testLimit": "Bootstrap/cleanup and plain gc() do not prove complete tracing. GC option-bag, asynchronous and snapshot extension requests are explicit remaining engine-service work; trace protocol output needs its own family acceptance.",
+      "files": ["engine-extras-runtime.h", "engine-extras-runtime-undef.h", "engine-extras-codecs-inl.h"]
+    },
+    {
+      "id": "profiling-and-heap-data",
+      "owner": "spidermonkey-node",
+      "why": "Feed original portable profile-tree, sampling and heap JSON algorithms with actual owner-thread SpiderMonkey frames, allocation/weak-edge observations and heap graph data. Native producers must stop/join before their callback records and engine owners retire.",
+      "protectingContracts": ["complete standard Node compilation/linkage", "shared native callback/GC/shutdown prerequisites"],
+      "testLimit": "Shared prerequisite checks do not exercise every active profiler producer or qualify profiles, snapshots, sampling or trace chunks. Direct current-artifact profiling/heap API acceptance remains required. Initial V8 startup-snapshot and Inspector boundaries retain their separate approved follow-ups.",
+      "files": ["engine-cpu-profiler-data.h", "engine-cpu-profiler-codecs-inl.h", "engine-profiler-stream-support.h", "engine-heap-profiler-data.h", "engine-heap-profiler-codecs-inl.h", "engine-heap-snapshot-data.h", "engine-heap-snapshot-codecs-inl.h", "engine-heap-snapshot-capture-inl.h", "engine-heap-allocation-data.h", "engine-heap-allocation-codecs-inl.h"]
+    }
+  ],
+  "patchGroups": [
+    {
+      "id": "portable-target-and-build",
+      "why": "Adapt the real Kandelo/Wasm target, static runtime and data types, binary format checks, declared providers and separate host/target toolsets. Keep original Node startup/registration and portable library dependencies; replace unavailable OS/CPU build assumptions rather than public Node algorithms.",
+      "protectingContracts": ["complete standard Node compilation/linkage", "verified engine/archive/header/ABI preflight", "installed CLI metadata and startup"],
+      "testLimit": "Build admission and initial startup do not prove all provider APIs, target variants or full OS behavior.",
+      "members": {
+        "base-engine": ["0002-kandelo-rust-target.patch", "0003-jsonprinter-size-t-wasm32.patch", "0007-check-wasm-network-imports.patch", "0010-use-wasm-icu-data-section-syntax.patch", "0023-use-flag-visibility-on-wasm32.patch", "0074-kandelo-posix-target-profile.patch"],
+        "producer-engine": ["0001-static-engine-closure.patch"],
+        "normal-node": ["0001-kandelo-configure-target.patch", "0002-retain-node-simdutf-with-external-engine.patch", "0003-kandelo-posix-build-settings.patch", "0004-kandelo-provider-targets.patch", "0005-kandelo-host-toolsets.patch", "0006-external-engine-header-selection.patch"]
+      }
+    },
+    {
+      "id": "native-process-gc-and-execution",
+      "why": "Use actual guest thread/stack/entropy/failure services and SpiderMonkey stop, Promise, collector and native callback hooks beneath original Node owners. Preserve FIFO delivery, existing errors/termination, Node-visible failure and producer/resource retirement; keep V8 register/cage machinery out of the target.",
+      "protectingContracts": ["native execution scopes/failure/GC/root/callback/shared-loop cleanup", "fatal before Environment, after disposal and OOM controls", "CLI asynchronous drain and exit", "VM and helper GC/Worker retirement"],
+      "testLimit": "The selected controls do not inject every entropy/allocation failure or qualify all Promise hooks, observers and engine-service variants. Base adaptations are interpreted with the later producer patches; the selected guest-libc abort path supersedes the earlier trap adaptation for this runtime.",
+      "members": {
+        "base-engine": ["0004-disable-wasm32-return-address-stackwalk.patch", "0005-getrandom-custom-backend-wasm32.patch", "0008-use-wasm-trap-for-moz-crash.patch", "0009-use-wasm-frame-address-for-native-stack-base.patch", "0011-heap-autorunparallel-task-on-wasm32.patch", "0045-preserve-host-defined-job-data.patch", "0059-kandelo-native-catch-state.patch", "0073-kandelo-native-execution-scopes.patch"],
+        "producer-engine": ["0002-native-entropy-source.patch", "0003-native-microtask-queue-routing.patch", "0004-native-promise-lifecycle.patch", "0005-native-finalization-queue-access.patch", "0010-native-cell-limit-and-gc-observer.patch", "0012-retain-guest-libc-abort.patch", "0015-native-allocation-counters-and-hash-seed.patch", "0017-native-cell-allocation-observer.patch"],
+        "normal-node": ["0008-spidermonkey-native-collector-process.patch"],
+        "native-source": ["0001-native-interrupt-transport.patch"]
+      }
+    },
+    {
+      "id": "native-properties-values-and-backing",
+      "why": "Represent Node's consumed private names, constructor identities, native properties, buffer ownership and UTF decoding using real engine storage and operations. Preserve SpiderMonkey object/proxy/property ordering and Node callback/field behavior rather than infer identity from public properties or add replacement JavaScript.",
+      "protectingContracts": ["VM18 global/property/descriptor/error/GC cases", "native handle/field/backing and parser lifetime controls", "normal REPL and installed JS/TS/HTTP consumers"],
+      "testLimit": "Selected VM and byte consumers do not qualify every private-name, buffer, template, descriptor, Unicode or resizable-store operation. Full-family API and failure variants remain required.",
+      "members": {
+        "base-engine": ["0046-kandelo-arraybuffer-detach-key.patch", "0048-kandelo-node-buffer.patch", "0050-kandelo-native-lazy-data-properties.patch", "0067-kandelo-constructor-identity.patch", "0068-kandelo-native-constructor-origin.patch"],
+        "producer-engine": ["0006-native-property-interceptors.patch", "0021-native-global-interceptors.patch", "0024-native-property-error-mode.patch", "0025-native-proxy-property-presence.patch"],
+        "native-source": ["0009-native-utf8-scalar-decoder.patch"]
+      }
+    },
+    {
+      "id": "native-compiler-module-and-diagnostics",
+      "why": "Supply real module linking/evaluation/import hooks, compiler stencils, retained source locations and owned parser diagnostic facts. Keep original Node loader/cache/retry/warning/rethrow algorithms; adapt their engine operations and diagnostic correspondence explicitly.",
+      "protectingContracts": ["native parser decision/report ownership/module metadata/function body/hashbang controls", "installed CLI", "separate CJS and ESM file gates", "VM errors and normal REPL"],
+      "testLimit": "Current cases are not full loader/vm/cache/import-attribute/source-position conformance. Report-copy allocation-failure injection and general guest-Wasm frame metadata require their own qualification.",
+      "members": {
+        "base-engine": ["0019-kandelo-link-evaluating-cycle.patch", "0027-kandelo-synthetic-modules.patch", "0028-kandelo-node-module-wrap.patch", "0029-kandelo-node-dynamic-import.patch", "0030-kandelo-node-error-stack.patch", "0064-kandelo-saved-frame-provenance.patch"],
+        "producer-engine": ["0007-native-function-stencils.patch", "0008-decoded-stencil-origins.patch", "0009-native-error-factory.patch", "0010-native-parser-diagnostic-metadata.patch"],
+        "normal-node": ["0014-native-cjs-module-diagnostic-predicates.patch"]
+      }
+    },
+    {
+      "id": "portable-profile-and-memory-algorithms",
+      "why": "Reuse complete portable V8/Node tracing, profile-tree, heap registry, JSON writer, measurement and sampling routines. Replace engine-private compiler/collector/register inputs with real SpiderMonkey metadata; preserve original public owner and output policy. Optional V8 statistics machinery is distinct from required Node observability.",
+      "protectingContracts": ["complete standard Node compilation/linkage", "shared native GC/callback/cleanup prerequisites", "actual external-allocation diagnostic"],
+      "testLimit": "These prerequisites and one real counter do not qualify complete profiling, heap snapshots/sampling, trace output, space metrics or reports. Required engine/observability acceptance remains separate; do not infer it from compilation.",
+      "members": {
+        "producer-engine": ["0014-native-code-memory-metrics.patch"],
+        "normal-node": ["0009-native-platform-instrumentation.patch", "0011-engine-owned-optional-statistics.patch"],
+        "native-source": ["0002-native-memory-measurement.patch", "0003-native-extras-tracing.patch", "0004-native-cpu-profile-json.patch", "0005-native-heap-profiler-registry.patch", "0006-native-heap-snapshot-json.patch", "0008-native-heap-sampling-math.patch"]
+      }
+    },
+    {
+      "id": "native-provider-and-transfer-ownership",
+      "why": "Connect actual guest native libraries, target ABI and shared-value leases through original Node owners and the normal dynamic loader. Preserve lazy Amaro loading and its full wrapper; the explicit Undici factory change selects its exact native C parser. FFI CIF/callback and shared-value retirement remain with their original native owners.",
+      "protectingContracts": ["complete standard Node compilation/linkage", "default CJS/ESM TypeScript", "HTTP/HTTPS Fetch and parser callback/GC/Worker retirement", "original disabled-addon profile controls"],
+      "testLimit": "Amaro/Undici consumer qualification does not qualify all FFI, addon or shared-conveyor operations. Native addon execution and general guest Wasm retain their agreed follow-ups. Migrate the two temporary native helpers back only after equivalent upstream Wasm qualification.",
+      "members": {
+        "normal-node": ["0007-native-amaro-consumer.patch", "0007-wasm-ffi-native-code-capability.patch", "0013-kandelo-native-dynamic-loader.patch", "0015-native-undici-parser-factory.patch", "0016-native-undici-parser-binding.patch"],
+        "native-source": ["0002-kandelo-ffi-owner-retirement.patch", "0010-native-value-wire-safety.patch"]
+      }
+    },
+    {
+      "id": "selected-initial-capability-boundaries",
+      "why": "Retain ordinary live startup/interfaces while rejecting the separately agreed V8 startup-snapshot operations and deferred diagnostic-report generation. Keep original Node flags, registration and ordinary error/exit behavior rather than manufacture successful snapshots or report data.",
+      "protectingContracts": ["initial CLI snapshot/report rejection and ordinary error/exit controls", "complete standard Node compilation/linkage"],
+      "testLimit": "Rejection/profile controls qualify the selected initial boundary only. Full snapshots and diagnostic reports remain required follow-up implementation and acceptance, not completed APIs.",
+      "members": {
+        "normal-node": ["0010-engine-owned-snapshot-flags.patch", "0012-deferred-diagnostic-report-generation.patch"]
+      }
+    }
+  ]
+}

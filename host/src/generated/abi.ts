@@ -949,6 +949,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
+  "kernel_rootfs_rename_file",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
   "kernel_wait_park_followup",

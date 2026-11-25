@@ -5,8 +5,8 @@
 # `require('/usr/lib/npm/lib/cli.js')` and run `npm install` from inside
 # node.wasm.
 #
-# The Node compatibility runtime stages this npm tree into node.zip, the shell
-# image's lazy node archive.
+# The current spidermonkey-node bundle uses npm from its pinned Node source
+# archive instead of this legacy npm release.
 #
 # To bump npm: change NPM_VERSION + NPM_SHA256 below. The sha is the
 # sha256 of the raw .tgz served by registry.npmjs.org. Verify with:

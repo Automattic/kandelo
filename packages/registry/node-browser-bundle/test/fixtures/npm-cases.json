@@ -1,0 +1,315 @@
+{
+  "profiles": {
+    "candidateBaseFlags": []
+  },
+  "limitsMs": {
+    "readiness": 180000,
+    "invocationIncludingRetirement": 120000,
+    "hostGate": 1200000,
+    "sessionRetirement": 60000,
+    "receiptCompletion": 60000,
+    "outerRunner": 1500000
+  },
+  "automaticRetries": 0,
+  "scope": "Offline install/lifecycle/package verification and controlled guest registry/cache/bin/ESM regressions; public online runs are separate.",
+  "fixtureFiles": [
+    {
+      "path": "/tmp/node-cli/npm-local/package.json",
+      "utf8": "{\"name\": \"npm-consumer-project\", \"version\": \"1.0.0\", \"private\": true}\n",
+      "mode": 420
+    },
+    {
+      "path": "/tmp/node-cli/npm-registry-fixture/registry-install.cjs",
+      "utf8": "'use strict';\nconst assert = require('node:assert/strict');\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst http = require('node:http');\nconst crypto = require('node:crypto');\nconst { spawn } = require('node:child_process');\nconst [project, archivePath, npmCommand, packagePath] = process.argv.slice(2);\n\nasync function main() {\n  assert.equal(process.versions.node, '26.13.0');\n  assert.equal(fs.existsSync(project), false, 'Use a fresh project and cache');\n  fs.mkdirSync(project, { recursive: true });\n  fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({\n    name: 'registry-consumer-project', version: '1.0.0', private: true,\n  }) + '\\n');\n  const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));\n  const archive = fs.readFileSync(archivePath);\n  const integrity = 'sha512-' + crypto.createHash('sha512').update(archive).digest('base64');\n  const archiveRoute = `/${pkg.name}/-/${pkg.name}-${pkg.version}.tgz`;\n  const counts = { metadata: 0, tarball: 0 };\n  const sockets = new Set();\n  let registry;\n  const server = http.createServer((request, response) => {\n    assert.equal(request.method, 'GET');\n    const route = request.url.split('?')[0];\n    let bytes;\n    if (route === '/' + pkg.name) {\n      counts.metadata++;\n      bytes = Buffer.from(JSON.stringify({\n        name: pkg.name, 'dist-tags': { latest: pkg.version },\n        versions: { [pkg.version]: { ...pkg, dist: {\n          tarball: registry + archiveRoute, integrity,\n          shasum: crypto.createHash('sha1').update(archive).digest('hex'),\n        } } },\n      }));\n      response.setHeader('content-type', 'application/json');\n    } else if (route === archiveRoute) {\n      counts.tarball++;\n      bytes = archive;\n      response.setHeader('content-type', 'application/octet-stream');\n    } else {\n      response.writeHead(404);\n      response.end('Unexpected fixture request');\n      return;\n    }\n    response.setHeader('content-length', bytes.length);\n    response.end(bytes);\n  });\n  server.on('connection', socket => {\n    sockets.add(socket);\n    socket.once('close', () => sockets.delete(socket));\n  });\n  try {\n    await new Promise((resolve, reject) => {\n      server.once('error', reject);\n      server.listen(0, '127.0.0.1', resolve);\n    });\n    const address = server.address();\n    assert.equal(address.address, '127.0.0.1');\n    assert.ok(address.port > 0);\n    registry = `http://127.0.0.1:${address.port}`;\n    const result = await new Promise((resolve, reject) => {\n      const child = spawn(npmCommand, ['install', '--registry=' + registry,\n        '--no-audit', '--no-fund', '--foreground-scripts', pkg.name], {\n        cwd: project, env: { ...process.env,\n          npm_config_cache: path.join(project, '.npm-cache'),\n          npm_config_update_notifier: 'false' },\n        stdio: ['ignore', 'pipe', 'pipe'],\n      });\n      let stdout = '', stderr = '';\n      child.stdout.setEncoding('utf8').on('data', data => { stdout += data; });\n      child.stderr.setEncoding('utf8').on('data', data => { stderr += data; });\n      child.once('error', reject);\n      child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));\n    });\n    process.stdout.write(result.stdout);\n    process.stderr.write(result.stderr);\n    assert.equal(result.code, 0);\n    assert.equal(result.signal, null);\n    assert.ok(counts.metadata > 0, 'npm must request registry metadata');\n    assert.ok(counts.tarball > 0, 'npm must download the actual tarball');\n    const installed = path.join(project, 'node_modules', pkg.name);\n    assert.equal(require(installed).answer, 42);\n    assert.equal(fs.readFileSync(path.join(installed, 'installed.marker'), 'utf8'),\n      'real-npm-lifecycle\\n');\n    const lock = JSON.parse(fs.readFileSync(path.join(project, 'package-lock.json'), 'utf8'));\n    const entry = lock.packages['node_modules/' + pkg.name];\n    assert.equal(entry.resolved, registry + archiveRoute);\n    assert.equal(entry.integrity, integrity);\n    fs.writeFileSync(path.join(project, 'registry-observation.json'),\n      JSON.stringify({ registry, counts, integrity }) + '\\n');\n  } finally {\n    if (server.listening) await new Promise((resolve, reject) => {\n      server.close(error => error ? reject(error) : resolve());\n    });\n  }\n  assert.equal(server.listening, false);\n  assert.equal(sockets.size, 0, 'Server connections must close normally');\n  console.log('Controlled registry installation verified');\n}\nmain().catch(error => { console.error(error); process.exitCode = 1; });\n",
+      "mode": 420
+    },
+    {
+      "path": "/tmp/node-cli/npm-registry-fixture/prepare-ci.cjs",
+      "utf8": "'use strict';\nconst assert = require('node:assert/strict');\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst crypto = require('node:crypto');\nconst [project] = process.argv.slice(2);\nconst hashes = Object.fromEntries(['package.json', 'package-lock.json'].map(name => [name,\n  crypto.createHash('sha256').update(fs.readFileSync(path.join(project, name))).digest('hex')]));\nassert.equal(require(path.join(project, 'node_modules/kandelo-install-fixture')).answer, 42);\nfs.writeFileSync(path.join(project, 'before-ci.json'), JSON.stringify(hashes) + '\\n');\nfs.writeFileSync(path.join(project, 'node_modules/extraneous-marker'), 'must be removed\\n');\nfs.unlinkSync(path.join(project, 'node_modules/kandelo-install-fixture/installed.marker'));\nconsole.log('Clean reinstall prepared');\n",
+      "mode": 420
+    },
+    {
+      "path": "/tmp/node-cli/npm-registry-fixture/verify-ci.cjs",
+      "utf8": "'use strict';\nconst assert = require('node:assert/strict');\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst crypto = require('node:crypto');\nconst [project] = process.argv.slice(2);\nconst before = JSON.parse(fs.readFileSync(path.join(project, 'before-ci.json'), 'utf8'));\nfor (const name of ['package.json', 'package-lock.json']) {\n  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(project, name))).digest('hex'), before[name]);\n}\nassert.equal(fs.existsSync(path.join(project, 'node_modules/extraneous-marker')), false);\nassert.equal(fs.readFileSync(path.join(project, 'node_modules/kandelo-install-fixture/installed.marker'), 'utf8'), 'real-npm-lifecycle\\n');\nassert.equal(require(path.join(project, 'node_modules/kandelo-install-fixture')).answer, 42);\nassert.ok(fs.lstatSync(path.join(project, 'node_modules/.bin/fixture-hello')).isSymbolicLink());\nconsole.log('Frozen clean reinstall verified');\n",
+      "mode": 420
+    },
+    {
+      "path": "/tmp/node-cli/npm-registry-fixture/fixture-package.json",
+      "utf8": "{\n  \"name\": \"kandelo-install-fixture\",\n  \"version\": \"0.0.1\",\n  \"main\": \"index.cjs\",\n  \"bin\": {\n    \"fixture-hello\": \"bin/hello.js\"\n  },\n  \"scripts\": {\n    \"install\": \"node install.cjs\"\n  }\n}\n",
+      "mode": 420
+    }
+  ],
+  "cases": [
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-local",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-local/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "id": "NPM-01-version",
+      "family": "npm-consumer",
+      "argv": [
+        "npm",
+        "--version"
+      ],
+      "guestPath": "/usr/bin/npm",
+      "expected": {
+        "status": 0,
+        "stdout": "11.20.0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-local",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-local/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "id": "NPM-02-local-install",
+      "family": "npm-consumer",
+      "argv": [
+        "npm",
+        "install",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--foreground-scripts",
+        "/usr/share/node-npm-fixture/package.tgz"
+      ],
+      "guestPath": "/usr/bin/npm",
+      "expected": {
+        "status": 0,
+        "stderr": "npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:\nnpm warn install-scripts   kandelo-install-fixture@0.0.1 (install: node install.cjs)\nnpm warn install-scripts\nnpm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.\n"
+      },
+      "stdoutIncludes": [
+        "added 1 package",
+        "node install.cjs"
+      ],
+      "requiredGuestFile": {
+        "path": "/tmp/node-cli/npm-local/node_modules/kandelo-install-fixture/installed.marker",
+        "bytesUtf8": "real-npm-lifecycle\n"
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-local",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-local/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "id": "NPM-03-verify-local",
+      "family": "npm-consumer",
+      "argv": [
+        "node",
+        "/usr/share/node-npm-fixture/verify-local.cjs",
+        "/tmp/node-cli/npm-local",
+        "/usr/share/node-npm-fixture/package.tgz"
+      ],
+      "guestPath": "/usr/bin/node",
+      "expected": {
+        "status": 0,
+        "stdout": "NPM local installation verified\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-04-registry-download",
+      "guestPath": "/usr/bin/node",
+      "argv": [
+        "node",
+        "/tmp/node-cli/npm-registry-fixture/registry-install.cjs",
+        "/tmp/node-cli/npm-registry",
+        "/usr/share/node-npm-fixture/package.tgz",
+        "/usr/bin/npm",
+        "/tmp/node-cli/npm-registry-fixture/fixture-package.json"
+      ],
+      "expected": {
+        "status": 0,
+        "stderr": "npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:\nnpm warn install-scripts   kandelo-install-fixture@0.0.1 (install: node install.cjs)\nnpm warn install-scripts\nnpm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.\n"
+      },
+      "stdoutIncludes": [
+        "added 1 package",
+        "node install.cjs",
+        "Controlled registry installation verified\n"
+      ]
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-registry",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-05-installed-bin",
+      "guestPath": "/tmp/node-cli/npm-registry/node_modules/.bin/fixture-hello",
+      "argv": [
+        "fixture-hello"
+      ],
+      "expected": {
+        "status": 0,
+        "stdout": "fixture-bin:42\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-registry",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-06-exec-installed",
+      "guestPath": "/usr/bin/npm",
+      "argv": [
+        "npm",
+        "exec",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--",
+        "fixture-hello"
+      ],
+      "expected": {
+        "status": 0,
+        "stdout": "fixture-bin:42\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-registry",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-07-prepare-ci",
+      "guestPath": "/usr/bin/node",
+      "argv": [
+        "node",
+        "/tmp/node-cli/npm-registry-fixture/prepare-ci.cjs",
+        "/tmp/node-cli/npm-registry"
+      ],
+      "expected": {
+        "status": 0,
+        "stdout": "Clean reinstall prepared\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-registry",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-08-offline-ci",
+      "guestPath": "/usr/bin/npm",
+      "argv": [
+        "npm",
+        "ci",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--foreground-scripts"
+      ],
+      "expected": {
+        "status": 0,
+        "stderr": "npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:\nnpm warn install-scripts   kandelo-install-fixture@0.0.1 (install: node install.cjs)\nnpm warn install-scripts\nnpm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.\n"
+      },
+      "stdoutIncludes": [
+        "added 1 package",
+        "node install.cjs"
+      ],
+      "requiredGuestFile": {
+        "path": "/tmp/node-cli/npm-registry/node_modules/kandelo-install-fixture/installed.marker",
+        "bytesUtf8": "real-npm-lifecycle\n"
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-registry",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-09-verify-ci",
+      "guestPath": "/usr/bin/node",
+      "argv": [
+        "node",
+        "/tmp/node-cli/npm-registry-fixture/verify-ci.cjs",
+        "/tmp/node-cli/npm-registry"
+      ],
+      "expected": {
+        "status": 0,
+        "stdout": "Frozen clean reinstall verified\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stdinUtf8": "",
+      "uid": 0,
+      "gid": 0,
+      "cwd": "/tmp/node-cli/npm-registry",
+      "environmentOverrides": {
+        "NODE_OPTIONS": "--no-addons",
+        "npm_config_cache": "/tmp/node-cli/npm-registry/.npm-cache",
+        "npm_config_update_notifier": "false"
+      },
+      "family": "npm-consumer",
+      "id": "NPM-10-esm-package",
+      "guestPath": "/usr/bin/node",
+      "argv": [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "import assert from \"node:assert/strict\";import pkg from \"kandelo-install-fixture\";assert.equal(pkg.answer,42);console.log(\"Installed ESM package import verified\");"
+      ],
+      "expected": {
+        "status": 0,
+        "stdout": "Installed ESM package import verified\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

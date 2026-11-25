@@ -4390,11 +4390,8 @@ enum Surface {
     FrozenBaselineRecord,
 }
 
-/// `abi_surfaces` key of the [`Surface::FrozenBaselineRecord`] list.
-pub(crate) const FROZEN_BASELINE_RECORD_KEY: &str = "frozen_baseline_record";
-
-/// Snapshot key that records each section's [`Surface`].
-pub(crate) const SURFACES_KEY: &str = "abi_surfaces";
+/// Shared snapshot keys, also consumed by the standalone SDK build helper.
+pub(crate) use crate::local_abi_identity::{FROZEN_BASELINE_RECORD_KEY, SURFACES_KEY};
 
 struct Sections {
     root: JsonMap,

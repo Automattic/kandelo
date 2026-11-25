@@ -1,0 +1,37 @@
+# Node embeds llhttp as a private static library. Kandelo's -rdynamic now
+# correctly exports default-visible executable symbols. Hide this target's
+# implementation symbols so the linker does not retain its unused standalone
+# Wasm embedding helpers, which expect eight external wasm_on_* callbacks.
+# Node instead supplies its own settings to llhttp_init; its original parser
+# and callbacks remain unchanged. This changes target visibility only, not
+# the SDK's export behavior, Node's registration lists or parser algorithms.
+# The header also explicitly overrides compiler visibility on Wasm. Give the
+# embedded target and its consumers an opt-out from those standalone exports;
+# a compiler flag alone cannot override the header's default attributes.
+# Review this setting when upstream llhttp separates its embedding helpers.
+--- a/deps/llhttp/llhttp.gyp
++++ b/deps/llhttp/llhttp.gyp
+@@ -11,6 +11,15 @@
+       'target_name': 'llhttp',
+       'type': 'static_library',
+       'include_dirs': [ '.', 'include' ],
++      'conditions': [
++        ['OS=="kandelo"', {
++          'cflags': [ '-fvisibility=hidden' ],
++          'defines': [ 'LLHTTP_NO_WASM_EXPORTS=1' ],
++          'direct_dependent_settings': {
++            'defines': [ 'LLHTTP_NO_WASM_EXPORTS=1' ],
++          },
++        }],
++      ],
+       'direct_dependent_settings': {
+         'include_dirs': [ 'include' ],
+       },
+--- a/deps/llhttp/include/llhttp.h
++++ b/deps/llhttp/include/llhttp.h
+@@ -554,4 +554,4 @@
+-#if defined(__wasm__)
++#if defined(__wasm__) && !defined(LLHTTP_NO_WASM_EXPORTS)
+ #define LLHTTP_EXPORT __attribute__((visibility("default")))
+ #elif defined(_WIN32)
+ #define LLHTTP_EXPORT __declspec(dllexport)

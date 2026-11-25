@@ -1,0 +1,56 @@
+# Kandelo patch rationale (S06)
+#
+# An engine assertion needs a working terminating instruction before any
+# Node runtime exists. Use the ordinary Wasm trap and keep the original
+# reason/file diagnostics useful in release builds. The extra generic crash
+# marker was redundant and has been removed. This does not replace Node's
+# separate fatal logger or Kandelo libc abort/SIGABRT behavior.
+#
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
+
+--- a/mfbt/Assertions.h
++++ b/mfbt/Assertions.h
+@@ -246,6 +246,12 @@
+
+ #elif __wasi__
+
++#  define MOZ_REALLY_CRASH(line) __builtin_trap()
++
++#elif defined(__wasm32__) && !defined(__EMSCRIPTEN__)
++
++// Keep the terminating primitive small. MOZ_CRASH/RELEASE_ASSERT report the
++// useful reason and source location through the original diagnostics below.
+ #  define MOZ_REALLY_CRASH(line) __builtin_trap()
+
+ #else
+@@ -342,7 +348,8 @@
+  * in release builds, and it's hard to print to stderr safely when memory might
+  * have been corrupted.
+  */
+-#if !(defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING))
++#if !(defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)) && \
++    !(defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+ #  define MOZ_CRASH(...)                                                       \
+     do {                                                                       \
+       MOZ_FUZZING_HANDLE_CRASH_EVENT4(                                         \
+@@ -395,7 +402,8 @@
+     const char* aFilename, int aLine, const char* aReason) {
+   aFilename = MOZ_StripRelativeComponents(aFilename);
+   MOZ_FUZZING_HANDLE_CRASH_EVENT4("MOZ_CRASH", aFilename, aLine, aReason);
+-#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)
++#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING) || \
++    (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+   MOZ_ReportCrash(aReason, aFilename, aLine);
+ #endif
+   MOZ_CRASH_ANNOTATE(aReason);
+@@ -519,7 +527,8 @@
+ #  define MOZ_VALIDATE_ASSERT_CONDITION_TYPE(x)
+ #endif
+
+-#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)
++#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING) || \
++    (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+ #  define MOZ_REPORT_ASSERTION_FAILURE(...) \
+     MOZ_ReportAssertionFailure(__VA_ARGS__)
+ #else

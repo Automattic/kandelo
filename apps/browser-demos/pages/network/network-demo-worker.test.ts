@@ -39,6 +39,7 @@ test("canonical network rootfs hands over the activated image unchanged", async 
         return `
           export const CAPTURED_STDIO = {};
           export class CentralizedKernelWorker {}
+          export class ConnectedNamesFile {}
           export function installBrowserSetImmediatePolyfill() {}
           export class BrowserWorkerAdapter {}
           export function detectPtrWidth() { return 4; }
@@ -165,6 +166,7 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
         return `
           export const CAPTURED_STDIO = {};
           export class CentralizedKernelWorker {}
+          export class ConnectedNamesFile {}
           export function installBrowserSetImmediatePolyfill() {}
           export class BrowserWorkerAdapter {}
           export function detectPtrWidth() { return 4; }

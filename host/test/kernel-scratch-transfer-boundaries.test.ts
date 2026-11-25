@@ -1110,6 +1110,60 @@ describe("trusted host executable target preparation", () => {
   });
 });
 
+describe("kernel-owned file publication rename", () => {
+  it.each([4, 8] as const)("lends both paths through checked %i-byte scratch pointers", (width) => {
+    const harness = makeScratchHarness(width);
+    const rename = vi.fn((oldPtr: number | bigint, oldLen: number, newPtr: number | bigint, newLen: number) => {
+      expect(typeof oldPtr).toBe(width === 8 ? "bigint" : "number");
+      expect(typeof newPtr).toBe(width === 8 ? "bigint" : "number");
+      const decode = (ptr: number | bigint, length: number) => new TextDecoder().decode(
+        harness.kernelBytes.subarray(Number(ptr), Number(ptr) + length),
+      );
+      expect(decode(oldPtr, oldLen)).toBe("/run/staged");
+      expect(decode(newPtr, newLen)).toBe("/run/current");
+      expect(Number(newPtr)).toBe(Number(oldPtr) + oldLen);
+      return 0;
+    });
+    harness.kernelExports.kernel_rootfs_rename_file = rename;
+    harness.worker.rootfsRenameFile("/run/staged", "/run/current");
+    expect(rename).toHaveBeenCalledOnce();
+    expectScratchTailUntouched(harness);
+  });
+
+  it.each([-2, 1])("preserves errno or rejects an invalid native result %s", (result) => {
+    const harness = makeScratchHarness();
+    harness.kernelExports.kernel_rootfs_rename_file = () => result;
+    try {
+      harness.worker.rootfsRenameFile("/run/staged", "/run/current");
+      throw new Error("rename unexpectedly succeeded");
+    } catch (error) {
+      expect(error).toBeInstanceOf(KernelScratchError);
+      expect((error as KernelScratchError).errno).toBe(result === -2 ? 2 : EIO);
+    }
+    expectScratchTailUntouched(harness);
+  });
+
+  it("reports an unavailable optional export", () => {
+    const harness = makeScratchHarness(4, ["kernel_rootfs_rename_file"]);
+    expect(() => harness.worker.rootfsRenameFile("/run/staged", "/run/current"))
+      .toThrow(/rootfs rename failed/);
+    expectScratchTailUntouched(harness);
+  });
+
+  it("refuses reentry before invoking the namespace mutation", () => {
+    const harness = makeScratchHarness();
+    const rename = vi.fn();
+    harness.kernelExports.kernel_rootfs_rename_file = rename;
+    harness.kernelExports.kernel_exec_target_size = () => {
+      expect(() => harness.worker.rootfsRenameFile("/run/staged", "/run/current"))
+        .toThrow(/cannot run while kernel_exec_target_size is active/);
+      return 0n;
+    };
+    expect(harness.worker.execTargetSize(100, 1)).toBe(0n);
+    expect(rename).not.toHaveBeenCalled();
+  });
+});
+
 describe("filesystem inspection admission", () => {
   function inspectionHarness(width: 4 | 8, variant: "directory" | "resources") {
     const harness = makeScratchHarness(width);

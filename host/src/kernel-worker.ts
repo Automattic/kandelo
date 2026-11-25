@@ -6303,6 +6303,56 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Atomically move a staged file into place in the kernel-owned namespace.
+   * Both paths are canonical absolute paths. The old destination's open
+   * readers retain their inode; no live file is truncated for publication.
+   */
+  rootfsRenameFile(oldPath: string, newPath: string): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encoder = new TextEncoder();
+    const oldBytes = encoder.encode(oldPath);
+    const newBytes = encoder.encode(newPath);
+    const oldLen = oldBytes.byteLength;
+    const newLen = newBytes.byteLength;
+    if (oldLen > POSIX_PATH_MAX_BYTES || newLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs rename path too long", ENAMETOOLONG);
+    }
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("kernel rootfs rename file", (entry) => {
+      if (typeof entry.instance.exports.kernel_rootfs_rename_file !== "function") {
+        failErrno = ENOSYS;
+        return undefined;
+      }
+      const region = this.#requireMainScratchRegion();
+      if (oldLen + newLen > region.capacity) {
+        failErrno = ENAMETOOLONG;
+        return undefined;
+      }
+      const result = region.withLease((lease) => {
+        lease.copyFrom(oldBytes, 0, 0, oldLen);
+        lease.copyFrom(newBytes, oldLen, 0, newLen);
+        const oldPtr = lease.exportPointer(0, oldLen);
+        const newPtr = lease.exportPointer(oldLen, newLen);
+        return this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_rootfs_rename_file",
+          [oldPtr, oldLen, newPtr, newLen],
+        );
+      });
+      if (!Number.isSafeInteger(result) || result > 0) {
+        failErrno = EIO;
+      } else if (result < 0) {
+        failErrno = -result;
+      }
+      return undefined;
+    });
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs rename failed", failErrno);
+    }
+  }
+
+  /**
    * Return the mode bits (type + permissions) of the rootfs entry at `path`
    * through the kernel's rootfs, for `read_vfs_file`'s includeMode variant.
    * Throws `KernelScratchError` (POSIX errno) on failure.

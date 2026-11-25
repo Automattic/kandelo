@@ -1,0 +1,68 @@
+# Kandelo patch rationale (S35)
+# Judgment: Supported. Keep the small factory entry until equivalence is
+# established because ordinary JS::Construct introduces native-call
+# admission that may change no-JavaScript error creation.
+#
+# Native Node code needs Errors created by Mozilla's original factory,
+# including cause and stack behavior. Calling a saved Error constructor
+# through ordinary JS::Construct also enters native-call execution checks;
+# equivalence inside no-JavaScript scopes is unproven. Keep the small
+# factory entry rather than copy its algorithm into the bridge. The OS
+# cannot create engine Errors.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/src/vm/ErrorObject.cpp
++++ b/js/src/vm/ErrorObject.cpp
+@@ -1930,6 +1930,35 @@
+   return copy;
+ }
+
++JS_PUBLIC_API bool JS::CreateErrorFromOptions(JSContext* cx, JSExnType type,
++                                             HandleString message,
++                                             HandleValue options,
++                                             MutableHandleValue rval) {
++  cx->check(message, options);
++  MOZ_ASSERT(type != JSEXN_AGGREGATEERR);
++#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
++  MOZ_ASSERT(type != JSEXN_SUPPRESSEDERR);
++#endif
++  RootedObject proto(cx, GlobalObject::getOrCreateCustomErrorPrototype(
++                            cx, cx->global(), type));
++  if (!proto) {
++    return false;
++  }
++  // Reuse the whole original constructor factory, including cause property
++  // access, stack capture, location and allocation behavior. Omitting a
++  // primitive options argument avoids SpiderMonkey's legacy filename argument.
++  JS::RootedValueArray<4> storage(cx);
++  storage[2].setString(message);
++  storage[3].set(options);
++  CallArgs args = CallArgsFromVp(options.isObject() ? 2 : 1, storage.begin());
++  auto* error = CreateErrorObject(cx, args, 0, type, proto);
++  if (!error) {
++    return false;
++  }
++  rval.setObject(*error);
++  return true;
++}
++
+ JS_PUBLIC_API bool JS::CreateError(JSContext* cx, JSExnType type,
+                                    HandleObject stack, HandleString fileName,
+                                    uint32_t lineNumber,
+--- a/js/public/ErrorReport.h
++++ b/js/public/ErrorReport.h
+@@ -561,6 +561,13 @@
+     JSErrorReport* report, HandleString message,
+     Handle<mozilla::Maybe<Value>> cause, MutableHandleValue rval);
+
++// Native embedding entry to the original ordinary Error factory. Primitive
++// options are ignored; an object supplies the standard optional cause. This
++// does not invoke a replaceable global constructor or a JS return checkpoint.
++extern JS_PUBLIC_API bool CreateErrorFromOptions(
++    JSContext* cx, JSExnType type, HandleString message, HandleValue options,
++    MutableHandleValue rval);
++
+ /**
+  * An uncatchable exception is used to terminate execution by returning false
+  * or nullptr without reporting a pending exception on the context. These

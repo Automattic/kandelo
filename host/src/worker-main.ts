@@ -1017,8 +1017,9 @@ function createProcessDylinkActivationOwner(
             }
             // WHY: this Worker needs fresh instance-local element functions,
             // but process linear memory and constructors are already live.
-            // The thread helper initializes only tables and drops data
-            // segments; the parent bootstrap would re-run side effects.
+            // The thread helper initializes tables and proven instance-local
+            // PIC address globals and drops active data segments. Shared
+            // memory and original-start effects remain process-owned.
             threadBootstrap();
           }
         },
@@ -6022,6 +6023,10 @@ export async function centralizedThreadWorkerMain(
           "wpk_fork_resume_thread",
       );
     }
+    // WHY: clone success must not let the parent immediately exit while a
+    // published sibling is still asynchronously initializing its instance.
+    // This acknowledges TLS/table/channel setup, not terminal quiescence.
+    port.postMessage({ type: "thread_ready", pid, tid } satisfies WorkerToHostMessage);
     let result = 0;
     if (hasForkInstrumentation && threadProcessContinuation) {
       for (;;) {

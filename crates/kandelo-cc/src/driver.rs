@@ -660,7 +660,19 @@ fn build_clang_args_internal(
         }
         if parsed.shared {
             // Shared library build: no CRT, no libc, no syscall glue.
-            args.extend(shared_link_flags());
+            // A library may explicitly export only its C ABI. Do not turn
+            // the caller's --no-export-dynamic back into an export of every
+            // archive member (including an entire language runtime).
+            let caller_limits_exports = filtered.iter().any(|arg| {
+                arg.strip_prefix("-Wl,").is_some_and(|options| {
+                    options.split(',').any(|option| option == "--no-export-dynamic")
+                })
+            }) || filtered.windows(2).any(|pair| {
+                pair[0] == "-Xlinker" && pair[1] == "--no-export-dynamic"
+            });
+            args.extend(shared_link_flags().into_iter().filter(|flag| {
+                !caller_limits_exports || flag != "-Wl,--export-all"
+            }));
         } else {
             let Some(lld_major) = toolchain.lld_major else {
                 return Err("wasm-ld version is unresolved; call prepare_executable_linker() before building \
@@ -696,6 +708,13 @@ fn build_clang_args_internal(
                 None => glue_sources(toolchain, links_cxx_runtime(language, &filtered)),
             };
             args.extend(glue.leading);
+            if parsed.link_dl {
+                // Fully instrumented side modules need a process activation
+                // owner, even if only their imported callbacks could fork.
+                // Retain the real libc entry so normal instrumentation sees
+                // kernel_fork and supplies that owner; never invent a claim.
+                args.push("-Wl,--export=fork".into());
+            }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
             let lazy_group = |members: Vec<String>| -> Vec<String> {

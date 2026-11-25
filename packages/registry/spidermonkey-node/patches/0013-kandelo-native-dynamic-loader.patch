@@ -1,0 +1,26 @@
+# Kandelo patch rationale (O34)
+#
+# Node's target must link Kandelo's real dynamic loader instead of musl's
+# weak unsupported-loader stubs. Keep this small target-only libraries entry:
+# current recipe LDFLAGS also reach host generators, and no equally direct
+# stock target-only recipe input was established. Adding injection machinery
+# would cost more to maintain than this explicit declaration. It does not
+# enable deferred .node addons or change Node's loading algorithm.
+#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
+--- a/node.gyp
++++ b/node.gyp
+@@ -640,6 +640,12 @@
+       'msvs_disabled_warnings!': [4244],
+
+       'conditions': [
++        [ 'OS=="kandelo"', {
++          # Select the SDK's real POSIX dynamic loader instead of musl's weak
++          # unsupported-loader stubs. This covers internal libraries and FFI;
++          # it does not enable Node's deferred .node addon execution.
++          'libraries': [ '-ldl' ],
++        }],
+         [ 'node_shared_hdr_histogram=="false"', {
+           'dependencies': [
+             'deps/histogram/histogram.gyp:histogram',

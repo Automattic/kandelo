@@ -1,0 +1,12 @@
+kind = "source"
+name = "node-core-source"
+version = "26.13.0"
+
+[source]
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/LICENSE"

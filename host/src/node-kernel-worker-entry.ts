@@ -1,3 +1,4 @@
+import { ConnectedNamesFile } from "./networking/connected-names-file";
 import { ProcessGenerationObservations } from "./process-generation-observation";
 import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
@@ -128,6 +129,7 @@ import {
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
+  createThreadWorkerReadiness,
   prepareProcessWorkerAbsence,
   sealProcessWorkerAbsence,
   processWorkerRetirementProven,
@@ -764,6 +766,7 @@ function post(msg: KernelToMainMessage) {
 }
 
 function terminatePoisonedKernelWorker(error: Error): void {
+  connectedNamesFile?.close(); connectedNamesFile = undefined;
   if (kernelFatalReported) return;
   kernelFatalReported = true;
   const detail = formatHostErrorDiagnostic(error);
@@ -1042,6 +1045,7 @@ function cleanupSessionDir(): Promise<void> {
 }
 
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
+let connectedNamesFile: ConnectedNamesFile | undefined;
 
 async function handleInit(msg: InitMessage) {
   observeProcessGenerations = msg.observeProcessGenerations === true;
@@ -1462,6 +1466,11 @@ async function handleInit(msg: InitMessage) {
       throw error;
     }
   }
+
+  connectedNamesFile = new ConnectedNamesFile(kernelWorker, io.network, (error) => {
+    post({ type: "host_diagnostic", pid: 0, source: "Connected names", message: `Connected-name publication failed: ${String(error)}` });
+  });
+  await connectedNamesFile.start();
 
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
@@ -3357,6 +3366,7 @@ async function handleClone(
       memory,
       kernelWorker.isExecHandoffActive(pid),
     );
+  const readiness = createThreadWorkerReadiness();
   let reclaimed = false;
   const reclaimThread = async () => {
     if (reclaimed) return;
@@ -3386,6 +3396,7 @@ async function handleClone(
     if (safe) removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
   };
   const terminateThreadEntry = (): Promise<void> => {
+    readiness.retire();
     if (!threadEntry.termination) {
       // Seal before any await: a delayed SIGCONT must never start this slot
       // after absence allowed its channel and allocator page to be reused.
@@ -3424,7 +3435,9 @@ async function handleClone(
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "exec_retired" && m.tid === tid) {
+    if (m.type === "thread_ready" && m.pid === pid && m.tid === tid) {
+      readiness.ready();
+    } else if (m.type === "exec_retired" && m.tid === tid) {
       threadEntry.execRetirement.settle();
     } else if (m.type === "thread_exit") {
       if (!isCurrentThreadGeneration()) {
@@ -3479,6 +3492,10 @@ async function handleClone(
     void terminateThreadEntry();
     throw new Error(`Process ${pid} changed generation before thread Worker launch`);
   }
+  // Construction alone does not mean this asynchronous Worker can run yet.
+  // Its exact readiness or retirement settles the existing clone transaction;
+  // no timeout becomes success and no terminal fence is fabricated.
+  await readiness.promise;
 
 }
 
@@ -3854,6 +3871,7 @@ async function performDestroy() {
   }
   await pcmDriver?.close();
   pcmDriver = null;
+  connectedNamesFile?.close(); connectedNamesFile = undefined;
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   let persistenceSyncFailure: string | undefined;
@@ -3890,6 +3908,7 @@ async function performDestroy() {
 async function handleDestroy(msg: { requestId: number }) {
   try {
     initReady = false;
+    connectedNamesFile?.close(); connectedNamesFile = undefined;
     // WHY: message and syscall callbacks overlap across awaits. The shared gate
     // closes admission synchronously, drains every creator that entered first,
     // and runs this terminal sweep only once. The outer worker-realm termination
@@ -4277,7 +4296,7 @@ function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_
 }
 
 port.on("message", (msg: MainToKernelMessage) => {
-  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError, () => connectedNamesFile!.ready())) return;
   switch (msg.type) {
     case "init":
       void processMemoryCreators.run("kernel initialization", async () => {
@@ -4293,6 +4312,7 @@ port.on("message", (msg: MainToKernelMessage) => {
           throw error;
         }
       }).catch((error) => {
+        connectedNamesFile?.close(); connectedNamesFile = undefined;
         remoteSegmentRuntime.close();
         initReady = false;
         post({

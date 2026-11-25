@@ -825,7 +825,9 @@ pub fn needs_linking(parsed: &ParsedArgs) -> bool {
     {
         return true;
     }
-    !parsed.source_files.is_empty() || !parsed.object_files.is_empty()
+    !parsed.source_files.is_empty()
+        || !parsed.object_files.is_empty()
+        || !parsed.archive_files.is_empty()
 }
 
 pub const THREAD_SLOT_USE_HOST_DEFAULT: i64 = -1;
