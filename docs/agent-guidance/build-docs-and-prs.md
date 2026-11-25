@@ -216,6 +216,9 @@ should tell a reviewer what was wrong, that it is fixed or what remains, and
 roughly how. If the key result appears only under Validation, move it to
 What changed and keep Validation to how it was measured.
 
+When a PR adds a checked-in copy of derived data, identify its source, explain
+why consumers need the copy, and name the freshness or provenance check.
+
 Most PRs need 10 to 20 lines. Add a short extra section only when a reviewer
 cannot judge the change without it, such as an ABI bump, a known gap, or a
 before/after table for a performance claim.

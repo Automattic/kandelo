@@ -103,8 +103,13 @@ For nontrivial work:
 4. Preserve Node.js/browser parity unless a documented platform boundary says
    otherwise.
 5. Update the authoritative docs for any changed behavior.
-6. Run validation that supports the exact claim you will make.
-7. Report what changed, what was run, and what was not run.
+6. When adding an inventory, table, or snapshot, name its authoritative inputs.
+   Derive it where those inputs are available. If consumers need a checked-in
+   copy, document why, generate it deterministically, and check for drift in
+   normal validation. Verify frozen compatibility fixtures against their
+   pinned source or artifact.
+7. Run validation that supports the exact claim you will make.
+8. Report what changed, what was run, and what was not run.
 
 For a reviewed patch integration, use the optional
 [`scripts/agent-integrate` workflow](docs/agent-integration.md) to validate
