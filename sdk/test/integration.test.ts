@@ -613,12 +613,13 @@ describe('integration: compile C program', () => {
     }
   }, 60_000);
 
-  it('links working dlopen into C++ programs that request -ldl', () => {
+  it.each([[['-ldl']], [[]]])('links working dlopen into C++ programs (extra flags %j)', (extra: string[]) => {
     // wasm32posix-c++ hands the SDK's C glue to clang++, which compiles a .c
     // input as C++. dlopen.c once lacked C linkage there, so its dlopen was
     // mangled and a C++ program silently bound to musl's weak stub, which
     // only reports "Dynamic loading not supported". The functional glue is
-    // recognizable by its host imports.
+    // recognizable by its host imports. A program that calls dlopen gets it
+    // with or without -ldl.
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'dlopen-cxx.cpp');
@@ -634,7 +635,7 @@ describe('integration: compile C program', () => {
       // The program uses no C++ library, and the repository sysroot holds
       // none (libc++ is a declared package dependency), so it opts out of
       // the C++ library c++ links by default, as it would with g++.
-      const result = sdk(CXX, [srcFile, '-o', outFile, '-ldl', '-nostdlib++']);
+      const result = sdk(CXX, [srcFile, '-o', outFile, ...extra, '-nostdlib++']);
       if (result.exitCode !== 0) {
         console.error('wasm32posix-c++ stderr:', result.stderr);
       }

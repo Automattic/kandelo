@@ -226,6 +226,7 @@ host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product
 host/test/guest-cmake.test.ts	prepared-product
 host/test/guest-meson.test.ts	prepared-product
+host/test/guest-plugins.test.ts	prepared-product
 host/test/guest-program-preparation.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
@@ -495,6 +496,7 @@ host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product
 host/test/scummvm-cli-smoke.test.ts	prepared-product
+host/test/sdk-plugin-modules.test.ts	prepared-product
 host/test/sdl2-editor-unit.test.ts	source-only
 host/test/sdl2-evdev-smoke.test.ts	prepared-product
 host/test/sdl2-kmsdrm-smoke.test.ts	prepared-product

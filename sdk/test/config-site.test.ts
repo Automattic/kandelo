@@ -8,12 +8,12 @@ function dynamicLoadingSiteFacts(overrides: Record<string, string> = {}): string
   const printFacts = [
     '. "$1";',
     'printf "%s\\n"',
-    '"$ac_cv_func_dlopen"',
-    '"$ac_cv_lib_dl_dlopen"',
-    '"$ac_cv_search_dlclose"',
-    '"$ac_cv_search_dlerror"',
-    '"$ac_cv_search_dlopen"',
-    '"$ac_cv_search_dlsym"',
+    '"${ac_cv_func_dlopen-unset}"',
+    '"${ac_cv_lib_dl_dlopen-unset}"',
+    '"${ac_cv_search_dlclose-unset}"',
+    '"${ac_cv_search_dlerror-unset}"',
+    '"${ac_cv_search_dlopen-unset}"',
+    '"${ac_cv_search_dlsym-unset}"',
   ].join(' ');
   const output = execFileSync(
     'bash',
@@ -123,29 +123,16 @@ function presentStdioExtSiteFacts(overrides: Record<string, string> = {}): strin
 }
 
 describe('config.site dynamic loading facts', () => {
-  it('routes dlfcn library searches through the SDK -ldl glue', () => {
-    expect(dynamicLoadingSiteFacts()).toEqual([
-      'no',
-      'yes',
-      '-ldl',
-      '-ldl',
-      '-ldl',
-      '-ldl',
-    ]);
+  // The SDK links its dlopen loader into any program that calls the dlfcn
+  // functions, so configure probes them for real instead of reading presets.
+  it('leaves the dlfcn probes to configure', () => {
+    expect(dynamicLoadingSiteFacts()).toEqual(Array(6).fill('unset'));
   });
 
   it('preserves caller overrides', () => {
     expect(dynamicLoadingSiteFacts({
-      ac_cv_func_dlopen: 'yes',
       ac_cv_search_dlopen: 'custom-dlopen-provider',
-    })).toEqual([
-      'yes',
-      'yes',
-      '-ldl',
-      '-ldl',
-      'custom-dlopen-provider',
-      '-ldl',
-    ]);
+    })).toEqual(['unset', 'unset', 'unset', 'unset', 'custom-dlopen-provider', 'unset']);
   });
 });
 

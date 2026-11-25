@@ -33,18 +33,30 @@ here, as Kandelo is not Linux.
 This differs from the SDK's cross files (`sdk/meson/wasm32posix.ini`),
 which declare `system = 'linux'` for cross builds on the build machine.
 
-One patch, `patches/0001-wasm-posix-executable-suffix.patch`: Meson names
-executables `<name>.js` on any system whose name starts with `wasm`, a
-convention for Emscripten's JavaScript loaders. Kandelo runs WebAssembly
-executables directly by path, so the patch leaves `wasm-posix` executables
-unsuffixed, like any POSIX system's.
+Two patches:
+
+- `patches/0001-wasm-posix-executable-suffix.patch`: Meson names
+  executables `<name>.js` on any system whose name starts with `wasm`, a
+  convention for Emscripten's JavaScript loaders. Kandelo runs WebAssembly
+  executables directly by path, so the patch leaves `wasm-posix`
+  executables unsuffixed, like any POSIX system's.
+- `patches/0002-kandelo-refuse-linking-programs-to-shared-libraries.patch`:
+  on a `wasm-posix` machine Meson refuses an executable's `link_with` of a
+  shared library, naming `static_library()`, `-Ddefault_library=static`
+  and `shared_module()`, instead of leaving the link to fail.
 
 ## Limits
 
-- **Static libraries only.** A Kandelo executable cannot link against a
-  shared library: `library()` defaults to shared, and the executable's link
-  fails with `wasm-ld: error: attempted static link of dynamic object`.
-  Use `static_library()`, or `meson setup -Ddefault_library=static`.
+- **Modules, not shared libraries.** A Kandelo executable cannot link
+  against a shared library. `library()` defaults to shared, so Meson stops
+  at configure time with "a Kandelo program cannot be linked against a
+  shared library"; use `static_library()`, or
+  `meson setup -Ddefault_library=static`. `shared_module()` builds a side
+  module, `lib<name>.so`, that `dlopen()` loads, and `export_dynamic: true`
+  on the executable (`-Wl,-export-dynamic`) exports its symbols, and the
+  libc functions it links, to it. `dependency('dl')` is built in: the SDK
+  links its loader into any program that calls `dlopen`. See "Plugin
+  modules" in `docs/sdk-guide.md`.
 - Kandelo reports one online processor, so by default Ninja (and
   `meson compile`) runs two jobs at a time and `meson test` one test at a
   time. `-j` and `MESON_NUM_PROCESSES` override them.

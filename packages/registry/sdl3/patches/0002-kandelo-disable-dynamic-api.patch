@@ -1,0 +1,25 @@
+# Turn off SDL's dynamic API on Kandelo.
+#
+# The dynamic API lets an SDL_DYNAMIC_API environment variable name a
+# replacement SDL shared library that a statically linked program loads
+# with dlopen() at startup. Kandelo builds SDL as a static library only;
+# there is no SDL side module to substitute. The SDK links its dlopen
+# loader into any program that references dlopen, and the dynamic API's
+# reference put it into every SDL program, along with every SDL function
+# (its jump table keeps them all). A fork-capable SDL program then imports
+# the loader and is instrumented as a dynamic-linking program. SDL turns
+# the dynamic API off the same way for Emscripten, the other WebAssembly
+# platform, and for RISC OS, where static programs cannot use dlopen().
+# SDL_LoadObject() still works: a program that calls it (ScummVM loads its
+# engine plugins that way) gets the loader.
+--- a/src/dynapi/SDL_dynapi.h
++++ b/src/dynapi/SDL_dynapi.h
+@@ -63,6 +63,8 @@
+ #define SDL_DYNAMIC_API 0 // vitasdk doesn't support dynamic linking
+ #elif defined(SDL_PLATFORM_3DS)
+ #define SDL_DYNAMIC_API 0 // devkitARM doesn't support dynamic linking
++#elif defined(__wasm__) && !defined(SDL_PLATFORM_EMSCRIPTEN) // Kandelo: SDL is linked statically; there is no SDL shared library to substitute.
++#define SDL_DYNAMIC_API 0
+ #elif defined(SDL_PLATFORM_NGAGE)
+ #define SDL_DYNAMIC_API 0
+ #elif defined(DYNAPI_NEEDS_DLOPEN) && !defined(HAVE_DLOPEN)

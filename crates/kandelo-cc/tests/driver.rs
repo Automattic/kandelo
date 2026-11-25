@@ -103,10 +103,74 @@ fn compile_and_link_adds_compile_and_link_flags_plus_glue() {
 }
 
 #[test]
-fn ldl_selects_the_functional_dynamic_loading_glue() {
-    let args = build(&["foo.c", "-ldl", "-o", "foo.wasm"]);
-    assert!(!has(&args, "-ldl"));
-    assert!(has(&args, "/tmp/glue/dlopen.c"));
+fn every_executable_link_offers_the_dlopen_loader_as_a_lazy_member() {
+    // With or without -ldl, the loader is a lazy member after the caller's
+    // inputs and ahead of libc.a, so a program that calls dlopen gets it
+    // instead of musl's static stub and a program that never calls dlopen
+    // gets none of it.
+    for user_args in [
+        &["foo.c", "-ldl", "-o", "foo.wasm"][..],
+        &["foo.c", "-o", "foo.wasm"][..],
+    ] {
+        let args = build(user_args);
+        assert!(!has(&args, "-ldl"));
+        let loader = index_of(&args, "/tmp/glue/dlopen.c").unwrap();
+        assert_eq!(args[loader + 1], "-Wl,--end-lib");
+        let group = args[..loader]
+            .iter()
+            .rposition(|a| a == "-Wl,--start-lib")
+            .unwrap();
+        assert!(index_of(&args, "foo.c").unwrap() < group);
+        assert!(loader < index_of(&args, "/tmp/sysroot/lib/libc.a").unwrap());
+    }
+}
+
+#[test]
+fn the_dlopen_loader_precedes_a_libc_the_caller_names() {
+    // A caller's own libc (librsvg's pkg-config file adds -lc) would offer
+    // musl's stubs first, so the loader goes just before it, still after
+    // the inputs ahead of it.
+    for (user_args, libc) in [
+        (&["foo.c", "-lc", "bar.o", "-o", "foo.wasm"][..], "-lc"),
+        (&["foo.c", "-l", "c", "bar.o", "-o", "foo.wasm"][..], "-l"),
+        (
+            &["foo.c", "-l:libc.a", "bar.o", "-o", "foo.wasm"][..],
+            "-l:libc.a",
+        ),
+        (
+            &[
+                "foo.c",
+                "/tmp/sysroot/lib/libc.a",
+                "bar.o",
+                "-o",
+                "foo.wasm",
+            ][..],
+            "/tmp/sysroot/lib/libc.a",
+        ),
+    ] {
+        let args = build(user_args);
+        let loader = index_of(&args, "/tmp/glue/dlopen.c").unwrap();
+        assert_eq!(
+            args[loader - 1..=loader + 2],
+            strings(&[
+                "-Wl,--start-lib",
+                "/tmp/glue/dlopen.c",
+                "-Wl,--end-lib",
+                libc
+            ])[..],
+            "{user_args:?}"
+        );
+        assert!(index_of(&args, "foo.c").unwrap() < loader, "{user_args:?}");
+        assert!(loader < index_of(&args, "bar.o").unwrap(), "{user_args:?}");
+        assert_eq!(args.iter().filter(|a| a.ends_with("dlopen.c")).count(), 1);
+    }
+}
+
+#[test]
+fn rdynamic_exports_the_executable_symbols() {
+    let args = build(&["foo.c", "-rdynamic", "-o", "foo.wasm"]);
+    assert!(!has(&args, "-rdynamic"));
+    assert!(has(&args, "-Wl,--export-dynamic"));
 }
 
 #[test]
@@ -208,6 +272,7 @@ fn preserves_user_linker_input_order_across_argument_categories() {
 fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
     let objects = Glue {
         leading: strings(&["/tmp/g/channel_syscall.o", "/tmp/g/compiler_rt.o"]),
+        loader: strings(&["/tmp/g/dlopen.o"]),
         fallback: strings(&["/tmp/g/cxxrt.o"]),
     };
     let args = build_clang_args(
@@ -225,8 +290,13 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
     assert!(first < index_of(&args, "/tmp/sysroot/lib/crt1.o").unwrap());
     let fallback = index_of(&args, "/tmp/g/cxxrt.o").unwrap();
     assert_eq!(
-        args[fallback - 1..=fallback + 1],
-        strings(&["-Wl,--start-lib", "/tmp/g/cxxrt.o", "-Wl,--end-lib"])[..]
+        args[fallback - 1..=fallback + 2],
+        strings(&[
+            "-Wl,--start-lib",
+            "/tmp/g/cxxrt.o",
+            "/tmp/g/dlopen.o",
+            "-Wl,--end-lib"
+        ])[..]
     );
     assert!(index_of(&args, "main.o").unwrap() < fallback);
     assert!(fallback < index_of(&args, "/tmp/sysroot/lib/libc.a").unwrap());
@@ -236,18 +306,12 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
 fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     let toolchain = toolchain();
     assert_eq!(
-        glue_sources(&toolchain, false, false),
+        glue_sources(&toolchain, false),
         Glue {
             leading: strings(&["/tmp/glue/channel_syscall.c", "/tmp/glue/compiler_rt.c"]),
+            loader: strings(&["/tmp/glue/dlopen.c"]),
             fallback: strings(&["/tmp/glue/cxxrt.c"]),
         }
-    );
-    assert_eq!(
-        glue_sources(&toolchain, true, false)
-            .leading
-            .last()
-            .map(String::as_str),
-        Some("/tmp/glue/dlopen.c")
     );
     let args = build_glue_compile_args(
         &strings(&[
@@ -262,6 +326,9 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     assert!(has(&args, "-O2"));
     assert!(has(&args, "-DSLOTS=4"));
     assert!(has(&args, "--target=wasm32-unknown-unknown"));
+    // The glue stays hidden.
+    assert!(has(&args, "-fvisibility=hidden"));
+    assert!(!has(&args, "-fvisibility=default"));
     assert!(has(&args, "--sysroot=/tmp/sysroot"));
     let x = index_of(&args, "-x").unwrap();
     assert_eq!(args[x..x + 2], strings(&["-x", "c"])[..]);
@@ -284,11 +351,10 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
 fn links_with_the_cxx_runtime_get_the_cxx_entry_glue_last_among_the_leading_glue() {
     let toolchain = toolchain();
     assert_eq!(
-        glue_sources(&toolchain, true, true).leading,
+        glue_sources(&toolchain, true).leading,
         strings(&[
             "/tmp/glue/channel_syscall.c",
             "/tmp/glue/compiler_rt.c",
-            "/tmp/glue/dlopen.c",
             "/tmp/glue/cxxrt_entry.cpp",
         ])
     );
@@ -339,7 +405,9 @@ fn the_minimal_cxx_runtime_is_a_lazy_member_after_the_cxx_library() {
     let args = build_cxx(&["main.cpp", "-o", "app.wasm"]);
     let cxxrt = position(&args, "/tmp/glue/cxxrt.c");
     assert_eq!(args[cxxrt - 1], "-Wl,--start-lib");
-    assert_eq!(args[cxxrt + 1], "-Wl,--end-lib");
+    // The dlopen loader shares the lazy group.
+    assert_eq!(args[cxxrt + 1], "/tmp/glue/dlopen.c");
+    assert_eq!(args[cxxrt + 2], "-Wl,--end-lib");
     assert!(position(&args, "-lc++abi") < cxxrt);
     assert!(cxxrt < position(&args, "/tmp/sysroot/lib/libc.a"));
 }
