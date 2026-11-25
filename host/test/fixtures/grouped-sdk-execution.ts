@@ -114,6 +114,8 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
   let execTermination: { signal: number } | undefined;
   let execReplacementPublications = 0;
   let execPrecommitStopFinished = false;
+  let publishRootExit!: () => void;
+  const rootExitPublished = new Promise<void>(resolve => { publishRootExit = resolve; });
   let threadRetirementCheckpoints = 0;
   const memoryEvidence = async () => {
     let backing;
@@ -430,6 +432,9 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               lifecycleEvidence.push({ kind: 'precommit-live-refused', ...await memoryEvidence() });
               if (!await retryKernelEntryResult(() => kernel.signalProcess(request.pid, 9))) throw Error('Precommit SIGKILL refused');
               await kernel.waitForMemoryGroupReplicaQuiescence(rootHandle);
+              // The Worker fence precedes ACK_STOP. Observe the actual exit
+              // publication before beginning a separate image retirement.
+              await rootExitPublished;
               if (options.joinOnExit && !rootJoined) await new Promise<void>((resolve, fail) => {
                 processWorker!.on('exit', code => code === 0 ? resolve() : fail(Error(`Precommit Worker exit ${code}`)));
               });
@@ -453,7 +458,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
               lifecycleEvidence.push({ kind: 'precommit-stopped-image-deactivated', ...await memoryEvidence() });
               execPrecommitStopFinished = true; maybeComplete();
             })();
-            evidenceWork.push(stop); await stop;
+            evidenceWork.push(stop); void stop.catch(reject); await stop;
           }
           if (options.execPoolRollback) {
             if (!rollbackPoolMemory) throw Error('Missing actual grouped exec backing');
@@ -482,6 +487,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           trace.push(...kernel.drainSyscallTrace().map(event => event.decoded ?? `syscall ${event.nr}`));
           if (pid === rootPid) {
             kernelExit = code;
+            publishRootExit();
             if (options.execSignal || options.execFinishExit) {
               const sample = (async () => {
                 const backing = (await memoryEvidence()).backing;
