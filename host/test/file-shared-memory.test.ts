@@ -43,6 +43,7 @@ function createFileHarness() {
   const channels = new Map(pids.map((pid) => {
     const processMemory = memories.get(pid)!;
     return [pid, {
+      source: processMemory,
       pid,
       memory: processMemory,
       channelOffset: 0,
@@ -134,7 +135,7 @@ function createFileHarness() {
   const onFork = vi.fn();
   const processes = new Map(pids.map((pid) => [pid, {
     pid,
-    memory: memories.get(pid)!,
+    memory: memories.get(pid)!, source: memories.get(pid)!,
     channels: [channels.get(pid)!],
   }]));
   const fdSupportsMmapWriteback = vi.fn(() => true);

@@ -13,6 +13,8 @@ import {
 } from "../src/fork-module-state";
 import { ForkProcessContinuationCoordinator } from "../src/fork-process-continuation";
 import { FORK_REPLAY_EVENT_SEGMENT_CAPACITY } from "../src/fork-replay-events";
+import { GroupProcessAddressSpace } from "../src/process-address-space";
+import { processDataView, type ProcessMemorySource } from "../src/process-memory-views";
 
 const PAGE_SIZE = 65_536;
 
@@ -146,7 +148,7 @@ function fakeActivation(
 }
 
 function makeCoordinator(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   owner: AllocationOwner,
   calls: string[],
   roots: Map<number, number>,
@@ -209,14 +211,42 @@ function makeCoordinator(
 }
 
 function writeOrdinal(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   payload: number | bigint,
   ordinal: number,
 ): void {
-  new DataView(memory.buffer).setUint32(Number(payload), ordinal, true);
+  processDataView(memory).setUint32(Number(payload), ordinal, true);
 }
 
 describe("ForkProcessContinuationCoordinator", () => {
+  it("commits and replays frame ordinals through a scattered virtual root", () => {
+    const memory = new WebAssembly.Memory({ initial: 40, maximum: 40, shared: true });
+    const words = new Uint32Array(memory.buffer), root = PAGE_SIZE;
+    words[root / 4] = 16;
+    for (let i = 0; i < 16; i++) words[root / 4 + 16 + i] = (4 + 2 * i) * PAGE_SIZE | 3;
+    const source = new GroupProcessAddressSpace({ memory, root, maximumPages: 16, assertLive: () => {} });
+    let next = PAGE_SIZE;
+    const owner = {
+      allocate(size: number) {
+        const address = next; next += size;
+        if (next > source.byteLength) throw new Error("virtual fixture allocation exhausted");
+        return address;
+      },
+      deallocate() {},
+    };
+    const fixture = makeCoordinator(source, owner, [], new Map(), "virtual frame replay");
+    fixture.arena.begin();
+    fixture.coordinator.beginCapture(fixture.arena);
+    const imports = fixture.coordinator.continuationImports(0);
+    const payload = (imports.__wpk_fork_frame_reserve as (size: number) => number)(16);
+    writeOrdinal(source, payload, 11);
+    (imports.__wpk_fork_frame_commit as (payload: number) => void)(payload);
+    fixture.coordinator.sealCapture();
+    fixture.coordinator.beginParentReplay();
+    expect((imports.__wpk_fork_frame_next as (size: number) => number)(16)).toBe(payload);
+    fixture.coordinator.finishReplay();
+    expect(fixture.coordinator.phaseName()).toBe("idle");
+  });
   it("borrows every active activation without consuming parent state", () => {
     const memory = new WebAssembly.Memory({
       initial: 16,

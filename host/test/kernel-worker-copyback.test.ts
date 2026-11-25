@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { type ProcessMemorySource } from "../src/process-memory-views";
 import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
+import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
@@ -10,13 +12,16 @@ import {
   CH_ERRNO,
   CH_RETURN,
   CH_STATUS,
+  CH_SYSCALL,
   SYSCALL_ARGS,
+  PROCESS_STATE_RUNNING,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  source: ProcessMemorySource;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -30,6 +35,7 @@ interface MutableCopybackWorkerState {
   processes: Map<number, {
     pid: number;
     memory: WebAssembly.Memory;
+    source: ProcessMemorySource;
     channels: TestChannel[];
     ptrWidth: 4 | 8;
     explicitMaxAddr: boolean;
@@ -41,11 +47,14 @@ interface MutableCopybackWorkerState {
 function createTestChannel(
   pid: number,
   memory: WebAssembly.Memory,
+  source: ProcessMemorySource = memory,
+  channelOffset = 0,
 ): TestChannel {
   return {
+    source,
     pid,
     memory,
-    channelOffset: 0,
+    channelOffset,
     i32View: new Int32Array(memory.buffer),
     consecutiveSyscalls: 0,
     handling: true,
@@ -55,11 +64,7 @@ function createTestChannel(
 function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
   const pid = 100;
   const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-  const processMemory = new WebAssembly.Memory({
-    initial: 2,
-    maximum: 2,
-    shared: true,
-  });
+  const processMemory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
   const channel = createTestChannel(pid, processMemory);
   const worker = createCentralizedKernelWorkerTestDouble();
   installKernelWorkerTestScratch(
@@ -67,7 +72,15 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
     kernelMemory,
     128,
     ptrWidth,
-    { kernelExportNames: [] },
+    { kernelExports: {
+      kernel_get_process_exit_signal: () => -1,
+      kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_dequeue_signal: () => 0,
+      kernel_drain_wakeup_events: () => 0,
+      kernel_get_parent_pid: () => -1,
+      kernel_set_current_tid: () => 0,
+      kernel_thread_exit: () => 0n,
+    } },
   );
   const state = worker as unknown as MutableCopybackWorkerState;
   state.processes = new Map([
@@ -75,7 +88,7 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
       pid,
       {
         pid,
-        memory: processMemory,
+        memory: processMemory, source: channel.source,
         channels: [channel],
         ptrWidth,
         explicitMaxAddr: false,
@@ -86,11 +99,7 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
   // Completion normally relistens the mailbox. Polling mode keeps this
   // focused harness synchronous without replacing a worker method.
   state.usePolling = true;
-  Atomics.store(
-    channel.i32View,
-    CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-    CHANNEL_STATUS_PENDING,
-  );
+  Atomics.store(channel.i32View, CH_STATUS / Int32Array.BYTES_PER_ELEMENT, CHANNEL_STATUS_PENDING);
 
   return {
     worker,
@@ -101,6 +110,10 @@ function makeCopybackHarness(ptrWidth: 4 | 8 = 4) {
 }
 
 describe("CentralizedKernelWorker syscall copy-back", () => {
+  // Grouped completion policy is tested through ProcessTable in
+  // group_operation/fork_launch.rs and the compiled-kernel transport in
+  // group-memory-kernel.test.ts. The worker boundary suite exercises real
+  // native observation settlement; this harness covers ordinary copy-back.
   it("leaves the destination unchanged when read reports EOF", () => {
     const { worker, channel, processMem } = makeCopybackHarness();
     const dest = 1024;
@@ -270,7 +283,7 @@ describe("CentralizedKernelWorker syscall copy-back", () => {
     const nestedChannel = createTestChannel(nestedPid, nestedMemory);
     state.processes.set(nestedPid, {
       pid: nestedPid,
-      memory: nestedMemory,
+      memory: nestedMemory, source: nestedMemory,
       channels: [nestedChannel],
       ptrWidth: 4,
       explicitMaxAddr: false,

@@ -60,6 +60,9 @@ xz2 = "0.1"
 regex = "1"
 rustix = { version = "1", features = ["fs", "process"] }
 
+# Private compiler outputs for generated SDK execution primitives.
+tempfile = "3"
+
 [dev-dependencies]
 # Assembles the small fixture modules the `kernel_imports` generator
 # tests parse, so the import-section round-trip is checked against
@@ -67,7 +70,3 @@ rustix = { version = "1", features = ["fs", "process"] }
 # `wat = "1"` matches fork-instrument, host-native, fork-codec and
 # wasm-local-root-spill.
 wat = "1"
-# Used by source_extract + build_deps integration tests for ergonomic
-# tempdirs. Not promoted to a runtime dep: the source_extract zip path
-# uses std::io::Cursor instead of NamedTempFile.
-tempfile = "3"

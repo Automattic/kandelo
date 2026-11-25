@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import { OP_CLEAR_COLOR } from "../src/webgl/ops.js";
+import { LinearProcessAddressSpace } from "../src/process-address-space.js";
 
 function colors(): Uint8Array {
   const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
@@ -44,4 +45,30 @@ it.each([4,8] as const)("native submission decodes its accepted snapshot after t
     expect(new DataView(guest.buffer,guest.byteOffset,40).getFloat32(28,true)).toBe(1);
     expect(binding.cmdbufView?.buffer).toBe(memory.buffer);
   } finally {kernel.releaseProcessViews(7);}
+});
+
+it("submits a checked virtual command range without retaining the group's physical Memory", () => {
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const physicalMemory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const virtualMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const guest = new Uint8Array(virtualMemory.buffer, 4096, 40); guest.set(colors());
+  const source = new LinearProcessAddressSpace(virtualMemory);
+  const native = renderer(() => replaceSecond(guest));
+  const reads: number[][] = [];
+  const read = source.readBytes.bind(source);
+  source.readBytes = (address, length) => { reads.push([address, length]); return read(address, length); };
+  const kernel = createWasmPosixKernelTestHarness({ io: {}, memory: kernelMemory, pointerWidth: 4,
+    callbacks: { getProcessMemory: () => physicalMemory, getProcessAddressSpace: () => source },
+    instance: createKernelScratchTestInstance(4, kernelMemory, () => ({}), () => 4096) });
+  kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 4096, cmdbufLen: 40 });
+  const binding = kernel.gl.get(7, 11)!; binding.gl = native.gl; binding.contextId = 1;
+  const imports = kernel.testAuthority.buildImportObject(kernelMemory).env as Record<string, (...args: any[]) => any>;
+  try {
+    expect(imports.host_gl_submit(7, 0, 40, 11)).toBe(0);
+    expect(reads).toEqual([[4096, 40]]);
+    expect(native.observed.slice(-2)).toEqual([[1,0,0,1],[0,0,1,1]]);
+    expect(binding.cmdbufView).toBeNull();
+    expect(imports.host_gl_submit(7, 39, 2, 11)).toBe(-22);
+    expect(reads).toHaveLength(1);
+  } finally { kernel.releaseProcessViews(7); }
 });

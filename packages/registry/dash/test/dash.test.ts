@@ -112,7 +112,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
   }, DASH_TEST_TIMEOUT);
 });
 
-const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+const coreutilsBinary = tryResolveBinary("programs/coreutils/coreutils.wasm");
 const hasCoreutils = !!coreutilsBinary;
 
 describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {

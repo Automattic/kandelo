@@ -39,7 +39,10 @@ impl Request {
             return Err(Errno::EINVAL);
         }
         let size = (capacity as u32) * (size_of::<WasmEpollEvent>() as u32);
-        if events == 0 || host.proc_validate_range(task.pid as i32, events, size as usize) < 0 {
+        if events == 0 || host.proc_validate_range(
+            task.pid as i32, events, size as usize,
+            wasm_posix_shared::ProcessMemoryAccess::Write,
+        ) < 0 {
             return Err(Errno::EFAULT);
         }
         let mask = if mask_address != 0 {

@@ -44,9 +44,7 @@ use crate::process_snapshot_wire::{
     process_snapshot_record_bytes, write_process_snapshot_record, ProcessSnapshotHeader,
 };
 use crate::signal::{
-    apply_default_signal_action_with_locks, deliver_pending_signals_for_tid_with_locks,
-    deliver_pending_signals_with_locks, dequeue_signal_for,
-    DefaultSignalOutcome,
+    deliver_pending_signals_for_tid_with_locks, deliver_pending_signals_with_locks,
 };
 use crate::syscalls;
 use crate::lifecycle::{
@@ -132,6 +130,19 @@ unsafe extern "C" {
         buf_ptr: *mut u8,
         buf_len: u32,
     ) -> i32;
+    fn host_group_memory_create(resource: u64, initial: u32, maximum: u32) -> i32;
+    fn host_group_memory_drop(resource: u64) -> i32;
+    fn host_group_memory_pages(resource: u64) -> i32;
+    fn host_group_memory_grow(resource: u64, additional: u32) -> i32;
+    fn host_group_memory_read(resource: u64, address: u32, output: *mut u8, length: u32) -> i32;
+    fn host_group_memory_write(resource: u64, address: u32, input: *const u8, length: u32) -> i32;
+    fn host_group_memory_fill(resource: u64, address: u32, length: u32, byte: u32) -> i32;
+    fn host_group_memory_copy(resource: u64, destination: u32, source: u32, length: u32) -> i32;
+    fn host_group_memory_atomic_load(resource: u64, address: u32) -> i64;
+    fn host_group_memory_next_nonzero(resource: u64, address: u32, words: u32) -> i64;
+    fn host_group_memory_atomic_store(resource: u64, address: u32, value: u32) -> i32;
+    fn host_group_memory_atomic_compare_exchange(resource: u64, address: u32, expected: u32, replacement: u32) -> i64;
+    fn host_group_memory_atomic_notify(resource: u64, address: u32, count: u32) -> i32;
     // Positioned read of the VFS image's own container bytes, so the kernel can
     // parse the image it booted from instead of consuming a tree the host
     // walked for it (`rootfs::load_image`). There is exactly one image per
@@ -336,6 +347,8 @@ unsafe extern "C" {
     // see `HostIO::gbm_bo_destroy` and `syscalls::apply_dri_release_effect`.
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32) -> i32;
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32;
+    fn host_gbm_bo_bind_group(pid: i32, bo_id: u32, addr: usize, len: usize,
+        bo_offset: u64, resource: u64, pages_ptr: *const u32, pages_count: u32, object_len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
     fn host_gl_unbind(pid: i32, session_id: u32) -> i32;
@@ -373,7 +386,7 @@ unsafe extern "C" {
     /// `publish_transfer_directly`.
     fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
-    fn host_proc_validate_range(pid: i32, addr: u64, len: u32) -> i32;
+    fn host_proc_validate_range(pid: i32, addr: u64, len: u32, access: u32) -> i32;
     /// Compare a complete process range against a live initialized Rust
     /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
     /// The host may read but never mutate or retain the snapshot allocation.
@@ -481,6 +494,13 @@ fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {
     }
 }
 
+fn checked_group_memory_status(status: i32) -> Result<(), Errno> {
+    match checked_host_i64_result(i64::from(status))? { 0 => Ok(()), _ => Err(Errno::EIO) }
+}
+fn checked_group_memory_word(value: i64) -> Result<u32, Errno> {
+    u32::try_from(checked_host_i64_result(value)?).map_err(|_| Errno::EIO)
+}
+
 fn split_i64_words(value: i64) -> (u32, i32) {
     (value as u32, (value >> 32) as i32)
 }
@@ -584,7 +604,49 @@ impl HostIO for WasmHostIO {
         };
         checked_host_transfer_result(result, buf.len())
     }
-
+    fn group_memory_create(&mut self, resource: u64, initial: u32, maximum: u32) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_create(resource, initial, maximum) })
+    }
+    fn group_memory_drop(&mut self, resource: u64) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_drop(resource) })
+    }
+    fn group_memory_fill(&mut self, resource: u64, address: u32, length: u32, byte: u8) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_fill(resource, address, length, u32::from(byte)) })
+    }
+    fn group_memory_copy(&mut self, resource: u64, destination: u32, source: u32, length: u32) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_copy(resource, destination, source, length) })
+    }
+    fn group_memory_next_nonzero(&self, resource: u64, address: u32, words: u32) -> Result<u64, Errno> {
+        let result = unsafe { host_group_memory_next_nonzero(resource, address, words) };
+        if result < 0 { checked_group_memory_word(result)?; }
+        Ok(result as u64)
+    }
+    fn group_memory_atomic_store(&mut self, resource: u64, address: u32, value: u32) -> Result<(), Errno> {
+        checked_group_memory_status(unsafe { host_group_memory_atomic_store(resource, address, value) })
+    }
+    fn group_memory_pages(&self, resource: u64) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_pages(resource) } as i64)
+    }
+    fn group_memory_grow(&mut self, resource: u64, additional: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_grow(resource, additional) } as i64)
+    }
+    fn group_memory_atomic_load(&self, resource: u64, address: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_atomic_load(resource, address) } as i64)
+    }
+    fn group_memory_atomic_compare_exchange(&mut self, resource: u64, address: u32, expected: u32, replacement: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_atomic_compare_exchange(resource, address, expected, replacement) } as i64)
+    }
+    fn group_memory_atomic_notify(&mut self, resource: u64, address: u32, count: u32) -> Result<u32, Errno> {
+        checked_group_memory_word(unsafe { host_group_memory_atomic_notify(resource, address, count) } as i64)
+    }
+    fn group_memory_read(&self, resource: u64, address: u32, output: &mut [u8]) -> Result<(), Errno> {
+        let length = checked_host_buffer_len(output.len())?;
+        checked_group_memory_status(unsafe { host_group_memory_read(resource, address, output.as_mut_ptr(), length) })
+    }
+    fn group_memory_write(&mut self, resource: u64, address: u32, input: &[u8]) -> Result<(), Errno> {
+        let length = checked_host_buffer_len(input.len())?;
+        checked_group_memory_status(unsafe { host_group_memory_write(resource, address, input.as_ptr(), length) })
+    }
     fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
         let capacity = checked_host_buffer_len(buf.len())?;
         let result = unsafe {
@@ -1169,6 +1231,14 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_bo_bind(pid, bo_id, addr, len, bo_offset) }
     }
 
+    fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
+        bo_offset: u64, object: &runtime_core::memory::GroupSharedMapping) -> i32 {
+        object.with_physical_pages(|resource, pages| unsafe {
+            host_gbm_bo_bind_group(pid, bo_id, addr, len, bo_offset,
+                resource, pages.as_ptr(), pages.len() as u32, object.length())
+        }).unwrap_or_else(|error| -(error as i32))
+    }
+
     fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
         unsafe { host_gbm_bo_unbind(pid, bo_id, addr, len) }
     }
@@ -1270,9 +1340,9 @@ impl HostIO for WasmHostIO {
         unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
     }
 
-    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize) -> i32 {
+    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
         match u32::try_from(len) {
-            Ok(len) => unsafe { host_proc_validate_range(pid, addr, len) },
+            Ok(len) => unsafe { host_proc_validate_range(pid, addr, len, access as u32) },
             Err(_) => -(Errno::EFAULT as i32),
         }
     }
@@ -1660,6 +1730,11 @@ fn gkl_acquire() {
 fn gkl_release() {
     if unsafe { *GKL_DEPTH.0.get() } == 1 {
         apply_pending_process_exits();
+        // Private metadata drops enqueue already admitted close effects. No
+        // process/MM borrow survives this outer-scope boundary or host call.
+        if let Err(error) = runtime_core::private_mapping::drain_releases(&mut WasmHostIO) {
+            panic!("private mapping native close failed: {error:?}");
+        }
     }
     let depth = unsafe { &mut *GKL_DEPTH.0.get() };
     *depth -= 1;
@@ -3805,6 +3880,18 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
         return -(Errno::EINVAL as i32);
     };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    // Grouped images must report their paused logical growth through the
+    // dedicated receipt-bound export before their MM can be snapshotted.
+    match table.process_memory_group(parent_pid) {
+        Ok(Some(_)) => {
+            if !table.get(parent_pid).is_some_and(|proc| proc.is_live_explicit_tid(caller_tid)) {
+                return -(Errno::ESRCH as i32);
+            }
+            return -(Errno::EOPNOTSUPP as i32);
+        },
+        Ok(None) => {},
+        Err(error) => return -(error as i32),
+    }
     match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
         Ok(child_pid) => {
             let mut host = WasmHostIO;
@@ -4000,6 +4087,18 @@ pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
     }
 }
 
+/// Return 1 after host exit acknowledgement, 0 before it, or -ESRCH for an
+/// absent/reaped process. This reads the existing kernel-owned publication
+/// bit; it does not create a host-side lifetime record or publish an exit.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exit_published(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.process_exit_published(pid) {
+        Ok(published) => i32::from(published),
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Return the host-visible parent pid for a process, or -ESRCH if absent or
 /// still hidden inside an unpublished spawn transaction.
 #[unsafe(no_mangle)]
@@ -4027,6 +4126,788 @@ pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
         Some(ProcessState::Exited) => PROCESS_STATE_EXITED,
         Some(ProcessState::Limbo) | None => -(Errno::ESRCH as i32),
     }
+}
+
+/// Memory-group admission metadata is an independent kernel-host capability.
+/// These exports do not advertise a ready execution/stop backend. Fixed output
+/// records belong to kernel scratch leases, never guest address-space pointers.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_protocol_version() -> u32 {
+    wasm_posix_shared::memory_group::PROTOCOL_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_capabilities() -> u32 {
+    wasm_posix_shared::memory_group::CAPABILITY_ADMISSION | wasm_posix_shared::group_memory_change::CAPABILITY
+        | wasm_posix_shared::group_memory_layout::CAPABILITY | wasm_posix_shared::group_exec::CAPABILITY
+}
+
+/// Bounded kernel-scratch output only. Future identity is kernel minted; no
+/// prepared target or old MM is consumed by allocation admission failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_exec_prepare(pid: u32, tid: u32, target: u32, out_ptr: *mut u8, out_len: u32) -> i32 {
+    use wasm_posix_shared::group_exec::{PREPARATION_BYTES, Preparation};
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_len as usize != PREPARATION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let prepared = match table.prepare_grouped_exec(pid, tid, target) {
+        Ok(prepared) => prepared, Err(error) => return -(error as i32),
+    };
+    let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, PREPARATION_BYTES) };
+    Preparation { receipt: prepared.receipt.record(), initial_pages: prepared.initial_pages, maximum_pages: prepared.maximum_pages }
+        .encode(output).map(|()| PREPARATION_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_exec_layout(record_ptr: *const u8, record_len: u32) -> i32 {
+    use wasm_posix_shared::group_memory_layout::{BYTES, Record};
+    if record_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if record_len as usize != BYTES { return -(Errno::EINVAL as i32); }
+    let record = match Record::decode(unsafe { core::slice::from_raw_parts(record_ptr, BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.configure_grouped_exec(record).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_exec_action(receipt_ptr: *const u8, receipt_len: u32, action: u32) -> i32 {
+    use wasm_posix_shared::{memory_group::{RECEIPT_BYTES, ReceiptRecord}, group_exec};
+    if receipt_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match action {
+        group_exec::VALIDATE => table.validate_grouped_exec(receipt),
+        group_exec::CANCEL => table.cancel_grouped_exec(receipt, &mut WasmHostIO),
+        group_exec::FINISH_CANCELLATION => table.finish_grouped_exec_cancellation(receipt),
+        _ => Err(Errno::EINVAL),
+    }.map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_layout_install(record_ptr: *const u8, record_len: u32) -> i32 {
+    use wasm_posix_shared::group_memory_layout::{BYTES, Record};
+    if record_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if record_len as usize != BYTES { return -(Errno::EINVAL as i32); }
+    let record = match Record::decode(unsafe { core::slice::from_raw_parts(record_ptr, BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.install_group_memory_layout(record).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_break(pid: u32, tid: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table.group_memory_break(pid, tid).map(|address| address as i64).unwrap_or_else(|error| -(error as i64))
+}
+
+/// Private grouped fork after an acknowledged host-owned image barrier. All
+/// identity words are copied scalars, never guest pointers or caller PIDs to
+/// allocate. The normal fork export remains unchanged for ordinary execution.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_fork(group: u32, pid: u32, tid: u32,
+    serial_lo: u32, serial_hi: u32, generation_lo: u32, generation_hi: u32, observed_pages: u32,
+) -> i32 {
+    let receipt = wasm_posix_shared::memory_group::ReceiptRecord { group, pid, tid,
+        serial: serial_lo as u64 | ((serial_hi as u64) << 32),
+        generation: generation_lo as u64 | ((generation_hi as u64) << 32) };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    group_fork_with_bindings(table, receipt, observed_pages)
+        .map(|child| child as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+fn group_fork_with_bindings(table: &mut runtime_core::process_table::ProcessTable,
+    receipt: wasm_posix_shared::memory_group::ReceiptRecord, observed_pages: u32,
+) -> Result<u32, Errno> {
+    let child = table.fork_group_memory_process(receipt, observed_pages)?;
+    let mut host = WasmHostIO;
+    let accepted = table.get(child).unwrap().dri_bindings.iter().all(|binding| {
+        let backing = crate::dri::with_registry(|r| r.group_storage_binding(binding.bo_id));
+        backing.is_some_and(|object| object.group() == receipt.group
+            && host.gbm_bo_bind_group(child as i32, binding.bo_id, binding.addr, binding.len,
+                binding.bo_offset, &object) >= 0)
+    });
+    if !accepted {
+        match lifecycle::run(table, &mut host, LifecycleRequest::Remove { pid: child, reap: false }) {
+            Ok(LifecycleCompletion::Removed(result)) => finish_removed_process(result),
+            Ok(_) => unreachable!("grouped fork binding rollback completion"),
+            Err(error) => panic!("grouped fork binding rollback failed for child {child}: {error:?}"),
+        }
+        return Err(Errno::ENOMEM);
+    }
+    Ok(child)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_owned_mapping_prepare(pid: u32, tid: u32, observed_pages: u32,
+    packet_ptr: *mut u8, packet_len: u32, out_ptr: *mut u8, out_capacity: u32) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if packet_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if packet_len != 320 || out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let packet = unsafe { core::slice::from_raw_parts_mut(packet_ptr, packet_len as usize) };
+    match table.prepare_group_owned_mapping(pid, tid, observed_pages, packet, &mut WasmHostIO) {
+        Ok(None) => 0,
+        Ok(Some(description)) => {
+            // Exact constants and a Rust-produced record make encoding infallible.
+            // Never erase custody if that internal invariant is broken.
+            description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
+                .expect("valid grouped driver mapping description");
+            DESCRIPTION_BYTES as i32
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_owned_mapping_validate(pid: u32, tid: u32, token: u32, transaction: u64,
+    out_ptr: *mut u8, out_capacity: u32) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.validate_group_owned_mapping(pid, tid, token, transaction) {
+        Ok(description) => description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
+            .map(|()| DESCRIPTION_BYTES as i32).unwrap_or_else(|error| -(error as i32)),
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_prepare(
+    pid: u32, tid: u32, request_ptr: *const u8, request_len: u32,
+    out_ptr: *mut u8, out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::group_memory_change::{DESCRIPTION_BYTES, REQUEST_BYTES, Request};
+    if request_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES || request_len as usize != REQUEST_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let request = match Request::decode(unsafe { core::slice::from_raw_parts(request_ptr, request_len as usize) }) {
+        Ok(request) => request, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let description = match table.prepare_group_memory_change_with_io(pid, tid, request.syscall, request.args, request.observed_pages, &mut WasmHostIO) {
+        Ok(description) => description, Err(error) => return -(error as i32),
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) };
+    match description.record().encode(out) {
+        Ok(()) => DESCRIPTION_BYTES as i32,
+        Err(error) => match table.cancel_group_memory_change_with_io(pid, tid, description.token, &mut WasmHostIO) {
+            Ok(()) => -(error as i32), Err(_) => -(Errno::EIO as i32),
+        },
+    }
+}
+
+/// A virtual slot selected by Rust, or a negative errno. No kernel pointer.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_thread_control_reuse(pid: u32, caller_tid: u32, thread_tid: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.reuse_group_thread_control(pid, caller_tid, thread_tid).map(|address| address as i64)
+        .unwrap_or_else(|error| -(error as i64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_thread_control_release(group: u32, pid: u32, tid: u32,
+    serial_lo: u32, serial_hi: u32, generation_lo: u32, generation_hi: u32) -> i32 {
+    let receipt = wasm_posix_shared::memory_group::ReceiptRecord { group, pid, tid,
+        serial: (u64::from(serial_hi) << 32) | u64::from(serial_lo),
+        generation: (u64::from(generation_hi) << 32) | u64::from(generation_lo) };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if table.retirement_control_retains(receipt) { return -(Errno::EBUSY as i32); }
+    table.release_group_storage_control(receipt, &mut WasmHostIO).map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_thread_control_prepare(
+    pid: u32, caller_tid: u32, thread_tid: u32, observed_pages: u32,
+    out_ptr: *mut u8, out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let description = match table.prepare_group_thread_control(pid, caller_tid, thread_tid, observed_pages) {
+        Ok(value) => value, Err(error) => return -(error as i32),
+    };
+    match description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) }) {
+        Ok(()) => DESCRIPTION_BYTES as i32,
+        Err(error) => match table.cancel_group_memory_change_with_io(pid, caller_tid, description.token, &mut WasmHostIO) {
+            Ok(()) => -(error as i32), Err(_) => -(Errno::EIO as i32),
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_memory_change_validate(
+    pid: u32, tid: u32, token_lo: u32, token_hi: u32, out_ptr: *mut u8, out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::group_memory_change::DESCRIPTION_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if out_capacity as usize != DESCRIPTION_BYTES { return -(Errno::EINVAL as i32); }
+    let token = (u64::from(token_hi) << 32) | u64::from(token_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let description = match table.validate_group_memory_change(pid, tid, token) {
+        Ok(description) => description, Err(error) => return -(error as i32),
+    };
+    description.record().encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, DESCRIPTION_BYTES) })
+        .map(|()| DESCRIPTION_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_create(group: u32, initial_pages: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.create_storage(group, initial_pages, &mut WasmHostIO))
+        .map(|_| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_drop(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.drop_storage(group, &mut WasmHostIO))
+        .map(|()| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_prepare(receipt_ptr: *const u8, receipt_len: u32,
+    initial: u32, maximum: u32, scratch: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{memory_group::{ReceiptRecord, RECEIPT_BYTES}, group_storage::REPLY_BYTES};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let record = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result = (|| {
+        let descriptor = if record.pid == record.tid {
+            let groups = table.memory_groups();
+            let admission = groups.resolve_receipt(record)?;
+            groups.prepare_storage_image(admission, runtime_core::memory_group::ImageLayout {
+                initial_pages: initial, maximum_pages: maximum, scratch_bytes: scratch,
+            }, &mut WasmHostIO)?
+        } else {
+            if initial != 0 || maximum != 0 || scratch != 0 { return Err(Errno::EINVAL); }
+            table.prepare_group_storage_thread(record, &mut WasmHostIO)?
+        };
+        let reply = runtime_core::memory_group::StorageReply { descriptor: Some(descriptor), value: 0, wait: None };
+        reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) })?;
+        Ok(REPLY_BYTES as i32)
+    })();
+    result.unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_action(receipt_ptr: *const u8, receipt_len: u32,
+    action: u32, token: u64, argument: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{memory_group::{ReceiptRecord, RECEIPT_BYTES}, group_storage::{Action, REPLY_BYTES}};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let record = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(record) => record, Err(error) => return -(error as i32),
+    };
+    let action = match Action::try_from(action) { Ok(action) => action, Err(error) => return -(error as i32) };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if action == wasm_posix_shared::group_storage::Action::ReleaseStoppedImage && (table.exec_control_retains_image(record) || table.retirement_control_retains(record)) { return -(Errno::EAGAIN as i32); }
+    let result = if action == wasm_posix_shared::group_storage::Action::ReleaseStoppedImage {
+        table.release_group_storage_image(record, &mut WasmHostIO)
+    } else {
+        table.memory_groups().storage_action(record, action, token, argument, &mut WasmHostIO)
+    };
+    result
+        .and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) }))
+        .map(|()| REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_fork(parent_ptr: *const u8, parent_len: u32,
+    child_ptr: *const u8, child_len: u32, epoch: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{memory_group::{ReceiptRecord, RECEIPT_BYTES}, group_storage::REPLY_BYTES};
+    if parent_ptr.is_null() || child_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if parent_len as usize != RECEIPT_BYTES || child_len as usize != RECEIPT_BYTES || capacity as usize != REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let result = (|| {
+        let parent = ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(parent_ptr, RECEIPT_BYTES) })?;
+        let child = ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(child_ptr, RECEIPT_BYTES) })?;
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let descriptor = table.memory_groups().prepare_storage_fork(parent, child, epoch, &mut WasmHostIO)?;
+        runtime_core::memory_group::StorageReply { descriptor: Some(descriptor), value: 0, wait: None }
+            .encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, REPLY_BYTES) })?;
+        Ok(REPLY_BYTES as i32)
+    })();
+    result.unwrap_or_else(|error: Errno| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_completion(input_ptr: *const u8, input_len: u32, out_ptr: *mut u8, capacity: u32) -> i32 {
+    use wasm_posix_shared::group_completion as W;
+    if input_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if input_len as usize != W::REQUEST_BYTES || capacity as usize != W::REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let request=match W::Request::decode(unsafe{core::slice::from_raw_parts(input_ptr,W::REQUEST_BYTES)}) { Ok(request)=>request,Err(error)=>return -(error as i32) };
+    let _gkl=GklGuard::acquire();
+    let table=unsafe{&mut *PROCESS_TABLE.0.get()};
+    table.group_completion_control(request,&mut WasmHostIO)
+        .and_then(|reply|reply.encode(unsafe{core::slice::from_raw_parts_mut(out_ptr,W::REPLY_BYTES)}))
+        .map(|()|W::REPLY_BYTES as i32).unwrap_or_else(|error|-(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_retirement_control(receipt_ptr: *const u8, receipt_len: u32,
+    command: u32, argument: u32, out_ptr: *mut u8, capacity: u32) -> i32 {
+    use wasm_posix_shared::{group_operation as W, memory_group::{ReceiptRecord, RECEIPT_BYTES}};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != W::REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.retirement_control(receipt, command, argument, &mut WasmHostIO)
+        .and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, W::REPLY_BYTES) }))
+        .map(|()| W::REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_root_control(group: u32, pid: u32, receipt_ptr: *const u8, receipt_len: u32,
+    command: u32, ceiling: u32, default_slots: u32, out_ptr: *mut u8, capacity: u32) -> i32 {
+    use wasm_posix_shared::{root_control::command as C, group_operation as W, memory_group::{ReceiptRecord, RECEIPT_BYTES}};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != W::REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result = if command == C::BEGIN {
+        if unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }.iter().any(|v| *v != 0) { return -(Errno::EINVAL as i32); }
+        table.begin_root_control(group, pid, ceiling, default_slots, &mut WasmHostIO)
+    } else {
+        if default_slots != 0 || (!matches!(command, C::PLATFORM_COMPLETED | C::PLATFORM_FAILED | C::ENTER_NATIVE) && ceiling != 0) { return -(Errno::EINVAL as i32); }
+        let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+            Ok(receipt) if receipt.group == group && receipt.pid == pid && receipt.tid == pid => receipt,
+            _ => return -(Errno::EINVAL as i32),
+        };
+        table.root_control_effect(receipt, command, ceiling, &mut WasmHostIO)
+    };
+    result.and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, W::REPLY_BYTES) }))
+        .map(|()| W::REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_exec_control(receipt_ptr: *const u8, receipt_len: u32,
+    command: u32, target: u32, out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{exec_control as C, group_operation as W, memory_group::{ReceiptRecord, RECEIPT_BYTES}};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != W::REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result = if command == C::command::BEGIN { table.begin_exec_control(receipt, target, &mut WasmHostIO) }
+        else { table.exec_control_effect(receipt, command, target, &mut WasmHostIO) };
+    result.and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, W::REPLY_BYTES) }))
+        .map(|()| W::REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_operation(receipt_ptr: *const u8, receipt_len: u32,
+    command: u32, token: u64, argument: u32, request_ptr: *const u8, request_len: u32,
+    out_ptr: *mut u8, capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::{group_operation as W, memory_group::{ReceiptRecord, RECEIPT_BYTES}};
+    if receipt_ptr.is_null() || out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES || capacity as usize != W::REPLY_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut result = match command {
+        W::command::BEGIN if token == 0 && argument == 0 => {
+            if request_ptr.is_null() || request_len as usize != W::REQUEST_BYTES { return -(Errno::EINVAL as i32); }
+            table.begin_group_operation(receipt, unsafe { core::slice::from_raw_parts(request_ptr, W::REQUEST_BYTES) }, &mut WasmHostIO)
+        }
+        W::command::POLL if request_len == 0 && argument == 0 => table.poll_group_operation(receipt, token, None, &mut WasmHostIO),
+        W::command::CANCEL if request_len == 0 => table.poll_group_operation(receipt, token, Some(argument), &mut WasmHostIO),
+        W::command::THREAD_BOUND | W::command::THREAD_DETACHED if request_len == 0 && argument == 0 =>
+            table.report_group_thread_binding(receipt, token, command == W::command::THREAD_DETACHED, &mut WasmHostIO),
+        W::command::THREAD_BINDING_FAILED | W::command::THREAD_BINDING_NO_MEMORY if request_len == 0 && argument == 0 =>
+            table.report_group_thread_binding_failure(receipt, token, command == W::command::THREAD_BINDING_NO_MEMORY, &mut WasmHostIO),
+        W::command::THREAD_BINDING_ENTER if request_len == 0 => table.enter_group_thread_binding(receipt, token, argument),
+        W::command::FORK_LAUNCHED | W::command::FORK_IMAGE_RETIRED | W::command::FORK_DETACHED if request_len == 0 =>
+            table.report_group_fork_effect(receipt, token, command, argument, &mut WasmHostIO),
+        native if (W::command::FORK_NATIVE_POLL..=W::command::FORK_NATIVE_NOT_APPLIED).contains(&native) && request_len == 0 =>
+            table.group_fork_launch_control(receipt, token, native, argument, &mut WasmHostIO),
+        W::command::FORK_SETUP_FAILED | W::command::FORK_SETUP_NO_MEMORY if request_len == 0 && argument == 0 =>
+            table.report_group_fork_setup_failure(receipt, token, command == W::command::FORK_SETUP_NO_MEMORY, &mut WasmHostIO),
+        native if (W::command::THREAD_NATIVE_POLL..=W::command::THREAD_NATIVE_NOT_APPLIED).contains(&native) && request_len == 0 =>
+            table.group_thread_launch_control(receipt, token, native, argument, &mut WasmHostIO),
+        W::command::THREAD_SETUP_FAILED | W::command::THREAD_SETUP_NO_MEMORY | W::command::THREAD_SETUP_UNAVAILABLE if request_len == 0 && argument == 0 =>
+            table.report_group_thread_setup_failure(receipt, token, command, &mut WasmHostIO),
+        W::command::ACK if request_len == 0 && argument == 0 => {
+            return table.acknowledge_group_operation(receipt, token).map(|()| 0).unwrap_or_else(|error| -(error as i32));
+        }
+        _ => return -(Errno::EINVAL as i32),
+    };
+    // Native lifecycle effects execute in this same real kernel entry. JS
+    // cannot supply a target PID or advance a different continuation's phase.
+    for _ in 0..4 {
+        let Ok(reply) = &result else { break; };
+        let operation = reply.operation;
+        match reply.effect {
+            W::effect::KERNEL_THREAD_EXIT => {
+                let target = match table.group_operation_thread_exit_target(receipt, operation) {
+                    Ok(target) => target, Err(error) => return -(error as i32),
+                };
+                let clear_child_tid = match table.group_operation_thread_exit_clears_child_tid(receipt, operation) {
+                    Ok(clear) => clear, Err(error) => return -(error as i32),
+                };
+                let current = table.get(target.pid).is_some_and(|proc| proc.exec_generation == target.generation);
+                let exited = if current { lifecycle::thread_exit(table, &mut WasmHostIO, target.pid, target.tid, clear_child_tid).map(|_| ()) } else { Ok(()) };
+                match exited {
+                    Ok(()) | Err(Errno::ESRCH) => {
+                        if let Err(error) = table.finish_group_operation_thread_exit(receipt, operation) { return -(error as i32); }
+                        result = table.poll_group_operation(receipt, operation, None, &mut WasmHostIO);
+                    }
+                    Err(Errno::EBUSY) | Err(Errno::EAGAIN) => {
+                        let mut reply = W::Reply::new(receipt, operation, W::effect::YIELD); reply.delay = 10; result = Ok(reply);
+                    }
+                    Err(error) => return -(error as i32),
+                }
+            }
+            W::effect::KERNEL_FORK_CREATE => {
+                let pages = match table.group_operation_fork_create_input(receipt, operation) {
+                    Ok(pages) => pages, Err(error) => return -(error as i32),
+                };
+                let child = group_fork_with_bindings(table, receipt, pages);
+                if let Err(error) = table.finish_group_operation_fork_create(receipt, operation, child) { return -(error as i32); }
+                result = table.poll_group_operation(receipt, operation, None, &mut WasmHostIO);
+            }
+            W::effect::KERNEL_FORK_REMOVE => {
+                let target = match table.group_operation_fork_remove_target(receipt, operation) {
+                    Ok(target) => target, Err(error) => return -(error as i32),
+                };
+                if table.get(target.pid).is_some_and(|proc| proc.exec_generation != target.generation) { return -(Errno::ESRCH as i32); }
+                let removed = if table.get(target.pid).is_none() { Ok(()) } else {
+                    match lifecycle::run(table, &mut WasmHostIO, LifecycleRequest::Remove { pid: target.pid, reap: false }) {
+                        Ok(LifecycleCompletion::Removed(removed)) => { finish_removed_process(removed); Ok(()) },
+                        Ok(_) => unreachable!("grouped fork removal completion"),
+                        Err(error) => Err(error),
+                    }
+                };
+                match removed {
+                    Ok(()) => result = table.finish_group_operation_fork_remove(receipt, operation, &mut WasmHostIO),
+                    Err(Errno::EBUSY) | Err(Errno::EAGAIN) => {
+                        let mut reply = W::Reply::new(receipt, operation, W::effect::YIELD); reply.delay = 10; result = Ok(reply);
+                    }
+                    Err(error) => return -(error as i32),
+                }
+            }
+            _ => break,
+        }
+    }
+    result.and_then(|reply| reply.encode(unsafe { core::slice::from_raw_parts_mut(out_ptr, W::REPLY_BYTES) }))
+        .map(|()| W::REPLY_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_mapping(receipt_ptr: *const u8, receipt_len: u32,
+    command: u32, token: u64, driver: u32, transaction: u64, argument: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::{ReceiptRecord, RECEIPT_BYTES};
+    if receipt_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if receipt_len as usize != RECEIPT_BYTES { return -(Errno::EINVAL as i32); }
+    let receipt = match ReceiptRecord::decode(unsafe { core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES) }) {
+        Ok(receipt) => receipt, Err(error) => return -(error as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.group_storage_mapping_action(receipt, command, token, driver, transaction, argument, &mut WasmHostIO)
+        .map(|value| value as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_snapshot(group: u32, out_ptr: *mut u8, capacity: u32) -> i32 {
+    use wasm_posix_shared::group_storage::SNAPSHOT_BYTES;
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
+    if capacity as usize != SNAPSHOT_BYTES { return -(Errno::EINVAL as i32); }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.storage_snapshot(group, &mut WasmHostIO,
+        unsafe { core::slice::from_raw_parts_mut(out_ptr, SNAPSHOT_BYTES) }))
+        .map(|()| SNAPSHOT_BYTES as i32).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_storage_sweep(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups.resolve_group(group).and_then(|group| groups.sweep_storage_objects(group, &mut WasmHostIO))
+        .map(|_| 0).unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_configure(maximum_pages: u32, maximum_groups: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table
+        .memory_groups()
+        .configure(maximum_pages, maximum_groups)
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_create(pages: u32, processes: u32, tasks: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table
+        .memory_groups()
+        .create(runtime_core::memory_group::MemoryGroupLimits {
+            maximum_pages: pages,
+            maximum_processes: processes,
+            maximum_tasks: tasks,
+        })
+        .map(|id| id.as_raw() as i32)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_seal(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups
+        .resolve_group(group)
+        .and_then(|id| groups.seal(id))
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+/// Stop one actual group member and return its native-notification identity.
+/// Zero means no live member remains; physical owners may still be retiring.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_stop_next(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    table.memory_groups().resolve_group(group)
+        .and_then(|id| table.stop_next_memory_group_member(id, &mut host))
+        .map(|pid| pid.unwrap_or(0) as i32)
+        .unwrap_or_else(|error| -(error as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_remove(group: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    groups
+        .resolve_group(group)
+        .and_then(|id| groups.remove_empty(id))
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_snapshot(
+    group: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::{SNAPSHOT_BYTES, SNAPSHOT_FIELDS};
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity as usize != SNAPSHOT_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let groups = table.memory_groups();
+    let snapshot = match groups
+        .resolve_group(group)
+        .and_then(|id| groups.snapshot(id))
+    {
+        Ok(snapshot) => snapshot,
+        Err(e) => return -(e as i32),
+    };
+    let values = [
+        snapshot.id.as_raw(),
+        snapshot.limits.maximum_pages,
+        snapshot.limits.maximum_processes,
+        snapshot.limits.maximum_tasks,
+        u32::from(snapshot.accepting),
+        snapshot.processes,
+        snapshot.tasks,
+        snapshot.quarantined_tasks,
+        snapshot.backings,
+        snapshot.images,
+    ];
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, SNAPSHOT_BYTES) };
+    for ((_, offset), value) in SNAPSHOT_FIELDS.iter().zip(values) {
+        out[*offset..*offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    SNAPSHOT_BYTES as i32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_prepare_process(
+    group: u32,
+    pid: u32,
+    generation_lo: u32,
+    generation_hi: u32,
+) -> i32 {
+    let generation = (u64::from(generation_hi) << 32) | u64::from(generation_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.exec_generation(pid) {
+        Ok(current) if current == generation => {}
+        Ok(_) => return -(Errno::EAGAIN as i32),
+        Err(e) => return -(e as i32),
+    }
+    let group = match table.memory_groups().resolve_group(group) {
+        Ok(group) => group,
+        Err(e) => return -(e as i32),
+    };
+    table
+        .prepare_process_memory_group(group, pid)
+        .map(|_| 0)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_task_receipt(
+    pid: u32,
+    tid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::RECEIPT_BYTES;
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity as usize != RECEIPT_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let receipt = match table.memory_group_task(pid, tid) {
+        Ok(Some(receipt)) => receipt,
+        Ok(None) => return -(Errno::ENOENT as i32),
+        Err(e) => return -(e as i32),
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, RECEIPT_BYTES) };
+    receipt
+        .record()
+        .encode(out)
+        .map(|()| RECEIPT_BYTES as i32)
+        .unwrap_or_else(|e| -(e as i32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_task_action(
+    receipt_ptr: *const u8,
+    receipt_len: u32,
+    action: u32,
+) -> i32 {
+    use wasm_posix_shared::memory_group::{RECEIPT_BYTES, ReceiptRecord, TaskAction};
+    if receipt_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if receipt_len as usize != RECEIPT_BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let action = match TaskAction::try_from(action) {
+        Ok(action) => action,
+        Err(e) => return -(e as i32),
+    };
+    let record = match ReceiptRecord::decode(unsafe {
+        core::slice::from_raw_parts(receipt_ptr, RECEIPT_BYTES)
+    }) {
+        Ok(record) => record,
+        Err(e) => return -(e as i32),
+    };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result = if action == TaskAction::CancelUnconstructed {
+        let groups = table.memory_groups();
+        groups.resolve_receipt(record).and_then(|receipt| groups.cancel_unconstructed_with_storage(receipt, &mut WasmHostIO))
+    } else {
+        table.memory_group_task_action(record, action)
+    };
+    if let Err(e) = result {
+        return -(e as i32);
+    }
+    // Init has no waiter to retry a reap which was blocked by execution
+    // custody at exit publication. Only the last exact stop may finish it;
+    // unpublished exits must remain for the host's normal exit observer.
+    if action == TaskAction::RetireQuiescent
+        && !table.memory_group_removal_pending(record.pid)
+        && table.get(record.pid).is_some_and(|p| {
+            p.ppid == crate::process_table::SYNTHETIC_INIT_PID
+                && p.state == ProcessState::Exited && p.exit_published
+        })
+    {
+        return reap_for_init_and_cleanup(record.pid);
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_memory_group_retire_image(
+    pid: u32,
+    generation_lo: u32,
+    generation_hi: u32,
+) -> i32 {
+    let generation = (u64::from(generation_hi) << 32) | u64::from(generation_lo);
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result = table
+        .memory_groups()
+        .retire_image(pid, generation)
+        .map(|()| 0)
+        .unwrap_or_else(|e| -(e as i32));
+    if result == 0 {
+        // Cancelling a committed, never-started exec may remove the last
+        // host hold after all outgoing execution receipts already retired.
+        runtime_core::wait_park::note_children_changed();
+        if !table.memory_group_removal_pending(pid)
+            && table.get(pid).is_some_and(|p| {
+                p.ppid == crate::process_table::SYNTHETIC_INIT_PID
+                    && p.state == ProcessState::Exited && p.exit_published
+            })
+        {
+            return reap_for_init_and_cleanup(pid);
+        }
+    }
+    result
 }
 
 /// Copy the exact unsigned image generation into an owned host scratch lease.
@@ -4569,126 +5450,31 @@ pub extern "C" fn kernel_dequeue_signal(
     out_ptr: *mut u8,
     out_capacity: u32,
 ) -> i32 {
-    use crate::signal::SignalHandler;
     use wasm_posix_shared::kernel_scratch_wire as signal_wire;
-
-    if let Err(error) = crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity)
-    {
+    if let Err(error) = crate::process_wire::validate_signal_delivery_output(out_ptr, out_capacity) {
         return -(error as i32);
     }
-    // A default action applied here can end the process; the guard applies
-    // that exit to the rest of the table before returning.
+    // Default actions can exit the process. Apply the table-wide exit through
+    // this same guard before any caller can publish a prepared signal.
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
-        Some(pair) => pair,
-        None => return -(Errno::ESRCH as i32),
+    if table.memory_group_task(pid, tid).ok().flatten().is_some() {
+        // Grouped caught-signal custody belongs to its retained completion.
+        // The ordinary scratch dequeue may not consume a second signal.
+        return -(Errno::EOPNOTSUPP as i32);
+    }
+    let (proc, locks) = match table.task_and_advisory_locks(pid, tid) {
+        Some(pair) => pair, None => return -(Errno::ESRCH as i32),
     };
-    loop {
-        // Peek at the lowest-numbered deliverable signal for this thread:
-        // directed-pending bits (ThreadInfo.signals.pending) have priority over
-        // shared-pending bits (Process.signals.pending), but we collapse to a
-        // single bitmask here — the actual dequeue routine below picks the
-        // right queue.
-        let Some(signum) = proc.next_deliverable_signal(tid) else {
-            return 0;
-        };
-        let action = proc.signals.get_action(signum);
-        match action.handler {
-            SignalHandler::Handler(idx) => {
-                // A blocking atomic KMS commit past its point of no return
-                // waits uninterruptibly, as Linux's commit tail does: a
-                // caught signal stays pending until the commit returns.
-                if crate::dri::atomic::waits_uninterruptibly(proc, tid)
-                    // GL parked on a buffer's implicit fences: on Linux the
-                    // call never waits, so it never fails with EINTR.
-                    || crate::dri::implicit_sync::waits_uninterruptibly(proc.pid, tid)
-                {
-                    return 0;
-                }
-                let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
-                    dequeue_signal_for(proc, tid, signum);
-                // The handler interrupts a parked DRM_IOCTL_WAIT_VBLANK
-                // (EINTR); its resolved target must not outlive the call.
-                crate::dri::forget_vblank_waits(proc, tid);
-                // Likewise a parked sync-object wait's fence snapshot.
-                crate::dri::syncobj::forget_task(proc.pid, tid);
-                // ppoll, pselect, and sigsuspend keep their replacement mask
-                // installed until the logical wait finally completes. Form
-                // the handler mask from that current mask and place the same
-                // current mask in the delivery record for normal handler
-                // return. The saved pre-wait mask stays Rust-owned across an
-                // SA_RESTART resubmission and is consumed only by terminal
-                // wait completion or exact host-owned cancellation.
-                let old_mask = proc.install_caught_handler_mask_for(tid, action.mask, signum);
-                // If SA_ONSTACK and alt stack is configured (not SS_DISABLE),
-                // mark that we're executing on the alt stack.
-                const SA_ONSTACK: u32 = 0x08000000;
-                const SS_ONSTACK: u32 = 1;
-                const SS_DISABLE: u32 = 2;
-                // Track whether we're transitioning onto the alt stack
-                let mut switch_to_alt_stack = false;
-                if action.flags & SA_ONSTACK != 0
-                    && proc.alt_stack_flags & SS_DISABLE == 0
-                    && proc.alt_stack_sp != 0
-                {
-                    // Only switch stacks when first entering alt stack (depth 0 → 1).
-                    // Nested signals on the alt stack keep the current __stack_pointer.
-                    if proc.alt_stack_depth == 0 {
-                        switch_to_alt_stack = true;
-                    }
-                    proc.alt_stack_depth += 1;
-                    proc.alt_stack_flags |= SS_ONSTACK;
-                }
-                // Encode into owned bytes before touching the destination.
-                // The host publishes this complete record from one exclusive
-                // lease, so no observer can see a partially replaced wire.
-                let encoded = crate::process_wire::encode_signal_delivery_record(
-                    crate::process_wire::SignalDeliveryRecord {
-                        signum,
-                        handler: idx,
-                        flags: action.flags,
-                        si_value_bits: si_value,
-                        old_mask,
-                        si_code,
-                        siginfo_word_1,
-                        siginfo_word_2,
-                        alt_sp: if switch_to_alt_stack {
-                            proc.alt_stack_sp
-                        } else {
-                            0
-                        },
-                        alt_size: if switch_to_alt_stack {
-                            proc.alt_stack_size
-                        } else {
-                            0
-                        },
-                    },
-                );
-                let buf = unsafe {
-                    slice::from_raw_parts_mut(out_ptr, signal_wire::SIGNAL_DELIVERY_BYTES as usize)
-                };
-                buf.copy_from_slice(&encoded);
-                return signum as i32;
-            }
-            SignalHandler::Default => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-                let mut host = WasmHostIO;
-                match apply_default_signal_action_with_locks(
-                    proc,
-                    advisory_locks,
-                    &mut host,
-                    signum,
-                ) {
-                    DefaultSignalOutcome::Continue => continue,
-                    DefaultSignalOutcome::Stopped | DefaultSignalOutcome::Exited => return 0,
-                }
-            }
-            SignalHandler::Ignore => {
-                let _ = dequeue_signal_for(proc, tid, signum);
-                continue;
-            }
+    match crate::signal::dequeue_caught_signal_for_task(proc, locks, &mut WasmHostIO, tid) {
+        Ok(Some(record)) => {
+            let encoded = crate::process_wire::encode_signal_delivery_record(record);
+            unsafe { slice::from_raw_parts_mut(out_ptr, signal_wire::SIGNAL_DELIVERY_BYTES as usize) }
+                .copy_from_slice(&encoded);
+            record.signum as i32
         }
+        Ok(None) => 0,
+        Err(error) => -(error as i32),
     }
 }
 
@@ -4933,6 +5719,21 @@ pub extern "C" fn kernel_exec_target_read(
     }
 }
 
+/// Select an SDK-prepared group image while keeping the ordinary executable's
+/// descriptor, credentials and generation as the authority. No page or task is
+/// admitted until the subsequent normal group launch/exec transaction.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_group_exec_target_bind_image(
+    owner_pid: u32, target: u32, image: u32, group: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    match table.bind_memory_group_exec_image(&mut host, group, owner_pid, target, image) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Decide what the retained target is (`exec_target::admit`) and write the
 /// answer to `out`: `[kind: u8]`, then for a script (kind 1)
 /// `[has_arg: u8][interp_len: u32][arg_len: u32][interp][arg]`, or for a
@@ -4947,6 +5748,21 @@ pub extern "C" fn kernel_exec_target_admit(
     out_ptr: usize,
     out_len: usize,
 ) -> i32 {
+    exec_target_admission_output(owner_pid, token, expected_abi, out_ptr, out_len, None)
+}
+
+/// Optional host capability: inspect a fresh root's exact retained executable
+/// for an explicitly configured group, without reserving an execution image.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_initial_group_exec_target_admit(
+    owner_pid: u32, token: u32, expected_abi: u32, out_ptr: usize, out_len: usize, group: u32,
+) -> i32 {
+    exec_target_admission_output(owner_pid, token, expected_abi, out_ptr, out_len, Some(group))
+}
+
+fn exec_target_admission_output(
+    owner_pid: u32, token: u32, expected_abi: u32, out_ptr: usize, out_len: usize, group: Option<u32>,
+) -> i32 {
     if out_len == 0
         || out_len > i32::MAX as usize
         || out_ptr == 0
@@ -4956,10 +5772,11 @@ pub extern "C" fn kernel_exec_target_admit(
     }
     let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let Some(proc) = table.get(owner_pid) else {
-        return -(Errno::ESRCH as i32);
+    let result = match group {
+        Some(group) => table.admit_initial_group_exec_target(group, owner_pid, token, expected_abi),
+        None => table.admit_exec_target(owner_pid, token, expected_abi),
     };
-    let admission = match crate::exec_target::admit(proc, owner_pid, token, expected_abi) {
+    let admission = match result {
         Ok(admission) => admission,
         Err(error) => return -(error as i32),
     };
@@ -8736,6 +9553,11 @@ pub extern "C" fn kernel_ipc_shmat_for_process(
         }
         _ => return -(Errno::ESRCH as i32),
     };
+    // A grouped participant must not enter the host's ordinary synthetic-mmap
+    // and byte-mirror attachment path. Refuse before ipc.shmat charges nattch.
+    if let Err(error) = table.validate_legacy_mapping_backend(pid) {
+        return -(error as i32);
+    }
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     match ipc.shmat(shmid, pid, flags as u32, uid, gid) {
         Ok(size) => match i32::try_from(size) {
@@ -12001,9 +12823,6 @@ pub fn kernel_recvmsg(
     pointer_width: u32,
     retry_token: i64,
 ) -> i32 {
-    use wasm_posix_shared::fd_flags::FD_CLOEXEC;
-    use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_CTRUNC};
-
     let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
     let operation = crate::blocked_retry::BlockingRetryOperation::Recvmsg;
@@ -12035,170 +12854,15 @@ pub fn kernel_recvmsg(
             return -($error as i32);
         }};
     }
-    let width = match pointer_width {
-        4 => 4u8,
-        8 => 8u8,
-        _ => bail!(Errno::EINVAL),
-    };
-    let pid = proc.pid as i32;
-    let header = match crate::msghdr::read_msghdr(&mut host, pid, msg_addr as u64, width) {
-        Ok(header) => header,
-        Err(error) => bail!(error),
-    };
-    let iovecs = match crate::msghdr::read_iovecs(
-        &mut host,
-        pid,
-        header.iov_addr,
-        header.iov_count,
-        width,
-    ) {
-        Ok(iovecs) => iovecs,
-        Err(error) => bail!(error),
-    };
-    let capacity = match crate::msghdr::iovec_total(&iovecs) {
-        Ok(capacity) => capacity,
-        Err(error) => bail!(error),
-    };
-    let mut payload = match crate::guest_ptr::zeroed_io_staging(
-        capacity,
-        wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES,
-    ) {
-        Ok(payload) => payload,
-        Err(error) => bail!(error),
-    };
-    // A receive address buffer can be larger than the widest address the
-    // kernel can produce. Reserve only `sockaddr_storage`; validating the
-    // unused tail would conflate the caller's capacity with its use.
-    let addr_capacity = (header.name_len as usize).min(
-        wasm_posix_shared::kernel_scratch_wire::SOCKADDR_STORAGE_BYTES as usize,
-    );
-    let mut addr_staging =
-        match crate::guest_ptr::zeroed_io_staging(addr_capacity, addr_capacity.max(1)) {
-            Ok(staging) => staging,
-            Err(error) => bail!(error),
-        };
-
-    let (mut result, mut received) = match syscalls::sys_recvmsg(
-        proc,
-        &mut host,
-        fd,
-        &mut payload,
-        flags,
-        &mut addr_staging,
-    ) {
-        Ok(received) => (received.return_len as i32, Some(received)),
-        Err(err) => (-(err as i32), None),
-    };
-    if result == -(Errno::EAGAIN as i32) {
-        if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
-            proc,
-            advisory_locks,
-            &mut host,
-            tid,
-            138,
-            fd,
-            None,
-        ) {
-            result = -(error as i32);
-        }
-    }
+    if pointer_width != u32::from(proc.pointer_width) { bail!(Errno::EINVAL); }
+    let received = runtime_core::guest_recvmsg::GuestRecvmsg::receive(proc, &mut host,
+        advisory_locks, tid, fd, msg_addr as u64, flags);
     finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
-
-    // Publish all result metadata even for a zero-byte datagram: a zero-length
-    // message can still carry descriptors and output flags.
-    let mut published_control_len = 0u32;
-    let mut installed_scm_rights = runtime_core::IoBuffer::new();
-    let mut published_name_len: Option<u32> = None;
-    let delivered_a_message = received.is_some();
-    let mut output_msg_flags = received
-        .as_ref()
-        .map_or(0, |received| received.output_flags);
-    if let Some(received) = received.as_mut() {
-        // Scatter the received bytes back across the caller's iovecs. The
-        // receive was bounded by their total, so this cannot overrun; a short
-        // result simply leaves the trailing buffers untouched.
-        let delivered = received.return_len.min(payload.len());
-        if let Err(error) =
-            crate::msghdr::scatter(&mut host, pid, &iovecs, &payload[..delivered])
-        {
-            result = -(error as i32);
-        }
-
-        if header.name_addr != 0 {
-            let addr_bytes = received.addr_len.min(addr_staging.len());
-            if addr_bytes > 0 {
-                if let Err(error) = crate::guest_ptr::write_guest_bytes(
-                    &mut host,
-                    pid,
-                    header.name_addr,
-                    &addr_staging[..addr_bytes],
-                ) {
-                    result = -(error as i32);
-                }
-            }
-            // msg_name PRESENCE, not its capacity, controls whether
-            // msg_namelen is a value-result field. A non-null zero-capacity
-            // pointer still receives the complete length -- that is how a
-            // caller learns its address buffer was too small.
-            published_name_len = Some(received.addr_len as u32);
-        }
-
-        if !received.ancillary_fds.is_empty() {
-            let in_flight = core::mem::take(&mut received.ancillary_fds);
-            if result < 0 {
-                drop(in_flight);
-                unsafe { crate::pipe::global_pipe_table().finish_ancillary_transition(); }
-            } else {
-                let fd_flags = if flags & MSG_CMSG_CLOEXEC != 0 {
-                    FD_CLOEXEC
-                } else {
-                    0
-                };
-                match syscalls::publish_scm_rights(
-                    proc, advisory_locks, &mut host, in_flight,
-                    crate::msghdr::ScmRightsOutput { addr: header.control_addr,
-                        capacity: header.control_len, pointer_width: width, fd_flags },
-                ) {
-                    Ok(publication) => {
-                        published_control_len = publication.control_len;
-                        if publication.truncated { output_msg_flags |= MSG_CTRUNC; }
-                        installed_scm_rights = publication.descriptors;
-                    }
-                    Err(error) => result = -(error as i32),
-                }
-            }
-        }
-    }
-
-    // Publish for a delivered message even when it carried zero bytes: a
-    // zero-length datagram still has descriptors and output flags, and the
-    // caller must be able to tell "no ancillary data" from a stale length it
-    // set before the call.
-    //
-    // But ONLY for a delivered message. On EAGAIN the host parks a retry and
-    // calls again with the same `msghdr`; zeroing `msg_controllen` here would
-    // leave that retry with no control capacity, so a descriptor that fitted
-    // the caller's buffer the first time would arrive truncated the second.
-    // Linux likewise leaves the header untouched on a failed `recvmsg`.
-    if delivered_a_message {
-        if let Err(error) = crate::msghdr::write_msghdr_results(
-            &mut host,
-            pid,
-            msg_addr as u64,
-            width,
-            published_name_len,
-            published_control_len,
-            output_msg_flags,
-        ) {
-            result = -(error as i32);
-        }
-    }
-
-    if result < 0 {
-        syscalls::rollback_scm_rights_fds(proc, advisory_locks, &mut host, installed_scm_rights);
-    }
+    let result = match received.and_then(|received| received.publish(proc, &mut host, advisory_locks)) {
+        Ok(length) => length as i32,
+        Err(error) => -(error as i32),
+    };
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
-
     deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
     result
 }
@@ -16484,6 +17148,9 @@ fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let Some(proc) = table.get(pid) else { return 0 };
     if proc.state != crate::process::ProcessState::Running
+        // Grouped publication has its own retained ProcessTable completion
+        // identity and physical hold. It must finish through that owner.
+        || table.memory_group_task(pid, tid).ok().flatten().is_some()
         || !proc.is_live_explicit_tid(tid)
         || crate::wait_park::signal_targets_task(proc, tid)
         || proc.memory.has_shared_mapping()

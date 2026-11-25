@@ -4,13 +4,14 @@
 
 use crate::Result;
 use crate::arch::{Language, WasmArch, target_triple};
-use crate::exec::{run, run_passthrough, run_without_env};
+use crate::exec::{RunResult, run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
     calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags,
-    default_visibility_flags, filter_args, host_imports_allowance, infer_thread_slot_declaration,
-    join, link_flags, main_thread_stack_size, needs_linking, parse_args, read_text_file,
-    requests_cfi, shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
+    default_visibility_flags, expand_response_files, filter_args, host_imports_allowance,
+    infer_thread_slot_declaration, join, link_flags, main_thread_stack_size, needs_linking,
+    parse_args, read_text_file, requests_cfi, shared_link_flags, thread_slot_declaration_define,
+    tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
 use crate::toolchain::{Toolchain, read_abi_contract_digest, resolve_lld_major};
@@ -837,6 +838,34 @@ impl Drop for TempDir {
     }
 }
 
+/// Keep long normalized compiler invocations below host argv limits. LLVM's
+/// GNU response syntax quotes each argument, preserving ordering and escapes.
+fn compiler_command_args(args: &[String]) -> Result<(Vec<String>, Option<TempDir>)> {
+    if args.iter().map(|arg| arg.len() + 1).sum::<usize>() < 16 * 1024 {
+        return Ok((args.to_vec(), None));
+    }
+    let directory = TempDir::new("kandelo-compiler-args-")?;
+    let path = directory.path().join("command.rsp");
+    let contents = args
+        .iter()
+        .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('\"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, contents)
+        .map_err(|error| format!("cannot write compiler response file: {error}"))?;
+    Ok((vec![format!("@{}", path.display())], Some(directory)))
+}
+
+fn run_compiler(compiler: &str, args: &[String]) -> Result<RunResult> {
+    let (args, _directory) = compiler_command_args(args)?;
+    Ok(run(compiler, &args, None))
+}
+
+fn run_compiler_passthrough(compiler: &str, args: &[String]) -> Result<i32> {
+    let (args, _directory) = compiler_command_args(args)?;
+    Ok(run_passthrough(compiler, &args))
+}
+
 /// Compile the link-time glue for an executable link into a temporary
 /// directory. Returns the objects (in link order) and the directory holding
 /// them, or `None` when this invocation is not an executable link.
@@ -934,7 +963,7 @@ pub fn prepare_executable_linker(
     let classification_args = build_clang_args_internal(
         user_args, toolchain, arch, language, None, false, true, None,
     )?;
-    let classification = run(compiler, &with_trace_flag(&classification_args), None);
+    let classification = run_compiler(compiler, &with_trace_flag(&classification_args))?;
     if classification.exit_code != 0 {
         return Err(format!(
             "clang -### failed while classifying the requested jobs:\n{}",
@@ -962,7 +991,7 @@ pub fn prepare_executable_linker(
         false,
         None,
     )?;
-    let trace = run(compiler, &with_trace_flag(&provisional), None);
+    let trace = run_compiler(compiler, &with_trace_flag(&provisional))?;
     if trace.exit_code != 0 {
         return Err(format!(
             "clang -### failed while preparing the executable link:\n{}",
@@ -1092,12 +1121,12 @@ pub fn run_compiler_driver(
     abi_contract: Option<&[u8; 32]>,
 ) -> Result<i32> {
     if !linking || args.iter().any(|a| a == "-###") {
-        return Ok(run_passthrough(compiler, args));
+        return run_compiler_passthrough(compiler, args);
     }
-    let trace = run(compiler, &with_trace_flag(args), None);
+    let trace = run_compiler(compiler, &with_trace_flag(args))?;
     // A failing trace is a failing command: let the real run report it.
     if trace.exit_code != 0 {
-        return Ok(run_passthrough(compiler, args));
+        return run_compiler_passthrough(compiler, args);
     }
     let jobs = traced_jobs(&trace.stderr)?;
     let wasm_opt: Vec<&Vec<String>> = jobs.iter().filter(|job| is_wasm_opt_job(job)).collect();
@@ -1131,7 +1160,7 @@ pub fn run_compiler_driver(
     if wasm_opt.len() == 1 {
         link_args.push("--no-wasm-opt".into());
         link_args.push(format!("-Wl,{KEEP_TARGET_FEATURES}"));
-        let held_back = run(compiler, &with_trace_flag(&link_args), None);
+        let held_back = run_compiler(compiler, &with_trace_flag(&link_args))?;
         let held_back_jobs = if held_back.exit_code == 0 {
             traced_jobs(&held_back.stderr)?
         } else {
@@ -1152,7 +1181,7 @@ pub fn run_compiler_driver(
             );
         }
     }
-    let exit_code = run_passthrough(compiler, &link_args);
+    let exit_code = run_compiler_passthrough(compiler, &link_args)?;
     if exit_code != 0 {
         return Ok(exit_code);
     }
@@ -1161,8 +1190,13 @@ pub fn run_compiler_driver(
     let module = std::fs::read(&output).ok();
     if let Some(module) = module.as_deref().filter(|m| is_wasm_module(m)) {
         let facts = wasm_artifact::read_artifact_facts(module).map_err(|error| error.0)?;
-        let failures = wasm_artifact::program_extensions::describe_failures(&facts, wasm_artifact::program_extensions::IMPLEMENTED);
-        if !failures.is_empty() { return Err(failures.join("; ")); }
+        let failures = wasm_artifact::program_extensions::describe_failures(
+            &facts,
+            wasm_artifact::program_extensions::IMPLEMENTED,
+        );
+        if !failures.is_empty() {
+            return Err(failures.join("; "));
+        }
         if is_fork_capable(module)? {
             if let Some(hashed) = with_code_hash_section(module)? {
                 write_output(&output, &hashed)?;
@@ -1231,6 +1265,14 @@ pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
 
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.
 pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -> Result<i32> {
+    // Build systems use compiler response files once their link command grows.
+    // Apply the same SDK target/flag/glue contract inside them as on argv.
+    // Linker-only -Wl,@file remains governed by the traced linker preparation.
+    let directory = cwd();
+    let expanded = expand_response_files(user_args, &mut |path| {
+        Ok(read_llvm_response_file(path, &directory))
+    })?;
+    let user_args = expanded.as_slice();
     let mut toolchain = crate::toolchain::resolve_toolchain(arch)?;
     if user_args == ["--print-kandelo-sdk"] {
         return print_sdk_identity(&toolchain);
@@ -1263,6 +1305,33 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     let result = run_compiler_driver(&compiler, &args, linking, abi_contract.as_ref());
     drop(glue);
     result
+}
+
+#[cfg(test)]
+mod compiler_response_tests {
+    use super::*;
+
+    #[test]
+    fn long_compiler_commands_preserve_order_and_quoting_in_private_response_files() {
+        let mut args = vec![
+            "space path.o".to_string(),
+            "-DQUOTE=\"hello\"".to_string(),
+            "-DBACKSLASH=a\\b".to_string(),
+            "-DMULTILINE=a\nb".to_string(),
+        ];
+        args.extend((0..1000).map(|i| format!("/long dependency path/{i}.a")));
+        let (command, owner) = compiler_command_args(&args).unwrap();
+        let owner = owner.expect("long command needs owned response storage");
+        assert_eq!(
+            command,
+            [format!("@{}", owner.path().join("command.rsp").display())]
+        );
+        let encoded = std::fs::read_to_string(owner.path().join("command.rsp")).unwrap();
+        assert_eq!(tokenize_gnu_response_file(&encoded), args);
+        let path = owner.path().to_path_buf();
+        drop(owner);
+        assert!(!path.exists());
+    }
 }
 
 /// Identify the SDK used by an external compiler that caches linked outputs.

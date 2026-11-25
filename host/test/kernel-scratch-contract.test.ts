@@ -379,6 +379,16 @@ function assertKernelScratchPointerRoleContract(
 
 const ownershipSeeds: OwnershipSeed[] = [
   {
+    declaration: 'host/src/group-memory-transport.ts::GroupMemoryTransport.#scratch',
+    target: 'value', owner: 'kernel', form: 'scratch-region',
+    why: 'This private bridge slot accepts only the exact region returned by the allocator ownership validator for its gated kernel generation. Every synchronous call consumes a fresh explicit entry scope.',
+  },
+  {
+    declaration: 'host/src/group-memory-transport.ts::GroupMemoryEntry.instance',
+    target: 'value', owner: 'kernel', form: 'instance',
+    why: 'The bridge receives the same lexical entry and scoped kernel instance as KernelWorker helpers. It never retains this per-call instance or sends it into detached effects.',
+  },
+  {
     declaration: "host/src/kernel.ts::WasmPosixKernel.#memory",
     target: "value",
     owner: "kernel",
@@ -594,12 +604,51 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+  {
+    key: 'host/src/kernel-worker.ts::CentralizedKernelWorker.createMemoryGroupBacking::kernel-export-direct-use::create(group, initialPages)',
+    disposition: 'kernel-control', count: 1,
+    why: 'Host27 constructs the one physical resource for an already admitted group. Rust validates initial extent against its budget, retains the backing lease and owns rollback; the host receives only status and stages no kernel pointers.',
+  },
+  {
+    key: 'host/src/kernel-worker.ts::CentralizedKernelWorker.removeEmptyMemoryGroup::kernel-export-direct-use::drop(group)',
+    disposition: 'kernel-control', count: 1,
+    why: 'Host27 requests removal by a Rust-issued group identity. Rust requires no images, replicas, objects or native pins before dropping its foreign resource and backing lease. The result is a scalar status, never a page list or retirement proof supplied by JS.',
+  },
+  {
+    key: 'host/src/group-memory-transport.ts::GroupMemoryTransport.sweepFileObjects::kernel-export-direct-use::sweep(this.group)',
+    disposition: 'kernel-control', count: 1,
+    why: 'This scalar group identity requests collection of Rust-owned objects. Rust derives last VMA/inode/BO holds and rechecks SDK/native pins under its allocator fence. No host logical-object lookup or page selection is involved.',
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareMemoryGroupProgram::kernel-export-direct-use::(bind as CallableFunction)(ownerPid, target, image, group)",
+    disposition: "kernel-control", count: 1,
+    why: "Host26 kernel_group_exec_target_bind_image takes four i32 control identities: owner PID, retained source target, retained implementation target and configured group. Rust validates the same live owner, source digest and implementation admission before binding descriptors. No kernel pointer, byte range or scratch reservation crosses this exact synchronous lexical kernel entry; the return is an i32 status.",
+  },
+
+
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#isKernelProcessExitPublished::kernel-export-direct-use::readPublished(pid)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "Host20 reads Rust's existing exit-publication bit for one kernel PID under the same lexical entry as finalization. It returns only 0, 1 or ESRCH; no address, kernel-memory borrow or scratch authority crosses the call. This avoids retaining host PID tombstones after grouped exec image retirement.",
+  },
+
+
 
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireChannelHostWaits::kernel-export-direct-use::cancel(channel.pid, entropy.tid, entropy.token)",
     disposition: "kernel-control",
     why: "Retires only the exact PID/TID and opaque entropy cursor token during channel teardown. It accesses no guest memory or kernel scratch and is safe after image retirement.",
   },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.cancelUnexposedMemoryGroupReplica::kernel-export-direct-use::retire(receipt.pid, Number(receipt.generation & 0xffffffffn), Number(receipt.generation >> 32n))",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact (i32,i32,i32)->i32 export releases only Rust image custody identified by PID and both unsigned generation halves, after exact unexposed task cancellation. It borrows no kernel pointer or memory. Physical pages return only on status0; EBUSY retains the root.",
+  },
+
+
+
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",
@@ -821,7 +870,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   // the address is guest memory the kernel reads later through
   // host_proc_read_bytes, never a kernel-memory pointer.
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(stableChannelOffsets[0]!))",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(stableChannelOffsets[0]!))",
   ),
   // Kernel-owned waits (wait_park): no arguments, a relative deadline in
   // nanoseconds (or -1) out.
@@ -935,6 +984,48 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.createProcess::kernel-export-direct-use::createProcess(stdinKind, stdoutKind, stderrKind)",
   ),
+  // Group admission uses only u32 budgets/identities and exact generation
+  // halves. These calls lend no kernel pointers; record-bearing exports
+  // remain scoped KernelScratchLease calls with their own capacity proofs.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#memoryGroupAdmissionAvailable::kernel-export-direct-use::capabilities()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#memoryGroupAdmissionAvailable::kernel-export-direct-use::protocol()",
+  ),
+  // Mapping capability and commit/cancel carry only scalar identities and
+  // both u32 halves of a validated opaque token. Preparation/validation records
+  // still borrow disjoint capacity-proved ranges through KernelScratchLease.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#beginGroupMapping::kernel-export-direct-use::capabilities()",
+  ),
+  // An i64 result carries a memory32 committed break or negative errno; no
+  // borrowed pointer or metadata mutation is involved in a heap query.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#readGroupMemoryBreak::kernel-export-direct-use::getBreak(pid, tid)",
+  ),
+
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.configureMemoryGroups::kernel-export-direct-use::configure(maximumPages, maximumGroups)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.createMemoryGroup::kernel-export-direct-use::create(maximumPages, maximumProcesses, maximumTasks)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.prepareMemoryGroupProcess::kernel-export-direct-use::prepare(group, pid, Number(generation & 0xffffffffn), Number(generation >> 32n))",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.removeEmptyMemoryGroup::kernel-export-direct-use::remove(group)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.sealMemoryGroup::kernel-export-direct-use::seal(group)",
+  ),
+  // Rust selects/signals the next member from a scalar group identity and
+  // returns a PID or status. The host borrows no memory and only transports
+  // the selected native notification.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.stopMemoryGroup::kernel-export-direct-use::stop(group)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.fdSupportsMmapWriteback::kernel-export-direct-use::supports(pid, fd)",
   ),
@@ -1038,7 +1129,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.pcmClockUpdate::kernel-export-direct-use::clockUpdate(requestedFrames)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",
@@ -1149,6 +1240,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 const auditAllowances: AuditAllowance[] = [
   ...nodeNativeSourceMemoryAllowances,
   {
+    key: "crates/shared-memory-instrument/tests/fixtures/offsets-node.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone translator offset oracle owns at most128pages of independent test memory in a disposable Node Worker. No Rust kernel or persistent browser/audio realm receives its storage; only copied check names leave the Worker.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/offsets-node.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(await readFile(workerData),{[G.MEMORY_GROUP_MODULE]:{memory},[G.MEMORY_GROUP_GROWTH_MODULE]:{[G.MEMORY_GROUP_GROWTH_IMPORT]:()=>{throw Error('Unexpected kernel growth in offset fixture');}}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The independent offset/split/atomic/overflow oracle instantiates only its translated fixture in its own bounded Worker-local test memory. Instance exports and views remain in that disposable Worker; no kernel memory participates.",
+  },
+  {
     key: "host/src/dri/byte-snapshot.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "Captures only the native buffer getter for authenticating the original mapped process Memory and the independent device baseline; no Memory or buffer is captured at module scope.",
@@ -1166,21 +1269,72 @@ const auditAllowances: AuditAllowance[] = [
     why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
   },
   {
-    key: "host/src/dri/byte-snapshot.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
-    disposition: "kernel-read",
-    why: "Captures only the native buffer getter for authenticating the original mapped process Memory and the independent device baseline; no Memory or buffer is captured at module scope.",
-  },
-  {
-    key: "host/src/dri/byte-snapshot.ts::allocateByteSnapshot::wasm-memory-authority::new Memory({ initial: pages, maximum: pages })",
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,memoryImports(memory))",
     disposition: "non-kernel",
-    authorityOwner: "framebuffer",
-    why: "This self-contained constructor allocates only an independent nonshared GBM comparison baseline. Initial and maximum pages both equal the admitted mapping's rounded byte length. The returned record contains no guest or kernel Memory, and survives only with its mapping's device bookkeeping.",
+    authorityOwner: "shared-memory",
+    count: 2,
+    why: "The independent copy oracle and thread-attach fixture import only disposable Worker-owned test memory and a growth callback that throws if used. No Rust kernel or persistent page/audio realm receives this storage.",
   },
   {
-    key: "host/src/dri/byte-snapshot.ts::publishMappedBytes::wasm-instance-authority::new Instance(module, {env: {kernel: baseline.snapshotMemory!, process: memory}})",
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,memoryImports(memory, delta => { growthRequests.push(delta >>> 0); return growthResult; }))",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The standalone translator fixture imports its bounded Worker-owned test memory. Its growth callback records a scalar delta and returns a chosen scalar result; it neither allocates frames nor publishes mappings. Actual allocation is tested against the Rust kernel separately.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{[G.MEMORY_GROUP_MODULE]:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Negative translator fixture omits the required growth import and requires instantiation refusal. Only disposable Worker-owned synthetic memory is supplied; no accepted instance or Rust kernel memory escapes.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{env:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Negative translator fixture deliberately attempts the ordinary env.memory import and requires instantiation refusal. No instance is admitted and no Rust kernel memory participates.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    count: 2,
+    why: "The independent large-copy oracle and primary compiled-C fixture each own a separate bounded shared test memory of at most128pages inside a disposable Worker. Only copied check metadata leaves that realm; neither allocation is Rust kernel memory.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-memory-authority::new WebAssembly.Memory({initial:3,maximum:32,shared:true})",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
+    why: "The native Wasm initialization oracle owns this bounded ordinary test memory inside a disposable Worker. It is independent of grouped storage and Rust kernel memory; only copied check names are returned.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The translated initialization fixture owns this bounded shared test backing inside a disposable Worker. No kernel, persistent page or audio realm receives the memory or its views; the result contains only copied check metadata.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(ordinaryBytes,{env:{memory:plainMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The native initialization oracle imports only its Worker-local ordinary test memory. Its exports remain local to synchronous comparisons against the translated fixture; no Rust kernel participates.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(groupedBytes,memoryImports(memory))",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The translated initialization fixture imports only its independent Worker-owned group backing. Its exports and views remain in that disposable realm; only copied check names leave it.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(activeOrdinaryBytes,{env:{memory:plainMemory}})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The active-data native oracle reuses its Worker-local ordinary memory and requires the original start function to trap. No accepted instance, export or kernel memory escapes this negative control.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(activeGroupedBytes,memoryImports(memory))",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The active-data translated oracle reuses its Worker-owned group backing to test data-drop/start ordering. The instance and exports stay local and only copied result metadata is returned; no Rust kernel participates.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
@@ -1203,6 +1357,22 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "kernel-read",
     why: "The GBM registry captures only the native buffer getter to authenticate each mapping's original process Memory before copying mapped bytes; no kernel Memory or view is retained.",
   },
+  {
+    key: "host/src/process-memory-views.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "Module initialization captures only the native buffer getter to authenticate caller process Memory. It retains no Memory instance or buffer; explicit grouped roots take the virtual path and cannot masquerade as native buffer objects.",
+  },
+  {
+    key: "host/src/process-atomic-word.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The Worker-local atomic accessor captures only the native buffer getter to authenticate each ordinary process Memory before constructing one fresh word view. The capture retains no Memory instance or buffer; grouped roots use checked virtual operations and cannot enter the native branch as fabricated Memory values.",
+  },
+  {
+    key: "host/src/process-memory-descriptor.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-control",
+    why: "The Worker-only descriptor codec captures the intrinsic buffer getter to reject fabricated Memory values before binding exact admitted backing/root/scratch identities. This prototype capture retains no Memory instance or buffer and grants no group admission or retirement authority.",
+  },
+
   {
     key: "host/src/process-snapshot-comparator.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
@@ -1444,6 +1614,42 @@ const auditAllowances: AuditAllowance[] = [
     why: "The fork transit provider has no imports or linear memory and owns only the process worker's temporary externref table.",
   },
   {
+    key: "host/src/group-memory-resources.ts::GroupMemoryResources.create::wasm-instance-authority::new WebAssembly.Instance(scanModule ??= new WebAssembly.Module(GROUP_MEMORY_SCAN_BYTES), { env: { memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This stateless kernel scanner imports only the exact Rust-issued foreign group backing. The generator permits integer control flow and seq-cst atomic loads, rejecting writes, growth, callbacks, start/data initialization and instance state access. It creates no Memory or lifecycle owner. The resource holder keeps its function until Rust requests that exact resource's disposal; the shared compiled module retains no backing. Rust still validates entries and owns publication, custody and reclamation. No main-thread or persistent realm receives this binding.",
+  },
+  {
+    key: "host/src/group-memory-resources.ts::GroupMemoryResources.create::wasm-memory-authority::new IntrinsicGroupMemory({ initial, maximum, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The disposable kernel Worker constructs the exact foreign backing resource issued by Rust after its group budget is admitted. This adapter retains only platform Memory/store objects and performs raw byte, growth and atomic operations; Rust owns images, page choice, mappings and retirement. The backing never reaches a persistent or main-thread realm.",
+  },
+  {
+    key: "host/src/memory-group-notification.ts::prepared::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory }, [G.MEMORY_GROUP_HOST_ACCESS_MODULE]: { publish: () => { if (!publication) return 1; try { publication.publish(); return 0; } catch (error) { publication.failed = true; publication.error = error; return 1; } } } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The normal Rust SDK primitive imports only an admitted foreign backing and one synchronous bounded publication callback. It creates no Memory and owns no allocation, identity, budgets or lifecycle. The generator rejects start/data initialization, memory/table growth and mutable instance writes. Rust owns translation, FIFO selection and lock cleanup. The callback catches native failures and reports status without unwinding through Rust; its exception/object references are cleared on return. It grants no kernel-entry or pointer authority. Weak-key caches retain actual platform bindings only.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/contender.js::<module>::wasm-instance-authority::new WebAssembly.Instance(data.module,{env:{memory:data.memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone reproduction with no Kandelo code: each disposable contender imports only the probe's private byte-zero mutex memory and exposes no platform imports or retirement authority.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/owner.js::<module>::wasm-instance-authority::new WebAssembly.Instance(module,{env:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone reproduction with no Kandelo code: the disposable owner binds only the generated probe module to its own shared memory for a native-store control, with no kernel or process capabilities.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/repro/owner.js::<module>::wasm-memory-authority::new WebAssembly.Memory({initial:8192,maximum:8192,shared:true})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Standalone reproduction with no Kandelo code: this bounded 512 MiB probe backing belongs only to disposable test Workers, never a running Kandelo machine or persistent UI realm.",
+  },
+  {
     key: "host/src/fork-worker-import-exceptions.ts::buildFatalTrap::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(bytes))",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
@@ -1518,11 +1724,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "This replay-capable main activation receives reconstructed process imports and caller-owned process memory, never kernel memory.",
   },
   {
+    key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, grouped ? grouped.imports(importObject, channelOffset) : importObject)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The SDK process path receives ordinary process imports or the admitted group's guarded imports, never kernel memory.",
+  },
+  {
     key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, importObject)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    count: 2,
-    why: "These two non-replay process launch paths instantiate user modules against caller-owned process memory, never kernel memory.",
+    why: "The separate WASI process path uses caller-owned native memory and explicitly refuses grouped execution.",
   },
   {
     key: "host/src/kernel-scratch.ts::intrinsicWasmMemoryBuffer::kernel-memory-escape::intrinsicMemoryBuffer(memory)",
@@ -1553,6 +1764,16 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel-scratch.ts::OwnedKernelScratchRegion.reserve::kernel-memory-escape::intrinsicObjectFreeze({ memory, pointerWidth, instance: kernelInstance ?? null, })",
     disposition: "scratch-core",
     why: "This frozen reservation-ownership record is private metadata, not a caller-visible Memory escape; revocation and validation remain bound to the matching token generation.",
+  },
+  {
+    key: 'host/src/group-memory-transport.ts::GroupMemoryTransport.constructor::scratch-address-contract::scratch',
+    disposition: 'scratch-core', count: 1,
+    why: 'This exact constructor argument goes only to validateKernelScratchRegionOwnership before the validated projection enters the private bridge slot. The validator checks the allocator-owned WeakMap identity, actual Memory and matching gated kernel generation; it creates no lease or pointer from the structural input.',
+  },
+  {
+    key: 'host/src/kernel-scratch.ts::validateKernelScratchRegionOwnership::scratch-address-contract::region as object',
+    disposition: 'scratch-core', count: 1,
+    why: 'This type-only object projection is the exact key of the module-private allocator ownership WeakMap. The validator rejects any missing record or different gated generation before returning the nominally proven region; it neither exposes an address nor replaces the region or its methods.',
   },
   {
     key: "host/src/kernel-scratch.ts::OwnedKernelScratchRegion.allocate::scratch-allocator-call::allocator(capacity)",
@@ -1731,6 +1952,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "The host_pread Wasm import binds the untouched Rust pointer and capacity formals before invoking any positioned producer.",
   },
   {
+    key: "host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, 'host_group_memory_read destination')",
+    disposition: "rust-lent",
+    why: "The raw foreign-memory read import accepts only the untouched Rust slice pointer/capacity, capped at one 64 KiB page. It reads into independent bytes and copies the complete bounded result through the authenticated destination before returning; the resource adapter retains no kernel view.",
+  },
+
+  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(ptr, len, "host_overlay_read destination")',
     disposition: "rust-lent",
     why: "The active journal read import binds its Rust-owned pointer and exact capacity before copying positioned storage bytes into kernel memory.",
@@ -1864,7 +2091,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "The raw sink runs only after lossless pointer conversion, explicit Rust-lent capacity/current-memory proof, and an intrinsic producer-length check; it publishes once synchronously.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, }, ], )",
+    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource), }, ], )",
     disposition: "kernel-control",
     why: "The package-private WeakMap grants only the dedicated worker access to this wrapper's exact gate, gated instance, and memory; none is exported from the public package surface.",
   },

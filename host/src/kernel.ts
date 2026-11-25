@@ -1,3 +1,4 @@
+import { GroupMemoryResources, GroupMemoryResourceError } from "./group-memory-resources";
 import {prepareScalarState} from "./webgl/scalar-state.js";
 import {validProgramJournalRequest,validProgramJournalBarrierRequest} from "./webgl/program-journal-query.js";
 import { QOP_GET_ERROR } from "./webgl/ops.js";
@@ -5,6 +6,8 @@ import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
+import { GroupProcessAddressSpace, processAddressFromWasm, type ProcessAddressSpace } from "./process-address-space";
+import { MemoryGroupProtocolFault } from "./memory-group-protocol";
 import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord, type PlanarPlaneStorage } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
@@ -88,6 +91,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
   DRI_CLEANUP_COMPLETE,
+  PROCESS_MEMORY_ACCESS_READ, PROCESS_MEMORY_ACCESS_WRITE,
 } from "./generated/abi";
 import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
@@ -125,6 +129,7 @@ interface WasmPosixKernelRuntimeAccess {
   readonly gate: KernelEntryGate;
   readonly instance: () => WebAssembly.Instance | null;
   readonly memory: () => WebAssembly.Memory | null;
+  readonly groupMemory: (resource: bigint) => WebAssembly.Memory;
 }
 
 interface KernelGraphicsAccess {
@@ -846,6 +851,12 @@ export interface KernelCallbacks {
    * process is gone" and turns the GL call into a silent no-op.
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /** Exact current source for process-copy and wait-completion imports. Native
+   * Memory keeps its direct-copy/comparison path; virtual roots use checked
+   * operations. An absent explicit source never falls back to getProcessMemory.
+   * This alone does not enable grouped launch or adapt graphics consumers.
+   */
+  getProcessAddressSpace?: (pid: number) => ProcessAddressSpace | WebAssembly.Memory | undefined;
   /**
    * The mutation epoch of `pid`'s memory while the process is provably
    * quiescent (every thread parked in a syscall, no vfork child borrowing
@@ -906,6 +917,7 @@ export interface KernelCallbacks {
   markKmsCanvasGlOwned?: (crtcId: number) => void;
   /** A canvas-backed GL frame has actually been presented on this CRTC. */
   onKmsGlPresented?: (crtcId: number) => void;
+  onKmsCanvasUpdated?: (crtcId: number) => void;
   /**
    * Inverse of `markKmsCanvasGlOwned`: the GL session that claimed the
    * canvas is gone (context destroyed or renderD128 session terminated),
@@ -1000,6 +1012,7 @@ export class WasmPosixKernel {
   #exchangeSourceProvider:
     | ((source: bigint, offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
+  readonly #groupMemoryResources = new GroupMemoryResources();
   /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
@@ -1424,17 +1437,22 @@ export class WasmPosixKernel {
     if (!gamma) {
       // The stage ended: show the retained frame as the session presented
       // it (the cursor is back on its overlay), then free the stage.
-      if (stage?.usable(gl) && stage.hasFrame) this.withGraphicsState(gl, () => stage.present(null, null));
+      if (stage?.usable(gl) && stage.hasFrame) {
+        this.withGraphicsState(gl, () => stage.present(null, null));
+        this.callbacks.onKmsCanvasUpdated?.(crtcId);
+      }
       this.#releaseColorStage(crtcId);
       return;
     }
     if (stage?.usable(gl) && stage.hasFrame) {
       this.withGraphicsState(gl, () => stage.present(gamma, cursor));
+      this.callbacks.onKmsCanvasUpdated?.(crtcId);
       return;
     }
     // The stage has just begun: the canvas still shows the session's last
     // frame as it presented it.
     this.#presentThroughStage(crtcId, gl, null, 0, 0, canvas.width, canvas.height, false, false);
+    this.callbacks.onKmsCanvasUpdated?.(crtcId);
   }
 
   /** The WebGL2 context each CRTC's frames last reached the canvas
@@ -1497,6 +1515,7 @@ export class WasmPosixKernel {
    * buffer is never recorded. */
   #recordDirectPresentation(crtcId: number, fb: HostScanout, canvas: OffscreenCanvas, storage: GpuScanoutStorage,
       stage: string | null, commits: number | undefined): void {
+    this.callbacks.onKmsCanvasUpdated?.(crtcId);
     const gl = storage.gl;
     if (gl.isContextLost() || gl.getContextAttributes?.()?.preserveDrawingBuffer !== true) return;
     this.#directPresentations.set(crtcId, { canvas, storage, bo: fb.bo_id, fbId: fb.fb_id, commits, stage,
@@ -1838,7 +1857,6 @@ export class WasmPosixKernel {
     this.#rootfsDeferredInvalidator = invalidator;
   }
 
-  /** Install the Kandelo exchange source byte provider. */
   setExchangeSourceProvider(
     provider: ((source: bigint, offset: bigint, dest: Uint8Array) => number) | undefined,
   ): void {
@@ -1872,6 +1890,10 @@ export class WasmPosixKernel {
     this.config = config;
     this.io = io;
     this.callbacks = callbacks ?? {};
+    this.bos.setGroupObjectIO({
+      read: (backing, offset, output) => this.#groupMemoryResources.readPages(backing.resource, backing.pages, offset, output),
+      write: (backing, offset, input) => this.#groupMemoryResources.writePages(backing.resource, backing.pages, offset, input),
+    });
     // A refused native GL deletion or restoration (native-recovery.ts) is a
     // fatal host fault. This kernel owns the renderers of its worker realm.
     setNativeGlFaultReporter(fault => this.callbacks.onHostFault?.(fault));
@@ -1927,6 +1949,7 @@ export class WasmPosixKernel {
           gate: this.#kernelEntryGate,
           instance: () => this.#instance,
           memory: () => this.#memory,
+          groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource),
         },
       ],
     );
@@ -2681,6 +2704,66 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
+        host_group_memory_create: (resource: bigint, initial: number, maximum: number): number => {
+          try { this.#groupMemoryResources.create(BigInt.asUintN(64, resource), initial, maximum); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_drop: (resource: bigint): number => {
+          try { this.#groupMemoryResources.drop(BigInt.asUintN(64, resource)); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_pages: (resource: bigint): number => {
+          try { return this.#groupMemoryResources.pages(BigInt.asUintN(64, resource)); }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_grow: (resource: bigint, additional: number): number => {
+          try { return this.#groupMemoryResources.grow(BigInt.asUintN(64, resource), additional); }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_fill: (resource: bigint, address: number, length: number, byte: number): number => {
+          try { this.#groupMemoryResources.fill(BigInt.asUintN(64, resource), address >>> 0, length >>> 0, byte >>> 0); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_copy: (resource: bigint, destination: number, source: number, length: number): number => {
+          try { this.#groupMemoryResources.copy(BigInt.asUintN(64, resource), destination >>> 0, source >>> 0, length >>> 0); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_atomic_store: (resource: bigint, address: number, value: number): number => {
+          try { this.#groupMemoryResources.store(BigInt.asUintN(64, resource), address >>> 0, value >>> 0); return 0; }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_atomic_notify: (resource: bigint, address: number, count: number): number => {
+          try { return this.#groupMemoryResources.notify(BigInt.asUintN(64, resource), address >>> 0, count >>> 0); }
+          catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -5; }
+        },
+        host_group_memory_next_nonzero: (resource: bigint, address: number, words: number): bigint => {
+          try { return this.#groupMemoryResources.nextNonzero(BigInt.asUintN(64, resource), address >>> 0, words >>> 0); }
+          catch (error) { return BigInt(error instanceof GroupMemoryResourceError ? -error.errno : -5); }
+        },
+        host_group_memory_atomic_load: (resource: bigint, address: number): bigint => {
+          try { return BigInt(this.#groupMemoryResources.load(BigInt.asUintN(64, resource), address >>> 0)); }
+          catch (error) { return BigInt(error instanceof GroupMemoryResourceError ? -error.errno : -5); }
+        },
+        host_group_memory_atomic_compare_exchange: (resource: bigint, address: number, expected: number, replacement: number): bigint => {
+          try { return BigInt(this.#groupMemoryResources.compareExchange(BigInt.asUintN(64, resource), address >>> 0, expected >>> 0, replacement >>> 0)); }
+          catch (error) { return BigInt(error instanceof GroupMemoryResourceError ? -error.errno : -5); }
+        },
+        host_group_memory_read: (resource: bigint, address: number, ptr: KernelPointer, len: number): number => {
+          try {
+            if (!Number.isInteger(len) || len < 0 || len > 65536) return -22;
+            const destination = this.#rustLentKernelDestination(ptr, len, 'host_group_memory_read destination');
+            const bytes = new IntrinsicUint8Array(destination.capacity);
+            this.#groupMemoryResources.read(BigInt.asUintN(64, resource), address >>> 0, bytes);
+            this.#writeKernelBytes(destination, bytes); return 0;
+          } catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -14; }
+        },
+        host_group_memory_write: (resource: bigint, address: number, ptr: KernelPointer, len: number): number => {
+          try {
+            if (!Number.isInteger(len) || len < 0 || len > 65536) return -22;
+            const bytes = this.#readKernelBytes(ptr, len);
+            this.#groupMemoryResources.write(BigInt.asUintN(64, resource), address >>> 0, bytes); return 0;
+          } catch (error) { return error instanceof GroupMemoryResourceError ? -error.errno : -14; }
+        },
         host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
           const uri = this.#readComponentFromMemory(uriPtr, uriLen);
           this.#rootfsDeferredInvalidator?.(uri);
@@ -3362,6 +3445,25 @@ export class WasmPosixKernel {
             return -75; // EOVERFLOW
           }
         },
+        host_gbm_bo_bind_group: (pid: number, bo: number, addr: KernelPointer, len: KernelPointer,
+          boOffset: bigint, resource: bigint, pagesPtr: KernelPointer, pagesCount: number, objectLength: KernelPointer): number => {
+          try {
+            if (typeof boOffset !== "bigint" || boOffset < 0n || boOffset > BigInt(Number.MAX_SAFE_INTEGER)) return -75;
+            const span = this.#checkedKernelSpan(addr, len, Number.MAX_SAFE_INTEGER, "group BO virtual mapping");
+            const length = this.#checkedKernelIndex(objectLength, "group BO object length");
+            if (!Number.isInteger(pagesCount) || pagesCount < 1 || pagesCount >= 16384 || pagesCount * WASM_PAGE_SIZE !== length) return -22;
+            const bytes = this.#readKernelBytes(pagesPtr, pagesCount * 4);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            const pages = Object.freeze(Array.from({length: pagesCount}, (_, at) => view.getUint32(at * 4, true)));
+            const identity = BigInt.asUintN(64, resource), extent = this.#groupMemoryResources.pages(identity);
+            if (pages.some(page => page === 0 || page >= extent)) return -14;
+            return this.bos.bindGroup(pid, bo, span.offset, span.length, Number(boOffset),
+              Math.ceil(span.length / WASM_PAGE_SIZE) * WASM_PAGE_SIZE, {resource: identity, pages, length});
+          } catch (error) {
+            if (error instanceof GbmMappingFault || isKernelExportFailure(error)) throw error;
+            return -75;
+          }
+        },
         host_gbm_bo_unbind: (
           pid: number,
           bo_id: number,
@@ -3684,7 +3786,15 @@ export class WasmPosixKernel {
           } catch (caught) { rethrowNativeGlFault(caught);
             return -22; // EINVAL
           }
-          if (!b.cmdbufView) {
+          const source = this.#resolveProcessAddressSpace(pid);
+          if (!source) return -5;
+          let groupedCommands: Uint8Array | undefined;
+          if (!(source instanceof IntrinsicWasmMemory)) {
+            // A virtual address is never a physical offset into the group's
+            // Memory. Detach only this submitted range for the existing queue.
+            try { groupedCommands = source.readBytes(b.cmdbufAddr + submission.offset, submission.length); }
+            catch (caught) { rethrowNativeGlFault(caught); return -14; }
+          } else if (!b.cmdbufView) {
             const memory = this.callbacks.getProcessMemory?.(pid);
             if (!memory) return -5; // EIO
             try {
@@ -3707,7 +3817,7 @@ export class WasmPosixKernel {
             }
           }
           let frame: SubmitFrame;
-          try { frame = new SubmitFrame(b.cmdbufView,submission.offset,submission.length); }
+          try { frame = new SubmitFrame(groupedCommands ?? b.cmdbufView!,groupedCommands ? 0 : submission.offset,submission.length); }
           catch (caught) { rethrowNativeGlFault(caught); return -12; } // ENOMEM: no submission has been admitted.
           const validation = frame.validate(validateCommandBuffer);
           if (validation < 0) { frame.discard(); return validation; }
@@ -4135,8 +4245,23 @@ export class WasmPosixKernel {
           src_ptr: KernelPointer,
           len: number,
         ): number => {
-          const procMem = this.callbacks.getProcessMemory?.(pid);
-          if (!procMem) return -14;
+          let procMem: WebAssembly.Memory;
+          try {
+            const addressSpace = this.#resolveProcessAddressSpace(pid);
+            if (!addressSpace) return -14;
+            if (addressSpace instanceof IntrinsicWasmMemory) {
+              procMem = addressSpace;
+            } else {
+              this.callbacks.onProcessMemoryChanged?.(pid);
+              processAddressFromWasm(addr, len, addressSpace.byteLength);
+              const source = this.#readKernelBytes(src_ptr, len);
+              const pointer = processAddressFromWasm(addr, len, addressSpace.byteLength);
+              addressSpace.writeBytes(pointer, source);
+              return 0;
+            }
+          } catch (caught) { rethrowNativeGlFault(caught);
+            return -14;
+          }
           // A host write into process memory is a mutation-epoch event, so a
           // quiescence proof taken before it cannot cover the bytes it leaves
           // (`CleanStamp` in crates/runtime-core/src/memory.rs).
@@ -4184,8 +4309,37 @@ export class WasmPosixKernel {
         // Kernel-published wait result (crates/kernel `publish_transfer_directly`):
         // the same writes and wake as the worker's own publication.
         host_publish_wait_completion: (pid: number, channel: bigint, ret: bigint, errno: number): number => {
-          const procMem = this.callbacks.getProcessMemory?.(pid);
-          if (!procMem) return -3; // ESRCH: the kernel queues it for the worker instead
+          let procMem: WebAssembly.Memory;
+          try {
+            const addressSpace = this.#resolveProcessAddressSpace(pid);
+            if (!addressSpace) return -3;
+            // The actual Rust grouped completion owner must retain and select
+            // this publication. The direct transfer import is ordinary-only.
+            if (addressSpace instanceof GroupProcessAddressSpace) return -3;
+            if (addressSpace instanceof IntrinsicWasmMemory) {
+              procMem = addressSpace;
+            } else {
+              this.callbacks.onProcessMemoryChanged?.(pid);
+              const base = processAddressFromWasm(channel, CH_ERRNO + 4, addressSpace.byteLength);
+              const bytes = new IntrinsicUint8Array(CH_ERRNO + 4 - CH_RETURN);
+              const result = new IntrinsicDataView(bytes.buffer);
+              intrinsicApply(intrinsicDataViewSetBigInt64, result, [0, ret, true]);
+              intrinsicApply(intrinsicDataViewSetUint32, result, [CH_ERRNO - CH_RETURN, errno, true]);
+              // A nonzero return leaves FLAG_PUBLISHED clear: Rust queues
+              // this exact result for the normal host completion owner.
+              // Never block a live kernel entry on a participant's queue.
+              addressSpace.publishBytes(base + CH_RETURN, bytes,
+                base + CH_STATUS, CHANNEL_STATUS_COMPLETE, 1);
+              return 0;
+            }
+          } catch (caught) {
+            if (caught instanceof MemoryGroupProtocolFault) {
+              this.callbacks.onHostFault?.(caught);
+              throw caught;
+            }
+            rethrowNativeGlFault(caught);
+            return -14;
+          }
           // Guest code may run once the task wakes: an epoch event.
           this.callbacks.onProcessMemoryChanged?.(pid);
           try {
@@ -4214,12 +4368,18 @@ export class WasmPosixKernel {
         // -1 (never provably quiescent) unless the embedder tracks epochs.
         host_proc_quiescent_epoch: (pid: number): bigint =>
           this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n,
-        host_proc_validate_range: (pid: number, addr: bigint, len: number): number => {
-          const memory = this.callbacks.getProcessMemory?.(pid);
-          if (!memory) return -14;
+        host_proc_validate_range: (pid: number, addr: bigint, len: number, access: number): number => {
+          if (access !== PROCESS_MEMORY_ACCESS_READ && access !== PROCESS_MEMORY_ACCESS_WRITE) return -22;
           try {
-            checkedWasmImportMemoryRange(memory, addr, len, 8,
-              "host_proc_validate_range process destination", true);
+            const memory = this.#resolveProcessAddressSpace(pid);
+            if (!memory) return -14;
+            if (memory instanceof IntrinsicWasmMemory) {
+              checkedWasmImportMemoryRange(memory, addr, len, 8,
+                "host_proc_validate_range process destination", true);
+            } else {
+              const pointer = processAddressFromWasm(addr, len, memory.byteLength);
+              memory.checkAccessRange(pointer, len, access === PROCESS_MEMORY_ACCESS_READ ? 'read' : 'write');
+            }
             return 0;
           } catch (caught) { rethrowNativeGlFault(caught); return -14; }
         },
@@ -4237,8 +4397,14 @@ export class WasmPosixKernel {
               len,
               "host_proc_read_bytes destination",
             );
-            const procMem = this.callbacks.getProcessMemory?.(pid);
+            const procMem = this.#resolveProcessAddressSpace(pid);
             if (!procMem) return -14;
+            if (!(procMem instanceof IntrinsicWasmMemory)) {
+              const pointer = processAddressFromWasm(addr, len, procMem.byteLength);
+              const source = procMem.readBytes(pointer, len);
+              this.#writeKernelBytes(destination, source);
+              return 0;
+            }
             // WHY allowAddressZero: byte 0 of a guest's linear memory is an
             // ordinary addressable byte, and the range proof against `procMem`
             // -- not a null-pointer convention -- is what establishes that the
@@ -4441,6 +4607,15 @@ export class WasmPosixKernel {
     );
   }
 
+  /** Resolve once per import: a missing or retired explicit image must never
+   * expose another source returned by the graphics/native callback. */
+  #resolveProcessAddressSpace(pid: number): ProcessAddressSpace | WebAssembly.Memory | undefined {
+    const explicit = this.callbacks.getProcessAddressSpace;
+    return explicit
+      ? intrinsicApply(explicit, this.callbacks, [pid]) as ProcessAddressSpace | WebAssembly.Memory | undefined
+      : this.callbacks.getProcessMemory?.(pid);
+  }
+
   /** Compare a Rust-lent initialized snapshot without copying either side.
    * Exact 0/1 is equal/different; 2 requests a separately checked owned read.
    * Invalid ranges return EFAULT. All native authority stays synchronous. */
@@ -4460,8 +4635,15 @@ export class WasmPosixKernel {
         memory, snapshotPointer, length, this.#kernelPtrWidth,
         "host_proc_compare_bytes Rust snapshot",
       );
-      const processMemory = this.callbacks.getProcessMemory?.(pid);
+      const processMemory = this.#resolveProcessAddressSpace(pid);
       if (!processMemory) return -14;
+      if (!(processMemory instanceof IntrinsicWasmMemory)) {
+        processAddressFromWasm(addr, length, processMemory.byteLength);
+        if (memory !== this.#memory || generation !== this.#memoryGeneration) return -14;
+        // Native comparator code interprets pointers as physical offsets. Ask
+        // Rust for its owned-read path rather than lend a group's whole backing.
+        return 2;
+      }
       const process = checkedWasmImportMemoryRange(
         processMemory, addr, length, 8,
         "host_proc_compare_bytes process source", true,

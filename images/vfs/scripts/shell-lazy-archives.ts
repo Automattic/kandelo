@@ -74,7 +74,6 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["composer-docs", "share/man/man1/composer.1"],
   ["cpython-docs", "share/man/man1/python3.1"],
   ["curl-docs", "share/man/man1/curl.1"],
-  ["dbus-docs", "share/man/man1/dbus-daemon.1"],
   ["diffutils-docs", "share/man/man1/diff.1"],
   ["dosbox-pure-docs", "share/man/man1/dos-play.1"],
   ["elinks-docs", "share/man/man1/elinks.1"],
@@ -100,7 +99,6 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["kandelo-cc-docs", "share/man/man1/kandelo-cc.1"],
   ["kandelo-desktop-docs", "share/man/man1/kandelo-terminal.1"],
   ["kandelo-exchange-docs", "share/man/man1/kandelo-exchange.1"],
-  ["labwc-docs", "share/man/man1/labwc.1"],
   ["less-docs", "share/man/man1/less.1"],
   ["lhasa-docs", "share/man/man1/lha.1"],
   ["libtool-docs", "share/man/man1/libtool.1"],
@@ -123,8 +121,6 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["perl-docs", "share/man/man1/perl.1"],
   ["php-docs", "share/man/man1/php.1"],
   ["pkgconf-docs", "share/man/man1/pkgconf.1"],
-  ["qtgallery-docs", "share/man/man1/qtgallery.1"],
-  ["quickshell-docs", "share/man/man1/quickshell.1"],
   ["redis-docs", "share/man/man1/redis-cli.1"],
   ["retro-emulators-docs", "share/man/man1/retro-run.1"],
   ["ruby-docs", "share/man/man1/ruby.1"],
@@ -152,7 +148,6 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["vim-docs", "share/man/man1/vim.1"],
   ["wasm-fork-instrument-docs", "share/man/man1/wasm-fork-instrument.1"],
   ["wasm-tools-docs", "share/man/man1/wasm-tools.1"],
-  ["wayland-demo-docs", "share/man/man1/wlcompositor.1"],
   ["wget-docs", "share/man/man1/wget.1"],
   ["xz-docs", "share/man/man1/xz.1"],
   ["zigcli-docs", "share/man/man1/tree.1"],
@@ -302,7 +297,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
 
 /** Data the canonical shell can load on first use: trust roots, speech, cursors, keymaps and desktops.
  * Kept separate from the shared tool archives: service-image builders do not
- * declare espeak-ng or wayland-demo and must not acquire those dependencies.
+ * declare espeak-ng or desktop-data and must not acquire those dependencies.
  */
 export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
   {
@@ -328,18 +323,18 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
   },
   {
     id: "desktop-data",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/kandelo-desktop-data.zip",
+    dependency: "desktop-data",
+    resolverPath: "programs/desktop-data/desktop-data.zip",
     mountPrefix: "/usr/share/kandelo/",
-    requiredMember: "themes/tokyo-night/theme.conf",
+    requiredMember: "sway/config",
   },
   {
     // libxkbcommon's compiled-in root. Only Wayland clients and compositors
     // compile keymaps from names, so a shell that never starts a desktop
     // never fetches the 3.3 MB of rules, symbols and geometry.
     id: "xkeyboard-config",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/xkeyboard-config.zip",
+    dependency: "desktop-data",
+    resolverPath: "programs/desktop-data/xkeyboard-config.zip",
     mountPrefix: "/usr/share/X11/xkb/",
     requiredMember: "rules/evdev",
   },

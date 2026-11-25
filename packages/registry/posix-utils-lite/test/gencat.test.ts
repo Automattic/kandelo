@@ -24,7 +24,7 @@ async function compile(source: string, update?: string, stdin = false) {
     rootfsImage: await image.saveImage(),
     execPrograms: new Map([
       ["/usr/bin/gencat", resolveBinary("programs/posix-utils-lite/gencat.wasm")],
-      ["/usr/bin/cat", resolveBinary("programs/coreutils.wasm")],
+      ["/usr/bin/cat", resolveBinary("programs/coreutils/coreutils.wasm")],
     ]),
     argv: ["dash", "-c", stdin ? "gencat - < /gencat-fixtures/source" : update === undefined
       ? "gencat - /gencat-fixtures/source"

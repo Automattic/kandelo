@@ -261,7 +261,7 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → cage → sway → tmux + DOS → WordPress
+- Four Doom → Quake → Freeciv → LÖVE → Cage → Sway → Sway/SFWBar → tmux + DOS → WordPress
   cycles in each of
   Chromium, Firefox, and WebKit, in one page per engine with the constrained
   memory profile. Games must render and reach running audio through trusted

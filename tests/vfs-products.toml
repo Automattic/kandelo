@@ -13,11 +13,12 @@ host = "required"
 
 [[registrations]]
 product = "browser-main-shell"
-node = ["main-shell-startup"]
+node = ["main-shell-startup", "shared-desktop-node-startup"]
 browser = [
   "main-shell-basic-e2e",
   "main-shell-fbdoom-e2e",
   "main-shell-modeset-e2e",
+  "shared-desktop-browser-startup",
 ]
 
 [registrations.applicability]

@@ -33,7 +33,7 @@ for (const { stopped, resume } of [
         const programUrl = new URL("/terminal-persistence-daemon.wasm", baseURL).href;
         const imageUrl = new URL("/terminal-persistence.vfs", baseURL).href;
         await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(resolveBinary("kernel.wasm")) }));
-        await page.route(programUrl, route => route.fulfill({ body: readFileSync(resolveBinary("programs/wasm32/coreutils.wasm")) }));
+        await page.route(programUrl, route => route.fulfill({ body: readFileSync(resolveBinary("programs/wasm32/coreutils/coreutils.wasm")) }));
         await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(image) }));
         await page.goto(new URL("/trap-signal-test.html", baseURL).href);
         const hostPath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));

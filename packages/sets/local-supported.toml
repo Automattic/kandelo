@@ -312,10 +312,6 @@ name = "clang-docs"
 class = "browser-product"
 
 [[packages]]
-name = "cli11"
-class = "platform"
-
-[[packages]]
 name = "coreutils"
 class = "user-software"
 
@@ -362,14 +358,6 @@ class = "browser-product"
 [[packages]]
 name = "dash"
 class = "user-software"
-
-[[packages]]
-name = "dbus"
-class = "user-software"
-
-[[packages]]
-name = "dbus-docs"
-class = "browser-product"
 
 [[packages]]
 name = "diffutils"
@@ -556,10 +544,6 @@ name = "harper-browser-bundle"
 class = "user-software"
 
 [[packages]]
-name = "hyprland-protocols"
-class = "platform"
-
-[[packages]]
 name = "icu"
 class = "platform"
 
@@ -636,10 +620,6 @@ name = "libcxx"
 class = "platform"
 
 [[packages]]
-name = "libdbus"
-class = "platform"
-
-[[packages]]
 name = "libdom"
 class = "platform"
 
@@ -704,10 +684,6 @@ name = "libpng"
 class = "platform"
 
 [[packages]]
-name = "librsvg"
-class = "platform"
-
-[[packages]]
 name = "libsigcxx"
 class = "platform"
 
@@ -729,10 +705,6 @@ class = "platform"
 
 [[packages]]
 name = "wayland-protocols"
-class = "platform"
-
-[[packages]]
-name = "wlr-protocols"
 class = "platform"
 
 [[packages]]
@@ -952,36 +924,8 @@ name = "posix-utils-lite"
 class = "user-software"
 
 [[packages]]
-name = "qtbase"
-class = "platform"
-
-[[packages]]
-name = "qtdeclarative"
-class = "platform"
-
-[[packages]]
-name = "qtgallery"
-class = "user-software"
-
-[[packages]]
-name = "qtgallery-docs"
-class = "browser-product"
-
-[[packages]]
-name = "qtshadertools"
-class = "platform"
-
-[[packages]]
 name = "quickjs-ng"
 class = "platform"
-
-[[packages]]
-name = "quickshell"
-class = "user-software"
-
-[[packages]]
-name = "quickshell-docs"
-class = "browser-product"
 
 [[packages]]
 name = "redis"
@@ -1032,6 +976,10 @@ name = "scummvm"
 class = "user-software"
 
 [[packages]]
+name = "scummvm-static"
+class = "user-software"
+
+[[packages]]
 name = "scummvm-docs"
 class = "browser-product"
 
@@ -1076,14 +1024,6 @@ name = "sdl2-demo-docs"
 class = "browser-product"
 
 [[packages]]
-name = "wayland-demo"
-class = "user-software"
-
-[[packages]]
-name = "wayland-demo-docs"
-class = "browser-product"
-
-[[packages]]
 name = "sdl2-mixer"
 class = "platform"
 
@@ -1117,14 +1057,6 @@ class = "browser-product"
 
 [[packages]]
 name = "sway-docs"
-class = "browser-product"
-
-[[packages]]
-name = "labwc"
-class = "user-software"
-
-[[packages]]
-name = "labwc-docs"
 class = "browser-product"
 
 [[packages]]
@@ -1479,3 +1411,82 @@ reason = "experimental guest Rust SDK bundle"
 [[exclusions]]
 name = "rust-native-fixtures"
 reason = "optional guest Rust native-dependency acceptance inputs"
+
+# Shared fonts, keymaps and Sway configuration without the retired compositors.
+[[packages]]
+name = "desktop-data"
+class = "browser-product"
+
+# Retired desktop recipes remain available for explicitly selected builds.
+
+[[exclusions]]
+name = "cli11"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "dbus"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "dbus-docs"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "hyprland-protocols"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "labwc"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "labwc-docs"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "libdbus"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "librsvg"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "qtbase"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "qtdeclarative"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "qtgallery"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "qtgallery-docs"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "qtshadertools"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "quickshell"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "quickshell-docs"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "wayland-demo"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "wayland-demo-docs"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"
+
+[[exclusions]]
+name = "wlr-protocols"
+reason = "retired desktop demo or its exclusive dependency; Cage and Sway remain supported"

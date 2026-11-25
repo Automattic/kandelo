@@ -51,10 +51,6 @@ wasm = "sfwbar.wasm"
 fork_instrumentation = "auto"
 
 [[runtime_files]]
-artifact = "appmenu.so"
-guest_path = "/usr/lib/sfwbar/appmenu.so"
-
-[[runtime_files]]
 artifact = "sfwbar.config"
 guest_path = "/etc/xdg/sfwbar/sfwbar.config"
 
@@ -84,6 +80,9 @@ guest_path = "/usr/share/applications/kandelo-terminal.desktop"
 artifact = "scummvm.desktop"
 guest_path = "/usr/share/applications/scummvm.desktop"
 
-[[runtime_files]]
-artifact = "wayland-demo.desktop"
-guest_path = "/usr/share/applications/wayland-demo.desktop"
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "sfwbar-shared"
+wasm = "sfwbar-shared.zip"
+shared_memory_from = "sfwbar"
+fork_instrumentation = "disabled"

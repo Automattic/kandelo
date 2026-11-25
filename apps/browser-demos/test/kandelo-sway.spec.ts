@@ -5,6 +5,9 @@ import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine"
 import { setInternalsOpen } from "./support/dock";
 import { workspaceButtonPixels } from "./support/sway-workspace-pixels";
 import { typePhysicalText } from "./support/physical-typing";
+import { configureNewComputer, bootStoredComputer } from "./support/computer-library";
+import { runTerminalCommand } from "./support/terminal-command";
+import { waitForSwayFootPrompt } from "./support/sway-foot-prompt";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
@@ -362,6 +365,8 @@ async function exitSway(page: Page, out: Output, marker: string) {
 test("Kandelo sway tiles foot terminals above its native workspace bar with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(420_000);
 
+  const startupErrors: string[] = [];
+  page.on("pageerror", error => startupErrors.push(error.stack ?? error.message));
   await gotoMachine(page, "sway");
 
   await openSurface(page, "Internals");
@@ -404,6 +409,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
       return still;
     }, { timeout: 60_000, intervals: [0] })
     .toBe(true);
+  await waitForSwayFootPrompt(page, canvas, 1);
   await typePhysicalText(page, "echo sway-gles2-ok\n", { delay: 40 });
   await expect
     .poll(async () => (await prompt()).equals(idle), { timeout: 60_000, intervals: [500, 1_000] })
@@ -431,6 +437,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await page.keyboard.press("Alt+Enter");
   await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),
     { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  await waitForSwayFootPrompt(page, canvas, 1);
   await typePhysicalText(page, "swaymsg -r -t get_workspaces > /tmp/sway-workspace-two\n", { delay: 40 });
   await workspaceEvidence(page, "sway-workspace-two", "2");
   await page.keyboard.press("Alt+Shift+Q");
@@ -480,30 +487,44 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await exitSway(page, out, "sway-pixman-exit");
   await openSurface(page, "Internals");
   await page.getByRole("tab", { name: "Procs", exact: true }).click();
-  await expect(page.locator(".ktable tbody tr > td:last-child").filter({
-    hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
-  })).toHaveCount(0, { timeout: 90_000 });
+  await expect.poll(async () => {
+    const rows = await page.locator(".ktable tbody tr").evaluateAll(elements => elements.flatMap(row => {
+      const cells = row.querySelectorAll("td");
+      return cells.length === 5 ? [{
+        pid: Number(cells[0].textContent?.match(/\d+/)?.[0]),
+        command: cells[4].textContent ?? "",
+      }] : [];
+    }));
+    // The process owner briefly renders Loading; only an initialized
+    // snapshot can prove every graphical process actually retired.
+    return { initialized: rows.some(row => row.pid === 1),
+      graphical: rows.filter(row => /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/.test(row.command)).length };
+  }, { timeout: 90_000 }).toEqual({ initialized: true, graphical: 0 });
   expect(await displayOwner(page)).toBe(0);
+  expect(startupErrors).toEqual([]);
 });
 
 
-/** Activity launch uses its own login/PTY; it must exercise the same real keys. */
-test("Sway Activity from shell opens another tiled Foot with Alt+Enter and exits cleanly", async ({ page }, testInfo) => {
+/** The gallery changes machines; the ordinary shell keeps its own filesystem. */
+test("Sway gallery launch preserves the shell, tiles another Foot and exits cleanly", async ({ page }, testInfo) => {
   test.setTimeout(420_000);
   await gotoMachine(page, "shell");
   await waitForMachineBootInput(page);
   await expect.poll(() => terminalText(page), { timeout: 120_000 })
     .toMatch(/maker@[^\r\n]*[$]\s*$/);
-  const computerUrl = page.url();
-  await page.getByRole("button", { name: "Activities", exact: true }).click();
-  const activities = page.getByRole("region", { name: "Installed activities" });
-  await activities.getByRole("button", { name: "Apps & Tools", exact: true }).click();
-  const sway = activities.locator('[data-image-activity="sway"]');
-  await expect(sway).toBeVisible({ timeout: 60_000 });
-  await expect(sway.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
-  await sway.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(activities).not.toBeVisible({ timeout: 180_000 });
-  expect(page.url(), "launch the Activity on this shell computer").toBe(computerUrl);
+  const shellId = new URL(page.url()).searchParams.get("computer");
+  expect(shellId).not.toBeNull();
+  await runTerminalCommand(page,
+    "printf 'ordinary-shell-proof\\n' > /home/projects/desktop-gallery-proof && sync && echo DESKTOP_GALLERY_WRITTEN", "DESKTOP_GALLERY_WRITTEN");
+  await configureNewComputer(page, "sway");
+  await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
+  await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
+  await waitForMachineBootInput(page);
+  const desktopId = new URL(page.url()).searchParams.get("computer");
+  expect(desktopId, "desktop uses the normal computer store").toMatch(/^[0-9a-f-]{36}$/);
+  expect(desktopId).not.toBe(shellId);
+  await expect(page.getByRole("button", { name: "Library", exact: true })).toBeEnabled();
 
   await openSurface(page, "Graphics");
   await expect(canvasLocator(page)).toBeVisible({ timeout: 30_000 });
@@ -564,6 +585,17 @@ test("Sway Activity from shell opens another tiled Foot with Alt+Enter and exits
     hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
   })).toHaveCount(0, { timeout: 90_000 });
   expect(await displayOwner(page)).toBe(0);
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await bootStoredComputer(page, shellId!);
+  // The old computer can still say Running while the asynchronous switch
+  // starts. Do not send this command to its soon-to-be-retired terminal.
+  await expect.poll(() => new URL(page.url()).searchParams.get("computer"),
+    { timeout: 240_000 }).toBe(shellId);
+  await waitForMachineBootInput(page);
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/maker@[^\r\n]*[$]\s*$/);
+  await runTerminalCommand(page,
+    "test \"$(cat /home/projects/desktop-gallery-proof)\" = ordinary-shell-proof && echo DESKTOP_GALLERY_RESTORED", "DESKTOP_GALLERY_RESTORED");
 });
 
 for (const deviceScaleFactor of [1, 2]) {
@@ -616,7 +648,7 @@ for (const deviceScaleFactor of [1, 2]) {
       test.setTimeout(300_000);
       // These are the normal resolver-owned archive bytes mounted by the
       // shell image at /usr/share/kandelo, not a test-only substitute config.
-      const zip = new Uint8Array(readFileSync(resolveBinary("programs/wayland-demo/kandelo-desktop-data.zip")));
+      const zip = new Uint8Array(readFileSync(resolveBinary("programs/desktop-data/desktop-data.zip")));
       const entries = parseZipCentralDirectory(zip);
       const member = (path: string) => {
         const entry = entries.find(entry => entry.fileName === path);

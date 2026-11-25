@@ -133,6 +133,11 @@ package builds (rootfs, shell, coreutils-docs, and others) execute
 the caller provisions the locked tree. A tree that already matches, such as
 one CI installed, is left untouched.
 
+The setup runner compiles the native `xtask` orchestrator with Cargo's
+release profile, matching build planning and the other `run.sh` entry points.
+Program, SDK and kernel build profiles continue to come from their declared
+build steps. Cache validation and package selection use the same engine.
+
 `./run.sh setup` builds this same graph. `./run.sh local-build` runs `xtask
 bootstrap packages`, the SDK prerequisites and the same engine step setup's
 `xtask bootstrap` runs, and both take their selection from one function
@@ -893,6 +898,47 @@ requires regular non-symlink runtime files after fresh builds and cache
 hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
+
+### Shared-memory outputs
+
+An SDK program can declare a separate compatible executable as a normal ZIP
+output. The source name refers to another ordinary output of the same producer:
+
+```toml
+[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+
+[[outputs]]
+name = "probe-shared"
+wasm = "probe-shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+```
+
+The recipe produces `probe.wasm`. Before publication, the normal resolver invokes
+`wasm32posix-shared-memory` and creates a deterministic ZIP containing executable
+`program.wasm`. The derived output must disable ordinary fork instrumentation
+because translation consumes the already instrumented source. Chained outputs,
+side modules, stale ABI contracts and unsupported architectures are rejected;
+this setting currently supports SDK memory32 executables only. The source remains
+ordinary and is never rewritten. Adding an output follows the existing
+multi-output mirror directory rules.
+
+The setting and translator/helper source closure enter the producer's cache key.
+Fresh builds, cache admission and complete local receipts validate the archive,
+source digest, shared-memory layout and current program ABI contract. Standalone
+local installation derives the output when collecting the complete generation.
+
+For image recipes the resolver supplies `WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS`, a
+readonly bounded JSON handoff in the private work directory. It identifies the
+consumer and the reachable declared producer outputs with source SHA-256,
+verified archive path, normal resolver URI, byte length and SHA-256. The shell
+composer registers these through normal lazy archives at
+`/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`. No central program
+list or desktop dependency is required. The runtime retains kernel descriptor
+binding; availability in an image does not opt an ordinary launch into sharing.
+See [shared-memory groups](shared-memory-groups.md) for launch and trust limits.
 
 Optional [package session procedures](package-sessions.md) use this same
 runtime-file contract. Packages declare offer setup forms, participant join
@@ -2901,6 +2947,7 @@ kept in
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
 | `harper` | `patches/chrono-0.4.45.patch`, `cubecl-common-0.8.1.patch`, `dirs-7.0.0.patch`, `getrandom-0.3.4.patch`, `getrandom-0.4.3.patch`, `mio-1.2.4.patch`, `tokio-1.53.3.patch`, `socket2-0.6.5.patch`, `parking_lot_core-0.9.12.patch`, `open-5.4.4.patch`. | Recognize Unix Wasm and Kandelo's existing libc interfaces: time, XDG directories, entropy, native future execution, threads, files, sockets, epoll/eventfd, peer credentials, and musl layouts. `open` selects guest Unix launcher commands; no opener is bundled, and an absent launcher remains an I/O failure. | Upstream target-recognition changes and the musl field-initialization fix; retain the actual Unix APIs rather than replacing them with browser stubs. |
+| `json-c` | `patches/0001-free-containers-outside-assert.patch`: evaluate final container deletion outside `assert`. | json-c 0.19 release builds define `NDEBUG`, removing a required freeing call. A native reproduction retains 200 objects after 100 nested releases; the patch retains zero. | Upstream the correction; remove it when the packaged release includes it. See `packages/registry/json-c/README.md`. |
 | `vim` | `patches/0001-clamp-expired-input-check.patch`: clamp an expired calculated input timeout to zero before the first availability check. | Upstream `inchar_loop()` subtracts elapsed time from a zero/finite timeout, then passes a negative result to a helper that means "wait indefinitely". Slow or preempted execution stalls startup and insert-mode redraw until another key arrives. Clock and POSIX select behavior are correct; this is an upstream timing defect. | Send upstream; drop the patch when the pinned release includes the correction. |
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |

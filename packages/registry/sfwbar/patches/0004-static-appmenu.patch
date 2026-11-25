@@ -1,0 +1,71 @@
+Subject: [PATCH] Offer a built-in application-menu build
+
+Static execution environments cannot load a GModule side module. Link the
+actual application-menu implementation with the core and invoke its normal
+main-thread initializer through module("appmenu"). GTK and GLib state stay
+in one executable. Other module names retain the ordinary loader behavior.
+The default upstream build remains unchanged.
+
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -14,3 +14,4 @@
+ option('mpd',type:'feature',value:'auto',description:'Music Player Daemon module')
+ option('xkb',type:'feature',value:'auto',description:'xkbcommon layout lookup')
+ option('build-docs',type:'feature',value:'auto',description:'rebuild man pages from rst files')
++option('static-appmenu',type:'boolean',value:false,description:'Link the application menu into the core instead of a loadable module')
+--- a/meson.build
++++ b/meson.build
+@@ -138,6 +138,13 @@
+     '-DGDK_DISABLE_DEPRECATED',
+     '-DGTK_DISABLE_DEPRECATED']
+ 
++# A static application menu shares the core's GTK/GLib state and retains the
++# same module("appmenu") configuration entry point.
++if get_option('static-appmenu')
++  libsrc += 'modules/appmenu.c'
++  cargs += '-DSFWBAR_STATIC_APPMENU'
++endif
++
+ sfwbar = library ('sfwbar', sources: libsrc,
+     c_args: cargs, install_dir: get_option('libdir') / 'sfwbar',
+     include_directories: headers,
+@@ -237,7 +244,7 @@
+   doc_list += 'sfwbar-xkbmap'
+ endif
+ 
+-if get_option('appmenu').enabled() or get_option('appmenu').auto()
++if not get_option('static-appmenu') and (get_option('appmenu').enabled() or get_option('appmenu').auto())
+   library('appmenu', sources: 'modules/appmenu.c', dependencies: deps,
+       include_directories: headers,
+       name_prefix: '', install: true,
+--- a/src/module.c
++++ b/src/module.c
+@@ -11,6 +11,11 @@
+ #include "util/string.h"
+ #include "vm/expr.h"
+ #include "vm/vm.h"
++
++#ifdef SFWBAR_STATIC_APPMENU
++/* The built-in uses the unchanged application menu's main-thread initializer. */
++gboolean sfwbar_module_init ( void );
++#endif
+ 
+ static GList *module_list, *iface_providers, *invalidators;
+ 
+@@ -197,6 +202,16 @@
+   if(g_list_find_custom(module_list, name, (GCompareFunc)g_strcmp0))
+     return FALSE;
+ 
++#ifdef SFWBAR_STATIC_APPMENU
++  if(!g_strcmp0(name, "appmenu"))
++  {
++    if(!sfwbar_module_init())
++      return FALSE;
++    module_list = g_list_prepend(module_list, g_strdup(name));
++    return TRUE;
++  }
++#endif
++
+   fname = g_strconcat(name, ".so", NULL);
+   path = g_build_filename(MODULE_DIR, fname, NULL);
+   g_free(fname);

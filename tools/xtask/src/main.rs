@@ -97,6 +97,7 @@ mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
 mod program_extensions;
+mod group_memory_scan;
 mod package_imports;
 mod recipe_tree_guard;
 mod remote_fetch;
@@ -147,6 +148,7 @@ fn main() -> ExitCode {
         "dump-abi" => dump_abi::run(rest),
         "check-program-env-imports" => program_env_imports::run(rest),
         "program-extensions" => program_extensions::run(rest),
+        "group-memory-scan" => group_memory_scan::run(&rest),
         "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),

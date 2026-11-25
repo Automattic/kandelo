@@ -1,3 +1,5 @@
+import { processDataView, processMemoryByteLength, readProcessBytes, writeProcessBytes,
+  fillProcessBytes, borrowOrCopyProcessBytes, type ProcessMemorySource } from "./process-memory-views";
 import { WASM_PAGE_SIZE } from "./constants";
 import { wasmModuleImports } from "./wasm-module-reflection";
 import {
@@ -832,12 +834,12 @@ function checkedEnd(addr: number, size: number, context: string): number {
 }
 
 function checkedMemoryRange(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   addr: number,
   size: number,
   context: string,
 ): void {
-  if (checkedEnd(addr, size, context) > memory.buffer.byteLength) {
+  if (checkedEnd(addr, size, context) > processMemoryByteLength(memory)) {
     throw new RangeError(`${context}: range exceeds WebAssembly memory`);
   }
 }
@@ -886,26 +888,26 @@ function checkedPointer(
 }
 
 function writePointer(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   ptrWidth: 4 | 8,
   addr: number,
   value: number,
 ): void {
   checkedMemoryRange(memory, addr, ptrWidth, "module-state pointer write");
   const checked = checkedPointer(value, ptrWidth, "module-state pointer write", true);
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   if (ptrWidth === 8) view.setBigUint64(addr, BigInt(checked), true);
   else view.setUint32(addr, checked, true);
 }
 
 function readPointer(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   ptrWidth: 4 | 8,
   addr: number,
   context: string,
 ): number {
   checkedMemoryRange(memory, addr, ptrWidth, context);
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   const raw = ptrWidth === 8
     ? view.getBigUint64(addr, true)
     : BigInt(view.getUint32(addr, true));
@@ -1399,7 +1401,7 @@ export function readForkImportedTables(
  * activation-owned root without changing activation-frame replay ordering.
  */
 export function writeForkModuleStateRoot(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   moduleBufferAddr: number,
   ptrWidth: 4 | 8,
   arenaRoot: number,
@@ -1423,7 +1425,7 @@ export function writeForkModuleStateRoot(
 }
 
 export function readForkModuleStateRoot(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   moduleBufferAddr: number,
   ptrWidth: 4 | 8,
 ): number {
@@ -2848,7 +2850,7 @@ export class ForkModuleStateArena {
   private readonly payloadIndex = new Map<string, number[]>();
 
   constructor(
-    private readonly memory: WebAssembly.Memory,
+    private readonly memory: ProcessMemorySource,
     readonly ptrWidth: 4 | 8,
     private readonly allocate: ContinuationAllocate,
     private readonly deallocate: ContinuationDeallocate,
@@ -3119,11 +3121,7 @@ export class ForkModuleStateArena {
       `${this.label}: reserved module-state payload`,
       false,
     );
-    new Uint8Array(
-      this.memory.buffer,
-      payloadNumber,
-      record.payload.byteLength,
-    ).set(record.payload);
+    writeProcessBytes(this.memory, payloadNumber, record.payload);
     this.commitRecord(payloadAddr);
   }
 
@@ -3216,7 +3214,7 @@ export class ForkModuleStateArena {
       totalSize,
       `${this.label}: module-state record`,
     );
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.memory);
     view.setUint32(recordAddr, RECORD_MAGIC, true);
     view.setUint16(recordAddr + 4, FORK_MODULE_STATE_RECORD_VERSION, true);
     view.setUint16(recordAddr + 6, kind, true);
@@ -3224,11 +3222,7 @@ export class ForkModuleStateArena {
     view.setUint32(recordAddr + 12, payloadBytes, true);
     view.setUint32(recordAddr + 16, activationId, true);
     view.setUint32(recordAddr + 20, ownerId, true);
-    new Uint8Array(
-      this.memory.buffer,
-      recordAddr + RECORD_HEADER_SIZE,
-      totalSize - RECORD_HEADER_SIZE,
-    ).fill(0);
+    fillProcessBytes(this.memory, recordAddr + RECORD_HEADER_SIZE, totalSize - RECORD_HEADER_SIZE, 0);
     const payloadAddr = recordAddr + RECORD_HEADER_SIZE;
     this.pending = {
       chunk,
@@ -3262,11 +3256,7 @@ export class ForkModuleStateArena {
     // visible. A sealed root can therefore never expose a partial TLV.
     const paddingSize = pending.totalSize - RECORD_HEADER_SIZE - pending.payloadSize;
     requireZeroBytes(
-      new Uint8Array(
-        this.memory.buffer,
-        pending.payloadAddr + pending.payloadSize,
-        paddingSize,
-      ),
+      readProcessBytes(this.memory, pending.payloadAddr + pending.payloadSize, paddingSize),
       `${this.label}: pending module-state record`,
     );
     chunk.used += pending.totalSize;
@@ -3277,7 +3267,7 @@ export class ForkModuleStateArena {
       chunk.addr + chunkOffset(this.ptrWidth, 4),
       chunk.used,
     );
-    new DataView(this.memory.buffer).setUint32(
+    processDataView(this.memory).setUint32(
       chunk.addr + chunkRecordCountOffset(this.ptrWidth),
       chunk.recordCount,
       true,
@@ -3365,7 +3355,8 @@ export class ForkModuleStateArena {
   }
 
   /**
-   * Zero-copy counterpart to `records()` for bounded streaming decoders.
+   * Bounded streaming counterpart to `records()`. Native storage lends its
+   * existing views; grouped storage returns explicit owned payload snapshots.
    *
    * Callers must finish using these views before `release()` recycles the arena
    * mappings. The returned record envelopes and underlying sealed bytes are
@@ -3486,7 +3477,7 @@ export class ForkModuleStateArena {
       && capacity >= WASM_PAGE_SIZE
       && capacity % WASM_PAGE_SIZE === 0
       && checkedEnd(addr, capacity, `${this.label}: module-state allocation`)
-        <= this.memory.buffer.byteLength
+        <= processMemoryByteLength(this.memory)
       && (this.ptrWidth === 8 || addr + capacity <= 0x1_0000_0000);
     if (!valid) {
       if (Number.isSafeInteger(addr) && addr > 0) {
@@ -3499,7 +3490,7 @@ export class ForkModuleStateArena {
       throw new Error(`${this.label}: allocator returned an invalid module-state chunk`);
     }
     const headerSize = chunkHeaderSize(this.ptrWidth);
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.memory);
     view.setUint32(addr, CHUNK_MAGIC, true);
     view.setUint16(addr + 4, FORK_MODULE_STATE_ARENA_VERSION, true);
     view.setUint16(addr + 6, root ? CHUNK_FLAG_ROOT : 0, true);
@@ -3508,18 +3499,18 @@ export class ForkModuleStateArena {
     writePointer(this.memory, this.ptrWidth, addr + chunkOffset(this.ptrWidth, 2), 0);
     writePointer(this.memory, this.ptrWidth, addr + chunkOffset(this.ptrWidth, 3), capacity);
     writePointer(this.memory, this.ptrWidth, addr + chunkOffset(this.ptrWidth, 4), headerSize);
-    new DataView(this.memory.buffer).setUint32(
+    processDataView(this.memory).setUint32(
       addr + chunkRecordCountOffset(this.ptrWidth),
       0,
       true,
     );
-    new DataView(this.memory.buffer).setUint32(
+    processDataView(this.memory).setUint32(
       addr + chunkReservedOffset(this.ptrWidth),
       0,
       true,
     );
     const fieldsEnd = chunkReservedOffset(this.ptrWidth) + 4;
-    new Uint8Array(this.memory.buffer, fieldsEnd, headerSize - fieldsEnd).fill(0);
+    fillProcessBytes(this.memory, addr + fieldsEnd, headerSize - fieldsEnd, 0);
     this.chunks.push({
       addr,
       size: capacity,
@@ -3530,13 +3521,13 @@ export class ForkModuleStateArena {
   }
 
   private writeChunkFlags(addr: number, flags: number): void {
-    new DataView(this.memory.buffer).setUint16(addr + 6, flags, true);
+    processDataView(this.memory).setUint16(addr + 6, flags, true);
   }
 
   private validateChunks(root: number, requireSealed: boolean): ArenaChunk[] {
     const chunks: ArenaChunk[] = [];
     const seen = new Set<number>();
-    const maxChunks = Math.floor(this.memory.buffer.byteLength / WASM_PAGE_SIZE);
+    const maxChunks = Math.floor(processMemoryByteLength(this.memory) / WASM_PAGE_SIZE);
     let current = root;
     let previous = 0;
     for (;;) {
@@ -3593,11 +3584,11 @@ export class ForkModuleStateArena {
       || addr <= 0
       || addr % WASM_PAGE_SIZE !== 0
       || checkedEnd(addr, headerSize, `${this.label}: module-state chunk header`)
-        > this.memory.buffer.byteLength
+        > processMemoryByteLength(this.memory)
     ) {
       throw new Error(`${this.label}: invalid module-state chunk address`);
     }
-    const view = new DataView(this.memory.buffer);
+    const view = processDataView(this.memory);
     const expectedFlags = (requireSealed ? CHUNK_FLAG_SEALED : 0)
       | (isRoot ? CHUNK_FLAG_ROOT : 0);
     if (
@@ -3639,7 +3630,7 @@ export class ForkModuleStateArena {
       capacity < WASM_PAGE_SIZE
       || capacity % WASM_PAGE_SIZE !== 0
       || checkedEnd(addr, capacity, `${this.label}: module-state chunk bounds`)
-        > this.memory.buffer.byteLength
+        > processMemoryByteLength(this.memory)
       || used < headerSize
       || used > capacity
       || (!isRoot && (used === headerSize || recordCount === 0))
@@ -3649,7 +3640,7 @@ export class ForkModuleStateArena {
     }
     const fieldsEnd = chunkReservedOffset(this.ptrWidth) + 4;
     requireZeroBytes(
-      new Uint8Array(this.memory.buffer, addr + fieldsEnd, headerSize - fieldsEnd),
+      readProcessBytes(this.memory, addr + fieldsEnd, headerSize - fieldsEnd),
       `${this.label}: module-state chunk header`,
     );
     return { addr, size: capacity, used, recordCount };
@@ -3670,7 +3661,7 @@ export class ForkModuleStateArena {
             `${this.label}: module-state chunk ${chunkIndex} has a truncated record header`,
           );
         }
-        const view = new DataView(this.memory.buffer);
+        const view = processDataView(this.memory);
         const kind = view.getUint16(addr + 6, true);
         if (
           view.getUint32(addr, true) !== RECORD_MAGIC
@@ -3698,11 +3689,7 @@ export class ForkModuleStateArena {
         }
         const paddingSize = totalSize - RECORD_HEADER_SIZE - payloadSize;
         requireZeroBytes(
-          new Uint8Array(
-            this.memory.buffer,
-            addr + RECORD_HEADER_SIZE + payloadSize,
-            paddingSize,
-          ),
+          readProcessBytes(this.memory, addr + RECORD_HEADER_SIZE + payloadSize, paddingSize),
           `${this.label}: module-state record ${records.length}`,
         );
         records.push({
@@ -3710,15 +3697,11 @@ export class ForkModuleStateArena {
           activationId: view.getUint32(addr + 16, true),
           ownerId: view.getUint32(addr + 20, true),
           payload: (() => {
-            const payload = new Uint8Array(
-            this.memory.buffer,
-            addr + RECORD_HEADER_SIZE,
-            payloadSize,
-            );
-            // `records()` preserves the historical detached-lifetime contract;
-            // internal validation and streaming consumers opt into sealed
-            // arena views explicitly.
-            return copyPayload ? payload.slice() : payload;
+            // Native streaming retains its existing borrowed lifetime; grouped
+            // payloads use explicit owned staging when no native span is lent.
+            return copyPayload
+              ? readProcessBytes(this.memory, addr + RECORD_HEADER_SIZE, payloadSize)
+              : borrowOrCopyProcessBytes(this.memory, addr + RECORD_HEADER_SIZE, payloadSize).bytes;
           })(),
         });
         offset += totalSize;
@@ -3741,7 +3724,7 @@ export class ForkModuleStateArena {
       let offset = chunkHeaderSize(this.ptrWidth);
       while (offset < chunk.used) {
         const addr = chunk.addr + offset;
-        const view = new DataView(this.memory.buffer);
+        const view = processDataView(this.memory);
         const kind = view.getUint16(addr + 6, true) as ForkModuleStateRecordKind;
         const totalSize = view.getUint32(addr + 8, true);
         const activationId = view.getUint32(addr + 16, true);

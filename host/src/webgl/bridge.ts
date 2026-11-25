@@ -544,6 +544,11 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_TEX_IMAGE_2D:
     case O.OP_TEX_SUB_IMAGE_2D:
       return tailBytesPayload(v, 36, 32);
+    case O.OP_TEX_SUB_IMAGE_2D_BGRA8:
+      return tailBytesPayload(v, 36, 32)
+        && v.getUint32(24, true) === 0x1908
+        && v.getUint32(28, true) === 0x1401
+        && v.getUint32(32, true) % 4 === 0;
     case O.OP_COMPRESSED_TEX_IMAGE_2D:
       return tailBytesPayload(v, 28, 24);
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
@@ -705,6 +710,8 @@ function dispatch(
   op: number,
   destinationOnly = false,
 ): boolean | void {
+  const bgra8 = op === O.OP_TEX_SUB_IMAGE_2D_BGRA8;
+  if (bgra8) op = O.OP_TEX_SUB_IMAGE_2D;
   if (uniformUploadOp(op)) {
     runUniformUpload(b,op,v,(original,payload)=>{dispatch(gl,b,payload,0,original);});
     return;
@@ -1163,6 +1170,14 @@ function dispatch(
         if (!destinationOnly && !predicted(b, uploadSizeError(
           uploadBytes(width, height, nativeFormat, nativeType, b.shadow.unpackAlignment), dataLen))) return false;
         data = copyPixels(v, p + 36, dataLen, nativeType);
+        if (bgra8) {
+          // copyPixels owns bounded, non-shared bytes. Never modify or retain
+          // a command/guest view while adapting BGRA to native RGBA uploads.
+          const bytes = data as Uint8Array;
+          for (let i = 0; i < bytes.length; i += 4) {
+            const red = bytes[i]; bytes[i] = bytes[i + 2]; bytes[i + 2] = red;
+          }
+        }
       }
       if (destinationOnly) {
         // GLES 2.0 section 3.7.2 bounds are x>=0, y>=0, x+w<=wt, y+h<=ht.

@@ -110,3 +110,31 @@ guest_path = "/usr/share/sway/xkeyboard-config.zip"
 [[runtime_files]]
 artifact = "libinput-quirks.zip"
 guest_path = "/usr/share/sway/libinput-quirks.zip"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "sway-shared"
+wasm = "sway-shared.zip"
+shared_memory_from = "sway"
+fork_instrumentation = "disabled"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "swaybar-shared"
+wasm = "swaybar-shared.zip"
+shared_memory_from = "swaybar"
+fork_instrumentation = "disabled"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "swaymsg-shared"
+wasm = "swaymsg-shared.zip"
+shared_memory_from = "swaymsg"
+fork_instrumentation = "disabled"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "swaynag-shared"
+wasm = "swaynag-shared.zip"
+shared_memory_from = "swaynag"
+fork_instrumentation = "disabled"

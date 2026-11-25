@@ -811,7 +811,10 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 9 as const;
+export const HOST_ADAPTER_VERSION = 40 as const;
+export const PROCESS_MEMORY_ACCESS_READ = 1 as const;
+export const PROCESS_MEMORY_ACCESS_WRITE = 2 as const;
+export const MEMORY_GROUP_PROTOCOL = {"access":{"bounds":-1,"busy":-4,"metadata":-3,"module":"kandelo.host-memory.v2","protection":-2,"publicationFailed":-5,"version":2},"capability_admission":1,"completion":{"commands":{"ack":7,"bind":1,"capture":2,"complete":3,"detach":5,"dispatch":11,"interrupted":8,"observed":6,"poll":4,"resume":9,"returned":12,"signal":10,"terminal":13},"effects":{"acknowledged":9,"cancelObservation":5,"captured":1,"discarded":7,"dispatch":13,"fatal":8,"interrupt":2,"observe":4,"published":6,"resumed":10,"retry":12,"signal":11,"stopped":3},"flags":{"automatic":4,"invalid":8,"relisten":1,"terminal":2},"reply_bytes":112,"reply_fields":{"address":80,"channel":28,"delay":96,"effect":0,"errno":24,"expected":84,"flags":4,"observation":72,"receipt":32,"requestFlags":92,"resource":64,"syscall":88,"token":8,"value":16},"request_bytes":80,"request_fields":{"argument":68,"channel":36,"command":32,"errno":64,"observation":48,"receipt":0,"token":40,"value":56},"retirement_codes":{"exec":1262835794,"exit":1262835796}},"driver":{"commands":{"ack":4,"begin":1,"cancel":3,"forkDetached":9,"forkImageRetired":8,"forkLaunched":7,"forkNativeCompleted":12,"forkNativeConstructorUnknown":17,"forkNativeEntered":11,"forkNativeFailed":13,"forkNativeNoMemory":16,"forkNativeNotApplied":19,"forkNativePoll":10,"forkNativeProtocolFailed":15,"forkNativeTimeout":14,"forkNativeValidate":18,"forkSetupFailed":20,"forkSetupNoMemory":21,"poll":2,"threadBindingEnter":24,"threadBindingFailed":22,"threadBindingNoMemory":23,"threadBound":5,"threadDetached":6,"threadNativeCompleted":27,"threadNativeConstructorUnknown":32,"threadNativeEntered":26,"threadNativeFailed":28,"threadNativeNoMemory":31,"threadNativeNotApplied":34,"threadNativePoll":25,"threadNativeProtocolFailed":30,"threadNativeTimeout":29,"threadNativeValidate":33,"threadSetupFailed":35,"threadSetupNoMemory":36,"threadSetupUnavailable":37},"effects":{"complete":1,"detachThreadBinding":6,"forkBind":26,"forkCancelNative":34,"forkConnect":28,"forkContain":37,"forkDeactivate":39,"forkDeliver":31,"forkDispose":40,"forkFailed":42,"forkFatal":43,"forkLaunch":8,"forkObjects":24,"forkPublish":25,"forkReady":30,"forkReferences":38,"forkRegister":27,"forkRemoveTransport":10,"forkReplay":32,"forkRetireTransport":9,"forkRuntime":33,"forkSeal":35,"forkStart":29,"forkSucceeded":41,"forkWaitStop":36,"native":2,"operation":4,"prepareThreadBinding":5,"threadBind":45,"threadCancelNative":51,"threadConnect":46,"threadContain":52,"threadDeliver":50,"threadDispose":54,"threadFailed":56,"threadFatal":57,"threadLaunch":13,"threadObjects":44,"threadReady":48,"threadReferences":53,"threadRuntime":49,"threadStart":47,"threadSucceeded":55,"yield":3},"flags":{"deliver":1,"nativeExecute":32,"nativePending":64,"ownedPacket":2,"threadExecution":16,"threadRetired":8},"fork_continuations":{"main":0,"thread":1},"fork_layout":{"argPtr":12,"channelOffset":24,"fnPtr":8,"forkBufAddr":4,"kind":0,"slotLen":20,"slotStart":16},"fork_layout_offset":32,"kinds":{"clone":6,"fork":5,"mapping":1,"ownedMapping":3},"native_event_limit":64,"payload_bytes":320,"reply_bytes":512,"reply_fields":{"delay":28,"effect":0,"errno":24,"flags":4,"length":164,"operation":8,"payload":168,"payloadBytes":160,"receipt":48,"storage":80,"value":16,"waitAddress":40,"waitExpected":44,"waitToken":32},"request_bytes":384,"request_fields":{"args":8,"kind":0,"payload":64,"reserved":60,"reservedTask":56,"syscall":4},"thread_layout":{"argPtr":32,"basePage":4,"channelOffset":20,"ctidPtr":44,"fnPtr":28,"forkSaveOffset":16,"processChannelOffset":24,"slotStartPage":0,"stackPtr":36,"tlsAllocAddr":12,"tlsOffset":8,"tlsPtr":40},"thread_receipt_offset":48,"transport_gone":2147483648},"exec_control":{"commands":{"ack":13,"begin":1,"cancel":3,"enterNative":17,"handoff":5,"installed":10,"platformCompleted":15,"platformFailed":16,"poll":2,"status":14,"validate":4,"validateInstall":9},"effects":{"bindReplacement":18,"cancelPreparation":27,"containFailure":23,"deliverLaunch":25,"detachPrevious":14,"discardFuture":20,"finishHandoff":22,"installReplacement":16,"joinPrevious":15,"joinReplacement":29,"publishTermination":21,"retirePrevious":17,"retireReplacement":30,"sealReplacement":26,"startReplacement":19,"waitReady":24,"waitReplacement":28,"waitWorkers":13,"wakeReplacement":31},"exit_status":152,"flags":{"exitHeld":128},"layout_fields":{"brkBase":48,"brkLimit":64,"channelOffset":32,"channelPage":40,"controlBase":16,"controlEnd":24,"firstThreadBasePage":88,"firstThreadSlotPage":80,"initialPages":0,"maxAddr":72,"maximumPages":8,"mmapBase":56,"threadArenaEndPage":96,"threadSlotCount":104},"parent":144,"phases":{"cancelled":7,"cancelling":6,"committed":3,"contained":12,"finished":11,"handoff":4,"installed":10,"oldStopped":5,"prepared":2,"preparing":1,"retiringInstalled":13,"terminatedFuture":9,"terminating":8},"signal":148,"source":112},"exec_preparation":{"actions":{"cancel":2,"finishCancellation":3,"validate":1},"bytes":40,"capability":8,"fields":{"initialPages":32,"maximumPages":36,"receipt":0},"version":1},"layout":{"bytes":96,"capability":4,"fields":{"brkBase":40,"brkLimit":56,"channel":80,"controlBase":64,"controlEnd":72,"initialPages":32,"maximumPages":36,"mmapBase":48,"mode":88,"receipt":0,"reserved":92},"modes":{"fresh":0,"inherited":1},"version":1},"mapping":{"capability":2,"description_bytes":136,"description_fields":{"address":48,"flags":88,"kind":40,"length":56,"oldAddress":64,"oldLength":72,"populationAddress":96,"populationLength":104,"prot":44,"receipt":0,"reserved":92,"result":80,"sharedLength":120,"sharedObject":112,"sharedOffset":128,"token":32},"kinds":{"break":5,"map":1,"protect":3,"remap":4,"unmap":2},"request_bytes":64,"request_fields":{"args":8,"observedPages":56,"reserved":4,"syscall":0,"tailReserved":60},"version":6},"receipt_bytes":32,"receipt_fields":{"generation":24,"group":0,"pid":4,"reserved":12,"serial":16,"tid":8},"retirement_control":{"cancel_exec_transport":15,"commands":{"ack":5,"ackStop":11,"beginImage":1,"beginReferences":13,"beginStop":8,"beginThread":2,"bindReferences":12,"nativeJoin":16,"noteWorkerAbsence":6,"platformDetached":4,"poll":3,"pollStop":10,"prepareDeactivation":7,"referencesDetached":14,"sealedAbsence":17,"workerContained":18,"workerFence":15,"workersStopped":9},"contain_worker":18,"detach_platform":14,"detach_references":17,"join_image_retirement":20,"native_join_capability":1,"publish_exit":1,"stop_accepted":2,"wait_thread_retirement":19,"wait_workers":16,"worker_joined":1,"worker_messages":{"cancel":"kandelo.memory-group.worker-cancel.v3","launch":"kandelo.memory-group.worker-launch.v3","prepare":"kandelo.memory-group.worker-prepare.v3","ready":"kandelo.memory-group.worker-ready.v3"}},"root_control":{"commands":{"ack":5,"begin":1,"cancel":3,"enterNative":11,"launch":6,"platformCompleted":7,"platformFailed":8,"poll":2},"effects":{"bindWorker":14,"cancelPreparedWorker":24,"connectImports":16,"containFailure":21,"deliverLaunch":23,"discardTransport":20,"publishTransport":13,"registerProcess":15,"retireImage":19,"scheduleStart":17,"sealAbsence":18,"waitReady":22},"phases":{"cancelled":4,"cancelling":3,"contained":8,"finished":7,"launching":5,"prepared":2,"preparing":1,"waiting":6}},"snapshot_bytes":40,"snapshot_fields":{"accepting":16,"backings":32,"group":0,"images":36,"maximumPages":4,"maximumProcesses":8,"maximumTasks":12,"processes":20,"quarantinedTasks":28,"tasks":24},"storage":{"actions":{"beginImageOperation":26,"beginImagePause":4,"containImage":25,"describe":1,"finishImageOperation":28,"imageOperationReady":27,"imagePauseAcknowledged":5,"inspectWait":22,"noteQuiescent":9,"pausedExtent":15,"pinChannel":23,"pinNative":12,"pinQueue":24,"progressBarrier":19,"progressLocks":20,"progressPool":21,"publish":2,"quarantine":16,"reclaimRemoved":17,"releaseStoppedImage":11,"resumeImage":6,"revokeSource":10,"settleNative":13,"status":14,"stopImage":8,"stopReplica":7,"sweepObjects":18},"mapping":{"cancel":4,"commit":3,"populate":2,"stage":1},"reply_bytes":80,"reply_fields":{"maximumPhysicalPages":52,"maximumVirtualPages":56,"receipt":0,"replica":44,"resource":32,"root":40,"scratch":48,"scratchBytes":60,"value":64,"waitAddress":72,"waitExpected":76},"snapshot_bytes":84,"snapshot_fields":["group","images","replicas","exposedReplicas","quarantinedReplicas","allocatedPages","pendingWaitDrains","nativeObservers","mappingStagingBytes","retainedMappingReferences","sharedObjects","sharedPages","sharedImageReferences","maximumPages","highWaterPages","physicalExtentPages","pausedImages","unacknowledgedReplicas","waitQueueLock","waitQueueNodes","pendingCompletions"],"status":{"imageStopped":4,"imageUnexposed":64,"paused":8,"prepared":1,"sourceLive":32,"stopped":2,"stopping":16}},"task_actions":{"beginRetirement":2,"cancelUnconstructed":5,"quarantine":4,"retireQuiescent":3,"start":1},"version":1} as const;
 export const ENTROPY_READ_PENDING = -2147483648 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
@@ -869,6 +872,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_get_fd_path",
   "kernel_get_parent_pid",
   "kernel_get_process_exec_generation",
+  "kernel_get_process_exit_published",
   "kernel_get_process_exit_signal",
   "kernel_get_process_state",
   "kernel_get_socket_timeout_ms",
@@ -943,6 +947,46 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_group_completion",
+  "kernel_group_exec_control",
+  "kernel_group_exec_target_bind_image",
+  "kernel_group_memory_break",
+  "kernel_group_memory_change_prepare",
+  "kernel_group_memory_change_validate",
+  "kernel_group_memory_exec_action",
+  "kernel_group_memory_exec_layout",
+  "kernel_group_memory_exec_prepare",
+  "kernel_group_memory_fork",
+  "kernel_group_memory_layout_install",
+  "kernel_group_memory_thread_control_prepare",
+  "kernel_group_memory_thread_control_release",
+  "kernel_group_memory_thread_control_reuse",
+  "kernel_group_operation",
+  "kernel_group_owned_mapping_prepare",
+  "kernel_group_owned_mapping_validate",
+  "kernel_group_retirement_control",
+  "kernel_group_root_control",
+  "kernel_initial_group_exec_target_admit",
+  "kernel_memory_group_capabilities",
+  "kernel_memory_group_configure",
+  "kernel_memory_group_create",
+  "kernel_memory_group_prepare_process",
+  "kernel_memory_group_protocol_version",
+  "kernel_memory_group_remove",
+  "kernel_memory_group_retire_image",
+  "kernel_memory_group_seal",
+  "kernel_memory_group_snapshot",
+  "kernel_memory_group_stop_next",
+  "kernel_memory_group_storage_action",
+  "kernel_memory_group_storage_create",
+  "kernel_memory_group_storage_drop",
+  "kernel_memory_group_storage_fork",
+  "kernel_memory_group_storage_mapping",
+  "kernel_memory_group_storage_prepare",
+  "kernel_memory_group_storage_snapshot",
+  "kernel_memory_group_storage_sweep",
+  "kernel_memory_group_task_action",
+  "kernel_memory_group_task_receipt",
   "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
@@ -2267,6 +2311,8 @@ export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
 /* Kernel request serving the kandelo.klog.v1 program extension
 * (kernel-host surface; see shared::extension_requests). */
 export const EXTENSION_REQUEST_KLOG_V1 = 600 as const;
+
+export const EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 = 601 as const;
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [

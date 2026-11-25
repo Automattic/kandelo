@@ -7,13 +7,59 @@ import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
 import ts from "typescript";
-import { waitForChannelCompletion } from "../src/channel-completion-wait";
+import { waitForChannelCompletion, waitForGroupedChannelCompletion } from "../src/channel-completion-wait";
+import { WorkerChannelIPC } from "../src/worker-channel-ipc";
 import {
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
 } from "../src/generated/abi";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it('keeps native channel publication, completion and reset on the original word', () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const channel = new WorkerChannelIPC(memory, 64), words = new Int32Array(memory.buffer);
+  const wait = vi.spyOn(Atomics, 'wait').mockImplementation((view, index, expected) => {
+    expect(view.buffer).toBe(memory.buffer); expect(index).toBe(16);
+    if (Atomics.load(view, index) !== expected) return 'not-equal';
+    Atomics.store(view, index, CHANNEL_STATUS_COMPLETE);
+    return 'ok';
+  });
+  channel.publishAndWait();
+  expect(wait).toHaveBeenCalledTimes(2);
+  expect(words[16]).toBe(CHANNEL_STATUS_COMPLETE);
+  channel.resetStatus();
+  expect(words[16]).toBe(0);
+});
+
+describe("translated worker channel completion", () => {
+  it("rechecks spurious wakes using the same virtual byte address and bound replica", () => {
+    const wait = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(2).mockReturnValueOnce(1);
+    waitForGroupedChannelCompletion(wait, 65532);
+    expect(wait.mock.calls).toEqual([
+      [65532, CHANNEL_STATUS_PENDING, 100_000_000n],
+      [65532, CHANNEL_STATUS_PENDING, 100_000_000n],
+      [65532, CHANNEL_STATUS_PENDING, -1n],
+    ]);
+  });
+  it("keeps the private request pending through repeated JSC heap safepoints", () => {
+    vi.stubGlobal('navigator', { userAgent: 'Version/26.6 Safari/605.1.15' });
+    const wait = vi.fn().mockReturnValueOnce(2).mockReturnValueOnce(2).mockReturnValueOnce(1);
+    waitForGroupedChannelCompletion(wait, 65532);
+    expect(wait.mock.calls).toEqual(Array(3).fill([65532, CHANNEL_STATUS_PENDING, 100_000_000n]));
+  });
+  it("preserves a native stop trap without retrying", () => {
+    const stopped = new WebAssembly.RuntimeError('native replica stopped');
+    const wait = vi.fn(() => { throw stopped; });
+    expect(() => waitForGroupedChannelCompletion(wait, 8)).toThrow(stopped);
+    expect(wait).toHaveBeenCalledTimes(1);
+  });
+  it("refuses an invalid helper result instead of treating it as completion", () => {
+    const wait = vi.fn(() => 3);
+    expect(() => waitForGroupedChannelCompletion(wait, 8)).toThrow('Invalid translated channel wait result');
+    expect(wait).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("borrowed channel completion wait", () => {
   it("re-enters after spurious wakes on the exact original view/index", () => {
@@ -166,11 +212,13 @@ describe("actual worker/Wasm channel-wait continuation", () => {
   });
 });
 
-it("routes all ten generated channel waits through the shared seam and retains independent lock waits", () => {
+it("routes generated channel waits through explicit seams and retains independent lock waits", () => {
   const code = readFileSync(new URL("../src/worker-main.ts", import.meta.url), "utf8");
   const source = ts.createSourceFile("worker-main.ts", code, ts.ScriptTarget.Latest, true);
   const callers: string[] = [];
+  const explicitCallers: string[] = [];
   const nativeLockWords: string[] = [];
+  const translatedLockWords: string[] = [];
   function enclosingName(node: ts.Node): string {
     for (let parent = node.parent; parent; parent = parent.parent) {
       if (ts.isFunctionDeclaration(parent) && parent.name) return parent.name.text;
@@ -187,23 +235,29 @@ it("routes all ten generated channel waits through the shared seam and retains i
       if (node.expression.getText(source) === "waitForChannelCompletion") {
         expect(node.arguments.length).toBe(2);
         expect(node.arguments[0].getText(source)).toBe("i32");
-        const caller = enclosingName(node);
-        expect(node.arguments[1].getText(source).replace(/\s+/g, "")).toBe(
-          caller === "sendForkSyscall" ? "(channelOffset+CH_STATUS)/4" : "(base+CH_STATUS)/4",
-        );
-        callers.push(caller);
+        expect(node.arguments[1].getText(source).replace(/\s+/g, "")).toBe("(base+CH_STATUS)/4");
+        callers.push(enclosingName(node));
+      }
+      if (node.expression.getText(source) === "channel.publishAndWait") {
+        expect(node.arguments.length).toBe(0);
+        explicitCallers.push(enclosingName(node));
       }
       if (node.expression.getText(source) === "Atomics.wait") nativeLockWords.push(node.arguments[0].getText(source));
+      if (["loaderOwner.wait", "archiveLock.wait", "processDlopenOwner.wait", "processDlopenLock.wait"].includes(node.expression.getText(source))) {
+        translatedLockWords.push(node.expression.getText(source));
+      }
     }
     ts.forEachChild(node, visit);
   }
   visit(source);
-  expect(callers.sort()).toEqual([
-    "continuationMmap", "continuationMunmap", "kernel_exit", "kernel_clone", "kernel_fork",
-    "invokeChannelSyscall", "allocateMemory", "deallocateMemory", "sendForkSyscall", "centralizedThreadWorkerMain",
+  expect(callers).toEqual([]);
+  expect(explicitCallers.sort()).toEqual([
+    "continuationMmap", "continuationMunmap", "sendForkSyscall", "kernel_exit", "kernel_clone", "kernel_fork",
+    "invokeChannelSyscall", "allocateMemory", "deallocateMemory", "sendThreadExit",
   ].sort());
-  expect(nativeLockWords.sort()).toEqual([
-    "loaderOwner", "loaderOwner", "loaderOwner", "archiveLock", "archiveLock",
-    "processDlopenOwner", "processDlopenLock",
+  expect(translatedLockWords.sort()).toEqual([
+    "loaderOwner.wait", "loaderOwner.wait", "loaderOwner.wait", "archiveLock.wait", "archiveLock.wait",
+    "processDlopenOwner.wait", "processDlopenLock.wait",
   ].sort());
+  expect(nativeLockWords).toEqual([]);
 });

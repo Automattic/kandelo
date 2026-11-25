@@ -96,6 +96,15 @@ Service Worker ──MessagePort──> Kernel Worker       │
 | Service Worker | `apps/browser-demos/public/service-worker.js` | Intercepts HTTP for nginx/WordPress demos |
 | Connection pump | `host/src/browser-kernel-worker-entry.ts` | Bridges HTTP requests to kernel TCP pipes |
 
+Worker bundles must keep their entry modules terminal: inline dynamic imports,
+remove unused generated entry exports, and reject a chunk that imports a
+stripped entry. Playwright WebKit 26.6 re-evaluates a module Worker entry when
+its dynamic dependency imports a helper back from that entry, replacing an
+initialized message handler with fresh state. A standalone reproduction and
+Chromium/Firefox controls are recorded in
+[WebKit terminal Worker entry workaround](../tests/runtime-workarounds/WEBKIT-WORKER-ENTRY-EXPORTS/entry.md).
+Native Safari has not been checked for this reproduction.
+
 ### Key Design Decisions
 
 - **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged. The immediate queue yields after
@@ -1008,7 +1017,22 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **spawn** — the page calls `kernel.spawn(programBytes, argv)` for each binary on a booted machine, and the Rust kernel allocates the PID before the worker launches it.
 
-### Wayland desktop demo
+### Desktop demo selection
+
+Cage and Sway shared-memory desktops support Chromium and Firefox within the opt-in preview contract. WebKit is experimental: repeated live desktop replacement can time out during Worker retirement, leaving the computer locked because storage quiescence is unconfirmed. This failure reproduced on both the scanner candidate and the preceding qualified runtime; its cause is unresolved. The [current receipt](measurements/2026-11-25-shared-memory-scanner.md) supersedes the support claim in the earlier [WebKit qualification](measurements/2026-11-25-shared-memory-webkit-qualification.md), retaining those successful runs as historical evidence. Native Safari and iOS remain untested. WebKit retains its 512 MiB group preallocation workaround; no memory saving is implied.
+
+The supported desktop selection is Cage with Foot, Sway with its native bar, and the Sway configuration using SFWBar. The gallery no longer exposes labwc, Omarchy or the custom Wayland desktop. Their recipes and sources are retained for explicit follow-up builds, while the normal supported build excludes their exclusive dependencies, including Quickshell/Qt and the custom compositor. The `desktop-data` package supplies shared fonts, keymaps, Foot and Sway configuration without compiling those retired programs.
+
+The retained gallery profiles use `browser-main-shell`. Desktop Activities
+select the shared backend for their own process family in the same computer;
+ordinary shell programs keep ordinary execution and normal files retain the
+computer's storage policy. The shell supplies independently lazy SDK
+alternatives without replacing ordinary executable identities. Custom image
+metadata cannot grant the host capability. SFWBar links its application-menu
+implementation into its executable because grouped side modules remain
+unsupported. See [the shell desktop contract](shared-memory-groups.md#ordinary-shell-image-integration).
+
+### Wayland desktop demo (retired from the default build)
 
 The Wayland desktop machine (launched from the gallery, or directly with
 `?vfs=<shell image>&profile=wayland`) boots four programs:
@@ -1341,7 +1365,7 @@ and in the browser through the Omarchy machine
 (`apps/browser-demos/test/kandelo-omarchy.spec.ts`, including the
 eight-window launch storm that guards the kernel's SCM_RIGHTS fd delivery).
 
-### Omarchy desktop demo
+### Omarchy desktop demo (retired from the default build)
 
 The Omarchy-style desktop machine (`?vfs=<shell image>&profile=omarchy`)
 is the tiling desktop above plus the shell that makes it a desktop: a
@@ -3198,6 +3222,15 @@ on fetch, so where the deployment serves a body from is transport, not
 trust. Adding a package to an image needs only the image recipe and the
 package's entry in the supported set.
 
+The production service worker caches complete native responses under the
+deployment's `vfs-groups/` directory for later reuse. If storing a completed
+response fails, including CacheStorage quota exhaustion, it logs a warning
+and returns the original network response with its Content-Length intact.
+Network and body-read failures still reject; failed, truncated and partial
+responses do not become cached successes. The kernel still verifies the
+image-declared size and digest. A completed download does not promise that
+the browser retained a cache entry or that the asset will work offline.
+
 Binaries the browser app imports directly (`@binaries/...`) are the other
 consumer. The Node CLI's literal `optionalBinary` built-ins are consumers
 too, including each alternative entry point. Each must be an output of a package in
@@ -4670,6 +4703,17 @@ coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### JavaScriptCore garbage collection and blocked workers
 
+The opt-in shared-memory desktop also has a bounded owning-Worker mutex-release
+workaround recorded as
+[`JSC-GROUP-MUTEX-STORE-STALL`](../tests/runtime-workarounds/JSC-GROUP-MUTEX-STORE-STALL/entry.md).
+A standalone JS/Wasm test reproduces contended JavaScript store delays on
+Playwright WebKit, with Chromium and Firefox controls. That timing observation
+does not establish the cause of every desktop stall; sustained desktop and
+resource acceptance remain separate gates. The helper is bound before guest
+execution in admitted disposable process Workers as well as the owning kernel
+Worker. It imports their existing backing and allocates no linear memory; its
+additional per-realm module/instance cost still needs application measurement.
+
 This is a suspected JavaScriptCore behavior with a tagged workaround in
 the syscall glue, recorded in the runtime workaround registry as
 [`JSC-BLOCKED-WAIT-GC-STARVATION`](../tests/runtime-workarounds/JSC-BLOCKED-WAIT-GC-STARVATION/entry.md)
@@ -5040,3 +5084,64 @@ Translated indexed sampler lookups and guest array parameters use scalar
 sampler parameters to avoid that shape. Chromium and WebKit link both
 standalone forms. The reproduction is retained for checking released
 Firefox versions before removing the workaround.
+
+
+### Shared desktop display transport
+
+Cage, Sway and Sway/SFWBar run through the normal shell profiles and Activities.
+Use `./run.sh browser` for the canonical image, or `./run.sh browser --partial`
+with the [desktop package selection](shared-memory-groups.md#shell-desktops-and-partial-development-images).
+No additional preview build flag or derived desktop image is needed.
+
+Grouped byte launches on Node and browser publish completion only after exact
+execution-image retirement and the existing Rust-owned root reap. Rust checks
+that an exited record belongs to the host parent (`ppid=0`); a guest parent's
+child remains available to its normal wait calls. Destroy also awaits a root
+reap deferred by a busy kernel entry, even after its execution image leaves the
+live map. The live process list omits zombies; use the actual `/proc/PID/stat`
+record when verifying root reclamation.
+
+The shell configures `BrowserKernel.kmsAttachBitmapRelay` through its normal
+KMS attachment API. This device transport renders into detached canvases in
+the kernel worker and presents independent `ImageBitmap` objects in a
+disposable display worker. Guest memories, their backing buffers and views
+never enter the display worker or browser main. Embedders without this group
+configuration and the Node host retain their existing presentation paths.
+
+At most one bundle of up to two changed planes is captured or awaiting an exact
+sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capture
+snapshots the producer canvas without consuming its retained pixels. A later
+swap or commit can present the same cached image without a redraw; consuming
+that image made subsequent presentations black. Native bitmap transport remains
+bounded, and the producer keeps its own surface until normal device retirement.
+This opt-in transport does not establish compatibility with mixed
+unprepared graphical clients. It creates an additional Worker and native device
+surfaces. A two-plane 3072×1728 bundle contains up to 40.5 MiB of pixel data;
+that is a payload bound, not a measurement of native graphics memory or total
+browser footprint. The retained producer surface adds a resource cost that
+must be remeasured after this correction. Earlier ordinary/grouped comparisons
+do not establish a net memory saving, and their results do not validate the new
+snapshot path's memory or performance. See the [current resource measurements](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md)
+for the workload, response endpoints, limitations and remaining acceptance.
+
+The shell's group has a 512 MiB backing ceiling without an additional small
+process/task quota. Embedders can supply explicit count quotas; kernel
+metadata, backing allocation and host workers remain finite resources.
+
+Shutdown stops frame admission synchronously, waits for any pending capture,
+and closes late images. It sends an ordered retirement request naming the last
+published sequence. The display consumes earlier frames, clears both visible
+surfaces, and acknowledges that exact sequence before the kernel destroy reply
+allows the parent to terminate the display realm. Repeated close calls share
+one completion. Replaced relays retain their retirement promises until observed.
+A fatal kernel error latches dispatch off synchronously, then starts relay
+retirement from the detached fatal-observer microtask after kernel entry
+authority has ended. Destroy awaits the same retirement ledger and preserves
+failed fences.
+A missing acknowledgement after three seconds rejects retirement and keeps
+containment visible in host diagnostics; terminating a Worker alone is not
+reported as a successful acknowledgement. See the
+[desktop integration evidence](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-19-shared-memory-desktop-integration.md)
+for the bounded validation and remaining gates.
+
+The opt-in grouped bitmap display waits for its disposable Worker to acknowledge initialization before capturing frames. This avoids an unreduced Firefox startup deserialization failure; [the suspected runtime entry](../tests/runtime-workarounds/FIREFOX-BITMAP-PORT-STARTUP/entry.md) records the negative standalone controls and remaining attribution limit. Missing readiness remains a visible failure. The host first waits for the display module to report that its code has loaded, with a separate 30-second load deadline. It then transfers the bounded device canvases and attaches the kernel relay. The existing three-second initialization and retirement acknowledgement deadlines do not include module fetching. Stopping during module loading cancels the unpublished ports and terminates that device worker.

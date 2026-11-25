@@ -318,6 +318,61 @@ pub fn dequeue_signal_for(proc: &mut Process, tid: u32, signum: u32) -> (u32, u6
     (signum, info.si_value_bits, info.si_code, word_1, word_2)
 }
 
+/// Prepare one caught signal for an exact live task. The caller owns the
+/// returned value and its destination; no host scratch or publication policy
+/// participates in selecting the signal or applying its default action.
+pub fn dequeue_caught_signal_for_task(
+    proc: &mut Process,
+    advisory_locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    tid: u32,
+) -> Result<Option<crate::process_wire::SignalDeliveryRecord>, Errno> {
+    if !proc.is_live_explicit_tid(tid) { return Err(Errno::ESRCH); }
+    loop {
+        let Some(signum) = proc.next_deliverable_signal(tid) else { return Ok(None); };
+        let action = proc.signals.get_action(signum);
+        match action.handler {
+            SignalHandler::Handler(handler) => {
+                if crate::dri::atomic::waits_uninterruptibly(proc, tid)
+                    || crate::dri::implicit_sync::waits_uninterruptibly(proc.pid, tid) {
+                    return Ok(None);
+                }
+                let (_, si_value_bits, si_code, siginfo_word_1, siginfo_word_2) =
+                    dequeue_signal_for(proc, tid, signum);
+                crate::dri::forget_vblank_waits(proc, tid);
+                crate::dri::syncobj::forget_task(proc.pid, tid);
+                // Preserve the current ppoll/pselect/sigsuspend mask across
+                // restart. Its pre-wait mask stays with the actual Rust wait.
+                let old_mask = proc.install_caught_handler_mask_for(tid, action.mask, signum);
+                const SA_ONSTACK: u32 = 0x08000000;
+                const SS_ONSTACK: u32 = 1;
+                const SS_DISABLE: u32 = 2;
+                let mut switch_to_alt_stack = false;
+                if action.flags & SA_ONSTACK != 0 && proc.alt_stack_flags & SS_DISABLE == 0
+                    && proc.alt_stack_sp != 0 {
+                    switch_to_alt_stack = proc.alt_stack_depth == 0;
+                    proc.alt_stack_depth += 1;
+                    proc.alt_stack_flags |= SS_ONSTACK;
+                }
+                return Ok(Some(crate::process_wire::SignalDeliveryRecord {
+                    signum, handler, flags: action.flags, si_value_bits, old_mask,
+                    si_code, siginfo_word_1, siginfo_word_2,
+                    alt_sp: if switch_to_alt_stack { proc.alt_stack_sp } else { 0 },
+                    alt_size: if switch_to_alt_stack { proc.alt_stack_size } else { 0 },
+                }));
+            }
+            SignalHandler::Default => {
+                let _ = dequeue_signal_for(proc, tid, signum);
+                match apply_default_signal_action_with_locks(proc, advisory_locks, host, signum) {
+                    DefaultSignalOutcome::Continue => {},
+                    DefaultSignalOutcome::Stopped | DefaultSignalOutcome::Exited => return Ok(None),
+                }
+            }
+            SignalHandler::Ignore => { let _ = dequeue_signal_for(proc, tid, signum); }
+        }
+    }
+}
+
 /// Consume default/ignored pending signals at a syscall boundary. Caught
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.

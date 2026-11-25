@@ -8,6 +8,17 @@ pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod kms_cursor;
+pub mod memory_group;
+pub mod group_storage;
+pub mod group_operation;
+pub mod group_completion;
+pub mod exec_control;
+pub mod root_control;
+pub mod retirement_control;
+pub mod group_access;
+pub mod group_memory_change;
+pub mod group_memory_layout;
+pub mod group_exec;
 pub mod process_layout;
 
 // The program ABI is owned separately so host-only edits do not rebuild
@@ -74,6 +85,11 @@ pub mod extension_requests {
     /// syscall number, of the kernel's dispatch table, and of the
     /// host-intercepted `SYS_SPAWN` (500).
     pub const KLOG_V1: u32 = 600;
+
+    /// Grouped SDK private memory.grow; handled by the actual completion owner,
+    /// never the base syscall dispatcher. One unsigned delta; no caller-selected
+    /// image, root or physical frame. The Wasm result is old pages or -1.
+    pub const MEMORY_GROUP_GROW_V1: u32 = 601;
 
     /// Size of the kernel message ring, and so the largest count a klog
     /// request can return. The ring lives in `runtime_core::kmsg`; the bound is
@@ -144,6 +160,13 @@ pub mod legacy_pshared {
         Request { number: COND_WAIT_ABORT, name: "SYS_PSHARED_COND_WAIT_ABORT", args: &["cond_id"], result: "0" },
     ];
 }
+
+/// Kernel-host byte-range access, from the guest's perspective. The import
+/// accepts exactly one direction, never an unchecked mask or bounds-only mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ProcessMemoryAccess { Read = 1, Write = 2 }
+
 
 pub mod platform_limits {
     pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -2367,9 +2390,11 @@ pub mod abi {
     ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
     /// 7: bounded entropy continuations, process-range validation, and private
     ///    guest-address I/O transport.
-    /// 8: length-derived select-family bitmap slots for descriptors above FD_SETSIZE.
-    /// 9: the kernel reads epoll addresses and owns blocking epoll waits.
-    pub const HOST_ADAPTER_VERSION: u32 = 9;
+    /// 8–37: opt-in memory-group ownership and execution (feature branch).
+    /// 38: length-derived select bitmap slots above FD_SETSIZE.
+    /// 39: direct shared-group page-table scanning.
+    /// 40: integrate kernel-owned epoll waits with those group contracts.
+    pub const HOST_ADAPTER_VERSION: u32 = 40;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2528,9 +2553,29 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_fd_path"),
         HostAdapterKernelExport::required("kernel_get_parent_pid"),
         HostAdapterKernelExport::required("kernel_get_process_exec_generation"),
+        HostAdapterKernelExport::required("kernel_get_process_exit_published"),
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
         HostAdapterKernelExport::required("kernel_get_process_state"),
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
+        HostAdapterKernelExport::optional("kernel_group_completion"),
+        HostAdapterKernelExport::optional("kernel_group_exec_control"),
+        HostAdapterKernelExport::optional("kernel_group_exec_target_bind_image"),
+        HostAdapterKernelExport::optional("kernel_group_memory_break"),
+        HostAdapterKernelExport::optional("kernel_group_memory_change_prepare"),
+        HostAdapterKernelExport::optional("kernel_group_memory_change_validate"),
+        HostAdapterKernelExport::optional("kernel_group_memory_exec_action"),
+        HostAdapterKernelExport::optional("kernel_group_memory_exec_layout"),
+        HostAdapterKernelExport::optional("kernel_group_memory_exec_prepare"),
+        HostAdapterKernelExport::optional("kernel_group_memory_fork"),
+        HostAdapterKernelExport::optional("kernel_group_memory_layout_install"),
+        HostAdapterKernelExport::optional("kernel_group_memory_thread_control_prepare"),
+        HostAdapterKernelExport::optional("kernel_group_memory_thread_control_release"),
+        HostAdapterKernelExport::optional("kernel_group_memory_thread_control_reuse"),
+        HostAdapterKernelExport::optional("kernel_group_operation"),
+        HostAdapterKernelExport::optional("kernel_group_owned_mapping_prepare"),
+        HostAdapterKernelExport::optional("kernel_group_owned_mapping_validate"),
+        HostAdapterKernelExport::optional("kernel_group_retirement_control"),
+        HostAdapterKernelExport::optional("kernel_group_root_control"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
         HostAdapterKernelExport::required("kernel_handle_guest_io"),
@@ -2538,6 +2583,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
         HostAdapterKernelExport::required("kernel_initial_exec_commit"),
+        HostAdapterKernelExport::optional("kernel_initial_group_exec_target_admit"),
         HostAdapterKernelExport::required("kernel_install_host_stdin_pipe"),
         HostAdapterKernelExport::required("kernel_ipc_shm_lookup_mapping_for_task"),
         HostAdapterKernelExport::required("kernel_ipc_shm_record_mapping_for_process"),
@@ -2552,6 +2598,26 @@ pub mod abi {
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
+        HostAdapterKernelExport::optional("kernel_memory_group_capabilities"),
+        HostAdapterKernelExport::optional("kernel_memory_group_configure"),
+        HostAdapterKernelExport::optional("kernel_memory_group_create"),
+        HostAdapterKernelExport::optional("kernel_memory_group_prepare_process"),
+        HostAdapterKernelExport::optional("kernel_memory_group_protocol_version"),
+        HostAdapterKernelExport::optional("kernel_memory_group_remove"),
+        HostAdapterKernelExport::optional("kernel_memory_group_retire_image"),
+        HostAdapterKernelExport::optional("kernel_memory_group_seal"),
+        HostAdapterKernelExport::optional("kernel_memory_group_snapshot"),
+        HostAdapterKernelExport::optional("kernel_memory_group_stop_next"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_action"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_create"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_drop"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_fork"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_mapping"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_prepare"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_snapshot"),
+        HostAdapterKernelExport::optional("kernel_memory_group_storage_sweep"),
+        HostAdapterKernelExport::optional("kernel_memory_group_task_action"),
+        HostAdapterKernelExport::optional("kernel_memory_group_task_receipt"),
         HostAdapterKernelExport::optional("kernel_owned_mapping_finish"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),
@@ -4150,7 +4216,12 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 17;
+    pub const OP_VERSION: u32 = 18;
+    /// Operation table bound into the supported ABI-56 program snapshot.
+    /// This is the existing table those binaries requested, not the maximum
+    /// additive table accepted by the current runtime. Keep its layouts and
+    /// meanings unchanged as OP_VERSION advances through GLIO_INIT negotiation.
+    pub const BASELINE_OP_VERSION: u32 = 17;
     /// One owned TLV replaces public-name staging for bounded client draws.
     /// Keep this record in the program digest even during the unpublished epoch.
     pub mod inline_client_draw {
@@ -4277,6 +4348,8 @@ pub mod gl {
     pub const OP_BIND_TEXTURE: u16 = 0x0202;
     pub const OP_TEX_IMAGE_2D: u16 = 0x0203;
     pub const OP_TEX_SUB_IMAGE_2D: u16 = 0x0204;
+    /// Version 18: same 36-byte RGBA/UNSIGNED_BYTE header; BGRA8 source pixels.
+    pub const OP_TEX_SUB_IMAGE_2D_BGRA8: u16 = 0x020D;
     pub const OP_TEX_PARAMETERI: u16 = 0x0205;
     pub const OP_ACTIVE_TEXTURE: u16 = 0x0206;
     pub const OP_GENERATE_MIPMAP: u16 = 0x0207;

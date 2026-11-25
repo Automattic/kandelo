@@ -37,7 +37,7 @@ export function imageActivity(config: KandeloDemoConfig, id: string, bootProfile
     ...(declaredActivity?.share ? { share: declaredActivity.share } : {}),
     ...(declaredActivity?.visible === false ? { hidden: true } : {}),
     command: declaredActivity?.shellCommand ?? (init !== null && "shellCommand" in init ? init.shellCommand : ":"),
-    launch: { executable: "/bin/sh", args: [], cwd: "/", requires: [], surface: display ? "display" : "terminal",
+    launch: { ...(runtime.executionBackend === undefined ? {} : { executionBackend: runtime.executionBackend }), executable: "/bin/sh", args: [], cwd: "/", requires: [], surface: display ? "display" : "terminal",
       ...(display ? { display } : {}), ...(presentation?.displayScale === undefined ? {} : { displayScale: presentation.displayScale }) },
   };
   if (declaredActivity?.shellCommand !== undefined && web?.requiredPorts.length) {

@@ -38,9 +38,9 @@ for (const pointerWidth of [4, 8] as const) {
       const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
       const words = new Int32Array(memory.buffer);
       const index = CH_STATUS / 4, counterIndex = 256, pid = 41;
-      const channel = { pid, memory, channelOffset: 0, i32View: words, consecutiveSyscalls: 0 };
+      const channel = { source: memory, pid, memory, channelOffset: 0, i32View: words, consecutiveSyscalls: 0 };
       const host: any = Object.assign(createCentralizedKernelWorkerTestDouble(), {
-        processes: new Map([[pid, { pid, execGeneration: 0n, memory, channels: [channel], ptrWidth: pointerWidth }]]),
+        processes: new Map([[pid, { pid, execGeneration: 0n, memory, source: memory, channels: [channel], ptrWidth: pointerWidth }]]),
         activeChannels: [channel], retiredChannelListeners: new Set(), stoppedPids: new Set(),
         pendingResumePids: new Set(), parkedChannelCompletions: new Map(), deferredStoppedChannels: new Map(),
         usePolling: false, relistenBatchSize: batchSize, relistenCount: 0,
@@ -125,9 +125,9 @@ for (const pointerWidth of [4, 8] as const) {
 
 function bareListenerHarness(onKernelFatal?: (error: Error) => void) {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
-  const channel = { pid: 73, memory, channelOffset: 0, i32View: new Int32Array(memory.buffer), consecutiveSyscalls: 0 };
+  const channel = { source: memory, pid: 73, memory, channelOffset: 0, i32View: new Int32Array(memory.buffer), consecutiveSyscalls: 0 };
   const host: any = Object.assign(createCentralizedKernelWorkerTestDouble({ callbacks: { onKernelFatal } }), {
-    processes: new Map([[73, { pid: 73, execGeneration: 0n, memory, channels: [channel] }]]),
+    processes: new Map([[73, { pid: 73, execGeneration: 0n, memory, source: memory, channels: [channel] }]]),
     activeChannels: [channel], retiredChannelListeners: new Set(), stoppedPids: new Set(),
     pendingResumePids: new Set(), parkedChannelCompletions: new Map(), deferredStoppedChannels: new Map(),
     usePolling: false, relistenBatchSize: 1, relistenCount: 0,

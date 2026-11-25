@@ -1,0 +1,24 @@
+id = "WEBKIT-WORKER-ENTRY-EXPORTS"
+kind = "bug"
+status = "confirmed"
+runtimes = ["webkit"]
+summary = "Importing a helper from a module Worker entry installs a second handler with fresh initialization state"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = true
+attempts = 3
+min_reproduced = 3
+timeout_seconds = 30
+
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-11-18
+source = "suite"
+released = false

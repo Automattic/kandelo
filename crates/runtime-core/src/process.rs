@@ -111,6 +111,59 @@ pub trait HostIO {
     fn exchange_source_read(&mut self, _source: u64, _offset: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno::EIO)
     }
+    /// Foreign WebAssembly memory is a host resource, while its identity,
+    /// extent choices, mappings and lifetime are kernel decisions. These
+    /// primitives carry no guest addresses, object ids or allocation policy.
+    fn group_memory_create(&mut self, _resource: u64, _initial: u32, _maximum: u32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_drop(&mut self, _resource: u64) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_pages(&self, _resource: u64) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_grow(&mut self, _resource: u64, _additional: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_read(&self, _resource: u64, _address: u32, _output: &mut [u8]) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_write(&mut self, _resource: u64, _address: u32, _input: &[u8]) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_fill(&mut self, _resource: u64, _address: u32, _length: u32, _byte: u8) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_copy(&mut self, _resource: u64, _destination: u32, _source: u32, _length: u32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_load(&self, _resource: u64, _address: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    /// Read-only sparse scan. High 32 bits encode the one-based relative word
+    /// index, low 32 bits its nonzero value; zero means the range was all zero.
+    /// The scalar implementation is the portable reference for native hosts.
+    fn group_memory_next_nonzero(&self, resource: u64, address: u32, words: u32) -> Result<u64, Errno> {
+        if address < 65536 || address % 4 != 0 || words > 65536
+            || u64::from(address) + u64::from(words) * 4 > u64::from(self.group_memory_pages(resource)?) * 65536 {
+            return Err(Errno::EINVAL);
+        }
+        for index in 0..words {
+            let value = self.group_memory_atomic_load(resource, address + index * 4)?;
+            if value != 0 { return Ok((u64::from(index + 1) << 32) | u64::from(value)); }
+        }
+        Ok(0)
+    }
+    fn group_memory_atomic_store(&mut self, _resource: u64, _address: u32, _value: u32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_compare_exchange(&mut self, _resource: u64, _address: u32, _expected: u32, _value: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn group_memory_atomic_notify(&mut self, _resource: u64, _address: u32, _count: u32) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
     /// image this kernel booted from. This is the seam that lets the kernel
     /// parse its own image (`rootfs::load_image`) rather than consume a tree the
@@ -471,6 +524,15 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// Bind native BO transport to the actual kernel-owned shared object.
+    /// The Wasm adapter lends its physical page descriptor synchronously;
+    /// the host never looks up logical object identity in a second registry.
+    #[allow(unused_variables)]
+    fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
+        bo_offset: u64, object: &crate::memory::GroupSharedMapping) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     /// Unbind a prior `gbm_bo_bind` — called from munmap /
     /// process-exit before the wasm pages are returned to the
     /// anonymous pool.
@@ -682,10 +744,11 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
-    /// Nonallocating bounds check against the current dispatching process's
-    /// registered memory. Does not dereference or copy the requested range.
+    /// Check the current dispatching process's whole range for the requested
+    /// guest access without copying bytes or allocating payload storage. Does
+    /// not grant future access: transfers and resumed input must revalidate.
     #[allow(unused_variables)]
-    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize) -> i32 {
+    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -881,9 +944,20 @@ impl Deref for ThreadIdentity {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GroupedThreadEntry {
+    pub function: u32,
+    pub argument: u32,
+    pub slot_start: u32,
+    pub slot_length: u32,
+}
+
 /// Mutable non-identity state for a retained thread.
 #[derive(Debug, Clone)]
 pub struct ThreadState {
+    /// The allocating caller and grouped replay recipe belong to this task.
+    pub(crate) creator_tid: u32,
+    pub(crate) grouped_entry: Option<GroupedThreadEntry>,
     pub ctid_ptr: usize, // CLONE_CHILD_CLEARTID address (futex wake on exit)
     pub stack_ptr: usize,
     pub tls_ptr: usize,
@@ -922,6 +996,8 @@ impl ThreadInfo {
             identity: ThreadIdentity {
                 tid,
                 state: ThreadState {
+                    creator_tid: 0,
+                    grouped_entry: None,
                     ctid_ptr,
                     stack_ptr,
                     tls_ptr,
@@ -1207,10 +1283,14 @@ pub struct Process {
     /// it (`kernel_set_main_channel_addr`), at every registration of an
     /// address space, including the one after an exec.
     pub main_channel_addr: u64,
+    /// A forked pthread becomes a process leader but still replays its thread
+    /// entry on subsequent forks. Exec clears this old-image recipe.
+    pub(crate) grouped_main_entry: Option<GroupedThreadEntry>,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
     pub exec_generation: u64,
+    pub(crate) grouped_artifact: Option<crate::group_layout::Artifact>,
     pub entropy_reads: crate::entropy_read::EntropyReadLedger,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
     pub prepared_exec_targets: PreparedExecLedger,
@@ -1343,6 +1423,12 @@ pub struct Process {
     /// Driver-owned exact resources belong to this image, not inherited fd
     /// numbers. Exec/exit explicitly consume these real OFD/BO references.
     pub(crate) owned_resources: crate::owned_resource::State,
+    /// One kernel-owned grouped mapping preparation for this image. Its token
+    /// never authorizes a replacement image or another task's completion.
+    pub(crate) pending_group_memory_change: Option<crate::IoBox<Option<crate::group_memory_change::Pending>>>,
+    /// Future grouped exec image custody. Keep this outside the outgoing MM
+    /// so failed/committed exec cannot erase its exact rollback obligation.
+    pub(crate) pending_grouped_exec: Option<crate::IoBox<Option<crate::grouped_exec::Pending>>>,
     /// Renderer leases created by this image, including descriptions now held
     /// only by another process. Weak references do not keep resources alive.
     pub(crate) gl_resource_owners: Vec<crate::ofd::WeakGlResources>,
@@ -1679,7 +1765,9 @@ impl Process {
             secure_exec: false,
             pointer_width: 4,
             main_channel_addr: 0,
+            grouped_main_entry: None,
             exec_generation: 0,
+            grouped_artifact: None,
             entropy_reads: crate::entropy_read::EntropyReadLedger::default(),
             prepared_exec_targets: PreparedExecLedger::new(),
             exe: None,
@@ -1733,6 +1821,8 @@ impl Process {
             fb_binding: None,
             dri_bindings: crate::IoBuffer::new(),
             owned_resources: crate::owned_resource::State::default(),
+            pending_group_memory_change: None,
+            pending_grouped_exec: None,
             gl_resource_owners: Vec::new(),
             shm_mappings: crate::IoBuffer::new(),
             fork_count: 0,
@@ -3176,6 +3266,8 @@ pub mod test_host {
     pub struct GuestMemoryHost {
         pub base: u64,
         pub memory: alloc::vec::Vec<u8>,
+        pub write_denied: bool,
+        pub write_fault: Option<core::ops::Range<u64>>,
         pub entropy_calls: usize,
         pub entropy_failure_at: Option<usize>,
         pub entropy_max_window: usize,
@@ -3188,6 +3280,8 @@ pub mod test_host {
             Self {
                 base,
                 memory: alloc::vec![0u8; len],
+                write_denied: false,
+                write_fault: None,
                 entropy_calls: 0,
                 entropy_failure_at: None,
                 entropy_max_window: 0,
@@ -3220,8 +3314,8 @@ pub mod test_host {
     }
 
     impl HostIO for GuestMemoryHost {
-        fn proc_validate_range(&mut self, _pid: i32, addr: u64, len: usize) -> i32 {
-            if self.range(addr, len).is_some() { 0 } else { -(Errno::EFAULT as i32) }
+        fn proc_validate_range(&mut self, _pid: i32, addr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
+            if self.range(addr, len).is_some() && !(len != 0 && access == wasm_posix_shared::ProcessMemoryAccess::Write && (self.write_denied || self.write_fault.as_ref().is_some_and(|r| addr < r.end && r.start < addr.saturating_add(len as u64)))) { 0 } else { -(Errno::EFAULT as i32) }
         }
         fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
             match self.range(addr, dst.len()) {
@@ -3234,6 +3328,7 @@ pub mod test_host {
         }
 
         fn proc_write_bytes(&mut self, _pid: i32, addr: u64, src: &[u8]) -> i32 {
+            if !src.is_empty() && (self.write_denied || self.write_fault.as_ref().is_some_and(|r| addr < r.end && r.start < addr.saturating_add(src.len() as u64))) { return -(Errno::EFAULT as i32); }
             match self.range(addr, src.len()) {
                 Some(range) => {
                     self.memory[range].copy_from_slice(src);

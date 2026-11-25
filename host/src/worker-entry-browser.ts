@@ -1,3 +1,4 @@
+import { receiveGroupedWorkerInitialization } from "./grouped-worker-initialization";
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 import { runWithProcessWorkerQuiescence } from "./worker-quiescence";
@@ -25,7 +26,16 @@ if (instancesOutliveThreads) retainWasmInstancesUntilWorkerEnds();
 // exact memory-quiescence fence. There is no separate shutdown postMessage
 // handler because a running guest can remain parked inside Wasm Atomics.wait.
 sw.onmessage = (e: MessageEvent) => {
-  const data = e.data as { type: string };
+  sw.onmessage = null;
+  void receiveGroupedWorkerInitialization(e.data,
+    () => new Promise(resolve => { sw.onmessage = event => { sw.onmessage = null; resolve(event.data); }; }),
+    message => sw.postMessage(message)).then(async ({ init: initData, grouped, stopped }) => {
+  if (stopped) {
+    await runWithProcessWorkerQuiescence(sw, { pid: stopped.pid,
+      ...(stopped.tid === stopped.pid ? {} : { tid: stopped.tid }), memoryGroup: stopped }, async () => {}, () => {});
+    return;
+  }
+  const data = initData as { type: string };
 
   const port = {
     postMessage: (msg: unknown, transfer?: unknown[]) =>
@@ -38,31 +48,36 @@ sw.onmessage = (e: MessageEvent) => {
     close: () => sw.close(),
   };
   if (data.type === "centralized_init") {
-    const init = e.data as CentralizedWorkerInitMessage;
-    void runWithProcessWorkerQuiescence(
+    const init = initData as CentralizedWorkerInitMessage;
+    await runWithProcessWorkerQuiescence(
       port,
-      { pid: init.pid },
-      () => centralizedWorkerMain(port, init),
+      { pid: init.pid, ...(grouped ? { memoryGroup: grouped.descriptor.receipt } : {}) },
+      async () => { try { await centralizedWorkerMain(port, init, grouped); } finally { grouped?.detach(); } },
       (error) =>
         console.error(
           `[worker-entry-browser] worker main error pid=${init.pid}`,
-          error,
+          error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
         ),
     );
   } else if (data.type === "centralized_thread_init") {
-    const init = e.data as CentralizedThreadInitMessage;
-    void runWithProcessWorkerQuiescence(
+    const init = initData as CentralizedThreadInitMessage;
+    await runWithProcessWorkerQuiescence(
       instancesOutliveThreads ? { ...port, close: () => {} } : port,
-      { pid: init.pid, tid: init.tid },
-      () => centralizedThreadWorkerMain(port, init),
+      { pid: init.pid, tid: init.tid, ...(grouped ? { memoryGroup: grouped.descriptor.receipt } : {}) },
+      async () => { try { await centralizedThreadWorkerMain(port, init, grouped); } finally { grouped?.detach(); } },
       (error) =>
         console.error(
           `[worker-entry-browser] thread worker main error`
             + ` pid=${init.pid} tid=${init.tid}`,
-          error,
+          error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
         ),
     );
   } else {
     throw new Error(`Unknown worker init type: ${data.type}`);
   }
+  }).catch(error => {
+    // Surface failed initialization through the normal Worker error route.
+    // No task identity or quiescence fence exists at this point.
+    setTimeout(() => { throw error; }, 0);
+  });
 };

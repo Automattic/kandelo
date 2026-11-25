@@ -1,7 +1,7 @@
 kind = "program"
 name = "bash"
 version = "5.2.37"
-kernel_abi = 7
+kernel_abi = 56
 depends_on = ["ncurses@6.5"]
 
 [source]
@@ -19,3 +19,10 @@ script_path = "packages/registry/bash/build-bash.sh"
 [[outputs]]
 name = "bash"
 wasm = "bash.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "bash-shared"
+wasm = "bash-shared.zip"
+shared_memory_from = "bash"
+fork_instrumentation = "disabled"

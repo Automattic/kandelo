@@ -93,7 +93,7 @@ Example:
 /home/maker      d  0755  1000  1000
 /etc/passwd      f  0644  0     0
 /bin/sh          l  0777  0     0  target=/usr/bin/bash
-/usr/bin/bash    f  0755  0     0  lazy_url=binaries/programs/wasm32/bash.wasm lazy_size=1234567
+/usr/bin/bash    f  0755  0     0  lazy_url=binaries/programs/wasm32/bash/bash.wasm lazy_size=1234567
 archive          url=./runtime.zip base=/usr fmode=0644 dmode=0755 uid=0 gid=0
 ```
 

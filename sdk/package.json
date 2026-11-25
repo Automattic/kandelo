@@ -4,6 +4,7 @@
   "license": "GPL-2.0-or-later",
   "type": "module",
   "bin": {
+    "wasm32posix-shared-memory": "./bin/wasm32posix-shared-memory",
     "wasm32posix-cc": "./bin/wasm32posix-cc",
     "wasm32posix-c++": "./bin/wasm32posix-c++",
     "wasm32posix-ar": "./bin/wasm32posix-ar",

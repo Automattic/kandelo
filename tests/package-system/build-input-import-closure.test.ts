@@ -240,10 +240,10 @@ describe("package build input import closure", () => {
         "const coreutilsRoot = process.env.WASM_POSIX_DEP_COREUTILS_DIR;",
       );
       expect(builder).toMatch(
-        /coreutils:\s*new Uint8Array\(\s*readFileSync\(coreutilsRoot\s*\?\s*join\(coreutilsRoot, "coreutils\.wasm"\)\s*:\s*resolveBinary\("programs\/coreutils\.wasm"\)\)/,
+        /coreutils:\s*new Uint8Array\(\s*readFileSync\(coreutilsRoot\s*\?\s*join\(coreutilsRoot, "coreutils\.wasm"\)\s*:\s*resolveBinary\("programs\/coreutils\/coreutils\.wasm"\)\)/,
       );
       expect(builder).not.toContain(
-        'tryResolveBinary("programs/coreutils.wasm")',
+        'tryResolveBinary("programs/coreutils/coreutils.wasm")',
       );
     }
   });

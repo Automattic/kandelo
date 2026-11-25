@@ -9,7 +9,7 @@ test("tmux pane shells, input, splits, windows and resizing", async ({ page }) =
   page.on("pageerror", error => errors.push(error.message));
   await page.goto("/pages/test-runner/?minimal=1");
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
-  const bashUrl = await devServerAssetUrl(page, "@binaries/programs/wasm32/bash.wasm");
+  const bashUrl = await devServerAssetUrl(page, "@binaries/programs/wasm32/bash/bash.wasm");
   const tmuxUrl = await devServerAssetUrl(page, `@binaries/${tmuxRelPath}`);
   const result = await page.evaluate(async ({ bashUrl, tmuxUrl, script, terminfoFiles }) => {
     const load = async (url: string) => {

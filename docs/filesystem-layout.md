@@ -135,3 +135,5 @@ The build runner rejects `/tmp`, `/run`, and the standard `/var/run` and
 `/var/lock` aliases, including their descendants, because guest path resolution
 would hide those host-backed inputs beneath scratch storage. This validation
 does not resolve arbitrary symlinks in custom images.
+
+SDK-prepared shared-memory implementations live in `/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`. Producers declare these through normal package output settings; images install their lazy archives without a guest catalog. Ordinary command paths retain their original executable identities; explicitly opted-in execution binds a compatible implementation through retained descriptors.

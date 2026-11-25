@@ -221,6 +221,45 @@ test("a scoped lazy VFS asset cache preserves full bytes and Content-Length duri
   expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
 });
 
+test("a scoped lazy VFS download survives cache quota exhaustion and can cache again later", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Managed native quota is a Chromium CDP control; ordinary cache contracts run on every engine");
+  const assetPath = "/a/vfs-groups/release-1/assets/shared.bin";
+  const body = "q".repeat(2 * 1024 * 1024);
+  lazyAssetResponses.set(assetPath, { kind: "ok", body });
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const session = await page.context().newCDPSession(page);
+  const origin = new URL(FIXTURE_ORIGIN).origin;
+  try {
+    const before = await session.send("Storage.getUsageAndQuota", { origin });
+    await session.send("Storage.overrideQuotaForOrigin", { origin, quotaSize: before.usage + 512 * 1024 });
+    expect((await session.send("Storage.getUsageAndQuota", { origin })).overrideActive).toBe(true);
+    // Establish the real browser refusal independently of service-worker fetch.
+    const refused = await page.evaluate(async () => {
+      const cache = await caches.open("owned-quota-control");
+      try {
+        await cache.put("/owned-quota-control", new Response(new Uint8Array(1024 * 1024).fill(53)));
+        return "unexpected success";
+      } catch (error) { return (error as Error).name; }
+    });
+    expect(refused).toBe("QuotaExceededError");
+    const response = await fetchResponse(page, assetPath);
+    expect(response.status).toBe(200);
+    expect(response.body === body).toBe(true);
+    expect(response.contentLength).toBe(String(Buffer.byteLength(body)));
+    expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
+    await session.send("Storage.overrideQuotaForOrigin", { origin });
+    lazyAssetResponses.set(assetPath, { kind: "ok", body: "cache works after quota recovery" });
+    expect((await fetchResponse(page, assetPath)).body).toBe("cache works after quota recovery");
+    expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+    lazyAssetResponses.set(assetPath, { kind: "failed", body: "origin unavailable" });
+    expect((await fetchResponse(page, assetPath)).body).toBe("cache works after quota recovery");
+  } finally {
+    await session.send("Storage.overrideQuotaForOrigin", { origin });
+    await session.detach();
+  }
+});
+
 test("an explicit native-integrity reload replaces a rejected scoped lazy body", async ({ page }) => {
   const assetPath = "/a/vfs-groups/release-1/assets/shared.bin";
   await page.goto(`${FIXTURE_ORIGIN}/a/`);

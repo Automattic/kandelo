@@ -10,6 +10,7 @@ import type { WorkerHandle } from "./worker-adapter";
  */
 export class DeferredWorkerHandle implements WorkerHandle {
   private worker: WorkerHandle | null = null;
+  private retiredWorker?: WeakRef<WorkerHandle>;
   #constructionAttempted = false;
   #absenceSealed = false;
   #backingTerminationCompleted = false;
@@ -118,7 +119,7 @@ export class DeferredWorkerHandle implements WorkerHandle {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   off(event: string, handler: (...args: any[]) => void): void {
     this.handlers.get(event)?.delete(handler);
-    if (this.worker) this.worker.off(event, handler);
+    (this.worker ?? this.retiredWorker?.deref())?.off(event, handler);
   }
 
   terminate(): Promise<number> {
@@ -131,6 +132,7 @@ export class DeferredWorkerHandle implements WorkerHandle {
     this.pendingMessages.splice(0);
     this.handlers.clear();
     const worker = this.worker;
+    if (worker) this.retiredWorker = new WeakRef(worker);
     this.worker = null;
     this.terminationPromise = worker
       ? worker.terminate().then((code) => {

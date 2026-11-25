@@ -66,12 +66,17 @@ export async function installBrowserMemoryBoundaryProbe(page: Page): Promise<voi
     window.__browserMemoryBoundaryRealmId = crypto.randomUUID();
     const NativeMemory = WebAssembly.Memory;
     const NativeWorker = window.Worker;
-    WebAssembly.Memory = class extends NativeMemory {
-      constructor(descriptor: WebAssembly.MemoryDescriptor) {
-        super(descriptor);
-        if (descriptor.shared) failures.push("browser main allocated shared Wasm memory");
-      }
-    };
+    // Preserve the native prototype and its own buffer getter while observing
+    // construction. A subclass hides that getter from valid host imports.
+    WebAssembly.Memory = new Proxy(NativeMemory, {
+      construct(target, args, newTarget) {
+        const memory = Reflect.construct(target, args, newTarget);
+        if ((args[0] as WebAssembly.MemoryDescriptor).shared) {
+          failures.push("browser main allocated shared Wasm memory");
+        }
+        return memory;
+      },
+    });
     window.Worker = class extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options);

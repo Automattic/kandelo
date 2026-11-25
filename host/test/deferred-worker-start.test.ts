@@ -1,3 +1,4 @@
+import { groupMemoryLayout } from './support/group-memory-layout';
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerAbsence, DeferredWorkerHandle } from "../src/deferred-worker-handle";
 import type { WorkerAbsence } from "../src/deferred-worker-handle";
@@ -5,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import ts from "typescript";
-import { createWorkerQuiescence, type WorkerQuiescence, retireWorkerBatch, processWorkerRetirementProven } from "../src/worker-quiescence";
+import { createWorkerQuiescence, createThreadWorkerReadiness, type WorkerQuiescence, retireWorkerBatch, processWorkerRetirementProven } from "../src/worker-quiescence";
 import { removeThreadWorkerRegistryEntry } from "../src/thread-worker-disposition";
 import { ThreadExitCoordinator } from "../src/thread-exit-coordinator";
 import { isCurrentProcessGeneration } from "../src/kernel-worker";
@@ -55,6 +56,16 @@ describe("DeferredWorkerHandle", () => {
     expect(messages).toEqual([{ type: "ready" }]);
   });
 
+  it('removes exact listeners from a retired backing after dropping its strong reference', async () => {
+    const adapter = new MockWorkerAdapter(), handle = new DeferredWorkerHandle(() => adapter.createWorker({}));
+    const message = vi.fn(), exit = vi.fn(); handle.on('message', message); handle.on('exit', exit); handle.start();
+    const backing = adapter.lastWorker!;
+    await handle.terminate();
+    expect((handle as any).worker).toBeNull();
+    handle.off('message', message); handle.off('exit', exit);
+    backing.simulateMessage({ type: 'stale' }); backing.simulateExit(0);
+    expect(message).not.toHaveBeenCalled(); expect(exit).not.toHaveBeenCalled();
+  });
   it("permanently cancels construction when terminated before start", async () => {
     const create = vi.fn(() => new MockWorkerAdapter().createWorker({}));
     const handle = new DeferredWorkerHandle(create);
@@ -107,6 +118,46 @@ describe("DeferredWorkerHandle", () => {
 });
 
 describe("stopped process Worker launch gate", () => {
+  it("does not release a constructor into a replacement registration sharing native Memory", async () => {
+    let state: number = PROCESS_STATE_STOPPED;
+    const memory = createSharedMemory(), { worker } = createWorkerHarness(memory, () => state);
+    const canceled = Promise.withResolvers<void>();
+    const start = vi.fn(), cancel = vi.fn(() => { canceled.resolve(); });
+    expect(worker.startProcessWorkerWhenRunnable(41, memory, start, cancel)).toBe("deferred");
+    worker.testAuthority.replaceProcessRegistrationForLifecycleTest({ pid: 41, memory, channelOffsets: [0] });
+    state = PROCESS_STATE_RUNNING;
+    expect(worker.testAuthority.resumeStoppedProcessForTest(41)).toBe(true);
+    await canceled.promise;
+    expect(start).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("requires the virtual source and refuses a replaced image sharing its native Memory", async () => {
+    const task = { group: 7, pid: 41, tid: 41, serial: 1n, generation: 0n };
+    const fixture = groupMemoryLayout({ receipt: task });
+    const { source, memory } = fixture;
+    let state: number = PROCESS_STATE_STOPPED;
+    const { worker, channel } = createWorkerHarness(memory, () => state);
+    const registration = (worker as any).processes.get(41);
+    Object.assign(registration, { source }); Object.assign(channel, { source });
+    const canceled = Promise.withResolvers<void>();
+    const start = vi.fn(), cancel = vi.fn(() => { canceled.resolve(); }), bareCancel = vi.fn();
+    try {
+      expect(worker.startProcessWorkerWhenRunnable(41, memory, start, bareCancel)).toBe("stale");
+      expect(bareCancel).toHaveBeenCalledOnce();
+      const next = { ...task, serial: 2n, generation: 1n };
+      const { launch: nextLaunch, source: nextSource } = groupMemoryLayout({ receipt: next, memory, rootPage: 2, replicaPage: 5, payloadPage: 16 });
+      expect(nextLaunch.envelope.memory).toBe(memory);
+      (worker as any).processes.set(41, { ...registration, source: nextSource,
+        channels: [{ ...channel, source: nextSource }] });
+      // Grouped construction itself now belongs to the actual Rust operation,
+      // not this ordinary deferred-start gate. A stale explicit source must
+      // still be rejected before either path can start a platform Worker.
+      expect(worker.startProcessWorkerWhenRunnable(41, memory, start, cancel, undefined, source)).toBe("stale");
+      await canceled.promise;
+      expect(start).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledOnce();
+    } finally { fixture.close(); }
+  });
+
   it("holds construction through STOPPED and releases it on SIGCONT", async () => {
     let processState = 1;
     const memory = createSharedMemory();
@@ -311,6 +362,7 @@ describe("stopped process Worker launch gate", () => {
     let processState = PROCESS_STATE_STOPPED;
     const memory = createSharedMemory();
     const channel = {
+      source: memory,
       pid: 41,
       memory,
       channelOffset: 0,
@@ -499,6 +551,7 @@ describe("stopped process Worker launch gate", () => {
     let processState = 1;
     const memory = createSharedMemory();
     const channel = {
+      source: memory,
       pid: 41,
       memory,
       channelOffset: 0,
@@ -594,6 +647,7 @@ function createWorkerHarness(
   readonly channel: {
     readonly pid: number;
     readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
     readonly channelOffset: number;
     readonly i32View: Int32Array;
     consecutiveSyscalls: number;
@@ -799,6 +853,8 @@ function actualCloneRetirementControl(
   const settleRetiredChannelListeners = vi.fn(async () => {});
   const waitForWorkerQuiescence = vi.fn(async (fence: WorkerQuiescence) => fence.settled);
   const waitForExecRetirement = vi.fn(async (exec: WorkerQuiescence, memory: WorkerQuiescence) => exec.settled && memory.settled);
+  let observeLaunch!: () => void;
+  const launched = new Promise<void>(resolve => { observeLaunch = resolve; });
   let start!: () => void, cancel!: () => void, admitted!: CloneThreadRetirementControl;
   const originalAdmission = observations.threadAdmitted.bind(observations);
   observations.threadAdmitted = (generation, thread) => {
@@ -810,7 +866,7 @@ function actualCloneRetirementControl(
       isExecHandoffActive: () => false, isProcessExecutionActive: () => true,
       attachThreadChannel() {}, getKernelAbiVersion: () => 56, getKernelAbiContractDigest: () => "source-control",
       startProcessWorkerWhenRunnable(_pid: number, _memory: WebAssembly.Memory, launch: () => void, stop: () => void) {
-        start = launch; cancel = stop;
+        start = launch; cancel = stop; observeLaunch();
         if (disposition === "started-stale" || disposition === "termination-failure" || disposition === "started") { launch(); return disposition === "started" ? "started" : "stale"; }
         if (disposition === "constructor-failure") { launch(); throw Error("constructor must throw"); }
         return disposition;
@@ -818,7 +874,7 @@ function actualCloneRetirementControl(
       settleRetiredChannelListeners, finalizeThreadExit() {}, failDeferredCloneLaunch: () => true,
     },
     isCurrentProcessGeneration, retryKernelEntryResult, retryKernelEntryResultForGeneration,
-    DeferredWorkerHandle, createWorkerAbsence, createWorkerQuiescence, removeThreadWorkerRegistryEntry,
+    DeferredWorkerHandle, createWorkerAbsence, createWorkerQuiescence, createThreadWorkerReadiness, removeThreadWorkerRegistryEntry,
     retireWorkerBatch, processWorkerRetirementProven, waitForWorkerQuiescence, waitForExecRetirement,
     terminateExitedThreadWorkers: async () => {},
     PROCESS_WORKER_QUIESCENCE_WAIT_MS: 100, EXEC_WORKER_RETIREMENT_WAIT_MS: 5000,
@@ -837,7 +893,7 @@ function actualCloneRetirementControl(
     (pid: number) => processes.get(pid), (pid: number) => { processes.delete(pid); },
     (generation, result) => observations.retired(generation, result),
   );
-  return { pending, info, slots, threadWorkers, observations, events, createWorker, settleRetiredChannelListeners,
+  return { pending, launched, info, slots, threadWorkers, observations, events, createWorker, settleRetiredChannelListeners,
     waitForWorkerQuiescence, waitForExecRetirement, retirementNotices,
     retireBatch: (exec = false): Promise<boolean> => actual.batch(pid, exec),
     get admitted() { return admitted; }, start: () => start(), cancel: () => cancel(),
@@ -883,9 +939,9 @@ for (const host of ["node", "browser"] as const) for (const ptrWidth of [4, 8] a
 
   it(`${host} actual deferred clone cancellation seals before a later continue (${ptrWidth})`, async () => {
     const r = actualCloneRetirementControl(host, ptrWidth, "deferred");
-    await r.pending;
+    await r.launched;
     expect(r.createWorker).not.toHaveBeenCalled();
-    r.cancel(); await r.admitted.termination;
+    r.cancel(); await r.pending; await r.admitted.termination;
     expect(r.slots.size).toBe(0);
     expect(r.admitted.workerAbsence?.proven).toBe(true);
     r.start(); expect(r.createWorker).not.toHaveBeenCalled();
@@ -927,7 +983,7 @@ for (const host of ["node", "browser"] as const) for (const ptrWidth of [4, 8] a
     // This is a real disposable Node realm for both source listeners; it does
     // not claim to exercise a real browser or the normal guest/kernel build.
     const r = actualCloneRetirementControl(host, ptrWidth, "started", () => {
-      realm = new Worker(`const {parentPort}=require('node:worker_threads');parentPort.once('message',()=>{parentPort.postMessage({type:'memory_quiescent',pid:41,tid:73});parentPort.close();});`, { eval: true });
+      realm = new Worker(`const {parentPort}=require('node:worker_threads');parentPort.postMessage({type:'thread_ready',pid:41,tid:73});parentPort.once('message',()=>{parentPort.postMessage({type:'memory_quiescent',pid:41,tid:73});parentPort.close();});`, { eval: true });
       release = () => realm.postMessage("return from worker-main control");
       return realm as unknown as WorkerHandle;
     });
@@ -948,11 +1004,12 @@ for (const host of ["node", "browser"] as const) for (const ptrWidth of [4, 8] a
 
   it.each([false, true])(`${host} actual batch seals a deferred clone without forging exec or memory ACKs (${ptrWidth}, exec=%s)`, async requireExec => {
     const r = actualCloneRetirementControl(host, ptrWidth, "deferred");
-    await r.pending;
+    await r.launched;
     // The main realm proof is a controlled boundary input. This fixture tests
     // the actual thread-batch body, not a normal main-worker activation.
     r.info.workerQuiescence.settle();
     const safe = await r.retireBatch(requireExec);
+    await r.pending;
     expect(safe).toBe(true);
     expect(r.createWorker).not.toHaveBeenCalled();
     expect(r.waitForWorkerQuiescence).not.toHaveBeenCalled();
@@ -969,6 +1026,8 @@ for (const host of ["node", "browser"] as const) for (const ptrWidth of [4, 8] a
 
   it(`${host} actual batch retains forced retirement after a started realm has no ACK (${ptrWidth})`, async () => {
     const r = actualCloneRetirementControl(host, ptrWidth, "started");
+    await r.launched;
+    r.createWorker.mock.results[0].value.simulateMessage({ type: 'thread_ready', pid: 41, tid: 73 });
     await r.pending;
     r.info.workerQuiescence.settle();
     const safe = await r.retireBatch(true);

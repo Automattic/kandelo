@@ -50,6 +50,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read scalar group accounting without creating a group or exposing memory. */
+export interface GetMemoryGroupUsageRequestMessage {
+  type: "get_memory_group_usage";
+  requestId: number;
+}
+
 export interface GetStorageMetadataMemoryUsageRequestMessage {
   type: "get_storage_metadata_memory_usage";
   requestId: number;
@@ -103,7 +109,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas; bitmapPort?: MessagePort };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. The

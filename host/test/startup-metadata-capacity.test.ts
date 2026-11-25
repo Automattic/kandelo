@@ -14,11 +14,42 @@ import {
   PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { buildKernelImportsForTest } from "../src/worker-main";
+import { GroupProcessAddressSpace } from "../src/process-address-space";
 
 const E2BIG = 7;
 const EFAULT = 14;
 const EINVAL = 22;
 const ERANGE = 34;
+
+describe('startup imports with an explicit virtual source', () => {
+  function group() {
+    const page = 65536;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 32, shared: true });
+    const words = new Uint32Array(memory.buffer), root = page, pte = root / 4 + 16;
+    words[root / 4] = 2;
+    words[pte] = 4 * page | 3; words[pte + 1] = 6 * page | 3;
+    const source = new GroupProcessAddressSpace({ memory, root, maximumPages: 32, assertLive: () => {} });
+    return { source, words, pte, page };
+  }
+  it('copies across discontiguous mapped pages using the existing UTF8 length contract', () => {
+    const { source, page } = group();
+    const imports = buildKernelImportsForTest(source, 64, 4, ['alpha'], [], false, () => 1);
+    const read = imports.kernel_argv_read as EntryReader;
+    expect(read(0, 0, 0)).toBe(5);
+    expect(read(0, page - 2, 5)).toBe(5);
+    expect([...source.readBytes(page - 2, 5)]).toEqual([...new TextEncoder().encode('alpha')]);
+  });
+  it('returns EFAULT without a partial copy when a later virtual page is read-only', () => {
+    const { source, words, pte, page } = group();
+    source.fillBytes(page - 2, 5, 0xa5); words[pte + 1] = 6 * page | 1;
+    const imports = buildKernelImportsForTest(source, 64, 4, ['alpha'], [], false, () => 1);
+    expect((imports.kernel_argv_read as EntryReader)(0, page - 2, 5)).toBe(-EFAULT);
+    expect([...source.readBytes(page - 2, 5)]).toEqual(Array(5).fill(0xa5));
+  });
+  it('refuses a grouped import set without a replica-bound translated wait', () => {
+    expect(() => buildKernelImportsForTest(group().source, 64, 4)).toThrow('replica-bound translated wait');
+  });
+});
 
 type EntryReader = (
   index: number,

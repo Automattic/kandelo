@@ -36,7 +36,7 @@ import { resolveBinary } from "../src/binary-resolver";
 import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
 const wltermBin = resolveBinary("programs/wayland-demo/wlterm.wasm");
-const shellBin = resolveBinary("programs/bash.wasm");
+const shellBin = resolveBinary("programs/bash/bash.wasm");
 requireSession("cage");
 requireSession("sway");
 const dashBin = resolveBinary("programs/dash.wasm");

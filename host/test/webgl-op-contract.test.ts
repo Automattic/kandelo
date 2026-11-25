@@ -59,3 +59,16 @@ it("binds opaque compressed staging to the shared Program contract and exact sou
   expect(wire.begin_acceptance).toBe("custody-only-not-native-storage-validation");
   expect(snapshot.abi_surfaces.program).toContain("gl_compressed_upload");
 });
+
+
+it("retains ABI-56's table-17 snapshot while negotiating additive GL tables", () => {
+  const root = resolve(import.meta.dirname, "../..");
+  const snapshot = JSON.parse(readFileSync(resolve(root, "abi/snapshot.json"), "utf8"));
+  const baseline = JSON.parse(readFileSync(resolve(root, "abi/supported-program-baseline.json"), "utf8"));
+  expect(snapshot.gl_inline_client_draw.op_version).toBe(17);
+  expect(snapshot.gl_image_container_receipts.op_version).toBe(17);
+  expect(hostOps.OP_VERSION).toBeGreaterThanOrEqual(17);
+  // The baseline file and exact program digest remain owned by the separate
+  // source-derived check; a new opcode does not rewrite either artifact.
+  expect(baseline.abi_version ?? baseline.abiVersion).toBe(56);
+});

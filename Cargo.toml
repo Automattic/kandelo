@@ -11,6 +11,7 @@ members = [
     "crates/fork-instrument",
     "crates/fork-instrument-capi",
     "crates/kandelo-ffi-adapter",
+    "crates/shared-memory-instrument",
     "crates/kandelo-cc",
     "crates/wasm-local-root-spill",
     "crates/wasm-artifact",

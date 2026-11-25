@@ -27,6 +27,7 @@ inputs = [
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/program-originals.ts",
   "images/vfs/scripts/dependency-original-inputs.ts",
+  "images/vfs/scripts/read-build-inputs.ts",
   "images/vfs/scripts/package-session-files.ts",
   "scripts/package-runtime-file.ts",
   "images/vfs/scripts/smtp-capture-helpers.ts",
@@ -56,5 +57,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 30
+revision = 31
 publication_state = "pending"

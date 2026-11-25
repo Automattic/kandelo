@@ -3838,7 +3838,7 @@ static const struct { GLenum format, type; uint8_t bytes; } k_texture_pixels[] =
     /* OES_depth_texture and OES_packed_depth_stencil. */
     {GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, 2}, {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, 4},
     {GL_DEPTH_STENCIL_OES, GL_UNSIGNED_INT_24_8_OES, 4},
-    /* EXT_texture_format_BGRA8888 (sent to the host as swizzled RGBA). */
+    /* EXT_texture_format_BGRA8888 (RGBA storage, BGRA8 source uploads). */
     {GL_BGRA_EXT, GL_UNSIGNED_BYTE, 4},
 };
 
@@ -3939,24 +3939,10 @@ static uint32_t unpack_row_stride(GLsizei pixels, uint32_t bpp) {
     return (row + a - 1u) & ~(a - 1u);
 }
 
-/* GL_EXT_texture_format_BGRA8888: WebGL has no BGRA format, so BGRA
- * pixels travel as RGBA with red and blue exchanged on the way. */
+/* GL_EXT_texture_format_BGRA8888 uses RGBA native storage. Version 18's
+ * BGRA8 upload opcode preserves source bytes until the host-owned copy. */
 static GLenum host_pixel_format(GLenum format) {
     return format == GL_BGRA_EXT ? GL_RGBA : format;
-}
-
-static void copy_row(uint8_t *dst, const uint8_t *src, uint32_t bytes,
-                     int swap_red_blue) {
-    if (!swap_red_blue) {
-        memcpy(dst, src, bytes);
-        return;
-    }
-    for (uint32_t i = 0; i + 3 < bytes; i += 4) {
-        dst[i]     = src[i + 2];
-        dst[i + 1] = src[i + 1];
-        dst[i + 2] = src[i];
-        dst[i + 3] = src[i + 3];
-    }
 }
 
 /* Largest OP_TEX_SUB_IMAGE_2D pixel payload: the TLV payload-length field
@@ -3972,7 +3958,6 @@ static void emit_tex_band(GLenum target, GLint level, GLint xoff, GLint yoff,
                           GLsizei width, GLsizei height,
                           GLenum format, GLenum type, uint32_t bpp,
                           const uint8_t *src, uint32_t src_stride) {
-    int swap = format == GL_BGRA_EXT;
     uint32_t stride = unpack_row_stride(width, bpp);
     uint32_t tail = (uint32_t)width * bpp;
     uint32_t max_rows = WPK_TEX_ROW_PAYLOAD / stride;
@@ -3980,7 +3965,9 @@ static void emit_tex_band(GLenum target, GLint level, GLint xoff, GLint yoff,
         uint32_t rows = (uint32_t)(height - y);
         if (rows > max_rows) rows = max_rows;
         uint32_t dlen = (rows - 1u) * stride + tail;
-        EMIT_BEGIN(OP_TEX_SUB_IMAGE_2D, 36u + dlen)
+        /* Version 18 keeps BGRA bytes in the bounded payload. The host
+         * converts its already-owned copy before the native WebGL call. */
+        EMIT_BEGIN(format == GL_BGRA_EXT ? OP_TEX_SUB_IMAGE_2D_BGRA8 : OP_TEX_SUB_IMAGE_2D, 36u + dlen)
         w_u32(&_c, (uint32_t)target);
         w_i32(&_c, level);
         w_i32(&_c, xoff);
@@ -3991,8 +3978,8 @@ static void emit_tex_band(GLenum target, GLint level, GLint xoff, GLint yoff,
         w_u32(&_c, (uint32_t)type);
         w_u32(&_c, dlen);
         for (uint32_t r = 0; r < rows; r++) {
-            copy_row(_c + (size_t)r * stride,
-                     src + ((size_t)(uint32_t)y + r) * src_stride, tail, swap);
+            memcpy(_c + (size_t)r * stride,
+                   src + ((size_t)(uint32_t)y + r) * src_stride, tail);
         }
         _c += dlen;
         EMIT_END()

@@ -82,10 +82,22 @@ pub fn describe_facts_policy_failures(
     facts: &ArtifactFacts,
     policy: &ArtifactPolicy<'_>,
 ) -> ArtifactPolicyReport {
+    describe_facts_policy_failures_with_extensions(
+        bytes, facts, policy, crate::program_extensions::IMPLEMENTED,
+    )
+}
+
+/// A selected backend names its implemented required interfaces. Default
+/// artifact, resolver and image policy continue to use IMPLEMENTED above.
+/// This grants no process membership or launch authority.
+pub fn describe_facts_policy_failures_with_extensions(
+    bytes: &[u8],
+    facts: &ArtifactFacts,
+    policy: &ArtifactPolicy<'_>,
+    supported: &[&str],
+) -> ArtifactPolicyReport {
     let mut report = ArtifactPolicyReport::default();
-    report.failures.extend(crate::program_extensions::describe_failures(
-        facts, crate::program_extensions::IMPLEMENTED,
-    ));
+    report.failures.extend(crate::program_extensions::describe_failures(facts, supported));
 
     if facts.contains_legacy_asyncify {
         report.failures.push(String::from("contains asyncify_"));

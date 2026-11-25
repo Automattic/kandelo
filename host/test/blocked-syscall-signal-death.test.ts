@@ -11,8 +11,8 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 
 const fixture = tryResolveBinary("programs/blocked-syscall-signal-death.wasm");
 const dash = tryResolveBinary("programs/dash.wasm");
-const coreutils = tryResolveBinary("programs/coreutils.wasm");
-const grep = tryResolveBinary("programs/grep.wasm");
+const coreutils = tryResolveBinary("programs/coreutils/coreutils.wasm");
+const grep = tryResolveBinary("programs/grep/grep.wasm");
 
 describe("signal death inside a blocked syscall", () => {
   it.skipIf(!fixture)(

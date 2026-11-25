@@ -1,0 +1,500 @@
+use super::*;
+use crate::memory_group::wait_queue;
+
+impl Storage {
+    pub(super) fn control(
+        &self,
+        memory: &impl PhysicalMemory,
+        admission: GroupAdmission,
+    ) -> Result<(ImageKey, u32, u32), Errno> {
+        let replica = self.owned(admission)?;
+        let image = self.images.get(&replica.image).ok_or(Errno::ESRCH)?;
+        let root = image.allocation.ok_or(Errno::EIO)?.controls.address();
+        let control = replica.scratch.ok_or(Errno::EIO)?.address();
+        let mut bytes = [0; layout::REPLICA_BYTES as usize];
+        memory.read(control, &mut bytes)?;
+        let word = |offset: u32| {
+            u32::from_le_bytes(
+                bytes[offset as usize..offset as usize + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        let wide = |offset: u32| {
+            u64::from_le_bytes(
+                bytes[offset as usize..offset as usize + 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        let receipt = admission.record();
+        if word(layout::REPLICA_MAGIC_OFFSET) != layout::REPLICA_MAGIC
+            || word(layout::REPLICA_ROOT) != root
+            || word(layout::REPLICA_PID) != receipt.pid
+            || word(layout::REPLICA_TID) != receipt.tid
+            || word(layout::REPLICA_GROUP) != receipt.group
+            || wide(layout::REPLICA_SERIAL) != receipt.serial
+            || wide(layout::REPLICA_GENERATION) != receipt.generation
+        {
+            return Err(Errno::EIO);
+        }
+        Ok((replica.image, root, control))
+    }
+
+    pub(crate) fn begin_image_pause(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+    ) -> Result<u32, Errno> {
+        let key = self.owned(admission)?.image;
+        let image = self.images.get(&key).ok_or(Errno::ESRCH)?;
+        if self.poisoned
+            || !image.source_live
+            || !image.exposed
+            || image.stopping
+            || image.pause.is_some()
+            || image.replicas.is_empty()
+        {
+            return Err(Errno::EBUSY);
+        }
+        let epoch = u32::try_from(self.next_epoch).map_err(|_| Errno::EOVERFLOW)?;
+        // Validate every member before freezing membership or requesting any
+        // checkpoint. A prepared thread cannot be silently omitted.
+        for (serial, _) in image.replicas.iter() {
+            let member = self.replicas.get(serial).ok_or(Errno::EIO)?;
+            let (_, _, control) = self.control(memory, member.admission)?;
+            if member.exposure != Exposure::Exposed
+                || member.pause.is_some()
+                || memory.atomic_load(control + layout::REPLICA_RUN)? != 1
+            {
+                return Err(Errno::EBUSY);
+            }
+        }
+        self.next_epoch += 1;
+        self.images.get_mut(&key).unwrap().pause = Some(epoch);
+        let result = self.replicas.try_for_each_mut_entry(|_, member| {
+            if member.image != key || member.exposure == Exposure::Stopped {
+                return Ok(());
+            }
+            member.pause = Some(epoch);
+            let control = member.scratch.ok_or(Errno::EIO)?.address();
+            memory.atomic_store(control + layout::REPLICA_REQUEST, epoch)?;
+            // Change the gate predicate as well as notifying it: a pause must
+            // not lose its wake between a replay wait's check and atomic wait.
+            memory.atomic_compare_exchange(control + layout::REPLICA_FORK_REPLAY, layout::REPLAY_PENDING, layout::REPLAY_PAUSED)?;
+            memory.atomic_notify(control + layout::REPLICA_FORK_REPLAY, u32::MAX)?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            self.contain_image(memory, key);
+            return Err(error);
+        }
+        Ok(epoch)
+    }
+
+    pub(crate) fn image_pause_acknowledged(
+        &self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+        epoch: u32,
+    ) -> Result<bool, Errno> {
+        let key = self.owned(admission)?.image;
+        let image = self.images.get(&key).ok_or(Errno::ESRCH)?;
+        if self.poisoned || !image.source_live || image.pause != Some(epoch) {
+            return Ok(false);
+        }
+        let mut acknowledged = true;
+        for (serial, _) in image.replicas.iter() {
+            let member = self.replicas.get(serial).ok_or(Errno::EIO)?;
+            let (_, root, control) = self.control(memory, member.admission)?;
+            if member.exposure != Exposure::Exposed
+                || member.pause != Some(epoch)
+                || memory.atomic_load(control + layout::REPLICA_RUN)? != 1
+            {
+                return Ok(false);
+            }
+            if memory.atomic_load(control + layout::REPLICA_REQUEST)? != epoch {
+                return Err(Errno::EIO);
+            }
+            match wait_queue::pause(memory, root, control, epoch) {
+                Ok(()) | Err(Errno::EAGAIN) => {}
+                Err(error) => return Err(error),
+            }
+            acknowledged &= memory.atomic_load(control + layout::REPLICA_ACK)? == epoch;
+        }
+        Ok(acknowledged)
+    }
+
+    pub(crate) fn resume_image(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+        epoch: u32,
+    ) -> Result<(), Errno> {
+        let key = self.owned(admission)?.image;
+        if self.images.get(&key).ok_or(Errno::ESRCH)?.pause != Some(epoch) {
+            return Err(Errno::ESRCH);
+        }
+        if self.images.get(&key).unwrap().mapping.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        let result = self.replicas.try_for_each_mut_entry(|_, member| {
+            if member.image != key
+                || member.exposure == Exposure::Stopped
+                || member.pause != Some(epoch)
+            {
+                return Ok(());
+            }
+            let control = member.scratch.ok_or(Errno::EIO)?.address();
+            if memory.atomic_load(control + layout::REPLICA_REQUEST)? != epoch {
+                return Err(Errno::EIO);
+            }
+            memory.atomic_store(control + layout::REPLICA_REQUEST, 0)?;
+            memory.atomic_compare_exchange(control + layout::REPLICA_FORK_REPLAY, layout::REPLAY_PAUSED, layout::REPLAY_PENDING)?;
+            memory.atomic_notify(control + layout::REPLICA_REQUEST, u32::MAX)?;
+            memory.atomic_notify(control + layout::REPLICA_FORK_REPLAY, u32::MAX)?;
+            member.pause = None;
+            Ok(())
+        });
+        if let Err(error) = result {
+            self.contain_image(memory, key);
+            return Err(error);
+        }
+        self.images.get_mut(&key).unwrap().pause = None;
+        Ok(())
+    }
+
+    pub(crate) fn request_stop(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+    ) -> Result<(), Errno> {
+        let (_, root, control) = self.control(memory, admission)?;
+        let result = wait_queue::stop(memory, root, control);
+        let member = self.replicas.get_mut(&admission.record().serial).unwrap();
+        member.pause = None;
+        member.pending_wait_drain = result.is_err();
+        result
+    }
+
+    pub(crate) fn request_image_stop(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+        natural_exit_tid: Option<u32>,
+    ) -> Result<(), Errno> {
+        let key = self.owned(admission)?.image;
+        if admission.record().pid != admission.record().tid {
+            return Err(Errno::EINVAL);
+        }
+        self.images.get_mut(&key).unwrap().stopping = true;
+        self.images.get_mut(&key).unwrap().pause = None;
+        let mut pending = false;
+        // No allocation is necessary while stopping a group under pressure.
+        self.replicas.try_for_each_mut_entry(|_, member| {
+            if member.image != key
+                || Some(member.admission.record().tid) == natural_exit_tid
+                || member.exposure == Exposure::Stopped && !member.pending_wait_drain
+            {
+                return Ok(());
+            }
+            let root = self
+                .images
+                .get(&key)
+                .unwrap()
+                .allocation
+                .ok_or(Errno::EIO)?
+                .controls
+                .address();
+            let control = member.scratch.ok_or(Errno::EIO)?.address();
+            let result = wait_queue::stop(memory, root, control);
+            member.pause = None;
+            member.pending_wait_drain = result.is_err();
+            match result {
+                Ok(()) => {}
+                Err(Errno::EAGAIN) => pending = true,
+                Err(error) => return Err(error),
+            }
+            Ok(())
+        })?;
+        if pending {
+            Err(Errno::EAGAIN)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Called after an exact native stop fact, or privately by the actual
+    /// clone owner before it has ever authorized Memory delivery. A stop
+    /// request, timeout or browser terminate() is insufficient evidence.
+    pub(crate) fn note_quiescent(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+    ) -> Result<(), Errno> {
+        let (key, _, control) = self.control(memory, admission)?;
+        let member = self.replicas.get_mut(&admission.record().serial).unwrap();
+        if !matches!(member.exposure, Exposure::Exposed | Exposure::Quarantined) {
+            return Err(Errno::ESRCH);
+        }
+        member.exposure = Exposure::Stopped;
+        member.pause = None;
+        self.images
+            .get_mut(&key)
+            .unwrap()
+            .replicas
+            .remove(&admission.record().serial);
+        memory.atomic_notify(control + layout::REPLICA_ACK, u32::MAX)?;
+        Ok(())
+    }
+
+    pub(crate) fn revoke_source(
+        &mut self,
+        memory: &mut impl PhysicalMemory,
+        admission: GroupAdmission,
+    ) -> Result<(), Errno> {
+        let (key, root, _) = self.control(memory, admission)?;
+        self.images.get_mut(&key).unwrap().source_live = false;
+        memory.atomic_store(root + layout::ROOT_RUN, 0)?;
+        memory.atomic_notify(root + layout::ROOT_RUN, u32::MAX)?;
+        Ok(())
+    }
+
+    pub(super) fn contain_image(&mut self, memory: &mut impl PhysicalMemory, key: ImageKey) {
+        if let Some(image) = self.images.get_mut(&key) {
+            image.source_live = false;
+            image.stopping = true;
+            image.pause = None;
+            if let Some(allocation) = image.allocation {
+                let _ = memory.atomic_store(allocation.controls.address() + layout::ROOT_RUN, 0);
+            }
+        }
+        let _ = self.replicas.try_for_each_mut_entry(|_, member| {
+            if member.image != key || member.exposure == Exposure::Stopped {
+                return Ok(());
+            }
+            member.exposure = Exposure::Quarantined;
+            member.pause = None;
+            if let Some(scratch) = member.scratch {
+                let _ = memory.atomic_store(scratch.address() + layout::REPLICA_RUN, 0);
+            }
+            member.pending_wait_drain = true;
+            Ok(())
+        });
+    }
+
+    pub(crate) fn pin_native_observation(
+        &mut self,
+        memory: &impl PhysicalMemory,
+        admission: GroupAdmission,
+        address: u32,
+    ) -> Result<u64, Errno> {
+        let member = self.owned(admission)?;
+        let image = self.images.get(&member.image).ok_or(Errno::ESRCH)?;
+        if !image.source_live
+            || self.poisoned
+            || !image.exposed
+            || !matches!(member.exposure, Exposure::Exposed | Exposure::Stopped)
+            || address % 4 != 0
+            || address / PAGE >= self.maximum_pages
+            || u64::from(address) + 4 > u64::from(memory.current_pages()?) * u64::from(PAGE)
+        {
+            return Err(Errno::ESRCH);
+        }
+        self.insert_native_pin(admission, address)
+    }
+
+    pub(super) fn insert_native_pin(
+        &mut self,
+        admission: GroupAdmission,
+        address: u32,
+    ) -> Result<u64, Errno> {
+        let image = self.owned(admission)?.image;
+        let token = self.next_pin;
+        let next = token.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        let entry = PreparedMapSlot::new_in(&IO_MEMORY, 0)?.finish(
+            token,
+            NativePin {
+                image,
+                address,
+                serial: admission.record().serial,
+            },
+        )?;
+        self.pins.publish_io(entry);
+        self.next_pin = next;
+        Ok(token)
+    }
+
+    /// Only actual native Promise settlement (or synchronous wait completion)
+    /// ends a host observation. Waking the target does not consume this token.
+    pub(crate) fn settle_native_observation(
+        &mut self,
+        admission: GroupAdmission,
+        token: u64,
+    ) -> Result<(), Errno> {
+        if self
+            .pins
+            .get(&token)
+            .is_none_or(|pin| pin.serial != admission.record().serial)
+        {
+            return Err(Errno::ESRCH);
+        }
+        self.pins.remove(&token).map(|_| ()).ok_or(Errno::ESRCH)
+    }
+}
+
+impl Storage {
+    /// The host reports an exact DeferredWorker constructor absence, rather
+    /// than treating process disappearance or terminate() as a stop proof.
+    pub(crate) fn note_worker_absence(&mut self, admission: GroupAdmission) -> Result<(), Errno> {
+        let replica = self.owned(admission)?;
+        if admission.record().pid != admission.record().tid || replica.exposure == Exposure::Prepared {
+            return Err(Errno::EINVAL);
+        }
+        self.replicas.get_mut(&admission.record().serial).unwrap().worker_absent = true;
+        Ok(())
+    }
+    pub(crate) fn worker_absence(&self, admission: GroupAdmission) -> Result<bool, Errno> {
+        Ok(self.owned(admission)?.worker_absent)
+    }
+}
+
+impl Storage {
+    pub(crate) fn validate_natural_exit_actor(&self, root: GroupAdmission, tid: u32) -> Result<(), Errno> {
+        let image = self.owned(root)?.image;
+        if tid != 0 && !self.replicas.values().any(|replica| replica.image == image && replica.admission.record().tid == tid) {
+            return Err(Errno::ESRCH);
+        }
+        Ok(())
+    }
+}
+
+
+impl Storage {
+    pub(crate) fn has_platform_references(&self, admission: GroupAdmission) -> Result<bool, Errno> {
+        Ok(self.owned(admission)?.references != References::Unbound)
+    }
+    pub(crate) fn bind_platform_references(&mut self, admission: GroupAdmission, native_join: bool) -> Result<(), Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Exposed || member.references != References::Unbound {
+            return Err(Errno::EBUSY);
+        }
+        let member = self.replicas.get_mut(&admission.record().serial).unwrap();
+        member.references = References::Bound;
+        member.native_join = native_join;
+        Ok(())
+    }
+    pub(crate) fn begin_reference_detachment(&mut self, admission: GroupAdmission) -> Result<bool, Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Stopped { return Err(Errno::EBUSY); }
+        if member.references != References::Unbound && member.containment != Containment::Complete {
+            return Err(Errno::EBUSY);
+        }
+        match member.references {
+            References::Unbound | References::Detached => Ok(false),
+            References::Bound | References::Detaching => {
+                self.replicas.get_mut(&admission.record().serial).unwrap().references = References::Detaching;
+                Ok(true)
+            }
+        }
+    }
+    pub(crate) fn complete_reference_detachment(&mut self, admission: GroupAdmission) -> Result<(), Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Stopped || member.references != References::Detaching {
+            return Err(Errno::EBUSY);
+        }
+        self.replicas.get_mut(&admission.record().serial).unwrap().references = References::Detached;
+        Ok(())
+    }
+
+    /// A terminal fence ends execution, but not the native Worker object.
+    /// Rust requests containment before it can request reference disposal.
+    pub(crate) fn begin_worker_containment(&mut self, admission: GroupAdmission) -> Result<bool, Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Stopped { return Err(Errno::EBUSY); }
+        if member.references == References::Unbound || member.containment == Containment::Complete {
+            return Ok(false);
+        }
+        self.replicas.get_mut(&admission.record().serial).unwrap().containment = Containment::Issued;
+        Ok(true)
+    }
+
+    pub(crate) fn complete_worker_containment(&mut self, admission: GroupAdmission, joined: bool) -> Result<(), Errno> {
+        let member = self.owned(admission)?;
+        if member.exposure != Exposure::Stopped || member.containment != Containment::Issued {
+            return Err(Errno::EBUSY);
+        }
+        if joined && !member.native_join { return Err(Errno::EINVAL); }
+        if member.native_join && !member.worker_absent && !joined { return Err(Errno::EBUSY); }
+        self.replicas.get_mut(&admission.record().serial).unwrap().containment = Containment::Complete;
+        Ok(())
+    }
+}
+
+impl Storage {
+    pub(crate) fn pending_platform_references(&self, admission: GroupAdmission, image: bool)
+        -> Result<Option<wasm_posix_shared::memory_group::ReceiptRecord>, Errno>
+    {
+        let selected = self.owned(admission)?;
+        Ok(self.replicas.values().find(|member|
+            (if image { member.image == selected.image } else { member.admission == admission })
+                && matches!(member.references, References::Bound | References::Detaching))
+            .map(|member| member.admission.record()))
+    }
+}
+
+impl Storage {
+    pub(crate) fn validate_worker_fact(&self, admission: GroupAdmission, fact: u32) -> Result<bool, Errno> {
+        use wasm_posix_shared::retirement_control::command as C;
+        let member = self.owned(admission)?;
+        if member.references == References::Unbound { return Err(Errno::EINVAL); }
+        match fact {
+            C::WORKER_FENCE | C::SEALED_ABSENCE => Ok(true),
+            // Browser terminate/exit is a native observation, not a join.
+            // Decline it without retiring a task or dropping its listeners.
+            C::NATIVE_JOIN => Ok(member.native_join),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+    pub(crate) fn accepted_worker_fact(&self, admission: GroupAdmission) -> Result<bool, Errno> {
+        Ok(self.owned(admission)?.worker_fact != 0)
+    }
+    pub(crate) fn record_worker_fact(&mut self, admission: GroupAdmission, fact: u32) {
+        let member = self.replicas.get_mut(&admission.record().serial).unwrap();
+        member.worker_fact = fact;
+        if fact == wasm_posix_shared::retirement_control::command::SEALED_ABSENCE { member.worker_absent = true; }
+        if member.containment == Containment::Unissued && matches!(fact,
+            wasm_posix_shared::retirement_control::command::NATIVE_JOIN
+                | wasm_posix_shared::retirement_control::command::SEALED_ABSENCE) {
+            // Credit a genuine native fact before requesting a new effect.
+            // Once issued, its acknowledgement remains outstanding even if
+            // the same fact arrives while the native Promise is settling.
+            member.containment = Containment::Complete;
+        }
+    }
+}
+
+impl Storage {
+    pub(crate) fn commit_fork_replay(&mut self, memory: &mut impl PhysicalMemory, admission: GroupAdmission) -> Result<(), Errno> {
+        let (_, _, control) = self.control(memory, admission)?;
+        if self.owned(admission)?.exposure != Exposure::Exposed || memory.atomic_load(control + layout::REPLICA_RUN)? != 1 {
+            return Err(Errno::ESRCH);
+        }
+        if memory.atomic_compare_exchange(control + layout::REPLICA_FORK_REPLAY, layout::REPLAY_PENDING, layout::REPLAY_COMMITTED)? != layout::REPLAY_PENDING {
+            return Err(Errno::EBUSY);
+        }
+        memory.atomic_notify(control + layout::REPLICA_FORK_REPLAY, u32::MAX)?;
+        Ok(())
+    }
+    pub(crate) fn cancel_fork_replay(&mut self, memory: &mut impl PhysicalMemory, admission: GroupAdmission) -> Result<(), Errno> {
+        let (_, _, control) = self.control(memory, admission)?;
+        let address = control + layout::REPLICA_FORK_REPLAY;
+        loop {
+            let current = memory.atomic_load(address)?;
+            if current == layout::REPLAY_COMMITTED { return Err(Errno::EBUSY); }
+            if current == layout::REPLAY_CANCELLED || memory.atomic_compare_exchange(address, current, layout::REPLAY_CANCELLED)? == current { break; }
+        }
+        memory.atomic_notify(control + layout::REPLICA_FORK_REPLAY, u32::MAX)?;
+        Ok(())
+    }
+}

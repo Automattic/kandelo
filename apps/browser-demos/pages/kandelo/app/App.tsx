@@ -49,7 +49,7 @@ import { stopDeviceOwner } from "../../../../../web-libs/kandelo-session/src/dev
 import { useExchangeConsumer } from "../kernel-host/react";
 
 /** What an activity launch needs to know about where its command shows. */
-type ActivityProcedure = SessionWebLaunch | Pick<SessionProgramLaunch, "surface" | "display" | "displayScale">;
+type ActivityProcedure = SessionWebLaunch | Pick<SessionProgramLaunch, "surface" | "display" | "displayScale" | "executionBackend">;
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
   { family: "kandelo", label: "Kandelo", description: "Candlelit Kandelo surfaces with warm highlights and ink-dark contrast." },
@@ -445,7 +445,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     setOpenActivities([...activityTerminals.current.values()]);
     // Own the fresh login/PTY before it can fork. The worker's existing job
     // ledger follows every descendant across exec, reparenting and setsid.
-    const pty = await host.attachPty(terminal.path, undefined, { id: activity.job, timeoutMs: 0 });
+    const pty = await host.attachPty(terminal.path, undefined, { id: activity.job, timeoutMs: 0 }, { executionBackend: procedure.executionBackend ?? "ordinary" });
     pty.close(); assertCurrent();
     flushSync(() => {
       setTerminals(previous => [...previous, terminal]);

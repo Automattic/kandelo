@@ -133,6 +133,7 @@ host/test/exec-memory-refusal.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	prepared-product
 host/test/exec.test.ts	prepared-product
+host/test/execution-backend.test.ts	source-only
 host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-read-buffer.test.ts	source-only
@@ -220,6 +221,16 @@ host/test/go-in-guest.test.ts	prepared-product
 host/test/go-sdk.test.ts	prepared-product
 host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
+host/test/group-memory-kernel.test.ts	prepared-product
+host/test/group-memory-resources.test.ts	source-only
+host/test/group-memory-transport.test.ts	source-only
+host/test/group-memory-worker-boundary.test.ts	prepared-product
+host/test/grouped-root-launch.test.ts	prepared-product
+host/test/grouped-sdk-execution.test.ts	prepared-product
+host/test/grouped-session-exit-publication.test.ts	source-only
+host/test/grouped-session-runtime.test.ts	prepared-product
+host/test/grouped-worker-initialization.test.ts	source-only
+host/test/grouped-worker-objects.test.ts	source-only
 host/test/gtk3-smoke.test.ts	prepared-product
 host/test/guest-autotools.test.ts	prepared-product
 host/test/guest-bash-subshells.test.ts	prepared-product
@@ -304,6 +315,7 @@ host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
 host/test/klogctl.test.ts	prepared-product
+host/test/kms-bitmap-relay.test.ts	source-only
 host/test/kmsg-poll.test.ts	prepared-product
 host/test/labwc-smoke.test.ts	prepared-product
 host/test/lazy-fetch-bytes.test.ts	source-only
@@ -330,6 +342,10 @@ host/test/man-shell-lazy-archive.test.ts	prepared-product
 host/test/mariadb-image-helpers.test.ts	prepared-product
 host/test/mariadb-test-source-copy.test.ts	prepared-product
 host/test/masked-wait-wake.test.ts	prepared-product
+host/test/memory-group-admission.test.ts	source-only
+host/test/memory-group-import-guard.test.ts	source-only
+host/test/memory-group-protocol.test.ts	source-only
+host/test/memory-group-usage.test.ts	source-only
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
 host/test/mkdir-existing-directory.test.ts	prepared-product
@@ -419,8 +435,10 @@ host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/positioned-image-targets.test.ts	source-only
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
+host/test/prepared-memory-group-execution.test.ts	prepared-product
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
+host/test/process-address-space.test.ts	source-only
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-generation-observation.test.ts	source-only
@@ -428,8 +446,10 @@ host/test/process-group-leader-timer.test.ts	prepared-product
 host/test/process-memory-allocator.test.ts	source-only
 host/test/process-memory-async-allocation.test.ts	source-only
 host/test/process-memory-creator-gate.test.ts	source-only
+host/test/process-memory-descriptor.test.ts	source-only
 host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
+host/test/process-memory-views.test.ts	source-only
 host/test/process-memory.test.ts	source-only
 host/test/process-native-layout.test.ts	prepared-product
 host/test/process-snapshot-comparator.test.ts	source-only
@@ -509,7 +529,9 @@ host/test/select-signal-guest.test.ts	prepared-product
 host/test/select-signal-outcome.test.ts	source-only
 host/test/sendmsg-iovec-gather.test.ts	prepared-product
 host/test/service-activities.test.ts	prepared-product
+host/test/shared-desktop-image.test.ts	prepared-product
 host/test/shared-memory-coherence.test.ts	source-only
+host/test/shared-memory-program.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only

@@ -1,3 +1,4 @@
+import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
@@ -17,6 +18,7 @@ export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -62,6 +64,7 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -218,6 +221,7 @@ export interface InitMessage {
   workerEntryUrl: string;
   bridgePort?: MessagePort;
   config: {
+    experimentalMemoryGroup?: TrustedMemoryGroupOptions;
     maxWorkers: number;
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
@@ -263,6 +267,8 @@ export interface OwnedJobMessage {
 }
 
 export interface SpawnMessage {
+  /** Explicit SDK variant selection; descendants inherit kernel group membership. */
+  executionBackend?: "ordinary" | "memory-group";
   ownedJob?: { id: string; timeoutMs: number };
   type: "spawn";
   requestId: number;
@@ -501,6 +507,7 @@ export type MainToKernelMessage =
   | RegisterPtyOutputMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetMemoryGroupUsageRequestMessage
   | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | MouseInjectMessage

@@ -28,6 +28,9 @@ const BASE = ["rootfs", "bash", "coreutils", "ncurses", "ca-certificates"];
 describe("shell selection", () => {
   it("includes everything canonically and only named packages partially", () => {
     expect(selectionIncludes(CANONICAL_SHELL_SELECTION, "ffmpeg")).toBe(true);
+    expect(selectionIncludes(CANONICAL_SHELL_SELECTION, "coreutils")).toBe(true);
+    expect(selectionIncludes(CANONICAL_SHELL_SELECTION, "wayland-demo")).toBe(false);
+    expect(selectionIncludes(CANONICAL_SHELL_SELECTION, "quickshell")).toBe(false);
     const partial = partialShellSelection([...BASE, "fbdoom"]);
     expect(selectionIncludes(partial, "fbdoom")).toBe(true);
     expect(selectionIncludes(partial, "ffmpeg")).toBe(false);

@@ -1,3 +1,5 @@
+import * as G from "../src/generated/program-extensions";
+import { GroupProcessAddressSpace, LinearProcessAddressSpace } from "../src/process-address-space";
 import { recordComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { describe, expect, it, vi } from "vitest";
 
@@ -1344,9 +1346,9 @@ describe("Rust-owned host import ranges", () => {
     const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
     const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
     new Uint8Array(processMemory.buffer).fill(0xa5);
-    expect(imports.env.host_proc_validate_range(7, 0n, 65536)).toBe(0);
+    expect(imports.env.host_proc_validate_range(7, 0n, 65536, 2)).toBe(0);
     for (const [address, length] of [[1n, 65536], [0xffffffffffffffffn, 1], [0n, 2147483647]] as const) {
-      expect(imports.env.host_proc_validate_range(7, address, length)).toBe(-14);
+      expect(imports.env.host_proc_validate_range(7, address, length, 2)).toBe(-14);
     }
     expect(new Uint8Array(processMemory.buffer)).toEqual(new Uint8Array(65536).fill(0xa5));
   });
@@ -1888,4 +1890,200 @@ for(const kind of ["unexpected","reset"] as const)it.each([4,8] as const)(`journ
   expect(b.programJournalControl.receipt.slice(0,3)).toEqual(new Uint32Array([2,2,3]));
   expect(journal.publishedTicket).toBe(1);expect(publish).toHaveBeenCalledTimes(1);
  }finally{publish.mockRestore();kernel.gl.destroyContext(7,0);}
+});
+
+
+describe("explicit grouped process byte imports", () => {
+  it.each([4, 8] as const)("keeps native copy, comparison and wait publication with an explicit source at width %i", width => {
+    const process = new WebAssembly.Memory({ initial: 2, maximum: 3, shared: true });
+    recordComparisonMemoryShape(process, 4, true, 3);
+    const legacy = vi.fn(() => { throw new Error("Legacy lookup must not run"); });
+    const changed = vi.fn();
+    const callbacks = {
+      getProcessMemory: legacy,
+      getProcessAddressSpace(pid: number) {
+        expect(this).toBe(callbacks);
+        return pid === 7 ? process : undefined;
+      },
+      onProcessMemoryChanged: changed,
+    };
+    const { kernel, memory } = kernelHarness({}, width, {}, callbacks);
+    const { env } = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
+    const ptr = (value: number) => width === 8 ? BigInt(value) : value;
+    new Uint8Array(memory.buffer, 4096, 4).set([11, 22, 33, 44]);
+    expect(env.host_proc_write_bytes(7, 65534n, ptr(4096), 4)).toBe(0);
+    expect([...new Uint8Array(process.buffer, 65534, 4)]).toEqual([11, 22, 33, 44]);
+    expect(env.host_proc_read_bytes(7, 65534n, ptr(8192), 4)).toBe(0);
+    expect([...new Uint8Array(memory.buffer, 8192, 4)]).toEqual([11, 22, 33, 44]);
+    // An explicit native source must still reach the fixed read-only Wasm
+    // comparator, rather than turn every comparison into an owned-read retry.
+    expect(env.host_proc_compare_bytes(7, 65534n, ptr(4096), 4)).toBe(0);
+    new Uint8Array(process.buffer)[65535] ^= 1;
+    expect(env.host_proc_compare_bytes(7, 65534n, ptr(4096), 4)).toBe(1);
+    expect(env.host_publish_wait_completion(7, 64n, -99n, 4)).toBe(0);
+    const result = new DataView(process.buffer);
+    expect(result.getBigInt64(64 + 56, true)).toBe(-99n);
+    expect(result.getUint32(64 + 64, true)).toBe(4);
+    expect(Atomics.load(new Int32Array(process.buffer), 64 / 4)).toBe(2);
+    expect(changed).toHaveBeenCalledTimes(2);
+    expect(env.host_publish_wait_completion(8, 64n, 1n, 0)).toBe(-3);
+    expect(env.host_proc_read_bytes(8, 0n, ptr(8192), 4)).toBe(-14);
+    expect(env.host_proc_write_bytes(8, 0n, ptr(4096), 4)).toBe(-14);
+    expect(env.host_proc_compare_bytes(8, 0n, ptr(4096), 4)).toBe(-14);
+    expect(env.host_proc_validate_range(7, 0n, 2 * 65536, 2)).toBe(0);
+    expect(env.host_proc_validate_range(8, 0n, 0, 2)).toBe(-14);
+    expect(legacy).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("refuses absent or failed explicit custody without falling back (throw=%s)", throws => {
+    const decoy = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+    new Uint8Array(decoy.buffer).fill(0xa5);
+    const legacy = vi.fn(() => decoy);
+    const { kernel, memory } = kernelHarness({}, 4, {}, {
+      getProcessMemory: legacy,
+      getProcessAddressSpace: () => { if (throws) throw new RangeError('retired'); return undefined; },
+    });
+    const { env } = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
+    for (const name of ['host_proc_write_bytes', 'host_proc_read_bytes', 'host_proc_compare_bytes']) {
+      expect(env[name](7, 0n, 4096, 4)).toBe(-14);
+    }
+    expect(env.host_proc_validate_range(7, 0n, 4, 2)).toBe(-14);
+    expect(legacy).not.toHaveBeenCalled();
+    expect([...new Uint8Array(decoy.buffer, 0, 4)]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+  });
+  function grouped(onHostFault?: (fault: Error) => void) {
+    const process = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+    const words = new Uint32Array(process.buffer), root = 65536, pte = root / 4 + 16;
+    words[root / 4] = 2; words[pte] = 4 * 65536 | 3; words[pte + 1] = 6 * 65536 | 3;
+    const access = new GroupProcessAddressSpace({ memory: process, root, maximumPages: 16, assertLive: () => {} });
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessAddressSpace: () => access, onHostFault });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
+    return { process, words, pte, access, kernelMemory: memory, env: imports.env };
+  }
+  it("preserves direct completion for an explicit linear address-space adapter", () => {
+    const process=new WebAssembly.Memory({initial:2,maximum:2,shared:true});
+    const source=new LinearProcessAddressSpace(process);
+    const {kernel,memory}=kernelHarness({},4,{}, {getProcessAddressSpace:()=>source});
+    const {env}=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+    expect(env.host_publish_wait_completion(7,64n,23n,0)).toBe(0);
+    const view=new DataView(process.buffer);
+    expect(view.getBigInt64(64+56,true)).toBe(23n);
+    expect(view.getUint32(64+64,true)).toBe(0);
+    expect(source.atomicLoadI32(64)).toBe(2);
+  });
+  it("refuses direct grouped publication with or without participant Q contention", () => {
+    const {access,env,process}=grouped();
+    const words=new Int32Array(process.buffer);
+    const channel=65536-60,q=G.MEMORY_GROUP_WAIT_HEADER / 4;
+    access.fillBytes(channel,128,0xa5);
+    const before=access.readBytes(channel,128);
+    const wait=vi.spyOn(Atomics,'wait').mockImplementation(()=>{throw Error('Direct kernel completion must not block on Q');});
+    Atomics.store(words,q,1);
+    try {
+      // The existing Rust caller treats a nonzero import return as NOT
+      // published and queues the result for the actual Rust completion owner.
+      const result=env.host_publish_wait_completion(7,BigInt(channel),23n,0);
+      expect(wait).not.toHaveBeenCalled();
+      expect(result).toBe(-3);
+      expect(access.readBytes(channel,128)).toEqual(before);
+      expect(Atomics.load(words,q)).toBe(1);
+      Atomics.store(words,q,0);
+      expect(env.host_publish_wait_completion(7,BigInt(channel),23n,0)).toBe(-3);
+      expect(access.readBytes(channel,128)).toEqual(before);
+    } finally {Atomics.store(words,q,0);Atomics.notify(words,q);wait.mockRestore();}
+  });
+  it("leaves scattered virtual channel pages untouched by the ordinary-only import", () => {
+    const { access, env } = grouped();
+    const channel = 65536 - 60;
+    access.fillBytes(channel, 68, 0xa5);
+    expect(env.host_publish_wait_completion(7, BigInt(channel), -23n, 4)).toBe(-3);
+    expect([...access.readBytes(channel, 68)]).toEqual(new Array(68).fill(0xa5));
+  });
+  it("validates the exact virtual extent without copying or using physical capacity", () => {
+    const { access, env } = grouped();
+    const read = vi.spyOn(access, "readBytes"), write = vi.spyOn(access, "writeBytes");
+    expect(env.host_proc_validate_range(7, 0n, 2 * 65536, 2)).toBe(0);
+    expect(env.host_proc_validate_range(7, 2n * 65536n, 0, 2)).toBe(0);
+    for (const [address, length] of [[2n * 65536n, 1], [0n, 8 * 65536],
+      [-1n, 0], [(1n << 32n), 1]] as const) {
+      expect(env.host_proc_validate_range(7, address, length, 2)).toBe(-14);
+    }
+    expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
+    access.detachHostAccess();
+    expect(env.host_proc_validate_range(7, 0n, 0, 2)).toBe(-14);
+  });
+  it("preflights the requested access across every mapped page before an I/O effect", () => {
+    const { access, env, words, pte, process } = grouped();
+    const read = vi.spyOn(access, "readBytes"), write = vi.spyOn(access, "writeBytes");
+    new Uint8Array(process.buffer, 4 * 65536, 65536).fill(0xa5);
+    words[pte] = 4 * 65536 | 1; // readable source, unwritable destination
+    expect(env.host_proc_validate_range(7, 0n, 4, 1)).toBe(0);
+    expect(env.host_proc_validate_range(7, 0n, 4, 2)).toBe(-14);
+    words[pte] = 4 * 65536 | 2; // writable destination need not be readable
+    expect(env.host_proc_validate_range(7, 0n, 4, 2)).toBe(0);
+    expect(env.host_proc_validate_range(7, 0n, 4, 1)).toBe(-14);
+    words[pte] = 4 * 65536 | 3;
+    for (const denied of [0, 6 * 65536, 6 * 65536 | 1]) {
+      words[pte + 1] = denied;
+      expect(env.host_proc_validate_range(7, 65534n, 4, 2)).toBe(-14);
+    }
+    for (const invalid of [0, 3, -1, 8, undefined]) {
+      expect(env.host_proc_validate_range(7, 0n, 4, invalid)).toBe(-22);
+    }
+    expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
+    expect(new Uint8Array(process.buffer, 4 * 65536, 4)).toEqual(new Uint8Array(4).fill(0xa5));
+  });
+  it("refuses completion before changing an inaccessible status or result", () => {
+    const { access, words, pte, env } = grouped();
+    const channel = 65536 - 4;
+    access.fillBytes(channel, 68, 0xa5);
+    words[pte] = 4 * 65536 | 1;
+    expect(env.host_publish_wait_completion(7, BigInt(channel), 1n, 0)).toBe(-3);
+    expect([...access.readBytes(channel, 68)]).toEqual(new Array(68).fill(0xa5));
+    words[pte] = 4 * 65536 | 3;
+    expect(env.host_publish_wait_completion(7, (1n << 32n) + BigInt(channel), 1n, 0)).toBe(-3);
+  });
+  it("refuses direct publication without interpreting a grouped wait queue", () => {
+    const onHostFault = vi.fn(), { access, words, env } = grouped(onHostFault);
+    const q = 4112 / 4, node = 8192;
+    words[q + 1] = node; words[q + 2] = node; words[q + 4] = 1;
+    words[node / 4] = 1; words[node / 4 + 1] = node;
+    expect(env.host_publish_wait_completion(7, 0n, 1n, 0)).toBe(-3);
+    expect(onHostFault).not.toHaveBeenCalled(); expect(access.atomicLoadI32(0)).toBe(0);
+    expect([words[q + 1], words[q + 2], words[q + 4], words[node / 4], words[node / 4 + 1]])
+      .toEqual([node, node, 1, 1, node]);
+  });
+  it("copies scattered virtual bytes through the authenticated kernel destination", () => {
+    const { access, kernelMemory, env } = grouped();
+    new Uint8Array(kernelMemory.buffer, 4096, 4).set([1, 2, 3, 4]);
+    expect(env.host_proc_write_bytes(7, 65534n, 4096, 4)).toBe(0);
+    expect([...access.readBytes(65534, 4)]).toEqual([1, 2, 3, 4]);
+    expect(env.host_proc_read_bytes(7, 65534n, 8192, 4)).toBe(0);
+    expect([...new Uint8Array(kernelMemory.buffer, 8192, 4)]).toEqual([1, 2, 3, 4]);
+  });
+  it("refuses a high guest address without aliasing its low32bits", () => {
+    const { access, kernelMemory, env } = grouped();
+    access.fillBytes(128, 4, 0xa5); new Uint8Array(kernelMemory.buffer, 8192, 4).fill(0x5a);
+    expect(env.host_proc_write_bytes(7, (1n << 32n) + 128n, 8192, 4)).toBe(-14);
+    expect(env.host_proc_read_bytes(7, (1n << 32n) + 128n, 8192, 4)).toBe(-14);
+    expect([...access.readBytes(128, 4)]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+    expect([...new Uint8Array(kernelMemory.buffer, 8192, 4)]).toEqual([0x5a, 0x5a, 0x5a, 0x5a]);
+  });
+  it("proves the Rust range before any process read and preflights writes", () => {
+    const { access, words, pte, kernelMemory, env } = grouped();
+    const read = vi.spyOn(access, "readBytes");
+    expect(env.host_proc_read_bytes(7, 0n, 0, 1)).toBe(-14); expect(read).not.toHaveBeenCalled();
+    access.fillBytes(65534, 4, 9); words[pte + 1] = 6 * 65536 | 1;
+    new Uint8Array(kernelMemory.buffer, 4096, 4).fill(1);
+    expect(env.host_proc_write_bytes(7, 65534n, 4096, 4)).toBe(-14);
+    expect([...access.readBytes(65534, 4)]).toEqual([9, 9, 9, 9]);
+  });
+  it("requests the owned snapshot path and refuses retired bindings", () => {
+    const { access, env } = grouped();
+    expect(env.host_proc_compare_bytes(7, 0n, 4096, 4)).toBe(2);
+    expect(env.host_proc_compare_bytes(7, 0n, 0, 4)).toBe(-14);
+    access.detachHostAccess();
+    expect(env.host_proc_compare_bytes(7, 0n, 4096, 4)).toBe(-14);
+    expect(env.host_proc_read_bytes(7, 0n, 4096, 4)).toBe(-14);
+    expect(env.host_proc_write_bytes(7, 0n, 4096, 4)).toBe(-14);
+  });
 });

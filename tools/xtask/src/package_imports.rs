@@ -26,6 +26,10 @@ struct Imports {
 }
 
 fn imports(bytes: &[u8]) -> Result<Imports, String> {
+    imports_with_extensions(bytes, wasm_artifact::program_extensions::IMPLEMENTED)
+}
+
+fn imports_with_extensions(bytes: &[u8], supported: &[&str]) -> Result<Imports, String> {
     let mut facts = Imports::default();
     for payload in Parser::new(0).parse_all(bytes) {
         match payload.map_err(|error| error.to_string())? {
@@ -75,7 +79,7 @@ fn imports(bytes: &[u8]) -> Result<Imports, String> {
             wasm_artifact::read_artifact_facts(bytes).map_err(|error| error.to_string())?;
         facts.extension_failures = wasm_artifact::program_extensions::describe_failures(
             &artifact,
-            wasm_artifact::program_extensions::IMPLEMENTED,
+            supported,
         );
     }
     Ok(facts)
@@ -248,7 +252,13 @@ fn audit(facts: &Imports, contract: &KernelContract) -> Vec<String> {
 }
 
 pub(crate) fn failures(bytes: &[u8], repo: &Path) -> Result<Vec<String>, String> {
-    let facts = imports(bytes)?;
+    failures_with_extensions(bytes, repo, wasm_artifact::program_extensions::IMPLEMENTED)
+}
+
+/// A declared backend selects its required interfaces; ordinary publication
+/// retains the default policy and cannot implicitly opt into shared memory.
+pub(crate) fn failures_with_extensions(bytes: &[u8], repo: &Path, supported: &[&str]) -> Result<Vec<String>, String> {
+    let facts = imports_with_extensions(bytes, supported)?;
     if facts.relocatable {
         return Ok(vec![]);
     }

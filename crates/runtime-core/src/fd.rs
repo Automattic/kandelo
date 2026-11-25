@@ -263,6 +263,17 @@ impl FdTable {
             })
     }
 
+    /// A monotonically advancing exec cursor needs no descriptor-sized Vec
+    /// after commit. Skip the raw slot iterator before filtering so each scan
+    /// resumes at the next slot rather than rescanning an open-descriptor list.
+    pub(crate) fn next_close_on_exec(&self, first_slot: usize) -> Option<i32> {
+        self.inline.iter().chain(self.slots.iter()).enumerate().skip(first_slot)
+            .find_map(|(index, slot)| match slot {
+                FdSlot::Open(entry) if entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC != 0 => Some(index as i32),
+                _ => None,
+            })
+    }
+
     pub(crate) fn restore_entry(&mut self, fd: usize, entry: FdEntry) -> Result<(), Errno> {
         i32::try_from(fd).map_err(|_| Errno::EINVAL)?;
         self.ensure_slot(fd, i32::MAX as usize + 1)?;

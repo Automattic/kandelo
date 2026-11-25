@@ -20,6 +20,7 @@ function makeWorker(memory: WebAssembly.Memory) {
     kernelExportNames: Object.keys(exports),
   });
   const channel = (offset: number) => ({
+    source: memory,
     pid: 7, memory, channelOffset: offset,
     i32View: new Int32Array(memory.buffer, offset), consecutiveSyscalls: 0,
   });
@@ -36,7 +37,7 @@ describe("an ioctl interrupted while parked on the blocking-retry path", () => {
     const { worker, channel } = makeWorker(memory);
     const ioctl = channel(0);
     const other = channel(0x800);
-    worker.processes.set(7, { channels: [ioctl, other], memory });
+    worker.processes.set(7, { channels: [ioctl, other], memory, source: memory });
     const rewritten = new Uint8Array([0, 0, 0, 0, 0x2a, 0, 0, 0]);
     worker.handleBlockingRetry(ioctl, SYS_IOCTL, [3, 0xc010643a, 0x4000, 16, 0, 0],
       [{ ptr: 0x4000, bytes: rewritten }], undefined, false, SIGUSR1);

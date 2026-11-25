@@ -1,7 +1,7 @@
 script_path = "packages/registry/foot/build-foot.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "fd2d27b6c"
-revision    = 2
+revision    = 3
 
 # Serial font loading remains a tracked input while its concurrent
 # FcFontMatch race is investigated. wl_shm uses upstream memfd pools.

@@ -38,6 +38,7 @@ const SCRATCH_OFFSET = 4096;
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -63,6 +64,7 @@ function makeHarness(): EntryHarness {
     shared: true,
   });
   const channel: TestChannel = {
+    source: processMemory,
     pid: PID,
     memory: processMemory,
     channelOffset: 0,
@@ -156,7 +158,7 @@ function makeHarness(): EntryHarness {
     PID,
     {
       pid: PID,
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
       channels: [channel],
       ptrWidth: 4,
     },

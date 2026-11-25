@@ -10,7 +10,7 @@ export function resolveRustSdkUpgradeArtifacts() {
   const old = process.env.KANDELO_GUEST_RUST_OLD_SDK;
   const unzip =
     process.env.KANDELO_GUEST_RUST_UPGRADE_UNZIP ??
-    tryResolveBinary("programs/wasm32/unzip.wasm");
+    tryResolveBinary("programs/wasm32/unzip/unzip.wasm");
   const [kernel, sdk] = resolveRustCargoArtifacts();
   return [process.env.KANDELO_GUEST_RUST_UPGRADE_KERNEL ?? kernel, sdk, old ?? null, unzip];
 }
