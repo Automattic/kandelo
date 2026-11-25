@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -52,26 +53,54 @@ type KernelAbi = {
   host_intercepted_syscalls: { name: string; number: number }[];
 };
 
-function boundaryInventory(source: string, abi: KernelAbi): string {
-  const sections = [
-    ["TypeScript dispatcher syscall references", ...dispatcherSyscalls(source)],
-    ["Kernel imports", ...abi.kernel_imports.map(({ module, name, kind, signature }) =>
-      `${module}.${name} ${signature ?? kind}`).sort()],
-    ["Host-intercepted syscalls in the ABI", ...abi.host_intercepted_syscalls.map(({ name, number }) =>
-      `${name} ${number}`).sort()],
+function boundaryInventory(source: string, abi: KernelAbi): string[] {
+  return [
+    ...dispatcherSyscalls(source).map((selector) => `Dispatcher syscall: ${selector}`),
+    ...abi.kernel_imports.map(({ module, name, kind, signature }) =>
+      `Kernel import: ${module}.${name} ${signature ?? kind}`).sort(),
+    ...abi.host_intercepted_syscalls.map(({ name, number }) =>
+      `Host-intercepted syscall: ${name} ${number}`).sort(),
   ];
-  return `${sections.map((section) => section.join("\n")).join("\n\n")}\n`;
+}
+
+function addedBoundaryEntries(base: string[], current: string[]): string[] {
+  const existing = new Set(base);
+  return current.filter((entry) => !existing.has(entry));
+}
+
+function git(...args: string[]): string {
+  return execFileSync("git", args, {
+    cwd: new URL("../../", import.meta.url),
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  }).trimEnd();
 }
 
 describe("Rust-first host boundary", () => {
-  it("records the existing dispatcher references and kernel host capabilities", () => {
-    const source = readFileSync(new URL("../src/kernel-worker.ts", import.meta.url), "utf8");
-    const abi = JSON.parse(readFileSync(new URL("../../abi/snapshot.json", import.meta.url), "utf8")) as KernelAbi;
+  it("flags additions to the integration base's dispatcher and host capabilities", () => {
+    const base = process.env.SYNTH_BASE_SHA
+      ? git("rev-parse", "--verify", "--end-of-options", `${process.env.SYNTH_BASE_SHA}^{commit}`)
+      : git("merge-base", "HEAD", "origin/develop");
+    const workerPath = "host/src/kernel-worker.ts";
+    const abiPath = "abi/snapshot.json";
+    const baseline = boundaryInventory(
+      git("show", `${base}:${workerPath}`),
+      JSON.parse(git("show", `${base}:${abiPath}`)) as KernelAbi,
+    );
+    const current = boundaryInventory(
+      readFileSync(new URL(`../../${workerPath}`, import.meta.url), "utf8"),
+      JSON.parse(readFileSync(new URL(`../../${abiPath}`, import.meta.url), "utf8")) as KernelAbi,
+    );
 
-    // A new reference or import needs an ownership review. Remove retired
-    // entries with the code so a later change cannot silently restore them.
-    const recorded = readFileSync(new URL("./rust-first-host-boundary.txt", import.meta.url), "utf8");
-    expect(boundaryInventory(source, abi)).toBe(recorded);
+    expect(addedBoundaryEntries(baseline, current), `Host boundary grew since ${base}`).toEqual([]);
+  });
+
+  it("flags new selectors and changed signatures while allowing removals", () => {
+    expect(addedBoundaryEntries(
+      ["Dispatcher syscall: SYS_RETIRED", "Kernel import: env.read (i32) -> (i32)"],
+      ["Dispatcher syscall: SYS_NEW", "Kernel import: env.read (i64) -> (i32)"],
+    )).toEqual(["Dispatcher syscall: SYS_NEW", "Kernel import: env.read (i64) -> (i32)"]);
+    expect(addedBoundaryEntries(["Dispatcher syscall: SYS_RETIRED"], [])).toEqual([]);
   });
 
   it("finds syscall selectors without counting comments or other methods", () => {
