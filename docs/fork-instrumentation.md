@@ -1251,7 +1251,10 @@ cannot expose either the monolithic callback or instantiation-time guest
 reentry. Source modules may contain a start section; the zero-count rule
 applies to the completed instrumented artifact after its start has become an
 explicit bootstrap. `DynamicLinker.dlopenSync()` remains a lower-level embedder
-API, not an import reachable from an accepted ABI 43 process artifact.
+API, not an import reachable from an accepted ABI 43 process artifact. The
+next program ABI removes the import and this lowering; see
+[required changes for the next program
+ABI](abi-versioning.md#required-changes-for-the-next-program-abi).
 
 The staged host can issue internal VFS and mapping channel requests while an
 import is active. Those completions set the ABI 43
