@@ -16,4 +16,5 @@ commit      = "UNPUBLISHED"
 # fetched or moved archive resolves its own headers and libraries.
 # Revision 7: use the dev shell's wrapped native compiler for Stage 1 so its
 # declared host libc++ and SDK headers participate in the host-tool build.
-revision    = 8
+# Revision 9 omits unused build-tool metadata that embeds the staging prefix.
+revision    = 9
