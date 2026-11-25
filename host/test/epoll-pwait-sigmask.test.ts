@@ -4,12 +4,8 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 
 const binary = tryResolveBinary("programs/epoll-pwait-sigmask.wasm");
 
-// The host runs epoll_pwait as poll retries and holds the caller's signal
-// mask across them through kernel_swap_poll_sigmask /
-// kernel_restore_poll_sigmask. Without that the mask was silently ignored:
-// foot's SIGCHLD reaper never fired and its window stayed open after `exit`.
-// The second case checks the kernel side: a handler that interrupts
-// epoll_pwait must return to the pre-wait mask, not the wait's mask.
+// A caught signal interrupts the wait while its temporary mask is active.
+// The guest checks the original mask again after the signal handler returns.
 describe("epoll_pwait signal mask", () => {
   it.skipIf(!binary)(
     "a signal unblocked only by the wait mask ends the wait with EINTR and runs its handler",

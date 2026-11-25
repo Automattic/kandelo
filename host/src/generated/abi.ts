@@ -811,7 +811,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 8 as const;
+export const HOST_ADAPTER_VERSION = 9 as const;
 export const ENTROPY_READ_PENDING = -2147483648 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
@@ -837,8 +837,6 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_drain_wait_completions",
   "kernel_entropy_read_cancel",
   "kernel_entropy_read_step",
-  "kernel_epoll_wait_finish",
-  "kernel_epoll_wait_token",
   "kernel_exchange_activate",
   "kernel_exchange_add_entry",
   "kernel_exchange_agent_failed",
@@ -945,7 +943,6 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
-  "kernel_epoll_wait_retry_state",
   "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
@@ -1691,6 +1688,10 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   359: { 3: "process-size", },
   361: { 3: "process-size", },
   377: { 2: "process-size", },
+} as const;
+export const DIRECT_READINESS_ADDRESS_SLOTS: Readonly<Partial<Record<number, readonly number[]>>> = {
+  241: [1, 4],
+  379: [1],
 } as const;
 export const CHANNEL_RESULT_CONTRACTS: Readonly<
   Partial<Record<number, ChannelResultKind>>

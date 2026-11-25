@@ -666,19 +666,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#captureBlockingRetryDisposition::kernel-export-direct-use::isFdNonblock(channel.pid, fd)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.clearReadinessWait::kernel-export-direct-use::restoreMask?.(channel.pid, this.guestTidForChannel(channel))",
-  ),
-  // Exact task/token identities are scalars, never guest/kernel pointers.
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.clearReadinessWait::kernel-export-direct-use::finish?.(channel.pid, this.guestTidForChannel(channel), token)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.retireChannelHostWaits::kernel-export-direct-use::finish?.(channel.pid, this.guestTidForChannel(channel), token)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::queryToken(channel.pid, this.guestTidForChannel(channel))",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#completeSuccessfulSpawnWithinKernelEntry::kernel-export-direct-use::publishSpawnChild(parentPid, childPid)",
   ),
   reviewedScalarKernelExportCall(
@@ -988,9 +975,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleBlockingRetry::kernel-export-direct-use::getSendPipeIdx?.(channel.pid, origArgs[0])",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::swapMask(channel.pid, this.guestTidForChannel(channel), mask)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleExit::kernel-export-direct-use::commitProcessExit(exitStatus)",
@@ -1987,17 +1971,6 @@ describe("kernel scratch static contract", () => {
         assertKernelScratchPointerRoleContract(kernelWasmApiSource, exportName),
       ).not.toThrow();
     }
-  });
-
-  it("keeps the retained epoll retry probe scalar-only", () => {
-    expect(rustKernelExportParameters(
-      kernelWasmApiSource, "kernel_epoll_wait_retry_state",
-    )).toEqual([
-      { name: "pid", type: "u32" },
-      { name: "tid", type: "u32" },
-      { name: "token", type: "u64" },
-      { name: "deadline_handle", type: "u64" },
-    ]);
   });
 
   it("keeps the reviewed process-exit publication scalar-only", () => {

@@ -2368,7 +2368,8 @@ pub mod abi {
     /// 7: bounded entropy continuations, process-range validation, and private
     ///    guest-address I/O transport.
     /// 8: length-derived select-family bitmap slots for descriptors above FD_SETSIZE.
-    pub const HOST_ADAPTER_VERSION: u32 = 8;
+    /// 9: the kernel reads epoll addresses and owns blocking epoll waits.
+    pub const HOST_ADAPTER_VERSION: u32 = 9;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2495,9 +2496,6 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
         HostAdapterKernelExport::required("kernel_entropy_read_cancel"),
         HostAdapterKernelExport::required("kernel_entropy_read_step"),
-        HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
-        HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
-        HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exchange_activate"),
         HostAdapterKernelExport::required("kernel_exchange_add_entry"),
         HostAdapterKernelExport::required("kernel_exchange_agent_failed"),

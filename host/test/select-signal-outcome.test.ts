@@ -117,7 +117,6 @@ function createHarness(options: {
     return handlerSignal;
   });
   const setCurrentTid = vi.fn(() => 0);
-  const swapSignalMask = vi.fn(() => 0);
   const implementations: Record<string, unknown> = {
     kernel_blocking_retry_release: () => 0,
     kernel_blocking_retry_token: () => 0n,
@@ -132,7 +131,6 @@ function createHarness(options: {
     kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     kernel_handle_channel: handleChannel,
     kernel_set_current_tid: setCurrentTid,
-    kernel_swap_poll_sigmask: swapSignalMask,
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
   };
   const gate = new KernelEntryGate();
@@ -153,7 +151,6 @@ function createHarness(options: {
         "kernel_get_process_exit_signal",
         "kernel_handle_channel",
         "kernel_set_current_tid",
-        "kernel_swap_poll_sigmask",
         "kernel_take_process_timer_cleanup",
       ],
     ),
@@ -213,7 +210,6 @@ function createHarness(options: {
     onExit,
     processMemory,
     setCurrentTid,
-    swapSignalMask,
     state: worker as unknown as SelectState,
     worker,
   };
@@ -248,25 +244,6 @@ function expectCompletion(
 }
 
 describe("select and pselect signal outcomes", () => {
-  it("rejects an invalid epoll output range before installing a temporary mask", () => {
-    const harness = createHarness({ handlerSignal: 10 });
-    const maskPointer = 2048;
-    new DataView(harness.processMemory.buffer).setBigUint64(maskPointer, 0n, true);
-    const args = syscallArgs(
-      3,
-      harness.processMemory.buffer.byteLength - 8,
-      1,
-      0,
-      maskPointer,
-      8,
-    );
-    dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, args);
-    expect(harness.swapSignalMask).not.toHaveBeenCalled();
-    expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.dequeueSignal).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(harness.channel, -1, 14);
-  });
-
   it("returns EINTR instead of re-parking pselect after a caught signal", () => {
     const harness = createHarness({ handlerSignal: 10 });
     const readfdsPointer = 1024;

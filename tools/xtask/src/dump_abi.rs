@@ -3861,6 +3861,11 @@ fn render_ts_module() -> String {
         out.push_str(" },\n");
     }
     out.push_str("} as const;\n");
+    out.push_str("export const DIRECT_READINESS_ADDRESS_SLOTS: Readonly<Partial<Record<number, readonly number[]>>> = {\n");
+    for &(number, slots) in shared::host_abi::DIRECT_READINESS_ADDRESS_SLOTS {
+        out.push_str(&format!("  {number}: {slots:?},\n"));
+    }
+    out.push_str("} as const;\n");
     out.push_str(
         "export const CHANNEL_RESULT_CONTRACTS: Readonly<\n\
          \x20 Partial<Record<number, ChannelResultKind>>\n\
@@ -4858,6 +4863,7 @@ fn declared_snapshot_sections() -> Sections {
     s.add(Program, "wait_contract", wait_contract());
     s.add(Program, "host_intercepted_syscalls", host_intercepted_syscalls());
     s.add(KernelHost, "host_adapter", host_adapter());
+    s.add(KernelHost, "direct_readiness_address_slots", json!(shared::host_abi::DIRECT_READINESS_ADDRESS_SLOTS));
     s.add(Program, "syscall_arg_descriptors", syscall_arg_descriptors());
     // Kernel requests the process worker issues to serve a program extension.
     // Kernel-host surface: no program marshals them, so they stay out of the

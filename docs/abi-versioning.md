@@ -223,6 +223,16 @@ programs, as the maintainer decided in
 `docs/plans/2026-11-15-process-shared-synchronization-design.md`. Such a
 change is documented where it lands and in `docs/posix-status.md`.
 
+### Host adapter version 9
+
+The kernel owns blocking epoll waits and writes events to the guest address.
+`direct_readiness_address_slots` records the raw arguments the adapter passes
+through its kernel scratch channel. The guest already writes these words in
+its syscall mailbox. They keep their representation in ABI 56 and existing
+binaries retain their program digest. The five `kernel_epoll_wait_*` and
+`kernel_*_poll_sigmask` exports used by the old host retry path are retired.
+Update the kernel and host together.
+
 ### Scheduled optional kernel exports
 
 `shared::abi::HOST_ADAPTER_KERNEL_EXPORTS` declares host-facing kernel

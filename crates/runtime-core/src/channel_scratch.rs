@@ -502,29 +502,6 @@ fn validate_special_layout(
             )?;
             Ok(validated)
         }
-        extended_syscalls::SYS_EPOLL_PWAIT | extended_syscalls::SYS_EPOLL_WAIT => {
-            let count = checked_size_scalar(args[2])?;
-            let length = count
-                .checked_mul(size_of::<WasmEpollEvent>())
-                .ok_or(Errno::EINVAL)?;
-            let mut validated = ValidatedChannelScratchArgs::new();
-            checked_exact_range(&mut validated, args, 1, region.start, length, region)?;
-            if syscall_number == extended_syscalls::SYS_EPOLL_PWAIT {
-                let mask_pointer = align_up(
-                    region.start.checked_add(length).ok_or(Errno::EFAULT)?,
-                    SCRATCH_ALIGNMENT,
-                )?;
-                checked_nullable_exact_range(
-                    &mut validated,
-                    args,
-                    4,
-                    mask_pointer,
-                    kernel_scratch_wire::SIGNAL_MASK_BYTES as usize,
-                    region,
-                )?;
-            }
-            Ok(validated)
-        }
         _ => Ok(ValidatedChannelScratchArgs::new()),
     }
 }
@@ -2178,9 +2155,8 @@ mod tests {
     // emits for one representative syscall per family and assert that
     // `prepare_channel_record` lays a scratch layout the UNCHANGED legacy
     // `validate_channel_scratch_arguments` / dispatch accept, including
-    // copy-back for value-result buffers. prctl, epoll_ctl,
-    // epoll_pwait/epoll_wait reuse the generic flat-span placement
-    // (single/ordered spans at the allocation base);
+    // copy-back for value-result buffers. prctl and epoll_ctl reuse generic
+    // flat-span placement (single spans at the allocation base);
     // select/pselect6 use the dedicated fixed-offset `prepare_select_record`.
     // -----------------------------------------------------------------------
 
@@ -2251,53 +2227,19 @@ mod tests {
     }
 
     #[test]
-    fn record_epoll_pwait_array_and_mask_match_legacy_validator() {
-        // epoll_pwait(epfd, events, maxevents=3, timeout, sigmask, sigsetsize=8).
-        let event = size_of::<WasmEpollEvent>();
-        let maxevents = 3usize;
-        let array_len = maxevents * event;
-        let mask_len = kernel_scratch_wire::SIGNAL_MASK_BYTES as usize;
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_EPOLL_PWAIT,
-            [4, 0, maxevents as i64, 0, 0, mask_len as i64],
-            &[
-                RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; array_len] },
-                RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 4, payload: alloc::vec![0u8; mask_len] },
-            ],
-        );
-        // Event array at the base; sigmask at align_up(base + array_len, 8),
-        // exactly where `validate_special_layout` recomputes it.
-        assert_eq!(prep.args[1] as usize, start);
-        let expected_mask = (start + array_len + 7) & !7usize;
-        assert_eq!(prep.args[4] as usize, expected_mask);
-        // Only the OUT event array copies back.
-        assert_eq!(prep.copy_back.len(), 1);
-        assert_eq!(prep.copy_back[0].scratch_src, start);
-        assert_eq!(prep.copy_back[0].len, array_len);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
-                .expect("legacy validator accepts the reconstructed epoll_pwait layout");
-        assert_eq!(validated.pointer(1), Ok(start));
-        assert_eq!(validated.pointer(4), Ok(expected_mask));
-    }
-
-    #[test]
-    fn record_epoll_wait_array_only_matches_legacy_validator() {
-        let event = size_of::<WasmEpollEvent>();
-        let maxevents = 2usize;
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_EPOLL_WAIT,
-            [4, 0, maxevents as i64, 0, 0, 0],
-            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; maxevents * event] }],
-        );
-        assert_eq!(prep.args[1] as usize, start);
-        assert_eq!(prep.copy_back.len(), 1);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
-                .expect("legacy validator accepts the reconstructed epoll_wait layout");
-        assert_eq!(validated.pointer(1), Ok(start));
+    fn epoll_wait_addresses_are_not_kernel_scratch_spans() {
+        let data = alloc::vec![0u8; REC_CAP];
+        let region = ChannelScratchRegion::new(data.as_ptr() as usize, REC_CAP).unwrap();
+        let above_wasm32 = 0x1_0000_0100;
+        for (syscall, mask) in [
+            (extended_syscalls::SYS_EPOLL_PWAIT, above_wasm32 + 32),
+            (extended_syscalls::SYS_EPOLL_WAIT, 0),
+        ] {
+            let args = [4, above_wasm32, 1, 0, mask, 8];
+            let validated = unsafe { validate_channel_scratch_arguments(syscall, &args, region, 8) }
+                .expect("caller addresses never use kernel scratch");
+            assert_eq!(validated.pointer(1), Err(Errno::EFAULT));
+        }
     }
 
     #[test]

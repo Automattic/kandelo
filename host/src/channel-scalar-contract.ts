@@ -3,6 +3,7 @@ import {
   CHANNEL_RESULT_DEFAULT_KIND,
   CHANNEL_SCALAR_DEFAULT_SLOT_KIND,
   CHANNEL_SCALAR_SLOT_CONTRACTS,
+  DIRECT_READINESS_ADDRESS_SLOTS,
   type ChannelArgumentIndex,
   type ChannelResultKind,
   type ChannelScalarSlotKind,
@@ -11,6 +12,7 @@ import {
 export {
   CHANNEL_RESULT_CONTRACTS,
   CHANNEL_SCALAR_SLOT_CONTRACTS,
+  DIRECT_READINESS_ADDRESS_SLOTS,
 };
 export type {
   ChannelResultKind,
@@ -105,8 +107,9 @@ export function normalizeChannelScalarArguments(
   rawArgs: readonly bigint[],
 ): ChannelScalarValue[] {
   const contract = CHANNEL_SCALAR_SLOT_CONTRACTS[syscallNr];
+  const directSlots = DIRECT_READINESS_ADDRESS_SLOTS[syscallNr];
   return rawArgs.map((raw, index) =>
-    normalizeChannelScalar(
+    directSlots?.includes(index) ? raw : normalizeChannelScalar(
       raw,
       contract?.[index as ChannelArgumentIndex]
         ?? CHANNEL_SCALAR_DEFAULT_SLOT_KIND,
