@@ -197,6 +197,75 @@ class AgentJobTest(JobsDirCase):
         self.assertTrue(aj.LOCKED.search(aj.shell_command(["./run.sh", "setup"])))
 
 
+class RetainedContextTest(JobsDirCase):
+    def check_context(self, *args):
+        return subprocess.run([sys.executable, str(REPO / 'scripts/retained_context.py'),
+                               str(pathlib.Path(self.cwd, '.context')), *args],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_absent_context_passes_without_creating_it(self):
+        self.assertEqual(self.check_context().returncode, 0)
+        self.assertFalse(pathlib.Path(self.cwd, '.context').exists())
+
+    def test_budgets_use_logical_bytes_even_for_sparse_files_and_compressed_names(self):
+        root = pathlib.Path(self.cwd, '.context')
+        root.mkdir()
+        large = root / 'build-tree.tar.gz'
+        with large.open('wb') as f:
+            f.truncate(25 * 1024 * 1024 + 1)
+        result = self.check_context('--json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertTrue(report['violations'])
+        self.assertEqual(report['bytes'], large.stat().st_size)
+        self.assertEqual(report['largest'][0]['path'], large.name)
+        self.assertEqual(large.stat().st_size, 25 * 1024 * 1024 + 1)
+        self.assertEqual(self.check_context('--max-file-mib', '26').returncode, 0)
+
+    def test_total_and_count_limits_catch_many_small_files_with_bounded_output(self):
+        root = pathlib.Path(self.cwd, '.context')
+        root.mkdir()
+        for i in range(20):
+            (root / f'log-{i}.txt').write_bytes(b'a' * 100)
+        result = self.check_context('--json', '--max-files', '10', '--max-mib', '0.001')
+        self.assertEqual(result.returncode, 1)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['files'], 20)
+        self.assertEqual(report['bytes'], 2000)
+        self.assertEqual(len(report['violations']), 2)
+        self.assertEqual(len(report['largest']), 10)
+        self.assertEqual(len(list(root.iterdir())), 20)
+
+    def test_links_do_not_scan_peer_trees_and_root_links_are_rejected(self):
+        root = pathlib.Path(self.cwd, '.context')
+        root.mkdir()
+        peer = pathlib.Path(self.tmp.name, 'peer')
+        peer.mkdir()
+        (peer / 'large').write_bytes(b'x' * 1024)
+        (root / 'peer').symlink_to(peer, target_is_directory=True)
+        (root / 'dangling').symlink_to(peer / 'missing')
+        report = json.loads(self.check_context('--json').stdout)
+        self.assertEqual(report['symlinks'], 2)
+        self.assertEqual(report['files'], 2)
+        root.rename(root.with_name('saved-context'))
+        root.symlink_to(peer, target_is_directory=True)
+        self.assertNotEqual(self.check_context().returncode, 0)
+        self.assertEqual((peer / 'large').read_bytes(), b'x' * 1024)
+
+    def test_incomplete_or_invalid_checks_fail(self):
+        root = pathlib.Path(self.cwd, '.context')
+        root.write_text('not a directory')
+        self.assertNotEqual(self.check_context().returncode, 0)
+        root.unlink()
+        root.mkdir()
+        os.mkfifo(root / 'pipe')
+        self.assertNotEqual(self.check_context().returncode, 0)
+        for limit in ('0', '-1', 'nan', 'inf'):
+            result = self.check_context('--max-mib', limit)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('budgets must be finite and positive', result.stderr)
+
+
 class PeerJobTest(JobsDirCase):
     """Jobs started in other worktrees: discovery, commits, and --peer."""
 
@@ -308,7 +377,7 @@ class PeerJobTest(JobsDirCase):
     def test_cleanup_command_runs_from_an_ordinary_checkout(self):
         scripts = pathlib.Path(self.main, "scripts")
         scripts.mkdir()
-        for name in ("agent-job", "validation_artifacts.py"):
+        for name in ("agent-job", "validation_artifacts.py", "retained_context.py"):
             shutil.copy(REPO / "scripts" / name, scripts / name)
         _, payload = self.finish(self.main, "archive-me")
         peer = self.start_running(self.peer, "sleep 60")
@@ -327,6 +396,22 @@ class PeerJobTest(JobsDirCase):
         report.parent.mkdir(parents=True)
         report.write_text("{}")
         self.assertEqual(self.git(self.main, "status", "--porcelain", "--untracked-files=all"), "")
+
+    def test_cleanup_releases_owned_payload_but_preserves_oversized_retained_data(self):
+        _, payload = self.finish(self.main, 'owned-build-log')
+        context = pathlib.Path(self.main, '.context')
+        large = context / 'caller-build.tar.gz'
+        with large.open('wb') as f:
+            f.truncate(26 * 1024 * 1024)
+        refused = self.agent_job('cleanup', cwd=self.main, check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('retained context budget exceeded', refused.stderr)
+        self.assertIn(large.name, refused.stdout)
+        self.assertFalse(payload.exists())
+        self.assertEqual(large.stat().st_size, 26 * 1024 * 1024)
+        # A reviewed exception is explicit, rather than deleting evidence or
+        # silently raising the default budget for every future workspace.
+        self.agent_job('cleanup', '--max-file-mib', '26', cwd=self.main)
 
     def test_removing_worktree_removes_payload_without_external_bulk(self):
         jid, payload = self.finish(self.peer, "removed-owner")

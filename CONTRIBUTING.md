@@ -221,6 +221,15 @@ Keep temporary checkouts and large experiments under `.scratch/` too.
 Conductor retains `.context/` on archive, so reserve it for notes,
 checkpoints, attachments, and selected evidence that should survive archival.
 
+Before a handoff, run `python3 scripts/retained_context.py`. It checks a
+50 MiB total budget, 25 MiB per file and 5,000 files, and reports the ten
+largest entries on failure. It is read-only and does not follow symlinks.
+For intentional larger evidence, review it explicitly; both the standalone
+check and `agent-job cleanup` accept `--max-mib`, `--max-file-mib` and
+`--max-files` overrides.
+Compressed build trees are still disposable build data. Do not duplicate
+them into an external handoff just to make `.context/` smaller.
+
 Evidence stays available until you release it or remove its worktree:
 
 ```bash
@@ -235,6 +244,13 @@ while a registered run still has active writers. After a refusal, finish
 the run and retry, or use `scripts/agent-job reopen` to resume work. Cleanup
 never stops a process. An optional editor or worktree-removal hook can call
 the same command, but must honor its failure before removing the worktree.
+After releasing managed payloads, `cleanup` also checks the retained-context
+budget and fails if remaining caller-owned data needs review. `--dry-run`
+checks the current files, including legacy payloads it has not removed.
+In Conductor, set the repository's Archive script to
+`scripts/agent-job cleanup` (preserving any existing archive steps).
+Each teammate must configure the hook in their installed Conductor version;
+this repository change alone cannot enforce a local app setting.
 
 The bulk payload is inside the worktree, so removing the directory also
 removes that payload even if no hook ran. A small machine-wide registry in

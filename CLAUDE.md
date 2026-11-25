@@ -91,6 +91,9 @@ outside `.context/` in `test-results/`. Copy any evidence needed after
 archival into retained storage before removing the workspace. See
 [`docs/repository-organization.md`](docs/repository-organization.md#worktree-local-storage)
 for storage ownership and cleanup.
+Run `python3 scripts/retained_context.py` before preparing a handoff or
+archiving. Resolve budget failures by reviewing the largest entries;
+never discard unique source or evidence automatically.
 
 ## Agent Work Loop
 

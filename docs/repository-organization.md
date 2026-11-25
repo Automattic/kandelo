@@ -103,6 +103,26 @@ Use a unique directory per run under `.scratch/`, or the job-provided
 output in `.context/`. Copy a concise result and any selected evidence that
 must survive archival into `.context/` or another durable destination.
 
+An archive follows the same rule as its contents: a compressed sysroot,
+build tree, browser profile, or job payload still belongs in `.scratch/`.
+For handoffs, retain decisions, source patches, result summaries, artifact
+hashes and selected compressed logs. Do not copy every build artifact into
+retained storage as a precaution, including an external handoff directory.
+Before archiving a workspace, check `.context/` with `du -sh .context` and
+review its largest entries. If bulk data has accumulated, extract any unique
+source changes and useful failure evidence, verify the smaller replacement,
+then remove the disposable payloads and redundant backup copies. Preserve
+registered validation evidence through the ownership-aware cleanup below.
+
+`python3 scripts/retained_context.py` checks the retained directory before a
+handoff; `scripts/agent-job cleanup` runs the same check after releasing its
+owned payloads. The defaults are 50 MiB total, 25 MiB per file and 5,000 files.
+The check never moves or deletes content. Its output is bounded to a summary
+and the ten largest entries, including with `--json`. An explicit directory
+argument can audit an archived context or external handoff. See the
+[contributor workflow](../CONTRIBUTING.md#retain-and-clean-validation-evidence)
+for reviewed overrides and Conductor archive-hook setup.
+
 Keep private agent progress ledgers and handoffs in `.context/`, not in
 tracked tool-specific directories. Keep reusable design rationale in `docs/`
 and current behavior in its authoritative reference. Before removing old plans

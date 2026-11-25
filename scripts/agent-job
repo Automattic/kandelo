@@ -61,6 +61,7 @@ those choices:
       Close this checkout/worktree to new runs, refuse active writers, then
       release its managed payloads. Run before removing a worktree in any IDE
       or plain Git workflow. Never stops a process or touches build caches.
+      Fail if remaining retained context exceeds its size/file-count budget.
   agent-job reopen
       Allow new runs after a refused cleanup or workspace restore.
   agent-job gc [--dry-run]
@@ -91,6 +92,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import validation_artifacts as artifacts
+import retained_context
 
 ROOT = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
 JOBS = os.path.join(ROOT, "jobs")
@@ -869,6 +871,7 @@ def cmd_release(args):
 
 
 def cmd_cleanup(args):
+    budgets = retained_context.budgets(args)
     path = worktree_of(os.getcwd())
     with artifacts.locked():
         ws = artifacts.workspace(path, allow_closed=True)
@@ -884,6 +887,9 @@ def cmd_cleanup(args):
         for _, d in legacy:
             release_legacy(d, args.dry_run)
     print(f"{'would release' if args.dry_run else 'released'} {count + len(legacy)} runs for {path}")
+    # Legacy registered payloads can live in .context: release them through
+    # their owners first, then check what Conductor would actually retain.
+    retained_context.check(os.path.join(path, '.context'), **budgets)
 
 
 def cmd_reopen(args):
@@ -944,6 +950,7 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("cleanup", help="close this worktree to new runs and release its inactive evidence")
     p.add_argument("--dry-run", action="store_true")
+    retained_context.add_budget_arguments(p)
     sub.add_parser("reopen", help="allow new runs after refused cleanup or workspace restore")
     p = sub.add_parser("gc", help="recover orphaned payloads without touching active writers or shared build caches")
     p.add_argument("--dry-run", action="store_true")
