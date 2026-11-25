@@ -82,6 +82,7 @@ PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" meson setup "$BUILD_DIR" "$SRC_DIR" \
     --cross-file "$CROSS_FILE" \
     --prefix "$INSTALL_DIR" \
     --libdir lib \
+    -Dicon_directory=/usr/share/icons \
     -Dbuild.pkg_config_path="$NATIVE_PC_PATH" \
     -Dwrap_mode=nodownload \
     -Dbuildtype=plain \
@@ -103,6 +104,12 @@ ninja -C "$BUILD_DIR"
 
 echo "==> Installing to $INSTALL_DIR..."
 meson install -C "$BUILD_DIR" --no-rebuild
+
+# Resolve development metadata relative to the installed package. ICONDIR
+# above is a guest runtime path and matches the shell's cursor theme mount.
+pc_file="$INSTALL_DIR/lib/pkgconfig/wlroots-0.20.pc"
+sed 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$pc_file" > "$pc_file.tmp"
+mv "$pc_file.tmp" "$pc_file"
 
 if [ ! -f "$INSTALL_DIR/lib/libwlroots-0.20.a" ]; then
     echo "ERROR: Build failed — library not found at $INSTALL_DIR/lib/libwlroots-0.20.a" >&2
