@@ -1266,8 +1266,9 @@ fn print_sdk_identity(toolchain: &Toolchain) -> Result<i32> {
         join(&toolchain.sysroot, "lib/libc.a"),
         host_imports_allowance(&toolchain.glue_dir),
     ];
-    let glue = glue_sources(toolchain, true, true);
+    let glue = glue_sources(toolchain, true);
     inputs.extend(glue.leading);
+    inputs.extend(glue.loader);
     inputs.extend(glue.fallback);
     inputs.extend(
         std::fs::read_dir(&toolchain.glue_dir)
