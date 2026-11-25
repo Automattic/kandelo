@@ -819,8 +819,8 @@ can be emitted again. Descriptor budgets are checked before writing a header.
 It seeds every matching fork import, every side-module function import, raw
 loader imports and conservative dynamic dispatch. It rejects previous private
 runtime imports, exports and metadata. Valid compiler facts use private SQLite
-relations with the requested effective-type policy; unreadable facts fall back
-to the bounded native baseline. Dlopen facts preserve the explicit side-module
+relations with the requested effective-type policy. Missing, stale or unsupported
+facts allow the bounded native baseline; storage and solver errors fail the build. Dlopen facts preserve the explicit side-module
 contract, including automatic full-entry planning for returning function
 pointers. No facts database survives into helper or source emission.
 
@@ -2332,7 +2332,7 @@ Which analysis runs:
 | Module | Analysis |
 |---|---|
 | wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
-| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
+| main module that cannot dlopen, facts absent, unsupported, unhashed or stale, or wasm64 | without facts |
 | main module that can dlopen, no usable facts | none (full closure) |
 | side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
 
@@ -2374,9 +2374,10 @@ chosen with `--side-modules`:
   boundary. The contract section says so and the hosts impose no
   restriction. Use it for a program that must load arbitrary plugins.
 
-Facts that cannot be read, or an
-internal error in the facts analysis, fall back to the analysis without
-facts with a one-line message, never to anything less conservative. The
+Missing or mismatched code hashes, unsupported facts formats, and modules the
+sink planner explicitly cannot model allow analysis without facts. Malformed
+bound facts, exceeded resource budgets, and SQLite or temporary-file failures
+fail instrumentation; the error identifies the temporary directory. The
 `kandelo.calltypes` and `kandelo.calltypes.code-sha256` sections are removed
 from every output, including a module the instrumenter otherwise returns
 unchanged.

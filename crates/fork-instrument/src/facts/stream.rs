@@ -2,9 +2,21 @@
 //! decoder never allocates a complete decompressed object. The logical input
 //! concatenates facts sections exactly as the linker/oracle does.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use flate2::{Decompress, FlushDecompress, Status};
 use std::io::{self, BufRead, BufReader, Read};
+
+/// An input format the instrumenter deliberately does not model.
+#[derive(Debug)]
+pub(crate) struct UnsupportedFormat(pub &'static str);
+
+impl std::fmt::Display for UnsupportedFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for UnsupportedFormat {}
 
 const MAGIC: &[u8; 8] = b"KCTZ\0\0\0\x01";
 const HEADER: &str = "#kandelo-calltypes\t";
@@ -240,10 +252,9 @@ impl<V: for<'a> FnMut(Event<'a>) -> Result<()>> Visitor<V> {
                 "compressed frame must contain one facts chunk"
             );
             self.finish()?;
-            ensure!(
-                text.split('\t').nth(1) == Some(super::side::FORMAT_VERSION),
-                "unsupported facts format"
-            );
+            if text.split('\t').nth(1) != Some(super::side::FORMAT_VERSION) {
+                bail!(UnsupportedFormat("unsupported facts format"));
+            }
             let chunk = self.report.chunks;
             self.report.chunks = chunk.checked_add(1).context("facts chunk count overflow")?;
             self.current = Some((0, 0));
@@ -306,10 +317,9 @@ pub fn visit_lines<'a>(
             input
                 .read_exact(&mut header)
                 .context("truncated compressed facts header")?;
-            ensure!(
-                &header[..8] == MAGIC,
-                "unsupported compressed facts encoding"
-            );
+            if &header[..8] != MAGIC {
+                bail!(UnsupportedFormat("unsupported compressed facts encoding"));
+            }
             let decoded = u64::from_le_bytes(header[8..16].try_into().unwrap());
             let encoded = u64::from_le_bytes(header[16..24].try_into().unwrap());
             ensure!(

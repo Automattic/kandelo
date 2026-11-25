@@ -71,7 +71,12 @@ pub fn analyze<'a>(
         && options.entry_import == "kernel.kernel_fork"
         && analysis.decision.entry_imports.len() == 1
     {
-        refine(&mut analysis, options, limits)?;
+        refine(&mut analysis, options, limits).with_context(|| {
+            format!(
+                "planning fork sinks using temporary directory {}",
+                tempfile::env::temp_dir().display()
+            )
+        })?;
     }
     Ok(analysis)
 }
@@ -86,28 +91,38 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
             .next()
             .is_some()
     {
-        match facts_plan(analysis, seed, options, limits) {
-            Ok((plan, report, mode)) => {
-                if analysis.decision.dynamic_linker {
-                    analysis.decision.dlopen_contract = Some(dlopen_contract(
-                        &analysis.scan,
-                        &plan,
-                        mode,
-                        limits.program.metadata_bytes,
-                    )?);
+        let unavailable = if (0..analysis.scan.types.as_ref().memory_count())
+            .any(|memory| analysis.scan.types.as_ref().memory_at(memory).memory64)
+        {
+            "the facts analysis models wasm32 only".into()
+        } else if let Err(error) = analysis.scan.verify_facts_hash() {
+            // Hash verification only inspects the immutable input bytes.
+            format!("{error:#}")
+        } else {
+            match facts_plan(analysis, seed, options, limits) {
+                Ok(Some((plan, report, mode))) => {
+                    if analysis.decision.dynamic_linker {
+                        analysis.decision.dlopen_contract = Some(dlopen_contract(
+                            &analysis.scan,
+                            &plan,
+                            mode,
+                            limits.program.metadata_bytes,
+                        )?);
+                    }
+                    apply(analysis, plan);
+                    analysis.decision.source = PlanSource::Facts;
+                    analysis.decision.facts = Some(report);
+                    return Ok(());
                 }
-                apply(analysis, plan);
-                analysis.decision.source = PlanSource::Facts;
-                analysis.decision.facts = Some(report);
-                return Ok(());
+                Ok(None) => "the facts analysis could not model this module".into(),
+                Err(error) if error.is::<crate::facts::stream::UnsupportedFormat>() => {
+                    format!("{error:#}")
+                }
+                Err(error) => return Err(error).context("analyzing compiler facts"),
             }
-            Err(error) => {
-                progress.note(format_args!(
-                    "unavailable: {error:#}; trying builtin analysis"
-                ));
-                analysis.decision.facts_error = Some(format!("{error:#}"));
-            }
-        }
+        };
+        progress.note(format_args!("compiler facts unavailable: {unavailable}"));
+        analysis.decision.facts_error = Some(unavailable);
     }
     if analysis.decision.dynamic_linker {
         return Ok(());
@@ -133,19 +148,10 @@ fn facts_plan(
     seed: u32,
     options: &Options,
     limits: AnalysisLimits,
-) -> Result<(sink::NativeSinkPlan, FactsReport, SideModules)> {
-    ensure!(
-        !(0..analysis.scan.types.as_ref().memory_count()).any(|memory| analysis
-            .scan
-            .types
-            .as_ref()
-            .memory_at(memory)
-            .memory64),
-        "the facts analysis models wasm32 only"
-    );
+) -> Result<Option<(sink::NativeSinkPlan, FactsReport, SideModules)>> {
     let progress = crate::progress::Progress::new("facts");
     progress.note(format_args!("load"));
-    let mut store = FactsStore::from_scan(&analysis.scan, limits.storage)?;
+    let mut store = FactsStore::from_verified_scan(&analysis.scan, limits.storage)?;
     progress.note(format_args!("resolve calls"));
     let report = store.resolve_calls(
         &analysis.scan,
@@ -161,14 +167,16 @@ fn facts_plan(
     // Under traced-entries a side-module call still returns normally; only
     // its fork path is excluded (the host enforces the contract at dlopen).
     program.side_modules_fork_return = mode != SideModules::TracedEntries;
-    let first = sink::plan_sinks(
+    let Some(first) = sink::plan_sinks(
         &mut program,
         seed,
         &analysis.reaching,
         SinkPolicy::default(),
         limits.sinks,
     )?
-    .context("the facts analysis could not model this module")?;
+    else {
+        return Ok(None);
+    };
     if dynamic_linking
         && mode == SideModules::TracedEntries
         && address_taken(&analysis.scan, &first)
@@ -183,11 +191,10 @@ fn facts_plan(
             &analysis.reaching,
             SinkPolicy::default(),
             limits.sinks,
-        )?
-        .context("full-entry facts analysis could not model this module")?;
-        Ok((plan, report, mode))
+        )?;
+        Ok(plan.map(|plan| (plan, report, mode)))
     } else {
-        Ok((first, report, mode))
+        Ok(Some((first, report, mode)))
     }
 }
 
