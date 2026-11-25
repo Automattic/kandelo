@@ -169,18 +169,17 @@ Some suites require additional binaries:
 | `mariadb-aria`, `mariadb-innodb` | wasm32 MariaDB programs; MariaDB VFS image for browser |
 | `mariadb-aria-64`, `mariadb-innodb-64` | wasm64 MariaDB programs; wasm64 MariaDB VFS image for browser |
 
-The standalone MariaDB benchmark images are not selected by ordinary browser
-product setup. Prepare both architectures through the package resolver:
+Prepare the browser application images through the local build graph. The
+MariaDB images are test fixtures. Build both architectures so the browser
+runner can resolve and verify them alongside WordPress:
 
 ```bash
-scripts/dev-shell.sh bash -c '
-  target="$(rustc -vV | sed -n "s/^host: //p")"
-  for arch in wasm32 wasm64; do
-    cargo run -q -p xtask --target "$target" -- build-deps resolve \
-      mariadb-vfs --arch "$arch" --binaries-dir "$PWD/binaries" || exit
-  done
-'
+./run.sh build wp-vfs mariadb-vfs mariadb64-vfs
 ```
+
+These targets publish the images through the same SourceOnly projection. For
+Node-only runs, `./run.sh build mariadb mariadb64` supplies the programs for
+the database suites.
 
 Browser benchmark extraction completes positive short reads in at most
 64 KiB windows and fails on premature EOF or invalid progress. The returned
@@ -518,26 +517,9 @@ environment (for example, both under `scripts/dev-shell.sh`, which sets its own
 
 ### Building All Suite Prerequisites
 
-To run the complete benchmark suite, build all prerequisites in order:
-
-```bash
-# 1. SDK toolchain (required by all application suites)
-scripts/dev-shell.sh bash -lc 'cd sdk && npm link'
-
-# 2. Base benchmark programs (syscall-io, process-lifecycle, spawn-scratch)
-scripts/dev-shell.sh bash scripts/build-programs.sh
-
-# 3. Erlang/OTP
-scripts/dev-shell.sh bash packages/registry/erlang/build-erlang.sh
-
-# 4. PHP + WordPress (PHP build includes SQLite, zlib, OpenSSL, libxml2)
-scripts/dev-shell.sh bash packages/registry/php/build-php.sh
-# Download WordPress into packages/registry/wordpress/wordpress/
-
-# 5. MariaDB
-scripts/dev-shell.sh bash packages/registry/mariadb/build-mariadb.sh          # wasm32
-scripts/dev-shell.sh bash packages/registry/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional)
-```
+Follow the [prerequisites](#prerequisites) in each comparison checkout. For
+both hosts, prepare the unpacked WordPress tree for Node and the verified
+application images for the browser.
 
 ### Running the Complete Suite for Performance Work
 

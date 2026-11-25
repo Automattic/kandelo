@@ -714,46 +714,11 @@ build_mariadb64() {
 }
 
 build_mariadb_vfs() {
-    # NOT folded: "mariadb-vfs" is an `[[exclusions]]` entry in
-    # packages/sets/local-supported.toml ("dormant browser product") — a
-    # pre-existing product decision predating this stage, not an engine
-    # limitation (its build script and
-    # images/vfs/products/browser-mariadb-wasm32.toml manifest already exist
-    # and validate fine; see
-    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
-    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
-    if has_mariadb_vfs; then
-        info "MariaDB VFS image (wasm32)"
-        return
-    fi
-    build_mariadb
-    # bash is /bin/sh in the image; dash ships at its own name.
-    build_bash
-    build_dash
-    step "Building MariaDB VFS image (wasm32)"
-    # Delegate to the package-system wrapper so install_local_binary
-    # populates local-binaries/programs/wasm32/mariadb-vfs.vfs.zst (the
-    # path the @binaries/ Vite alias resolves against).
-    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
-        bash "$REPO_ROOT/packages/registry/mariadb-vfs/build-mariadb-vfs.sh"
-    info "MariaDB VFS image (wasm32) built"
+    bootstrap_target mariadb-vfs
 }
 
 build_mariadb64_vfs() {
-    # NOT folded: same "mariadb-vfs" exclusion as build_mariadb_vfs above
-    # (this is its wasm64 arch variant of the same excluded package).
-    if has_mariadb64_vfs; then
-        info "MariaDB VFS image (wasm64)"
-        return
-    fi
-    build_mariadb64
-    # bash is /bin/sh in the image; dash ships at its own name.
-    build_bash
-    build_dash
-    step "Building MariaDB VFS image (wasm64)"
-    WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
-        bash "$REPO_ROOT/packages/registry/mariadb-vfs/build-mariadb-vfs.sh"
-    info "MariaDB VFS image (wasm64) built"
+    bootstrap_target mariadb-vfs64
 }
 
 build_mariadb_test_vfs() {
@@ -2196,10 +2161,12 @@ clean_target() {
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-glue-objs-64"
             warn "Cleaned MariaDB" ;;
         mariadb-vfs)
+            xtask_clean_target mariadb-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/mariadb.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/mariadb-vfs.vfs.zst"
             warn "Cleaned MariaDB VFS image (wasm32)" ;;
         mariadb64-vfs)
+            xtask_clean_target mariadb-vfs64
             rm -f "$REPO_ROOT/apps/browser-demos/public/mariadb-64.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm64/mariadb-vfs.vfs.zst"
             warn "Cleaned MariaDB VFS image (wasm64)" ;;
