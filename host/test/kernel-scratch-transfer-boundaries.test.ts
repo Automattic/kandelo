@@ -2675,7 +2675,8 @@ describe("kernel scratch transfer capacity regressions", () => {
     "rejects an out-of-range %s fd_set before copying it",
     (_name, _method, syscall) => {
       const harness = makeScratchHarness();
-      const invalidSet = harness.processBytes.byteLength - 4;
+      // Even a one-descriptor set requires a complete native word.
+      const invalidSet = harness.processBytes.byteLength - 1;
 
       expect(() =>
         dispatchScratchBoundarySyscallWithArgs(harness, syscall, [

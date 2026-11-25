@@ -1926,7 +1926,7 @@ describe("explicit grouped process byte imports", () => {
     expect(view.getUint32(64+64,true)).toBe(0);
     expect(source.atomicLoadI32(64)).toBe(2);
   });
-  it("defers direct grouped transfer publication without blocking on participant Q", () => {
+  it("refuses direct grouped publication with or without participant Q contention", () => {
     const {access,env,process}=grouped();
     const words=new Int32Array(process.buffer);
     const channel=65536-60,q=G.MEMORY_GROUP_WAIT_HEADER / 4;
@@ -1936,26 +1936,23 @@ describe("explicit grouped process byte imports", () => {
     Atomics.store(words,q,1);
     try {
       // The existing Rust caller treats a nonzero import return as NOT
-      // published and queues the real result for the host completion owner.
+      // published and queues the result for the actual Rust completion owner.
       const result=env.host_publish_wait_completion(7,BigInt(channel),23n,0);
       expect(wait).not.toHaveBeenCalled();
-      expect(result).toBe(-11);
+      expect(result).toBe(-3);
       expect(access.readBytes(channel,128)).toEqual(before);
       expect(Atomics.load(words,q)).toBe(1);
       Atomics.store(words,q,0);
-      expect(env.host_publish_wait_completion(7,BigInt(channel),23n,0)).toBe(0);
-      expect(access.atomicLoadI32(channel)).toBe(2);
-      const body=new DataView(access.readBytes(channel+56,12).buffer);
-      expect(body.getBigInt64(0,true)).toBe(23n);expect(body.getUint32(8,true)).toBe(0);
+      expect(env.host_publish_wait_completion(7,BigInt(channel),23n,0)).toBe(-3);
+      expect(access.readBytes(channel,128)).toEqual(before);
     } finally {Atomics.store(words,q,0);Atomics.notify(words,q);wait.mockRestore();}
   });
-  it("publishes virtual channel completion across scattered pages", () => {
+  it("leaves scattered virtual channel pages untouched by the ordinary-only import", () => {
     const { access, env } = grouped();
     const channel = 65536 - 60;
-    expect(env.host_publish_wait_completion(7, BigInt(channel), -23n, 4)).toBe(0);
-    expect(access.atomicLoadI32(channel)).toBe(2);
-    const body = new DataView(access.readBytes(channel + 56, 12).buffer);
-    expect(body.getBigInt64(0, true)).toBe(-23n); expect(body.getUint32(8, true)).toBe(4);
+    access.fillBytes(channel, 68, 0xa5);
+    expect(env.host_publish_wait_completion(7, BigInt(channel), -23n, 4)).toBe(-3);
+    expect([...access.readBytes(channel, 68)]).toEqual(new Array(68).fill(0xa5));
   });
   it("validates the exact virtual extent without copying or using physical capacity", () => {
     const { access, env } = grouped();
@@ -1996,18 +1993,20 @@ describe("explicit grouped process byte imports", () => {
     const channel = 65536 - 4;
     access.fillBytes(channel, 68, 0xa5);
     words[pte] = 4 * 65536 | 1;
-    expect(env.host_publish_wait_completion(7, BigInt(channel), 1n, 0)).toBe(-14);
+    expect(env.host_publish_wait_completion(7, BigInt(channel), 1n, 0)).toBe(-3);
     expect([...access.readBytes(channel, 68)]).toEqual(new Array(68).fill(0xa5));
     words[pte] = 4 * 65536 | 3;
-    expect(env.host_publish_wait_completion(7, (1n << 32n) + BigInt(channel), 1n, 0)).toBe(-14);
+    expect(env.host_publish_wait_completion(7, (1n << 32n) + BigInt(channel), 1n, 0)).toBe(-3);
   });
-  it("latches a corrupt wait queue as a host fault before publication", () => {
+  it("refuses direct publication without interpreting a grouped wait queue", () => {
     const onHostFault = vi.fn(), { access, words, env } = grouped(onHostFault);
     const q = 4112 / 4, node = 8192;
     words[q + 1] = node; words[q + 2] = node; words[q + 4] = 1;
     words[node / 4] = 1; words[node / 4 + 1] = node;
-    expect(() => env.host_publish_wait_completion(7, 0n, 1n, 0)).toThrow('Corrupt memory-group wait queue');
-    expect(onHostFault).toHaveBeenCalledTimes(1); expect(access.atomicLoadI32(0)).toBe(0);
+    expect(env.host_publish_wait_completion(7, 0n, 1n, 0)).toBe(-3);
+    expect(onHostFault).not.toHaveBeenCalled(); expect(access.atomicLoadI32(0)).toBe(0);
+    expect([words[q + 1], words[q + 2], words[q + 4], words[node / 4], words[node / 4 + 1]])
+      .toEqual([node, node, 1, 1, node]);
   });
   it("copies scattered virtual bytes through the authenticated kernel destination", () => {
     const { access, kernelMemory, env } = grouped();

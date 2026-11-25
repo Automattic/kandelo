@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { groupMemoryObservationFixture } from './support/group-memory-layout';
-import { installKernelWorkerTestScratch } from './kernel-worker-test-scratch';
 import { GroupProcessAddressSpace } from "../src/process-address-space";
 import { prepareProcessNativeObservationI32, type ProcessMemorySource } from "../src/process-memory-views";
 import { CH_STATUS } from "../src/generated/abi";
@@ -17,7 +16,6 @@ type ChannelFixture = {
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
-  grouped?: { handle: unknown; store: unknown };
 };
 
 type ListenerHarness = CentralizedKernelWorker & {
@@ -89,7 +87,7 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     } else {
       processes.set(channel.pid, {
         pid: channel.pid,
-        memory: channel.memory, source: channel.source, grouped: channel.grouped,
+        memory: channel.memory, source: channel.source,
         channels: [channel],
       });
     }
@@ -107,7 +105,6 @@ function createHarness(channels: ChannelFixture[]): ListenerHarness {
     relistenBatchSize: 64,
     relistenCount: 0,
   }) as ListenerHarness;
-  if (channels.some(channel => channel.grouped)) installKernelWorkerTestScratch(worker, new WebAssembly.Memory({ initial: 2 }), 128);
   return worker;
 }
 
@@ -154,49 +151,52 @@ function groupedChannels() {
   const b = groupMemoryObservationFixture({ receipt: { ...task, serial: 2n, generation: 1n }, memory: a.memory,
     rootPage: 2, replicaPage: 5, payloadPage: 16 }, pending);
   const oldLaunch = a.launch, oldSource = a.source, newSource = b.source;
-  const old = { ...createChannel(100, a.memory, offset), source: oldSource, grouped: { handle: a.handle, store: a.transport } };
-  const replacement = { ...createChannel(100, b.memory, offset), source: newSource, grouped: { handle: b.handle, store: b.transport } };
+  const old = { ...createChannel(100, a.memory, offset), source: oldSource };
   const store = { pending, memory: a.memory, close: () => { a.close(); b.close(); } };
-  return { store, a, b, old, replacement, oldLaunch, oldSource, newSource };
+  return { store, a, b, old, oldLaunch, oldSource, newSource };
 }
 
 describe("retired syscall-channel listener reclamation", () => {
-  it("keeps same-PID same-offset grouped images separate after source revocation", async () => {
-    const { store, a, b, old, replacement, oldSource, newSource } = groupedChannels();
-    const worker = createHarness([old]), waits = observeWaits();
+  // These fixtures cover mechanical native observations. Rust completion
+  // ownership and actual worker registration are exercised by
+  // group-memory-kernel.test.ts and group-memory-worker-boundary.test.ts.
+  // Do not recreate the removed TypeScript group owner in this harness.
+  it("keeps same-PID same-offset native observations separate after source revocation", async () => {
+    const { store, a, b, old, oldSource, newSource } = groupedChannels();
+    const first = prepareProcessNativeObservationI32(oldSource, old.channelOffset);
+    const second = prepareProcessNativeObservationI32(newSource, old.channelOffset);
+    const firstWait = first.arm(0), secondWait = second.arm(0);
+    expect(firstWait.async).toBe(true); expect(secondWait.async).toBe(true);
+    if (!firstWait.async || !secondWait.async) throw Error("native observations were not armed");
     try {
-      worker.listenOnChannel(old); worker.retireChannelListener(old);
       a.close();
-      worker.processes.set(100, { pid: 100, memory: replacement.memory, source: newSource, grouped: replacement.grouped, channels: [replacement] } as any);
-      worker.activeChannels = [replacement]; worker.listenOnChannel(replacement);
-      expect(old.memory).toBe(replacement.memory); expect(waits).toHaveLength(2);
       expect(store.pending.size).toBe(2);
-      expect(() => worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset)).toThrow("exact image source");
-      await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, newSource);
-      expect(waits.map(wait => wait.settled)).toEqual([false, false]);
       const charged = store.memory.buffer.byteLength;
-      const done = worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
+      first.wake();
+      // A native notification is not a settlement acknowledgement.
       expect(store.pending.size).toBe(2);
-      expect(worker.retiredChannelListeners.has(old)).toBe(true);
-      await done;
-      expect(waits.map(wait => wait.settled)).toEqual([true, false]);
-      expect(waits).toHaveLength(2); expect(store.pending.size).toBe(1);
+      await firstWait.value;
+      expect(first.settled).toBe(true); expect(second.settled).toBe(false);
+      expect(store.pending.size).toBe(1);
       expect(store.memory.buffer.byteLength).toBe(charged);
-      worker.retireChannelListener(replacement); b.close();
-      await worker.settleRetiredChannelListeners(100, replacement.memory, replacement.channelOffset, newSource);
+      b.close(); second.wake(); await secondWait.value;
       expect(store.pending.size).toBe(0);
-    } finally { store.close(); }
+    } finally {
+      first.wake(); second.wake();
+      await Promise.all([firstWait.value, secondWait.value]); store.close();
+    }
   });
 
   it("wakes the captured physical word after a virtual PTE changes", async () => {
     const { store, old, oldLaunch, oldSource } = groupedChannels();
-    const worker = createHarness([old]);
+    const observation = prepareProcessNativeObservationI32(oldSource, old.channelOffset);
+    const waiting = observation.arm(0);
+    expect(waiting.async).toBe(true);
+    if (!waiting.async) throw Error("native observation was not armed");
     const ptes = new Uint32Array(old.memory.buffer, oldLaunch.expectation.root + 64, 16);
     let control: { async: true; value: Promise<string> } | undefined;
     let fresh: Int32Array | undefined;
-    const originalWord = new Int32Array(old.memory.buffer, (ptes[0] & 0xffff0000) + old.channelOffset, 1);
     try {
-      worker.listenOnChannel(old); worker.retireChannelListener(old);
       [ptes[0], ptes[1]] = [ptes[1], ptes[0]];
       fresh = new Int32Array(old.memory.buffer, (ptes[0] & 0xffff0000) + old.channelOffset, 1);
       const wait = originalWaitAsync(fresh, 0, 0);
@@ -204,39 +204,40 @@ describe("retired syscall-channel listener reclamation", () => {
       if (!wait.async) throw Error("control waiter was not armed");
       control = wait;
       let incorrectlyWoken = false; void wait.value.then(() => { incorrectlyWoken = true; });
-      await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
+      observation.wake(); await waiting.value;
       expect(incorrectlyWoken).toBe(false); expect(store.pending.size).toBe(0);
     } finally {
-      Atomics.notify(originalWord, 0);
+      observation.wake(); await waiting.value;
       if (fresh) Atomics.notify(fresh, 0);
       if (control) await control.value;
-      await waitForMicrotasks();
       store.close();
     }
   });
 
-  it("keeps a failed wake charged and retries without acknowledging retirement", async () => {
-    const { store, old, oldSource } = groupedChannels(), worker = createHarness([old]);
+  it("keeps a failed native wake charged until an actual retry settles", async () => {
+    const { store, old, oldSource } = groupedChannels();
+    const observation = prepareProcessNativeObservationI32(oldSource, old.channelOffset);
+    const waiting = observation.arm(0);
+    expect(waiting.async).toBe(true);
+    if (!waiting.async) throw Error("native observation was not armed");
     try {
-      worker.listenOnChannel(old); worker.retireChannelListener(old);
       const notify = vi.spyOn(Atomics, "notify").mockImplementationOnce(() => { throw Error("injected wake failure"); });
-      expect(() => worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource)).toThrow("injected wake failure");
-      expect(worker.retiredChannelListeners.has(old)).toBe(true);
+      expect(() => observation.wake()).toThrow("injected wake failure");
+      expect(observation.settled).toBe(false);
       expect(store.pending.size).toBe(1); notify.mockRestore();
-      await worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource);
+      observation.wake(); await waiting.value;
       expect(store.pending.size).toBe(0);
-    } finally { store.close(); }
+    } finally { observation.wake(); await waiting.value; store.close(); }
   });
 
-  it("does not acknowledge an observer whose continuation could not be registered", async () => {
-    const { store, old, oldSource } = groupedChannels(), worker = createHarness([old]);
+  it("does not release a native observation whose continuation could not be registered", () => {
+    const { store, old, oldSource } = groupedChannels();
+    const observation = prepareProcessNativeObservationI32(oldSource, old.channelOffset);
     const wait = vi.spyOn(Atomics, "waitAsync").mockReturnValueOnce({ async: true, value: {} as Promise<"ok"> });
-    worker.listenOnChannel(old); wait.mockRestore(); worker.retireChannelListener(old);
-    let acknowledged = false;
-    void worker.settleRetiredChannelListeners(100, old.memory, old.channelOffset, oldSource).then(() => { acknowledged = true; });
-    await waitForMicrotasks();
-    expect(acknowledged).toBe(false); expect(worker.retiredChannelListeners.has(old)).toBe(true);
-    expect(store.pending.size).toBe(1);
+    try { expect(() => observation.arm(0)).toThrow(TypeError); }
+    finally { wait.mockRestore(); }
+    observation.wake();
+    expect(observation.settled).toBe(false); expect(store.pending.size).toBe(1);
     store.close(); expect(store.pending.size).toBe(1);
   });
 

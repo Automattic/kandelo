@@ -539,7 +539,7 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(KERNEL_TID);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
-      .toEqual({ fnPtr: 11, argPtr: 22 });
+      .toEqual({ fnPtr: 11, argPtr: 22, slot: { address: 0, byteLength: 4 * WASM_PAGE_SIZE } });
   });
 
   it("rejects assigning one kernel TID to a second channel", async () => {
@@ -610,7 +610,7 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${secondThreadOffset}`))
       .toBe(siblingTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${secondThreadOffset}`))
-      .toEqual({ fnPtr: 33, argPtr: 44 });
+      .toEqual({ fnPtr: 33, argPtr: 44, slot: { address: WASM_PAGE_SIZE, byteLength: 4 * WASM_PAGE_SIZE } });
     expect((worker as any).addChannel).toBeUndefined();
 
     // Native identity refusal happens before kernel ingress and cannot poison
@@ -660,7 +660,7 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(replacementTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
-      .toEqual({ fnPtr: 33, argPtr: 44 });
+      .toEqual({ fnPtr: 33, argPtr: 44, slot: { address: 0, byteLength: 4 * WASM_PAGE_SIZE } });
   });
 });
 
