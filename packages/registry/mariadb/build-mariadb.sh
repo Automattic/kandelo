@@ -442,16 +442,20 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # The bundled line editor must reference terminfo's PC/BC/UP globals.
 # NEED_EXTERN_PC is its existing portability selector for that ownership.
+# The compiled directory defaults use the guest layout. The raw Clang
+# toolchains need an explicit prefix map for source paths in diagnostics.
+SOURCE_PREFIX_MAP="-ffile-prefix-map=$BUILD_STATE_ROOT=/usr/src/kandelo-build/mariadb"
 cmake "$SRC_DIR" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$GLUE_OBJ_DIR" \
-    -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DINSTALL_MYSQLDATADIR=/var/lib/mysql \
     -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
     \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG -DNEED_EXTERN_PC=1" \
-    -DCMAKE_CXX_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
+    -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG -DNEED_EXTERN_PC=1 \"$SOURCE_PREFIX_MAP\"" \
+    -DCMAKE_CXX_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG \"$SOURCE_PREFIX_MAP\"" \
     \
     -DWITH_UNIT_TESTS=OFF \
     -DWITH_MARIABACKUP=OFF \
