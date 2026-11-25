@@ -158,7 +158,9 @@ fn facts_plan(
     progress.note(format_args!("sink plan"));
     let mut mode = options.side_modules;
     let dynamic_linking = program.dynamic_linking;
-    program.dynamic_linking &= mode != SideModules::TracedEntries;
+    // Under traced-entries a side-module call still returns normally; only
+    // its fork path is excluded (the host enforces the contract at dlopen).
+    program.side_modules_fork_return = mode != SideModules::TracedEntries;
     let first = sink::plan_sinks(
         &mut program,
         seed,
@@ -173,7 +175,7 @@ fn facts_plan(
     {
         // WHY: a returning function pointer can enter an untraced side module.
         // Preserve loading by selecting the conservative full-entry contract.
-        program.dynamic_linking = true;
+        program.side_modules_fork_return = true;
         mode = SideModules::AssumeAllEntriesForkReturning;
         let plan = sink::plan_sinks(
             &mut program,

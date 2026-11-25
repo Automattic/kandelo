@@ -2336,12 +2336,23 @@ Which analysis runs:
 | main module that can dlopen, no usable facts | none (full closure) |
 | side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
 
-A module that can dlopen is analysed with facts too. What it may assume
-about side modules is chosen with `--side-modules`:
+A module that can dlopen is analysed with facts too. In such a module
+every function export is a possible target of indirect calls through
+`__indirect_function_table`, even with no element segment naming it:
+`dlsym(RTLD_DEFAULT, name)` and a side module's `GOT.func` relocation
+append the export to that table at run time (`symbolAddress` in
+`host/src/dylink.ts`). Otherwise a call through such a pointer would have
+no targets, would be treated as never returning, and the frames above a
+later fork would not be instrumented. What the module may assume about
+side modules is
+chosen with `--side-modules`:
 
 - `traced-entries` (the default). The analysis treats a side module as
   entering the main program only through its imports (an `env` function or
-  a `GOT.func` slot). A function whose fork child can return to a caller is
+  a `GOT.func` slot). A main-program call through a pointer that may reach
+  a side module still returns normally and may throw, but no fork child
+  returns through it, so it does not by itself keep its callers
+  instrumented. A function whose fork child can return to a caller is
   *fork-returning*; it stays instrumented in the callers' frames. The
   instrumenter records the main module's side of that assumption in a
   `kandelo.wpk_fork.dlopen_contract` custom section: the exported
