@@ -34,13 +34,22 @@ check_scheduled_program_abi_changes() {
 import json
 from pathlib import Path
 
-slot = json.loads(Path("abi/snapshot.json").read_text())["process_memory_layout"]["thread_slot"]
+snapshot = json.loads(Path("abi/snapshot.json").read_text())
+failures = []
+
+slot = snapshot["process_memory_layout"]["thread_slot"]
 expected = ["fork_save_scratch", "syscall_channel_primary", "syscall_channel_spill"]
 pages = [(page["name"], page["page_offset"]) for page in slot["pages"]]
 if slot["pages_per_slot"] != len(expected) or pages != list(zip(expected, range(len(expected)))):
+    failures.append("ABI 57 and later require separate pthread TLS and a three-page control slot.")
+
+if any(entry["name"] == "__wasm_dlopen" for entry in snapshot["host_env_imports"]):
+    failures.append("ABI 57 and later remove the single-step env.__wasm_dlopen host import.")
+
+if failures:
     raise SystemExit(
-        "abi: ABI 57 and later require separate pthread TLS and a three-page control slot. "
-        "See docs/abi-versioning.md#required-changes-for-the-next-program-abi."
+        "".join(f"abi: {failure}\n" for failure in failures)
+        + "See docs/abi-versioning.md#required-changes-for-the-next-program-abi."
     )
 PYTHON
     fi
