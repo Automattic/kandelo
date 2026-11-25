@@ -736,6 +736,76 @@ mod tests {
         let (store, admission) = f.process.table.memory_groups().storage_owner(f.parent).unwrap();
         store.completion_count(admission).unwrap()
     }
+
+    #[test]
+    fn grouped_mapping_defers_orphan_collection_while_notification_queue_is_locked() {
+        use wasm_posix_shared::{mmap, program_extensions::memory_group_v3 as L};
+        fn mapping<H: HostIO>(f: &mut Fixture<H>, syscall: Syscall, args: [u64; 6], mut contend: bool) -> u32 {
+            let mut input = [0; W::REQUEST_BYTES];
+            input[..4].copy_from_slice(&kind::MAPPING.to_le_bytes());
+            input[4..8].copy_from_slice(&(syscall as u32).to_le_bytes());
+            for (index, value) in args.into_iter().enumerate() {
+                input[8 + index * 8..16 + index * 8].copy_from_slice(&value.to_le_bytes());
+            }
+            let mut reply = f.process.table.begin_group_operation(f.parent, &input, &mut f.host).unwrap();
+            let token = reply.operation;
+            for _ in 0..16 {
+                if reply.effect == E::COMPLETE {
+                    assert_eq!(reply.errno, 0);
+                    f.process.table.acknowledge_group_operation(f.parent, token).unwrap();
+                    return reply.value as u32;
+                }
+                assert!(matches!(reply.effect, E::WAIT_NATIVE | E::YIELD));
+                let (store, admission) = f.process.table.memory_groups().storage_owner(f.parent).unwrap();
+                let descriptor = store.descriptor(admission).unwrap();
+                let epoch = f.host.group_memory_atomic_load(f.resource, descriptor.replica + L::REPLICA_REQUEST).unwrap();
+                f.host.group_memory_atomic_store(f.resource, descriptor.replica + L::REPLICA_ACK, epoch).unwrap();
+                if reply.effect == E::WAIT_NATIVE {
+                    f.process.table.memory_groups().storage_action(f.parent, Action::SettleNative,
+                        reply.wait_token, 0, &mut f.host).unwrap();
+                }
+                if contend {
+                    let mut host = MappingContentionHost(&mut f.host, descriptor.root + L::ROOT_GROW_LOCK, 0);
+                    let result = f.process.table.poll_group_operation(f.parent, token, None, &mut host);
+                    assert!(host.2 >= 2, "contention must occur after removed-page inspection");
+                    f.host.group_memory_atomic_store(f.resource, L::WAIT_HEADER, 0).unwrap();
+                    reply = result.unwrap();
+                    contend = false;
+                } else {
+                    reply = f.process.table.poll_group_operation(f.parent, token, None, &mut f.host).unwrap();
+                }
+            }
+            panic!("mapping did not finish");
+        }
+        fn count<H: HostIO>(f: &mut Fixture<H>, name: &str) -> u32 {
+            let (store, _) = f.process.table.memory_groups().storage_owner(f.parent).unwrap();
+            let values = store.snapshot(&mut HostMemory { resource: f.resource, host: &mut f.host }).unwrap();
+            values[wasm_posix_shared::group_storage::SNAPSHOT_FIELDS.iter().position(|field| *field == name).unwrap()]
+        }
+        let mut f = clone_fixture();
+        let before = count(&mut f, "allocatedPages");
+        let address = mapping(&mut f, Syscall::Mmap, [0, 65536, 3,
+            u64::from(mmap::MAP_SHARED | mmap::MAP_ANONYMOUS), u64::MAX, 0], false);
+        // An inode or descriptor can retain the model beyond the last VMA.
+        let model = f.process.table.get(f.parent.pid).unwrap().memory.mappings().iter()
+            .find(|mapping| mapping.addr == address as usize).unwrap()
+            .file.as_ref().unwrap().group_shared.clone().unwrap();
+        mapping(&mut f, Syscall::Munmap, [u64::from(address), 65536, 0, 0, 0, 0], false);
+        assert_eq!(count(&mut f, "sharedObjects"), 1);
+        assert_eq!(count(&mut f, "sharedImageReferences"), 0);
+        drop(model);
+        // The orphan is collectible, but an SDK participant owns the queue
+        // mutex. Optional collection must not fail an unrelated mapping.
+        mapping(&mut f, Syscall::Mmap, [0, 65536, 3,
+            u64::from(mmap::MAP_PRIVATE | mmap::MAP_ANONYMOUS), u64::MAX, 0], true);
+        assert_eq!(count(&mut f, "sharedObjects"), 1);
+        assert_eq!(count(&mut f, "nativeObservers"), 0);
+        f.host.group_memory_atomic_store(f.resource, L::WAIT_HEADER, 0).unwrap();
+        let group = f.process.table.memory_groups().resolve_group(f.parent.group).unwrap();
+        assert_eq!(f.process.table.memory_groups().sweep_storage_objects(group, &mut f.host), Ok(1));
+        assert_eq!(count(&mut f, "sharedObjects"), 0);
+        assert_eq!(count(&mut f, "allocatedPages"), before + 1);
+    }
     #[test]
     fn grouped_completion_admission_reservation_binds_exact_channels_at_full_budget() {
         let (mut f, _, child) = bound_clone();
@@ -1181,6 +1251,56 @@ mod tests {
         fn group_memory_atomic_load(&self, r: u64, a: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_load(r,a) }
         fn group_memory_atomic_store(&mut self, r: u64, a: u32, v: u32) -> Result<(), Errno> {
             if v == 0xabcd { self.1 += 1; Err(Errno::EAGAIN) } else { self.0.group_memory_atomic_store(r,a,v) }
+        }
+        fn group_memory_atomic_compare_exchange(&mut self, r: u64, a: u32, e: u32, v: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_compare_exchange(r,a,e,v) }
+        fn group_memory_atomic_notify(&mut self, r: u64, a: u32, n: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_notify(r,a,n) }
+    }
+    struct MappingContentionHost<'a, H>(&'a mut H, u32, u32);
+    impl<H: HostIO> HostIO for MappingContentionHost<'_, H> {
+    required! {
+        fn host_close(h: i64) -> Result<(), Errno>;
+        fn host_read(h: i64, b: &mut [u8]) -> Result<usize, Errno>;
+        fn host_write(h: i64, b: &[u8]) -> Result<usize, Errno>;
+        fn host_seek(h: i64, o: i64, w: u32) -> Result<i64, Errno>;
+        fn host_fstat(h: i64) -> Result<wasm_posix_shared::WasmStat, Errno>;
+        fn host_readdir(h: i64, b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno>;
+        fn host_clock_gettime(c: u32) -> Result<(i64, i64), Errno>;
+        fn host_ftruncate(h: i64, l: i64) -> Result<(), Errno>;
+        fn host_fsync(h: i64) -> Result<(), Errno>;
+        fn host_fchmod(h: i64, m: u32) -> Result<(), Errno>;
+        fn host_fchown(h: i64, u: u32, g: u32) -> Result<(), Errno>;
+        fn host_set_alarm(s: u32) -> Result<(), Errno>;
+        fn host_set_posix_timer(t: i32, s: i32, v: i64, i: i64) -> Result<(), Errno>;
+        fn host_getrandom(b: &mut [u8]) -> Result<usize, Errno>;
+        fn host_net_connect(h: i32, a: &[u8], p: u16) -> Result<(), Errno>;
+        fn host_net_connect_status(h: i32) -> Result<(), Errno>;
+        fn host_net_send(h: i32, d: &[u8], f: u32) -> Result<usize, Errno>;
+        fn host_net_close(h: i32) -> Result<(), Errno>;
+        fn host_net_recv(h: i32, l: u32, f: u32, b: &mut [u8]) -> Result<usize, Errno>;
+        fn host_net_listen(h: i32, p: u16, a: &[u8; 4]) -> Result<(), Errno>;
+        fn host_getaddrinfo(n: &[u8], r: &mut [u8]) -> Result<usize, Errno>;
+        fn bind_framebuffer(p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) -> ();
+        fn unbind_framebuffer(p: i32) -> ();
+        fn fb_write(p: i32, o: usize, b: &[u8]) -> ();
+    }
+        fn group_memory_read(&self, r: u64, a: u32, b: &mut [u8]) -> Result<(), Errno> { self.0.group_memory_read(r,a,b) }
+        fn group_memory_grow(&mut self, r: u64, n: u32) -> Result<u32, Errno> { self.0.group_memory_grow(r,n) }
+        fn group_memory_write(&mut self, r: u64, a: u32, b: &[u8]) -> Result<(), Errno> { self.0.group_memory_write(r,a,b) }
+        fn group_memory_fill(&mut self, r: u64, a: u32, n: u32, b: u8) -> Result<(), Errno> { self.0.group_memory_fill(r,a,n,b) }
+        fn group_memory_copy(&mut self, r: u64, a: u32, b: u32, n: u32) -> Result<(), Errno> { self.0.group_memory_copy(r,a,b,n) }
+        fn group_memory_pages(&self, r: u64) -> Result<u32, Errno> { self.0.group_memory_pages(r) }
+        fn group_memory_atomic_load(&self, r: u64, a: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_load(r,a) }
+        fn group_memory_atomic_store(&mut self, r: u64, a: u32, v: u32) -> Result<(), Errno> {
+            self.0.group_memory_atomic_store(r,a,v)?;
+            if a == self.1 && v == 0 {
+                self.2 += 1;
+                if self.2 == 2 {
+                    // A participant acquires Q after removed-page inspection
+                    // releases the root lock and before the optional sweep.
+                    self.0.group_memory_atomic_store(r, wasm_posix_shared::program_extensions::memory_group_v3::WAIT_HEADER, 1)?;
+                }
+            }
+            Ok(())
         }
         fn group_memory_atomic_compare_exchange(&mut self, r: u64, a: u32, e: u32, v: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_compare_exchange(r,a,e,v) }
         fn group_memory_atomic_notify(&mut self, r: u64, a: u32, n: u32) -> Result<u32, Errno> { self.0.group_memory_atomic_notify(r,a,n) }

@@ -1168,7 +1168,13 @@ impl ProcessTable {
                         }
                         Err(error) => return Err(error),
                     }
-                    store.sweep_objects(&mut memory)?;
+                    // Collection is opportunistic: another image can acquire
+                    // Q or retain a native wait after removed-page inspection.
+                    // Keep its custody and let this mapping continue.
+                    match store.sweep_objects(&mut memory) {
+                        Ok(_) | Err(Errno::EAGAIN) => {}
+                        Err(error) => return Err(error),
+                    }
                     if operation.request.kind == kind::FORK {
                         operation.value = i64::from(extent);
                         operation.phase = Phase::ForkAllocate;
@@ -1319,10 +1325,15 @@ impl ProcessTable {
                                 Ok(_) | Err(Errno::EAGAIN) => {}
                                 Err(error) => return Err(error),
                             }
-                            store.sweep_objects(&mut HostMemory {
+                            // Publication has committed. A busy collector keeps
+                            // the orphan charged; it cannot fail this operation.
+                            match store.sweep_objects(&mut HostMemory {
                                 resource: store.resource(),
                                 host,
-                            })?;
+                            }) {
+                                Ok(_) | Err(Errno::EAGAIN) => {}
+                                Err(error) => return Err(error),
+                            }
                             self.resume_group_operation(operation, host)?;
                             operation.description = None;
                             operation.phase = if kind::is_thread(operation.request.kind) {
