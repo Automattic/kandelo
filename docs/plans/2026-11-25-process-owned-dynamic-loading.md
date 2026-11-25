@@ -117,28 +117,21 @@ name-to-slot/export relationship and the facts plan's knowledge of the
 targets. Raw writers of the process function table remain subject to the
 instrumenter's dynamic-write rules and the fork table journal.
 
-Try two construction methods before choosing a shipping path.
+Implement single-pass support in wasm-ld from the first prototype.
+Select the dynamic symbols after resolution and liveness, assign
+canonical slots before layout, and emit the index using ordinary data
+and table reservations. Use the same linker behavior in the hosted and
+guest SDKs. Measure the new single-pass link against the baseline on
+small and large inputs, including LTO where used.
 
-1. **Prototype with a discovery link and a final link.** Run compilation
-   once. Discover resolved export and linker symbol identities from a
-   link map and artifact sections, then generate a small relocatable
-   data object with canonical table and data relocations. Re-run the
-   link with the original response file plus that object and a private
-   root for the index. Match by linker symbol identity, including renamed
-   exports and aliases. Confirm discovery and final export sets agree and
-   that the added object did not alter archive extraction. Reject
-   mismatches, including unsupported LTO or driver paths, during the
-   prototype. Measure both link passes and any repeated LTO work.
-2. **Prefer a linker-generated section if two passes are too costly or
-   lose reliable symbol identity.** In wasm-ld, select dynamic symbols
-   after resolution and liveness, assign slots before layout, and emit
-   the index with ordinary data and table reservations. Estimate the
-   patch and maintenance cost for both hosted and guest wasm-ld. Compare
-   a single-pass implementation or timed spike on large links before
-   committing to it. A standalone post-link editor has to reproduce
-   liveness, storage layout, canonical slots, and code-bound facts
-   validity. Treat it as a controlled experiment unless it can prove
-   those invariants across the normal SDK pipeline.
+A discovery link followed by a final link is an alternative for
+experimenting with the current linker. It would extract export identities
+from the first link and feed a generated relocation object into the
+second. This would repeat link work and require matching aliases and
+renamed exports across both passes. A post-link editor would need
+to preserve storage layout, canonical slots, and code-bound compiler
+facts. The selected single-pass prototype can use the linker's resolved
+symbols directly.
 
 An executable without lookup or plugin-host intent needs no index.
 An executable with lookup and an empty export set uses an empty index.
@@ -342,7 +335,7 @@ and the [Wasm dynamic linking conventions](https://raw.githubusercontent.com/Web
 | Object handles and `dylink.0` needed entries | Search the named object then its transitive dependencies in breadth-first dependency order. Bind relocations in load order over the eligible set of startup objects, committed global objects and this load's closure. Add newly discovered objects to logical load order in dependency order, independent of engine instantiation order. Check a diamond, duplicate definitions, an unrelated local object, a missing dependency, a cycle, and rollback. The Wasm needed list serves the role of ELF `DT_NEEDED`. Startup linking against shared libraries remains outside this design. |
 | `RTLD_NOW` and `RTLD_LAZY` | Bind eagerly for both. POSIX allows eager resolution for LAZY. Verify that both resolve data and functions before initialization and report missing strong imports at open. Validate invalid flag combinations and inventory existing extensions such as `RTLD_NOLOAD` before changing their behavior. |
 | `RTLD_GLOBAL` and `RTLD_LOCAL` | Local is the default. Promote an already-open object and its eligible closure on a global open. Preserve earlier bindings and retain their defining objects while needed. Test order and lifetime with two roots sharing a provider and with a local-to-global reopen. |
-| `RTLD_NEXT` | Search after the actual calling object's position in its applicable load scope. Wasm has no portable return-address lookup. Spike linker-injected caller IDs for proven direct calls. For indirect or interposed calls, investigate explicit guest caller provenance that preserves canonical `&dlsym`, includes nested callbacks and tail calls, and can survive fork. Until the general mechanism is proven, return a specific unsupported diagnostic for NEXT and document the extension as unsupported. Test that refusal and, if implemented, main/side callers and indirect calls with duplicate definitions. |
+| `RTLD_NEXT` | Preserve the existing unsupported status in the prototype and initial implementation. Return a specific unsupported diagnostic and test it. If a port needs the extension, use that case to investigate caller-module provenance, including indirect calls through the canonical `&dlsym`. |
 | `dlclose` | Track explicit opens, needed edges and binding-provider edges. Invalidate the final closed handle, make it impossible for a reused handle to alias that stale value, and retire unreferenced objects including unreachable groups. Run registered destructors once in reverse initialization/dependency order outside the registry lock before reclamation, with C++ finalization and pending thread destructors accounted for. Test repeated opens, stale handles, destructor reentry, and reopen after final close. POSIX allows deferred unmapping. |
 | `dlerror` | Keep the last unconsumed loader error in libc TLS. Consume it once, keep the returned string valid through the specified lifetime, and distinguish a zero-valued symbol from lookup failure. A successful call need not consume a prior error. Test two simultaneous distinct errors, a success between failure and read, and the calling pthread's inherited error after fork. |
 | Address identity and nesting | Compare executable and side function results to `&f`, including aliases, address-taken and previously export-only functions, and a side consumer's GOT pointer. Check a data symbol and side TLS where admitted. Have a side module open another module and use its result. Verify constructor execution once, nested close and failed nested open. |
@@ -413,12 +406,21 @@ contract and any explicitly accepted gaps.
 
 ## Prototype and measurement review
 
-Phase 1 ends with this document. After approval, phase 2 starts with a
-SDK-built lookup-only fork fixture, an SDL2 lookup-only consumer, a small
-plugin dependency closure with side-originated loading, and a real
-plugin host (CPython extension or ScummVM engine). Exercise the same
-paths on Node and browser. Keep port configurations and the compiler
-fixed. The measurement cohort includes waybar, gtk3_smoke,
+The first milestone uses the single-pass linker and a versioned
+mapping extension while preserving ABI 56. Start with a lookup-only
+SDK fixture to prove pointer identity and static table targets. Complete
+the milestone with one plugin that imports an executable symbol and
+exports a function the executable finds through `dlsym`. On Node and
+browser, fork after loading and call the plugin through the inherited
+handle in the child. Also fork from within an active plugin call and
+verify the child resumes inside the plugin and returns to the executable
+without repeating the pre-fork prefix.
+
+Validate a ScummVM engine next to exercise thousands of imports per
+module and measure the batching path. Follow with a CPython extension,
+a small dependency closure with side-originated loading, and an SDL2
+lookup-only consumer. Keep port configurations and the compiler fixed.
+The measurement cohort includes waybar, gtk3_smoke,
 `sdl2.wasm`, `sdl2-dsp-test`, `playwave`, `ffplay`, `love`,
 `freeciv-sdl2`, ScummVM plus representative engines, and CPython plus
 an extension. The prior inventory lists six SDL2 outputs to inspect.
@@ -430,7 +432,7 @@ that clang and rustc need dynamic loading.
 
 | Cost | Capture on each comparable arm |
 | --- | --- |
-| Link | Prerequisite compilation, discovery link, final link, LTO repetition, and post-link steps timed separately. Record wall time, peak RSS, and peak scratch usage. Measure a no-loader link and an export-heavy variant on clang/rustc-scale inputs. |
+| Link | Prerequisite compilation, single-pass final link including LTO where used, and post-link steps timed separately. Record wall time, peak RSS, and peak scratch usage. Measure a no-loader link and an export-heavy variant on clang/rustc-scale inputs. |
 | Image and instrumentation | Raw/final Wasm and compressed bytes, function table and element entries, index/name bytes, exports, facts source and artifact size, capability byte, instrumented-function count, and per-phase instrumentation time. Attribute code retention separately. Keep a facts fallback or disk-full run visible and outside the comparable results. |
 | Open and lookup | Time cold/warm/repeated opens, handle/global hits and misses, data/function lookup, local-to-global promotion, and close. Include reader/loader CPU, adapter calls and bytes, ScummVM engine import counts, and both first-use and steady-state latency. |
 | Fork | Measure parent-to-child-ready and child-to-reap with zero side modules and after several loads. Include memory copy and attach/replay components, worker startup, and memory growth. State sparse/dense copy mode and use the same mode in each pair. |
@@ -456,10 +458,8 @@ logs in run-local scratch, disable automatic cache GC inside the build
 environment, and budget for only one heavy link or instrumenter arm
 at a time. Preserve measurements and raw logs needed for review.
 Phase 2 stops for review with measured deltas, correctness results, and
-remaining gaps. For this review, confirm the successor-ABI direction
-and the prototype's treatment of `RTLD_NEXT` and cyclic direct imports.
-The latter two need evidence before either is included in shipping
-support.
+remaining gaps. Use that evidence to review the proposed shipping ABI
+transition and the plan for cyclic direct imports.
 
 After that review, propose reviewable changes targeting develop.
 Land any independent correctness regression coverage first, then
