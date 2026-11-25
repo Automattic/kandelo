@@ -7,6 +7,7 @@ members = [
     "crates/overlay-prototype",
     "crates/kandelo-image-module",
     "crates/kernel",
+    "crates/host-native",
     "crates/fork-instrument",
     "crates/kandelo-cc",
     "crates/wasm-local-root-spill",

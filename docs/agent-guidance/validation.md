@@ -232,6 +232,22 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Wasmtime smoke
+
+Run `./run.sh build kernel` and ensure the wasm32 SDK sysroot with
+`scripts/dev-shell.sh bash scripts/build-musl.sh --ensure`. In the dev shell,
+run the smoke check with the kernel from that build:
+
+```bash
+bash scripts/test-wasmtime-smoke.sh "$(bash scripts/resolve-binary.sh kernel.wasm)"
+```
+
+The runner loads the production wasm32 kernel and a minimal VFS image with
+Wasmtime. The SDK-built test program opens and reads the image, sleeps through
+the kernel's parked-wait protocol, and exits through the guest syscall channel.
+Missing imports trap when used. This is third-engine evidence for the tested
+path. Keep it in candidate validation alongside Node and browser tests.
+
 ## Browser memory regression gate
 
 Run `./run.sh test browser-memory` after changing shared-memory ownership,
