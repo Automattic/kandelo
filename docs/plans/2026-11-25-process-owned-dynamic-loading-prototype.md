@@ -182,6 +182,110 @@ The engine relink medians were 0.639 s and 0.646 s, respectively.
 Both sets of ranges overlapped. These times exclude application
 compilation and fork instrumentation.
 
+## Lookup-only SDL2 comparison
+
+This comparison uses the same pinned `develop@af25e6e57300` loader,
+ABI-56 kernel, host checkout, and Clang 23.1.3 as the ScummVM
+comparison. The guest link explicitly includes the executable-lookup
+libc object and uses the patched wasm-ld. It retains each recipe's
+existing export policy. The arm pairs use the same precompiled app
+objects and archive dependencies. Production arms compile the package sources with the existing
+package-specific patches.
+
+The `sdl2-dsp-test` pair uses the registry audio fixture unchanged. A
+second pair links that fixture with a test entry point. The entry
+looks up the real SDL export `SDL_GetVersion` and compares the result
+with its C function pointer. A second export is reachable through
+`dlsym` with no address taken in the source and contains a call to
+`fork`. The child returns through the lookup-derived call, calls the
+inherited SDL pointer, and verifies the lookup address and that the
+pre-fork prefix ran once. A guest `table.size` instruction measures
+the table on both sides of lookup. The legacy probe grew from 1,148
+to 1,149 slots. The guest probe stayed at 1,151 slots.
+
+Both forms passed on Node 24.22.1 and Chromium 153.0.8010.12. Each
+timed form had one warmup per arm, six alternating pairs and four
+additional legacy repeat controls, with a fresh guest per run.
+The Node probe used sparse fork copying. The audio fixture played
+through the Node paced device and the Chromium AudioWorklet with its
+producer cursor fully drained at exit. The first Chromium audio run
+failed during setup because it requested the canonical rootfs. The
+timed retry used the same minimal VFS as the fork probe with the
+audio worklet enabled.
+
+| Guest wall time | Node legacy | Node guest | Chromium legacy | Chromium guest |
+| --- | ---: | ---: | ---: | ---: |
+| 5,000 lookups of the late export | 217.92 ms | 0.50 ms | 156.34 ms | 0.46 ms |
+| Fork through the lookup result and reap | 128.71 ms | 121.20 ms | 78.33 ms | 75.37 ms |
+| Playback window in the unmodified audio fixture | 903 ms | 903 ms | 903 ms | 901.5 ms |
+
+The legacy lookup controls had medians of 218.73 ms in Node and
+157.83 ms in Chromium. One Node guest sample took 10.08 ms. The
+other five took under 1 ms. Fork time ranges overlapped, including
+the legacy repeat controls. Median audio device close ranged from
+59.5 to 64.5 ms across the two hosts and arms. The fixture schedules
+900 ms of playback, and the end-to-end timings overlap the repeat
+controls on both hosts.
+
+The default facts analyzer selected the same three functions in
+both unmodified audio binaries. The probe introduced a real
+fork-returning call path and reduced the selected set from 1,880 to
+687 functions. The probe shrank from 3,680,614 to 2,019,524 bytes
+after instrumentation. These probe results describe the additional
+fork path and lookup workload.
+
+### LÖVE physics
+
+The LÖVE pair ran a headless Lua fixture through the normal LÖVE
+runtime. The fixture creates 72 dynamic bodies on a static floor,
+warms up for 120 steps, and times 1,200 fixed-step Box2D updates.
+The final checksum was 18623.211661 in every run. Each host ran a
+warmup per arm, six alternating pairs, and four legacy repeat controls.
+
+| Guest wall time | Legacy median and range | Guest median and range | Legacy repeat median |
+| --- | ---: | ---: | ---: |
+| Node | 258.09 ms (247.17–266.96) | 172.12 ms (170.05–185.15) | 263.67 ms |
+| Chromium | 242.21 ms (232.04–258.64) | 155.02 ms (149.32–164.58) | 239.97 ms |
+
+The medians fell 33.3% in Node and 36.0% in Chromium for this
+headless physics workload. The fixture leaves video, graphics, and
+audio disabled. The guest executable retained the ordinary package
+export policy with an 86-byte index. Its raw link grew by 954 bytes,
+while the instrumented output shrank by 5,251,393 bytes.
+
+### Application artifacts
+
+The production artifacts below all changed from capability flags
+`0x06` to `0x04` and dropped the host `dlsym`, `dlclose` and
+`dlerror` imports. Compression uses zstd level 3 on the final Wasm.
+
+| Program | Legacy instrumented bytes | Guest instrumented bytes | Change | Legacy compressed bytes | Guest compressed bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `sdl2-dsp-test` | 1,564,390 | 1,545,111 | −1.23% | 462,906 | 462,339 |
+| `sdl2` playground | 1,734,968 | 1,715,696 | −1.11% | 545,133 | 544,328 |
+| `playwave` | 2,010,359 | 1,991,032 | −0.96% | 697,811 | 698,675 |
+| `ffplay` | 23,635,840 | 23,596,576 | −0.17% | 8,449,250 | 8,453,634 |
+| LÖVE | 9,254,482 | 4,003,089 | −56.74% | 2,353,410 | 1,368,399 |
+| Freeciv SDL2 client | 16,376,337 | 15,411,898 | −5.89% | 4,711,963 | 4,646,148 |
+
+The SDL2 playground passed its help path in both hosts, and the
+Freeciv client passed its version path. `playwave`
+and `ffplay` played a deterministic WAV through the paced Node sink
+and the Chromium AudioWorklet. The Chromium runs checked positive PCM
+production, full drain, clean exit, and empty host diagnostics. The
+LÖVE facts plan selected 6,892 functions with the legacy loader and
+three with executable lookup. Host load averages during the paired
+LÖVE runs were in the 7–8 range on the 14-core machine.
+
+### Waybar and gtk3_smoke eligibility
+
+Read-only inspection found all three legacy open imports as well as
+the lookup imports in the cached Waybar and `gtk3_smoke` executables.
+Both carry `0x06`. The GTK graphics dependency libepoxy resolves EGL
+symbols through `dlopen`, and the GLib build configures GModule for
+`dlopen`. A matched size and runtime comparison for these applications needs
+the named-module mapping path on both arms.
+
 ## Remaining validation
 
 The prototype maps one distinct wasm32 module per process. Libc owns
@@ -192,10 +296,12 @@ dependency closure, side-originated loading, destructor handling,
 unmapping, and racing loader operations across pthreads remain open.
 The in-guest wasm-ld package was also outside this build.
 
-The real-app comparison is outstanding for CPython, waybar, gtk3_smoke,
-and the SDL2 outputs. ScummVM gameplay and other engines remain
-outside the headless engine comparison. The clang and rustc link
-timings need matching relocatable link inputs. The conformance,
+The real-app comparison is outstanding for CPython, Waybar, and
+`gtk3_smoke`. SDL2 playground rendering and full application suites
+remain outside the targeted SDL2 comparison, including Freeciv
+gameplay. ScummVM gameplay and other engines remain outside the
+headless engine comparison. The clang and rustc
+link timings need matching relocatable link inputs. The conformance,
 browser-memory, full Node and browser benchmark suites, and canonical
 image integration remain pending. The package comparisons and the
 shipping ABI decision remain gates before full implementation.
