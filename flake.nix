@@ -424,11 +424,13 @@
           "${pkgs.apple-sdk_26}";
       in {
         packages.zig = kandeloZig;
-        # LDC links LLVM's C++ API. Its LLVM 21 libraries and TableGen are
-        # optional inputs to the D compiler bootstrap, alongside the main SDK.
+        # LDC links LLVM's C++ API, and LDC 1.43 supports LLVM 18 through 22,
+        # not the SDK's LLVM 23. LLVM 22 is the version LDC's own release
+        # packages use. Its libraries and TableGen are optional inputs to the
+        # D compiler bootstrap, alongside the main SDK.
         packages.d-llvm = pkgs.symlinkJoin {
-          name = "kandelo-d-llvm-${pkgs.llvmPackages_21.llvm.version}";
-          paths = [ pkgs.llvmPackages_21.llvm pkgs.llvmPackages_21.llvm.dev ];
+          name = "kandelo-d-llvm-${pkgs.llvmPackages_22.llvm.version}";
+          paths = [ pkgs.llvmPackages_22.llvm pkgs.llvmPackages_22.llvm.dev ];
         };
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;

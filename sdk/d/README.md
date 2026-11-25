@@ -1,10 +1,10 @@
 # D on Kandelo
 
 Status: prototype. Ordinary D programs run on Node.js, Chromium, Firefox
-and WebKit. In-guest DUB builds pass on Node.js, Chromium and Firefox. In
-WebKit, guest LDC reports `Maximum call stack size exceeded` while compiling
-a DUB project. That WebKit failure is an open, undiagnosed gap; see
-[DUB and LDC inside a guest](#dub-and-ldc-inside-a-guest) below.
+and WebKit. In-guest DUB fetch, build, test and run pass on Node.js,
+Chromium, Firefox and WebKit; WebKit's stack margin is thin (see
+[DUB and LDC inside a guest](#dub-and-ldc-inside-a-guest)). Fibers are not
+supported yet ([Fibers](#fibers)).
 
 The development SDK uses host-side LDC 1.43.0 and statically links DRuntime
 and Phobos against Kandelo's wasm32 musl sysroot. The target is
@@ -18,8 +18,11 @@ evaluation before building the libraries. LDC uses host `real` precision
 for this evaluation. On ARM64 macOS that rounds away valid guest values.
 An ARM64 Linux VM can build the guest binaries for a macOS development host.
 
-Realize the optional LLVM 21 compiler libraries once. The Kandelo C/C++
-SDK continues to use the LLVM toolchain from the default dev shell.
+Realize the optional LLVM 22 compiler libraries once. LDC 1.43 supports
+LLVM 18 through 22, so the D compiler cannot use the C/C++ SDK's LLVM 23.
+LLVM 22 is the version LDC's own release packages use. The Kandelo C/C++
+SDK, including the linker for D programs, continues to use the LLVM
+toolchain from the default dev shell.
 
 ```sh
 mkdir -p .scratch
@@ -77,20 +80,18 @@ The shared [binary128 C regression](../../tests/sortix/os-test-local/basic/math/
 covers subnormal arithmetic, rounding during float conversion, and NaN
 payloads and comparisons on both Wasm widths.
 
-D fibers use Kandelo's guest-local continuation provider. A suspended fiber
-resumes on the pthread that started it. Each pthread has a separate Wasm
-instance with its own reference tables. `Fiber.allowMigration()` leaves
-that restriction in place. The collector scans saved shadow stack and
-activation ranges through DRuntime's stack context list.
+`test/exception_chain.d` checks nested exception chains, `Error` priority,
+loops in `scope(exit)` during unwinding, and collection while two exceptions
+are in flight; with `KandeloFibers` it also checks exceptions across a
+suspended and reset fiber. LDC keeps garbage collection safepoints inside
+the native Wasm cleanup handlers where they run. DRuntime tracks in-flight
+exceptions in each stack context.
 
-Build `test/fibers.d` with the same driver to exercise fiber reset, TLS,
-garbage collection while a fiber is suspended, exception propagation, and
-Phobos `Generator`. `test/exception_chain.d` checks nested exception chains,
-`Error` priority, loops in `scope(exit)` during unwinding, and collection
-while two exceptions are in flight or after a suspended fiber is reset.
-LDC keeps garbage collection safepoints inside the native Wasm cleanup
-handlers where they run. DRuntime tracks in-flight exceptions in each
-stack context.
+DRuntime also builds without fork-based concurrent marking on Kandelo, as it
+does on WASI. `DRT_GCOPT=fork:1` is accepted and collections stop the
+world. A marking child that can unwind back into its callers would make
+Kandelo's fork instrumentation keep nearly every function of a D program
+resumable.
 
 The socket tests cover Kandelo's loopback TCP and Unix streams. The guest
 resolver delegates IPv4 hostnames to the configured host network backend
@@ -98,12 +99,39 @@ and returns the queried hostname for `AI_CANONNAME`. The musl protocol
 database reports `tcp` with an empty alias list. Phobos tests that expect
 an external DNS alias or a `TCP` protocol alias can report a soft failure.
 
+## Fibers
+
+Kandelo's D SDK builds without fibers. `core.thread.Fiber`,
+`std.concurrency.Generator` and `FiberScheduler` are absent, as upstream
+DRuntime leaves them out on every WebAssembly target. Supporting them is
+[future work](../../docs/future-improvements.md#support-d-fibers-without-instrumenting-whole-programs):
+the instrumentation fibers need currently reaches nearly every function of
+any program that links them, used or not.
+
+The fiber implementation stays in `ldc-1.43.0-kandelo.patch` behind the
+`KandeloFibers` version, off by default. It runs fibers on Kandelo's
+guest-local continuation provider. A suspended fiber resumes on the pthread
+that started it, because each pthread has a separate Wasm instance with its
+own reference tables, and `Fiber.allowMigration()` leaves that restriction
+in place. The collector scans saved shadow stack and activation ranges
+through DRuntime's stack context list. To try it, add
+`-d-version=KandeloFibers` to the D flags for DRuntime and Phobos and to
+every program. `test/fibers.d` exercises fiber reset, TLS, garbage
+collection while a fiber is suspended, exception propagation and Phobos
+`Generator`; it refuses to compile without the version. This is not a
+supported configuration.
+
+DUB itself reads `dub.sdl` recipes through a fiber, in its vendored
+`libInputVisitor`. `build-dub.sh` applies `dub-1.43.0-sdlang-without-fiber.patch`,
+which falls back to parsing the whole recipe first when DRuntime has no
+`Fiber`; the patch header gives the reasoning and when to drop it.
+
 ## DUB and LDC inside a guest
 
 Build with the host-side D SDK above and the wasm32 resolver outputs for
 `libcxx`, `libcurl`, `openssl` and `zlib`. Use the same checkout and ABI
 contract for the D SDK, dependency builds and guest image. The guest
-compiler script builds the WebAssembly backend of LLVM 21.1.8 and LDC
+compiler script builds the WebAssembly backend of LLVM 22.1.8 and LDC
 1.43.0. It prints a staged `/usr` tree with the compiler, imports, runtime
 archives and linker entry point.
 
@@ -143,10 +171,24 @@ scripts/dev-shell.sh ./node_modules/.bin/tsx sdk/d/test/guest-dub.ts \
     "$kernel_wasm" "$kandelo_sdk_zip" "$fork_instrument_wasm" "$guest_usr"
 ```
 
-The fetch, build, test and run sequence also passed in Chromium and
-Firefox on a partial image. In WebKit, the registry fetch and binary128
-check passed. The LDC worker reported `Maximum call stack size exceeded`
-while compiling the application in both debug and release builds.
+The same fetch, build, test and run sequence passed in Chromium, Firefox
+and WebKit (three of three cold WebKit runs, Playwright WebKit 26.6, macOS,
+2026-11-25) from a guest image built with these scripts.
+
+WebKit gives a Wasm function's first deep call far less engine stack than
+Chromium or Node ([browser-support.md](../../docs/browser-support.md#engine-stack-depth)),
+and DMD's frontend recurses deeply. Several choices keep the guest compiler
+within it; each is explained where it is made:
+- `ldc2` has no fork path, so the fork instrumenter adds nothing to its
+  frames. LLVM launches tools only through `posix_spawn`
+  (`llvm-22.1.8-kandelo-spawn.patch`). DRuntime has no fork-based GC marking
+  and no fibers (`ldc-1.43.0-kandelo.patch`).
+- `build-guest.sh` compiles with Wasm tail calls.
+- `build-guest.sh` optimizes without inlining, which would merge functions
+  into fewer, larger frames.
+
+A D package that recurses deeper than this one can still overflow on a
+first WebKit run.
 
 `test/mixed_exceptions.d` and `test/mixed_exceptions.cpp` exercise the two
 exception handlers in one executable. With the C++ SDK libraries on the

@@ -24,6 +24,9 @@ printf '%s  %s\n' "$digest" "$work/source.tar.gz" | sha256sum --check
 tar -xzf "$work/source.tar.gz" -C "$work" --strip-components=1
 
 cd "$work"
+# The Kandelo D SDK has no Fiber yet; DUB reads SDLang recipes through one.
+# The patch header explains the fallback and when to drop it.
+patch --batch --fuzz=0 -p1 < "$sdk_dir/dub-$version-sdlang-without-fiber.patch"
 # DUB's upstream build.d normally writes this module from GITVER.
 printf 'module dub.version_;\nenum dubVersion = "%s";\n' "$version" > source/dub/version_.d
 # Phobos binds these libcurl functions through dlsym on the executable.

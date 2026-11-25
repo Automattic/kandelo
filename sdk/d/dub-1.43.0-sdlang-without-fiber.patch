@@ -1,0 +1,91 @@
+# DUB 1.43.0: read SDLang recipes without a Fiber.
+#
+# @suggest-upstream
+#
+# Purpose: DUB's vendored libInputVisitor turns the SDLang pull parser's
+# visitor callbacks into an input range by running the visitor in a
+# core.thread.Fiber. DUB uses it for every dub.sdl package recipe and for
+# the SDL output of compiler probes. When DRuntime provides no Fiber, this
+# patch runs the visitor to completion into an array and serves that
+# instead. With a Fiber the upstream class is used unchanged.
+#
+# Why Kandelo needs it: the Kandelo D SDK builds DRuntime without fibers,
+# as upstream DRuntime does on every WebAssembly target. Fibers on Kandelo
+# are future work: suspending one needs fork-style instrumentation that,
+# without LDC call-type facts, covers nearly every function of a program
+# that links Fiber (see "Fibers" in sdk/d/README.md and "Support D fibers
+# without instrumenting whole programs" in docs/future-improvements.md).
+# Without this patch DUB does not compile ("undefined identifier Fiber").
+#
+# Justification: this is a portability fix for any target without fibers,
+# not a Kandelo POSIX gap. Behaviour is the same for DUB: the same events
+# in the same order. The only difference is that a parse error surfaces
+# on the first access rather than after the events before it, and DUB's
+# one consumer (the DOM parser) discards the partial tree on any error
+# either way. Memory use grows by one parsed recipe's events, which are
+# small. The in-guest DUB acceptance run (sdk/d/test/guest-dub.ts) reads
+# the fetched taggedalgebraic recipe through it.
+#
+# Exit: drop it when Kandelo's D SDK supports fibers, or when an upstream
+# DUB release reads SDLang without them.
+--- a/source/dub/internal/libInputVisitor.d
++++ b/source/dub/internal/libInputVisitor.d
+@@ -36,6 +36,58 @@
+
+ import core.thread;
+
++// Without Fiber, run the visitor to completion and serve the elements it
++// yielded. DRuntime has no Fiber on WebAssembly targets, including Kandelo,
++// where fibers are not yet supported. Consumers see the same elements in
++// the same order. A parse error is thrown on the first access instead of
++// after the elements before it; DUB's only consumer builds a whole tree and
++// discards it on error, so DUB behaves the same.
++static if (!__traits(compiles, { import core.thread.fiber : Fiber; }))
++class InputVisitor(Obj, Elem)
++{
++	private Obj obj;
++	private Elem[] elements;
++	private bool started;
++
++	this(Obj obj)
++	{
++		this.obj = obj;
++	}
++
++	private void ensureStarted()
++	{
++		if (!started)
++		{
++			started = true;
++			obj.visit(this);
++		}
++	}
++
++	@property Elem front()
++	{
++		ensureStarted();
++		return elements[0];
++	}
++
++	void popFront()
++	{
++		ensureStarted();
++		elements = elements[1 .. $];
++	}
++
++	@property bool empty()
++	{
++		ensureStarted();
++		return elements.length == 0;
++	}
++
++	void yield(Elem elem)
++	{
++		elements ~= elem;
++	}
++}
++else
++
+ class InputVisitor(Obj, Elem) : Fiber
+ {
+ 	bool started = false;

@@ -1,0 +1,156 @@
+# LLVM 22.1.8 for the guest D compiler: launch tools with posix_spawn only.
+#
+# Purpose: llvm::sys::ExecuteNoWait (Unix/Program.inc) uses posix_spawn
+# unless the caller asks for a detached process or a memory limit; then it
+# falls back to fork, and that child returns `false` into the compiler when
+# redirecting its standard streams or setsid fails. With
+# KANDELO_LLVM_USE_SPAWN, set by CMake for a Kandelo build, the fork
+# fallback is compiled out. Detaching uses the POSIX_SPAWN_SETSID spawn
+# flag. A memory limit, which no ldc2 path requests, is reported as an
+# error rather than ignored.
+#
+# Why Kandelo needs it: a fork child that can return into its callers makes
+# Kandelo's fork instrumentation keep every one of those callers resumable.
+# LLVM's fallback alone made nearly all of ldc2 (about 57,700 functions)
+# resumable. The larger frames made DMD's frontend recursion overflow
+# WebKit's first-tier Wasm stack (status 139 in the DUB demo). Kandelo's
+# posix_spawn creates the child without fork, so with this patch ldc2 has
+# no fork path through LLVM.
+#
+# Justification: this changes no behaviour ldc2 relies on. Every launch
+# ldc2 makes was already a plain posix_spawn on Kandelo. The patch only
+# removes a fork path that Kandelo pays for in frame size on every call.
+# packages/registry/flang-browser-bundle/patches/kandelo-spawn.patch makes
+# the same change for the browser Flang driver. Drop this patch once
+# upstream LLVM launches processes without a fork fallback on a target
+# with posix_spawn; `wasm-fork-instrument --sink-report` on the raw ldc2
+# link output shows whether any fork path remains.
+--- a/llvm/lib/Support/CMakeLists.txt
++++ b/llvm/lib/Support/CMakeLists.txt
+@@ -136,6 +136,12 @@
+
+ add_subdirectory(BLAKE3)
+ add_subdirectory(LSP)
++
++# Kandelo LLVM tools launch processes through the platform's spawn API.
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  set_source_files_properties(Program.cpp PROPERTIES
++    COMPILE_DEFINITIONS KANDELO_LLVM_USE_SPAWN)
++endif()
+
+ add_llvm_component_library(LLVMSupport
+   ABIBreak.cpp
+--- a/llvm/lib/Support/Unix/Program.inc
++++ b/llvm/lib/Support/Unix/Program.inc
+@@ -87,6 +87,7 @@
+   return errc::no_such_file_or_directory;
+ }
+
++#ifndef KANDELO_LLVM_USE_SPAWN
+ static bool RedirectIO(std::optional<StringRef> Path, int FD, std::string *ErrMsg) {
+   if (!Path) // Noop
+     return false;
+@@ -115,6 +116,8 @@
+   return false;
+ }
+
++#endif
++
+ #ifdef HAVE_POSIX_SPAWN
+ static bool RedirectIO_PS(const std::string *Path, int FD, std::string *ErrMsg,
+                           posix_spawn_file_actions_t *FileActions) {
+@@ -136,6 +139,7 @@
+
+ static void TimeOutHandler(int Sig) {}
+
++#ifndef KANDELO_LLVM_USE_SPAWN
+ static void SetMemoryLimits(unsigned size) {
+   struct rlimit r;
+   __typeof__(r.rlim_cur) limit = (__typeof__(r.rlim_cur))(size)*1048576;
+@@ -152,6 +156,8 @@
+ #endif
+ }
+
++#endif
++
+ static std::vector<const char *>
+ toNullTerminatedCStringArray(ArrayRef<StringRef> Strings, StringSaver &Saver) {
+   std::vector<const char *> Result;
+@@ -185,8 +191,19 @@
+   // If this OS has posix_spawn and there is no memory limit being implied, use
+   // posix_spawn.  It is more efficient than fork/exec.
+ #ifdef HAVE_POSIX_SPAWN
++#ifdef KANDELO_LLVM_USE_SPAWN
++  // Kandelo provides atomic spawn with optional session creation. Its
++  // spawn attributes cannot express LLVM's child-specific memory limit.
++  if (MemoryLimit != 0) {
++    if (ErrMsg)
++      *ErrMsg = "Child process memory limits are unavailable on Kandelo";
++    return false;
++  }
++  {
++#else
+   // Cannot use posix_spawn if you would like to detach the process
+   if (MemoryLimit == 0 && !DetachProcess) {
++#endif
+     posix_spawn_file_actions_t FileActionsStore;
+     posix_spawn_file_actions_t *FileActions = nullptr;
+
+@@ -232,6 +249,21 @@
+       Envp = const_cast<const char **>(*_NSGetEnviron());
+ #endif
+
++    const posix_spawnattr_t *SpawnAttrs = nullptr;
++#ifdef KANDELO_LLVM_USE_SPAWN
++    posix_spawnattr_t Attrs;
++    if (DetachProcess) {
++      posix_spawnattr_init(&Attrs);
++      int Err = posix_spawnattr_setflags(&Attrs, POSIX_SPAWN_SETSID);
++      if (Err) {
++        posix_spawnattr_destroy(&Attrs);
++        if (FileActions)
++          posix_spawn_file_actions_destroy(FileActions);
++        return !MakeErrMsg(ErrMsg, "Cannot set spawn session", Err);
++      }
++      SpawnAttrs = &Attrs;
++    }
++#endif
+     constexpr int maxRetries = 8;
+     int retries = 0;
+     pid_t PID;
+@@ -239,10 +271,14 @@
+     do {
+       PID = 0; // Make Valgrind happy.
+       Err = posix_spawn(&PID, Program.str().c_str(), FileActions,
+-                        /*attrp*/ nullptr, const_cast<char **>(Argv),
++                        SpawnAttrs, const_cast<char **>(Argv),
+                         const_cast<char **>(Envp));
+     } while (Err == EINTR && ++retries < maxRetries);
+
++#ifdef KANDELO_LLVM_USE_SPAWN
++    if (SpawnAttrs)
++      posix_spawnattr_destroy(&Attrs);
++#endif
+     if (FileActions)
+       posix_spawn_file_actions_destroy(FileActions);
+
+@@ -256,6 +292,11 @@
+   }
+ #endif // HAVE_POSIX_SPAWN
+
++#ifdef KANDELO_LLVM_USE_SPAWN
++#ifndef HAVE_POSIX_SPAWN
++#error "Kandelo LLVM tools require posix_spawn"
++#endif
++#else
+   // Create a child process.
+   int child = fork();
+   switch (child) {
+@@ -329,6 +370,7 @@
+   PI.Process = child;
+
+   return true;
++#endif
+ }
+
+ namespace llvm {
