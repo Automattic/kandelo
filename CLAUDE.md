@@ -126,7 +126,7 @@ changes, package artifacts, or performance claims.
 | Validation and completion claims | `docs/agent-guidance/validation.md` | `docs/repository-organization.md` |
 | Debugging, POSIX, process, VFS, devices | `docs/agent-guidance/debugging-and-posix.md` | `docs/architecture.md`, `docs/posix-status.md` |
 | ABI versioning and snapshot policy | `docs/agent-guidance/abi.md` | `docs/abi-versioning.md`, `docs/fork-instrumentation.md` |
-| Host runtime and Node/browser parity | `docs/agent-guidance/host-runtime.md` | `docs/architecture.md`, `docs/browser-support.md` |
+| Rust-first kernel, host capabilities, and host parity | `docs/agent-guidance/host-runtime.md` | `docs/architecture.md`, `docs/browser-support.md` |
 | Package schema, builds, resolver, cache | `docs/agent-guidance/packages-and-builds.md` | `docs/package-management.md`, `docs/porting-guide.md`, `docs/sdk-guide.md` |
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Filesystem image hierarchy and installed guest paths | `docs/agent-guidance/images.md` | `docs/filesystem-layout.md` |
@@ -210,10 +210,20 @@ be rebuilt through the normal path; do not add implicit compatibility shims.
 ## Host Runtime Contract
 
 Read [host runtime guidance](docs/agent-guidance/host-runtime.md) before
-changing host runtime, worker protocols or adapters. Node.js and browser
-hosts are peers; shared runtime changes need both, unless a real platform
-boundary explains the difference. The kernel always runs in a dedicated
-worker. Never instantiate `CentralizedKernelWorker` on the main thread.
+changing kernel control flow, portable runtime policy, worker protocols or
+adapters. Implement guest semantics and portable control flow in Rust. Use
+`crates/runtime-core` for policy and state, `crates/kernel` for the Wasm
+boundary, and `crates/shared` for versioned wire contracts. Hosts manage engine
+resources, transport requests and results, and provide platform I/O. Rust
+decides what host events mean for a guest. Move an existing TypeScript policy
+decision into Rust before extending it. An exception requires maintainer
+approval and a documented removal condition.
+
+Node.js and browser hosts are peers. Shared runtime changes need both unless
+a documented platform boundary explains the difference. Keep the same kernel
+usable from non-JavaScript engines such as Wasmtime. On the JavaScript hosts,
+run the kernel in a dedicated worker. Never instantiate
+`CentralizedKernelWorker` on the main thread.
 
 Memory ceilings consume reservation budget on WebKit/JavaScriptCore at
 construction. Account for that cost before adding or raising one; budgets
@@ -326,7 +336,7 @@ layer whose platform behavior is wrong.
 | `crates/shared/` | Shared ABI constants, syscall/interface definitions, host/kernel contract types |
 | `crates/fork-instrument/` | Wasm fork continuation instrumentation |
 | `abi/` | Committed ABI snapshot and generated ABI evidence |
-| `host/src/` | TypeScript host runtime shared by Node.js and browser |
+| `host/src/` | Node.js and browser adapters for the Wasm engine, transport, and platform I/O |
 | `host/test/` | Host/kernel runtime behavior tests |
 | `web-libs/` | Browser-independent reusable UI/session contracts |
 | `apps/browser-demos/` | Browser app, demo pages, app-local presentation helpers |

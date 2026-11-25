@@ -3054,6 +3054,8 @@ incompatible-change rules.
 
 ## Required changes for the next program ABI
 
+### Independent pthread TLS
+
 The first program ABI after **56** must give each pthread an independently
 reserved executable TLS block. This applies to any change that bumps the
 program ABI. The ABI check requires the replacement control slot to contain
@@ -3069,6 +3071,41 @@ thread's TLS address and live contents through fork, including a subsequent
 fork from the child. Cover small and multi-page TLS, over-alignment, thread
 isolation, slot reuse, and fork on Node and in the browser. Follow the normal
 supported-program baseline and ABI fixture workflow for that version bump.
+
+### Remove the single-step loader import
+
+The first program ABI after **56** must also remove the single-step
+`env.__wasm_dlopen` host import. ABI 43 replaced it with the staged
+`__wasm_dlopen_prepare`/`next`/`commit` protocol. Current libc emits only the
+staged imports, and no in-tree package or SDK toolchain emits the old one.
+ABI 56 still declares it in `HOST_ENV_IMPORTS`, so the SDK lets a program
+leave it undefined, the host implements it, and the fork instrumenter lowers
+it into a local staged adapter (`LegacyLoaderPlan`; see
+[fork instrumentation](fork-instrumentation.md)). The adapter runs side-module
+initializers that compiler facts do not describe, so the sink planner declines
+such modules and they fall back to the full closure. Keeping an import that
+nothing produces costs a second host loader entry point, an instrumenter
+rewrite and several dedicated artifact guards.
+
+Remove the `HOST_ENV_IMPORTS` entry, which also removes the name from the
+generated SDK link and host import lists and from host admission. Remove the
+host implementation in `host/src/worker-main.ts`, `LegacyLoaderPlan`, and the
+instrumenter's other special cases for the import: dynamic-linker detection,
+the closure seed, the contract inventory count and the sink planner's refusal.
+The planner must still refuse an imported `__wasm_longjmp`. Replace the
+retained-import guards in `host/src/constants.ts`,
+`scripts/wasm-artifact-guards.sh` and `tools/xtask/src/build_deps.rs` with
+ordinary undeclared-import rejection. Drop the `__wasm_dlopen` source
+heuristic in `kandelo-cc` and the name from the Go toolchain patch's
+host-function list.
+
+Acceptance: an SDK link that leaves `__wasm_dlopen` undefined fails; the host
+refuses an artifact that imports it as undeclared; the instrumenter rejects
+such an input instead of lowering it; and the `dylink`, `dylink-fork-archive`,
+`dlopen-e2e`, `dlopen-host-imports`, `fork-dlopen-replay-e2e` and
+`fork-from-dlopen-side-module-e2e` host suites and the browser
+`dlopen-main-scope` spec pass. The ABI check fails above 56 while
+`host_env_imports` still lists `__wasm_dlopen`.
 
 To schedule another verified change for a specific program ABI, record its
 current epoch, required behavior, and acceptance tests here. Add a check to
