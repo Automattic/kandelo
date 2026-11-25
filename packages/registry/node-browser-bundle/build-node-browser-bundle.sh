@@ -2,8 +2,8 @@
 #
 # Build the browser lazy-archive bundle for Node.js. Reshapes the node
 # package's node.wasm plus native Amaro and unchanged bundled npm into a root-relative
-# node.zip (bin/spidermonkey-node + bin/node symlink + bin/npm + bin/npx + lib/npm/…). Consumers see the
-# bare zip at programs/wasm32/node.zip.
+# spidermonkey-node.zip (bin/spidermonkey-node + bin/node symlink + bin/npm + bin/npx + lib/npm/…). Consumers see the
+# bare zip at programs/wasm32/spidermonkey-node.zip.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -49,7 +49,7 @@ TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
 TSX_TMP="$(mktemp -d /tmp/kandelo-node.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
 
-archive="$WORK_DIR/node.zip"
+archive="$WORK_DIR/spidermonkey-node.zip"
 TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     "$NODE_BIN" "$TSX_CLI" \
     "$REPO_ROOT/images/vfs/scripts/build-node-zip.ts" \
@@ -59,4 +59,4 @@ export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary node-browser-bundle "$archive" node.zip
+install_local_binary node-browser-bundle "$archive" spidermonkey-node.zip

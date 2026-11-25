@@ -241,7 +241,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
     id: "node",
     dependency: "node-browser-bundle",
-    resolverPath: "programs/wasm32/node.zip",
+    resolverPath: "programs/wasm32/spidermonkey-node.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/spidermonkey-node",
   },

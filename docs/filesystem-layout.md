@@ -59,6 +59,7 @@ command names, not duplicate installations of the same name.
 The Node runtime is installed once as `/usr/bin/spidermonkey-node`.
 `/usr/bin/node` is a relative symlink to `spidermonkey-node`, so standard Node
 shebangs and npm commands keep working while the executable names its engine.
+Its lazy runtime download is named `spidermonkey-node.zip`.
 
 The installed `more`, `ed`, `tar`, `gzip`, `gunzip` and `zcat` commands use
 `/bin` as specified by FHS sections 3.4.2–3.4.3. Minimal images may omit

@@ -26,6 +26,6 @@ probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[outputs]]
-name = "node"
-wasm = "node.zip"
+name = "spidermonkey-node"
+wasm = "spidermonkey-node.zip"
 fork_instrumentation = "disabled"
