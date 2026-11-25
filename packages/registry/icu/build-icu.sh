@@ -229,7 +229,7 @@ wasm32posix-configure \
     --with-cross-build="$HOST_BUILD" \
     --enable-static --disable-shared \
     --disable-tools --disable-tests --disable-samples --disable-extras \
-    --disable-layoutex \
+    --disable-layoutex --disable-icu-config \
     --with-data-packaging=archive \
     --prefix="$INSTALL_DIR"
 
@@ -243,6 +243,13 @@ run_logged wasm-make make -j"$NPROC" ICUDATA_DIR=/usr/lib/php
 
 echo "==> Installing to $INSTALL_DIR..."
 run_logged wasm-install make install
+
+# ICU still installs two legacy build-tool fragments even with target tools
+# disabled. The host tools consume their build-tree copies. The installed
+# fragments retain the staging prefix, and consumers use pkg-config.
+icu_config_dir="$INSTALL_DIR/lib/icu"
+rm -f "$icu_config_dir/Makefile.inc" "$icu_config_dir/pkgdata.inc" \
+    "$icu_config_dir/$ICU_VERSION/Makefile.inc" "$icu_config_dir/$ICU_VERSION/pkgdata.inc"
 
 # ICU's generated pkg-config metadata records --prefix verbatim. Resolver
 # builds install into a temporary directory and later rewrite that to the
