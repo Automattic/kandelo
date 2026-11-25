@@ -289,13 +289,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     requiredMember: "bin/kandelo-cc",
   },
   {
-    id: "flang",
-    dependency: "flang-browser-bundle",
-    resolverPath: "programs/wasm32/flang.zip",
-    mountPrefix: "/usr/",
-    requiredMember: "bin/flang",
-  },
-  {
     id: "go",
     dependency: "go-toolchain",
     resolverPath: "programs/wasm32/go.zip",

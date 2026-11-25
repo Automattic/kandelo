@@ -22,6 +22,7 @@ dependency_only = [
 ]
 registry_non_roots = [
   { name = "node-native-lifetime-tests", reason = "unshipped native Node lifetime qualification fixture; resolved explicitly by diagnostic runs" },
+  { name = "flang-browser-bundle", reason = "optional Fortran compiler; resolve explicitly instead of blocking the standard shell and automatic builds" },
 ]
 
 [[packages]]
@@ -592,10 +593,6 @@ class = "test-support"
 
 [[packages]]
 name = "kandelo-sdk-browser-bundle"
-class = "browser-product"
-
-[[packages]]
-name = "flang-browser-bundle"
 class = "browser-product"
 
 [[packages]]
