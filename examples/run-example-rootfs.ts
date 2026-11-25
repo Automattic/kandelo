@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 
+import { resolveRootfsArtifact } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import {
   MAX_CLOSED_LAZY_ASSETS,
@@ -40,6 +41,11 @@ function readExactArtifact(path: string, size: number, url: string): Uint8Array 
   } finally {
     closeSync(descriptor);
   }
+}
+
+export function prepareDefaultRunExampleRootfs(): ReturnType<typeof prepareRunExampleRootfs> {
+  const { selectedPath } = resolveRootfsArtifact();
+  return prepareRunExampleRootfs(readFileSync(selectedPath));
 }
 
 /** Bind the canonical rootfs's deferred files to verified local artifacts. */

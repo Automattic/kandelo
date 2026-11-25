@@ -11,9 +11,9 @@
 # run lost the whole 55-test Sortix io section that way, with no failure.
 
 # record_missing_browser_results <start-idx> <runner-rc> <id>...
-# Records every test from <start-idx> on as an ERROR. <id>... is every test
-# id handed to the runner, in order. Appends to the caller's RESULTS array
-# and ERROR_COUNT.
+# Records every test from <start-idx> on. The browser runner reserves status
+# 2 for missing fixture inputs and reports their details in stderr. Other
+# unfinished tests count as ERROR. <id>... is the input order.
 record_missing_browser_results() {
     local start_idx="$1" runner_rc="$2"
     shift 2
@@ -25,9 +25,13 @@ record_missing_browser_results() {
         reason="browser runner did not report a result"
     fi
     while [ "$start_idx" -lt "${#ids[@]}" ]; do
-        echo "ERROR ${ids[$start_idx]}: $reason"
-        RESULTS+=("ERROR ${ids[$start_idx]}")
-        ERROR_COUNT=$((ERROR_COUNT + 1))
+        if [ "$runner_rc" -eq 2 ]; then
+            conformance_record_setup_error "${ids[$start_idx]}" "browser fixtures unavailable; see runner diagnostics above"
+        else
+            echo "ERROR ${ids[$start_idx]}: $reason"
+            RESULTS+=("ERROR ${ids[$start_idx]}")
+            ERROR_COUNT=$((ERROR_COUNT + 1))
+        fi
         start_idx=$((start_idx + 1))
     done
 }

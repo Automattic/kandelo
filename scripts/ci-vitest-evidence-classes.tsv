@@ -147,6 +147,7 @@ host/test/fork-artifact-gc-types.test.ts	source-only
 host/test/fork-borrowed-replay.test.ts	source-only
 host/test/fork-continuation.test.ts	source-only
 host/test/fork-dlopen-replay-e2e.test.ts	prepared-product
+host/test/fork-dlsym-facts-e2e.test.ts	prepared-product
 host/test/fork-early-reference-provider.test.ts	source-only
 host/test/fork-exception-provider.test.ts	source-only
 host/test/fork-externref-host-parity.test.ts	source-only

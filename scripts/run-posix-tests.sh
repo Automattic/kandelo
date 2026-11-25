@@ -21,7 +21,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # compile against THAT checkout's sysroot while the prerequisite check below
 # validated this one. Pin the cwd so both agree.
 cd "$REPO_ROOT"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
 POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
@@ -176,8 +177,9 @@ discover_interfaces() {
 }
 
 verify_test_tree() {
-    if [ ! -d "$IFACE_DIR" ]; then
-        echo "Error: Open POSIX Test Suite interfaces not found at $IFACE_DIR" >&2
+    conformance_source_input posix
+    if [ ! -f "$CONFORMANCE_SOURCE_FILE" ]; then
+        conformance_setup_error "missing $CONFORMANCE_SOURCE_FILE. Run $CONFORMANCE_SOURCE_REPAIR."
         exit 1
     fi
 }
@@ -193,8 +195,8 @@ build_test() {
     mkdir -p "$BUILD_DIR/$iface"
 
     "$WASM32_CC" "${CFLAGS[@]}" "$src" \
-        -o "$wasm" 2>/tmp/posix-test-build-err.txt
-    instrument_wasm "$wasm"
+        -o "$wasm" 2>/tmp/posix-test-build-err.txt || return 1
+    instrument_wasm "$wasm" || return 1
 
     # Launch every test from the guest VFS so argv[0] names a real executable.
     # Tests that exec themselves must traverse the same isolated path as the
@@ -219,6 +221,11 @@ run_test() {
 
     # Build
     if ! build_test "$iface" "$test_name" 2>/dev/null; then
+        local missing
+        if missing=$(conformance_missing_build_input); then
+            conformance_record_setup_error "$test_id" "$missing"
+            return
+        fi
         local build_output
         build_output=$(cat /tmp/posix-test-build-err.txt 2>/dev/null || true)
         if $is_xfail && ! xfail_check "$(xfail_expected_reason "$test_id")" build "$build_output"; then
@@ -250,9 +257,11 @@ run_test() {
         journal_dir=$(mktemp -d)
         journal_path="$journal_dir/rootfs.journal"
     fi
+    : > "$CASE_SETUP_FILE"
     set +e
     output=$(cd "$REPO_ROOT" && \
         KERNEL_CWD= \
+        KANDELO_RUNNER_SETUP_ERROR_FILE="$CASE_SETUP_FILE" \
         KANDELO_RUNNER_FIXTURE_ROOT="$fixture_root" \
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
@@ -269,6 +278,10 @@ run_test() {
     set -e
     if [ -n "$journal_dir" ]; then
         rm -rf "$journal_dir"
+    fi
+    if [ -s "$CASE_SETUP_FILE" ]; then
+        conformance_record_setup_error "$test_id" "$(cat "$CASE_SETUP_FILE")"
+        return
     fi
 
     case $rc in
@@ -386,7 +399,7 @@ if [ ${#INTERFACES[@]} -eq 0 ]; then
 fi
 
 if [ ${#INTERFACES[@]} -eq 0 ]; then
-    echo "Error: no Open POSIX Test Suite interfaces discovered under $IFACE_DIR" >&2
+    conformance_setup_error "no Open POSIX Test Suite interfaces discovered under $IFACE_DIR. Run $CONFORMANCE_SOURCE_REPAIR."
     exit 1
 fi
 
@@ -395,38 +408,29 @@ fi
 # passed.
 for iface in "${INTERFACES[@]}"; do
     if [ ! -d "$IFACE_DIR/$iface" ]; then
-        echo "Error: interface '$iface' not found in $IFACE_DIR" >&2
-        echo "Run $0 --list for the available interfaces." >&2
+        conformance_setup_error "interface '$iface' not found in $IFACE_DIR. Run $0 --list for the available interfaces."
         exit 1
     fi
 done
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
-if [ ! -f "$KERNEL_WASM" ]; then
-    echo "Error: kernel wasm not found. Run build.sh first." >&2
-    exit 1
-fi
-RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
-if [ -z "$RUST_HOST_TARGET" ]; then
-    echo "Error: could not determine the Rust host target." >&2
-    exit 1
-fi
-cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
-PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
-if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
-    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
-    exit 1
-fi
+for iface in "${INTERFACES[@]}"; do
+    if [ -z "$(discover_tests "$iface")" ]; then
+        conformance_setup_error "no Open POSIX tests were discovered for $iface under $IFACE_DIR. Run $0 --list for available interfaces."
+        exit 1
+    fi
+done
+conformance_preflight posix node || exit 1
 abi_contract_stamp_prepare || exit 1
+PROGRAM_INDEX_CHECKER="$KANDELO_ABI_STAMP_XTASK"
+export PROGRAM_INDEX_CHECKER
 # shellcheck source=scripts/conformance-program-index.sh
 source "$REPO_ROOT/scripts/conformance-program-index.sh"
 conformance_program_index_prepare || exit 1
+conformance_check_node_rootfs || exit 1
+CASE_SETUP_FILE="$(mktemp)"
+trap 'rm -f "$CASE_SETUP_FILE"' EXIT
 
+SETUP_ERROR_COUNT=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -469,11 +473,12 @@ echo "SKIP:       $SKIP"
 echo "BUILD:      $BUILD_FAIL"
 echo "UNRESOLVED: $UNRESOLVED"
 echo "TIMEOUT:    $TIMEOUT_COUNT"
+echo "SETUP:   $SETUP_ERROR_COUNT"
 echo "TOTAL:      $TOTAL"
 echo ""
 
 # Group results by status
-for status in PASS XPASS FAIL XFAIL BUILD UNRES TIME SKIP; do
+for status in PASS XPASS FAIL XFAIL BUILD UNRES SETUP TIME SKIP; do
     count=0
     for r in "${RESULTS[@]}"; do
         [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -510,12 +515,13 @@ if $REPORT_MODE; then
         echo "| XPASS | $XPASS |"
         echo "| SKIP | $SKIP |"
         echo "| BUILD | $BUILD_FAIL |"
+        echo "| SETUP | $SETUP_ERROR_COUNT |"
         echo "| UNRESOLVED | $UNRESOLVED |"
         echo "| TIMEOUT | $TIMEOUT_COUNT |"
         echo "| **TOTAL** | **$TOTAL** |"
         echo ""
 
-        for status in FAIL BUILD UNRES TIME; do
+        for status in FAIL BUILD UNRES SETUP TIME; do
             count=0
             for r in "${RESULTS[@]}"; do
                 [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -524,6 +530,7 @@ if $REPORT_MODE; then
                 case "$status" in
                     FAIL) echo "## Unexpected Failures ($count)" ;;
                     BUILD) echo "## Build Failures ($count)" ;;
+                    SETUP) echo "## Setup Errors ($count)" ;;
                     UNRES) echo "## Unresolved ($count)" ;;
                     TIME) echo "## Timeouts ($count)" ;;
                 esac
@@ -585,7 +592,7 @@ if $REPORT_MODE; then
 fi
 
 # Exit with failure if there are unexpected failures
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $UNRESOLVED -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
+if [ "$SETUP_ERROR_COUNT" -gt 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $UNRESOLVED -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi
 exit 0

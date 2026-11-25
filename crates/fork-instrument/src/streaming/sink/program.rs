@@ -61,7 +61,15 @@ pub struct Program<'s, 'a> {
     pub global_constants: Vec<Option<i64>>,
     pub stack_pointer_global: Option<u32>,
     pub constant_slots: bool,
+    /// The module can dynamically link: an indirect call through a dynamic
+    /// table or a reference may reach side-module code, which returns
+    /// normally and may throw.
     pub dynamic_linking: bool,
+    /// Side-module code may also return through a fork child into this
+    /// module's frames (`--side-modules=assume-all-entries-fork-returning`).
+    /// Under the traced-entries contract the host refuses side modules that
+    /// could, so a side-module call still returns but is not a fork path.
+    pub side_modules_fork_return: bool,
     unknown_tables: Vec<bool>,
     unknown_reference_imports: bool,
     target_groups: RefCell<TargetGroups>,
@@ -425,6 +433,13 @@ impl<'s, 'a> Program<'s, 'a> {
         if mutated {
             store.db.execute_batch("INSERT OR IGNORE INTO sink_member SELECT t.id,c.signature,r.target FROM sink_ref r JOIN sink_compatible c ON c.function=r.target CROSS JOIN sink_table t;")?;
         }
+        // Exports are already escaping. A runtime-installed slot is never a
+        // literal slot, so `sink_slot` is unchanged.
+        if let (Some(table), functions) = crate::call_graph::runtime_table_exports(scan) {
+            for function in functions {
+                store.execute("INSERT OR IGNORE INTO sink_member SELECT ?,signature,function FROM sink_compatible WHERE function=?", params![table, function])?;
+            }
+        }
         store.db.execute_batch(
             "UPDATE sink_function SET escaping=1 WHERE id IN (SELECT target FROM sink_ref);",
         )?;
@@ -474,6 +489,7 @@ impl<'s, 'a> Program<'s, 'a> {
             stack_pointer_global,
             constant_slots,
             dynamic_linking,
+            side_modules_fork_return: dynamic_linking,
             unknown_tables,
             unknown_reference_imports,
             target_groups: RefCell::default(),
@@ -680,10 +696,12 @@ impl<'s, 'a> Program<'s, 'a> {
         self.scan
     }
 
-    /// The native fork-closure driver must seed its external vertex whenever
-    /// this is true, not only when a dlopen function import is present.
-    pub fn has_external_dispatch(&self) -> bool {
-        self.dynamic_linking
+    /// Whether code outside this module's analysis can return through a fork
+    /// child into its frames. The native fork-closure driver must then seed
+    /// its external vertex, not only when a dlopen function import is
+    /// present. External targets that only return normally do not count.
+    pub fn external_may_fork_return(&self) -> bool {
+        (self.dynamic_linking && self.side_modules_fork_return)
             || self.unknown_reference_imports
             || self.unknown_tables.iter().any(|unknown| *unknown)
     }

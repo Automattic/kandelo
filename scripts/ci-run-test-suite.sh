@@ -25,7 +25,6 @@ host_target() {
 # Direct post-suite consumers use the same helper so the binding cannot be
 # lost merely because GitHub starts a new workflow step.
 source "$REPO_ROOT/scripts/activate-ci-test-workspace.sh"
-activate_ci_test_workspace
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
@@ -36,11 +35,60 @@ group="${2:-${TEST_GROUP:-all}}"
 # Defines disabled_software_vitest_excludes and the evidence-class registry
 # reader and coverage check used by every Vitest group.
 source "$REPO_ROOT/scripts/check-vitest-evidence-classes.sh"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
+activate_ci_test_workspace ||
+    conformance_setup_error 'cannot activate the prepared CI test workspace. Run ./run.sh setup or restore the complete CI test workspace archive.'
 disabled_software_cargo_test_args=(
     "--skip" "formula"
     "--skip" "bottle"
     "--skip" "tap"
 )
+
+invalid_group() {
+    echo "unknown $suite test group: $group" >&2
+    exit 2
+}
+
+# Reject incomplete worktrees before preparing the checker or installing JS
+# dependencies. Standalone conformance wrappers also perform these checks.
+case "$suite" in
+    libc)
+        case "$group" in all|functional-regression|math) ;; *) invalid_group ;; esac
+        conformance_preflight libc node
+        ;;
+    posix)
+        conformance_preflight posix node
+        ;;
+    sortix)
+        case "$group" in
+            include) conformance_preflight sortix node compile-only ;;
+            all|basic|runtime) conformance_preflight sortix node ;;
+            *) invalid_group ;;
+        esac
+        ;;
+    vitest)
+        case "$group" in all|1/2|2/2|resource-isolated|exact-abi-source) ;; *) invalid_group ;; esac
+        for sysroot in sysroot sysroot64; do
+            [ -f "$sysroot/lib/libc.a" ] ||
+                conformance_setup_error "missing $sysroot/lib/libc.a. Run ./run.sh setup."
+        done
+        if [ "$group" != resource-isolated ]; then
+            conformance_require_rootfs node
+        fi
+        conformance_require_artifact kernel.wasm './run.sh setup' >/dev/null
+        if [ "$group" != exact-abi-source ]; then
+            conformance_require_candidate './run.sh setup --all' programs/ruby/ruby.wasm
+            conformance_require_candidate 'scripts/dev-shell.sh bash scripts/build-programs.sh' programs/exec-child.wasm
+        fi
+        ;;
+    browser)
+        if [ "${PREPARE_BROWSER_ASSETS:-0}" != 1 ] && [ "${PREPARE_BROWSER_ASSETS:-false}" != true ]; then
+            conformance_require_rootfs browser
+            conformance_require_artifact kernel.wasm './run.sh setup' >/dev/null
+        fi
+        ;;
+esac
 
 # WHY: every conformance case starts a fresh Node resolver under a short
 # timeout. Prepare one exact worktree-local checker before parallel cases
@@ -53,17 +101,11 @@ case "$suite" in
             cargo build --release -p xtask --target "$(host_target)" --quiet
         fi
         if [ ! -f "$prepared_xtask" ] || [ ! -x "$prepared_xtask" ]; then
-            echo "ci-run-test-suite: missing executable prepared package checker: $prepared_xtask" >&2
-            exit 1
+            conformance_setup_error "missing executable prepared package checker: $prepared_xtask. Run ./run.sh setup."
         fi
         export WASM_POSIX_XTASK_BIN="$prepared_xtask"
         ;;
 esac
-
-invalid_group() {
-    echo "unknown $suite test group: $group" >&2
-    exit 2
-}
 
 # run_exact_abi_source_vitest <inventory-root>
 # Runs only source-only evidence. <inventory-root>/evidence holds the
@@ -190,7 +232,8 @@ run_exact_abi_source_vitest() {
         listed_names="$inventory_root/resource-$resource_file_number-listed"
         if ! (
             cd host
-            npx vitest list --no-static-parse "$selected_path" --json="$inventory_json"
+            npx vitest list --config vitest.inventory.config.ts \
+                --no-static-parse "$selected_path" --json="$inventory_json"
         ); then
             echo "ci-run-test-suite: could not enumerate source-only resource-isolated file: $test_file" >&2
             exit 2
@@ -573,10 +616,6 @@ case "$suite" in
         cargo run -p xtask --target "$(host_target)" --quiet -- runtime-workarounds run
         ;;
     vitest)
-        case "$group" in
-            all|1/2|2/2|resource-isolated|exact-abi-source) ;;
-            *) invalid_group ;;
-        esac
         vitest_inventory_dir="$(
             mktemp -d \
                 "${RUNNER_TEMP:-/tmp}/kandelo-vitest-inventory.XXXXXX"
@@ -595,6 +634,12 @@ case "$suite" in
             run_exact_abi_source_vitest "$vitest_inventory_dir"
             exit 0
         fi
+        # Missing or refused fixtures used to yield an empty Ruby inventory
+        # when its describe block was conditionally skipped. Check the actual
+        # resolver results before starting collection.
+        ruby_wasm=$(conformance_require_artifact programs/ruby/ruby.wasm './run.sh setup --all')
+        exec_child_wasm=$(conformance_require_artifact programs/exec-child.wasm \
+            'scripts/dev-shell.sh bash scripts/build-programs.sh')
         resource_cases="$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv"
         resource_files=()
         resource_markers=()
@@ -677,7 +722,7 @@ case "$suite" in
             listed_names="$vitest_resource_inventory_dir/listed-$resource_file_number"
             if ! (
                 cd host
-                npx vitest list --no-static-parse \
+                npx vitest list --config vitest.inventory.config.ts --no-static-parse \
                     "../$test_file" \
                     --json="$inventory_json"
             ); then
@@ -750,6 +795,12 @@ case "$suite" in
                 # reclamation boundary.
                 test_marker="${resource_markers[$index]}"
                 test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
+                if [ "${resource_files[$index]}" = packages/registry/ruby/test/posix-spawn.test.ts ]; then
+                    [ -f "$ruby_wasm" ] ||
+                        conformance_setup_error "missing $ruby_wasm. Run ./run.sh setup --all."
+                    [ -f "$exec_child_wasm" ] ||
+                        conformance_setup_error "missing $exec_child_wasm. Run scripts/dev-shell.sh bash scripts/build-programs.sh."
+                fi
                 (
                     cd host
                     bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
