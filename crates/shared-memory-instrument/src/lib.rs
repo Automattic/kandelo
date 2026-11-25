@@ -9,7 +9,7 @@ use wasmparser::{self as p, Operator as O, Parser, Payload};
 
 use sha2::{Digest, Sha256};
 
-use wasm_posix_program_abi::program_extensions::memory_group_v3 as layout;
+use wasm_posix_program_abi::program_extensions::{memory_group_v3 as layout, memory_group_growth_v1 as growth};
 pub const ARTIFACT_SECTION: &str = layout::SECTION;
 pub const EXTENSION_MODULE: &str = layout::MODULE;
 pub const EXTENSION_IMPORT: &str = layout::IMPORT;
@@ -30,6 +30,7 @@ struct Shape {
     types: Vec<p::FuncType>,
     functions: Vec<u32>,
     imported_functions: u32,
+    function_imports: Vec<(String, String)>,
     globals: u32,
     exports: BTreeMap<String, (p::ExternalKind, u32)>,
     initial: u64,
@@ -61,6 +62,7 @@ fn scan(bytes: &[u8]) -> Result<Shape> {
                         p::TypeRef::Func(t) => {
                             s.functions.push(t);
                             s.imported_functions += 1;
+                            s.function_imports.push((import.module.into(), import.name.into()));
                         }
                         p::TypeRef::Global(_) => s.globals += 1,
                         p::TypeRef::Memory(m) => {
@@ -329,6 +331,7 @@ struct Helper<'a> {
     shape: Shape,
     type_base: u32,
     function_base: u32,
+    growth_index: u32,
 }
 impl Reencode for Helper<'_> {
     type Error = anyhow::Error;
@@ -336,7 +339,7 @@ impl Reencode for Helper<'_> {
         Ok(self.type_base + t)
     }
     fn function_index(&mut self, f: u32) -> R<u32> {
-        Ok(self.function_base + f)
+        Ok(if f == 0 { self.growth_index } else { self.function_base + f })
     }
     fn global_index(&mut self, _: u32) -> R<u32> {
         Err(error(
@@ -366,6 +369,9 @@ impl Rewrite<'_> {
         function.instruction(&I::GlobalGet(self.replica()));
         function.instruction(&I::Call(self.helper_function("vm_checkpoint")));
         self.stop_polls += 1;
+    }
+    fn source_function_index(&self, index: u32) -> u32 {
+        if index < self.source.imported_functions { index } else { index + 1 }
     }
     fn root(&self) -> u32 {
         self.source.globals
@@ -406,7 +412,7 @@ impl Rewrite<'_> {
         self.types_done = true;
     }
     fn add_functions(&mut self, fs: &mut enc::FunctionSection) {
-        for t in &self.helper.shape.functions {
+        for t in self.helper.shape.functions.iter().skip(self.helper.shape.imported_functions as usize) {
             fs.function(self.helper.type_base + t);
         }
         for _ in 0..self.source.data {
@@ -584,7 +590,7 @@ impl Rewrite<'_> {
         if let Some(start) = self.source.start {
             f.instruction(&I::LocalGet(3));
             f.instruction(&I::If(enc::BlockType::Empty));
-            f.instruction(&I::Call(start));
+            f.instruction(&I::Call(self.source_function_index(start)));
             f.instruction(&I::End);
         }
         f.instruction(&I::End);
@@ -678,6 +684,15 @@ impl Rewrite<'_> {
 }
 impl Reencode for Rewrite<'_> {
     type Error = anyhow::Error;
+    fn function_index(&mut self, index: u32) -> R<u32> {
+        Ok(self.source_function_index(index))
+    }
+    fn parse_import_section(&mut self, section: &mut enc::ImportSection, reader: p::ImportSectionReader<'_>) -> R<()> {
+        reencode::utils::parse_import_section(self, section, reader)?;
+        section.import(growth::MODULE, growth::IMPORT,
+            enc::EntityType::Function(self.helper.type_base + self.helper.shape.functions[0]));
+        Ok(())
+    }
     fn memory_type(&mut self, _: p::MemoryType) -> R<enc::MemoryType> {
         Ok(enc::MemoryType {
             minimum: 1,
@@ -882,7 +897,7 @@ fn check_compiled_helper_layout(bytes: &[u8], shape: &Shape) -> Result<()> {
             _ => None,
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    // Helpers have no imported functions. Validate bodies without executing
+    // Imported SDK requests have no body. Validate marker definitions without executing
     // arbitrary code or constructing a shared memory in the build process.
     for (name, expected) in layout::WIRE {
         let export = format!("vm_layout_{name}");
@@ -894,7 +909,8 @@ fn check_compiled_helper_layout(bytes: &[u8], shape: &Shape) -> Result<()> {
             function_type.params().is_empty() && function_type.results() == [p::ValType::I32],
             "compiled helper layout marker {name} has an invalid signature; rebuild helpers"
         );
-        let body = &bodies[index as usize];
+        let body_index = index.checked_sub(shape.imported_functions).context("layout marker cannot be an import")?;
+        let body = &bodies[body_index as usize];
         ensure!(
             body.get_locals_reader()?.get_count() == 0,
             "compiled helper layout marker {name} has locals; rebuild helpers"
@@ -922,12 +938,16 @@ pub fn translate(
     let shape = scan(source)?;
     let helper_shape = scan(helpers)?;
     ensure!(
-        helper_shape.imported_functions == 0
+        helper_shape.imported_functions == 1
+            && helper_shape.function_imports.as_slice() == [(growth::MODULE.to_owned(), growth::IMPORT.to_owned())]
             && helper_shape.data == 0
             && helper_shape.globals == 0
             && helper_shape.start.is_none(),
-        "helpers must be freestanding and have no static data, globals or startup"
+        "helpers must request only the exact versioned kernel growth import and have no static data, globals or startup"
     );
+    let growth_signature = &helper_shape.types[helper_shape.functions[0] as usize];
+    ensure!(growth_signature.params() == [p::ValType::I32] && growth_signature.results() == [p::ValType::I32],
+        "kernel growth helper import signature is incompatible");
     ensure!(
         helper_shape
             .exports
@@ -974,6 +994,7 @@ pub fn translate(
         bytes: helpers,
         type_base: shape.types.len() as u32,
         function_base: shape.functions.len() as u32,
+        growth_index: shape.imported_functions,
         shape: helper_shape,
     };
     let mut rewrite = Rewrite {
@@ -993,7 +1014,7 @@ pub fn translate(
     rewrite
         .parse_core_module(&mut module, Parser::new(0), &stripped.finish())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let report = serde_json::json!({"version":layout::VERSION,"layout":layout::LAYOUT,"threadAttach":2,"cooperativeStop":3,"executionBarrier":1,"orderedWaitQueue":2,
+    let report = serde_json::json!({"version":layout::VERSION,"layout":layout::LAYOUT,"threadAttach":2,"cooperativeStop":3,"executionBarrier":1,"orderedWaitQueue":2,"kernelGrowth":growth::VERSION,
         "initialPages":initial,"maximumPages":maximum,"accessProfile":"outlined","accessWrappers":rewrite.wrappers.len(),
         "rewritten":rewrite.counts,"stopPolls":rewrite.stop_polls,
         "sourceSha256":format!("{:x}",Sha256::digest(source)),"helpersSha256":format!("{:x}",Sha256::digest(helpers))});
@@ -1034,7 +1055,7 @@ const REQUIRED_HELPERS: &[(&str, &[p::ValType], &[p::ValType])] = &[
 ];
 
 // Give the existing memory import a required, versioned namespace. No index
-// changes: fork custom sections keep their function/global/table identities.
+// changes in this final pass; source references were remapped before it.
 struct RequiredExtension;
 impl Reencode for RequiredExtension {
     type Error = anyhow::Error;

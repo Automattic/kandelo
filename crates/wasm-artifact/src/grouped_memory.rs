@@ -6,11 +6,11 @@ use crate::{
 };
 use alloc::{borrow::Cow, format, string::String, vec::Vec};
 use serde::Deserialize;
-use wasm_posix_program_abi::program_extensions::{klog_v1, memory_group_v3 as G, stack_v1};
+use wasm_posix_program_abi::program_extensions::{klog_v1, memory_group_v3 as G, memory_group_growth_v1 as growth, stack_v1};
 use wasmparser::{Parser, Payload, TypeRef};
 
 const LIMIT: usize = 4096;
-const SUPPORTED: &[&str] = &[stack_v1::MODULE, klog_v1::MODULE, G::MODULE];
+const SUPPORTED: &[&str] = &[stack_v1::MODULE, klog_v1::MODULE, G::MODULE, growth::MODULE];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupedMemoryLayout {
@@ -27,6 +27,7 @@ struct Declaration<'a> {
     cooperative_stop: u32,
     execution_barrier: u32,
     ordered_wait_queue: u32,
+    kernel_growth: u32,
     initial_pages: u32,
     maximum_pages: u32,
     #[serde(borrow)]
@@ -47,6 +48,7 @@ fn digest(value: &str) -> bool {
 pub fn read_layout(bytes: &[u8]) -> Result<GroupedMemoryLayout, String> {
     let mut declaration = None;
     let mut imported = 0;
+    let mut growth_imported = 0;
     for payload in Parser::new(0).parse_all(bytes) {
         match payload.map_err(|error| format!("invalid grouped artifact: {error}"))? {
             Payload::CustomSection(section) if section.name() == G::SECTION => {
@@ -61,6 +63,8 @@ pub fn read_layout(bytes: &[u8]) -> Result<GroupedMemoryLayout, String> {
             Payload::ImportSection(section) => {
                 for entry in section.into_imports() {
                     let entry = entry.map_err(|_| String::from("invalid grouped import"))?;
+                    if entry.module == growth::MODULE && entry.name == growth::IMPORT
+                        && matches!(entry.ty, TypeRef::Func(_)) { growth_imported += 1; }
                     if let TypeRef::Memory(memory) = entry.ty {
                         imported += 1;
                         if entry.module != G::MODULE
@@ -100,7 +104,7 @@ pub fn read_layout(bytes: &[u8]) -> Result<GroupedMemoryLayout, String> {
         }
     }
     let d = declaration.ok_or_else(|| String::from("missing grouped artifact declaration"))?;
-    if imported != 1
+    if imported != 1 || growth_imported != 1 || d.kernel_growth != growth::VERSION
         || d.version != G::VERSION
         || d.layout != G::LAYOUT
         || d.thread_attach != 2
@@ -226,7 +230,7 @@ mod tests {
     }
     fn metadata(patch: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
         let mut value = serde_json::json!({"version":3,"layout":3,"threadAttach":2,"cooperativeStop":3,
-            "executionBarrier":1,"orderedWaitQueue":2,"initialPages":149,"maximumPages":65536,"accessProfile":"outlined",
+            "executionBarrier":1,"orderedWaitQueue":2,"kernelGrowth":1,"initialPages":149,"maximumPages":65536,"accessProfile":"outlined",
             "sourceSha256":"0".repeat(64),"helpersSha256":"a".repeat(64)});
         patch(&mut value);
         serde_json::to_vec(&value).unwrap()
@@ -250,11 +254,33 @@ mod tests {
         (func(export "__vm_host_span")(param i32 i32 i32 i32)(result i32)i32.const 0)
     "#;
     fn module(shape: &str, data: &[u8]) -> Vec<u8> {
-        let mut bytes = wat::parse_str(format!(r#"(module {shape} {BINDINGS})"#)).unwrap();
+        let mut bytes = wat::parse_str(format!(r#"(module
+            (import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (func(param i32)(result i32)))
+            {shape} {BINDINGS})"#)).unwrap();
         append(&mut bytes, data);
         bytes
     }
     const IMPORT: &str = r#"(import "kandelo.memory-group.v3" "memory" (memory 1 65536 shared))"#;
+    #[test]
+    fn kernel_growth_requires_its_exact_namespace_kind_count_and_signature() {
+        for growth in [
+            "",
+            r#"(import "env" "__kandelo_memory_group_grow_v1" (func(param i32)(result i32)))"#,
+            r#"(import "kandelo.memory-group-growth.v2" "__kandelo_memory_group_grow_v1" (func(param i32)(result i32)))"#,
+            r#"(import "kandelo.memory-group-growth.v1" "wrong" (func(param i32)(result i32)))"#,
+            r#"(import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (global i32))"#,
+            r#"(import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (func(param i64)(result i32)))"#,
+            r#"(import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (func(param i32)))"#,
+            r#"(import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (func(param i32)(result i32)))
+               (import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (func(param i32)(result i32)))"#,
+        ] {
+            let mut bytes = wat::parse_str(format!("(module {IMPORT} {growth} {BINDINGS})")).unwrap();
+            append(&mut bytes, &metadata(|_| {}));
+            let facts = crate::read_artifact_facts(&bytes).unwrap();
+            assert!(!describe_failures(&bytes, &facts, &ArtifactPolicy::default()).is_acceptable(), "{growth}");
+        }
+    }
+
     #[test]
     fn grouped_support_is_explicit_and_preserves_ordinary_refusal() {
         let bytes = module(IMPORT, &metadata(|_| {}));
@@ -288,6 +314,7 @@ mod tests {
             "cooperativeStop",
             "executionBarrier",
             "orderedWaitQueue",
+            "kernelGrowth",
             "maximumPages",
         ] {
             let data = metadata(|v| v[field] = serde_json::json!(0));

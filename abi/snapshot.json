@@ -1553,6 +1553,7 @@
   "extension_requests": {
     "KLOG_V1": 600,
     "KMSG_CAPACITY_BYTES": 131072,
+    "MEMORY_GROUP_GROW_V1": 601,
     "descriptors": {
       "600": [
         {
@@ -2483,7 +2484,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 36,
+      "required_host_adapter_version": 37,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2717,7 +2718,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 36,
+    "version": 37,
     "worker_features": [
       {
         "bit": 2,

@@ -2,8 +2,7 @@
 //!
 //! A host supplies foreign-memory byte and atomic operations. Page selection,
 //! capacity checks, allocation publication and rollback belong to the kernel.
-//! The bitmap is shared with the versioned SDK grow helper; it is not mirrored
-//! in an independently managed host allocator.
+//! The bitmap is the kernel allocation record, never a mirrored host allocator.
 
 use wasm_posix_shared::{program_extensions::memory_group_v3 as layout, Errno};
 
@@ -780,7 +779,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn kernel_allocator_observes_pages_taken_by_the_sdk_grow_helper() {
+    fn kernel_allocator_obeys_existing_shared_bitmap_ownership() {
         let mut memory = Memory::new(16);
         let mut pool = PagePool::initialize(&mut memory, 16).unwrap();
         memory.grow(3).unwrap();

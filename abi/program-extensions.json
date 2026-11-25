@@ -65,6 +65,19 @@
       ]
     },
     {
+      "kind": "function",
+      "module": "kandelo.memory-group-growth.v1",
+      "name": "__kandelo_memory_group_grow_v1",
+      "params": [
+        "i32"
+      ],
+      "results": [
+        "i32"
+      ],
+      "status": "required by the opt-in grouped SDK; old virtual pages or -1",
+      "version": 1
+    },
+    {
       "initialPages": 1,
       "kind": "memory",
       "maximumPages": 65536,

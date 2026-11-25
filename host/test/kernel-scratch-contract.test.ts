@@ -1041,6 +1041,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.sealMemoryGroup::kernel-export-direct-use::seal(group)",
   ),
+  // Rust selects/signals the next member from a scalar group identity and
+  // returns a PID or status. The host borrows no memory and only transports
+  // the selected native notification.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.stopMemoryGroup::kernel-export-direct-use::stop(group)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.fdSupportsMmapWriteback::kernel-export-direct-use::supports(pid, fd)",
   ),
@@ -1263,7 +1269,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "Standalone translator offset oracle owns at most128pages of independent test memory in a disposable Node Worker. No Rust kernel or persistent browser/audio realm receives its storage; only copied check names leave the Worker.",
   },
   {
-    key: "crates/shared-memory-instrument/tests/fixtures/offsets-node.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(await readFile(workerData),{'kandelo.memory-group.v3':{memory}})",
+    key: "crates/shared-memory-instrument/tests/fixtures/offsets-node.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(await readFile(workerData),{[G.MEMORY_GROUP_MODULE]:{memory},[G.MEMORY_GROUP_GROWTH_MODULE]:{[G.MEMORY_GROUP_GROWTH_IMPORT]:()=>{throw Error('Unexpected kernel growth in offset fixture');}}})",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "The independent offset/split/atomic/overflow oracle instantiates only its translated fixture in its own bounded Worker-local test memory. Instance exports and views remain in that disposable Worker; no kernel memory participates.",
@@ -1286,29 +1292,29 @@ const auditAllowances: AuditAllowance[] = [
     why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
   },
   {
-    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory:limitedMemory}})",
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,memoryImports(memory))",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
-    why: "Bounded standalone compiled-C translator fixture in a disposable Worker. This instance controls only its test process-group storage; no Rust kernel or persistent page/audio realm receives it.",
+    count: 2,
+    why: "The independent copy oracle and thread-attach fixture import only disposable Worker-owned test memory and a growth callback that throws if used. No Rust kernel or persistent page/audio realm receives this storage.",
   },
   {
-    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})",
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,memoryImports(memory, delta => { growthRequests.push(delta >>> 0); return growthResult; }))",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
-    count: 3,
-    why: "The independent copy oracle, primary fixture and thread-attach fixture each instantiate the compiled C program inside a disposable Worker. They use only Worker-owned test group storage; no Rust kernel or persistent page/audio realm receives it.",
+    why: "The standalone translator fixture imports its bounded Worker-owned test memory. Its growth callback records a scalar delta and returns a chosen scalar result; it neither allocates frames nor publishes mappings. Actual allocation is tested against the Rust kernel separately.",
+  },
+  {
+    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{[G.MEMORY_GROUP_MODULE]:{memory}})",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "Negative translator fixture omits the required growth import and requires instantiation refusal. Only disposable Worker-owned synthetic memory is supplied; no accepted instance or Rust kernel memory escapes.",
   },
   {
     key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,{env:{memory}})",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "Negative translator fixture deliberately attempts the ordinary env.memory import and requires instantiation refusal. No instance is admitted and no Rust kernel memory participates.",
-  },
-  {
-    key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:5,maximum:5,shared:true})",
-    disposition: "non-kernel",
-    authorityOwner: "shared-memory",
-    why: "Standalone compiled-C translator fixture creates a bounded shared process-group memory (at most128pages; the OOM control5pages). It is created inside a disposable Worker, never the Rust kernel or a persistent browser/audio realm.",
   },
   {
     key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-memory-authority::new WebAssembly.Memory({initial:64,maximum:128,shared:true})",
@@ -1336,7 +1342,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "The native initialization oracle imports only its Worker-local ordinary test memory. Its exports remain local to synchronous comparisons against the translated fixture; no Rust kernel participates.",
   },
   {
-    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(groupedBytes,{'kandelo.memory-group.v3':{memory}})",
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(groupedBytes,memoryImports(memory))",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "The translated initialization fixture imports only its independent Worker-owned group backing. Its exports and views remain in that disposable realm; only copied check names leave it.",
@@ -1348,7 +1354,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "The active-data native oracle reuses its Worker-local ordinary memory and requires the original start function to trap. No accepted instance, export or kernel memory escapes this negative control.",
   },
   {
-    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(activeGroupedBytes,{'kandelo.memory-group.v3':{memory}})",
+    key: "crates/shared-memory-instrument/tests/fixtures/data-init-runner.mjs::checkDataInit::wasm-instance-authority::WebAssembly.instantiate(activeGroupedBytes,memoryImports(memory))",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
     why: "The active-data translated oracle reuses its Worker-owned group backing to test data-drop/start ordering. The instance and exports stay local and only copied result metadata is returned; no Rust kernel participates.",
@@ -1735,7 +1741,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "This replay-capable main activation receives reconstructed process imports and caller-owned process memory, never kernel memory.",
   },
   {
-    key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, grouped ? grouped.imports(importObject) : importObject)",
+    key: "host/src/worker-main.ts::centralizedWorkerMain::wasm-instance-authority::WebAssembly.instantiate(module, grouped ? grouped.imports(importObject, channelOffset) : importObject)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "The SDK process path receives ordinary process imports or the admitted group's guarded imports, never kernel memory.",

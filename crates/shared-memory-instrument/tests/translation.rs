@@ -147,6 +147,12 @@ fn stale_layout_marker(helper: &[u8], name: &str) -> Vec<u8> {
         }
     }
     let target = target.expect("compiled C marker export");
+    let imported = Parser::new(0).parse_all(helper).filter_map(|payload| match payload.unwrap() {
+        Payload::ImportSection(imports) => Some(imports.into_imports()
+            .filter(|entry| matches!(entry.as_ref().unwrap().ty, wasmparser::TypeRef::Func(_))).count() as u32),
+        _ => None,
+    }).sum::<u32>();
+    let target = target.checked_sub(imported).expect("marker must be a defined function");
     let mut function = 0;
     for payload in Parser::new(0).parse_all(helper) {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {

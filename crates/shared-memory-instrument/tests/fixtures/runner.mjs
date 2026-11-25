@@ -1,5 +1,8 @@
 import * as G from '../../../../host/src/generated/program-extensions.ts';
 // Run only in a disposable Worker; return copied results, never guest storage.
+function memoryImports(memory, grow = () => { throw Error('Unexpected kernel growth in translation fixture'); }) {
+  return { [G.MEMORY_GROUP_MODULE]: { memory }, [G.MEMORY_GROUP_GROWTH_MODULE]: { [G.MEMORY_GROUP_GROWTH_IMPORT]: grow } };
+}
 export async function check(bytes) {
   const checks=[];
   function check(name, condition) {if(!condition)throw Error(name);checks.push(name);}
@@ -17,7 +20,7 @@ export async function check(bytes) {
   {
     const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
     const words=new Uint32Array(memory.buffer),payload=new Uint8Array(memory.buffer);
-    const e=(await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
+    const e=(await WebAssembly.instantiate(bytes,memoryImports(memory))).instance.exports;
     words[root/4]=8;words[root/4+1]=64;words[root/4+2]=P;words[root/4+14]=1;
     const pte=root/4+16,ordinary=[4,6,7,8,9,10,11,12];
     ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
@@ -56,7 +59,8 @@ export async function check(bytes) {
   const control=G.MEMORY_GROUP_CONTROL/4, bitmap=G.MEMORY_GROUP_BITMAP/4;
   u32[control+1]=16;u32[control+2]=128;u32[control+3]=G.MEMORY_GROUP_MAGIC;
   u32[bitmap]=0xffff;
-  const {instance}=await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}});
+  const growthRequests=[]; let growthResult=-1;
+  const {instance}=await WebAssembly.instantiate(bytes,memoryImports(memory, delta => { growthRequests.push(delta >>> 0); return growthResult; }));
   const e=instance.exports;
   let ordinaryAccepted=false;
   try {const {instance:ordinaryInstance}=await WebAssembly.instantiate(bytes,{env:{memory}});ordinaryAccepted=ordinaryInstance!==undefined;}catch{}
@@ -92,7 +96,7 @@ export async function check(bytes) {
   u32[pte+1]=6*P|1;const before=u8[5*P-1];trap('split write preflights all permissions',()=>e.write32(P-1,0));check('failed split write is atomic with respect to preflight',u8[5*P-1]===before);u32[pte+1]=6*P|3;
   u32[pte+1]=u32[pte];e.write32(P+60000,99);check('shared alias observes same backing without copying',e.read32(60000)===99);u32[pte+1]=6*P|3;
   e.set_initialized(0x13579bdf);
-  const second=(await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
+  const second=(await WebAssembly.instantiate(bytes,memoryImports(memory))).instance.exports;
   second.__vm_root.value=root;second.__vm_scratch.value=3*P;second.__vm_replica.value=replica(memory,5*P+64,root);second.__vm_initialize(2);
   check('thread attach does not replay initial data',e.initialized()===0x13579bdf&&second.initialized()===0x13579bdf&&second.read32(60000)===99);
   trap('fresh initialization cannot repeat',()=>e.__vm_initialize(1));
@@ -101,43 +105,16 @@ export async function check(bytes) {
   check('stopping one replica preserves its same-root peer',e.read32(60000)===99);
   Atomics.store(u32,(5*P+64+G.MEMORY_GROUP_REPLICA_RUN)/4,1); // Fixture restart only; no old Worker or wait exists.
   check('logical memory.size is virtualized',e.size()===2);
-  check('memory.grow installs new virtual pages',e.grow(1)===2&&e.size()===3&&u32[pte+2]===(16*P|3));
-  check('new logical pages start zero',e.read32(2*P)===0);
-  u8.fill(0xef,8*P,9*P);u32[bitmap]&=~(1<<8); // Quiescent synthetic fixture reset only.
-  check('C grow reuses a fixture-reset page',e.grow(1)===3&&u32[pte+3]===(8*P|3));
-  check('C grow zeroes reused physical bytes',e.read32(3*P)===0);
-  check('next C grow observes prior page ownership',e.grow(1)===4&&u32[pte+4]===(17*P|3));
-  u8.fill(0xea,17*P,18*P);u32[pte+4]=0;Atomics.store(u32,root/4,4);u32[bitmap]&=~(1<<17);
-  let plateau=true;
-  for(let i=0;i<256;i++) {
-    if(e.grow(1)!==4||u32[pte+4] !== (17*P|3)||e.read32(4*P)!==0)plateau=false;
-    e.write32(4*P,0xffffffff);u32[pte+4]=0;Atomics.store(u32,root/4,4);
-    // Synthetic fixture retirement after synchronous calls, with no live user
-    // of that page. This is not evidence for the normal lifecycle fences.
-    u32[bitmap]&=~(1<<17);
-  }
-  check('256 C grow/fixture-reset cycles reuse the same zeroed page',plateau);
-  check('physical extent plateaus instead of growing per cycle',u32[control+1]===18&&memory.buffer.byteLength===64*P);
-  check('limit refusal leaves virtual size unchanged',(e.grow(32)>>>0)===0xffffffff&&e.size()===4);
-  trap('out-of-bounds addresses trap',()=>e.read32(4*P));
-  // Exhaust reusable physical pages as an input vector, then let the
-  // emitted helper perform the actual WebAssembly.Memory growth.
-  u32[bitmap]=0xffffffff;u32[bitmap+1]=0xffffffff;u32[control+1]=64;
-  check('C grow extends exhausted physical storage',e.grow(1)===4&&memory.buffer.byteLength===65*P);
-  check('C physical growth is visible to an attached instance',second.size()===5&&second.read32(4*P)===0);
-  check('C physical growth publishes its high-water mark',u32[control+1]===65);
-  const limitedMemory=new WebAssembly.Memory({initial:5,maximum:5,shared:true});
-  const limitedWords=new Uint32Array(limitedMemory.buffer);
-  limitedWords[control+1]=5;limitedWords[control+2]=8;limitedWords[control+3]=G.MEMORY_GROUP_MAGIC;
-  limitedWords[bitmap]=31;
-  limitedWords[root/4]=2;limitedWords[root/4+1]=32;limitedWords[root/4+2]=P;limitedWords[root/4+14]=1;
-  limitedWords[pte]=4*P|3;limitedWords[pte+1]=4*P|3;
-  const limited=(await WebAssembly.instantiate(bytes,{'kandelo.memory-group.v3':{memory:limitedMemory}})).instance.exports;
-  limited.__vm_root.value=root;limited.__vm_scratch.value=2*P+64;limited.__vm_replica.value=replica(limitedMemory,2*P,root);limited.__vm_initialize(1);
-  const refusedBefore=new Uint8Array(limitedMemory.buffer,0,P).slice();
-  check('C physical grow failure preserves logical size',(limited.grow(1)>>>0)===0xffffffff&&limited.size()===2);
-  check('C physical grow failure preserves metadata and releases locks',new Uint8Array(limitedMemory.buffer,0,P).every((byte,i)=>byte===refusedBefore[i])&&limitedWords[root/4+13]===0&&limitedWords[pte+2]===0);
+  const beforeGrowth=u32.slice(0,2*P/4);
+  growthResult=37;
+  check('translated memory.grow returns the kernel result',e.grow(3)===37);
+  growthResult=-1;
+  check('translated growth forwards all unsigned delta bits',(e.grow(0xffffffff)>>>0)===0xffffffff&&growthRequests[0]===3&&growthRequests[1]===0xffffffff);
+  check('SDK growth does not allocate or publish frames',u32.subarray(0,2*P/4).every((word,i)=>word===beforeGrowth[i])&&e.size()===2);
+  let missingGrowth=false;
+  try { const unexpectedMissingGrowth = await WebAssembly.instantiate(bytes,{[G.MEMORY_GROUP_MODULE]:{memory}}); if (unexpectedMissingGrowth.instance) throw Error('Missing growth import unexpectedly admitted'); } catch(error) { missingGrowth=error instanceof TypeError||error instanceof WebAssembly.LinkError; }
+  check('missing required kernel growth import is refused',missingGrowth);
   u32[root/4+14]=0;trap('stop escapes before source function work',()=>e.write32(60000,1));
   check('stopped instance did not modify guest storage',u32[(4*P+60000)/4]===99);
-  return {checks,scope:'C translation against fixed protocol inputs and quiescent fixture resets; no runtime allocation, lifecycle-fence or sustained desktop claim'};
+  return {checks,scope:'SDK translation and kernel-request marshalling against fixed protocol inputs; allocation/refusal/reuse is checked by Rust and real SDK kernel tests, not this fixture'};
 }

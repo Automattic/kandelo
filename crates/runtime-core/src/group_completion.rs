@@ -106,6 +106,7 @@ pub enum Effect {
         token: u64,
     },
     WaitStopped,
+    Retry { delay: u32 },
     Observe {
         resource: u64,
         wait: ProgressWait,
@@ -837,6 +838,31 @@ impl ProcessTable {
             self.set_completion_binding(binding);
             return Ok(Effect::Discarded);
         }
+        if call.syscall == wasm_posix_shared::extension_requests::MEMORY_GROUP_GROW_V1 {
+            use wasm_posix_shared::channel as CH;
+            let (store, admission) = self.memory_groups().storage_owner(receipt)?;
+            let resource = store.resource();
+            let mut memory = HostMemory { resource, host };
+            let delta = store.completion_word(&memory, admission, binding.channel + CH::ARGS_OFFSET as u32)?;
+            let high = store.completion_word(&memory, admission, binding.channel + CH::ARGS_OFFSET as u32 + 4)?;
+            let grown = if high != 0 { Err(Errno::EINVAL) } else {
+                store.grow_private(&mut memory, admission, delta)
+            };
+            let value = match grown {
+                Ok(old) => i64::from(old),
+                Err(Errno::ENOMEM | Errno::EINVAL) => -1,
+                Err(Errno::EAGAIN) => return Ok(Effect::Retry { delay: 1 }),
+                Err(Errno::EIO) => return self.fail_group_completion_image(receipt, host),
+                Err(error) => return Err(error),
+            };
+            // This is a Wasm intrinsic, with no libc signal-return shim.
+            // Preserve caught signals for the next ordinary guest request.
+            binding.call.as_mut().unwrap().flags |= C::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY;
+            binding.call.as_mut().unwrap().dispatched = true;
+            self.set_completion_binding(binding);
+            self.complete_group_channel_request(receipt, token, value, 0)?;
+            return self.poll_group_channel_completion(receipt, token, host);
+        }
         binding.call.as_mut().unwrap().dispatched = true;
         self.set_completion_binding(binding);
         Ok(Effect::Dispatch)
@@ -878,6 +904,7 @@ impl ProcessTable {
             Effect::Dispatch => E::DISPATCH,
             Effect::InterruptTransport { .. } => E::INTERRUPT,
             Effect::WaitStopped => E::STOPPED,
+            Effect::Retry { .. } => E::RETRY,
             Effect::Observe { .. } => E::OBSERVE,
             Effect::CancelObservation { .. } => E::CANCEL_OBSERVATION,
             Effect::Published { .. } => E::PUBLISHED,
@@ -886,6 +913,7 @@ impl ProcessTable {
         };
         let mut reply = self.completion_reply(target, token, kind);
         match effect {
+            Effect::Retry { delay } => reply.delay = delay,
             Effect::Observe { resource, wait } | Effect::CancelObservation { resource, wait } => {
                 reply.resource = resource;
                 reply.observation = wait.token;

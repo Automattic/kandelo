@@ -7,6 +7,8 @@ import {
   STACK_MODULE,
   MEMORY_GROUP_MODULE,
   MEMORY_GROUP_IMPORT,
+  MEMORY_GROUP_GROWTH_MODULE,
+  MEMORY_GROUP_GROWTH_IMPORT,
 } from "./generated/program-extensions";
 
 interface Import { readonly module: string; readonly name: string; readonly kind: string }
@@ -19,12 +21,12 @@ const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
   [STACK_MODULE, STACK_IMPORT],
   [KLOG_MODULE, KLOG_IMPORT],
 ]);
-const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set(EXTENSION_IMPORTS.values());
+const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set([...EXTENSION_IMPORTS.values(), MEMORY_GROUP_GROWTH_IMPORT]);
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());
 
 /** Artifact policy for the explicitly selected shared-memory backend. */
 export const GROUPED_WORKER_EXTENSIONS: ReadonlySet<string> = new Set([
-  STACK_MODULE, KLOG_MODULE, MEMORY_GROUP_MODULE,
+  STACK_MODULE, KLOG_MODULE, MEMORY_GROUP_MODULE, MEMORY_GROUP_GROWTH_MODULE,
 ]);
 
 /** Whether an import names an extension function, from any module. */
@@ -44,6 +46,16 @@ export function describeProgramExtensionFailures(
       if (entry.name !== MEMORY_GROUP_IMPORT || entry.kind !== "memory"
           || memoryPointerWidths.length !== 1 || memoryPointerWidths[0] !== 4) {
         failures.push(`incompatible grouped memory import ${entry.module}.${entry.name}`);
+      }
+      continue;
+    }
+    if (entry.module === MEMORY_GROUP_GROWTH_MODULE && supported.has(MEMORY_GROUP_GROWTH_MODULE)) {
+      const matches = functions.filter(candidate => candidate.module === entry.module && candidate.name === entry.name);
+      if (entry.name !== MEMORY_GROUP_GROWTH_IMPORT || entry.kind !== 'function'
+          || memoryPointerWidths.length !== 1 || memoryPointerWidths[0] !== 4 || matches.length !== 1
+          || matches.some(({ signature }) => signature.params.length !== 1 || signature.params[0] !== 0x7f
+            || signature.results.length !== 1 || signature.results[0] !== 0x7f)) {
+        failures.push(`incompatible grouped growth import ${entry.module}.${entry.name}`);
       }
       continue;
     }

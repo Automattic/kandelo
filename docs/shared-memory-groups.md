@@ -48,13 +48,13 @@ Grouped completion authority also belongs to the actual `ProcessTable`. It retai
 
 The actual Rust root, fork, exec and pthread owners select execution transactions and cancellation. Rust also selects Worker containment before reference disposal and orders pthread retirement against whole-image retirement. An accepted Node native join or sealed constructor absence already satisfies containment; a browser terminal fence still requires the requested platform termination. References and physical frames remain charged until their distinct acknowledgements and native waits settle.
 
-Group shutdown seals admission and selects current members in the actual Rust `ProcessTable`, using normal signal delivery. Native creator draining starts after that stop request, so a pending or stopped launch cannot hold the shutdown open indefinitely. A constructed root awaiting readiness or backing delivery receives exact scalar-only cancellation and must return a real terminal fence. An already completed native retirement can satisfy its late acknowledgement. SDK private-growth allocation still needs ownership correction. TypeScript retains genuine platform objects, native observations and pending platform operations. Existing IPC, fork serialization, dynamic loading, graphics presentation and build/lazy-loading helpers remain in their normal layers unless this feature placed group policy there. Moving ordinary algorithms to Rust is not a requirement of this feature.
+Group shutdown seals admission and selects current members in the actual Rust `ProcessTable`, using normal signal delivery. Native creator draining starts after that stop request, so a pending or stopped launch cannot hold the shutdown open indefinitely. A constructed root awaiting readiness or backing delivery receives exact scalar-only cancellation and must return a real terminal fence. An already completed native retirement can satisfy its late acknowledgement. TypeScript retains genuine platform objects, native observations and pending platform operations. Existing IPC, fork serialization, dynamic loading, graphics presentation and build/lazy-loading helpers remain in their normal layers unless this feature placed group policy there. Moving ordinary algorithms to Rust is not a requirement of this feature.
 
 Host address translation and ordered queue notification execute shared stateless Rust SDK primitives against the admitted foreign memory; that extraction owns no pages, membership or lifecycle. Its bounded publication callback reports failure as data so Rust releases its own queue lock. The normal generator rejects start/data initialization, memory growth and mutable instance writes. Platform objects and native completion observations remain host responsibilities.
 
 Grouped mappings must enter the Rust physical/PTE transaction owner. The ordinary direct/synthetic mmap, munmap, mremap and mprotect entries refuse grouped images; direct brk leaves the break unchanged. SysV attachment to a grouped image is unsupported and is refused by the kernel before attachment accounting, rather than entering the legacy synthetic-mmap and byte-mirror path. Ordinary processes retain that path. This refusal does not add SysV sharing to the grouped preview.
 
-The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. The SDK's private growth path still uses the shared v3 bitmap protocol; Rust synchronizes with its locks and captures its frames from stable page tables for reclamation. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
+The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. SDK private growth sends only its unsigned page delta through the admitted syscall channel. The actual kernel storage owner allocates and zeroes frames through its existing pool, retains image custody before publishing page-table entries, and publishes the new virtual extent last. Contention retries through the existing completion owner; stopped tasks cannot grow, and uncertain publication contains the image without dropping its charges. No SDK or TypeScript allocator chooses frames. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or
 authorize reuse. The optional scalar usage API reports allocator contention as
 `EAGAIN` without poisoning the kernel. No persistent browser or audio realm receives the guest
@@ -95,10 +95,14 @@ The normal SDK currently emits the required memory namespace
 `kandelo.memory-group.v3`, custom section `kandelo.memory-group`, and executable
 metadata `version: 3`, `layout: 3`. Its additional metadata requires
 `threadAttach: 2`, `cooperativeStop: 3`, `executionBarrier: 1` and
-`orderedWaitQueue: 2`. These identities come from
+`orderedWaitQueue: 2` and `kernelGrowth: 1`. The required function namespace
+`kandelo.memory-group-growth.v1` exports
+`__kandelo_memory_group_grow_v1(i32) -> i32`: an unsigned page delta returns
+the old virtual page count or -1 on allocation refusal. A grouped artifact
+without this exact import is rejected. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 36, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 37, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the
@@ -125,7 +129,8 @@ process-stop owner handles later exit. A constructed Worker awaiting launch
 receives an exact scalar-only cancellation and returns its real terminal fence
 without guest memory. Readiness requires the exact host adapter version before
 memory delivery, so an older Worker cannot claim this cancellation contract.
-SDK private-growth allocation and final integrated validation remain incomplete.
+Kernel-owned SDK private-growth allocation is implemented; final integrated
+validation remains incomplete.
 
 The normal SDK prepares versioned compatible executables. The runtime checks
 the translated contract, program ABI and kernel-host contract before admission.
@@ -572,7 +577,8 @@ A committed child cannot be rolled back by
 a later parent exit. Generic native setup failures report `EIO`; an explicitly
 reported resource exhaustion remains `ENOMEM`. Constructor uncertainty retains
 custody and contains the kernel. Native and real SDK Node/browser checks cover
-this fork path; kernel-owned group shutdown and SDK private-growth allocation remain unfinished.
+this fork path. Kernel-selected group shutdown and SDK private-growth allocation
+are implemented; final integrated acceptance remains pending.
 
 The actual kernel thread record retains its creator and grouped entry recipe.
 The mapping operation emits the complete pthread control/bootstrap layout;

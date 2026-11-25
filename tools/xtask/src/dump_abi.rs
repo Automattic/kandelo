@@ -3982,6 +3982,8 @@ fixedSize: {}, maxCallerSize: {} }},\n",
          export const EXTENSION_REQUEST_KLOG_V1 = {} as const;\n\n",
         shared::extension_requests::KLOG_V1
     ));
+    out.push_str(&format!("export const EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 = {} as const;\n\n",
+        shared::extension_requests::MEMORY_GROUP_GROW_V1));
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
     for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS
         .iter()
@@ -6996,6 +6998,7 @@ fn extension_requests() -> Value {
         "KLOG_V1".into(),
         json!(shared::extension_requests::KLOG_V1),
     );
+    requests.insert("MEMORY_GROUP_GROW_V1".into(), json!(shared::extension_requests::MEMORY_GROUP_GROW_V1));
     requests.insert(
         "KMSG_CAPACITY_BYTES".into(),
         json!(shared::extension_requests::KMSG_CAPACITY_BYTES),

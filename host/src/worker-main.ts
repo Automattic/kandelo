@@ -3941,7 +3941,7 @@ export async function centralizedWorkerMain(
         programBytes,
         importObject,
       );
-      const guardedMainImports = grouped ? grouped.imports(routedImportObject) : routedImportObject;
+      const guardedMainImports = grouped ? grouped.imports(routedImportObject, channelOffset) : routedImportObject;
       const reconstructedMainImports = importedStatePlanner
         ? importedStatePlanner.importsForActivation(
             0,
@@ -4334,7 +4334,7 @@ export async function centralizedWorkerMain(
         undefined,
         dlopenSupport.extensionImports,
       );
-      const instance = await WebAssembly.instantiate(module, grouped ? grouped.imports(importObject) : importObject);
+      const instance = await WebAssembly.instantiate(module, grouped ? grouped.imports(importObject, channelOffset) : importObject);
       processInstance = instance;
       grouped?.bind(instance, initData.isForkChild ? 0 : 1);
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
@@ -5853,7 +5853,7 @@ export async function centralizedThreadWorkerMain(
           importObject,
         )
       : importObject;
-    const guardedThreadImports = grouped ? grouped.imports(routedThreadImportObject) : routedThreadImportObject;
+    const guardedThreadImports = grouped ? grouped.imports(routedThreadImportObject, channelOffset) : routedThreadImportObject;
     const threadMainImportedState =
       threadImportedStateCapture?.prepareActivation(
         0,

@@ -1,10 +1,12 @@
+import * as G from '../../../../host/src/generated/program-extensions.ts';
+function memoryImports(memory) { return { [G.MEMORY_GROUP_MODULE]: { memory }, [G.MEMORY_GROUP_GROWTH_MODULE]: { [G.MEMORY_GROUP_GROWTH_IMPORT]: () => { throw Error('Unexpected kernel growth in data initialization fixture'); } } }; }
 // Run in a disposable Worker. Only copied check names leave its realm.
 export async function checkDataInit(ordinaryBytes,groupedBytes,activeOrdinaryBytes,activeGroupedBytes) {
   const P=65536,root=P,scratch=2*P,replica=3*P,dataLength=2*P+31;
   const plainMemory=new WebAssembly.Memory({initial:3,maximum:32,shared:true});
   const ordinary=(await WebAssembly.instantiate(ordinaryBytes,{env:{memory:plainMemory}})).instance.exports;
   const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
-  const grouped=(await WebAssembly.instantiate(groupedBytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
+  const grouped=(await WebAssembly.instantiate(groupedBytes,memoryImports(memory))).instance.exports;
   const words=new Uint32Array(memory.buffer),payload=new Uint8Array(memory.buffer),plain=new Uint8Array(plainMemory.buffer),checks=[];
   words[root/4]=3;words[root/4+1]=32;words[root/4+2]=P;words[root/4+14]=1;
   words[replica/4]=1;words[(replica+12)/4]=root;words[(replica+60)/4]=861031755;
@@ -42,7 +44,7 @@ export async function checkDataInit(ordinaryBytes,groupedBytes,activeOrdinaryByt
   let ordinaryStartTrapped=false;
   // Keep an unexpected instance locally owned even on this negative path.
   try{const {instance:unexpectedActiveOrdinary}=await WebAssembly.instantiate(activeOrdinaryBytes,{env:{memory:plainMemory}});if(unexpectedActiveOrdinary)throw Error('native active-data start unexpectedly completed');}catch(error){if(!(error instanceof WebAssembly.RuntimeError))throw error;ordinaryStartTrapped=true;}
-  const active=(await WebAssembly.instantiate(activeGroupedBytes,{'kandelo.memory-group.v3':{memory}})).instance.exports;
+  const active=(await WebAssembly.instantiate(activeGroupedBytes,memoryImports(memory))).instance.exports;
   words[root/4+3]=0;active.__vm_root.value=root;active.__vm_scratch.value=scratch;active.__vm_replica.value=replica;
   check('active data is dropped before original start',ordinaryStartTrapped&&trap(()=>active.__vm_initialize(1)));
   return {checks,scope:'Native Wasm memory.init versus translated output, independent data pattern and physical snapshot oracle. No normal grouped lifecycle or performance claim.'};

@@ -20,13 +20,14 @@ function fixture() {
 function leb(value: number): number[] { const out: number[] = []; do { const byte = value & 127; value >>>= 7; out.push(byte | (value ? 128 : 0)); } while (value); return out; }
 const text = (value: string): number[] => { const bytes = [...new TextEncoder().encode(value)]; return [...leb(bytes.length), ...bytes]; };
 function artifact(patch: object = {}, start = false): ArrayBuffer {
-  const metadata = { version: 3, layout: 3, threadAttach: 2, cooperativeStop: 3, executionBarrier: 1, orderedWaitQueue: 2,
+  const metadata = { version: 3, layout: 3, threadAttach: 2, cooperativeStop: 3, executionBarrier: 1, orderedWaitQueue: 2, kernelGrowth: 1,
     initialPages: 1, maximumPages: 16, accessProfile: 'outlined', sourceSha256: '0'.repeat(64), helpersSha256: '1'.repeat(64), ...patch };
   const bytes = [0,97,115,109,1,0,0,0];
   const section = (id: number, body: number[]) => bytes.push(id, ...leb(body.length), ...body);
-  if (start) section(1, [1,0x60,0,0]);
-  section(2, [1,...text(G.MEMORY_GROUP_MODULE),...text('memory'),2,3,1,32]);
-  if (start) { section(3,[1,0]); section(8,[0]); section(10,[1,2,0,0x0b]); }
+  section(1, [start ? 2 : 1,0x60,1,0x7f,1,0x7f,...(start ? [0x60,0,0] : [])]);
+  section(2, [2,...text(G.MEMORY_GROUP_MODULE),...text('memory'),2,3,1,32,
+    ...text(G.MEMORY_GROUP_GROWTH_MODULE),...text(G.MEMORY_GROUP_GROWTH_IMPORT),0,0]);
+  if (start) { section(3,[1,1]); section(8,[1]); section(10,[1,2,0,0x0b]); }
   section(0,[...text(G.MEMORY_GROUP_SECTION), ...new TextEncoder().encode(JSON.stringify(metadata))]);
   return Uint8Array.from(bytes).buffer;
 }

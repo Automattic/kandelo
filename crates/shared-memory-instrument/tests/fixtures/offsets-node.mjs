@@ -10,7 +10,7 @@ const control=new Uint32Array(memory.buffer,replica,G.MEMORY_GROUP_REPLICA_BYTES
 control[G.MEMORY_GROUP_REPLICA_RUN/4]=1;
 control[G.MEMORY_GROUP_REPLICA_ROOT/4]=root;
 control[G.MEMORY_GROUP_REPLICA_MAGIC_OFFSET/4]=G.MEMORY_GROUP_REPLICA_MAGIC;
-const e=(await WebAssembly.instantiate(await readFile(workerData),{'kandelo.memory-group.v3':{memory}})).instance.exports;
+const e=(await WebAssembly.instantiate(await readFile(workerData),{[G.MEMORY_GROUP_MODULE]:{memory},[G.MEMORY_GROUP_GROWTH_MODULE]:{[G.MEMORY_GROUP_GROWTH_IMPORT]:()=>{throw Error('Unexpected kernel growth in offset fixture');}}})).instance.exports;
 e.__vm_root.value=root;e.__vm_scratch.value=scratch;e.__vm_replica.value=replica;e.__vm_initialize(1);
 const checks=[];
 const check=(name,ok)=>{if(!ok)throw Error(name);checks.push(name);};

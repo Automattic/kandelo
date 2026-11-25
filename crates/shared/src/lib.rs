@@ -86,6 +86,11 @@ pub mod extension_requests {
     /// host-intercepted `SYS_SPAWN` (500).
     pub const KLOG_V1: u32 = 600;
 
+    /// Grouped SDK private memory.grow; handled by the actual completion owner,
+    /// never the base syscall dispatcher. One unsigned delta; no caller-selected
+    /// image, root or physical frame. The Wasm result is old pages or -1.
+    pub const MEMORY_GROUP_GROW_V1: u32 = 601;
+
     /// Size of the kernel message ring, and so the largest count a klog
     /// request can return. The ring lives in `runtime_core::kmsg`; the bound is
     /// here because the host's copy-back check needs it: the size actions
@@ -2363,7 +2368,7 @@ pub mod abi {
     ///    guest-address I/O transport.
     /// 8: opt-in memory-group admission metadata, exact execution receipts
     ///    and image custody. No ready execution/stop backend is advertised.
-    pub const HOST_ADAPTER_VERSION: u32 = 36;
+    pub const HOST_ADAPTER_VERSION: u32 = 37;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

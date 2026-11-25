@@ -154,49 +154,14 @@ uint32_t vm_initialize_gate(uint32_t root, uint32_t fresh, uint32_t replica) {
     if (!__atomic_compare_exchange_n(&words(root)[3], &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fail();
     return fresh;
 }
-// The same bitmap is used by the kernel-realm host allocator. Root lock then
-// group lock is the only lock order. No page becomes reachable until zeroed.
-AI uint32_t pool_used(uint32_t p) {
-    return words(KANDELO_MG_BITMAP)[p>>5] & (1u<<(p&31));
-}
-AI void pool_mark(uint32_t p) {
-    words(KANDELO_MG_BITMAP)[p>>5] |= 1u<<(p&31);
-}
+// The import is bound to this exact task's kernel channel. Frame selection,
+// budget checks, zeroing, PTE publication and custody belong to the kernel.
+__attribute__((import_module(KANDELO_MG_GROWTH_MODULE), import_name(KANDELO_MG_GROWTH_IMPORT)))
+extern uint32_t kernel_private_grow(uint32_t delta);
 EXPORT("vm_grow")
-uint32_t vm_grow(uint32_t delta,uint32_t root) {
-    if(!root)fail();
-    uint32_t *group=words(KANDELO_MG_CONTROL);
-    if(group[3]!=KANDELO_MG_MAGIC || !group[2] || group[2]>KANDELO_MG_MAXIMUM_PAGES)fail();
-    uint32_t *growth=words(root+KANDELO_MG_ROOT_GROW_LOCK);
-    while(__atomic_exchange_n(growth,1,__ATOMIC_ACQUIRE)) { }
-    uint32_t old=words(root)[0],result=UINT32_MAX;
-    if(old>words(root)[1] || delta>words(root)[1]-old)goto done;
-    if(!delta){result=old;goto done;}
-    while(__atomic_exchange_n(group,1,__ATOMIC_ACQUIRE)) { }
-    uint32_t found=0,end=1;
-    for(uint32_t p=1;p<group[2] && found<delta;p++) {
-        if(!pool_used(p)){found++;end=p+1;}
-    }
-    if(found==delta) {
-        uint32_t size=__builtin_wasm_memory_size(0);
-        if(end<=size || __builtin_wasm_memory_grow(0,end-size)!=(unsigned long)-1) {
-            uint32_t installed=0;
-            for(uint32_t p=1;p<end && installed<delta;p++) {
-                if(pool_used(p))continue;
-                __builtin_memset((void*)(uintptr_t)(p*PAGE),0,PAGE);
-                pool_mark(p);
-                words(root+HEADER)[old+installed]=(p*PAGE)|3;installed++;
-            }
-            if(end>group[1])group[1]=end;
-            __atomic_store_n(&words(root)[0],old+delta,__ATOMIC_RELEASE);result=old;
-        }
-    }
-    __atomic_store_n(group,0,__ATOMIC_RELEASE);
-    __builtin_wasm_memory_atomic_notify((int*)group,1);
-done:
-    __atomic_store_n(growth,0,__ATOMIC_RELEASE);
-    __builtin_wasm_memory_atomic_notify((int*)growth,1);
-    return result;
+uint32_t vm_grow(uint32_t delta, uint32_t root) {
+    if (!root) fail();
+    return kernel_private_grow(delta);
 }
 
 #include "vm-wait-queue.h"

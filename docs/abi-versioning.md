@@ -16,6 +16,25 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Kernel-owned SDK private growth
+
+Host-adapter 37 adds kernel-host extension request 601 for the optional
+`kandelo.memory-group-growth.v1` SDK interface. Its exact function
+`__kandelo_memory_group_grow_v1(i32) -> i32` takes an unsigned page delta and
+returns the old virtual page count or -1 on allocation refusal. The normal
+translator adds this import and requires `kernelGrowth: 1` metadata; existing
+grouped artifacts without it must be rebuilt. Ordinary program ABI 56, its
+base libc imports and its frozen executable contract are unchanged.
+
+The admitted channel supplies the exact image and task. Its existing Rust
+completion owner checks stopped/default-signal state and serializes retries.
+Actual storage and frame-pool owners select, zero, charge and retain frames
+before publishing new mappings and the virtual extent. Allocation refusal
+leaves the extent unchanged; uncertain publication contains the image and
+retains charges. The intrinsic defers caught signals until a normal guest
+request with the libc signal-return shim. TypeScript transports scalar values
+and performs only existing kernel-requested foreign-memory effects.
+
 ## Kernel-selected grouped shutdown
 
 Host-adapter 36 adds optional `kernel_memory_group_stop_next(group) -> i32`.

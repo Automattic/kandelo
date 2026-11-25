@@ -336,7 +336,7 @@ impl Storage {
         }
         let result = (|| {
             let image = self.images.get(&key).ok_or(Errno::ESRCH)?;
-            // Both SDK growth and kernel publication hold this image's root
+            // Kernel growth and mapping publication hold this image's root
             // lock. Read its stable PTEs in bounded chunks, as mapping setup
             // does, instead of crossing into the host for every unused word.
             // Peer tables below remain atomic: their locks are not held here.

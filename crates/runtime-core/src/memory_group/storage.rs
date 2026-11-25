@@ -17,6 +17,7 @@ use wasm_posix_shared::{program_extensions::memory_group_v3 as layout, Errno};
 
 const PAGE: u32 = layout::PAGE_BYTES;
 mod fork;
+mod growth;
 mod lifecycle;
 #[cfg(test)]
 #[path = "storage/tests.rs"]

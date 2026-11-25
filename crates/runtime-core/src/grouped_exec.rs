@@ -455,6 +455,7 @@ pub(crate) mod tests {
         let mut bytes = wat::parse_str(format!(
             r#"(module
             (import "kandelo.memory-group.v3" "memory" (memory 1 65536 shared))
+            (import "kandelo.memory-group-growth.v1" "__kandelo_memory_group_grow_v1" (func (param i32)(result i32)))
             (func(export "__abi_version")(result i32)i32.const {ABI_VERSION})
             (global(export "__vm_root")(mut i32)(i32.const 0))
             (global(export "__vm_scratch")(mut i32)(i32.const 0))
@@ -466,7 +467,7 @@ pub(crate) mod tests {
         ))
         .unwrap();
         let data = format!(
-            r#"{{"version":{version},"layout":3,"threadAttach":2,"cooperativeStop":3,"executionBarrier":1,"orderedWaitQueue":2,"initialPages":149,"maximumPages":65536,"accessProfile":"outlined","sourceSha256":"{}","helpersSha256":"{}"}}"#,
+            r#"{{"version":{version},"layout":3,"threadAttach":2,"cooperativeStop":3,"executionBarrier":1,"orderedWaitQueue":2,"kernelGrowth":1,"initialPages":149,"maximumPages":65536,"accessProfile":"outlined","sourceSha256":"{}","helpersSha256":"{}"}}"#,
             "0".repeat(64),
             "a".repeat(64)
         );

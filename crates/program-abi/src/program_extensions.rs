@@ -89,6 +89,15 @@ pub mod klog_v1 {
     ];
 }
 
+/// The grouped SDK delegates private frame allocation to the actual kernel.
+/// This required namespace is independent of both the base ABI and the physical
+/// memory layout namespace; no ordinary executable requests it.
+pub mod memory_group_growth_v1 {
+    pub const MODULE: &str = "kandelo.memory-group-growth.v1";
+    pub const IMPORT: &str = "__kandelo_memory_group_grow_v1";
+    pub const VERSION: u32 = 1;
+}
+
 /// Every implemented extension, by module and its single function import.
 /// Each has the signature `(pointer, i32, i32) -> i32`.
 pub const EXTENSIONS: &[(&str, &str)] = &[
@@ -106,12 +115,12 @@ pub fn extension_import(module: &str) -> Option<&'static str> {
 
 /// Whether a name is one of the extension functions, imported from any module.
 pub fn is_extension_import_name(name: &str) -> bool {
-    EXTENSIONS.iter().any(|(_, import)| *import == name)
+    name == memory_group_growth_v1::IMPORT || EXTENSIONS.iter().any(|(_, import)| *import == name)
 }
 
 /// Independently versioned trusted-group memory layout. Not a base env import.
 /// Ordinary hosts reject this required memory namespace until their explicit
-/// grouped backend is available. A bitmap serves both host and guest growth.
+/// grouped backend is available. The kernel owns the shared allocation bitmap.
 #[path = "memory_group_layout.rs"]
 pub mod memory_group_v3;
 

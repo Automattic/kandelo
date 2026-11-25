@@ -5,7 +5,7 @@ import { MemoryGroupProtocolFault } from './memory-group-protocol';
 import { decodeProcessMemoryDescriptor, type GroupReplicaMemoryExpectation, type GroupReplicaMemoryDescriptor } from './process-memory-descriptor';
 import { GroupProcessAddressSpace } from './process-address-space';
 import { trapProcessWorker } from './fork-worker-import-exceptions';
-import type { GroupedWorkerWait32 } from './worker-channel-ipc';
+import { WorkerChannelIPC, type GroupedWorkerWait32 } from './worker-channel-ipc';
 import { wasmModuleImports } from './wasm-module-reflection';
 
 function fail(message: string): never { throw new MemoryGroupProtocolFault(message); }
@@ -90,7 +90,7 @@ export class GroupedWorkerRuntime {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
         || metadata.version !== G.MEMORY_GROUP_VERSION || metadata.layout !== G.MEMORY_GROUP_LAYOUT
         || metadata.threadAttach !== 2 || metadata.cooperativeStop !== 3 || metadata.executionBarrier !== 1
-        || metadata.orderedWaitQueue !== 2 || metadata.accessProfile !== 'outlined'
+        || metadata.orderedWaitQueue !== 2 || metadata.kernelGrowth !== G.MEMORY_GROUP_GROWTH_VERSION || metadata.accessProfile !== 'outlined'
         || !Number.isSafeInteger(metadata.initialPages) || (metadata.initialPages as number) < 0
         || (metadata.initialPages as number) > this.source.byteLength / G.MEMORY_GROUP_PAGE_BYTES
         || !Number.isSafeInteger(metadata.maximumPages) || (metadata.maximumPages as number) > 65536
@@ -102,13 +102,21 @@ export class GroupedWorkerRuntime {
     const memories = wasmModuleImports(module).filter(entry => entry.kind === 'memory');
     if (memories.length !== 1 || memories[0]!.module !== G.MEMORY_GROUP_MODULE
         || memories[0]!.name !== G.MEMORY_GROUP_IMPORT) return fail('Grouped program must import only its versioned physical memory');
+    const growth = wasmModuleImports(module).filter(entry => entry.module === G.MEMORY_GROUP_GROWTH_MODULE);
+    if (growth.length !== 1 || growth[0]!.name !== G.MEMORY_GROUP_GROWTH_IMPORT || growth[0]!.kind !== 'function') {
+      return fail('Grouped program must request kernel-owned private growth');
+    }
     assertDeferredGroupedStart(programBytes);
     this.validatedModule = module;
   }
-  imports(imports: WebAssembly.Imports): WebAssembly.Imports {
+  imports(imports: WebAssembly.Imports, channelOffset: number): WebAssembly.Imports {
     if (!this.validatedModule) return fail('Grouped imports require validated program metadata');
-    // This is the final outer guard, after exception normalization/import routing.
-    const guarded = this.guard.wrap(imports);
+    const channel = new WorkerChannelIPC(this.source, channelOffset, this.wait32);
+    // Guard the SDK request too: a stop while blocked must escape guest
+    // handlers before any source continuation can touch the old address space.
+    const guarded = this.guard.wrap({ ...imports,
+      [G.MEMORY_GROUP_GROWTH_MODULE]: { [G.MEMORY_GROUP_GROWTH_IMPORT]: (delta: number) => channel.growPrivate(delta) },
+    });
     if (guarded.env) delete (guarded.env as Record<string, unknown>).memory;
     guarded[G.MEMORY_GROUP_MODULE] = { [G.MEMORY_GROUP_IMPORT]: this.memory };
     return guarded;

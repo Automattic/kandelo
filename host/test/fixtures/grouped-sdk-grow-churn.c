@@ -36,8 +36,8 @@ int main(void) {
     }
     while (__atomic_load_n(&barrier[0], __ATOMIC_SEQ_CST) != 3) sched_yield();
     __atomic_store_n(&barrier[1], 1, __ATOMIC_SEQ_CST);
-    // mmap uses the kernel allocator while child memory.grow uses the SDK
-    // helper. All reuse and retirement goes through real kernel operations.
+    // mmap and the grouped SDK memory.grow request use the same kernel frame
+    // owner. All reuse and retirement goes through real kernel operations.
     for (int cycle = 0; cycle < 512; cycle++) {
         volatile uint32_t *words = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         CHECK(words != MAP_FAILED);

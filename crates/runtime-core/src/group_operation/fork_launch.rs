@@ -686,6 +686,52 @@ mod tests {
         }
         call
     }
+    #[test]
+    fn grouped_completion_growth_waits_for_kernel_permission_and_allocates_once() {
+        use crate::group_completion::Effect as F;
+        use wasm_posix_shared::{channel as CH, program_extensions::memory_group_v3 as G};
+        let mut f = clone_fixture();
+        let channel = f.process.table.group_task_channel(f.parent).unwrap();
+        f.process.table.bind_group_completion_channel(f.parent, channel).unwrap();
+        let (store, admission) = f.process.table.memory_groups().storage_owner(f.parent).unwrap();
+        let descriptor = store.descriptor(admission).unwrap();
+        let old = f.host.group_memory_atomic_load(f.resource, descriptor.root).unwrap();
+        for (offset, value) in [(CH::STATUS_OFFSET, wasm_posix_shared::ChannelStatus::Pending as u32),
+            (CH::SYSCALL_OFFSET, wasm_posix_shared::extension_requests::MEMORY_GROUP_GROW_V1),
+            (CH::REQUEST_FLAGS_OFFSET, 0), (CH::ARGS_OFFSET, 2), (CH::ARGS_OFFSET + 4, 0)] {
+            clone_word(&mut f, channel + offset as u32, Some(value));
+        }
+        let call = f.process.table.capture_group_channel_request(f.parent, &mut f.host).unwrap();
+        f.process.table.get_mut(f.parent.pid).unwrap().state = crate::process::ProcessState::Stopped;
+        assert!(matches!(f.process.table.dispatch_group_channel_request(f.parent, call.token, &mut f.host).unwrap(), F::WaitStopped));
+        assert_eq!(f.host.group_memory_atomic_load(f.resource, descriptor.root).unwrap(), old);
+        f.process.table.get_mut(f.parent.pid).unwrap().state = crate::process::ProcessState::Running;
+        f.host.group_memory_atomic_store(f.resource, descriptor.root + G::ROOT_GROW_LOCK, 1).unwrap();
+        assert!(matches!(f.process.table.dispatch_group_channel_request(f.parent, call.token, &mut f.host).unwrap(), F::Retry { .. }));
+        assert_eq!(f.host.group_memory_atomic_load(f.resource, descriptor.root).unwrap(), old);
+        f.host.group_memory_atomic_store(f.resource, descriptor.root + G::ROOT_GROW_LOCK, 0).unwrap();
+        let process = f.process.table.get_mut(f.parent.pid).unwrap();
+        process.signals.set_action(10, crate::signal::SignalAction {
+            handler: crate::signal::SignalHandler::Handler(37), flags: 0, mask: 0,
+        }).unwrap();
+        assert!(process.raise_for_thread(f.parent.tid, 10));
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert_eq!(clone_word(&mut f, channel + CH::RETURN_OFFSET as u32, None), old);
+        assert_eq!(clone_word(&mut f, channel + CH::ERRNO_OFFSET as u32, None), 0);
+        assert_eq!(f.host.group_memory_atomic_load(f.resource, descriptor.root).unwrap(), old + 2);
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, call.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert_eq!(f.host.group_memory_atomic_load(f.resource, descriptor.root).unwrap(), old + 2);
+        f.process.table.acknowledge_group_channel_completion(f.parent, call.token).unwrap();
+        assert_eq!(completion_count(&mut f), 0);
+        assert!(f.process.table.get(f.parent.pid).unwrap().signal_pending_for(f.parent.tid, 10));
+        let ordinary = completion_capture(&mut f, wasm_posix_shared::Syscall::Read as u32, 0);
+        f.process.table.complete_group_channel_request(f.parent, ordinary.token, 0, 0).unwrap();
+        assert!(matches!(f.process.table.poll_group_channel_completion(f.parent, ordinary.token, &mut f.host).unwrap(), F::Published { .. }));
+        assert!(!f.process.table.get(f.parent.pid).unwrap().signal_pending_for(f.parent.tid, 10));
+        assert_eq!(clone_word(&mut f, channel + CH::SIG_SIGNUM as u32, None), 10);
+        f.process.table.acknowledge_group_channel_completion(f.parent, ordinary.token).unwrap();
+    }
+
     fn completion_count<H: HostIO>(f: &mut Fixture<H>) -> u32 {
         let (store, admission) = f.process.table.memory_groups().storage_owner(f.parent).unwrap();
         store.completion_count(admission).unwrap()

@@ -149,46 +149,21 @@ impl Storage {
                     .count()
             };
             mapping.allocated = IoBuffer::try_filled(fresh, 0)?;
-            // SDK memory.grow owns frames too. Capture its private PTEs before
-            // a mapping removes them, so their only custody cannot disappear
-            // with this transaction's undo table. Shared objects stay with
-            // their distinct page owner.
+            // Every private frame is already retained by the kernel allocator.
+            // A page table cannot mint custody by naming an unowned frame.
             let image = self.images.get(&key).unwrap();
-            let mut custody = [0u8; layout::MAXIMUM_PAGES as usize];
-            for page in image.payload.iter().copied() {
-                custody[page as usize] = 1;
-            }
+            let mut custody = [false; layout::MAXIMUM_PAGES as usize];
+            for page in image.payload.iter().copied() { custody[page as usize] = true; }
             for id in image.objects.keys() {
                 let object = self.objects.get(id).ok_or(Errno::EIO)?;
                 for at in 0..object.pages.byte_length() / PAGE as usize {
-                    custody[object.pages.page(at)? as usize] = 1;
+                    custody[object.pages.page(at)? as usize] = true;
                 }
             }
-            let mut observed = 0;
-            for entry in mapping.before.iter().copied() {
-                let page = entry >> 16;
-                if page != 0 && custody[page as usize] == 0 {
-                    custody[page as usize] = 2;
-                    observed += 1;
-                }
+            if mapping.before.iter().any(|entry| *entry >> 16 != 0 && !custody[(*entry >> 16) as usize]) {
+                return Err(Errno::EIO);
             }
-            // Commit cannot need new metadata after the PTEs are published.
-            self.images
-                .get_mut(&key)
-                .unwrap()
-                .payload
-                .try_reserve_exact(fresh + observed)?;
-            let image = self.images.get_mut(&key).unwrap();
-            for (page, state) in custody
-                .iter()
-                .copied()
-                .enumerate()
-                .take(self.maximum_pages as usize)
-            {
-                if state == 2 {
-                    image.payload.push(page as u32);
-                }
-            }
+            self.images.get_mut(&key).unwrap().payload.try_reserve_exact(fresh)?;
             Ok(())
         })();
         memory.atomic_store(root + layout::ROOT_GROW_LOCK, 0)?;
@@ -676,29 +651,15 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_page_created_by_sdk_growth_does_not_lose_its_kernel_custody() {
+    fn removing_a_kernel_grown_private_page_preserves_its_custody_until_reclamation() {
         let (_groups, mut storage, mut memory, admission) = running();
-        let root = storage.descriptor(admission).unwrap();
-        // Model the SDK's shared-bitmap reservation and PTE publication. It
-        // deliberately does not append to Rust's initial-image frame vector.
-        let grown = storage
-            .pool()
-            .unwrap()
-            .allocate_contiguous(&mut memory, 1)
-            .unwrap();
-        memory
-            .atomic_store(
-                root.root + layout::ROOT_HEADER_BYTES + 4 * 4,
-                grown.address() | 3,
-            )
-            .unwrap();
-        memory.atomic_store(root.root, 5).unwrap();
+        assert_eq!(storage.grow_private(&mut memory, admission, 1), Ok(2));
         let epoch = pause(&mut storage, &mut memory, admission);
         let change = description(
             admission,
             777,
             Effect::Unmap {
-                addr: 4 * PAGE as usize,
+                addr: 2 * PAGE as usize,
                 len: PAGE as usize,
             },
         );
