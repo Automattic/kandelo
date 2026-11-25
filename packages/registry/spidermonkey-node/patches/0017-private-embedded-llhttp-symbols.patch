@@ -1,0 +1,22 @@
+# Node embeds llhttp as a private static library. Kandelo's -rdynamic now
+# correctly exports default-visible executable symbols. Hide this target's
+# implementation symbols so the linker does not retain its unused standalone
+# Wasm embedding helpers, which expect eight external wasm_on_* callbacks.
+# Node instead supplies its own settings to llhttp_init; its original parser
+# and callbacks remain unchanged. This changes target visibility only, not
+# the SDK's export behavior, Node's registration lists or parser algorithms.
+# Review this setting when upstream llhttp separates its embedding helpers.
+--- a/deps/llhttp/llhttp.gyp
++++ b/deps/llhttp/llhttp.gyp
+@@ -11,6 +11,11 @@
+       'target_name': 'llhttp',
+       'type': 'static_library',
+       'include_dirs': [ '.', 'include' ],
++      'conditions': [
++        ['OS=="kandelo"', {
++          'cflags': [ '-fvisibility=hidden' ],
++        }],
++      ],
+       'direct_dependent_settings': {
+         'include_dirs': [ 'include' ],
+       },

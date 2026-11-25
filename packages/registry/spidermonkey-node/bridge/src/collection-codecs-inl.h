@@ -40,5 +40,14 @@ MaybeLocal<Value> Date::New(Local<Context> context,double milliseconds){
   JS::RootedObject object(frame.cx,JS::NewDateObject(frame.cx,JS::TimeClip(milliseconds)));
   if(!object)return {};JS::RootedValue value(frame.cx,JS::ObjectValue(*object));return frame.OwnValue(value);
 }
+double Date::ValueOf()const{
+  auto& frame=*Frame::current;frame.state->AssertForeground();
+  JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,cell().value));
+  CHECK(object&&object->is<js::DateObject>());
+  // V8 reads the internal date value without invoking user JavaScript. Use
+  // the same pinned engine slot as serialization, preserving invalid-date NaN
+  // and existing exceptions without consulting a replaceable valueOf method.
+  return object->as<js::DateObject>().UTCTime().toNumber();
+}
 }
 #endif

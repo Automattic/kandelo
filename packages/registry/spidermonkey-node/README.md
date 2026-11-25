@@ -38,6 +38,14 @@ symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
 implementation and qualification remain required later compatibility work.
 There is no automatic second executable or user profile selector.
 
+Node's embedded llhttp static target uses hidden symbol visibility. Its native
+parser remains unchanged and uses Node's original callback settings. The
+separate standalone Wasm embedding helpers are not executable exports: exporting
+them would require host callbacks that Node's native parser does not use.
+`Date::ValueOf` reads SpiderMonkey's internal date slot through the bridge,
+using the same pinned private `DateObject` interface as serialization; it never
+calls an overridable JavaScript method. Check that interface on engine upgrades.
+
 [Maintained npm regressions](../node-browser-bundle/test/README.md) run offline
 and controlled-registry installation, lifecycle execution, CJS/ESM package use,
 lockfiles, cache-only installation, executable links and process/thread/session
