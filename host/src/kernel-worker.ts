@@ -1814,6 +1814,8 @@ interface GroupedExecPreparationState {
   reservation?: GroupedExecReservation;
   handle?: PreparedGroupReplica;
   released?: boolean;
+  /** One-shot platform request issued by Rust inside the exec commit entry. */
+  committedHandoff?: GroupExecControlEffect;
 }
 
 interface ExecCallerIdentity {
@@ -9118,7 +9120,10 @@ export class CentralizedKernelWorker {
     }
     const previous = state.registration.grouped!.handle;
     const protocol = MEMORY_GROUP_PROTOCOL, commands = protocol.exec_control.commands, effects = protocol.exec_control.effects;
-    let reply = this.#execControlCall(state, commands.handoff);
+    const initial = state.committedHandoff;
+    if (!initial) throw new MemoryGroupProtocolFault('Missing committed exec platform handoff');
+    state.committedHandoff = undefined;
+    let reply: GroupExecControlEffect = initial;
     let secureExec = false, launch: GroupReplicaLaunch | undefined;
     while (reply.effect !== protocol.driver.effects.complete) {
       if (reply.progress) {
@@ -12202,6 +12207,12 @@ export class CentralizedKernelWorker {
                 if (prepared.registration === registration && prepared.target === target) {
                   this.#preparedGroupExecReservations.delete(prepared);
                   this.#committedGroupExecs.set(registration.pid, prepared);
+                  // Commit's detached observers can queue unrelated ingress.
+                  // Retain Rust's first request here so old-worker detachment
+                  // still starts on the commit stack without a second entry.
+                  prepared.committedHandoff = this.#execControlWithinKernelEntry(
+                    prepared, MEMORY_GROUP_PROTOCOL.exec_control.commands.handoff, entry,
+                  );
                 }
               }
               const retirementMemory = registration.memory, retirementSource = registration.source;
