@@ -79,18 +79,110 @@ host and give no estimate for the lookup-only SDL2 binaries.
 The synthetic comparison gives a bounded measurement of the protocol.
 Package timing and link time at clang and rustc scale remain unmeasured.
 
-## ScummVM and remaining validation
+## ScummVM engine comparison
 
-Read-only inspection of one existing ABI-56 ScummVM cache generation
-(`571128ab509838d1` prefix) identified 785 imports in `libscumm.so`
-and 185 in `libdreamweb.so`. The former includes 83 `GOT.func`,
-43 `GOT.mem`, and 649 `env` function imports. Every application
-import checked in the two engines has a name in that generation's
-executable export section. That result establishes the need for both
-GOT binding kinds and identifies a feasible subset for the next real
-prototype pair. The cached engine files predate the prototype side
-symbol index. The executable and engines need matching relinks for
-a real A/B.
+The two arms use the verified ScummVM 2026.3.0 source and the Kandelo
+package configuration with one runtime engine, SCUMM including the
+v7/v8 subengine. They share the application objects, dependencies,
+Clang 23.1.3, ABI-56 kernel, and host checkout at `515c596b6`.
+The legacy arm uses the SDK loader from `develop@af25e6e57300` and
+stock wasm-ld. The guest arm links the prototype libc object, the
+versioned mapping extension, and the patched wasm-ld for both images.
+The executable uses the package's `--export-all` policy. Both main
+images run the facts instrumenter with the conservative side-entry
+policy. The pinned develop base keeps the compiler and package inputs
+matched as develop advances.
+
+A shared scratch probe runs through ScummVM's plugin discovery and its
+SDL provider with a minimal kernel-owned VFS containing `libscumm.so`
+and the plugin path configuration. The probe skips video initialization
+because the packaged SDL2 has no dummy video driver. It loads and runs
+the actual engine's plugin initialization and checks that its
+`MetaEngine::getName()` returns `scumm`. It measures
+`SDL_LoadObject`, 20,000 repeated `SDL_LoadFunction` calls on the
+already loaded `PLUGIN_getObject` symbol, and the time to fork, call
+the engine in the child, and reap it. Every repeated lookup must return
+the first pointer. The lookup loop is a microbenchmark for the
+app's symbol and path, with more calls than a normal engine load.
+
+The timings are guest monotonic wall time on an Apple M3 Max running
+macOS 27.2.1, Node 24.22.1, and Chromium 153.0.8010.12. Each host
+gets one warmup per arm and six alternating pairs, each in a fresh
+guest. Node uses sparse fork copying. Time in the host's VFS build and
+the main executable startup occurs before the clocked operations.
+
+All 24 measured runs opened and executed the engine and verified that a
+forked child could call it. The six-pair medians are in milliseconds.
+
+| Operation | Node legacy | Node guest | Chromium legacy | Chromium guest |
+| --- | ---: | ---: | ---: | ---: |
+| Load the SCUMM engine | 422.15 | 432.23 | 400.92 | 413.58 |
+| Look up `PLUGIN_getObject` 20,000 times | 12,442.35 | 2.83 | 8,242.43 | 2.58 |
+| Fork, call the engine in the child, and reap | 726.94 | 730.02 | 594.26 | 597.76 |
+
+Guest open medians were 2.4% higher in Node and 3.2% higher in Chromium.
+The open ranges overlapped on each host. The ranges were 394–586 ms
+for legacy and 407–565 ms for guest in Node, and 390–418 ms for legacy
+and 401–459 ms for guest in Chromium. Fork medians were within 0.6%,
+with overlapping ranges. Legacy `DynamicLinker.symbolAddress` scans
+the function table on every call. The guest resolves a handle lookup
+from the already loaded engine's sorted symbol index. A typical
+ScummVM engine load does a handful of symbol lookups.
+
+### Guest open profile
+
+A separate run with timers in libc and the adapter used the same
+instrumented engine bytes. Five measured opens per host followed a
+warmup. Medians are in milliseconds.
+
+| Phase | Node | Chromium |
+| --- | ---: | ---: |
+| Open and read the file | 14.85 | 8.76 |
+| Inspect, compile, and write batch metadata | 16.94 | 7.59 |
+| Resolve 747 guest bindings and retain the index | 4.22 | 1.83 |
+| Map and activate the module | 516.12 | 423.63 |
+| Engine instance construction, included in map and activate | 8.44 | 3.52 |
+
+Map and activate includes adapter preparation, engine instance
+construction, initializer calls, and recording the mapped engine for
+fork. That phase accounted for 94–96% of profiled open time. Resolving the batch and constructing the engine instance each
+took single-digit milliseconds. The profile does not attribute the
+difference between the two loaders to an individual phase.
+
+### Image size and export selection
+
+| Artifact | Legacy bytes | Guest bytes | Growth |
+| --- | ---: | ---: | ---: |
+| Linked executable | 95,533,011 | 96,924,415 | 1.5% |
+| Linked engine | 3,779,678 | 4,202,989 | 11.2% |
+| Instrumented executable | 27,343,513 | 28,729,129 | 5.1% |
+| Instrumented engine | 5,880,212 | 6,303,523 | 7.2% |
+
+Both main images carry fork flags `0x06`, including the conservative
+side-loading role. The instrumented engine has 785 imports and the
+guest batch resolves 747 application bindings, including 83 GOT
+function-pointer and 43 GOT data bindings. Those bindings use 733
+distinct names and all resolve in the executable index. The same index
+encoding would take 40,243 bytes for those names alone. That estimate
+excludes any additional part of the executable's public lookup scope
+and the exports needed by other engines. An earlier read-only inspection
+found 185 imports in the cached DreamWeb engine.
+
+The executable's full index takes 1,359,696 bytes for 24,176 entries,
+including 972,864 bytes of strings. The side index takes 417,391 bytes
+for 6,706 entries, including 310,079 bytes of strings. Those two
+indexes account for most of the measured growth.
+
+### SDK relink time
+
+Six warm relinks per arm used the same retained application objects.
+The SDK link and make overhead together had a median of 1.637 s
+for the legacy executable and 1.596 s for the guest executable.
+The engine relink medians were 0.639 s and 0.646 s, respectively.
+Both sets of ranges overlapped. These times exclude application
+compilation and fork instrumentation.
+
+## Remaining validation
 
 The prototype maps one distinct wasm32 module per process. Libc owns
 the scope and handles, and the existing archive still retains engine
@@ -100,9 +192,10 @@ dependency closure, side-originated loading, destructor handling,
 unmapping, and racing loader operations across pthreads remain open.
 The in-guest wasm-ld package was also outside this build.
 
-The real-app comparison is outstanding for ScummVM, CPython, waybar,
-gtk3_smoke, and the SDL2 outputs. The clang and rustc link timings need
-matching relocatable link inputs. The conformance, browser-memory,
-and full Node and browser benchmark suites were outside this first
-milestone. No canonical image was built. The package comparison and
-the shipping ABI decision remain gates before full implementation.
+The real-app comparison is outstanding for CPython, waybar, gtk3_smoke,
+and the SDL2 outputs. ScummVM gameplay and other engines remain
+outside the headless engine comparison. The clang and rustc link
+timings need matching relocatable link inputs. The conformance,
+browser-memory, full Node and browser benchmark suites, and canonical
+image integration remain pending. The package comparisons and the
+shipping ABI decision remain gates before full implementation.
