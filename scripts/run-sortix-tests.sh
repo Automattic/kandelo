@@ -30,13 +30,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # compile against THAT checkout's sysroot while the prerequisite check below
 # validated this one. Pin the cwd so both agree.
 cd "$REPO_ROOT"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
 # Upstream has case-distinct test filenames. A caller on a case-insensitive
 # filesystem can supply a pristine checkout on a case-sensitive volume.
 OS_TEST="${KANDELO_SORTIX_SOURCE_ROOT:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 BUILD_DIR="$OS_TEST/build"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # Expected failures, their recorded reasons, and how expected output is
 # found and compared are shared with the browser runner.
@@ -510,7 +510,7 @@ run_include_suite() {
     echo "  Compiling in parallel ($(nproc 2>/dev/null || sysctl -n hw.logicalcpu) jobs)..."
 
     # Export variables needed by build_include_one
-    export OS_TEST WASM32_CC BUILD_DIR SYSROOT
+    export OS_TEST WASM32_CC BUILD_DIR
     export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
     export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
 
@@ -582,6 +582,17 @@ run_include_suite() {
             is_xfail=true
         fi
 
+        local missing
+        case "$outcome" in
+            good|previous_posix|extension) ;;
+            *)
+                if missing=$(conformance_missing_build_input); then
+                    conformance_record_setup_error "include/$test_name" "$missing"
+                    continue
+                fi
+                ;;
+        esac
+
         case "$outcome" in
         good|previous_posix|extension)
             if $is_xfail; then
@@ -615,7 +626,7 @@ run_include_suite() {
 # Run a single runtime test and write result to RESULT_DIR.
 # Designed to be called from xargs for parallel execution.
 # Writes: <result_dir>/<suite>/<test_name>.result with format:
-#   Line 1: STATUS (PASS, FAIL, XFAIL, XPASS, BUILD, TIME)
+#   Line 1: STATUS (PASS, FAIL, XFAIL, XPASS, BUILD, SETUP, TIME)
 #   Line 2+: output (for FAIL/BUILD diagnostics)
 _run_runtime_test_worker() {
     local suite="$1"
@@ -637,6 +648,11 @@ _run_runtime_test_worker() {
 
     # Check that the wasm file exists (pre-built)
     if [ ! -f "$wasm" ]; then
+        local missing
+        if missing=$(conformance_missing_build_input); then
+            printf 'SETUP\n%s\n' "$missing" > "$result_dir/${test_name//\//__}.result"
+            return
+        fi
         if $is_xfail; then
             # XFAIL results record HOW the test failed (line 2) and its output
             # (line 3 on), because the reason check runs in the parent, where
@@ -667,7 +683,8 @@ _run_runtime_test_worker() {
     local result_base="${test_name//\//__}"
     local guest_output_file="$result_dir/${result_base}.guest-output"
     local host_diagnostic_file="$result_dir/${result_base}.host-diagnostics"
-    rm -f "$guest_output_file" "$host_diagnostic_file"
+    local setup_file="$result_dir/${result_base}.setup-error"
+    rm -f "$guest_output_file" "$host_diagnostic_file" "$setup_file"
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
@@ -685,6 +702,7 @@ _run_runtime_test_worker() {
         KERNEL_CWD= \
         KANDELO_RUNNER_NETWORK=offline-egress \
         KANDELO_GUEST_OUTPUT_FILE="$guest_output_file" \
+        KANDELO_RUNNER_SETUP_ERROR_FILE="$setup_file" \
         KANDELO_RUNNER_FIXTURE_ROOT="${SORTIX_FIXTURE_ROOT:?}" \
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
@@ -699,6 +717,10 @@ _run_runtime_test_worker() {
             </dev/null >"$host_diagnostic_file" 2>&1)
     rc=$?
     set -e
+    if [ -s "$setup_file" ]; then
+        { echo "SETUP"; cat "$setup_file"; } > "$result_dir/${result_base}.result"
+        return
+    fi
     output=$(sortix_compose_output "$guest_output_file" "$rc")
 
     # For suites with .expect files, compare output against the candidates
@@ -902,6 +924,10 @@ _collect_result() {
             RESULTS+=("XPASS ${suite}/${test_name}")
             XPASS=$((XPASS + 1))
             ;;
+        SETUP)
+            conformance_record_setup_error "${suite}/${test_name}" "$(sed -n '2,$p' "$result_file")"
+            return
+            ;;
         BUILD)
             echo "BUILD ${suite}/${test_name}"
             _print_result_output "$result_file"
@@ -982,7 +1008,7 @@ run_suite() {
 
         echo "  Building $count tests ($PARALLEL parallel)..."
         # Build in parallel using a wrapper that reconstructs arrays
-        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT
+        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL
         export WASM32_CC FORK_INSTRUMENT
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
@@ -1033,7 +1059,9 @@ run_suite() {
         echo "  Running $count tests ($PARALLEL parallel)..."
 
         # Export everything needed by the worker function
-        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT TEST_TIMEOUT XFAIL_TIMEOUT
+        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL TEST_TIMEOUT XFAIL_TIMEOUT
+        export CONFORMANCE_SOURCE_FILE CONFORMANCE_SOURCE_REPAIR
+        export -f conformance_missing_build_input
         export -f _run_runtime_test_worker _run_runtime_test_with_private_fixture
         export -f _check_xfail_serialized run_with_timeout not_applicable_reason xfail_expected_reason
         export -f sortix_expect_dirs sortix_has_expect sortix_compose_output sortix_output_matches
@@ -1100,36 +1128,28 @@ if [ ${#SUITES[@]} -eq 0 ]; then
 fi
 export PERSISTENT_MODE PERSISTENT_REBOOT_MODE
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
-if [ ! -f "$KERNEL_WASM" ]; then
-    echo "Error: kernel wasm not found. Run build.sh first." >&2
-    exit 1
-fi
-if [ ! -d "$OS_TEST" ]; then
-    echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
-    exit 1
-fi
-RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
-if [ -z "$RUST_HOST_TARGET" ]; then
-    echo "Error: could not determine the Rust host target." >&2
-    exit 1
-fi
-cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
-PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
-if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
-    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
-    exit 1
-fi
-export PROGRAM_INDEX_CHECKER
+mode=compile-only
+for suite in "${SUITES[@]}"; do
+    if [ "$suite" != include ]; then mode=runtime; fi
+done
+conformance_preflight sortix node "$mode" || exit 1
+for suite in "${SUITES[@]}"; do
+    if [ -z "$("discover_${suite}")" ]; then
+        conformance_setup_error "no Sortix tests discovered for $suite under $OS_TEST. Run $CONFORMANCE_SOURCE_REPAIR."
+        exit 1
+    fi
+done
 abi_contract_stamp_prepare || exit 1
+PROGRAM_INDEX_CHECKER="$KANDELO_ABI_STAMP_XTASK"
+export PROGRAM_INDEX_CHECKER
 # shellcheck source=scripts/conformance-program-index.sh
 source "$REPO_ROOT/scripts/conformance-program-index.sh"
-conformance_program_index_prepare || exit 1
+if [ "$mode" = runtime ]; then
+    conformance_program_index_prepare || exit 1
+    conformance_check_node_rootfs || exit 1
+fi
 
+SETUP_ERROR_COUNT=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -1165,11 +1185,12 @@ echo "XPASS:   $XPASS"
 echo "BUILD:   $BUILD_FAIL"
 echo "SKIP:    $SKIP"
 echo "TIMEOUT: $TIMEOUT_COUNT"
+echo "SETUP:   $SETUP_ERROR_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
 
 # Group non-PASS results
-for status in FAIL XPASS BUILD TIME; do
+for status in FAIL XPASS BUILD SETUP TIME; do
     count=0
     for r in "${RESULTS[@]}"; do
         [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -1205,12 +1226,13 @@ if $REPORT_MODE; then
         echo "| XFAIL | $XFAIL |"
         echo "| XPASS | $XPASS |"
         echo "| BUILD | $BUILD_FAIL |"
+        echo "| SETUP | $SETUP_ERROR_COUNT |"
         echo "| SKIP | $SKIP |"
         echo "| TIMEOUT | $TIMEOUT_COUNT |"
         echo "| **TOTAL** | **$TOTAL** |"
         echo ""
 
-        for status in FAIL BUILD TIME; do
+        for status in FAIL BUILD SETUP TIME; do
             count=0
             for r in "${RESULTS[@]}"; do
                 [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -1219,6 +1241,7 @@ if $REPORT_MODE; then
                 case "$status" in
                     FAIL) echo "## Unexpected Failures ($count)" ;;
                     BUILD) echo "## Build Failures ($count)" ;;
+                    SETUP) echo "## Setup Errors ($count)" ;;
                     TIME) echo "## Timeouts ($count)" ;;
                 esac
                 echo ""
@@ -1244,6 +1267,6 @@ if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
     echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
     exit 1
 fi
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
+if [ "$SETUP_ERROR_COUNT" -gt 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

@@ -20,7 +20,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # validated this one. Pin the cwd so both agree. (The browser runner below
 # also needs this cwd; it used to set it just before the npx call.)
 cd "$REPO_ROOT"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
 # Match the Node runner's source authority: case-distinct upstream files need
 # a faithful checkout, while the SDK/kernel still belong to this worktree.
 OS_TEST="${KANDELO_SORTIX_SOURCE_ROOT:-$REPO_ROOT/tests/sortix/os-test}"
@@ -31,7 +32,6 @@ source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
 # shellcheck source=scripts/browser-runner-accounting.sh
 source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
 BUILD_DIR="$OS_TEST/build"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # Expected failures, their recorded reasons, and how expected output is
 # found and compared are shared with the Node.js runner: both boot the same
@@ -309,7 +309,7 @@ run_include_suite() {
     JOBS=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 
     # Export for parallel compilation
-    export OS_TEST WASM32_CC BUILD_DIR SYSROOT
+    export OS_TEST WASM32_CC BUILD_DIR
     export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
     export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
 
@@ -383,6 +383,17 @@ run_include_suite() {
         if [ ${#xfail_list[@]} -gt 0 ] && is_expected_fail "$test_name" "${xfail_list[@]}"; then
             is_xfail=true
         fi
+
+        local missing
+        case "$outcome" in
+            good|previous_posix|extension) ;;
+            *)
+                if missing=$(conformance_missing_build_input); then
+                    conformance_record_setup_error "include/$test_name" "$missing"
+                    continue
+                fi
+                ;;
+        esac
 
         case "$outcome" in
         good|previous_posix|extension)
@@ -467,6 +478,11 @@ run_runtime_suite() {
             # Check if build failure is expected
             local is_xfail=false
             _get_xfail_list "$suite"
+            local missing
+            if missing=$(conformance_missing_build_input); then
+                conformance_record_setup_error "$suite/$test_name" "$missing"
+                continue
+            fi
             if [ ${#_XFAIL_LIST[@]} -gt 0 ] && is_expected_fail "$test_name" "${_XFAIL_LIST[@]}"; then
                 is_xfail=true
             fi
@@ -668,21 +684,24 @@ if [ ${#SUITES[@]} -eq 0 ]; then
     fi
 fi
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
-if [ ! -f "$KERNEL_WASM" ]; then
-    echo "Error: kernel wasm not found. Run build.sh first." >&2
-    exit 1
-fi
-if [ ! -d "$OS_TEST" ]; then
-    echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
-    exit 1
-fi
+mode=compile-only
+for suite in "${SUITES[@]}"; do
+    if [ "$suite" != include ]; then mode=runtime; fi
+done
+conformance_preflight sortix browser "$mode" || exit 1
+for suite in "${SUITES[@]}"; do
+    if [ -z "$("discover_${suite}")" ]; then
+        conformance_setup_error "no Sortix tests discovered for $suite under $OS_TEST. Run $CONFORMANCE_SOURCE_REPAIR."
+        exit 1
+    fi
+done
 abi_contract_stamp_prepare || exit 1
+if [ "$mode" = runtime ]; then
+    WASM_POSIX_XTASK_BIN="${WASM_POSIX_XTASK_BIN:-$KANDELO_ABI_STAMP_XTASK}" conformance_check_browser_artifacts || exit 1
+    export WASM_POSIX_XTASK_BIN="${WASM_POSIX_XTASK_BIN:-$KANDELO_ABI_STAMP_XTASK}"
+fi
 
+SETUP_ERROR_COUNT=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -726,12 +745,13 @@ echo "BUILD:   $BUILD_FAIL"
 echo "SKIP:    $SKIP"
 echo "ERROR:   $ERROR_COUNT"
 echo "TIMEOUT: $TIMEOUT_COUNT"
+echo "SETUP:   $SETUP_ERROR_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
 
 # Group non-PASS results
 if [ ${#RESULTS[@]} -gt 0 ]; then
-    for status in FAIL XPASS BUILD ERROR TIME; do
+    for status in FAIL XPASS BUILD ERROR SETUP TIME; do
         count=0
         for r in "${RESULTS[@]}"; do
             [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -753,7 +773,7 @@ if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
     echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
     exit 1
 fi
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] \
+if [ "$SETUP_ERROR_COUNT" -gt 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] \
     || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

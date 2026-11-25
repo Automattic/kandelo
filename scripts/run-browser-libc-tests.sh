@@ -19,10 +19,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # validated this one. Pin the cwd so both agree. (The browser runner below
 # also needs this cwd; it used to set it just before the npx call.)
 cd "$REPO_ROOT"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
 LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
 BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures (same as Node.js version) ──────────────────
 
@@ -140,9 +140,9 @@ source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
 
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
-    mv "$wasm.instr" "$wasm"
-    abi_contract_stamp "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" &&
+        mv "$wasm.instr" "$wasm" &&
+        abi_contract_stamp "$wasm"
 }
 
 TEST_TIMEOUT=30000  # ms (for browser runner)
@@ -182,7 +182,7 @@ build_functional() {
 
     "$WASM32_CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -194,7 +194,7 @@ build_regression() {
 
     "$WASM32_CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -209,7 +209,7 @@ build_math() {
         "$src" \
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -234,17 +234,20 @@ if [ ${#CATEGORIES[@]} -eq 0 ]; then
     CATEGORIES=(functional regression math)
 fi
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
-if [ ! -f "$KERNEL_WASM" ]; then
-    echo "Error: kernel wasm not found. Run build.sh first." >&2
-    exit 1
+conformance_preflight libc browser || exit 1
+if [ ${#SPECIFIC_TESTS[@]} -eq 0 ]; then
+    for category in "${CATEGORIES[@]}"; do
+        if [ -z "$("discover_${category}")" ]; then
+            conformance_setup_error "no libc-test tests were discovered for $category under $LIBC_TEST. Run $CONFORMANCE_SOURCE_REPAIR."
+            exit 1
+        fi
+    done
 fi
 abi_contract_stamp_prepare || exit 1
+WASM_POSIX_XTASK_BIN="${WASM_POSIX_XTASK_BIN:-$KANDELO_ABI_STAMP_XTASK}" conformance_check_browser_artifacts || exit 1
+export WASM_POSIX_XTASK_BIN="${WASM_POSIX_XTASK_BIN:-$KANDELO_ABI_STAMP_XTASK}"
 
+SETUP_ERROR_COUNT=0
 PASS=0
 FAIL=0
 BUILD_FAIL=0
@@ -279,6 +282,10 @@ for category in "${CATEGORIES[@]}"; do
 
         # Build
         if ! "build_${category}" "$test_name" 2>/dev/null; then
+            if missing=$(conformance_missing_build_input); then
+                conformance_record_setup_error "${category}/${test_name}" "$missing"
+                continue
+            fi
             echo "BUILD ${category}/${test_name}"
             RESULTS+=("BUILD ${category}/${test_name}")
             BUILD_FAIL=$((BUILD_FAIL + 1))
@@ -418,12 +425,13 @@ echo "XPASS:   $XPASS"
 echo "BUILD:   $BUILD_FAIL"
 echo "ERROR:   $ERROR_COUNT"
 echo "TIMEOUT: $TIMEOUT_COUNT"
+echo "SETUP:   $SETUP_ERROR_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
 
 # Group results by status
 if [ ${#RESULTS[@]} -gt 0 ]; then
-    for status in PASS XPASS FAIL XFAIL BUILD ERROR TIME; do
+    for status in PASS XPASS FAIL XFAIL BUILD ERROR SETUP TIME; do
         count=0
         for r in "${RESULTS[@]}"; do
             [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -438,7 +446,7 @@ if [ ${#RESULTS[@]} -gt 0 ]; then
     done
 fi
 
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
+if [ "$SETUP_ERROR_COUNT" -gt 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi
 exit 0

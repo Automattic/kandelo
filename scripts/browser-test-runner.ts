@@ -144,14 +144,23 @@ function startViteOnPort(port: number): Promise<ChildProcess> {
   });
 }
 
+class BrowserFixtureSetupError extends Error {}
+
 async function waitForTestRunner(page: Page, timeout = 30_000): Promise<void> {
+  const paths = process.env.KANDELO_BROWSER_CONFORMANCE_ARTIFACTS?.split("\n") ?? [];
+  const missing = paths.filter((path) => !existsSync(path));
+  if (missing.length > 0) {
+    throw new BrowserFixtureSetupError("missing " + missing.join(", "));
+  }
   if (vitePort === undefined) throw new Error("Vite server is not running");
-  await page.goto(`http://${VITE_HOST}:${vitePort}/pages/test-runner/`);
+  await page.goto(`http://${VITE_HOST}:${vitePort}/pages/test-runner/?conformance=1`);
   await page.waitForFunction(
-    () => (window as any).__testRunnerReady === true,
+    () => (window as any).__testRunnerReady === true || (window as any).__testRunnerSetupError,
     {},
     { timeout },
   );
+  const setupError = await page.evaluate(() => (window as any).__testRunnerSetupError);
+  if (setupError) throw new BrowserFixtureSetupError(setupError);
 }
 
 interface DataFileSpec {
@@ -404,7 +413,8 @@ async function main() {
   async function safeWaitForTestRunner(page: Page): Promise<void> {
     try {
       await waitForTestRunner(page);
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserFixtureSetupError) throw error;
       // Vite may have crashed — restart it and retry
       await ensureVite();
       await waitForTestRunner(page);
@@ -550,6 +560,11 @@ async function main() {
 }
 
 main().catch((err) => {
+  if (err instanceof BrowserFixtureSetupError) {
+    console.error("SETUP ERROR: " + err.message +
+      "\nRun ./run.sh setup --all and scripts/dev-shell.sh bash scripts/build-rootfs.sh.");
+    process.exit(2);
+  }
   console.error(err);
   process.exit(1);
 });
