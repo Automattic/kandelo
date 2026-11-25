@@ -139,6 +139,16 @@ the original target-group API.
 Return-flow queries start from each function's small visited-slot set so the
 planner does not rescan all module call sites for every function.
 
+Conversion and slot-origin reachability use packed graphs within the resident
+metadata allowance. The solver visits strongly connected components in
+dependency order and shares equal sets. Cast reach is recorded once per
+distinct type set, and convergence compares the per-function group IDs and
+the start-name set. Slot origins are propagated only to components that can
+reach a read. The read-back queries share each read slot's origin set, and
+slot aliases are interned once per type and parameter. If the graph or
+unique sets exceed the resident allowance, the same reachability relations
+are computed by file-backed recursive SQL.
+
 Default storage budgets are a 32 MiB page-cache target for each main/temp
 schema, 1 MiB name cache,
 4 MiB shared target-list cache,

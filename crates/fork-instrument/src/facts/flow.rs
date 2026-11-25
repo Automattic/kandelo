@@ -1,17 +1,18 @@
-//! External-memory port of targets.rs's conversion/slot-flow rules. Recursive
-//! sets and graph edges live in the private database, not Rust HashSet graphs.
+//! Cast and slot-flow fixed points over interned facts. Packed reachability
+//! shares sets across cycles and spills to indexed SQL at the resident limit.
 
-use super::storage::FactsStore;
+use super::{reach::Reach, storage::FactsStore};
 use anyhow::{Context, Result, ensure};
 use rusqlite::params;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 // Both snapshots have non-null primary keys (flow.sql). Probe those keys in
 // both directions instead of materializing EXCEPT's temporary result trees.
 const CONVERSIONS_CHANGED: &str = "SELECT
-    EXISTS(SELECT 1 FROM conversion_reach n WHERE NOT EXISTS(
-        SELECT 1 FROM old_conversion_reach o WHERE o.name=n.name AND o.ty=n.ty))
-    OR EXISTS(SELECT 1 FROM old_conversion_reach o WHERE NOT EXISTS(
-        SELECT 1 FROM conversion_reach n WHERE n.name=o.name AND n.ty=o.ty))
+    EXISTS(SELECT 1 FROM function_group n WHERE NOT EXISTS(
+        SELECT 1 FROM old_function_group o WHERE o.name=n.name AND o.group_id=n.group_id))
+    OR EXISTS(SELECT 1 FROM old_function_group o WHERE NOT EXISTS(
+        SELECT 1 FROM function_group n WHERE n.name=o.name AND n.group_id=o.group_id))
     OR EXISTS(SELECT 1 FROM conversion_name n WHERE NOT EXISTS(
         SELECT 1 FROM old_conversion_name o WHERE o.name=n.name))
     OR EXISTS(SELECT 1 FROM old_conversion_name o WHERE NOT EXISTS(
@@ -19,7 +20,7 @@ const CONVERSIONS_CHANGED: &str = "SELECT
 
 impl FactsStore {
     /// Preserve the oracle's pass-through fixed point and its four slot/type
-    /// feedback rounds. All intermediate relations remain file backed.
+    /// feedback rounds. The database retains the derived relations.
     pub fn solve_conversions(&self, effective_types: bool, slots: bool) -> Result<()> {
         let progress = crate::progress::Progress::new("conversion facts");
         self.conversions_ready.set(false);
@@ -38,13 +39,14 @@ impl FactsStore {
                 self.link_shapes().context("linking slot shapes")?;
             }
             self.trace(&progress, "conversion reach");
-            self.conversions().context("solving conversion reach")?;
+            self.conversions(slots)
+                .context("solving conversion reach")?;
             if slots {
                 for round in 0..4 {
                     progress.note(format_args!("feedback round {}", round + 1));
                     self.db.execute_batch(
-                        "DELETE FROM old_conversion_reach; DELETE FROM old_conversion_name;
-                        INSERT INTO old_conversion_reach SELECT * FROM conversion_reach;
+                        "DELETE FROM old_function_group; DELETE FROM old_conversion_name;
+                        INSERT INTO old_function_group SELECT * FROM function_group;
                         INSERT INTO old_conversion_name SELECT * FROM conversion_name;",
                     )?;
                     self.trace(&progress, "slot origins");
@@ -53,7 +55,7 @@ impl FactsStore {
                     self.read_backs(effective_types)
                         .context("solving slot read backs")?;
                     self.trace(&progress, "conversion reach");
-                    self.conversions()
+                    self.conversions(true)
                         .context("solving conversion reach feedback")?;
                     let changed: bool = self.db.query_row(CONVERSIONS_CHANGED, [], |r| r.get(0))?;
                     if !changed {
@@ -185,8 +187,8 @@ impl FactsStore {
         Ok(())
     }
 
-    fn conversions(&self) -> Result<()> {
-        self.db.execute_batch("DELETE FROM conversion_name; DELETE FROM conversion_reach;
+    fn conversions(&self, slots: bool) -> Result<()> {
+        self.db.execute_batch("DELETE FROM conversion_name; DELETE FROM function_group;
             DELETE FROM conversion_edge; DELETE FROM conversion_seed;
             INSERT OR IGNORE INTO conversion_edge SELECT src,dst FROM cast_edge UNION SELECT src,dst FROM extra_cast;
             INSERT OR IGNORE INTO conversion_name
@@ -197,12 +199,119 @@ impl FactsStore {
             INSERT OR IGNORE INTO conversion_seed
               SELECT name,ty FROM cast_start UNION SELECT name,ty FROM extra_start
               UNION SELECT f.name,p.ty FROM record_function f JOIN record_pun p ON p.record=f.record
-              UNION SELECT o.name,o.ty FROM own_type o JOIN conversion_name n ON n.name=o.name;
-            WITH RECURSIVE reach(name,ty) AS (
+              UNION SELECT o.name,o.ty FROM own_type o JOIN conversion_name n ON n.name=o.name;")?;
+        if !slots {
+            return self.expand_conversions();
+        }
+        // Reverse the cast edges so each type gets the set it can reach.
+        // Combine the closures of each function's seed types. Identical
+        // seed closures (including types in the same cycle) share a group.
+        if let Some(reach) = Reach::solve(
+            self,
+            "SELECT src,dst FROM conversion_edge ORDER BY src,dst",
+            "SELECT ty FROM conversion_seed UNION SELECT src FROM conversion_edge
+             UNION SELECT dst FROM conversion_edge ORDER BY 1",
+            None,
+        )? {
+            let mut names = self
+                .db
+                .prepare("SELECT DISTINCT name FROM conversion_seed ORDER BY name")?;
+            let mut rows = names.query([])?;
+            let mut types = self
+                .db
+                .prepare("SELECT ty FROM conversion_seed WHERE name=?")?;
+            let mut groups = HashMap::<Vec<usize>, i64>::new();
+            let mut remaining = self.metadata_budget() / 16;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next()? {
+                let name: i64 = row.get(0)?;
+                let mut seeds = types.query([name])?;
+                ids.clear();
+                while let Some(seed) = seeds.next()? {
+                    ids.push(reach.id(seed.get(0)?));
+                }
+                ids.sort_unstable();
+                ids.dedup();
+                let group = if let Some(&group) = groups.get(&ids) {
+                    group
+                } else {
+                    let group = if ids.len() == 1 {
+                        self.save_conversion_group(reach.members(ids[0]))?
+                    } else {
+                        let mut types = BTreeSet::new();
+                        for &id in &ids {
+                            for (i, ty) in reach.members(id).enumerate() {
+                                if i % 1000 == 0 {
+                                    self.charge_work(1)?;
+                                }
+                                types.insert(ty);
+                                ensure!(
+                                    types.len() <= self.row_budget() / 8,
+                                    "conversion reach set exceeds row budget"
+                                );
+                            }
+                        }
+                        self.save_conversion_group(types.into_iter())?
+                    };
+                    let charge = ids.len() * size_of::<usize>() + 96;
+                    if charge <= remaining {
+                        remaining -= charge;
+                        groups.insert(ids.clone(), group);
+                    }
+                    group
+                };
+                self.execute(
+                    "INSERT INTO function_group VALUES(?,?)",
+                    params![name, group],
+                )?;
+            }
+            return Ok(());
+        }
+        crate::progress::Progress::new("conversion facts").note(format_args!(
+            "cast graph exceeds resident budget; using file-backed reach"
+        ));
+        self.expand_conversions()?;
+        self.group_expanded_conversions()?;
+        self.execute("DELETE FROM expanded_conversion_reach", [])?;
+        Ok(())
+    }
+
+    fn expand_conversions(&self) -> Result<()> {
+        self.db.execute_batch(
+            "WITH RECURSIVE reach(name,ty) AS (
               SELECT name,ty FROM conversion_seed
               UNION SELECT r.name,e.dst FROM reach r JOIN conversion_edge e ON e.src=r.ty
-            ) INSERT OR IGNORE INTO conversion_reach SELECT name,ty FROM reach;")?;
+            ) INSERT INTO expanded_conversion_reach SELECT name,ty FROM reach;",
+        )?;
         Ok(())
+    }
+
+    fn save_conversion_group(&self, types: impl Iterator<Item = i64>) -> Result<i64> {
+        let mut contents = Vec::new();
+        for ty in types {
+            ensure!(
+                contents.len() / 8 < self.row_budget() / 8,
+                "conversion reach set exceeds row budget"
+            );
+            contents.extend_from_slice(&ty.to_le_bytes());
+        }
+        let created = self.execute(
+            "INSERT OR IGNORE INTO reach_group(contents) VALUES(?)",
+            [&contents],
+        )?;
+        let group: i64 = self
+            .db
+            .prepare_cached("SELECT id FROM reach_group WHERE contents=?")?
+            .query_row([&contents], |r| r.get(0))?;
+        if created != 0 {
+            for ty in contents.chunks_exact(8) {
+                self.execute(
+                    "INSERT INTO group_type VALUES(?,?)",
+                    params![group, i64::from_le_bytes(ty.try_into().unwrap())],
+                )?;
+            }
+        }
+        Ok(group)
     }
 
     fn link_shapes(&self) -> Result<()> {
@@ -226,43 +335,27 @@ impl FactsStore {
         Ok(())
     }
 
-    fn groups(&self) -> Result<()> {
-        self.execute("DELETE FROM function_group", [])?;
+    fn group_expanded_conversions(&self) -> Result<()> {
         let mut names = self
             .db
-            .prepare("SELECT DISTINCT name FROM conversion_reach ORDER BY name")?;
+            .prepare("SELECT DISTINCT name FROM expanded_conversion_reach ORDER BY name")?;
         let mut rows = names.query([])?;
+        let mut types = self
+            .db
+            .prepare("SELECT ty FROM expanded_conversion_reach WHERE name=? ORDER BY ty")?;
+        let mut values = Vec::new();
         while let Some(row) = rows.next()? {
             let name: i64 = row.get(0)?;
-            let mut types = self
-                .db
-                .prepare_cached("SELECT ty FROM conversion_reach WHERE name=? ORDER BY ty")?;
             let mut type_rows = types.query([name])?;
-            let mut contents = Vec::new();
+            values.clear();
             while let Some(ty) = type_rows.next()? {
                 ensure!(
-                    contents.len() <= self.row_budget().saturating_sub(8),
+                    values.len() < self.row_budget() / 8,
                     "conversion reach set exceeds row budget"
                 );
-                let ty: i64 = ty.get(0)?;
-                contents.extend_from_slice(&ty.to_le_bytes());
+                values.push(ty.get(0)?);
             }
-            let created = self.execute(
-                "INSERT OR IGNORE INTO reach_group(contents) VALUES(?)",
-                [&contents],
-            )?;
-            let group: i64 = self
-                .db
-                .prepare_cached("SELECT id FROM reach_group WHERE contents=?")?
-                .query_row([&contents], |r| r.get(0))?;
-            if created != 0 {
-                for ty in contents.chunks_exact(8) {
-                    self.execute(
-                        "INSERT INTO group_type VALUES(?,?)",
-                        params![group, i64::from_le_bytes(ty.try_into().unwrap())],
-                    )?;
-                }
-            }
+            let group = self.save_conversion_group(values.iter().copied())?;
             self.execute(
                 "INSERT INTO function_group VALUES(?,?)",
                 params![name, group],
@@ -272,9 +365,10 @@ impl FactsStore {
     }
 
     fn origins(&self) -> Result<()> {
-        self.groups()?;
+        let progress = crate::progress::Progress::new("slot facts");
         self.db.execute_batch(
             "DELETE FROM flow_edge; DELETE FROM flow_origin;
+            DELETE FROM group_join; DELETE FROM slot_alias;
             INSERT OR IGNORE INTO flow_edge SELECT src,dst FROM slot_edge
               UNION SELECT src,dst FROM pass_edge UNION SELECT src,dst FROM link_shape;",
         )?;
@@ -291,41 +385,89 @@ impl FactsStore {
                 "INSERT OR IGNORE INTO group_join VALUES(?,?,?)",
                 params![group, parameter, slot],
             )?;
-            let mut types = self
-                .db
-                .prepare_cached("SELECT ty FROM group_type WHERE group_id=? ORDER BY ty")?;
-            let mut type_rows = types.query([group])?;
-            while let Some(ty) = type_rows.next()? {
-                let t = self.name(ty.get(0)?)?;
-                let alias = self.atom(&if k == "ret" {
-                    format!("rt:{t}")
-                } else {
-                    format!("pt:{t}:{k}")
-                })?;
-                let (src, dst) = if k == "ret" {
-                    (slot, alias)
-                } else {
-                    (alias, slot)
-                };
-                self.execute(
-                    "INSERT OR IGNORE INTO flow_edge VALUES(?,?)",
-                    params![src, dst],
-                )?;
-            }
-            if k == "ret" {
-                self.execute(
-                    "INSERT OR IGNORE INTO flow_edge SELECT l.src,?3 FROM link_shape l
-                    JOIN function_group f ON f.name=l.name WHERE f.group_id=?1 AND l.parameter=?2",
-                    params![group, parameter, slot],
-                )?;
-            } else {
-                self.execute(
-                    "INSERT OR IGNORE INTO flow_edge SELECT ?3,l.dst FROM link_shape l
-                    JOIN function_group f ON f.name=l.name WHERE f.group_id=?1 AND l.parameter=?2",
-                    params![group, parameter, slot],
-                )?;
-            }
         }
+        // The same type/parameter pair can occur in many groups. Intern the
+        // slot once and connect all the groups with indexed bulk inserts.
+        let mut aliases = self.db.prepare(
+            "SELECT DISTINCT t.ty,j.parameter FROM group_join j
+             CROSS JOIN group_type t ON t.group_id=j.group_id",
+        )?;
+        let mut rows = aliases.query([])?;
+        while let Some(row) = rows.next()? {
+            let (ty, parameter): (i64, i64) = (row.get(0)?, row.get(1)?);
+            let t = self.name(ty)?;
+            let k = self.name(parameter)?;
+            let alias = if k == "ret" {
+                format!("rt:{t}")
+            } else {
+                format!("pt:{t}:{k}")
+            };
+            self.execute(
+                "INSERT INTO slot_alias VALUES(?,?,?)",
+                params![ty, parameter, self.atom(&alias)?],
+            )?;
+        }
+        self.db.execute_batch(
+            "INSERT OR IGNORE INTO flow_edge
+             SELECT CASE WHEN p.name='ret' THEN j.slot ELSE a.slot END,
+                    CASE WHEN p.name='ret' THEN a.slot ELSE j.slot END
+             FROM group_join j CROSS JOIN group_type t ON t.group_id=j.group_id
+             JOIN slot_alias a ON a.ty=t.ty AND a.parameter=j.parameter
+             JOIN atom p ON p.id=j.parameter;",
+        )?;
+        // Each shape has at most one active join per parameter. Visit the
+        // shape table once and look up its group and join by primary key.
+        self.db.execute_batch(
+            "INSERT OR IGNORE INTO flow_edge
+             SELECT CASE WHEN p.name='ret' THEN l.src ELSE j.slot END,
+                    CASE WHEN p.name='ret' THEN j.slot ELSE l.dst END
+             FROM link_shape l JOIN function_group f ON f.name=l.name
+             JOIN group_join j ON j.group_id=f.group_id AND j.parameter=l.parameter
+             JOIN atom p ON p.id=l.parameter;",
+        )?;
+        self.trace(&progress, "graph ready");
+        self.db
+            .execute_batch("DELETE FROM flow_slot_group; DELETE FROM flow_group_origin;")?;
+        const READ_SLOTS: &str = "SELECT a FROM relation WHERE kind=7
+             UNION SELECT a FROM relation WHERE kind=8
+             UNION SELECT a FROM relation WHERE kind=9";
+        if let Some(reach) = Reach::solve(
+            self,
+            "SELECT dst,src FROM flow_edge ORDER BY dst,src",
+            "SELECT a.id FROM atom a WHERE a.kind IN (5,6,7) AND (
+                EXISTS(SELECT 1 FROM flow_edge e WHERE e.src=a.id)
+                OR EXISTS(SELECT 1 FROM flow_edge e WHERE e.dst=a.id)) ORDER BY a.id",
+            Some(READ_SLOTS),
+        )? {
+            let mut reads = self.db.prepare(READ_SLOTS)?;
+            let mut rows = reads.query([])?;
+            let mut saved = HashSet::new();
+            while let Some(row) = rows.next()? {
+                let slot = row.get(0)?;
+                let group = reach.id(slot);
+                if group == 0 {
+                    continue;
+                }
+                if saved.insert(group) {
+                    for origin in reach.members(group) {
+                        self.execute(
+                            "INSERT INTO flow_group_origin VALUES(?,?)",
+                            params![group, origin],
+                        )?;
+                    }
+                }
+                self.execute(
+                    "INSERT INTO flow_slot_group VALUES(?,?)",
+                    params![slot, group],
+                )?;
+            }
+            return Ok(());
+        }
+        progress.note(format_args!(
+            "slot graph exceeds resident budget; using file-backed reach"
+        ));
+        // The resident solver can decline a large graph or set catalog.
+        // Retry the same reachability calculation in the private file.
         self.db.execute_batch(
             "WITH RECURSIVE origins(slot,origin) AS (
             SELECT e.src,e.src FROM flow_edge e JOIN atom a ON a.id=e.src WHERE a.origin=1
@@ -345,13 +487,13 @@ impl FactsStore {
         self.execute(
             "INSERT OR IGNORE INTO extra_start_name
             SELECT f.name FROM read_record r JOIN unit u ON u.chunk=r.chunk
-              JOIN flow_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
+              JOIN read_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
               JOIN record_functions f ON f.record=a.target
             WHERE a.kind=7 AND a.target<>r.record AND (?1=0 OR r.relaxed OR u.all_relaxed)
-            UNION SELECT a.target FROM read_function r JOIN flow_origin o ON o.slot=r.slot
+            UNION SELECT a.target FROM read_function r JOIN read_origin o ON o.slot=r.slot
               JOIN atom a ON a.id=o.origin WHERE a.kind=5
             UNION SELECT f.name FROM read_memory r JOIN unit u ON u.chunk=r.chunk
-              JOIN flow_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
+              JOIN read_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
               JOIN record_functions f ON f.record=a.target
             WHERE a.kind=7 AND (?1=0 OR r.relaxed OR u.all_relaxed)",
             [effective_types],
@@ -359,20 +501,20 @@ impl FactsStore {
         self.execute(
             "INSERT OR IGNORE INTO extra_start
             SELECT f.name,t.ty FROM read_record r JOIN unit u ON u.chunk=r.chunk
-              JOIN flow_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
+              JOIN read_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
               JOIN record_functions f ON f.record=a.target JOIN record_types t ON t.record=r.record
             WHERE a.kind=7 AND a.target<>r.record AND (?1=0 OR r.relaxed OR u.all_relaxed)
-            UNION SELECT a.target,r.ty FROM read_function r JOIN flow_origin o ON o.slot=r.slot
+            UNION SELECT a.target,r.ty FROM read_function r JOIN read_origin o ON o.slot=r.slot
               JOIN atom a ON a.id=o.origin WHERE a.kind=5
             UNION SELECT f.name,r.ty FROM read_memory r JOIN unit u ON u.chunk=r.chunk
-              JOIN flow_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
+              JOIN read_origin o ON o.slot=r.slot JOIN atom a ON a.id=o.origin
               JOIN record_functions f ON f.record=a.target
             WHERE a.kind=7 AND (?1=0 OR r.relaxed OR u.all_relaxed)",
             [effective_types],
         )?;
         self.execute(
             "INSERT OR IGNORE INTO extra_cast
-            SELECT a.target,r.ty FROM read_function r JOIN flow_origin o ON o.slot=r.slot
+            SELECT a.target,r.ty FROM read_function r JOIN read_origin o ON o.slot=r.slot
               JOIN atom a ON a.id=o.origin WHERE a.kind=6 AND a.target<>r.ty",
             [],
         )?;
@@ -385,8 +527,8 @@ mod tests {
     use super::*;
 
     const ORIGINAL_CHANGED: &str = "SELECT
-        EXISTS(SELECT * FROM conversion_reach EXCEPT SELECT * FROM old_conversion_reach)
-        OR EXISTS(SELECT * FROM old_conversion_reach EXCEPT SELECT * FROM conversion_reach)
+        EXISTS(SELECT * FROM function_group EXCEPT SELECT * FROM old_function_group)
+        OR EXISTS(SELECT * FROM old_function_group EXCEPT SELECT * FROM function_group)
         OR EXISTS(SELECT * FROM conversion_name EXCEPT SELECT * FROM old_conversion_name)
         OR EXISTS(SELECT * FROM old_conversion_name EXCEPT SELECT * FROM conversion_name)";
 
@@ -397,7 +539,7 @@ mod tests {
         // Equal/empty sets, either direction of change, and pairs differing in
         // either component. Name-only differences must remain observable even
         // when the reach sets agree.
-        let pairs = [(1, 1), (1, 2), (2, 1)];
+        let pairs = [(1, 1), (2, 1), (3, 2)];
         for current_pairs in 0..8 {
             for old_pairs in 0..8 {
                 for current_names in 0..4 {
@@ -405,14 +547,14 @@ mod tests {
                         store
                             .db
                             .execute_batch(
-                                "DELETE FROM conversion_reach;
-                            DELETE FROM old_conversion_reach; DELETE FROM conversion_name;
+                                "DELETE FROM function_group;
+                            DELETE FROM old_function_group; DELETE FROM conversion_name;
                             DELETE FROM old_conversion_name;",
                             )
                             .unwrap();
                         for (table, mask) in [
-                            ("conversion_reach", current_pairs),
-                            ("old_conversion_reach", old_pairs),
+                            ("function_group", current_pairs),
+                            ("old_function_group", old_pairs),
                         ] {
                             for (bit, (name, ty)) in pairs.iter().enumerate() {
                                 if mask & (1 << bit) != 0 {
@@ -462,7 +604,7 @@ mod tests {
     fn convergence_uses_non_null_primary_key_probes_without_temporary_set_trees() {
         let store = FactsStore::empty(Default::default()).unwrap();
         store.db.execute_batch(include_str!("flow.sql")).unwrap();
-        for table in ["conversion_reach", "old_conversion_reach"] {
+        for table in ["function_group", "old_function_group"] {
             for values in ["NULL,1", "1,NULL"] {
                 assert!(
                     store
