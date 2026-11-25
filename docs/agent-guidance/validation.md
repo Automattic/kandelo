@@ -692,7 +692,7 @@ part of the task. Build what is missing:
    images. `setup --all` source-builds the supported graph declared in
    `packages/sets/local-supported.toml` into `local-binaries/source-only-v1/`.
    It does not build excluded packages or dormant standalone images such as
-   `mariadb-vfs` and `perl-vfs`. If a selected test loads one, resolve that
+   `perl-vfs`. If a selected test loads one, resolve that
    recipe through the normal package resolver for its declared architecture.
    There is no separate fetch step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
    local-first; do not look for it. A single package can be resolved on demand

@@ -1455,9 +1455,9 @@ reason = "retired standalone browser product"
 name = "redis-vfs"
 class = "user-software"
 
-[[exclusions]]
+[[packages]]
 name = "mariadb-vfs"
-reason = "retired standalone browser product; use WordPress with MariaDB"
+class = "test-support"
 
 [[products]]
 id = "browser-redis"

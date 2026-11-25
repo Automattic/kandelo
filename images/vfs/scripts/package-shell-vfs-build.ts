@@ -20,6 +20,7 @@ import {
   type SaveImageOptions,
 } from "./vfs-image-helpers";
 import {
+  SHELL_DERIVED_IMAGE_WRITER_IO_BUDGET_BYTES,
   SHELL_DERIVED_VFS_MIN_FREE_BYTES,
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
@@ -36,9 +37,7 @@ const SHELL_DERIVED_CREATED_BY =
 
 export function createShellDerivedImageFilesystem(): KandeloImageFs {
   const fs = KandeloImageFs.create();
-  // The inherited lazy catalogs and the web application files can push an
-  // export plan past the default 32 MiB. Allow 48 MiB for the build-time writer.
-  fs.setIoBudgetBytes(48 * 1024 * 1024);
+  fs.setIoBudgetBytes(SHELL_DERIVED_IMAGE_WRITER_IO_BUDGET_BYTES);
   return fs;
 }
 
