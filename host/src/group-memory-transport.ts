@@ -429,6 +429,9 @@ export class GroupMemoryTransport {
   }
   prepareChannelObservation(handle: PreparedGroupReplica, receipt: MemoryGroupTaskReceipt, address: number, entry: GroupMemoryEntry): NativeI32Observation {
     const result = this.action(receipt, P.storage.actions.pinChannel, entry, 0n, address);
+    // A scheduled relisten can arrive after Rust revoked the exact source.
+    // No pin was issued; retain the refusal as a result, not a host fault.
+    if (result.status === -ERRNO.ESRCH) throw new GroupMemoryStorageRefusal(ERRNO.ESRCH);
     if (result.status !== 0) this.#fault(`Kernel channel observation refused: ${result.status}`);
     // The handle identifies the actual backing object; the exact task receipt
     // identifies whose Rust pin must survive until native settlement.

@@ -12,6 +12,7 @@ import { FixedTreeBackend } from './support/fixed-tree-backend';
 import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import { DeferredWorkerHandle } from '../src/deferred-worker-handle';
 import { MockWorkerHandle } from '../src/worker-adapter';
+import { GroupMemoryStorageRefusal } from '../src/group-memory-transport';
 
 // The actual Rust kernel owns allocation and lifecycle here. The test-only
 // bridge installs its exact gate/scratch on the host worker; no fake owner or
@@ -70,6 +71,33 @@ async function published() {
   if (typeof launch === 'number') throw Error(`Publication refused: ${launch}`);
   return { ...h, launch };
 }
+
+it('balances a late channel observation refused by Rust without failing the kernel or releasing custody', async () => {
+  const h = await published();
+  const worker = h.worker as any;
+  try {
+    // Register the actual Rust-owned image without arming a native listener;
+    // inject only the scalar refusal at the platform marshalling boundary.
+    worker.usePolling = true;
+    h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
+      brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
+    worker.stopPolling(); worker.usePolling = false;
+    const registration = worker.processes.get(h.pid), channel = registration.channels[0];
+    const before = inspectBacking(h);
+    const refuse = vi.spyOn(registration.grouped.store, 'prepareChannelObservation')
+      .mockImplementationOnce(() => { throw new GroupMemoryStorageRefusal(ERRNO.ESRCH); });
+    expect(() => worker.listenOnChannel(channel)).not.toThrow();
+    expect(refuse).toHaveBeenCalledOnce(); refuse.mockRestore();
+    expect(worker.pendingChannelListenerCounts.get(channel) ?? 0).toBe(0);
+    expect(worker.pendingChannelNativeObservations.size).toBe(0);
+    expect(inspectBacking(h)).toEqual(before);
+    // The refusal cannot stand in for a Worker fence or return any frames.
+    const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
+    h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
+    expect(await h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete, () => {})).toBe(true);
+    expect(inspectBacking(h)).toMatchObject({ images: 0, replicas: 0, allocatedPages: 1, nativeObservers: 0 });
+  } finally { worker.stopPolling(); h.scratch.revoke(); }
+}, 30_000);
 
 it('reports allocator contention without poisoning inspection or changing ownership', async () => {
   const h = await published();

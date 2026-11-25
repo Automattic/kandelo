@@ -14172,7 +14172,17 @@ export class CentralizedKernelWorker {
         return undefined;
       }
       const binding = this.#groupChannelBinding(channel);
-      const observation = binding.store.prepareChannelObservation(grouped.handle, binding.receipt, channel.channelOffset + CH_STATUS, entry);
+      let observation: NativeI32Observation;
+      try {
+        observation = binding.store.prepareChannelObservation(grouped.handle, binding.receipt, channel.channelOffset + CH_STATUS, entry);
+      } catch (error) {
+        if (!(error instanceof GroupMemoryStorageRefusal) || error.errno !== ESRCH) throw error;
+        entry.deferProtocolEffect(() => {
+          this.finishChannelListenerWait(channel);
+          this.acknowledgeIdleRetiredCompletionChannel(channel); return undefined;
+        });
+        return undefined;
+      }
       entry.deferProtocolEffect(() => ready(observation));
       return undefined;
     });

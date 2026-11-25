@@ -147,7 +147,16 @@ describe.each([4, 8] as const)('Rust group storage transport at kernel pointer w
     const thread = { ...h.receipt, tid: 101, serial: h.receipt.serial + 1n };
     h.actionStatus(-ERRNO.ESRCH);
     expect(() => h.enter(entry => h.store.prepareChannelObservation(handle, thread, 65536, entry)))
-      .toThrow('Kernel channel observation refused');
+      .toThrow(GroupMemoryStorageRefusal);
+    expect(h.resources).not.toHaveBeenCalled();
+    expect(h.settleNative).not.toHaveBeenCalled();
+  });
+
+  it('keeps unexpected channel observation refusals fatal without resolving a backing', () => {
+    const h = harness(width), handle = h.prepare();
+    h.actionStatus(-ERRNO.EIO);
+    expect(() => h.enter(entry => h.store.prepareChannelObservation(handle, h.receipt, 0, entry)))
+      .toThrow(MemoryGroupProtocolFault);
     expect(h.resources).not.toHaveBeenCalled();
     expect(h.settleNative).not.toHaveBeenCalled();
   });
