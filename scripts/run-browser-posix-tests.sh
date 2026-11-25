@@ -18,7 +18,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # validated this one. Pin the cwd so both agree. (The browser runner below
 # also needs this cwd; it used to set it just before the npx call.)
 cd "$REPO_ROOT"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
 POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
@@ -106,9 +107,9 @@ source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
 
 instrument_wasm() {
     local wasm="$1"
-    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
-    mv "$wasm.instr" "$wasm"
-    abi_contract_stamp "$wasm"
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" &&
+        mv "$wasm.instr" "$wasm" &&
+        abi_contract_stamp "$wasm"
 }
 
 TEST_TIMEOUT=30000  # ms (for browser runner)
@@ -150,8 +151,9 @@ discover_interfaces() {
 }
 
 verify_test_tree() {
-    if [ ! -d "$IFACE_DIR" ]; then
-        echo "Error: Open POSIX Test Suite interfaces not found at $IFACE_DIR" >&2
+    conformance_source_input posix
+    if [ ! -f "$CONFORMANCE_SOURCE_FILE" ]; then
+        conformance_setup_error "missing $CONFORMANCE_SOURCE_FILE. Run $CONFORMANCE_SOURCE_REPAIR."
         exit 1
     fi
 }
@@ -172,22 +174,22 @@ if [ ${#INTERFACES[@]} -eq 0 ]; then
 fi
 
 if [ ${#INTERFACES[@]} -eq 0 ]; then
-    echo "Error: no Open POSIX Test Suite interfaces discovered under $IFACE_DIR" >&2
+    conformance_setup_error "no Open POSIX Test Suite interfaces discovered under $IFACE_DIR. Run $CONFORMANCE_SOURCE_REPAIR."
     exit 1
 fi
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
-if [ ! -f "$KERNEL_WASM" ]; then
-    echo "Error: kernel wasm not found. Run build.sh first." >&2
-    exit 1
-fi
+for iface in "${INTERFACES[@]}"; do
+    if [ -z "$(discover_tests "$iface")" ]; then
+        conformance_setup_error "no Open POSIX tests were discovered for $iface under $IFACE_DIR."
+        exit 1
+    fi
+done
+conformance_preflight posix browser || exit 1
 abi_contract_stamp_prepare || exit 1
+WASM_POSIX_XTASK_BIN="${WASM_POSIX_XTASK_BIN:-$KANDELO_ABI_STAMP_XTASK}" conformance_check_browser_artifacts || exit 1
+export WASM_POSIX_XTASK_BIN="${WASM_POSIX_XTASK_BIN:-$KANDELO_ABI_STAMP_XTASK}"
 
+SETUP_ERROR_COUNT=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -216,6 +218,10 @@ for iface in "${INTERFACES[@]}"; do
         mkdir -p "$BUILD_DIR/$iface"
 
         if ! "$WASM32_CC" "${CFLAGS[@]}" "$src" -o "$wasm" 2>/tmp/posix-test-build-err.txt; then
+            if missing=$(conformance_missing_build_input); then
+                conformance_record_setup_error "$local_test_id" "$missing"
+                continue
+            fi
             if is_expected_fail "$local_test_id"; then
                 echo "XFAIL $local_test_id (expected — build failure)"
                 RESULTS+=("XFAIL $local_test_id")
@@ -354,11 +360,12 @@ echo "BUILD:      $BUILD_FAIL"
 echo "UNRESOLVED: $UNRESOLVED"
 echo "ERROR:      $ERROR_COUNT"
 echo "TIMEOUT:    $TIMEOUT_COUNT"
+echo "SETUP:   $SETUP_ERROR_COUNT"
 echo "TOTAL:      $TOTAL"
 echo ""
 
 if [ ${#RESULTS[@]} -gt 0 ]; then
-    for status in PASS XPASS FAIL XFAIL BUILD UNRES ERROR TIME SKIP; do
+    for status in PASS XPASS FAIL XFAIL BUILD UNRES ERROR SETUP TIME SKIP; do
         count=0
         for r in "${RESULTS[@]}"; do
             [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -375,7 +382,7 @@ fi
 
 # The same failure classes as the Node.js runner (scripts/run-posix-tests.sh),
 # plus ERROR: a test the browser runner never ran.
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $UNRESOLVED -gt 0 ] \
+if [ "$SETUP_ERROR_COUNT" -gt 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $UNRESOLVED -gt 0 ] \
     || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

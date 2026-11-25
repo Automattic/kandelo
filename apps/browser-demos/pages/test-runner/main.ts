@@ -14,6 +14,8 @@ import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
 import {
   createEmptyBuildFs,
   createBuildFsWithEtc,
+  ensureImageWriterInstalled,
+  fetchRootfsBytes,
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
 } from "../../lib/kernel-owned-boot";
@@ -74,6 +76,7 @@ interface AudioTestSession {
 declare global {
   interface Window {
     __testRunnerReady: boolean;
+    __testRunnerSetupError?: string;
     __runTest: (
       wasmBytes: ArrayBuffer,
       argv?: string[],
@@ -225,7 +228,8 @@ function installAudioResumeButton(): void {
 }
 
 async function init() {
-  const minimal = new URLSearchParams(window.location.search).get("minimal") === "1";
+  const params = new URLSearchParams(window.location.search);
+  const minimal = params.get("minimal") === "1";
   /*
    * WHY: tests that never exec shell tools must not activate unrelated
    * optional package generations. The default path still imports the checked
@@ -238,13 +242,17 @@ async function init() {
     );
   [kernelWasmBytes, execBinarySupport] = await Promise.all([
     fetch(kernelWasmUrl)
-      .then((response) => response.arrayBuffer())
-      .catch(() => null),
+      .then((response) => {
+        if (!response.ok) throw new Error("Failed to fetch kernel.wasm: " + response.status);
+        return response.arrayBuffer();
+      }),
     execBinarySupportPromise,
   ]);
 
-  if (!kernelWasmBytes) {
-    throw new Error("Failed to fetch kernel wasm");
+  if (params.get("conformance") === "1") {
+    // The wrappers always seed /etc. Capture its inputs during page setup so
+    // a missing file on a later reload cannot reach case/XFAIL accounting.
+    await Promise.all([ensureImageWriterInstalled(), fetchRootfsBytes()]);
   }
 
   window.__testCount = 0;
@@ -496,6 +504,7 @@ async function init() {
 }
 
 init().catch((err) => {
+  window.__testRunnerSetupError = String(err);
   document.getElementById("status")!.textContent = `Error: ${err.message}`;
   console.error("Test runner init failed:", err);
 });

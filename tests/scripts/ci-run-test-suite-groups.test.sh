@@ -142,6 +142,7 @@ cp \
     "$REPO_ROOT/scripts/check-vitest-evidence-classes.sh" \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv" \
+    "$REPO_ROOT/scripts/conformance-prerequisites.sh" \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/record-test-report.sh" \
     "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
@@ -327,8 +328,11 @@ EOF
 
 cat > "$FIXTURE/scripts/resolve-binary.sh" <<'EOF'
 #!/usr/bin/env bash
-[ "$#" -eq 1 ] || exit 2
 case "$1" in
+    --check-candidates) exit 0 ;;
+    kernel.wasm|programs/ruby/ruby.wasm|programs/exec-child.wasm)
+        printf '%s\n' "$PWD/host/wasm/$1"
+        ;;
     programs/shell.vfs.zst)
         printf '%s\n' "$FIXTURE_SHELL_IMAGE"
         ;;
@@ -382,6 +386,20 @@ chmod +x \
     "$FIXTURE/scripts/resolve-binary.sh" \
     "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" \
     "$prepared_xtask"
+
+# Cargo dispatch prepares these inputs itself. Keep those calls inside the
+# disposable fixture as well, since this test observes only the dispatch.
+printf '#!/bin/sh\nexit 0\n' > "$FIXTURE/scripts/build-musl.sh"
+printf '# Stubbed native baseline preparation.\n' > "$FIXTURE/scripts/build-program-baseline.py"
+
+# Required setup inputs for the CI dispatch fixture. These files are never
+# read by the stubbed conformance runners or Vitest CLI.
+mkdir -p "$FIXTURE"/{sysroot/lib,sysroot64/lib,tests/libc/libc-test/src/common,tests/sortix/os-test,host/wasm/programs/ruby}
+touch "$FIXTURE"/{sysroot/lib/libc.a,sysroot64/lib/libc.a,tests/libc/libc-test/src/common/test.h,tests/sortix/os-test/Makefile}
+touch "$FIXTURE"/host/wasm/{kernel.wasm,programs/ruby/ruby.wasm,programs/exec-child.wasm}
+touch "$FIXTURE/local-binaries/kandelo_image_module32.wasm"
+
+
 
 git -C "$FIXTURE" init -q
 git -C "$FIXTURE" config user.name "Kandelo CI fixture"
@@ -1132,6 +1150,7 @@ exit 2
 EOF
 chmod +x "$prepared_xtask"
 
+
 mkdir -p "$FIXTURE/.ci-test-binary-cache/programs"
 cache_capture="$TMP_DIR/portable-cache-root"
 xtask_capture="$TMP_DIR/portable-xtask"
@@ -1642,6 +1661,7 @@ cp \
     "$FIXTURE/scripts/activate-ci-test-workspace.sh" \
     "$FIXTURE/scripts/check-vitest-evidence-classes.sh" \
     "$FIXTURE/scripts/ci-run-test-suite.sh" \
+    "$FIXTURE/scripts/conformance-prerequisites.sh" \
     "$FIXTURE/scripts/ci-check-browser-assets.sh" \
     "$FIXTURE/scripts/resolve-binary.sh" \
     "$FIXTURE/scripts/materialize-ci-publication-blockers.sh" \

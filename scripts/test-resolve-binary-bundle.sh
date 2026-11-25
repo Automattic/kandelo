@@ -29,4 +29,25 @@ if ! grep -F "usage: scripts/resolve-binary.sh" "$load_err" >/dev/null; then
     exit 1
 fi
 
+# The CLI bundle lives under scripts/, while the runtime resolver lives in
+# host/src/. Both must see the canonical fallback under host/wasm/.
+fixture="$generated_dir/checkout"
+mkdir -p "$fixture/scripts" "$fixture/host/wasm"
+cp "$generated" "$fixture/scripts/"
+printf '[workspace]\n' > "$fixture/Cargo.toml"
+printf '{"name":"kandelo"}\n' > "$fixture/package.json"
+touch "$fixture/host/wasm/rootfs.vfs.zst"
+(
+    cd "$fixture"
+    unset WASM_POSIX_RESOLUTION_POLICY WASM_POSIX_BINARY_RESOLVER_REPO_ROOT
+    node scripts/resolve-binary.bundle.mjs --check-candidates rootfs.vfs.zst programs/rootfs.vfs.zst
+    [ "$(node scripts/resolve-binary.bundle.mjs rootfs.vfs.zst)" = "$(pwd -P)/host/wasm/rootfs.vfs.zst" ]
+    rm host/wasm/rootfs.vfs.zst
+    if node scripts/resolve-binary.bundle.mjs --check-candidates rootfs.vfs.zst programs/rootfs.vfs.zst 2> "$load_err"; then
+        echo "test-resolve-binary-bundle: absent rootfs was admitted" >&2
+        exit 1
+    fi
+    grep -q 'No artifact candidate for rootfs.vfs.zst' "$load_err"
+)
+
 echo "test-resolve-binary-bundle: ok"

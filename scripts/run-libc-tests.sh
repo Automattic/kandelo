@@ -18,11 +18,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # compile against THAT checkout's sysroot while the prerequisite check below
 # validated this one. Pin the cwd so both agree.
 cd "$REPO_ROOT"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=scripts/conformance-prerequisites.sh
+source "$REPO_ROOT/scripts/conformance-prerequisites.sh"
 LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
 BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
 RUNNER_FIXTURE_ROOT="$BUILD_DIR/runner-fixture"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
 # Tests known to fail due to wasm32 soft-float precision limits (no hardware FPU rounding control).
@@ -258,7 +258,7 @@ build_functional() {
 
     "$WASM32_CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -270,7 +270,7 @@ build_regression() {
 
     "$WASM32_CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -285,7 +285,7 @@ build_math() {
         "$src" \
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -303,7 +303,7 @@ build_math-relaxed() {
         "$src" \
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt || return 1
     instrument_wasm "$wasm"
 }
 
@@ -359,6 +359,11 @@ run_test() {
 
     # Build
     if ! "build_${category}" "$test_name" 2>/dev/null; then
+        local missing
+        if missing=$(conformance_missing_build_input); then
+            conformance_record_setup_error "${category}/${test_name}" "$missing"
+            return
+        fi
         local err
         err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
         echo "BUILD ${category}/${test_name}"
@@ -371,9 +376,11 @@ run_test() {
     # Run with timeout.
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
+    : > "$CASE_SETUP_FILE"
     set +e
     output=$(cd "$REPO_ROOT" && \
         KERNEL_CWD= \
+        KANDELO_RUNNER_SETUP_ERROR_FILE="$CASE_SETUP_FILE" \
         KERNEL_PATH="$kernel_path" \
         KANDELO_RUNNER_FIXTURE_ROOT="$fixture_root" \
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
@@ -387,6 +394,10 @@ run_test() {
             </dev/null 2>&1)
     rc=$?
     set -e
+    if [ -s "$CASE_SETUP_FILE" ]; then
+        conformance_record_setup_error "${category}/${test_name}" "$(cat "$CASE_SETUP_FILE")"
+        return
+    fi
 
     if [ $rc -eq 0 ]; then
         if $is_flaky; then
@@ -470,20 +481,22 @@ if [ ${#CATEGORIES[@]} -eq 0 ]; then
     fi
 fi
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
+conformance_preflight libc node || exit 1
+if [ ${#SPECIFIC_TESTS[@]} -eq 0 ]; then
+    for category in "${CATEGORIES[@]}"; do
+        if [ -z "$("discover_${category}")" ]; then
+            conformance_setup_error "no libc-test tests were discovered for $category under $LIBC_TEST. Run $CONFORMANCE_SOURCE_REPAIR."
+            exit 1
+        fi
+    done
 fi
-if [ ! -f "$KERNEL_WASM" ]; then
-    echo "Error: kernel wasm not found. Run build.sh first." >&2
-    exit 1
-fi
-
 abi_contract_stamp_prepare || exit 1
 # shellcheck source=scripts/conformance-program-index.sh
 source "$REPO_ROOT/scripts/conformance-program-index.sh"
 conformance_program_index_prepare || exit 1
+conformance_check_node_rootfs || exit 1
+CASE_SETUP_FILE="$(mktemp)"
+trap 'rm -f "$CASE_SETUP_FILE"' EXIT
 
 if ! build_example_program echo; then
     err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
@@ -507,6 +520,7 @@ fi
 cp "$REPO_ROOT/examples/echo.wasm" "$RUNNER_FIXTURE_ROOT/bin/echo"
 chmod 0555 "$RUNNER_FIXTURE_ROOT/bin/echo"
 
+SETUP_ERROR_COUNT=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -559,11 +573,12 @@ echo "XPASS:   $XPASS"
 echo "FLAKY:   $((FLAKE_PASS + FLAKE_FAIL + FLAKE_TIME))"
 echo "BUILD:   $BUILD_FAIL"
 echo "TIMEOUT: $TIMEOUT_COUNT"
+echo "SETUP:   $SETUP_ERROR_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
 
 # Group results by status
-for status in PASS XPASS FAIL XFAIL FLAKE-PASS FLAKE-FAIL FLAKE-TIME BUILD TIME; do
+for status in PASS XPASS FAIL XFAIL FLAKE-PASS FLAKE-FAIL FLAKE-TIME BUILD SETUP TIME; do
     count=0
     for r in "${RESULTS[@]}"; do
         [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -594,11 +609,12 @@ if $REPORT_MODE; then
         echo "| XPASS | $XPASS |"
         echo "| FLAKY | $((FLAKE_PASS + FLAKE_FAIL + FLAKE_TIME)) |"
         echo "| BUILD | $BUILD_FAIL |"
+        echo "| SETUP | $SETUP_ERROR_COUNT |"
         echo "| TIMEOUT | $TIMEOUT_COUNT |"
         echo "| **TOTAL** | **$TOTAL** |"
         echo ""
 
-        for status in FAIL BUILD TIME; do
+        for status in FAIL BUILD SETUP TIME; do
             count=0
             for r in "${RESULTS[@]}"; do
                 [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -607,6 +623,7 @@ if $REPORT_MODE; then
                 case "$status" in
                     FAIL) echo "## Unexpected Failures ($count)" ;;
                     BUILD) echo "## Build Failures ($count)" ;;
+                    SETUP) echo "## Setup Errors ($count)" ;;
                     TIME) echo "## Timeouts ($count)" ;;
                 esac
                 echo ""
@@ -717,6 +734,6 @@ if $REPORT_MODE; then
 fi
 
 # Exit with error if any unexpected failures
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
+if [ "$SETUP_ERROR_COUNT" -gt 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

@@ -20,11 +20,13 @@ if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     exit 0
 fi
 wants_program=0
-for rel_path in "$@"; do
-    case "$rel_path" in
-        programs/*) wants_program=1 ;;
-    esac
-done
+if [ "$1" != "--check-candidates" ]; then
+    for rel_path in "$@"; do
+        case "$rel_path" in
+            programs/*) wants_program=1 ;;
+        esac
+    done
+fi
 
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"

@@ -1,4 +1,11 @@
-import { resolveBinary, tryResolveBinaries } from "../host/src/binary-resolver";
+import { existsSync, statSync } from "node:fs";
+import { browserRootfsCandidates } from "../host/src/browser-rootfs-candidates";
+import {
+  hasBinaryCandidate,
+  resolveBinary,
+  sourceOnlyBinaryRoot,
+  tryResolveBinaries,
+} from "../host/src/binary-resolver";
 
 // One path, or several in one call. Several share ONE freshness check of the
 // program-package projection (`tryResolveBinaries`), which is what lets a
@@ -12,6 +19,23 @@ if (relPaths.length === 0) {
 }
 
 try {
+  if (relPaths[0] === "--check-candidates") {
+    const requests = relPaths.slice(1);
+    if (!requests.length || !requests.some(hasBinaryCandidate)) {
+      throw new Error(`No artifact candidate for ${requests.join(" or ")}`);
+    }
+    process.exit(0);
+  }
+  if (relPaths[0] === "--browser-rootfs") {
+    const rootfs = sourceOnlyBinaryRoot() === null
+      ? browserRootfsCandidates(process.cwd()).find(existsSync)
+      : resolveBinary("programs/wasm32/rootfs.vfs.zst");
+    if (!rootfs || !statSync(rootfs).isFile()) {
+      throw new Error("Browser rootfs.vfs.zst is missing");
+    }
+    process.stdout.write(`${rootfs}\n`);
+    process.exit(0);
+  }
   const resolved = relPaths.length === 1
     ? [resolveBinary(relPaths[0]!)]
     : tryResolveBinaries(relPaths).map((path, index) =>

@@ -110,7 +110,13 @@ function resolverRepoRoot(): string {
 }
 
 function packageRoot(): string {
-  return resolve(currentModuleDir(), "..");
+  const moduleDir = currentModuleDir();
+  const parent = dirname(moduleDir);
+  // The standalone resolver CLI bundles this module into scripts/. In a
+  // source checkout it must still see the host package's artifact tier.
+  return basename(moduleDir) === "scripts" && isRepoRoot(parent)
+    ? join(parent, "host")
+    : parent;
 }
 
 function hasSourceCheckout(): boolean {
@@ -342,6 +348,21 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
     },
   });
   return tiers;
+}
+
+/**
+ * A cheap absence check for setup checks. A candidate is not proof of
+ * admissibility: callers still need the resolver to validate its identity.
+ * In particular an absent program need not first build the index checker.
+ */
+export function hasBinaryCandidate(relPath: string): boolean {
+  const sourceOnlyRoot = sourceOnlyBinaryRoot();
+  if (sourceOnlyRoot !== null) {
+    return existsSync(join(sourceOnlyRoot, applyDefaultArch(relPath)));
+  }
+  return binaryCandidateTiers().some((tier) =>
+    tier.candidatesFor(relPath).some((path) => existsSync(path))
+  );
 }
 
 interface ProgramPackageClosureMember {

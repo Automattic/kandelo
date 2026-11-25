@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { resolveBinary } from "../../../../host/src/binary-resolver";
 import {
   detectPtrWidth,
   extractHeapBase,
@@ -19,8 +19,8 @@ import {
   RUBY_VFORK_FAILED_EXEC_PROGRAM,
 } from "./posix-spawn-contract";
 
-const rubyBinary = tryResolveBinary("programs/ruby/ruby.wasm");
-const execChildBinary = tryResolveBinary("programs/exec-child.wasm");
+const rubyBinary = resolveBinary("programs/ruby/ruby.wasm");
+const execChildBinary = resolveBinary("programs/exec-child.wasm");
 
 function initialAddressSpaceBytes(programPath: string): number {
   const file = readFileSync(programPath);
@@ -36,13 +36,13 @@ function initialAddressSpaceBytes(programPath: string): number {
   }).initialPages * WASM_PAGE_SIZE;
 }
 
-describe.skipIf(!rubyBinary || !execChildBinary)(
+describe(
   "Ruby Process.spawn on Kandelo",
   () => {
     it(`${RUBY_VFORK_FAILED_EXEC_MARKER} preserves process semantics`, async () => {
       const events: string[] = [];
       const result = await runCentralizedProgram({
-        programPath: rubyBinary!,
+        programPath: rubyBinary,
         argv: ["ruby", "--disable-gems", "-e", RUBY_VFORK_FAILED_EXEC_PROGRAM],
         env: ["HOME=/tmp", "TMPDIR=/tmp"],
         uid: 1000,
@@ -51,7 +51,7 @@ describe.skipIf(!rubyBinary || !execChildBinary)(
         // An ordinary fork would need a second full Memory and fail before it
         // could report ENOENT. Reaching the failed exec proves CRuby selected
         // Kandelo's borrowed-memory vfork transaction.
-        maxProcessMemoryBytes: initialAddressSpaceBytes(rubyBinary!),
+        maxProcessMemoryBytes: initialAddressSpaceBytes(rubyBinary),
         captureForkCount: true,
         onProcessEvent: (event) => events.push(event.kind),
         useDefaultRootfs: false,
@@ -69,13 +69,13 @@ describe.skipIf(!rubyBinary || !execChildBinary)(
     it(`${RUBY_VFORK_EXEC_MARKER} preserves process semantics`, async () => {
       const events: string[] = [];
       const result = await runCentralizedProgram({
-        programPath: rubyBinary!,
+        programPath: rubyBinary,
         argv: ["ruby", "--disable-gems", "-e", RUBY_VFORK_EXEC_PROGRAM],
         env: ["HOME=/tmp", "TMPDIR=/tmp"],
         uid: 1000,
         gid: 1000,
         execPrograms: new Map([
-          [RUBY_VFORK_EXECUTABLE, execChildBinary!],
+          [RUBY_VFORK_EXECUTABLE, execChildBinary],
         ]),
         captureForkCount: true,
         onProcessEvent: (event) => events.push(event.kind),
@@ -96,7 +96,7 @@ describe.skipIf(!rubyBinary || !execChildBinary)(
     it(`${RUBY_PRIVILEGED_FORK_MARKER} preserves process semantics`, async () => {
       const events: string[] = [];
       const result = await runCentralizedProgram({
-        programPath: rubyBinary!,
+        programPath: rubyBinary,
         argv: ["ruby", "--disable-gems", "-e", RUBY_PRIVILEGED_FORK_PROGRAM],
         env: ["HOME=/tmp", "TMPDIR=/tmp"],
         uid: 0,
@@ -104,7 +104,7 @@ describe.skipIf(!rubyBinary || !execChildBinary)(
         // Root is intentionally in CRuby's privileged ordinary-fork branch.
         // With no room for a cloned Memory, both its initial attempt and the
         // documented post-GC retry fail with ENOMEM.
-        maxProcessMemoryBytes: initialAddressSpaceBytes(rubyBinary!),
+        maxProcessMemoryBytes: initialAddressSpaceBytes(rubyBinary),
         onProcessEvent: (event) => events.push(event.kind),
         useDefaultRootfs: false,
         timeout: 180_000,

@@ -20,7 +20,7 @@ describe("browser libc conformance inventory", () => {
     };
     // WHY: execute the real discovery/accounting wrapper, not a textual model
     // of its guard. Only unavailable build/runtime prerequisites are peers.
-    for (const name of ["run-browser-libc-tests.sh", "browser-runner-accounting.sh"]) {
+    for (const name of ["run-browser-libc-tests.sh", "browser-runner-accounting.sh", "conformance-prerequisites.sh"]) {
       write(`scripts/${name}`, readFileSync(join(repoRoot, "scripts", name), "utf8"));
     }
     write("scripts/resolve-binary.sh", '#!/bin/sh\nprintf "%s\\n" "$(dirname "$0")/../kernel.wasm"\n', true);
@@ -47,11 +47,13 @@ describe("browser libc conformance inventory", () => {
     const output = result.stdout + result.stderr;
     expect(result.error, output).toBeUndefined();
     expect(result.signal, output).toBeNull();
-    expect(existsSync(abi), output).toBe(true);
+    expect(existsSync(abi), output).toBe(false);
     expect(existsSync(compiler), output).toBe(false);
     expect(existsSync(browser), output).toBe(false);
     expect(result.status, output).not.toBe(0);
-    expect(output).toContain("Error: no libc-test tests were discovered or selected (categories: functional regression math); is tests/libc/libc-test checked out?");
+    expect(output).toContain("SETUP ERROR");
+    expect(output).toContain("git submodule update --init tests/libc/libc-test");
+    expect(output).not.toMatch(/^(PASS|FAIL|TOTAL):/m);
     expect(output).not.toContain("===== Running");
   });
 });
