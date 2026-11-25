@@ -24,6 +24,7 @@ import {
   DynamicLinker,
   FORK_CAP_DYLINK_MAIN,
   forkInstrumentRoleAvailable,
+  parseDylinkSection,
   readForkInstrumentCapabilityClaim,
   requireCppExceptionTag,
   requireLongjmpTag,
@@ -150,6 +151,15 @@ import {
   KLOG_IMPORT,
   KLOG_INVALID_ARGUMENT,
   KLOG_MODULE,
+  LOADER_ADVANCE,
+  LOADER_BIND_DATA,
+  LOADER_BIND_DIRECT,
+  LOADER_BIND_FUNCTION_POINTER,
+  LOADER_IMPORT,
+  LOADER_INSPECT,
+  LOADER_MAP,
+  LOADER_MAX_IMPORTS,
+  LOADER_MODULE,
   STACK_IMPORT,
   STACK_MODULE,
 } from "./generated/program-extensions";
@@ -1191,6 +1201,9 @@ export function buildDlopenImports(
     return errno !== 0 ? -errno : result;
   };
   const extensionImports: WebAssembly.Imports = {
+    ...(ptrWidth === 4 && forkActivationOwner ? {
+      [LOADER_MODULE]: { [LOADER_IMPORT]: mapGuestModule },
+    } : {}),
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
@@ -1794,6 +1807,121 @@ export function buildDlopenImports(
     return null;
   };
 
+  // For this prototype each binding selects an executable definition. The
+  // vector is libc-owned even when a fresh worker rebuilds engine objects.
+  const guestMappingName = "\0kandelo.loader.prototype.v1/1";
+  const guestBindingImports = (imports: readonly WebAssembly.ModuleImportDescriptor[]) => {
+    const bindings: { name: string; kind: number }[] = [];
+    for (const { module, name, kind } of imports) {
+      if (module === "env" && kind === "function" &&
+          name !== "fork" && !name.startsWith("__wpk_fork_")) {
+        bindings.push({ name, kind: LOADER_BIND_DIRECT });
+      } else if (module === "GOT.func" && kind === "global") {
+        bindings.push({ name, kind: LOADER_BIND_FUNCTION_POINTER });
+      } else if (module === "GOT.mem" && kind === "global") {
+        bindings.push({ name, kind: LOADER_BIND_DATA });
+      }
+    }
+    return bindings;
+  };
+  let inspected: { bytes: Uint8Array; module: WebAssembly.Module } | undefined;
+  let preparedGuestModule: WebAssembly.Module | undefined;
+
+  function mapGuestModule(packetPtr: number, packetLength: number, action: number): number {
+    if (!acquireMainDlopenLock()) return -22;
+    let transaction = 0;
+    try {
+      requireOwnedMemory("map a guest module");
+      const packet = checkedWasmMemoryRange(
+        memory, packetPtr, packetLength, ptrWidth, "guest module request",
+      );
+      if (packet.length !== 16) return -22;
+      const readWord = (offset: number): number =>
+        new DataView(memory.buffer).getUint32(packet.offset + offset, true);
+      if (action === LOADER_INSPECT) {
+        inspected = undefined;
+        if (loadedLibraries.has(guestMappingName) || readWord(4) > 64 * 1024 * 1024) return -22;
+        const source = checkedWasmMemoryRange(
+          memory, readWord(0), readWord(4), ptrWidth, "guest module bytes",
+        );
+        const output = checkedWasmMemoryRange(
+          memory, readWord(8), readWord(12), ptrWidth, "guest module metadata",
+        );
+        const bytes = new Uint8Array(memory.buffer, source.offset, source.length).slice();
+        const metadata = parseDylinkSection(bytes);
+        if (!metadata || metadata.neededDynlibs.length || metadata.tlsExports.size)
+          return -22;
+        const compiled = new WebAssembly.Module(bytes);
+        const imports = WebAssembly.Module.imports(compiled);
+        const rows = guestBindingImports(imports).map(({ name, kind }) =>
+          ({ name: encoder.encode(name), kind }));
+        if (rows.length > LOADER_MAX_IMPORTS) return -22;
+        const [symtab, duplicate] = WebAssembly.Module.customSections(compiled, "kandelo.dynsym.v1");
+        if (!symtab || duplicate) return -22;
+        const size = 8 + rows.reduce((size, { name }) => size + 8 + name.length + 1, 0)
+          + symtab.byteLength;
+        if (size > output.length) return -105;
+        const dest = new Uint8Array(memory.buffer, output.offset, size);
+        const view = new DataView(dest.buffer, dest.byteOffset, dest.byteLength);
+        view.setUint32(0, rows.length, true);
+        view.setUint32(4, symtab.byteLength, true);
+        let offset = 8;
+        for (const { name, kind } of rows) {
+          view.setUint32(offset, name.length + 1, true);
+          view.setUint32(offset + 4, kind, true);
+          dest.set(name, offset + 8);
+          offset += 8 + name.length + 1;
+          dest[offset - 1] = 0;
+        }
+        dest.set(new Uint8Array(symtab), offset);
+        inspected = { bytes, module: compiled };
+        return size;
+      }
+      const linker = getLinker();
+      if (action === LOADER_MAP) {
+        if (!inspected || preparedGuestModule || loadedLibraries.has(guestMappingName)) return -22;
+        const prepared = inspected;
+        inspected = undefined;
+        claimLoaderOwnership();
+        transaction = linker.beginDlopenSync(guestMappingName, prepared.bytes, false);
+        if (transaction <= 0) {
+          releaseLoaderOwnershipIfIdle();
+          return -22;
+        }
+        preparedGuestModule = prepared.module;
+        ownedDlopenTransactions.add(transaction);
+        return transaction;
+      }
+      if (action !== LOADER_ADVANCE) return -22;
+      transaction = readWord(0);
+      if (!ownedDlopenTransactions.has(transaction)) return -22;
+      const entry = linker.nextDlopenInitialization(transaction);
+      if (entry > 0) {
+        notifyCommit(forkArchive.sync(linker.forkState()));
+        return entry;
+      }
+      const mapped = entry === 0 ? linker.finishGuestMapping(transaction) : undefined;
+      if (!mapped) linker.abortDlopenTransaction(transaction);
+      ownedDlopenTransactions.delete(transaction);
+      releaseLoaderOwnershipIfIdle();
+      notifyCommit(forkArchive.sync(linker.forkState()));
+      if (!mapped) return -22;
+      const result = new DataView(memory.buffer);
+      result.setUint32(packet.offset + 4, mapped.tableBase, true);
+      result.setUint32(packet.offset + 8, mapped.memoryBase, true);
+      return 0;
+    } catch (error) {
+      if (transaction && ownedDlopenTransactions.delete(transaction)) {
+        getLinker().abortDlopenTransaction(transaction, error);
+        releaseLoaderOwnershipIfIdle();
+        notifyCommit(forkArchive.sync(getLinker().forkState()));
+      }
+      return -22;
+    } finally {
+      releaseMainDlopenLock();
+    }
+  }
+
   const getLinker = (): DynamicLinker => {
     if (linker) return linker;
     const table = getTable();
@@ -1859,6 +1987,60 @@ export function buildDlopenImports(
       globalSymbolOwners,
       got: new Map(),
       loadedLibraries,
+      takeGuestCompiledModule: (moduleName) => {
+        if (moduleName !== guestMappingName) return undefined;
+        // The transaction only retains bytes from this exact inspected module.
+        const compiled = preparedGuestModule;
+        preparedGuestModule = undefined;
+        return compiled;
+      },
+      guestModuleBindings: (moduleName, imports, replaying) => {
+        if (moduleName !== guestMappingName) return undefined;
+        const coordinates = inst?.exports.__kandelo_loader_bindings;
+        if (!(coordinates instanceof WebAssembly.Global) || typeof coordinates.value !== "number")
+          throw new Error("guest mapping has no executable binding vector");
+        const names = guestBindingImports(imports);
+        if (names.length > LOADER_MAX_IMPORTS)
+          throw new Error("guest mapping import count exceeds its binding vector");
+        const range = checkedWasmMemoryRange(
+          memory, coordinates.value, names.length * 8, ptrWidth, "guest binding vector",
+        );
+        const view = new DataView(memory.buffer, range.offset, range.length);
+        const functions = new Map<string, Function>();
+        const globals = new Map<string, number>();
+        names.forEach(({ name, kind }, index) => {
+          const slot = view.getUint32(index * 8, true);
+          if (kind !== LOADER_BIND_DIRECT) {
+            const key = `${kind === LOADER_BIND_DATA ? "mem" : "func"}:${name}`;
+            const prior = globals.get(key);
+            if (prior !== undefined && prior !== slot)
+              throw new Error(`guest mapping import ${name} has inconsistent GOT values`);
+            globals.set(key, slot);
+            return;
+          }
+          const nameAddress = view.getUint32(index * 8 + 4, true);
+          if (!slot || !nameAddress || nameAddress >= memory.buffer.byteLength)
+            throw new Error(`guest mapping import ${name} has an invalid binding`);
+          const nameBuffer = new Uint8Array(
+            memory.buffer, nameAddress, Math.min(4096, memory.buffer.byteLength - nameAddress),
+          );
+          const end = nameBuffer.indexOf(0);
+          if (end <= 0)
+            throw new Error(`guest mapping import ${name} has no provider export name`);
+          const exportName = decoder.decode(nameBuffer.slice(0, end));
+          const target = inst?.exports[exportName];
+          // The child attaches providers before it applies the copied table.
+          // Bind its fresh export directly, then restore the canonical slot.
+          if (typeof target !== "function" || (!replaying &&
+              (slot >= table.length || table.get(slot) !== target)))
+            throw new Error(`guest mapping import ${name} has no callable provider`);
+          const prior = functions.get(name);
+          if (prior && prior !== target)
+            throw new Error(`guest mapping import ${name} has inconsistent bindings`);
+          functions.set(name, target);
+        });
+        return { functions, globals };
+      },
       programExtensionImports: extensionImports,
       withModuleInstantiation: <T>(operation: () => T): T => {
         instantiatingModules++;

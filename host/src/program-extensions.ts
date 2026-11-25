@@ -2,6 +2,8 @@
 import {
   KLOG_IMPORT,
   KLOG_MODULE,
+  LOADER_IMPORT,
+  LOADER_MODULE,
   RESERVED_MODULE_PREFIX,
   STACK_IMPORT,
   STACK_MODULE,
@@ -20,6 +22,7 @@ interface FunctionImport {
 const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
   [STACK_MODULE, STACK_IMPORT],
   [KLOG_MODULE, KLOG_IMPORT],
+  [LOADER_MODULE, LOADER_IMPORT],
 ]);
 const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set([...EXTENSION_IMPORTS.values(), MEMORY_GROUP_GROWTH_IMPORT]);
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());
@@ -73,6 +76,10 @@ export function describeProgramExtensionFailures(
     const width = memoryPointerWidths[0];
     if (memoryPointerWidths.length !== 1 || (width !== 4 && width !== 8)) {
       failures.push(`${identity} requires one process memory`);
+      continue;
+    }
+    if (entry.module === LOADER_MODULE && width !== 4) {
+      failures.push(`${identity} requires wasm32`);
       continue;
     }
     const expected = [width === 8 ? 0x7e : 0x7f, 0x7f, 0x7f];

@@ -1,0 +1,149 @@
+--- a/lld/wasm/Config.h
++++ b/lld/wasm/Config.h
+@@ -62,0 +63 @@
++  bool kandeloSideDynsym;
+--- a/lld/wasm/Driver.cpp
++++ b/lld/wasm/Driver.cpp
+@@ -540,0 +541 @@
++  ctx.arg.kandeloSideDynsym = args.hasArg(OPT_kandelo_side_dynsym);
+@@ -594,0 +596,2 @@
++  if (ctx.arg.kandeloSideDynsym && !ctx.arg.shared)
++    error("--kandelo-side-dynsym requires --shared");
+--- a/lld/wasm/Options.td
++++ b/lld/wasm/Options.td
+@@ -72,0 +73,3 @@
++def kandelo_side_dynsym: F<"kandelo-side-dynsym">,
++  HelpText<"Emit Kandelo's module-relative dynamic symbol index for a shared object">;
++
+--- a/lld/wasm/Writer.cpp
++++ b/lld/wasm/Writer.cpp
+@@ -28,0 +29 @@
++#include "llvm/Support/Endian.h"
+@@ -86,0 +88,2 @@
++  void reserveKandeloDynsym();
++  void writeKandeloDynsym();
+@@ -109,0 +113,10 @@
++  struct KandeloSymbol {
++    StringRef name;
++    Symbol *symbol;
++  };
++  std::vector<KandeloSymbol> kandeloSymbols;
++  std::vector<uint8_t> kandeloDynsym;
++  WasmSegment kandeloDynsymSegment{};
++  InputSegment *kandeloDynsymInput = nullptr;
++
++
+@@ -152,0 +166,4 @@
++      if (name == "kandelo.dynsym.v1" && ctx.arg.kandeloSideDynsym) {
++        error("input defines the reserved kandelo.dynsym.v1 section");
++        continue;
++      }
+@@ -573,0 +591,3 @@
++  if (ctx.arg.kandeloSideDynsym && kandeloDynsymInput)
++    addSection(make<CustomSection>("kandelo.dynsym.v1",
++                                   ArrayRef<InputChunk *>{kandeloDynsymInput}));
+@@ -1072,0 +1093,17 @@
++
++// The lookup object refers to the section start symbol. If GC removed that
++// reference, leave an ordinary link untouched.
++void Writer::reserveKandeloDynsym() {
++  Symbol *anchor = symtab->find("__start_kandelo_dynsym");
++  bool executable = anchor && anchor->isLive() && isa<UndefinedData>(anchor);
++  if (!executable && !ctx.arg.kandeloSideDynsym)
++    return;
++  if (executable && (ctx.arg.relocatable || ctx.isPic)) {
++    error("Kandelo executable dynamic symbol index requires a non-PIC executable");
++    return;
++  }
++  StringRef name = "kandelo_dynsym";
++  if (segmentMap.contains(name)) {
++    error("input defines the reserved kandelo_dynsym segment");
++    return;
++  }
+@@ -1073,0 +1111,81 @@
++  uint64_t byteSize = 16;
++  for (Symbol *sym : symtab->symbols()) {
++    if (!sym->isLive() || !sym->isExported() || !sym->getFile())
++      continue;
++    auto *function = dyn_cast<DefinedFunction>(sym);
++    if (!function && !isa<DefinedData>(sym))
++      continue;
++    if (function && function->isStub)
++      continue;
++    StringRef exportName = sym->getName();
++    if (function)
++      exportName = function->function->getExportName().value_or(exportName);
++    if (exportName == "_start" || exportName.starts_with("__wasm_") ||
++        exportName.starts_with("__kandelo_") ||
++        exportName.starts_with("wpk_fork_") ||
++        exportName.starts_with("_wpk_fork_"))
++      continue;
++    kandeloSymbols.push_back({exportName, sym});
++    byteSize += 16 + exportName.size() + 1;
++  }
++  if (byteSize > 64 * 1024 * 1024) {
++    error("Kandelo dynamic symbol index exceeds 64 MiB");
++    return;
++  }
++  llvm::sort(kandeloSymbols, [](const KandeloSymbol &a, const KandeloSymbol &b) {
++    return a.name < b.name;
++  });
++
++  kandeloDynsym.resize(byteSize);
++  kandeloDynsymSegment.Data.Name = name;
++  kandeloDynsymSegment.Data.Alignment = 3;
++  kandeloDynsymSegment.Data.Content = kandeloDynsym;
++  kandeloDynsymInput = make<InputSegment>(kandeloDynsymSegment, nullptr);
++  kandeloDynsymInput->live = true;
++  if (!ctx.arg.kandeloSideDynsym) {
++    OutputSegment *segment = createOutputSegment(name);
++    segmentMap[name] = segment;
++    segment->addInputSegment(kandeloDynsymInput);
++  }
++}
++
++void Writer::writeKandeloDynsym() {
++  if (kandeloDynsym.empty())
++    return;
++
++  // All existing address-taken functions have slots after relocation scanning.
++  // ElemSection adds slots for the remaining dynamic exports and deduplicates
++  // aliases of an already indexed InputFunction.
++  using namespace llvm::support::endian;
++  uint8_t *header = kandeloDynsym.data();
++  memcpy(header, "KDS1", 4);
++  write32le(header + 4, kandeloDynsym.size());
++  write32le(header + 8, kandeloSymbols.size());
++  size_t nameOffset = 16 + kandeloSymbols.size() * 16;
++  uint8_t *row = header + 16;
++  for (const KandeloSymbol &entry : kandeloSymbols) {
++    uint64_t value;
++    uint32_t kind;
++    if (auto *f = dyn_cast<DefinedFunction>(entry.symbol)) {
++      if (!ctx.sym.indirectFunctionTable)
++        ctx.sym.indirectFunctionTable =
++            symtab->resolveIndirectFunctionTable(/*required=*/true);
++      if (!ctx.sym.indirectFunctionTable)
++        return;
++      out.elemSec->addEntry(f);
++      value = f->getTableIndex();
++      kind = 1;
++    } else {
++      auto *d = cast<DefinedData>(entry.symbol);
++      value = d->getVA();
++      kind = d->isTLS() ? 3 : 2;
++    }
++    write32le(row, nameOffset);
++    write32le(row + 4, kind);
++    write64le(row + 8, value);
++    memcpy(header + nameOffset, entry.name.data(), entry.name.size());
++    nameOffset += entry.name.size() + 1;
++    row += 16;
++  }
++}
++
+@@ -1094,0 +1213,2 @@
++  reserveKandeloDynsym();
++
+@@ -1859,0 +1980 @@
++  writeKandeloDynsym();

@@ -791,8 +791,19 @@ export interface DylinkForkReconcileOptions {
 /**
  * Options for loading a shared library.
  */
+export interface GuestModuleBindings {
+  readonly functions: ReadonlyMap<string, Function>;
+  readonly globals: ReadonlyMap<string, number>;
+}
+
 export interface LoadSharedLibraryOptions {
   programExtensionImports?: WebAssembly.Imports;
+  takeGuestCompiledModule?: (moduleName: string) => WebAssembly.Module | undefined;
+  guestModuleBindings?: (
+    moduleName: string,
+    imports: readonly WebAssembly.ModuleImportDescriptor[],
+    replaying: boolean,
+  ) => GuestModuleBindings | undefined;
   withModuleInstantiation?: <T>(operation: () => T) => T;
   /** Process storage for metadata and main-symbol operations. Side-module
    * instantiation currently requires genuine ordinary linear memory. */
@@ -1200,9 +1211,8 @@ function* instantiateSharedLibrarySteps(
   // Compile the exact archive bytes first. Besides producing clearer engine
   // diagnostics, this makes the narrow section parser below operate only on a
   // structurally valid module.
-  const sourceModule = new WebAssembly.Module(
-    wasmBytes as unknown as BufferSource,
-  );
+  const sourceModule = (replay ? undefined : options.takeGuestCompiledModule?.(name)) ??
+    new WebAssembly.Module(wasmBytes as unknown as BufferSource);
   registerWasmModuleReflection(sourceModule, wasmBytes);
   const borrowsMemory = replay?.memoryOwnership === "borrowed";
   if (borrowsMemory) {
@@ -1228,6 +1238,7 @@ function* instantiateSharedLibrarySteps(
     registerWasmModuleReflection(module, borrowedModuleBytes);
   }
   const moduleImports = wasmModuleImports(module);
+  const guestBindings = options.guestModuleBindings?.(name, moduleImports, replay !== undefined);
   checkSideModuleForkContract(
     name,
     moduleImports,
@@ -1682,6 +1693,19 @@ function* instantiateSharedLibrarySteps(
       symName: string,
       kind: "mem" | "func",
     ): WebAssembly.Global => {
+      if (guestBindings) {
+        const key = `${kind}:${symName}`;
+        const value = guestBindings.globals.get(key);
+        if (value === undefined)
+          throw new Error(`${name}: missing planned GOT.${kind} binding for ${symName}`);
+        let cell = localGot.get(key);
+        if (!cell) {
+          cell = new WebAssembly.Global({ value: pointerGlobalType, mutable: true },
+            wasmAddress(value, ptrWidth, `${name}: GOT.${kind}.${symName}`));
+          localGot.set(key, cell);
+        }
+        return cell;
+      }
       const resolved = scopedSymbol(options, dependencyScope, symName);
       recordProvider(resolved?.owner);
       if (
@@ -1890,6 +1914,8 @@ function* instantiateSharedLibrarySteps(
                 // ownership between the loader and coordinator. Missing
                 // activation imports fail before the side module executes.
                 value = undefined;
+              } else if (guestBindings) {
+                value = guestBindings.functions.get(prop);
               } else {
                 const resolved = scopedSymbol(
                   options,
@@ -1924,6 +1950,7 @@ function* instantiateSharedLibrarySteps(
             hasCompleteForkInstrumentation
             && (prop === "fork" || prop.startsWith("__wpk_fork_"))
           ) return false;
+          if (guestBindings) return guestBindings.functions.has(prop);
           return scopedSymbol(options, dependencyScope, prop) !== undefined
             || selfFunctionImports.has(prop);
         },
@@ -2185,7 +2212,9 @@ function* instantiateSharedLibrarySteps(
     };
 
     // Update GOT with this library's exports
-    for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
+    // Guest-mapped modules already have canonical slots in their element
+    // segment. The guest index names those slots, and the host adds none.
+    for (const [exportName, exportValue] of guestBindings ? [] : Object.entries(relocatedExports)) {
       if (exportName.startsWith("__") || isForkRuntimeExport(exportName)) {
         // WHY: these are activation-control entry points, not ELF-visible
         // application symbols. Publishing them would put post-catalog
@@ -3595,6 +3624,17 @@ export class DynamicLinker {
 
   hasPendingDlopen(token: number): boolean {
     return this.pendingDlopens.has(token);
+  }
+
+  /** Complete a guest-selected mapping without creating a host dlopen handle. */
+  finishGuestMapping(token: number): LoadedSharedLibrary | undefined {
+    const transaction = this.pendingDlopens.get(token);
+    if (!transaction?.loaded || transaction.awaitingCompletion ||
+        !this.options.guestModuleBindings) {
+      return undefined;
+    }
+    this.pendingDlopens.delete(token);
+    return transaction.loaded;
   }
 
   /** Commit the fully initialized module closure and return its stable handle. */

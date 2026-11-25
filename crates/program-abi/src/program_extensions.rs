@@ -89,6 +89,29 @@ pub mod klog_v1 {
     ];
 }
 
+/// Experimental worker-local mapping transport. No POSIX scopes or handles
+/// are part of the transport. The packet fields are fixed-width offsets.
+pub mod loader_v1 {
+    pub const MODULE: &str = "kandelo.loader.prototype.v1";
+    pub const IMPORT: &str = "__kandelo_map_module_v1";
+    pub const INSPECT: u32 = 1;
+    pub const MAP: u32 = 2;
+    pub const ADVANCE: u32 = 3;
+    pub const MAX_IMPORTS: u32 = 8192;
+    pub const BIND_DIRECT: u32 = 1;
+    pub const BIND_FUNCTION_POINTER: u32 = 2;
+    pub const BIND_DATA: u32 = 3;
+    pub const WIRE: &[(&str, u32)] = &[
+        ("INSPECT", INSPECT),
+        ("MAP", MAP),
+        ("ADVANCE", ADVANCE),
+        ("MAX_IMPORTS", MAX_IMPORTS),
+        ("BIND_DIRECT", BIND_DIRECT),
+        ("BIND_FUNCTION_POINTER", BIND_FUNCTION_POINTER),
+        ("BIND_DATA", BIND_DATA),
+    ];
+}
+
 /// The grouped SDK delegates private frame allocation to the actual kernel.
 /// This required namespace is independent of both the base ABI and the physical
 /// memory layout namespace; no ordinary executable requests it.
@@ -96,45 +119,3 @@ pub mod memory_group_growth_v1 {
     pub const MODULE: &str = "kandelo.memory-group-growth.v1";
     pub const IMPORT: &str = "__kandelo_memory_group_grow_v1";
     pub const VERSION: u32 = 1;
-}
-
-/// Every implemented extension, by module and its single function import.
-/// Each has the signature `(pointer, i32, i32) -> i32`.
-pub const EXTENSIONS: &[(&str, &str)] = &[
-    (stack_v1::MODULE, stack_v1::IMPORT),
-    (klog_v1::MODULE, klog_v1::IMPORT),
-];
-
-/// The function import a known extension module supplies.
-pub fn extension_import(module: &str) -> Option<&'static str> {
-    EXTENSIONS
-        .iter()
-        .find(|(candidate, _)| *candidate == module)
-        .map(|(_, import)| *import)
-}
-
-/// Whether a name is one of the extension functions, imported from any module.
-pub fn is_extension_import_name(name: &str) -> bool {
-    name == memory_group_growth_v1::IMPORT || EXTENSIONS.iter().any(|(_, import)| *import == name)
-}
-
-/// Independently versioned trusted-group memory layout. Not a base env import.
-/// Ordinary hosts reject this required memory namespace until their explicit
-/// grouped backend is available. The kernel owns the shared allocation bitmap.
-#[path = "memory_group_layout.rs"]
-pub mod memory_group_v3;
-
-#[cfg(test)]
-mod memory_group_layout_tests {
-    use super::memory_group_v3 as g;
-    #[test]
-    fn physical_pool_metadata_cannot_overlap_wait_nodes_or_root_controls() {
-        let ranges=[(g::CONTROL,g::CONTROL+16),(g::WAIT_HEADER,g::WAIT_HEADER+24),
-            (g::BITMAP,g::BITMAP+g::BITMAP_BYTES),(g::WAIT_NODES,g::PAGE_BYTES)];
-        for pair in ranges.windows(2) {assert!(pair[0].1<=pair[1].0);}
-        assert_eq!(g::MAXIMUM_PAGES,g::BITMAP_BYTES*8);
-        assert!(g::ROOT_GROW_LOCK+4<=g::ROOT_RUN);
-        assert!(g::ROOT_RUN+4<=g::ROOT_HEADER_BYTES);
-        assert!((g::MAXIMUM_PAGES as u64)*(g::PAGE_BYTES as u64)<=u32::MAX as u64+1);
-    }
-}
