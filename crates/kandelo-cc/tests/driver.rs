@@ -344,6 +344,7 @@ fn links_declared_fictions_lazily_ahead_of_the_callers_inputs() {
         fallback: strings(&["/tmp/g/cxxrt.o"]),
         fictions: strings(&["/tmp/g/kandelo_fiction_mprotect.o"]),
         fiction_libraries: strings(&["-lkandelo-mprotect"]),
+        ..Glue::default()
     };
     let args = build_clang_args(
         &strings(&["main.o", "-lkandelo-mprotect", "-o", "out.wasm"]),
