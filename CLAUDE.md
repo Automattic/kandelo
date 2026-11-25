@@ -261,6 +261,9 @@ Kandelo is not Linux. Never define `__linux__` in SDK flags, `config.site` or
 the sysroot. Prefer feature macros or cache variables for upstream probes;
 a per-package `-D__linux__` is a commented last resort requiring a maintainer
 conversation. Package patches must not hide ordinary Kandelo POSIX gaps.
+Every carried patch opens with a comment header giving its purpose, reason,
+justification and exit condition; see
+[patch documentation](docs/agent-guidance/packages-and-builds.md#patch-documentation).
 
 ## Browser And User Contract
 

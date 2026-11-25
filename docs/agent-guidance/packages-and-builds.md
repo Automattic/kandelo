@@ -113,6 +113,51 @@ test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 `KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
 [Cache garbage collection](../package-management.md#cache-garbage-collection).
 
+## Patch documentation
+
+Aim for unpatched upstream builds. Before patching, look for a fix through
+the platform (libc, SDK, kernel, host), an upstream configure option or
+build flag, or a newer upstream release. When a patch is still needed, keep
+it as small as the problem. Where possible, gate it on the missing
+capability, so the code behaves as upstream does wherever that capability
+exists, and mark it `# @suggest-upstream` when upstream could take it (see
+below).
+
+Every patch the repository carries against third-party source documents
+itself. That covers package patches, SDK and toolchain patches under `sdk/`,
+and any `.patch` or `.diff` a build script applies. A reader must be able to
+tell from the patch file alone why it exists. Test fixtures whose patch
+content is the input under test are exempt.
+
+Open each patch with a comment header before the first diff header. GNU
+`patch` and `git apply` skip text before the first diff. In a `git
+format-patch` file, the commit message is the header. The header states:
+
+- **Purpose:** what the patch changes, grouped by file or hunk when it
+  touches several areas.
+- **Reason:** the failure or boundary that makes Kandelo need it. Give the
+  observed error, measurement or missing interface, not just "needed for
+  Kandelo".
+- **Justification:** why a patch is the right fix rather than a change to
+  Kandelo. Name the boundary it belongs to (upstream portability, a
+  WebAssembly or browser limit, a documented platform gap with its
+  follow-up), and the test or evidence that covers it.
+- **Exit:** the condition for dropping the patch, such as an upstream
+  release, a Kandelo feature landing, or a measurement that no longer holds.
+
+When the reason for an individual hunk is not obvious from the header, put a
+comment at that site in the patched source too. Explain the Kandelo reason
+there, not just the mechanics.
+
+Write header lines as `#` comments. Never start one with `--- `, `+++ `,
+`*** `, `@@`, `diff ` or `Index:`, because patch tools read those as diff
+syntax. Keep the header current when hunks change. When a patch you edit
+has no header, add one in the same change. The script that applies a
+patch needs only a short pointer comment; the patch is the authority, and
+package READMEs or `docs/package-management.md` summarize and link to it.
+After editing a patch, check that it still applies with
+`patch --fuzz=0` to the pinned source.
+
 ## Upstream submission candidates
 
 Mark a package patch that may be suitable for upstream review with this
