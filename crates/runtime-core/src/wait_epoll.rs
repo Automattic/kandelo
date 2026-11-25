@@ -1,6 +1,5 @@
 //! Epoll wait arguments and copyout survive a park in the guest's address space.
 
-use alloc::vec::Vec;
 use wasm_posix_shared::{Errno, WasmEpollEvent, epoll::MAX_EVENTS};
 
 use crate::process::{HostIO, Process};
@@ -137,17 +136,22 @@ impl Request {
             peers,
         )?;
         if count > 0 {
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(events.len() * size_of::<WasmEpollEvent>())
-                .map_err(|_| Errno::ENOMEM)?;
-            for (flags, data) in events {
-                bytes.extend_from_slice(&flags.to_le_bytes());
-                bytes.extend_from_slice(&0u32.to_le_bytes());
-                bytes.extend_from_slice(&data.to_le_bytes());
-            }
-            if host.proc_write_bytes(proc.pid as i32, self.events, &bytes) < 0 {
-                return Err(Errno::EFAULT);
+            const EVENTS_PER_COPY: usize = 64;
+            const EVENT_BYTES: usize = size_of::<WasmEpollEvent>();
+            // The ready queue has already consumed these events. Reuse a
+            // bounded buffer so copyout cannot lose them to a heap allocation.
+            let mut bytes = [0; EVENTS_PER_COPY * EVENT_BYTES];
+            let mut address = self.events;
+            for batch in events.chunks(EVENTS_PER_COPY) {
+                let output = &mut bytes[..batch.len() * EVENT_BYTES];
+                for (record, &(flags, data)) in output.chunks_exact_mut(EVENT_BYTES).zip(batch) {
+                    record[..4].copy_from_slice(&flags.to_le_bytes());
+                    record[8..16].copy_from_slice(&data.to_le_bytes());
+                }
+                if host.proc_write_bytes(proc.pid as i32, address, output) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                address += output.len() as u64;
             }
         }
         Ok(count)

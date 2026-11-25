@@ -50168,6 +50168,71 @@ impl HostIO for NetMock {
     }
 
     #[test]
+    fn epoll_copyout_delivers_one_shot_events_in_bounded_batches() {
+        use wasm_posix_shared::epoll::{EPOLLET, EPOLLIN, EPOLLONESHOT};
+
+        const COUNT: usize = 65;
+        const ADDRESS: usize = 16;
+        const STRIDE: usize = size_of::<wasm_posix_shared::WasmEpollEvent>();
+        const TAG: u64 = 0xfeed_abcd_0000_0000;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.proc_memory = vec![0xaa; ADDRESS + COUNT * STRIDE];
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        for index in 0..COUNT {
+            let fd = sys_eventfd2(&mut proc, 1, 0).unwrap();
+            sys_epoll_ctl(
+                &mut proc,
+                epfd,
+                1,
+                fd,
+                EPOLLIN | EPOLLET | EPOLLONESHOT,
+                TAG + index as u64,
+            )
+            .unwrap();
+        }
+
+        let mut wait = |host: &mut MockHostIO, address: usize| {
+            crate::wait_epoll::Request::start(
+                &mut proc,
+                &mut [],
+                host,
+                GuestTask::wasm32(1, 1),
+                epfd,
+                address as u64,
+                COUNT as i32,
+                0,
+                0,
+                0,
+            )
+        };
+        assert!(matches!(wait(&mut host, ADDRESS + 1), Err(Errno::EFAULT)));
+        assert!(host.proc_write_calls.is_empty());
+        assert!(matches!(
+            wait(&mut host, ADDRESS),
+            Ok(ParkOutcome::Done(count)) if count == COUNT as i32
+        ));
+        let writes: Vec<_> = host
+            .proc_write_calls
+            .iter()
+            .map(|(_, address, bytes)| (*address, bytes.len()))
+            .collect();
+        assert_eq!(
+            writes,
+            [(ADDRESS as u64, 64 * STRIDE), ((ADDRESS + 64 * STRIDE) as u64, STRIDE)]
+        );
+        let mut data = Vec::new();
+        for record in host.proc_memory[ADDRESS..].chunks_exact(STRIDE) {
+            assert_eq!(u32::from_le_bytes(record[..4].try_into().unwrap()), EPOLLIN);
+            assert_eq!(record[4..8], [0; 4]);
+            data.push(u64::from_le_bytes(record[8..16].try_into().unwrap()));
+        }
+        data.sort_unstable();
+        assert_eq!(data, (TAG..TAG + COUNT as u64).collect::<Vec<_>>());
+        assert!(matches!(wait(&mut host, ADDRESS), Ok(ParkOutcome::Done(0))));
+    }
+
+    #[test]
     fn test_epoll_pwait_empty_interests() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
