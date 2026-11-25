@@ -1,0 +1,53 @@
+Use Go's existing unsupported paths for automatic toolchain replacement
+and OS version telemetry on Kandelo. The guest SDK runs the installed
+toolchain with GOTOOLCHAIN=local. The Go port lacks syscall.Exec and the
+vendored Unix telemetry code does not implement Uname for Kandelo.
+
+diff --git a/src/cmd/go/internal/toolchain/exec.go b/src/cmd/go/internal/toolchain/exec.go
+--- a/src/cmd/go/internal/toolchain/exec.go
++++ b/src/cmd/go/internal/toolchain/exec.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !js && !wasip1
++//go:build !js && !wasip1 && !kandelo
+ 
+ package toolchain
+ 
+diff --git a/src/cmd/go/internal/toolchain/exec_stub.go b/src/cmd/go/internal/toolchain/exec_stub.go
+--- a/src/cmd/go/internal/toolchain/exec_stub.go
++++ b/src/cmd/go/internal/toolchain/exec_stub.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build js || wasip1
++//go:build js || wasip1 || kandelo
+ 
+ package toolchain
+ 
+diff --git a/src/cmd/go/internal/telemetrystats/version_unix.go b/src/cmd/go/internal/telemetrystats/version_unix.go
+--- a/src/cmd/go/internal/telemetrystats/version_unix.go
++++ b/src/cmd/go/internal/telemetrystats/version_unix.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !cmd_go_bootstrap && unix
++//go:build !cmd_go_bootstrap && unix && !kandelo
+ 
+ package telemetrystats
+ 
+diff --git a/src/cmd/go/internal/telemetrystats/version_other.go b/src/cmd/go/internal/telemetrystats/version_other.go
+--- a/src/cmd/go/internal/telemetrystats/version_other.go
++++ b/src/cmd/go/internal/telemetrystats/version_other.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !cmd_go_bootstrap && !unix && !windows
++//go:build !cmd_go_bootstrap && ((!unix && !windows) || kandelo)
+ 
+ package telemetrystats
+ 

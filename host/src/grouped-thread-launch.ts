@@ -82,7 +82,7 @@ export async function launchGroupedThreadWorker(options: GroupedThreadWorkerOpti
         processChannelOffset: plan.processChannelOffset, channelOffset: plan.allocation.channelOffset,
         secureExec, externrefGenerationId: options.generation.id, forkHostImports: endpoint.init,
         fnPtr: plan.entry.fnPtr, argPtr: plan.entry.argPtr, stackPtr: plan.entry.stackPtr, tlsPtr: plan.entry.tlsPtr,
-        ctidPtr: plan.entry.ctidPtr, tlsOffset: plan.allocation.tlsOffset, tlsAllocAddr: plan.allocation.tlsOffset,
+        ctidPtr: plan.entry.ctidPtr, tls: plan.allocation.tls,
         ptrWidth: 4, kernelAbiVersion: kernel.getKernelAbiVersion(),
         kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
     },

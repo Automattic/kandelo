@@ -63,6 +63,11 @@ fn instrument_inner(
     mut limits: Limits,
     debug: Option<(crate::debug_info::Limits, bool)>,
 ) -> Result<Artifact> {
+    let local = crate::streaming::local_continuation::prepare(input, limits)?;
+    if local.is_some() && debug.is_some_and(|(_, required)| required) {
+        bail!("guest-local continuation lowering does not yet produce source maps");
+    }
+    let input = local.as_ref().map_or(input, MappedArtifact::bytes);
     let lines = debug
         .map(|(debug, required)| {
             if required {

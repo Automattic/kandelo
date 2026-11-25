@@ -1,0 +1,2444 @@
+--- a/gen/optimizer.cpp
++++ b/gen/optimizer.cpp
+@@ -40,10 +40,14 @@
+ #endif
+
+ #include "llvm/TargetParser/Triple.h"
++#include "llvm/Analysis/CFG.h"
+ #include "llvm/Analysis/InlineCost.h"
+ #include "llvm/Analysis/TargetLibraryInfo.h"
+ #include "llvm/Analysis/TargetTransformInfo.h"
++#include "llvm/CodeGen/WinEHPrepare.h"
+ #include "llvm/IR/DataLayout.h"
++#include "llvm/IR/EHPersonalities.h"
++#include "llvm/IR/IRBuilder.h"
+ #include "llvm/IR/LegacyPassNameParser.h"
+ #include "llvm/IR/LegacyPassManager.h"
+ #include "llvm/IR/Module.h"
+@@ -343,6 +347,75 @@
+ }
+
+ #ifndef IN_JITRT
++// A Wasm thread running a loop can otherwise go indefinitely without reaching
++// Kandelo's signal delivery code. Insert calls before spilling potential GC
++// roots so suspended threads expose live pointers to the collector.
++struct KandeloSafepoints : PassInfoMixin<KandeloSafepoints> {
++  PreservedAnalyses run(llvm::Module &module, ModuleAnalysisManager &manager) {
++    FunctionCallee poll;
++    bool preparedFunclets = false;
++    for (Function &function : module) {
++      if (function.isDeclaration())
++        continue;
++      SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 16> edges;
++      FindFunctionBackedges(function, edges);
++      if (edges.empty())
++        continue;
++
++      DenseMap<BasicBlock *, ColorVector> colors;
++      if (function.hasPersonalityFn() &&
++          isScopedEHPersonality(classifyEHPersonality(function.getPersonalityFn()))) {
++        colors = colorEHFunclets(function);
++        if (llvm::any_of(edges, [&](const auto &edge) {
++              const auto color = colors.find(const_cast<BasicBlock *>(edge.first));
++              return color != colors.end() && color->second.size() > 1;
++            })) {
++          // Give shared latches distinct funclet copies before adding calls.
++          // This is the same preparation used by the Wasm backend.
++          auto &functions = manager
++              .getResult<FunctionAnalysisManagerModuleProxy>(module)
++              .getManager();
++          auto preserved = WinEHPreparePass(/*DemoteCatchSwitchPHIOnly=*/true)
++                               .run(function, functions);
++          functions.invalidate(function, preserved);
++          preparedFunclets = true;
++          colors = colorEHFunclets(function);
++          edges.clear();
++          FindFunctionBackedges(function, edges);
++        }
++      }
++
++      SmallPtrSet<BasicBlock *, 16> latches;
++      for (const auto &edge : edges) {
++        auto *latch = const_cast<BasicBlock *>(edge.first);
++        if (!latches.insert(latch).second)
++          continue;
++        Instruction *terminator = latch->getTerminator();
++        // An exception dispatch block cannot contain a call. A loop through
++        // its handlers has a throwing instruction on its unwind path.
++        if (isa<CatchSwitchInst>(terminator))
++          continue;
++        if (!poll.getCallee())
++          poll = module.getOrInsertFunction("__ldc_kandelo_gc_safepoint",
++                                           llvm::Type::getVoidTy(module.getContext()));
++        SmallVector<OperandBundleDef, 1> bundles;
++        if (auto color = colors.find(latch); color != colors.end()) {
++          assert(color->second.size() == 1 && "safepoint latch has an ambiguous funclet");
++          auto *entry = color->second.front();
++          if (entry != &function.getEntryBlock()) {
++            auto *pad = cast<FuncletPadInst>(&*entry->getFirstNonPHIIt());
++            bundles.emplace_back("funclet", pad);
++          }
++        }
++        IRBuilder<> builder(terminator);
++        builder.CreateCall(poll, {}, bundles)->setDoesNotThrow();
++      }
++    }
++    return poll.getCallee() || preparedFunclets ? PreservedAnalyses::none()
++                                               : PreservedAnalyses::all();
++  }
++};
++
+ static void addWasmPointersSpillPass(ModulePassManager &mpm,
+                                          OptimizationLevel level
+ #if LLVM_VERSION_MAJOR >= 20
+@@ -350,6 +423,9 @@
+                                          ThinOrFullLTOPhase
+ #endif
+ ) {
++  const auto &triple = *global.params.targetTriple;
++  if (triple.getArch() == llvm::Triple::wasm32 && triple.getOSName() == "kandelo")
++    mpm.addPass(KandeloSafepoints());
+   mpm.addPass(createModuleToFunctionPassAdaptor(WasmPointersSpillPass()));
+   if (verifyEach) {
+     mpm.addPass(VerifierPass());
+--- a/gen/llvmhelpers.cpp
++++ b/gen/llvmhelpers.cpp
+@@ -1722,11 +1722,13 @@
+                                     llvm::StringRef mangledName,
+                                     bool isConstant, bool isThreadLocal,
+                                     bool useDLLImport) {
+-  // No TLS support for WebAssembly and AVR; spare users from having to add
+-  // __gshared everywhere.
+-  const auto arch = global.params.targetTriple->getArch();
+-  if (arch == llvm::Triple::wasm32 || arch == llvm::Triple::wasm64 ||
+-      arch == llvm::Triple::avr)
++  // Kandelo initializes native Wasm TLS for the main thread and pthreads.
++  // Keep the existing behavior for AVR and the other Wasm targets.
++  const auto &triple = *global.params.targetTriple;
++  const auto arch = triple.getArch();
++  const bool kandeloWasm32 = arch == llvm::Triple::wasm32 &&
++                             triple.getOSName() == "kandelo";
++  if (arch == llvm::Triple::avr || (triple.isWasm() && !kandeloWasm32))
+     isThreadLocal = false;
+
+   llvm::GlobalVariable *existing =
+--- a/runtime/druntime/src/rt/sections_wasm.d
++++ b/runtime/druntime/src/rt/sections_wasm.d
+@@ -51,9 +51,21 @@
+ {
+ }
+
++version (Kandelo)
++{
++    pragma(LDC_intrinsic, "llvm.wasm.tls.base")
++    private void* wasmTlsBase() nothrow @nogc;
++
++    pragma(LDC_intrinsic, "llvm.wasm.tls.size.i32")
++    private size_t wasmTlsSize() nothrow @nogc;
++}
++
+ void[] initTLSRanges() nothrow @nogc
+ {
+-    return null;
++    version (Kandelo)
++        return wasmTlsBase()[0 .. wasmTlsSize()];
++    else
++        return null;
+ }
+
+ void finiTLSRanges(void[] rng) nothrow @nogc
+--- a/runtime/druntime/src/core/time.d
++++ b/runtime/druntime/src/core/time.d
+@@ -336,6 +336,14 @@
+     second = 6,
+     threadCPUTime = 7,
+ }
++else version (Kandelo) enum ClockType
++{
++    normal = 0,
++    bootTime = 1,
++    coarse = 2,
++    precise = 3,
++    second = 6,
++}
+ else version (WASI) enum ClockType
+ {
+     normal = 0,
+@@ -439,6 +447,19 @@
+             case precise: return CLOCK_MONOTONIC;
+             case processCPUTime: return CLOCK_PROCESS_CPUTIME_ID;
+             case threadCPUTime: return CLOCK_THREAD_CPUTIME_ID;
++            case second: assert(0);
++            }
++        }
++        else version (Kandelo)
++        {
++            import core.sys.posix.time : CLOCK_BOOTTIME, CLOCK_MONOTONIC,
++                                        CLOCK_MONOTONIC_COARSE;
++            with(ClockType) final switch (clockType)
++            {
++            case bootTime: return CLOCK_BOOTTIME;
++            case coarse: return CLOCK_MONOTONIC_COARSE;
++            case normal: return CLOCK_MONOTONIC;
++            case precise: return CLOCK_MONOTONIC;
+             case second: assert(0);
+             }
+         }
+--- a/runtime/druntime/src/core/internal/backtrace/dwarf.d
++++ b/runtime/druntime/src/core/internal/backtrace/dwarf.d
+@@ -49,7 +49,8 @@
+
+ module core.internal.backtrace.dwarf;
+
+-version (WASI) {}
++// This reader depends on an ELF or Mach-O image for address translation.
++version (WebAssembly) {}
+ else:
+
+ version (Posix):
+--- a/runtime/druntime/src/core/demangle.d
++++ b/runtime/druntime/src/core/demangle.d
+@@ -3003,6 +3003,7 @@
+         version (OpenBSD) import core.sys.openbsd.dlfcn : RTLD_DEFAULT;
+         version (Darwin) import core.sys.darwin.dlfcn : RTLD_DEFAULT;
+         version (Solaris) import core.sys.solaris.dlfcn : RTLD_DEFAULT;
++        version (Kandelo) import core.sys.posix.dlfcn : RTLD_DEFAULT;
+         version (Emscripten) import core.sys.posix.dlfcn : RTLD_DEFAULT;
+         version (CRuntime_WASI) import core.sys.posix.dlfcn : RTLD_DEFAULT;
+
+--- a/runtime/druntime/src/core/stdc/stdint.d
++++ b/runtime/druntime/src/core/stdc/stdint.d
+@@ -42,6 +42,11 @@
+     alias int128_t = cent;   ///
+     alias uint128_t = ucent; ///
+ }
++
++version (Kandelo)
++    version = LinuxStdint;
++else version (linux)
++    version = LinuxStdint;
+
+ version (Windows)
+ {
+@@ -119,7 +124,7 @@
+     alias intmax_t  = long;      ///
+     alias uintmax_t = ulong;     ///
+ }
+-else version (linux)
++else version (LinuxStdint)
+ {
+     alias int8_t   = byte;   ///
+     alias int16_t  = short;  ///
+--- a/runtime/druntime/src/core/stdc/limits.d
++++ b/runtime/druntime/src/core/stdc/limits.d
+@@ -181,6 +181,15 @@
+     ///
+     enum PIPE_BUF       = 5120;
+ }
++else version (Kandelo)
++{
++    ///
++    enum NAME_MAX = 255;
++    ///
++    enum PATH_MAX = 4096;
++    ///
++    enum PIPE_BUF = 4096;
++}
+ else version (Emscripten)
+ {
+     ///
+--- a/runtime/druntime/src/core/stdc/errno.d
++++ b/runtime/druntime/src/core/stdc/errno.d
+@@ -38,6 +38,18 @@
+ version (SystemZ) version = IBMZ_Any;
+ version (X86)     version = X86_Any;
+ version (X86_64)  version = X86_Any;
++
++// The wasm32 musl SDK uses musl's generic bits/errno.h.
++version (Kandelo)
++{
++    version = LinuxErrnoFamily;
++    version = GenericErrnoNumbers;
++}
++else version (linux)
++    version = LinuxErrnoFamily;
++
++version (X86_Any)
++    version = GenericErrnoNumbers;
+
+ @trusted: // Only manipulates errno.
+ nothrow:
+@@ -396,7 +408,7 @@
+         enum ESTRPIPE = 143;
+     }
+ }
+-else version (linux)
++else version (LinuxErrnoFamily)
+ {
+     enum EPERM              = 1;  ///
+     enum ENOENT             = 2;  ///
+@@ -433,7 +445,7 @@
+     enum EDOM               = 33; ///
+     enum ERANGE             = 34; ///
+
+-    version (X86_Any)
++    version (GenericErrnoNumbers)
+     {
+         enum EDEADLK            = 35;         ///
+         enum ENAMETOOLONG       = 36;         ///
+--- a/runtime/druntime/src/core/stdc/config.d
++++ b/runtime/druntime/src/core/stdc/config.d
+@@ -638,7 +638,9 @@
+ // https://musl.libc.org/time64.html
+ version (CRuntime_Musl)
+ {
+-    version (Emscripten)
++    version (Kandelo)
++        enum muslRedirTime64 = false;
++    else version (Emscripten)
+         enum muslRedirTime64 = false;
+     else version (CRuntime_Musl_Pre_Time64)
+         enum muslRedirTime64 = false;
+--- a/runtime/druntime/src/core/stdc/fenv.d
++++ b/runtime/druntime/src/core/stdc/fenv.d
+@@ -372,6 +372,15 @@
+
+     alias fexcept_t = int;
+ }
++else version (Kandelo)
++{
++    struct fenv_t
++    {
++        ushort __control_word;
++        ushort __status_word;
++    }
++    alias fexcept_t = ushort;
++}
+ else version (CRuntime_Musl)
+ {
+     version (AArch64)
+@@ -645,6 +654,19 @@
+     else
+     {
+         static assert(0, "Unimplemented architecture");
++    }
++}
++else version (Kandelo)
++{
++    enum
++    {
++        FE_ALL_EXCEPT = 0,
++        FE_INVALID = 0,
++        FE_DIVBYZERO = 0,
++        FE_OVERFLOW = 0,
++        FE_UNDERFLOW = 0,
++        FE_INEXACT = 0,
++        FE_TONEAREST = 0,
+     }
+ }
+ else version (Emscripten)
+--- a/runtime/druntime/src/core/thread/osthread.d
++++ b/runtime/druntime/src/core/thread/osthread.d
+@@ -1977,6 +1977,11 @@
+ }
+
+
++// Kandelo's pthread API reports the bounds of the calling thread.
++version (Kandelo) {}
++else version (WebAssembly)
++    version = WasmStaticStackBounds;
++
+ version (LDC_Windows)
+ {
+     private extern(D) void* getStackBottom() nothrow @nogc @naked
+@@ -1991,9 +1996,9 @@
+             static assert(false, "Architecture not supported.");
+     }
+ }
+-else version (WebAssembly)
+-{
+-    private extern(C) extern ubyte __stack_high;
++else version (WasmStaticStackBounds)
++{
++    private extern(C) extern __gshared ubyte __stack_high;
+     private extern(D) void* getStackBottom() nothrow @nogc
+     {
+         return &__stack_high;
+@@ -2076,6 +2081,19 @@
+     }
+     else
+         static assert(false, "Platform not supported.");
++}
++
++version (Kandelo)
++{
++    private uint safepointCounter;
++    private extern(C) void __wasm_posix_signal_checkpoint() nothrow @nogc;
++
++    // Limit channel round trips while keeping compute-bound code interruptible.
++    extern(C) void __ldc_kandelo_gc_safepoint() nothrow @nogc
++    {
++        if ((++safepointCounter & 1023) == 0)
++            __wasm_posix_signal_checkpoint();
++    }
+ }
+
+ /**
+--- a/runtime/druntime/src/core/sys/posix/dirent.d
++++ b/runtime/druntime/src/core/sys/posix/dirent.d
+@@ -27,6 +27,11 @@
+ else version (WatchOS)
+     version = Darwin;
+
++version (Kandelo)
++    version = DirentWithOffset;
++else version (linux)
++    version = DirentWithOffset;
++
+ version (Posix):
+ extern (C):
+ nothrow:
+@@ -53,7 +58,7 @@
+         char[256]   d_name = 0;
+     }
+ }
+-else version (linux)
++else version (DirentWithOffset)
+ {
+     struct dirent
+     {
+--- a/runtime/druntime/src/core/sys/posix/netinet/in_.d
++++ b/runtime/druntime/src/core/sys/posix/netinet/in_.d
+@@ -27,6 +27,11 @@
+     version = Darwin;
+ else version (WatchOS)
+     version = Darwin;
++
++version (Kandelo)
++    version = GenericInetABI;
++else version (linux)
++    version = GenericInetABI;
+
+ version (Posix):
+ extern (C) nothrow @nogc:
+@@ -407,7 +412,7 @@
+         INADDR_NONE      = 0xffffffff
+     }
+ }
+-else version (linux)
++else version (GenericInetABI)
+ {
+     private enum __SOCK_SIZE__ = 16;
+
+@@ -1825,7 +1830,7 @@
+ {
+     enum uint IPPROTO_RAW = 255;
+ }
+-else version (linux)
++else version (GenericInetABI)
+ {
+     enum uint IPPROTO_RAW = 255;
+ }
+--- a/runtime/druntime/src/core/sys/posix/netinet/tcp.d
++++ b/runtime/druntime/src/core/sys/posix/netinet/tcp.d
+@@ -24,6 +24,11 @@
+     version = Darwin;
+ else version (WatchOS)
+     version = Darwin;
++
++version (Kandelo)
++    version = TCPNoDelayOne;
++else version (linux)
++    version = TCPNoDelayOne;
+
+ version (Posix):
+ extern (C):
+@@ -63,7 +68,7 @@
+ {
+     enum TCP_NODELAY = 1;
+ }
+-else version (linux)
++else version (TCPNoDelayOne)
+ {
+     enum TCP_NODELAY = 1;
+ }
+--- a/runtime/druntime/src/core/sys/posix/sched.d
++++ b/runtime/druntime/src/core/sys/posix/sched.d
+@@ -57,7 +57,27 @@
+ int sched_setscheduler(pid_t, int, const scope sched_param*);
+ */
+
+-version (linux)
++version (Kandelo)
++{
++    struct sched_param
++    {
++        int sched_priority;
++        int sched_ss_max_repl;
++        timespec sched_ss_repl_period;
++        timespec sched_ss_init_budget;
++        int sched_ss_low_priority;
++    }
++
++    enum SCHED_OTHER = 0;
++    enum SCHED_FIFO = 1;
++    enum SCHED_RR = 2;
++    enum SCHED_BATCH = 3;
++    enum SCHED_IDLE = 5;
++    enum SCHED_DEADLINE = 6;
++    enum SCHED_SPORADIC = 7;
++    enum SCHED_RESET_ON_FORK = 0x40000000;
++}
++else version (linux)
+ {
+     version (CRuntime_Musl)
+     {
+--- a/runtime/druntime/src/core/sys/posix/time.d
++++ b/runtime/druntime/src/core/sys/posix/time.d
+@@ -134,7 +134,11 @@
+ CLOCK_MONOTONIC
+ */
+
+-version (linux)
++version (Kandelo)
++{
++    enum CLOCK_MONOTONIC = 1;
++}
++else version (linux)
+ {
+     enum CLOCK_MONOTONIC          = 1;
+ }
+@@ -278,6 +282,15 @@
+
+     alias timestruc_t = timespec;
+ }
++else version (Kandelo)
++{
++    struct timespec
++    {
++        time_t tv_sec;
++        c_long tv_nsec;
++        int : 32; // musl time64 padding on little-endian wasm32
++    }
++}
+ else version (Emscripten)
+ {
+     struct timespec
+@@ -526,6 +539,7 @@
+     enum CLOCK_PROCESS_CPUTIME_ID = 2;
+     enum CLOCK_THREAD_CPUTIME_ID = 3;
+     enum CLOCK_REALTIME_COARSE = 5;
++    version (Kandelo) enum CLOCK_MONOTONIC_COARSE = 6;
+     enum CLOCK_BOOTTIME = 7;
+     enum CLOCK_REALTIME_ALARM = 8;
+     enum CLOCK_BOOTTIME_ALARM = 9;
+--- a/runtime/druntime/src/core/sys/posix/fcntl.d
++++ b/runtime/druntime/src/core/sys/posix/fcntl.d
+@@ -96,14 +96,30 @@
+     pid_t   l_pid;
+ }
+ */
+-version (linux)
++version (Kandelo)
++{
++    // wasm32 uses musl's generic fcntl numbers with 64-bit off_t.
++    enum F_GETLK = 12;
++    enum F_SETLK = 13;
++    enum F_SETLKW = 14;
++    version = GenericFileControl;
++    version = GenericOpenFlags;
++}
++else version (linux)
++    version = GenericFileControl;
++
++version (X86_Any)
++    version = GenericOpenFlags;
++
++version (GenericFileControl)
+ {
+     enum F_DUPFD        = 0;
+     enum F_GETFD        = 1;
+     enum F_SETFD        = 2;
+     enum F_GETFL        = 3;
+     enum F_SETFL        = 4;
+-  version (X86_64)
++  version (Kandelo) {}
++  else version (X86_64)
+   {
+     static assert(off_t.sizeof == 8);
+     enum F_GETLK        = 5;
+@@ -184,7 +200,7 @@
+     enum F_UNLCK        = 2;
+     enum F_WRLCK        = 1;
+
+-    version (X86_Any)
++    version (GenericOpenFlags)
+     {
+         enum O_CREAT        = 0x40;     // octal     0100
+         enum O_EXCL         = 0x80;     // octal     0200
+--- a/runtime/druntime/src/core/sys/posix/signal.d
++++ b/runtime/druntime/src/core/sys/posix/signal.d
+@@ -40,6 +40,19 @@
+ version (SystemZ) version = IBMZ_Any;
+ version (X86)     version = X86_Any;
+ version (X86_64)  version = X86_Any;
++
++// Kandelo musl uses the standard signal numbers and the same signal
++// structures as the generic 32-bit musl ABI.
++version (Kandelo)
++{
++    version = LinuxSignalABI;
++    version = StandardSignalNumbers;
++}
++else version (linux)
++    version = LinuxSignalABI;
++
++version (X86_Any)
++    version = StandardSignalNumbers;
+
+ version (CRuntime_WASI)
+ {
+@@ -179,7 +192,7 @@
+     enum SIGRTMIN = 33;
+     enum SIGRTMAX = 63;
+ }
+-else version (linux)
++else version (LinuxSignalABI)
+ {
+     // Note: CRuntime_Bionic switched to calling these functions
+     // since Lollipop, and Glibc, UClib and Musl all implement them
+@@ -207,9 +220,9 @@
+     }
+ }
+
+-version (linux)
+-{
+-    version (X86_Any)
++version (LinuxSignalABI)
++{
++    version (StandardSignalNumbers)
+     {
+         //SIGABRT (defined in core.stdc.signal)
+         enum SIGALRM    = 14;
+@@ -635,7 +648,7 @@
+     static assert(false, "Unsupported platform");
+ }
+
+-version (linux)
++version (LinuxSignalABI)
+ {
+     version (CRuntime_Musl)
+     {
+@@ -990,7 +1003,7 @@
+ nothrow @nogc
+ {
+
+-version (linux)
++version (LinuxSignalABI)
+ {
+     enum SIG_HOLD = cast(sigfn_t2) 2;
+
+@@ -1897,9 +1910,9 @@
+ POLL_HUP
+ */
+
+-version (linux)
+-{
+-    version (X86_Any)
++version (LinuxSignalABI)
++{
++    version (StandardSignalNumbers)
+     {
+         enum SIGPOLL        = 29;
+         enum SIGPROF        = 27;
+@@ -3053,7 +3066,7 @@
+         enum MINSIGSTKSZ = 4096;
+         enum SIGSTKSZ    = 10240;
+     }
+-    else version (X86_Any)
++    else version (StandardSignalNumbers)
+     {
+         enum MINSIGSTKSZ = 2048;
+         enum SIGSTKSZ    = 8192;
+@@ -3190,7 +3203,7 @@
+ nothrow:
+ @nogc:
+
+-version (linux)
++version (LinuxSignalABI)
+ {
+     private enum __SIGEV_MAX_SIZE = 64;
+
+--- a/runtime/druntime/src/core/sys/posix/termios.d
++++ b/runtime/druntime/src/core/sys/posix/termios.d
+@@ -28,6 +28,16 @@
+     version = Darwin;
+ else version (WatchOS)
+     version = Darwin;
++
++version (Kandelo)
++    version = GenericTermiosLayout;
++else version (linux)
++    version = GenericTermiosLayout;
++
++version (Kandelo)
++    version = GenericTermiosFunctions;
++else version (CRuntime_Glibc)
++    version = GenericTermiosFunctions;
+
+ version (Posix):
+ extern (C):
+@@ -133,7 +143,7 @@
+ TCOON
+ */
+
+-version (linux)
++version (GenericTermiosLayout)
+ {
+     alias cc_t = ubyte;
+     alias speed_t = uint;
+@@ -848,7 +858,7 @@
+ int     tcsetattr(int, int, const scope termios*);
+ */
+
+-version (CRuntime_Glibc)
++version (GenericTermiosFunctions)
+ {
+     speed_t cfgetispeed(const scope termios*);
+     speed_t cfgetospeed(const scope termios*);
+@@ -991,7 +1001,7 @@
+ pid_t   tcgetsid(int);
+ */
+
+-version (CRuntime_Glibc)
++version (GenericTermiosFunctions)
+ {
+     enum IXANY      = 0x0000800; // 0004000
+
+--- a/runtime/druntime/src/core/sys/posix/poll.d
++++ b/runtime/druntime/src/core/sys/posix/poll.d
+@@ -24,6 +24,11 @@
+     version = Darwin;
+ else version (WatchOS)
+     version = Darwin;
++
++version (Kandelo)
++    version = GenericPollFlags;
++else version (linux)
++    version = GenericPollFlags;
+
+ version (Posix):
+ extern (C):
+@@ -207,7 +212,7 @@
+ POLLNVAL
+ */
+
+-version (linux)
++version (GenericPollFlags)
+ {
+     enum
+     {
+--- a/runtime/druntime/src/core/sys/posix/spawn.d
++++ b/runtime/druntime/src/core/sys/posix/spawn.d
+@@ -43,6 +43,11 @@
+     version = Darwin;
+ else version (iOS)
+     version = Darwin;
++
++version (Kandelo)
++    version = SpawnWithLibcSpecificLayout;
++else version (linux)
++    version = SpawnWithLibcSpecificLayout;
+
+ version (Posix):
+ public import core.sys.posix.sys.types : mode_t, pid_t;
+@@ -88,7 +93,7 @@
+                  const posix_spawnattr_t* attrp,
+                  const char** argv, const char** envp);
+
+-version (linux)
++version (SpawnWithLibcSpecificLayout)
+ {
+     version (CRuntime_Glibc)
+     {
+--- a/runtime/druntime/src/core/sys/posix/sys/ipc.d
++++ b/runtime/druntime/src/core/sys/posix/sys/ipc.d
+@@ -56,7 +56,30 @@
+ IPC_STAT
+ */
+
+-version (linux)
++version (Kandelo)
++{
++    struct ipc_perm
++    {
++        key_t __key;
++        uid_t uid;
++        gid_t gid;
++        uid_t cuid;
++        gid_t cgid;
++        mode_t mode;
++        int __seq;
++        c_long __pad1;
++        c_long __pad2;
++    }
++
++    enum IPC_CREAT = 0x0200;
++    enum IPC_EXCL = 0x0400;
++    enum IPC_NOWAIT = 0x0800;
++    enum key_t IPC_PRIVATE = 0;
++    enum IPC_RMID = 0;
++    enum IPC_SET = 1;
++    enum IPC_STAT = 2;
++}
++else version (linux)
+ {
+     struct ipc_perm
+     {
+--- a/runtime/druntime/src/core/sys/posix/sys/wait.d
++++ b/runtime/druntime/src/core/sys/posix/sys/wait.d
+@@ -31,6 +31,11 @@
+ else version (WatchOS)
+     version = Darwin;
+
++version (Kandelo)
++    version = GenericWaitStatus;
++else version (linux)
++    version = GenericWaitStatus;
++
+ version (Posix):
+ extern (C) nothrow @nogc:
+
+@@ -42,7 +47,7 @@
+ WUNTRACED
+ */
+
+-version (linux)
++version (GenericWaitStatus)
+ {
+     enum WNOHANG        = 1;
+     enum WUNTRACED      = 2;
+@@ -324,7 +329,7 @@
+ }
+ */
+
+-version (linux)
++version (GenericWaitStatus)
+ {
+     enum WEXITED    = 4;
+     enum WSTOPPED   = 2;
+--- a/runtime/druntime/src/core/sys/posix/sys/shm.d
++++ b/runtime/druntime/src/core/sys/posix/sys/shm.d
+@@ -30,6 +30,11 @@
+ else version (WatchOS)
+     version = Darwin;
+
++version (Kandelo)
++    version = ShmidWithTimeFieldsFirst;
++else version (linux)
++    version = ShmidWithTimeFieldsFirst;
++
+ version (Posix):
+ extern (C) nothrow @nogc:
+
+@@ -55,7 +60,7 @@
+ }
+ */
+
+-version (linux)
++version (ShmidWithTimeFieldsFirst)
+ {
+     enum SHM_RDONLY     = 0x01000; // 010000
+     enum SHM_RND        = 0x02000; // 020000
+--- a/runtime/druntime/src/core/sys/posix/sys/socket.d
++++ b/runtime/druntime/src/core/sys/posix/sys/socket.d
+@@ -44,6 +44,17 @@
+ version (X86)     version = X86_Any;
+ version (X86_64)  version = X86_Any;
+
++version (Kandelo)
++{
++    version = LinuxSocketABI;
++    version = StandardSocketNumbers;
++}
++else version (linux)
++    version = LinuxSocketABI;
++
++version (X86_Any)
++    version = StandardSocketNumbers;
++
+ version (Posix):
+ extern (C) nothrow @nogc:
+
+@@ -139,7 +150,7 @@
+ SHUT_WR
+ */
+
+-version (linux)
++version (LinuxSocketABI)
+ {
+     alias socklen_t = uint;
+     alias sa_family_t = ushort;
+@@ -168,7 +179,10 @@
+         void*     msg_name;
+         socklen_t msg_namelen;
+         iovec*    msg_iov;
+-        size_t    msg_iovlen;
++        version (Kandelo)
++            int   msg_iovlen;
++        else
++            size_t msg_iovlen;
+         void*     msg_control;
+         size_t    msg_controllen;
+         int       msg_flags;
+@@ -188,7 +202,21 @@
+
+     extern (D) inout(ubyte)*   CMSG_DATA( return scope inout(cmsghdr)* cmsg ) pure nothrow @nogc { return cast(ubyte*)( cmsg + 1 ); }
+
+-    version (CRuntime_Musl)
++    version (Kandelo)
++    {
++        extern (D) inout(cmsghdr)* CMSG_NXTHDR(inout(msghdr)* msg,
++                                              inout(cmsghdr)* cmsg) pure nothrow @nogc
++        {
++            if (cmsg.cmsg_len < cmsghdr.sizeof)
++                return null;
++            auto current = cast(inout(ubyte)*) cmsg;
++            auto end = cast(const(ubyte)*) msg.msg_control + msg.msg_controllen;
++            auto length = CMSG_ALIGN(cmsg.cmsg_len);
++            return length + cmsghdr.sizeof >= end - current
++                ? null : cast(inout(cmsghdr)*)(current + length);
++        }
++    }
++    else version (CRuntime_Musl)
+     {
+         extern (D)
+         {
+@@ -255,7 +283,7 @@
+         int l_linger;
+     }
+
+-    version (X86_Any)
++    version (StandardSocketNumbers)
+     {
+         enum
+         {
+@@ -281,13 +309,21 @@
+             SO_OOBINLINE    = 10,
+             SO_RCVBUF       = 8,
+             SO_RCVLOWAT     = 18,
+-            SO_RCVTIMEO     = 20,
+             SO_REUSEADDR    = 2,
+             SO_REUSEPORT    = 15,
+             SO_SNDBUF       = 7,
+             SO_SNDLOWAT     = 19,
+-            SO_SNDTIMEO     = 21,
+             SO_TYPE         = 3
++        }
++        version (Kandelo)
++        {
++            enum SO_RCVTIMEO = 66;
++            enum SO_SNDTIMEO = 67;
++        }
++        else
++        {
++            enum SO_RCVTIMEO = 20;
++            enum SO_SNDTIMEO = 21;
+         }
+     }
+     else version (HPPA_Any)
+@@ -2111,7 +2147,7 @@
+ AF_INET6
+ */
+
+-version (linux)
++version (LinuxSocketABI)
+ {
+     enum
+     {
+@@ -2188,7 +2224,7 @@
+ SOCK_RAW
+ */
+
+-version (linux)
++version (LinuxSocketABI)
+ {
+     enum
+     {
+--- a/runtime/druntime/src/core/sys/posix/sys/resource.d
++++ b/runtime/druntime/src/core/sys/posix/sys/resource.d
+@@ -26,6 +26,11 @@
+ } else version = Supported;
+
+ version (Supported):
++version (Kandelo)
++    version = GenericResourceABI;
++else version (linux)
++    version = GenericResourceABI;
++
+ version (Posix):
+
+ public import core.sys.posix.sys.time;
+@@ -91,7 +96,7 @@
+ }
+ */
+
+-version (linux)
++version (GenericResourceABI)
+ {
+     enum
+     {
+@@ -100,12 +105,17 @@
+         PRIO_USER    = 2,
+     }
+
+-    static if (__USE_FILE_OFFSET64)
++    version (Kandelo)
++        private enum UseRlim64 = true;
++    else
++        private enum UseRlim64 = __USE_FILE_OFFSET64;
++
++    static if (UseRlim64)
+         alias rlim_t = ulong;
+     else
+         alias rlim_t = c_ulong;
+
+-    static if (__USE_FILE_OFFSET64)
++    static if (UseRlim64)
+         enum RLIM_INFINITY = 0xffffffffffffffffUL;
+     else
+         enum RLIM_INFINITY = cast(c_ulong)~0UL;
+--- a/runtime/druntime/src/core/sys/posix/sys/ioctl.d
++++ b/runtime/druntime/src/core/sys/posix/sys/ioctl.d
+@@ -26,11 +26,16 @@
+ else version (WatchOS)
+     version = Darwin;
+
++version (Kandelo)
++    version = GenericIoctlABI;
++else version (linux)
++    version = GenericIoctlABI;
++
+ version (Posix):
+
+ extern (C) nothrow @nogc:
+
+-version (linux)
++version (GenericIoctlABI)
+ {
+     import core.sys.posix.termios; // tcflag_t, speed_t, cc_t
+
+--- a/runtime/druntime/src/core/sys/posix/sys/types.d
++++ b/runtime/druntime/src/core/sys/posix/sys/types.d
+@@ -85,7 +85,23 @@
+ uid_t
+ */
+
+-version (linux)
++version (Kandelo)
++{
++    // wasm32 musl types from bits/alltypes.h.
++    alias blkcnt_t = long;
++    alias blksize_t = int;
++    alias dev_t = ulong;
++    alias gid_t = uint;
++    alias ino_t = ulong;
++    alias mode_t = uint;
++    alias nlink_t = uint;
++    alias off_t = long;
++    alias pid_t = int;
++    alias ssize_t = ptrdiff_t;
++    alias time_t = long;
++    alias uid_t = uint;
++}
++else version (linux)
+ {
+   static if ( __USE_FILE_OFFSET64 )
+   {
+@@ -388,7 +404,17 @@
+ useconds_t
+ */
+
+-version (linux)
++version (Kandelo)
++{
++    alias fsblkcnt_t = ulong;
++    alias fsfilcnt_t = ulong;
++    alias clock_t = c_long;
++    alias id_t = uint;
++    alias key_t = int;
++    alias suseconds_t = long;
++    alias useconds_t = uint;
++}
++else version (linux)
+ {
+   static if ( __USE_FILE_OFFSET64 )
+   {
+--- a/runtime/druntime/src/core/sys/posix/sys/un.d
++++ b/runtime/druntime/src/core/sys/posix/sys/un.d
+@@ -23,6 +23,11 @@
+ else version (WatchOS)
+     version = Darwin;
+
++version (Kandelo)
++    version = SockaddrUnPath108;
++else version (linux)
++    version = SockaddrUnPath108;
++
+ version (Posix):
+ extern(C):
+
+@@ -41,7 +46,7 @@
+ sa_family_t    // From core.sys.posix.sys.socket
+ */
+
+-version (linux)
++version (SockaddrUnPath108)
+ {
+     enum UNIX_PATH_MAX = 108;
+
+--- a/runtime/druntime/src/core/sys/posix/sys/mman.d
++++ b/runtime/druntime/src/core/sys/posix/sys/mman.d
+@@ -54,6 +54,11 @@
+ } else version = Supported;
+
+ version (Supported):
++version (Kandelo)
++    version = GenericMemoryFlags;
++else version (linux)
++    version = GenericMemoryFlags;
++
+ version (Posix):
+ extern (C) nothrow @nogc:
+
+@@ -126,7 +131,7 @@
+ POSIX_MADV_DONTNEED
+ */
+
+-version (linux)
++version (GenericMemoryFlags)
+ {
+     version (Alpha)
+         private enum __POSIX_MADV_DONTNEED = 6;
+@@ -216,7 +221,7 @@
+ PROT_NONE
+ */
+
+-version (linux)
++version (GenericMemoryFlags)
+ {
+     enum PROT_NONE      = 0x0;
+     enum PROT_READ      = 0x1;
+@@ -381,7 +386,7 @@
+ MS_INVALIDATE (MF|SIO)
+ */
+
+-version (linux)
++version (GenericMemoryFlags)
+ {
+     enum MAP_SHARED     = 0x01;
+     enum MAP_PRIVATE    = 0x02;
+@@ -389,7 +394,9 @@
+
+     enum MAP_FAILED     = cast(void*) -1;
+
+-    version (MICROBLAZE)
++    version (Kandelo)
++        private enum DEFAULTS = true;
++    else version (MICROBLAZE)
+         private enum DEFAULTS = true;
+     else version (Alpha)
+     {
+@@ -620,7 +627,7 @@
+ MCL_FUTURE
+ */
+
+-version (linux)
++version (GenericMemoryFlags)
+ {
+     version (SPARC_Any) enum
+     {
+--- a/runtime/druntime/src/core/sys/posix/sys/stat.d
++++ b/runtime/druntime/src/core/sys/posix/sys/stat.d
+@@ -37,6 +37,11 @@
+ // other types on 32-bit architectures.
+ version (CRuntime_Bionic)
+     private enum __USE_FILE_OFFSET64 = true;
++
++version (Kandelo)
++    version = GenericStatConstants;
++else version (linux)
++    version = GenericStatConstants;
+
+ version (Posix):
+ extern (C) nothrow @nogc:
+@@ -68,7 +73,43 @@
+ S_TYPEISSHM(buf)
+  */
+
+-version (linux)
++version (Kandelo)
++{
++    // Keep in sync with the SDK's wasm32 bits/stat.h.
++    struct stat_t
++    {
++        dev_t st_dev;
++        ino_t st_ino;
++        mode_t st_mode;
++        nlink_t st_nlink;
++        uid_t st_uid;
++        gid_t st_gid;
++        off_t st_size;
++        timespec st_atim;
++        timespec st_mtim;
++        timespec st_ctim;
++        dev_t st_rdev;
++        blksize_t st_blksize;
++        blkcnt_t st_blocks;
++
++        extern(D) @safe @property inout pure nothrow
++        {
++            ref inout(time_t) st_atime() return { return st_atim.tv_sec; }
++            ref inout(time_t) st_mtime() return { return st_mtim.tv_sec; }
++            ref inout(time_t) st_ctime() return { return st_ctim.tv_sec; }
++        }
++    }
++
++    static assert(stat_t.sizeof == 112);
++    static assert(stat_t.st_atim.offsetof == 40);
++    static assert(stat_t.st_rdev.offsetof == 88);
++    static assert(stat_t.st_blocks.offsetof == 104);
++
++    enum S_ISUID = 0x800;
++    enum S_ISGID = 0x400;
++    enum S_ISVTX = 0x200;
++}
++else version (linux)
+ {
+     version (X86)
+     {
+@@ -2297,7 +2338,7 @@
+ UTIME_NOW
+ UTIME_OMIT
+ */
+-version (linux)
++version (GenericStatConstants)
+ {
+     enum UTIME_NOW = 0x3fffffff;
+     enum UTIME_OMIT = 0x3ffffffe;
+@@ -2369,7 +2410,7 @@
+ S_IFSOCK
+ */
+
+-version (linux)
++version (GenericStatConstants)
+ {
+     enum S_IFMT     = 0xF000; // octal 0170000
+     enum S_IFBLK    = 0x6000; // octal 0060000
+--- a/runtime/phobos/std/datetime/systime.d
++++ b/runtime/phobos/std/datetime/systime.d
+@@ -246,6 +246,32 @@
+                     gettimeofday(&tv, null);
+                     return convert!("seconds", "hnsecs")(tv.tv_sec) +
+                            tv.tv_usec * 10 +
++                           hnsecsToUnixEpoch;
++                }
++            }
++            else version (Kandelo)
++            {
++                static if (clockType == ClockType.second)
++                    return unixTimeToStdTime(core.stdc.time.time(null));
++                else
++                {
++                    import core.sys.posix.time : clock_gettime, CLOCK_REALTIME, CLOCK_REALTIME_COARSE;
++                    static if (clockType == ClockType.coarse)       alias clockArg = CLOCK_REALTIME_COARSE;
++                    else static if (clockType == ClockType.normal)  alias clockArg = CLOCK_REALTIME;
++                    else static if (clockType == ClockType.precise) alias clockArg = CLOCK_REALTIME;
++                    else static assert(0, "Previous static if is wrong.");
++                    timespec ts = void;
++                    immutable error = clock_gettime(clockArg, &ts);
++                    // Posix clock_gettime called with a valid address and valid clock_id is only
++                    // permitted to fail if the number of seconds does not fit in time_t. If tv_sec
++                    // is long or larger overflow won't happen before 292 billion years A.D.
++                    static if (ts.tv_sec.max < long.max)
++                    {
++                        if (error)
++                            throw new TimeException("Call to clock_gettime() failed");
++                    }
++                    return convert!("seconds", "hnsecs")(ts.tv_sec) +
++                           ts.tv_nsec / 100 +
+                            hnsecsToUnixEpoch;
+                 }
+             }
+--- a/runtime/phobos/std/parallelism.d
++++ b/runtime/phobos/std/parallelism.d
+@@ -1055,6 +1055,11 @@
+         return cast(uint) sysconf(_SC_NPROCESSORS_ONLN);
+     }
+     else version (Hurd)
++    {
++        import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
++        return cast(uint) sysconf(_SC_NPROCESSORS_ONLN);
++    }
++    else version (Kandelo)
+     {
+         import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
+         return cast(uint) sysconf(_SC_NPROCESSORS_ONLN);
+--- a/runtime/phobos/std/file.d
++++ b/runtime/phobos/std/file.d
+@@ -3663,6 +3663,10 @@
+         // Only Solaris 10 and later
+         return readLink(format("/proc/%d/path/a.out", getpid()));
+     }
++    else version (Kandelo)
++    {
++        return readLink("/proc/self/exe");
++    }
+     else version (Hurd)
+     {
+         return readLink("/proc/self/exe");
+--- a/driver/main.cpp
++++ b/driver/main.cpp
+@@ -808,6 +808,16 @@
+       VersionCondition::addPredefinedGlobalIdent("D_AVX2");
+   }
+
++  if (triple.getArch() == llvm::Triple::wasm32 &&
++      triple.getOSName() == "kandelo") {
++    VersionCondition::addPredefinedGlobalIdent("Kandelo");
++    VersionCondition::addPredefinedGlobalIdent("Posix");
++    VersionCondition::addPredefinedGlobalIdent("CRuntime_Musl");
++    VersionCondition::addPredefinedGlobalIdent("CppRuntime_LLVM");
++    VersionCondition::addPredefinedGlobalIdent("CppRuntime_Clang");
++    return;
++  }
++
+   // parse the OS out of the target triple
+   // see http://gcc.gnu.org/install/specific.html for details
+   // also llvm's different SubTargets have useful information
+diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetime/timezone.d
+--- a/runtime/phobos/std/datetime/timezone.d
++++ b/runtime/phobos/std/datetime/timezone.d
+@@ -342,6 +342,7 @@ abstract class TimeZone
+             else version (NetBSD)        enum utcZone = "UTC";
+             else version (DragonFlyBSD)  enum utcZone = "UTC";
+             else version (linux)         enum utcZone = "UTC";
++            else version (Kandelo)       enum utcZone = "Etc/UTC";
+             else version (Darwin)        enum utcZone = "UTC";
+             else version (Solaris)       enum utcZone = "UTC";
+             else static assert(0, "The location of the UTC timezone file on this Posix platform must be set.");
+--- a/runtime/druntime/src/core/thread/fiber/package.d
++++ b/runtime/druntime/src/core/thread/fiber/package.d
+@@ -11,9 +11,9 @@
+
+ module core.thread.fiber;
+
+-// No Fiber support on WebAssembly (arch issue)
+-// TODO: Investigate Wasm `stack-switching` proposal as solution
+-version(WebAssembly) {} else:
++version (Kandelo) {}
++else version (WebAssembly) version = NoFiber;
++version (NoFiber) {} else:
+
+ import core.thread.context;
+ import core.thread.fiber.base : fiber_entryPoint, FiberBase;
+@@ -175,7 +175,9 @@
+         }
+     }
+
+-    version (Posix)
++    version (Kandelo)
++        version = AlignFiberStackTo16Byte;
++    else version (Posix)
+     {
+         version (AsmX86_Windows)    {} else
+         version (AsmX86_Posix)      {} else
+@@ -205,7 +207,14 @@
+     import core.stdc.stdlib : abort;
+
+     // Look above the definition of 'class Fiber' for some information about the implementation of this routine
+-    version (AsmExternal)
++    version (Kandelo)
++    {
++        extern(C) void kandeloFiberEntry(void*) nothrow
++        {
++            fiber_entryPoint();
++        }
++    }
++    else version (AsmExternal)
+     {
+         extern (C) void fiber_switchContext( void** oldp, void* newp ) nothrow @nogc;
+         version (AArch64)
+@@ -1011,6 +1020,8 @@
+             }
+         }
+
++        version (Kandelo)
++            kandeloStackBottom = m_pmem + guardPageSize;
+         ThreadBase.add( m_ctxt );
+     }
+
+@@ -1024,6 +1035,8 @@
+     {
+         // NOTE: m_ctxt is guaranteed to be alive because it is held in the
+         //       global context list.
++        version (Kandelo)
++            retireKandeloContinuation();
+         ThreadBase.slock.lock_nothrow();
+         scope(exit) ThreadBase.slock.unlock_nothrow();
+         ThreadBase.remove( m_ctxt );
+@@ -1094,7 +1107,18 @@
+             }
+         }
+
+-        version (AsmX86_Windows)
++        version (Kandelo)
++        {
++            retireKandeloContinuation();
++            auto continuation =
++                kandelo_continuation_create(kandeloStackBottom, pstack, &kandeloFiberEntry, null);
++            if (continuation is null)
++                onOutOfMemoryError();
++            m_ctxt.kandeloScanSaved = &kandelo_continuation_visit_saved;
++            m_ctxt.kandeloContinuation = continuation;
++            resetKandeloOwner();
++        }
++        else version (AsmX86_Windows)
+         {
+             version (StackGrowsDown) {} else static assert( false );
+
+@@ -1674,6 +1698,29 @@
+         else
+             static assert(0, "Not implemented");
+     }
++
++    version (Kandelo)
++    {
++        private void* kandeloStackBottom;
++
++        private void retireKandeloContinuation() @nogc nothrow
++        {
++            void* exceptions;
++            {
++                // Exclude the stack and exception scanners while removing
++                // their list entries and disposing of the captured frames.
++                ThreadBase.slock.lock_nothrow();
++                scope(exit) ThreadBase.slock.unlock_nothrow();
++                if (kandelo_continuation_destroy(m_ctxt.kandeloContinuation))
++                    abort();
++                m_ctxt.kandeloContinuation = null;
++                exceptions = m_ctxt.ehContext;
++                m_ctxt.ehContext = null;
++            }
++            import rt.dwarfeh : retireKandeloExceptionStack;
++            retireKandeloExceptionStack(exceptions);
++        }
++    }
+ }
+
+
+--- a/runtime/druntime/src/core/thread/fiber/base.d
++++ b/runtime/druntime/src/core/thread/fiber/base.d
+@@ -11,9 +11,9 @@
+
+ module core.thread.fiber.base;
+
+-// No Fiber support on WebAssembly (arch issue)
+-// TODO: Investigate Wasm `stack-switching` proposal as solution
+-version(WebAssembly) {} else:
++version (Kandelo) {}
++else version (WebAssembly) version = NoFiber;
++version (NoFiber) {} else:
+
+ package:
+
+@@ -47,7 +47,8 @@
+     else version (TVOS)    version = Darwin;
+     else version (WatchOS) version = Darwin;
+
+-    version (Darwin)       version = CheckFiberMigration;
++    version (Kandelo)      version = CheckFiberMigration;
++    else version (Darwin)  version = CheckFiberMigration;
+     else version (Android) version = CheckFiberMigration;
+     else version (AArch64) version = CheckFiberMigration;
+     else version (PPC64)   version = CheckFiberMigration;
+@@ -158,7 +159,13 @@
+           obj.m_ucur = &obj.m_utxt;
+
+         obj.m_state = Fiber.State.TERM;
+-        obj.switchOut();
++        version (Kandelo)
++        {
++            obj.m_ctxt.tstack = obj.m_ctxt.bstack;
++            atomicStore!(MemoryOrder.raw)(*cast(shared)&ThreadBase.getThis().m_lock, true);
++        }
++        else
++            obj.switchOut();
+     }
+ }
+
+@@ -565,12 +572,14 @@
+      * the code and know that thread locals are not involved.
+      *
+      * For systems without this issue, allowMigration does nothing, as you are
+-     * always free to migrate.
++     * always free to migrate. On Kandelo this method has no effect because
++     * suspended execution belongs to the original pthread's Wasm instance.
+      */
+     final void allowMigration() nothrow
+     {
+         // Does nothing if checking is disabled
+-        version (CheckFiberMigration)
++        version (Kandelo) {} // Native Wasm reference tables belong to the originating pthread.
++        else version (CheckFiberMigration)
+             m_allowMigration = true;
+     }
+ }
+@@ -722,6 +731,13 @@
+
+
+     StackContext*   m_ctxt;
++
++    version (Kandelo)
++        protected void resetKandeloOwner() nothrow @nogc
++        {
++            m_curThread = null;
++        }
++
+     size_t          m_size;
+     void*           m_pmem;
+
+@@ -783,10 +799,13 @@
+                 if (auto e = cast(ThreadException) malloc(threadExceptionSize))
+                 {
+                     import core.lifetime : emplace;
+-                    emplace(e,
+-                        "Migrating Fibers between Threads on this platform may lead " ~
+-                        "to incorrect thread local variable access.  To allow " ~
+-                        "migration anyway, call Fiber.allowMigration()");
++                    version (Kandelo)
++                        emplace(e, "Kandelo fibers resume on the pthread that started them");
++                    else
++                        emplace(e,
++                            "Migrating Fibers between Threads on this platform may lead " ~
++                            "to incorrect thread local variable access.  To allow " ~
++                            "migration anyway, call Fiber.allowMigration()");
+                     m_unhandled = e;
+                     // the exception will leak...
+                 }
+@@ -833,7 +852,13 @@
+             informSanitizerOfStartSwitchFiber(&__fake_stack, new_bottom, m_size);
+         }
+
+-        fiber_switchContext( oldp, newp );
++        version (Kandelo)
++        {
++            if (kandelo_continuation_enter(m_ctxt.kandeloContinuation) < 0)
++                abort();
++        }
++        else
++            fiber_switchContext( oldp, newp );
+
+         version (SupportSanitizers)
+         {
+@@ -886,7 +911,10 @@
+             informSanitizerOfStartSwitchFiber(&__fake_stack, __from_stack_bottom, __from_stack_size);
+         }
+
+-        fiber_switchContext( oldp, newp );
++        version (Kandelo)
++            kandelo_continuation_suspend();
++        else
++            fiber_switchContext( oldp, newp );
+
+         version (SupportSanitizers)
+         {
+@@ -1086,9 +1114,24 @@
+             f.allowMigration();
+         }
+
+-        f.call();
+-        // tls may be 0 (wrong) or 1 (good) depending on thread local handling
+-        // by compiler
++        version (Kandelo)
++        {
++            import core.thread.threadbase : ThreadException;
++            try
++            {
++                f.call();
++                assert(false, "Kandelo cannot migrate a suspended fiber");
++            }
++            catch (ThreadException ex)
++            {
++            }
++            assert(tls == 0);
++        }
++        else
++        {
++            f.call();
++            // tls may be 0 (wrong) or 1 (good) depending on compiler handling.
++        }
+     });
+
+     assert(tls == 0);
+@@ -1097,6 +1140,12 @@
+
+     t.start();
+     t.join();
++
++    version (Kandelo)
++    {
++        f.call();
++        assert(f.state == Fiber.State.TERM && tls == 2);
++    }
+
+     version (CheckFiberMigration)
+     {
+@@ -1126,7 +1175,8 @@
+     }
+ }
+
+-// Multiple threads running shared fibers
++// Multiple threads running shared fibers, including suspended migrations.
++version (Kandelo) {} else
+ unittest
+ {
+     shared bool[10] locks;
+--- a/runtime/druntime/src/core/thread/threadbase.d
++++ b/runtime/druntime/src/core/thread/threadbase.d
+@@ -528,7 +528,9 @@
+     }
+     do
+     {
+-        m_curr.ehContext = swapContext(c.ehContext);
++        version (Kandelo) {} // the active stack context directly owns the EH chain
++        else
++            m_curr.ehContext = swapContext(c.ehContext);
+         c.within = m_curr;
+         m_curr = c;
+     }
+@@ -543,7 +545,9 @@
+     {
+         StackContext* c = m_curr;
+         m_curr = c.within;
+-        c.ehContext = swapContext(m_curr.ehContext);
++        version (Kandelo) {}
++        else
++            c.ehContext = swapContext(m_curr.ehContext);
+         c.within = null;
+     }
+
+@@ -1137,6 +1141,22 @@
+ package alias callWithStackShellDg = void delegate(void* sp) nothrow;
+ private alias callWithStackShell = externDFunc!("core.thread.osthread.callWithStackShell", void function(scope callWithStackShellDg) nothrow);
+
++version (Kandelo)
++public void** kandeloExceptionStack() @nogc nothrow
++{
++    if (auto thread = ThreadBase.getThis())
++        if (auto context = thread.m_curr)
++            return &context.ehContext;
++    return null;
++}
++
++version (Kandelo)
++private extern(C) void scanKandeloContinuation(void* start, size_t size, void* argument) nothrow
++{
++    auto scan = cast(ScanAllThreadsTypeFn*)argument;
++    (*scan)(ScanType.stack, start, start + size);
++}
++
+ private void scanAllTypeImpl(scope ScanAllThreadsTypeFn scan, void* curStackTop) nothrow
+ {
+     ThreadBase  thisThread  = null;
+@@ -1171,6 +1191,15 @@
+
+     for (StackContext* c = ThreadBase.sm_cbeg; c; c = c.next)
+     {
++        version (Kandelo)
++        {
++            if (c.kandeloContinuation)
++                c.kandeloScanSaved(c.kandeloContinuation, &scanKandeloContinuation, &scan);
++
++            import rt.dwarfeh : scanKandeloExceptionStack;
++            if (c.ehContext)
++                scanKandeloExceptionStack(c.ehContext, (p, q) => scan(ScanType.stack, p, q));
++        }
+         static if (isStackGrowingDown)
+         {
+             assert(c.tstack <= c.bstack, "stack bottom can't be less than top");
+--- a/runtime/druntime/src/core/thread/context.d
++++ b/runtime/druntime/src/core/thread/context.d
+@@ -14,10 +14,34 @@
+ // LDC: Unconditionally change ABI to support sanitizers
+ version (LDC) version = SupportSanitizers_ABI;
+
++version (Kandelo)
++{
++    package struct KandeloContinuation;
++    package alias KandeloEntry = extern(C) void function(void*) nothrow;
++    package alias KandeloScan = extern(C) void function(void*, size_t, void*) nothrow;
++
++    package extern(C) nothrow
++    {
++        @nogc KandeloContinuation* kandelo_continuation_create(
++            void* bottom, void* top, KandeloEntry entry, void* argument);
++        @nogc int kandelo_continuation_enter(KandeloContinuation*);
++        @nogc void kandelo_continuation_suspend();
++        @nogc int kandelo_continuation_destroy(KandeloContinuation*);
++        void kandelo_continuation_visit_saved(
++            const KandeloContinuation*, KandeloScan scan, void* argument);
++    }
++}
++
+ ///
+ struct StackContext
+ {
+     void* bstack, tstack;
++
++    version (Kandelo)
++    {
++        package KandeloContinuation* kandeloContinuation;
++        package typeof(&kandelo_continuation_visit_saved) kandeloScanSaved;
++    }
+
+     /// Slot for the EH implementation to keep some state for each stack
+     /// (will be necessary for exception chaining, etc.). Opaque as far as
+--- a/runtime/phobos/std/concurrency.d
++++ b/runtime/phobos/std/concurrency.d
+@@ -77,6 +77,9 @@
+  */
+ module std.concurrency;
+
++version (Kandelo) {}
++else version (WebAssembly) version = NoFiber;
++
+ public import std.variant;
+
+ import core.atomic;
+@@ -1493,7 +1496,7 @@
+  * This is an example scheduler that creates a new `Fiber` per call to spawn
+  * and multiplexes the execution of all fibers within the main thread.
+  */
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else class FiberScheduler : Scheduler
+ {
+     /**
+@@ -1685,7 +1688,7 @@
+     size_t m_pos;
+ }
+
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else @system unittest
+ {
+     static void receive(Condition cond, ref size_t received)
+@@ -1746,7 +1749,7 @@
+  */
+ void yield() nothrow
+ {
+-    version (WebAssembly) // No Fiber support on Wasm yet
++    version (NoFiber)
+     {
+         scheduler.yield();
+     }
+@@ -1775,7 +1778,7 @@
+  * that periodically returns values of type `T` to the
+  * caller via `yield`.  This is represented as an InputRange.
+  */
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else class Generator(T) :
+     Fiber, IsGenerator, InputRange!T
+ {
+@@ -1959,7 +1962,7 @@
+ }
+
+ ///
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else @system unittest
+ {
+     auto tid = spawn({
+@@ -1988,7 +1991,7 @@
+  * Params:
+  *  value = The value to yield.
+  */
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else void yield(T)(ref T value)
+ {
+     Generator!T cur = cast(Generator!T) Fiber.getThis();
+@@ -2001,13 +2004,13 @@
+ }
+
+ /// ditto
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else void yield(T)(T value)
+ {
+     yield(value);
+ }
+
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else @system unittest
+ {
+     import core.exception;
+@@ -2062,7 +2065,7 @@
+     scheduler = null;
+ }
+ ///
+-version (WebAssembly) {} // No Fiber support on Wasm yet
++version (NoFiber) {}
+ else @system unittest
+ {
+     import std.range;
+@@ -2953,7 +2956,7 @@
+     static assert(__traits(compiles, send(Tid.init, noreturn.init)          ));
+     static assert(__traits(compiles, prioritySend(Tid.init, noreturn.init)  ));
+
+-    version (WebAssembly) {}
++    version (NoFiber) {}
+     else
+         static assert(__traits(compiles, yield(noreturn.init)                   ));
+
+--- a/gen/trycatchfinally.cpp
++++ b/gen/trycatchfinally.cpp
+@@ -10,6 +10,10 @@
+ #include "gen/trycatchfinally.h"
+
+ #include "llvm/IR/IntrinsicsWebAssembly.h"
++#include "llvm/ADT/SmallPtrSet.h"
++#include "llvm/IR/CFG.h"
++#include "llvm/Transforms/Utils/Cloning.h"
++#include "llvm/Transforms/Utils/Local.h"
+
+ #include "dmd/identifier.h"
+ #include "dmd/errors.h"
+@@ -481,8 +485,29 @@
+
+ ////////////////////////////////////////////////////////////////////////////////
+
++static bool useKandeloWasmCleanup() {
++  return useWasmEH() && global.params.targetTriple->getOSName() == "kandelo";
++}
++
+ CleanupScope::CleanupScope(llvm::BasicBlock *beginBlock,
+-                           llvm::BasicBlock *endBlock) {
++                           llvm::BasicBlock *endBlock,
++                           llvm::BasicBlock *outerUnwind)
++    : outerUnwind(outerUnwind) {
++  if (useKandeloWasmCleanup()) {
++    // Reach local exception handlers as well as normal successors. The
++    // enclosing scope's unwind target remains outside this cleanup.
++    llvm::SmallPtrSet<llvm::BasicBlock *, 16> seen{beginBlock};
++    blocks.push_back(beginBlock);
++    if (beginBlock == endBlock)
++      return;
++    for (size_t i = 0; i < blocks.size(); ++i)
++      for (auto *successor : llvm::successors(blocks[i]))
++        if (successor != endBlock && successor != outerUnwind &&
++            seen.insert(successor).second)
++          blocks.push_back(successor);
++    blocks.push_back(endBlock);
++    return;
++  }
+   if (useMSVCEH() || useWasmEH()) {
+     findSuccessors(blocks, beginBlock, endBlock);
+     return;
+@@ -596,6 +621,80 @@
+   exitTargets.back().sourceBlocks.push_back(sourceBlock);
+
+   return beginBlock();
++}
++
++// Preserve internal EH scopes when copying a finally. Only exceptions escaping
++// the copy belong to the replacement-exception handler.
++static void cloneWasmCleanup(const std::vector<llvm::BasicBlock *> &source,
++                             std::vector<llvm::BasicBlock *> &copy,
++                             llvm::BasicBlock *continueWith,
++                             llvm::BasicBlock *outerUnwind,
++                             llvm::BasicBlock *replacement,
++                             llvm::Value *parent) {
++  llvm::ValueToValueMapTy map;
++  auto *end = source.back()->getTerminator();
++  if (continueWith && end && end->getNumSuccessors())
++    map[end->getSuccessor(0)] = continueWith;
++  if (outerUnwind && replacement)
++    map[outerUnwind] = replacement;
++  for (auto *block : source) {
++    auto *cloned = llvm::CloneBasicBlock(block, map, "", block->getParent());
++    map[block] = cloned;
++    copy.push_back(cloned);
++  }
++  for (auto *block : copy)
++    for (auto &instruction : *block)
++      llvm::RemapInstruction(&instruction, map,
++                             llvm::RF_IgnoreMissingLocals |
++                             llvm::RF_NoModuleLevelChanges);
++  if (!parent)
++    return;
++
++  llvm::SmallVector<llvm::CallInst *, 8> calls;
++  for (auto *block : copy) {
++    for (auto it = block->begin(); it != block->end();) {
++      auto *inst = &*it++;
++      if (auto *switchPad = llvm::dyn_cast<llvm::CatchSwitchInst>(inst)) {
++        if (llvm::isa<llvm::ConstantTokenNone>(switchPad->getParentPad()))
++          switchPad->setParentPad(parent);
++        if (!switchPad->hasUnwindDest()) {
++          auto *redirected = llvm::CatchSwitchInst::Create(
++              switchPad->getParentPad(), replacement,
++              switchPad->getNumHandlers(), "", switchPad->getIterator());
++          for (auto *handler : switchPad->handlers())
++            redirected->addHandler(handler);
++          redirected->takeName(switchPad);
++          switchPad->replaceAllUsesWith(redirected);
++          switchPad->eraseFromParent();
++        }
++      } else if (auto *pad = llvm::dyn_cast<llvm::CleanupPadInst>(inst)) {
++        if (llvm::isa<llvm::ConstantTokenNone>(pad->getParentPad()))
++          pad->setParentPad(parent);
++      } else if (auto *ret = llvm::dyn_cast<llvm::CleanupReturnInst>(inst)) {
++        if (!ret->hasUnwindDest()) {
++          llvm::CleanupReturnInst::Create(ret->getCleanupPad(), replacement, ret->getIterator());
++          ret->eraseFromParent();
++        }
++      } else if (auto *call = llvm::dyn_cast<llvm::CallBase>(inst)) {
++        const bool rethrow = call->getIntrinsicID() == llvm::Intrinsic::wasm_rethrow;
++        if (llvm::isa<llvm::IntrinsicInst>(call) && !rethrow)
++          continue;
++        if (!call->getOperandBundle("funclet")) {
++          auto *withParent = llvm::CallBase::addOperandBundle(
++              call, llvm::LLVMContext::OB_funclet,
++              llvm::OperandBundleDef("funclet", parent), call->getIterator());
++          call->replaceAllUsesWith(withParent);
++          call->eraseFromParent();
++          call = withParent;
++        }
++        if (auto *ordinary = llvm::dyn_cast<llvm::CallInst>(call);
++            ordinary && (rethrow || !ordinary->doesNotThrow()))
++          calls.push_back(ordinary);
++      }
++    }
++  }
++  for (auto *call : calls)
++    llvm::changeToInvokeAndSplitBasicBlock(call, replacement);
+ }
+
+ llvm::BasicBlock *CleanupScope::runCopying(IRState &irs,
+@@ -650,6 +749,9 @@
+           if (succ != continueWith)
+             remapBlocksValue(blocks, succ, continueWith);
+     exitTarget.cleanupBlocks = blocks;
++  } else if (useKandeloWasmCleanup()) {
++    cloneWasmCleanup(blocks, exitTarget.cleanupBlocks, continueWith, outerUnwind,
++                    unwindTo, funclet);
+   } else {
+     // clone the code
+     cloneBlocks(blocks, exitTarget.cleanupBlocks, continueWith, unwindTo,
+@@ -711,7 +813,10 @@
+
+ void TryCatchFinallyScopes::pushCleanup(llvm::BasicBlock *beginBlock,
+                                         llvm::BasicBlock *endBlock) {
+-  cleanupScopes.emplace_back(beginBlock, endBlock);
++  auto *outerUnwind = useKandeloWasmCleanup() && currentCleanupScope()
++                          ? getLandingPadRef(currentCleanupScope())
++                          : nullptr;
++  cleanupScopes.emplace_back(beginBlock, endBlock, outerUnwind);
+   unresolvedGotosPerCleanupScope.emplace_back();
+   landingPadsPerCleanupScope.emplace_back();
+ }
+@@ -1019,14 +1124,79 @@
+         getRuntimeFunction(Loc(), irs.module, personality));
+   }
+
+-  if (cleanupScope == 0)
+-    return runCleanupPad(cleanupScope, nullptr);
+-
+-  llvm::BasicBlock *&pad = getLandingPadRef(cleanupScope);
+-  if (!pad)
+-    pad = emitLandingPadWasm(cleanupScope - 1);
+-
+-  return runCleanupPad(cleanupScope, pad);
++  llvm::BasicBlock *unwindTo = nullptr;
++  if (cleanupScope != 0) {
++    auto &pad = getLandingPadRef(cleanupScope);
++    if (!pad)
++      pad = emitLandingPadWasm(cleanupScope - 1);
++    unwindTo = pad;
++  }
++
++  if (useKandeloWasmCleanup())
++    return runKandeloWasmCleanup(cleanupScope, unwindTo);
++  return runCleanupPad(cleanupScope, unwindTo);
++}
++
++// Record native language exception payloads before entering a common cleanup.
++// Other exception tags enter the same cleanup by unwinding around the probe.
++static llvm::BasicBlock *probeWasmException(IRState &irs,
++                                           llvm::Value *parent,
++                                           llvm::BasicBlock *cleanup,
++                                           llvm::AllocaInst *slot) {
++  auto *dispatch = irs.insertBB("cleanup.exception.dispatch");
++  auto *caught = irs.insertBB("cleanup.exception.probe");
++  auto *unreachable = irs.insertBB("cleanup.exception.unreachable");
++  auto *switchPad = llvm::CatchSwitchInst::Create(parent, cleanup, 1, "", dispatch);
++  switchPad->addHandler(caught);
++  irs.ir->SetInsertPoint(caught);
++  auto *catchPad = irs.ir->CreateCatchPad(switchPad, {getNullPtr()});
++  auto *exception = irs.ir->CreateCall(GET_INTRINSIC_DECL(wasm_get_exception, {}),
++                                      catchPad);
++  irs.ir->CreateStore(exception, slot);
++  irs.ir->CreateInvoke(GET_INTRINSIC_DECL(wasm_rethrow, {}), unreachable,
++                       cleanup, {}, {llvm::OperandBundleDef("funclet", catchPad)});
++  irs.ir->SetInsertPoint(unreachable);
++  irs.ir->CreateUnreachable();
++  return dispatch;
++}
++
++llvm::BasicBlock *
++TryCatchFinallyScopes::runKandeloWasmCleanup(CleanupCursor scope,
++                                            llvm::BasicBlock *unwindTo) {
++  if (isCatchSwitchBlock(cleanupScopes[scope].beginBlock()))
++    return cleanupScopes[scope].beginBlock();
++
++  const auto savedInsertPoint = irs.saveInsertPoint();
++  auto *slot = DtoRawAlloca(getOpaquePtrType(), 0, "cleanup.exception");
++  irs.ir->SetInsertPoint(slot->getParent(), std::next(slot->getIterator()));
++  irs.ir->CreateStore(getNullPtr(), slot);
++
++  auto *cleanup = irs.insertBB("cleanuppad");
++  auto *replacement = irs.insertBB("cleanup.replacement");
++  auto *resume = irs.insertBB("cleanupret");
++  auto *root = llvm::ConstantTokenNone::get(irs.context());
++  auto *cleanupPad = llvm::CleanupPadInst::Create(root, {}, "", cleanup);
++  auto *replacePad = llvm::CleanupPadInst::Create(cleanupPad, {}, "", replacement);
++  llvm::CleanupReturnInst::Create(cleanupPad, unwindTo, resume);
++
++  auto *dispatch = probeWasmException(irs, root, cleanup, slot);
++  auto *escape = probeWasmException(irs, cleanupPad, replacement, slot);
++  irs.ir->SetInsertPoint(cleanup);
++  auto *original = irs.ir->CreateLoad(getOpaquePtrType(), slot);
++  irs.ir->CreateStore(getNullPtr(), slot);
++  auto *body = cleanupScopes[scope].runCopying(irs, cleanup, resume, escape,
++                                               cleanupPad);
++  createBranch(body, cleanup);
++
++  irs.ir->SetInsertPoint(replacement);
++  auto *escaping = irs.ir->CreateLoad(getOpaquePtrType(), slot);
++  irs.ir->CreateStore(getNullPtr(), slot);
++  auto *combine = getRuntimeFunction(Loc(), irs.module,
++                                     "_d_kandelo_wasm_replace_exception");
++  irs.ir->CreateCall(combine, {original, escaping},
++                     {llvm::OperandBundleDef("funclet", replacePad)});
++  llvm::CleanupReturnInst::Create(replacePad, unwindTo, replacement);
++  return dispatch;
+ }
+
+ llvm::BasicBlock *
+--- a/gen/trycatchfinally.h
++++ b/gen/trycatchfinally.h
+@@ -96,7 +96,8 @@
+ /// local variables with destructors, each of which might throw itself).
+ class CleanupScope {
+ public:
+-  CleanupScope(llvm::BasicBlock *beginBlock, llvm::BasicBlock *endBlock);
++  CleanupScope(llvm::BasicBlock *beginBlock, llvm::BasicBlock *endBlock,
++               llvm::BasicBlock *outerUnwind);
+
+   llvm::BasicBlock *run(IRState &irs, llvm::BasicBlock *sourceBlock,
+                         llvm::BasicBlock *continueWith);
+@@ -115,6 +116,7 @@
+
+ private:
+   std::vector<llvm::BasicBlock *> blocks;
++  llvm::BasicBlock *outerUnwind;
+
+   /// The branch selector variable, or null if not created yet.
+   llvm::AllocaInst *branchSelector = nullptr;
+@@ -316,6 +318,8 @@
+   // MSVC & Wasm
+   void runCleanupCopies(CleanupCursor sourceScope, CleanupCursor targetScope,
+                         llvm::BasicBlock *continueWith);
++  llvm::BasicBlock *runKandeloWasmCleanup(CleanupCursor scope,
++                                          llvm::BasicBlock *unwindTo);
+   llvm::BasicBlock *runCleanupPad(CleanupCursor scope,
+                                   llvm::BasicBlock *unwindTo);
+ };
+--- a/gen/runtime.cpp
++++ b/gen/runtime.cpp
+@@ -752,6 +752,10 @@
+     createFwdDecl(LINK::c, throwableTy, {"_d_eh_enter_catch"},
+                   {voidPtrTy, classInfoTy}, {});
+   } else if (useWasmEH()) {
++    if (global.params.targetTriple->getOSName() == "kandelo")
++      createFwdDecl(LINK::c, voidTy, {"_d_kandelo_wasm_replace_exception"},
++                    {voidPtrTy, voidPtrTy}, {}, Attr_NoUnwind);
++
+     // Throwable _d_eh_enter_catch(ptr)
+     createFwdDecl(LINK::c, throwableTy, {"_d_eh_enter_catch"}, {voidPtrTy}, {},
+                   Attr_NoUnwind);
+--- a/runtime/druntime/src/rt/dwarfeh.d
++++ b/runtime/druntime/src/rt/dwarfeh.d
+@@ -170,6 +170,29 @@
+  * Wrap the unwinder's data with our own compiler specific struct
+  * with our own data.
+  */
++version (Kandelo)
++void scanKandeloExceptionStack(void* head, scope void delegate(void*, void*) nothrow scan) nothrow
++{
++    for (auto eh = cast(ExceptionHeader*)head; eh; eh = eh.next)
++        scan(&eh.object, (&eh.object) + 1);
++}
++
++version (Kandelo)
++void retireKandeloExceptionStack(void* head) @nogc nothrow
++{
++    auto eh = cast(ExceptionHeader*)head;
++    while (eh)
++    {
++        auto next = eh.next;
++        // GC may already have collected the abandoned objects. Only a
++        // ref-counted object has a reference to release here.
++        if (eh.counted)
++            _d_delThrowable(eh.object);
++        ExceptionHeader.free(eh);
++        eh = next;
++    }
++}
++
+ struct ExceptionHeader
+ {
+     Throwable object;                   // the thrown D object
+@@ -183,13 +206,36 @@
+     // Stack other thrown exceptions in current thread through here.
+     ExceptionHeader* next;
+
+-    static ExceptionHeader* stack;      // thread local stack of chained exceptions
+-
+-    /* Pre-allocate storage for 1 instance per thread.
+-     * Use calloc/free for multiple exceptions in flight.
+-     * Does not use GC
+-     */
+-    static ExceptionHeader ehstorage;
++    version (Kandelo)
++    {
++        // Attached pthreads publish the live exception chain in their
++        // current stack context, including when a fiber is suspended.
++        private static ExceptionHeader* unattachedStack;
++        static ref ExceptionHeader* stack() @nogc nothrow
++        {
++            import core.thread.threadbase : kandeloExceptionStack;
++            if (auto slot = kandeloExceptionStack())
++                return *cast(ExceptionHeader**)slot;
++            return unattachedStack;
++        }
++    }
++    else
++        static ExceptionHeader* stack;  // thread local stack of chained exceptions
++
++    version (Kandelo)
++    {
++        // A suspended fiber can outlive its pthread TLS allocation. Keep
++        // headers in the guest heap, with a process-owned emergency slot.
++        private static shared bool emergencyInUse;
++        private static __gshared ExceptionHeader ehstorage;
++        private bool counted;
++    }
++    else
++    {
++        // Pre-allocate one instance per thread and use calloc/free for
++        // multiple in-flight exceptions. Neither path allocates with GC.
++        static ExceptionHeader ehstorage;
++    }
+
+     /************
+      * Allocate and initialize an ExceptionHeader.
+@@ -200,12 +246,27 @@
+      */
+     static ExceptionHeader* create(Throwable o) @nogc
+     {
+-        auto eh = &ehstorage;
+-        if (eh.object)                  // if in use
+-        {
+-            eh = cast(ExceptionHeader*).calloc(1, ExceptionHeader.sizeof);
++        version (Kandelo)
++        {
++            auto eh = cast(ExceptionHeader*).calloc(1, ExceptionHeader.sizeof);
+             if (!eh)
+-                terminate(__LINE__);              // out of memory while throwing - not much else can be done
++            {
++                import core.atomic : cas;
++                if (!cas(&emergencyInUse, false, true))
++                    terminate(__LINE__);
++                eh = &ehstorage;
++            }
++            eh.counted = o.refcount() != 0;
++        }
++        else
++        {
++            auto eh = &ehstorage;
++            if (eh.object)
++            {
++                eh = cast(ExceptionHeader*).calloc(1, ExceptionHeader.sizeof);
++                if (!eh)
++                    terminate(__LINE__);
++            }
+         }
+         eh.object = o;
+         eh.exception_object.exception_class = dmdExceptionClass;
+@@ -218,7 +279,7 @@
+      * Params:
+      *  eh = ExceptionHeader to free
+      */
+-    static void free(ExceptionHeader* eh)
++    static void free(ExceptionHeader* eh) @nogc nothrow
+     {
+         debug (EH_personality) writeln("free(%p)", eh);
+         /* Smite contents even if subsequently free'd,
+@@ -227,6 +288,11 @@
+         *eh = ExceptionHeader.init;
+         if (eh != &ehstorage)
+             .free(eh);
++        else version (Kandelo)
++        {
++            import core.atomic : atomicStore;
++            atomicStore(emergencyInUse, false);
++        }
+     }
+
+     /*************************
+@@ -256,7 +322,7 @@
+      * Returns:
+      *  pointer to ExceptionHeader that eo points into.
+      */
+-    static ExceptionHeader* toExceptionHeader(_Unwind_Exception* eo)
++    static ExceptionHeader* toExceptionHeader(_Unwind_Exception* eo) @nogc nothrow
+     {
+         return cast(ExceptionHeader*)(cast(void*)eo - ExceptionHeader.exception_object.offsetof);
+     }
+@@ -543,6 +609,49 @@
+ }
+ else version (WebAssembly)
+ {
++    version (Kandelo)
++    {
++        extern(C) void _d_kandelo_wasm_replace_exception(
++            _Unwind_Exception* original, _Unwind_Exception* replacement) @nogc nothrow
++        {
++            if (!original || original.exception_class != dmdExceptionClass)
++                return;
++            auto old = ExceptionHeader.toExceptionHeader(original);
++            auto displaced = old.object;
++
++            if (replacement && replacement.exception_class == dmdExceptionClass)
++            {
++                auto current = ExceptionHeader.toExceptionHeader(replacement);
++                if (current.object !is displaced)
++                {
++                    auto replacementError = cast(Error)current.object;
++                    if (replacementError && !cast(Error) displaced)
++                    {
++                        replacementError.bypassedException = Throwable.chainTogether(
++                            displaced, replacementError.bypassedException);
++                        displaced = null; // ownership moved to bypassedException
++                    }
++                    else
++                    {
++                        auto appended = current.object;
++                        current.object = Throwable.chainTogether(displaced, appended);
++                        current.counted = old.counted;
++                        displaced = appended; // next now owns a reference
++                    }
++                }
++            }
++
++            auto link = &ExceptionHeader.stack();
++            while (*link && *link != old)
++                link = &(*link).next;
++            if (!*link)
++                abort();
++            *link = old.next;
++            ExceptionHeader.free(old);
++            _d_delThrowable(displaced);
++        }
++    }
++
+     // We inline the needed parts of libunwind here to avoid dependence
+     // We can't link libunwind because we need to override _Unwind_CallPersonality
+     //
+@@ -807,6 +916,8 @@
+ ClassInfo getClassInfo(_Unwind_Exception* exceptionObject, const(ubyte)* currentLsd)
+ {
+     ExceptionHeader* eh = ExceptionHeader.toExceptionHeader(exceptionObject);
++    version (Kandelo)
++        return typeid(eh.object); // compiler cleanup edges have already chained it
+     Throwable ehobject = eh.object;
+     debug (EH_personality) writeln("start: %p '%.*s'", ehobject, cast(int)(typeid(ehobject).info.name.length), ehobject.classinfo.info.name.ptr);
+     for (ExceptionHeader* ehn = eh.next; ehn; ehn = ehn.next)
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -1013,6 +1013,8 @@
+
+     if (TARGET_SYSTEM MATCHES "WASI")
+       set(c_libs ${c_libs} c-printscan-long-double)
++    elseif(TARGET_SYSTEM MATCHES "Kandelo")
++        list(APPEND c_libs "${KANDELO_CONTINUATION_LIBRARY}")
+     endif()
+
+     compile_testrunner("${full_dflags}" "${is_shared}" "${target_suffix}" "")
+--- a/runtime/druntime/src/core/math.d
++++ b/runtime/druntime/src/core/math.d
+@@ -175,7 +175,6 @@
+             alias U = ushort;
+             enum sig_mask = U(1) << (U.sizeof * 8 - 1);
+             enum exp_shft = 0;
+-            enum man_mask = 0;
+             version (LittleEndian)
+                 enum idx = 4;
+             else
+@@ -199,17 +198,17 @@
+                 alias M = U;
+             enum sig_mask = U(1) << (U.sizeof * 8 - 1);
+             enum uint exp_shft = T.mant_dig - 1 - (T.sizeof > U.sizeof ? U.sizeof * 8 : 0);
+-            enum man_mask = (U(1) << exp_shft) - 1;
+             enum idx = T.sizeof > U.sizeof ? MANTISSA_MSB : 0;
+         }
+         enum exp_mask = (U.max >> (exp_shft + 1)) << exp_shft;
+         enum int exp_msh = exp_mask >> exp_shft;
+-        enum intPartMask = man_mask + 1;
+
+         import core.checkedint : adds;
+         alias _expect = llvm_expect;
+
+         enum norm_factor = 1 / T.epsilon;
++        if (n == 0)
++            return n;
+         T vf = n;
+
+         auto u = (cast(U*)&vf)[idx];
+@@ -224,7 +223,10 @@
+                 e = int((u & exp_mask) >> exp_shft) - (T.mant_dig - 1);
+             }
+             bool overflow;
+-            exp = adds(exp, e, overflow);
++            const targetExponent = adds(exp, e, overflow);
++            if (overflow && exp < 0)
++                return n * cast(T) 0.0;
++            exp = targetExponent;
+             if (_expect(overflow || exp >= exp_msh, false)) // infs
+             {
+                 static if (realFormat == RealFormat.ieeeExtended)
+@@ -257,53 +259,14 @@
+             }
+             else // subnormal output
+             {
+-                exp = 1 - exp;
+-                static if (realFormat != RealFormat.ieeeExtended)
+-                {
+-                    auto m = u & man_mask;
+-                    if (exp > T.mant_dig)
+-                    {
+-                        exp = T.mant_dig;
+-                        static if (T.sizeof > U.sizeof)
+-                            (cast(U*)&vf)[MANTISSA_LSB] = 0;
+-                    }
+-                }
+-                u &= sig_mask;
+-                static if (realFormat == RealFormat.ieeeExtended)
+-                {
+-                    version (LittleEndian)
+-                        auto mp = cast(ulong*)&vf;
+-                    else
+-                        auto mp = cast(ulong*)((cast(ushort*)&vf) + 1);
+-                    if (exp >= ulong.sizeof * 8)
+-                        *mp = 0;
+-                    else
+-                        *mp >>>= exp;
+-                }
+-                else
+-                {
+-                    m ^= intPartMask;
+-                    static if (T.sizeof > U.sizeof)
+-                    {
+-                        int exp2 = exp - int(U.sizeof) * 8;
+-                        if (exp2 < 0)
+-                        {
+-                            (cast(U*)&vf)[MANTISSA_LSB] = ((cast(U*)&vf)[MANTISSA_LSB] >> exp) ^ (m << (U.sizeof * 8 - exp));
+-                            m >>>= exp;
+-                            u ^= cast(U) m;
+-                        }
+-                        else
+-                        {
+-                            exp = exp2;
+-                            (cast(U*)&vf)[MANTISSA_LSB] = (exp < U.sizeof * 8) ? m >> exp : 0;
+-                        }
+-                    }
+-                    else
+-                    {
+-                        m >>>= exp;
+-                        u ^= cast(U) m;
+-                    }
+-                }
++                if (exp < 1 - T.mant_dig)
++                    return n * cast(T) 0.0;
++
++                // Install a normal exponent. Multiplication by an exact
++                // power of two rounds the result at subnormal precision.
++                const biasedExponent = cast(typeof(U.init + 0))(exp + T.mant_dig);
++                (cast(U*)&vf)[idx] = cast(U)((u & ~exp_mask) ^ (biasedExponent << exp_shft));
++                return vf * (cast(T) 0.5 * T.epsilon);
+             }
+             (cast(U*)&vf)[idx] = u;
+         }
+@@ -348,6 +311,13 @@
+     {
+         assert(ldexp(1.0L, -16384) == 0x1p-16384L);
+         assert(ldexp(1.0L, -16382) == 0x1p-16382L);
++        static if (real.mant_dig == 113)
++        {
++            assert(ldexp(1.5L, -16495) == 0x1p-16494L);
++            assert(ldexp(-1.5L, -16495) == -0x1p-16494L);
++            assert(ldexp(1.0L, -16495) == 0.0L);
++            assert(ldexp(0x1p-16494L, 16383) == 0x1p-111L);
++        }
+     }
+     else static if (real.mant_dig == 106)
+     {
+--- a/runtime/phobos/std/math/exponential.d
++++ b/runtime/phobos/std/math/exponential.d
+@@ -1080,7 +1080,7 @@
+     import std.math.traits : floatTraits, RealFormat, isNaN;
+     import std.math.rounding : floor;
+     import std.math.algebraic : poly;
+-    import std.math.constants : LOG2E;
++    import std.math.constants : LN2, LOG2E;
+
+     alias F = floatTraits!T;
+     static if (F.realFormat == RealFormat.ieeeSingle)
+@@ -1172,8 +1172,8 @@
+         enum T C2 = 1.428606820309417232121458176568075500134E-6L;
+
+         // Overflow and Underflow limits.
+-        enum T OF =  1.135583025911358400418251384584930671458833e4L;
+-        enum T UF = -1.143276959615573793352782661133116431383730e4L;
++        enum T OF = 16384 * LN2;
++        enum T UF = -16495 * LN2; // Log of half the smallest subnormal.
+     }
+     else
+         static assert(0, "Not implemented for this architecture");
+@@ -1330,6 +1330,11 @@
+         // Unfortunately, fldl2e sets it!
+         // So it's not realistic to avoid setting it.
+         assert(exp(cast(T) 0.0) == 1.0);
++        static if (realFormat == RealFormat.ieeeQuadruple)
++        {
++            assert(exp(cast(T) -11433.125L) == 0x1p-16494L);
++            assert(exp(cast(T) 11356.0L) < T.infinity);
++        }
+
+         // NaN propagation. Doesn't set flags, bcos was already NaN.
+         version (IeeeFlagsSupport)

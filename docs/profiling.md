@@ -279,6 +279,36 @@ capacity tests.
 | `lock_dense_file_replace_us_per_op` | microseconds/operation | Replace each dense-file write range with a read range under the same OFD owner |
 | `lock_dense_file_unlock_us_per_op` | microseconds/operation | Unlock each dense-file range |
 
+On the Node host, all but the timed-wait metrics measure warm-up, not
+steady-state cost. Each program gets a fresh kernel worker and times 127 to
+1000 operations, often under 50 ms, which has two consequences:
+
+- The kernel worker's JavaScript is still being compiled while it is timed.
+  On one binary the 1000-call `getpid()` window ranged from about 300,000 to
+  480,000 retired instructions per call, depending on when V8's background
+  threads got CPU, against about 200,000 once warm. Background load moves
+  this suite far more than the long-running ones, and `--rounds` does not
+  remove that: it takes a median inside one parent process.
+- A single garbage collection can outweigh a phase. The kernel worker's
+  collection during the lock workload takes about 7 ms, and the 127-operation
+  `lock_many_files_conflict` phase about 5 to 10 ms. A small change in
+  startup allocation moves that collection into or out of the phase and
+  changes that metric two to three times. The move from Node.js 24.17 to
+  24.18 did this with no measurable change in the cost of a syscall.
+
+Before attributing a difference in this suite to a runtime, toolchain or
+host change:
+
+- alternate several invocations per side, include an identical A/A arm and
+  record the load;
+- check whether a collection moved, by repeating both sides as
+  `npx tsx --min-semi-space-size=64 --max-semi-space-size=64 benchmarks/run.ts`
+  (a difference that disappears was a displaced collection);
+- compare warm-up work with kernel-worker instruction counts under
+  `node --single-threaded`, which compiles and collects synchronously.
+
+Keep those diagnostics separate from timed results.
+
 For a focused advisory-lock comparison, run the same benchmark source and
 round count before and after the change on both hosts. Rebuild the guest
 artifact for each side's ABI epoch; an ABI 39 benchmark must not be reused with

@@ -8,10 +8,9 @@ const wasmModule = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
 const memory64 = process.argv[2] === '1';
 const frameSizes = process.argv[3].split(',').map(Number);
 const pointer = value => memory64 ? BigInt(value) : value;
-const descriptor = pointer(512);
-
 function createRun(failAt = 0) {
   let instance;
+  let descriptor = pointer(512);
   let mode = 'normal';
   let capture = true;
   let reservations = 0;
@@ -121,11 +120,19 @@ function createRun(failAt = 0) {
   return {
     exports, events, trace, committed,
     disableCapture() { capture = false; },
-    rewind() {
-      mode = 'rewind';
-      pendingReplay = committed.slice().reverse();
+    enableCapture(address) {
+      descriptor = pointer(address);
+      capture = true;
+    },
+    finishCapture() {
       exports.wpk_fork_unwind_end();
-      exports.wpk_fork_rewind_begin(descriptor);
+      mode = 'normal';
+      return { descriptor, frames: committed.splice(0) };
+    },
+    rewind(saved = this.finishCapture()) {
+      mode = 'rewind';
+      pendingReplay = saved.frames.slice().reverse();
+      exports.wpk_fork_rewind_begin(saved.descriptor);
     },
     routeThroughSecondRootCall() {
       const root = committed.find(frame => frame.functionOrdinal === 2);
@@ -192,7 +199,32 @@ function checkNonlexicalResume() {
   assert.equal(run.exports.counter.value, 1);
 }
 
+function checkIndependentCaptures() {
+  const run = createRun();
+  const { exports } = run;
+  const isUnwind = error => error instanceof WebAssembly.Exception && error.is(exports.unwind_tag);
+  assert.throws(() => exports.root(3), isUnwind);
+  const first = run.finishCapture();
+  assert.equal(exports.wpk_fork_state(), 0);
+
+  run.enableCapture(1024);
+  assert.throws(() => exports.root(0), isUnwind);
+  const second = run.finishCapture();
+
+  run.rewind(second);
+  assert.equal(exports.resume_root(), 12);
+  assert.equal(exports.counter.value, 3);
+  run.rewind(first);
+  assert.equal(exports.resume_root(), 15);
+  assert.equal(exports.wpk_fork_state(), 0);
+  // Fork replay restores the mutable globals from the selected descriptor.
+  assert.equal(exports.counter.value, 2);
+  assert.deepEqual(run.trace, [3, 4, 4, 2, 3, 2]);
+  assert.deepEqual(consumedOrdinals(run), [2, 1, 2, 1]);
+}
+
 checkNormalExecution();
 for (const input of [0, 3]) checkCaptureAndRewind(input);
 for (const failAt of [1, 2]) checkAllocationFailure(failAt);
 checkNonlexicalResume();
+checkIndependentCaptures();

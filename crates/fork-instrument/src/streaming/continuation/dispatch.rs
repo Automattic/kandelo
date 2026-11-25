@@ -432,8 +432,16 @@ where
         self.instruction(Instruction::I32Const(crate::runtime::STATE_REWINDING))?;
         self.instruction(Instruction::I32LtU)?;
         self.instruction(Instruction::BrIf(0))?;
-        let first = targets.first().context("empty dispatch gate")?.0.start;
-        let end = targets.last().unwrap().0.end;
+        let ((last, last_label), earlier) = targets.split_last().context("empty dispatch gate")?;
+        let first = targets[0].0.start;
+        let end = last.end;
+        let count = (end - first) as usize;
+        ensure!(
+            targets
+                .windows(2)
+                .all(|pair| pair[0].0.end == pair[1].0.start),
+            "noncontiguous dispatch call ranges"
+        );
         // Invalid replay coordinates must trap, not select a normal chunk.
         self.index_relative(first)?;
         self.instruction(Instruction::I32Const((end - first) as i32))?;
@@ -441,10 +449,21 @@ where
         self.instruction(Instruction::If(BlockType::Empty))?;
         self.instruction(Instruction::Unreachable)?;
         self.instruction(Instruction::End)?;
-        if targets.len() == 1 {
-            self.instruction(Instruction::Br(self.depth(Label::Synthetic(targets[0].1))?))?;
+        if earlier.is_empty() {
+            self.instruction(Instruction::Br(self.depth(Label::Synthetic(*last_label))?))?;
+        } else if count > 16 * targets.len() {
+            // Each range with many call sites shares a single destination.
+            // Use one comparison and branch per range to bound the emitted
+            // targets when enclosing gates cover the same large call span.
+            self.step(earlier.len())?;
+            for (range, label) in earlier {
+                self.instruction(Instruction::GlobalGet(self.environment.call_index_global))?;
+                self.instruction(Instruction::I32Const(range.end as i32))?;
+                self.instruction(Instruction::I32LtU)?;
+                self.instruction(Instruction::BrIf(self.depth(Label::Synthetic(*label))?))?;
+            }
+            self.instruction(Instruction::Br(self.depth(Label::Synthetic(*last_label))?))?;
         } else {
-            let count = (end - first) as usize;
             self.step(count)?;
             ensure!(
                 count <= self.limits.metadata_bytes / 16
@@ -460,7 +479,6 @@ where
                 let depth = self.depth(Label::Synthetic(label))?;
                 table.extend(std::iter::repeat_n(depth, range.len()));
             }
-            ensure!(table.len() == count, "noncontiguous dispatch call ranges");
             self.index_relative(first)?;
             let default = table[0];
             self.instruction(Instruction::BrTable(Cow::Owned(table), default))?;

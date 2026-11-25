@@ -1,0 +1,1338 @@
+From ba007912b1fb483cc7713ce64567b0c77840733b Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 20:00:19 +0800
+Subject: [PATCH 06/22] runtime, cmd/link, reflect: support wasm32 function
+ values
+
+Separate wasm32 function handles from logical PCs. Function values use
+call_indirect table indices, while reflection and stack unwinding use
+PCs. Add linker mappings and runtime conversions, and store both values
+in each 8-byte continuation.
+
+Keep logical PCs at or above runtime.minLegalPointer so stack copying
+accepts reflected code pointers. Store reflected method handles as
+uintptr values so checkptr does not treat them as pointers.
+
+Updates #63131
+
+Change-Id: I1043f0b165d04bcb6262c4efa3283e191068f66f
+
+diff --git a/src/cmd/compile/abi-internal.md b/src/cmd/compile/abi-internal.md
+index 5ba6f9d50c50be40416bf09370102f9e28f06d1c..c34d4745e44ed2be88639428c6538ae7645e14ba 100644
+--- a/src/cmd/compile/abi-internal.md
++++ b/src/cmd/compile/abi-internal.md
+@@ -881,6 +881,22 @@ s390x `BL` operation.
+ The s390x architecture maintains a single condition code (CC) field in the Program Status Word (PSW).
+ Go-generated code sets and tests this condition code to control conditional branches.
+ 
++### wasm32 architecture
++
++The wasm32 architecture has 32-bit pointers and `int` values. It uses
++the WebAssembly backend with 64-bit integer locals. Its register size,
++stack alignment, and `int64` alignment are 8 bytes. Arguments and
++results are passed on the stack. The result sequence starts at a
++pointer-aligned offset, as specified by the general assignment algorithm.
++
++WebAssembly has no native program counter or link register. A wasm32
++function value stores a non-zero `call_indirect` table index in its
++code word. The runtime identifies resume points with 32-bit logical
++PCs. An 8-byte return-PC slot stores the logical PC in its low word
++and the function handle in its high word. The runtime uses both words
++to resume a suspended function. Keeping the handle separate avoids
++reserving a fixed high-address region for PCs.
++
+ ## Future directions
+ 
+ ### Spill path improvements
+diff --git a/src/cmd/link/internal/ld/data.go b/src/cmd/link/internal/ld/data.go
+index d4d89e374f6b13c9bab3e43ca970cc205d03f183..ec79481ed7cb9adbf60b6775990896d2fb85c6a7 100644
+--- a/src/cmd/link/internal/ld/data.go
++++ b/src/cmd/link/internal/ld/data.go
+@@ -501,8 +501,8 @@ func (st *relocSymState) relocsym(s loader.Sym, P []byte) {
+ 			// to the start of the first text section, even if there are multiple.
+ 			if sect.Name == ".text" {
+ 				o = ldr.SymValue(rs) - int64(Segtext.Sections[0].Vaddr) + r.Add()
+-				if target.IsWasm() {
+-					// On Wasm, textoff (e.g. in the method table) is just the function index,
++				if target.IsWasm() && target.Arch.PtrSize == 8 {
++					// On GOARCH=wasm, textoff (e.g. in the method table) is just the function index,
+ 					// whereas the "PC" (rs's Value), relative to section start, is
+ 					// function index << 16 + block index (see ../wasm/asm.go:assignAddress).
+ 					if o&(1<<16-1) != 0 {
+@@ -3020,12 +3020,17 @@ func (ctxt *Link) address() []*sym.Segment {
+ 		s.Vaddr = va
+ 		va += s.Length
+ 		if ctxt.IsWasm() && i == 0 {
+-			// On Wasm, functions are not in the linear memory.
+-			// Start the data address at wasmMinDataAddr.
++			// On GOARCH=wasm, functions are not in linear memory, so reset the
++			// data address. wasm32 assigns dense logical PC tokens, so place
++			// data after the token range instead.
+ 			// (The second and later sections in Segtext are
+ 			// actually rodata. Probably we should put them in
+ 			// Segrodata.)
+-			va = wasmMinDataAddr
++			if ctxt.Arch.PtrSize == 8 {
++				va = wasmMinDataAddr
++			} else if va < wasmMinDataAddr {
++				va = wasmMinDataAddr
++			}
+ 		}
+ 	}
+ 	Segtext.Length = va - uint64(*FlagTextAddr)
+diff --git a/src/cmd/link/internal/ld/pcln.go b/src/cmd/link/internal/ld/pcln.go
+index 915186606dc31ae55efbac2c0cf7e71a6ec85b41..e1910bc8f9af28e838f339eda1c8f65a77ea7c1c 100644
+--- a/src/cmd/link/internal/ld/pcln.go
++++ b/src/cmd/link/internal/ld/pcln.go
+@@ -136,11 +136,11 @@ func computeDeferReturn(ctxt *Link, deferReturnSym, s loader.Sym) uint32 {
+ 	relocs := ldr.Relocs(s)
+ 	for ri := 0; ri < relocs.Count(); ri++ {
+ 		r := relocs.At(ri)
+-		if target.IsWasm() && r.Type() == objabi.R_ADDR {
++		if target.IsWasm() && (r.Type() == objabi.R_ADDR || r.Type() == objabi.R_WASMPC) {
+ 			// wasm/ssa.go generates an ARESUMEPOINT just
+ 			// before the deferreturn call. The "PC" of
+ 			// the deferreturn call is stored in the
+-			// R_ADDR relocation on the ARESUMEPOINT.
++			// continuation relocation on the ARESUMEPOINT.
+ 			lastWasmAddr = uint32(r.Add())
+ 		}
+ 		if r.Type().IsDirectCall() && (r.Sym() == deferReturnSym || ldr.IsDeferReturnTramp(r.Sym())) {
+@@ -627,7 +627,7 @@ func (state *pclntab) generateFuncdata(ctxt *Link, funcs []loader.Sym, inlsyms m
+ 				// With multiple .text sections the offset
+ 				// is from the start of the first one.
+ 				o -= int64(Segtext.Sections[0].Vaddr)
+-				if ctxt.Target.IsWasm() {
++				if ctxt.Target.IsWasm() && ctxt.Arch.PtrSize == 8 {
+ 					if o&(1<<16-1) != 0 {
+ 						ctxt.Errorf(fdSym, "textoff relocation does not target function entry for funcdata symbol: %s %#x", ldr.SymName(rs), o)
+ 					}
+@@ -777,8 +777,8 @@ func textOff(ctxt *Link, s loader.Sym, textStart int64) uint32 {
+ 	if off < 0 {
+ 		panic(fmt.Sprintf("expected func %s(%x) to be placed at or after textStart (%x)", ldr.SymName(s), ldr.SymValue(s), textStart))
+ 	}
+-	if ctxt.IsWasm() {
+-		// On Wasm, the function table contains just the function index, whereas
++	if ctxt.IsWasm() && ctxt.Arch.PtrSize == 8 {
++		// On GOARCH=wasm, the function table contains just the function index, whereas
+ 		// the "PC" (s's Value), relative to textStart, is function index << 16 + block index
+ 		// (see ../wasm/asm.go:assignAddress).
+ 		if off&(1<<16-1) != 0 {
+@@ -807,8 +807,8 @@ func writePCToFunc(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, sta
+ 	// Final entry of table is just end pc offset.
+ 	lastFunc := funcs[len(funcs)-1]
+ 	lastPC := pcOff(lastFunc) + uint32(ldr.SymSize(lastFunc))
+-	if ctxt.IsWasm() {
+-		lastPC = pcOff(lastFunc) + 1 // On Wasm it is function index (see above)
++	if ctxt.IsWasm() && ctxt.Arch.PtrSize == 8 {
++		lastPC = pcOff(lastFunc) + 1 // On GOARCH=wasm it is a function index (see above)
+ 	}
+ 	sb.SetUint32(ctxt.Arch, int64(len(funcs))*2*4, lastPC)
+ }
+diff --git a/src/cmd/link/internal/wasm/asm.go b/src/cmd/link/internal/wasm/asm.go
+index 2ac8d3478a6a553eddb2f440983581d8465cc356..9da83931759928580d4d1fd3972258ef68360915 100644
+--- a/src/cmd/link/internal/wasm/asm.go
++++ b/src/cmd/link/internal/wasm/asm.go
+@@ -9,10 +9,12 @@ import (
+ 	"cmd/internal/obj"
+ 	"cmd/internal/obj/wasm"
+ 	"cmd/internal/objabi"
++	"cmd/internal/sys"
+ 	"cmd/link/internal/ld"
+ 	"cmd/link/internal/loader"
+ 	"cmd/link/internal/sym"
+ 	"fmt"
++	"internal/abi"
+ 	"internal/buildcfg"
+ 	"io"
+ 	"regexp"
+@@ -41,7 +43,75 @@ const (
+ 	sectionData     = 11
+ )
+ 
+-func gentext(ctxt *ld.Link, ldr *loader.Loader) {
++// wasm32State belongs to one linker invocation. assignAddress builds the
++// function index before relocation starts; parallel relocations only read it.
++type wasm32State struct {
++	funcIndex         map[loader.Sym]uint32
++	funcEntries       loader.Sym
++	unreachableMethod loader.Sym
++}
++
++func (st *wasm32State) gentext(ctxt *ld.Link, ldr *loader.Loader) {
++	if ctxt.Arch.PtrSize != 4 {
++		return
++	}
++
++	st.funcIndex = make(map[loader.Sym]uint32, len(ctxt.Textp))
++	abiVersion := sym.SymVerABIInternal
++	if !buildcfg.Experiment.RegabiWrappers {
++		abiVersion = 0
++	}
++	st.unreachableMethod = ldr.Lookup("runtime.unreachableMethod", abiVersion)
++	entries := ldr.CreateSymForUpdate("runtime.wasmFuncEntry", 0)
++	entries.SetType(sym.SRODATA)
++	entries.SetAlign(4)
++	// Reserve handle 0 for nil. assignAddress fills the remaining slots
++	// after text ordering, using relocations to the final function PCs.
++	entries.SetSize(int64(len(ctxt.Textp)+1) * 4)
++	entries.Grow(entries.Size())
++	st.funcEntries = entries.Sym()
++
++	count := ldr.CreateSymForUpdate("runtime.wasmFuncCountData", 0)
++	count.SetType(sym.SRODATA)
++	count.SetAlign(4)
++	count.AddUint32(ctxt.Arch, uint32(len(ctxt.Textp)))
++
++	addHandle := func(name, target string) {
++		s := ldr.CreateSymForUpdate(name, 0)
++		s.SetType(sym.SRODATA)
++		s.SetAlign(4)
++		s.AddSymRef(ctxt.Arch, ldr.Lookup(target, 0), 0, objabi.R_WASMFCALL, 4)
++	}
++	addHandle("runtime.wasmMstartF", "runtime.mstart")
++	addHandle("runtime.wasmSystemstackSwitchF", "runtime.systemstack_switch")
++	addHandle("runtime.wasmGoexitF", "runtime.goexit")
++}
++
++func (st *wasm32State) archreloc(target *ld.Target, ldr *loader.Loader, _ *ld.ArchSyms, r loader.Reloc, s loader.Sym, val int64) (int64, int, bool) {
++	if r.Type() != objabi.R_WASMFCALL {
++		return val, 0, false
++	}
++	if target.Arch.PtrSize != 4 {
++		ldr.Errorf(s, "R_WASMFCALL used on non-wasm32 target")
++		return val, 0, true
++	}
++	rs := r.Sym()
++	if r.Weak() && !ldr.AttrReachable(rs) {
++		rs = st.unreachableMethod
++	}
++	handle, ok := st.funcIndex[rs]
++	if !ok {
++		ldr.Errorf(s, "R_WASMFCALL target is not a defined WebAssembly function: %s", ldr.SymName(rs))
++		return val, 0, true
++	}
++	return int64(handle), 0, true
++}
++
++func extreloc(_ *ld.Target, _ *loader.Loader, r loader.Reloc, _ loader.Sym) (loader.ExtReloc, bool) {
++	if r.Type() == objabi.R_WASMFCALL {
++		return loader.ExtReloc{}, false
++	}
++	panic("unexpected external WebAssembly relocation")
+ }
+ 
+ type wasmFunc struct {
+@@ -63,6 +133,8 @@ func readWasmImport(ldr *loader.Loader, s loader.Sym) obj.WasmImport {
+ }
+ 
+ var wasmFuncTypes = map[string]*wasmFuncType{
++	"_rt0_wasm32_wasip1":      {Params: []byte{}},
++	"_rt0_wasm32_wasip1_lib":  {Params: []byte{}},
+ 	"_rt0_wasm_js":            {Params: []byte{}},                                         //
+ 	"_rt0_wasm_wasip1":        {Params: []byte{}},                                         //
+ 	"_rt0_wasm_wasip1_lib":    {Params: []byte{}},                                         //
+@@ -71,7 +143,7 @@ var wasmFuncTypes = map[string]*wasmFuncType{
+ 	"wasm_export_resume":      {Params: []byte{}},                                         //
+ 	"wasm_export_getsp":       {Results: []byte{I32}},                                     // sp
+ 	"wasm_pc_f_loop":          {Params: []byte{}},                                         //
+-	"wasm_pc_f_loop_export":   {Params: []byte{I32}},                                      // pc_f
++	"wasm_pc_f_loop_export":   {Params: []byte{I32}},                                      // stop PC_F or logical PC token
+ 	"runtime.wasmDiv":         {Params: []byte{I64, I64}, Results: []byte{I64}},           // x, y -> x/y
+ 	"runtime.wasmTruncS":      {Params: []byte{F64}, Results: []byte{I64}},                // x -> int(x)
+ 	"runtime.wasmTruncU":      {Params: []byte{F64}, Results: []byte{I64}},                // x -> uint(x)
+@@ -95,23 +167,69 @@ var wasmFuncTypes = map[string]*wasmFuncType{
+ // We set the highest bit, so PCs are distinct from data addresses.
+ const pcBase = -1 << 63
+ 
+-func assignAddress(ldr *loader.Loader, sect *sym.Section, n int, s loader.Sym, va uint64, isTramp bool) (*sym.Section, int, uint64) {
++func nextFuncAddress(arch *sys.Arch, pc, size uint64) (uint64, bool) {
++	if arch.PtrSize == 8 {
++		return pc + 1<<16, true
++	}
++	next := pc + max(size, abi.MINFUNC)
++	if next < pc || next >= 1<<32 {
++		return 0, false
++	}
++	return next, true
++}
++
++func wasmRelocValue(entry, add int64, size uint8) int64 {
++	value := entry + add
++	if size == 4 {
++		return int64(int32(value))
++	}
++	return value
++}
++
++// wasmPCRelocValue returns the SLEB value for a continuation relocation. A
++// wasm32 continuation occupies an 8-byte PC slot: its low word is
++// the logical PC token and its high word is the PC_F table handle.
++func wasmPCRelocValue(arch *sys.Arch, entry, add int64, size uint8, handle uint32) int64 {
++	value := entry + add
++	if arch.PtrSize == 4 && size == 8 {
++		return int64(uint64(handle)<<32 | uint64(uint32(value)))
++	}
++	return wasmRelocValue(entry, add, size)
++}
++
++func (st *wasm32State) assignAddress(arch *sys.Arch, ldr *loader.Loader, sect *sym.Section, n int, s loader.Sym, va uint64, isTramp bool) (*sym.Section, int, uint64) {
+ 	// WebAssembly functions do not live in the same address space as the linear memory.
+ 	// Instead, WebAssembly automatically assigns indices. Imported functions (section "import")
+ 	// have indices 0 to n. They are followed by native functions (sections "function" and "code")
+ 	// with indices n+1 and following.
+ 	//
+-	// The following rules describe how wasm handles function indices and addresses:
+-	//   PC_F = WebAssembly function index (not including the imports)
+-	//   s.Value = PC = pcBase + PC_F<<16 + PC_B
++	// On GOARCH=wasm, s.Value is 1<<63 + PC_F<<16. On wasm32, s.Value
++	// is a logical PC. Each function has SymSize(s) consecutive PC tokens,
++	// so s.Value+PC_B identifies a resume point. A separate
++	// PC_F identifies the function's call_indirect table entry.
+ 	//
+ 	// The field "s.Value" corresponds to the concept of PC at runtime.
+ 	// However, there is no PC register, only PC_F and PC_B. PC_F denotes the function,
+ 	// PC_B the resume point inside of that function. The entry of the function has PC_B = 0.
++	size := uint64(max(ldr.SymSize(s), 1))
++	next, ok := nextFuncAddress(arch, va, size)
++	if !ok {
++		ldr.Errorf(s, "wasm32 logical PC space exhausted")
++		return sect, n, va
++	}
+ 	ldr.SetSymSect(s, sect)
+ 	ldr.SetSymValue(s, int64(va)) // va already includes pcBase (through FlagTextAddr)
+-	va += 1 << 16                 // increment PC_F
+-	return sect, n, va
++	if arch.PtrSize == 4 {
++		// Address assignment may revisit a function. Preserve its handle
++		// and let the entry relocation resolve to its final PC.
++		if _, ok := st.funcIndex[s]; !ok {
++			handle := uint32(len(st.funcIndex) + 1)
++			st.funcIndex[s] = handle
++			entries := ldr.MakeSymbolUpdater(st.funcEntries)
++			entries.SetAddr(arch, int64(handle)*4, s)
++		}
++	}
++	return sect, n, next
+ }
+ 
+ type wasmDataSect struct {
+@@ -141,7 +259,7 @@ func asmb(ctxt *ld.Link, ldr *loader.Loader) {
+ 
+ // asmb writes the final WebAssembly module binary.
+ // Spec: https://webassembly.github.io/spec/core/binary/modules.html
+-func asmb2(ctxt *ld.Link, ldr *loader.Loader) {
++func (st *wasm32State) asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 	types := []*wasmFuncType{
+ 		// For normal Go functions, the single parameter is PC_B,
+ 		// the return value is
+@@ -182,6 +300,21 @@ func asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 	// collect functions with WebAssembly body
+ 	var buildid []byte
+ 	fns := make([]*wasmFunc, len(ctxt.Textp))
++	funcIndexes := make(map[int64]uint32, len(ctxt.Textp))
++	for i, fn := range ctxt.Textp {
++		funcIndexes[ldr.SymValue(fn)] = uint32(i)
++	}
++	// Resolve aliases through the same PC index used for direct calls.
++	funcHandle := func(s loader.Sym) (uint32, bool) {
++		if handle, ok := st.funcIndex[s]; ok {
++			return handle, true
++		}
++		if index, ok := funcIndexes[ldr.SymValue(s)]; ok {
++			handle, ok := st.funcIndex[ctxt.Textp[index]]
++			return handle, ok
++		}
++		return 0, false
++	}
+ 	for i, fn := range ctxt.Textp {
+ 		wfn := new(bytes.Buffer)
+ 		if ldr.SymName(fn) == "go:buildid" {
+@@ -204,9 +337,32 @@ func asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 				rs := r.Sym()
+ 				switch r.Type() {
+ 				case objabi.R_ADDR:
+-					writeSleb128(wfn, ldr.SymValue(rs)+r.Add())
++					writeSleb128(wfn, wasmRelocValue(ldr.SymValue(rs), r.Add(), r.Siz()))
++				case objabi.R_WASMPC:
++					var handle uint32
++					if ctxt.Arch.PtrSize == 4 {
++						var ok bool
++						handle, ok = funcHandle(rs)
++						if !ok {
++							ldr.Errorf(fn, "continuation target is not a defined WebAssembly function: %s", ldr.SymName(rs))
++							continue
++						}
++					}
++					writeSleb128(wfn, wasmPCRelocValue(ctxt.Arch, ldr.SymValue(rs), r.Add(), r.Siz(), handle))
++				case objabi.R_WASMFCALL:
++					handle, ok := funcHandle(rs)
++					if !ok {
++						ldr.Errorf(fn, "function handle target is not a defined WebAssembly function: %s", ldr.SymName(rs))
++						continue
++					}
++					writeSleb128(wfn, int64(handle))
+ 				case objabi.R_CALL:
+-					writeSleb128(wfn, int64(len(hostImports))+int64(uint32(uint64(ldr.SymValue(rs))>>16)))
++					idx, ok := funcIndexes[ldr.SymValue(rs)]
++					if !ok {
++						ldr.Errorf(fn, "direct call target is not a defined WebAssembly function: %s", ldr.SymName(rs))
++						continue
++					}
++					writeSleb128(wfn, int64(len(hostImports))+int64(idx))
+ 				case objabi.R_WASMIMPORT:
+ 					writeSleb128(wfn, hostImportMap[rs])
+ 				default:
+@@ -246,11 +402,15 @@ func asmb2(ctxt *ld.Link, ldr *loader.Loader) {
+ 	writeTypeSec(ctxt, types)
+ 	writeImportSec(ctxt, hostImports)
+ 	writeFunctionSec(ctxt, fns)
+-	writeTableSec(ctxt, fns)
++	tableOffset := uint32(0)
++	if ctxt.Arch.PtrSize == 4 {
++		tableOffset = 1 // zero is the nil function handle
++	}
++	writeTableSec(ctxt, fns, tableOffset)
+ 	writeMemorySec(ctxt, ldr)
+ 	writeGlobalSec(ctxt)
+-	writeExportSec(ctxt, ldr, len(hostImports))
+-	writeElementSec(ctxt, uint64(len(hostImports)), uint64(len(fns)))
++	writeExportSec(ctxt, ldr, len(hostImports), funcIndexes)
++	writeElementSec(ctxt, uint64(len(hostImports)), tableOffset, uint64(len(fns)))
+ 	writeCodeSec(ctxt, fns)
+ 	writeDataSec(ctxt)
+ 	writeProducerSec(ctxt)
+@@ -348,10 +508,10 @@ func writeFunctionSec(ctxt *ld.Link, fns []*wasmFunc) {
+ // writeTableSec writes the section that declares tables. Currently there is only a single table
+ // that is used by the CallIndirect operation to dynamically call any function.
+ // The contents of the table get initialized by the "element" section.
+-func writeTableSec(ctxt *ld.Link, fns []*wasmFunc) {
++func writeTableSec(ctxt *ld.Link, fns []*wasmFunc, tableOffset uint32) {
+ 	sizeOffset := writeSecHeader(ctxt, sectionTable)
++	numElements := uint64(len(fns)) + uint64(tableOffset)
+ 
+-	numElements := uint64(len(fns))
+ 	writeUleb128(ctxt.Out, 1)           // number of tables
+ 	ctxt.Out.WriteByte(0x70)            // type: anyfunc
+ 	ctxt.Out.WriteByte(0x00)            // no max
+@@ -412,8 +572,15 @@ func writeGlobalSec(ctxt *ld.Link) {
+ // writeExportSec writes the section that declares exports.
+ // Exports can be accessed by the WebAssembly host, usually JavaScript.
+ // The wasm_export_* functions and the linear memory get exported.
+-func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
++func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int, funcIndexes map[int64]uint32) {
+ 	sizeOffset := writeSecHeader(ctxt, sectionExport)
++	funcIndex := func(s loader.Sym) uint32 {
++		idx, ok := funcIndexes[ldr.SymValue(s)]
++		if !ok {
++			ldr.Errorf(s, "export is not a defined WebAssembly function")
++		}
++		return uint32(lenHostImports) + idx
++	}
+ 
+ 	switch buildcfg.GOOS {
+ 	case "wasip1":
+@@ -421,22 +588,22 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
+ 		var entry, entryExpName string
+ 		switch ctxt.BuildMode {
+ 		case ld.BuildModeExe:
+-			entry = "_rt0_wasm_wasip1"
++			entry = "_rt0_" + ctxt.Arch.Name + "_wasip1"
+ 			entryExpName = "_start"
+ 		case ld.BuildModeCShared:
+-			entry = "_rt0_wasm_wasip1_lib"
++			entry = "_rt0_" + ctxt.Arch.Name + "_wasip1_lib"
+ 			entryExpName = "_initialize"
+ 		}
+ 		s := ldr.Lookup(entry, 0)
+ 		if s == 0 {
+ 			ld.Errorf("export symbol %s not defined", entry)
+ 		}
+-		idx := uint32(lenHostImports) + uint32(uint64(ldr.SymValue(s))>>16)
++		idx := funcIndex(s)
+ 		writeName(ctxt.Out, entryExpName)   // the wasi entrypoint
+ 		ctxt.Out.WriteByte(0x00)            // func export
+ 		writeUleb128(ctxt.Out, uint64(idx)) // funcidx
+ 		for _, s := range ldr.WasmExports {
+-			idx := uint32(lenHostImports) + uint32(uint64(ldr.SymValue(s))>>16)
++			idx := funcIndex(s)
+ 			writeName(ctxt.Out, ldr.SymName(s))
+ 			ctxt.Out.WriteByte(0x00)            // func export
+ 			writeUleb128(ctxt.Out, uint64(idx)) // funcidx
+@@ -451,13 +618,13 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
+ 			if s == 0 {
+ 				ld.Errorf("export symbol %s not defined", "wasm_export_"+name)
+ 			}
+-			idx := uint32(lenHostImports) + uint32(uint64(ldr.SymValue(s))>>16)
++			idx := funcIndex(s)
+ 			writeName(ctxt.Out, name)           // inst.exports.run/resume/getsp in wasm_exec.js
+ 			ctxt.Out.WriteByte(0x00)            // func export
+ 			writeUleb128(ctxt.Out, uint64(idx)) // funcidx
+ 		}
+ 		for _, s := range ldr.WasmExports {
+-			idx := uint32(lenHostImports) + uint32(uint64(ldr.SymValue(s))>>16)
++			idx := funcIndex(s)
+ 			writeName(ctxt.Out, ldr.SymName(s))
+ 			ctxt.Out.WriteByte(0x00)            // func export
+ 			writeUleb128(ctxt.Out, uint64(idx)) // funcidx
+@@ -474,14 +641,14 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
+ 
+ // writeElementSec writes the section that initializes the tables declared by the "table" section.
+ // The table for CallIndirect gets initialized in a very simple way so that each table index (PC_F value)
+-// maps linearly to the function index (numImports + PC_F).
+-func writeElementSec(ctxt *ld.Link, numImports, numFns uint64) {
++// maps linearly to the function index (numImports + PC_F - tableOffset).
++func writeElementSec(ctxt *ld.Link, numImports uint64, tableOffset uint32, numFns uint64) {
+ 	sizeOffset := writeSecHeader(ctxt, sectionElement)
+ 
+ 	writeUleb128(ctxt.Out, 1) // number of element segments
+ 
+ 	writeUleb128(ctxt.Out, 0) // tableidx
+-	writeI32Const(ctxt.Out, 0)
++	writeI32Const(ctxt.Out, int32(tableOffset))
+ 	ctxt.Out.WriteByte(0x0b) // end
+ 
+ 	writeUleb128(ctxt.Out, numFns) // number of entries
+diff --git a/src/cmd/link/internal/wasm/obj.go b/src/cmd/link/internal/wasm/obj.go
+index 70cc34f0ed59f2bd023754107e191dd12cca4343..6beb673e7e984655b209aaa10f79c20e2a79638d 100644
+--- a/src/cmd/link/internal/wasm/obj.go
++++ b/src/cmd/link/internal/wasm/obj.go
+@@ -7,22 +7,33 @@ package wasm
+ import (
+ 	"cmd/internal/sys"
+ 	"cmd/link/internal/ld"
++	"cmd/link/internal/loader"
++	"cmd/link/internal/sym"
+ )
+ 
+-func Init() (*sys.Arch, ld.Arch) {
++// Init returns the architecture configuration for the wasm linker.
++func Init(arch *sys.Arch) (*sys.Arch, ld.Arch) {
++	if arch != sys.ArchWasm && arch != sys.ArchWasm32 {
++		panic("invalid WebAssembly architecture")
++	}
++	st := new(wasm32State)
+ 	theArch := ld.Arch{
+ 		Funcalign: 16,
+ 		Maxalign:  32,
+ 		Minalign:  1,
+ 
+-		Archinit:      archinit,
+-		AssignAddress: assignAddress,
+-		Asmb:          asmb,
+-		Asmb2:         asmb2,
+-		Gentext:       gentext,
++		Archinit: archinit,
++		AssignAddress: func(ldr *loader.Loader, sect *sym.Section, n int, s loader.Sym, va uint64, isTramp bool) (*sym.Section, int, uint64) {
++			return st.assignAddress(arch, ldr, sect, n, s, va, isTramp)
++		},
++		Asmb:      asmb,
++		Asmb2:     st.asmb2,
++		Gentext:   st.gentext,
++		Archreloc: st.archreloc,
++		Extreloc:  extreloc,
+ 	}
+ 
+-	return sys.ArchWasm, theArch
++	return arch, theArch
+ }
+ 
+ func archinit(ctxt *ld.Link) {
+@@ -33,5 +44,10 @@ func archinit(ctxt *ld.Link) {
+ 		// See asm.go:assignAddress for the meaning of PC on Wasm
+ 		// and the value here.
+ 		*ld.FlagTextAddr = pcBase
++		if ctxt.Arch.PtrSize == 4 {
++			// Code pointers returned by reflect must be at least
++			// runtime.minLegalPointer, including across stack growth.
++			*ld.FlagTextAddr = 4096
++		}
+ 	}
+ }
+diff --git a/src/cmd/link/main.go b/src/cmd/link/main.go
+index 16e5a0115132f93b2f7fad0ab9628cd5d40504d1..036c632e9e57a9625a5bf91464b66353b229640d 100644
+--- a/src/cmd/link/main.go
++++ b/src/cmd/link/main.go
+@@ -67,7 +67,9 @@ func main() {
+ 	case "s390x":
+ 		arch, theArch = s390x.Init()
+ 	case "wasm":
+-		arch, theArch = wasm.Init()
++		arch, theArch = wasm.Init(sys.ArchWasm)
++	case "wasm32":
++		arch, theArch = wasm.Init(sys.ArchWasm32)
+ 	}
+ 	ld.Main(arch, theArch)
+ }
+diff --git a/src/internal/abi/abi_test.go b/src/internal/abi/abi_test.go
+index e230c88ff4ac8684142e44824f32bafd117dde5b..cf37a5a4161e0822a06f0ccc59aea239aef43886 100644
+--- a/src/internal/abi/abi_test.go
++++ b/src/internal/abi/abi_test.go
+@@ -8,6 +8,7 @@ import (
+ 	"internal/abi"
+ 	"internal/testenv"
+ 	"path/filepath"
++	"reflect"
+ 	"strings"
+ 	"testing"
+ )
+@@ -29,6 +30,38 @@ func TestFuncPC(t *testing.T) {
+ 	}
+ }
+ 
++//go:noinline
++func dynamicFuncPC(f func(int) int) uintptr {
++	return abi.FuncPCABIInternal(f)
++}
++
++func funcPCTarget(x int) int { return x + 1 }
++
++type funcPCReceiver int
++
++func (r funcPCReceiver) method(x int) int { return x + int(r) }
++
++func TestFuncPCDynamic(t *testing.T) {
++	offset := len(t.Name())
++	for _, test := range []struct {
++		name string
++		fn   func(int) int
++	}{
++		{"function", funcPCTarget},
++		{"closure", func(x int) int { return x + offset }},
++		{"method", funcPCReceiver(offset).method},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			if got, want := dynamicFuncPC(test.fn), reflect.ValueOf(test.fn).Pointer(); got != want {
++				t.Errorf("FuncPCABIInternal = %#x, want %#x", got, want)
++			}
++		})
++	}
++	if got, want := dynamicFuncPC(funcPCTarget), abi.FuncPCABIInternal(funcPCTarget); got != want {
++		t.Errorf("dynamic FuncPCABIInternal = %#x, want static PC %#x", got, want)
++	}
++}
++
+ func TestFuncPCCompileError(t *testing.T) {
+ 	// Test that FuncPC* on a function of a mismatched ABI is rejected.
+ 	testenv.MustHaveGoBuild(t)
+diff --git a/src/internal/abi/abi_test.s b/src/internal/abi/abi_test.s
+index 93ace3ef48df5d968aab94f3d53784374a7896a8..68a0a335fa7202d148c0415bf9555e20cf8c28a4 100644
+--- a/src/internal/abi/abi_test.s
++++ b/src/internal/abi/abi_test.s
+@@ -16,6 +16,9 @@
+ #ifdef GOARCH_mipsle
+ #define PTRSIZE 4
+ #endif
++#ifdef GOARCH_wasm32
++#define PTRSIZE 4
++#endif
+ #ifndef PTRSIZE
+ #define PTRSIZE 8
+ #endif
+diff --git a/src/reflect/all_test.go b/src/reflect/all_test.go
+index c289014de8d6d6f75b88710f975d86c51e81f1c7..15043d185c671f71ee500e7772ee1bdb8a1bb51b 100644
+--- a/src/reflect/all_test.go
++++ b/src/reflect/all_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"flag"
+ 	"fmt"
+ 	"go/token"
++	"internal/abi"
+ 	"internal/asan"
+ 	"internal/goarch"
+ 	"internal/msan"
+@@ -8685,7 +8686,7 @@ func TestValuePointerAndUnsafePointer(t *testing.T) {
+ 		{"channel", ValueOf(ch), *(*unsafe.Pointer)(unsafe.Pointer(&ch))},
+ 		{"map", ValueOf(m), *(*unsafe.Pointer)(unsafe.Pointer(&m))},
+ 		{"unsafe.Pointer", ValueOf(unsafePtr), unsafePtr},
+-		{"function", ValueOf(fn), **(**unsafe.Pointer)(unsafe.Pointer(&fn))},
++		{"function", ValueOf(fn), unsafe.Pointer(abi.FuncPCABIInternal(fn))},
+ 		{"slice", ValueOf(slice), unsafe.Pointer(unsafe.SliceData(slice))},
+ 		{"string", ValueOf(s), unsafe.Pointer(unsafe.StringData(s))},
+ 	}
+diff --git a/src/reflect/export_test.go b/src/reflect/export_test.go
+index 4ecdb1ef2e8c3077f55ac6f003a87fa2dc3c74ac..55c0dc0ac0f9924a50f889095bd2b23f3064a9f1 100644
+--- a/src/reflect/export_test.go
++++ b/src/reflect/export_test.go
+@@ -153,7 +153,9 @@ func SetArgRegs(ints, floats int, floatSize uintptr) (oldInts, oldFloats int, ol
+ 	return
+ }
+ 
+-var MethodValueCallCodePtr = methodValueCallCodePtr
++var MethodValueCallCodePtr = func() uintptr {
++	return funcValuePC(methodValueCallCode())
++}
+ 
+ var InternalIsZero = isZero
+ 
+diff --git a/src/reflect/funchandle.go b/src/reflect/funchandle.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9360ca9cf23ea7fd3d95dc0ce65530e6653e57fa
+--- /dev/null
++++ b/src/reflect/funchandle.go
+@@ -0,0 +1,28 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package reflect
++
++import "internal/goarch"
++
++// These functions are implemented by runtime on wasm32. Calls must be
++// guarded by goarch.IsWasm32 so other architectures do not reference them.
++func wasm32FuncHandleToPC(handle uintptr) uintptr
++func wasm32FuncPCToHandle(pc uintptr) uintptr
++
++// funcValuePC returns the entry PC for a function value's code word.
++func funcValuePC(fn uintptr) uintptr {
++	if goarch.IsWasm32 != 0 {
++		return wasm32FuncHandleToPC(fn)
++	}
++	return fn
++}
++
++// funcHandle returns the code word used to call the function at pc.
++func funcHandle(pc uintptr) uintptr {
++	if goarch.IsWasm32 != 0 {
++		return wasm32FuncPCToHandle(pc)
++	}
++	return pc
++}
+diff --git a/src/reflect/makefunc.go b/src/reflect/makefunc.go
+index 293154b2a04ea14cf561617f61733520e673df97..d1b886795074765520dc5b6a983788dc8ffdaf04 100644
+--- a/src/reflect/makefunc.go
++++ b/src/reflect/makefunc.go
+@@ -53,7 +53,7 @@ func MakeFunc(typ Type, fn func(args []Value) (results []Value)) Value {
+ 
+ 	ftyp := (*funcType)(unsafe.Pointer(t))
+ 
+-	code := abi.FuncPCABI0(makeFuncStub)
++	code := funcHandle(abi.FuncPCABI0(makeFuncStub))
+ 
+ 	// makeFuncImpl contains a stack map for use by the runtime
+ 	_, _, abid := funcLayout(ftyp, nil)
+@@ -111,7 +111,7 @@ func makeMethodValue(v Value, i int) Value {
+ 	}
+ 	ftyp := mtyp.FuncType()
+ 
+-	code := methodValueCallCodePtr()
++	code := methodValueCallCode()
+ 
+ 	// methodValue contains a stack map for use by the runtime
+ 	_, _, abid := funcLayout(ftyp, nil)
+@@ -129,8 +129,8 @@ func makeMethodValue(v Value, i int) Value {
+ 	return Value{ftyp.Common(), unsafe.Pointer(fv), v.flag.ro() | flagMethod | flag(Func)}
+ }
+ 
+-func methodValueCallCodePtr() uintptr {
+-	return abi.FuncPCABI0(methodValueCall)
++func methodValueCallCode() uintptr {
++	return funcHandle(abi.FuncPCABI0(methodValueCall))
+ }
+ 
+ // methodValueCall is an assembly function that is the code half of
+diff --git a/src/reflect/type.go b/src/reflect/type.go
+index 77169ba305004af564abaf8f599c35e8e73da6ea..e6e55e982dd72b6998ba42f5dd4ac4c8cf42439e 100644
+--- a/src/reflect/type.go
++++ b/src/reflect/type.go
+@@ -668,7 +668,7 @@ func (t *rtype) Method(i int) (m Method) {
+ 	}
+ 	mt := FuncOf(in, out, ft.IsVariadic())
+ 	m.Type = mt
+-	tfn := t.textOff(p.Tfn)
++	tfn := funcHandle(uintptr(t.textOff(p.Tfn)))
+ 	fn := unsafe.Pointer(&tfn)
+ 	m.Func = Value{&mt.(*rtype).t, fn, fl}
+ 
+diff --git a/src/reflect/value.go b/src/reflect/value.go
+index 2402071acb29177c4602f6fc98c4067742349004..a17dd4ea6059f0f71597635247815a62edc6ff4d 100644
+--- a/src/reflect/value.go
++++ b/src/reflect/value.go
+@@ -899,7 +899,7 @@ func methodReceiver(op string, v Value, methodIndex int) (rcvrtype *abi.Type, t
+ 		if !nameOffFor(v.typ(), m.Name).IsExported() {
+ 			panic("reflect: " + op + " of unexported method")
+ 		}
+-		ifn := textOffFor(v.typ(), m.Ifn)
++		ifn := funcHandle(uintptr(textOffFor(v.typ(), m.Ifn)))
+ 		fn = unsafe.Pointer(&ifn)
+ 		t = (*funcType)(unsafe.Pointer(typeOffFor(v.typ(), m.Mtyp)))
+ 	}
+@@ -2055,7 +2055,7 @@ func (v Value) Pointer() uintptr {
+ 		if p != nil {
+ 			p = *(*unsafe.Pointer)(p)
+ 		}
+-		return uintptr(p)
++		return funcValuePC(uintptr(p))
+ 	case Slice:
+ 		return uintptr((*unsafeheader.Slice)(v.ptr).Data)
+ 	case String:
+@@ -2567,7 +2567,7 @@ func (v Value) UnsafePointer() unsafe.Pointer {
+ 		if p != nil {
+ 			p = *(*unsafe.Pointer)(p)
+ 		}
+-		return p
++		return unsafe.Pointer(funcValuePC(uintptr(p)))
+ 	case Slice:
+ 		return (*unsafeheader.Slice)(v.ptr).Data
+ 	case String:
+diff --git a/src/runtime/continuation_wasm32_test.go b/src/runtime/continuation_wasm32_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..227ed791ca376c9e234da1e55793d38444dfb826
+--- /dev/null
++++ b/src/runtime/continuation_wasm32_test.go
+@@ -0,0 +1,89 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm32
++
++package runtime_test
++
++import (
++	"internal/abi"
++	"reflect"
++	"runtime"
++	"strings"
++	"testing"
++)
++
++type wasm32Adder interface {
++	Add(int) int
++}
++
++type wasm32AddOne struct{}
++
++//go:noinline
++func (wasm32AddOne) Add(v int) int { return v + 1 }
++
++//go:noinline
++func wasm32GrowAndYield(depth int, fn func(int) int) int {
++	var frame [256]byte
++	frame[0] = byte(depth)
++	if depth == 0 {
++		runtime.Gosched()
++		result := fn(40)
++		runtime.KeepAlive(&frame)
++		return result
++	}
++	result := wasm32GrowAndYield(depth-1, fn)
++	runtime.KeepAlive(&frame)
++	return result
++}
++
++//go:noinline
++func wasm32RecoverAndContinue(fn func() int) (result int) {
++	defer func() {
++		if recover() == nil {
++			result = -1
++			return
++		}
++		runtime.Gosched()
++		result = fn()
++	}()
++	panic("resume")
++}
++
++//go:noinline
++func wasm32IndirectTarget(v int) int { return v + 2 }
++
++func TestWasm32ContinuationState(t *testing.T) {
++	var nilFn func()
++	if got := reflect.ValueOf(nilFn).Pointer(); got != 0 {
++		t.Fatalf("nil function PC = %#x, want 0", got)
++	}
++	if got := reflect.ValueOf(nilFn).UnsafePointer(); got != nil {
++		t.Fatalf("nil function pointer = %p, want nil", got)
++	}
++	fn := wasm32IndirectTarget
++	pc := abi.FuncPCABIInternal(fn)
++	if got := reflect.ValueOf(fn).Pointer(); got != pc {
++		t.Fatalf("reflect function PC = %#x, want %#x", got, pc)
++	}
++	f := runtime.FuncForPC(pc)
++	if f == nil {
++		t.Fatalf("FuncForPC(%#x) returned nil", pc)
++	}
++	if got := f.Name(); !strings.HasSuffix(got, ".wasm32IndirectTarget") {
++		t.Fatalf("FuncForPC(%#x).Name() = %q, want wasm32IndirectTarget", pc, got)
++	}
++
++	done := make(chan int, 1)
++	go func() {
++		var adder wasm32Adder = wasm32AddOne{}
++		result := wasm32GrowAndYield(256, adder.Add)
++		result += wasm32RecoverAndContinue(func() int { return 1 })
++		done <- result
++	}()
++
++	if got := <-done; got != 42 {
++		t.Fatalf("continuation result = %d, want 42", got)
++	}
++}
+diff --git a/src/runtime/gobuf_other.go b/src/runtime/gobuf_other.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee4c5e58c1d2d018eb3abdfed4db7eef4d3fc062
+--- /dev/null
++++ b/src/runtime/gobuf_other.go
+@@ -0,0 +1,33 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build !wasm32
++
++package runtime
++
++import (
++	"internal/abi"
++	"internal/runtime/sys"
++)
++
++// Function value code words are entry PCs on these architectures.
++//
++//go:nosplit
++func funcValuePC(fn uintptr) uintptr { return fn }
++
++//go:nosplit
++func funcHandle(pc uintptr) uintptr { return pc }
++
++//go:nosplit
++func gobufSetPC(buf *gobuf, pc uintptr) {
++	buf.pc = pc
++	buf.lr = 0
++}
++
++// gobufSetGoexit leaves PC-1 within goexit for stack unwinding.
++//
++//go:nosplit
++func gobufSetGoexit(buf *gobuf) {
++	gobufSetPC(buf, abi.FuncPCABI0(goexit)+sys.PCQuantum)
++}
+diff --git a/src/runtime/gobuf_wasm32.go b/src/runtime/gobuf_wasm32.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdc7aa4d34bef124b90aebc1c1cd5af72191211f
+--- /dev/null
++++ b/src/runtime/gobuf_wasm32.go
+@@ -0,0 +1,87 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm32
++
++package runtime
++
++import (
++	"internal/abi"
++	"internal/runtime/sys"
++	"unsafe"
++)
++
++func wasmFuncEntryAddr() uintptr
++func wasmFuncCount() uintptr
++func wasmGoexitHandle() uintptr
++
++//go:linkname reflect_wasm32FuncHandleToPC reflect.wasm32FuncHandleToPC
++func reflect_wasm32FuncHandleToPC(handle uintptr) uintptr {
++	return funcValuePC(handle)
++}
++
++//go:linkname reflect_wasm32FuncPCToHandle reflect.wasm32FuncPCToHandle
++func reflect_wasm32FuncPCToHandle(pc uintptr) uintptr {
++	return funcHandle(pc)
++}
++
++// funcValuePC returns the logical entry PC for a function table handle.
++// Handle 0 denotes nil and maps to the zero-initialized first table entry.
++//
++//go:nosplit
++func funcValuePC(handle uintptr) uintptr {
++	if handle > wasmFuncCount() {
++		throw("invalid wasm32 function handle")
++	}
++	base := wasmFuncEntryAddr()
++	return uintptr(*(*uint32)(unsafe.Pointer(base + handle*4)))
++}
++
++//go:nosplit
++func funcHandle(pc uintptr) uintptr {
++	if pc == 0 {
++		return 0
++	}
++	f := findfunc(pc)
++	if !f.valid() {
++		throw("invalid wasm32 function PC")
++	}
++	entry := f.entry()
++
++	count := wasmFuncCount()
++	base := wasmFuncEntryAddr()
++	lo, hi := uintptr(1), count+1
++	for lo < hi {
++		mid := lo + (hi-lo)/2
++		midPC := uintptr(*(*uint32)(unsafe.Pointer(base + mid*4)))
++		if midPC < entry {
++			lo = mid + 1
++		} else {
++			hi = mid
++		}
++	}
++	if lo > count || uintptr(*(*uint32)(unsafe.Pointer(base + lo*4))) != entry {
++		throw("missing wasm32 function handle")
++	}
++	return lo
++}
++
++// gobufSetPC sets a wasm32 continuation. gobuf.lr is the PC_F handle paired
++// with gobuf.pc, not a link register. Assembly paths that copy an existing
++// continuation copy both fields directly.
++//
++//go:nosplit
++func gobufSetPC(buf *gobuf, pc uintptr) {
++	buf.pc = pc
++	buf.lr = funcHandle(pc)
++}
++
++// gobufSetGoexit leaves PC-1 within goexit for stack unwinding and uses
++// the static handle instead of looking up a known PC.
++//
++//go:nosplit
++func gobufSetGoexit(buf *gobuf) {
++	buf.pc = abi.FuncPCABI0(goexit) + sys.PCQuantum
++	buf.lr = wasmGoexitHandle()
++}
+diff --git a/src/runtime/heapdump.go b/src/runtime/heapdump.go
+index dc8259fa48b3bde7989a78364edfe02054a2eda3..8c988cfc4e39c5da7e5a86c449722f3d8f174cc9 100644
+--- a/src/runtime/heapdump.go
++++ b/src/runtime/heapdump.go
+@@ -227,7 +227,8 @@ func dumpfinalizer(obj unsafe.Pointer, fn *funcval, fint *_type, ot *ptrtype) {
+ 	dumpint(tagFinalizer)
+ 	dumpint(uint64(uintptr(obj)))
+ 	dumpint(uint64(uintptr(unsafe.Pointer(fn))))
+-	dumpint(uint64(uintptr(unsafe.Pointer(fn.fn))))
++	fnPC := funcValuePC(fn.fn)
++	dumpint(uint64(fnPC))
+ 	dumpint(uint64(uintptr(unsafe.Pointer(fint))))
+ 	dumpint(uint64(uintptr(unsafe.Pointer(ot))))
+ }
+@@ -389,7 +390,8 @@ func dumpgoroutine(gp *g) {
+ 			// d.fn can be nil for open-coded defers
+ 			dumpint(uint64(0))
+ 		} else {
+-			dumpint(uint64(uintptr(unsafe.Pointer(fn.fn))))
++			fnPC := funcValuePC(fn.fn)
++			dumpint(uint64(fnPC))
+ 		}
+ 		dumpint(uint64(uintptr(unsafe.Pointer(d.link))))
+ 	}
+@@ -437,7 +439,8 @@ func finq_callback(fn *funcval, obj unsafe.Pointer, nret uintptr, fint *_type, o
+ 	dumpint(tagQueuedFinalizer)
+ 	dumpint(uint64(uintptr(obj)))
+ 	dumpint(uint64(uintptr(unsafe.Pointer(fn))))
+-	dumpint(uint64(uintptr(unsafe.Pointer(fn.fn))))
++	fnPC := funcValuePC(fn.fn)
++	dumpint(uint64(fnPC))
+ 	dumpint(uint64(uintptr(unsafe.Pointer(fint))))
+ 	dumpint(uint64(uintptr(unsafe.Pointer(ot))))
+ }
+diff --git a/src/runtime/iface.go b/src/runtime/iface.go
+index 9f1914372e719471a1ba313a765fbc2cc82806a5..8c1cc31dbc48a93bc763e6df0168dd02143e9707 100644
+--- a/src/runtime/iface.go
++++ b/src/runtime/iface.go
+@@ -223,7 +223,7 @@ func itabInit(m *itab, firstTime bool) string {
+ 	// store emits no write barrier: on wasm a code pointer can look like a
+ 	// heap pointer and make the GC crash (see issue 80472).
+ 	methods := unsafe.Slice(&m.Fun[0], ni)
+-	var fun0 unsafe.Pointer
++	var fun0 uintptr
+ imethods:
+ 	for k := 0; k < ni; k++ {
+ 		i := &inter.Methods[k]
+@@ -244,11 +244,11 @@ imethods:
+ 					pkgPath = rtyp.nameOff(x.PkgPath).Name()
+ 				}
+ 				if tname.IsExported() || pkgPath == ipkg {
+-					ifn := rtyp.textOff(t.Ifn)
++					ifn := funcHandle(uintptr(rtyp.textOff(t.Ifn)))
+ 					if k == 0 {
+ 						fun0 = ifn // we'll set m.Fun[0] at the end
+ 					} else if firstTime {
+-						methods[k] = uintptr(ifn)
++						methods[k] = ifn
+ 					}
+ 					continue imethods
+ 				}
+@@ -259,7 +259,7 @@ imethods:
+ 		return iname
+ 	}
+ 	if firstTime {
+-		m.Fun[0] = uintptr(fun0)
++		m.Fun[0] = fun0
+ 	}
+ 	return ""
+ }
+diff --git a/src/runtime/mheap.go b/src/runtime/mheap.go
+index 758cf01da1a9e91e290f8d8cfc35295e0192d93b..b094a3297240b36dd0f366a9da7635898d1e6f45 100644
+--- a/src/runtime/mheap.go
++++ b/src/runtime/mheap.go
+@@ -2216,6 +2216,7 @@ func setFinalizerContext(ptr unsafe.Pointer, ptrType *_type, createPC, funcPC ui
+ // finalizer or cleanup special attached. Pass 0 for the cleanupID to indicate
+ // a finalizer.
+ func setCleanupContext(ptr unsafe.Pointer, ptrType *_type, createPC, funcPC uintptr, cleanupID uint64) {
++	funcPC = funcValuePC(funcPC)
+ 	lock(&mheap_.speciallock)
+ 	s := (*specialCheckFinalizer)(mheap_.specialCheckFinalizerAlloc.alloc())
+ 	unlock(&mheap_.speciallock)
+diff --git a/src/runtime/panic.go b/src/runtime/panic.go
+index b68ee1b82e4dc27415bba1575b062402fc30fe13..5e9834ce3b6d7592ebfa1a5b4324db00dacf9928 100644
+--- a/src/runtime/panic.go
++++ b/src/runtime/panic.go
+@@ -1478,8 +1478,7 @@ func recovery(gp *g) {
+ 
+ 	// branch directly to the deferreturn
+ 	gp.sched.sp = sp
+-	gp.sched.pc = gotoPc
+-	gp.sched.lr = 0
++	gobufSetPC(&gp.sched, gotoPc)
+ 	// Restore the bp on platforms that support frame pointers.
+ 	// N.B. It's fine to not set anything for platforms that don't
+ 	// support frame pointers, since nothing consumes them.
+@@ -1857,5 +1856,5 @@ func pcOff(pc uintptr) hex {
+ 	return hex(pc - fn.entry())
+ }
+ func fnName(fn func()) string {
+-	return pcName(**(**uintptr)(unsafe.Pointer(&fn)))
++	return pcName(abi.FuncPCABIInternal(fn))
+ }
+diff --git a/src/runtime/proc.go b/src/runtime/proc.go
+index cfa68d3bc1da73ecb1569fe0781e6e9aec35be25..a2bc229d0d538177925f579664f47a201dd2a5d6 100644
+--- a/src/runtime/proc.go
++++ b/src/runtime/proc.go
+@@ -1917,7 +1917,13 @@ func mstart1() {
+ 	// And goexit0 does a gogo that needs to return from mstart1
+ 	// and let mstart0 exit the thread.
+ 	gp.sched.g = guintptr(unsafe.Pointer(gp))
+-	gp.sched.pc = sys.GetCallerPC()
++	pc := sys.GetCallerPC()
++	if goarch.IsWasm32 != 0 {
++		gobufSetPC(&gp.sched, pc)
++	} else {
++		// Some link-register architectures initialize sched.lr before this.
++		gp.sched.pc = pc
++	}
+ 	gp.sched.sp = sys.GetCallerSP()
+ 	gp.sched.bp = getcallerfp()
+ 
+@@ -4609,9 +4615,8 @@ func save(pc, sp, bp uintptr) {
+ 		throw("save on system g not allowed")
+ 	}
+ 
+-	gp.sched.pc = pc
++	gobufSetPC(&gp.sched, pc)
+ 	gp.sched.sp = sp
+-	gp.sched.lr = 0
+ 	gp.sched.bp = bp
+ 	// We need to ensure ctxt is zero, but can't have a write
+ 	// barrier here. However, it should always already be zero.
+@@ -5392,13 +5397,13 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr, parked bool, waitreaso
+ 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
+ 	newg.sched.sp = sp
+ 	newg.stktopsp = sp
+-	newg.sched.pc = abi.FuncPCABI0(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
++	gobufSetGoexit(&newg.sched)
+ 	newg.sched.g = guintptr(unsafe.Pointer(newg))
+ 	gostartcallfn(&newg.sched, fn)
+ 	newg.parentGoid = callergp.goid
+ 	newg.gopc = callerpc
+ 	newg.ancestors = saveAncestors(callergp)
+-	newg.startpc = fn.fn
++	newg.startpc = funcValuePC(fn.fn)
+ 	newg.runningCleanups.Store(false)
+ 	if isSystemGoroutine(newg, false) {
+ 		sched.ngsys.Add(1)
+diff --git a/src/runtime/runtime2.go b/src/runtime/runtime2.go
+index e238caa286ad9834438407b78fd7915c1bbc5202..b7a33767928f94ecbbd490668de7f2002f30fb52 100644
+--- a/src/runtime/runtime2.go
++++ b/src/runtime/runtime2.go
+@@ -315,7 +315,7 @@ type gobuf struct {
+ 	pc   uintptr
+ 	g    guintptr
+ 	ctxt unsafe.Pointer
+-	lr   uintptr
++	lr   uintptr // link register; on wasm32, PC_F paired with pc
+ 	bp   uintptr // for framepointer-enabled architectures
+ }
+ 
+diff --git a/src/runtime/stkframe.go b/src/runtime/stkframe.go
+index ff79f0c23ed8d85159c9fa779eb8d7ae53e85dbb..1e7f9c30c8590ea254aa38e4ab5a0be3fe610a1d 100644
+--- a/src/runtime/stkframe.go
++++ b/src/runtime/stkframe.go
+@@ -135,7 +135,8 @@ func (frame *stkframe) argMapInternal() (argMap bitvector, hasReflectStackObj bo
+ 		// Reflect will update this value after it copies
+ 		// in the return values.
+ 		retValid := *(*bool)(unsafe.Pointer(arg0 + 4*goarch.PtrSize))
+-		if mv.fn != f.entry() {
++		fnPC := funcValuePC(mv.fn)
++		if fnPC != f.entry() {
+ 			print("runtime: confused by ", funcname(f), "\n")
+ 			throw("reflect mismatch")
+ 		}
+diff --git a/src/runtime/sys_wasm.go b/src/runtime/sys_wasmx.go
+similarity index 79%
+rename from src/runtime/sys_wasm.go
+rename to src/runtime/sys_wasmx.go
+index b2d515a241ecb55ee5aeeadfd376797ab0a36f2e..3f86aa28a0582c6feac538c8b64192327a6a920d 100644
+--- a/src/runtime/sys_wasm.go
++++ b/src/runtime/sys_wasmx.go
+@@ -2,9 +2,12 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
++//go:build wasm || wasm32
++
+ package runtime
+ 
+ import (
++	"internal/goarch"
+ 	"internal/runtime/sys"
+ 	"unsafe"
+ )
+@@ -26,11 +29,18 @@ func wasmExit(code int32)
+ // adjust Gobuf as it if executed a call to fn with context ctxt
+ // and then stopped before the first instruction in fn.
+ func gostartcall(buf *gobuf, fn, ctxt unsafe.Pointer) {
+-	sp := buf.sp
+-	sp -= retPCSize
+-	*(*uintptr)(unsafe.Pointer(sp)) = buf.pc
++	sp := buf.sp - retPCSize
++	pc := uint64(buf.pc)
++	if goarch.IsWasm32 != 0 {
++		pc |= uint64(buf.lr) << 32
++	}
++	*(*uint64)(unsafe.Pointer(sp)) = pc
+ 	buf.sp = sp
+ 	buf.pc = uintptr(fn)
++	if goarch.IsWasm32 != 0 {
++		buf.pc = funcValuePC(buf.pc)
++		buf.lr = uintptr(fn)
++	}
+ 	buf.ctxt = ctxt
+ }
+ 
+diff --git a/src/runtime/traceback.go b/src/runtime/traceback.go
+index 4e13733a8d79972e140f5994a59416602b8bb1c9..cdb6320e96217022032cd06350ca2fa02fbdce55 100644
+--- a/src/runtime/traceback.go
++++ b/src/runtime/traceback.go
+@@ -25,9 +25,10 @@ import (
+ const usesLR = sys.MinFrameSize > 0
+ 
+ // retPCSize is the size of the return-PC slot between stack frames on
+-// architectures without a link register.
++// architectures without a link register. It is pointer-sized on x86 and
++// 8 bytes on wasm and wasm32.
+ // The linker describes the same slot using the target's register size.
+-const retPCSize = goarch.PtrSize
++const retPCSize = goarch.PtrSize + (8-goarch.PtrSize)*goarch.IsWasm32
+ 
+ const (
+ 	// tracebackInnerFrames is the number of innermost frames to print in a
+@@ -312,7 +313,11 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
+ 				frame.fn = findfunc(frame.pc)
+ 				f = frame.fn
+ 				flag = f.flag
+-				frame.lr = gp.sched.lr
++				if usesLR {
++					frame.lr = gp.sched.lr
++				} else {
++					frame.lr = 0
++				}
+ 				frame.sp = gp.sched.sp
+ 				u.cgoCtxt = len(gp.cgoCtxt) - 1
+ 			case abi.FuncID_systemstack:
+diff --git a/test/reflectmethodcheckptr.go b/test/reflectmethodcheckptr.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6aaa70c6bf3b8b6cd19f0abec8c95f910656bf11
+--- /dev/null
++++ b/test/reflectmethodcheckptr.go
+@@ -0,0 +1,25 @@
++// run -gcflags=all=-d=checkptr=1
++
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package main
++
++import "reflect"
++
++type T struct{}
++
++func (T) M() int { return 42 }
++
++func main() {
++	v := reflect.ValueOf(T{})
++	// Both paths construct a function value from a method's text offset.
++	// On wasm32, its code word is an integer function handle, not a pointer.
++	if got := v.Type().Method(0).Func.Call([]reflect.Value{v})[0].Int(); got != 42 {
++		panic("incorrect Type.Method result")
++	}
++	if got := v.Method(0).Call(nil)[0].Int(); got != 42 {
++		panic("incorrect Value.Method result")
++	}
++}
+diff --git a/test/wasmfuncpc.go b/test/wasmfuncpc.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..8ec4982d856051373675314141013ad5416220e8
+--- /dev/null
++++ b/test/wasmfuncpc.go
+@@ -0,0 +1,48 @@
++// run
++
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm || wasm32
++
++package main
++
++import (
++	"reflect"
++	"runtime"
++	"unsafe"
++)
++
++// A runtime method has a low logical PC. Its code pointer must remain valid
++// when stack growth adjusts pointers in the caller's frame.
++func mapError() (err any) {
++	defer func() { err = recover() }()
++	var m map[any]int
++	_ = m[[]int{}]
++	return
++}
++
++//go:noinline
++func grow(n int, p unsafe.Pointer) {
++	var pad [512]byte
++	pad[n%len(pad)] = byte(n)
++	if n > 0 {
++		grow(n-1, p)
++	}
++	runtime.KeepAlive(p)
++	runtime.KeepAlive(&pad)
++}
++
++func main() {
++	m, ok := reflect.TypeOf(mapError()).MethodByName("Error")
++	if !ok {
++		panic("missing Error method")
++	}
++	p := m.Func.UnsafePointer()
++	if runtime.FuncForPC(uintptr(p)) == nil {
++		panic("missing function for method PC")
++	}
++	grow(1000, p)
++	runtime.KeepAlive(p)
++}

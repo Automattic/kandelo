@@ -102,7 +102,7 @@ the old virtual page count or -1 on allocation refusal. A grouped artifact
 without this exact import is rejected. These identities come from
 `crates/program-abi/src/program_extensions.rs` and the normal SDK translator;
 readers must validate them, rather than infer compatibility from a report title.
-Program ABI 56, host adapter 37, kernel group protocol 1 and mapping-description
+Program ABI 56, host adapter 38, kernel group protocol 1 and mapping-description
 protocol 6 are separately versioned contracts.
 
 The historical research candidate was called **format4**. That label is not the

@@ -1,0 +1,7 @@
+{
+    "name": "kandelo-dub-check",
+    "targetType": "executable",
+    "dependencies": {
+        "taggedalgebraic": "1.0.1"
+    }
+}

@@ -1,0 +1,199 @@
+diff --git a/src/Compilation.zig b/src/Compilation.zig
+--- a/src/Compilation.zig
++++ b/src/Compilation.zig
+@@ -1782,8 +1782,12 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
+             else => |e| return diag.fail(.{ .find_native_libc = e }),
+         };
+
++        // The external SDK also produces relocatable objects and static archives.
++        const sdk_emits_binary = !options.config.use_lib_llvm and options.emit_bin != .no and
++            (use_llvm or (output_mode == .Lib and options.config.link_mode == .static));
++
+         const kandelo_sdk_identity = if (target.os.tag == .kandelo and
+-            (is_exe_or_dyn_lib or options.c_source_files.len != 0))
++            (is_exe_or_dyn_lib or options.c_source_files.len != 0 or sdk_emits_binary))
+         sdk: {
+             const result = std.process.run(arena, io, .{
+                 .argv = &.{ "wasm32posix-cc", "--print-kandelo-sdk" },
+
+diff --git a/src/Compilation/Config.zig b/src/Compilation/Config.zig
+--- a/src/Compilation/Config.zig
++++ b/src/Compilation/Config.zig
+@@ -365,10 +365,10 @@
+         // If we cannot use LLVM libraries, then our own backends will be a
+         // better default since the LLVM backend can only produce bitcode
+         // and not an object file or executable.
++        // With no bundled LLVM, Kandelo lowers Zig's bitcode through its SDK.
++        if (target.os.tag == .kandelo) break :b true;
++
+         if (!use_lib_llvm and options.emit_bin) break :b false;
+-
+-        // The SDK consumes relocatable LLVM Wasm objects.
+-        if (target.os.tag == .kandelo) break :b true;
+
+         // Prefer LLVM for release builds.
+         if (root_optimize_mode != .debug) break :b true;
+@@ -385,7 +385,7 @@
+     const backend = target_util.zigBackend(target, use_llvm);
+
+     if (options.emit_bin and options.have_zcu) {
+-        if (!use_lib_llvm and use_llvm) {
++        if (!use_lib_llvm and use_llvm and target.os.tag != .kandelo) {
+             // Explicit request to use LLVM to produce an object file, but without
+             // using LLVM libraries. Impossible.
+             return error.EmittingBinaryRequiresLlvmLibrary;
+@@ -404,6 +404,9 @@
+             break :b false;
+         }
+
++        // The Kandelo branch delegates to the SDK driver instead of bundled LLD.
++        if (target.os.tag == .kandelo) break :b true;
++
+         if (!build_options.have_llvm) {
+             if (options.use_lld == true) return error.LldUnavailable;
+             break :b false;
+@@ -422,8 +425,6 @@
+         }
+
+         if (options.use_lld) |x| break :b x;
+-
+-        if (target.os.tag == .kandelo) break :b true;
+
+         // If the user didn't specify whether to use LLD but did specify to use the new linker,
+         // assume no LLD.
+diff --git a/src/codegen/llvm.zig b/src/codegen/llvm.zig
+--- a/src/codegen/llvm.zig
++++ b/src/codegen/llvm.zig
+@@ -1,3 +1,40 @@
++// Zig serializes LLVM bitcode itself. The SDK's Clang lowers it to a
++// relocatable object so the compiler executable can run without libLLVM.
++fn emitKandeloObject(comp: *Compilation, output: []const u8, bitcode: []const u8) link.Error!void {
++    const gpa = comp.gpa;
++    const io = comp.io;
++    const input = try std.fmt.allocPrint(gpa, "{s}.bc", .{output});
++    defer gpa.free(input);
++
++    const cwd: Io.Dir = .cwd();
++    {
++        const file = cwd.createFile(io, input, .{}) catch |err|
++            return comp.link_diags.fail("could not create SDK bitcode input: {t}", .{err});
++        defer file.close(io);
++        errdefer cwd.deleteFile(io, input) catch {};
++        file.writeStreamingAll(io, bitcode) catch |err|
++            return comp.link_diags.fail("could not write SDK bitcode input: {t}", .{err});
++    }
++    defer cwd.deleteFile(io, input) catch {};
++
++    const optimize: []const u8 = switch (comp.root_mod.optimize_mode) {
++        .debug => "-O0",
++        .safe, .fast => "-O3",
++        .small => "-Oz",
++    };
++    const argv = &.{ "wasm32posix-cc", "-c", "-x", "ir", optimize,
++        "-Wno-override-module", "-Wno-unused-command-line-argument", input, "-o", output };
++    const result = std.process.run(gpa, io, .{ .argv = argv }) catch |err| switch (err) {
++        error.OutOfMemory, error.Canceled => |e| return e,
++        else => return comp.link_diags.fail("could not run the Kandelo SDK backend: {t}", .{err}),
++    };
++    defer gpa.free(result.stdout);
++    defer gpa.free(result.stderr);
++    if (result.term != .exited or result.term.exited != 0)
++        return comp.link_diags.fail("Kandelo SDK object emission failed:\n{s}", .{result.stderr});
++    if (result.stderr.len != 0) log.warn("Kandelo SDK object emission:\n{s}", .{result.stderr});
++}
++
+ const std = @import("std");
+ const Io = std.Io;
+ const assert = std.debug.assert;
+@@ -551,6 +588,13 @@
+                 options.post_ir_path == null and options.post_bc_path == null) return;
+
+             if (!build_options.have_llvm or !comp.config.use_lib_llvm) {
++                if (comp.root_mod.resolved_target.result.os.tag == .kandelo) {
++                    if (options.asm_path != null or options.post_ir_path != null or options.post_bc_path != null) {
++                        return diags.fail("the external Kandelo SDK backend emits Wasm objects only", .{});
++                    }
++                    if (options.bin_path) |path| try emitKandeloObject(comp, path, @ptrCast(bitcode));
++                    return;
++                }
+                 return diags.fail("emitting without libllvm not implemented", .{});
+             }
+
+diff --git a/src/link/Lld.zig b/src/link/Lld.zig
+--- a/src/link/Lld.zig
++++ b/src/link/Lld.zig
+@@ -268,8 +268,10 @@
+
+     const comp = lld.base.comp;
+     const result = if (comp.config.output_mode == .Lib and comp.config.link_mode == .static) r: {
+-        if (!@import("build_options").have_llvm or !comp.config.use_lib_llvm) {
+-            return lld.base.comp.link_diags.fail("using lld without libllvm not implemented", .{});
++        if ((!@import("build_options").have_llvm or !comp.config.use_lib_llvm) and
++            comp.root_mod.resolved_target.result.os.tag != .kandelo)
++        {
++            return comp.link_diags.fail("using lld without libllvm not implemented", .{});
+         }
+         break :r linkAsArchive(lld, arena);
+     } else switch (lld.ofmt) {
+@@ -339,9 +341,21 @@
+         std.debug.print("\n", .{});
+     }
+
++    const target = &comp.root_mod.resolved_target.result;
++    if (!@import("build_options").have_llvm or !comp.config.use_lib_llvm) {
++        // Recreate the archive so its contents are exactly this build's inputs.
++        Io.Dir.cwd().deleteFile(comp.io, full_out_path) catch |err| switch (err) {
++            error.FileNotFound => {},
++            else => return comp.link_diags.fail("could not replace the Kandelo archive: {t}", .{err}),
++        };
++        var argv: std.ArrayList([]const u8) = .empty;
++        try argv.appendSlice(arena, &.{ "wasm32posix-ar", "rcs", full_out_path });
++        for (object_files.items) |path| try argv.append(arena, std.mem.span(path));
++        return runKandeloTool(comp, arena, argv.items);
++    }
++
+     const llvm_bindings = @import("../codegen/llvm/bindings.zig");
+     const llvm = @import("../codegen/llvm.zig");
+-    const target = &comp.root_mod.resolved_target.result;
+     llvm.initializeLLVMTarget(comp.io, target.cpu.arch);
+     var err_file_index: usize = undefined;
+     var err_msg: [*:0]u8 = undefined;
+@@ -1659,7 +1673,6 @@
+     ubsan_rt_path: ?Cache.Path,
+ ) !void {
+     const comp = lld.base.comp;
+-    const io = comp.io;
+     const wasm = &lld.ofmt.wasm;
+     var argv: std.ArrayList([]const u8) = .empty;
+     try argv.appendSlice(arena, &.{ "wasm32posix-cc", "-o", full_out_path });
+@@ -1682,14 +1695,25 @@
+         if (path) |p| try argv.append(arena, try p.toString(arena));
+     }
+
+-    if (comp.verbose_link) try Compilation.dumpArgv(io, argv.items);
+-    const result = std.process.run(arena, io, .{ .argv = argv.items }) catch |err| switch (err) {
++    try runKandeloTool(comp, arena, argv.items);
++    // zig build executes its generated build runner inside the guest.
++    if (builtin.os.tag == .kandelo and comp.config.output_mode == .Exe) {
++        try runKandeloTool(comp, arena, &.{
++            "wasm-fork-instrument", full_out_path, "-o", full_out_path,
++        });
++    }
++}
++
++fn runKandeloTool(comp: *Compilation, arena: Allocator, argv: []const []const u8) link.Error!void {
++    const io = comp.io;
++    if (comp.verbose_link) try Compilation.dumpArgv(io, argv);
++    const result = std.process.run(arena, io, .{ .argv = argv }) catch |err| switch (err) {
+         error.OutOfMemory, error.Canceled => |e| return e,
+-        else => return comp.link_diags.fail("could not run wasm32posix-cc: {t}", .{err}),
++        else => return comp.link_diags.fail("could not run {s}: {t}", .{ argv[0], err }),
+     };
+     if (result.term != .exited or result.term.exited != 0)
+-        return comp.link_diags.fail("wasm32posix-cc failed:\n{s}", .{result.stderr});
+-    if (result.stderr.len != 0) log.warn("wasm32posix-cc:\n{s}", .{result.stderr});
++        return comp.link_diags.fail("{s} failed:\n{s}", .{ argv[0], result.stderr });
++    if (result.stderr.len != 0) log.warn("{s}:\n{s}", .{ argv[0], result.stderr });
+ }
+
+ fn spawnLld(comp: *Compilation, arena: Allocator, argv: []const []const u8) !void {

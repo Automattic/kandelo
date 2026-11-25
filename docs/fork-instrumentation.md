@@ -15,6 +15,25 @@ Some conservative-GC package builds run an additional local-root visibility
 pass before fork instrumentation. That pass is not part of the fork ABI; see
 [`crates/wasm-local-root-spill/README.md`](../crates/wasm-local-root-spill/README.md)
 for its Ruby-focused rationale, risk profile, and extension limits.
+
+The tool also lowers guest-local continuations when a linked input carries
+private `__kandelo_local_continuation_*` exports. Those exports identify
+the dispatcher, suspend function, and guest-owned frame providers. The local
+pass consumes the exports, lowers suspension up to the dispatcher, and
+restores the selected linear stack pointer on resume. It then passes the
+rewritten module to the ordinary process-fork analysis. Compiler facts and
+source offsets describe the original input and are discarded for that rewrite.
+
+The wasm32 SDK continuation provider supplies the active record through
+pthread TLS and owns the saved activation payloads in guest memory. The
+instrumenter generates the shadow stack switch, private exception delimiter,
+resume table, and typed reference tables. A suspended continuation can be
+resumed by its originating pthread. The caller owns the shadow stack and can
+visit conservative root ranges while the owner is quiescent. A different
+pthread has its own Wasm instance and reference tables. See
+[`sdk/kandelo/continuation`](../sdk/kandelo/continuation) for the C provider
+and its pthread and fork fixture.
+
 For motivation, tradeoffs, and the rollout plan that led here, read
 [`plans/2026-04-20-fork-instrumentation-design.md`](plans/2026-04-20-fork-instrumentation-design.md);
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
@@ -160,6 +179,13 @@ regions, 4,096 frame slots and 1,048,576 memberships in distinct retained
 call-target sets per body. Equal sorted sets share storage across call sites;
 each site's union remains independent when later interpretation adds targets.
 Superseded sets are released when no site uses them.
+The metadata program reuses frozen table and reference membership groups
+across callers. It uses up to 2 MiB of its remaining header allowance.
+Caller-specific policy and return or throw effects are evaluated separately.
+The child fixed point reads call sites in source order and reuses effects
+for equal target groups within one caller evaluation. It also retains up to
+2 MiB of large reaching target groups across callers. Each revisit uses the
+current child summaries with the same ordered target membership.
 The sink interpreter also memoizes indirect/reference target selection under
 its frozen policy with a 2 MiB estimated payload allowance. Keys include the
 original call point, invocation, selector and tail-call status. Eviction or an
@@ -670,6 +696,8 @@ through the next normal chunk before closing their empty block. The last
 child emits outside all bucket labels so source region results retain their
 original types. Replay gates reject invalid call ordinals, skip preceding
 normal chunks, enter the selected nested region and force the saved `if` arm.
+Gates use a branch table for dense destinations and compare range boundaries
+when many call ordinals share a destination.
 Typed entry-parameter bridges preserve multi-value block and arm inputs.
 
 Original symbolic branch targets are translated through the inserted labels,

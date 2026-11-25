@@ -82,6 +82,7 @@ declare global {
         dataFiles?: DataFile[];
         cwd?: string;
         env?: string[];
+        seedEtc?: boolean;
         ptyInput?: PtyInput;
         corsProxy?: BrowserCorsProxyConfig | null;
         /** Guest host names mapped to exact upstream URLs (see

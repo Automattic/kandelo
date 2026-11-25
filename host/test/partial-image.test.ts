@@ -87,6 +87,14 @@ const PROBES: Record<string, string> = {
     "\"python3 -c 'import sys; print(\\\"python-prefix\\\", sys.prefix, sys.exec_prefix)'\" 2>&1; done",
   cmake: "cmake --version | head -n 1; ctest --version | head -n 1; cpack --version | head -n 1",
   "cmake-docs": "man -w cmake",
+  zigcli: [
+    "mkdir -p /tmp/zigcli-test",
+    "printf 'const answer = 42;\\n// note\\n\\n' > /tmp/zigcli-test/main.zig",
+    "tree -m ascii /tmp/zigcli-test",
+    "loc -m ascii /tmp/zigcli-test",
+    "hexdump --color never --length 5 /tmp/zigcli-test/main.zig",
+  ].join("\n"),
+  "zigcli-docs": "for tool in tree loc hexdump; do MANPAGER=cat man 1 \"$tool\"; done",
   "wasm-tools": "wasm-tools --version; wasm-tools validate /usr/bin/wasm-tools && echo wasm-tools-validate-ok",
   toybox: "dmesg -r | head -n 1; dmesg -S | head -n 1 | sed 's/^/klog: /'; logger -s -t probe hello 2>&1",
 };
@@ -217,6 +225,16 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       }
       if (manifest!.packages.includes("cmake-docs")) {
         expect(stdout).toContain("/usr/share/man/man1/cmake.1");
+      }
+      if (manifest!.packages.includes("zigcli")) {
+        expect(stdout).toContain("main.zig");
+        expect(stdout).toMatch(/Zig\s*\|\s*1\s*\|\s*3\s*\|\s*1\s*\|\s*1\s*\|\s*1/);
+        expect(stdout).toContain("63 6f 6e 73 74");
+      }
+      if (manifest!.packages.includes("zigcli-docs")) {
+        expect(stdout).toContain("display a directory tree");
+        expect(stdout).toContain("count lines of code");
+        expect(stdout).toContain("display file contents in hexadecimal");
       }
       if (manifest!.packages.includes("cargo")) expect(stdout).toContain("cargo 1.97.0-nightly");
       if (manifest!.packages.includes("rustc")) expect(stdout).toContain("rustc 1.97.0-nightly");

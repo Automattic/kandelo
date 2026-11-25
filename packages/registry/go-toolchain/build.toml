@@ -1,0 +1,20 @@
+script_path = "packages/registry/go-toolchain/build.sh"
+inputs = [
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "packages/registry/go-toolchain/prune-stdlib.go",
+  "scripts/install-local-binary.sh",
+  "scripts/kandelo-go-bootstrap.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/bin/wasm32posix-go",
+  "sdk/go/patches",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+
+[[git_inputs]]
+name = "upstream_go"
+repository = "https://github.com/golang/go.git"
+commit = "6c49ac311e5642fa5399b46c736295a9dc4eeec9"

@@ -150,6 +150,7 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["wasm-tools-docs", "share/man/man1/wasm-tools.1"],
   ["wget-docs", "share/man/man1/wget.1"],
   ["xz-docs", "share/man/man1/xz.1"],
+  ["zigcli-docs", "share/man/man1/tree.1"],
   ["zip-docs", "share/man/man1/zip.1"],
   ["zstd-docs", "share/man/man1/zstd.1"],
 ] as const;
@@ -288,6 +289,13 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     resolverPath: "programs/wasm32/flang.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/flang",
+  },
+  {
+    id: "go",
+    dependency: "go-toolchain",
+    resolverPath: "programs/wasm32/go.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/go/bin/go",
   },
   // Autoconf, Automake, Libtool and the other build tools' scripts and data
   // (images/vfs/lib/init/dev-tools.ts).

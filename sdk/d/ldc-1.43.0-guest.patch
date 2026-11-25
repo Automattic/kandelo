@@ -1,0 +1,86 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -29,13 +29,28 @@
+ # Locate LLVM.
+ #
+
+-find_package(LLVM 18.0 REQUIRED
++set(ldc_llvm_components
+-    all-targets analysis asmparser asmprinter bitreader bitwriter codegen core
++    analysis asmparser asmprinter bitreader bitwriter codegen core
+     debuginfodwarf debuginfomsf debuginfopdb demangle
+     instcombine ipo instrumentation irreader libdriver linker lto mc
+     mcdisassembler mcparser objcarcopts object option profiledata scalaropts
+     selectiondag support tablegen target transformutils vectorize
+     windowsdriver windowsmanifest symbolize ${EXTRA_LLVM_MODULES})
++if(CMAKE_CROSSCOMPILING AND LLVM_DIR)
++    # A target LLVM's llvm-config cannot be executed by the build machine.
++    # Its CMake package exposes the same target library and include paths.
++    find_package(LLVM REQUIRED CONFIG)
++    if(LLVM_PACKAGE_VERSION VERSION_LESS 18.0)
++        message(FATAL_ERROR "LLVM 18.0 or newer is required")
++    endif()
++    set(LLVM_VERSION_STRING "${LLVM_PACKAGE_VERSION}")
++    llvm_map_components_to_libnames(LLVM_LIBRARIES ${LLVM_TARGETS_TO_BUILD} ${ldc_llvm_components})
++    include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
++    set(LLVM_CXXFLAGS "-fno-rtti")
++    set(LLVM_IS_SHARED OFF)
++else()
++    find_package(LLVM 18.0 REQUIRED all-targets ${ldc_llvm_components})
++endif()
+ message(STATUS "Using LLVM Version ${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}")
+ # Remove LLVMTableGen library from list of libraries
+ string(REGEX MATCH "[^;]*LLVMTableGen[^;]*" LLVM_TABLEGEN_LIBRARY "${LLVM_LIBRARIES}")
+--- a/dmd/target.d
++++ b/dmd/target.d
+@@ -55,6 +55,8 @@
+     native              // the machine the compiler is being run on
+ }
+
++// LDC initializes the target from the LLVM triple.
++version (IN_LLVM) {} else
+ Target.OS defaultTargetOS() @safe
+ {
+     version (Windows)
+--- a/dmd/root/dcompat.h
++++ b/dmd/root/dcompat.h
+@@ -36,7 +36,7 @@
+ };
+
+ /// Corresponding C++ type that maps to D size_t
+-#if __APPLE__ && (__i386__ || __ppc__)
++#if (__APPLE__ && (__i386__ || __ppc__)) || defined(__wasm32__)
+ // size_t is 'unsigned long', which makes it mangle differently than D's 'uint'
+ typedef unsigned d_size_t;
+ #elif MARS && DMD_VERSION >= 2079 && DMD_VERSION <= 2081 && \
+--- a/gen/ctfloat.cpp
++++ b/gen/ctfloat.cpp
+@@ -129,7 +129,7 @@
+
+ ////////////////////////////////////////////////////////////////////////////////
+
+-int CTFloat::sprint(char *str, size_t str_buf_length, char fmt, real_t x) {
++int CTFloat::sprint(char *str, d_size_t str_buf_length, char fmt, real_t x) {
+   assert(fmt == 'g' || fmt == 'a' || fmt == 'A');
+   const bool uppercase = fmt == 'A';
+
+--- a/cmake/Modules/BuildDExecutable.cmake
++++ b/cmake/Modules/BuildDExecutable.cmake
+@@ -50,7 +50,7 @@
+             OUTPUT ${object_file}
+             COMMAND "${D_COMPILER}" -c ${dflags} -of${object_file} ${d_src_files}
+             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+-            DEPENDS ${d_src_files} ${extra_compile_deps}
++            DEPENDS "${D_COMPILER}" ${d_src_files} ${extra_compile_deps}
+             VERBATIM
+         )
+         set(object_files ${object_file})
+@@ -65,7 +65,7 @@
+                 OUTPUT ${object_file}
+                 COMMAND "${D_COMPILER}" -c ${dflags} -of${object_file} ${f}
+                 WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+-                DEPENDS ${f} ${extra_compile_deps}
++                DEPENDS "${D_COMPILER}" ${f} ${extra_compile_deps}
+                 VERBATIM
+             )
+             list(APPEND object_files ${object_file})

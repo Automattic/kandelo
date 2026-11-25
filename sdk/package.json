@@ -13,6 +13,7 @@
     "wasm32posix-strip": "./bin/wasm32posix-strip",
     "wasm32posix-pkg-config": "./bin/wasm32posix-pkg-config",
     "wasm32posix-configure": "./bin/wasm32posix-configure",
+    "wasm32posix-go": "./bin/wasm32posix-go",
     "wasm64posix-cc": "./bin/wasm64posix-cc",
     "wasm64posix-c++": "./bin/wasm64posix-c++",
     "wasm64posix-ar": "./bin/wasm64posix-ar",
@@ -24,6 +25,8 @@
   },
   "files": [
     "activate.sh",
+    "go-runtime-env.d.ts",
+    "go-runtime-env.js",
     "bin",
     "config.site",
     "glue",

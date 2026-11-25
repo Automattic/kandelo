@@ -286,6 +286,9 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: [] },
   { id: "tmux", resolverPath: "programs/tmux.wasm", vfsPath: "/usr/bin/tmux", symlinks: [] },
   { id: "termchat", resolverPath: "programs/termchat/termchat.wasm", vfsPath: "/usr/bin/termchat", symlinks: [] },
+  { id: "tree", dependency: "zigcli", resolverPath: "programs/zigcli/tree.wasm", vfsPath: "/usr/bin/tree", symlinks: [] },
+  { id: "loc", dependency: "zigcli", resolverPath: "programs/zigcli/loc.wasm", vfsPath: "/usr/bin/loc", symlinks: [] },
+  { id: "hexdump", dependency: "zigcli", resolverPath: "programs/zigcli/hexdump.wasm", vfsPath: "/usr/bin/hexdump", symlinks: [] },
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },

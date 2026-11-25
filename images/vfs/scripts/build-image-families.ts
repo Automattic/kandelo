@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import type { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsFile } from "./vfs-image-helpers";
-import { resolveVfsArtifact, saveShellDerivedVfsImage } from "./package-shell-vfs-build";
+import { createShellDerivedImageFilesystem, resolveVfsArtifact, saveShellDerivedVfsImage } from "./package-shell-vfs-build";
 import { copyImageTree, installServiceActivities } from "./service-activities";
 import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import { installImageSessions } from "./image-session-files";
@@ -11,7 +11,7 @@ import { parseComputerServices } from "../../../web-libs/kandelo-session/src/com
 import { renderWordPressConfig, wordpressConfigTemplate } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
 
 function load(packageName: string, file: string): KandeloImageFs {
-  const fs = KandeloImageFs.create();
+  const fs = createShellDerivedImageFilesystem();
   fs.loadImage(new Uint8Array(readFileSync(resolveVfsArtifact(`programs/${file}`, packageName))));
   return fs;
 }

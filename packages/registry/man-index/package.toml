@@ -97,6 +97,7 @@ depends_on = [
   "wasm-tools-docs@1.263.0",
   "wget-docs@1.25.0",
   "xz-docs@5.6.2",
+  "zigcli-docs@0.7.0-dev.20261009",
   "zip-docs@3.0",
   "zstd-docs@1.5.6",
 ]

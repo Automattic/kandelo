@@ -2703,12 +2703,12 @@ function readGlobalInitAddr(src: Uint8Array, pos: number): bigint | null {
   const opcode = src[pos++];
   if (opcode === 0x41) {
     // i32.const
-    const [val] = readSLEB128_i32(src, pos);
-    return BigInt.asUintN(32, BigInt(val));
+    const [val, width] = readSLEB128_i32(src, pos);
+    return src[pos + width] === 0x0b ? BigInt.asUintN(32, BigInt(val)) : null;
   } else if (opcode === 0x42) {
     // i64.const
-    const [val] = readSLEB128_i64(src, pos);
-    return BigInt.asUintN(64, val);
+    const [val, width] = readSLEB128_i64(src, pos);
+    return src[pos + width] === 0x0b ? BigInt.asUintN(64, val) : null;
   }
   // Other init expressions (global.get, ref.func, etc.) are not used
   // for __heap_base by current LLD output.
@@ -2770,12 +2770,21 @@ function skipGlobalEntry(src: Uint8Array, pos: number): number {
  * large data sections like mariadbd).
  */
 export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
+  return extractGlobalConstants(programBytes, ["__heap_base"]).get("__heap_base") ?? null;
+}
+
+/** A missing export is absent from the map. An unsupported definition maps to null. */
+export function extractGlobalConstants(
+  programBytes: ArrayBuffer,
+  names: readonly string[],
+  immutable = false,
+): ReadonlyMap<string, bigint | null> {
   const src = new Uint8Array(programBytes);
-  if (src.length < 8) return null;
+  const values = new Map<string, bigint | null>();
+  if (!hasWasmMagic(src)) return values;
 
   let globalImports = 0;
-  let funcImports = 0;
-  let heapBaseGlobalIndex: number | null = null;
+  const globals = new Map<number, string[]>();
   let globalSectionContent: { offset: number; size: number } | null = null;
 
   let offset = 8; // skip magic + version
@@ -2786,20 +2795,19 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
 
     if (sectionId === 2) {
       // Import section — count global imports
-      const counts = { funcImports, globalImports };
+      const counts = { funcImports: 0, globalImports: 0 };
       let pos = contentOffset;
       const [importCount, countBytes] = readULEB128(src, pos);
       pos += countBytes;
       for (let i = 0; i < importCount; i++) {
         pos = skipImportEntry(src, pos, counts);
       }
-      funcImports = counts.funcImports;
       globalImports = counts.globalImports;
     } else if (sectionId === 6) {
       // Global section — defer until we know the global index
       globalSectionContent = { offset: contentOffset, size: sectionSize };
     } else if (sectionId === 7) {
-      // Export section — find __heap_base
+      // Export section — collect requested locally defined globals.
       let pos = contentOffset;
       const [exportCount, countBytes] = readULEB128(src, pos); pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
@@ -2807,17 +2815,15 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
         const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
-        if (kind === 3 && name === "__heap_base") {
-          heapBaseGlobalIndex = idx;
-          break;
+        if (names.includes(name)) {
+          values.set(name, null);
+          if (kind === 3 && idx >= globalImports) {
+            const index = idx - globalImports;
+            const aliases = globals.get(index) ?? [];
+            aliases.push(name);
+            globals.set(index, aliases);
+          }
         }
-      }
-      if (heapBaseGlobalIndex === null) return null;
-      if (globalSectionContent === null) {
-        // Sections appear in canonical order, so Global (id=6) comes
-        // before Export (id=7). Reaching here means the binary is
-        // malformed or the global is imported (not defined locally).
-        return null;
       }
       break;
     }
@@ -2825,21 +2831,24 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
     offset = contentOffset + sectionSize;
   }
 
-  if (heapBaseGlobalIndex === null || globalSectionContent === null) return null;
-
-  // The export's global index counts both imports and defined globals.
-  // Defined globals start at index `globalImports`.
-  const definedIndex = heapBaseGlobalIndex - globalImports;
-  if (definedIndex < 0) return null; // imported global, can't read its init here
+  if (globals.size === 0 || globalSectionContent === null) return values;
 
   let pos = globalSectionContent.offset;
   const [globalCount, countBytes] = readULEB128(src, pos); pos += countBytes;
-  if (definedIndex >= globalCount) return null;
-
-  for (let i = 0; i < definedIndex; i++) {
+  for (let i = 0; i < globalCount && globals.size !== 0; i++) {
+    const aliases = globals.get(i);
+    if (aliases) {
+      const mutability = readWasmValueType(src, pos, "global type").next;
+      if (!immutable || src[mutability] === 0) {
+        const value = readGlobalInitAddr(src, pos);
+        for (const name of aliases) values.set(name, value);
+      }
+      globals.delete(i);
+      if (globals.size === 0) break;
+    }
     pos = skipGlobalEntry(src, pos);
   }
-  return readGlobalInitAddr(src, pos);
+  return values;
 }
 
 /**

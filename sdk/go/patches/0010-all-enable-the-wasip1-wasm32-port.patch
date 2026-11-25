@@ -1,0 +1,1140 @@
+From 5e196a61a223f2590d576909992bea8803d770f9 Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 20:00:47 +0800
+Subject: [PATCH 10/22] all: enable the wasip1/wasm32 port
+
+Enable GOOS=wasip1 GOARCH=wasm32 in the build and test tools. Support
+GOWASM options and use internal linking for -buildmode=c-shared WASI
+reactors. Reuse the existing WASI execution wrapper.
+
+Document the new port and extend compiler and WASI tests to wasm32.
+
+Updates #63131
+
+Change-Id: I5c536a5712a66c53c5e582f4e1660a5570e4990d
+
+diff --git a/doc/next/7-ports.md b/doc/next/7-ports.md
+index 8bea3f8fbc33f90f98bd40929a4a3a2fccb7481c..dfb5fd4df7ce52e62839bddc499a765a733e815b 100644
+--- a/doc/next/7-ports.md
++++ b/doc/next/7-ports.md
+@@ -1,2 +1,6 @@
+ ## Ports {#ports}
+ 
++### WebAssembly {#wasm32}
++
++Go supports `GOARCH=wasm32` with `GOOS=wasip1`.
++The new architecture uses 32-bit pointers and `int` values.
+diff --git a/lib/wasm/go_wasip1_wasm32_exec b/lib/wasm/go_wasip1_wasm32_exec
+new file mode 100755
+index 0000000000000000000000000000000000000000..b3bb1e13e4b6f891a52b45a0a2949d319e2e073b
+--- /dev/null
++++ b/lib/wasm/go_wasip1_wasm32_exec
+@@ -0,0 +1,13 @@
++#!/usr/bin/env bash
++# Copyright 2026 The Go Authors. All rights reserved.
++# Use of this source code is governed by a BSD-style
++# license that can be found in the LICENSE file.
++
++SOURCE="${BASH_SOURCE[0]}"
++while [ -h "$SOURCE" ]; do
++	DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
++	SOURCE="$(readlink "$SOURCE")"
++	[[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
++done
++DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
++exec "$DIR/go_wasip1_wasm_exec" "$@"
+diff --git a/src/cmd/compile/doc.go b/src/cmd/compile/doc.go
+index dee509218965f83146da3a2ee95a3311832f200c..497e1c3db8f709130de12bab9311674de160477a 100644
+--- a/src/cmd/compile/doc.go
++++ b/src/cmd/compile/doc.go
+@@ -319,7 +319,7 @@ the function is accessed from outside the package.
+ 
+ 	//go:wasmimport importmodule importname
+ 
+-The //go:wasmimport directive is wasm-only and must be followed by a
++The //go:wasmimport directive is WebAssembly-only and must be followed by a
+ function declaration with no body.
+ It specifies that the function is provided by a wasm module identified
+ by ``importmodule'' and ``importname''. For example,
+@@ -331,7 +331,7 @@ causes g to refer to the WebAssembly function f from module a_module.
+ 
+ 	//go:wasmexport exportname
+ 
+-The //go:wasmexport directive is wasm-only and must be followed by a
++The //go:wasmexport directive is WebAssembly-only and must be followed by a
+ function definition.
+ It specifies that the function is exported to the wasm host as ``exportname''.
+ For example,
+@@ -362,5 +362,9 @@ int32, uint32, int64, uint64, float32, float64, an array whose element type is
+ a permitted pointer element type, or a struct, which, if non-empty, embeds
+ [structs.HostLayout], and contains only fields whose types are permitted pointer
+ element types.
++
++On GOARCH=wasm32, a permitted pointer element may itself be a pointer or
++unsafe.Pointer because Go and the WebAssembly host use the same 32-bit pointer
++width. These nested pointer element types remain disallowed on GOARCH=wasm.
+ */
+ package main
+diff --git a/src/cmd/compile/internal/logopt/logopt_test.go b/src/cmd/compile/internal/logopt/logopt_test.go
+index 1edabf9fb7ff0430844da72b3f1e51c6b0814603..0d82140150ed998e50ccc8e8f91243aebf19e392 100644
+--- a/src/cmd/compile/internal/logopt/logopt_test.go
++++ b/src/cmd/compile/internal/logopt/logopt_test.go
+@@ -147,7 +147,7 @@ func s15a8(x *[15]int64) [15]int64 {
+ 		arches := []string{runtime.GOARCH}
+ 		goos0 := runtime.GOOS
+ 		if runtime.GOARCH == "amd64" { // Test many things with "linux" (wasm will get "js")
+-			arches = []string{"arm", "arm64", "386", "amd64", "mips", "mips64", "loong64", "ppc64le", "riscv64", "s390x", "wasm"}
++			arches = []string{"arm", "arm64", "386", "amd64", "mips", "mips64", "loong64", "ppc64le", "riscv64", "s390x", "wasm", "wasm32"}
+ 			goos0 = "linux"
+ 		}
+ 
+@@ -156,6 +156,8 @@ func s15a8(x *[15]int64) [15]int64 {
+ 				goos := goos0
+ 				if arch == "wasm" {
+ 					goos = "js"
++				} else if arch == "wasm32" {
++					goos = "wasip1"
+ 				}
+ 				_, err := testCopy(t, dir, arch, goos, copy, outcopy)
+ 				if err != nil {
+diff --git a/src/cmd/compile/internal/ssa/debug_lines_test.go b/src/cmd/compile/internal/ssa/debug_lines_test.go
+index d438319e6873ce6fc29a8f644d59a1a420b1137f..bbae074456e0f6661f244b3b73bda43a45de35df 100644
+--- a/src/cmd/compile/internal/ssa/debug_lines_test.go
++++ b/src/cmd/compile/internal/ssa/debug_lines_test.go
+@@ -200,6 +200,8 @@ func compileAndDump(t *testing.T, file, function, moreGCFlags string) []byte {
+ 	testGoos := "linux" // default to linux
+ 	if testGoArch() == "wasm" {
+ 		testGoos = "js"
++	} else if testGoArch() == "wasm32" {
++		testGoos = "wasip1"
+ 	}
+ 	cmd.Env = replaceEnv(cmd.Env, "GOOS", testGoos)
+ 	cmd.Env = replaceEnv(cmd.Env, "GOARCH", testGoArch())
+diff --git a/src/cmd/compile/internal/test/inl_test.go b/src/cmd/compile/internal/test/inl_test.go
+index f1d3a9f9c6c8b5de36b6be48d551e8affde3e8d9..5e742199ef9b115fd8cc113bb38b6b44c10a2a1d 100644
+--- a/src/cmd/compile/internal/test/inl_test.go
++++ b/src/cmd/compile/internal/test/inl_test.go
+@@ -281,7 +281,7 @@ func TestIntendedInlining(t *testing.T) {
+ 	}
+ 
+ 	switch runtime.GOARCH {
+-	case "386", "wasm", "arm":
++	case "386", "wasm", "wasm32", "arm":
+ 	default:
+ 		// TODO(mvdan): As explained in /test/inline_sync.go, some
+ 		// architectures don't have atomic intrinsics, so these go over
+@@ -296,7 +296,7 @@ func TestIntendedInlining(t *testing.T) {
+ 		}
+ 	}
+ 
+-	if runtime.GOARCH != "wasm" {
++	if runtime.GOARCH != "wasm" && runtime.GOARCH != "wasm32" {
+ 		// mutex implementation for multi-threaded GOARCHes
+ 		want["runtime"] = append(want["runtime"],
+ 			// in the fast paths of lock2 and unlock2
+diff --git a/src/cmd/dist/build.go b/src/cmd/dist/build.go
+index ae97882d574eb791ff0bd405e0f2613e3bbbde1a..99eb9e0786b6c9df9885f95b797bba26f19e20dc 100644
+--- a/src/cmd/dist/build.go
++++ b/src/cmd/dist/build.go
+@@ -83,6 +83,7 @@ var okgoarch = []string{
+ 	"s390x",
+ 	"sparc64",
+ 	"wasm",
++	"wasm32",
+ }
+ 
+ // The known operating systems.
+@@ -1317,6 +1318,7 @@ var cgoEnabled = map[string]bool{
+ 	"ios/amd64":       true,
+ 	"js/wasm":         false,
+ 	"wasip1/wasm":     false,
++	"wasip1/wasm32":   false,
+ 	"netbsd/386":      true,
+ 	"netbsd/amd64":    true,
+ 	"netbsd/arm":      true,
+diff --git a/src/cmd/dist/test.go b/src/cmd/dist/test.go
+index 3d07648b03b3fc548633122d82b0fbeff91ffa46..1a4209478c6f0fba4cee9a7c0010b8973b4220c3 100644
+--- a/src/cmd/dist/test.go
++++ b/src/cmd/dist/test.go
+@@ -1709,7 +1709,7 @@ func raceDetectorSupported(goos, goarch string) bool {
+ // because cmd/dist can not import internal packages during bootstrap.
+ func fips140Supported(goos, goarch string) bool {
+ 	switch {
+-	case goarch == "wasm",
++	case goarch == "wasm", goarch == "wasm32",
+ 		goos == "windows" && goarch == "386",
+ 		goos == "openbsd",
+ 		goos == "aix":
+@@ -1761,7 +1761,7 @@ func buildModeSupported(compiler, buildmode, goos, goarch string) bool {
+ 			"freebsd/amd64",
+ 			"darwin/amd64", "darwin/arm64",
+ 			"windows/amd64", "windows/386", "windows/arm64",
+-			"wasip1/wasm":
++			"wasip1/wasm", "wasip1/wasm32":
+ 			return true
+ 		}
+ 		return false
+diff --git a/src/cmd/go/alldocs.go b/src/cmd/go/alldocs.go
+index 5343762633aafa30d6d2eebb45b4a24a51950b15..c8f8a1f5e53a714ce97b0e77629d941f05071f63 100644
+--- a/src/cmd/go/alldocs.go
++++ b/src/cmd/go/alldocs.go
+@@ -2208,8 +2208,8 @@
+ //   - For GOARCH=riscv64,
+ //     GORISCV64=rva20u64, rva22u64 and rva23u64 correspond to the riscv64.rva20u64,
+ //     riscv64.rva22u64 and riscv64.rva23u64 build tags.
+-//   - For GOARCH=wasm, GOWASM=satconv and signext
+-//     correspond to the wasm.satconv and wasm.signext feature build tags.
++//   - For GOARCH=wasm or wasm32, GOWASM=satconv and signext
++//     correspond to the GOARCH.satconv and GOARCH.signext feature build tags.
+ //
+ // For GOARCH=amd64, arm, ppc64, ppc64le, and riscv64, a particular feature level
+ // sets the feature build tags for all previous levels as well.
+@@ -2597,7 +2597,7 @@
+ //		See https://github.com/riscv/riscv-profiles/blob/main/src/profiles.adoc
+ //		and https://github.com/riscv/riscv-profiles/blob/main/src/rva23-profile.adoc
+ //	GOWASM
+-//		For GOARCH=wasm, comma-separated list of experimental WebAssembly features to use.
++//		For GOARCH=wasm or wasm32, comma-separated list of experimental WebAssembly features to use.
+ //		Valid values are satconv, signext.
+ //
+ // Environment variables for use with code coverage:
+diff --git a/src/cmd/go/internal/cfg/cfg.go b/src/cmd/go/internal/cfg/cfg.go
+index 5c34612f5d2a952c8d413406384c9e68959314db..52ab1cd81699cfe0290d2e66505688b1fbc7c409 100644
+--- a/src/cmd/go/internal/cfg/cfg.go
++++ b/src/cmd/go/internal/cfg/cfg.go
+@@ -531,7 +531,7 @@ func GetArchEnv() (key, val string, changed bool) {
+ 		return "GOPPC64", GOPPC64, goPPC64Changed
+ 	case "riscv64":
+ 		return "GORISCV64", GORISCV64, goRISCV64Changed
+-	case "wasm":
++	case "wasm", "wasm32":
+ 		return "GOWASM", GOWASM, goWASMChanged
+ 	}
+ 	return "", "", false
+diff --git a/src/cmd/go/internal/help/helpdoc.go b/src/cmd/go/internal/help/helpdoc.go
+index b305457a23d1045a4e00a99b91f7e03fa65330a4..9e3dae93d157218e1faaefbac2f348c530351374 100644
+--- a/src/cmd/go/internal/help/helpdoc.go
++++ b/src/cmd/go/internal/help/helpdoc.go
+@@ -719,7 +719,7 @@ Architecture-specific environment variables:
+ 		See https://github.com/riscv/riscv-profiles/blob/main/src/profiles.adoc
+ 		and https://github.com/riscv/riscv-profiles/blob/main/src/rva23-profile.adoc
+ 	GOWASM
+-		For GOARCH=wasm, comma-separated list of experimental WebAssembly features to use.
++		For GOARCH=wasm or wasm32, comma-separated list of experimental WebAssembly features to use.
+ 		Valid values are satconv, signext.
+ 
+ Environment variables for use with code coverage:
+@@ -1027,8 +1027,8 @@ The defined architecture feature build tags are:
+ 	- For GOARCH=riscv64,
+ 	  GORISCV64=rva20u64, rva22u64 and rva23u64 correspond to the riscv64.rva20u64,
+ 	  riscv64.rva22u64 and riscv64.rva23u64 build tags.
+-	- For GOARCH=wasm, GOWASM=satconv and signext
+-	  correspond to the wasm.satconv and wasm.signext feature build tags.
++	- For GOARCH=wasm or wasm32, GOWASM=satconv and signext
++	  correspond to the GOARCH.satconv and GOARCH.signext feature build tags.
+ 
+ For GOARCH=amd64, arm, ppc64, ppc64le, and riscv64, a particular feature level
+ sets the feature build tags for all previous levels as well.
+diff --git a/src/cmd/go/internal/load/pkg.go b/src/cmd/go/internal/load/pkg.go
+index 56ad32276bb0599818d95daa8b573374636491e1..71d3fc464213d4706196e4bd8f79fc155cd2f0b8 100644
+--- a/src/cmd/go/internal/load/pkg.go
++++ b/src/cmd/go/internal/load/pkg.go
+@@ -2724,7 +2724,7 @@ func externalLinkingReason(s *modload.Loader, p *Package) (what string) {
+ 	// Some build modes always require external linking.
+ 	switch cfg.BuildBuildmode {
+ 	case "c-shared":
+-		if cfg.BuildContext.GOARCH == "wasm" {
++		if cfg.BuildContext.GOARCH == "wasm" || cfg.BuildContext.GOARCH == "wasm32" {
+ 			break
+ 		}
+ 		fallthrough
+diff --git a/src/cmd/go/internal/work/gc.go b/src/cmd/go/internal/work/gc.go
+index a31a2ff9097d91224cfffc4ce9be3034302b9bcf..5535584f58a9202dc0b7d3845b4ffac9b5220b36 100644
+--- a/src/cmd/go/internal/work/gc.go
++++ b/src/cmd/go/internal/work/gc.go
+@@ -116,7 +116,7 @@ func (gcToolchain) gc(b *Builder, a *Action, export string, importcfg, embedcfg
+ 	if a.buildID != "" {
+ 		defaultGcFlags = append(defaultGcFlags, "-buildid", a.buildID)
+ 	}
+-	if p.Internal.OmitDebug || cfg.Goos == "plan9" || cfg.Goarch == "wasm" {
++	if p.Internal.OmitDebug || cfg.Goos == "plan9" || cfg.Goarch == "wasm" || cfg.Goarch == "wasm32" {
+ 		defaultGcFlags = append(defaultGcFlags, "-dwarf=false")
+ 	}
+ 	if strings.HasPrefix(ToolchainVersion, "go1") && !strings.Contains(os.Args[0], "go_bootstrap") {
+diff --git a/src/cmd/go/testdata/script/tooltags.txt b/src/cmd/go/testdata/script/tooltags.txt
+index a69b7a5c37b7463cb5d8d04a507296fe8116f078..8c17591276fc13b63e322706f8291862a6622c4a 100644
+--- a/src/cmd/go/testdata/script/tooltags.txt
++++ b/src/cmd/go/testdata/script/tooltags.txt
+@@ -75,6 +75,11 @@ env GOWASM=satconv
+ go list -f '{{context.ToolTags}}'
+ stdout 'wasm.satconv'
+ 
++env GOARCH=wasm32
++env GOWASM=signext
++go list -f '{{context.ToolTags}}'
++stdout 'wasm32.signext'
++
+ -- go.mod --
+ module m
+ 
+diff --git a/src/cmd/internal/testdir/testdir_test.go b/src/cmd/internal/testdir/testdir_test.go
+index 5147e2efc86b6f994b7a3e7dc3cf58f6f7d68aaf..2a585fb315823570b98bb087e64a5218b2f960a2 100644
+--- a/src/cmd/internal/testdir/testdir_test.go
++++ b/src/cmd/internal/testdir/testdir_test.go
+@@ -280,7 +280,7 @@ func (t test) expectFail() bool {
+ 	// Note: gccgo supports more 32-bit architectures than this, but
+ 	// hopefully the 32-bit failures are fixed before this matters.
+ 	switch goarch {
+-	case "386", "arm", "mips", "mipsle":
++	case "386", "arm", "mips", "mipsle", "wasm32":
+ 		failureSets = append(failureSets, types2Failures32Bit)
+ 	}
+ 
+@@ -1543,6 +1543,7 @@ var (
+ 		"ppc64x":  {}, // A pseudo-arch representing both ppc64 and ppc64le
+ 		"s390x":   {},
+ 		"wasm":    {},
++		"wasm32":  {},
+ 		"riscv64": {"GORISCV64", "rva20u64", "rva22u64", "rva23u64"},
+ 	}
+ )
+@@ -1630,6 +1631,8 @@ func (t test) wantedAsmOpcodes(fn string) asmChecks {
+ 				os, arch, subarch = "linux", archspec[0], ""
+ 				if arch == "wasm" {
+ 					os = "js"
++				} else if arch == "wasm32" {
++					os = "wasip1"
+ 				}
+ 			}
+ 
+diff --git a/src/cmd/link/internal/ld/config.go b/src/cmd/link/internal/ld/config.go
+index acbebf28598a9c3db2bc871fbc9903c7ede062cc..7587038d8930bb02a2d979db874a6305e161eae1 100644
+--- a/src/cmd/link/internal/ld/config.go
++++ b/src/cmd/link/internal/ld/config.go
+@@ -145,7 +145,7 @@ func mustLinkExternal(ctxt *Link) (res bool, reason string) {
+ 	case BuildModeCArchive:
+ 		return true, "buildmode=c-archive"
+ 	case BuildModeCShared:
+-		if buildcfg.GOARCH == "wasm" {
++		if buildcfg.GOARCH == "wasm" || buildcfg.GOARCH == "wasm32" {
+ 			break
+ 		}
+ 		return true, "buildmode=c-shared"
+diff --git a/src/cmd/link/internal/ld/execarchive.go b/src/cmd/link/internal/ld/execarchive.go
+index 7a19567a6c956c5899c0300010d9845f9aa56c90..7e43d4b1c5591c017367bac61b76dac8926ec9d5 100644
+--- a/src/cmd/link/internal/ld/execarchive.go
++++ b/src/cmd/link/internal/ld/execarchive.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !wasm && !windows
++//go:build !wasm && !wasm32 && !windows
+ 
+ package ld
+ 
+diff --git a/src/cmd/link/internal/ld/execarchive_noexec.go b/src/cmd/link/internal/ld/execarchive_noexec.go
+index ada3e9f74aa80ae5d663e747a81f0f70187eba06..4a76e14420959b09ab88ff63fae7d918870c92d0 100644
+--- a/src/cmd/link/internal/ld/execarchive_noexec.go
++++ b/src/cmd/link/internal/ld/execarchive_noexec.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm || windows
++//go:build wasm || wasm32 || windows
+ 
+ package ld
+ 
+diff --git a/src/internal/buildcfg/cfg.go b/src/internal/buildcfg/cfg.go
+index 3ebd93058886fa1830b87c2841d6aecbe402a50e..2cc139addc148a514a22b7c1855a1fe3bdd02d18 100644
+--- a/src/internal/buildcfg/cfg.go
++++ b/src/internal/buildcfg/cfg.go
+@@ -413,7 +413,7 @@ func GOGOARCH() (name, value string) {
+ 		return "GOPPC64", fmt.Sprintf("power%d", GOPPC64)
+ 	case "riscv64":
+ 		return "GORISCV64", fmt.Sprintf("rva%du64", GORISCV64)
+-	case "wasm":
++	case "wasm", "wasm32":
+ 		return "GOWASM", GOWASM.String()
+ 	}
+ 	return "", ""
+@@ -468,7 +468,7 @@ func gogoarchTags() []string {
+ 			list = append(list, GOARCH+"."+"rva23u64")
+ 		}
+ 		return list
+-	case "wasm":
++	case "wasm", "wasm32":
+ 		var list []string
+ 		// SatConv is always enabled
+ 		list = append(list, GOARCH+".satconv")
+diff --git a/src/internal/platform/supported.go b/src/internal/platform/supported.go
+index 86dc5ae15b56bbe9ebd3fc213bff7e444f7712f2..4b6aeff4d5c0604e1573b4d246932b66e469141a 100644
+--- a/src/internal/platform/supported.go
++++ b/src/internal/platform/supported.go
+@@ -64,7 +64,7 @@ func ASanSupported(goos, goarch string) bool {
+ func FIPS140Supported(goos, goarch string) bool {
+ 	// Keep this in sync with crypto/internal/fips140.Supported.
+ 	switch {
+-	case goarch == "wasm",
++	case goarch == "wasm", goarch == "wasm32",
+ 		goos == "windows" && goarch == "386",
+ 		goos == "openbsd",
+ 		goos == "aix":
+@@ -183,7 +183,7 @@ func BuildModeSupported(compiler, buildmode, goos, goarch string) bool {
+ 			"freebsd/amd64",
+ 			"darwin/amd64", "darwin/arm64",
+ 			"windows/amd64", "windows/386", "windows/arm64",
+-			"wasip1/wasm":
++			"wasip1/wasm", "wasip1/wasm32":
+ 			return true
+ 		}
+ 		return false
+diff --git a/src/internal/platform/zosarch.go b/src/internal/platform/zosarch.go
+index ec6368e8b0531701c758b8a81f91a4cb3d172b96..18938a1724b43b667b14cd60bcf5e714f485e848 100644
+--- a/src/internal/platform/zosarch.go
++++ b/src/internal/platform/zosarch.go
+@@ -54,6 +54,7 @@ var List = []OSArch{
+ 	{"plan9", "arm"},
+ 	{"solaris", "amd64"},
+ 	{"wasip1", "wasm"},
++	{"wasip1", "wasm32"},
+ 	{"windows", "386"},
+ 	{"windows", "amd64"},
+ 	{"windows", "arm64"},
+@@ -106,6 +107,7 @@ var distInfo = map[OSArch]osArchInfo{
+ 	{"plan9", "arm"}:       {},
+ 	{"solaris", "amd64"}:   {CgoSupported: true},
+ 	{"wasip1", "wasm"}:     {},
++	{"wasip1", "wasm32"}:   {},
+ 	{"windows", "386"}:     {CgoSupported: true, FirstClass: true},
+ 	{"windows", "amd64"}:   {CgoSupported: true, FirstClass: true},
+ 	{"windows", "arm64"}:   {CgoSupported: true},
+diff --git a/src/internal/runtime/wasitest/host_test.go b/src/internal/runtime/wasitest/host_test.go
+index ca4ef8f4e8616a05a09d930488fb9e653ccf3973..56d9e18f09e9e7f904538319882e7bb29c06201f 100644
+--- a/src/internal/runtime/wasitest/host_test.go
++++ b/src/internal/runtime/wasitest/host_test.go
+@@ -4,7 +4,10 @@
+ 
+ package wasi_test
+ 
+-import "flag"
++import (
++	"flag"
++	"strings"
++)
+ 
+ var target string
+ 
+@@ -12,3 +15,12 @@ func init() {
+ 	// The dist test runner passes -target when running this as a host test.
+ 	flag.StringVar(&target, "target", "", "")
+ }
++
++func targetArch() (string, bool) {
++	const prefix = "wasip1/"
++	if !strings.HasPrefix(target, prefix) {
++		return "", false
++	}
++	arch := strings.TrimPrefix(target, prefix)
++	return arch, arch == "wasm" || arch == "wasm32"
++}
+diff --git a/src/internal/runtime/wasitest/nonblock_test.go b/src/internal/runtime/wasitest/nonblock_test.go
+index f5f6bb84d0ef11606cca404209aea058897552eb..9b6a66a75e606ca620b8f3098187c8e725b99d41 100644
+--- a/src/internal/runtime/wasitest/nonblock_test.go
++++ b/src/internal/runtime/wasitest/nonblock_test.go
+@@ -3,7 +3,7 @@
+ // license that can be found in the LICENSE file.
+ 
+ // Not all systems have syscall.Mkfifo.
+-//go:build !aix && !plan9 && !solaris && !wasm && !windows
++//go:build !aix && !plan9 && !solaris && !wasm && !wasm32 && !windows
+ 
+ package wasi_test
+ 
+@@ -33,7 +33,8 @@ type fifo struct {
+ }
+ 
+ func TestNonblock(t *testing.T) {
+-	if target != "wasip1/wasm" {
++	arch, ok := targetArch()
++	if !ok {
+ 		t.Skip()
+ 	}
+ 
+@@ -67,7 +68,7 @@ func TestNonblock(t *testing.T) {
+ 
+ 			subProcess := exec.Command(testenv.GoToolPath(t), args...)
+ 
+-			subProcess.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
++			subProcess.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH="+arch)
+ 
+ 			pr, pw := io.Pipe()
+ 			defer pw.Close()
+diff --git a/src/internal/runtime/wasitest/tcpecho_test.go b/src/internal/runtime/wasitest/tcpecho_test.go
+index aa57d9e2e340a3991898a15692bec2a5b910d427..047666e63b1db2221224b6e7096032aa0b8831e3 100644
+--- a/src/internal/runtime/wasitest/tcpecho_test.go
++++ b/src/internal/runtime/wasitest/tcpecho_test.go
+@@ -17,7 +17,8 @@ import (
+ )
+ 
+ func TestTCPEcho(t *testing.T) {
+-	if target != "wasip1/wasm" {
++	arch, ok := targetArch()
++	if !ok {
+ 		t.Skip()
+ 	}
+ 
+@@ -49,7 +50,7 @@ func TestTCPEcho(t *testing.T) {
+ 
+ 	subProcess := exec.Command(testenv.GoToolPath(t), "run", "./testdata/tcpecho.go")
+ 
+-	subProcess.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
++	subProcess.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH="+arch)
+ 
+ 	switch os.Getenv("GOWASIRUNTIME") {
+ 	case "wazero":
+diff --git a/test/abi/bad_internal_offsets.go b/test/abi/bad_internal_offsets.go
+index bad4ebdc8ecb305f91439ccb1e52e501469b1a49..e689f50609c82627949729b251561fa4aaf10a74 100644
+--- a/test/abi/bad_internal_offsets.go
++++ b/test/abi/bad_internal_offsets.go
+@@ -1,6 +1,6 @@
+ // compile
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/double_nested_addressed_struct.go b/test/abi/double_nested_addressed_struct.go
+index c3e68a1783fc65523420b52c2eba73702177a8bb..165985d61f04645dd9caf80aefab8b7946b77c47 100644
+--- a/test/abi/double_nested_addressed_struct.go
++++ b/test/abi/double_nested_addressed_struct.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/double_nested_struct.go b/test/abi/double_nested_struct.go
+index 0dce143f57ac7b58e7e7c25a7c46ce01d9404e81..2e62a23c11f868bc6486dea4dd292552f9bc6b31 100644
+--- a/test/abi/double_nested_struct.go
++++ b/test/abi/double_nested_struct.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/f_ret_z_not.go b/test/abi/f_ret_z_not.go
+index 0fec654e4b298612adc3a6bc35281b4bf2a7dd6a..470bcfee72807e903491c14780139d873b860fa7 100644
+--- a/test/abi/f_ret_z_not.go
++++ b/test/abi/f_ret_z_not.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/fibish.go b/test/abi/fibish.go
+index 20ed92437a085ab6a68d6009fa8e6146f3f30bbb..7b68f416ef97301cd6adfd298cd6d7ada8a394d7 100644
+--- a/test/abi/fibish.go
++++ b/test/abi/fibish.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/fibish_closure.go b/test/abi/fibish_closure.go
+index 682886cec425b2b21f121e2bf66dc5d1c368abeb..c54c18abc509a8821cdf912bed34d6edb3470a46 100644
+--- a/test/abi/fibish_closure.go
++++ b/test/abi/fibish_closure.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/leaf.go b/test/abi/leaf.go
+index fb1be5cd8af4b468b9d0a21eef0fcc8435613cd1..e6135d33e5d11cf9adf0e6694a61f5285318342d 100644
+--- a/test/abi/leaf.go
++++ b/test/abi/leaf.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/leaf2.go b/test/abi/leaf2.go
+index fdad59cf7ec8dfe085fc9c3450f63a86758f8eea..4a12dc64acbe03997a6486659b24d896660f0436 100644
+--- a/test/abi/leaf2.go
++++ b/test/abi/leaf2.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/many_int_input.go b/test/abi/many_int_input.go
+index 046e31c39da1b84b647cea1eebb07ac9cd1c8251..2c962bd98b3f775847a8e48b6f29c069dfe99c4b 100644
+--- a/test/abi/many_int_input.go
++++ b/test/abi/many_int_input.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/many_intstar_input.go b/test/abi/many_intstar_input.go
+index dc9e43b5abfb1c3678af8aee325dacf3c4ddd684..1911d4208a848b4cd75f4b324011b102116e9cb0 100644
+--- a/test/abi/many_intstar_input.go
++++ b/test/abi/many_intstar_input.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/more_intstar_input.go b/test/abi/more_intstar_input.go
+index 256081d0f5db21d2e1c4575d27d6e868459bd791..20ad6a85abe8039ef9a0f75137d98e3181a65de8 100644
+--- a/test/abi/more_intstar_input.go
++++ b/test/abi/more_intstar_input.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/named_results.go b/test/abi/named_results.go
+index 07ea4610bf090fb460d84f71e281ea87880300a5..95a939e5c1d4ad471b26c3d0bf5cbfb7e790761d 100644
+--- a/test/abi/named_results.go
++++ b/test/abi/named_results.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/named_return_stuff.go b/test/abi/named_return_stuff.go
+index ac779f0dbec05696251b081b5b899943b3ab5e2e..27747d29067c94cfe8216f2f7234fc704bf3ab61 100644
+--- a/test/abi/named_return_stuff.go
++++ b/test/abi/named_return_stuff.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/reg_not_ssa.go b/test/abi/reg_not_ssa.go
+index da0f40511612171961e6484798a418c5faced391..d5a0d45c12c76ffe7e23cf2f51ffa9392e99eef3 100644
+--- a/test/abi/reg_not_ssa.go
++++ b/test/abi/reg_not_ssa.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2023 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/return_stuff.go b/test/abi/return_stuff.go
+index 222a9ee89ad6b9c69a8761c33865a5136bef2aeb..7b302ab23a1a2610bdd47eec66a6b174c0ae506d 100644
+--- a/test/abi/return_stuff.go
++++ b/test/abi/return_stuff.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/s_sif_sif.go b/test/abi/s_sif_sif.go
+index f57faac6740008782d34fcd2f7eba3dcc4a5630c..b4c717d7a29667f12398ec9df2639936f6aa1dde 100644
+--- a/test/abi/s_sif_sif.go
++++ b/test/abi/s_sif_sif.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/spills3.go b/test/abi/spills3.go
+index 4dee3eb679dda09d43e11325f5ecbfe6acd83b44..5f04019885931bb0ef82d3f194908a700e82473c 100644
+--- a/test/abi/spills3.go
++++ b/test/abi/spills3.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/spills4.go b/test/abi/spills4.go
+index 646d6965d8223aea7b75538164648d35b7788f58..d991cbddc4bfe1de18b4b6a8d09bc051908bcb51 100644
+--- a/test/abi/spills4.go
++++ b/test/abi/spills4.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/struct_3_string_input.go b/test/abi/struct_3_string_input.go
+index 2291bbb036bfbe58204a2a95e06af2cbbd2236fd..4622ccb8733b39ba298ad39d7b2827fde2f0603b 100644
+--- a/test/abi/struct_3_string_input.go
++++ b/test/abi/struct_3_string_input.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/struct_lower_1.go b/test/abi/struct_lower_1.go
+index 363b85c019e06dd5f59796c34c0c945165b4264d..dced9feef2b8bf26c24b95f24b559bd8992dcdb0 100644
+--- a/test/abi/struct_lower_1.go
++++ b/test/abi/struct_lower_1.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/too_big_to_ssa.go b/test/abi/too_big_to_ssa.go
+index e10acd17529f5f6f2a6f8215b20d2c296a9fc75a..07aad537ea96e2c2a3ddf3209ba1a94e366791ba 100644
+--- a/test/abi/too_big_to_ssa.go
++++ b/test/abi/too_big_to_ssa.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/uglyfib.go b/test/abi/uglyfib.go
+index 9c9d7101054279e4be2e197518d51c168b761b67..3c3161e1fe57f4f9d5c7ff64d814a86715c21be6 100644
+--- a/test/abi/uglyfib.go
++++ b/test/abi/uglyfib.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/abi/wrapdefer_largetmp.go b/test/abi/wrapdefer_largetmp.go
+index 1aaaade39c4e0a4b9004a2473cc5885077f27ebf..7af97fd306cf7e85e6c568ca15e24d8975152d2f 100644
+--- a/test/abi/wrapdefer_largetmp.go
++++ b/test/abi/wrapdefer_largetmp.go
+@@ -1,6 +1,6 @@
+ // run
+ 
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2021 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/codegen/arithmetic.go b/test/codegen/arithmetic.go
+index b6a478eb6093761d9526f5f7e7288a2f06daaf4b..f29655fffd0ae0e5b8f1c64ca3ec692f42f1369f 100644
+--- a/test/codegen/arithmetic.go
++++ b/test/codegen/arithmetic.go
+@@ -421,6 +421,12 @@ func ConstDivs(n1 uint, n2 int) (uint, int) {
+ 	return a, b
+ }
+ 
++func ConstDiv7(n uint32) uint32 {
++	// wasm:1`I64Mul` -`I64DivU`
++	// wasm32:1`I64Mul` -`I64DivU`
++	return n / 7
++}
++
+ func FloatDivs(a []float32) float32 {
+ 	// amd64:`DIVSS 8\([A-Z]+\), X[0-9]+`
+ 	// 386/sse2:`DIVSS 8\([A-Z]+\), X[0-9]+`
+diff --git a/test/codegen/memops.go b/test/codegen/memops.go
+index 0800fbcbaf60b333b5a359c6a391561308b15f19..4f84f6869fed20b869466f1dbe19205c48550d6f 100644
+--- a/test/codegen/memops.go
++++ b/test/codegen/memops.go
+@@ -23,11 +23,13 @@ func Equal4Constant(p unsafe.Pointer) bool {
+ 
+ func Equal8Constant(p unsafe.Pointer) bool {
+ 	// wasm:`I64Eq` -`.*memequal.*`
++	// wasm32:`I64Eq` -`.*memequal.*`
+ 	return memequal(p, unsafe.Pointer(unsafe.StringData("abcdefgh")), 8)
+ }
+ 
+ func Equal5Constant(p unsafe.Pointer) bool {
+ 	// wasm:`I64Eq` -`.*memequal.*`
++	// wasm32:`I64Eq` -`.*memequal.*`
+ 	return memequal(unsafe.Pointer(unsafe.StringData("abcde")), p, 5)
+ }
+ 
+diff --git a/test/codegen/slices.go b/test/codegen/slices.go
+index 26714fdc89e4dbd82904726119773c08eb64237a..e944ee641676e02257f733a1463865fb4c9c864c 100644
+--- a/test/codegen/slices.go
++++ b/test/codegen/slices.go
+@@ -518,6 +518,17 @@ func SliceAndIndex(a []int, b int) int {
+ 	return a[b:][b]
+ }
+ 
++// 64-bit indices on wasm32 use the backend panic path.
++func IndexInt64(s []byte, i int64) byte {
++	// wasm32:`Call runtime\.panicExtend\(SB\)` -`Call runtime\.goPanicExtend`
++	return s[i]
++}
++
++func IndexUint64(s []byte, i uint64) byte {
++	// wasm32:`Call runtime\.panicExtend\(SB\)` -`Call runtime\.goPanicExtend`
++	return s[i]
++}
++
+ // --------------------------------------- //
+ //   Code generation for unsafe.Slice      //
+ // --------------------------------------- //
+diff --git a/test/codegen/wasmimport.go b/test/codegen/wasmimport.go
+index 061f743f2aa105c95a74fa8ef4bc48ea1167eb08..31e5b15887c7455112a8bf446c0a1799c600beae 100644
+--- a/test/codegen/wasmimport.go
++++ b/test/codegen/wasmimport.go
+@@ -4,22 +4,22 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package codegen
+ 
+ // Imported 32-bit values should not be widened just to store them on the Go stack.
+ 
+ //go:wasmimport test int32
+-func ImportInt32() int32 // wasm:`I32Store\s` -`I64ExtendI32U`
++func ImportInt32() int32 // wasm:`I32Store\s` -`I64ExtendI32U` wasm32:`I32Store\s` -`I64ExtendI32U`
+ 
+ //go:wasmimport test bool
+-func ImportBool() bool // wasm:`I32Store8` -`I64ExtendI32U`
++func ImportBool() bool // wasm:`I32Store8` -`I64ExtendI32U` wasm32:`I32Store8` -`I64ExtendI32U`
+ 
+ // Pointer results must retain their full Go pointer width on each architecture.
+ 
+ //go:wasmimport test pointer
+-func ImportPointer() *byte // wasm:`I64ExtendI32U` `I64Store\s`
++func ImportPointer() *byte // wasm:`I64ExtendI32U` `I64Store\s` wasm32:`I32Store\s` -`I64ExtendI32U`
+ 
+ //go:wasmimport test int64
+-func ImportInt64() int64 // wasm:`I64Store\s`
++func ImportInt64() int64 // wasm:`I64Store\s` wasm32:`I64Store\s`
+diff --git a/test/convert5.go b/test/convert5.go
+index 6a787071de4f1948de8f304b66fc084a834991f0..5e43877bcd9c14fc5e67ac887d7316f75523c744 100644
+--- a/test/convert5.go
++++ b/test/convert5.go
+@@ -4,7 +4,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !wasm && !386 && !arm && !mips && !mipsle
++//go:build !wasm && !wasm32 && !386 && !arm && !mips && !mipsle
+ 
+ // TODO fix this to work for wasm and 32-bit architectures.
+ // Doing more than this, however, expands the change.
+diff --git a/test/convinline.go b/test/convinline.go
+index e9a6bf9f11af406a9f311bdcb6b23f5f5c06b4f3..77a22dbee018eca492a0c48be4c9485bfdde8f4c 100644
+--- a/test/convinline.go
++++ b/test/convinline.go
+@@ -1,5 +1,5 @@
+ // runoutput
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ // Copyright 2022 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/fixedbugs/issue11656.go b/test/fixedbugs/issue11656.go
+index 2d746891d62a6319a4df95472ff5b9ddce20e0c2..15768a445f8bf51e292ce5406beabb14bfe6a860 100644
+--- a/test/fixedbugs/issue11656.go
++++ b/test/fixedbugs/issue11656.go
+@@ -16,6 +16,6 @@
+ // any unwind information for the artificial function, and will not be
+ // able to unwind past that point.
+ 
+-//go:build !windows && !wasm && !gccgo
++//go:build !windows && !wasm && !wasm32 && !gccgo
+ 
+ package ignored
+diff --git a/test/fixedbugs/issue22200b.go b/test/fixedbugs/issue22200b.go
+index 79fa91c4354faa0967db2aa3d13164554d0c6214..fcb237f72732b10e0f50926a4b44b39b703ab4b6 100644
+--- a/test/fixedbugs/issue22200b.go
++++ b/test/fixedbugs/issue22200b.go
+@@ -1,6 +1,6 @@
+ // errorcheck
+ 
+-//go:build !386 && !amd64p32 && !arm && !mips && !mipsle
++//go:build !386 && !amd64p32 && !arm && !mips && !mipsle && !wasm32
+ 
+ // Copyright 2017 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/fixedbugs/issue52697.go b/test/fixedbugs/issue52697.go
+index da08a4f1f4267bbb63325138a4b0731216aa9eda..dde6c80e998270913b447f022a1c6c681d1dcd22 100644
+--- a/test/fixedbugs/issue52697.go
++++ b/test/fixedbugs/issue52697.go
+@@ -4,7 +4,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-//go:build !386 && !amd64p32 && !arm && !mips && !mipsle
++//go:build !386 && !amd64p32 && !arm && !mips && !mipsle && !wasm32
+ 
+ package main
+ 
+diff --git a/test/fixedbugs/issue6036.go b/test/fixedbugs/issue6036.go
+index e7c2557864356c54fb1bb44acf8d2ca50136a7db..dac447f1ebc5914b9e37aaf0e41f9db7027b6e61 100644
+--- a/test/fixedbugs/issue6036.go
++++ b/test/fixedbugs/issue6036.go
+@@ -1,6 +1,6 @@
+ // compile
+ 
+-//go:build !386 && !arm && !mips && !mipsle && !amd64p32
++//go:build !386 && !arm && !mips && !mipsle && !amd64p32 && !wasm32
+ 
+ // Copyright 2013 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/fixedbugs/issue75764.go b/test/fixedbugs/issue75764.go
+index efc36a3e98f5a113f71d1e56885efcc5e12e9715..94634d7fe07ebce8b40e24c7c68911ec05fe1ada 100644
+--- a/test/fixedbugs/issue75764.go
++++ b/test/fixedbugs/issue75764.go
+@@ -43,7 +43,7 @@ func best(f func() time.Duration) time.Duration {
+ }
+ 
+ func main() {
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		// TODO: upgrade wasm to do indirect tail calls
+ 		return
+ 	}
+diff --git a/test/fixedbugs/issue80519.go b/test/fixedbugs/issue80519.go
+index 5b8bad477343d31ac347c464ee08bb4ea6ce3ae2..6acd9fe448d4ffd83944e062039ff605d051587f 100644
+--- a/test/fixedbugs/issue80519.go
++++ b/test/fixedbugs/issue80519.go
+@@ -121,7 +121,7 @@ func main() {
+ 		panic("range clear target changed through unsafe pointer field")
+ 	}
+ 
+-	if runtime.GOARCH != "wasm" {
++	if runtime.GOARCH != "wasm" && runtime.GOARCH != "wasm32" {
+ 		panicked = false
+ 		func() {
+ 			defer func() {
+diff --git a/test/fixedbugs/issue80896.go b/test/fixedbugs/issue80896.go
+index 131a862df93b32096232b2410d34e2b06db4ed97..986c34f02303e8eb583d4c1deeecfb4ec41d6e6c 100644
+--- a/test/fixedbugs/issue80896.go
++++ b/test/fixedbugs/issue80896.go
+@@ -1,6 +1,6 @@
+ // errorcheck -std
+ 
+-//go:build !(386 || arm || mips || mipsle)
++//go:build !(386 || arm || mips || mipsle || wasm32)
+ 
+ // Copyright 2026 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/fixedbugs/issue9604b.go b/test/fixedbugs/issue9604b.go
+index 0033a6ff951fee85a9f400bd499633888949b2de..114027bb11e666701fcb87c1c2f95964d95fa471 100644
+--- a/test/fixedbugs/issue9604b.go
++++ b/test/fixedbugs/issue9604b.go
+@@ -5,7 +5,7 @@
+ // license that can be found in the LICENSE file.
+ 
+ // terribly slow on wasm
+-//go:build !wasm
++//go:build !wasm && !wasm32
+ 
+ package main
+ 
+diff --git a/test/inline_sync.go b/test/inline_sync.go
+index 8359aa3aa22cd2cefa207a1d8c925e8fec5de067..e4cfad3d90a4a5819317d5977ba8f4d4aded09f8 100644
+--- a/test/inline_sync.go
++++ b/test/inline_sync.go
+@@ -1,6 +1,6 @@
+ // errorcheck -0 -m
+ 
+-//go:build !nacl && !386 && !wasm && !arm && !gcflags_noopt
++//go:build !nacl && !386 && !wasm && !wasm32 && !arm && !gcflags_noopt
+ 
+ // Copyright 2019 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/nilptr3.go b/test/nilptr3.go
+index 2cc510beb635df01ae75e92ee06d51212e1ef34d..d98bfa27f2e64178cdbd65a386f9d61360ba662f 100644
+--- a/test/nilptr3.go
++++ b/test/nilptr3.go
+@@ -1,6 +1,6 @@
+ // errorcheck -0 -d=nil
+ 
+-//go:build !wasm && !aix
++//go:build !wasm && !wasm32 && !aix
+ 
+ // Copyright 2013 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/nilptr5.go b/test/nilptr5.go
+index a76592abadc61f6bfef24a19f0ebca8aca762374..f286f190fddc317ed4b21d935edce6652c2765b3 100644
+--- a/test/nilptr5.go
++++ b/test/nilptr5.go
+@@ -1,6 +1,6 @@
+ // errorcheck -0 -d=nil
+ 
+-//go:build !wasm && !aix
++//go:build !wasm && !wasm32 && !aix
+ 
+ // Copyright 2018 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/nilptr5_wasm.go b/test/nilptr5_wasmx.go
+similarity index 97%
+rename from test/nilptr5_wasm.go
+rename to test/nilptr5_wasmx.go
+index e653ffd2870fcf5193976a1da8ae9bebed59e559..de9d8d1141a5add3336524045743463b48a285a2 100644
+--- a/test/nilptr5_wasm.go
++++ b/test/nilptr5_wasmx.go
+@@ -1,6 +1,6 @@
+ // errorcheck -0 -d=nil
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ // Copyright 2018 The Go Authors. All rights reserved.
+ // Use of this source code is governed by a BSD-style
+diff --git a/test/peano.go b/test/peano.go
+index 1102a972444b8f6e1dd39795d93c35ff13a99f78..e5325f9a2bce00f0fba9f0432c23c9cbf40480a6 100644
+--- a/test/peano.go
++++ b/test/peano.go
+@@ -119,7 +119,7 @@ var results = [...]int{
+ 
+ func main() {
+ 	max := 9
+-	if runtime.GOARCH == "wasm" {
++	if runtime.GOARCH == "wasm" || runtime.GOARCH == "wasm32" {
+ 		max = 7 // stack size is limited
+ 	}
+ 	for i := 0; i <= max; i++ {
+diff --git a/test/wasmexport.go b/test/wasmexport.go
+index 3b92ae93c954c895749f73488ed2c8f82cb58b0a..f137e62868d89b6998c146d5e44d10e7953abb8b 100644
+--- a/test/wasmexport.go
++++ b/test/wasmexport.go
+@@ -6,7 +6,7 @@
+ 
+ // Verify that misplaced directives are diagnosed.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package p
+ 
+diff --git a/test/wasmexport2.go b/test/wasmexport2.go
+index cfbfab99b03a4d50fb1dfab367e435811e976abb..19c96d3580d1b1bfba4d5b886b417f357f128f0a 100644
+--- a/test/wasmexport2.go
++++ b/test/wasmexport2.go
+@@ -7,7 +7,7 @@
+ // Verify that wasmexport supports allowed types and rejects
+ // unallowed types.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package p
+ 
+diff --git a/test/wasmexport_wasm32.go b/test/wasmexport_wasm32.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c16d5650cc8405806b68000ac2f2bbc06a7e8a29
+--- /dev/null
++++ b/test/wasmexport_wasm32.go
+@@ -0,0 +1,31 @@
++// errorcheck
++
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm32
++
++package p
++
++import (
++	"structs"
++	"unsafe"
++)
++
++type pointerHostLayout struct {
++	_ structs.HostLayout
++	p *int32
++	u unsafe.Pointer
++}
++
++//go:wasmexport nestedPointers
++func nestedPointers(**int32, *pointerHostLayout) {}
++
++type badHostLayout struct {
++	_ structs.HostLayout
++	s string
++}
++
++//go:wasmexport badNestedValue
++func badNestedValue(*badHostLayout) {} // ERROR "go:wasmexport: unsupported parameter type"
+diff --git a/test/wasmmemsize.dir/asm_wasm.s b/test/wasmmemsize.dir/asm_wasmx.s
+similarity index 90%
+rename from test/wasmmemsize.dir/asm_wasm.s
+rename to test/wasmmemsize.dir/asm_wasmx.s
+index daccfcc753d8d3433777a26aa27a7bb68d581237..55889543a93dc644701d3591c8500688ed8e1fe3 100644
+--- a/test/wasmmemsize.dir/asm_wasm.s
++++ b/test/wasmmemsize.dir/asm_wasmx.s
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
++//go:build wasm || wasm32
++
+ #include "textflag.h"
+ 
+ TEXT ·currentMemory(SB), NOSPLIT, $0
+diff --git a/test/wasmmemsize.go b/test/wasmmemsize.go
+index 449816908719f7df9d8fcf13f6d2bd5cb12381bb..1c436d6a9b4dc474860b286999148f82a12e673f 100644
+--- a/test/wasmmemsize.go
++++ b/test/wasmmemsize.go
+@@ -6,6 +6,6 @@
+ 
+ // This test checks the memory size of a small wasm program.
+ 
+-//go:build wasm
++//go:build wasm || wasm32
+ 
+ package ignored

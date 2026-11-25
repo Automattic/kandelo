@@ -1,0 +1,188 @@
+From 924bccecd7a40b1831b2f4513cc3ad5b57546274 Mon Sep 17 00:00:00 2001
+From: Brandon Payton <brandon@happycode.net>
+Date: Fri, 6 Nov 2026 22:29:32 -0500
+Subject: [PATCH 13/22] cgo: Preserve wasm32 scalar and function-pointer
+ semantics
+
+Wasm32 has four-byte pointers but eight-byte scalar alignment. Use
+that alignment in C argument frames instead of truncating it to the
+pointer size. Treat C function table handles as non-heap opaque
+pointers through the existing runtime/cgo.Incomplete mechanism so
+stack growth cannot mistake low table indexes for linear addresses.
+
+Keep data pointers as ordinary GC roots. Add host layout tests; the
+Kandelo typed-field fixture reproduces both failures before these
+changes and passes after them. Seven Node and 21 browser prototype
+cases pass; full std builds and both WASI controls also pass.
+No collector or code generator changes.
+
+diff --git a/src/cmd/cgo/gcc.go b/src/cmd/cgo/gcc.go
+index f317e0d282f0ac5928d36ee5bcc2b46a60d13c8f..3e6cfb23d2c254ae5d1883497476ea841160614b 100644
+--- a/src/cmd/cgo/gcc.go
++++ b/src/cmd/cgo/gcc.go
+@@ -2344,8 +2344,9 @@ type typeConv struct {
+ 	goVoid                                 ast.Expr // _Ctype_void, denotes C's void
+ 	goVoidPtr                              ast.Expr // unsafe.Pointer or *byte
+ 
+-	ptrSize int64
+-	intSize int64
++	ptrSize  int64
++	intSize  int64
++	maxAlign int64
+ }
+ 
+ var tagGen int
+@@ -2363,6 +2364,11 @@ var anonymousStructTag = make(map[*dwarf.StructType]string)
+ func (c *typeConv) Init(ptrSize, intSize int64) {
+ 	c.ptrSize = ptrSize
+ 	c.intSize = intSize
++	c.maxAlign = ptrSize
++	if goarch == "wasm32" {
++		// wasm32 has four-byte pointers but eight-byte scalar alignment.
++		c.maxAlign = 8
++	}
+ 	c.m = make(map[string]*Type)
+ 	c.ptrs = make(map[string][]*Type)
+ 	c.getTypeIDs = make(map[string]bool)
+@@ -2568,8 +2574,8 @@ func (c *typeConv) loadType(dtype dwarf.Type, pos token.Pos, parent string) *Typ
+ 		t.Align = 1
+ 
+ 	case *dwarf.EnumType:
+-		if t.Align = t.Size; t.Align >= c.ptrSize {
+-			t.Align = c.ptrSize
++		if t.Align = t.Size; t.Align >= c.maxAlign {
++			t.Align = c.maxAlign
+ 		}
+ 		t.C.Set("enum " + dt.EnumName)
+ 		signed := 0
+@@ -2610,8 +2616,8 @@ func (c *typeConv) loadType(dtype dwarf.Type, pos token.Pos, parent string) *Typ
+ 		case 8:
+ 			t.Go = c.float64
+ 		}
+-		if t.Align = t.Size; t.Align >= c.ptrSize {
+-			t.Align = c.ptrSize
++		if t.Align = t.Size; t.Align >= c.maxAlign {
++			t.Align = c.maxAlign
+ 		}
+ 
+ 	case *dwarf.ComplexType:
+@@ -2623,8 +2629,8 @@ func (c *typeConv) loadType(dtype dwarf.Type, pos token.Pos, parent string) *Typ
+ 		case 16:
+ 			t.Go = c.complex128
+ 		}
+-		if t.Align = t.Size / 2; t.Align >= c.ptrSize {
+-			t.Align = c.ptrSize
++		if t.Align = t.Size / 2; t.Align >= c.maxAlign {
++			t.Align = c.maxAlign
+ 		}
+ 
+ 	case *dwarf.FuncType:
+@@ -2632,14 +2638,25 @@ func (c *typeConv) loadType(dtype dwarf.Type, pos token.Pos, parent string) *Typ
+ 		// directly between worlds, but we need to moderate those.
+ 		t.Go = c.uintptr
+ 		t.Align = c.ptrSize
++		if goarch == "wasm32" {
++			// A Wasm function pointer indexes a table, not linear memory.
++			// Reuse cgo's existing non-heap opaque-pointer semantics so
++			// low handles are not scanned or relocated as Go data pointers.
++			t.Go = c.Ident(incomplete)
++			if !*importRuntimeCgo {
++				t.Go = c.Ident("Incomplete") // runtime/cgo itself
++			}
++			t.Size = 0
++			t.C.Set("void")
++		}
+ 
+ 	case *dwarf.IntType:
+ 		if dt.BitSize > 0 {
+ 			fatalf("%s: unexpected: %d-bit int type - %s", lineno(pos), dt.BitSize, dtype)
+ 		}
+ 
+-		if t.Align = t.Size; t.Align >= c.ptrSize {
+-			t.Align = c.ptrSize
++		if t.Align = t.Size; t.Align >= c.maxAlign {
++			t.Align = c.maxAlign
+ 		}
+ 
+ 		switch t.Size {
+@@ -2889,8 +2906,8 @@ func (c *typeConv) loadType(dtype dwarf.Type, pos token.Pos, parent string) *Typ
+ 			fatalf("%s: unexpected: %d-bit uint type - %s", lineno(pos), dt.BitSize, dtype)
+ 		}
+ 
+-		if t.Align = t.Size; t.Align >= c.ptrSize {
+-			t.Align = c.ptrSize
++		if t.Align = t.Size; t.Align >= c.maxAlign {
++			t.Align = c.maxAlign
+ 		}
+ 
+ 		switch t.Size {
+diff --git a/src/cmd/cgo/wasm_test.go b/src/cmd/cgo/wasm_test.go
+index 0083312d91f455e822cff7de7d776f9749cf0122..187a56da5c4ffca918d882e630a2c35a0b2dfdc1 100644
+--- a/src/cmd/cgo/wasm_test.go
++++ b/src/cmd/cgo/wasm_test.go
+@@ -20,7 +20,7 @@ func TestKandeloWasmCgoPointerStructFields(t *testing.T) {
+ 	pointer := &dwarf.PtrType{CommonType: dwarf.CommonType{ByteSize: 4}, Type: integer}
+ 	array := &dwarf.ArrayType{Type: pointer, Count: 2}
+ 	converter := new(typeConv)
+-	converter.Init(4, 8)
++	converter.Init(4, 4)
+ 	if _, ok := converter.Type(pointer, token.NoPos).Go.(*ast.StarExpr); !ok {
+ 		t.Fatal("C pointers must retain ordinary typed Go pointer fields")
+ 	}
+@@ -156,3 +156,56 @@ func TestWasmPassiveDataIsNotAddressable(t *testing.T) {
+ 		t.Fatal("truncated passive bytes were accepted")
+ 	}
+ }
++
++func TestWasm32FunctionPointersAreNotHeapPointers(t *testing.T) {
++	previousArch := goarch
++	goarch = "wasm32"
++	t.Cleanup(func() { goarch = previousArch })
++	function := &dwarf.FuncType{CommonType: dwarf.CommonType{ByteSize: -1}}
++	functionPointer := &dwarf.PtrType{CommonType: dwarf.CommonType{ByteSize: 4}, Type: function}
++	converter := new(typeConv)
++	converter.Init(4, 4)
++	mapped := converter.Type(functionPointer, token.NoPos)
++	converter.FinishType(token.NoPos)
++	pointer, ok := mapped.Go.(*ast.StarExpr)
++	if !ok {
++		t.Fatalf("function pointer type = %T", mapped.Go)
++	}
++	opaque, ok := pointer.X.(*ast.Ident)
++	if !ok || opaque.Name != incomplete {
++		t.Fatalf("function pointer must use cgo's non-heap opaque type: %#v", pointer.X)
++	}
++	if mapped.Size != 4 {
++		t.Fatalf("function pointer size = %d", mapped.Size)
++	}
++}
++
++func TestWasm32ScalarAlignment(t *testing.T) {
++	previousArch := goarch
++	goarch = "wasm32"
++	t.Cleanup(func() { goarch = previousArch })
++	converter := new(typeConv)
++	converter.Init(4, 4)
++	for _, test := range []struct {
++		name  string
++		dtype dwarf.Type
++		align int64
++	}{
++		{"int32", &dwarf.IntType{BasicType: dwarf.BasicType{CommonType: dwarf.CommonType{ByteSize: 4, Name: "int"}}}, 4},
++		{"int64", &dwarf.IntType{BasicType: dwarf.BasicType{CommonType: dwarf.CommonType{ByteSize: 8, Name: "long long int"}}}, 8},
++		{"float64", &dwarf.FloatType{BasicType: dwarf.BasicType{CommonType: dwarf.CommonType{ByteSize: 8, Name: "double"}}}, 8},
++		{"complex64", &dwarf.ComplexType{BasicType: dwarf.BasicType{CommonType: dwarf.CommonType{ByteSize: 8, Name: "complex float"}}}, 4},
++		{"complex128", &dwarf.ComplexType{BasicType: dwarf.BasicType{CommonType: dwarf.CommonType{ByteSize: 16, Name: "complex double"}}}, 8},
++	} {
++		if got := converter.Type(test.dtype, token.NoPos).Align; got != test.align {
++			t.Fatalf("%s alignment = %d, want %d", test.name, got, test.align)
++		}
++	}
++	integer := &Type{Size: 4, Align: 4, C: c("int"), Go: ast.NewIdent("int32")}
++	wide := &Type{Size: 8, Align: 8, C: c("long long"), Go: ast.NewIdent("int64")}
++	call := &Name{FuncType: &FuncType{Params: []*Type{integer, wide, integer}, Result: wide}}
++	layout, size := (&Package{PtrSize: 4}).structType(call)
++	if size != 32 || !strings.Contains(layout, "__pad4[4]") || !strings.Contains(layout, "__pad20[4]") {
++		t.Fatalf("wide frame: %d %s", size, layout)
++	}
++}

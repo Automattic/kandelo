@@ -331,7 +331,13 @@ import would stall all of them.
 
 **Location**: `host/src/`
 
-The host runtime loads and manages the kernel and process workers. It has two main classes:
+The host runtime instantiates the kernel and guest modules, manages engine
+resources, transports requests and results, and provides platform I/O. Rust
+owns guest state and portable runtime decisions. Existing TypeScript paths
+for syscall marshalling, blocking retry, and fork sequencing are migration
+work. Keep the kernel-host protocol usable by native Wasm engines.
+
+The JavaScript host has two main classes:
 
 **`CentralizedKernelWorker`** (`kernel-worker.ts`): The primary runtime. Creates the kernel Wasm instance, manages process registration, listens for syscall channel activity via `Atomics.waitAsync`, and dispatches to the kernel's `kernel_handle_channel` export. **Must be instantiated in a dedicated worker thread**, not on the main thread.
 
@@ -341,7 +347,7 @@ Key host components:
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| CentralizedKernelWorker | `kernel-worker.ts` | Manages kernel instance, process channels, blocking retry |
+| CentralizedKernelWorker | `kernel-worker.ts` | Manages the kernel instance and process channels. Still handles some legacy syscall marshalling and blocking retries |
 | SyscallChannel | `channel.ts` | Typed view into SharedArrayBuffer channel region |
 | NodePlatformIO | `platform/node.ts` | Node.js handle-only `*at` filesystem calls, networking, clocks, random |
 | VirtualPlatformIO | `vfs/vfs.ts` | Host-mount router for directories mounted beneath the kernel's `/` — used by both Node and browser hosts |
@@ -1430,6 +1436,14 @@ expiry performs one zero-time kernel pass. That pass makes the final readiness
 decision, clears readiness outputs, and restores any temporary `ppoll()` or
 `pselect6()` signal mask. The host rebuilds the pass from its immutable request
 snapshot; it does not overwrite the caller's original timeout or arguments.
+
+Both select syscalls copy only the word-rounded `nfds` extent of each guest
+bitmap. The public libc `fd_set` stays at 1024 bits. Host-adapter version 8
+admits wider, eight-byte-aligned kernel slots, using the existing token-owned
+channel reservation when the full layout exceeds the fixed mailbox. A wide
+retry retains only the supplied bitmap bytes under the host's shared retry
+bitmap budget. Closing a descriptor leaves subsequent checks against the
+current descriptor table. A failed check publishes no bitmap changes.
 
 `F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
 conflict returns the internal retry result, and the host parks only that lock
@@ -2554,6 +2568,15 @@ For current binaries, `control_base` is page-aligned from the larger of the impo
 
 The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot and returns the slot to that process's allocator after thread exit.
 
+On ABI 56 the host reads `__tls_size` and `__tls_align` from the executable.
+TLS that fits uses the first page. Larger or over-aligned TLS receives an
+aligned range after the four pages in the same reservation. The worker
+receives the explicit TLS address and length before `__wasm_init_tls` runs.
+The full reservation follows the thread's lifetime. Fork reserves the
+calling thread's range at the same address in the child and keeps its live
+TLS bytes. Separate TLS reservations for all pthreads are scheduled for the
+[next program ABI](abi-versioning.md#required-changes-for-the-next-program-abi).
+
 Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact per-process limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
 
 `mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. A usable non-fixed address hint is preferred after rounding it down to the 64KB Wasm page boundary; an occupied or invalid hint falls back to the ordinary first-fit search. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. `munmap` rounds its length up to a Wasm page before updating both kernel mappings and host-owned bindings. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
@@ -3530,11 +3553,15 @@ including inherited and queued `SCM_RIGHTS` references. Last I/O-endpoint
 release discards the volatile data and frees the buffer/credit even if names
 or path-only references retain the inode. Logical pipe capacity remains
 64 KiB, and neither open buffers nor this memory quota count as filesystem
-blocks or OPFS storage. Anonymous and socket stream rings use that same
-fallible I/O admission before allocation. Pipe arena capacity also retains
-I/O credits while slots are free; growth admits old and new backing together.
-Contiguous pair allocation prepares both payloads and arena capacity before
-publishing either pipe, and descriptor reservations roll back on refusal.
+blocks or OPFS storage. Anonymous pipes and TCP stream rings admit their
+backing before publication. Unix stream pairs start with empty rings and
+admit backing as writes need it, up to the same 64 KiB logical capacity in
+each direction. Growth preserves queued bytes and descriptor barriers, and
+read shutdown or final reader close releases the direction's backing.
+Pipe arena capacity retains I/O credits while slots are free. Arena and
+ring growth admit old and new backing together. Contiguous pair allocation
+prepares both slots before publishing either pipe, and descriptor
+reservations roll back on refusal.
 Host-stdin payload/slot preparation precedes closing the original fd 0.
 Impossible descriptor limits fail before that close, and failed later
 installation releases the unclaimed pipe and its payload. Unclaimed buffers

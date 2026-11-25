@@ -1,0 +1,139 @@
+diff --git a/lib/std/Build/Configuration.zig b/lib/std/Build/Configuration.zig
+index b35a8a22..55bd94b4 100644
+--- a/lib/std/Build/Configuration.zig
++++ b/lib/std/Build/Configuration.zig
+@@ -2457,6 +2457,7 @@ pub const TargetQuery = struct {
+         ashetos,
+
+         default,
++        kandelo,
+
+         pub fn init(x: ?std.Target.Os.Tag) @This() {
+             return switch (x orelse return .default) {
+diff --git a/lib/std/Target.zig b/lib/std/Target.zig
+index 1ad10435..190f5207 100644
+--- a/lib/std/Target.zig
++++ b/lib/std/Target.zig
+@@ -75,6 +75,7 @@ pub const Os = struct {
+         tios,
+
+         ashetos,
++        kandelo,
+
+         pub inline fn isDarwin(tag: Tag) bool {
+             return switch (tag) {
+@@ -172,6 +173,7 @@ pub const Os = struct {
+                 .gba,
+
+                 .emscripten,
++                .kandelo,
+
+                 .mesa3d,
+
+@@ -413,6 +415,7 @@ pub const Os = struct {
+                 .gba,
+
+                 .emscripten,
++                .kandelo,
+
+                 .mesa3d,
+
+@@ -953,7 +956,7 @@ pub const Abi = enum {
+             .ps3 => .ilp32,
+             .psp => .eabihf,
+             .vita => .eabihf,
+-            .wasi, .emscripten => .musl,
++            .wasi, .emscripten, .kandelo => .musl,
+
+             .ashetos => .eabi,
+
+@@ -2315,6 +2318,7 @@ pub fn requiresLibC(target: *const Target) bool {
+         .haiku,
+         .serenity,
+         .emscripten,
++        .kandelo,
+         => true,
+
+         // Android API levels prior to 29 did not have native TLS support. For these API levels, TLS
+@@ -2521,6 +2525,7 @@ pub const DynamicLinker = struct {
+             .vita,
+
+             .emscripten,
++            .kandelo,
+             .wasi,
+
+             .amdhsa,
+@@ -2969,6 +2974,7 @@ pub const DynamicLinker = struct {
+             .vita,
+
+             .emscripten,
++            .kandelo,
+             .wasi,
+
+             .amdhsa,
+@@ -3350,6 +3356,7 @@ pub fn cTypeBitSize(target: *const Target, c_type: CType) ?u16 {
+
+         .wasi,
+         .emscripten,
++        .kandelo,
+         => switch (c_type) {
+             .char => 8,
+             .short, .ushort => 16,
+diff --git a/lib/std/zig/llvm/Builder.zig b/lib/std/zig/llvm/Builder.zig
+index a44c1ed0..6a60ea98 100644
+--- a/lib/std/zig/llvm/Builder.zig
++++ b/lib/std/zig/llvm/Builder.zig
+@@ -284,6 +284,7 @@ pub fn tripleForTarget(allocator: Allocator, target: *const std.Target) ![]const
+         .managarm => "managarm",
+
+         .contiki,
++        .kandelo,
+         .freestanding,
+         .opencl, // https://llvm.org/docs/SPIRVUsage.html#target-triples
+         .opengl,
+@@ -343,7 +344,7 @@ pub fn tripleForTarget(allocator: Allocator, target: *const std.Target) ![]const
+         .musl => switch (target.os.tag) {
+             // For WASI/Emscripten, "musl" refers to the libc, not really the ABI.
+             // "unknown" provides better compatibility with LLVM-based tooling for these targets.
+-            .wasi, .emscripten => "unknown",
++            .wasi, .emscripten, .kandelo => "unknown",
+             else => "musl",
+         },
+         .muslabin32 => "muslabin32",
+diff --git a/lib/std/zig/system.zig b/lib/std/zig/system.zig
+index 9b8eba1f..892187d9 100644
+--- a/lib/std/zig/system.zig
++++ b/lib/std/zig/system.zig
+@@ -397,6 +397,11 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) DetectError!Target {
+         },
+         else => {},
+     }
++    if (os.tag == .kandelo and cpu.arch == .wasm32) {
++        cpu.features.addFeatureSet(Target.wasm.featureSet(&.{
++            .atomics, .bulk_memory, .mutable_globals, .sign_ext, .nontrapping_fptoint,
++        }));
++    }
+     updateCpuFeatures(
+         &cpu.features,
+         cpu.arch.allFeaturesList(),
+diff --git a/src/target.zig b/src/target.zig
+index 6234c11a..f76c0e77 100644
+--- a/src/target.zig
++++ b/src/target.zig
+@@ -74,7 +74,7 @@ pub fn requiresPie(target: *const std.Target, link_mode: std.lang.LinkMode) bool
+ /// This function returns whether non-pic code is completely invalid on the given target.
+ pub fn requiresPic(target: *const std.Target, linking_libc: bool) bool {
+     return ((target.os.tag == .windows or target.os.tag == .uefi) and (target.cpu.arch == .aarch64 or target.cpu.arch == .x86_64)) or
+-        target.requiresLibC() or
++        (target.requiresLibC() and target.os.tag != .kandelo) or
+         (linking_libc and target.isGnuLibC());
+ }
+
+@@ -115,6 +115,7 @@ pub fn alwaysSingleThreaded(target: *const std.Target) bool {
+ }
+
+ pub fn defaultSingleThreaded(target: *const std.Target) bool {
++    if (target.os.tag == .kandelo) return false;
+     switch (target.cpu.arch) {
+         .wasm32, .wasm64 => return true,
+         else => {},

@@ -1,0 +1,79 @@
+From 39a58341aff1e182e1e48cc1a781bd0e55655997 Mon Sep 17 00:00:00 2001
+From: Zxilly <zhouxinyu1001@gmail.com>
+Date: Mon, 7 Sep 2026 19:26:02 +0800
+Subject: [PATCH 03/22] cmd/internal/obj/wasm: avoid widening 32-bit import
+ results
+
+Import wrappers widen i32 and bool results to i64 only to store their
+low bits on the Go stack. PC_B is no longer needed once the import
+returns, so use that i32 local and emit i32 stores directly.
+
+Change-Id: I96571d4d2978b52c2b0037f08b97a7dd393f87c5
+
+diff --git a/src/cmd/internal/obj/wasm/wasmobj.go b/src/cmd/internal/obj/wasm/wasmobj.go
+index 6be681a50e813a75b4b3e209f2b7e3ff405e44d4..1e3d12ef785eba34bdf7c4cc545e4b4a83e82d14 100644
+--- a/src/cmd/internal/obj/wasm/wasmobj.go
++++ b/src/cmd/internal/obj/wasm/wasmobj.go
+@@ -853,11 +853,12 @@ func genWasmImportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ 			// calls back into Go, the Go stack may have moved.
+ 			switch f.Type {
+ 			case obj.WasmI32:
+-				p = appendp(p, AI64ExtendI32U) // the register is 64-bit, so we have to extend
+-				p = appendp(p, ASet, regAddr(REG_R0))
++				// PC_B is no longer needed after the import returns. Reuse
++				// its i32 local without widening the result to an i64 local.
++				p = appendp(p, ASet, regAddr(REG_PC_B))
+ 				p = appendp(p, AGet, regAddr(REG_SP))
+-				p = appendp(p, AGet, regAddr(REG_R0))
+-				p = appendp(p, AI64Store32, constAddr(storeOffset))
++				p = appendp(p, AGet, regAddr(REG_PC_B))
++				p = appendp(p, AI32Store, constAddr(storeOffset))
+ 			case obj.WasmI64:
+ 				p = appendp(p, ASet, regAddr(REG_R0))
+ 				p = appendp(p, AGet, regAddr(REG_SP))
+@@ -885,11 +886,10 @@ func genWasmImportWrapper(s *obj.LSym, appendp func(p *obj.Prog, as obj.As, args
+ 				p = appendp(p, AGet, regAddr(REG_R0))
+ 				p = appendp(p, AI64Store, constAddr(storeOffset))
+ 			case obj.WasmBool:
+-				p = appendp(p, AI64ExtendI32U)
+-				p = appendp(p, ASet, regAddr(REG_R0))
++				p = appendp(p, ASet, regAddr(REG_PC_B))
+ 				p = appendp(p, AGet, regAddr(REG_SP))
+-				p = appendp(p, AGet, regAddr(REG_R0))
+-				p = appendp(p, AI64Store8, constAddr(storeOffset))
++				p = appendp(p, AGet, regAddr(REG_PC_B))
++				p = appendp(p, AI32Store8, constAddr(storeOffset))
+ 			default:
+ 				panic("bad result type")
+ 			}
+diff --git a/test/codegen/wasmimport.go b/test/codegen/wasmimport.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..061f743f2aa105c95a74fa8ef4bc48ea1167eb08
+--- /dev/null
++++ b/test/codegen/wasmimport.go
+@@ -0,0 +1,25 @@
++// asmcheck
++
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//go:build wasm
++
++package codegen
++
++// Imported 32-bit values should not be widened just to store them on the Go stack.
++
++//go:wasmimport test int32
++func ImportInt32() int32 // wasm:`I32Store\s` -`I64ExtendI32U`
++
++//go:wasmimport test bool
++func ImportBool() bool // wasm:`I32Store8` -`I64ExtendI32U`
++
++// Pointer results must retain their full Go pointer width on each architecture.
++
++//go:wasmimport test pointer
++func ImportPointer() *byte // wasm:`I64ExtendI32U` `I64Store\s`
++
++//go:wasmimport test int64
++func ImportInt64() int64 // wasm:`I64Store\s`

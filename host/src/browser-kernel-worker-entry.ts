@@ -127,7 +127,7 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
-import { ThreadPageAllocator } from "./thread-allocator";
+import { readThreadTlsRequirements, type ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import { KernelScratchError } from "./kernel-scratch";
 import {
@@ -891,6 +891,7 @@ async function createFreshProcessMemory(
   threadAllocator: ThreadPageAllocator;
 }> {
   const heapBase = extractHeapBase(programBytes);
+  const tlsRequirements = readThreadTlsRequirements(programBytes);
   const layout = computeProcessMemoryLayout({
     maxPages: processMaxPages,
     defaultThreadSlots,
@@ -926,7 +927,7 @@ async function createFreshProcessMemory(
       memory,
       memoryLease,
       layout,
-      threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
+      threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid, tlsRequirements),
     };
   } catch (error) {
     // No browser Worker or kernel registration exists yet, so rollback is an
@@ -2149,6 +2150,7 @@ async function handleVfork(
         maxAddr: childLayout.maxAddr,
         mmapBase: childLayout.mmapBase,
         borrowedAddressSpace: true,
+        inheritedThreadSlot: continuation.slot,
       }));
     registered = true;
     // Inheritance refuses to start while another kernel entry holds the gate
@@ -2217,7 +2219,7 @@ async function handleVfork(
       forkPrivatePrefixAddr:
         childChannelOffset - FORK_SAVE_BUFFER_SIZE,
       forkPrivatePrefixBytes: borrowedReplay.prefixBytes,
-      forkScratchAddr: workspaceAllocation.tlsOffset,
+      forkScratchAddr: workspaceAllocation.controlOffset,
       forkScratchBytes: borrowedReplay.scratchBytes,
       forkReplayGate: forkReplay.gate,
       forkChildThreadFnPtr: forkReplayContext?.fnPtr,
@@ -2255,7 +2257,9 @@ async function handleVfork(
       ptrWidth,
       secureExec: childInitData.secureExec,
       layout: childLayout,
-      threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+      threadAllocator: threadAllocatorForLayout(
+        childLayout, ptrWidth, childPid, parentInfo.threadAllocator.tlsRequirements,
+      ),
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
       vforkWorkspace: workspaceOwnership,
@@ -2546,6 +2550,7 @@ async function handleOrdinaryFork(
         ptrWidth,
         maxAddr: childLayout.maxAddr,
         mmapBase: childLayout.mmapBase,
+        inheritedThreadSlot: continuation.slot,
       }));
     registered = true;
     // Inheritance refuses to start while another kernel entry holds the gate
@@ -2642,7 +2647,9 @@ async function handleOrdinaryFork(
       ptrWidth,
       secureExec: childInitData.secureExec,
       layout: childLayout,
-      threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+      threadAllocator: threadAllocatorForLayout(
+        childLayout, ptrWidth, childPid, parentInfo.threadAllocator.tlsRequirements,
+      ),
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
     };
@@ -3559,7 +3566,7 @@ async function handleClone(
   try {
     const attachmentState = await retryKernelEntryResultForGeneration(
       belongsToCompiledProcessImage,
-      () => kernelWorker.attachThreadChannel(attachment, alloc.channelOffset),
+      () => kernelWorker.attachThreadChannel(attachment, alloc.channelOffset, alloc.slotByteLength),
     );
     if (attachmentState.status === "stale") {
       throw new Error(`Process ${pid} changed generation during clone attachment`);
@@ -3605,8 +3612,7 @@ async function handleClone(
     stackPtr,
     tlsPtr,
     ctidPtr,
-    tlsOffset: alloc.tlsOffset,
-    tlsAllocAddr: alloc.tlsAllocAddr,
+    tls: alloc.tls,
     ptrWidth: processInfo.ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,

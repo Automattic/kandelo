@@ -185,6 +185,47 @@ describe("ThreadPageAllocator", () => {
     expect(reservations).toBe(2);
   });
 
+  it("reserves contiguous, aligned TLS after the control pages and clears it on reuse", () => {
+    const alignment = 2 * WASM_PAGE_SIZE;
+    const byteLength = 4 * WASM_PAGE_SIZE + 1;
+    const reservations: number[] = [];
+    let nextPage = 129;
+    const allocator = new ThreadPageAllocator({
+      firstSlotStartPage: nextPage,
+      maxPageExclusive: nextPage,
+      reservedSlots: 2,
+      tlsRequirements: { byteLength, alignment },
+      reserveSlotStartPage(length) {
+        reservations.push(length);
+        const startPage = nextPage;
+        nextPage += length / WASM_PAGE_SIZE;
+        return startPage;
+      },
+    });
+    const memory = makeMemory();
+    const control = allocator.allocateHostControl(memory);
+    allocator.free(control.slotStartPage);
+
+    const first = allocator.allocate(memory);
+    expect(first.slotStartPage).not.toBe(control.slotStartPage);
+    expect(first.channelOffset).toBe((first.slotStartPage + 2) * WASM_PAGE_SIZE);
+    expect(first.tls.offset % alignment).toBe(0);
+    expect(first.tls.offset).toBeGreaterThanOrEqual((first.slotStartPage + 4) * WASM_PAGE_SIZE);
+    expect(first.tls.byteLength).toBe(byteLength);
+    expect(first.tls.offset + byteLength).toBeLessThanOrEqual(memory.buffer.byteLength);
+
+    const lastByte = first.tls.offset + byteLength - 1;
+    new Uint8Array(memory.buffer)[lastByte] = 42;
+    const second = allocator.allocate(memory);
+    expect(second.tls.offset).toBeGreaterThan(lastByte);
+    allocator.free(first.slotStartPage);
+
+    expect(allocator.allocate(memory).tls).toEqual(first.tls);
+    expect(new Uint8Array(memory.buffer)[lastByte]).toBe(0);
+    expect(allocator.allocateHostControl(memory).slotStartPage).toBe(control.slotStartPage);
+    expect(reservations).toEqual([4, 10, 10].map((pages) => pages * WASM_PAGE_SIZE));
+  });
+
   it("reserves vfork host control for a zero-pthread process", () => {
     let nextPage = 128;
     const alloc = new ThreadPageAllocator({

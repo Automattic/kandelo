@@ -13,8 +13,8 @@ import { resolveBinary } from "../src/binary-resolver";
 import { retryKernelEntryResult } from "../src/kernel-entry-retry";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
-import { ThreadPageAllocator } from "../src/thread-allocator";
-import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "../src/constants";
+import { readThreadTlsRequirements, ThreadPageAllocator } from "../src/thread-allocator";
+import { detectPtrWidth, extractHeapBase, WASM_PAGE_SIZE } from "../src/constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -96,13 +96,15 @@ function createSharedProcessMemory(
 function threadAllocatorForLayout(
   layout: ProcessMemoryLayout,
   ptrWidth: 4 | 8,
-  reserveSlotStartPage?: () => number,
+  programBytes: ArrayBuffer,
+  reserveSlotStartPage?: (byteLength: number) => number,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
     firstBasePage: layout.firstThreadBasePage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    tlsRequirements: readThreadTlsRequirements(programBytes),
     reserveSlotStartPage,
   });
 }
@@ -110,7 +112,7 @@ function threadAllocatorForLayout(
 function createFreshProcessMemory(
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
-  reserveSlotStartPage?: () => number,
+  reserveSlotStartPage?: (byteLength: number) => number,
   maximumPages: number = MAX_PAGES,
 ): {
   memory: WebAssembly.Memory;
@@ -129,7 +131,7 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, reserveSlotStartPage),
+    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, programBytes, reserveSlotStartPage),
   };
 }
 
@@ -550,9 +552,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         } = createFreshProcessMemory(
           program.programBytes,
           childPtrWidth,
-          () => kernelWorker.reserveHostRegion(
+          (byteLength) => kernelWorker.reserveHostRegion(
             childPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+            byteLength,
           ) / WASM_PAGE_SIZE,
           options.maxPages,
         );
@@ -671,6 +673,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             ptrWidth: parentPtrWidth,
             maxAddr: childLayout.maxAddr,
             mmapBase: childLayout.mmapBase,
+          inheritedThreadSlot: continuation.slot,
           }));
         await retryKernelEntryResult(() =>
           kernelWorker.inheritProcessSharedMappings(parentPid, childPid));
@@ -759,9 +762,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         threadAllocators.set(childPid, threadAllocatorForLayout(
           childLayout,
           parentPtrWidth,
-          () => kernelWorker.reserveHostRegion(
+          parentProgram,
+          (byteLength) => kernelWorker.reserveHostRegion(
             childPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+            byteLength,
           ) / WASM_PAGE_SIZE,
         ));
         processPtrWidths.set(childPid, parentPtrWidth);
@@ -854,9 +858,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         } = createFreshProcessMemory(
           newProgramBytes,
           newPtrWidth,
-          () => kernelWorker.reserveHostRegion(
+          (byteLength) => kernelWorker.reserveHostRegion(
             execPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+            byteLength,
           ) / WASM_PAGE_SIZE,
           options.maxPages,
         );
@@ -1030,7 +1034,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         }
         const alloc = threadAllocator.allocate(memory);
         try {
-          kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
+          kernelWorker.attachThreadChannel(attachment, alloc.channelOffset, alloc.slotByteLength);
         } catch (err) {
           threadAllocator.free(alloc.basePage);
           throw err;
@@ -1074,8 +1078,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           stackPtr,
           tlsPtr,
           ctidPtr,
-          tlsOffset: alloc.tlsOffset,
-          tlsAllocAddr: alloc.tlsAllocAddr,
+          tls: alloc.tls,
           ptrWidth: clonePtrWidth,
           externrefGenerationId: processGeneration.id,
           forkHostImports: threadForkHostImports.init,
@@ -1197,9 +1200,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   } = createFreshProcessMemory(
     programBytes,
     ptrWidth,
-    () => kernelWorker.reserveHostRegion(
+    (byteLength) => kernelWorker.reserveHostRegion(
       pid,
-      PAGES_PER_THREAD * WASM_PAGE_SIZE,
+      byteLength,
     ) / WASM_PAGE_SIZE,
     options.maxPages,
   );

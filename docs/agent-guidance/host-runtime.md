@@ -1,14 +1,32 @@
 # Host Runtime Contract
 
-The host runtime is part of the platform, not demo scaffolding. It owns worker
-lifecycle, Wasm instantiation, process memory, syscall channel dispatch,
-blocking retry, VFS/network/device adapters, process-worker launch, and the
-Node/browser bridge to platform APIs. Changes here can change POSIX behavior
-even when kernel Rust code is untouched.
+Rust owns guest-visible state and portable decisions, including syscall
+validation and dispatch, blocking and wake decisions, signal scope, lifecycle
+transitions, fork capture and replay sequencing, and VFS and device policy.
+Use `runtime-core` for semantics, `kernel` for the Wasm entry points and
+host-import adapter, and `shared` for versioned records and generated bindings.
 
-The kernel must run in a dedicated worker on every host. `CentralizedKernelWorker`
-must not be instantiated on the main thread. The main thread is a proxy for
-setup, UI, and I/O routing; it is not the syscall engine.
+Hosts instantiate Wasm, manage workers and engine objects, move bytes and
+notifications, and provide clocks, timer delivery and platform I/O. They also
+control which embedding capabilities the guest can access. Report platform
+facts such as I/O completion, time elapsed or a worker trap to Rust. For
+example, Rust sets the next guest deadline and decides which wait completes.
+The adapter arms the timer and transports the completion. Use opaque handles
+or typed records declared in Rust for handoffs across the boundary.
+
+Some TypeScript paths still interpret syscall arguments, drive blocking
+retries or sequence fork state. When work changes a decision in one of those
+paths, move the affected decision to Rust before extending it. Document the
+specific platform constraint and removal condition for any maintainer-approved
+exception. For an added or expanded host capability, identify the concrete
+primitive, show why the existing interface is insufficient, and specify how a
+host without it reports failure. Follow the [ABI guide](abi.md) for wire
+changes.
+
+On Node.js and browsers, the kernel must run in a dedicated worker.
+`CentralizedKernelWorker` must never run on the main thread. Keep JavaScript
+engine types and worker protocols inside their adapters so a native engine
+can use the same kernel and guest ABI.
 
 A declared memory ceiling is a spent resource, not a free upper bound. On
 WebKit/JavaScriptCore — Safari on every device, and Bun — a shared
@@ -120,7 +138,7 @@ concurrent launches with a requested working directory on both hosts.
 | Kernel-worker lifecycle helpers | shared `host/src/process-lifecycle.ts` | shared `host/src/process-lifecycle.ts` |
 | Protocol types both entries declare | shared `host/src/kernel-protocol-shared.ts` | shared `host/src/kernel-protocol-shared.ts` |
 
-Logic and message types that are the same on both hosts live once, in
+Shared JavaScript adapter code and worker messages live in
 `process-lifecycle.ts` and `kernel-protocol-shared.ts`. The lifecycle module is
 parameterised by an explicit `ProcessLifecycleHost` record, so each genuine
 platform difference is named there — most importantly

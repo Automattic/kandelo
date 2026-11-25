@@ -7488,11 +7488,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let read_pointer = channel_mut_ptr!(1, u8);
             let write_pointer = channel_mut_ptr!(2, u8);
             let except_pointer = channel_mut_ptr!(3, u8);
+            let Ok(slot_bytes) = wasm_posix_shared::select::slot_bytes(args[0]) else {
+                return -(Errno::EINVAL as i32);
+            };
             let fd_set_capacity = |pointer: *mut u8| {
                 if pointer.is_null() {
                     0
                 } else {
-                    wasm_posix_shared::select::FD_SET_BYTES as u32
+                    slot_bytes as u32
                 }
             };
             kernel_select(
@@ -8429,23 +8432,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
 
         // SYS_SCHED_GET_PRIORITY_MAX: POSIX requires at least 32 levels for SCHED_RR/SCHED_FIFO
-        234 => {
-            let policy = a1;
-            if policy >= 0 && policy <= 2 {
-                32
-            } else {
-                -(Errno::EINVAL as i32)
-            }
-        }
+        234 => match a1 {
+            0 => 0, // SCHED_OTHER has one static priority.
+            1 | 2 => 32,
+            _ => -(Errno::EINVAL as i32),
+        },
         // SYS_SCHED_GET_PRIORITY_MIN
-        235 => {
-            let policy = a1;
-            if policy >= 0 && policy <= 2 {
-                1
-            } else {
-                -(Errno::EINVAL as i32)
-            }
-        }
+        235 => match a1 {
+            0 => 0,
+            1 | 2 => 1,
+            _ => -(Errno::EINVAL as i32),
+        },
 
         // Scheduler parameters use the complete native 48-byte structure.
         230 => {
@@ -12049,12 +12046,12 @@ pub fn kernel_sigaltstack(
     0
 }
 
-/// Validate a PID and caller's permission to query/modify its scheduling
+/// Validate a task ID and caller's permission to query or modify its scheduling
 /// parameters.
 ///
 /// Returns 0 if PID is valid and the caller has permission (pid==0 means
 /// current process, always allowed). Returns -ESRCH if the target doesn't
-/// exist, -EPERM if the caller's uid doesn't match per `can_signal()`.
+/// exist, -EPERM if the caller lacks scheduling permission.
 fn kernel_sched_validate_pid(pid: i32) -> i32 {
     if pid == 0 {
         return 0; // pid 0 means current process
@@ -12063,7 +12060,10 @@ fn kernel_sched_validate_pid(pid: i32) -> i32 {
     let sender_euid = caller.effective_uid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Err(error) = table.ensure_init() { return -(error as i32); }
-    match table.get(pid as u32) {
+    let id = pid as u32;
+    // Keep process targets, including synthetic init, addressable for POSIX
+    // credential checks. Musl's pthread APIs pass worker TIDs here as well.
+    match table.get(id).or_else(|| table.get_process_containing_task(id)) {
         None => -(Errno::ESRCH as i32),
         Some(target) => {
             if syscalls::can_query_sched(
@@ -13801,7 +13801,6 @@ fn cross_process_unix_connect(
     fd: i32,
     addr: &[u8],
 ) -> Result<(), Errno> {
-    use crate::pipe::PipeBuffer;
     use crate::socket::{SocketDomain, SocketState, SocketType};
 
     // sys_connect already validated this address before the cross-process
@@ -13875,9 +13874,7 @@ fn cross_process_unix_connect(
     // Allocate pipes only after both endpoints have been validated, so a
     // stale or wrong-type registry entry cannot leak global pipe slots.
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
-        PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
-    )?;
+    let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_unix_stream_pair()?;
 
     let pending = crate::socket::PendingConnection {
         local_addr: [0;4],
@@ -15461,8 +15458,8 @@ pub fn kernel_readlinkat(
 
 /// select — synchronous I/O multiplexing.
 ///
-/// Each fd_set uses the shared generated width. Null means the set is unused.
-/// Returns number of ready fds, or negative errno on error.
+/// Each present bitmap uses the validated channel slot capacity for nfds.
+/// Returns the number of ready bits across the sets, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_select(
     nfds: i32,
@@ -15476,7 +15473,9 @@ pub extern "C" fn kernel_select(
 ) -> i32 {
     let (_gkl, proc, mut peers, advisory_locks) = unsafe { get_process_peers_and_locks() };
 
-    let fd_set_bytes = wasm_posix_shared::select::FD_SET_BYTES;
+    let Ok(fd_set_bytes) = wasm_posix_shared::select::slot_bytes(nfds as i64) else {
+        return -(Errno::EINVAL as i32);
+    };
     let pointer_range = |ptr: *mut u8, capacity: u32| -> Result<Option<(usize, usize)>, Errno> {
         if ptr.is_null() {
             return if capacity == 0 {
@@ -17409,26 +17408,29 @@ pub fn kernel_pselect6(
     mask_hi: u32,
 ) -> i32 {
     let (_gkl, proc, mut peers, advisory_locks) = unsafe { get_process_peers_and_locks() };
+    let Ok(fd_set_bytes) = wasm_posix_shared::select::slot_bytes(nfds as i64) else {
+        return -(Errno::EINVAL as i32);
+    };
 
     let readfds = if readfds_ptr.is_null() {
         None
     } else {
         Some(unsafe {
-            core::slice::from_raw_parts_mut(readfds_ptr, wasm_posix_shared::select::FD_SET_BYTES)
+            core::slice::from_raw_parts_mut(readfds_ptr, fd_set_bytes)
         })
     };
     let writefds = if writefds_ptr.is_null() {
         None
     } else {
         Some(unsafe {
-            core::slice::from_raw_parts_mut(writefds_ptr, wasm_posix_shared::select::FD_SET_BYTES)
+            core::slice::from_raw_parts_mut(writefds_ptr, fd_set_bytes)
         })
     };
     let exceptfds = if exceptfds_ptr.is_null() {
         None
     } else {
         Some(unsafe {
-            core::slice::from_raw_parts_mut(exceptfds_ptr, wasm_posix_shared::select::FD_SET_BYTES)
+            core::slice::from_raw_parts_mut(exceptfds_ptr, fd_set_bytes)
         })
     };
 
@@ -17705,7 +17707,10 @@ pub extern "C" fn kernel_pipe_write(
         Some(p) => p,
         None => return -(Errno::EBADF as i32),
     };
-    pipe.write(buf) as i32
+    match pipe.try_write(buf) {
+        Ok(written) => written as i32,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Close the write end of a pipe buffer (signals EOF to the reader).

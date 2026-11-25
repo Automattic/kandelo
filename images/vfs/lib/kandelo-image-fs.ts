@@ -110,6 +110,7 @@ interface ModuleExports extends Partial<PersistentWriterExports> {
   sm_export_image_cancel(): void;
   sm_load_image(ptr: number, len: number): number;
   sm_set_metadata_budget_bytes(limit: number): number;
+  sm_set_io_budget_bytes(limit: number): number;
   sm_metadata_used_bytes(): number;
   sm_load_image_positioned?: (lengthLo: number, lengthHi: number) => number;
   sm_load_persistent_image?: (lengthLo: number, lengthHi: number, ...binding: number[]) => number;
@@ -531,6 +532,13 @@ export class KandeloImageFs {
       throw new RangeError("metadata budget must be a positive u32 byte count");
     }
     this.check(this.exports.sm_set_metadata_budget_bytes(limit), "setMetadataBudgetBytes", "/");
+  }
+
+  setIoBudgetBytes(limit: number): void {
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 0xffff_ffff) {
+      throw new RangeError("I/O budget must be a positive u32 byte count");
+    }
+    this.check(this.exports.sm_set_io_budget_bytes(limit), "setIoBudgetBytes", "/");
   }
 
   metadataUsedBytes(): number {
