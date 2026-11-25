@@ -125,6 +125,13 @@ impl FactsStore {
     }
     pub fn from_scan(scan: &crate::streaming::Scan<'_>, limits: StorageLimits) -> Result<Self> {
         scan.verify_facts_hash()?;
+        Self::from_verified_scan(scan, limits)
+    }
+
+    pub(crate) fn from_verified_scan(
+        scan: &crate::streaming::Scan<'_>,
+        limits: StorageLimits,
+    ) -> Result<Self> {
         let mut store = Self::read_sections(scan.custom_data(super::SECTION), limits)?;
         store.source_fingerprint = Some(scan.source_fingerprint());
         Ok(store)

@@ -1,0 +1,99 @@
+# Build dlopen modules, and only modules, as Kandelo side modules.
+#
+# Kandelo identifies as wasm32-unknown-linux-musl. Upstream libtool would
+# take it for GNU/Linux: it would build libfoo.so for every library and
+# link programs against it, which fails ("attempted static link of
+# dynamic object") because a Kandelo program cannot be linked against a
+# shared library. Kandelo's dlopen(3) does load WebAssembly side modules,
+# which `cc -shared` builds and which take libc and every other undefined
+# symbol from the program that loads them.
+#
+# libtool.m4 describes that loader (unversioned NAME.so, no soname, no
+# run paths, libc never linked into a module, -export-dynamic as
+# -Wl,--export-dynamic), and ltmain builds an installed library shared
+# only when it is a module (-module) or its link asks for -shared; every
+# other library is static, whatever LT_INIT asks for.
+--- a/m4/libtool.m4
++++ b/m4/libtool.m4
+@@ -3340,6 +3340,41 @@
+ 
+ *)
+   dynamic_linker=no
++  ;;
++esac
++case $host_cpu-$host_os in
++wasm32-linux-musl* | wasm64-linux-musl*)
++  # Kandelo, a POSIX environment for WebAssembly whose GNU identity is
++  # *-unknown-linux-musl.  Its dlopen(3) loads WebAssembly side modules
++  # that `cc -shared` builds; they take libc and every other undefined
++  # symbol from the program that loads them.  A program cannot be linked
++  # against a shared library, so ltmain builds only modules (-module, or
++  # an explicit -shared link) shared, and every other library static.
++  version_type=none
++  need_lib_prefix=no
++  need_version=no
++  library_names_spec='$libname$release$shared_ext'
++  soname_spec='$libname$release$shared_ext'
++  shlibpath_var=
++  shlibpath_overrides_runpath=
++  hardcode_into_libs=no
++  finish_cmds=
++  dynamic_linker='Kandelo dlopen (modules only)'
++  _LT_TAGVAR(ld_shlibs, $1)=yes
++  _LT_TAGVAR(archive_cmds, $1)='$CC -shared $pic_flag $libobjs $deplibs $compiler_flags -o $lib'
++  _LT_TAGVAR(archive_expsym_cmds, $1)=
++  # The module takes libc from the program; never link it in.
++  _LT_TAGVAR(archive_cmds_need_lc, $1)=no
++  _LT_TAGVAR(allow_undefined_flag, $1)=
++  _LT_TAGVAR(no_undefined_flag, $1)=
++  # Exports the program's default-visibility symbols to its modules.
++  _LT_TAGVAR(export_dynamic_flag_spec, $1)='$wl--export-dynamic'
++  _LT_TAGVAR(whole_archive_flag_spec, $1)='$wl--whole-archive$convenience $wl--no-whole-archive'
++  _LT_TAGVAR(hardcode_libdir_flag_spec, $1)=
++  _LT_TAGVAR(hardcode_direct, $1)=no
++  _LT_TAGVAR(hardcode_shlibpath_var, $1)=unsupported
++  _LT_TAGVAR(runpath_var, $1)=
++  can_build_shared=yes
+   ;;
+ esac
+ AC_MSG_RESULT([$dynamic_linker])
+--- a/build-aux/ltmain.in
++++ b/build-aux/ltmain.in
+@@ -4885,6 +4885,7 @@
+     libobjs=
+     ltlibs=
+     module=no
++    shared_only_requested=no
+     no_install=no
+     objs=
+     os2dllname=
+@@ -4916,6 +4917,7 @@
+ 	test yes != "$build_libtool_libs" \
+ 	  && func_fatal_configuration "cannot build a shared library"
+ 	build_old_libs=no
++	shared_only_requested=yes
+ 	break
+ 	;;
+       -all-static | -static | -static-libtool-libs | --static | -Bstatic)
+@@ -7190,6 +7192,21 @@
+       ;;
+ 
+     lib)
++      # Kandelo (wasm32/wasm64 *-linux-musl): a program cannot be linked
++      # against a shared library; dlopen(3) loads side modules.  Build an
++      # installed library shared only when it is a module (-module) or the
++      # link asks for -shared, and static otherwise.  Convenience libraries
++      # (no -rpath) keep their PIC objects for the modules that use them.
++      case $host in
++      wasm32-*-linux-musl* | wasm64-*-linux-musl*)
++	if test yes = "$build_libtool_libs" && test no = "$module" \
++	   && test yes != "$shared_only_requested" && test -n "$rpath"; then
++	  build_libtool_libs=no
++	  build_old_libs=yes
++	fi
++	;;
++      esac
++
+       # Make sure we only generate libraries of the form 'libNAME.la'.
+       case $outputname in
+       lib*)

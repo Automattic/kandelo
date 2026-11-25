@@ -1,0 +1,13 @@
+[package]
+name = "host-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Wasmtime smoke runner for Kandelo kernel artifacts"
+publish = false
+
+[dependencies]
+anyhow = "1"
+runtime-core = { path = "../runtime-core" }
+wasm-posix-shared = { path = "../shared" }
+wasmtime = { version = "48", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "threads", "gc", "gc-drc"] }

@@ -20,6 +20,7 @@ import {
   resolveIndependentBinaries,
   withProgramIndexFreshness,
 } from "../../host/src/binary-resolver";
+import { browserRootfsCandidates } from "../../host/src/browser-rootfs-candidates";
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
   browserImageModule32ModuleSpecifier,
@@ -425,13 +426,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
             "programs/wasm32/rootfs.vfs.zst",
           );
         }
-        const candidates = [
-          path.resolve(repoRoot, "host/wasm/rootfs.vfs.zst"),
-          path.resolve(repoRoot, "local-binaries/rootfs.vfs.zst"),
-          path.resolve(repoRoot, "binaries/rootfs.vfs.zst"),
-          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs.zst"),
-          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs.zst"),
-        ];
+        const candidates = browserRootfsCandidates(repoRoot);
         for (const file of candidates) {
           if (fs.existsSync(file)) return access.approve(file) + query;
         }

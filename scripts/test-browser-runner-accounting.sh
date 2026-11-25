@@ -12,6 +12,7 @@ cd "$REPO_ROOT"
 
 missing=()
 [ -f "$REPO_ROOT/sysroot/lib/libc.a" ] || missing+=("sysroot/lib/libc.a")
+"$REPO_ROOT/scripts/resolve-binary.sh" --browser-rootfs >/dev/null 2>&1 || missing+=("rootfs.vfs.zst")
 "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1 || missing+=("kernel.wasm")
 [ -d "$REPO_ROOT/tests/libc/libc-test/src/functional" ] || missing+=("tests/libc/libc-test")
 [ -d "$REPO_ROOT/tests/sortix/os-test/malloc" ] || missing+=("tests/sortix/os-test")

@@ -334,6 +334,11 @@ impl FactsStore {
                 }
             }
         }
+        // The facts pool models table 0, the exported indirect table, which
+        // is the table the dynamic linker grows.
+        for function in crate::call_graph::runtime_table_exports(scan).1 {
+            self.execute("UPDATE wasm_function SET in_table=1 WHERE id=?", [function])?;
+        }
         Ok(())
     }
 
@@ -527,8 +532,8 @@ impl FactsStore {
                 NOT EXISTS(SELECT 1 FROM own_known o WHERE o.target=t.id)
                 AND NOT EXISTS(SELECT 1 FROM vslot v WHERE v.name=t.name))
               OR (NOT EXISTS(SELECT 1 FROM hub h WHERE h.caller=w.id AND h.definition=s.definition AND h.site=s.ordinal)
-                AND EXISTS(SELECT 1 FROM icall i JOIN conversion_reach r ON r.ty=i.ty AND r.name=t.name
-                  WHERE i.definition=s.definition AND i.site=s.ordinal))
+                AND EXISTS(SELECT 1 FROM function_group f JOIN icall i ON i.definition=s.definition AND i.site=s.ordinal
+                  JOIN group_type r ON r.group_id=f.group_id AND r.ty=i.ty WHERE f.name=t.name))
               OR EXISTS(SELECT 1 FROM icall i JOIN own_cfi o ON o.ty=i.ty AND o.target=t.id
                 WHERE i.definition=s.definition AND i.site=s.ordinal AND (
                   NOT EXISTS(SELECT 1 FROM hub h WHERE h.caller=w.id AND h.definition=s.definition AND h.site=s.ordinal AND h.ty=i.ty)

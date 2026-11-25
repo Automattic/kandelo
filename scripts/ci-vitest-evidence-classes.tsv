@@ -149,6 +149,7 @@ host/test/fork-artifact-gc-types.test.ts	source-only
 host/test/fork-borrowed-replay.test.ts	source-only
 host/test/fork-continuation.test.ts	source-only
 host/test/fork-dlopen-replay-e2e.test.ts	prepared-product
+host/test/fork-dlsym-facts-e2e.test.ts	prepared-product
 host/test/fork-early-reference-provider.test.ts	source-only
 host/test/fork-exception-provider.test.ts	source-only
 host/test/fork-externref-host-parity.test.ts	source-only
@@ -227,6 +228,7 @@ host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product
 host/test/guest-cmake.test.ts	prepared-product
 host/test/guest-meson.test.ts	prepared-product
+host/test/guest-plugins.test.ts	prepared-product
 host/test/guest-program-preparation.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
@@ -486,6 +488,7 @@ host/test/rust-compatibility-in-guest.test.ts	prepared-product
 host/test/rust-coverage-in-guest.test.ts	prepared-product
 host/test/rust-debugger.test.ts	prepared-product
 host/test/rust-devtools-in-guest.test.ts	prepared-product
+host/test/rust-first-host-boundary.test.ts	source-only
 host/test/rust-man-pages.test.ts	prepared-product
 host/test/rust-native-dependencies-in-guest.test.ts	prepared-product
 host/test/rust-sdk-upgrade.test.ts	prepared-product
@@ -495,6 +498,7 @@ host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product
 host/test/scummvm-cli-smoke.test.ts	prepared-product
+host/test/sdk-plugin-modules.test.ts	prepared-product
 host/test/sdl2-editor-unit.test.ts	source-only
 host/test/sdl2-evdev-smoke.test.ts	prepared-product
 host/test/sdl2-kmsdrm-smoke.test.ts	prepared-product

@@ -202,6 +202,16 @@ the original target-group API.
 Return-flow queries start from each function's small visited-slot set so the
 planner does not rescan all module call sites for every function.
 
+Conversion and slot-origin reachability use packed graphs within the resident
+metadata allowance. The solver visits strongly connected components in
+dependency order and shares equal sets. Cast reach is recorded once per
+distinct type set, and convergence compares the per-function group IDs and
+the start-name set. Slot origins are propagated only to components that can
+reach a read. The read-back queries share each read slot's origin set, and
+slot aliases are interned once per type and parameter. If the graph or
+unique sets exceed the resident allowance, the same reachability relations
+are computed by file-backed recursive SQL.
+
 Default storage budgets are a 32 MiB page-cache target for each main/temp
 schema, 1 MiB name cache,
 4 MiB shared target-list cache,
@@ -882,8 +892,8 @@ can be emitted again. Descriptor budgets are checked before writing a header.
 It seeds every matching fork import, every side-module function import, raw
 loader imports and conservative dynamic dispatch. It rejects previous private
 runtime imports, exports and metadata. Valid compiler facts use private SQLite
-relations with the requested effective-type policy; unreadable facts fall back
-to the bounded native baseline. Dlopen facts preserve the explicit side-module
+relations with the requested effective-type policy. Missing, stale or unsupported
+facts allow the bounded native baseline; storage and solver errors fail the build. Dlopen facts preserve the explicit side-module
 contract, including automatic full-entry planning for returning function
 pointers. No facts database survives into helper or source emission.
 
@@ -1314,7 +1324,10 @@ cannot expose either the monolithic callback or instantiation-time guest
 reentry. Source modules may contain a start section; the zero-count rule
 applies to the completed instrumented artifact after its start has become an
 explicit bootstrap. `DynamicLinker.dlopenSync()` remains a lower-level embedder
-API, not an import reachable from an accepted ABI 43 process artifact.
+API, not an import reachable from an accepted ABI 43 process artifact. The
+next program ABI removes the import and this lowering; see
+[required changes for the next program
+ABI](abi-versioning.md#required-changes-for-the-next-program-abi).
 
 The staged host can issue internal VFS and mapping channel requests while an
 import is active. Those completions set the ABI 43
@@ -2392,16 +2405,27 @@ Which analysis runs:
 | Module | Analysis |
 |---|---|
 | wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
-| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
+| main module that cannot dlopen, facts absent, unsupported, unhashed or stale, or wasm64 | without facts |
 | main module that can dlopen, no usable facts | none (full closure) |
 | side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
 
-A module that can dlopen is analysed with facts too. What it may assume
-about side modules is chosen with `--side-modules`:
+A module that can dlopen is analysed with facts too. In such a module
+every function export is a possible target of indirect calls through
+`__indirect_function_table`, even with no element segment naming it:
+`dlsym(RTLD_DEFAULT, name)` and a side module's `GOT.func` relocation
+append the export to that table at run time (`symbolAddress` in
+`host/src/dylink.ts`). Otherwise a call through such a pointer would have
+no targets, would be treated as never returning, and the frames above a
+later fork would not be instrumented. What the module may assume about
+side modules is
+chosen with `--side-modules`:
 
 - `traced-entries` (the default). The analysis treats a side module as
   entering the main program only through its imports (an `env` function or
-  a `GOT.func` slot). A function whose fork child can return to a caller is
+  a `GOT.func` slot). A main-program call through a pointer that may reach
+  a side module still returns normally and may throw, but no fork child
+  returns through it, so it does not by itself keep its callers
+  instrumented. A function whose fork child can return to a caller is
   *fork-returning*; it stays instrumented in the callers' frames. The
   instrumenter records the main module's side of that assumption in a
   `kandelo.wpk_fork.dlopen_contract` custom section: the exported
@@ -2423,9 +2447,10 @@ about side modules is chosen with `--side-modules`:
   boundary. The contract section says so and the hosts impose no
   restriction. Use it for a program that must load arbitrary plugins.
 
-Facts that cannot be read, or an
-internal error in the facts analysis, fall back to the analysis without
-facts with a one-line message, never to anything less conservative. The
+Missing or mismatched code hashes, unsupported facts formats, and modules the
+sink planner explicitly cannot model allow analysis without facts. Malformed
+bound facts, exceeded resource budgets, and SQLite or temporary-file failures
+fail instrumentation; the error identifies the temporary directory. The
 `kandelo.calltypes` and `kandelo.calltypes.code-sha256` sections are removed
 from every output, including a module the instrumenter otherwise returns
 unchanged.

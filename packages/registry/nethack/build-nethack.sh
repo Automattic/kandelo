@@ -283,7 +283,10 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
     # them. The hints set LFLAGS=-rdynamic with `=` (not `+=`)
     # later in the Makefile, which would clobber a `LFLAGS+=...` that
     # appeared earlier — so rewrite `LFLAGS=-rdynamic` to `LFLAGS+=...`
-    # that prepends our `-L` to whatever was set previously.
+    # that keeps our `-L`. The rewrite drops -rdynamic: on Linux it only
+    # gives glibc's backtrace_symbols() names for panic traces, NetHack
+    # loads no modules, and the SDK honors it, exporting every NetHack
+    # function (4,000 exports, about 150 KB after fork instrumentation).
     awk -v ncurses="$GUEST_NCURSES" '
         /^CFLAGS\+=-DCURSES_GRAPHICS/ {
             print;
@@ -292,7 +295,7 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
             next;
         }
         /^LFLAGS=-rdynamic$/ {
-            print "LFLAGS+=-rdynamic -L" ncurses "/lib";
+            print "LFLAGS+=-L" ncurses "/lib";
             next;
         }
         { print }

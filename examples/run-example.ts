@@ -13,10 +13,10 @@
  *   KERNEL_UID=1000 KERNEL_GID=1000 npx tsx examples/run-example.ts hello
  */
 
-import { closeSync, existsSync, openSync, readFileSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
-import { NodeKernelHost, resolveRootfsArtifact } from "../host/src/node-kernel-host";
-import { tryResolveBinaries } from "../host/src/binary-resolver";
+import { NodeKernelHost } from "../host/src/node-kernel-host";
+import { resolveBinary, tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
 import { assertPersistentFixtureUnchanged, inspectPersistentFixture } from "./run-example-persistence-verification";
 import {
@@ -24,7 +24,7 @@ import {
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
-import { prepareCheckedPersistentRunExampleRootfs, prepareRunExampleRootfs } from "./run-example-rootfs";
+import { prepareCheckedPersistentRunExampleRootfs, prepareDefaultRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -440,11 +440,21 @@ async function main() {
     let host: NodeKernelHost | undefined;
     let status = 1;
     try {
-        const rootfs = runnerFilesystem.isolated
-            ? prepareRunExampleRootfs(new Uint8Array(
-                readFileSync(resolveRootfsArtifact().selectedPath),
-            ))
-            : undefined;
+        const setupErrorFile = process.env.KANDELO_RUNNER_SETUP_ERROR_FILE;
+        let rootfs: ReturnType<typeof prepareDefaultRunExampleRootfs> | undefined;
+        let kernelWasm: ArrayBuffer | undefined;
+        try {
+            rootfs = runnerFilesystem.isolated ? prepareDefaultRunExampleRootfs() : undefined;
+            kernelWasm = setupErrorFile ? loadBytes(resolveBinary("kernel.wasm")) : undefined;
+        } catch (error) {
+            // Only this host-side stage can write a setup result. Guest exit
+            // codes and diagnostics retain their ordinary test meanings.
+            if (setupErrorFile) {
+                writeFileSync(setupErrorFile, String(error) + "\n" +
+                    "Run ./run.sh setup --all and scripts/dev-shell.sh bash scripts/build-rootfs.sh.\n");
+            }
+            throw error;
+        }
         const persistentImage = runnerFilesystem.persistentFixtureRoot === undefined
             ? undefined
             : await prepareCheckedPersistentRunExampleRootfs(
@@ -457,7 +467,7 @@ async function main() {
             maxWorkers: 4,
             // Exec authority stays in the image; local bytes only supply
             // its declared lazy transport.
-            ...(persistentImage ?? { rootfsImage: runnerFilesystem.rootfsImage }),
+            ...(persistentImage ?? { rootfsImage: rootfs?.rootfsImage ?? runnerFilesystem.rootfsImage }),
             experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
             rootfsLazyUrlBase: persistentImage === undefined ? undefined : rootfs?.rootfsLazyUrlBase,
             rootfsLazyAssets: persistentImage === undefined ? undefined : rootfs?.rootfsLazyAssets,
@@ -472,7 +482,7 @@ async function main() {
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
         });
 
-        await host.init();
+        await host.init(kernelWasm);
 
         const processArgv = [
             runnerFilesystem.guestProgram ?? programPath,

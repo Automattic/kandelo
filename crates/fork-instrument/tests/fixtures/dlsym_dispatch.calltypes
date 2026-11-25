@@ -1,0 +1,22 @@
+#kandelo-calltypes	5
+M	/src/dlsym.c
+F	forker	0	E	1	forker
+T	forker	_ZTSFivE
+C	forker	0	kernel_fork
+D	forker	0	1
+F	value	0	E	1	value
+T	value	_ZTSFivE
+D	value	0	0
+F	direct	0	E	0	direct
+C	direct	0	__wasm_dlsym
+S	direct	1	->i32	icall	_ZTSFivE
+C	direct	2	forker
+D	direct	0	3
+F	through	0	E	0	through
+C	through	0	__wasm_dlsym
+S	through	1	->i32	icall	_ZTSFivE
+D	through	0	2
+F	_start	0	E	0	_start
+C	_start	0	direct
+C	_start	1	through
+D	_start	0	2

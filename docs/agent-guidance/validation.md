@@ -79,8 +79,15 @@ source checkout. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
-Conformance wrappers must reject an empty selected test inventory. A missing
-upstream checkout is provisioning work, never a successful zero-test run.
+Conformance wrappers check their selected inventories, source checkouts,
+sysroot and runtime artifacts before compiling or launching cases. A failed
+preflight exits with a SETUP ERROR and no case totals. Node runtime suites
+also validate the rootfs's deferred files. The browser wrappers validate the
+image and tools their test page loads. Sortix's compile-only include suite
+requires the source checkout and toolchain. A prerequisite lost during a run
+is recorded as SETUP for affected cases. Run
+`bash scripts/test-conformance-preflight.sh` to exercise these checks without
+building products.
 Browser exec fixtures must use Bash for `/bin/sh`, matching the normal Node
 rootfs. Required-tool HTTP or body failures must stop fixture readiness;
 missing tools are not a partially working conformance environment.
@@ -211,8 +218,10 @@ test inventory and `--all` for Sortix. Vitest's complete run excludes each
 file declared in `scripts/ci-vitest-resource-isolated-cases.tsv` from its main
 worker and then runs every declared case in a fresh worker process. Each row
 names a regex-safe identifier that occurs in exactly one test. Before excluding
-a file, the runner requires those identifiers to map one-to-one onto its full
-machine-readable `vitest list --json` inventory.
+a file, the runner checks its required prepared artifacts and requires the
+identifiers to map one-to-one onto its full machine-readable
+`vitest list --json` inventory. The inventory config leaves fixture compilation
+to the run itself.
 
 For direct Cargo commands, compute `<host-target>` with:
 
@@ -222,6 +231,22 @@ rustc -vV | awk '/^host/ {print $2}'
 
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
+
+## Wasmtime smoke
+
+Run `./run.sh build kernel` and ensure the wasm32 SDK sysroot with
+`scripts/dev-shell.sh bash scripts/build-musl.sh --ensure`. In the dev shell,
+run the smoke check with the kernel from that build:
+
+```bash
+bash scripts/test-wasmtime-smoke.sh "$(bash scripts/resolve-binary.sh kernel.wasm)"
+```
+
+The runner loads the production wasm32 kernel and a minimal VFS image with
+Wasmtime. The SDK-built test program opens and reads the image, sleeps through
+the kernel's parked-wait protocol, and exits through the guest syscall channel.
+Missing imports trap when used. This is third-engine evidence for the tested
+path. Keep it in candidate validation alongside Node and browser tests.
 
 ## Browser memory regression gate
 

@@ -799,7 +799,7 @@ fn native_sink_includes_function_references_in_table_and_global_initializers() {
                 vec![target as u32]
             );
         }
-        assert!(!program.has_external_dispatch());
+        assert!(!program.external_may_fork_return());
         let result = summarize(&program, Default::default()).unwrap();
         assert!(result.functions.iter().all(|s| s.may_return));
     }
@@ -820,7 +820,7 @@ fn native_sink_treats_unknown_reference_imports_and_element_expressions_as_exter
         let scan = scan(&input).unwrap();
         let mut store = FactsStore::empty(Default::default()).unwrap();
         let program = Program::build(&scan, &mut store, Default::default()).unwrap();
-        assert!(program.has_external_dispatch());
+        assert!(program.external_may_fork_return());
         let result = summarize(&program, Default::default()).unwrap();
         assert_eq!(
             result.functions[0],

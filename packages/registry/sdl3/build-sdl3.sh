@@ -45,6 +45,10 @@ mkdir -p "$BUILD_DIR"
 
 echo "==> Applying the Kandelo platform-classification patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-platform.patch"
+# SDL's dynamic API looks for a replacement SDL shared library, which
+# Kandelo does not build; its dlopen call linked the dynamic loader into
+# every SDL program (patch header).
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0002-kandelo-disable-dynamic-api.patch"
 
 echo "==> Configuring SDL3 with only the OSS playback backend..."
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
