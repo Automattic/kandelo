@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import * as G from '../src/generated/program-extensions';
-import { ERRNO } from '../src/generated/abi';
+import { ABI_SYSCALLS, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE, CH_STATUS, CH_SYSCALL, CH_RETURN, CH_REQUEST_FLAGS, CH_TOTAL_SIZE, ERRNO } from '../src/generated/abi';
 import { WasmPosixKernel, getWasmPosixKernelRuntimeAccess } from '../src/kernel';
 import { createCentralizedKernelWorkerTestDouble, CAPTURED_STDIO } from '../src/kernel-worker';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
@@ -24,7 +24,7 @@ async function harness() {
   await kernel.init(Uint8Array.from(readFileSync(resolveBinary('kernel.wasm'))));
   const access = getWasmPosixKernelRuntimeAccess(kernel), instance = access.instance()!;
   const scratch = allocateKernelScratchRegion(access.memory()!, instance.exports.kernel_alloc_scratch as (size: number) => number,
-    65536, 4, 'real kernel group host boundary', instance);
+    CH_TOTAL_SIZE, 4, 'real kernel group host boundary', instance);
   const worker = createCentralizedKernelWorkerTestDouble({ config, io });
   worker.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
   worker.testAuthority.initializeKernelForTest({ instance, gate: access.gate, mainScratch: scratch });
@@ -224,3 +224,38 @@ it('returns the actual never-exposed image only after exact Rust cancellation', 
     expect(h.worker.cancelUnexposedMemoryGroupReplica(h.handle)).toBe(-22);
   } finally { h.scratch.revoke(); }
 }, 30_000);
+
+for (const wake of ['notify', 'timeout'] as const) {
+  it(`publishes a real Rust-owned completion after notification queue ${wake}`, async () => {
+    const h = await published(), worker = h.worker as any;
+    const source = h.launch.source;
+    const queue = new Int32Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1);
+    const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
+    try {
+      worker.usePolling = true;
+      h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
+        brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
+      worker.stopPolling();
+      h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
+      const channel = worker.processes.get(h.pid).channels[0];
+      source.atomicStoreI32(65536 + CH_SYSCALL, ABI_SYSCALLS.Getpid);
+      source.atomicStoreI32(65536 + CH_REQUEST_FLAGS, 0);
+      source.atomicStoreI32(65536 + CH_STATUS, CHANNEL_STATUS_PENDING);
+      Atomics.store(queue, 0, 1);
+      await retryKernelEntryResult(() => worker.handleSyscall(channel));
+      expect(source.atomicLoadI32(65536 + CH_STATUS)).toBe(CHANNEL_STATUS_PENDING);
+      expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ pendingCompletions: 1, nativeObservers: 1 });
+      Atomics.store(queue, 0, 0);
+      if (wake === 'notify') Atomics.notify(queue, 0);
+      await expect.poll(() => source.atomicLoadI32(65536 + CH_STATUS)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(source.atomicLoadI32(65536 + CH_RETURN)).toBe(h.pid);
+      await expect.poll(async () => (await retryKernelEntryResult(() => inspectBacking(h))).pendingCompletions).toBe(0);
+      expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ nativeObservers: 0 });
+      expect(await retryKernelEntryResult(() => h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete, () => {}))).toBe(true);
+      expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ images: 0, replicas: 0, allocatedPages: 1, nativeObservers: 0 });
+    } finally {
+      Atomics.store(queue, 0, 0); Atomics.notify(queue, 0);
+      worker.stopPolling(); h.scratch.revoke();
+    }
+  }, 30_000);
+}
