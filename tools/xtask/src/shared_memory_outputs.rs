@@ -5,6 +5,14 @@ use std::io::{Cursor, Read, Write};
 
 const MAX_PROGRAM_BYTES: u64 = 512 * 1024 * 1024;
 
+pub(super) fn grouped_program_extensions() -> Vec<&'static str> {
+    let mut extensions = wasm_artifact::program_extensions::IMPLEMENTED.to_vec();
+    extensions.push(wasm_posix_shared::program_extensions::memory_group_v3::MODULE);
+    extensions.push(wasm_posix_shared::program_extensions::memory_group_growth_v1::MODULE);
+    extensions
+}
+
+
 pub(super) fn enabled(target: &DepsManifest) -> bool {
     target
         .program_outputs
@@ -221,8 +229,7 @@ pub(super) fn validate(
     if layout.source_sha256 != source_digest {
         return Err("shared-memory output source identity differs".into());
     }
-    let mut extensions = wasm_artifact::program_extensions::IMPLEMENTED.to_vec();
-    extensions.push(wasm_posix_shared::program_extensions::memory_group_v3::MODULE);
+    let extensions = grouped_program_extensions();
     let mut failures = wasm_artifact_policy_failures_with_extensions(
         &program,
         ForkInstrumentationPolicy::Auto,

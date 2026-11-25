@@ -185,7 +185,7 @@ describe('normal grouped Worker initialization', () => {
     await centralizedThreadWorkerMain({ postMessage: (message: unknown) => events.push(message) } as any, {
       type: 'centralized_thread_init', pid: 100, tid: 101, memory: runtime.memory, programBytes: artifact({}, true),
       processChannelOffset: 4096, channelOffset: 8192, secureExec: false, fnPtr: 0, argPtr: 0,
-      stackPtr: 32768, tlsPtr: 0, ctidPtr: 0, tlsOffset: 16384, tlsAllocAddr: 16384,
+      stackPtr: 32768, tlsPtr: 0, ctidPtr: 0, tls: { offset: 16384, byteLength: 16384 },
     }, runtime);
     expect(events).toHaveLength(1); expect(events[0].type).toBe('error');
     expect(events[0].message).toContain('defer its start'); runtime.detach(); f.close();

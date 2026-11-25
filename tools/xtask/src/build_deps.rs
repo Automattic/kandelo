@@ -26282,8 +26282,7 @@ fork_instrumentation = "disabled"
 
     #[test]
     fn shared_memory_import_admission_requires_explicit_backend_policy() {
-        let mut supported = wasm_artifact::program_extensions::IMPLEMENTED.to_vec();
-        supported.push(wasm_posix_shared::program_extensions::memory_group_v3::MODULE);
+        let supported = super::shared_memory_outputs::grouped_program_extensions();
         for (name, memory, allowed) in [
             ("memory", "memory 1 2 shared", true),
             ("wrong", "memory 1 2 shared", false),
@@ -26293,6 +26292,30 @@ fork_instrumentation = "disabled"
             let bytes = wat::parse_str(format!(r#"(module (import "kandelo.memory-group.v3" "{name}" ({memory})))"#)).unwrap();
             assert!(!wasm_artifact_policy_failures_for(&bytes, ForkInstrumentationPolicy::Auto, &[]).is_empty());
             assert_eq!(wasm_artifact_policy_failures_with_extensions(&bytes, ForkInstrumentationPolicy::Auto, &[], &supported).is_empty(), allowed);
+        }
+    }
+
+    #[test]
+    fn shared_memory_growth_import_requires_exact_grouped_policy() {
+        use wasm_posix_shared::program_extensions::memory_group_growth_v1 as growth;
+        let supported = super::shared_memory_outputs::grouped_program_extensions();
+        for (module, name, declaration, allowed) in [
+            (growth::MODULE, growth::IMPORT, "func (param i32) (result i32)", true),
+            (growth::MODULE, growth::IMPORT, "func (param i64) (result i32)", false),
+            (growth::MODULE, growth::IMPORT, "func (param i32) (result i64)", false),
+            (growth::MODULE, growth::IMPORT, "global i32", false),
+            (growth::MODULE, "wrong", "func (param i32) (result i32)", false),
+            ("kandelo.memory-group-growth.v2", growth::IMPORT, "func (param i32) (result i32)", false),
+        ] {
+            let bytes = wat::parse_str(format!(r#"(module
+                (import "kandelo.memory-group.v3" "memory" (memory 1 2 shared))
+                (import "{module}" "{name}" ({declaration})))"#)).unwrap();
+            let ordinary = wat::parse_str(format!(r#"(module
+                (import "{module}" "{name}" ({declaration}))
+                (memory 1 2 shared))"#)).unwrap();
+            assert!(!wasm_artifact_policy_failures_for(&ordinary, ForkInstrumentationPolicy::Auto, &[]).is_empty());
+            assert_eq!(wasm_artifact_policy_failures_with_extensions(&bytes,
+                ForkInstrumentationPolicy::Auto, &[], &supported).is_empty(), allowed);
         }
     }
 
