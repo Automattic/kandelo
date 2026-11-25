@@ -482,8 +482,6 @@ has_php()           { pkg_has_output php php.wasm || [ -f "$REPO_ROOT/packages/r
 has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm" ]; }
 has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; }
 has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm" ]; }
-has_mariadb_vfs()   { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst; }
-has_mariadb64_vfs() { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst wasm64; }
 has_wordpress()     { [ -f "$REPO_ROOT/packages/registry/wordpress/wordpress/wp-settings.php" ]; }
 has_wp_vfs()        { pkg_has_output wordpress wordpress.vfs.zst; }
 has_dash()          { pkg_has_output dash dash.wasm || [ -f "$REPO_ROOT/packages/registry/dash/bin/dash.wasm" ]; }

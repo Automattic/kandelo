@@ -178,8 +178,8 @@ runner can resolve and verify them alongside WordPress:
 ```
 
 These targets publish the images through the same SourceOnly projection. For
-Node-only runs, `./run.sh build mariadb mariadb64` supplies the programs for
-the database suites.
+Node-only runs, `./run.sh build php mariadb mariadb64` supplies the executables
+for the WordPress and database suites.
 
 Browser benchmark extraction completes positive short reads in at most
 64 KiB windows and fails on premature EOF or invalid progress. The returned
