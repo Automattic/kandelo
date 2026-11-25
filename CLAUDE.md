@@ -103,8 +103,14 @@ For nontrivial work:
 4. Preserve Node.js/browser parity unless a documented platform boundary says
    otherwise.
 5. Update the authoritative docs for any changed behavior.
-6. Run validation that supports the exact claim you will make.
-7. Report what changed, what was run, and what was not run.
+6. Derive data from its authoritative inputs. Commit a derived copy only when
+   a concrete requirement cannot reasonably be met by deriving it at use time
+   or during the build. Document the requirement and the authoritative inputs.
+   For copies that track current inputs, generate them deterministically and
+   check for drift in normal validation. Verify deliberately frozen fixtures
+   against their pinned source or artifact.
+7. Run validation that supports the exact claim you will make.
+8. Report what changed, what was run, and what was not run.
 
 For a reviewed patch integration, use the optional
 [`scripts/agent-integrate` workflow](docs/agent-integration.md) to validate

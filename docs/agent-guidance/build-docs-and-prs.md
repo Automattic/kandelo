@@ -216,6 +216,11 @@ should tell a reviewer what was wrong, that it is fixed or what remains, and
 roughly how. If the key result appears only under Validation, move it to
 What changed and keep Validation to how it was measured.
 
+When a PR adds a checked-in copy of derived data, show the concrete requirement
+that makes committing the copy necessary and why deriving it at use time or
+during the build cannot reasonably meet that requirement. Name the authoritative
+inputs and the check that catches drift or verifies a frozen fixture's provenance.
+
 Most PRs need 10 to 20 lines. Add a short extra section only when a reviewer
 cannot judge the change without it, such as an ABI bump, a known gap, or a
 before/after table for a performance claim.
