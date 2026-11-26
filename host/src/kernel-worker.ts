@@ -11412,7 +11412,8 @@ export class CentralizedKernelWorker {
   async #settleGroupThreadRetirement(owner: GroupThreadControlOwner, record: GroupThreadRetirement,
     launch: Promise<void> | undefined, initial: GroupOperationEffect): Promise<number> {
     await this.#driveRetirementControl(owner.store, owner.receipt, initial, async () => {
-      if (launch) await launch;
+      // Leave the detached retirement-start effect before re-entering the gate.
+      await launch;
       await retryKernelEntryResult(() => this.#runImmediateKernelEntry('detach retiring pthread transport', entry => {
         const registration = this.processes.get(owner.receipt.pid);
         if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.channelOffset)) {
