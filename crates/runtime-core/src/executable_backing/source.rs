@@ -35,6 +35,10 @@ impl SourceBinding {
         self
     }
 
+    pub(crate) fn matches_digest(&self, digest: &[u8; 32]) -> bool {
+        self.digest == *digest
+    }
+
     pub(super) fn check_identity(self, stat: &WasmStat) -> Result<(), Errno> {
         if stat.st_dev != self.device
             || stat.st_ino != self.inode
