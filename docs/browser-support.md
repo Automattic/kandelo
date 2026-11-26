@@ -742,6 +742,29 @@ pipe pair.
   `nano`) fills the visible terminal. A PTY started before any terminal
   reports a size starts at 80×24 until the first sized attach.
 
+#### Terminal fonts
+
+The browser Shell loads a small Noto Sans Mono webfont before xterm measures
+the terminal grid. Additional scripts and symbols use self-hosted WOFF2
+subsets. The app builds its character coverage catalog from the fonts' actual
+glyph maps and loads it when output first goes beyond Latin-1. Terminals in the same
+page share in-flight requests and loaded faces. The fonts belong to the browser
+app and are available with any guest image.
+
+On a font miss, the Shell holds output briefly so xterm can measure the new
+face before displaying it. A slow load can hold at most 400 ms, 256 KiB, or
+512 chunks before output resumes with available fonts. A later successful load
+updates the renderer. The initial base font has a separate 1.2-second limit and
+uses the browser's monospace stack on failure. With a caller-supplied font
+family, the standalone `PtyTerminal` uses that family directly.
+
+The shipped glyphs cover the pinned `cool-ascii-faces` corpus. Glyph coverage
+does not establish cross-cell combining, bidirectional layout, or contextual
+shaping in xterm. The catalog gives Japanese CJK subsets priority for shared Han
+characters and uses the other regional subsets for additional glyphs. See
+[font notices](../apps/browser-demos/public/terminal-fonts-OFL.txt) and
+[supplemental font sources](../apps/browser-demos/assets/terminal-fonts/README.md).
+
 #### Clickable links
 
 URLs in terminal output are clickable and always open in a new tab. Both plain

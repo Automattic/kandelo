@@ -49,6 +49,7 @@ import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedResolverFiles, devLazyAssets } from "./vite/dev-lazy-assets";
 import { devPartialImage } from "./vite/dev-partial-image";
+import { terminalFontAssets } from "./vite/terminal-font-assets.mjs";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -1056,6 +1057,7 @@ export default defineConfig(() => {
       vfsProductsPlugin(base),
       devPartialImage({ partialDir: path.resolve(repoRoot, "local-binaries/partial") }),
       react(),
+      terminalFontAssets(),
       browserTestGlAudit(),
       // Before the SourceOnly store, and like it `enforce: "pre"`: the
       // store's middleware answers the pinned path this route rewrites a
