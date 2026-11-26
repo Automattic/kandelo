@@ -1,24 +1,14 @@
 //! Original function identities used by analysis reports and loader discovery.
 
 pub(crate) fn is_dynamic_linker_function_import(module: &str, name: &str) -> bool {
-    use wasm_posix_program_abi::program_extensions::loader_v3;
+    use wasm_posix_program_abi::program_extensions::loader_v1;
     is_legacy_dynamic_linker_import(module, name)
-        || (module == loader_v3::MODULE && name == loader_v3::IMPORT)
+        || (module == loader_v1::MODULE && name == loader_v1::IMPORT)
 }
 
 fn is_legacy_dynamic_linker_import(module: &str, name: &str) -> bool {
-    module == "env"
-        && matches!(
-            name,
-            "__wasm_dlopen"
-                | "__wasm_dlopen_main"
-                | "__wasm_dlopen_prepare"
-                | "__wasm_dlopen_next"
-                | "__wasm_dlopen_commit"
-                | "__wasm_dlsym"
-                | "__wasm_dlclose"
-                | "__wasm_dlerror"
-        )
+    use wasm_posix_program_abi::program_extensions::ABI56_LOADER_IMPORTS;
+    module == "env" && ABI56_LOADER_IMPORTS.contains(&name)
 }
 
 /// Function exports the host's dynamic linker can append to the exported

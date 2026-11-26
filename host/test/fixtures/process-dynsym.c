@@ -28,8 +28,12 @@ typedef pid_t (*fork_fn)(void);
 
 int main(int argc, char **argv)
 {
+#ifdef PROCESS_DYNSYM_LOOKUP_ONLY
+    void *main = RTLD_DEFAULT;
+#else
     void *main = dlopen(NULL, RTLD_NOW);
     if (!main) return 1;
+#endif
 
     value_fn value = (value_fn)dlsym(main, "process_value");
     value_fn alias = (value_fn)dlsym(RTLD_DEFAULT, "process_alias");
@@ -48,6 +52,7 @@ int main(int argc, char **argv)
     void *side = 0;
     int (*plugin_value)(int) = 0;
     fork_fn plugin_fork = 0;
+#ifndef PROCESS_DYNSYM_LOOKUP_ONLY
     if (argc > 1) {
         side = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
         if (!side) {
@@ -73,6 +78,7 @@ int main(int argc, char **argv)
                 return 24;
         }
     }
+#endif
 
     /* Re-entry at the beginning would print a second prefix. */
     puts("before fork");
@@ -84,7 +90,11 @@ int main(int argc, char **argv)
         if (side && (dlsym(side, "plugin_value") != (void *)plugin_value ||
                      plugin_value(2) != 44 || dlclose(side)))
             _exit(17);
+#ifdef PROCESS_DYNSYM_LOOKUP_ONLY
+        _exit(0);
+#else
         _exit(dlclose(main) == 0 ? 0 : 13);
+#endif
     }
     int status;
     if (waitpid(child, &status, 0) != child || status != 0)
@@ -100,10 +110,12 @@ int main(int argc, char **argv)
         if (dlclose(side) || dlsym(side, "plugin_value") || !dlerror())
             return 22;
     }
+#ifndef PROCESS_DYNSYM_LOOKUP_ONLY
     if (dlsym(main, "process_value") != (void *)value || dlclose(main) != 0)
         return 9;
     if (dlsym(main, "process_value") || !dlerror())
         return 10;
+#endif
     puts("guest dynsym fork ok");
     return 0;
 }

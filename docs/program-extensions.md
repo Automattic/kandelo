@@ -137,6 +137,34 @@ program's libc marshals 600.
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).
 
+## Side module mapping version 1
+
+An executable that can open a named side module declares
+`kandelo.loader.v1.__kandelo_map_module_v1`. Its arguments are a pointer
+to a request in process memory, a byte length and an action. Its result
+is an i32. Four pointer-width words form each request.
+
+| Action | Request words | Result |
+| --- | --- | --- |
+| Inspect | Module bytes, byte count, response buffer, capacity | Encoded byte count or negative error |
+| Map | Module bytes, byte count, guest mapping record, table high-water mark | Staged mapping token or negative error |
+| Advance | Token and three output words | Positive table slot to call, zero when finished, or negative error |
+| Retire | Guest mapping record and three reserved words | Zero on retirement or negative error |
+
+Inspection returns the module's needed names, import rows and symbol
+index in one transfer. Libc selects providers and builds a binding
+vector before calling Map. The stable record contains addresses for
+the binding and dependency vectors, their counts and the nonzero
+mapping generation. Libc calls initializer slots from Wasm. Advance
+returns the memory and table bases and tracks the table high-water
+mark across Workers. Retire releases the process-selected mapping
+after libc has applied its lifetime rules and called finalizers.
+
+The extension preserves the base program ABI. The runtime still
+recognizes artifacts using the ABI-56 host loader imports. SDK links
+refuse those imports in new executables. Artifacts may declare one
+loader interface. The host rejects mixed interfaces before execution.
+
 ## Shared-memory execution and private growth
 
 A grouped executable requires the shared memory import

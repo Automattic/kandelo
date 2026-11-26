@@ -499,7 +499,7 @@ describe.skipIf(!hasCompiler())("dylink.0 parser", () => {
     const metadata = parseDylinkSection(wasmBytes);
     expect(metadata).not.toBeNull();
     expect(metadata!.memorySize).toBe(0); // No static data
-    expect(metadata!.tableSize).toBe(0);  // No indirect calls
+    expect(metadata!.tableSize).toBe(1);  // Canonical slot for the exported add
     expect(metadata!.neededDynlibs).toEqual([]);
   });
 

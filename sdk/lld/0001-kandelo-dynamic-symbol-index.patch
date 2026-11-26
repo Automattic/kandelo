@@ -9,6 +9,20 @@
 @@ -594,0 +596,2 @@
 +  if (ctx.arg.kandeloSideDynsym && !ctx.arg.shared)
 +    error("--kandelo-side-dynsym requires --shared");
+@@ -1520,1 +1523,13 @@
+   markLive();
++
++  // The process-owned loader retains the real libc fork entry. Export it
++  // only when the mapping import survived archive extraction, LTO and GC.
++  if (Symbol *map = symtab->find("__kandelo_map_module_v1");
++      map && map->isLive() && isa<UndefinedFunction>(map)) {
++    Symbol *fork = symtab->find("fork");
++    if (!fork || !fork->isLive() || !isa<DefinedFunction>(fork)) {
++      error("Kandelo mapping import requires the process fork entry");
++      return;
++    }
++    fork->forceExport = true;
++  }
 --- a/lld/wasm/Options.td
 +++ b/lld/wasm/Options.td
 @@ -72,0 +73,3 @@

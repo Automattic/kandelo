@@ -1,5 +1,6 @@
 /** Import namespaces are required interfaces, not optional metadata to ignore. */
 import {
+  ABI56_LOADER_IMPORTS,
   KLOG_IMPORT,
   KLOG_MODULE,
   LOADER_IMPORT,
@@ -44,6 +45,12 @@ export function describeProgramExtensionFailures(
   supported: ReadonlySet<string> = implemented,
 ): string[] {
   const failures: string[] = [];
+  if (functions.some(entry => entry.module === LOADER_MODULE) &&
+      functions.some(({ module, name }) =>
+        module === "env" && (ABI56_LOADER_IMPORTS as readonly string[]).includes(name))) {
+    failures.push("artifact mixes the ABI-56 loader with the process-owned loader");
+  }
+
   for (const entry of imports) {
     if (entry.module === MEMORY_GROUP_MODULE && supported.has(MEMORY_GROUP_MODULE)) {
       if (entry.name !== MEMORY_GROUP_IMPORT || entry.kind !== "memory"
@@ -76,10 +83,6 @@ export function describeProgramExtensionFailures(
     const width = memoryPointerWidths[0];
     if (memoryPointerWidths.length !== 1 || (width !== 4 && width !== 8)) {
       failures.push(`${identity} requires one process memory`);
-      continue;
-    }
-    if (entry.module === LOADER_MODULE && width !== 4) {
-      failures.push(`${identity} requires wasm32`);
       continue;
     }
     const expected = [width === 8 ? 0x7e : 0x7f, 0x7f, 0x7f];

@@ -2,7 +2,12 @@ import { expect, test } from "../playwright-test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const fixture = new URL("../../../.scratch/process-dynsym.wasm", import.meta.url);
+const fixture = new URL(
+  process.env.KANDELO_LOADER_FIXTURE_ARCH === "wasm64posix"
+    ? "../../../.scratch/dynsym-wasm64/process-dynsym.wasm"
+    : "../../../.scratch/process-dynsym.wasm",
+  import.meta.url,
+);
 
 test("guest executable symbol lookup preserves addresses through fork", async ({ page }) => {
   test.skip(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1", "requires the prototype linker");

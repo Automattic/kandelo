@@ -22,6 +22,8 @@ import {
   createCppExceptionTag,
   createLongjmpTag,
   DynamicLinker,
+  getTableEntry,
+  tableLength,
   FORK_CAP_DYLINK_MAIN,
   forkInstrumentRoleAvailable,
   parseDylinkSection,
@@ -155,6 +157,7 @@ import {
   LOADER_BIND_DATA,
   LOADER_BIND_DIRECT,
   LOADER_BIND_FUNCTION_POINTER,
+  LOADER_BIND_WEAK,
   LOADER_IMPORT,
   LOADER_INSPECT,
   LOADER_MAP,
@@ -1182,7 +1185,7 @@ export function buildDlopenImports(
     return errno !== 0 ? -errno : result;
   };
   const extensionImports: WebAssembly.Imports = {
-    ...(ptrWidth === 4 && forkActivationOwner ? {
+    ...(forkActivationOwner ? {
       [LOADER_MODULE]: { [LOADER_IMPORT]: mapGuestModule },
     } : {}),
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
@@ -1788,12 +1791,29 @@ export function buildDlopenImports(
     return null;
   };
 
+  const guestAddress = (address: number): WasmGuestPointer =>
+    ptrWidth === 4 ? address : BigInt(address);
+  const guestRange = (address: number, length: number, name: string) =>
+    checkedWasmMemoryRange(memory, guestAddress(address), length, ptrWidth, name);
+  const readGuestWord = (view: ProcessDataView, index: number): number => {
+    const offset = index * ptrWidth;
+    const value = ptrWidth === 4 ? view.getUint32(offset, true) : view.getBigUint64(offset, true);
+    return checkedWasmGuestPointerOffset(value, ptrWidth, "guest mapping word");
+  };
+  const writeGuestWord = (view: ProcessDataView, index: number, value: number): void => {
+    const offset = index * ptrWidth;
+    if (ptrWidth === 4) view.setUint32(offset, value, true);
+    else view.setBigUint64(offset, BigInt(value), true);
+  };
   // The archive identity includes a guest generation. A later load may
   // reuse the address without matching a pthread's old engine instance.
   const guestMappingPrefix = `\0${LOADER_MODULE}/`;
+  const guestGenerationOffset = 2 * ptrWidth + 8;
+  const guestRecordSize = guestGenerationOffset + 4;
   const guestMappingName = (address: number): string => {
-    const range = checkedWasmMemoryRange(memory, address, 20, ptrWidth, "guest mapping record");
-    const generation = processDataView(memory, range.offset, range.length).getUint32(16, true);
+    const range = guestRange(address, guestRecordSize, "guest mapping record");
+    const generation = processDataView(memory, range.offset, range.length)
+      .getUint32(guestGenerationOffset, true);
     if (!range.offset || !generation) throw new Error("invalid guest mapping identity");
     return `${guestMappingPrefix}${range.offset}/${generation}`;
   };
@@ -1801,7 +1821,7 @@ export function buildDlopenImports(
     if (!name.startsWith(guestMappingPrefix)) return undefined;
     const address = Number(name.slice(guestMappingPrefix.length).split("/")[0]);
     if (guestMappingName(address) !== name) throw new Error("invalid guest mapping key");
-    return processDataView(memory, address, 20);
+    return processDataView(memory, address, guestRecordSize);
   };
   const guestBindingImports = (imports: readonly WebAssembly.ModuleImportDescriptor[]) => {
     const bindings: { name: string; kind: number }[] = [];
@@ -1820,7 +1840,7 @@ export function buildDlopenImports(
   let inspected: { source: number; bytes: Uint8Array; module: WebAssembly.Module } | undefined;
   let preparedGuestModule: { name: string; module: WebAssembly.Module } | undefined;
 
-  function mapGuestModule(packetPtr: number, packetLength: number, action: number): number {
+  function mapGuestModule(packetPtr: WasmGuestPointer, packetLength: number, action: number): number {
     if (!acquireMainDlopenLock()) return -22;
     let transaction = 0;
     try {
@@ -1828,26 +1848,24 @@ export function buildDlopenImports(
       const packet = checkedWasmMemoryRange(
         memory, packetPtr, packetLength, ptrWidth, "guest module request",
       );
-      if (packet.length !== 16) return -22;
-      const readWord = (offset: number): number =>
-        processDataView(memory, packet.offset, packet.length).getUint32(offset, true);
+      if (packet.length !== 4 * ptrWidth) return -22;
+      const request = processDataView(memory, packet.offset, packet.length);
+      const readField = (index: number): number => readGuestWord(request, index);
       if (action === LOADER_INSPECT) {
         inspected = undefined;
-        if (readWord(4) > 64 * 1024 * 1024) return -22;
-        const source = checkedWasmMemoryRange(
-          memory, readWord(0), readWord(4), ptrWidth, "guest module bytes",
-        );
-        const output = checkedWasmMemoryRange(
-          memory, readWord(8), readWord(12), ptrWidth, "guest module metadata",
-        );
+        if (readField(1) > 64 * 1024 * 1024) return -22;
+        const source = guestRange(readField(0), readField(1), "guest module bytes");
+        const output = guestRange(readField(2), readField(3), "guest module metadata");
         const bytes = readProcessBytes(memory, source.offset, source.length);
         const metadata = parseDylinkSection(bytes);
         if (!metadata || metadata.tlsExports.size ||
             metadata.neededDynlibs.length > LOADER_MAX_IMPORTS) return -22;
         const compiled = new WebAssembly.Module(bytes);
         const imports = WebAssembly.Module.imports(compiled);
-        const rows = guestBindingImports(imports).map(({ name, kind }) =>
-          ({ name: encoder.encode(name), kind }));
+        const rows = guestBindingImports(imports).map(({ name, kind }) => ({
+          name: encoder.encode(name),
+          kind: metadata.weakImports.has(name) ? kind | LOADER_BIND_WEAK : kind,
+        }));
         if (rows.length > LOADER_MAX_IMPORTS) return -22;
         const [symtab, duplicate] = WebAssembly.Module.customSections(compiled, "kandelo.dynsym.v1");
         if (!symtab || duplicate) return -22;
@@ -1880,17 +1898,15 @@ export function buildDlopenImports(
       }
       const linker = getLinker();
       if (action === LOADER_RETIRE) {
-        const retired = linker.retireGuestMapping(guestMappingName(readWord(0)));
+        const retired = linker.retireGuestMapping(guestMappingName(readField(0)));
         if (retired) notifyCommit(forkArchive.sync(linker.forkState()));
         return retired ? 0 : -22;
       }
       if (action === LOADER_MAP) {
-        const name = guestMappingName(readWord(8));
+        const name = guestMappingName(readField(2));
         if (preparedGuestModule || loadedLibraries.has(name) ||
-            readWord(4) > 64 * 1024 * 1024) return -22;
-        const source = checkedWasmMemoryRange(
-          memory, readWord(0), readWord(4), ptrWidth, "guest module bytes",
-        );
+            readField(1) > 64 * 1024 * 1024) return -22;
+        const source = guestRange(readField(0), readField(1), "guest module bytes");
         const prepared = inspected;
         inspected = undefined;
         const reuse = prepared?.source === source.offset && prepared.bytes.length === source.length;
@@ -1898,7 +1914,7 @@ export function buildDlopenImports(
         // retains the original bytes through MAP, including across a fork.
         const bytes = reuse ? prepared.bytes :
           readProcessBytes(memory, source.offset, source.length);
-        linker.guestTableHighWater(readWord(12));
+        linker.guestTableHighWater(readField(3));
         claimLoaderOwnership();
         transaction = linker.beginDlopenSync(name, bytes, false);
         if (transaction <= 0) {
@@ -1910,11 +1926,11 @@ export function buildDlopenImports(
         return transaction;
       }
       if (action !== LOADER_ADVANCE) return -22;
-      transaction = readWord(0);
+      transaction = readField(0);
       if (!ownedDlopenTransactions.has(transaction)) return -22;
       const entry = linker.nextDlopenInitialization(transaction);
       const result = processDataView(memory, packet.offset, packet.length);
-      result.setUint32(12, linker.guestTableHighWater(), true);
+      writeGuestWord(result, 3, linker.guestTableHighWater());
       if (entry > 0) {
         notifyCommit(forkArchive.sync(linker.forkState()));
         return entry;
@@ -1928,8 +1944,8 @@ export function buildDlopenImports(
       releaseLoaderOwnershipIfIdle();
       notifyCommit(forkArchive.sync(linker.forkState()));
       if (!mapped) return -22;
-      result.setUint32(4, mapped.tableBase, true);
-      result.setUint32(8, mapped.memoryBase, true);
+      writeGuestWord(result, 1, mapped.tableBase);
+      writeGuestWord(result, 2, mapped.memoryBase);
       return 0;
     } catch (error) {
       if (transaction && ownedDlopenTransactions.delete(transaction)) {
@@ -2015,43 +2031,40 @@ export function buildDlopenImports(
         preparedGuestModule = undefined;
         return compiled;
       },
-      guestModuleGeneration: (moduleName) => guestRecord(moduleName)?.getUint32(16, true),
+      guestModuleGeneration: (moduleName) => guestRecord(moduleName)?.getUint32(guestGenerationOffset, true),
       guestModuleDependencies: (moduleName, expectedCount) => {
         const record = guestRecord(moduleName);
         if (!record) return undefined;
-        const count = record.getUint32(12, true);
+        const count = record.getUint32(2 * ptrWidth + 4, true);
         if (count !== expectedCount || count > LOADER_MAX_IMPORTS)
           throw new Error("guest mapping dependency count differs from dylink metadata");
-        const range = checkedWasmMemoryRange(
-          memory, record.getUint32(8, true), count * 4, ptrWidth, "guest dependency vector",
-        );
+        const range = guestRange(readGuestWord(record, 1), count * ptrWidth, "guest dependency vector");
         const vector = processDataView(memory, range.offset, range.length);
         return Array.from({ length: count }, (_, i) => {
-          const name = guestMappingName(vector.getUint32(i * 4, true));
+          const name = guestMappingName(readGuestWord(vector, i));
           if (!loadedLibraries.has(name))
             throw new Error("guest mapping requires an existing dependency");
           return name;
         });
       },
-      guestModuleBindings: (moduleName, imports, replaying) => {
+      guestModuleBindings: (moduleName, imports, replaying, weakImports) => {
         const record = guestRecord(moduleName);
         if (!record) return undefined;
         const names = guestBindingImports(imports);
-        if (names.length > LOADER_MAX_IMPORTS || names.length !== record.getUint32(4, true))
+        if (names.length > LOADER_MAX_IMPORTS || names.length !== record.getUint32(2 * ptrWidth, true))
           throw new Error("guest mapping import count differs from its binding vector");
-        const range = checkedWasmMemoryRange(
-          memory, record.getUint32(0, true), names.length * 12, ptrWidth, "guest binding vector",
-        );
+        const range = guestRange(readGuestWord(record, 0), names.length * 3 * ptrWidth, "guest binding vector");
         const view = processDataView(memory, range.offset, range.length);
         const functions = new Map<string, Function>();
-        const globals = new Map<string, number>();
+        const globals = new Map<string, { address: number; relative: boolean }>();
         const providers = new Set<string>();
         names.forEach(({ name, kind }, index) => {
-          const address = view.getUint32(index * 12, true);
-          const provider = view.getUint32(index * 12 + 8, true);
+          const address = readGuestWord(view, index * 3);
+          const provider = readGuestWord(view, index * 3 + 2);
+          const providerName = provider ? guestMappingName(provider) : undefined;
+          const relative = providerName === moduleName;
           let exports = inst?.exports;
-          if (provider) {
-            const providerName = guestMappingName(provider);
+          if (providerName && !relative) {
             const library = loadedLibraries.get(providerName);
             if (!library) throw new Error(`guest mapping import ${name} has no mapped provider`);
             providers.add(providerName);
@@ -2060,12 +2073,18 @@ export function buildDlopenImports(
           if (kind !== LOADER_BIND_DIRECT) {
             const key = `${kind === LOADER_BIND_DATA ? "mem" : "func"}:${name}`;
             const prior = globals.get(key);
-            if (prior !== undefined && prior !== address)
+            if (prior && (prior.address !== address || prior.relative !== relative))
               throw new Error(`guest mapping import ${name} has inconsistent GOT values`);
-            globals.set(key, address);
+            globals.set(key, { address, relative });
             return;
           }
-          const nameAddress = view.getUint32(index * 12 + 4, true);
+          const nameAddress = readGuestWord(view, index * 3 + 1);
+          if (!address && !nameAddress && !provider && weakImports.has(name)) {
+            functions.set(name, () => {
+              throw new WebAssembly.RuntimeError(`unresolved weak side import ${name}`);
+            });
+            return;
+          }
           const memoryLength = processMemoryByteLength(memory);
           if (!address || !nameAddress || nameAddress >= memoryLength)
             throw new Error(`guest mapping import ${name} has an invalid binding`);
@@ -2080,7 +2099,7 @@ export function buildDlopenImports(
           // Fork reconstructs dependencies first and applies the table overlay
           // later. Use the already-attached provider's fresh engine reference.
           if (typeof target !== "function" || (!replaying &&
-              (address >= table.length || table.get(address) !== target)))
+              (address >= tableLength(table) || getTableEntry(table, address) !== target)))
             throw new Error(`guest mapping import ${name} has no callable provider`);
           const prior = functions.get(name);
           if (prior && prior !== target)

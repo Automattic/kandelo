@@ -6,6 +6,7 @@ inputs = [
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",
   "sdk/activate.sh",
+  "sdk/lld/0001-kandelo-dynamic-symbol-index.patch",
   "sdk/cmake/Platform/Kandelo.cmake",
   "sdk/src/plugin/KandeloCallTypes.cpp",
   "sdk/src/plugin/KandeloFnCasts.cpp",

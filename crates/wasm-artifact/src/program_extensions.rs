@@ -4,14 +4,30 @@ use alloc::{format, string::String, vec::Vec};
 use wasm_posix_program_abi::program_extensions::{
     extension_import, is_extension_import_name, klog_v1 as klog, stack_v1 as stack,
     memory_group_growth_v1 as growth,
-    loader_v3 as loader,
+    loader_v1 as loader,
+    ABI56_LOADER_IMPORTS,
     RESERVED_MODULE_PREFIX,
 };
+
+pub fn uses_abi56_loader(facts: &ArtifactFacts) -> bool {
+    facts.function_import_entries.iter().any(|entry| {
+        entry.module == "env" && ABI56_LOADER_IMPORTS.contains(&entry.name.as_str())
+    })
+}
 
 pub const IMPLEMENTED: &[&str] = &[stack::MODULE, klog::MODULE, loader::MODULE];
 
 pub fn describe_failures(facts: &ArtifactFacts, supported: &[&str]) -> Vec<String> {
     let mut failures = Vec::new();
+    if uses_abi56_loader(facts)
+        && facts
+            .function_import_entries
+            .iter()
+            .any(|entry| entry.module == loader::MODULE)
+    {
+        failures.push("artifact mixes the ABI-56 loader with the process-owned loader".into());
+    }
+
     for import in &facts.import_descriptors {
         if !import.module.starts_with(RESERVED_MODULE_PREFIX)
             && !is_extension_import_name(&import.name)
@@ -59,10 +75,6 @@ pub fn describe_failures(facts: &ArtifactFacts, supported: &[&str]) -> Vec<Strin
         let width = facts.memory_pointer_widths.first().copied().unwrap_or(0);
         if facts.memory_pointer_widths.len() != 1 || ![4, 8].contains(&width) {
             failures.push(format!("{identity} requires one process memory"));
-            continue;
-        }
-        if import.module == loader::MODULE && width != 4 {
-            failures.push(format!("{identity} requires wasm32"));
             continue;
         }
         let expected = [if width == 8 { 0x7e } else { 0x7f }, 0x7f, 0x7f];

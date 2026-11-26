@@ -7,4 +7,4 @@ __attribute__((visibility("default")))
 int dependency_data = 19;
 
 __attribute__((visibility("default")))
-int dependency_value(void) { return 19; }
+int dependency_value(void) { return dependency_data; }

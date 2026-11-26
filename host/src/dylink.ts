@@ -483,7 +483,7 @@ function tableAddress(
   return wasmAddress(value, tableWidth, context);
 }
 
-function tableLength(table: WebAssembly.Table): number {
+export function tableLength(table: WebAssembly.Table): number {
   const rawLength = (table as unknown as AddressedTable).length;
   const tableWidth = typeof rawLength === "bigint" ? 8 : 4;
   requireWasmAddress(rawLength, tableWidth, "dynamic-linker table length");
@@ -499,7 +499,7 @@ function growTable(table: WebAssembly.Table, delta: number): void {
   addressed.grow(tableAddress(table, delta, "dynamic-linker table growth"));
 }
 
-function getTableEntry(
+export function getTableEntry(
   table: WebAssembly.Table,
   index: number,
 ): Function | null {
@@ -795,7 +795,7 @@ export interface DylinkForkReconcileOptions {
  */
 export interface GuestModuleBindings {
   readonly functions: ReadonlyMap<string, Function>;
-  readonly globals: ReadonlyMap<string, number>;
+  readonly globals: ReadonlyMap<string, { address: number; relative: boolean }>;
   readonly providers: ReadonlySet<string>;
 }
 
@@ -808,6 +808,7 @@ export interface LoadSharedLibraryOptions {
     moduleName: string,
     imports: readonly WebAssembly.ModuleImportDescriptor[],
     replaying: boolean,
+    weakImports: ReadonlySet<string>,
   ) => GuestModuleBindings | undefined;
   withModuleInstantiation?: <T>(operation: () => T) => T;
   /** Process storage for metadata and main-symbol operations. Side-module
@@ -1243,7 +1244,7 @@ function* instantiateSharedLibrarySteps(
     registerWasmModuleReflection(module, borrowedModuleBytes);
   }
   const moduleImports = wasmModuleImports(module);
-  const guestBindings = options.guestModuleBindings?.(name, moduleImports, replay !== undefined);
+  const guestBindings = options.guestModuleBindings?.(name, moduleImports, replay !== undefined, metadata.weakImports);
   checkSideModuleForkContract(
     name,
     moduleImports,
@@ -1706,9 +1707,11 @@ function* instantiateSharedLibrarySteps(
             wasmAddress(memoryBase, ptrWidth, `${name}: DSO identity`));
         }
         const key = `${kind}:${symName}`;
-        const value = guestBindings.globals.get(key);
-        if (value === undefined)
+        const binding = guestBindings.globals.get(key);
+        if (!binding)
           throw new Error(`${name}: missing planned GOT.${kind} binding for ${symName}`);
+        const base = kind === "mem" ? memoryBase : tableBase;
+        const value = binding.relative ? base + binding.address : binding.address;
         let cell = localGot.get(key);
         if (!cell) {
           cell = new WebAssembly.Global({ value: pointerGlobalType, mutable: true },
@@ -3655,6 +3658,7 @@ export class DynamicLinker {
   guestTableHighWater(floor = 0): number {
     const table = this.options.table;
     const length = tableLength(table);
+    if (floor > 0x7fff_ffff) throw new RangeError("guest module table floor exceeds the loader limit");
     if (floor > length) growTable(table, floor - length);
     return Math.max(length, floor);
   }

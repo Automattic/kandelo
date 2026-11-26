@@ -75,6 +75,7 @@ echo "==> Applying LLVM portability and wasm-only driver patches..."
 for p in "$SCRIPT_DIR"/patches/*.patch; do
   patch -p1 -d "$LLVM_SRC_DIR" < "$p"
 done
+patch -p1 -d "$LLVM_SRC_DIR" < "$REPO_ROOT/sdk/lld/0001-kandelo-dynamic-symbol-index.patch"
 
 # --- The KandeloCallTypes compiler plugin, compiled into clang ---
 # Every compile through the SDK records compiler facts for fork

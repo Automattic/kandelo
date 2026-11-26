@@ -6,16 +6,19 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 
 const root = join(__dirname, "../..");
+const wasm64 = process.env.KANDELO_LOADER_FIXTURE_ARCH === "wasm64posix";
+const fixtureDir = join(root, ".scratch", wasm64 ? "dynsym-wasm64" : "");
+
 
 it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
   "resolves executable symbols locally and preserves their slots through fork",
   { timeout: 120_000 },
   async () => {
-    const program = join(root, ".scratch/process-dynsym.wasm");
-    const linked = join(root, ".scratch/process-dynsym.linked.wasm");
+    const program = join(fixtureDir, "process-dynsym.wasm");
+    const linked = join(fixtureDir, "process-dynsym.linked.wasm");
     const tool = join(root, "scripts/run-wasm-fork-instrument.sh");
     const report = execFileSync(tool, [linked, "--sink-report"], { encoding: "utf8" });
-    expect(report.split("\n")[0], report).toBe("source\tfacts");
+    expect(report.split("\n")[0], report).toBe(wasm64 ? "source\tbuiltin" : "source\tfacts");
 
     const module = new WebAssembly.Module(readFileSync(program));
     expect(WebAssembly.Module.imports(module).filter(({ name }) => /^__wasm_dl/.test(name)))
@@ -45,19 +48,19 @@ it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1").each([
   "maps $side and forks with and within it",
   { timeout: 120_000 },
   async ({ side, needed }) => {
-    const programPath = join(root, ".scratch/process-dynsym-mapped.wasm");
+    const programPath = join(fixtureDir, "process-dynsym-mapped.wasm");
     const module = new WebAssembly.Module(readFileSync(programPath));
     const imports = WebAssembly.Module.imports(module);
     expect(imports.filter(({ name }) => /^__wasm_dl/.test(name))).toEqual([]);
     expect(imports).toContainEqual({
-      module: "kandelo.loader.prototype.v3",
-      name: "__kandelo_map_module_v3",
+      module: "kandelo.loader.v1",
+      name: "__kandelo_map_module_v1",
       kind: "function",
     });
 
     const path = "/lib/dynsym-fixture.so";
-    const execPrograms = new Map([[path, join(root, ".scratch", side)]]);
-    if (needed) execPrograms.set("/lib/dynsym-dependency.so", join(root, ".scratch/dynsym-dependency.so"));
+    const execPrograms = new Map([[path, join(fixtureDir, side)]]);
+    if (needed) execPrograms.set("/lib/dynsym-dependency.so", join(fixtureDir, "dynsym-dependency.so"));
     const result = await runCentralizedProgram({
       programPath,
       argv: ["process-dynsym", path, ...(needed ? ["dependency"] : [])],
@@ -100,14 +103,13 @@ it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
   "serializes named loads and closes, including nested initialization",
   { timeout: 120_000 },
   async () => {
-    const scratch = join(root, ".scratch");
     const plugin = "/lib/dynsym-lifecycle.so";
     const result = await runCentralizedProgram({
-      programPath: join(scratch, "process-dynsym-lifecycle.wasm"),
+      programPath: join(fixtureDir, "process-dynsym-lifecycle.wasm"),
       argv: ["dynsym-lifecycle", plugin],
       execPrograms: new Map([
-        [plugin, join(scratch, "dynsym-lifecycle.so")],
-        ["/lib/dynsym-dependency.so", join(scratch, "dynsym-dependency.so")],
+        [plugin, join(fixtureDir, "dynsym-lifecycle.so")],
+        ["/lib/dynsym-dependency.so", join(fixtureDir, "dynsym-dependency.so")],
       ]),
       useDefaultRootfs: false,
       timeout: 45_000,
