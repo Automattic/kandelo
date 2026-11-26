@@ -1797,8 +1797,13 @@ A fork-using program goes through Binaryen's `wasm-opt` once or twice:
    it as `wasm-ld` wrote it, so the compiler facts still describe the
    linked functions (see "Links" in the
    [SDK guide](sdk-guide.md#compiler-facts-for-fork-instrumentation)). Some
-   recipes (bash, git's `git-remote-http`, php, vim) run their own
-   `wasm-opt -O2` before instrumenting. Inlining, dead-function removal and
+   recipes (CPython, Git's `git-remote-http`, PHP, Vim) run their own
+   `wasm-opt -O2` before instrumenting. A recipe can also use a
+   [fork optimization profile](package-management.md#fork-optimization-profiles)
+   to request the pre-pass through the installer. The instrumenter drops
+   the original call-type and source-location sections before this pass and
+   uses the full fork closure. Inlining can erase the source-level patterns
+   that the sink analysis uses. Inlining, dead-function removal and
    identical-function merging shrink the call graph the instrumenter has
    to cover. Quickshell's raw link has 108,860 functions on the fork path;
    after `wasm-opt -O2` it has 51,960.
@@ -1838,6 +1843,15 @@ Instrumenting the raw link instead (last column) gives up step 1: every
 function of the unoptimized graph gets instrumented, and wasm-opt does not
 recover that afterwards. On C programs the difference is small; on Qt
 programs it is large.
+
+In a matched ABI 56 build of Vim 9.1.0900 at `c2a3365cf` with Binaryen
+133, the recipe's `-O2` pre-pass followed by instrumentation and final
+`-Os` gave a 5,133,557-byte module with 3,496 instrumented functions.
+Instrumentation of the same raw link bound compiler facts to 5,733 of
+5,736 functions and instrumented 4,374. The facts-first module was
+5,148,560 bytes with final `-Os` and 5,165,049 bytes with final `-O2`.
+Vim explicitly uses `--no-facts` after pre-optimization to select analysis
+of that rewritten input.
 
 Why a pass after instrumentation is safe:
 
@@ -2457,7 +2471,10 @@ unchanged.
 
 Flags:
 
-- `--no-facts` ignores the facts (diagnosis).
+- `--no-facts` selects analysis without compiler facts. Use it for
+  diagnosis or when the recipe intentionally plans from rewritten Wasm.
+- `--require-facts` requires that the instrumentation plan use compiler facts
+  and that the facts bind to at least one linked function.
 - `--no-effective-types` applies C's effective-type rule nowhere.
 - `--side-modules=traced-entries|assume-all-entries-fork-returning` (above).
 - `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts>`),

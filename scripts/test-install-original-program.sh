@@ -50,6 +50,24 @@ cmp "$work/expected-original" "$work/output/originals/app.wasm"
     --verify-original "$work/output/originals/app.wasm"
 [ ! -x "$work/output/originals/app.wasm" ] || fail "raw companion is executable"
 
+export WASM_POSIX_INSTALL_OUTPUT_METADATA='[
+  {"source_artifact":"profiled.wasm","mirror_path":"profiled.wasm","fork_instrumentation":"auto","fork_pre_optimize":"Oz","fork_post_optimize":"O2","original_wasm":"originals/profiled.wasm"},
+  {"source_artifact":"strict.wasm","mirror_path":"strict.wasm","fork_instrumentation":"auto","fork_require_facts":true}
+]'
+cp "$work/expected-original" "$work/sources/profiled"
+install_local_binary fixture "$work/sources/profiled" profiled.wasm
+cmp "$work/expected-original" "$work/output/originals/profiled.wasm"
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$work/expected-original" \
+    -o "$work/expected-profiled" --pre-optimize Oz --post-optimize O2
+cmp "$work/expected-profiled" "$work/output/profiled.wasm"
+if install_local_binary fixture "$work/expected-original" strict.wasm; then
+    fail "accepted an executable with missing required facts"
+fi
+[ ! -e "$work/output/strict.wasm" ] || fail "published after facts refusal"
+if install_local_binary fixture "$work/output/profiled.wasm" profiled.wasm; then
+    fail "accepted a prepared executable with a policy for raw inputs"
+fi
+
 printf '(module (func (export "_start")))\n' >"$work/plain.wat"
 wat2wasm "$work/plain.wat" -o "$work/sources/plain"
 cp "$work/sources/plain" "$work/expected-plain"

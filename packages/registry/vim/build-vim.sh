@@ -271,15 +271,14 @@ SIZE_BEFORE=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
 # --- Size optimization + fork instrumentation ---
-# wasm-opt -O2 runs first so instrumentation covers the smaller, inlined
-# call graph; wasm-fork-instrument then runs its own wasm-opt pass over the
-# code it adds. It auto-discovers fork paths via call-graph analysis, so no
-# onlylist file is needed.
+# Optimizing first produced a smaller instrumented Vim in the ABI 56
+# comparison (see docs/fork-instrumentation.md). The rewrite invalidates
+# the linked compiler facts, so explicitly plan from the resulting Wasm.
 echo "==> Optimizing vim.wasm with wasm-opt -O2..."
 "$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
 
 echo "==> Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm.instr"
+"$FORK_INSTRUMENT" "$BIN_DIR/vim.wasm" --no-facts -o "$BIN_DIR/vim.wasm.instr"
 mv "$BIN_DIR/vim.wasm.instr" "$BIN_DIR/vim.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')

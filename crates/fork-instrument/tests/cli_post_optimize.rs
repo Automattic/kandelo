@@ -24,6 +24,72 @@ const PLAIN_WAT: &str = r#"
   (func (export "_start")))
 "#;
 
+#[test]
+fn pre_optimization_strips_facts_and_uses_the_fork_closure() {
+    let dir = TempDir::new("pre-optimized");
+    let input = dir.join("input.wasm");
+    let wat = FORK_WAT.replacen(
+        "(module",
+        "(module (@custom \"kandelo.calltypes\" \"stale\")",
+        1,
+    );
+    fs::write(&input, wat::parse_str(wat).unwrap()).unwrap();
+    let report = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
+        .arg(&input)
+        .args(["--pre-optimize", "Oz", "--sink-report"])
+        .output()
+        .unwrap();
+    assert!(report.status.success(), "{:?}", report);
+    let report = String::from_utf8(report.stdout).unwrap();
+    assert!(report.starts_with("source\tclosure\n"), "{report}");
+    assert!(!report.contains("facts-error"), "{report}");
+    let output = dir.join("output.wasm");
+    let result = instrument(&input, &output, &["--pre-optimize", "Oz"], None);
+    assert!(result.status.success(), "{:?}", result);
+    let output = fs::read(output).unwrap();
+    assert!(has_custom_section(&output, "kandelo.wpk_fork.capabilities"));
+    assert!(!has_custom_section(&output, "kandelo.calltypes"));
+}
+
+#[test]
+fn requiring_facts_checks_the_actual_plan_before_publication() {
+    use fork_instrument::facts;
+    use wasm_encoder::{CustomSection, Encode};
+
+    let dir = TempDir::new("require-facts");
+    let input = dir.join("input.wasm");
+    let output = dir.join("output.wasm");
+    let raw = wat::parse_str(include_str!("fixtures/typed_dispatch.wat")).unwrap();
+    let hash = facts::code_sha256(&raw).unwrap();
+    let fixtures = [
+        (raw.clone(), [0; 32], false),
+        (without_names(raw.clone()), hash, false),
+        (raw, hash, true),
+    ];
+    for (mut bytes, hash, accepted) in fixtures {
+        for (name, data) in [
+            (facts::SECTION, include_bytes!("fixtures/typed_dispatch.calltypes").as_slice()),
+            (facts::CODE_HASH_SECTION, &hash),
+        ] {
+            bytes.push(0);
+            CustomSection { name: name.into(), data: data.into() }.encode(&mut bytes);
+        }
+        fs::write(&input, bytes).unwrap();
+        fs::write(&output, b"existing output").unwrap();
+        let result = instrument(
+            &input,
+            &output,
+            &["--require-facts", "--post-optimize", "none"],
+            None,
+        );
+        assert_eq!(result.status.success(), accepted, "{:?}", result);
+        if !accepted {
+            assert!(String::from_utf8_lossy(&result.stderr).contains("requires compiler facts"));
+            assert_eq!(fs::read(&output).unwrap(), b"existing output");
+        }
+    }
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {

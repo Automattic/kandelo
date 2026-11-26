@@ -279,8 +279,14 @@ patch that compensates for that, consider building the package inside Kandelo
 with `scripts/guest-build.sh`. See "Building inside Kandelo" in
 `docs/package-management.md` for the recipe contract.
 
-Fork-using packages must be instrumented with
-`scripts/run-wasm-fork-instrument.sh` after linking and after optimization.
+Fork-using packages must run `scripts/run-wasm-fork-instrument.sh` on
+linked Wasm. Preserve linked code, names and call-type sections when the
+recipe relies on compiler facts. A recipe that checks for usable facts
+should check both the `source facts` line and a positive `bound` count in
+`--sink-report`. By default, the instrumenter optimizes the whole module
+after instrumentation. If a recipe also optimizes before instrumentation,
+document the package-specific reason and validate the resulting fork behavior.
+See [optimization around instrumentation](../fork-instrumentation.md#optimization-around-instrumentation).
 Missing `wpk_fork_*` exports are a build/runtime error. Legacy Asyncify
 artifacts are stale and must be rebuilt, not supported.
 

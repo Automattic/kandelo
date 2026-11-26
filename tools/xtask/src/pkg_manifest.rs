@@ -121,6 +121,79 @@ impl ForkInstrumentationPolicy {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ForkPreOptimize {
+    #[default]
+    #[serde(rename = "none")]
+    None,
+    O2,
+    Oz,
+}
+
+impl ForkPreOptimize {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::O2 => "O2",
+            Self::Oz => "Oz",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ForkPostOptimize {
+    #[default]
+    Os,
+    O2,
+    Oz,
+}
+
+impl ForkPostOptimize {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Os => "Os",
+            Self::O2 => "O2",
+            Self::Oz => "Oz",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkOptimization {
+    pub pre: Option<ForkPreOptimize>,
+    pub post: Option<ForkPostOptimize>,
+    pub require_facts: Option<bool>,
+}
+
+impl ForkOptimization {
+    fn with_default(self, default: Self) -> Self {
+        Self {
+            pre: self.pre.or(default.pre),
+            post: self.post.or(default.post),
+            require_facts: self.require_facts.or(default.require_facts),
+        }
+    }
+
+    pub fn pre(self) -> ForkPreOptimize {
+        self.pre.unwrap_or_default()
+    }
+
+    pub fn post(self) -> ForkPostOptimize {
+        self.post.unwrap_or_default()
+    }
+
+    pub fn requires_facts(self) -> bool {
+        self.require_facts.unwrap_or_default()
+    }
+
+    pub fn is_default(self) -> bool {
+        self.pre() == ForkPreOptimize::None
+            && self.post() == ForkPostOptimize::Os
+            && !self.requires_facts()
+    }
+}
+
 /// One entry in a `kind = "program"` manifest's `[[outputs]]` array.
 ///
 /// Each program declares one or more wasm artifacts. `name` is the
@@ -133,6 +206,8 @@ pub struct ProgramOutput {
     pub wasm: String,
     #[serde(default)]
     pub fork_instrumentation: ForkInstrumentationPolicy,
+    #[serde(default)]
+    pub fork_optimization: ForkOptimization,
     #[serde(default)]
     pub original_wasm: Option<String>,
     /// Derive this ZIP output from another ordinary executable output using
@@ -1340,6 +1415,8 @@ impl std::fmt::Display for DepRef {
 #[serde(deny_unknown_fields)]
 struct Raw {
     kind: ManifestKind,
+    #[serde(default)]
+    fork_optimization: ForkOptimization,
     name: String,
     version: String,
     /// Legacy publish-time counter. Required on `validate_archived`
@@ -1670,6 +1747,9 @@ impl DepsManifest {
     }
 
     fn validate_common(raw: Raw, dir: PathBuf) -> Result<Self, String> {
+        if raw.kind != ManifestKind::Program && raw.fork_optimization != ForkOptimization::default() {
+            return Err("fork_optimization is supported only for program packages".into());
+        }
         if raw.name.is_empty() {
             return Err("name must not be empty".into());
         }
@@ -1998,7 +2078,7 @@ impl DepsManifest {
                             .into(),
                     );
                 }
-                let program_outputs: Vec<ProgramOutput> = raw
+                let mut program_outputs: Vec<ProgramOutput> = raw
                     .outputs
                     .try_into()
                     .map_err(|e| format!("parse [[outputs]] array: {e}"))?;
@@ -2007,12 +2087,26 @@ impl DepsManifest {
                         "kind = \"program\" must declare at least one [[outputs]] entry".into(),
                     );
                 }
-                for (idx, out) in program_outputs.iter().enumerate() {
+                for (idx, out) in program_outputs.iter_mut().enumerate() {
                     validate_single_path_component(&out.name, &format!("[[outputs]][{idx}].name"))?;
                     if out.wasm.is_empty() {
                         return Err(format!("[[outputs]][{idx}].wasm must not be empty"));
                     }
                     validate_output_path(&out.wasm, &format!("[[outputs]][{idx}].wasm"))?;
+                    let can_instrument = out.fork_instrumentation == ForkInstrumentationPolicy::Auto
+                        && out.wasm.ends_with(".wasm");
+                    if can_instrument {
+                        out.fork_optimization = out.fork_optimization.with_default(raw.fork_optimization);
+                    }
+                    let optimization = out.fork_optimization;
+                    if !optimization.is_default()
+                        && (!can_instrument || raw.arches.iter().any(|arch| *arch != TargetArch::Wasm32))
+                    {
+                        return Err(format!("fork_optimization for {:?} requires an auto-instrumented wasm32 output", out.wasm));
+                    }
+                    if optimization.pre() != ForkPreOptimize::None && optimization.requires_facts() {
+                        return Err(format!("fork_optimization for {:?} cannot require facts after pre-optimization", out.wasm));
+                    }
                     if let Some(original) = &out.original_wasm {
                         validate_output_path(original, &format!("[[outputs]][{idx}].original_wasm"))?;
                     }

@@ -122,6 +122,19 @@ pub(super) struct Cli {
     #[arg(long, default_value = "Os", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
     pub(super) post_optimize: String,
 
+    /// Optimize a raw wasm32 fork executable before planning, using its rewritten Wasm.
+    #[arg(long, value_parser = ["O2", "Oz"], conflicts_with_all = [
+        "require_facts", "retain_uninstrumented", "debug_map", "streaming_scan",
+        "contract_inventory", "artifact_identity", "original_reference", "verify_original",
+        "debug_location", "fork_capability_hex", "linked_frame_descriptor_hex",
+        "reserved_env_imports", "legacy_asyncify_exports",
+    ])]
+    pub(super) pre_optimize: Option<String>,
+
+    /// Require that this instrumentation plan use compiler facts with function bindings.
+    #[arg(long, requires = "output", conflicts_with_all = ["no_facts", "no_sinks", "retain_uninstrumented"])]
+    pub(super) require_facts: bool,
+
     /// Debugging: keep the name section through the post-optimize pass
     /// (`wasm-opt -g`), so traps and profiles show function names.
     #[arg(long)]
