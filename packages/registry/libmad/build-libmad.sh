@@ -19,7 +19,10 @@ if [ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" != wasm32 ]; then
     exit 1
 fi
 
-export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+# Upstream enables both C and CXX and links a target executable for each probe.
+base_sysroot="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+private_sysroot="$(kandelo_package_prepare_private_sysroot libmad "$base_sysroot" libcxx)"
+export WASM_POSIX_SYSROOT="$private_sysroot"
 kandelo_package_stage_primary_source libmad "$SRC_DIR" "$WORK_DIR"
 
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/libmad -fdebug-prefix-map=$WORK_DIR=/usr/src/libmad -fmacro-prefix-map=$WORK_DIR=/usr/src/libmad"
