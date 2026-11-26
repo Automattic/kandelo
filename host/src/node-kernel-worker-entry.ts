@@ -205,7 +205,6 @@ import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
   configureRootfsOverlayFromImage,
   createProcessLifecycle,
-  handleThreadExit,
   isMissingPathError,
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
@@ -1292,7 +1291,7 @@ async function handleInit(msg: InitMessage) {
         "a pthread Worker",
         () => handleClone(attachment),
       ),
-      onThreadExit: (pid, tid, channelOffset) => groupedSession?.threadExit(pid, tid) || handleThreadExit(pid, channelOffset),
+      onThreadExit: (pid, tid) => groupedSession?.threadExit(pid, tid) ?? false,
       onExit: handleExit,
     },
   );

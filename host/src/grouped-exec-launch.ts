@@ -6,14 +6,13 @@ import type { ForkExternrefGeneration } from './fork-reference-broker';
 import type { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import type { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
 import type { CentralizedWorkerInitMessage } from './worker-protocol';
-import type { WorkerAdapter, WorkerHandle } from './worker-adapter';
+import type { WorkerAdapter } from './worker-adapter';
 import { retryKernelEntryResult } from './kernel-entry-retry';
 
 export interface GroupedExecWorkerOptions {
   readonly kernel: CentralizedKernelWorker;
   readonly request: PreparedExecLaunchRequest;
   readonly previousImage: PreparedGroupReplica;
-  readonly previousWorkers: readonly WorkerHandle[];
   readonly previousGeneration: ForkExternrefGeneration;
   readonly externrefs: ForkExternrefProcessOwner;
   readonly imports: ForkHostImportOwnerRuntime;
@@ -26,7 +25,7 @@ export interface GroupedExecWorkerOptions {
   readonly onStopped?: () => void | Promise<void>;
   /** Both images and old host references retired; kernel owns exit status. */
   readonly onTerminated?: (signal: number, status: number) => void;
-  readonly retirePreviousReferences: () => void | Promise<void>;
+  readonly retirePreviousReferences?: () => void | Promise<void>;
   readonly onRetired?: (previous: PreparedGroupReplica, replacement: PreparedGroupReplica) => void | Promise<void>;
   readonly onMessage: (message: any, worker: GroupedWorkerObjects) => void;
   readonly onError: (error: Error, worker: GroupedWorkerObjects) => void;
@@ -56,12 +55,9 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
             options.onCommitted();
             generation = options.externrefs.replaceGeneration(options.previousGeneration);
           },
-          joinPrevious: async () => {
-            await Promise.all(options.previousWorkers.map(worker => worker.terminate()));
-            await options.onStopped?.();
-          },
+          previousWorkersJoined: options.onStopped,
           retirePreviousReferences: async () => {
-            await options.retirePreviousReferences();
+            await options.retirePreviousReferences?.();
             options.externrefs.releaseGeneration(options.previousGeneration);
           },
           discardFuture: () => options.externrefs.releaseGeneration(generation),

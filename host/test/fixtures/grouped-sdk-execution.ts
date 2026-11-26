@@ -330,7 +330,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
           } });
           return prepareGroupedExecWorker({ kernel: execKernel, request, adapter: processAdapter, externrefs: owner, imports,
-            previousImage: rootHandle, previousWorkers: [processWorker, ...previousThreads.map(thread => thread.worker)],
+            previousImage: rootHandle,
             previousGeneration: generation, terminationProvesQuiescence: options.joinOnExit,
             onCommitted: () => {
               execHandoff = true;

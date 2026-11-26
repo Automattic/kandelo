@@ -41,7 +41,6 @@ type ExecRequest = Parameters<NonNullable<CentralizedKernelCallbacks['onGroupedE
 export class GroupedSessionRuntime {
   private readonly processes = new Map<number, Process>();
   private readonly threads = new Map<number, GroupedWorkerObjects>();
-  private readonly threadRetirements = new Map<number, Promise<void>>();
   private readonly exitPublications = new Set<Promise<void>>();
   private readonly externrefs = new ForkExternrefProcessOwner();
   private readonly imports = new ForkHostImportOwnerRuntime(this.externrefs);
@@ -253,42 +252,36 @@ export class GroupedSessionRuntime {
       adapter: this.adapter, imports: this.imports, generation: process.owner.generation, programBytes: process.bytes,
       terminationProvesQuiescence: this.joins, isCurrent: thread => this.threads.get(thread.tid) === thread,
       retain: thread => this.threads.set(thread.tid, thread), discard: thread => this.threads.delete(thread.tid),
-      onMessage: (message, thread) => { if (message.type === 'thread_exit') this.threadExit(thread.pid, thread.tid); else this.message(process, message); },
+      onMessage: message => this.message(process, message),
       onError: error => this.fault(process, error), onExit: (code, thread) => { if (code && !thread.quiescent) this.fault(process, Error(`Grouped pthread Worker exit ${code}`)); },
     });
   }
   threadExit(pid: number, tid: number): boolean {
     const thread = this.threads.get(tid), process = this.processes.get(pid);
     if (!thread || thread.pid !== pid) return false;
-    if (!process || thread.referencesDisposed || this.threadRetirements.has(tid)) return true;
-    const retirement = (async () => {
+    if (!process || thread.referencesDisposed) return true;
+    // The kernel calls this once after logical SYS_EXIT. The later Worker
+    // thread_exit message repeats it. Only the exact terminal fence proves stop.
+    void (async () => {
       await this.kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
       this.number(await retry(() => this.kernel.retireMemoryGroupThread(thread.handle)), 'retire grouped pthread');
       this.threads.delete(tid);
-    })();
-    this.threadRetirements.set(tid, retirement);
-    const settled = () => {
-      if (this.threadRetirements.get(tid) === retirement) this.threadRetirements.delete(tid);
-    };
-    void retirement.then(settled, error => { settled(); this.fault(process, error); });
+    })().catch(error => this.fault(process, error));
     return true;
   }
   exec(request: ExecRequest): ReturnType<NonNullable<CentralizedKernelCallbacks['onGroupedExec']>> {
     const { pid } = request;
     const previous = this.processes.get(pid);
     if (!previous || this.closed || !request.groupedExec) return Promise.resolve(-95);
-    const oldThreads = [...this.threads.values()].filter(thread => thread.pid === pid);
     return Promise.resolve(prepareGroupedExecWorker({ kernel: this.kernel, request, previousImage: previous.owner.handle,
-      previousWorkers: [previous.owner.worker, ...oldThreads.map(thread => thread.worker)],
       previousGeneration: previous.owner.generation, externrefs: this.externrefs, imports: this.imports, adapter: this.adapter,
       terminationProvesQuiescence: this.joins,
       isCurrent: owner => this.processes.get(owner.pid)?.owner === owner,
       onCommitted: () => { previous.replacing = true; },
-      retirePreviousReferences: async () => {
-        for (const thread of oldThreads) {
-          this.threads.delete(thread.tid);
+      retirePreviousReferences: () => {
+        for (const thread of this.threads.values()) {
+          if (thread.generation === previous.owner.generation) this.threads.delete(thread.tid);
         }
-
       },
       retain: owner => {
         const layout = request.groupedExec!.layout;
@@ -313,7 +306,7 @@ export class GroupedSessionRuntime {
       const members = [...this.threads.values()].filter(thread => thread.pid === pid);
       const retired = await retry(() => this.kernel.retireMemoryGroupImage(process.owner.handle));
       if (retired !== 0) throw Error(`Grouped image retirement pid=${pid}: errno ${-retired}`);
-      for (const thread of members) { this.threads.delete(thread.tid); this.threadRetirements.delete(thread.tid); }
+      for (const thread of members) this.threads.delete(thread.tid);
       if (this.processes.get(pid) === process) this.processes.delete(pid);
       await this.publishRetiredExit(pid, status, process.owner.generation.id);
     })();

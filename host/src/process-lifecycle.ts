@@ -200,20 +200,6 @@ export function isMissingPathError(err: unknown): boolean {
     message.startsWith("ENOENT: no mount for path");
 }
 
-/**
- * Acknowledge a kernel-completed thread exit.
- *
- * The kernel has finished the exit syscall, but the process worker may not
- * have resumed from `Atomics.wait` yet. Slot reclamation is authorized by the
- * worker's `memory_quiescent` message, never by `Worker.terminate()`, so
- * there is nothing to do here beyond reporting success.
- */
-export function handleThreadExit(pid: number, channelOffset: number): boolean {
-  void pid;
-  void channelOffset;
-  return true;
-}
-
 // ── Host-parameterised lifecycle ────────────────────────────────────────────
 
 /**
