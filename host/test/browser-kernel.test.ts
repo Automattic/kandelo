@@ -29,6 +29,7 @@ vi.mock("../src/browser-kernel-default-artifacts", () => {
     // WHY a function, not a URL constant: the canonical rootfs is resolved on
     // demand so it stays out of every entry point's eager dependency graph.
     browserDefaultRootfsVfsUrl: async () => "stub://default-rootfs",
+    browserDefaultMemoryInstrumenterUrl: async () => "stub://default-memory-instrumenter",
   };
 });
 
@@ -349,6 +350,55 @@ describe("BrowserKernel", () => {
 
     worker.simulateMessage({ type: "ready" });
     await initPromise;
+  });
+
+  it("fetches the bundled memory instrumenter only in share mode without explicit bytes", async () => {
+    const defaultInstrumenter = new Uint8Array([17, 18, 19]);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      expect(url).toBe("stub://default-memory-instrumenter");
+      return {
+        ok: true,
+        arrayBuffer: async () => defaultInstrumenter.buffer.slice(0),
+      };
+    }));
+    const BrowserKernel = await loadBrowserKernel();
+    const images = { kernelWasm: new Uint8Array([20]).buffer, vfsImage: new Uint8Array([21]) };
+
+    const fetched = new BrowserKernel({ kernelOwnedFs: true, forkMemory: "share" });
+    const fetchedInit = fetched.initFromImage(images);
+    while (MockWorker.instances.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const fetchedWorker = MockWorker.instances[0]!;
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(new Uint8Array(fetchedWorker.lastMessage("init").config.memoryInstrumenter))
+      .toEqual(defaultInstrumenter);
+    fetchedWorker.simulateMessage({ type: "ready" });
+    await fetchedInit;
+
+    const memoryInstrumenter = new Uint8Array([22]).buffer;
+    const explicit = new BrowserKernel({ kernelOwnedFs: true, forkMemory: "share", memoryInstrumenter });
+    const explicitInit = explicit.initFromImage(images);
+    while (MockWorker.instances.length === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const explicitWorker = MockWorker.instances[1]!;
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(explicitWorker.lastMessage("init").config.memoryInstrumenter).toBe(memoryInstrumenter);
+    explicitWorker.simulateMessage({ type: "ready" });
+    await explicitInit;
+  });
+
+  it("fails the boot when the bundled memory instrumenter cannot be fetched", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, statusText: "Not Found" })));
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true, forkMemory: "share" });
+
+    await expect(kernel.initFromImage({
+      kernelWasm: new Uint8Array([23]).buffer,
+      vfsImage: new Uint8Array([24]),
+    })).rejects.toThrow('forkMemory:"share" could not fetch the memory instrumenter (404 Not Found)');
+    expect(MockWorker.instances).toHaveLength(0);
   });
 
   it("snapshots and transfers an exhaustive lazy-asset binding to the worker", async () => {

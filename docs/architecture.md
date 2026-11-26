@@ -1769,6 +1769,62 @@ reuse or pooling of process memory must zero the destination first or use
 the dense copy; otherwise a child would keep the previous owner's bytes
 wherever its parent's page is zero.
 
+Copy-on-write fork is in progress behind the experimental `forkMemory`
+option of `NodeKernelHost` and `BrowserKernel` (default `"copy"`). It
+applies only to programs rewritten by `wasm-memory-instrument`
+(`crates/memory-instrument`), which translate every guest load and store
+through a per-process page table that starts at their
+`__memory_table_base` global. In `"share"` mode, a freshly spawned or
+exec'd image of such a program gets a 320 KiB group header at the end of
+its host control slab, so its program break starts 320 KiB higher. Its
+Worker stores the header address in `__memory_group_base`. Host access to
+its memory (syscall argument copies and the kernel's `host_proc_*`
+imports) goes through `ForkShareAddressSpace`
+(`host/src/fork-share-address-space.ts`), which reads the same tables. It
+is one more process memory source next to an ordinary `WebAssembly.Memory`
+and the grouped root of the experimental process address spaces
+(`host/src/process-memory-views.ts`). The two virtual sources differ: a
+memory-sharing group keeps its page table, its pages and its access rights
+in the Rust kernel and copies every private page at fork; this mode keeps
+its tables in the program and its page allocator in the host, has no
+access rights, and copies a page at its first write. The
+pages that `brk`, `mmap` and `mremap` add come from the group header's
+page allocator and get table entries; for a process that has not forked,
+each new page has the same physical and virtual number. A side module
+that such a process loads with `dlopen` runs in the same Memory, so the
+loader rewrites it first with the memory instrumenter module
+(`local-binaries/kandelo_memory_instrument32.wasm`, built by
+`crates/memory-instrument/build-wasm.sh`). In `"share"` mode each host
+loads that module through the path it uses for `kernel.wasm`; the hosts'
+`memoryInstrumenter` option replaces it.
+
+A fork of such a process keeps the parent's Memory instead of copying it.
+The child gets its own tables in that Memory, both write tables mark every
+page copy-on-write, and the first store to a page copies it. The child
+gets a copy of the host control pages (channel, fork-save page, pthread
+slots) on one physical run of its own. A channel keeps its guest address;
+the kernel worker observes its status word at its place in that run, so
+no fork shares those pages. A vfork child uses the tables of its parent.
+Fork first
+parks the other threads of the parent: a thread in a syscall is parked,
+and a running thread parks at its next store through its stop words
+(`__memory_stop_base`). When a thread does not park in 10 ms, or while a
+vfork child borrows the Memory, the child gets a copy of every page
+inside the same Memory. No page of a group Memory is freed before the
+last process of the group exits.
+
+A device mapping (the `/dev/fb0` framebuffer or a DRI buffer) is a guest
+range that the host reads and writes outside a syscall.
+When the `mmap` of such a mapping completes, the kernel worker puts its
+pages on one physical run that no other process shares, and the device
+registry keeps the Memory offset of that run next to the guest address.
+A placement that fails makes the `mmap` fail with `EIO`. Fork does not
+share those runs: the parent keeps its pages and the child gets copies.
+The DRI mappings that the child inherits are placed again through the
+child's tables. The host reads a GL command buffer through the tables at
+each submit, so it needs no placement. The remaining gaps are listed in
+`crates/memory-instrument/README.md`.
+
 Kandelo releases its references to an exited or replaced process generation
 only after the exact Worker, channel, thread, and framebuffer ownership fences
 complete. JavaScript engines still decide when the unreachable shared backing

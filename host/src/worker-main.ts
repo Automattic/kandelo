@@ -84,6 +84,7 @@ import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
 } from "./process-memory";
+import { ForkShareAddressSpace, bindPageTable } from "./fork-share-address-space";
 import {
   ContinuationAllocationError,
   invokeForkContinuationBegin,
@@ -1164,6 +1165,7 @@ export function buildDlopenImports(
   forkSideModuleContract?: ForkSideModuleContract,
   stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
   groupedWait32?: GroupedWorkerWait32,
+  memoryInstrumenter?: WebAssembly.Module,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1848,6 +1850,7 @@ export function buildDlopenImports(
 
     linker = new DynamicLinker({
       memory,
+      memoryInstrumenter,
       table,
       stackPointer: sp,
       allocateMemory,
@@ -2980,7 +2983,9 @@ export async function centralizedWorkerMain(
   let kernelExitStatus: number | null = null;
   try {
     const { memory: physicalMemory, programBytes, channelOffset, pid } = initData;
-    const memory = grouped?.source ?? physicalMemory;
+    const memory = grouped?.source ?? (initData.pageTable
+      ? new ForkShareAddressSpace(physicalMemory, initData.pageTable, "worker")
+      : physicalMemory);
     // WHY: the kernel keeps its own copy of the program bytes, and a running
     // process never reads them again. Detaching frees them at once: an idle
     // process worker waits in Atomics.wait and rarely collects garbage.
@@ -3751,6 +3756,7 @@ export async function centralizedWorkerMain(
         readForkSideModuleContract(module),
         programBytes,
         grouped?.wait32,
+        initData.memoryInstrumenter,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3981,6 +3987,7 @@ export async function centralizedWorkerMain(
       }
       processInstance = instance;
       grouped?.bind(instance, initData.isForkChild ? 0 : 1);
+      if (initData.pageTable) bindPageTable(instance, initData.pageTable);
       mainImportedStatePreparation?.complete(instance);
       mainExceptionProvider = forkExceptionProviderFromInstance(0, instance);
       const mainTypedReferenceProvider = forkGcCodecProviderFromInstance(
@@ -4312,6 +4319,7 @@ export async function centralizedWorkerMain(
         readForkSideModuleContract(module),
         programBytes,
         grouped?.wait32,
+        initData.memoryInstrumenter,
       );
       const importObject = buildImportObject(
         module,
@@ -4338,6 +4346,7 @@ export async function centralizedWorkerMain(
       const instance = await WebAssembly.instantiate(module, grouped ? grouped.imports(importObject, channelOffset) : importObject);
       processInstance = instance;
       grouped?.bind(instance, initData.isForkChild ? 0 : 1);
+      if (initData.pageTable) bindPageTable(instance, initData.pageTable);
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
       setupChannelBase(
@@ -5272,13 +5281,15 @@ export async function centralizedThreadWorkerMain(
     tlsPtr,
     ctidPtr,
   } = initData;
-  const memory = grouped?.source ?? physicalMemory;
   const { offset: tlsOffset, byteLength: tlsByteLength } = initData.tls;
   const ptrWidth = initData.ptrWidth ?? 4;
 
   // WHY: synchronize the received memory before this isolate binds any view
   // or Wasm instance to a possibly stale fixed-length view of its backing.
   synchronizeReceivedSharedWasmMemory(physicalMemory, ptrWidth);
+  const memory = grouped?.source ?? (initData.pageTable
+    ? new ForkShareAddressSpace(physicalMemory, initData.pageTable, "worker")
+    : physicalMemory);
 
   let threadInstance: WebAssembly.Instance | undefined;
   let threadProcessContinuation: ForkProcessContinuationCoordinator | null =
@@ -5773,6 +5784,7 @@ export async function centralizedThreadWorkerMain(
       readForkSideModuleContract(module),
       () => programBytes ?? patchWasmForThread(initData.programBytes),
       grouped?.wait32,
+      initData.memoryInstrumenter,
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -5867,6 +5879,7 @@ export async function centralizedThreadWorkerMain(
     noteProcessMemoryInstance(instance);
     threadInstance = instance;
     grouped?.bind(instance, 2);
+    if (initData.pageTable) bindPageTable(instance, initData.pageTable);
     threadMainImportedState?.complete(instance);
     if (
       hasForkInstrumentation &&

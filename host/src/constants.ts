@@ -2773,6 +2773,16 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
   return extractGlobalConstants(programBytes, ["__heap_base"]).get("__heap_base") ?? null;
 }
 
+/**
+ * Extract the initial `__memory_table_base` of a program rewritten by
+ * `wasm-memory-instrument`: the physical address of its page tables. Null
+ * when the program is not instrumented.
+ */
+export function extractMemoryTableBase(programBytes: ArrayBuffer): bigint | null {
+  return extractGlobalConstants(programBytes, ["__memory_table_base"])
+    .get("__memory_table_base") ?? null;
+}
+
 /** A missing export is absent from the map. An unsupported definition maps to null. */
 export function extractGlobalConstants(
   programBytes: ArrayBuffer,

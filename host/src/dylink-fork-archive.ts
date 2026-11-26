@@ -1,5 +1,6 @@
 import { processDataView, processMemoryByteLength, readProcessBytes, writeProcessBytes, fillProcessBytes, type ProcessMemorySource } from './process-memory-views';
 import { GroupProcessAddressSpace } from './process-address-space';
+import { ForkShareAddressSpace } from './fork-share-address-space';
 import type {
   DylinkForkLibraryState,
   DylinkForkState,
@@ -1979,6 +1980,8 @@ export class DylinkForkArchive {
     let value: bigint;
     if (this.memory instanceof GroupProcessAddressSpace) {
       value = this.memory.atomicLoadU64(address);
+    } else if (this.memory instanceof ForkShareAddressSpace) {
+      value = Atomics.load(this.memory.atomicLong(address), 0);
     } else if (
       typeof SharedArrayBuffer !== "undefined"
       && this.memory.buffer instanceof SharedArrayBuffer
@@ -2004,6 +2007,8 @@ export class DylinkForkArchive {
     const address = header + 40;
     if (this.memory instanceof GroupProcessAddressSpace) {
       this.memory.atomicStoreU64(address, BigInt(generation));
+    } else if (this.memory instanceof ForkShareAddressSpace) {
+      Atomics.store(this.memory.atomicLong(address), 0, BigInt(generation));
     } else if (
       typeof SharedArrayBuffer !== "undefined"
       && this.memory.buffer instanceof SharedArrayBuffer

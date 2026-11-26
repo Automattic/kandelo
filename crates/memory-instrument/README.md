@@ -146,6 +146,9 @@ page with bit 0 set calls the copy-on-write helper:
 The count stays above zero while a copy reads the old page, so no other
 process writes that page in place during the copy.
 
+A vfork child borrows the memory of its parent and gets no tables of its
+own: the host gives it the table base of the parent.
+
 When a fork child exits and its Workers have stopped, the host removes its
 mappings. A page that no process maps goes to the free list. The run that
 holds the tables and the control pages of the child stays whole, and a
@@ -173,6 +176,9 @@ the runtime parks the threads of a process at their next store:
 - When every thread has echoed its request or waits in a syscall, the
   runtime shares the pages, clears bit 1, stores zero to each request word
   and notifies it.
+- The fork child gets a copy of the control pages of its parent. The
+  runtime stores zero to the stop words in the child's copy of the main
+  channel, so the child does not start with a request of its parent.
 
 A thread that makes no store and no syscall never echoes. The runtime must
 then give up after a deadline, clear the bits it set, and copy the memory.
@@ -258,10 +264,8 @@ packed and `memcpy`-style accesses, which `aligned` still checks.
 - `aligned` mode is incorrect for a misaligned access with a natural
   alignment hint that crosses into a page with a different mapping.
 - The host translates its accesses to guest addresses through the table,
-  with two exceptions. The `clone` handler checks its tid pointers
-  against the physical size of the memory. `host/src/wasi-shim.ts` uses
-  physical addresses; a WASI program cannot fork, so its entries are all
-  identity.
+  with one exception. `host/src/wasi-shim.ts` uses physical addresses; a
+  WASI program cannot fork, so its entries are all identity.
 - The parent of a marked program runs the rewritten form from its start,
   at the cost in "Cost", also when all its fork children are plain.
 - The host never drops a rewritten form that it made at `exec`, so a

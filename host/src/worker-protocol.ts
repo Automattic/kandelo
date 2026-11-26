@@ -7,6 +7,7 @@ import type {
   ForkExternrefImportWake,
 } from "./fork-externref-import-mailbox";
 import { MEMORY_GROUP_PROTOCOL, type ProcessForkMode } from "./generated/abi";
+import type { PageTableLocation } from "./fork-share-address-space";
 
 export type ForkMemoryOwnership = "copied" | "borrowed";
 
@@ -46,6 +47,19 @@ export interface CentralizedWorkerInitMessage {
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
   channelOffset: number;
+  /**
+   * Page tables of a program rewritten by `wasm-memory-instrument` in
+   * `"share"` mode. The Worker stores `table` in `__memory_table_base`,
+   * `group` in `__memory_group_base` and the offset of its stop words in
+   * `__memory_stop_base` before guest code runs, and translates its own
+   * accesses to guest memory through the same tables.
+   */
+  pageTable?: PageTableLocation;
+  /**
+   * Compiled `kandelo_memory_instrument32.wasm`. A process with `pageTable`
+   * rewrites every side module it loads with `dlopen` through it.
+   */
+  memoryInstrumenter?: WebAssembly.Module;
   /** Kernel-owned sticky secure-execution state for this exact image. */
   secureExec: boolean;
   /**
@@ -145,6 +159,10 @@ export interface CentralizedThreadInitMessage {
    * archive head relative to this live shared-memory anchor before fork. */
   processChannelOffset: number;
   channelOffset: number;
+  /** See [`CentralizedWorkerInitMessage#pageTable`]. */
+  pageTable?: PageTableLocation;
+  /** See [`CentralizedWorkerInitMessage#memoryInstrumenter`]. */
+  memoryInstrumenter?: WebAssembly.Module;
   /** Same sticky image marker as the process worker. */
   secureExec: boolean;
   /**

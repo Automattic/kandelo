@@ -47,6 +47,7 @@ import type { ForkExternrefGeneration } from "../src/fork-reference-broker";
 import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
+import type { ForkMemory } from "../src/fork-share-address-space";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -171,6 +172,9 @@ export interface RunProgramOptions {
   maxProcessMemoryBytes?: number;
   /** Fork address-space copy mode (NodeKernelHost default when omitted). */
   forkCopy?: ForkAddressSpaceCopy;
+  /** Fork memory mode (NodeKernelHost default when omitted). Worker-thread
+   *  mode only. */
+  forkMemory?: ForkMemory;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -309,6 +313,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     forkCopy: options.forkCopy,
+    forkMemory: options.forkMemory,
     rootfsImage,
     rootfsMountSpec: options.rootfsNosuid === undefined
       ? undefined

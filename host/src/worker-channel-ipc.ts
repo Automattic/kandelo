@@ -1,5 +1,6 @@
 import { CH_STATUS, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_IDLE, CH_SYSCALL, CH_ARGS, CH_ARG_SIZE, CH_RETURN, CH_ERRNO, CH_REQUEST_FLAGS, EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 } from './generated/abi';
 import { GroupProcessAddressSpace } from './process-address-space';
+import { ForkShareAddressSpace } from './fork-share-address-space';
 import { processDataView, type ProcessDataView, type ProcessMemorySource } from './process-memory-views';
 import { waitForChannelCompletion, waitForGroupedChannelCompletion } from './channel-completion-wait';
 
@@ -29,10 +30,10 @@ export class WorkerChannelIPC {
       this.source.notifyKernelObserverI32(statusAddress, 1);
       waitForGroupedChannelCompletion(this.groupedWait32!, statusAddress);
     } else {
-      const words = new Int32Array(this.source.buffer);
-      Atomics.store(words, statusAddress / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(words, statusAddress / 4, 1);
-      waitForChannelCompletion(words, statusAddress / 4);
+      const { words, index } = this.status();
+      Atomics.store(words, index, CHANNEL_STATUS_PENDING);
+      Atomics.notify(words, index, 1);
+      waitForChannelCompletion(words, index);
     }
   }
 
@@ -59,7 +60,14 @@ export class WorkerChannelIPC {
     if (this.source instanceof GroupProcessAddressSpace) {
       this.source.atomicStoreI32(statusAddress, CHANNEL_STATUS_IDLE);
     } else {
-      Atomics.store(new Int32Array(this.source.buffer), statusAddress / 4, CHANNEL_STATUS_IDLE);
+      const { words, index } = this.status();
+      Atomics.store(words, index, CHANNEL_STATUS_IDLE);
     }
+  }
+
+  private status(): { words: Int32Array; index: number } {
+    const statusAddress = this.offset + CH_STATUS;
+    if (this.source instanceof ForkShareAddressSpace) return { words: this.source.atomicWord(statusAddress), index: 0 };
+    return { words: new Int32Array((this.source as WebAssembly.Memory).buffer), index: statusAddress / 4 };
   }
 }

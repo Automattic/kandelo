@@ -9,8 +9,10 @@ import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type { ThreadAllocation } from './thread-allocator';
 import { retryKernelEntryResult } from './kernel-entry-retry';
 import { GroupProcessAddressSpace, ProcessAddressFault, type NativeI32Observation } from "./process-address-space";
-import { captureProcessRead, processDataView, readProcessBytes, writeProcessBytes,
-  fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, type CapturedProcessRead,
+import { ForkShareAddressSpace, type PageRun, type PageTableLocation } from "./fork-share-address-space";
+import { captureProcessRead, processDataView, readProcessBytes, writeProcessBytes, borrowOrCopyProcessBytes,
+  fillProcessBytes, checkProcessWriteRange, processMemoryByteLength, prepareProcessNativeObservationI32, isVirtualProcessAddressSpace,
+  type CapturedProcessRead,
   type ProcessMemorySource } from "./process-memory-views";
 import {
   decodeMemoryGroupReceipt, decodeMemoryGroupSnapshot, memoryGroupU32,
@@ -299,6 +301,7 @@ import {
   ProcessMemoryRetirementBacklogError,
   PROCESS_MMAP_BASE,
   type ProcessMemoryLayout,
+  channelStopOffset,
   growMemoryToCover,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
@@ -363,6 +366,10 @@ const KERNEL_ENTRY_I32_BYTES = 4;
  * layer.
  */
 const VFS_IMAGE_HEADER_SIZE = 16;
+/** Index of a thread's stop words in the `i32View` of its channel. */
+const FORK_STOP_INDEX = channelStopOffset(0) / 4;
+/** How long a fork waits for the running threads of its process to park. */
+const FORK_STOP_WAIT_MS = 10;
 
 
 // WHY: callers already hold the KernelEntryGate token for the exact process
@@ -1090,6 +1097,38 @@ const F_DUPFD_CLOEXEC = FCNTL_COMMANDS.F_DUPFD_CLOEXEC;
 
 function alignWasmPageLength(len: number): number {
   return Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
+}
+
+/**
+ * The words of the channel at guest address `channelOffset`.
+ *
+ * WHY: a process with page tables keeps each channel in a run that no fork
+ * shares, so the physical place of the channel does not change.
+ */
+function channelWords(
+  memory: WebAssembly.Memory,
+  source: ProcessMemorySource,
+  channelOffset: number,
+): Int32Array {
+  return new Int32Array(memory.buffer, channelMemoryOffset(source, channelOffset));
+}
+
+/** The 32-bit word at the guest address `address` of an ordinary or page-table process. */
+function processWord(source: WebAssembly.Memory | ForkShareAddressSpace, address: number): Int32Array {
+  return source instanceof ForkShareAddressSpace
+    ? source.atomicWord(address)
+    : new Int32Array(source.buffer, address, 1);
+}
+
+/** Offset in the process Memory of the channel at guest address `channelOffset`. */
+function channelMemoryOffset(source: ProcessMemorySource, channelOffset: number): number {
+  return source instanceof ForkShareAddressSpace ? source.readable(channelOffset) : channelOffset;
+}
+
+/** The pages that hold the `len` device-mapped bytes at guest address `addr`. */
+function deviceMappingRun(addr: number, len: number): PageRun {
+  const page = Math.floor(addr / WASM_PAGE_SIZE);
+  return { page, count: Math.ceil((addr + len) / WASM_PAGE_SIZE) - page };
 }
 
 /** Syscall numbers for scatter/gather I/O */
@@ -1999,6 +2038,10 @@ interface RegisterProcessOptions {
   /** The process is a vfork child borrowing another process's Memory. */
   borrowedAddressSpace?: boolean;
   inheritedThreadSlot?: ForkThreadSlot;
+  /** Page tables of a program rewritten by `wasm-memory-instrument`. */
+  pageTable?: PageTableLocation | null;
+  /** Address space of a fork child that shares its parent's Memory. */
+  addressSpace?: ForkShareAddressSpace;
 }
 
 type RegisterProcessStdioKind = "pipe" | "terminal";
@@ -2253,7 +2296,7 @@ interface CloneRollbackState {
   readonly registration: ProcessRegistration | undefined;
   readonly request: FrozenChannelRequest | undefined;
   readonly memory: WebAssembly.Memory;
-  readonly source: WebAssembly.Memory;
+  readonly source: WebAssembly.Memory | ForkShareAddressSpace;
   readonly origArgs: number[];
   transferred?: boolean;
   parentTidWritten: boolean;
@@ -2683,7 +2726,7 @@ interface ScratchBoundaryTestHooks {
     truncateLength?: bigint,
   ) => void;
   readonly synchronizeSharedMemoryForBoundary?: (
-    process: Pick<ChannelInfo, "pid" | "memory">,
+    process: Pick<ChannelInfo, "pid" | "memory" | "source">,
   ) => void;
   readonly completeChannel?: (
     channel: ChannelInfo,
@@ -3763,6 +3806,8 @@ export class CentralizedKernelWorker {
    * crates/runtime-core/src/memory.rs.
    */
   #memoryRunEpochs = new WeakMap<ProcessMemorySource, number>();
+  /** Last value stored to the stop words of threads by a fork; never 0. */
+  #forkStopRequest = 0;
   /**
    * Source of `#memoryRunEpochs` values. One counter for every memory, so an
    * epoch is never reused, even by a memory that replaces another (exec).
@@ -7342,7 +7387,7 @@ export class CentralizedKernelWorker {
       pointerWidth,
       `${field} length`,
     );
-    if (channel.source instanceof GroupProcessAddressSpace) {
+    if (isVirtualProcessAddressSpace(channel.source)) {
       return checkedProcessMemoryViewRange(channel.source, canonicalPointer,
         canonicalLength, pointerWidth, field, allowAddressZero);
     }
@@ -8187,8 +8232,7 @@ export class CentralizedKernelWorker {
         this.cleanupSharedMappings(channel.pid, address, alignWasmPageLength(length), entry);
       }
       this.ensureProcessMemoryCovers(channel.pid, channel.memory, channel.source, SYS_MMAP, address, args, entry);
-      const bo = this.#kernel.bos.findBindingByAddr(channel.pid, address);
-      if (bo !== undefined && !this.#kernel.bos.primeBindFromSab(channel.pid, bo, channel.memory, address)) {
+      if (!this.#placeDeviceMappings(channel, address)) {
         throw new Error("owned mapping could not prime its exact backing");
       }
       // WHY: finishing, zeroing and priming stay in this one serialized entry.
@@ -9786,7 +9830,8 @@ export class CentralizedKernelWorker {
       }
     }
 
-    const source = grouped?.source ?? memory;
+    const source = grouped?.source ?? options?.addressSpace
+      ?? (options?.pageTable ? new ForkShareAddressSpace(memory, options.pageTable) : memory);
     if (grouped) {
       if (ptrWidth !== 4 || metadataPtrWidth !== 4 || options?.borrowedAddressSpace === true) {
         throw new Error("Grouped registration requires wasm32 and an owned image");
@@ -9816,7 +9861,7 @@ export class CentralizedKernelWorker {
       memory,
       source,
       channelOffset: offset,
-      i32View: grouped ? undefined : new Int32Array(memory.buffer, offset),
+      i32View: grouped ? undefined : channelWords(memory, source, offset),
       consecutiveSyscalls: 0,
     }));
 
@@ -10950,7 +10995,9 @@ export class CentralizedKernelWorker {
     for (const snapshot of snapshots) {
       const registration = this.processes.get(snapshot.pid);
       if (registration) {
-        snapshot.memoryBytes = registration.memory.buffer.byteLength;
+        snapshot.memoryBytes = registration.source instanceof ForkShareAddressSpace
+          ? registration.source.byteLength
+          : registration.memory.buffer.byteLength;
       }
     }
     return snapshots;
@@ -13205,7 +13252,7 @@ export class CentralizedKernelWorker {
       source: registration.source,
       channelOffset,
       i32View: source instanceof GroupProcessAddressSpace ? undefined
-        : new Int32Array(source.buffer, channelOffset),
+        : channelWords(registration.memory, source, channelOffset),
       consecutiveSyscalls: 0,
     };
     if (completionReceipt) {
@@ -14079,7 +14126,7 @@ export class CentralizedKernelWorker {
       return channel.source.atomicLoadI32(channel.channelOffset + CH_STATUS);
     }
     // Preserve the ordinary view for remaining native channel consumers.
-    channel.i32View = new Int32Array(channel.source.buffer, channel.channelOffset);
+    channel.i32View = channelWords(channel.memory, channel.source, channel.channelOffset);
     return Atomics.load(channel.i32View, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
   }
 
@@ -14247,7 +14294,7 @@ export class CentralizedKernelWorker {
   /** Read a null-terminated C string from process memory */
   private readCString(memory: ProcessMemorySource, ptr: number, maxLen = 256): string {
     if (ptr === 0) return "(null)";
-    if (memory instanceof GroupProcessAddressSpace) {
+    if (isVirtualProcessAddressSpace(memory)) {
       try {
         const captured = captureProcessRead(memory);
         const length = Math.max(0, Math.min(maxLen, captured.byteLength - ptr));
@@ -14268,7 +14315,7 @@ export class CentralizedKernelWorker {
 
   private readBytesPreview(memory: ProcessMemorySource, ptr: number, len: number, maxLen = 160): string {
     if (ptr === 0 || len <= 0) return "";
-    if (memory instanceof GroupProcessAddressSpace) {
+    if (isVirtualProcessAddressSpace(memory)) {
       try {
         const length = Math.max(0, Math.min(len, maxLen, memory.byteLength - ptr));
         return new TextDecoder("utf-8", { fatal: false }).decode(memory.readBytes(ptr, length));
@@ -14989,8 +15036,9 @@ export class CentralizedKernelWorker {
       }
       return channel;
     }
-    const buffer = kernelEntryMemoryBuffer(channel.source);
-    if (channel.channelOffset > buffer.byteLength - CH_TOTAL_SIZE) {
+    const buffer = kernelEntryMemoryBuffer(channel.memory);
+    const channelOffset = channelMemoryOffset(channel.source, channel.channelOffset);
+    if (channelOffset > buffer.byteLength - CH_TOTAL_SIZE) {
       throw new TypeError(
         `${purpose} main channel is outside process Memory`,
       );
@@ -15001,7 +15049,7 @@ export class CentralizedKernelWorker {
       [
         new KernelEntryIntrinsicInt32Array(
           buffer,
-          channel.channelOffset,
+          channelOffset,
           CH_TOTAL_SIZE / KERNEL_ENTRY_I32_BYTES,
         ),
         CH_STATUS / KERNEL_ENTRY_I32_BYTES,
@@ -17321,32 +17369,29 @@ export class CentralizedKernelWorker {
             if (this.hostReaped?.has(channel.pid)) return;
           }
         }
-        // DRI bo mmap prime: the kernel's sys_mmap on /dev/dri/{render,card}
-        // already called `host_gbm_bo_bind` to record metadata, but the
-        // actual SAB→Memory copy is deferred until here so the
-        // anonymous-mmap zero-fill is in place first. This is what
-        // delivers the parent's writes to a child across PRIME
-        // export → fork → PRIME import. No-op for non-DRI mmaps.
+        // Device mmap placement and DRI bo prime: the kernel's sys_mmap on
+        // /dev/fb0 or /dev/dri/{render,card} already called its bind import
+        // to record metadata, but the placement and the SAB→Memory copy are
+        // deferred until here so the anonymous-mmap zero-fill is in place
+        // first. The prime is what delivers the parent's writes to a child
+        // across PRIME export → fork → PRIME import. No-op for other mmaps.
         if (retVal > 0) {
           const mmapAddr = retVal;
-          const boId = this.#kernel.bos.findBindingByAddr(channel.pid, mmapAddr);
-          if (boId !== undefined) {
-            if (!this.#kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory, mmapAddr)) {
-              // The numeric PID/address is not authority to prime a successor
-              // Memory. Roll back the reserved VMA before publishing mmap EIO.
-              // A failed rollback is not acknowledged as successful cleanup.
-              const rollback = this.runSyntheticMemorySyscall(
-                channel, SYS_MUNMAP,
-                [mmapAddr, alignWasmPageLength(origArgs[1])], entry,
-              );
-              if (this.hostReaped?.has(channel.pid)) return;
-              if (rollback.retVal !== 0 || rollback.errVal !== 0) {
-                this.#failBlockingRetryProtocol("DRI mmap prime rollback failed");
-              }
-              retVal = -1;
-              publicationRetVal = -1;
-              errVal = EIO;
+          if (!this.#placeDeviceMappings(channel, mmapAddr)) {
+            // The numeric PID/address is not authority to prime a successor
+            // Memory. Roll back the reserved VMA before publishing mmap EIO.
+            // A failed rollback is not acknowledged as successful cleanup.
+            const rollback = this.runSyntheticMemorySyscall(
+              channel, SYS_MUNMAP,
+              [mmapAddr, alignWasmPageLength(origArgs[1])], entry,
+            );
+            if (this.hostReaped?.has(channel.pid)) return;
+            if (rollback.retVal !== 0 || rollback.errVal !== 0) {
+              this.#failBlockingRetryProtocol("device mmap placement rollback failed");
             }
+            retVal = -1;
+            publicationRetVal = -1;
+            errVal = EIO;
           }
         }
       }
@@ -18146,10 +18191,11 @@ export class CentralizedKernelWorker {
     }
 
     channel.handling = false;
-    const buffer = kernelEntryMemoryBuffer(channel.source);
+    const buffer = kernelEntryMemoryBuffer(channel.memory);
+    const channelOffset = channelMemoryOffset(channel.source, channel.channelOffset);
     const processView = new KernelEntryIntrinsicDataView(
       buffer,
-      channel.channelOffset,
+      channelOffset,
     );
     kernelEntryIntrinsicApply(
       kernelEntryIntrinsicDataViewSetBigInt64,
@@ -18168,7 +18214,7 @@ export class CentralizedKernelWorker {
     this.#noteGuestMayRun(channel.source);
     const i32View = new KernelEntryIntrinsicInt32Array(
       buffer,
-      channel.channelOffset,
+      channelOffset,
     );
     const statusIndex = CH_STATUS / KERNEL_ENTRY_I32_BYTES;
     kernelEntryIntrinsicApply(
@@ -18742,7 +18788,7 @@ export class CentralizedKernelWorker {
       if (ptidPtr !== undefined) {
         try {
           checkProcessWriteRange(channel.source, ptidPtr, 4);
-          Atomics.compareExchange(new Int32Array(channel.source.buffer), ptidPtr / 4, tid, 0);
+          Atomics.compareExchange(processWord(channel.source, ptidPtr), 0, tid, 0);
         } catch { return false; }
       }
 
@@ -24044,7 +24090,7 @@ export class CentralizedKernelWorker {
     const threadCtx = this.threadForkContexts.get(threadKey);
     const inheritedThreadSlot = this.processes.get(parentPid)?.inheritedThreadSlot;
     const forkBufAddr = readForkContinuationAnchor(
-      channel.memory,
+      channel.source,
       channel.channelOffset - FORK_BUF_SIZE,
       this.processes.get(parentPid)?.ptrWidth ?? 4,
     );
@@ -26113,7 +26159,7 @@ export class CentralizedKernelWorker {
       // The original mailbox may already have returned to its caller. Do
       // not clear a replacement task's word, even if it uses the same address.
       try {
-        Atomics.compareExchange(new Int32Array(state.source.buffer), ptidPtr / 4, tid, 0);
+        Atomics.compareExchange(processWord(state.source, ptidPtr), 0, tid, 0);
       } catch (error) {
         // Revoked images have no caller to observe rollback. Always retire
         // the exact Rust task even if its old word can no longer be written.
@@ -26389,7 +26435,7 @@ export class CentralizedKernelWorker {
       && registration.channels.length === 1
       && registration.channels[0] === channel
       && Atomics.load(
-          new Int32Array(channel.memory.buffer, channel.channelOffset),
+          channelWords(channel.memory, channel.source, channel.channelOffset),
           CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
         ) === CH_PENDING;
     this.discardStoppedChannelStateForProcess(exitingPid);
@@ -27278,8 +27324,9 @@ export class CentralizedKernelWorker {
     if (channel.source instanceof GroupProcessAddressSpace) return false;
     try {
       const ptrWidth = this.processes.get(channel.pid)?.ptrWidth ?? 4;
-      growMemoryToCover(channel.memory, end, ptrWidth);
-      if (channel.memory.buffer.byteLength < end) return false;
+      if (channel.source instanceof ForkShareAddressSpace) channel.source.grow(end);
+      else growMemoryToCover(channel.memory, end, ptrWidth);
+      if (processMemoryByteLength(channel.source) < end) return false;
       const grownBuffer = channel.memory.buffer;
       entry.deferObserverEffect(() => {
         this.observeProcessMemoryTarget(channel.memory, grownBuffer);
@@ -27313,7 +27360,7 @@ export class CentralizedKernelWorker {
       );
     }
     const ptrWidth = this.processes.get(pid)?.ptrWidth ?? 4;
-    if (syscallNr === SYS_MREMAP && !(source instanceof GroupProcessAddressSpace)) {
+    if (syscallNr === SYS_MREMAP && !isVirtualProcessAddressSpace(source)) {
       // The old bytes are a host copy source when a mapping moves. Prove that
       // complete caller range before memory.grow or zero-fill mutates the new
       // destination.
@@ -27366,7 +27413,7 @@ export class CentralizedKernelWorker {
     const currentBytes = processMemoryByteLength(source);
     // Read before zeroing the destination: even discontiguous guest spans
     // may alias physical pages. Keep the prefix owned across every store.
-    const movedPrefix = source instanceof GroupProcessAddressSpace
+    const movedPrefix = isVirtualProcessAddressSpace(source)
       && syscallNr === SYS_MREMAP && retVal !== origArgs[0]
       && origArgs[0] !== 0 && origArgs[1] > 0
       ? readProcessBytes(source, origArgs[0], Math.min(alignWasmPageLength(origArgs[1]), alignWasmPageLength(mmapLen)))
@@ -27376,7 +27423,8 @@ export class CentralizedKernelWorker {
       if (source instanceof GroupProcessAddressSpace) {
         throw new RangeError("Grouped mapping exceeds its published virtual extent");
       }
-      growMemoryToCover(processMemory, endAddr, ptrWidth);
+      if (source instanceof ForkShareAddressSpace) source.grow(endAddr);
+      else growMemoryToCover(processMemory, endAddr, ptrWidth);
       const grownBuffer = processMemory.buffer;
       entry.deferObserverEffect(() => {
         this.observeProcessMemoryTarget(processMemory, grownBuffer);
@@ -27475,11 +27523,10 @@ export class CentralizedKernelWorker {
   ): void {
     const len = origArgs[1];
     if (len === 0) return;
-    const processMem = new Uint8Array(channel.memory.buffer);
-    if (mapAddr + len > processMem.length) return;
+    if (mapAddr + len > processMemoryByteLength(channel.source)) return;
 
     const key = `anon:${channel.pid}:${mapAddr}:${this.nextAnonymousSharedBackingId++}`;
-    const initial = processMem.slice(mapAddr, mapAddr + len);
+    const initial = readProcessBytes(channel.source, mapAddr, len);
     this.anonymousSharedBackings.set(key, {
       key,
       bytes: initial.slice(),
@@ -27876,7 +27923,7 @@ export class CentralizedKernelWorker {
       BigInt(context.len),
       BigInt(context.fileOffset),
       context.writable ? 1 : 0,
-      BigInt(channel.memory.buffer.byteLength),
+      BigInt(processMemoryByteLength(channel.source)),
       entry,
     );
     this.#refreshKernelSharedMappingPid(channel.pid, entry);
@@ -27900,7 +27947,7 @@ export class CentralizedKernelWorker {
    * process before it resumes; at an entry it does no kernel-file work.
    */
   private synchronizeSharedMemoryForBoundary(
-    process: Pick<ChannelInfo, "pid" | "memory">,
+    process: Pick<ChannelInfo, "pid" | "memory" | "source">,
     boundary: "entry" | "completion",
     entry?: KernelWorkerEntryContext,
   ): void {
@@ -27995,17 +28042,20 @@ export class CentralizedKernelWorker {
    * cannot accidentally mark unseen peer bytes as observed.
    */
   private syncAnonymousSharedMappingsFromProcess(
-    process: Pick<ChannelInfo, "pid" | "memory">,
+    process: Pick<ChannelInfo, "pid" | "memory" | "source">,
     options: { force?: boolean } = {},
   ): void {
     const pidMap = this.sharedMappings?.get(process.pid);
     if (!pidMap) return;
-    const processMem = new Uint8Array(process.memory.buffer);
+    const space = process.source instanceof ForkShareAddressSpace ? process.source : undefined;
 
     for (const [mapAddr, mapping] of pidMap) {
       if (!mapping.backingKey || !mapping.snapshot) continue;
+      // WHY: the refresh of an earlier mapping can copy a shared page and
+      // grow the Memory; a view from before the growth is too short.
+      const processMem = new Uint8Array(process.memory.buffer);
       const backing = this.anonymousSharedBackings?.get(mapping.backingKey);
-      if (!backing || mapAddr + mapping.len > processMem.length) continue;
+      if (!backing || mapAddr + mapping.len > processMemoryByteLength(process.source)) continue;
       const wasStale = (mapping.seenVersion ?? 0) !== backing.version;
       // A sole current observer can defer scanning its private Wasm memory,
       // but a sole *stale* observer must still import a publication made by a
@@ -28016,16 +28066,21 @@ export class CentralizedKernelWorker {
       if (mapping.writable) {
         for (let offset = 0; offset < mapping.len; offset += 4096) {
           const len = Math.min(4096, mapping.len - offset);
+          // WHY: a view per chunk would allocate at every syscall boundary.
+          // One physical run holds a chunk unless it crosses a Wasm page.
+          const run = space ? space.readableRun(mapAddr + offset, len) : mapAddr + offset;
+          const chunk = run < 0 ? space!.readBytes(mapAddr + offset, len) : processMem;
+          const chunkOffset = run < 0 ? 0 : run;
           if (!this.rangeDiffersFromSnapshot(
-            processMem,
-            mapAddr + offset,
+            chunk,
+            chunkOffset,
             mapping.snapshot,
             offset,
             len,
           )) continue;
           if (mergeChangedByteRuns(
-            processMem,
-            mapAddr + offset,
+            chunk,
+            chunkOffset,
             mapping.snapshot,
             offset,
             backing.bytes,
@@ -28043,7 +28098,7 @@ export class CentralizedKernelWorker {
           mapping.fileOffset,
           mapping.fileOffset + mapping.len,
         );
-        processMem.set(latest, mapAddr);
+        writeProcessBytes(process.source, mapAddr, latest);
         mapping.snapshot = latest;
       }
       mapping.seenVersion = backing.version;
@@ -28216,8 +28271,7 @@ export class CentralizedKernelWorker {
   ): FileSharedMmapResult {
     const { fd, fileOffset, len, writable, writeAllowed, backing } = context;
     try {
-      const processMem = new Uint8Array(channel.memory.buffer);
-      if (mapAddr + len > processMem.length) {
+      if (mapAddr + len > processMemoryByteLength(channel.source)) {
         this.releasePreparedSharedMmap(context, entry);
         return { kind: "error", errno: EIO };
       }
@@ -28230,7 +28284,7 @@ export class CentralizedKernelWorker {
         len,
         entry,
       );
-      processMem.set(initial, mapAddr);
+      writeProcessBytes(channel.source, mapAddr, initial);
       let pidMap = this.sharedMappings.get(channel.pid);
       if (!pidMap) {
         pidMap = new Map();
@@ -28730,12 +28784,13 @@ export class CentralizedKernelWorker {
   }
 
   private syncFileSharedMappingsFromProcess(
-    process: Pick<ChannelInfo, "pid" | "memory">,
+    process: Pick<ChannelInfo, "pid" | "memory" | "source">,
     options: { force?: boolean } = {},
     entry?: KernelWorkerEntryContext,
   ): void {
     const mappings = this.sharedMappings?.get(process.pid);
     if (!mappings) return;
+    const space = process.source instanceof ForkShareAddressSpace ? process.source : undefined;
     const processMem = new Uint8Array(process.memory.buffer);
     const candidates: Array<{
       mapAddr: number;
@@ -28747,7 +28802,7 @@ export class CentralizedKernelWorker {
     for (const [mapAddr, mapping] of mappings) {
       if (mapping.backingKind !== "file" || !mapping.backingKey || !mapping.snapshot) continue;
       const backing = this.sharedMmapBackings.get(mapping.backingKey);
-      if (!backing || mapAddr + mapping.len > processMem.length) continue;
+      if (!backing || mapAddr + mapping.len > processMemoryByteLength(process.source)) continue;
       const wasStale = (mapping.seenVersion ?? 0) !== backing.version;
       if (!options.force && backing.refCount <= 1 && !wasStale) continue;
       candidates.push({ mapAddr, mapping, backing, snapshot: mapping.snapshot });
@@ -28761,17 +28816,20 @@ export class CentralizedKernelWorker {
       if (mapping.writable) {
         for (let offset = 0; offset < mapping.len; offset += FILE_PAGE_SIZE) {
           const len = Math.min(FILE_PAGE_SIZE, mapping.len - offset);
+          const run = space ? space.readableRun(mapAddr + offset, len) : mapAddr + offset;
+          const chunk = run < 0 ? space!.readBytes(mapAddr + offset, len) : processMem;
+          const chunkOffset = run < 0 ? 0 : run;
           if (!this.rangeDiffersFromSnapshot(
-            processMem,
-            mapAddr + offset,
+            chunk,
+            chunkOffset,
             snapshot,
             offset,
             len,
           )) continue;
           if (this.mergeChangedFileMappingRuns(
             backing,
-            processMem,
-            mapAddr + offset,
+            chunk,
+            chunkOffset,
             snapshot,
             offset,
             mapping.fileOffset + offset,
@@ -28801,7 +28859,7 @@ export class CentralizedKernelWorker {
         ),
       }));
     for (const { mapAddr, mapping, backing, latest } of refreshes) {
-      processMem.set(latest, mapAddr);
+      writeProcessBytes(process.source, mapAddr, latest);
       mapping.snapshot = latest;
       mapping.seenVersion = backing.version;
     }
@@ -29136,29 +29194,25 @@ export class CentralizedKernelWorker {
   }
 
   private resolveSharedMmapPath(
-    channel: Pick<ChannelInfo, "pid" | "memory">,
+    channel: Pick<ChannelInfo, "pid" | "source">,
     pathPtr: number,
     dirfd: number = AT_FDCWD,
     entry?: KernelWorkerEntryContext,
   ): SharedMmapHostResult<string> {
     try {
-      const memory = new Uint8Array(channel.memory.buffer);
-      if (pathPtr <= 0 || pathPtr >= memory.length) {
+      const memory = captureProcessRead(channel.source);
+      if (pathPtr <= 0 || pathPtr >= memory.byteLength) {
         return { kind: "error", errno: EFAULT };
       }
-      const limit = Math.min(
-        memory.length,
-        pathPtr + POSIX_PATH_MAX_BYTES,
+      const pathLength = memory.findZero(
+        pathPtr,
+        Math.min(memory.byteLength - pathPtr, POSIX_PATH_MAX_BYTES),
       );
-      let end = pathPtr;
-      while (end < limit && memory[end] !== 0) end++;
-      if (end === limit) return { kind: "error", errno: ENAMETOOLONG };
+      if (pathLength < 0) return { kind: "error", errno: ENAMETOOLONG };
       // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // Chrome's TextDecoder rejects views backed by SharedArrayBuffer. Copy
       // the guest pathname into ordinary host memory before decoding.
-      const pathBytes = new Uint8Array(end - pathPtr);
-      pathBytes.set(memory.subarray(pathPtr, end));
-      const path = new TextDecoder().decode(pathBytes);
+      const path = new TextDecoder().decode(memory.readBytes(pathPtr, pathLength));
       if (!path) return { kind: "error", errno: ENOENT };
       if (path.startsWith("/")) {
         return { kind: "ok", value: this.normalizeSharedMmapPath(path) };
@@ -29447,8 +29501,7 @@ export class CentralizedKernelWorker {
       this.invalidateSharedMmapBackingPages(backing);
       return;
     }
-    const processMem = new Uint8Array(channel.memory.buffer);
-    if (ptr + len > processMem.length) {
+    if (ptr + len > processMemoryByteLength(channel.source)) {
       this.reloadSharedMmapBackingRange(backing, offset, len, entry);
       return;
     }
@@ -29456,7 +29509,7 @@ export class CentralizedKernelWorker {
       this.copyRangeToSharedMmapBacking(
         backing,
         offset,
-        processMem.subarray(ptr, ptr + len),
+        borrowOrCopyProcessBytes(channel.source, ptr, len).bytes,
         false,
         entry,
       );
@@ -29828,7 +29881,7 @@ export class CentralizedKernelWorker {
     const parentSharedEntries = parentSharedMap
       ? Array.from(parentSharedMap.entries())
       : [];
-    const childBytes = childMemory.buffer.byteLength;
+    const childBytes = processMemoryByteLength(child.source);
     const sharedMappings: PreparedInheritedSharedMapping[] = [];
     for (const [mapAddr, mapping] of parentSharedEntries) {
       if (!mapping.backingKey) continue;
@@ -29957,7 +30010,7 @@ export class CentralizedKernelWorker {
         );
       }
     }
-    const childBytes = prepared.childMemory.buffer.byteLength;
+    const childBytes = processMemoryByteLength(prepared.child.source);
     for (const mapping of prepared.sharedMappings) {
       if (mapping.mapAddr + mapping.inherited.len > childBytes) {
         return new Error(
@@ -30207,16 +30260,15 @@ export class CentralizedKernelWorker {
       let written = 0;
       while (written < len) {
         const chunkSize = Math.min(CH_DATA_SIZE, len - written);
-        const processMem = new Uint8Array(channel.memory.buffer);
+        const chunk = borrowOrCopyProcessBytes(
+          channel.source,
+          processAddr + written,
+          chunkSize,
+        ).bytes;
         const curOffset = fileOffset + written;
         const bytesWritten = scratch.withLease((lease) => {
           const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-          lease.copyFrom(
-            processMem,
-            CH_DATA,
-            processAddr + written,
-            chunkSize,
-          );
+          lease.copyFrom(chunk, CH_DATA, 0, chunkSize);
           kernelView.setUint32(CH_SYSCALL, SYS_PWRITE, true);
           kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
           lease.writeAddress(
@@ -30427,7 +30479,7 @@ export class CentralizedKernelWorker {
           newLen,
           entry,
         );
-        new Uint8Array(registration.memory.buffer).set(latest, newAddr);
+        writeProcessBytes(registration.source, newAddr, latest);
         mapping.snapshot = latest;
         mapping.seenVersion = fileBacking.version;
       } else if (anonymousBacking && registration) {
@@ -30435,10 +30487,9 @@ export class CentralizedKernelWorker {
         if (required > anonymousBacking.bytes.length) {
           const grown = new Uint8Array(required);
           grown.set(anonymousBacking.bytes);
-          const processMem = new Uint8Array(registration.memory.buffer);
-          if (newAddr + newLen <= processMem.length && newLen > mapping.len) {
+          if (newAddr + newLen <= processMemoryByteLength(registration.source) && newLen > mapping.len) {
             grown.set(
-              processMem.subarray(newAddr + mapping.len, newAddr + newLen),
+              readProcessBytes(registration.source, newAddr + mapping.len, newLen - mapping.len),
               mapping.fileOffset + mapping.len,
             );
           }
@@ -30449,7 +30500,7 @@ export class CentralizedKernelWorker {
           mapping.fileOffset,
           mapping.fileOffset + newLen,
         );
-        new Uint8Array(registration.memory.buffer).set(latest, newAddr);
+        writeProcessBytes(registration.source, newAddr, latest);
         mapping.snapshot = latest;
         mapping.seenVersion = anonymousBacking.version;
       } else {
@@ -30566,7 +30617,7 @@ export class CentralizedKernelWorker {
       ? this.#ksmInherit(
         prepared.parentPid,
         prepared.childPid,
-        BigInt(prepared.childMemory.buffer.byteLength),
+        BigInt(processMemoryByteLength(prepared.child.source)),
         entry,
       )
       : 0;
@@ -30620,7 +30671,7 @@ export class CentralizedKernelWorker {
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (validationError !== null) throw validationError;
 
-    const childMem = new Uint8Array(prepared.childMemory.buffer);
+    const childSource = prepared.child.source;
     const originals: Array<{
       readonly mapAddr: number;
       readonly bytes: Uint8Array;
@@ -30628,10 +30679,7 @@ export class CentralizedKernelWorker {
     for (const mapping of prepared.sharedMappings) {
       originals.push({
         mapAddr: mapping.mapAddr,
-        bytes: childMem.slice(
-          mapping.mapAddr,
-          mapping.mapAddr + mapping.inherited.len,
-        ),
+        bytes: readProcessBytes(childSource, mapping.mapAddr, mapping.inherited.len),
       });
     }
     const childSharedMap = new Map<number, SharedMmapMapping>();
@@ -30647,7 +30695,7 @@ export class CentralizedKernelWorker {
     let sharedPublished = false;
     try {
       for (const mapping of prepared.sharedMappings) {
-        childMem.set(mapping.latest, mapping.mapAddr);
+        writeProcessBytes(childSource, mapping.mapAddr, mapping.latest);
       }
       for (const mapping of prepared.sharedMappings) {
         mapping.backing.refCount++;
@@ -30662,7 +30710,11 @@ export class CentralizedKernelWorker {
         this.sharedMappings.set(prepared.childPid, childSharedMap);
         sharedPublished = true;
       }
-      if (!this.#kernel.bos.primeProcessMappings(prepared.childPid, prepared.childMemory)) {
+      if (!this.#kernel.bos.primeProcessMappings(
+        prepared.childPid,
+        prepared.childMemory,
+        (addr, len) => this.#deviceMappingOffset(childSource, addr, len),
+      )) {
         throw new Error("Inherited DRI mapping publication failed");
       }
     } catch (cause) {
@@ -30679,7 +30731,7 @@ export class CentralizedKernelWorker {
         retainedBackings[index]!.refCount--;
       }
       for (const original of originals) {
-        childMem.set(original.bytes, original.mapAddr);
+        writeProcessBytes(childSource, original.mapAddr, original.bytes);
       }
       throw cause;
     }
@@ -31185,6 +31237,123 @@ export class CentralizedKernelWorker {
    */
   getProcessMemory(pid: number): WebAssembly.Memory | undefined {
     return this.processes.get(pid)?.memory;
+  }
+
+  /** Return the page tables of `pid`, if it is a registered process with page tables. */
+  getProcessForkShare(pid: number): ForkShareAddressSpace | undefined {
+    const source = this.processes.get(pid)?.source;
+    return source instanceof ForkShareAddressSpace ? source : undefined;
+  }
+
+  /**
+   * Give the framebuffer and the DRI buffer mapped at `address` their place
+   * in the process Memory, then prime the DRI buffer. False when the pages
+   * or the prime are refused.
+   */
+  #placeDeviceMappings(channel: ChannelInfo, address: number): boolean {
+    const place = (addr: number, len: number) =>
+      this.#deviceMappingOffset(channel.source, addr, len);
+    try {
+      const framebuffer = this.#kernel.framebuffers.get(channel.pid);
+      if (framebuffer && framebuffer.len !== 0 && framebuffer.addr === address) {
+        this.#kernel.framebuffers.place(channel.pid, place(address, framebuffer.len));
+      }
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      return false;
+    }
+    const boId = this.#kernel.bos.findBindingByAddr(channel.pid, address);
+    return boId === undefined
+      || this.#kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory, address, place);
+  }
+
+  /**
+   * Memory offset of the `len` device-mapped bytes at guest address `addr`.
+   *
+   * WHY: the device registries read and write a mapping at a fixed Memory
+   * offset, outside any syscall. A page that a fork shares would move on the
+   * guest's next write, so the pages become one run that no fork shares
+   * (`#deviceMappingRuns`).
+   */
+  #deviceMappingOffset(source: ProcessMemorySource, addr: number, len: number): number {
+    if (!(source instanceof ForkShareAddressSpace)) return addr;
+    const { page, count } = deviceMappingRun(addr, len);
+    return source.privateRun(page, count) * WASM_PAGE_SIZE + addr % WASM_PAGE_SIZE;
+  }
+
+  /** The pages of `pid`'s placed device mappings. */
+  #deviceMappingRuns(pid: number): PageRun[] {
+    const runs = this.#kernel.bos.primedRanges(pid)
+      .map(({ addr, len }) => deviceMappingRun(addr, len));
+    const framebuffer = this.#kernel.framebuffers.get(pid);
+    if (framebuffer?.offset !== undefined) runs.push(deviceMappingRun(framebuffer.addr, framebuffer.len));
+    return runs;
+  }
+
+  /**
+   * Create the address space of a fork child inside the parent's Memory.
+   * `privateRuns` names the host control pages the child must own; the
+   * parent's device mappings join them. The calling thread is parked in fork.
+   */
+  forkProcessAddressSpace(
+    parentPid: number,
+    privateRuns: readonly PageRun[],
+  ): ForkShareAddressSpace {
+    const parent = this.processes.get(parentPid);
+    const space = parent?.source;
+    if (!parent || !(space instanceof ForkShareAddressSpace)) {
+      throw new Error(`Fork parent pid ${parentPid} has no page tables`);
+    }
+    // WHY: a thread that loaded a write entry before fork set the
+    // copy-on-write bit would write a shared page in place. A thread with a
+    // pending syscall runs no guest code until this worker completes it, and
+    // this call does not yield. A running thread parks at its next store
+    // (`stopWrites`). When a thread does not park in time, or a vfork child
+    // borrows the Memory, the child gets a copy of every page and the parent
+    // keeps its pages unshared.
+    const everyPage = [{ page: 0, count: space.byteLength / WASM_PAGE_SIZE }];
+    const memoryIsBorrowed = [...this.processes.values()].some((registration) =>
+      registration.borrowedAddressSpace && registration.memory === parent.memory
+    );
+    if (memoryIsBorrowed) return space.fork(everyPage);
+    const unsharedRuns = [...privateRuns, ...this.#deviceMappingRuns(parentPid)];
+    const running = parent.channels.filter((channel) =>
+      this.loadChannelStatus(channel) !== CH_PENDING
+    );
+    if (running.length === 0) return space.fork(unsharedRuns);
+
+    const request = this.#forkStopRequest = this.#forkStopRequest % 0x7fffffff + 1;
+    for (const channel of running) Atomics.store(channel.i32View!, FORK_STOP_INDEX, request);
+    space.stopWrites(unsharedRuns);
+    const everyThreadIsParked = this.#forkStopReached(running, request);
+    if (!everyThreadIsParked) space.resumeWrites();
+    const child = space.fork(everyThreadIsParked ? unsharedRuns : everyPage);
+    for (const channel of running) {
+      Atomics.store(channel.i32View!, FORK_STOP_INDEX, 0);
+      Atomics.notify(channel.i32View!, FORK_STOP_INDEX);
+    }
+    return child;
+  }
+
+  /**
+   * Wait until each thread of `running` has a pending syscall or waits on
+   * its stop word for `request`. False when a thread does neither in
+   * `FORK_STOP_WAIT_MS`: it runs code with no store and no syscall.
+   */
+  #forkStopReached(running: readonly ChannelInfo[], request: number): boolean {
+    const deadline = performance.now() + FORK_STOP_WAIT_MS;
+    for (const channel of running) {
+      for (;;) {
+        if (Atomics.load(channel.i32View!, CH_STATUS / 4) === CH_PENDING) break;
+        const echo = Atomics.load(channel.i32View!, FORK_STOP_INDEX + 1);
+        if (echo === request) break;
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) return false;
+        // A pending syscall does not notify the stop words: wait in slices.
+        Atomics.wait(channel.i32View!, FORK_STOP_INDEX + 1, echo, Math.min(remaining, 1));
+      }
+    }
+    return true;
   }
 
   /** Whether the dedicated worker has one usable, non-poisoned generation. */

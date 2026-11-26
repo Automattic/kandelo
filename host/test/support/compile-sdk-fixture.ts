@@ -6,6 +6,10 @@ import { makeHostScratchTempRoot } from "../centralized-test-helper";
 
 interface FixtureOptions {
   forkInstrument?: boolean;
+  /** Extra `wasm-fork-instrument` arguments, after the input and output. */
+  forkInstrumentArgs?: string[];
+  /** Route every guest load and store through a per-process page table. */
+  memoryInstrument?: boolean;
   arch?: "wasm32" | "wasm64";
 }
 
@@ -25,20 +29,29 @@ export function stampFixtureAbiContract(programPath: string): void {
 /** Build and stamp a test-owned guest using the current SDK and ABI contract. */
 export function compileSdkFixture(
   source: URL, linkArgs: string[] = [],
-  { forkInstrument = false, arch = "wasm32" }: FixtureOptions = {},
+  {
+    forkInstrument = false, forkInstrumentArgs = [], memoryInstrument = false,
+    arch = "wasm32",
+  }: FixtureOptions = {},
 ) {
   const scratch = makeHostScratchTempRoot("sdk-fixture-");
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });
   const programPath = join(scratch, "probe.wasm");
   try {
     const linked = forkInstrument ? `${programPath}.linked` : programPath;
+    const stamped = memoryInstrument ? `${programPath}.stamped` : programPath;
     execFileSync(join(root, `sdk/bin/${arch}posix-cc`), [
       fileURLToPath(source), "-O2", ...linkArgs, "-o", linked,
     ], { cwd: root, stdio: "pipe" });
     if (forkInstrument) execFileSync("bash", [
-      join(root, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", programPath,
+      join(root, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", stamped,
+      ...forkInstrumentArgs,
     ], { cwd: root, stdio: "pipe" });
-    stampFixtureAbiContract(programPath);
+    stampFixtureAbiContract(stamped);
+    if (memoryInstrument) execFileSync("bash", [
+      join(root, "scripts/run-wasm-memory-instrument.sh"), stamped, "-o", programPath,
+      "--crossing", "aligned",
+    ], { cwd: root, stdio: "pipe" });
     return { programPath, cleanup };
   } catch (error) { cleanup(); throw error; }
 }

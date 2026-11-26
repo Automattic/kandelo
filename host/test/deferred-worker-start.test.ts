@@ -865,6 +865,7 @@ function actualCloneRetirementControl(
     kernelWorker: {
       isExecHandoffActive: () => false, isProcessExecutionActive: () => true,
       attachThreadChannel() {}, getKernelAbiVersion: () => 56, getKernelAbiContractDigest: () => "source-control",
+      getProcessForkShare: () => undefined,
       startProcessWorkerWhenRunnable(_pid: number, _memory: WebAssembly.Memory, launch: () => void, stop: () => void) {
         start = launch; cancel = stop; observeLaunch();
         if (disposition === "started-stale" || disposition === "termination-failure" || disposition === "started") { launch(); return disposition === "started" ? "started" : "stale"; }
@@ -885,6 +886,7 @@ function actualCloneRetirementControl(
     delay: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
     THREADED_WORKER_TERMINATION_SETTLE_MS: 250,
     exitedThreadWorkersOutliveThreads: false,
+    memoryInstrumenter: undefined,
   };
   const actual = new Function(...Object.keys(deps), code + "\nreturn {clone:handleClone,batch:terminateThreadWorkers};")(...Object.values(deps));
   const clone = actual.clone;

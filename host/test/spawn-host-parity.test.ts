@@ -271,7 +271,7 @@ describe("spawn host parity", () => {
         clone,
         `${entry} must guard clone allocation and thread attachment`,
       ).toMatch(
-        /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
+        /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(forkShare \?\? memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
       );
     }
   });
@@ -307,7 +307,7 @@ describe("spawn host parity", () => {
         );
         expect(asynchronousClone).toBe(nextAwait);
         expect(handler).toMatch(
-          /const childMemoryLease = processMemoryAllocator\.hasAsyncMemoryFactory\s*\? await processMemoryAllocator\.acquireForkClone\([\s\S]*?\)\s*: acquireForkMemoryClone\(/,
+          /const childMemoryLease = sharesMemory\s*\? parentInfo\.memoryLease\.retainAddressSpace\(\)\s*: processMemoryAllocator\.hasAsyncMemoryFactory\s*\? await processMemoryAllocator\.acquireForkClone\([\s\S]*?\)\s*: acquireForkMemoryClone\(/,
         );
       } else {
         expect(clone, `${entry} must clone before yielding`).toBeLessThan(nextAwait);

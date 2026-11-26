@@ -1,6 +1,6 @@
 import { BrowserFramebufferMirrors } from "../src/framebuffer/browser-mirror";
 import { describe, expect, it, vi } from "vitest";
-import { FramebufferRegistry } from "../src/framebuffer/registry.js";
+import { FramebufferRegistry, type FbBindingInput } from "../src/framebuffer/registry.js";
 
 describe("FramebufferRegistry", () => {
   it("binds and retrieves with lazy view", () => {
@@ -183,15 +183,20 @@ describe("FramebufferRegistry", () => {
 
 
 describe("browser framebuffer storage", () => {
-  it("waits for the guest growth that follows an mmap bind", () => {
+  it("waits for the growth and the placement that follow an mmap bind", () => {
     vi.useFakeTimers();
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 3, shared: true });
     const mirrors = new BrowserFramebufferMirrors(() => memory);
+    const binding: FbBindingInput = { pid: 1, addr: 65536, len: 16, w: 2, h: 2, stride: 8, fmt: "BGRA32" };
     try {
-      const pixels = mirrors.bind({ pid: 1, addr: 65536, len: 16, w: 2, h: 2, stride: 8, fmt: "BGRA32" }, 1)!;
+      new Uint8Array(memory.buffer, 65536, 16).fill(11);
+      const pixels = mirrors.bind(binding, 1)!;
+      expect(new Uint8Array(pixels)[0]).toBe(0);
+      binding.offset = 131072;
+      vi.advanceTimersByTime(16);
       expect(new Uint8Array(pixels)[0]).toBe(0);
       memory.grow(1);
-      new Uint8Array(memory.buffer, 65536, 16).fill(23);
+      new Uint8Array(memory.buffer, 131072, 16).fill(23);
       vi.advanceTimersByTime(16);
       expect(new Uint8Array(pixels)[0]).toBe(23);
     } finally {
@@ -205,7 +210,7 @@ describe("browser framebuffer storage", () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
     let generation = 1;
     const mirrors = new BrowserFramebufferMirrors((_pid, requested) => requested === generation ? memory : undefined);
-    const binding = { pid: 7, addr: 64, len: 16, w: 2, h: 2, stride: 8, fmt: "BGRA32" as const };
+    const binding = { pid: 7, addr: 64, offset: 64, len: 16, w: 2, h: 2, stride: 8, fmt: "BGRA32" as const };
     try {
       new Uint8Array(memory.buffer, 64, 16).fill(17);
       const pixels = mirrors.bind(binding, 1)!;

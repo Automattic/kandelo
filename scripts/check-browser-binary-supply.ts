@@ -176,6 +176,7 @@ const VIRTUAL_MODULE_ARTIFACTS: Readonly<Record<string, string | null>> = {
   "kernel-wasm": "kernel.wasm",
   "kandelo-image-module32-wasm": "kandelo_image_module32.wasm",
   "kandelo-image-module-positioned32-wasm": "kandelo_image_module_positioned32.wasm",
+  "kandelo-memory-instrument32-wasm": "kandelo_memory_instrument32.wasm",
   "rootfs-vfs": "programs/wasm32/rootfs.vfs.zst",
   "pages-vfs-products": null,
 };

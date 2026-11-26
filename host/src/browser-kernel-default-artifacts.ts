@@ -25,3 +25,14 @@ export async function browserDefaultRootfsVfsUrl(): Promise<string> {
   const loaded = await import("@rootfs-vfs?url");
   return loaded.default as string;
 }
+
+/**
+ * Resolve the memory instrumenter URL on demand.
+ *
+ * WHY this is a dynamic import: only a kernel in `forkMemory: "share"` mode
+ * rewrites side modules, so the default `"copy"` boot must not fetch it.
+ */
+export async function browserDefaultMemoryInstrumenterUrl(): Promise<string> {
+  const loaded = await import("@kandelo-memory-instrument32-wasm?url");
+  return loaded.default as string;
+}

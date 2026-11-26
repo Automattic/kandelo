@@ -211,7 +211,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       // 0xFF000000 | (r << 16) | c. Sample at a few coordinates.
       const procMem = kernel.getProcessMemory(pid);
       expect(procMem).toBeDefined();
-      const view = new DataView(procMem!.buffer, binding!.addr, binding!.len);
+      const view = new DataView(procMem!.buffer, binding!.offset, binding!.len);
       const sample = (r: number, c: number) =>
         view.getUint32((r * binding!.w + c) * 4, /*littleEndian*/ true);
 

@@ -17,6 +17,11 @@ import {
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
 } from "./generated/abi";
+import {
+  GROUP_HEADER_BYTES,
+  STOP_WORDS_BYTES,
+  type PageTableLocation,
+} from "./fork-share-address-space";
 
 /** Legacy Kernel MemoryManager::MMAP_BASE. Compact hosts override this per process. */
 export const PROCESS_MMAP_BASE = PROCESS_MEMORY_LEGACY_MMAP_BASE;
@@ -35,6 +40,29 @@ export const PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT =
 export const FORK_SAVE_BUFFER_SIZE = PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE;
 export const FORK_SAVE_CONTROL_PREFIX_SIZE = PROCESS_MEMORY_FORK_SAVE_CONTROL_PREFIX_SIZE;
 export const CHANNEL_PAGES = Math.ceil(CH_TOTAL_SIZE / WASM_PAGE_SIZE);
+
+/**
+ * Guest address of the stop words of the thread that owns the channel at
+ * `channelOffset`: the end of its channel pages, which the channel leaves
+ * free. A fork that shares pages parks the thread through them; see
+ * `ForkShareAddressSpace.stopWrites`.
+ */
+export function channelStopOffset(channelOffset: number): number {
+  return channelOffset + CHANNEL_PAGES * WASM_PAGE_SIZE - STOP_WORDS_BYTES;
+}
+
+/**
+ * Page tables for the Worker of the thread whose channel is at the Memory
+ * offset `channelOffset`, with the place of its stop words. Undefined for a
+ * process without page tables.
+ */
+export function workerPageTable(
+  pageTable: PageTableLocation | null,
+  channelOffset: number,
+): PageTableLocation | undefined {
+  if (pageTable === null) return undefined;
+  return { ...pageTable, stop: channelStopOffset(channelOffset) };
+}
 
 export interface ProcessMemoryLayout {
   /** Initial WebAssembly.Memory pages required before user code starts. */
@@ -65,6 +93,11 @@ export interface ProcessMemoryLayout {
   threadArenaEndPage: number;
   /** Maximum concurrent pthread slots for this process. */
   threadSlotCount: number;
+  /**
+   * Page tables and group header of a program rewritten by
+   * `wasm-memory-instrument`; the header ends the control slab.
+   */
+  pageTable: PageTableLocation | null;
 }
 
 export interface ProcessMemoryLayoutOptions {
@@ -79,6 +112,8 @@ export interface ProcessMemoryLayoutOptions {
   threadSlots?: number;
   /** Preallocate the full pthread control slab. Defaults to dynamic slots. */
   preallocateThreadSlots?: boolean;
+  /** `__memory_table_base` of a program rewritten by `wasm-memory-instrument`. */
+  pageTable?: number;
   /** @deprecated brk and mmap are coordinated by the kernel allocator. */
   brkReservePages?: number;
 }
@@ -271,9 +306,15 @@ export function computeProcessMemoryLayout(
       options.preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
     );
 
+  const pageTable = options.pageTable === undefined
+    ? null
+    : { table: options.pageTable, group: threadArenaEndPage * WASM_PAGE_SIZE };
+  const controlEndPage = threadArenaEndPage
+    + (pageTable === null ? 0 : GROUP_HEADER_BYTES / WASM_PAGE_SIZE);
+
   const initialPages = Math.max(
     minPages,
-    threadArenaEndPage,
+    controlEndPage,
   );
 
   if (initialPages > maximumPages) {
@@ -282,7 +323,7 @@ export function computeProcessMemoryLayout(
     );
   }
 
-  const brkBase = threadArenaEndPage * WASM_PAGE_SIZE;
+  const brkBase = controlEndPage * WASM_PAGE_SIZE;
   const maxAddr = maximumPages * WASM_PAGE_SIZE;
 
   return {
@@ -300,6 +341,7 @@ export function computeProcessMemoryLayout(
     firstThreadBasePage,
     threadArenaEndPage,
     threadSlotCount,
+    pageTable,
   };
 }
 
@@ -487,9 +529,20 @@ export interface ProcessMemoryLease {
   /**
    * Retain one additional explicit host ownership token for this exact
    * backing. This does not create a new POSIX address space and must never be
-   * used to implement ordinary fork, which requires an independent Memory.
+   * used to implement ordinary fork: a `"copy"` fork requires an independent
+   * Memory and a `"share"` fork uses `retainAddressSpace()`.
    */
   retainAlias(): ProcessMemoryLease;
+  /**
+   * Retain one ownership token for a `"share"` fork child, which uses this
+   * backing through its own page tables.
+   *
+   * Unlike `retainAlias()`, this succeeds after a forced termination. A
+   * terminated Worker writes only pages that its own tables map without the
+   * copy-on-write bit, and no other process maps those pages. The backing
+   * still retires as forced.
+   */
+  retainAddressSpace(): ProcessMemoryLease;
   /**
    * Release this alias after its Worker and channel have crossed their exact
    * quiescence fence. The backing retires only after every retained alias is
@@ -685,7 +738,9 @@ type ProcessMemoryRecord = {
 
 class OwnedProcessMemoryLease implements ProcessMemoryLease {
   private ownedMemory: WebAssembly.Memory | undefined;
-  private retainOwnedRecord: (() => ProcessMemoryLease) | undefined;
+  private retainOwnedRecord:
+    | ((afterForcedTermination: boolean) => ProcessMemoryLease)
+    | undefined;
   private consumeOwnedRecord:
     | ((retirementMode: "quiescent" | "forced") => void)
     | undefined;
@@ -697,7 +752,7 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     readonly ptrWidth: 4 | 8,
     readonly maximumPages: number,
     private readonly executionState: ExecutionOwnerState,
-    retainOwnedRecord: () => ProcessMemoryLease,
+    retainOwnedRecord: (afterForcedTermination: boolean) => ProcessMemoryLease,
     consumeOwnedRecord: (retirementMode: "quiescent" | "forced") => void,
   ) {
     this.executionOwner = executionState.handle;
@@ -804,10 +859,18 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
   }
 
   retainAlias(): ProcessMemoryLease {
+    return this.retain(false);
+  }
+
+  retainAddressSpace(): ProcessMemoryLease {
+    return this.retain(true);
+  }
+
+  private retain(afterForcedTermination: boolean): ProcessMemoryLease {
     if (!this.retainOwnedRecord || !this.ownedMemory) {
       throw new Error("Process memory lease was already consumed");
     }
-    return this.retainOwnedRecord();
+    return this.retainOwnedRecord(afterForcedTermination);
   }
 
   release(): void {
@@ -1226,12 +1289,15 @@ export class ProcessMemoryAllocator {
       record.ptrWidth,
       record.maximumPages,
       record.executionOwner,
-      () => this.retainRecord(record),
+      (afterForcedTermination) => this.retainRecord(record, afterForcedTermination),
       (retirementMode) => this.releaseRecord(record, retirementMode),
     );
   }
 
-  private retainRecord(record: ProcessMemoryRecord): ProcessMemoryLease {
+  private retainRecord(
+    record: ProcessMemoryRecord,
+    afterForcedTermination: boolean,
+  ): ProcessMemoryLease {
     if (
       this.records.get(record.allocationId) !== record
       || record.state !== "leased"
@@ -1240,7 +1306,7 @@ export class ProcessMemoryAllocator {
     ) {
       throw new Error("Process memory record is not an active lease");
     }
-    if (record.forcedTerminationObserved) {
+    if (record.forcedTerminationObserved && !afterForcedTermination) {
       throw new Error("Cannot retain process memory after forced termination");
     }
     if (record.activeAliases === Number.MAX_SAFE_INTEGER) {
