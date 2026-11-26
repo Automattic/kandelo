@@ -241,6 +241,35 @@ Both paths join one pending disposer. An authorization refusal releases the
 host attempt so an already-issued effect can proceed. Disposer and
 acknowledgement failures stay with the exact Worker. Rust still requires the
 `REFERENCES_DETACHED` acknowledgement before releasing physical storage.
+The fork and pthread launch controllers issue their rollback actions before
+the storage owner enters detachment. The fork rollback can still require a
+separate containment acknowledgement at that point. Reusing the fast path
+there would require changing where those controllers hand off custody.
+
+The issued-detachment follow-up (`b24f481b9a`) passed 108 focused Node cases
+against the published kernel. Three new cases check that normal retirement
+skips the begin call, with single disposal and exact acknowledgement even
+when rollback overlaps or acknowledgement must wait for the kernel gate.
+They also cover a refused rollback racing kernel authorization and a failing
+disposer retaining its exact backing. The host build and three Rust-first
+host-boundary checks passed. The ABI 56/40 snapshot check passed against
+pinned develop. Kernel, SDK and ABI sources are identical to that baseline.
+
+Both Node arms passed 24 grouped roots with child wait and reaping, and 256
+ordinary and 256 grouped pthread cycles. Over the last 128 grouped cycles
+both recorded one live image, one to two replicas, 162–168 allocated pages,
+a fixed 170-page extent and zero quarantined replicas or pending wait drains.
+Both ended with one allocated control page and zero images, replicas and
+native observers.
+
+Chromium, Firefox and WebKit passed real SDK pthread-launch rollback,
+threaded exec and standalone native-wait exit. Chromium and WebKit also
+passed the forty-cohort native-wait workload. The first Firefox cohort run
+passed the exact retirement assertions and failed the final fixed-extent
+assertion as the backing grew from 500 to 501 pages. Four matched Firefox
+reruns in develop–candidate–candidate–develop order passed the unchanged
+assertion. The original result is retained. The full-gallery browser-memory
+gate for this follow-up awaits canonical source provisioning.
 
 ## Focus latency follow-up
 
@@ -287,8 +316,56 @@ BGRA and the predicate used a normalized RGBA readback. The video medians were
 and 184.62 ms. Starting load ranged from 81 to 127. The direct-canvas and
 normalized-video results are separate diagnostics under different loads.
 They agree on typical latency and give different directions for the tail
-difference. The original performance question still needs a staged trace on
-a quieter host. [Raw focus diagnostic timings](2026-11-25-grouped-worker-startup-samples.json).
+difference.
+
+The next four Chromium runs traced 45 moves each in ABBA order, using
+`b24f481b9a` and the same kernel and partial Sway/Foot shell. Scratch
+instrumentation recorded the absolute pointer batch entering evdev, the
+first DRM submission after that batch, the next flip latch, scanout and the
+first observed canvas sample with the expected border color. Each context's
+monotonic timestamps were aligned with `performance.timeOrigin`, and a
+Worker timestamp was checked against bracketing page timestamps.
+The event-to-canvas medians were 80.03 ms on develop and 80.21 ms on the
+candidate. The respective p95s were 180.09 ms and 179.68 ms. Starting
+one-minute load ranged from 55 to 71 on an 18-CPU host.
+
+The slow samples took separate paths. One 180 ms candidate move spent
+108 ms before evdev ingress, with the page listener reached in 13 ms.
+Another 191 ms candidate move reached evdev in 7 ms and waited 160 ms
+for the first DRM submission. In that interval scanout had a 123 ms gap.
+The slowest develop move took 214 ms, including 155 ms between evdev and
+the first submission and a 116 ms scanout gap. Flip-latch and scanout
+timestamps identify activity during the interval. Multiple flips can occur
+before the expected color, so the first flip cannot be assigned to the
+focus change from these marks.
+
+A second ABBA block added the page's message post, the Worker message
+handler and the vblank scheduler callback. The 180 moves had medians of
+80.40 ms and 80.43 ms, and p95s of 194.06 ms and 177.88 ms. Starting
+one-minute load ranged from 35 to 44. Of 21 moves at or above 130 ms, nine
+waited at least 50 ms between post and handler, reaching about 90 ms on
+both revisions. No vblank callbacks were recorded during those nine waits.
+Eleven had at least 80 ms from evdev to first DRM submission and also had
+an interval of at least 80 ms between vblank callbacks. The remaining move
+submitted at 41 ms and latched at 146 ms, after a 115 ms callback gap.
+Posting took at most 15 ms from the input timestamp, and the message
+handler reached evdev within 0.03 ms on every move. Once the vblank callback
+ran, its kernel entry began within 0.06 ms. The trace leaves Worker
+scheduling, queued work and frame delivery as the next profiling targets.
+
+A third ABBA block on the same runtime performed six Foot open/close
+cycles before the 45 traced moves in each run. All four returned to their
+starting live image and task counts, with zero quarantined replicas and
+pending wait drains. Across 12 cycles per arm, the median terminal open
+was 1,735 ms on develop and 1,736 ms on the candidate. The respective
+median closes were 290 ms and 285 ms. Focus medians were 80.56 ms and
+80.76 ms, with p95s of 179.08 ms and 180.20 ms. Starting one-minute load
+was 20–25. Both revisions again saw delayed message handling and gaps in
+vblank callbacks. This lighter-load comparison exercised the changed
+retirement path and reproduced a similar focus tail on both revisions.
+It still used direct canvas sampling, so the original video-observed
+16 ms p95 difference remains unattributed.
+[Raw focus diagnostic timings](2026-11-25-grouped-worker-startup-samples.json).
 
 ## Retained failures
 
@@ -312,3 +389,14 @@ pinned digests. Wasmtime smoke stopped at the existing three-argument native
 `host_proc_validate_range` binding. The pinned kernel requires four arguments,
 and the corresponding kernel and native host sources are identical on both
 revisions.
+The first issued-detachment test fixture leaked a spy through the frozen gate
+object. Replacing it with a real queued kernel entry made the targeted suite
+pass. A shared Nix input fetch lock stalled repeat invocations of the
+developer shell. The focused reruns used the exact environment exported from
+the worktree's recorded Nix profile.
+The follow-up's source-only host audit passed 1,431 cases and exceeded the
+five-minute watchdog on the repository-wide TypeScript ownership scan.
+The unchanged scan passed in 262 seconds on an isolated rerun.
+The first scheduler trace tried to instrument Vite's Worker URL wrapper.
+Skipping that wrapper left the marker on the actual Worker source, and all
+four runs completed.
