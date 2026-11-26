@@ -204,6 +204,15 @@ export class WasmModuleCache {
     );
   }
 
+  /** A launch may transport the module only when this cache already bound
+   * its exact, kernel-owned immutable byte buffer to that program variant.
+   * A new buffer, a cleared cache, or an expired module uses byte compilation. */
+  cachedProgramForOwnedBytes(bytes: ArrayBuffer): WebAssembly.Module | undefined {
+    const identity = this.#identities.get(bytes);
+    if (!identity || identity.byteLength !== bytes.byteLength) return undefined;
+    return this.#entries.get(`program:${identity.id}`)?.ref.deref();
+  }
+
   /**
    * The thread-entry module for a program, keyed by the program's own bytes.
    * `patchForThread` must be a pure function of those bytes. When it leaves

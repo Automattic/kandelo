@@ -5,6 +5,7 @@ import { MemoryGroupProtocolFault, memoryGroupU32 } from './memory-group-protoco
 import { decodeStoppedGroupedWorkerIdentity, type GroupReplicaMemoryExpectation, type ProcessMemoryEnvelope } from './process-memory-descriptor';
 import type { MemoryGroupTaskReceipt } from './memory-group-protocol';
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from './worker-protocol';
+import type { WasmModuleCache } from './wasm-module-cache';
 import type { WorkerHandle } from './worker-adapter';
 
 const { prepare: PREPARE, ready: READY, launch: LAUNCH, cancel: CANCEL } = MEMORY_GROUP_PROTOCOL.retirement_control.worker_messages;
@@ -87,9 +88,18 @@ export async function waitForGroupedWorkerReady(worker: WorkerHandle, expected: 
   try { await observation.result; } finally { clearTimeout(timeout); }
 }
 /** Send only after readiness and exact Rust publication have both succeeded. */
-export function createGroupedWorkerLaunch(init: GroupedWorkerInit, envelope: ProcessMemoryEnvelope): unknown {
+export function createGroupedWorkerLaunch(init: GroupedWorkerInit, envelope: ProcessMemoryEnvelope,
+    cache?: WasmModuleCache): unknown {
   const data = own(init);
   if (Object.hasOwn(data, 'memory')) return fail('Grouped launch must carry its backing exactly once');
+  // The caller's optional module is never a proof about these bytes. Only
+  // the kernel Worker's compiler can supply the module in its launch message.
+  delete data.programModule;
+  delete data.cachedGroupProgram;
+  if (data.type === 'centralized_init' && data.programBytes instanceof ArrayBuffer) {
+    const compiled = cache?.cachedProgramForOwnedBytes(data.programBytes);
+    if (compiled) data.cachedGroupProgram = compiled;
+  }
   return { type: LAUNCH, init: data, envelope };
 }
 
@@ -139,7 +149,12 @@ export async function receiveGroupedWorkerInitialization(
     return fail('Grouped launch disagrees with its prepared Worker identity');
   }
   let grouped: GroupedWorkerRuntime;
-  try { grouped = new GroupedWorkerRuntime(launch.envelope, { ...expected, assertLive: () => {} }); }
+  try {
+    const program = init.type === 'centralized_init' && init.cachedGroupProgram instanceof WebAssembly.Module
+      && init.programBytes instanceof ArrayBuffer ? { bytes: init.programBytes, module: init.cachedGroupProgram } : undefined;
+    delete init.cachedGroupProgram;
+    grouped = new GroupedWorkerRuntime(launch.envelope, { ...expected, assertLive: () => {} }, program);
+  }
   catch (error) {
     // Stop can win after the parent sends launch but before this realm decodes
     // it. Keep every identity/layout check; only a genuine RUN=0 launch may

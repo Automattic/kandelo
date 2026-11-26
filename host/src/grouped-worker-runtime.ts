@@ -41,7 +41,8 @@ export class GroupedWorkerRuntime {
   private bound = false;
   private validatedModule: WebAssembly.Module | undefined;
 
-  constructor(envelope: unknown, expected: GroupReplicaMemoryExpectation) {
+  constructor(envelope: unknown, expected: GroupReplicaMemoryExpectation,
+    private preparedProgram?: { bytes: ArrayBuffer; module: WebAssembly.Module }) {
     // Refresh the received memory32 backing before the decoder creates views.
     const memoryField = envelope && typeof envelope === 'object'
       ? Object.getOwnPropertyDescriptor(envelope, 'memory') : undefined;
@@ -63,6 +64,13 @@ export class GroupedWorkerRuntime {
       fail('Grouped Worker requires an admitted virtual source');
     }
     this.source = decoded.source; this.descriptor = decoded.descriptor; this.backing = decoded.memory;
+  }
+  /** Consume the parent transport's compiler result only with its paired
+   * bytes. A thread must still patch its own constructor before instantiation. */
+  takePreparedProgram(bytes: ArrayBuffer): WebAssembly.Module | undefined {
+    const program = this.preparedProgram;
+    this.preparedProgram = undefined;
+    return program?.bytes === bytes ? program.module : undefined;
   }
   get memory(): WebAssembly.Memory {
     if (!this.backing) return fail('Grouped Worker storage is retired');
@@ -146,6 +154,7 @@ export class GroupedWorkerRuntime {
     if (!this.bound || !this.backing || prepareMemoryGroupForkReplay(this.backing)(this.descriptor.replica) !== 0) trapProcessWorker();
   }
   detach(): void {
+    this.preparedProgram = undefined;
     this.guard.detach(); this.wait = undefined; this.validatedModule = undefined;
     this.source.detachHostAccess(); this.backing = undefined;
   }
