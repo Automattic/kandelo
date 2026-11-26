@@ -63,7 +63,7 @@ Grouped completion authority also belongs to the actual `ProcessTable`. It retai
 
 Rust preflights all destination words before writing a signal record or publishing a result. Consecutive words on the same virtual page reuse the private-frame translation for that synchronous operation. Publication validates the entire locked SDK wait queue, records the first matching waiter, then writes the result and wakes that waiter. An unlinked node stays allocated until its waiting task returns.
 
-The kernel Worker holds one physical atomic-word view per group backing. The view covers a prefix of the shared memory. When Rust requests a word beyond it, the adapter checks the current extent and refreshes the view. Per-process translation and exact native-wait pins still follow the current mapping and the Rust-issued receipt.
+The kernel Worker holds one physical atomic-word view per group backing. The view covers a prefix of the shared memory. When Rust requests a word beyond it, the adapter checks the current extent and refreshes the view. Per-process translation and exact native-wait pins still follow the current mapping and the Rust-issued receipt. See the [grouped completion and desktop measurements](measurements/2026-11-26-grouped-syscall-desktop-latency.md).
 
 The actual Rust root, fork, exec and pthread owners select execution transactions and cancellation. Rust also selects Worker containment before reference disposal and orders pthread retirement against whole-image retirement. An accepted Node native join or sealed constructor absence already satisfies containment; a browser terminal fence still requires the requested platform termination. References and physical frames remain charged until their distinct acknowledgements and native waits settle.
 
