@@ -300,8 +300,9 @@ generation and creates a new registry.
 
 ### Fork role
 
-Under the successor ABI, capability 0x02 identifies a fork-instrumented
-main that can map side code. Use the shared declared mapping capability
+Capability 0x02 continues to identify the dynamic-linking role. For a
+process-owned loader, derive that role from its declared ability to map
+side code. Use the shared declared mapping capability
 and artifact validation to derive and enforce it consistently across
 streaming graph, facts planning, SDK and host admission. A main that only
 has its static index and local lookup uses ordinary target discovery and
@@ -343,66 +344,39 @@ and the [Wasm dynamic linking conventions](https://raw.githubusercontent.com/Web
 
 ## ABI and migration
 
-The base currently pairs program ABI 56 with host adapter 8. Use a
-private prototype using an explicitly required versioned
-`kandelo.*` program extension for experimental mapping imports. Derive
-the new fork behavior only from that declared experiment contract.
-Keep the ordinary ABI-56 path and checks active. Run the prototype with
-its own matched artifacts and supplied capability. An extension can deliver a new interface while preserving the
-ABI-56 base, but it cannot withdraw the old loader or reinterpret the old
-fork role. Keeping both paths would retain the old host loader and its
-replay policy for ABI-56 artifacts.
+Keep ABI 56 as the supported program baseline. New SDK builds that
+use dynamic loading link the process-owned loader. Declare any host
+mapping imports through a required, versioned `kandelo.*` program
+extension. Executable-only lookup runs locally and omits the mapping
+import. Programs built against the old loader imports keep the
+original host implementation and fork reconstruction contract as
+ABI-56 compatibility behavior. The host selects that behavior from
+the artifact's interface, regardless of when or where it was built.
+The new SDK has one loader and rejects mixed legacy and
+process-owned interfaces.
 
-Recommend a coordinated successor program ABI for shipping the
-replacement, with explicit maintainer approval of the supported-baseline
-transition. Change `crates/program-abi/src/lib.rs::ABI_VERSION` for the
-program manifest, required mapping imports, side artifact validation and
-fork interpretation. Bump `HOST_ADAPTER_VERSION` in
-`crates/shared/src/lib.rs` with the incompatible kernel/worker
-reconstruction contract, including the new generation-bound mapping
-handoff and old archive retirement. If these are the next bumps, the
-numbers are 57 and 9. Assign them at integration. The existing
-[scheduled next-ABI changes](../abi-versioning.md#required-changes-for-the-next-program-abi)
-also require independent pthread TLS and removal of the single-step
-`__wasm_dlopen` import and lowering. Coordinate that work before staging
-a program ABI successor. If the maintainer keeps ABI 56 as the supported
-baseline, retain the base gate and legacy behavior and stage only the
-additive extension path until a successor is authorized.
+Add the production extension through the existing generator and
+check the generated manifests, SDK allowlist, and artifact admission.
+Preserve the ABI-56 program digest and frozen fixtures. Version any
+incompatible kernel-to-host reconstruction change separately and
+update its snapshot and bindings as required by the ABI policy.
+Retiring the old loader imports requires an explicit supported
+program baseline decision and the scheduled work for the next
+program ABI.
 [Program extensions](../program-extensions.md)
 [Persistent-program baseline](../persistent-program-compatibility.md#what-a-narrow-program-contract-actually-contains)
 
-Record the versioned program records and role in the Program snapshot
-surface, and the separately versioned kernel/host records on the
-KernelHost surface. Update `abi/snapshot.json` and generated bindings
-with `scripts/check-abi-version.sh update`, check the digest and
-classification, and rebuild and test the standalone resolver bundle.
-Require the new loader format and architecture on the normal SDK
-`-shared` path as well as mains where applicable. Today not every shared
-library carries a full program digest. Give new modules an explicit
-loader format and program ABI/digest declaration checked at map time.
-Validate bindings and fork contracts before entering module code.
-Validate non-SDK linked artifacts and all normal SDK entry points,
-including in-guest links and ports with raw linker invocations.
-
-Preserve the ABI-56 frozen fixture bytes and historical release artifacts.
-Any supported-baseline transition explicitly creates a fresh cohort with
-the normal SDK and gates. Under a new exclusive baseline, old user
-programs remain intact and are rebuilt from source with the matching
-SDK and instrumenter. Already-installed packaged programs and their
-lazy references move to a verified, coherent SDK, libc, package/side
-module and image generation through the normal ABI staging workflow.
-Use the new ABI release namespace and cache identity. No automatic
-restamping or binary conversion is part of this plan.
-
-Test mismatched kernel/host pairs at startup, wrong executable stamps
-and invalid manifest/role pairs before launch (including exec, spawn
-and publication), and stale or wrong-width side modules at dlopen.
-The diagnostic identifies the offending artifact and the expected
-version or declaration and explains the rebuild requirement. An
-incompatible module must never reach a constructor, or fail only when
-a pointer is invoked in a fork child. Update the ABI, SDK,
-fork-instrumentation and POSIX status references with the shipped
-contract and any explicitly accepted gaps.
+Give side modules a loader format and ABI declaration checked at
+map time. Validate bindings and fork contracts before initialization.
+Cover normal host and in-guest SDK links, raw linker invocations,
+and admission through exec, spawn, publication, and dlopen. Test
+the frozen old artifacts as well as new artifacts with missing,
+unknown, mixed, or incompatible interface declarations. Refuse
+stale or wrong-width side modules before their constructors run,
+with a diagnostic naming the artifact and the expected format.
+Version cache inputs so mains, side modules, and lazy package
+references rebuild as a coherent generation. Preserve installed
+user artifacts and historical release bytes.
 
 ## Prototype and measurement review
 
@@ -458,51 +432,35 @@ logs in run-local scratch, disable automatic cache GC inside the build
 environment, and budget for only one heavy link or instrumenter arm
 at a time. Preserve measurements and raw logs needed for review.
 Phase 2 stops for review with measured deltas, correctness results, and
-remaining gaps. Use that evidence to review the proposed shipping ABI
-transition and the plan for cyclic direct imports.
+remaining gaps. Use that evidence to review the mapping contract,
+including the plan for cyclic direct imports.
 
 ## Landing sequence
 
-Target one PR on fresh develop for the wasm32 executable lookup path.
-Include the linker, libc, normal SDK selection, and fork regression
-coverage together. Enable it automatically for new links whose full
-resolved input set can use executable lookup alone. Adoption then
-happens through ordinary rebuilds across the cohort.
+Ship one process-owned loader for new SDK builds. Keep the current
+loader as ABI-56 artifact compatibility only. An SDK missing the
+required linker support fails a loader-using link with a diagnostic
+that identifies the matching toolchain. Within the new loader, an
+executable-only link can omit the mapping import and the side-loading
+fork role when the final link proves it has no side-loading path.
+Links that use no loader retain their export policy and omit the
+index.
 
-Use a single link-time decision for the complete loader implementation.
-Require proof that a dependency or an LTO input cannot retain
-`dlopen` or otherwise supply a legacy handle to the guest loader.
-Run this check before choosing the loader. The absence of host
-imports after substituting the guest loader is insufficient evidence.
-A retained `dlopen` reference, including `dlopen(NULL)`, or an
-unproven link keeps the legacy loader as a unit. A toolchain without
-index support also keeps the legacy route. Links that use no loader
-keep their existing export policy and omit the index.
+Implement and validate both lookup and named-module loading before
+the SDK cutover. The prototype maps one distinct side module per
+process. Complete dependency closures, side-originated loading,
+scope and reference counts, constructor and destructor handling,
+per-thread errors, and concurrent loader and fork behavior. Validate
+this with SDK fixtures on Node and browsers and with the actual
+mapping paths in Waybar, `gtk3_smoke`, ScummVM, and CPython. Keep the
+existing executable-lookup regression cases for pointer identity,
+stable table size, and fork continuation through a looked-up
+function. Test the frozen ABI-56 loader fixtures alongside these.
 
-Before enabling the default, verify lookup semantics, per-thread
-`dlerror`, canonical pointer identity, a stable indirect table, and
-fork continuation through a looked-up function in Node and Chromium.
-Exercise the normal host and in-guest SDK routes, including a
-transitive `dlopen` control and a stock linker control. Check existing
-artifacts against the ABI gates and rerun matched LÖVE builds on
-fresh develop for physics, graphics, and audio. Record final-link
-cost at clang and rustc scale and report the conformance and
-performance suites run. The executable-only path introduces no host
-mapping import and can preserve the existing program ABI and host
-adapter contract.
-
-A universal cutover requires the named-module path to reach parity
-first. The prototype maps one distinct side module per process.
-General dependency closures, side-originated loading, destructor
-handling, and concurrent loader operations still need coverage.
-Waybar and `gtk3_smoke` keep the legacy path until they pass a
-mapping-capable comparison. Decide whether to retire the legacy
-loader and transition the supported baseline at that review. The
-ABI and adapter numbers above describe the pinned prototype base.
-Assign any successor versions against the actual landing branch.
-
-Release validation includes the normal SDK and guest build paths,
-the loader and fork host and browser suites, Sortix dynamic-linking
-and applicable POSIX/libc suites, the browser-memory gate, and the
-Node and browser performance suites. Report each run or omission.
-Push and PR creation require separate approval.
+Validate the cutover on fresh develop. Include the normal SDK and
+guest build paths, the loader and fork host and browser suites,
+Sortix dynamic-linking and applicable POSIX/libc suites, the
+browser-memory gate, and the Node and browser performance suites.
+Repeat the matched LÖVE comparison and measure final-link costs at
+clang and rustc scale. Report each run or omission. Push and PR
+creation require separate approval.

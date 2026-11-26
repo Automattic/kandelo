@@ -303,5 +303,5 @@ gameplay. ScummVM gameplay and other engines remain outside the
 headless engine comparison. The clang and rustc
 link timings need matching relocatable link inputs. The conformance,
 browser-memory, full Node and browser benchmark suites, and canonical
-image integration remain pending. The package comparisons and the
-shipping ABI decision remain gates before full implementation.
+image integration remain pending. Named-module parity and runtime
+validation of the ABI-56 compatibility path gate the SDK cutover.
