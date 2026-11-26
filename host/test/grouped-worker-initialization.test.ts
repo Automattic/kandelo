@@ -12,10 +12,9 @@ import * as G from '../src/generated/program-extensions';
 const P = 65536;
 function fixture() {
   const receipt = { group: 7, pid: 100, tid: 100, serial: (1n << 55n) + 1n, generation: (1n << 54n) + 3n };
-  const { handle, launch, memory, close } = groupMemoryLayout({ receipt });
-  const { assertLive: _live, ...expected } = launch.expectation;
+  const { handle, launch, owner, memory, close } = groupMemoryLayout({ receipt });
   const init = { type: 'centralized_init' as const, pid: 100, programBytes: new ArrayBuffer(0), channelOffset: 4096, secureExec: false };
-  return { handle, launch, expected, init, memory, close };
+  return { handle, launch, owner, expected: launch.expectation, init, memory, close };
 }
 function leb(value: number): number[] { const out: number[] = []; do { const byte = value & 127; value >>>= 7; out.push(byte | (value ? 128 : 0)); } while (value); return out; }
 const text = (value: string): number[] => { const bytes = [...new TextEncoder().encode(value)]; return [...leb(bytes.length), ...bytes]; };
@@ -116,7 +115,7 @@ describe('normal grouped Worker initialization', () => {
     const f = fixture();
     const task = { ...f.expected.receipt, tid: 101, serial: f.expected.receipt.serial + 1n };
     const launch = thread ? groupMemoryLayout({ receipt: task, memory: f.memory, replicaPage: 5 }).launch : f.launch;
-    const { assertLive: _live, ...expected } = launch.expectation;
+    const { expectation: expected } = launch;
     const init = thread ? { ...f.init, type: 'centralized_thread_init', tid: 101 } : f.init;
     const message = createGroupedWorkerLaunch(init as any, launch.envelope);
     Atomics.store(new Int32Array(launch.envelope.memory.buffer,
@@ -169,19 +168,19 @@ describe('normal grouped Worker initialization', () => {
     expect(terminate).not.toHaveBeenCalled(); f.close();
   });
   it.each([{ layout: 2 }, { threadAttach: 1 }, { maximumPages: 1 }, { accessProfile: 'research' }])('refuses incompatible executable metadata %j', patch => {
-    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), bytes = artifact(patch);
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.owner), bytes = artifact(patch);
     expect(() => runtime.validate(new WebAssembly.Module(bytes), bytes, 100, 100)).toThrow('Incompatible');
     runtime.detach(); f.close();
   });
   it('refuses a start section before binding controls or executing Wasm', () => {
-    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), bytes = artifact({}, true);
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.owner), bytes = artifact({}, true);
     expect(() => runtime.validate(new WebAssembly.Module(bytes), bytes, 100, 100)).toThrow('defer its start');
     runtime.detach(); f.close();
   });
   it('rejects an original thread start before constructor patching can hide it', async () => {
     const f = fixture(), task = { ...f.expected.receipt, tid: 101, serial: f.expected.receipt.serial + 1n };
-    const { launch } = groupMemoryLayout({ receipt: task, memory: f.memory, replicaPage: 5 });
-    const runtime = new GroupedWorkerRuntime(launch.envelope, launch.expectation), events: any[] = [];
+    const { launch, owner } = groupMemoryLayout({ receipt: task, memory: f.memory, replicaPage: 5 });
+    const runtime = new GroupedWorkerRuntime(launch.envelope, owner), events: any[] = [];
     await centralizedThreadWorkerMain({ postMessage: (message: unknown) => events.push(message) } as any, {
       type: 'centralized_thread_init', pid: 100, tid: 101, memory: runtime.memory, programBytes: artifact({}, true),
       processChannelOffset: 4096, channelOffset: 8192, secureExec: false, fnPtr: 0, argPtr: 0,
@@ -196,14 +195,14 @@ describe('normal grouped Worker initialization', () => {
     expect(describeWasmArtifactPolicyFailures(bytes, { supportedProgramExtensions: GROUPED_WORKER_EXTENSIONS })).toEqual([]);
   });
   it('revokes storage before publishing an exact grouped terminal fence', async () => {
-    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), events: any[] = [];
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.owner), events: any[] = [];
     await runWithProcessWorkerQuiescence({ postMessage: message => {
       expect(() => runtime.source.readBytes(0, 1)).toThrow(); events.push(message);
     }, close: () => events.push('close') }, { pid: 100, memoryGroup: f.expected.receipt }, async () => runtime.detach(), () => {});
     expect(events).toEqual([{ type: 'memory_quiescent', pid: 100, memoryGroup: f.expected.receipt }, 'close']); f.close();
   });
   it.each([false, true])('handles stop winning during a retirement-marker read (stop=%s)', async stopped => {
-    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation);
+    const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.owner);
     const failure = Error('marker storage revoked');
     vi.spyOn(runtime.source, 'readBytes').mockImplementation(() => {
       if (stopped) Atomics.store(new Int32Array(runtime.memory.buffer,

@@ -895,7 +895,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           let native!: WorkerHandle, readiness!: Promise<void>;
           const worker = new DeferredWorkerHandle(() => {
             if (!launch) throw Error('Root fixture lacks kernel publication');
-            const { assertLive: _live, ...expected } = launch.expectation;
+            const { expectation: expected } = launch;
             native = processAdapter.createWorker(createGroupedWorkerPrepare(expected));
             readiness = waitForGroupedWorkerReady(native, expected);
             void readiness.catch(() => {});

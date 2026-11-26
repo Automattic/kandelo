@@ -46,15 +46,16 @@ export function groupMemoryLayout(options: {
   let live = true;
   const assertLive = () => { if (!live) throw new ProcessAddressFault('retired'); };
   const expectation = Object.freeze({ receipt, root, replica, scratch: replica + G.MEMORY_GROUP_REPLICA_BYTES,
-    scratchBytes: PAGE, maximumVirtualPages, maximumPhysicalPages, assertLive });
+    scratchBytes: PAGE, maximumVirtualPages, maximumPhysicalPages });
+  const owner = { ...expectation, assertLive };
   const binding = { memory, root, maximumPages: maximumVirtualPages, assertLive };
   const source = new GroupProcessAddressSpace(binding);
   const envelope = encodeProcessMemoryDescriptor(memory, { kind: G.MEMORY_GROUP_MODULE, receipt, root, replica,
-    scratch: expectation.scratch, scratchBytes: PAGE, maximumVirtualPages }, { ...expectation, memory });
-  const launch = { envelope, expectation, source: new GroupProcessAddressSpace(binding) };
+    scratch: expectation.scratch, scratchBytes: PAGE, maximumVirtualPages }, { ...owner, memory });
+  const launch = { envelope, expectation };
   const handle = Object.freeze(Object.create(null)) as PreparedGroupReplica;
-  const close = () => { live = false; source.detachHostAccess(); launch.source.detachHostAccess(); };
-  return { memory, source, launch, handle, close };
+  const close = () => { live = false; source.detachHostAccess(); };
+  return { memory, source, launch, owner, handle, close };
 }
 
 /** A fake kernel reply for isolated channel/Worker scheduling tests. Count

@@ -34,8 +34,7 @@ export class GroupedWorkerObjects {
     private releaseGeneration?: () => void) {
     this.worker = new DeferredWorkerHandle(() => {
       const launch = preparation.launch();
-      const { assertLive: _live, ...expected } = launch.expectation;
-      const prepare = createGroupedWorkerPrepare(expected);
+      const prepare = createGroupedWorkerPrepare(launch.expectation);
       this.constructorFailed = true;
       const worker = preparation.adapter.createWorker(prepare);
       this.constructorFailed = false;
@@ -94,7 +93,7 @@ export class GroupedWorkerObjects {
   disposeReferences(): void {
     if (this.disposed) return;
     this.absent = DeferredWorkerHandle.sealNeverStarted(this.worker);
-    this.cancelReadiness(Error('Kernel disposed grouped Worker readiness'));
+    this.initialization?.readiness.cancel(Error('Kernel disposed grouped Worker readiness'));
     this.initialization = undefined;
     this.cleanup?.(); this.cleanup = undefined;
     this.endpoint?.close(); this.endpoint = undefined;

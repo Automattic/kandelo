@@ -52,9 +52,9 @@ it('registers the actual Rust-owned image with an explicit virtual channel', asy
     const launch = h.worker.publishMemoryGroupReplica(h.handle);
     if (typeof launch === 'number') throw Error(`Publication refused: ${launch}`);
     expect(launch.expectation.receipt).toEqual(h.receipt);
-    expect(launch.source.byteLength).toBe(4 * 65536);
     h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
       brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
+    expect((h.worker as any).processes.get(h.pid).source.byteLength).toBe(4 * 65536);
     expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ images: 1, replicas: 1, exposedReplicas: 1 });
     expect(await retryKernelEntryResult(() => h.worker.cancelUnexposedMemoryGroupReplica(h.handle))).toBe(-22);
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
@@ -114,19 +114,24 @@ it('reports allocator contention without poisoning inspection or changing owners
 }, 30_000);
 
 it.each(['group', 'pid', 'tid', 'serial', 'generation'] as const)('contains a foreign terminal %s without freeing the real Rust allocation', async key => {
-  const h = await published();
+  const h = await published(), worker = h.worker as any;
   try {
+    worker.usePolling = true;
+    h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
+      brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
+    worker.stopPolling();
+    const { source } = worker.processes.get(h.pid);
     const concrete = new MockWorkerHandle();
     h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
     const before = new Uint8Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_BITMAP, G.MEMORY_GROUP_BITMAP_BYTES).slice();
     const forged = { ...h.receipt, [key]: typeof h.receipt[key] === 'bigint' ? h.receipt[key] as bigint ^ (1n << 40n) : Number(h.receipt[key]) + 1 };
     expect(() => concrete.simulateMessage({ type: 'memory_quiescent', pid: h.pid, memoryGroup: forged })).toThrow(/Wrong terminal/);
     expect(() => inspectBacking(h)).toThrow();
-    expect(() => h.launch.source.readBytes(0, 1)).toThrow();
+    expect(() => source.readBytes(0, 1)).toThrow('retired');
     // Fatal containment makes inspection unavailable. Read only the retained
     // test-owned backing to prove its allocation bits were not returned.
     expect(new Uint8Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_BITMAP, G.MEMORY_GROUP_BITMAP_BYTES)).toEqual(before);
-  } finally { h.scratch.revoke(); }
+  } finally { worker.stopPolling(); h.scratch.revoke(); }
 }, 30_000);
 
 it.each([true, false])('accepts only the bound Worker fence or a concrete Node join (joins=%s)', async joins => {
@@ -228,7 +233,6 @@ it('returns the actual never-exposed image only after exact Rust cancellation', 
 for (const wake of ['notify', 'timeout'] as const) {
   it(`publishes a real Rust-owned completion after notification queue ${wake}`, async () => {
     const h = await published(), worker = h.worker as any;
-    const source = h.launch.source;
     const queue = new Int32Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1);
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
     try {
@@ -238,6 +242,7 @@ for (const wake of ['notify', 'timeout'] as const) {
       worker.stopPolling();
       h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
       const channel = worker.processes.get(h.pid).channels[0];
+      const { source } = channel;
       source.atomicStoreI32(65536 + CH_SYSCALL, ABI_SYSCALLS.Getpid);
       source.atomicStoreI32(65536 + CH_REQUEST_FLAGS, 0);
       source.atomicStoreI32(65536 + CH_STATUS, CHANNEL_STATUS_PENDING);

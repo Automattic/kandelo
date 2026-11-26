@@ -27,9 +27,7 @@ it('waits for a deferred root reap when destroy starts after execution retiremen
     {maximumPages: 8, maximumProcesses: 1, maximumTasks: 1}, false, onExit, report);
   // An already-stopped fixture owner: this test checks final publication
   // ownership, not Worker, memory or kernel execution semantics.
-  const process: any = {pid: 123, handle: {}, owner: {
-    contain: async () => {}, generation: {id: 7},
-  }};
+  const process: any = {owner: {pid: 123, handle: {}, generation: {id: 7}}};
   (session as any).processes.set(123, process);
   expect(session.exit(123, 23)).toBe(true);
   await firstAttempt;
@@ -57,7 +55,7 @@ it('releases settled pthread retirement promises during sustained session churn'
   const session = new GroupedSessionRuntime(kernel, {} as WorkerAdapter,
     {maximumPages: 8}, false, vi.fn(), report);
   const state = session as any;
-  state.processes.set(123, {pid: 123});
+  state.processes.set(123, {owner: {pid: 123}});
   for (let tid = 200; tid < 264; tid++) {
     state.threads.set(tid, {pid: 123, tid, handle: {}, referencesDisposed: false});
     expect(session.threadExit(123, tid)).toBe(true);
@@ -81,7 +79,7 @@ it('releases failed retirement bookkeeping while preserving the thread for conta
   const session = new GroupedSessionRuntime(kernel, {} as WorkerAdapter,
     {maximumPages: 8}, false, vi.fn(), report);
   const state = session as any, thread = {pid: 123, tid: 200, handle: {}, referencesDisposed: false};
-  state.processes.set(123, {pid: 123}); state.threads.set(200, thread);
+  state.processes.set(123, {owner: {pid: 123}}); state.threads.set(200, thread);
   expect(session.threadExit(123, 200)).toBe(true);
   await expect(state.threadRetirements.get(200)).rejects.toThrow('errno 5');
   expect(state.threadRetirements.size).toBe(0);

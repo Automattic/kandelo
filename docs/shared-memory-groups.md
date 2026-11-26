@@ -154,6 +154,12 @@ fails if the handle has retired. Reference disposal cancels any pending
 readiness observation. Rust still selects the sequencing and failure path of
 each operation, including fork replay and old-image exec retirement.
 
+The launch transport carries scalar identity and the backing envelope. The
+kernel Worker uses the registered image's translated address-space view for
+syscall and device access. Each guest Worker constructs its own view upon
+receiving the envelope. The session reads a process's PID and replica handle
+from its Worker owner.
+
 Exec readiness and memory delivery are separate kernel-selected effects. While
 handoff is pending, the actual exec owner retains a replacement's normal or
 signal exit status and selects exact stop, native join, reference detachment

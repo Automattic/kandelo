@@ -2229,7 +2229,6 @@ interface PendingThreadChannelAttachment {
   readonly source: ProcessMemorySource;
   attachedChannelOffset?: number;
   attachedChannel?: ChannelInfo;
-  groupedReplica?: PreparedGroupReplica;
   bindingOperation?: bigint;
   readonly creatorChannel: ChannelInfo;
   readonly creatorRequest: FrozenChannelRequest | undefined;
@@ -23304,7 +23303,6 @@ export class CentralizedKernelWorker {
         reply = pending.store.operation(pending.receipt, protocol.commands.threadBound, pending.operation, 0, entry);
         if (!reply || reply.effect !== protocol.effects.threadLaunch || reply.errno !== 0) this.#memoryGroupProtocolError('Kernel did not retain pthread native startup');
         const launch = pending.store.bindPublishedExecution(handle, reply.storage);
-        thread.groupedReplica = handle;
         this.#memoryGroupThreadControls.set(handle, { handle, rootHandle: owner.rootHandle, store: pending.store,
           source: thread.source as GroupProcessAddressSpace, memory: thread.memory, receipt: owner.receipt, channelOffset: allocation.channelOffset });
         preparation.plan = { status: 'ready', handle, launch, allocation,
@@ -23399,7 +23397,7 @@ export class CentralizedKernelWorker {
         if (reply && reply.flags & MEMORY_GROUP_PROTOCOL.driver.flags.threadRetired) {
           pending.store.forgetCancelledReplica(preparation.handle, entry);
           this.#memoryGroupReplicas.delete(preparation.handle); this.#memoryGroupThreadControls.delete(preparation.handle);
-          if (thread) { thread.groupedReplica = undefined; thread.controlOwner = undefined; }
+          if (thread) thread.controlOwner = undefined;
         }
       }
       preparation.nativeWake?.(); preparation.nativeWake = undefined;
