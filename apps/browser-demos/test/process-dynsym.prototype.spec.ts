@@ -100,9 +100,11 @@ test("guest-owned loader serializes pthreads and resumes initializer and finaliz
   await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);
   const read = (name: string) => Array.from(readFileSync(fileURLToPath(new URL(name, fixture))));
   const plugin = "/lib/dynsym-lifecycle.so";
+  const main = read("process-dynsym-lifecycle.wasm");
   const dataFiles = [
     { path: plugin, data: read("dynsym-lifecycle.so") },
     { path: "/lib/dynsym-dependency.so", data: read("dynsym-dependency.so") },
+    { path: "/bin/dynsym-lifecycle", data: main },
   ];
   const result = await page.evaluate(async ({ main, plugin, dataFiles }) => {
     const runner = window as Window & {
@@ -115,7 +117,7 @@ test("guest-owned loader serializes pthreads and resumes initializer and finaliz
       seedEtc: false,
       dataFiles,
     });
-  }, { main: read("process-dynsym-lifecycle.wasm"), plugin, dataFiles });
+  }, { main, plugin, dataFiles });
   expect(result).toMatchObject({
     exitCode: 0,
     stdout: "guest loader lifecycle ok\n",

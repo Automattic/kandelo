@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <pthread.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -11,6 +12,7 @@ static pthread_barrier_t error_barrier;
 static int callbacks[3];
 int lifecycle_fork_stage;
 pid_t lifecycle_fork_result;
+extern char **environ;
 
 void observe_lifecycle(int stage)
 {
@@ -41,6 +43,8 @@ static void *check_loader_parallel(void *argument)
 int main(int argc, char **argv)
 {
     if (argc != 2) return 1;
+    if (!strcmp(argv[1], "--verify-exec"))
+        return dlsym(RTLD_DEFAULT, "observe_lifecycle") == (void *)&observe_lifecycle ? 0 : 17;
     pthread_t first, second;
     void *status;
     if (pthread_barrier_init(&error_barrier, 0, 2) ||
@@ -105,6 +109,13 @@ int main(int argc, char **argv)
             fprintf(stderr, "loader fork stage %d failed, child status %#x\n", stage, child_status);
             return 14 + stage;
         }
+    }
+    char *child_argv[] = {"/bin/dynsym-lifecycle", "--verify-exec", 0};
+    int spawn_error = posix_spawn(&child, child_argv[0], 0, 0, child_argv, environ);
+    if (spawn_error || waitpid(child, &child_status, 0) != child || child_status) {
+        fprintf(stderr, "exec of loader-capable program failed, error %d, status %#x\n",
+                spawn_error, child_status);
+        return 18;
     }
     puts("guest loader lifecycle ok");
     return 0;

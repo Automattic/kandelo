@@ -104,12 +104,14 @@ it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
   { timeout: 120_000 },
   async () => {
     const plugin = "/lib/dynsym-lifecycle.so";
+    const programPath = join(fixtureDir, "process-dynsym-lifecycle.wasm");
     const result = await runCentralizedProgram({
-      programPath: join(fixtureDir, "process-dynsym-lifecycle.wasm"),
+      programPath,
       argv: ["dynsym-lifecycle", plugin],
       execPrograms: new Map([
         [plugin, join(fixtureDir, "dynsym-lifecycle.so")],
         ["/lib/dynsym-dependency.so", join(fixtureDir, "dynsym-dependency.so")],
+        ["/bin/dynsym-lifecycle", programPath],
       ]),
       useDefaultRootfs: false,
       timeout: 45_000,
