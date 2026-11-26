@@ -93,6 +93,18 @@ wasm = "swaybar.wasm"
 name = "swaynag"
 wasm = "swaynag.wasm"
 
+# Kandelo's shipped Sway configuration runs a persistent status clock.
+[[outputs]]
+name = "sway-status-clock"
+wasm = "sway-status-clock.wasm"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "sway-status-clock-shared"
+wasm = "sway-status-clock-shared.zip"
+shared_memory_from = "sway-status-clock"
+fork_instrumentation = "disabled"
+
 # The default configuration sway reads from /etc/sway/config.
 [[runtime_files]]
 artifact = "sway.conf"

@@ -81,7 +81,7 @@ bar {
     height 32
     workspace_buttons yes
     font pango:monospace 14
-    status_command while date +'%Y-%m-%d %X'; do sleep 1; done
+    status_command exec /usr/bin/sway-status-clock
     colors {
         statusline #ffffff
         background #323232

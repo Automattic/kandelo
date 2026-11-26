@@ -126,6 +126,10 @@ for program in sway swaymsg swaybar swaynag; do
     cp "$BUILD_DIR/$program/$program" "$BUILD_DIR/$program.wasm"
     install_local_binary sway "$BUILD_DIR/$program.wasm" "$program.wasm"
 done
+
+wasm32posix-cc -O2 "$SCRIPT_DIR/status-clock.c" -o "$BUILD_DIR/sway-status-clock.wasm"
+install_local_binary sway "$BUILD_DIR/sway-status-clock.wasm" sway-status-clock.wasm
+
 # The artifact keeps an extension: the browser dev server (Vite) serves an
 # extensionless file as a JavaScript module, not as its bytes.
 install_local_runtime_file sway "$BUILD_DIR/config" sway.conf
