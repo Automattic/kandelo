@@ -1,0 +1,39 @@
+SDL2: Give the test timeout handler SDL_TimerCallback's signature
+
+The timer thread calls its callback with an interval and a user pointer and
+expects a Uint32 result. The harness cast its void(void) bailout to that
+type. Wasm checks the indirect call before the bailout can log the timeout
+and exit. Carry the timer type through registration so the compiler checks it.
+
+--- a/src/test/SDL_test_harness.c
++++ b/src/test/SDL_test_harness.c
+@@ -166,7 +166,7 @@
+  *
+  * \return Timer id or -1 on failure.
+  */
+-static SDL_TimerID SDLTest_SetTestTimeout(int timeout, void(SDLCALL *callback)(void))
++static SDL_TimerID SDLTest_SetTestTimeout(int timeout, SDL_TimerCallback callback)
+ {
+     Uint32 timeoutInMilliseconds;
+     SDL_TimerID timerID;
+@@ -192,6 +192,6 @@
+     /* Set timer */
+     timeoutInMilliseconds = timeout * 1000;
+-    timerID = SDL_AddTimer(timeoutInMilliseconds, (SDL_TimerCallback)callback, 0x0);
++    timerID = SDL_AddTimer(timeoutInMilliseconds, callback, 0x0);
+     if (timerID == 0) {
+         SDLTest_LogError("Creation of SDL timer failed: %s", SDL_GetError());
+         return -1;
+@@ -206,8 +206,10 @@
+ #if defined(__WATCOMC__)
+ #pragma aux SDLTest_BailOut aborts;
+ #endif
+-static SDL_NORETURN void SDLCALL SDLTest_BailOut(void)
+-{
++static SDL_NORETURN Uint32 SDLCALL SDLTest_BailOut(Uint32 interval, void *param)
++{
++    (void)interval;
++    (void)param;
+     SDLTest_LogError("TestCaseTimeout timer expired. Aborting test run.");
+     exit(TEST_ABORTED); /* bail out from the test */
+ }

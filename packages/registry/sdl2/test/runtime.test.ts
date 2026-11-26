@@ -10,14 +10,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../../..");
 
 let temp = "";
-let wasm = "";
 
-// The guest is a real SDK build linked against the resolved SDL2, Wayland,
-// xkbcommon, libffi and libdrm packages and then fork-instrumented, which
-// takes minutes on a loaded machine. Build it before the test, so the
-// test's own budget covers only the guest's run.
+// Build and fork-instrument both guests before the tests. Linking the SDL2
+// dependency closure takes minutes on a loaded machine.
 beforeAll(() => {
-  temp = mkdtempSync(join(tmpdir(), "kandelo-sdl-text-"));
+  temp = mkdtempSync(join(tmpdir(), "kandelo-sdl-tests-"));
   // Enter through the resolver, including its active cache policy and
   // receipt checks; never scan caches or assume a staged library prefix.
   const xtask = process.env.WASM_POSIX_XTASK_BIN;
@@ -29,15 +26,19 @@ beforeAll(() => {
     paths.set(name, execFileSync(command, [...prefix, "build-deps", "resolve", name, "--arch", "wasm32"],
       { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim().split("\n").at(-1)!);
   }
-  wasm = join(temp, "text-input.wasm");
-  execFileSync(join(root, "sdk/bin/wasm32posix-cc"), [
-    "-O2", `-I${paths.get("sdl2")}/include`, join(here, "text-input.c"),
-    ...[...paths.values()].map(path => `-L${path}/lib`),
-    "-lSDL2", "-lwayland-client", "-lwayland-egl", "-lwayland-cursor", "-lxkbcommon", "-lffi", "-lgbm", "-ldrm", "-lEGL", "-lGLESv2", "-lm", "-o", `${wasm}.linked`,
-  ], { cwd: root, stdio: "inherit" });
-  execFileSync("bash", [join(root, "scripts/run-wasm-fork-instrument.sh"), `${wasm}.linked`, "-o", wasm],
-    { cwd: root, stdio: "inherit" });
-  execFileSync(command, [...prefix, "stamp-abi-contract", wasm], { cwd: root, stdio: "inherit" });
+  function buildGuest(name: string, extraFlags: string[] = []) {
+    const wasm = join(temp, name + ".wasm");
+    execFileSync(join(root, "sdk/bin/wasm32posix-cc"), [
+      "-O2", `-I${paths.get("sdl2")}/include`, join(here, name + ".c"),
+      ...[...paths.values()].map(path => `-L${path}/lib`), ...extraFlags,
+      "-lSDL2", "-lwayland-client", "-lwayland-egl", "-lwayland-cursor", "-lxkbcommon", "-lffi", "-lgbm", "-ldrm", "-lEGL", "-lGLESv2", "-lm", "-o", `${wasm}.linked`,
+    ], { cwd: root, stdio: "inherit" });
+    execFileSync("bash", [join(root, "scripts/run-wasm-fork-instrument.sh"), `${wasm}.linked`, "-o", wasm],
+      { cwd: root, stdio: "inherit" });
+    execFileSync(command, [...prefix, "stamp-abi-contract", wasm], { cwd: root, stdio: "inherit" });
+  }
+  buildGuest("text-input");
+  buildGuest("test-timeout", ["-Wl,--wrap=SDL_AddTimer", "-lSDL2_test"]);
 }, 600_000);
 afterAll(() => {
   if (temp) rmSync(temp, { recursive: true, force: true });
@@ -50,7 +51,7 @@ it("evdev preserves text, event order, overflow recovery, and inclusive pointer 
   try {
     await host.init();
     let pid = 0;
-    const exit = host.spawn(new Uint8Array(readFileSync(wasm)).buffer, ["sdl-text-input"], {
+    const exit = host.spawn(new Uint8Array(readFileSync(join(temp, "text-input.wasm"))).buffer, ["sdl-text-input"], {
       onStarted: started => { pid = started; },
     });
     await expect.poll(() => output, { timeout: 30_000 }).toContain("READY:0");
@@ -138,3 +139,18 @@ it("evdev preserves text, event order, overflow recovery, and inclusive pointer 
     await host.destroy();
   }
 }, 120_000);
+
+it("SDL's test timer logs the timeout and exits with TEST_ABORTED", async () => {
+  let output = "";
+  const record = (_pid: number, bytes: Uint8Array) => { output += new TextDecoder().decode(bytes); };
+  const host = new NodeKernelHost({ onStdout: record, onStderr: record });
+  try {
+    await host.init();
+    const guest = new Uint8Array(readFileSync(join(temp, "test-timeout.wasm")));
+    const status = await host.spawn(guest.buffer, ["test-timeout"]);
+    expect(output).toContain("TestCaseTimeout timer expired. Aborting test run.");
+    expect(status).toBe(-1); // NodeKernelHost exposes the raw exit(TEST_ABORTED) value.
+  } finally {
+    await host.destroy();
+  }
+}, 30_000);
