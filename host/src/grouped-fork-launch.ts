@@ -122,7 +122,7 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
     waitReady: () => { if (!readiness) throw Error('Native fork readiness has no Worker'); return readiness.result; },
     deliverLaunch: () => {
       if (!native || !options.isCurrent(ownership)) throw Error('Native fork launch lost its Worker');
-      native.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+      native.postMessage(createGroupedWorkerLaunch(init, launch.envelope, kernel.wasmModules));
     },
     waitReplay: () => replayResult,
     installRuntimeListeners: () => {

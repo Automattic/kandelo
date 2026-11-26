@@ -83,7 +83,7 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
             });
             deliver = () => {
               if (!nativeWorker || !options.isCurrent(ownership)) throw Error('Stale grouped exec before memory launch');
-              nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+              nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope, kernel.wasmModules));
             };
             ownership = new GroupedWorkerObjects(handle, expected.receipt, generation, worker,
               () => options.externrefs.releaseGeneration(generation));

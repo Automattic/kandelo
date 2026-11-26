@@ -3004,10 +3004,8 @@ export async function centralizedWorkerMain(
           artifactFailures.join("; "),
       );
     }
-    // Use pre-compiled module if provided (avoids recompilation in workers)
-    const module = !grouped && initData.programModule
-      ? initData.programModule
-      : await WebAssembly.compile(programBytes);
+    const prepared = grouped ? grouped.takePreparedProgram(programBytes) : initData.programModule;
+    const module = prepared ?? await WebAssembly.compile(programBytes);
     registerWasmModuleReflection(module, programBytes);
     retainProgramBytes = wasmModuleImports(module)
       .some((entry) => entry.module === STACK_MODULE);

@@ -235,7 +235,7 @@ export class GroupedSessionRuntime {
       },
       deliverLaunch: () => {
         if (!nativeWorker || !this.current(process)) throw Error('Grouped root replaced before launch delivery');
-        nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+        nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope, this.kernel.wasmModules));
       },
       sealAbsence: () => {
         bindWorker();
