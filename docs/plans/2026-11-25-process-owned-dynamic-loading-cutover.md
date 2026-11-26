@@ -96,6 +96,74 @@ through the minimal browser runner, using the source-built kernel and
 the retained image writer binaries from unchanged sources. The full
 release-image browser-memory gate remains pending local review.
 
+## Package cost of explicit -ldl
+
+Each pair used the same objects, archives, SDK and export policy. The
+SDK used its ordinary finish path for each arm. Sizes are bytes for
+individual Wasm payloads before and after compression at zstd level 3.
+
+| Program or plugin | Plain Wasm | Fork-capable Wasm | Plain zstd | Fork-capable zstd |
+| --- | ---: | ---: | ---: | ---: |
+| LADSPA `applyplugin` 1.13 executable | 86,358 | 141,962 | 38,360 | 56,221 |
+| LADSPA amplifier side module | 3,141 | 10,377 | 1,571 | 4,685 |
+
+LADSPA's `applyplugin` is an upstream audio utility outside Kandelo's
+registry. Its Makefile normally includes `-ldl`. The application
+sources were unchanged. The port uses the Kandelo SDK and maps the
+amplifier's ELF `_init` and `_fini` to Wasm constructor and destructor
+attributes. The ordinary main imports the mapper and has neither
+`kernel_fork` nor `kernel_clone`. Adding `-ldl` retains the fork
+entry, so the application and the plugin both receive the usual
+fork preparation. Combined zstd payload size grew by 20,975 bytes.
+
+Twenty alternating Node pairs followed one warmup per arm. Each timed
+invocation used a fresh guest. Launch-to-usage wall time was 126.17 ms
+without the flag and 132.16 ms with it. Launch, gain processing of a
+45-second mono WAV through the amplifier, and exit took 243.85 ms and
+252.22 ms respectively. The median paired differences were +5.05 ms
+at startup and +13.27 ms for the full command. Individual runs varied
+and the ranges overlapped. Both arms produced the same 4,320,044-byte
+WAV in every run. These timings include the Node harness and exclude
+network delivery.
+
+ScummVM's upstream Linux plugin configure branch adds `-ldl`. A
+captured link recipe with the retained SCUMM experiment's objects
+and export set included exactly one `-ldl`. Both arms retained the
+mapper, fork and pthread creation. Their pre-instrumentation modules
+differed only in the Wasm name section. Re-running the instrumenter
+produced 28,737,722 bytes without `-ldl` and 28,737,718 with it.
+Zstd sizes were 7,008,948 and 7,005,768 bytes.
+
+In eight alternating Node pairs after warmup, median fresh-guest
+`--version` wall times were 743.48 ms without the flag and 742.83 ms
+with it. The same retained SCUMM engine loaded and ran in each
+arm. Median guest engine-open times were 426.41 ms and 428.37 ms.
+Timing ranges overlapped. The minimal `--version` runs emitted the
+same XDG runtime-directory and absent-config warnings in both arms.
+
+### Transitive link flags
+
+- Cached target pkg-config metadata emits `-ldl` through Cairo's
+  public link flags. This propagates through GTK 3, gtkmm, pangocairo
+  and librsvg. The `rsvg-convert` recipe uses the static system-deps
+  path with that Cairo dependency.
+- Static pkg-config expansion adds `-ldl` from libcurl, libepoxy
+  and the Node libffi package. Cargo's recipe selects static libcurl
+  metadata. The SpiderMonkey Node recipe supplies static libffi
+  metadata and has a direct target-only `-ldl` in its GYP patch.
+- ScummVM gets the flag from upstream configure. PHP's main link,
+  Git's HTTP helper link and the curl build also pass it directly.
+  Kandelo's CMake platform leaves `CMAKE_DL_LIBS` empty. Recipes that
+  list archives directly may bypass the library's pkg-config flags.
+
+A read-only scan of 2,490 cached Wasm artifacts across the local
+program stores found 103 with named-load imports, across 24 distinct
+filenames. All 103 also imported `kernel_fork`. Five already used
+`kandelo.loader.v1` and imported `kernel_clone`. The other 98 used
+the old loader imports. This is an inventory of cached artifacts.
+It cannot identify every final command that uses `-ldl` or predict
+what a complete rebuild with the cutover SDK would retain.
+
 ## Application measurements
 
 Size is in bytes. The LÖVE baseline uses the earlier pinned develop
