@@ -128,7 +128,8 @@ for program in sway swaymsg swaybar swaynag; do
 done
 
 wasm32posix-cc -O2 "$SCRIPT_DIR/status-clock.c" -o "$BUILD_DIR/sway-status-clock.wasm"
-install_local_binary sway "$BUILD_DIR/sway-status-clock.wasm" sway-status-clock.wasm
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+    install_local_binary sway "$BUILD_DIR/sway-status-clock.wasm" sway-status-clock.wasm
 
 # The artifact keeps an extension: the browser dev server (Vite) serves an
 # extensionless file as a JavaScript module, not as its bytes.
