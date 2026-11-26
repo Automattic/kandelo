@@ -73,3 +73,28 @@ KANDELO_GROUPED_SDK_PROBE=native-wait-exit npx vitest run --config vitest.groupe
 ```
 
 For source-only Node runs, set `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` and `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` to the checkout's published kernel projection.
+
+## Where the cursor waited
+
+In a separate traced control run after five painted terminals, each of eight distant positions reached the kernel input device, appeared in Sway's DRM atomic request, and eventually appeared on the cursor plane. The kernel-side timestamps below use the same Worker clock. Each input was matched to the submitted cursor plane's exact horizontal coordinate after conversion from the absolute input range and application of the cursor hotspot. The window separately timed trusted pointermove to cursor pixels. The early pointer-input path can run before the regular DOM pointermove event.
+
+| Median of eight positions | Firefox | WebKit |
+| --- | ---: | ---: |
+| Kernel evdev delivery to compositor's cursor commit request | 279.7 ms | 88.4 ms |
+| Commit request to KMS cursor snapshot | 6.5 ms | 7.6 ms |
+| Snapshot to outgoing primary/cursor bundle | 10.2 ms | 7.7 ms |
+
+These runs used separate recording instrumentation and a busy machine. The first interval includes guest scheduling, input handling, graphics work and waits for earlier frames. Its duration cannot be attributed to a single operation. See the [individual matched samples](2026-11-26-grouped-cursor-stages.csv).
+
+A second trace decoded the graphics queries from a sweep. In *each* engine the compositor requested 184 synchronous texture binds, including 92 binds of texture zero, all targeting 2D textures. The acknowledged graphics protocol commits guest binding ownership after native acceptance. A change here needs to preserve failure, context loss, shared contexts, pending commands, and the timing of ownership release. See the [graphics binding contract](../graphics/compatibility-v1.md#acknowledged-c-texturerenderbuffer-bindings-2026-10-24).
+
+Two more experiments were kept out of the product:
+
+- Capturing a 1%, 20% or 40% vertical strip, transferring it to another Worker and drawing into a retained 2D canvas preserved the sampled pixels. Firefox took 6.8 / 8.2 / 9.3 ms, against 6.4 / 6.1 / 6.4 ms for a full bitmap. WebKit took 10.7 / 10.5 / 12.6 ms, against 12.3 / 10.5 / 11.6 ms. This implementation offers little at the observed damage sizes.
+- An isolated input transport sent all 92 original PS/2 packets in eight ordered Worker messages while retaining evdev frames. WebKit still took a median of 77.8 ms from evdev to the cursor commit in that run. The Firefox setup missed the five-tile predicate and yielded no comparable sweep.
+
+## Additional checks on the review branch
+
+The develop candidate passed all 55 real-kernel, Worker-boundary and public grouped-session tests with the explicit read-only mprotect fixture opt-in above. The original run without the fixture's opt-in recorded eight link failures. The Chromium guard was also repeated using the repository's exact 97 × 13 Foot prompt mask in **every** tile at a 2634 × 1806 scanout. The control and the candidate both passed all five prompts and all eight cursor positions. Four launches took 3.33 and 3.05 seconds respectively in those single runs.
+
+The clean develop baseline and candidate both ran three rounds of the normal syscall I/O, process lifecycle and empty-filesystem spawn benchmarks on Node and the browser. Both ran the Node WordPress benchmark. The shared-host results were mixed. For example, browser pipe throughput was 34.16 → 25.84 MB/s and Node pipe throughput was 6.83 → 12.85 MB/s. These ordinary-process workloads do not enable the grouped completion path. Browser WordPress requires its composed image. The two MariaDB architectures and full application comparison still require separate qualification.
