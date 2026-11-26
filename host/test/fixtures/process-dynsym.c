@@ -48,6 +48,9 @@ int main(int argc, char **argv)
     char *error = dlerror();
     if (!error || !strstr(error, "missing_process_symbol") || dlerror())
         return 6;
+    if (dlsym(RTLD_NEXT, "process_value")) return 26;
+    error = dlerror();
+    if (!error || !strstr(error, "RTLD_NEXT") || dlerror()) return 26;
 
     void *side = 0;
     int (*plugin_value)(int) = 0;
