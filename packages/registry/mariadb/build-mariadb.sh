@@ -21,7 +21,6 @@ MARIADB_VERSION="$WASM_POSIX_DEP_VERSION"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
-GLUE_DIR="$REPO_ROOT/libc/glue"
 
 # Default to xtask resolver's WASM_POSIX_DEP_TARGET_ARCH (set per
 # manifest arch at build-deps time); fall back to wasm32 outside the
@@ -62,9 +61,8 @@ fi
 if [ "$WASM_ARCH" = "wasm64" ]; then
     CROSS_BUILD_DIR="${CROSS_BUILD_BASE}-64"
     INSTALL_DIR="${INSTALL_BASE}-64"
-    TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
+    TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-wasm64-toolchain.cmake"
     SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
-    WASM_TARGET="wasm64-unknown-unknown"
     # [RUNTIME-WORKAROUND: LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE]
     # Suspected, observed with LLVM 21 and not re-tested on LLVM 23: the
     # wasm64 backend miscompiled sign extension of i32 to i64 in table
@@ -73,9 +71,8 @@ if [ "$WASM_ARCH" = "wasm64" ]; then
 else
     CROSS_BUILD_DIR="$CROSS_BUILD_BASE"
     INSTALL_DIR="$INSTALL_BASE"
-    TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
+    TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake"
     SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-    WASM_TARGET="wasm32-unknown-unknown"
 fi
 export WASM_POSIX_SYSROOT="$SDK_SYSROOT"
 
@@ -253,13 +250,6 @@ resolve_dep() {
 }
 
 # --- Resolve libcxx via the dep cache, then project a private sysroot ---
-LLVM_PREFIX="${LLVM_PREFIX:?LLVM_PREFIX not set. Run through scripts/dev-shell.sh.}"
-LLVM_CLANG="$LLVM_PREFIX/bin/clang"
-if [ ! -x "$LLVM_CLANG" ]; then
-    echo "ERROR: clang not found at $LLVM_CLANG. Run through scripts/dev-shell.sh." >&2
-    exit 1
-fi
-
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
 if [ -z "$LIBCXX_PREFIX" ]; then
     echo "==> Resolving libcxx via cargo xtask build-deps..."
@@ -305,7 +295,7 @@ fi
     exit 1
 }
 TERMINFO_BUILD_DIR="$BUILD_STATE_ROOT/terminfo-build"
-export WASM_POSIX_MARIADB_TERMINFO_PREFIX="$BUILD_STATE_ROOT/terminfo-install"
+TERMINFO_PREFIX="$BUILD_STATE_ROOT/terminfo-install"
 mkdir -p "$TERMINFO_BUILD_DIR"
 (
     cd "$TERMINFO_BUILD_DIR"
@@ -314,7 +304,7 @@ mkdir -p "$TERMINFO_BUILD_DIR"
         CFLAGS=-O2 cf_cv_working_poll=yes cf_cv_ar_flags=-curvD \
         "$TERMINFO_SOURCE_DIR/configure" \
         --host="$WASM_ARCH-unknown-none" \
-        --prefix="$WASM_POSIX_MARIADB_TERMINFO_PREFIX" \
+        --prefix="$TERMINFO_PREFIX" \
         --without-cxx --without-cxx-binding --without-ada --without-tests \
         --without-progs --without-manpages --without-shared --without-debug \
         --with-termlib --enable-widec --disable-db-install \
@@ -328,8 +318,9 @@ mkdir -p "$TERMINFO_BUILD_DIR"
 # The bundled readline adds CURSES_INCLUDE_PATH for its own objects, while
 # client/mysql.cc includes curses.h through the normal target include path.
 # Project these real dependency headers into this recipe's private sysroot.
-cp -R "$WASM_POSIX_MARIADB_TERMINFO_PREFIX/include/." "$SYSROOT/include/"
-cp -R "$WASM_POSIX_MARIADB_TERMINFO_PREFIX/include/ncursesw/." "$SYSROOT/include/"
+cp -R "$TERMINFO_PREFIX/include/." "$SYSROOT/include/"
+cp -R "$TERMINFO_PREFIX/include/ncursesw/." "$SYSROOT/include/"
+cp "$TERMINFO_PREFIX/lib/libtinfow.a" "$SYSROOT/lib/"
 
 PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:-}"
 if [ -n "$PCRE2_PREFIX" ]; then
@@ -373,23 +364,14 @@ else
     fi
     if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
         echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
-        PCRE2_SIZEOF_VOID_P=4
-        [ "$WASM_ARCH" = "wasm64" ] && PCRE2_SIZEOF_VOID_P=8
-
         rm -rf "$PCRE2_BUILD"
         mkdir -p "$PCRE2_BUILD"
         cd "$PCRE2_BUILD"
 
         cmake "$PCRE2_SOURCE_DIR" \
-            -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-            -DCMAKE_C_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -fno-exceptions -fno-trapping-math --sysroot=$SYSROOT -O2 -DNDEBUG" \
-            -DCMAKE_AR="$LLVM_PREFIX/bin/llvm-ar" \
-            -DCMAKE_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib" \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR="$WASM_ARCH" \
-            -DCMAKE_CROSSCOMPILING=TRUE \
-            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-            -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
             -DPCRE2_BUILD_TESTS=OFF \
             -DPCRE2_BUILD_PCRE2GREP=OFF \
             -DBUILD_SHARED_LIBS=OFF \
@@ -408,52 +390,35 @@ else
     echo "==> PCRE2 installed to sysroot from cached source"
 fi
 
-# --- Pre-compile glue objects ---
-WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
-
-if [ "$WASM_ARCH" = "wasm64" ]; then
-    GLUE_OBJ_DIR="$BUILD_STATE_ROOT/mariadb-glue-objs-64"
-else
-    GLUE_OBJ_DIR="$BUILD_STATE_ROOT/mariadb-glue-objs"
-fi
-mkdir -p "$GLUE_OBJ_DIR"
-
-NEED_GLUE_REBUILD=0
-if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
-    NEED_GLUE_REBUILD=1
-elif [ "$GLUE_DIR/channel_syscall.c" -nt "$GLUE_OBJ_DIR/channel_syscall.o" ] || \
-     [ "$GLUE_DIR/compiler_rt.c" -nt "$GLUE_OBJ_DIR/compiler_rt.o" ]; then
-    NEED_GLUE_REBUILD=1
-fi
-if [ "$NEED_GLUE_REBUILD" = "1" ]; then
-    echo "==> Compiling glue objects..."
-    $LLVM_CLANG $WASM_COMPILE_FLAGS -O2 -c "$GLUE_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
-    $LLVM_CLANG $WASM_COMPILE_FLAGS -O2 -c "$GLUE_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
-    echo "==> Glue objects compiled."
-fi
-
 # --- Step 2: Cross build ---
 echo "==> Step 2: Cross build for $WASM_ARCH..."
 rm -rf -- "$CROSS_BUILD_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 cd "$CROSS_BUILD_DIR"
 
-export WASM_POSIX_SYSROOT="$SYSROOT"
-
-# The bundled line editor must reference terminfo's PC/BC/UP globals.
-# NEED_EXTERN_PC is its existing portability selector for that ownership.
-# The compiled directory defaults use the guest layout. The raw Clang
-# toolchains need an explicit prefix map for source paths in diagnostics.
+# NEED_EXTERN_PC gives terminfo ownership of the line editor's PC/BC/UP
+# globals. MariaDB requires Curses for the interactive client, so use the
+# target terminfo library and headers from the private sysroot.
+# _GNU_SOURCE exposes musl's declarations for the GNU extensions found by
+# MariaDB's linked checks. Set it for those checks and for my_config.h too.
+# Disable DTrace so CMake does not select the build machine's dtrace.
 SOURCE_PREFIX_MAP="-ffile-prefix-map=$BUILD_STATE_ROOT=/usr/src/kandelo-build/mariadb"
 cmake "$SRC_DIR" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-    -DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$GLUE_OBJ_DIR" \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DINSTALL_MYSQLDATADIR=/var/lib/mysql \
     -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
     \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS=-D_GNU_SOURCE=1 \
+    -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE=1 -isystem \"$SYSROOT/include/c++/v1\"" \
+    -DCMAKE_CXX_STANDARD_LIBRARIES="-lc++ -lc++abi" \
+    -DCMAKE_REQUIRED_DEFINITIONS=-D_GNU_SOURCE=1 \
+    -D_GNU_SOURCE=1 \
+    -DCURSES_LIBRARY="$SYSROOT/lib/libtinfow.a" \
+    -DCURSES_INCLUDE_PATH="$SYSROOT/include" \
+    -DENABLE_DTRACE=OFF \
     -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG -DNEED_EXTERN_PC=1 \"$SOURCE_PREFIX_MAP\"" \
     -DCMAKE_CXX_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG \"$SOURCE_PREFIX_MAP\"" \
     \
@@ -507,7 +472,6 @@ cmake "$SRC_DIR" \
     -DPLUGIN_HEAP=STATIC \
     -DPLUGIN_PARTITION=STATIC \
     \
-    -DSTACK_DIRECTION=-1 \
     -DHAVE_LLVM_LIBCPP=OFF \
     2>&1 | tail -40
 
@@ -553,7 +517,7 @@ else
 fi
 
 # Check if mariadbd was built (10.5+ renames mysqld → mariadbd)
-MYSQLD_BIN="$CROSS_BUILD_DIR/sql/mariadbd"
+MYSQLD_BIN="$CROSS_BUILD_DIR/sql/mariadbd.wasm"
 if [ -f "$MYSQLD_BIN" ]; then
     echo "==> MariaDB mysqld built successfully!"
     ls -lh "$MYSQLD_BIN"
@@ -597,10 +561,10 @@ else
     exit 1
 fi
 
-cp "$CROSS_BUILD_DIR/client/mariadb" "$INSTALL_DIR/bin/mariadb.wasm"
+cp "$CROSS_BUILD_DIR/client/mariadb.wasm" "$INSTALL_DIR/bin/mariadb.wasm"
 
 # --- Install mysqltest ---
-MYSQLTEST_BIN="$CROSS_BUILD_DIR/client/mariadb-test"
+MYSQLTEST_BIN="$CROSS_BUILD_DIR/client/mariadb-test.wasm"
 if [ -f "$MYSQLTEST_BIN" ]; then
     echo "==> mysqltest built successfully!"
     ls -lh "$MYSQLTEST_BIN"

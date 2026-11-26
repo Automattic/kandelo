@@ -7,7 +7,7 @@ pub trait PointeeSized {}
 pub trait MetaSized: PointeeSized {}
 #[lang = "sized"]
 pub trait Sized: MetaSized {}
-unsafe extern "C" { fn capture(); }
+#[link(wasm_import_module = "env")] unsafe extern "C" { fn capture(); }
 #[inline(never)]
 #[unsafe(no_mangle)]
 pub extern "C" fn inner() {

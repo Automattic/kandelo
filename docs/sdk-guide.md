@@ -914,29 +914,30 @@ make
 
 ## CMake Projects
 
-For CMake, create a toolchain file:
-
-```cmake
-# wasm32-posix-toolchain.cmake
-set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_SYSTEM_PROCESSOR wasm32)
-
-set(CMAKE_C_COMPILER wasm32posix-cc)
-set(CMAKE_CXX_COMPILER wasm32posix-c++)
-set(CMAKE_AR wasm32posix-ar)
-set(CMAKE_RANLIB wasm32posix-ranlib)
-
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-```
-
-Then:
+Use the SDK's cross toolchain, `sdk/cmake/kandelo-toolchain.cmake` for wasm32
+or `sdk/cmake/kandelo-wasm64-toolchain.cmake` for wasm64. Both set
+`CMAKE_SYSTEM_NAME=Kandelo` and `UNIX=1`. CMake discovers the target's
+pointer size and gives executables a `.wasm` suffix.
 
 ```bash
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=wasm32-posix-toolchain.cmake
+KANDELO_REPO=/path/to/kandelo
+source "$KANDELO_REPO/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$KANDELO_REPO/sysroot"
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$KANDELO_REPO/sdk/cmake/kandelo-toolchain.cmake"
 cmake --build build
 ```
+
+For wasm64, select the wasm64 toolchain and set `WASM_POSIX_SYSROOT` to
+`"$KANDELO_REPO/sysroot64"` or your private wasm64 sysroot.
+
+The toolchains link CMake's `try_compile` probes as executables. The SDK
+reports an unresolved function as a link error, so CMake's function and
+library checks can distinguish available symbols from missing ones. Run
+probes still require an emulator or a verified target answer.
+
+The SDK is the sole owner of the executable link contract used by recipes.
+Recipes that use these toolchains declare the entry file,
+`kandelo-toolchain-common.cmake`, and `Platform/Kandelo.cmake` in their build inputs.
 
 ### Example: building Redis
 
