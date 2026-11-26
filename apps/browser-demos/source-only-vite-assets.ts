@@ -66,6 +66,7 @@ export interface SourceOnlyPublicSnapshot {
 export const SOURCE_ONLY_PUBLIC_FILE_ALLOWLIST = new Set([
   "blob-iframe-interceptor.js",
   "service-worker.js",
+  "terminal-fonts-OFL.txt",
   "terminate-atomics-test.html",
   "terminate-atomics-worker.js",
   "trap-signal-test.html",
