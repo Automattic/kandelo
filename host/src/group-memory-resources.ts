@@ -9,6 +9,7 @@ export class GroupMemoryResourceError extends Error {
 }
 interface Resource {
   readonly memory: WebAssembly.Memory;
+  words: Int32Array;
   readonly store: (address: number, value: number) => void;
   readonly scan: (address: number, words: number) => bigint;
 }
@@ -35,7 +36,7 @@ export class GroupMemoryResources {
     prepareMemoryGroupQueueUnlock(memory);
     const scanner = new WebAssembly.Instance(scanModule ??= new WebAssembly.Module(GROUP_MEMORY_SCAN_BYTES), { env: { memory } });
     const scan = scanner.exports.next_nonzero as (address: number, words: number) => bigint;
-    this.#resources.set(id, { memory, store, scan });
+    this.#resources.set(id, { memory, words: new Int32Array(memory.buffer), store, scan });
   }
 
   drop(id: bigint): void {
@@ -85,19 +86,22 @@ export class GroupMemoryResources {
     if (!u32(address) || !u32(words)) fail(ERRNO.EINVAL);
     return this.#resource(id).scan(address, words);
   }
-  load(id: bigint, address: number): number { return Atomics.load(this.#word(id, address), 0) >>> 0; }
+  load(id: bigint, address: number): number {
+    const resource = this.#wordResource(id, address);
+    return Atomics.load(resource.words, address / 4) >>> 0;
+  }
   store(id: bigint, address: number, value: number): void {
-    this.#word(id, address);
+    const resource = this.#wordResource(id, address);
     if (!u32(value)) fail(ERRNO.EINVAL);
-    this.#resource(id).store(address, value);
+    resource.store(address, value);
   }
   compareExchange(id: bigint, address: number, expected: number, replacement: number): number {
     if (!u32(expected) || !u32(replacement)) fail(ERRNO.EINVAL);
-    return Atomics.compareExchange(this.#word(id, address), 0, expected, replacement) >>> 0;
+    return Atomics.compareExchange(this.#wordResource(id, address).words, address / 4, expected, replacement) >>> 0;
   }
   notify(id: bigint, address: number, count: number): number {
     if (!u32(count)) fail(ERRNO.EINVAL);
-    return Atomics.notify(this.#word(id, address), 0, count);
+    return Atomics.notify(this.#wordResource(id, address).words, address / 4, count);
   }
 
   #resource(id: bigint): Resource { return this.#resources.get(id) ?? fail(ERRNO.ENOENT); }
@@ -106,10 +110,18 @@ export class GroupMemoryResources {
     if (!u32(address) || !u32(length) || address > buffer.byteLength || length > buffer.byteLength - address) fail(ERRNO.EFAULT);
     return new Uint8Array(buffer, address, length);
   }
-  #word(id: bigint, address: number): Int32Array {
+  #wordResource(id: bigint, address: number): Resource {
     if (!u32(address) || address % 4) fail(ERRNO.EINVAL);
-    const bytes = this.#bytes(id, address, 4);
-    return new Int32Array(bytes.buffer, address, 1);
+    const resource = this.#resource(id);
+    // Shared Wasm growth preserves the existing bytes. Refresh the physical
+    // view only when Rust supplies an address outside that prefix. Other
+    // realms can grow this same memory without calling this adapter.
+    if (address >= resource.words.byteLength) {
+      const buffer = resource.memory.buffer;
+      if (address >= buffer.byteLength) fail(ERRNO.EFAULT);
+      resource.words = new Int32Array(buffer);
+    }
+    return resource;
   }
   #pageSpans(id: bigint, pages: readonly number[], offset: number, length: number): Uint8Array[] {
     if (!Number.isSafeInteger(offset) || offset < 0 || !u32(length)
