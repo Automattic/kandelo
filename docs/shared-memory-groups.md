@@ -320,8 +320,13 @@ The normal shell configures the SDK catalog and group budget as embedder
 policy. Its profiles and Activities select the backend per process family,
 while retaining the computer library and normal filesystem storage policy.
 Custom images and boot links cannot grant this capability. Grouped KMS
-attachment uses the disposable bitmap display relay through the existing
-display API.
+attachment uses the disposable display Worker through the existing display
+API. The primary plane is delivered as a native bitmap. The cursor plane
+receives its position and up to 64×64 pixels of owned RGBA data. The display
+Worker paints that overlay at the kernel-selected scanout extent. Color
+correction can composite the cursor into the primary plane and suppress the
+overlay. Both planes share one acknowledgement and an ordered display
+retirement fence.
 
 The maintained canonical consumers described below cover the normal shell
 profiles. Earlier standalone desktop pages, global build flags and derived

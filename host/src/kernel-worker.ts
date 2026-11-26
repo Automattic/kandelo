@@ -3782,7 +3782,6 @@ export class CentralizedKernelWorker {
   /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
   private kmsBitmapRelays = new Map<number, KmsBitmapRelay>();
-  private kmsBitmapCursorCanvases = new Map<number, OffscreenCanvas>();
   private retiringKmsBitmapRelays = new Set<Promise<void>>();
   private retireKmsBitmapRelay(relay: KmsBitmapRelay): Promise<void> {
     const retirement = relay.close();
@@ -3794,7 +3793,6 @@ export class CentralizedKernelWorker {
   async closeKmsBitmapRelays(): Promise<void> {
     for (const relay of this.kmsBitmapRelays.values()) this.retireKmsBitmapRelay(relay);
     this.kmsBitmapRelays.clear();
-    this.kmsBitmapCursorCanvases.clear();
     const results = await Promise.allSettled(this.retiringKmsBitmapRelays);
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'KMS bitmap retirement failed');
@@ -3994,9 +3992,9 @@ export class CentralizedKernelWorker {
         const stats = this.kmsStatsViews.get(crtcId);
         if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
       },
-      onKmsCanvasUpdated: (crtcId: number) => this.kmsBitmapRelays.get(crtcId)?.changed(0),
+      onKmsCanvasUpdated: (crtcId: number) => this.kmsBitmapRelays.get(crtcId)?.changed(),
       onKmsGlPresented: (crtcId: number) => {
-        this.kmsBitmapRelays.get(crtcId)?.changed(0);
+        this.kmsBitmapRelays.get(crtcId)?.changed();
         const stats = this.kmsStatsViews.get(crtcId);
         if (stats) {
           Atomics.add(stats, 0, 1);
@@ -34976,7 +34974,7 @@ export class CentralizedKernelWorker {
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas; bitmapPort?: MessagePort },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas; bitmapPort?: MessagePort; bitmapCursor?: boolean },
   ): void {
     // An embedder may attach a NEW OffscreenCanvas for the same CRTC;
     // a presenter cached against the old canvas would keep painting the
@@ -35004,12 +35002,10 @@ export class CentralizedKernelWorker {
     const priorRelay = this.kmsBitmapRelays.get(crtc_id);
     if (priorRelay) this.retireKmsBitmapRelay(priorRelay);
     this.kmsBitmapRelays.delete(crtc_id);
-    this.kmsBitmapCursorCanvases.delete(crtc_id);
     if (opts?.bitmapPort) {
       this.kmsBitmapRelays.set(crtc_id, new KmsBitmapRelay(opts.bitmapPort, error => {
         this.callbacks.onHostDiagnostic?.({pid: 0, source: 'kms-bitmap-relay', message: error.message + (error.cause === undefined ? '' : ': ' + String(error.cause))});
-      }));
-      if (opts.cursorCanvas) this.kmsBitmapCursorCanvases.set(crtc_id, opts.cursorCanvas);
+      }, opts.bitmapCursor === true));
     }
     const statsView = statsSab === undefined
       ? undefined
@@ -35407,15 +35403,23 @@ export class CentralizedKernelWorker {
           });
         }
 
-        const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
+        const cursorPlacement = (crtcId: number) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
           const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
-          return { crtcId, plane, width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
-        });
+          return { width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
+        };
+        const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => ({
+          plane, ...cursorPlacement(crtcId),
+        }));
+        const relayPresents = Array.from(this.kmsBitmapRelays, ([crtcId, relay]) => ({
+          relay, canvas: this.kmsCanvases.get(crtcId),
+          cursor: relay.hasCursor
+            ? { cursor: cursorSnapshot, ...cursorPlacement(crtcId) } : undefined,
+        }));
         entry.deferObserverEffect(() => {
           if (this.vblankClock !== clock) return undefined;
-          for (const { crtcId, plane, width, height, composited } of cursorPlanes) {
-            if (plane.present(cursorSnapshot, width, height, composited)) this.kmsBitmapRelays.get(crtcId)?.changed(1);
+          for (const { plane, width, height, composited } of cursorPlanes) {
+            plane.present(cursorSnapshot, width, height, composited);
           }
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
@@ -35450,7 +35454,7 @@ export class CentralizedKernelWorker {
               0,
               0,
             );
-            this.kmsBitmapRelays.get(blit.crtcId)?.changed(0);
+            this.kmsBitmapRelays.get(blit.crtcId)?.changed();
             if (blit.stats) {
               const blitUs =
                 ((performance.now() - blitStart) * 1000) | 0;
@@ -35476,7 +35480,7 @@ export class CentralizedKernelWorker {
               cursorSnapshot,
             );
             if (!painted) continue;
-            this.kmsBitmapRelays.get(present.crtcId)?.changed(0);
+            this.kmsBitmapRelays.get(present.crtcId)?.changed();
             const presentUs =
               ((performance.now() - presentStart) * 1000) | 0;
             const stats = this.kmsStatsViews.get(present.crtcId);
@@ -35505,11 +35509,10 @@ export class CentralizedKernelWorker {
               presenter.lastFbId = -1;
             }
             this.kmsBlanked.add(crtcId);
-            this.kmsBitmapRelays.get(crtcId)?.changed(0);
+            this.kmsBitmapRelays.get(crtcId)?.changed();
           }
-          for (const [crtcId, relay] of this.kmsBitmapRelays) {
-            const canvas = this.kmsCanvases.get(crtcId);
-            if (canvas) relay.present(canvas, this.kmsBitmapCursorCanvases.get(crtcId));
+          for (const { relay, canvas, cursor } of relayPresents) {
+            if (canvas) relay.present(canvas, cursor);
           }
           for (const snapshot of statsSnapshots) {
             // Display capability outlives applications. Publish ownership

@@ -1,3 +1,5 @@
+import type { KmsCursorUpdate } from "./cursor-plane.js";
+
 /** Bounded device-only transport. No guest memory enters this relay. A single
  * capture or published bundle remains owned until its exact acknowledgement.
  * Retirement waits for native capture settlement and an ordered display fence. */
@@ -8,8 +10,9 @@ export class KmsBitmapRelay {
   private active = 0;
   private next = 0;
   private published = 0;
-  private versions = [0, 0];
-  private sentVersions = [0, 0];
+  private version = 0;
+  private sentVersion = 0;
+  private sentCursor: KmsCursorUpdate | undefined;
   private captureInFlight: Promise<void> | undefined;
   private retirement: Promise<void> | undefined;
   private resolveRetirement: (() => void) | undefined;
@@ -20,6 +23,7 @@ export class KmsBitmapRelay {
   private failure: Error | undefined;
 
   constructor(private readonly port: MessagePort, private readonly fail: (error: Error) => void,
+    readonly hasCursor: boolean,
     private readonly captureImage: (source: OffscreenCanvas) => ImageBitmap | Promise<ImageBitmap>
       = source => createImageBitmap(source),
     private readonly retirementTimeoutMs = 3000) {
@@ -45,49 +49,61 @@ export class KmsBitmapRelay {
     }, this.retirementTimeoutMs);
     port.start();
   }
-  changed(plane: 0 | 1): void { if (!this.retiring) this.versions[plane]++; }
-  present(canvas: OffscreenCanvas, cursor?: OffscreenCanvas): void {
+  changed(): void { if (!this.retiring) this.version++; }
+
+  present(canvas: OffscreenCanvas, cursor?: KmsCursorUpdate): void {
     // [RUNTIME-WORKAROUND: FIREFOX-BITMAP-PORT-STARTUP] Suspected native
     // deserialization failure when images precede receiver initialization.
     // Keep dirty versions until the disposable display owns its contexts.
     if (!this.ready || this.retiring || this.active) return;
-    const planes = (cursor ? [0, 1] : [0]).filter(plane => this.versions[plane] !== this.sentVersions[plane]);
-    if (!planes.length) return;
-    const versions = planes.map(plane => this.versions[plane]);
-    const sources = planes.map(plane => plane === 0 ? canvas : cursor!);
-    if (sources.some(source => !Number.isInteger(source.width) || source.width < 1 || source.width > 3840
-        || !Number.isInteger(source.height) || source.height < 1 || source.height > 2160)) {
+    const primaryChanged = this.version !== this.sentVersion;
+    const last = this.sentCursor;
+    const cursorChanged = this.hasCursor && cursor && (!last || cursor.cursor.version !== last.cursor.version
+      || cursor.width !== last.width || cursor.height !== last.height
+      || cursor.composited !== last.composited);
+    if (!primaryChanged && !cursorChanged) return;
+    if (primaryChanged && (!Number.isInteger(canvas.width) || canvas.width < 1 || canvas.width > 3840
+        || !Number.isInteger(canvas.height) || canvas.height < 1 || canvas.height > 2160)) {
       this.stop(new Error('KMS bitmap presentation exceeds its device extent'));
       return;
     }
     this.active = ++this.next;
-    this.captureInFlight = this.capture(sources, planes, versions, this.active);
+    this.captureInFlight = this.publish(primaryChanged ? canvas : undefined,
+      cursorChanged ? cursor : undefined, this.version, this.active);
   }
-  private async capture(sources: OffscreenCanvas[], planes: number[], versions: number[], sequence: number): Promise<void> {
-    // Snapshot the producer's retained canvas. Consuming it would invalidate
-    // renderer caches and partial redraws that still own its previous pixels.
-    // allSettled also releases a successful sibling after another capture fails.
-    const results = await Promise.allSettled(sources.map(source => {
-      try { return this.captureImage(source); } catch (error) { return Promise.reject(error); }
-    }));
-    const frames: ImageBitmap[] = [];
-    let failure: unknown;
-    let failed = false;
-    for (const result of results) {
-      if (result.status === 'fulfilled') frames.push(result.value); else { failed = true; failure = result.reason; }
-    }
-    if (this.retiring || failed) {
-      for (const frame of frames) frame.close();
+
+  private async publish(canvas: OffscreenCanvas | undefined, update: KmsCursorUpdate | undefined,
+    version: number, sequence: number): Promise<void> {
+    let frame: ImageBitmap | undefined;
+    try {
+      // Snapshot the primary's retained canvas. Consuming it would invalidate
+      // renderer caches and partial redraws that still own its previous pixels.
+      if (canvas) frame = await this.captureImage(canvas);
+    } catch (error) {
       this.active = 0;
-      if (failed && !this.retiring) this.stop(new Error('KMS bitmap capture failed', { cause: failure }));
+      if (!this.retiring) this.stop(new Error('KMS bitmap capture failed', { cause: error }));
+      return;
+    }
+    if (this.retiring) {
+      frame?.close();
+      this.active = 0;
       return;
     }
     try {
-      this.port.postMessage({ type: 'frame', sequence, planes, frames }, frames);
+      let cursor: KmsCursorUpdate | undefined;
+      if (update) {
+        const { version, x, y, width, height, pixels } = update.cursor;
+        // Clone only the small cursor image. Its premultiplied form is local
+        // to the producer's gamma stage. No guest backing leaves that realm.
+        cursor = { width: update.width, height: update.height, composited: update.composited,
+          cursor: { version, x, y, width, height, pixels: update.composited ? null : pixels } };
+      }
+      this.port.postMessage({ type: 'frame', sequence, frame, cursor }, frame ? [frame] : []);
       this.published = sequence;
-      for (let i = 0; i < planes.length; i++) this.sentVersions[planes[i]] = versions[i];
+      if (frame) this.sentVersion = version;
+      if (update) this.sentCursor = update;
     } catch (error) {
-      for (const frame of frames) frame.close();
+      frame?.close();
       this.active = 0;
       this.stop(new Error('KMS bitmap transfer failed', { cause: error }));
     }
@@ -109,6 +125,7 @@ export class KmsBitmapRelay {
     this.port.onmessage = null;
     this.port.onmessageerror = null;
     this.port.close();
+    this.sentCursor = undefined;
     if (this.failure) this.rejectRetirement?.(this.failure);
     else this.resolveRetirement?.();
     this.resolveRetirement = undefined;
