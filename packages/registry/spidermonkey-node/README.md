@@ -38,6 +38,13 @@ symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
 implementation and qualification remain required later compatibility work.
 There is no automatic second executable or user profile selector.
 
+Node's bundled OpenSSL uses `no-secure-memory`, like the
+[standalone OpenSSL package](../openssl/README.md#no-secure-heap). WebAssembly
+linear memory cannot enforce the secure heap's guard pages. Node reports the
+secure heap as unavailable and still builds its OpenSSL crypto and TLS provider.
+The engine link uses Kandelo's opt-in `mprotect()` library for buffer commits.
+Requests to restrict memory access return `ENOTSUP`.
+
 Node's embedded llhttp static target uses hidden symbol visibility. Its native
 parser remains unchanged and uses Node's original callback settings. The
 separate standalone Wasm embedding helpers are not executable exports: exporting
