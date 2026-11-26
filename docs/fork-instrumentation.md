@@ -1813,6 +1813,26 @@ A fork-using program goes through Binaryen's `wasm-opt` once or twice:
    simplifies the dispatch and frame code the transform adds, merges or
    removes generated helpers, and drops runtime imports nothing calls.
 
+`scripts/audit-fork-optimization.sh` compares one package output across
+optimization profiles. Capture the raw link and the input that the recipe
+passes to the instrumenter from the same source build. Use the raw link for
+both inputs if the recipe passes it through unchanged. Supply any existing
+instrumenter flags after the output directory:
+
+```sh
+mkdir -p .scratch
+scripts/dev-shell.sh bash scripts/audit-fork-optimization.sh \
+    vim vim.wasm vim-linked.wasm vim-pre-O2.wasm .scratch/vim-audit --no-facts
+```
+
+The new directory contains the resolver's output declaration, input hashes,
+plan reports, final binaries and a `summary.tsv` with plan source, binding
+count, instrumented function count, boundary count and final bytes. The
+candidates use the raw link with final `Os`, `O2` or `Oz`, or a shared
+pre-`O2` or pre-`Oz` pass with final `Os`. Test promising variants with
+the program's fork workload on Node and the relevant browser before
+selecting a package profile.
+
 The post-instrumentation run skips Binaryen's `constraint-analysis` pass,
 which Binaryen 133 schedules at `-O3`, `-O4`, `-Os` and `-Oz`; the CLI
 passes `--skip-pass=constraint-analysis` at every `--post-optimize` level.
