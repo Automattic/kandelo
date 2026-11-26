@@ -18,6 +18,8 @@ export default defineConfig({
     "src/worker-main.ts",
     "src/program-policy-node-worker.ts",
     "src/program-policy-browser-worker.ts",
+    "src/memory-instrument-node-worker.ts",
+    "src/memory-instrument-browser-worker.ts",
     "src/vfs/index.ts",
     "src/vfs/opfs-worker.ts",
     "src/networking/index.ts",

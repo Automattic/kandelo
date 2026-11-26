@@ -1089,7 +1089,30 @@ export class ProcessMemoryAllocator {
       ptrWidth,
       initialPages: source.byteLength / WASM_PAGE_SIZE,
       maximumPages,
-    }, source);
+    }, {
+      byteLength: source.byteLength,
+      capture: (snapshot) => this.copyForkAddressSpace(snapshot, source),
+    });
+  }
+
+  /**
+   * Capture the guest-virtual pages of a fork parent before the first yield,
+   * for a child that leaves the group of its parent. See
+   * `acquireForkMemoryCopy`.
+   */
+  acquireForkCopy(
+    parentSpace: ForkShareAddressSpace,
+    ptrWidth: 4 | 8,
+    maximumPages: number,
+  ): Promise<ProcessMemoryLease> {
+    return this.acquireAsynchronously({
+      ptrWidth,
+      initialPages: parentSpace.byteLength / WASM_PAGE_SIZE,
+      maximumPages,
+    }, {
+      byteLength: parentSpace.byteLength,
+      capture: (snapshot) => copyGuestVirtualPages(snapshot, parentSpace),
+    });
   }
 
   /**
@@ -1189,7 +1212,7 @@ export class ProcessMemoryAllocator {
 
   private acquireAsynchronously(
     request: ProcessMemoryAllocationRequest,
-    source?: ArrayBufferLike,
+    source?: { byteLength: number; capture(snapshot: ArrayBuffer): void },
   ): Promise<ProcessMemoryLease> {
     // Copy the descriptor too: callers cannot alter an admitted request
     // while another worker is constructing its memory.
@@ -1203,7 +1226,7 @@ export class ProcessMemoryAllocator {
     try {
       if (source !== undefined) {
         snapshot = new ArrayBuffer(source.byteLength);
-        this.copyForkAddressSpace(snapshot, source);
+        source.capture(snapshot);
       }
     } catch (error) {
       this.releaseAllocationReservation(reservedBytes);
@@ -1778,6 +1801,46 @@ export function acquireForkMemoryClone(
     // safely retired immediately.
     lease.release();
     throw error;
+  }
+}
+
+/**
+ * Acquire a private Memory for a fork child that leaves the group of its
+ * parent, and copy the guest-virtual pages of the parent into it.
+ *
+ * WHY: the child runs the plain form of the program, so each page must sit
+ * at its guest-virtual address. The copy is synchronous for the same reason
+ * as in `acquireForkMemoryClone`. The Memory is new and all zero, so a zero
+ * page of the parent needs no copy in either `forkCopy` mode.
+ */
+export function acquireForkMemoryCopy(
+  allocator: ProcessMemoryAllocator,
+  parentSpace: ForkShareAddressSpace,
+  ptrWidth: 4 | 8,
+  maximumPages: number,
+): ProcessMemoryLease {
+  const lease = allocator.acquire({
+    ptrWidth,
+    initialPages: parentSpace.byteLength / WASM_PAGE_SIZE,
+    maximumPages,
+  });
+  try {
+    copyGuestVirtualPages(lease.memory.buffer, parentSpace);
+    return lease;
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+}
+
+function copyGuestVirtualPages(destination: ArrayBufferLike, parentSpace: ForkShareAddressSpace): void {
+  const source = parentSpace.memory.buffer;
+  for (let address = 0; address < parentSpace.byteLength; address += WASM_PAGE_SIZE) {
+    const physical = parentSpace.readable(address);
+    if (isZeroChunk(source, physical, WASM_PAGE_SIZE)) continue;
+    new Uint8Array(destination, address, WASM_PAGE_SIZE).set(
+      new Uint8Array(source, physical, WASM_PAGE_SIZE),
+    );
   }
 }
 

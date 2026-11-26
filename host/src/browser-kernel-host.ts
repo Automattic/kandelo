@@ -49,6 +49,7 @@ import { batchBySynReport } from "./input/input-batch";
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
+import programRewriteWorkerEntryUrl from "./memory-instrument-browser-worker.ts?worker&url";
 import {
   DEFAULT_MAX_WORKERS,
   WASM_PAGE_SIZE,
@@ -177,6 +178,15 @@ export interface BrowserKernelOptions {
    * `"share"` mode the default is the build's copy of that file.
    */
   memoryInstrumenter?: ArrayBuffer;
+  /**
+   * In `"share"` mode, the smallest address space of a parent, in bytes, whose
+   * fork child shares the pages of its parent (default 0: every fork
+   * shares). This applies to a program with the
+   * `kandelo.memory.rewrite_at_exec` mark, which the host rewrites when a
+   * process starts it. A smaller parent gets a child with a private Memory
+   * that runs the plain form of the program, without page tables.
+   */
+  forkShareMinimumBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Additional VFS mount points */
@@ -932,6 +942,7 @@ export class BrowserKernel {
           experimentalResizablePersistenceName: opts.experimentalResizablePersistenceName,
           requireExistingRootfsPersistence: opts.requireExistingRootfsPersistence,
           workerEntryUrl,
+          programRewriteWorkerEntryUrl,
           config: {
             experimentalMemoryGroup: this.options.experimentalMemoryGroup === undefined ? undefined : { ...this.options.experimentalMemoryGroup },
             maxWorkers: this.options.maxWorkers,
@@ -948,6 +959,7 @@ export class BrowserKernel {
             forkCopy: this.options.forkCopy,
             forkMemory: this.options.forkMemory,
             memoryInstrumenter,
+            forkShareMinimumBytes: this.options.forkShareMinimumBytes,
             defaultThreadSlots: this.options.defaultThreadSlots,
             env: this.options.env,
             enableSyscallLog: this.options.enableSyscallLog,

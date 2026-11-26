@@ -158,8 +158,10 @@ export interface InitMessage {
     forkCopy?: ForkAddressSpaceCopy;
     /** Address-space mode for memory-instrumented programs; defaults to `"copy"`. */
     forkMemory?: ForkMemory;
-    /** Bytes of the memory instrumenter module that rewrites side modules. */
+    /** Bytes of the memory instrumenter module that rewrites marked programs and side modules. */
     memoryInstrumenter?: ArrayBuffer;
+    /** Smallest parent address space whose fork child shares pages; defaults to 0. */
+    forkShareMinimumBytes?: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     dataBufferSize?: number;

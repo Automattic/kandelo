@@ -349,6 +349,7 @@ host/test/memory-group-admission.test.ts	source-only
 host/test/memory-group-import-guard.test.ts	source-only
 host/test/memory-group-protocol.test.ts	source-only
 host/test/memory-group-usage.test.ts	source-only
+host/test/memory-instrument-worker.test.ts	prepared-product
 host/test/memory-instrument.test.ts	prepared-product
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
@@ -466,6 +467,7 @@ host/test/procfs-fd-stat.test.ts	prepared-product
 host/test/program-fixture-freshness.test.ts	source-only
 host/test/program-originals.test.ts	prepared-product
 host/test/program-policy-worker.test.ts	prepared-product
+host/test/program-rewriter.test.ts	prepared-product
 host/test/psync-semantics.test.ts	prepared-product
 host/test/pthread-channel-reuse.test.ts	prepared-product
 host/test/pthread-shared-memory-growth.test.ts	prepared-product

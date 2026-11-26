@@ -1600,10 +1600,10 @@ const auditAllowances: AuditAllowance[] = [
     why: "This is the small Rust metadata module, not a kernel. The sole supplied import is freshly created private worker memory, with no filesystem, OPFS, process or device capabilities. Worker retirement owns the entire instance after success, refusal, cancellation or parser allocation failure.",
   },
   {
-    key: "host/src/memory-instrument.ts::instrumentSideModule::wasm-instance-authority::new WebAssembly.Instance(instrumenter)",
+    key: "host/src/memory-instrument.ts::rewrite::wasm-instance-authority::new WebAssembly.Instance(instrumenter)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    why: "This is the Rust side-module rewriter, not a kernel. It imports nothing and owns private nonshared memory. The process Worker copies the side-module bytes in and the rewritten bytes out; the instance receives neither kernel nor guest linear memory and is unreachable after the call returns.",
+    why: "This is the Rust memory rewriter, not a kernel. It imports nothing and owns private nonshared memory. The caller copies the module bytes in and the rewritten bytes out: a process Worker for a side module, the rewrite Worker for a program. The instance receives neither kernel nor guest linear memory and is unreachable after the call returns.",
   },
   {
     key: 'images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.instantiatePositioned::wasm-instance-authority::new WebAssembly.Instance(module, { env })',

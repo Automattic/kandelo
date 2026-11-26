@@ -1816,6 +1816,19 @@ them. The pages of the first process of a group, and of a child that the
 host terminated by force, stay in use until the last process of the group
 exits.
 
+A program can also carry the mark `kandelo.memory.rewrite_at_exec`
+(`wasm-memory-instrument --at-exec`, or `memory_instrumentation = "auto"`
+on a package output) in place of the rewrite. Its image
+file is the plain form. In `"share"` mode the host rewrites it in a
+separate Worker when a process starts it and keeps the result until the
+kernel stops (`host/src/program-rewriter.ts`). The process runs the
+rewritten form, and the kernel keeps the admitted plain bytes as its
+executable. At each fork the host compares the guest address space of the
+parent with the `forkShareMinimumBytes` option of `NodeKernelHost` and
+`BrowserKernel` (default 0). A parent at or above it shares its pages as
+described above. A smaller parent gets a child with a private Memory, a
+copy of each guest-virtual page, and the plain form without page tables.
+
 A device mapping (the `/dev/fb0` framebuffer or a DRI buffer) is a guest
 range that the host reads and writes outside a syscall.
 When the `mmap` of such a mapping completes, the kernel worker puts its

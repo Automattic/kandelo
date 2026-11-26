@@ -152,6 +152,15 @@ export interface NodeKernelHostOptions {
    * `"share"` mode the default is the resolver's copy of that file.
    */
   memoryInstrumenter?: ArrayBuffer;
+  /**
+   * In `"share"` mode, the smallest guest address space, in bytes, whose
+   * fork child shares the pages of its parent (default 0: every fork
+   * shares). This applies to a program with the
+   * `kandelo.memory.rewrite_at_exec` mark, which the host rewrites when a
+   * process starts it. A smaller parent gets a child with a private Memory
+   * that runs the plain form of the program, without page tables.
+   */
+  forkShareMinimumBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Size of the data buffer for syscall data transfer (default: 65536).
@@ -576,6 +585,7 @@ export class NodeKernelHost {
               ?? (this.options.forkMemory === "share"
                 ? loadBinary("kandelo_memory_instrument32.wasm")
                 : undefined),
+            forkShareMinimumBytes: this.options.forkShareMinimumBytes,
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
             useSharedMemory: true,

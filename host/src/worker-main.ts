@@ -101,8 +101,8 @@ import {
 } from "./fork-unwind-transport";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
-  computeForkModuleTemplateId,
   computeForkModuleTemplateIdSync,
+  computeProgramForkTemplateId,
   ForkModuleStateArena,
   readForkModuleStateDescriptor,
   readForkModuleStateRoot,
@@ -3217,7 +3217,7 @@ export async function centralizedWorkerMain(
             `does not match linked frames ${linkedFrameFormat.ptrWidth}`,
         );
       }
-      const mainTemplateId = await computeForkModuleTemplateId(programBytes);
+      const mainTemplateId = await computeProgramForkTemplateId(module, programBytes);
       const forkContinuation = new LinkedForkContinuation(
         memory,
         linkedFrameFormat,
@@ -5439,7 +5439,7 @@ export async function centralizedThreadWorkerMain(
         )
       : null;
     const threadTemplateId = hasForkInstrumentation
-      ? await computeForkModuleTemplateId(initData.programBytes)
+      ? await computeProgramForkTemplateId(module, initData.programBytes)
       : null;
     const newThreadModuleStateArena = (): ForkModuleStateArena =>
       new ForkModuleStateArena(

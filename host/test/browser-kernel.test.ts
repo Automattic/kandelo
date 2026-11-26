@@ -377,7 +377,9 @@ describe("BrowserKernel", () => {
     await fetchedInit;
 
     const memoryInstrumenter = new Uint8Array([22]).buffer;
-    const explicit = new BrowserKernel({ kernelOwnedFs: true, forkMemory: "share", memoryInstrumenter });
+    const explicit = new BrowserKernel({
+      kernelOwnedFs: true, forkMemory: "share", memoryInstrumenter, forkShareMinimumBytes: 4096,
+    });
     const explicitInit = explicit.initFromImage(images);
     while (MockWorker.instances.length === 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -385,6 +387,8 @@ describe("BrowserKernel", () => {
     const explicitWorker = MockWorker.instances[1]!;
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(explicitWorker.lastMessage("init").config.memoryInstrumenter).toBe(memoryInstrumenter);
+    expect(explicitWorker.lastMessage("init").config.forkShareMinimumBytes).toBe(4096);
+    expect(explicitWorker.lastMessage("init").programRewriteWorkerEntryUrl).toBe("stub://vite-url");
     explicitWorker.simulateMessage({ type: "ready" });
     await explicitInit;
   });

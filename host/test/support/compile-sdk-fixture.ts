@@ -8,8 +8,12 @@ interface FixtureOptions {
   forkInstrument?: boolean;
   /** Extra `wasm-fork-instrument` arguments, after the input and output. */
   forkInstrumentArgs?: string[];
-  /** Route every guest load and store through a per-process page table. */
-  memoryInstrument?: boolean;
+  /**
+   * Route every guest load and store through a per-process page table.
+   * `"at-exec"` keeps the plain form and marks it, so the host does the
+   * rewrite when a process starts the program.
+   */
+  memoryInstrument?: boolean | "at-exec";
   arch?: "wasm32" | "wasm64";
 }
 
@@ -50,7 +54,7 @@ export function compileSdkFixture(
     stampFixtureAbiContract(stamped);
     if (memoryInstrument) execFileSync("bash", [
       join(root, "scripts/run-wasm-memory-instrument.sh"), stamped, "-o", programPath,
-      "--crossing", "aligned",
+      ...(memoryInstrument === "at-exec" ? ["--at-exec"] : ["--crossing", "aligned"]),
     ], { cwd: root, stdio: "pipe" });
     return { programPath, cleanup };
   } catch (error) { cleanup(); throw error; }

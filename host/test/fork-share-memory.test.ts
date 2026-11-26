@@ -3,6 +3,11 @@
  * "copy" and to "share". In "share" mode a fork child keeps its parent's
  * Memory and gets its own page tables, so each program checks that a write
  * on one side of a fork never shows on the other side.
+ *
+ * Each program also runs in its plain form with the rewrite-at-exec mark.
+ * In "copy" mode the mark has no effect. In "share" mode the host makes the
+ * rewritten form. With a share threshold above every address space, each
+ * fork child gets a private Memory and runs the plain form.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
@@ -26,6 +31,19 @@ const glue = fileURLToPath(new URL("../../libc/glue", import.meta.url));
 const fixtureSource = (name: string): URL =>
   new URL(`./fixtures/fork-share-${name}.c`, import.meta.url);
 
+const modes = [
+  { name: "forkMemory copy", form: "rewritten", forkMemory: "copy" },
+  { name: "forkMemory share", form: "rewritten", forkMemory: "share" },
+  { name: "the mark and forkMemory copy", form: "marked", forkMemory: "copy" },
+  { name: "a rewrite at exec and shared fork children", form: "marked", forkMemory: "share" },
+  {
+    name: "a rewrite at exec and plain fork children",
+    form: "marked",
+    forkMemory: "share",
+    forkShareMinimumBytes: 2 ** 32,
+  },
+] as const;
+
 const programs: Program[] = [
   {
     name: "private-pages",
@@ -34,6 +52,7 @@ const programs: Program[] = [
       "parent forked=1 child=42 kept=1",
     ],
   },
+  { name: "moved", stdout: ["first=41 second=42 kept=1"] },
   {
     name: "growth",
     stdout: ["zero=1 kept=1 heap=3 map=5 size=145800000"],
@@ -117,19 +136,23 @@ const programs: Program[] = [
 ];
 
 describe.each(programs)("fork-share-$name", (program) => {
-  let fixture: Fixture;
+  let fixtures: { rewritten: Fixture; marked: Fixture } | undefined;
   let library: Fixture | undefined;
 
   beforeAll(() => {
-    fixture = compileSdkFixture(
+    const compile = (memoryInstrument: true | "at-exec"): Fixture => compileSdkFixture(
       fixtureSource(program.name),
       program.linkArgs,
       {
         forkInstrument: true,
         forkInstrumentArgs: program.forkInstrumentArgs,
-        memoryInstrument: true,
+        memoryInstrument,
       },
     );
+    const rewritten = compile(true);
+    try {
+      fixtures = { rewritten, marked: compile("at-exec") };
+    } catch (error) { rewritten.cleanup(); throw error; }
     if (!program.libraryPath) return;
     // The host rewrites a side module when a process with page tables loads
     // it, so the library is not memory-instrumented here.
@@ -141,11 +164,13 @@ describe.each(programs)("fork-share-$name", (program) => {
   }, 120_000);
 
   afterAll(() => {
-    fixture?.cleanup();
+    fixtures?.rewritten.cleanup();
+    fixtures?.marked.cleanup();
     library?.cleanup();
   });
 
-  it.each(["copy", "share"] as const)("passes with forkMemory %s", async (forkMemory) => {
+  it.each(modes)("passes with $name", async ({ form, forkMemory, ...mode }) => {
+    const fixture = fixtures![form];
     const execPrograms = new Map<string, string>();
     if (program.ownPath) execPrograms.set(program.ownPath, fixture.programPath);
     if (program.libraryPath) execPrograms.set(program.libraryPath, library!.programPath);
@@ -155,6 +180,7 @@ describe.each(programs)("fork-share-$name", (program) => {
       programPath: fixture.programPath,
       argv: [`fork-share-${program.name}`, ...(guestPath ? [guestPath] : [])],
       forkMemory,
+      forkShareMinimumBytes: "forkShareMinimumBytes" in mode ? mode.forkShareMinimumBytes : undefined,
       execPrograms,
       timeout: 60_000,
     });

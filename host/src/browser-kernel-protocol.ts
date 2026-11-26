@@ -220,6 +220,8 @@ export interface InitMessage {
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;
+  /** Entry of the Worker that rewrites a marked program. */
+  programRewriteWorkerEntryUrl: string;
   bridgePort?: MessagePort;
   config: {
     experimentalMemoryGroup?: TrustedMemoryGroupOptions;
@@ -240,8 +242,10 @@ export interface InitMessage {
     forkCopy?: ForkAddressSpaceCopy;
     /** Address-space mode for memory-instrumented programs; defaults to `"copy"`. */
     forkMemory?: ForkMemory;
-    /** Bytes of the memory instrumenter module that rewrites side modules. */
+    /** Bytes of the memory instrumenter module that rewrites marked programs and side modules. */
     memoryInstrumenter?: ArrayBuffer;
+    /** Smallest parent address space whose fork child shares pages; defaults to 0. */
+    forkShareMinimumBytes?: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */

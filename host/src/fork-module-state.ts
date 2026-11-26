@@ -589,6 +589,31 @@ export async function computeForkModuleTemplateId(
   return new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", owned));
 }
 
+/** Custom section of a program rewritten by `wasm-memory-instrument`. */
+export const MEMORY_PLAIN_FORM_SECTION = "kandelo.memory.plain_form";
+
+/**
+ * Template id of a main program.
+ *
+ * WHY: a fork child of a rewritten program may run the plain form of that
+ * program in a private Memory. `wasm-memory-instrument` records the SHA-256
+ * of its input, so both forms have the id of the plain form and the child's
+ * template check refuses any other program.
+ */
+export async function computeProgramForkTemplateId(
+  module: WebAssembly.Module,
+  bytes: ArrayBuffer | ArrayBufferView,
+): Promise<Uint8Array> {
+  const sections = WebAssembly.Module.customSections(module, MEMORY_PLAIN_FORM_SECTION);
+  if (sections.length === 0) return computeForkModuleTemplateId(bytes);
+  if (sections.length !== 1 || sections[0]!.byteLength !== MODULE_TEMPLATE_ID_SIZE) {
+    throw new Error(
+      `${MEMORY_PLAIN_FORM_SECTION} must be one section of ${MODULE_TEMPLATE_ID_SIZE} bytes`,
+    );
+  }
+  return new Uint8Array(sections[0]!);
+}
+
 const SHA256_INITIAL_STATE = new Uint32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,

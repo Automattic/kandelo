@@ -175,6 +175,9 @@ export interface RunProgramOptions {
   /** Fork memory mode (NodeKernelHost default when omitted). Worker-thread
    *  mode only. */
   forkMemory?: ForkMemory;
+  /** Share threshold of a fork (NodeKernelHost default when omitted).
+   *  Worker-thread mode only. */
+  forkShareMinimumBytes?: number;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -314,6 +317,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     forkCopy: options.forkCopy,
     forkMemory: options.forkMemory,
+    forkShareMinimumBytes: options.forkShareMinimumBytes,
     rootfsImage,
     rootfsMountSpec: options.rootfsNosuid === undefined
       ? undefined
