@@ -44,7 +44,11 @@ export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 source "$repo_root/scripts/install-local-binary.sh"
 install_local_binary graphics-cts "$build/modules/egl/deqp-egl.wasm" deqp-egl.wasm
-install_local_binary graphics-cts "$build/modules/gles2/deqp-gles2.wasm" deqp-gles2.wasm
+# GLES2 exhausts the optional sink analysis work budget. Use the full
+# fork-reachable closure so continuation coverage is preserved.
+"$repo_root/scripts/run-wasm-fork-instrument.sh" \
+    "$build/modules/gles2/deqp-gles2.wasm" --no-sinks -o "$work/deqp-gles2.wasm"
+install_local_binary graphics-cts "$work/deqp-gles2.wasm" deqp-gles2.wasm
 
 # Preserve every upstream GLES2 asset with paths expected by --deqp-archive-dir.
 python3 - "$src/data/gles2" "$work/deqp-data.zip" <<'PY'
