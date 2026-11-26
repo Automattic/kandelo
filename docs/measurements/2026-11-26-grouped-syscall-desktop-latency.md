@@ -86,6 +86,17 @@ In a separate traced control run after five painted terminals, each of eight dis
 
 These runs used separate recording instrumentation and a busy machine. The first interval includes guest scheduling, input handling, graphics work and waits for earlier frames. Its duration cannot be attributed to a single operation. See the [individual matched samples](2026-11-26-grouped-cursor-stages.csv).
 
+Eight isolated moves can all arrive even when continuous movement looks jerky. A separate test sent 120 distinct pointer positions over 2.1–2.3 seconds with five painted terminals. It recorded trusted DOM events, kernel evdev delivery, the kernel Worker's outgoing cursor positions and the display Worker's applied positions. The final position was verified on the cursor canvas. The gap column measures the longest interval between outgoing cursor updates. The last column measures the time from the last DOM event until the final cursor was observed.
+
+| Engine and cumulative build | Distinct DOM / evdev positions | Distinct outgoing / applied positions | Longest gap | Final position visible |
+| --- | --- | --- | ---: | ---: |
+| Firefox control | 120 / 120 | 10 / 10 | 394 ms | 387 ms |
+| Firefox candidate | 120 / 120 | 11 / 11 | 485 ms | 604 ms |
+| WebKit control | 120 / 120 | 37 / 37 | 126 ms | 86 ms |
+| WebKit candidate | 120 / 120 | 47 / 47 | 117 ms | 61 ms |
+
+The display Worker applied every distinct position it received. Most intermediate positions had already disappeared upstream. These single instrumented runs on a shared host locate the missing updates. They do not establish a repeatable cursor-speed improvement.
+
 A second trace decoded the graphics queries from a sweep. In *each* engine the compositor requested 184 synchronous texture binds, including 92 binds of texture zero, all targeting 2D textures. The acknowledged graphics protocol commits guest binding ownership after native acceptance. A change here needs to preserve failure, context loss, shared contexts, pending commands, and the timing of ownership release. See the [graphics binding contract](../graphics/compatibility-v1.md#acknowledged-c-texturerenderbuffer-bindings-2026-10-24).
 
 Two more experiments were kept out of the product:
