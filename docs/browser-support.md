@@ -1277,6 +1277,11 @@ provides that event. The regular stream supplies any later coalesced
 position and handles buttons, drag, touch and pen. Pointer-locked input
 continues through the relative mouse stream.
 
+The packaged Sway configuration runs a single guest `sway-status-clock`
+process. It formats local guest time and writes one line per second to
+Swaybar. The bar can update while the desktop is idle without starting a
+new program on each tick.
+
 Interactions, all end-to-end through the compositor:
 
 - **Typing** — `BrowserInputSource` writes keystrokes to `event0`;
