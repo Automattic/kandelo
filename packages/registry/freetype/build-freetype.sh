@@ -60,6 +60,10 @@ mkdir -p "$BUILD_DIR"
 echo "==> Configuring freetype for wasm32 (zlib at $ZLIB_PREFIX)..."
 (
     cd "$BUILD_DIR"
+    # The cross-configure mmap probe tests fixed-address replacement. The
+    # Unix loader only needs a private file mapping at a kernel-chosen address
+    # and falls back to read() when a file cannot be mapped.
+    export FTSYS_SRC='$(PLATFORM_DIR)/ftsystem.c'
     # FreeType probes build-gcc/gcc before cc when cross compiling. Select
     # the native compiler from the declared dev shell for its helper tools.
     CC_BUILD="$(command -v clang)" \
