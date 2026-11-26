@@ -411,6 +411,8 @@ that needs a libc function the program does not link.
 -mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
                                    # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
+-Wcast-function-type-strict        # Warn about incompatible function pointer casts
+-Wno-error=cast-function-type-strict # Keep the warning nonfatal under -Werror
 -fvisibility=default               # Non-PIC compiles only: Unix symbol
                                    # visibility (see "Plugin modules");
                                    # the caller's -fvisibility wins
@@ -439,6 +441,32 @@ dependency prefixes when those paths must also be reproducible.
 The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
 leave unresolved host imports in linked programs.
+
+A direct cast between incompatible callback types gets a Clang warning.
+A cast through `void *` can erase the information Clang needs. Give callback
+parameters their actual function-pointer types so Clang can also check callers.
+Some C type differences, such as two different pointer parameter types, have
+the same Wasm representation. A warning alone does not establish that the
+program will trap.
+
+In the completed supported-registry run at `d4b37e705b`, the compiler emitted
+this warning in 55 of 338 package names, across 58 package/architecture
+builds. Of 359 scheduled nodes, 329 succeeded, 29 used cached source packages
+or composed products, and one failed. The failed package, `graphics-cts`,
+emitted warnings during compilation and reached its fork-instrumentation
+budget after linking.
+Repeated header and generated-code diagnostics can dominate the output.
+For example, wasm32 libffi emitted 6,289 warnings in its generated dispatch
+code, where a runtime signature selects the typed call.
+
+A source review of 61 distinct wasm32 diagnostics across basu, Bison, FBDoom,
+gperf, nano, SDL2 and SDL3 found one call with a mismatched Wasm signature.
+SDL2's test timeout registers a no-argument function with a timer API that
+invokes it with two arguments and expects an integer result. Of the other
+60 diagnostics, 53 retained the same Wasm signature and seven involved
+callback identity checks or storage for those checks. These seven packages
+were selected for source review. Their counts do not estimate a registry-wide
+defect rate.
 
 ### Compiler facts for fork instrumentation
 
@@ -1069,6 +1097,38 @@ See [`docs/fork-instrumentation.md`](fork-instrumentation.md) for the
 exported ABI, save-buffer format, and the dispatch-scheme decisions.
 
 ## Inspecting build output
+
+In the dev shell, `cargo xtask wasm-indirect-call-report FILE.wasm [FILE.wasm ...]`
+produces one JSON record per linked module. Add `--show-compatible` before the
+paths to include the compatible targets for auditing. Each record counts indirect-call
+groups (caller, table and expected type), groups with a resolved target, and
+resolved paths. Several paths can reach the same group. A finding gives
+the caller and target function indices, table slot, expected and actual Wasm
+type indices, and the evidence for the slot. Findings are informational.
+
+The prototype recognizes a literal slot, a literal final argument carried
+through one direct call, and an immediate store and reload at the same
+constant address. A finding describes what happens if execution follows that
+path with the table's initial binding. Exported tables can be changed by the
+embedding host, and another thread can replace a value in shared memory.
+The report skips dynamic-linker, imported and guest-written tables. Callbacks
+stored on a heap list, including Toybox's exit handlers, can remain unresolved.
+A module with zero findings can still trap.
+
+Two overlapping samples of packaged wasm32 executables at `d4b37e705b`
+were deduplicated by content within each sample. The registry sample includes
+every published program of at most 2 MiB present when the sample was taken.
+
+| Sample | Executables | Indirect-call groups | Groups with a resolved target | False positives / verified compatible paths |
+| --- | ---: | ---: | ---: | ---: |
+| Partial shell build | 40 | 1,323 | 25 | 0 / 25 |
+| Registry build, programs up to 2 MiB | 126 | 126,633 | 71 | 0 / 246 |
+
+Independent WABT disassembly and table dumps confirmed the slot, caller and
+target type for every resolved path. Neither sample produced a mismatch,
+so precision among naturally occurring alerts is unknown. A separate SDK-built
+terminal test guest produced one finding. Correcting its handler parameter
+removed the finding at that same table slot.
 
 SDK output is WebAssembly, not ELF. The Kandelo shell carries two sets of
 tools for reading it: LLVM's binary tools (`objdump`, `nm`, `ar`, `size`,

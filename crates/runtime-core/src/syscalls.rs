@@ -12384,7 +12384,7 @@ fn sys_exit_impl(
 /// Exit for a signal's terminating default action, publishing status after
 /// cleanup completes.
 pub fn sys_exit_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
-    sys_exit_by_signal_impl(proc, None, host, signum);
+    sys_exit_by_signal_impl(proc, None, host, signum, None);
 }
 
 pub fn sys_exit_by_signal_with_locks(
@@ -12393,29 +12393,46 @@ pub fn sys_exit_by_signal_with_locks(
     host: &mut dyn HostIO,
     signum: u32,
 ) {
-    sys_exit_by_signal_impl(proc, Some(locks), host, signum);
+    sys_exit_by_signal_impl(proc, Some(locks), host, signum, None);
 }
 
-fn sys_exit_by_signal_impl(
+pub(crate) fn sys_exit_by_signal_impl(
     proc: &mut Process,
     locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
     signum: u32,
+    trap: Option<wasm_posix_shared::abi::WasmIndirectCallTrap>,
 ) {
     if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
         return;
     }
     cleanup_process_for_exit(proc, locks, host);
     if proc.record_signal_exit(signum) {
-        record_death_by_signal(proc.pid, signum, host);
+        record_death_by_signal(proc.pid, signum, host, trap);
     }
 }
 
 /// Write the kernel log's record of a process dying of a signal. Once per
 /// death, from the one place a signal death is recorded, so it costs nothing
 /// on the syscall path of a process that lives.
-fn record_death_by_signal(pid: u32, signum: u32, host: &mut dyn HostIO) {
+fn record_death_by_signal(
+    pid: u32,
+    signum: u32,
+    host: &mut dyn HostIO,
+    trap: Option<wasm_posix_shared::abi::WasmIndirectCallTrap>,
+) {
     use crate::kmsg::{klog, KlogSite};
+    use wasm_posix_shared::abi::WasmIndirectCallTrap;
+    if let Some(trap) = trap {
+        let cause = match trap {
+            WasmIndirectCallTrap::SignatureMismatch => "signature mismatch",
+            WasmIndirectCallTrap::NullOrSignatureMismatch => "null table entry or signature mismatch",
+        };
+        klog(host, KlogSite::WasmIndirectCallTrap, format_args!(
+            "process {pid} killed by signal {signum} (SIGILL): Wasm indirect call trap ({cause})"
+        ));
+        return;
+    }
     // The exit status keeps the low seven bits; name what the parent will see.
     let signum = signum & 0x7f;
     // SIGPIPE is how every `yes | head` ends. It is left out because of the

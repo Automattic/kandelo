@@ -91,8 +91,10 @@ import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
+  observeWasmIndirectCallTrap,
   signalExitStatus,
   SIGSEGV,
+  type WasmIndirectCallTrap,
 } from "./trap-signals";
 import {
   removeThreadWorkerRegistryEntry,
@@ -1835,7 +1837,7 @@ function installProcessWorkerListeners(
   const finalize = (
     status: number,
     crashSignum?: number,
-    failure?: Pick<HostDiagnostic, "source" | "message">,
+    failure?: Pick<HostDiagnostic, "source" | "message"> & { trap?: WasmIndirectCallTrap },
   ) => {
     if (exited) return;
     if (intentionallyTerminated.has(worker as object)) return;
@@ -1859,6 +1861,7 @@ function installProcessWorkerListeners(
         failure === undefined
           ? (signalFromExitStatus(status) === null ? "exit" : "signal")
           : "trap",
+        failure?.trap,
       );
     }
   };
@@ -1886,6 +1889,7 @@ function installProcessWorkerListeners(
       {
         source: "worker.onerror",
         message: `[kernel-worker] worker error pid=${pid}: ${err.message}`,
+        trap: observeWasmIndirectCallTrap(err),
       },
     );
   });
@@ -1948,6 +1952,7 @@ function installProcessWorkerListeners(
         {
           source: "worker-main error message",
           message: `[process-worker] ${m.message ?? "unknown error"}`,
+          trap: m.wasmIndirectCallTrap,
         },
       );
     } else if (m.type === "exit" && m.pid === pid) {
@@ -3701,7 +3706,7 @@ async function handleClone(
   const isCurrentThreadGeneration = () =>
     !intentionallyTerminated.has(threadWorker as object)
     && belongsToCurrentProcessImage();
-  const failThread = (reason: string, awaitQuiescence = false) => {
+  const failThread = (reason: string, awaitQuiescence = false, trap?: WasmIndirectCallTrap) => {
     if (!isCurrentThreadGeneration()) {
       void terminateThreadEntry();
       return;
@@ -3718,7 +3723,7 @@ async function handleClone(
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     if (!awaitQuiescence) void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
-      handleExit(pid, disposition.exitStatus, disposition.signum);
+      handleExit(pid, disposition.exitStatus, disposition.signum, undefined, "signal", trap);
     }
   };
 
@@ -3749,12 +3754,13 @@ async function handleClone(
       } else {
         void terminateThreadEntry();
       }
-    } else if ((m as { type?: string }).type === "error") {
+    } else if (m.type === "error") {
       // worker-main posted {type:"error"} — instantiation failure, top-level
       // throw, etc. Without this the parent's pthread_join blocks forever.
       failThread(
-        (m as { message?: string }).message ?? "thread error",
+        m.message ?? "thread error",
         true,
+        m.wasmIndirectCallTrap,
       );
     } else if (m.type === "vm_interrupt_timer") {
       if (!isCurrentThreadGeneration() || m.pid !== pid) return;
@@ -3764,7 +3770,7 @@ async function handleClone(
     }
   });
   threadWorker.on("error", (err: Error) => {
-    failThread(`worker error: ${err.message ?? err}`);
+    failThread(`worker error: ${err.message ?? err}`, false, observeWasmIndirectCallTrap(err));
   });
 
   let startDisposition: ReturnType<
@@ -3811,6 +3817,7 @@ function handleExit(
   expectedWorker = processes.get(pid)?.worker,
   vforkReason: VforkExactCompletionReason =
     signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
+  trap?: WasmIndirectCallTrap,
 ): void {
   if (groupedSession?.exit(pid, exitStatus)) return;
   void finishProcessExit(
@@ -3819,6 +3826,7 @@ function handleExit(
     crashSignum,
     expectedWorker,
     vforkReason,
+    trap,
   );
 }
 
@@ -3829,6 +3837,7 @@ async function finishProcessExit(
   expectedWorker = processes.get(pid)?.worker,
   vforkReason: VforkExactCompletionReason =
     signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
+  trap?: WasmIndirectCallTrap,
 ): Promise<void> {
   if (!expectedWorker) return;
   const info = processes.get(pid);
@@ -3856,7 +3865,7 @@ async function finishProcessExit(
     // `hostReaped`: when the kernel already processed a clean
     // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
     // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
+    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum, trap); } catch { /* best-effort */ }
 
     // Keep the pid registered until the process worker is gone. musl's
     // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker

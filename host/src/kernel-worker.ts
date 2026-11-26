@@ -18,6 +18,7 @@ import {
   MemoryGroupProtocolFault, type MemoryGroupSnapshot, type MemoryGroupTaskReceipt,
 } from "./memory-group-protocol";
 import { MEMORY_GROUP_PROTOCOL } from "./generated/abi";
+import type { WasmIndirectCallTrap } from "./trap-signals";
 import { validateMemoryGroupUsage, type MemoryGroupUsage } from './memory-group-usage';
 import { GroupMemoryTransport, GroupMemoryStorageRefusal, type GroupImageLayout, type GroupReplicaLaunch,
   type PreparedGroupReplica, type GroupOperationEffect, type GroupExecControlEffect, type GroupCompletionEffect } from "./group-memory-transport";
@@ -9497,7 +9498,7 @@ export class CentralizedKernelWorker {
 
   /** Record a crash only for this currently registered execution image.
    * A late old-Worker error cannot signal a replacement sharing its PID. */
-  recordMemoryGroupCrash(handle: PreparedGroupReplica, signum = SIGSEGV): number {
+  recordMemoryGroupCrash(handle: PreparedGroupReplica, signum = SIGSEGV, trap?: WasmIndirectCallTrap): number {
     if (!memoryGroupU32(signum) || signum === 0 || signum > SIGNAL_MASK_BYTES * 8) return -EINVAL;
     let result = -ESRCH;
     this.#runImmediateKernelEntry('record exact grouped image crash', entry => {
@@ -9511,7 +9512,7 @@ export class CentralizedKernelWorker {
         throw generation;
       }
       if (generation !== receipt.generation) return undefined;
-      this.#notifyHostProcessCrashedWithinKernelEntry(receipt.pid, signum, entry); result = 0;
+      this.#notifyHostProcessCrashedWithinKernelEntry(receipt.pid, signum, entry, trap); result = 0;
       return undefined;
     });
     return result;
@@ -19196,8 +19197,8 @@ export class CentralizedKernelWorker {
     alreadyExited = false,
   ): boolean {
     if (channel.source instanceof GroupProcessAddressSpace && !alreadyExited && !this.hostReaped.has(channel.pid)) {
-      const mark = entry.instance.exports.kernel_mark_process_signaled as (pid: number, signum: number) => number;
-      const status = mark(channel.pid, SIGKILL);
+      const mark = entry.instance.exports.kernel_mark_process_signaled as (pid: number, signum: number, trap: number) => number;
+      const status = mark(channel.pid, SIGKILL, 0);
       if (status !== 0) throw new MemoryGroupProtocolFault(`Kernel refused grouped teardown: ${status}`);
       this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
       this.wakeExitedChannelForRetirement(channel, entry);
@@ -26501,6 +26502,7 @@ export class CentralizedKernelWorker {
   notifyHostProcessCrashed(
     pid: number,
     signum: number = 11 /* SIGSEGV */,
+    trap?: WasmIndirectCallTrap,
   ): void {
     if (this.hostReaped.has(pid)) return;
     this.#runOrDeferKernelEntry(
@@ -26510,6 +26512,7 @@ export class CentralizedKernelWorker {
           pid,
           signum,
           entry,
+          trap,
         );
         return undefined;
       },
@@ -26520,6 +26523,7 @@ export class CentralizedKernelWorker {
     pid: number,
     signum: number,
     entry: KernelWorkerEntryContext,
+    trap?: WasmIndirectCallTrap,
   ): void {
     if (this.hostReaped.has(pid)) return;
     // A late old-Worker error cannot overwrite an already recorded exec
@@ -26527,11 +26531,11 @@ export class CentralizedKernelWorker {
     if (this.#holdCommittedGroupExecTermination(pid, entry) !== undefined) return;
     const markSignaled = entry.instance.exports
       .kernel_mark_process_signaled as
-      ((pid: number, signum: number) => number) | undefined;
+      ((pid: number, signum: number, trap: number) => number) | undefined;
     if (!markSignaled) {
       throw new Error("Kernel missing required kernel_mark_process_signaled export");
     }
-    const result = markSignaled(pid, signum);
+    const result = markSignaled(pid, signum, trap ?? 0);
     if (result !== 0) {
       const detail = result < 0 ? `errno ${-result}` : `invalid result ${result}`;
       throw new Error(

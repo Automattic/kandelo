@@ -451,7 +451,7 @@ function signatures(
       result: i32,
     },
     kernel_mark_process_signaled: {
-      parameters: [i32, i32],
+      parameters: [i32, i32, i32],
       result: i32,
     },
     kernel_kms_commit_count: {
