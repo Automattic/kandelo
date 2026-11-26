@@ -242,6 +242,54 @@ both sources of authorization. It would need to keep one disposer when
 rollback and retirement meet on the same receipt, including refusal before
 entry and failure after platform disposal starts.
 
+## Focus latency follow-up
+
+The original Chromium focus metric starts at the trusted pointer event and
+ends at the video frame callback timestamp when a sample has the new border
+color. It includes browser input delivery, guest focus and rendering, scanout
+and video observation. The final historical block's medians were 82.18 ms on
+develop and 82.05 ms on the candidate. Its p95 was the fourth-slowest of 60
+observations per arm. Three of the four slowest candidate observations came
+from the same run.
+
+Across the five recorded blocks, 56 of the 57 observations above 100 ms
+occurred on move one or moves 15–20. An exploratory calculation on the final
+block omitting those positions gave p95s of 83.26 ms and 83.00 ms. The original
+p95s of 115.69 ms and 131.68 ms still describe the complete block. The recurring
+positions identify where the tail lies. Its cause remains unresolved.
+
+Two follow-up video diagnostics timed out on the focus-color assertion on both
+revisions. Screenshots showed the correct blue border. A diagnostic comparing
+the frame bytes with RGBA readbacks from the current video and canvas directly
+confirmed BGRA frames. The raw focused pixel was `[119, 85, 40, 255]`, and both
+RGBA readbacks gave `[40, 85, 119, 255]`. The raw benchmark predicate assumes
+RGBA ordering, so it rejected those frames. The format-aware trial recognized
+all eight candidate transitions. The original passing runs did not record
+pixel formats, so the format issue explains the diagnostic failures and leaves
+the historical tail difference unattributed.
+
+A four-run direct-canvas diagnostic used pinned develop and `fd88906d1d`, the
+same kernel and partial shell and two already-running Foot windows. Each run
+verified its trusted pointer events, warmed up in both directions and timed 45
+focus changes without terminal churn. The 90-move medians were 79.71 ms on
+develop and 79.05 ms on the candidate. The respective p95s were 179.77 ms and
+164.19 ms. Machine load ranged from 54 to 77 at the start of these runs on an
+18-CPU host. Both arms had nine moves of at least 130 ms. For those moves the
+page listener was reached within 15 ms of the event timestamp. The remaining
+interval covers kernel delivery, guest work, scanout and canvas observation.
+The next attribution point is the kernel's evdev ingress and Sway's DRM flip
+for the same pointer event.
+
+The four format-corrected video runs used the same two-window workload and
+also completed all 45 measured moves per run. Each sampled video frame was
+BGRA and the predicate used a normalized RGBA readback. The video medians were
+79.18 ms on develop and 79.62 ms on the candidate. Their p95s were 179.04 ms
+and 184.62 ms. Starting load ranged from 81 to 127. The direct-canvas and
+normalized-video results are separate diagnostics under different loads.
+They agree on typical latency and give different directions for the tail
+difference. The original performance question still needs a staged trace on
+a quieter host. [Raw focus diagnostic timings](2026-11-25-grouped-worker-startup-samples.json).
+
 ## Retained failures
 
 The first partial build refused a changed package registry snapshot. A retry
