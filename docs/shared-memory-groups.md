@@ -6,7 +6,9 @@ experimental: repeated live desktop replacement can time out during Worker
 retirement, leaving the computer locked because storage quiescence is unconfirmed.
 Native Safari and iOS remain untested. The
 [scanner and landing receipt](measurements/2026-11-25-shared-memory-scanner.md)
-records current validation, measurements and limits; the earlier
+records validation, measurements and limits for the initial feature. The
+[Worker startup receipt](measurements/2026-11-25-grouped-worker-startup.md)
+records the follow-up and its comparison with develop. The earlier
 [WebKit qualification](measurements/2026-11-25-shared-memory-webkit-qualification.md)
 retains the successful runs preceding the reproduced failure.
 The [historical evidence index](measurements/shared-memory-evidence.md) preserves
