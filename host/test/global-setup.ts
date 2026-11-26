@@ -152,6 +152,7 @@ const TEST_PROGRAMS = [
   "epoll_semantics_test.c",
   "mmap_file_test.c",
   "mremap_madvise_test.c",
+  "rusage_cpu_time_test.c",
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
   "select_signal_test.c",
@@ -244,6 +245,8 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "orphan_reparent_test.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
+  // Forks children whose CPU time reaches RUSAGE_CHILDREN.
+  "rusage_cpu_time_test.c",
   // Forks the poker that makes the record its reader waits for.
   "kmsg_tail_test.c",
   // Forks to get a sender that never bound the path it sends to.

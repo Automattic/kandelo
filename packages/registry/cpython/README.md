@@ -66,8 +66,9 @@ choice:
   `MADV_DONTNEED` zero-fills private anonymous pages, and advice Kandelo
   cannot carry out raises `OSError` (`docs/posix-status.md`,
   `posix_madvise()` / `madvise()`). `resize()` uses `mremap()`.
-- **`resource.getrusage()`** returns zeros: Wasm hosts expose no process
-  accounting (`docs/posix-status.md`, `getrusage()`).
+- **`resource.getrusage()`** reports user and system CPU time, which
+  Kandelo measures at each thread's syscall boundaries; its other fields
+  are zero (`docs/posix-status.md`, `getrusage()`).
 
 ## Installed layout
 

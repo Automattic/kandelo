@@ -32,8 +32,6 @@ BASIC_EXPECTED_FAIL=(
                                                           # XFAIL_TIMEOUT) instead of failing with an error;
                                                           # unexplained, a candidate defect in pthread_create
                                                           # with PTHREAD_EXPLICIT_SCHED
-    "pthread/pthread_getcpuclockid"                       # encoded per-thread CPU clocks are not yet
-                                                          # recognized by clock_gettime (EINVAL)
     "syslog/closelog" "syslog/syslog"                    # no /dev/log receiver; keep that boundary visible
     "unistd/fpathconf" "unistd/pathconf"                  # _PC_FILESIZEBITS is truthfully indeterminate until
                                                           # the selected VFS backend can prove a bit width
@@ -94,7 +92,6 @@ xfail_expected_reason() {
         include/devctl/*) echo "outcome:missing_header" ;;
         basic/devctl/posix_devctl) echo "build:wasm not found" ;;
         basic/pthread/pthread_attr_setinheritsched) echo "timeout" ;;
-        basic/pthread/pthread_getcpuclockid) echo "output:clock_gettime self cpu clock: EINVAL" ;;
         basic/syslog/closelog) echo "output:openlog: ENOENT" ;;
         basic/syslog/syslog) echo "output:syslog: EDESTADDRREQ" ;;
         basic/unistd/fpathconf|basic/unistd/pathconf) echo "output:_PC_FILESIZEBITS" ;;

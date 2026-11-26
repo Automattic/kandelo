@@ -836,6 +836,12 @@ export interface KmsDisplaySize {
 export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
+  /**
+   * User and system CPU time in nanoseconds the host measured for task `tid`
+   * of `pid` (all of its tasks when `tid` is 0), or null when it has no
+   * record of the task. See `runtime_core::cpu_time`.
+   */
+  taskCpuTime?: (pid: number, tid: number) => readonly [bigint, bigint] | null;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
   /** Packed IPv4 source in network byte order, or a negative errno. */
   onUdpSourceAddress?: (destination: [number, number, number, number]) => number;
@@ -3114,6 +3120,21 @@ export class WasmPosixKernel {
                 nsecPtr,
                 8,
                 "host_clock_gettime nanoseconds destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
+        host_task_cpu_time: (pid: number, tid: number, outPtr: KernelPointer): number => {
+          try {
+            return this.#hostTaskCpuTime(
+              pid >>> 0,
+              tid >>> 0,
+              this.#rustLentKernelDestination(
+                outPtr,
+                16,
+                "host_task_cpu_time destination",
               ),
             );
           } catch {
@@ -5853,6 +5874,31 @@ export class WasmPosixKernel {
         nanosecondsDestination,
         nanoseconds,
       );
+      return 0;
+    } catch (error) {
+      return negErrno(error);
+    }
+  }
+
+  /**
+   * host_task_cpu_time(pid, tid, out_ptr) -> i32
+   *
+   * Writes the task's user and system CPU time, in nanoseconds, as two
+   * little-endian u64 values. -ESRCH when the host has no record of it.
+   */
+  #hostTaskCpuTime(
+    pid: number,
+    tid: number,
+    destination: RustLentKernelDestination,
+  ): number {
+    try {
+      const times = this.callbacks.taskCpuTime?.(pid, tid) ?? null;
+      if (times === null) return -3; // ESRCH
+      const bytes = new IntrinsicUint8Array(16);
+      const view = new IntrinsicDataView(typedArrayBuffer(bytes));
+      dataViewSetBigUint64(view, 0, BigInt.asUintN(64, times[0]), true);
+      dataViewSetBigUint64(view, 8, BigInt.asUintN(64, times[1]), true);
+      this.#writeKernelBytes(destination, bytes);
       return 0;
     } catch (error) {
       return negErrno(error);
