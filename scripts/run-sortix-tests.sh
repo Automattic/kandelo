@@ -154,19 +154,6 @@ LINK_FLAGS=(
     -ldl
 )
 
-# Flags for building shared libraries (.so) for dlopen tests. `-shared`
-# selects the SDK's shared-library link contract (shared_link_flags() in
-# crates/kandelo-cc/src/flags.rs): no CRT, no libc, no syscall glue, plus
-# --experimental-pic/--shared/--shared-memory/--export-all.
-SO_CFLAGS=(
-    -fPIC
-    -O2
-    -DSHARED
-)
-SO_LINK_FLAGS=(
-    -shared
-)
-
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 # Stamp each compiled test program with this checkout's ABI-contract digest.
@@ -175,6 +162,24 @@ source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
 instrument_wasm() {
     local wasm="$1"
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
+}
+
+# Fork-instrumented executables require the same side-boundary preparation
+# for modules they load, including a fixture whose own code never forks.
+build_runtime_side_module() {
+    local src="$1"
+    local wasm="$2"
+    if ! grep -q '#ifdef SHARED' "$src"; then
+        return 0
+    fi
+
+    local so="${wasm%.wasm}.so"
+    rm -f "$so"
+    if ! "$WASM32_CC" -fPIC -O2 -DSHARED "$src" -shared -o "$so" ||
+       ! instrument_wasm "$so"; then
+        rm -f "$wasm" "$so"
+        return 1
+    fi
 }
 
 # The per-test budget in seconds. It is forwarded to examples/run-example.ts
@@ -391,13 +396,7 @@ build_runtime_test() {
         -o "$wasm" 2>/tmp/sortix-build-err-$$.txt
     instrument_wasm "$wasm"
 
-    # If source has #ifdef SHARED, also build as a shared library (.so)
-    if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
-        local so="$BUILD_DIR/$suite/${test_name}.so"
-        "$WASM32_CC" "${SO_CFLAGS[@]}" \
-            "$src" "${SO_LINK_FLAGS[@]}" \
-            -o "$so" 2>/dev/null || true
-    fi
+    build_runtime_side_module "$src" "$wasm"
 }
 
 build_basic()   { build_runtime_test basic "$1"; }
@@ -1012,8 +1011,7 @@ run_suite() {
         export WASM32_CC FORK_INSTRUMENT
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
-        export SO_CFLAGS_STR="${SO_CFLAGS[*]}"
-        export SO_LINK_FLAGS_STR="${SO_LINK_FLAGS[*]}"
+        export -f instrument_wasm build_runtime_side_module
 
         _build_runtime_wrapper() {
             local suite="$1"
@@ -1040,16 +1038,8 @@ run_suite() {
             "$WASM32_CC" "${cflags[@]}" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
-            "$FORK_INSTRUMENT" "$wasm" -o "$wasm" || return 1
-            abi_contract_stamp "$wasm" || return 1
-            # Build shared library (.so) if source has #ifdef SHARED
-            if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
-                local so="$BUILD_DIR/$suite/${test_name}.so"
-                # shellcheck disable=SC2086
-                "$WASM32_CC" $SO_CFLAGS_STR \
-                    "$src" $SO_LINK_FLAGS_STR \
-                    -o "$so" 2>/dev/null || true
-            fi
+            instrument_wasm "$wasm" || return 1
+            build_runtime_side_module "$src" "$wasm"
         }
         export -f _build_runtime_wrapper
 

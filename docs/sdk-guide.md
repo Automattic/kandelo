@@ -369,7 +369,10 @@ What `-rdynamic` exports is what the program links. A plugin that calls a
 libc function the program never uses fails to load, because a static
 program contains only the libc members it references; link and export it
 with `-Wl,--export=<symbol>`. Calling `fork` from a plugin likewise needs a
-program that links `fork` and is fork-instrumented.
+program that links `fork` and is fork-instrumented. Run the same
+instrumenter on every plugin a fork-instrumented process loads so
+the host can restore its side-module boundaries. This also applies
+to plugins that never call `fork` themselves.
 
 Libtool, CMake and Meson build plugin modules natively inside Kandelo:
 see [GNU build tools](#gnu-build-tools) and
