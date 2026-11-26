@@ -44,8 +44,17 @@ path in `dlerror`.
   assertion caught a missing alias for Clang's `__main_argc_argv`.
 - The source-only browser-memory checks passed seven page boundary
   tests and 1,429 host tests. The prepared grouped-memory boundaries
-  passed 19 checks on the refreshed kernel. With a minimal VFS, five
-  reclamation and heap-safepoint checks passed on each of Node and Bun.
+  passed 19 checks on the refreshed kernel. The standard teardown
+  command passed three Node and seven Bun tests against a freshly
+  built canonical rootfs. An earlier minimal-VFS run passed five
+  reclamation and heap-safepoint checks on each engine.
+  The audio activation helper and worker exit specs passed 12 checks
+  across Chromium, Firefox and WebKit with required mode enabled.
+  A source-built partial shell with fbDOOM passed the real audio
+  gesture on all three engines after the local test observer was
+  extended to see DOM insertions. The first partial-image attempt
+  timed out waiting for the activity signal in Chromium. The
+  release-image gesture still needs its original test run.
 - The SDK's 17 integration tests, Rust driver and artifact-policy
   tests, ABI snapshot comparison and host typecheck passed.
   The normal Clang package completed. Its in-guest Clang and wasm-ld
@@ -89,7 +98,9 @@ sysroot graphics archives. Both artifacts carry the side-loading
 fork role. The fresh artifact imports only the mapping extension for
 dynamic loading. Both mapped a 1,920-by-34-pixel layer-shell bar in
 Node. The full workspace-switch test timed out at `HYPR_LISTENER`
-with both artifacts after the bar appeared.
+with both artifacts after the bar appeared. Rebuilding the compositor
+from the current tree yielded the same geometry and timeout in both
+arms.
 
 CPython's packaged interpreter mapped a C extension, called its
 initializer, and reaped a forked child in Node and Chromium. The
@@ -157,8 +168,12 @@ these inputs.
 
 The full browser-memory gate requires provisioning the release browser
 products. Its dry run found 306 nodes to run and 18 cache hits, with
-a 7,837-second build estimate before the browser tests. The browser
-source and grouped-memory results above cover parts of that gate.
+a 7,837-second build estimate before the browser tests. Planning
+only the two products used by the specs, `browser-main-shell` and
+`browser-wordpress-family`, still found 258 nodes to run with a
+7,940-second estimate after provisioning the canonical rootfs and
+fbDOOM. Clang and Rust remain on the critical path. The release-image
+machine switch and DOOM audio gesture specs remain pending.
 The conformance runs used a minimal VFS. The standard Sortix runner
 stopped at its canonical rootfs preflight.
 
