@@ -76,6 +76,52 @@ exclusion. These are local Worker acknowledgements under substantial host
 load. They establish a reduction of relay work with no estimate of the
 end-to-end input-to-paint improvement.
 
+## Cursor updates while focusing terminals
+
+The same instrumented WebKit desktop trace that sent 106 cursor updates
+also requested a primary bitmap in **all 106 bundles**. In the isolated
+relay test each timed update carried only a cursor. Among 106 of the 116
+distinct pointer targets that could be matched to a published KMS position
+by coordinates, median time from evdev injection to that position was
+34 ms. Across the 106 bundles, median time from sending the bundle to its
+acknowledgement was 15 ms. The acknowledgement does not timestamp when
+the browser displays the cursor. The run included tracing and substantial host load. It cannot assign all
+the delay to a specific compositor operation or browser API.
+
+## Visible response on the combined demo
+
+Two local demos served the same partial Sway image and grouped kernel.
+The updated demo additionally included the cursor relay and the observed
+executable-buffer reuse from [#1799](https://github.com/Automattic/kandelo/pull/1799).
+The probe used each live demo in updated/earlier/earlier/updated order.
+It verified the served kernel digest, focused the graphics pane, and
+detected the initial Bash prompt in a screenshot. From the first of five
+Alt+Enter automation commands it timed until a screenshot showed six
+distinct rendered prompts. After the burst, it sent eight isolated
+trusted pointer moves across tiles. For each move it sampled a 40×40
+region of the cursor canvas at the destination on delivery and on
+successive animation frames until cursor pixels appeared. Each target
+was separated from the previous one by hundreds of pixels. Reading the
+canvas can add work and samples at frame granularity. These observations
+exclude physical input latency and the display panel.
+
+| Browser and metric | Earlier run 1 | Earlier run 2 | Updated run 1 | Updated run 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Firefox, median cursor sample (ms) | 93.5 | 102.0 | 83.5 | 84.5 |
+| WebKit, median cursor sample (ms) | 65.0 | 48.5 | 63.0 | 56.5 |
+| Firefox, five launches to prompts (s) | 8.57 | 6.77 | 5.56 | 5.44 |
+| WebKit, five launches to prompts (s) | 4.01 | 3.96 | 18.49 | 4.88 |
+
+Both demos completed both engines' runs. Firefox still took roughly five
+60 Hz frames to show the sampled cursor position on the updated demo.
+WebKit's cursor samples overlapped between builds. Host load varied and
+there were only two runs per build. The table cannot isolate either
+patch's contribution or identify the cause of the 18.49 s WebKit burst.
+The burst measurement does not isolate time spent showing a background
+before terminal text. WebKit here is Playwright's browser on macOS.
+The installed Safari 27.2 driver timed out creating an automation session
+before testing the demo.
+
 ## Deferred work
 
 A trace also found repeated primary blits of the same BO, framebuffer, and
