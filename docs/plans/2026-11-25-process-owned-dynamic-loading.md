@@ -461,6 +461,50 @@ Phase 2 stops for review with measured deltas, correctness results, and
 remaining gaps. Use that evidence to review the proposed shipping ABI
 transition and the plan for cyclic direct imports.
 
+## Landing sequence
+
+Start with an opt-in wasm32 executable lookup path. The measured gain
+comes from resolving executable symbols locally and giving the fork
+instrumenter a complete set of statically assigned slots. This slice
+can use the existing program ABI and host adapter. It introduces no
+mapping import or new interpretation of old capability flags. The
+normal SDK keeps the legacy route for existing artifacts and programs
+with a retained `dlopen` reference.
+
+1. **Toolchain.** Package the executable index and canonical slot
+   support through the SDK's normal wasm-ld build and selection. Give
+   requested lookup-only links a useful error with a stock or stale
+   linker. Verify ordinary SDK links retain their export policy.
+   Exercise the supported host and in-guest compiler routes, and
+   measure the final-link and artifact cost for large export sets
+   before enabling the feature by default.
+2. **Libc and fork.** Make executable lookup an explicit SDK choice
+   with a link-time guard. Reject a lookup-only request if the final
+   link retains a reference to `dlopen`, including a reference from
+   a dependency. Check that the executable cannot mix guest lookups
+   with legacy handles or imports. The first slice leaves
+   `dlopen(NULL)` on the legacy route as part of this conservative
+   boundary. Verify the supported lookup, error, and pointer identity
+   behavior, including per-thread `dlerror`. Add ordinary Node and
+   browser regressions for a previously unaddressed export, a fork
+   that returns through a looked-up target, stable table size, and
+   the existing side-loading behavior.
+3. **First package.** Exercise the normal build path with LÖVE as
+   the first opt-in candidate. Use matched builds on fresh develop
+   to repeat the headless physics comparison and test graphical and
+   audio behavior. Run the old-artifact and ABI checks, verify the
+   resulting role and dependency closure, and record which
+   conformance and performance suites ran before requesting rollout
+   review.
+
+Named-module loading follows as a separate implementation and review
+step. Cover real dependency closures, lifecycle and fork attachment on
+the mapping path before testing Waybar and `gtk3_smoke`. Treat removal
+of the legacy loader and a supported-baseline transition as a separate
+maintainer decision. The ABI 56 and adapter 8 numbers above describe
+the prototype's pinned base. Read the live versions when preparing
+each landing branch and assign any successor versions at integration.
+
 After that review, propose reviewable changes targeting develop.
 Land any independent correctness regression coverage first, then
 toolchain/artifact and guest-loader/adapter changes behind a coherent
