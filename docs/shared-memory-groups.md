@@ -44,6 +44,12 @@ retains the instance's callable function with the exact backing resource.
 instruction check. This kernel-host interface requires adapter 40 and leaves
 program ABI 56 unchanged.
 
+For a host byte transfer, the Rust access helper checks each virtual page
+while finding contiguous physical spans. The host finishes collecting those
+spans before it reads or writes any bytes. A range-only permission check asks
+Rust to validate the range directly. Both operations check the live image
+binding. [Grouped transfer measurements](measurements/2026-11-26-grouped-transfer-scan.md)
+
 Image-mutating mappings, fork and pthread-control reservations enter a kernel-owned operation queue. Rust issues exact task-bound tokens and permits only the earliest live operation on an image to begin its pause. Cancelling an operation from the middle cannot let its successor bypass an earlier operation. Outstanding operations prevent image reclamation; an owning task's scratch cannot retire while its operation remains live. Host promises wake continuations, which must recheck Rust readiness before proceeding.
 
 Root preparation, mapping, fork, exec replacement and pthread preparation use kernel-owned continuations. Rust computes grouped layouts from the SDK artifact and retains exact admissions through allocator contention and cancellation. Normal executable commits retain the parsed layout metadata; direct byte-supplied roots read their attached executable once before admission. The host receives copied layouts and transport descriptors.

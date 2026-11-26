@@ -199,11 +199,9 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
   get byteLength(): number { return this.current().pages * PAGE; }
   /** This drops actual platform references, without granting reuse. */
   detachHostAccess(): void { this.binding = undefined; }
-  private checked(address: number, length: number, rights: number): GroupAddressSpaceBinding {
+  private checkedBounds(address: number, length: number): GroupAddressSpaceBinding {
     const { binding, pages } = this.current();
     range(address, length, pages * PAGE);
-    const result = memoryGroupAccess(binding.memory).check(binding.root, binding.maximumPages, BigInt(address), BigInt(length), rights);
-    if (result !== 0) this.accessFault(result);
     return binding;
   }
   private accessFault(result: number): never {
@@ -213,10 +211,16 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
   }
   checkAccessRange(address: number, length: number, access: 'read' | 'write'): void {
     if (access !== 'read' && access !== 'write') throw new ProcessAddressFault('metadata');
-    this.checked(address, length, access === 'read' ? READ : WRITE);
+    const binding = this.checkedBounds(address, length);
+    const result = memoryGroupAccess(binding.memory).check(binding.root, binding.maximumPages,
+      BigInt(address), BigInt(length), access === 'read' ? READ : WRITE);
+    if (result !== 0) this.accessFault(result);
   }
   private plan(address: number, length: number, rights: number): { binding: GroupAddressSpaceBinding; spans: Span[] } {
-    const binding = this.checked(address, length, rights), native = memoryGroupAccess(binding.memory), spans: Span[] = [];
+    // Collect every authorized span before the caller touches the backing.
+    const binding = this.checkedBounds(address, length);
+    const native = memoryGroupAccess(binding.memory);
+    const spans: Span[] = [];
     let at = address, remaining = length;
     while (remaining) {
       const packed = BigInt.asUintN(64, native.span(binding.root, binding.maximumPages, BigInt(at), BigInt(remaining), rights));
