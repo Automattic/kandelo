@@ -1842,17 +1842,26 @@ it.each([4,8] as const)("lifecycle journal import confines metadata and preserve
   for(const words of [[1,2,4],[2,2,1],[4,2,1,1],[5,2]])expect(query(QOP_PROGRAM_JOURNAL_BARRIER,words)).toBe(-22);
   expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6])).toBe(48);
   expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[7,journal.id])).toBe(48);expect(native).not.toHaveBeenCalled();
+   expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,2,1,journal.id,0,1,0,1,0,0,0])).toBe(48);
+  expect(native).not.toHaveBeenCalled();
  }finally{native.mockRestore();}
- expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,2,1,journal.id,0,1,0,1,0,0,0])).toBe(48);
  expect(execute).not.toHaveBeenCalled();expect(retain).not.toHaveBeenCalled();
  expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ // Releasing the last public name can still perform physical deletion.
+ b.programs.set(37,{} as WebGLProgram);
+ b.programDeletePending.add(37);b.logicalProgramCurrent!.name=37;
+ const cleanup=vi.spyOn(b.gl,"getError");
+ try{
+   expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,3,1,journal.id,1,2,0,2,0,0,0])).toBe(48);
+   expect(b.programs.has(37)).toBe(false);expect(cleanup).toHaveBeenCalled();
+ }finally{cleanup.mockRestore();}
  markRendererReset(b);
  const lostNative=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("lifecycle recovery sampled lost renderer");});
  try {
   expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6])).toBe(48);
   expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[7,journal.id])).toBe(48);
-  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,3,1,journal.id,1,2,0,2,0,0,0])).toBe(-19);
-  expect(b.programJournalControl.receipt[1]).toBe(2);expect(lostNative).not.toHaveBeenCalled();
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,4,1,journal.id,2,3,0,3,0,0,0])).toBe(-19);
+  expect(b.programJournalControl.receipt[1]).toBe(3);expect(lostNative).not.toHaveBeenCalled();
  }finally{lostNative.mockRestore();}
  expect(rendererLost(b)).toBe(true);expect(b.uniformUpload).toBe(upload);
  b.uniformUpload=null;kernel.gl.destroyContext(7,0);
