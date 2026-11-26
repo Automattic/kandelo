@@ -2158,8 +2158,9 @@ fn reject_fixed_persistence_mutation() -> Result<(), Errno> {
 ///
 /// Populated once by the host at overlay-configure time via
 /// `set_foreign_prefixes`. tmpfs scratch mounts are excluded separately by
-/// `tmpfs::owns_path`; a tmpfs prefix appearing here too is harmless (either
-/// check independently disqualifies the path).
+/// `tmpfs::owns_path`. A prefix at or beneath a tmpfs scratch mount covers that
+/// part of the scratch mount too, as a later mount covers the directory it is
+/// mounted on (see [`foreign_prefix_len`]).
 struct ForeignMounts {
     locked: AtomicBool,
     prefixes: UnsafeCell<Vec<Vec<u8>>>,
@@ -2377,7 +2378,7 @@ pub(crate) fn foreign_mount_root(path: &[u8]) -> Option<(i64, usize)> {
 /// `/usr/local/lib` to exist even though the mounted backend owns the final
 /// component. The mount point itself is deliberately NOT created: it belongs to
 /// the foreign filesystem, which the overlay does not claim
-/// (see [`path_under_foreign`]).
+/// (see [`foreign_prefix_len`]).
 ///
 /// This is the kernel half of what the TypeScript hosts used to do to their own
 /// copy of the image (`ensureMountParentDirectories`). It belongs here: the
@@ -2475,17 +2476,22 @@ fn mkdir_ancestor_chain(path: &[u8], mode: u32, uid: u32, gid: u32) -> (usize, R
     (created, result)
 }
 
-/// Whether `path` lies at or under a registered foreign mount prefix. The match
-/// respects path-component boundaries, so a foreign mount at `/var/lib/kandelo-tests/runner`
-/// matches `/var/lib/kandelo-tests/runner` and `/var/lib/kandelo-tests/runner/...` but not
+/// Length of the longest registered foreign mount prefix that contains `path`.
+/// The match respects path-component boundaries, so a foreign mount at
+/// `/var/lib/kandelo-tests/runner` matches `/var/lib/kandelo-tests/runner` and
+/// `/var/lib/kandelo-tests/runner/...` but not
 /// `/var/lib/kandelo-tests/runner-extra` or a sibling `/run/other`.
-fn path_under_foreign(path: &[u8]) -> bool {
+pub fn foreign_prefix_len(path: &[u8]) -> Option<usize> {
     FOREIGN_MOUNTS.with(|prefixes| {
-        prefixes.iter().any(|p| {
-            let p = p.as_slice();
-            path == p
-                || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/')
-        })
+        prefixes
+            .iter()
+            .map(|p| p.as_slice())
+            .filter(|p| {
+                path == *p
+                    || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/')
+            })
+            .map(|p| p.len())
+            .max()
     })
 }
 
@@ -2559,7 +2565,7 @@ pub fn owns_path(path: &[u8]) -> bool {
         && !crate::tmpfs::owns_path(path)
         && !crate::devfs::owns_path(path)
         && !crate::sysfs::is_namespace_path(path)
-        && !path_under_foreign(path)
+        && foreign_prefix_len(path).is_none()
 }
 
 /// Whether the in-kernel rootfs currently claims authority over a path: rootfs
@@ -11742,8 +11748,8 @@ mod tests {
         assert!(crate::tmpfs::owns_path(b"/dev/shm/sem.foo"));
 
         // The host registers the sibling mounts that remain after dropping `/`.
-        let n = set_foreign_prefixes(b"/dev/shm\0/var/lib/kandelo-tests/runner\0/mnt/data\0");
-        assert_eq!(n, 3);
+        let n = set_foreign_prefixes(b"/var/lib/kandelo-tests/runner\0/mnt/data\0");
+        assert_eq!(n, 2);
 
         // Paths at or under a foreign prefix are NOT overlay-owned: they must
         // fall through to the sibling host mount.
@@ -11769,10 +11775,25 @@ mod tests {
         let _g = TestGuard::acquire();
         // `/` (the overlay's own root) and non-absolute / empty entries are
         // dropped; trailing slashes trimmed; duplicates collapsed.
-        let n = set_foreign_prefixes(b"/\0\0relative\0/dev/shm/\0/dev/shm\0");
+        let n = set_foreign_prefixes(b"/\0\0relative\0/mnt/data/\0/mnt/data\0");
         assert_eq!(n, 1);
-        assert!(!owns_path(b"/dev/shm/x"));
+        assert!(!owns_path(b"/mnt/data/x"));
         assert!(owns_path(b"/")); // root is never foreign
+    }
+
+    #[test]
+    fn a_foreign_mount_covers_tmpfs_at_or_beneath_its_scratch_mount() {
+        let _g = TestGuard::acquire();
+        assert_eq!(set_foreign_prefixes(b"/dev\0/run/qux\0"), 2);
+        assert!(crate::tmpfs::owns_path(b"/dev/shm/sem.foo"));
+        assert!(crate::tmpfs::owns_path(b"/run"));
+        assert!(crate::tmpfs::owns_path(b"/run/quxx"));
+        assert!(!crate::tmpfs::owns_path(b"/run/qux"));
+        assert!(!crate::tmpfs::owns_path(b"/run/qux/bar"));
+        assert!(!owns_path(b"/run/qux/bar"));
+
+        assert_eq!(set_foreign_prefixes(b""), 0);
+        assert!(crate::tmpfs::owns_path(b"/run/qux/bar"));
     }
 
     #[test]
