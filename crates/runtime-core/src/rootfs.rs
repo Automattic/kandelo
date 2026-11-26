@@ -1922,6 +1922,19 @@ pub fn image_length() -> Option<u64> {
     ROOTFS.with(|state| state.image.map(|geometry| geometry.image_len))
 }
 
+/// ` (host reports N)` when the kernel reports fewer processors than the
+/// host, and nothing otherwise. Formats without allocating, as `klog` needs.
+struct ProcessorReduction(Option<u32>);
+
+impl core::fmt::Display for ProcessorReduction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(reported) => write!(f, " (host reports {reported})"),
+            None => Ok(()),
+        }
+    }
+}
+
 /// Write the kernel log's boot and mount records for the `/` image that was
 /// just loaded, `entries` being what the loader counted.
 ///
@@ -1934,6 +1947,9 @@ pub fn image_length() -> Option<u64> {
 ///
 /// Both records are stamped with the host clock; without one neither is
 /// written. Nothing is written when no image is loaded.
+///
+/// The host sets the processor count before `/` loads, so the boot record
+/// names it, and names the host's own count when the kernel reports fewer.
 pub fn record_root_image_loaded<H: crate::process::HostIO + ?Sized>(host: &mut H, entries: usize) {
     use crate::kmsg::{klog, KlogSite};
     let Some(image_len) = image_length() else { return };
@@ -1941,12 +1957,15 @@ pub fn record_root_image_loaded<H: crate::process::HostIO + ?Sized>(host: &mut H
         state.image_metadata.as_deref().and_then(|bytes| crate::image_policy::declared_kernel_abi(bytes))
     });
     let width = if core::mem::size_of::<usize>() == 8 { "wasm64" } else { "wasm32" };
+    let processors = crate::processors::count();
     klog(
         host,
         KlogSite::BootIdentity,
         format_args!(
-            "kernel ABI {}, {width}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
+            "kernel ABI {}, {width}, {processors} processor{}{}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
             wasm_posix_shared::ABI_VERSION,
+            if processors == 1 { "" } else { "s" },
+            ProcessorReduction(crate::processors::host_count_beyond_max()),
             metadata_budget_usage().1,
             journal_state_budget_usage().1,
             io_budget_usage().1,
@@ -19909,20 +19928,26 @@ mod tests {
         let width = if cfg!(target_pointer_width = "64") { "wasm64" } else { "wasm32" };
         let log = kernel_log();
         assert_eq!(log.len(), 2, "one boot record and one mount record: {log:?}");
-        // The kernel's own identity, and the budgets it will refuse against.
-        assert_eq!(
-            log[0],
-            (
-                crate::kmsg::LOG_INFO,
-                2_500_000_000,
-                alloc::format!(
-                    "kernel ABI {}, {width}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
-                    wasm_posix_shared::ABI_VERSION,
-                    metadata_budget_usage().1,
-                    journal_state_budget_usage().1,
-                    io_budget_usage().1,
-                )
+        // The kernel's own identity, its processors, and the budgets it will
+        // refuse against. The processor count is process-global: this test
+        // binary sees either the unconfigured count or the one
+        // `processors::tests::configure_sets_the_count_once` sets (a host
+        // reporting 40, of which the kernel names 32).
+        let identity = |processors: &str| {
+            alloc::format!(
+                "kernel ABI {}, {width}, {processors}; memory budgets: rootfs metadata {} B, journal state {} B, I/O {} B",
+                wasm_posix_shared::ABI_VERSION,
+                metadata_budget_usage().1,
+                journal_state_budget_usage().1,
+                io_budget_usage().1,
             )
+        };
+        assert_eq!((log[0].0, log[0].1), (crate::kmsg::LOG_INFO, 2_500_000_000));
+        assert!(
+            log[0].2 == identity("1 processor")
+                || log[0].2 == identity("32 processors (host reports 40)"),
+            "{:?}",
+            log[0]
         );
         // The rootfs identity: what image, and which kernel it says it is for.
         assert!(

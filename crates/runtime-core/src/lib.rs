@@ -94,6 +94,7 @@ pub mod group_completion;
 pub mod process_wire;
 pub mod device_id;
 pub mod program_preparation;
+pub mod processors;
 pub mod procfs;
 pub mod pshared;
 pub mod pty;

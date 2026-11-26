@@ -28,9 +28,10 @@ pub use wasm_posix_program_abi::program_extensions;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
-/// The current kernel models one CPU and uses one wasm32 kernel word. Both
-/// wasm32 and wasm64 guests therefore receive the same four-byte raw mask;
-/// changing this width is an ABI change.
+/// The mask is one wasm32 kernel word, so it names at most 32 CPUs
+/// (`runtime_core::processors::MAX_PROCESSORS`). Both wasm32 and wasm64
+/// guests receive the same four-byte raw mask; changing this width is an ABI
+/// change.
 pub const SCHED_AFFINITY_MASK_SIZE: u32 = 4;
 
 /// Kandelo's reference instant, in whole seconds since the Unix epoch: the

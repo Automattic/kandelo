@@ -2965,6 +2965,27 @@ pub extern "C" fn kernel_set_image_build_determinism(
     }
 }
 
+/// Record how many processors the host can run guest Workers on at once.
+/// Returns the count the kernel will report through `sysconf` and
+/// `sched_getaffinity` (at most `runtime_core::processors::MAX_PROCESSORS`),
+/// or `-errno`.
+///
+/// The host calls this once at boot. `EBUSY` refuses it once any user process
+/// exists or after the count is set, so the value cannot change while a
+/// program may have sized its parallelism from it. `EINVAL` for zero. A kernel
+/// that is never configured reports one processor.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_processor_count(available: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if table.has_allocated_user_tasks() {
+        return -(Errno::EBUSY as i32);
+    }
+    match crate::processors::configure(available) {
+        Ok(count) => count as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Read up to `buf_len` bytes at `offset` from the rootfs file named by the path
 /// bytes `path_ptr..path_len`, into kernel memory `buf_ptr..buf_len`. Host-facing
 /// because the kernel owns `/`: the host reads current `/` bytes through the
@@ -8688,11 +8709,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             )
         }
 
-        // -- Scheduling stubs (single-CPU Wasm) --
+        // -- Scheduling stubs --
         237 => {
             let _cpusetsize = channel_scalar::u32_argument(237, args, 1);
             0
-        } // SYS_SCHED_SETAFFINITY: no-op (single CPU)
+        } // SYS_SCHED_SETAFFINITY: no-op (the host places Workers on CPUs)
         238 => kernel_sched_getaffinity(
             a1,
             channel_scalar::u32_argument(238, args, 1),
@@ -11986,7 +12007,8 @@ fn sched_affinity_target_process(
         .ok_or(Errno::ESRCH)
 }
 
-/// Linux sched_getaffinity compatibility for Kandelo's one-CPU kernel.
+/// Linux sched_getaffinity compatibility: every task may run on every
+/// processor the host reported (`runtime_core::processors`).
 ///
 /// Linux validates the unsigned byte length against one kernel-word mask,
 /// requires kernel-word alignment, and returns the number of bytes copied by
@@ -12008,8 +12030,7 @@ fn kernel_sched_getaffinity(pid: i32, cpusetsize: u32, mask_ptr: *mut u8) -> i32
     }
 
     let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, MASK_SIZE as usize) };
-    mask.fill(0);
-    mask[0] = 1;
+    mask.copy_from_slice(&crate::processors::affinity_mask(crate::processors::count()));
     MASK_SIZE as i32
 }
 
@@ -12065,8 +12086,8 @@ fn kernel_sched_accept_param(pid: i32, param_ptr: *const u8) -> i32 {
         )
     };
     match crate::process_wire::read_sched_param(bytes) {
-        // Scheduling remains a truthful no-op in the one-CPU Wasm model, but
-        // the complete caller-owned record is still validated and staged.
+        // The host, not the kernel, schedules guest Workers, so the policy is
+        // not applied; the complete caller-owned record is still validated.
         Ok(_param) => 0,
         Err(error) => -(error as i32),
     }

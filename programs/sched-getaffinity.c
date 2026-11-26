@@ -1,11 +1,19 @@
 #define _GNU_SOURCE
 
+/* Usage: sched-getaffinity <processors>
+ *
+ * <processors> is the count the host reports for the machine (its available
+ * parallelism, capped at the 32 CPUs the four-byte kernel mask can name).
+ * Every interface that reports a processor count must agree with it. */
+
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/sysinfo.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -15,6 +23,7 @@ enum {
 };
 
 static unsigned char large_mask[LARGE_MASK_SIZE];
+static unsigned char expected_mask[KERNEL_MASK_SIZE];
 static pthread_mutex_t worker_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t worker_cond = PTHREAD_COND_INITIALIZER;
 static pid_t worker_tid;
@@ -55,7 +64,7 @@ static int expect_raw_mask(pid_t pid, long size, unsigned char *mask,
         fprintf(stderr, "%s returned %ld errno %d\n", label, result, errno);
         return -1;
     }
-    if (mask[0] != 1 || mask[1] != 0 || mask[2] != 0 || mask[3] != 0) {
+    if (memcmp(mask, expected_mask, KERNEL_MASK_SIZE) != 0) {
         fprintf(stderr, "%s returned mask %02x %02x %02x %02x\n",
                 label, mask[0], mask[1], mask[2], mask[3]);
         return -1;
@@ -89,9 +98,20 @@ static void *affinity_worker(void *unused) {
     return NULL;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     cpu_set_t set;
     unsigned char *bytes = (unsigned char *)&set;
+
+    char *end = NULL;
+    long processors = argc == 2 ? strtol(argv[1], &end, 10) : 0;
+    if (argc != 2 || *end != '\0' || processors < 1
+        || processors > KERNEL_MASK_SIZE * 8) {
+        fputs("usage: sched-getaffinity <processors 1..32>\n", stderr);
+        return 64;
+    }
+    for (long cpu = 0; cpu < processors; ++cpu) {
+        expected_mask[cpu / 8] |= (unsigned char)(1u << (cpu % 8));
+    }
 
     const long invalid_sizes[] = {
         0, 1, 3, 5, -1, (long)9007199254740997LL,
@@ -196,17 +216,23 @@ int main(void) {
         perror("sched_getaffinity");
         return 18;
     }
-    if (!CPU_ISSET(0, &set)) {
-        fputs("CPU 0 missing\n", stderr);
-        return 19;
+    for (int cpu = 0; cpu < processors; ++cpu) {
+        if (!CPU_ISSET(cpu, &set)) {
+            fprintf(stderr, "CPU %d missing\n", cpu);
+            return 19;
+        }
     }
-    for (int cpu = 1; cpu < CPU_SETSIZE; ++cpu) {
+    for (int cpu = (int)processors; cpu < CPU_SETSIZE; ++cpu) {
         if (CPU_ISSET(cpu, &set)) {
             fprintf(stderr, "unexpected CPU %d\n", cpu);
             return 20;
         }
     }
-    for (size_t i = 1; i < sizeof(set); ++i) {
+    if (CPU_COUNT(&set) != processors) {
+        fprintf(stderr, "CPU_COUNT %d\n", CPU_COUNT(&set));
+        return 20;
+    }
+    for (size_t i = KERNEL_MASK_SIZE; i < sizeof(set); ++i) {
         if (bytes[i] != 0) {
             fprintf(stderr, "libc left byte %zu as 0x%02x\n", i, bytes[i]);
             return 21;
@@ -215,9 +241,12 @@ int main(void) {
 
     long online = sysconf(_SC_NPROCESSORS_ONLN);
     long configured = sysconf(_SC_NPROCESSORS_CONF);
-    if (online != 1 || configured != 1) {
-        fprintf(stderr, "unexpected CPU counts: online=%ld configured=%ld\n",
-                online, configured);
+    if (online != processors || configured != processors
+        || get_nprocs() != processors || get_nprocs_conf() != processors) {
+        fprintf(stderr,
+                "unexpected CPU counts: online=%ld configured=%ld "
+                "get_nprocs=%d get_nprocs_conf=%d\n",
+                online, configured, get_nprocs(), get_nprocs_conf());
         return 22;
     }
 
